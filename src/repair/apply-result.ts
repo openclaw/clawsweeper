@@ -41,13 +41,6 @@ import {
   type PrCloseCoverageProofModelResult,
   type PrCloseCoverageProofPullRequestView,
 } from "../pr-close-coverage-proof.js";
-import {
-  isFixFirstBlockedCloseAction,
-  orderRepairClosureActions,
-  planRepairClosureResult,
-  repairClosureDependencyRefs,
-  resolveRepairClosureRelationship,
-} from "./closure-result-plan.js";
 
 const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 const CLOSE_ACTIONS = new Set([
@@ -180,38 +173,11 @@ const maintainerCloseRefs = new Set(
 
 const { effectiveResult, promotions } = applyPostFlightClosurePromotions(result);
 if (promotions.length > 0) report.closure_promotions = promotions;
-const closurePlan = planRepairClosureResult(effectiveResult);
-if (closurePlan.status === "needs_human") {
-  throw new Error(
-    `refusing apply: ${closurePlan.diagnostics
-      .map((diagnostic) => `closure dependency plan ${diagnostic.code}: ${diagnostic.message}`)
-      .join("; ")}`,
-  );
-}
-report.closure_plan = closurePlan;
-const closureOutcomes = new Map<string, LooseRecord>();
-const applicatorActions = (effectiveResult.actions ?? []).filter(isApplicatorAction);
-for (const action of orderRepairClosureActions(applicatorActions, closurePlan)) {
+for (const action of effectiveResult.actions ?? []) {
   if (!isApplicatorAction(action)) continue;
-  const outcome =
-    blockedClosureDependencyOutcome({
-      result: effectiveResult,
-      action,
-      dryRun,
-      closureOutcomes,
-    }) ??
-    applyAction({
-      job,
-      result: effectiveResult,
-      action,
-      dryRun,
-      allowMissingUpdatedAt,
-    });
-  report.actions.push(outcome);
-  if (action.status === "planned" && CLOSE_ACTIONS.has(String(action.action ?? ""))) {
-    const target = normalizeRepairClosureRef(action.target);
-    if (target) closureOutcomes.set(target, outcome);
-  }
+  report.actions.push(
+    applyAction({ job, result: effectiveResult, action, dryRun, allowMissingUpdatedAt }),
+  );
 }
 
 const reportPath =
@@ -260,38 +226,27 @@ function applyPostFlightClosurePromotions(sourceResult: LooseRecord): {
   ) {
     return { effectiveResult: sourceResult, promotions: [] };
   }
-
-  const mergedFixRefs = new Set(
+  const mergedFixes = new Set(
     (postFlightReport.closure_authorization.merged_fixes ?? [])
       .filter(
         (entry: JsonValue) =>
           typeof entry?.merge_commit_sha === "string" && entry.merge_commit_sha.trim(),
       )
-      .map((entry: JsonValue) => normalizeRepairClosureRef(entry.fix_ref))
+      .map((entry: JsonValue) => normalizeIssueRef(entry.fix_ref, sourceResult.repo))
       .filter(Boolean),
   );
-  if (mergedFixRefs.size === 0) return { effectiveResult: sourceResult, promotions: [] };
-
-  const actions = Array.isArray(sourceResult.actions) ? sourceResult.actions : [];
-  const hasFixPath = actions.some(
-    (action: JsonValue) =>
-      ["fix_needed", "build_fix_artifact", "open_fix_pr"].includes(String(action?.action ?? "")) &&
-      ["planned", "blocked"].includes(String(action?.status ?? "")),
-  );
   const promotions: LooseRecord[] = [];
-  const effectiveActions = actions.map((action: LooseRecord) => {
-    if (
-      !CLOSE_ACTIONS.has(String(action.action ?? "")) ||
-      !isFixFirstBlockedCloseAction(action, hasFixPath)
-    ) {
+  const actions = (sourceResult.actions ?? []).map((action: LooseRecord) => {
+    if (action.status !== "blocked" || !CLOSE_ACTIONS.has(String(action.action ?? ""))) {
       return action;
     }
-    const candidateFix = normalizeRepairClosureRef(
-      resolveRepairClosureRelationship(action).candidateFix,
+    const candidateFix = normalizeIssueRef(
+      action.candidate_fix ?? action.fixed_by ?? action.fix_candidate,
+      sourceResult.repo,
     );
-    if (!candidateFix || !mergedFixRefs.has(candidateFix)) return action;
+    if (!candidateFix || !mergedFixes.has(candidateFix)) return action;
     promotions.push({
-      target: normalizeRepairClosureRef(action.target),
+      target: normalizeIssueRef(action.target, sourceResult.repo),
       action: action.action,
       source_status: action.status,
       effective_status: "planned",
@@ -300,24 +255,33 @@ function applyPostFlightClosurePromotions(sourceResult: LooseRecord): {
     });
     return { ...action, status: "planned" };
   });
-  if (promotions.length === 0) return { effectiveResult: sourceResult, promotions };
   return {
-    effectiveResult: { ...sourceResult, actions: effectiveActions },
+    effectiveResult: promotions.length > 0 ? { ...sourceResult, actions } : sourceResult,
     promotions,
   };
 }
 
 function applyAction({ job, result, action, dryRun, allowMissingUpdatedAt }: LooseRecord) {
-  const {
-    target,
-    actionName,
+  const target = normalizeIssueRef(action.target, result.repo);
+  const actionName = String(action.action ?? "");
+  const classification = normalizeClassification(action);
+  const canonical = normalizeIssueRef(action.canonical ?? action.duplicate_of, result.repo);
+  const candidateFix = normalizeIssueRef(
+    action.candidate_fix ?? action.fixed_by ?? action.fix_candidate,
+    result.repo,
+  );
+  const idempotencyKey =
+    typeof action.idempotency_key === "string" && action.idempotency_key.trim()
+      ? action.idempotency_key.trim()
+      : defaultIdempotencyKey(result.cluster_id, target, actionName, classification);
+  const base = {
+    target: `#${target}`,
+    action: actionName,
     classification,
-    canonical,
-    candidateFix,
-    relationshipRoot,
-    idempotencyKey,
-    base,
-  } = repairActionContext(result, action);
+    canonical: canonical ? `#${canonical}` : undefined,
+    candidate_fix: candidateFix ? `#${candidateFix}` : undefined,
+    idempotency_key: idempotencyKey,
+  };
 
   if (!target) return { ...base, status: "failed", reason: "target must look like #123" };
   if (action.status !== "planned") {
@@ -347,7 +311,6 @@ function applyAction({ job, result, action, dryRun, allowMissingUpdatedAt }: Loo
     classification,
     canonical,
     candidateFix,
-    relationshipRoot,
     idempotencyKey,
   });
 }
@@ -364,7 +327,6 @@ function applyCloseAction({
   classification,
   canonical,
   candidateFix,
-  relationshipRoot,
   idempotencyKey,
 }: LooseRecord) {
   const closePolicyBlock = validateClosePolicy({ job, actionName });
@@ -466,21 +428,6 @@ function applyCloseAction({
     }
   }
 
-  const comment = renderCloseComment({ action, classification, result, target, live });
-  const marker = idempotencyMarker(result.cluster_id, target, idempotencyKey);
-  const body = comment.includes(marker) ? comment : `${comment.trim()}\n\n${marker}`;
-  const existingComment = findExistingComment(result.repo, target, marker, body);
-  if (live.state !== "open") {
-    return {
-      ...base,
-      status: existingComment ? "executed" : "skipped",
-      reason: existingComment
-        ? "already closed with matching clawsweeper-repair comment"
-        : "already closed",
-      live_state: live.state,
-    };
-  }
-
   const expectedUpdatedAt = action.target_updated_at ?? action.live_updated_at;
   if (!expectedUpdatedAt && !allowMissingUpdatedAt) {
     return {
@@ -502,6 +449,21 @@ function applyCloseAction({
     };
   }
 
+  const comment = renderCloseComment({ action, classification, result, target, live });
+  const marker = idempotencyMarker(result.cluster_id, target, idempotencyKey);
+  const body = comment.includes(marker) ? comment : `${comment.trim()}\n\n${marker}`;
+  const existingComment = findExistingComment(result.repo, target, marker, body);
+
+  if (live.state !== "open") {
+    return {
+      ...base,
+      status: existingComment ? "executed" : "skipped",
+      reason: existingComment
+        ? "already closed with matching clawsweeper-repair comment"
+        : "already closed",
+      live_state: live.state,
+    };
+  }
   const lockedSkip = lockedConversationSkipIfLocked(base, live);
   if (lockedSkip) return lockedSkip;
 
@@ -511,8 +473,9 @@ function applyCloseAction({
     actionName,
     target,
     live,
+    canonical,
+    candidateFix,
     classification,
-    coveringRef: relationshipRoot,
   });
   if (proofValidation?.status === "blocked") {
     return {
@@ -562,9 +525,12 @@ function applyCloseAction({
   }
   const postProofCoveringSafetyBlock = validatePrCloseCoverageCoveringRefSafety({
     result,
+    actionName,
     target,
     live,
-    coveringRef: relationshipRoot,
+    canonical,
+    candidateFix,
+    classification,
   });
   if (postProofCoveringSafetyBlock) {
     return {
@@ -844,7 +810,7 @@ function validateFixFirstClose({
   );
   if (fixLanded) return "";
 
-  return "close requires ClawSweeper fix PR opened/pushed, merged candidate fix, or candidate merge executed first";
+  return "close requires ClawSweeper fix PR opened/pushed, merged candidate fix, or merge executed first";
 }
 
 function isMergedCandidateFix(repo: string, candidateFix: LooseRecord) {
@@ -1008,9 +974,16 @@ function validatePrCloseCoverageProof({
   actionName,
   target,
   live,
+  canonical,
+  candidateFix,
   classification,
-  coveringRef,
 }: LooseRecord): PrCloseCoverageProofValidation {
+  const coveringRef = prCloseCoverageProofCoveringRef({
+    actionName,
+    classification,
+    canonical,
+    candidateFix,
+  });
   if (!coveringRef || coveringRef === target || !live.pull_request) return null;
 
   let source: PrCloseCoverageProofPullRequestView;
@@ -1120,10 +1093,19 @@ function validatePrCloseCoverageCoveringFreshness({
 
 function validatePrCloseCoverageCoveringRefSafety({
   result,
+  actionName,
   target,
   live,
-  coveringRef,
+  canonical,
+  candidateFix,
+  classification,
 }: LooseRecord): PrCloseCoverageProofBlock | null {
+  const coveringRef = prCloseCoverageProofCoveringRef({
+    actionName,
+    classification,
+    canonical,
+    candidateFix,
+  });
   if (!coveringRef || coveringRef === target || !live.pull_request) return null;
 
   try {
@@ -1262,6 +1244,23 @@ function prCloseCoverageProofRepairSourceReport({
     ...(evidence.length ? evidence.map((entry: string) => `- ${entry}`) : ["- none"]),
   ];
   return lines.join("\n");
+}
+
+function prCloseCoverageProofCoveringRef({
+  actionName,
+  classification,
+  canonical,
+  candidateFix,
+}: LooseRecord) {
+  if (actionName === "close_duplicate") return canonical;
+  if (actionName === "close_superseded") return candidateFix || canonical;
+  if (["close_fixed_by_candidate", "post_merge_close"].includes(actionName)) return candidateFix;
+  if (actionName === "close") {
+    if (classification === "duplicate") return canonical;
+    if (classification === "superseded") return candidateFix || canonical;
+    if (classification === "fixed_by_candidate") return candidateFix;
+  }
+  return null;
 }
 
 function hydratePrCloseCoveragePullRequest(
@@ -1595,81 +1594,25 @@ function isApplicatorAction(action: LooseRecord) {
   );
 }
 
-function blockedClosureDependencyOutcome({
-  result,
-  action,
-  dryRun,
-  closureOutcomes,
-}: Readonly<{
-  result: LooseRecord;
-  action: LooseRecord;
-  dryRun: boolean;
-  closureOutcomes: Map<string, LooseRecord>;
-}>): LooseRecord | null {
-  if (action.status !== "planned" || !CLOSE_ACTIONS.has(String(action.action ?? ""))) return null;
-  const dependencies = repairClosureDependencyRefs(action);
-  if (dependencies.length === 0) return null;
-
-  const unsatisfied = dependencies
-    .map((dependency) => ({ dependency, outcome: closureOutcomes.get(dependency) }))
-    .filter(
-      ({ outcome }) => outcome?.status !== "executed" && !(dryRun && outcome?.status === "planned"),
-    );
-  if (unsatisfied.length === 0) return null;
-
-  const { base } = repairActionContext(result, action);
-  return {
-    ...base,
-    status: "blocked",
-    depends_on: dependencies,
-    dependency_outcomes: unsatisfied.map(({ dependency, outcome }) => ({
-      target: dependency,
-      status: outcome?.status ?? "missing",
-    })),
-    reason: `closure prerequisites did not close successfully: ${unsatisfied
-      .map(({ dependency, outcome }) => `${dependency} (${outcome?.status ?? "missing"})`)
-      .join(", ")}`,
-  };
-}
-
-function repairActionContext(result: LooseRecord, action: LooseRecord): LooseRecord {
-  const relationship = resolveRepairClosureRelationship(action);
-  const target = normalizeIssueRef(action.target, result.repo);
-  const actionName = String(action.action ?? "");
-  const classification = relationship.classification;
-  const canonical = normalizeIssueRef(relationship.canonical, result.repo);
-  const candidateFix = normalizeIssueRef(relationship.candidateFix, result.repo);
-  const relationshipRoot = normalizeIssueRef(relationship.root, result.repo);
-  const idempotencyKey =
-    typeof action.idempotency_key === "string" && action.idempotency_key.trim()
-      ? action.idempotency_key.trim()
-      : defaultIdempotencyKey(result.cluster_id, target, actionName, classification);
-  return {
-    target,
-    actionName,
-    classification,
-    canonical,
-    candidateFix,
-    relationshipRoot,
-    idempotencyKey,
-    base: {
-      target: `#${target}`,
-      action: actionName,
-      classification,
-      canonical: canonical ? `#${canonical}` : undefined,
-      candidate_fix: candidateFix ? `#${candidateFix}` : undefined,
-      idempotency_key: idempotencyKey,
-    },
-  };
-}
-
-function normalizeRepairClosureRef(value: JsonValue): string {
-  const number = normalizeIssueRef(value);
-  return number ? `#${number}` : "";
-}
-
 function normalizeIssueRef(value: JsonValue, expectedRepo: JsonValue = "") {
   return issueNumberFromRef(value, String(expectedRepo ?? ""));
+}
+
+function normalizeClassification(action: LooseRecord) {
+  const raw = String(
+    action.classification ?? action.close_reason ?? action.reason ?? "",
+  ).toLowerCase();
+  if (raw.includes("low_signal") || raw.includes("low-signal") || raw.includes("low signal"))
+    return "low_signal";
+  if (raw.includes("fixed") || raw.includes("candidate")) return "fixed_by_candidate";
+  if (raw.includes("superseded") || raw.includes("supersede")) return "superseded";
+  if (raw.includes("duplicate") || raw.includes("dupe")) return "duplicate";
+  if (action.action === "close_fixed_by_candidate") return "fixed_by_candidate";
+  if (action.action === "close_low_signal") return "low_signal";
+  if (action.action === "close_superseded") return "superseded";
+  if (action.action === "close_duplicate") return "duplicate";
+  if (action.action === "post_merge_close") return "fixed_by_candidate";
+  return raw;
 }
 
 function defaultIdempotencyKey(
@@ -1818,8 +1761,7 @@ function fetchPullRequestView(repo: string, number: JsonValue) {
 function findExistingComment(repo: string, number: JsonValue, marker: LooseRecord, body: string) {
   const comments = ghPaged(`repos/${repo}/issues/${number}/comments`);
   return comments.find(
-    (comment: JsonValue) =>
-      isClawSweeperComment(comment) && (comment.body?.includes(marker) || comment.body === body),
+    (comment: JsonValue) => comment.body?.includes(marker) || comment.body === body,
   );
 }
 

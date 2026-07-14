@@ -111,8 +111,6 @@ jobs:
             src/github-json.ts
             src/github-retry.ts
             src/pr-close-coverage-proof.ts
-            src/review-activity-cursor.ts
-            src/stable-json.ts
             src/action-ledger-files.ts
             src/action-ledger-runtime.ts
             src/action-ledger.ts
@@ -484,12 +482,15 @@ jobs:
             echo "Command action event shards existed but no paths were imported." >&2
             exit 1
           fi
+          action_ledger_args=()
           while IFS= read -r event_path; do
             durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
             test -f "$durable_event_path"
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
           done < "$event_paths_file"
-          node dist/repair/publish-action-event-paths.js \
-            --paths-file "$event_paths_file" \
-            --message "chore: append command action ledger"
+          pnpm run repair:publish-main -- \
+            --message "chore: append command action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal

@@ -27,26 +27,20 @@ The mental model:
 - Assist has a small fixed cap because it is lightweight maintainer Q&A, not a
   derived review or repair lane.
 - Background lanes shrink when priority work is already active.
-- The optional exact-review background-yield experiment can further reduce
-  broad review work when the queue publishes `congested` or `saturated`
-  pressure. It is disabled unless a maintainer sets
-  `CLAWSWEEPER_ENABLE_EXACT_REVIEW_BACKGROUND_YIELD=1`.
 - Runtime overrides are escape hatches, not the normal tuning surface.
 
 ## Worker Budget
 
-| Name                                                  | Current | Meaning                                                                                       |
-| ----------------------------------------------------- | ------: | --------------------------------------------------------------------------------------------- |
-| `workers.max`                                         |     128 | Maximum global Codex worker budget used to derive lane limits.                                |
-| `workers.reserve_for_interactive`                     |      16 | Worker slots background lanes leave open for exact/manual/urgent work.                        |
-| `workers.expansion_reserve`                           |       8 | Extra slots background lanes leave open for independently planned matrix expansion.           |
-| `workers.minimum_background`                          |      16 | Target floor for background progress when enough global capacity is available.                |
-| `lanes.exact_review.max_concurrent`                   |      64 | Maximum concurrent exact-item review workflow runs admitted to Codex.                         |
-| `lanes.exact_review.target_max_concurrent`            |      60 | Maximum concurrent exact-item review workflow runs one target repository may consume.         |
-| `lanes.exact_review.background_congested_max_workers` |      16 | Experimental broad-review cap while the queue publishes `congested` pressure. |
-| `lanes.exact_review.background_saturated_max_workers` |       4 | Experimental broad-review cap while the queue publishes `saturated` pressure. |
-| `lanes.assist.max`                                    |      10 | Maximum concurrent lightweight assist jobs.                                                   |
-| `lanes.repair.cluster_max_live_runs`                  |       2 | Default live repair workflow cap for imported gitcrawl cluster dispatches.                    |
+| Name                                       | Current | Meaning                                                                               |
+| ------------------------------------------ | ------: | ------------------------------------------------------------------------------------- |
+| `workers.max`                              |     128 | Maximum global Codex worker budget used to derive lane limits.                        |
+| `workers.reserve_for_interactive`          |      16 | Worker slots background lanes leave open for exact/manual/urgent work.                |
+| `workers.expansion_reserve`                |       8 | Extra slots background lanes leave open for independently planned matrix expansion.   |
+| `workers.minimum_background`               |      16 | Target floor for background progress when enough global capacity is available.        |
+| `lanes.exact_review.max_concurrent`        |      64 | Maximum concurrent exact-item review workflow runs admitted to Codex.                 |
+| `lanes.exact_review.target_max_concurrent` |      60 | Maximum concurrent exact-item review workflow runs one target repository may consume. |
+| `lanes.assist.max`                         |      10 | Maximum concurrent lightweight assist jobs.                                           |
+| `lanes.repair.cluster_max_live_runs`       |       2 | Default live repair workflow cap for imported gitcrawl cluster dispatches.            |
 
 ## Derived Limits
 
@@ -61,8 +55,6 @@ by default.
 | --------------------------------------------------- | ------: | ------------------------------------------------------------------------------------- |
 | `exact_review.concurrent_max`                       |      64 | Exact-item review admission cap, clamped to `workers.max`.                            |
 | `exact_review.target_concurrent_max`                |      60 | Exact-item per-target admission cap, clamped to global exact-review capacity.         |
-| `exact_review.background_congested_max_workers`     |      16 | Experimental broad-review cap for published `congested` pressure.                     |
-| `exact_review.background_saturated_max_workers`     |       4 | Experimental broad-review cap for published `saturated` pressure.                     |
 | `assist.default`                                    |      10 | Maintainer assist job cap.                                                            |
 | `review_shards.normal_default`                      |      89 | Quiet-system normal review shard ceiling.                                             |
 | `review_shards.normal_active_floor`                 |      38 | Minimum active normal review shards to keep queued for `openclaw/openclaw`.           |
@@ -107,44 +99,7 @@ The scheduler does this for background lanes:
 4. reserve `workers.reserve_for_interactive`
 5. reserve `workers.expansion_reserve` for independently planned matrix waves
 6. cap the result at the lane's derived quiet-system ceiling
-7. when the fresh queue snapshot publishes `congested` pressure, cap broad lanes at
-   `lanes.exact_review.background_congested_max_workers`
-8. when the fresh queue snapshot publishes `saturated` pressure, cap broad lanes at
-   `lanes.exact_review.background_saturated_max_workers`
-9. return zero when the exact-pressure cap is already consumed, so no further
-   broad worker is admitted until the current matrices drain
-
-The pressure cap is a shared residual allowance, not a fresh allowance for
-each concurrently planning background workflow. Existing broad review matrices
-are subtracted before calculating new intake; once the cap is already occupied,
-the scheduler defers new broad work until in-flight jobs drain. With the
-experiment enabled, sweep and commit-review planners share one broad-admission
-lock so concurrent snapshots cannot each claim the same allowance. Queued
-planners are held by that lock; only in-progress review matrices consume the
-live pressure allowance.
-Manual exact-review batches remain priority work and are never charged against
-that background allowance.
-An unexpanded commit-review planner reserves its configured, hard-capped page
-size until its review matrix is visible. A literal skipped matrix job identifies
-a completed zero-review plan so its report-publishing phase holds no reservation.
-When exact pressure consumes the allowance, commit review keeps the shared
-admission lock for a short delay and requeues the same commit range; it is
-deferred rather than marked reviewed or exhausted.
-
-The workflow reads `exact_review_queue.generated_at` and
-`exact_review_queue.pressure.status` from the public queue snapshot before
-admitting normal review, hot intake, or commit-review work. Pressure production
-and explanation remain owned by the dashboard queue surface; the workflow does
-not reconstruct pressure from raw queue counts. A failed, stale, malformed,
-missing, or `unknown` snapshot is fail-open: the existing active-worker
-calculation remains in effect. The queue's pressure contract already excludes
-retry-delayed or target-cap-blocked work and reports inactive dispatch or
-unknown handoff state as `idle` or `unknown`.
-Exact-review admission itself remains governed by the durable queue's separate
-global and per-target caps; these background caps reduce competing work rather
-than raising those admission limits. An explicit commit-review page-size override
-remains unchanged while the queue is idle, but is capped while exact-review
-pressure is present.
+7. return at least 1 so an enabled lane can still make slow progress
 
 Background planner jobs serialize per target repository. A sweep that is still
 planning, queued, or expanding its matrix reserves its quiet lane size. Once
@@ -203,9 +158,6 @@ Examples with the current config:
   - 96 background = 4`.
 - 105 active priority workers: commit review gets 1, so commit review yields but
   does not fully stall.
-- Saturated exact-review pressure with four active background workers: the
-  shared four-worker allowance is occupied, so new broad planners defer until
-  one of those workers drains.
 
 Use these commands to inspect the effective values from a checkout:
 
@@ -226,11 +178,6 @@ hot intake `14`, and commit review `2`. Existing repair lanes keep their
 
 - `CLAWSWEEPER_COMMIT_REVIEW_PAGE_SIZE` overrides
   `commit_review.page_size_default`.
-- `CLAWSWEEPER_ENABLE_EXACT_REVIEW_BACKGROUND_YIELD=1` enables shared
-  background admission and pressure-based caps. The default is disabled.
-- `CLAWSWEEPER_EXACT_REVIEW_QUEUE_MAX_AGE_SECONDS` sets the maximum age of a
-  trusted exact-review queue snapshot for scheduler reshuffling. The default is
-  900 seconds; values below 60 seconds fall back to that default.
 - `CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED=1` enables the scheduled
   `repair-cluster-intake.yml` imported-cluster intake. Direct repair import and
   dispatch commands are not blocked by this variable; they keep the existing

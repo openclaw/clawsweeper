@@ -128,7 +128,7 @@ jobs:
       allow_fix_pr: ${{ steps.capture_gates.outputs.allow_fix_pr }}
       allow_merge: ${{ steps.capture_gates.outputs.allow_merge }}
       job_exists: ${{ steps.check_job.outputs.job_exists }}
-      effective_mode: ${{ steps.recovery_inputs.outputs.effective_mode }}
+      effective_mode: ${{ steps.run_worker.outputs.effective_mode }}
     env:
       CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
       CLAWSWEEPER_ALLOW_EXECUTE: ${{ (inputs.mode == 'execute' || inputs.mode == 'autonomous') && vars.CLAWSWEEPER_ALLOW_EXECUTE == '1' && '1' || '0' }}
@@ -149,117 +149,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           filter: blob:none
-
-      - name: Persist immutable recovery inputs
-        id: recovery_inputs
-        env:
-          SOURCE_JOB: ${{ inputs.job }}
-          SOURCE_DISPATCH_KEY: ${{ inputs.dispatch_key }}
-          REQUESTED_MODE: ${{ inputs.mode }}
-          RUNNER_LABEL: ${{ inputs.runner }}
-          EXECUTION_RUNNER_LABEL: ${{ inputs.execution_runner }}
-          PLANNER_SANDBOX: ${{ inputs.planner_sandbox }}
-          MODEL: ${{ inputs.model }}
-          DRY_RUN: ${{ inputs.dry_run }}
-          REQUEUE: ${{ inputs.requeue }}
-          REQUEUE_DEPTH: ${{ inputs.requeue_depth }}
-        run: |
-          set -euo pipefail
-          effective_mode="$REQUESTED_MODE"
-          if [ "$effective_mode" != "plan" ] && [ "${CLAWSWEEPER_ALLOW_EXECUTE}" != "1" ]; then
-            echo "CLAWSWEEPER_ALLOW_EXECUTE is not explicitly 1; persisting plan-only mode for requested $effective_mode run"
-            effective_mode="plan"
-          fi
-          mkdir -p .clawsweeper-repair/recovery-inputs
-          EFFECTIVE_MODE="$effective_mode" node <<'NODE'
-          const fs = require("node:fs");
-          const path = require("node:path");
-          const boolean = (name) => {
-            const value = process.env[name];
-            if (value === "true") return true;
-            if (value === "false") return false;
-            throw new Error(`${name} must be true or false`);
-          };
-          const bounded = (name, maxLength, allowEmpty = false) => {
-            const value = process.env[name] || "";
-            if (
-              (!allowEmpty && value.length === 0) ||
-              value !== value.trim() ||
-              value.length > maxLength ||
-              /[\u0000-\u001f\u007f]/.test(value)
-            ) {
-              throw new Error(`${name} is invalid`);
-            }
-            return value;
-          };
-          const sourceJob = process.env.SOURCE_JOB || "";
-          const normalizedJob = path.posix.normalize(sourceJob.replaceAll("\\", "/"));
-          if (
-            !normalizedJob.startsWith("jobs/") ||
-            !normalizedJob.endsWith(".md") ||
-            normalizedJob !== sourceJob
-          ) {
-            throw new Error("SOURCE_JOB must be a normalized relative jobs/... markdown path");
-          }
-          if (!["plan", "execute", "autonomous"].includes(process.env.REQUESTED_MODE || "")) {
-            throw new Error("REQUESTED_MODE is invalid");
-          }
-          if (!["plan", "execute", "autonomous"].includes(process.env.EFFECTIVE_MODE || "")) {
-            throw new Error("EFFECTIVE_MODE is invalid");
-          }
-          if (
-            process.env.EFFECTIVE_MODE !== process.env.REQUESTED_MODE &&
-            process.env.EFFECTIVE_MODE !== "plan"
-          ) {
-            throw new Error("EFFECTIVE_MODE must preserve or safely downgrade REQUESTED_MODE");
-          }
-          if (!["read-only", "danger-full-access"].includes(process.env.PLANNER_SANDBOX || "")) {
-            throw new Error("PLANNER_SANDBOX is invalid");
-          }
-          bounded("SOURCE_DISPATCH_KEY", 256, true);
-          bounded("RUNNER_LABEL", 256);
-          bounded("EXECUTION_RUNNER_LABEL", 256);
-          bounded("MODEL", 128);
-          const requeue = boolean("REQUEUE");
-          const requeueDepth = Number(process.env.REQUEUE_DEPTH);
-          if (
-            !Number.isSafeInteger(requeueDepth) ||
-            requeueDepth < 0 ||
-            requeueDepth > 1 ||
-            (requeue && requeueDepth !== 1) ||
-            (!requeue && requeueDepth !== 0)
-          ) {
-            throw new Error("REQUEUE_DEPTH is outside the bounded workflow contract");
-          }
-          const input = {
-            schema_version: 1,
-            source_job: sourceJob,
-            source_dispatch_key: process.env.SOURCE_DISPATCH_KEY || "",
-            requested_mode: process.env.REQUESTED_MODE,
-            effective_mode: process.env.EFFECTIVE_MODE,
-            runner: process.env.RUNNER_LABEL,
-            execution_runner: process.env.EXECUTION_RUNNER_LABEL,
-            planner_sandbox: process.env.PLANNER_SANDBOX,
-            model: process.env.MODEL,
-            dry_run: boolean("DRY_RUN"),
-            requeue,
-            requeue_depth: requeueDepth,
-          };
-          fs.writeFileSync(
-            ".clawsweeper-repair/recovery-inputs/workflow-inputs.json",
-            `${JSON.stringify(input, null, 2)}\n`,
-          );
-          NODE
-          echo "effective_mode=$effective_mode" >> "$GITHUB_OUTPUT"
-
-      - name: Upload immutable recovery inputs
-        uses: actions/upload-artifact@v7
-        with:
-          name: clawsweeper-repair-inputs-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .clawsweeper-repair/recovery-inputs/workflow-inputs.json
-          if-no-files-found: error
-          retention-days: 90
-          include-hidden-files: true
 
       - name: Resolve target owner
         id: target
@@ -415,16 +304,18 @@ jobs:
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Run worker
+        id: run_worker
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' }}
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
         run: |
-          worker_mode="${{ steps.recovery_inputs.outputs.effective_mode }}"
-          if [ -z "$worker_mode" ]; then
-            echo "Persisted effective repair mode is missing." >&2
-            exit 1
+          worker_mode="${{ inputs.mode }}"
+          if [ "$worker_mode" != "plan" ] && [ "${CLAWSWEEPER_ALLOW_EXECUTE}" != "1" ]; then
+            echo "CLAWSWEEPER_ALLOW_EXECUTE is not explicitly 1; rendering plan-only output for requested $worker_mode run"
+            worker_mode="plan"
           fi
+          echo "effective_mode=$worker_mode" >> "$GITHUB_OUTPUT"
           args=("${{ inputs.job }}" --mode "$worker_mode" --model "${{ inputs.model }}")
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             args+=(--dry-run)
@@ -462,7 +353,7 @@ jobs:
           retention-days: 7
 
       - name: Upload worker transfer artifacts
-        if: ${{ always() && (steps.recovery_inputs.outputs.effective_mode == 'execute' || steps.recovery_inputs.outputs.effective_mode == 'autonomous') && !inputs.dry_run }}
+        if: ${{ always() && (inputs.mode == 'execute' || inputs.mode == 'autonomous') && !inputs.dry_run }}
         uses: actions/upload-artifact@v7
         with:
           name: clawsweeper-repair-worker-${{ github.run_id }}-${{ github.run_attempt }}
@@ -470,7 +361,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload final worker artifacts
-        if: ${{ always() && (!((steps.recovery_inputs.outputs.effective_mode == 'execute' || steps.recovery_inputs.outputs.effective_mode == 'autonomous') && !inputs.dry_run) || failure() || cancelled()) }}
+        if: ${{ always() && (!((inputs.mode == 'execute' || inputs.mode == 'autonomous') && !inputs.dry_run) || failure() || cancelled()) }}
         uses: actions/upload-artifact@v7
         with:
           name: clawsweeper-repair-${{ github.run_id }}-${{ github.run_attempt }}
@@ -490,7 +381,7 @@ jobs:
       - name: Record planning completion
         if: ${{ success() && steps.crabfleet_session.outcome == 'success' }}
         run: |
-          if [[ "${{ steps.recovery_inputs.outputs.effective_mode }}" == "plan" || "${{ inputs.dry_run }}" == "true" ]]; then
+          if [[ "${{ steps.run_worker.outputs.effective_mode }}" == "plan" || "${{ inputs.dry_run }}" == "true" ]]; then
             pnpm run repair:action-session -- update \
               --state completed \
               --phase "done" \
@@ -511,7 +402,7 @@ jobs:
   execute:
     name: Execute and apply cluster actions
     needs: cluster
-    if: ${{ needs.cluster.result == 'success' && needs.cluster.outputs.job_exists == '1' && (needs.cluster.outputs.effective_mode == 'execute' || needs.cluster.outputs.effective_mode == 'autonomous') && !inputs.dry_run }}
+    if: ${{ needs.cluster.result == 'success' && needs.cluster.outputs.job_exists == '1' && needs.cluster.outputs.allow_execute == '1' && (needs.cluster.outputs.effective_mode == 'execute' || needs.cluster.outputs.effective_mode == 'autonomous') && !inputs.dry_run }}
     runs-on: ${{ inputs.execution_runner }}
     timeout-minutes: 120
     permissions:
@@ -527,8 +418,6 @@ jobs:
       CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS || '1800000' }}
       CLAWSWEEPER_FIX_STEP_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_FIX_STEP_TIMEOUT_MS || '4200000' }}
       CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS: ${{ vars.CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS || '1800000' }}
-      CLAWSWEEPER_EXECUTE_JOB_WINDOW_SECONDS: "5400"
-      CLAWSWEEPER_EXECUTE_RECOVERY_RESERVE_SECONDS: "900"
       CLAWSWEEPER_RESOLVE_REVIEW_THREADS: ${{ vars.CLAWSWEEPER_RESOLVE_REVIEW_THREADS || '1' }}
       CLAWSWEEPER_TARGET_VALIDATION_MODE: ${{ vars.CLAWSWEEPER_TARGET_VALIDATION_MODE || 'changed-only' }}
       CLAWSWEEPER_POST_FLIGHT_IGNORE_CHECKS: ${{ vars.CLAWSWEEPER_POST_FLIGHT_IGNORE_CHECKS || 'auto-response,Labeler,Stale' }}
@@ -540,19 +429,9 @@ jobs:
       CLAWSWEEPER_CRABFLEET_URL: ${{ vars.CLAWSWEEPER_CRABFLEET_URL || 'https://crabfleet.openclaw.ai' }}
       OPENCLAW_LOCAL_CHECK: "0"
     steps:
-      - name: Record execute recovery deadline
-        run: |
-          set -euo pipefail
-          started_at="$(date +%s)"
-          deadline="$((started_at + CLAWSWEEPER_EXECUTE_JOB_WINDOW_SECONDS))"
-          echo "CLAWSWEEPER_EXECUTE_DEADLINE_EPOCH=$deadline" >> "$GITHUB_ENV"
-
       - uses: actions/checkout@v7
         with:
           filter: blob:none
-
-      - uses: ./.github/actions/setup-action-ledger
-        id: execute-action-ledger
 
       - name: Resolve target owner
         id: target
@@ -637,7 +516,7 @@ jobs:
         id: execute-setup-pnpm
         if: ${{ steps.check_job.outputs.job_exists == '1' }}
         with:
-          build-script: build:worker
+          build-script: build:repair
 
       - uses: ./.github/actions/setup-codex
         if: ${{ steps.check_job.outputs.job_exists == '1' }}
@@ -811,92 +690,11 @@ jobs:
       - name: Execute credited fix artifact
         id: execute_fix
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
+        timeout-minutes: 70
         env:
           GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
-          CLAWSWEEPER_ACTION_LEDGER_INVOCATION: execute-fix
-        run: |
-          set -euo pipefail
-          case "$CLAWSWEEPER_FIX_STEP_TIMEOUT_MS" in
-            ''|*[!0-9]*)
-              echo "Invalid CLAWSWEEPER_FIX_STEP_TIMEOUT_MS: $CLAWSWEEPER_FIX_STEP_TIMEOUT_MS" >&2
-              exit 2
-              ;;
-          esac
-          now="$(date +%s)"
-          remaining_seconds="$((CLAWSWEEPER_EXECUTE_DEADLINE_EPOCH - now - CLAWSWEEPER_EXECUTE_RECOVERY_RESERVE_SECONDS))"
-          configured_seconds="$(((CLAWSWEEPER_FIX_STEP_TIMEOUT_MS + 999) / 1000))"
-          if (( configured_seconds <= 0 )); then
-            echo "Invalid zero execute timeout derived from CLAWSWEEPER_FIX_STEP_TIMEOUT_MS" >&2
-            exit 2
-          elif (( remaining_seconds <= 0 )); then
-            echo "::error::execute recovery reserve reached before mutation dispatch"
-            execute_exit_code=124
-          else
-            execute_timeout_seconds="$configured_seconds"
-            if (( execute_timeout_seconds > remaining_seconds )); then
-              execute_timeout_seconds="$remaining_seconds"
-            fi
-            echo "::notice title=Bounded execute-fix::timeout=${execute_timeout_seconds}s recovery_reserve=${CLAWSWEEPER_EXECUTE_RECOVERY_RESERVE_SECONDS}s"
-            set +e
-            timeout --signal=TERM --kill-after=30s "${execute_timeout_seconds}s" \
-              node dist/repair/execute-fix-attempt.js "${{ inputs.job }}" --latest --defer-publication
-            execute_exit_code=$?
-            set -e
-          fi
-          echo "exit_code=$execute_exit_code" >> "$GITHUB_OUTPUT"
-          exit "$execute_exit_code"
-
-      - name: Finalize execute-fix action ledger
-        id: finalize-execute-fix-action-ledger
-        if: ${{ always() && steps.execute-action-ledger.outcome == 'success' && steps.execute-setup-pnpm.outcome == 'success' }}
-        env:
-          EXECUTE_EXIT_CODE: ${{ steps.execute_fix.outputs.exit_code || '' }}
-          EXECUTE_OUTCOME: ${{ steps.execute_fix.outcome || 'not_started' }}
-        run: |
-          set -euo pipefail
-          if [ "$EXECUTE_OUTCOME" = "cancelled" ] || [ "$EXECUTE_EXIT_CODE" = "130" ] || [ "$EXECUTE_EXIT_CODE" = "143" ]; then
-            reason=cancelled
-          elif [ "$EXECUTE_EXIT_CODE" = "124" ] || [ "$EXECUTE_EXIT_CODE" = "137" ]; then
-            reason=timeout
-          else
-            reason=workflow_failed
-          fi
-          pnpm run --silent finalize-action-events -- \
-            --interrupt-open-attempts \
-            --reason "$reason"
-
-      - name: Publish immutable execute-fix action ledger
-        if: ${{ always() && steps.finalize-execute-fix-action-ledger.outcome == 'success' }}
-        run: |
-          set -euo pipefail
-          test -n "${CLAWSWEEPER_STATE_DIR:-}"
-          source_root="${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
-          if [ ! -d "$source_root/ledger" ]; then
-            echo "No execute-fix action event shards were finalized."
-            exit 0
-          fi
-          event_paths_file=".artifacts/execute-fix-action-ledger-paths.txt"
-          mkdir -p .artifacts
-          pnpm run --silent repair:publish-action-events -- \
-            --source-root "$source_root" \
-            --state-root "$CLAWSWEEPER_STATE_DIR" \
-            --expected-producer-job "$GITHUB_JOB" |
-            jq -r '.paths[]?' |
-            sort -u > "$event_paths_file"
-          if [ ! -s "$event_paths_file" ]; then
-            echo "Execute-fix action event shards existed but no paths were imported." >&2
-            exit 1
-          fi
-          while IFS= read -r event_path; do
-            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
-            test -f "$durable_event_path"
-            mkdir -p "$(dirname "$event_path")"
-            cp "$durable_event_path" "$event_path"
-          done < "$event_paths_file"
-          node dist/repair/publish-action-event-paths.js \
-            --paths-file "$event_paths_file" \
-            --message "chore: append execute-fix action ledger"
+        run: pnpm run repair:execute-fix -- "${{ inputs.job }}" --latest --defer-publication
 
       - name: Renew target write token for post-flight
         id: target_post_flight_token
@@ -1070,7 +868,7 @@ jobs:
           set -euo pipefail
           echo "Requeueing ${{ steps.repair_requeue.outputs.count }} source-head race repair result(s) against the latest head."
           pnpm run repair:requeue -- "${{ inputs.job }}" \
-            --mode "${{ needs.cluster.outputs.effective_mode }}" \
+            --mode "${{ inputs.mode }}" \
             --execute \
             --open-execute-window \
             --wait-for-capacity \
@@ -1079,8 +877,6 @@ jobs:
             --max-requeue-depth 1 \
             --runner "${{ inputs.runner }}" \
             --execution-runner "${{ inputs.execution_runner }}" \
-            --planner-sandbox "${{ inputs.planner_sandbox }}" \
-            --dry-run "${{ inputs.dry_run }}" \
             --model "${{ inputs.model }}"
 
       - name: Finalize repair requeue action ledger
@@ -1120,15 +916,18 @@ jobs:
             echo "Repair requeue action event shards existed but no paths were imported." >&2
             exit 1
           fi
+          action_ledger_args=()
           while IFS= read -r event_path; do
             durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
             test -f "$durable_event_path"
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
           done < "$event_paths_file"
-          node dist/repair/publish-action-event-paths.js \
-            --paths-file "$event_paths_file" \
-            --message "chore: append repair requeue action ledger"
+          pnpm run repair:publish-main -- \
+            --message "chore: append repair requeue action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal
 
       - name: Record requeued work
         if: ${{ always() && steps.crabfleet_session.outcome == 'success' && steps.repair_requeue.outputs.count != '' && steps.repair_requeue.outputs.count != '0' && steps.requeue_dispatch.outcome == 'success' }}

@@ -5,10 +5,7 @@ import {
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
 import { stableJson } from "../src/stable-json.ts";
 import { bayHtml } from "./bay-page.ts";
-import {
-  summarizeExactReviewHandoff,
-  summarizeExactReviewPressure,
-} from "./exact-review-health.ts";
+import { summarizeExactReviewHandoff } from "./exact-review-health.ts";
 import { TRIAGE_ROUTING_GROUPS, triageRoutingGroupsForLabels } from "./triage-routing-groups.ts";
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
@@ -81,12 +78,6 @@ type ExactReviewQueueState = {
     retryAt?: number;
   };
 };
-type ExactReviewQueuePressurePoint = {
-  observed_at: string;
-  pending: number;
-  dispatching: number;
-  leased: number;
-};
 type LegacyExactReviewQueueState = ExactReviewQueueState & {
   deliveries?: Record<string, number>;
 };
@@ -147,9 +138,6 @@ const EXACT_REVIEW_RECONCILE_LIST_PAGE_LIMIT = 3;
 const EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_BATCH = 1_000;
 const EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_MAX_BATCHES = 5;
-const EXACT_REVIEW_DISPATCH_RECEIPT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const EXACT_REVIEW_DISPATCH_RECEIPT_PRUNE_BATCH = 1_000;
-const EXACT_REVIEW_DISPATCH_RECEIPT_PRUNE_MAX_BATCHES = 5;
 const EXACT_REVIEW_QUEUE_SQL_BINDING_ROW_BATCH = 50;
 const EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION = 1;
 const EXACT_REVIEW_QUEUE_LEGACY_ROLLBACK_MS = 24 * 60 * 60 * 1000;
@@ -159,15 +147,9 @@ const EXACT_REVIEW_QUEUE_LEGACY_RECEIPT_SHIFT_MS = 2 * 24 * 60 * 60 * 1000;
 const EXACT_REVIEW_QUEUE_ROLLBACK_CLOCK_SKEW_MS = 5 * 60 * 1000;
 const EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX = "__clawsweeper_sql_generation:";
 const EXACT_REVIEW_QUEUE_STATE_KEY = "exact-review-queue";
-const EXACT_REVIEW_QUEUE_PRESSURE_HISTORY_KEY = "exact-review-queue-pressure-history:v1";
-const EXACT_REVIEW_QUEUE_PRESSURE_BUCKET_MS = 5 * 60_000;
-const EXACT_REVIEW_QUEUE_PRESSURE_WINDOW_MS = 3 * 60 * 60_000;
-const EXACT_REVIEW_QUEUE_PRESSURE_POINT_LIMIT =
-  EXACT_REVIEW_QUEUE_PRESSURE_WINDOW_MS / EXACT_REVIEW_QUEUE_PRESSURE_BUCKET_MS + 1;
 const EXACT_REVIEW_QUEUE_META_TABLE = "exact_review_queue_meta";
 const EXACT_REVIEW_QUEUE_ITEM_TABLE = "exact_review_queue_items";
 const EXACT_REVIEW_QUEUE_DELIVERY_TABLE = "exact_review_queue_deliveries";
-const EXACT_REVIEW_DISPATCH_RECEIPT_TABLE = "exact_review_dispatch_receipts";
 const EXACT_REVIEW_QUEUE_NAME = "global";
 const EXACT_REVIEW_COMMAND_STATUS_MARKER_PATTERN =
   /^<!-- clawsweeper-command-status:[^<>\r\n]{1,200} -->$/;
@@ -485,7 +467,6 @@ export class ExactReviewQueue {
   private storage;
   private env;
   private ready: Promise<void>;
-  private commentDispatchToken: { expiresAt: number; promise: Promise<string> } | undefined;
   private migratedAt = 0;
   private legacyMirrorDisabled = false;
   private legacyMirrorWarningReported = false;
@@ -584,60 +565,8 @@ export class ExactReviewQueue {
       if (accepted.deduped) {
         return json({ ok: true, deduped: true, item_key: exactReviewItemKey(decision) }, 202);
       }
-      await this.recordPressureHistory(accepted.state, now);
       await this.scheduleNext(accepted.state, now);
       return json({ ok: true, queued: true, item_key: accepted.key }, 202);
-    }
-
-    if (request.method === "POST" && url.pathname === "/dispatch-comment/preflight") {
-      try {
-        await this.commentDispatchCapability();
-        return new Response(null, { status: 204 });
-      } catch (error) {
-        console.error(
-          `ClawSweeper comment dispatch preflight failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-        return json({ error: "comment_dispatch_unavailable" }, 503);
-      }
-    }
-
-    if (request.method === "POST" && url.pathname === "/dispatch-comment") {
-      const body = objectValue(await request.json().catch(() => null));
-      const deliveryId = String(body.delivery_id || "").trim();
-      const dispatchBody = clawsweeperCommentDispatchBodyFrom(body.dispatch_body);
-      if (!deliveryId || deliveryId.length > 256) {
-        return json({ error: "invalid_delivery_id" }, 400);
-      }
-      if (!dispatchBody) return json({ error: "invalid_comment_dispatch" }, 400);
-      try {
-        const token = await this.commentDispatchCapability();
-        await this.dispatchWithReceipt({
-          operationKey: {
-            kind: "github_webhook_comment",
-            deliveryId,
-          },
-          dispatchTarget: "clawsweeper_comment",
-          requestBody: dispatchBody,
-          operation: () =>
-            dispatchClawsweeperRequest({
-              token,
-              body: dispatchBody,
-              errorLabel: "ClawSweeper comment dispatch",
-            }),
-        });
-        return json({ ok: true, dispatched: "clawsweeper_comment" }, 202);
-      } catch (error) {
-        console.error(
-          `ClawSweeper comment dispatch failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-        return json({ error: "comment_dispatch_failed" }, 502);
-      } finally {
-        await this.scheduleNext(this.readStateSync(), Date.now());
-      }
     }
 
     if (request.method === "POST" && url.pathname === "/claim") {
@@ -899,7 +828,7 @@ export class ExactReviewQueue {
 
     if (request.method === "GET" && url.pathname === "/stats") {
       const now = Date.now();
-      const { state, changed } = this.storage.transactionSync(() => {
+      const state = this.storage.transactionSync(() => {
         this.pruneDeliveryReceiptsSync(now);
         const current = this.readStateSync();
         // Dashboard reads are also the operational heartbeat. Reclaim leases and
@@ -907,14 +836,9 @@ export class ExactReviewQueue {
         const changed = reclaimExpiredExactReviewLeases(current, now);
         if (changed) this.writeStateSync(current);
         else this.syncLegacyCompatibilitySync(current);
-        return { state: current, changed };
+        return current;
       });
       await this.scheduleNext(state, now);
-      if (changed) await this.recordPressureHistory(state, now);
-      const pressureHistory = exactReviewQueuePressureHistory(
-        [...(await this.readPressureHistory(now)), exactReviewQueuePressurePoint(state, now)],
-        now,
-      );
       return json({
         ...exactReviewQueueStats(
           state,
@@ -924,9 +848,7 @@ export class ExactReviewQueue {
           exactReviewDispatchLeaseMs(this.env),
           exactReviewExecutionLeaseMs(this.env),
         ),
-        pressure_history: pressureHistory,
         delivery_receipts: this.deliveryReceiptCountSync(),
-        dispatch_receipts: this.dispatchReceiptCountSync(),
         storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
         legacy_rollback_available:
           !this.legacyMirrorDisabled &&
@@ -944,7 +866,6 @@ export class ExactReviewQueue {
     await this.storage.deleteAlarm();
     this.storage.transactionSync(() => {
       this.pruneDeliveryReceiptsSync(startedAt);
-      this.pruneDispatchReceiptsSync(startedAt);
       this.syncLegacyCompatibilitySync(this.readStateSync());
     });
     const snapshot = this.readStateSync();
@@ -1034,27 +955,12 @@ export class ExactReviewQueue {
     const failures: Array<{ key: string; leaseId: string }> = [];
     for (const item of admitted) {
       try {
-        const requestBody = clawsweeperItemDispatchBody({
+        await dispatchClawsweeperItem({
+          token: preflight.token,
           decision: item.leaseDecision || item.decision,
           itemKey: item.key,
-          leaseId: String(item.leaseId || ""),
-          leaseRevision: Number(item.leaseRevision || 0),
-        });
-        await this.dispatchWithReceipt({
-          operationKey: {
-            kind: "exact_review_queue_item",
-            itemKey: item.key,
-            leaseId: String(item.leaseId || ""),
-            leaseRevision: Number(item.leaseRevision || 0),
-          },
-          dispatchTarget: "clawsweeper_item",
-          requestBody,
-          operation: () =>
-            dispatchClawsweeperRequest({
-              token: preflight.token,
-              body: requestBody,
-              errorLabel: "ClawSweeper item dispatch",
-            }),
+          leaseId: item.leaseId,
+          leaseRevision: item.leaseRevision,
         });
       } catch {
         failures.push({ key: item.key, leaseId: String(item.leaseId || "") });
@@ -1086,128 +992,6 @@ export class ExactReviewQueue {
     }
     if (currentChanged) await this.writeState(current);
     await this.scheduleNext(current, completedAt);
-  }
-
-  private async dispatchWithReceipt({
-    operationKey,
-    dispatchTarget,
-    requestBody,
-    operation,
-  }: {
-    operationKey: Record<string, unknown>;
-    dispatchTarget: string;
-    requestBody: Record<string, unknown>;
-    operation: () => Promise<unknown>;
-  }) {
-    const requestSha256 = await sha256Text(stableJson(requestBody));
-    const operationSha256 = await sha256Text(
-      stableJson({ operationKey, dispatchTarget, requestSha256 }),
-    );
-    const attempt = this.storage.transactionSync(() => {
-      const now = Date.now();
-      this.pruneDispatchReceiptsSync(now);
-      const latest = Array.from(
-        this.storage.sql.exec(
-          `SELECT MAX(attempt) AS latest_attempt
-             FROM ${EXACT_REVIEW_DISPATCH_RECEIPT_TABLE}
-            WHERE operation_sha256 = ?`,
-          operationSha256,
-        ),
-      )[0] as { latest_attempt?: number | null } | undefined;
-      const nextAttempt = Number(latest?.latest_attempt || 0) + 1;
-      const receiptId = crypto.randomUUID();
-      this.storage.sql.exec(
-        `INSERT INTO ${EXACT_REVIEW_DISPATCH_RECEIPT_TABLE}
-           (receipt_id, operation_sha256, request_sha256, dispatch_target, attempt,
-            phase, outcome, status_kind, recorded_at, parent_receipt_id)
-         VALUES (?, ?, ?, ?, ?, 'attempt', 'attempted', 'attempted', ?, NULL)`,
-        receiptId,
-        operationSha256,
-        requestSha256,
-        dispatchTarget,
-        nextAttempt,
-        now,
-      );
-      return { attempt: nextAttempt, receiptId };
-    });
-
-    let result: unknown;
-    try {
-      result = await operation();
-    } catch (error) {
-      const disposition = dashboardDispatchErrorDisposition(error);
-      try {
-        this.recordDispatchOutcomeSync({
-          operationSha256,
-          requestSha256,
-          dispatchTarget,
-          attempt: attempt.attempt,
-          parentReceiptId: attempt.receiptId,
-          outcome: disposition.outcome,
-          statusKind: disposition.statusKind,
-        });
-      } catch (receiptError) {
-        console.error(
-          `ClawSweeper dispatch outcome receipt failed: ${
-            receiptError instanceof Error ? receiptError.message : String(receiptError)
-          }`,
-        );
-      }
-      throw error;
-    }
-
-    try {
-      this.recordDispatchOutcomeSync({
-        operationSha256,
-        requestSha256,
-        dispatchTarget,
-        attempt: attempt.attempt,
-        parentReceiptId: attempt.receiptId,
-        outcome: "accepted",
-        statusKind: "accepted",
-      });
-    } catch (receiptError) {
-      console.error(
-        `ClawSweeper dispatch accepted but outcome receipt failed: ${
-          receiptError instanceof Error ? receiptError.message : String(receiptError)
-        }`,
-      );
-    }
-    return result;
-  }
-
-  private recordDispatchOutcomeSync({
-    operationSha256,
-    requestSha256,
-    dispatchTarget,
-    attempt,
-    parentReceiptId,
-    outcome,
-    statusKind,
-  }: {
-    operationSha256: string;
-    requestSha256: string;
-    dispatchTarget: string;
-    attempt: number;
-    parentReceiptId: string;
-    outcome: "accepted" | "rejected" | "unknown";
-    statusKind: "accepted" | "error" | "timeout" | "unknown";
-  }) {
-    this.storage.sql.exec(
-      `INSERT INTO ${EXACT_REVIEW_DISPATCH_RECEIPT_TABLE}
-         (receipt_id, operation_sha256, request_sha256, dispatch_target, attempt,
-          phase, outcome, status_kind, recorded_at, parent_receipt_id)
-       VALUES (?, ?, ?, ?, ?, 'outcome', ?, ?, ?, ?)`,
-      crypto.randomUUID(),
-      operationSha256,
-      requestSha256,
-      dispatchTarget,
-      attempt,
-      outcome,
-      statusKind,
-      Date.now(),
-      parentReceiptId,
-    );
   }
 
   private async initializeStorage() {
@@ -1311,25 +1095,6 @@ export class ExactReviewQueue {
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_queue_deliveries_received_at
          ON ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE} (received_at, delivery_id)`,
-    );
-    this.storage.sql.exec(
-      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_DISPATCH_RECEIPT_TABLE} (
-         receipt_id TEXT PRIMARY KEY,
-         operation_sha256 TEXT NOT NULL,
-         request_sha256 TEXT NOT NULL,
-         dispatch_target TEXT NOT NULL,
-         attempt INTEGER NOT NULL CHECK (attempt > 0),
-         phase TEXT NOT NULL CHECK (phase IN ('attempt', 'outcome')),
-         outcome TEXT NOT NULL CHECK (outcome IN ('attempted', 'accepted', 'rejected', 'unknown')),
-         status_kind TEXT NOT NULL CHECK (status_kind IN ('attempted', 'accepted', 'error', 'timeout', 'unknown')),
-         recorded_at INTEGER NOT NULL,
-         parent_receipt_id TEXT,
-         UNIQUE (operation_sha256, attempt, phase)
-       ) STRICT`,
-    );
-    this.storage.sql.exec(
-      `CREATE INDEX IF NOT EXISTS exact_review_dispatch_receipts_recorded_at
-         ON ${EXACT_REVIEW_DISPATCH_RECEIPT_TABLE} (recorded_at, receipt_id)`,
     );
   }
 
@@ -1557,38 +1322,8 @@ export class ExactReviewQueue {
     return state;
   }
 
-  private async writeState(state: ExactReviewQueueState, observedAt = Date.now()) {
+  private writeState(state: ExactReviewQueueState) {
     this.storage.transactionSync(() => this.writeStateSync(state));
-    await this.recordPressureHistory(state, observedAt);
-  }
-
-  private async recordPressureHistory(state: ExactReviewQueueState, observedAt: number) {
-    try {
-      const current = exactReviewQueuePressureHistory(
-        await this.storage.get(EXACT_REVIEW_QUEUE_PRESSURE_HISTORY_KEY),
-        observedAt,
-      );
-      const point = exactReviewQueuePressurePoint(state, observedAt);
-      const next = exactReviewQueuePressureHistory(
-        [...current.filter((entry) => entry.observed_at !== point.observed_at), point],
-        observedAt,
-      );
-      await this.storage.put(EXACT_REVIEW_QUEUE_PRESSURE_HISTORY_KEY, next);
-    } catch (error) {
-      console.warn("exact-review queue pressure history write failed", error);
-    }
-  }
-
-  private async readPressureHistory(now: number) {
-    try {
-      return exactReviewQueuePressureHistory(
-        await this.storage.get(EXACT_REVIEW_QUEUE_PRESSURE_HISTORY_KEY),
-        now,
-      );
-    } catch (error) {
-      console.warn("exact-review queue pressure history read failed", error);
-      return [];
-    }
   }
 
   private writeStateSync(state: ExactReviewQueueState) {
@@ -1667,66 +1402,6 @@ export class ExactReviewQueue {
       ),
     )[0] as { receipt_count?: number } | undefined;
     return Number(row?.receipt_count || 0);
-  }
-
-  private pruneDispatchReceiptsSync(now: number) {
-    const cutoff = now - EXACT_REVIEW_DISPATCH_RECEIPT_TTL_MS;
-    for (let batch = 0; batch < EXACT_REVIEW_DISPATCH_RECEIPT_PRUNE_MAX_BATCHES; batch += 1) {
-      const deleted = Array.from(
-        this.storage.sql.exec(
-          `DELETE FROM ${EXACT_REVIEW_DISPATCH_RECEIPT_TABLE}
-            WHERE (operation_sha256, attempt) IN (
-              SELECT operation_sha256, attempt
-                FROM ${EXACT_REVIEW_DISPATCH_RECEIPT_TABLE}
-               GROUP BY operation_sha256, attempt
-              HAVING MAX(recorded_at) <= ?
-               ORDER BY MIN(recorded_at), operation_sha256, attempt
-               LIMIT ${EXACT_REVIEW_DISPATCH_RECEIPT_PRUNE_BATCH}
-            )
-          RETURNING receipt_id`,
-          cutoff,
-        ),
-      );
-      if (deleted.length < EXACT_REVIEW_DISPATCH_RECEIPT_PRUNE_BATCH) break;
-    }
-  }
-
-  private dispatchReceiptCountSync() {
-    const row = Array.from(
-      this.storage.sql.exec(
-        `SELECT COUNT(*) AS receipt_count FROM ${EXACT_REVIEW_DISPATCH_RECEIPT_TABLE}`,
-      ),
-    )[0] as { receipt_count?: number } | undefined;
-    return Number(row?.receipt_count || 0);
-  }
-
-  private nextReceiptExpirySync() {
-    const delivery = Array.from(
-      this.storage.sql.exec(
-        `SELECT MIN(received_at) AS oldest_recorded_at
-           FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}`,
-      ),
-    )[0] as { oldest_recorded_at?: number | null } | undefined;
-    const dispatch = Array.from(
-      this.storage.sql.exec(
-        `SELECT MIN(latest_recorded_at) AS oldest_recorded_at
-           FROM (
-             SELECT MAX(recorded_at) AS latest_recorded_at
-               FROM ${EXACT_REVIEW_DISPATCH_RECEIPT_TABLE}
-              GROUP BY operation_sha256, attempt
-           )`,
-      ),
-    )[0] as { oldest_recorded_at?: number | null } | undefined;
-    const expiries = [
-      [delivery?.oldest_recorded_at, EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS],
-      [dispatch?.oldest_recorded_at, EXACT_REVIEW_DISPATCH_RECEIPT_TTL_MS],
-    ]
-      .filter(
-        (entry): entry is [number, number] =>
-          typeof entry[0] === "number" && Number.isFinite(entry[0]),
-      )
-      .map(([recordedAt, ttl]) => Math.min(Number.MAX_SAFE_INTEGER, recordedAt + ttl));
-    return expiries.length ? Math.min(...expiries) : null;
   }
 
   private legacyReceiptTimestamp(receivedAt: number) {
@@ -1826,19 +1501,12 @@ export class ExactReviewQueue {
   }
 
   private async scheduleNext(state: ExactReviewQueueState, now: number) {
-    const queueNext = exactReviewQueueNextWakeAt(
+    const next = exactReviewQueueNextWakeAt(
       state,
       now,
       exactReviewQueueCapacity(this.env),
       exactReviewTargetCapacity(this.env),
     );
-    const receiptNext = this.nextReceiptExpirySync();
-    const next =
-      queueNext === null
-        ? receiptNext
-        : receiptNext === null
-          ? queueNext
-          : Math.min(queueNext, receiptNext);
     if (next === null) {
       await this.storage.deleteAlarm();
       return;
@@ -1846,24 +1514,6 @@ export class ExactReviewQueue {
     const scheduled = await this.storage.getAlarm();
     if (scheduled === null || scheduled <= now || next < scheduled) {
       await this.storage.setAlarm(next);
-    }
-  }
-
-  private async commentDispatchCapability(): Promise<string> {
-    const now = Date.now();
-    if (this.commentDispatchToken && this.commentDispatchToken.expiresAt > now) {
-      return this.commentDispatchToken.promise;
-    }
-    const capability = {
-      expiresAt: now + 60_000,
-      promise: exactReviewDispatchToken(this.env),
-    };
-    this.commentDispatchToken = capability;
-    try {
-      return await capability.promise;
-    } catch (error) {
-      if (this.commentDispatchToken === capability) this.commentDispatchToken = undefined;
-      throw error;
     }
   }
 }
@@ -2174,8 +1824,8 @@ async function githubWebhook(request, env, ctx) {
     return json({ ok: true, accepted: false, reason: decision.reason }, 202);
   }
 
-  const deliveryId = request.headers.get("x-github-delivery") || "";
   if ("type" in decision && decision.type === "item") {
+    const deliveryId = request.headers.get("x-github-delivery") || "";
     const queued = await enqueueExactReview({
       env,
       deliveryId,
@@ -2192,18 +1842,16 @@ async function githubWebhook(request, env, ctx) {
   });
   if (trigger) await recordBayJourneyTelemetry(env, ctx, [trigger], []);
 
-  const dispatchPreflight = await exactReviewQueueRequest(
-    env,
-    "/dispatch-comment/preflight",
-    new Request("https://clawsweeper-exact-review-queue/dispatch-comment/preflight", {
-      method: "POST",
-    }),
-  );
-  if (!dispatchPreflight.ok) return dispatchPreflight;
-
   const credentials = githubAppCredentials(env);
   if (!credentials) return json({ error: "github_app_not_configured" }, 503);
   const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
+  const dispatchToken = await createGithubAppTokenFor({
+    appJwt,
+    installationId: await githubAppInstallationId(appJwt, CLAWSWEEPER_REVIEW_REPO),
+    label: CLAWSWEEPER_REVIEW_REPO,
+    repositories: [repoName(CLAWSWEEPER_REVIEW_REPO)],
+    permissions: { contents: "write" },
+  });
 
   const commentDecision = decision as any;
   const targetToken = await createGithubAppTokenFor({
@@ -2228,23 +1876,11 @@ async function githubWebhook(request, env, ctx) {
     commentId: commentDecision.commentId,
     content: "eyes",
   });
-  const dispatchBody = await clawsweeperCommentDispatchBody({
+  await dispatchClawsweeperComment({
+    token: dispatchToken,
     decision: commentDecision,
     statusCommentId,
   });
-  const dispatchResponse = await exactReviewQueueRequest(
-    env,
-    "/dispatch-comment",
-    new Request("https://clawsweeper-exact-review-queue/dispatch-comment", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        delivery_id: deliveryId,
-        dispatch_body: dispatchBody,
-      }),
-    }),
-  );
-  if (!dispatchResponse.ok) return dispatchResponse;
   settleFastAckComments({
     token: targetToken,
     repo: commentDecision.targetRepo,
@@ -3137,30 +2773,8 @@ function exactReviewQueueStats(
         left.target_repo.localeCompare(right.target_repo),
     );
   const nextWakeAt = exactReviewQueueNextWakeAt(state, now, capacity, targetCapacity);
-  const readyPending = items.filter(
-    (item) => item.state === "pending" && item.nextAttemptAt <= now,
-  ).length;
-  const admissiblePending = exactReviewQueueAdmittedItems(
-    state,
-    now,
-    Number.MAX_SAFE_INTEGER,
-    targetCapacity,
-  ).length;
-  const pressure = summarizeExactReviewPressure({
-    pending: handoffHealth.phases.pending.count,
-    readyPending,
-    admissiblePending,
-    dispatching: handoffHealth.phases.dispatching.count,
-    leased: handoffHealth.phases.leased.count,
-    capacity,
-    dispatcherState: state.dispatcher?.state,
-    handoffStatus: handoffHealth.status,
-  });
   return {
-    generated_at: handoffHealth.observed_at,
     pending: handoffHealth.phases.pending.count,
-    ready_pending: readyPending,
-    admissible_pending: admissiblePending,
     dispatching: handoffHealth.phases.dispatching.count,
     leased: handoffHealth.phases.leased.count,
     oldest_pending_at: handoffHealth.phases.pending.oldest_at,
@@ -3170,7 +2784,6 @@ function exactReviewQueueStats(
     oldest_leased_at: handoffHealth.phases.leased.oldest_at,
     oldest_leased_age_seconds: handoffHealth.phases.leased.oldest_age_seconds,
     handoff_health: handoffHealth,
-    pressure,
     next_wake_at: nextWakeAt === null ? null : new Date(nextWakeAt).toISOString(),
     dispatcher: {
       state: state.dispatcher?.state || "unknown",
@@ -3183,48 +2796,6 @@ function exactReviewQueueStats(
     },
     target_stats: targetStats,
   };
-}
-
-function exactReviewQueuePressurePoint(state: ExactReviewQueueState, observedAt: number) {
-  const bucketAt =
-    Math.floor(observedAt / EXACT_REVIEW_QUEUE_PRESSURE_BUCKET_MS) *
-    EXACT_REVIEW_QUEUE_PRESSURE_BUCKET_MS;
-  let pending = 0;
-  let dispatching = 0;
-  let leased = 0;
-  for (const item of Object.values(state.items)) {
-    if (item.state === "pending") pending += 1;
-    else if (item.state === "dispatching") dispatching += 1;
-    else if (item.state === "leased") leased += 1;
-  }
-  return {
-    observed_at: new Date(bucketAt).toISOString(),
-    pending,
-    dispatching,
-    leased,
-  } satisfies ExactReviewQueuePressurePoint;
-}
-
-function exactReviewQueuePressureHistory(value: unknown, now = Date.now()) {
-  const cutoff = now - EXACT_REVIEW_QUEUE_PRESSURE_WINDOW_MS;
-  const byTimestamp = new Map<number, ExactReviewQueuePressurePoint>();
-  for (const point of Array.isArray(value) ? value : []) {
-    const candidate = objectValue(point);
-    const observedAt = Date.parse(String(candidate.observed_at || ""));
-    if (!Number.isFinite(observedAt) || observedAt < cutoff || observedAt > now) continue;
-    const pending = Math.max(0, Math.floor(Number(candidate.pending) || 0));
-    const dispatching = Math.max(0, Math.floor(Number(candidate.dispatching) || 0));
-    const leased = Math.max(0, Math.floor(Number(candidate.leased) || 0));
-    byTimestamp.set(observedAt, {
-      observed_at: new Date(observedAt).toISOString(),
-      pending,
-      dispatching,
-      leased,
-    });
-  }
-  return [...byTimestamp.values()]
-    .sort((left, right) => Date.parse(left.observed_at) - Date.parse(right.observed_at))
-    .slice(-EXACT_REVIEW_QUEUE_PRESSURE_POINT_LIMIT);
 }
 
 function exactReviewQueueNextWakeAt(
@@ -3675,16 +3246,18 @@ async function addIssueCommentReaction({ token, repo, commentId, content }) {
   });
 }
 
-function clawsweeperItemDispatchBody({
+async function dispatchClawsweeperItem({
+  token,
   decision,
   itemKey,
   leaseId,
   leaseRevision,
 }: {
+  token: string;
   decision: ExactReviewDecision;
   itemKey: string;
-  leaseId: string | undefined;
-  leaseRevision: number | undefined;
+  leaseId: string;
+  leaseRevision: number;
 }) {
   // Keep the v1 fields during the rolling-upgrade window. Old workflows consume
   // this immutable dispatch snapshot, while v2 workflows ignore it after claim
@@ -3700,28 +3273,34 @@ function clawsweeperItemDispatchBody({
     ...(decision.statusCommentId ? { status_comment_id: decision.statusCommentId } : {}),
     ...(decision.additionalPrompt ? { additional_prompt: decision.additionalPrompt } : {}),
   };
-  return {
-    event_type: "clawsweeper_item",
-    client_payload: {
-      queue_lease_id: String(leaseId || ""),
-      queue_claim: {
-        protocol_version: 2,
-        item_key: itemKey,
-        lease_revision: Number(leaseRevision || 0),
+  await githubTokenJson({
+    token,
+    path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/dispatches`,
+    method: "POST",
+    body: {
+      event_type: "clawsweeper_item",
+      client_payload: {
+        queue_lease_id: leaseId,
+        queue_claim: {
+          protocol_version: 2,
+          item_key: itemKey,
+          lease_revision: leaseRevision,
+        },
+        target_repo: decision.targetRepo,
+        target_branch: decision.targetBranch,
+        item_number: decision.itemNumber,
+        item_kind: decision.itemKind,
+        source_event: decision.sourceEvent,
+        source_action: decision.sourceAction,
+        supersedes_in_progress: decision.supersedesInProgress,
+        ...(Object.keys(reviewOptions).length > 0 ? { review_options: reviewOptions } : {}),
       },
-      target_repo: decision.targetRepo,
-      target_branch: decision.targetBranch,
-      item_number: decision.itemNumber,
-      item_kind: decision.itemKind,
-      source_event: decision.sourceEvent,
-      source_action: decision.sourceAction,
-      supersedes_in_progress: decision.supersedesInProgress,
-      ...(Object.keys(reviewOptions).length > 0 ? { review_options: reviewOptions } : {}),
     },
-  };
+    errorLabel: "ClawSweeper item dispatch",
+  });
 }
 
-async function clawsweeperCommentDispatchBody({ decision, statusCommentId }) {
+async function dispatchClawsweeperComment({ token, decision, statusCommentId }) {
   const exactVersion =
     decision.commentUpdatedAt && typeof decision.commentBody === "string"
       ? {
@@ -3730,131 +3309,30 @@ async function clawsweeperCommentDispatchBody({ decision, statusCommentId }) {
           comment_body_sha256: await sha256Text(decision.commentBody),
         }
       : {};
-  return {
-    event_type: "clawsweeper_comment",
-    client_payload: {
-      target_repo: decision.targetRepo,
-      target_branch: decision.targetBranch,
-      item_number: decision.itemNumber,
-      comment_id: decision.commentId,
-      status_comment_id: statusCommentId,
-      source_event: "issue_comment",
-      source_action: decision.sourceAction,
-      ...exactVersion,
-    },
-  };
-}
-
-function clawsweeperCommentDispatchBodyFrom(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const body = objectValue(value);
-  const payload = objectValue(body.client_payload);
-  const targetRepo = String(payload.target_repo || "")
-    .trim()
-    .toLowerCase();
-  const targetBranch = String(payload.target_branch || "").trim();
-  const itemNumber = Number(payload.item_number);
-  const commentId = Number(payload.comment_id);
-  const statusCommentId = Number(payload.status_comment_id);
-  const sourceAction = String(payload.source_action || "").trim();
-  if (
-    body.event_type !== "clawsweeper_comment" ||
-    !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(targetRepo) ||
-    !/^[A-Za-z0-9_./-]+$/.test(targetBranch) ||
-    !Number.isSafeInteger(itemNumber) ||
-    itemNumber < 1 ||
-    !Number.isSafeInteger(commentId) ||
-    commentId < 1 ||
-    !Number.isSafeInteger(statusCommentId) ||
-    statusCommentId < 1 ||
-    payload.source_event !== "issue_comment" ||
-    !sourceAction ||
-    sourceAction.length > 64
-  ) {
-    return null;
-  }
-  const hasExactVersion =
-    payload.comment_event_auth !== undefined ||
-    payload.comment_updated_at !== undefined ||
-    payload.comment_body_sha256 !== undefined;
-  const exactVersion = hasExactVersion
-    ? {
-        comment_event_auth: String(payload.comment_event_auth || ""),
-        comment_updated_at: String(payload.comment_updated_at || ""),
-        comment_body_sha256: String(payload.comment_body_sha256 || ""),
-      }
-    : null;
-  if (
-    exactVersion &&
-    (exactVersion.comment_event_auth !== "github_webhook_v1" ||
-      !Number.isFinite(Date.parse(exactVersion.comment_updated_at)) ||
-      !/^[a-f0-9]{64}$/.test(exactVersion.comment_body_sha256))
-  ) {
-    return null;
-  }
-  return {
-    event_type: "clawsweeper_comment",
-    client_payload: {
-      target_repo: targetRepo,
-      target_branch: targetBranch,
-      item_number: itemNumber,
-      comment_id: commentId,
-      status_comment_id: statusCommentId,
-      source_event: "issue_comment",
-      source_action: sourceAction,
-      ...exactVersion,
-    },
-  };
-}
-
-async function dispatchClawsweeperRequest({ token, body, errorLabel }) {
   await githubTokenJson({
     token,
     path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/dispatches`,
     method: "POST",
-    body,
-    errorLabel,
+    body: {
+      event_type: "clawsweeper_comment",
+      client_payload: {
+        target_repo: decision.targetRepo,
+        target_branch: decision.targetBranch,
+        item_number: decision.itemNumber,
+        comment_id: decision.commentId,
+        status_comment_id: statusCommentId,
+        source_event: "issue_comment",
+        source_action: decision.sourceAction,
+        ...exactVersion,
+      },
+    },
+    errorLabel: "ClawSweeper comment dispatch",
   });
 }
 
 async function sha256Text(value) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return hexEncode(new Uint8Array(digest));
-}
-
-class GithubTokenRequestError extends Error {
-  readonly status: number | null;
-  readonly timeout: boolean;
-
-  constructor(message: string, options: { status?: number; timeout?: boolean } = {}) {
-    super(message);
-    this.name = "GithubTokenRequestError";
-    this.status = options.status ?? null;
-    this.timeout = options.timeout ?? false;
-  }
-}
-
-function dashboardDispatchErrorDisposition(error: unknown): {
-  outcome: "rejected" | "unknown";
-  statusKind: "error" | "timeout" | "unknown";
-} {
-  if (error instanceof GithubTokenRequestError) {
-    if (
-      error.status !== null &&
-      error.status >= 400 &&
-      error.status < 500 &&
-      ![408, 425, 429].includes(error.status)
-    ) {
-      return { outcome: "rejected", statusKind: "error" };
-    }
-    return { outcome: "unknown", statusKind: error.timeout ? "timeout" : "error" };
-  }
-  const name =
-    error && typeof error === "object" ? String((error as { name?: unknown }).name || "") : "";
-  return {
-    outcome: "unknown",
-    statusKind: name.toLowerCase() === "aborterror" ? "timeout" : "unknown",
-  };
 }
 
 async function githubTokenJson({ token, path, method = "GET", body, errorLabel }) {
@@ -3871,24 +3349,13 @@ async function githubTokenJson({ token, path, method = "GET", body, errorLabel }
     },
   };
   if (body !== undefined) init.body = JSON.stringify(body);
-  let response: Response;
-  try {
-    response = await fetch(`https://api.github.com${path}`, init);
-  } catch (error) {
-    if (controller.signal.aborted) {
-      throw new GithubTokenRequestError(`${errorLabel || "GitHub"} request timed out`, {
-        timeout: true,
-      });
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
+  const response = await fetch(`https://api.github.com${path}`, init).finally(() =>
+    clearTimeout(timeout),
+  );
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new GithubTokenRequestError(
+    throw new Error(
       `${errorLabel || "GitHub"} ${response.status}${text ? `: ${text.slice(0, 240)}` : ""}`,
-      { status: response.status, timeout: response.status === 408 },
     );
   }
   if (response.status === 204) return {};
@@ -9149,7 +8616,6 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .exact-handoff-title { display: grid; gap: 3px; }
 .exact-handoff-title strong { font-size: 13px; font-weight: 650; }
 .exact-handoff-title span { color: var(--muted); font-size: 12px; }
-.exact-handoff-badges { display: flex; flex-wrap: wrap; gap: 6px; }
 .health-badge {
   flex: 0 0 auto;
   padding: 3px 8px;
@@ -9162,10 +8628,8 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 }
 .health-badge.healthy,
 .health-badge.idle { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); }
-.health-badge.degraded,
-.health-badge.congested { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
-.health-badge.stalled,
-.health-badge.saturated { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
+.health-badge.degraded { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
+.health-badge.stalled { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
 .handoff-phases {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -9977,8 +9441,6 @@ function renderExactReviewHandoff(queue) {
     return;
   }
   const status = ["idle", "healthy", "degraded", "stalled"].includes(health.status) ? health.status : "unknown";
-  const pressure = queue?.pressure;
-  const pressureStatus = ["idle", "congested", "saturated", "unknown"].includes(pressure?.status) ? pressure.status : "unknown";
   const labels = {
     pending: ["Pending", "waiting for admission"],
     dispatching: ["Dispatching", "waiting for run claim"],
@@ -9992,9 +9454,8 @@ function renderExactReviewHandoff(queue) {
     return '<div class="handoff-phase"><span>' + esc(labels[phase][0]) + '</span><strong>' + fmt.format(summary.count || 0) + '</strong><small>' + esc(labels[phase][1] + " · " + age) + '</small></div>';
   }).join("");
   const slots = fmt.format(health.available_slots || 0) + " of " + fmt.format(health.capacity || 0) + " exact-review slots open";
-  const backlog = fmt.format(queue?.pending || 0) + " total · " + fmt.format(queue?.ready_pending || 0) + " ready · " + fmt.format(queue?.admissible_pending || 0) + " admissible";
   const threshold = "stalled after " + elapsed((health.stalled_after_seconds || 0) * 1000);
-  target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Exact-review handoff</strong><span>' + esc(health.message || "Queue phase telemetry") + '</span></div><div class="exact-handoff-badges"><span class="health-badge ' + esc(status) + '">' + esc(status) + '</span><span class="health-badge ' + esc(pressureStatus) + '">pressure ' + esc(pressureStatus) + '</span></div></div><div class="handoff-phases">' + phases + '</div><div class="handoff-foot"><span>' + esc(slots) + '</span><span>' + esc(backlog) + '</span><span>' + esc(threshold) + '</span></div></div>';
+  target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Exact-review handoff</strong><span>' + esc(health.message || "Queue phase telemetry") + '</span></div><span class="health-badge ' + esc(status) + '">' + esc(status) + '</span></div><div class="handoff-phases">' + phases + '</div><div class="handoff-foot"><span>' + esc(slots) + '</span><span>' + esc(threshold) + '</span></div></div>';
 }
 function renderWorkers(rows) {
   workerIndex = new Map(rows.map(worker => [String(worker.id), worker]));

@@ -1469,7 +1469,7 @@ if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
     base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
     user: { login: "reporter" }
   }));
-} else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|reviews|comments)(?:\\?|$)/.test(path)) {
+} else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|comments|reviews)(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/321\\/timeline/.test(path)) {
   console.log(JSON.stringify([]));
@@ -1622,7 +1622,7 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments$/.test(path) && args.includ
     base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
     user: { login: "reporter" }
   }));
-} else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|reviews|comments)(?:\\?|$)/.test(path)) {
+} else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|comments|reviews)(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/321\\/timeline/.test(path)) {
   console.log(JSON.stringify([]));
@@ -1774,7 +1774,7 @@ if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
     base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
     user: { login: "reporter" }
   }));
-} else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|reviews|comments)(?:\\?|$)/.test(path)) {
+} else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|comments|reviews)(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/321\\/timeline/.test(path)) {
   console.log(JSON.stringify([]));
@@ -2032,7 +2032,7 @@ test("runtime yield keeps the unfinished item out of the apply cursor trace", ()
   assert.deepEqual(examined, [10]);
 });
 
-test("spam comment intake serializes duplicate deliveries without cancelling publication", () => {
+test("spam comment intake coalesces duplicate comment deliveries", () => {
   const workflow = readText(".github/workflows/spam-comment-intake.yml");
 
   assert.match(workflow, /types: \[clawsweeper_spam_comment_intake\]/);
@@ -2047,7 +2047,7 @@ test("spam comment intake serializes duplicate deliveries without cancelling pub
   assert.match(workflow, /Check core API budget/);
   assert.match(workflow, /CLAWSWEEPER_MIN_CORE_REMAINING/);
   assert.match(workflow, /github\.run_id/);
-  assert.match(workflow, /cancel-in-progress: false/);
+  assert.match(workflow, /cancel-in-progress: true/);
 });
 
 test("spam scanner exact dispatches publish only per-comment audit records", () => {
@@ -2110,8 +2110,7 @@ test("repair workers hydrate only durable jobs from generated state", () => {
   assert.match(workflow, /clawsweeper-repair-requeue-\{0\}-\{1\}.*clawsweeper-repair-\{0\}/);
   assert.match(workflow, /cancel-in-progress: false/);
   assert.match(workflow, /requeue:\n\s+description:/);
-  assert.match(requeue, /requeue: true/);
-  assert.match(requeue, /`requeue=\$\{dispatchInput\.requeue\}`/);
+  assert.match(requeue, /"requeue=true"/);
   assert.equal(workflow.match(/uses: \.\/\.github\/actions\/setup-state/g)?.length, 2);
   assert.match(workflow, /sparse-checkout: jobs/);
   assert.match(workflow, /sparse-checkout: \|\n\s+jobs\n\s+ledger/);

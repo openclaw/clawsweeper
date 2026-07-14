@@ -241,11 +241,11 @@ jobs:
           assertExactKeys(
             sourceConfig,
             [
-              '$schema',
-              'compatibility_date',
-              'd1_databases',
+               '$schema',
+               'compatibility_date',
+               'd1_databases',
               'limits',
-              'main',
+               'main',
               'name',
               'observability',
               'r2_buckets',
@@ -257,10 +257,10 @@ jobs:
           );
           if (
             sourceConfig.name !== 'crawl-remote' ||
-            sourceConfig.main !== 'src/index.ts' ||
-            sourceConfig.workers_dev !== true ||
+             sourceConfig.main !== 'src/index.ts' ||
+             sourceConfig.workers_dev !== true ||
             JSON.stringify(sourceConfig.limits) !== JSON.stringify({ cpu_ms: 300000 }) ||
-            sourceConfig.vars?.CRAWL_REMOTE_RELEASE_SHA !== undefined
+             sourceConfig.vars?.CRAWL_REMOTE_RELEASE_SHA !== undefined
           ) {
             throw new Error('source Wrangler config has an unexpected deployment identity');
           }
@@ -294,10 +294,10 @@ jobs:
           const deploymentConfig = {
             name: sourceConfig.name,
             compatibility_date: sourceConfig.compatibility_date,
-            workers_dev: sourceConfig.workers_dev,
-            observability: sourceConfig.observability,
+             workers_dev: sourceConfig.workers_dev,
+             observability: sourceConfig.observability,
             limits: sourceConfig.limits,
-            vars: sourceConfig.vars,
+             vars: sourceConfig.vars,
             routes: sourceConfig.routes,
             d1_databases: sourceConfig.d1_databases,
             r2_buckets: sourceConfig.r2_buckets,
@@ -1181,10 +1181,10 @@ jobs:
           assertExactKeys(
             config,
             [
-              'compatibility_date',
-              'd1_databases',
+               'compatibility_date',
+               'd1_databases',
               'limits',
-              'name',
+               'name',
               'observability',
               'r2_buckets',
               'routes',
@@ -1194,10 +1194,10 @@ jobs:
             'deployment Wrangler config',
           );
           if (
-            config.name !== 'crawl-remote' ||
-            config.workers_dev !== true ||
+             config.name !== 'crawl-remote' ||
+             config.workers_dev !== true ||
             JSON.stringify(config.limits) !== JSON.stringify({ cpu_ms: 300000 }) ||
-            config.vars?.CRAWL_REMOTE_RELEASE_SHA !== undefined ||
+             config.vars?.CRAWL_REMOTE_RELEASE_SHA !== undefined ||
             Object.hasOwn(config, 'main') ||
             Object.hasOwn(config, 'build')
           ) {

@@ -55,12 +55,11 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
 
 concurrency:
   group: >-
     github-activity-${{ github.event.client_payload.activity.repo || github.event.client_payload.target_repo || github.event.repository.full_name || github.repository }}-${{ github.event_name == 'workflow_run' && 'workflow-run' || format('{0}-{1}-{2}-{3}', github.event.client_payload.event_name || github.event.client_payload.activity.type || github.event_name, github.event.client_payload.action || github.event.client_payload.activity.action || github.event.action || 'activity', github.event.client_payload.comment_id || github.event.client_payload.review_comment_id || github.event.client_payload.activity.comment.id || github.event.comment.id || github.event.client_payload.activity.review.id || github.event.review.id || github.event.client_payload.activity.workflow_run.id || github.event.workflow_run.id || github.event.client_payload.activity.pull_request.number || github.event.pull_request.number || github.event.client_payload.activity.issue.number || github.event.issue.number || github.event.client_payload.activity.subject.number || github.event.client_payload.number || github.run_id, github.event.client_payload.activity.label.name || github.event.label.name || github.event.client_payload.activity.assignee.login || github.event.assignee.login || github.event.client_payload.activity.pull_request.head.sha || github.event.pull_request.head.sha || github.event.client_payload.activity.delivery_id || github.event.client_payload.delivery_id || github.event.client_payload.activity.idempotency_key || github.event.client_payload.idempotency_key || github.run_attempt) }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   notify:
@@ -71,7 +70,7 @@ jobs:
         !(github.event_name == 'workflow_run' && contains(fromJSON('["success","neutral","skipped"]'), github.event.workflow_run.conclusion))
       }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Check core API budget
         id: core-budget
@@ -97,7 +96,6 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           filter: blob:none
-          fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/setup-node@v6
@@ -135,7 +133,6 @@ jobs:
             ${{ runner.os }}-pnpm-
 
       - name: Install dependencies
-        id: setup-activity-pnpm
         if: steps.core-budget.outputs.skip != 'true'
         shell: bash
         run: |
@@ -151,27 +148,7 @@ jobs:
           done
           pnpm run build:repair
 
-      - name: Create state token
-        if: steps.core-budget.outputs.skip != 'true'
-        id: activity-state-token
-        uses: ./.github/actions/create-state-token
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-
-      - uses: ./.github/actions/setup-state
-        if: steps.core-budget.outputs.skip != 'true'
-        id: setup-activity-state
-        with:
-          token: ${{ steps.activity-state-token.outputs.token }}
-          persist-credentials: "false"
-
-      - uses: ./.github/actions/setup-action-ledger
-        if: steps.core-budget.outputs.skip != 'true'
-        id: setup-activity-ledger
-
       - name: Dispatch spam scan candidate
-        id: dispatch-spam-scan-candidate
         if: steps.core-budget.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -179,99 +156,8 @@ jobs:
           set -euo pipefail
           pnpm run repair:spam-comment-intake -- --write-report
 
-      - name: Finalize GitHub activity dispatch action ledger
-        id: finalize-activity-dispatch-ledger
-        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-state.outcome == 'success' && steps.setup-activity-pnpm.outcome == 'success' && steps.setup-activity-ledger.outcome == 'success' }}
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          : "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
-          mkdir -p .artifacts
-          node dist/repair/dispatch-action-ledger-cli.js finalize \
-            --lane github-activity-dispatch \
-            --allow-empty \
-            > .artifacts/github-activity-dispatch-action-ledger-manifest.json
-
-      - name: Freeze GitHub activity dispatch receipt bundle
-        id: bundle-activity-dispatch-ledger
-        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-pnpm.outcome == 'success' && steps.setup-activity-ledger.outcome == 'success' && steps.finalize-activity-dispatch-ledger.outcome == 'success' }}
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          manifest_file=".artifacts/github-activity-dispatch-action-ledger-manifest.json"
-          if [ ! -s "$manifest_file" ]; then
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "No GitHub activity dispatch action events to bundle."
-            exit 0
-          fi
-          bundle_root="artifacts/github-activity-dispatch-receipts"
-          node dist/repair/dispatch-action-ledger-cli.js bundle \
-            --lane github-activity-dispatch \
-            --manifest "$manifest_file" \
-            --source-root "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}" \
-            --bundle-root "$bundle_root"
-          echo "ready=true" >> "$GITHUB_OUTPUT"
-
-      - name: Upload GitHub activity dispatch receipt bundle
-        id: upload-activity-dispatch-ledger
-        if: ${{ always() && steps.bundle-activity-dispatch-ledger.outputs.ready == 'true' }}
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: github-activity-dispatch-receipts-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/github-activity-dispatch-receipts
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Publish GitHub activity dispatch action ledger
-        id: publish-activity-dispatch-ledger
-        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-state.outcome == 'success' && steps.setup-activity-pnpm.outcome == 'success' && steps.bundle-activity-dispatch-ledger.outputs.ready == 'true' }}
-        continue-on-error: true
-        env:
-          PUBLISH_TOKEN: ${{ steps.activity-state-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          test -n "${CLAWSWEEPER_STATE_DIR:-}"
-          bundle_root="artifacts/github-activity-dispatch-receipts"
-          source_root="$bundle_root/source"
-          manifest_file="$bundle_root/manifest.json"
-          event_paths_file=".artifacts/github-activity-dispatch-action-ledger-paths.txt"
-          import_result_file=".artifacts/github-activity-dispatch-action-ledger-import.json"
-          node dist/repair/dispatch-action-ledger-cli.js publish \
-            --lane github-activity-dispatch \
-            --manifest "$manifest_file" \
-            --source-root "$source_root" \
-            --state-root "$CLAWSWEEPER_STATE_DIR" > "$import_result_file"
-          if ! jq -e --slurpfile manifest "$manifest_file" \
-            '.eventPaths == $manifest[0].event_paths' \
-            "$import_result_file" >/dev/null; then
-            echo "Imported GitHub activity dispatch paths do not match the finalized manifest." >&2
-            exit 1
-          fi
-          jq -r '.paths[]?' "$import_result_file" |
-            sort -u > "$event_paths_file"
-          if [ ! -s "$event_paths_file" ]; then
-            echo "GitHub activity dispatch shards existed but no paths were imported." >&2
-            exit 1
-          fi
-          while IFS= read -r event_path; do
-            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
-            test -f "$durable_event_path"
-            mkdir -p "$(dirname "$event_path")"
-            cp "$durable_event_path" "$event_path"
-          done < "$event_paths_file"
-          auth_header="$(printf 'x-access-token:%s' "$PUBLISH_TOKEN" | base64 | tr -d '\n')"
-          export GIT_CONFIG_COUNT=1
-          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
-          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
-          node dist/repair/publish-action-event-paths.js \
-            --paths-file "$event_paths_file" \
-            --message "chore: append GitHub activity dispatch action ledger"
-
       - name: Feed activity to OpenClaw
-        id: notify-openclaw
-        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-pnpm.outcome == 'success' }}
-        continue-on-error: true
+        if: steps.core-budget.outputs.skip != 'true'
         env:
           CLAWSWEEPER_OPENCLAW_HOOK_URL: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_URL }}
           CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_TOKEN }}
@@ -280,15 +166,3 @@ jobs:
         run: |
           set -euo pipefail
           pnpm run repair:notify-github-activity -- --write-report
-
-      - name: Report GitHub activity dispatch ledger failure
-        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && (steps.finalize-activity-dispatch-ledger.outcome == 'failure' || steps.bundle-activity-dispatch-ledger.outcome == 'failure' || steps.publish-activity-dispatch-ledger.outcome == 'failure') }}
-        run: |
-          echo "::error::GitHub activity dispatch receipts were not durably published."
-          exit 1
-
-      - name: Report GitHub activity notification failure
-        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.notify-openclaw.outcome == 'failure' }}
-        run: |
-          echo "::error::GitHub activity notification failed after dispatch receipt publication."
-          exit 1

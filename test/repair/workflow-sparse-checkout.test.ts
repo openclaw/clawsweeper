@@ -16,8 +16,6 @@ const REPAIR_RUNTIME_PATHS = [
   "src/codex-transient.ts",
   "src/github-json.ts",
   "src/pr-close-coverage-proof.ts",
-  "src/review-activity-cursor.ts",
-  "src/stable-json.ts",
 ] as const;
 
 const SPARSE_REPAIR_BUILD_WORKFLOWS = [
@@ -43,13 +41,6 @@ test("sparse CI checkout includes pnpm workspace policy", () => {
   const entries = sparseCheckoutEntries(workflow);
 
   assert.ok(entries.has("pnpm-workspace.yaml"));
-});
-
-test("spam intake sparse checkout includes the state hydrator used by setup-state", () => {
-  const workflow = readText(".github/workflows/spam-comment-intake.yml");
-  const entries = sparseCheckoutEntries(workflow);
-
-  assert.ok(entries.has("scripts/hydrate-state.ts"));
 });
 
 test("repair build emits the bounded Codex process worker", () => {
@@ -88,19 +79,6 @@ test("repair comment router sparse checkout includes action ledger runtime", () 
     "src/action-ledger.ts",
   ]) {
     assert.ok(entries.has(requiredPath), `repair comment router missing ${requiredPath}`);
-  }
-});
-
-test("spam scanner sparse checkout includes action ledger runtime", () => {
-  const workflow = readText(".github/workflows/spam-scanner.yml");
-  const entries = sparseCheckoutEntries(workflow);
-
-  for (const requiredPath of [
-    "src/action-ledger-files.ts",
-    "src/action-ledger-runtime.ts",
-    "src/action-ledger.ts",
-  ]) {
-    assert.ok(entries.has(requiredPath), `spam scanner missing ${requiredPath}`);
   }
 });
 

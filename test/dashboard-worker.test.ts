@@ -20,7 +20,6 @@ import {
   TRIAGE_ROUTING_GROUPS,
   triageRoutingGroupsForLabels,
 } from "../dashboard/triage-routing-groups.ts";
-import { stableJson } from "../src/stable-json.ts";
 
 test("exact-review queue defaults to 64 of the 128 global workers", () => {
   assert.equal(exactReviewQueueCapacity({}), 64);
@@ -44,168 +43,12 @@ test("dashboard status reads the exact-review handoff model from the durable que
   });
 
   assert.ok(status);
-  assert.match(status.generated_at, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(status.pending, 1);
-  assert.equal(status.ready_pending, 1);
-  assert.equal(status.admissible_pending, 1);
   assert.equal(status.dispatching, 0);
   assert.equal(status.leased, 0);
   assert.equal(status.handoff_health.status, "healthy");
   assert.equal(status.handoff_health.phases.pending.count, 1);
-  assert.equal(status.pressure.status, "idle");
-  assert.equal(status.pressure.reason, "capacity_available");
-  assert.equal(status.pressure_history.length, 1);
-  assert.match(status.pressure_history[0].observed_at, /^\d{4}-\d{2}-\d{2}T/);
-  assert.equal(status.pressure_history[0].pending, 1);
-  assert.equal(status.pressure_history[0].dispatching, 0);
-  assert.equal(status.pressure_history[0].leased, 0);
   assert.equal(await exactReviewQueueStatusSnapshot({}), null);
-});
-
-test("exact-review pressure history replaces a five-minute bucket and stays bounded", async () => {
-  const originalNow = Date.now;
-  let now = Date.parse("2026-07-14T10:00:12.000Z");
-  Date.now = () => now;
-  try {
-    const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
-    await queue.fetch(buildExactReviewQueueRequest("pressure-first", 601, "opened"));
-
-    now += 60_000;
-    await queue.fetch(buildExactReviewQueueRequest("pressure-second", 602, "opened"));
-    let stats = (await (await queue.fetch(new Request("https://queue.test/stats"))).json()) as {
-      pressure_history: Array<{ observed_at: string; pending: number }>;
-    };
-    assert.equal(stats.pressure_history.length, 1);
-    assert.equal(stats.pressure_history[0].pending, 2);
-
-    now += 5 * 60_000;
-    await queue.fetch(buildExactReviewQueueRequest("pressure-third", 603, "opened"));
-    stats = (await (await queue.fetch(new Request("https://queue.test/stats"))).json()) as {
-      pressure_history: Array<{ observed_at: string; pending: number }>;
-    };
-    assert.equal(stats.pressure_history.length, 2);
-
-    now += 3 * 60 * 60_000 + 5 * 60_000;
-    await queue.fetch(buildExactReviewQueueRequest("pressure-prune", 604, "opened"));
-    stats = (await (await queue.fetch(new Request("https://queue.test/stats"))).json()) as {
-      pressure_history: Array<{ observed_at: string; pending: number }>;
-    };
-    assert.equal(stats.pressure_history.length, 1);
-    assert.equal(stats.pressure_history[0].pending, 4);
-  } finally {
-    Date.now = originalNow;
-  }
-});
-
-test("exact-review queue keeps its core mutation available when pressure history fails", async () => {
-  const storage = new MemoryDurableStorage();
-  const queue = new ExactReviewQueue({ storage }, {});
-  const warnings: unknown[][] = [];
-  const originalWarn = console.warn;
-  console.warn = (...args) => warnings.push(args);
-  try {
-    const firstResponse = await queue.fetch(
-      buildExactReviewQueueRequest("pressure-write-success", 605, "opened"),
-    );
-    assert.equal(firstResponse.status, 202);
-    storage.failNextPut("exact-review-queue-pressure-history:v1");
-    const secondResponse = await queue.fetch(
-      buildExactReviewQueueRequest("pressure-write-failure", 606, "opened"),
-    );
-    assert.equal(secondResponse.status, 202);
-  } finally {
-    console.warn = originalWarn;
-  }
-
-  const status = await exactReviewQueueStatusSnapshot({
-    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
-  });
-  assert.equal(status?.pending, 2);
-  assert.equal(status?.pressure_history.at(-1)?.pending, 2);
-  assert.equal(warnings.length, 1);
-  assert.match(String(warnings[0][0]), /pressure history write failed/);
-});
-
-test("dashboard status excludes retry-delayed exact reviews from dispatchable backlog", async () => {
-  const storage = new MemoryDurableStorage();
-  const queue = new ExactReviewQueue({ storage }, {});
-  await queue.fetch(buildExactReviewQueueRequest("delayed-status", 598, "opened"));
-  const state = (await storage.get("exact-review-queue")) as {
-    items: Record<string, { nextAttemptAt: number }>;
-  };
-  state.items["openclaw/gogcli#598"].nextAttemptAt = Date.now() + 60_000;
-  await storage.put("exact-review-queue", state);
-
-  const status = await exactReviewQueueStatusSnapshot({
-    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
-  });
-
-  assert.ok(status);
-  assert.equal(status.pending, 1);
-  assert.equal(status.ready_pending, 0);
-  assert.equal(status.admissible_pending, 0);
-  assert.equal(status.pressure.reason, "no_ready_backlog");
-});
-
-test("dashboard status excludes ready reviews blocked by a target exact-review cap", async () => {
-  const storage = new MemoryDurableStorage();
-  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_TARGET_MAX_CONCURRENT: "1" });
-  await queue.fetch(
-    buildExactReviewQueueRequest("target-cap-status", 599, "opened", "issue", "openclaw/openclaw"),
-  );
-  const state = (await storage.get("exact-review-queue")) as {
-    items: Record<string, ReturnType<typeof leasedExactReviewQueueItem>>;
-  };
-  state.items["openclaw/openclaw#600"] = leasedExactReviewQueueItem(600, "run-600");
-  await storage.put("exact-review-queue", state);
-
-  const status = await exactReviewQueueStatusSnapshot({
-    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
-  });
-
-  assert.ok(status);
-  assert.equal(status.pending, 1);
-  assert.equal(status.ready_pending, 1);
-  assert.equal(status.admissible_pending, 0);
-  assert.equal(status.pressure.reason, "no_admissible_backlog");
-});
-
-test("dashboard status reports saturated exact-review pressure at full capacity", async () => {
-  const storage = new MemoryDurableStorage();
-  const queue = new ExactReviewQueue(
-    { storage },
-    {
-      EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "1",
-      EXACT_REVIEW_TARGET_MAX_CONCURRENT: "1",
-    },
-  );
-  await queue.fetch(
-    buildExactReviewQueueRequest("pressure-status", 601, "opened", "issue", "openclaw/gogcli"),
-  );
-  const state = (await storage.get("exact-review-queue")) as {
-    dispatcher?: { state: "active"; checkedAt: number; workflowState: string };
-    items: Record<string, ReturnType<typeof leasedExactReviewQueueItem>>;
-  };
-  state.dispatcher = { state: "active", checkedAt: Date.now(), workflowState: "active" };
-  state.items["openclaw/openclaw#602"] = leasedExactReviewQueueItem(602, "run-602");
-  await storage.put("exact-review-queue", state);
-
-  const status = await exactReviewQueueStatusSnapshot({
-    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
-  });
-
-  assert.ok(status);
-  assert.equal(status.ready_pending, 1);
-  assert.equal(status.admissible_pending, 1);
-  assert.deepEqual(status.pressure, {
-    status: "saturated",
-    reason: "capacity_full_with_backlog",
-    capacity: 1,
-    active: 1,
-    pending: 1,
-    ready_pending: 1,
-    admissible_pending: 1,
-  });
 });
 
 test("triage routing groups classify impact labels without forcing one primary group", () => {
@@ -300,63 +143,6 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   assert.match(body, /more in the tide buffer/);
   assert.match(body, /lane-nudge/);
   assert.match(body, /id="overall-average"/);
-  assert.match(body, /id="pressure-panel"/);
-  assert.match(body, /Review handoff pressure · last 3 hours/);
-  assert.match(body, /function updatePressureTrend/);
-  assert.match(body, /pressure_history/);
-  const pressureScript = [...body.matchAll(/<script>\n([\s\S]*?)\n<\/script>/g)].at(-1)?.[1];
-  assert.ok(pressureScript);
-  const pressureStart = pressureScript.indexOf("function updatePressureTrend");
-  const pressureEnd = pressureScript.indexOf("function esc", pressureStart);
-  assert.ok(pressureStart > 0 && pressureEnd > pressureStart);
-  const pressureClasses = new Set<string>();
-  const pressureAttributes = new Map<string, string>();
-  const pressureElements = {
-    "pressure-panel": {
-      classList: {
-        add: (value: string) => pressureClasses.add(value),
-        remove: (value: string) => pressureClasses.delete(value),
-      },
-    },
-    "pressure-summary": { textContent: "" },
-    "pressure-current": { textContent: "" },
-    "pressure-chart": {
-      innerHTML: "",
-      setAttribute: (name: string, value: string) => pressureAttributes.set(name, value),
-    },
-  };
-  const pressureContext = createContext({
-    document: {
-      getElementById: (id: keyof typeof pressureElements) => pressureElements[id],
-    },
-    queue: {
-      pending: 9,
-      pressure_history: [
-        {
-          observed_at: "2026-07-14T11:55:00Z",
-          pending: 4,
-          leased: 1,
-        },
-        {
-          observed_at: "2026-07-14T12:00:00Z",
-          pending: 9,
-          leased: 2,
-        },
-      ],
-    },
-  });
-  new Script(
-    `${pressureScript.slice(pressureStart, pressureEnd)};updatePressureTrend(queue);queue={pending:7,pressure_history:[{observed_at:"2026-07-14T12:00:00Z",pending:7,leased:2}]};updatePressureTrend(queue);`,
-  ).runInContext(pressureContext);
-  assert.equal(pressureClasses.has("collecting"), true);
-  assert.equal(pressureElements["pressure-current"].textContent, "7");
-  assert.equal(pressureElements["pressure-summary"].textContent, "Collecting queue history");
-  assert.equal(
-    pressureAttributes.get("aria-label"),
-    "Review handoff pressure history is collecting. 7 items are currently waiting for admission.",
-  );
-  assert.match(pressureElements["pressure-chart"].innerHTML, /after two observations/);
-  assert.doesNotMatch(pressureElements["pressure-chart"].innerHTML, /pressure-pending/);
   assert.doesNotMatch(body, /function laneTimingHtml/);
   assert.doesNotMatch(body, /lane-average/);
   assert.doesNotMatch(body, /AVG WAIT|AVG TIME|AVG RUN/);
@@ -1165,23 +951,6 @@ class MemorySqlStorage {
       .prepare("UPDATE exact_review_queue_deliveries SET received_at = ? WHERE delivery_id = ?")
       .run(receivedAt, deliveryId);
   }
-
-  setDispatchReceiptTime(phase: "attempt" | "outcome", recordedAt: number) {
-    this.database
-      .prepare("UPDATE exact_review_dispatch_receipts SET recorded_at = ? WHERE phase = ?")
-      .run(recordedAt, phase);
-  }
-
-  readDispatchReceipts() {
-    return this.database
-      .prepare(
-        `SELECT receipt_id, operation_sha256, request_sha256, dispatch_target, attempt,
-                phase, outcome, status_kind, recorded_at, parent_receipt_id
-           FROM exact_review_dispatch_receipts
-          ORDER BY rowid`,
-      )
-      .all() as Array<Record<string, unknown>>;
-  }
 }
 
 class MemoryDurableStorage {
@@ -1337,10 +1106,6 @@ class MemoryDurableStorage {
   setExactReviewReceiptTime(deliveryId: string, receivedAt: number) {
     this.sql.setReceiptTime(deliveryId, receivedAt);
   }
-
-  setExactReviewDispatchReceiptTime(phase: "attempt" | "outcome", recordedAt: number) {
-    this.sql.setDispatchReceiptTime(phase, recordedAt);
-  }
 }
 
 class MemoryDurableNamespace {
@@ -1357,21 +1122,6 @@ class MemoryDurableNamespace {
   get() {
     return this.stub;
   }
-}
-
-function exactReviewDispatchQueue(privateKey: string) {
-  const storage = new MemoryDurableStorage();
-  const queue = new ExactReviewQueue(
-    { storage },
-    {
-      CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
-      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
-    },
-  );
-  return {
-    storage,
-    namespace: new MemoryDurableNamespace(queue),
-  };
 }
 
 class MemoryCache {
@@ -3072,27 +2822,6 @@ test("exact-review queue retries dispatch failures and reclaims an unclaimed lea
       { pending: 0, dispatching: 1, leased: 0 },
     );
     assert.equal(dispatchAttempts, 3);
-    const receipts = storage.sql.readDispatchReceipts();
-    assert.equal(receipts.length, 6);
-    assert.deepEqual(
-      receipts.map((receipt) => [receipt.phase, receipt.outcome, receipt.status_kind]),
-      [
-        ["attempt", "attempted", "attempted"],
-        ["outcome", "unknown", "error"],
-        ["attempt", "attempted", "attempted"],
-        ["outcome", "accepted", "accepted"],
-        ["attempt", "attempted", "attempted"],
-        ["outcome", "accepted", "accepted"],
-      ],
-    );
-    assert.ok(
-      receipts.every(
-        (receipt) =>
-          /^[a-f0-9]{64}$/.test(String(receipt.operation_sha256)) &&
-          /^[a-f0-9]{64}$/.test(String(receipt.request_sha256)),
-      ),
-    );
-    assert.doesNotMatch(JSON.stringify(receipts), /openclaw\/gogcli|queue_lease_id/);
     const staleClaim = await queue.fetch(
       new Request("https://clawsweeper-exact-review-queue/claim", {
         method: "POST",
@@ -3106,195 +2835,6 @@ test("exact-review queue retries dispatch failures and reclaims an unclaimed lea
       }),
     );
     assert.equal(staleClaim.status, 409);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("exact-review queue keeps accepted dispatches terminal when outcome receipt storage fails", async (t) => {
-  const originalFetch = globalThis.fetch;
-  const storage = new MemoryDurableStorage();
-  const errors: string[] = [];
-  t.mock.method(console, "error", (...args: unknown[]) => {
-    errors.push(args.map(String).join(" "));
-  });
-  const { privateKey } = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
-    publicKeyEncoding: { type: "spki", format: "pem" },
-  });
-  let dispatchAttempts = 0;
-  globalThis.fetch = async (input) => {
-    const url = new URL(String(input));
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml")
-      return jsonResponse({ state: "active" });
-    if (url.pathname === "/repos/openclaw/clawsweeper/installation")
-      return jsonResponse({ id: 999 });
-    if (url.pathname === "/app/installations/999/access_tokens")
-      return jsonResponse({ token: "dispatch-token" });
-    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
-      dispatchAttempts += 1;
-      return new Response(null, { status: 204 });
-    }
-    throw new Error(`unexpected fetch ${url}`);
-  };
-
-  try {
-    const queue = new ExactReviewQueue(
-      { storage },
-      {
-        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
-        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
-      },
-    );
-    assert.equal(
-      (await queue.fetch(buildExactReviewQueueRequest("accepted-receipt-failure", 600, "opened")))
-        .status,
-      202,
-    );
-    storage.failNextSql(
-      /VALUES\s*\(\?, \?, \?, \?, \?, 'outcome'/,
-      new Error("accepted receipt unavailable"),
-    );
-
-    await queue.alarm();
-
-    const stats = await (
-      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
-    ).json();
-    assert.equal(dispatchAttempts, 1);
-    assert.deepEqual(
-      { pending: stats.pending, dispatching: stats.dispatching, leased: stats.leased },
-      { pending: 0, dispatching: 1, leased: 0 },
-    );
-    const state = (await storage.get("exact-review-queue")) as {
-      items: Record<string, { state: string; attempts: number; leaseId?: string }>;
-    };
-    const item = state.items["openclaw/gogcli#600"];
-    assert.equal(item.state, "dispatching");
-    assert.equal(item.attempts, 0);
-    assert.ok(item.leaseId);
-    assert.deepEqual(
-      storage.sql
-        .readDispatchReceipts()
-        .map((receipt) => [receipt.phase, receipt.outcome, receipt.status_kind]),
-      [["attempt", "attempted", "attempted"]],
-    );
-    assert.match(
-      errors.join("\n"),
-      /ClawSweeper dispatch accepted but outcome receipt failed: accepted receipt unavailable/,
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("exact-review queue prunes complete dispatch receipt chains atomically", async () => {
-  const originalFetch = globalThis.fetch;
-  const storage = new MemoryDurableStorage();
-  const { privateKey } = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
-    publicKeyEncoding: { type: "spki", format: "pem" },
-  });
-  globalThis.fetch = async (input) => {
-    const url = new URL(String(input));
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml")
-      return jsonResponse({ state: "active" });
-    if (url.pathname === "/repos/openclaw/clawsweeper/installation")
-      return jsonResponse({ id: 999 });
-    if (url.pathname === "/app/installations/999/access_tokens")
-      return jsonResponse({ token: "dispatch-token" });
-    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches")
-      return new Response(null, { status: 204 });
-    throw new Error(`unexpected fetch ${url}`);
-  };
-
-  try {
-    const queue = new ExactReviewQueue(
-      { storage },
-      {
-        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
-        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
-      },
-    );
-    assert.equal(
-      (await queue.fetch(buildExactReviewQueueRequest("prune-chain", 602, "opened"))).status,
-      202,
-    );
-    await queue.alarm();
-    assert.equal(storage.sql.readDispatchReceipts().length, 2);
-
-    const expiredAt = Date.now() - 31 * 24 * 60 * 60 * 1000;
-    storage.setExactReviewDispatchReceiptTime("attempt", expiredAt);
-    await queue.alarm();
-    assert.deepEqual(
-      storage.sql.readDispatchReceipts().map((receipt) => receipt.phase),
-      ["attempt", "outcome"],
-    );
-
-    storage.setExactReviewDispatchReceiptTime("outcome", expiredAt);
-    await queue.alarm();
-    assert.deepEqual(storage.sql.readDispatchReceipts(), []);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("exact-review queue schedules dispatch receipt expiry while idle", async () => {
-  const originalFetch = globalThis.fetch;
-  const storage = new MemoryDurableStorage();
-  const { privateKey } = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
-    publicKeyEncoding: { type: "spki", format: "pem" },
-  });
-  globalThis.fetch = async (input) => {
-    const url = new URL(String(input));
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml")
-      return jsonResponse({ state: "active" });
-    if (url.pathname === "/repos/openclaw/clawsweeper/installation")
-      return jsonResponse({ id: 999 });
-    if (url.pathname === "/app/installations/999/access_tokens")
-      return jsonResponse({ token: "dispatch-token" });
-    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches")
-      return new Response(null, { status: 204 });
-    throw new Error(`unexpected fetch ${url}`);
-  };
-
-  try {
-    const queue = new ExactReviewQueue(
-      { storage },
-      {
-        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
-        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
-      },
-    );
-    assert.equal(
-      (await queue.fetch(buildExactReviewQueueRequest("idle-receipt-expiry", 603, "opened")))
-        .status,
-      202,
-    );
-    await queue.alarm();
-    assert.equal(storage.sql.readDispatchReceipts().length, 2);
-
-    await storage.put("exact-review-queue", { deliveries: {}, items: {} });
-    await storage.deleteAlarm();
-    const recordedAt = Date.now() - 29 * 24 * 60 * 60 * 1000;
-    storage.setExactReviewDispatchReceiptTime("attempt", recordedAt);
-    storage.setExactReviewDispatchReceiptTime("outcome", recordedAt);
-    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
-    const expiryAlarm = await storage.getAlarm();
-    const expectedExpiry = recordedAt + 30 * 24 * 60 * 60 * 1000;
-    assert.ok(expiryAlarm !== null);
-    assert.ok(Math.abs(expiryAlarm - expectedExpiry) < 1_000);
-
-    const expiredAt = Date.now() - 31 * 24 * 60 * 60 * 1000;
-    storage.setExactReviewDispatchReceiptTime("attempt", expiredAt);
-    storage.setExactReviewDispatchReceiptTime("outcome", expiredAt);
-    await queue.alarm();
-    assert.deepEqual(storage.sql.readDispatchReceipts(), []);
-    assert.equal(await storage.getAlarm(), null);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -3374,15 +2914,6 @@ test("exact-review queue preserves a claimed lease after an ambiguous dispatch f
     assert.deepEqual(
       { pending: stats.pending, dispatching: stats.dispatching, leased: stats.leased },
       { pending: 0, dispatching: 0, leased: 1 },
-    );
-    assert.deepEqual(
-      storage.sql
-        .readDispatchReceipts()
-        .map((receipt) => [receipt.phase, receipt.outcome, receipt.status_kind]),
-      [
-        ["attempt", "attempted", "attempted"],
-        ["outcome", "unknown", "error"],
-      ],
     );
     const completed = await queue.fetch(
       new Request("https://clawsweeper-exact-review-queue/complete", {
@@ -4714,18 +4245,6 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
     automatic_work: [],
     pipeline: [],
     exact_review_queue: {
-      pending: 4,
-      ready_pending: 3,
-      admissible_pending: 2,
-      pressure: {
-        status: "congested",
-        reason: "capacity_full_with_backlog",
-        capacity: 28,
-        active: 28,
-        pending: 4,
-        ready_pending: 3,
-        admissible_pending: 2,
-      },
       handoff_health: {
         status: "healthy",
         message: "Dispatch-to-claim handoffs are within the expected window.",
@@ -4836,12 +4355,9 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(elementFor("exact-review-handoff").innerHTML, /Dispatching/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /2 of 28 exact-review slots open/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /health-badge healthy/);
-  assert.match(elementFor("exact-review-handoff").innerHTML, /pressure congested/);
-  assert.match(elementFor("exact-review-handoff").innerHTML, /4 total · 3 ready · 2 admissible/);
 
   status.recent.apply_health.items = [];
   status.exact_review_queue.handoff_health.status = "stalled";
-  status.exact_review_queue.pressure.status = "saturated";
   status.exact_review_queue.handoff_health.message =
     "A dispatched review has not been claimed within the expected handoff window.";
   context.renderDashboard(status, "");
@@ -4849,7 +4365,6 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.equal(elementFor("hero-dot").className, "hero-dot red");
   assert.match(elementFor("hero-headline").textContent, /^Needs attention/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /health-badge stalled/);
-  assert.match(elementFor("exact-review-handoff").innerHTML, /pressure saturated/);
 
   Object.assign(status, { exact_review_queue: null });
   status.diagnostics.exact_review_queue_error = "exact-review queue timed out";
@@ -7536,7 +7051,7 @@ test("triage uses ClawSweeper GitHub App credentials when no static token is con
   }
 });
 
-test("hosted webhook accepts author read-only mention commands before dispatch config", async () => {
+test("hosted webhook accepts author read-only mention commands", async () => {
   for (const body of [
     "@clawsweeper Re-run",
     "@clawsweeper\nre-review based on latest comments",
@@ -7567,8 +7082,8 @@ test("hosted webhook accepts author read-only mention commands before dispatch c
       }),
       { CLAWSWEEPER_WEBHOOK_SECRET: "test-secret" },
     );
-    assert.equal(response.status, 503, `${body} should pass classification before queue config`);
-    assert.deepEqual(await response.json(), { error: "exact_review_queue_not_configured" });
+    assert.equal(response.status, 503, `${body} should pass classification before app config`);
+    assert.deepEqual(await response.json(), { error: "github_app_not_configured" });
   }
 });
 
@@ -7779,124 +7294,6 @@ test("hosted webhook ignores removal of non-close-guard labels", async () => {
   });
 });
 
-test("hosted webhook requires comment dispatch capability before fast ack side effects", async () => {
-  const originalFetch = globalThis.fetch;
-  let githubCalls = 0;
-  globalThis.fetch = async () => {
-    githubCalls += 1;
-    throw new Error("GitHub should not be called before dispatch preflight succeeds");
-  };
-  const queue = new MemoryDurableNamespace({
-    async fetch(request: Request) {
-      assert.equal(new URL(request.url).pathname, "/dispatch-comment/preflight");
-      return new Response(JSON.stringify({ error: "comment_dispatch_unavailable" }), {
-        status: 503,
-        headers: { "content-type": "application/json" },
-      });
-    },
-  });
-
-  try {
-    const response = await worker.fetch(
-      signedGithubWebhookRequest({
-        event: "issue_comment",
-        secret: "test-secret",
-        payload: {
-          action: "created",
-          repository: {
-            full_name: "openclaw/gogcli",
-            default_branch: "trunk",
-            private: false,
-            archived: false,
-            fork: false,
-            has_issues: true,
-          },
-          issue: { number: 597, user: { login: "steipete" } },
-          installation: { id: 123 },
-          comment: {
-            id: 456,
-            body: "@clawsweeper status",
-            author_association: "OWNER",
-            user: { login: "steipete" },
-          },
-        },
-      }),
-      {
-        CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
-        EXACT_REVIEW_QUEUE: queue,
-      },
-    );
-
-    assert.equal(response.status, 503);
-    assert.deepEqual(await response.json(), { error: "comment_dispatch_unavailable" });
-    assert.equal(githubCalls, 0);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("comment dispatch attempts schedule receipt expiry alarms after success and failure", async () => {
-  const originalFetch = globalThis.fetch;
-  const { privateKey } = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
-    publicKeyEncoding: { type: "spki", format: "pem" },
-  });
-  let dispatchStatus = 204;
-  globalThis.fetch = async (input) => {
-    const url = new URL(String(input));
-    if (url.pathname === "/repos/openclaw/clawsweeper/installation") {
-      return jsonResponse({ id: 999 });
-    }
-    if (url.pathname === "/app/installations/999/access_tokens") {
-      return jsonResponse({ token: "dispatch-token" });
-    }
-    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
-      return new Response(dispatchStatus === 204 ? null : "unavailable", {
-        status: dispatchStatus,
-      });
-    }
-    throw new Error(`unexpected fetch ${url}`);
-  };
-
-  try {
-    for (const expected of [
-      { status: 204, response: 202 },
-      { status: 503, response: 502 },
-    ]) {
-      dispatchStatus = expected.status;
-      const dispatchQueue = exactReviewDispatchQueue(privateKey);
-      const queue = dispatchQueue.namespace.get();
-      const response = await queue.fetch(
-        new Request("https://clawsweeper-exact-review-queue/dispatch-comment", {
-          method: "POST",
-          body: JSON.stringify({
-            delivery_id: `delivery-${expected.status}`,
-            dispatch_body: {
-              event_type: "clawsweeper_comment",
-              client_payload: {
-                target_repo: "openclaw/gogcli",
-                target_branch: "trunk",
-                item_number: 597,
-                comment_id: 456,
-                status_comment_id: 777,
-                source_event: "issue_comment",
-                source_action: "created",
-              },
-            },
-          }),
-        }),
-      );
-
-      assert.equal(response.status, expected.response);
-      assert.ok((await dispatchQueue.storage.getAlarm())! > Date.now());
-      assert.equal(dispatchQueue.storage.sql.readDispatchReceipts().length, 2);
-    }
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
 test("hosted webhook reuses existing fast ack comments on redelivery", async () => {
   const originalFetch = globalThis.fetch;
   const { privateKey } = generateKeyPairSync("rsa", {
@@ -7904,7 +7301,6 @@ test("hosted webhook reuses existing fast ack comments on redelivery", async () 
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
-  const dispatchQueue = exactReviewDispatchQueue(privateKey);
   let dispatchBody: unknown = null;
   let postedAck = false;
   globalThis.fetch = async (input, init) => {
@@ -7977,7 +7373,6 @@ test("hosted webhook reuses existing fast ack comments on redelivery", async () 
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
         CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
         CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS: "0",
-        EXACT_REVIEW_QUEUE: dispatchQueue.namespace,
       },
     );
 
@@ -8004,20 +7399,6 @@ test("hosted webhook reuses existing fast ack comments on redelivery", async () 
         .length,
       10,
     );
-    const receipts = dispatchQueue.storage.sql.readDispatchReceipts();
-    assert.deepEqual(
-      receipts.map((receipt) => [receipt.dispatch_target, receipt.phase, receipt.outcome]),
-      [
-        ["clawsweeper_comment", "attempt", "attempted"],
-        ["clawsweeper_comment", "outcome", "accepted"],
-      ],
-    );
-    assert.equal(receipts[0]?.request_sha256, receipts[1]?.request_sha256);
-    assert.equal(
-      receipts[0]?.request_sha256,
-      createHash("sha256").update(stableJson(dispatchBody)).digest("hex"),
-    );
-    assert.doesNotMatch(JSON.stringify(receipts), /openclaw\/gogcli|status_comment_id/);
     await new Promise((resolve) => setTimeout(resolve, 0));
   } finally {
     globalThis.fetch = originalFetch;
@@ -8031,7 +7412,6 @@ test("hosted webhook coalesces concurrent duplicate fast ack comments", async ()
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
-  const dispatchQueue = exactReviewDispatchQueue(privateKey);
   const comments: Array<{ id: number; body: string; created_at: string; user: { login: string } }> =
     [];
   const dispatchBodies: unknown[] = [];
@@ -8113,7 +7493,6 @@ test("hosted webhook coalesces concurrent duplicate fast ack comments", async ()
     CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
     CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
     CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS: "0",
-    EXACT_REVIEW_QUEUE: dispatchQueue.namespace,
   };
 
   try {
@@ -8160,7 +7539,6 @@ test("hosted webhook removes duplicate fast ack comments after concurrent redeli
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
-  const dispatchQueue = exactReviewDispatchQueue(privateKey);
   let commentLookups = 0;
   let deletedAck = 0;
   let dispatchBody: unknown = null;
@@ -8243,7 +7621,6 @@ test("hosted webhook removes duplicate fast ack comments after concurrent redeli
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
         CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
         CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS: "0",
-        EXACT_REVIEW_QUEUE: dispatchQueue.namespace,
       },
     );
 
@@ -8280,7 +7657,6 @@ test("hosted webhook schedules post-dispatch fast ack cleanup", async () => {
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
-  const dispatchQueue = exactReviewDispatchQueue(privateKey);
   let commentLookups = 0;
   let deletedAck = 0;
   const waitUntilPromises: Promise<unknown>[] = [];
@@ -8377,7 +7753,6 @@ test("hosted webhook schedules post-dispatch fast ack cleanup", async () => {
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
         CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
         CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS: "0,0,0",
-        EXACT_REVIEW_QUEUE: dispatchQueue.namespace,
       },
       {
         waitUntil(promise: Promise<unknown>) {

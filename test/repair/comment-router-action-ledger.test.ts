@@ -33,7 +33,6 @@ test("comment router wraps every GitHub mutation at the request boundary", () =>
   assert.match(source, /function runGitHubBestEffortMutation[\s\S]*runGitHubTextMutationOnce/);
   assert.match(source, /function runGitHubSpawnMutation[\s\S]*runCommandMutation/);
   for (const kind of [
-    "autoclose_preclose_comment",
     "label_create",
     "label_add",
     "label_remove",
@@ -53,88 +52,6 @@ test("comment router wraps every GitHub mutation at the request boundary", () =>
   ]) {
     assert.match(source, new RegExp(`"${kind}"`), kind);
   }
-});
-
-test("trusted verdict mutations refresh reviewed PR activity before dispatch", () => {
-  const source = readText("src/repair/comment-router.ts");
-  const executeCommand = source.slice(
-    source.indexOf("function executeCommand("),
-    source.indexOf("function executeCommandWithReceipt("),
-  );
-  const executeAutomerge = source.slice(
-    source.indexOf("function executeAutomerge("),
-    source.indexOf("function latestAutomergeTarget("),
-  );
-  const commandPreflight = executeCommand.indexOf(
-    "const trustedAutomationActivityBlock = trustedAutomationReviewActivityBlockReason(command)",
-  );
-  const labelMutation = executeCommand.indexOf("applyLabelActions(command)");
-  const waitLoop = executeAutomerge.indexOf("while (block && isTransientAutomergeBlock(block)");
-  const initialReviewActivity = executeAutomerge.indexOf(
-    "const initialReviewActivityBlock = trustedAutomationReviewActivityBlockReason(command)",
-  );
-  const reviewLease = executeAutomerge.indexOf(
-    "const reviewLeaseBlock = trustedAutomationReviewLeaseBlockReason(command)",
-  );
-  const reviewActivity = executeAutomerge.indexOf(
-    "const reviewActivityBlock = trustedAutomationReviewActivityBlockReason(command)",
-  );
-  const merge = executeAutomerge.indexOf("const result = runGitHubSpawnMutation(");
-
-  assert.ok(commandPreflight >= 0);
-  assert.ok(labelMutation > commandPreflight);
-  assert.ok(initialReviewActivity >= 0);
-  assert.ok(waitLoop > initialReviewActivity);
-  assert.ok(waitLoop >= 0);
-  assert.ok(reviewLease > waitLoop);
-  assert.ok(reviewActivity > reviewLease);
-  assert.ok(merge > reviewActivity);
-  assert.match(
-    source,
-    /expected_review_activity_cursor: parsed\.expected_review_activity_cursor \?\? null/,
-  );
-  assert.match(
-    source,
-    /function trustedAutomationReviewActivityCursorOnce[\s\S]*pulls\/\$\{number\}\/reviews[\s\S]*pulls\/\$\{number\}\/comments[\s\S]*function trustedAutomationReviewActivityCursor[\s\S]*readStableReviewedPrActivityCursor[\s\S]*function trustedAutomationReviewActivityBlockReason[\s\S]*clawsweeper_auto_repair[\s\S]*isReviewedPrActivityCursor\(expected\)/,
-  );
-  assert.match(
-    source,
-    /inlineComments\.length === 0 \? \[\] : trustedAutomationReviewThreads\(number, remaining \+ 1\)/,
-  );
-  for (const wrapper of [
-    "runGitHubTextMutation",
-    "runGitHubTextMutationOnce",
-    "runGitHubSpawnMutation",
-  ]) {
-    const start = source.indexOf(`function ${wrapper}(`);
-    const end = source.indexOf("\nfunction ", start + 1);
-    const implementation = source.slice(start, end);
-    assert.match(implementation, /runReviewedPrActivityGuardedMutation/);
-    assert.match(
-      implementation,
-      /refresh: \(\) => trustedAutomationReviewActivityBlockReason\(command\)/,
-    );
-  }
-  assert.match(
-    source,
-    /function runGitHubBestEffortMutation[\s\S]*error instanceof ReviewedPrActivityGuardError[\s\S]*throw error/,
-  );
-  assert.match(
-    readText("src/repair/comment-router-core.ts"),
-    /function trustedRepair[\s\S]*expected_review_activity_cursor: marker\?\.attrs\?\.review_activity_cursor \?\? null/,
-  );
-  assert.match(
-    readText("src/repair/comment-router-core.ts"),
-    /function trustedClose[\s\S]*expected_review_activity_cursor: marker\?\.attrs\?\.review_activity_cursor \?\? null/,
-  );
-  assert.match(
-    source,
-    /function trustedAutomationReviewActivityBlockReason[\s\S]*!command\.trusted_bot[\s\S]*"autoclose"[\s\S]*"clawsweeper_needs_human"[\s\S]*intent === "autoclose" && command\.target\?\.kind !== "pull_request"/,
-  );
-  assert.match(
-    source,
-    /function postIssueComment[\s\S]*"autoclose_preclose_comment"[\s\S]*function closeIssueOrPullRequest/,
-  );
 });
 
 test("exact comment convergence classifies a missing comment as no mutation", () => {

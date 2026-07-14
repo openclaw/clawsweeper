@@ -851,32 +851,6 @@ export function actionEventShardRelativePath(
   );
 }
 
-const ACTION_EVENT_PUBLISH_PATH_PATTERN =
-  /^ledger\/v1\/(?:events\/\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl|import-bindings\/(?:producer-runs|events|shard-sets|completed-shard-sets)\/[a-f0-9]{64}\.json)$/;
-
-export function isActionEventPublishPath(value: string): boolean {
-  return ACTION_EVENT_PUBLISH_PATH_PATTERN.test(value);
-}
-
-export function actionEventPublishContentsEquivalent(
-  relativePath: string,
-  left: string,
-  right: string,
-): boolean {
-  if (left === right) return true;
-  if (!relativePath.startsWith("ledger/v1/events/")) return false;
-  try {
-    const rightEvents = parseActionEventShardContent(right, `${relativePath} (remote)`);
-    const canonicalRight = `${rightEvents.map((event) => actionLedgerJson(event)).join("\n")}\n`;
-    return (
-      right === canonicalRight &&
-      actionEventShardContentReplayEquivalent(left, rightEvents, `${relativePath} (candidate)`)
-    );
-  } catch {
-    return false;
-  }
-}
-
 export function actionEventShardImportBindingRelativePaths(identity: ActionEventShardIdentity): {
   reservation: string;
   completion: string;

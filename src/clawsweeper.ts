@@ -53,7 +53,7 @@ import {
   summarizeGhArgs,
 } from "./github-retry.js";
 import { parseGhJson, parseGhJsonLinesWithRetry, parseGhJsonWithRetry } from "./github-json.js";
-import { stableJson, stableJsonCodeUnit } from "./stable-json.js";
+import { stableJson } from "./stable-json.js";
 import {
   REVIEW_STRUCTURAL_CACHE_VERSION,
   reviewStructuralRecordAtLeastAsFresh,
@@ -193,19 +193,6 @@ import {
   reviewedPrActivityThreadsPageFromGraphql,
 } from "./review-activity-cursor.js";
 import {
-  MAX_PROOF_CONVERSATION_ACTIVITY,
-  createProofConversationActivityCursor,
-  finishProofMutationReceipt,
-  proofMutationFreshnessBlock,
-  recordProofMutationPendingReconciliation,
-  recordProofMutationReconciliation,
-  startProofMutationReceipt,
-  type ProofMutationFreshnessBlock,
-  type ProofMutationFreshnessSnapshot,
-  type ProofMutationLane,
-  type ProofMutationReceiptContext,
-} from "./proof-mutation-safety.js";
-import {
   ACTION_EVENT_REASON_CODES,
   ACTION_EVENT_STATUSES,
   ACTION_EVENT_TYPES,
@@ -216,12 +203,14 @@ import {
   type ActionEventSubject,
 } from "./action-ledger.js";
 import {
+  ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS,
   flushWorkflowActionEvents,
+  importActionEventShards,
   interruptOpenWorkflowActionEvents,
   recordWorkflowPhaseEvent,
+  workflowActionProducer,
 } from "./action-ledger-runtime.js";
-import { importWorkflowActionEvents } from "./repair/action-event-importer.js";
-import { publishActionEventPaths } from "./repair/action-event-publisher.js";
+import { publishMainCommit } from "./repair/git-publish.js";
 
 export {
   codexEnv,
@@ -237,10 +226,6 @@ export {
   parseGhJsonWithRetryAsync,
 } from "./github-json.js";
 export { itemNumbersArg } from "./clawsweeper-args.js";
-export {
-  actionEventPublishCoordination as actionEventPublishCoordinationForTest,
-  actionEventPublishPaths as actionEventPublishPathsForTest,
-} from "./repair/action-event-publisher.js";
 export {
   buildDecisionPacketFromReport,
   renderDecisionPacketPublicBlock,
@@ -1082,9 +1067,6 @@ interface FailedReviewRetryState {
 type ProofNudgeAction =
   | "proof_nudge_posted"
   | "proof_nudge_planned"
-  | "proof_nudge_reconciled"
-  | "proof_nudge_reconciliation_pending"
-  | "proof_nudge_outcome_unknown"
   | "skipped_not_pull_request"
   | "skipped_not_open"
   | "skipped_policy_exempt"
@@ -1097,7 +1079,6 @@ type ProofNudgeAction =
   | "skipped_protected_label"
   | "skipped_locked_conversation"
   | "skipped_no_live_head"
-  | "skipped_changed_before_mutation"
   | "skipped_live_fetch_failed"
   | "skipped_runtime_budget";
 
@@ -1106,9 +1087,6 @@ type BotProofAction =
   | "bot_proof_mantis_request_planned"
   | "bot_proof_decision_posted"
   | "bot_proof_decision_planned"
-  | "bot_proof_decision_reconciled"
-  | "bot_proof_reconciliation_pending"
-  | "bot_proof_mutation_outcome_unknown"
   | "skipped_not_pull_request"
   | "skipped_not_open"
   | "skipped_not_bot_authored"
@@ -1117,8 +1095,6 @@ type BotProofAction =
   | "skipped_stale_report_head"
   | "skipped_no_live_head"
   | "skipped_locked_conversation"
-  | "skipped_protected_label"
-  | "skipped_changed_before_mutation"
   | "skipped_live_fetch_failed"
   | "skipped_runtime_budget";
 
@@ -1130,24 +1106,6 @@ interface ProofNudgeResult {
   url?: string | undefined;
   headSha?: string | undefined;
   reviewedAt?: string | undefined;
-}
-
-interface ProofNudgeMutationCycle {
-  schema_version: 1;
-  repository: string;
-  number: number;
-  head_sha: string;
-  marker_timestamp: string;
-  created_at: string;
-}
-
-interface BotProofCommentMutationCycle {
-  schema_version: 1;
-  repository: string;
-  number: number;
-  head_sha: string;
-  comment_body_sha256: string;
-  created_at: string;
 }
 
 interface BotProofResult {
@@ -1217,13 +1175,7 @@ interface ProofNudgeEligibility {
   eligible: boolean;
   action: Exclude<
     ProofNudgeAction,
-    | "proof_nudge_posted"
-    | "skipped_not_open"
-    | "skipped_runtime_budget"
-    | "proof_nudge_reconciled"
-    | "proof_nudge_reconciliation_pending"
-    | "proof_nudge_outcome_unknown"
-    | "skipped_changed_before_mutation"
+    "proof_nudge_posted" | "skipped_not_open" | "skipped_runtime_budget"
   >;
   reason: string;
   latestActivityAt?: string | undefined;
@@ -1246,12 +1198,8 @@ interface BotProofEligibility {
     BotProofAction,
     | "bot_proof_mantis_request_posted"
     | "bot_proof_decision_posted"
-    | "bot_proof_decision_reconciled"
-    | "bot_proof_reconciliation_pending"
-    | "bot_proof_mutation_outcome_unknown"
     | "skipped_not_open"
     | "skipped_runtime_budget"
-    | "skipped_changed_before_mutation"
     | "skipped_live_fetch_failed"
   >;
   reason: string;
@@ -2692,80 +2640,15 @@ type MutationRunner = <T>(options: {
   knownNoMutation?: ((error: unknown) => boolean) | undefined;
 }) => T;
 
-type ApplyMutationReviewBlock = {
-  sourceChanged: boolean;
-  reason: string;
-};
-
 class ApplyMutationReviewGuardError extends Error {
-  readonly block: ApplyMutationReviewBlock;
-
-  constructor(block: ApplyMutationReviewBlock) {
-    super(block.reason);
+  constructor(reason: string) {
+    super(reason);
     this.name = "ApplyMutationReviewGuardError";
-    this.block = block;
   }
 }
-
-class ProofMutationFreshnessError extends Error {
-  readonly block: ProofMutationFreshnessBlock;
-
-  constructor(block: ProofMutationFreshnessBlock) {
-    super(block.message);
-    this.name = "ProofMutationFreshnessError";
-    this.block = block;
-  }
-}
-
-class ProofMutationOutcomeUnknownError extends Error {
-  readonly cause: unknown;
-
-  constructor(cause: unknown) {
-    super("proof mutation request outcome is unknown");
-    this.name = "ProofMutationOutcomeUnknownError";
-    this.cause = cause;
-  }
-}
-
-type ProofMutationSession = {
-  context: ProofMutationReceiptContext;
-  expectedFreshness: ProofMutationRequestSnapshot;
-  refreshFreshness: () => ProofMutationRequestSnapshot;
-  validateRequest: (snapshot: ProofMutationRequestSnapshot) => ProofMutationFreshnessBlock | null;
-  bindLabelState: boolean;
-  nextAttemptByMutation: Map<string, number>;
-  latestEventIdByMutation: Map<string, string>;
-  knownNoMutationIdentities: Set<string>;
-  unknownMutationIdentities: Set<string>;
-  unknownMutationObserved: boolean;
-};
 
 let activeApplyMutationRunner: MutationRunner | null = null;
 let activeReviewMutationRunner: MutationRunner | null = null;
-let activeProofMutationRunner: MutationRunner | null = null;
-
-function expectedProofMutationSnapshotAfterLabelRequest(
-  snapshot: ProofMutationRequestSnapshot,
-  mutationIdentity: string,
-): ProofMutationRequestSnapshot {
-  const match = mutationIdentity.match(/^issue_label_(add|remove):(\d+):([\s\S]+)$/);
-  if (!match || Number(match[2]) !== snapshot.item.number) return snapshot;
-  const operation = match[1];
-  const label = match[3];
-  if (!operation || !label) return snapshot;
-  const normalizedLabel = normalizeLabelName(label);
-  const labels =
-    operation === "add"
-      ? snapshot.item.labels.some((entry) => normalizeLabelName(entry) === normalizedLabel)
-        ? [...snapshot.item.labels]
-        : [...snapshot.item.labels, label]
-      : snapshot.item.labels.filter((entry) => normalizeLabelName(entry) !== normalizedLabel);
-  return {
-    ...snapshot,
-    item: { ...snapshot.item, labels },
-    labelStateCursor: proofMutationLabelStateCursor(labels),
-  };
-}
 
 function mutationErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -2779,8 +2662,7 @@ function runObservedApplyMutation<T>(options: {
   didMutate?: ((result: T) => boolean) | undefined;
   knownNoMutation?: ((error: unknown) => boolean) | undefined;
 }): T {
-  const runner =
-    activeApplyMutationRunner ?? activeReviewMutationRunner ?? activeProofMutationRunner;
+  const runner = activeApplyMutationRunner ?? activeReviewMutationRunner;
   if (runner) {
     return runner({
       identity: options.identity,
@@ -2793,155 +2675,6 @@ function runObservedApplyMutation<T>(options: {
   const result = options.operation();
   if (options.didMutate?.(result) ?? true) options.onMutation?.();
   return result;
-}
-
-function refreshProofMutationSession(session: ProofMutationSession): ProofMutationRequestSnapshot {
-  let currentFreshness: ProofMutationRequestSnapshot;
-  try {
-    currentFreshness = session.refreshFreshness();
-  } catch (error) {
-    if (error instanceof ProofMutationFreshnessError) throw error;
-    throw new ProofMutationFreshnessError({
-      reason: "freshness_unavailable",
-      message: "proof mutation freshness could not be refreshed before the request",
-    });
-  }
-  const block =
-    proofMutationFreshnessBlock(session.expectedFreshness, currentFreshness) ??
-    (session.bindLabelState &&
-    currentFreshness.labelStateCursor !== session.expectedFreshness.labelStateCursor
-      ? proofMutationEligibilityChanged("live labels changed before the request")
-      : null) ??
-    session.validateRequest(currentFreshness);
-  if (block) {
-    throw new ProofMutationFreshnessError(block);
-  }
-  return currentFreshness;
-}
-
-function proofMutationRunner(
-  session: ProofMutationSession,
-  beforeRequest?: (mutationIdentity: string) => void,
-): MutationRunner {
-  return <T>(options: {
-    identity: string;
-    idempotencyIdentity: string;
-    operation: () => T;
-    didMutate?: ((result: T) => boolean) | undefined;
-    knownNoMutation?: ((error: unknown) => boolean) | undefined;
-  }): T => {
-    const currentFreshness = refreshProofMutationSession(session);
-    const requestAttempt =
-      (session.nextAttemptByMutation.get(options.idempotencyIdentity) ?? 0) + 1;
-    session.nextAttemptByMutation.set(options.idempotencyIdentity, requestAttempt);
-    const attempt = startProofMutationReceipt({
-      context: session.context,
-      receiptIdentity: options.identity,
-      mutationIdentity: options.idempotencyIdentity,
-      requestAttempt,
-    });
-    let requestStarted = false;
-    try {
-      beforeRequest?.(options.idempotencyIdentity);
-      requestStarted = true;
-      const result = options.operation();
-      const outcome = finishProofMutationReceipt({
-        attempt,
-        outcome: options.didMutate?.(result) === false ? "rejected" : "accepted",
-      });
-      if (outcome) {
-        session.latestEventIdByMutation.set(options.idempotencyIdentity, outcome.event_id);
-      }
-      if (session.bindLabelState && options.didMutate?.(result) !== false) {
-        session.expectedFreshness = expectedProofMutationSnapshotAfterLabelRequest(
-          currentFreshness,
-          options.idempotencyIdentity,
-        );
-      }
-      return result;
-    } catch (error) {
-      const knownNoMutation = !requestStarted || options.knownNoMutation?.(error) === true;
-      const rejected =
-        isGitHubRequiresAuthenticationError(error) ||
-        isLockedConversationCommentError(error) ||
-        knownNoMutation;
-      const outcome = finishProofMutationReceipt({
-        attempt,
-        outcome: rejected ? "rejected" : "unknown",
-      });
-      if (outcome) {
-        session.latestEventIdByMutation.set(options.idempotencyIdentity, outcome.event_id);
-      }
-      if (knownNoMutation) {
-        session.knownNoMutationIdentities.add(options.idempotencyIdentity);
-      }
-      if (!rejected) {
-        session.unknownMutationIdentities.add(options.idempotencyIdentity);
-        session.unknownMutationObserved = true;
-        throw new ProofMutationOutcomeUnknownError(error);
-      }
-      throw error;
-    }
-  };
-}
-
-export function runProofMutationPreRequestForTest(options: {
-  context: ProofMutationReceiptContext;
-  beforeRequest: () => void;
-  operation: () => string;
-}): string {
-  const snapshot: ProofMutationRequestSnapshot = {
-    item: {
-      repo: options.context.repository,
-      kind: "pull_request",
-      number: options.context.number,
-      title: "proof mutation pre-request test",
-      url: `https://github.com/${options.context.repository}/pull/${options.context.number}`,
-      createdAt: "2026-01-01T00:00:00Z",
-      updatedAt: "2026-01-01T00:00:00Z",
-      author: "contributor",
-      authorAssociation: "CONTRIBUTOR",
-      locked: false,
-      labels: [],
-    },
-    state: "OPEN",
-    draft: false,
-    headSha: options.context.headSha,
-    reviewActivityCursor: "v2:0:test",
-    conversationActivityCursor: "v1:0:test",
-    labelStateCursor: proofMutationLabelStateCursor([]),
-    comments: [],
-  };
-  const session: ProofMutationSession = {
-    context: options.context,
-    expectedFreshness: snapshot,
-    refreshFreshness: () => snapshot,
-    validateRequest: () => null,
-    bindLabelState: false,
-    nextAttemptByMutation: new Map(),
-    latestEventIdByMutation: new Map(),
-    knownNoMutationIdentities: new Set(),
-    unknownMutationIdentities: new Set(),
-    unknownMutationObserved: false,
-  };
-  return proofMutationRunner(session, () => options.beforeRequest())({
-    identity: "proof_test_mutation:request_attempt:1",
-    idempotencyIdentity: "proof_test_mutation",
-    operation: options.operation,
-  });
-}
-
-function reconcileProofMutation(session: ProofMutationSession, mutationIdentity: string): void {
-  const requestAttempt = session.nextAttemptByMutation.get(mutationIdentity) ?? 0;
-  recordProofMutationReconciliation({
-    context: session.context,
-    mutationIdentity,
-    parentEventId: session.latestEventIdByMutation.get(mutationIdentity) ?? null,
-    phaseSeq: requestAttempt * 2 + 1,
-  });
-  session.unknownMutationIdentities.delete(mutationIdentity);
-  session.knownNoMutationIdentities.delete(mutationIdentity);
-  session.unknownMutationObserved = session.unknownMutationIdentities.size > 0;
 }
 
 function ghObservedMutationCommand(options: {
@@ -5574,41 +5307,6 @@ function compactCommitStatus(value: unknown): unknown {
   };
 }
 
-function compareCanonicalJson(left: unknown, right: unknown): number {
-  const leftJson = stableJsonCodeUnit(left);
-  const rightJson = stableJsonCodeUnit(right);
-  return leftJson < rightJson ? -1 : leftJson > rightJson ? 1 : 0;
-}
-
-function canonicalPullChecksContext(
-  rawCheckRuns: unknown[],
-  rawStatuses: unknown[],
-  checkRunsTruncated: boolean,
-  statusesTruncated: boolean,
-): unknown {
-  const checkRuns = rawCheckRuns.slice(0, 100).map(compactCheckRun).sort(compareCanonicalJson);
-  const statuses = rawStatuses.slice(0, 100).map(compactCommitStatus).sort(compareCanonicalJson);
-  return {
-    complete: !checkRunsTruncated && !statusesTruncated,
-    checkRuns,
-    checkRunsTruncated,
-    statuses,
-    statusesTruncated,
-  };
-}
-
-export function pullChecksContextForTest(checkRuns: unknown[], statuses: unknown[]): unknown {
-  return canonicalPullChecksContext(checkRuns, statuses, false, false);
-}
-
-function canonicalPullChecksDigest(pullChecks: unknown): string {
-  return sha256(stableJsonCodeUnit(pullChecks));
-}
-
-export function pullChecksDigestForTest(pullChecks: unknown): string {
-  return canonicalPullChecksDigest(pullChecks);
-}
-
 function pullChecksContext(number: number, headSha: string): unknown {
   try {
     const checkResponse = asRecord(
@@ -5632,12 +5330,21 @@ function pullChecksContext(number: number, headSha: string): unknown {
     }
     const checkRunsTruncated = checkRunsTotal > rawCheckRuns.length || rawCheckRuns.length > 100;
     const statusesTruncated = statusesTotal > rawStatuses.length || rawStatuses.length > 100;
-    return canonicalPullChecksContext(
-      rawCheckRuns,
-      rawStatuses,
+    const checkRuns = rawCheckRuns
+      .slice(0, 100)
+      .map(compactCheckRun)
+      .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
+    const statuses = rawStatuses
+      .slice(0, 100)
+      .map(compactCommitStatus)
+      .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
+    return {
+      complete: !checkRunsTruncated && !statusesTruncated,
+      checkRuns,
       checkRunsTruncated,
+      statuses,
       statusesTruncated,
-    );
+    };
   } catch (error) {
     console.error(
       `[review] ${new Date().toISOString()} check-state=unavailable #${number}: ${
@@ -6864,128 +6571,6 @@ function fetchReviewedPrActivityCursor(
     inlineComments.length === 0 ? [] : reviewedPrActivityThreads(number, remaining + 1);
   if (reviewThreads.length > remaining) return null;
   return createReviewedPrActivityCursor({ reviews, inlineComments, reviewThreads });
-}
-
-function fetchProofConversationActivityCursor(number: number): string | null {
-  const comments = ghPagedLimit<unknown>(
-    `repos/${targetRepo()}/issues/${number}/comments`,
-    MAX_PROOF_CONVERSATION_ACTIVITY + 1,
-  );
-  return createProofConversationActivityCursor(comments);
-}
-
-type ProofMutationRequestSnapshot = ProofMutationFreshnessSnapshot & {
-  item: Item;
-  state: string;
-  draft: boolean;
-  labelStateCursor: string;
-  comments: ProofNudgeComment[];
-  authorEditedAt?: string | undefined;
-  authorReviewActivityAt?: string | undefined;
-};
-
-function fetchProofMutationClosingPullState(number: number): {
-  headSha: string;
-  draft: boolean;
-} {
-  const pull = asRecord(
-    ghJson<unknown>([
-      "api",
-      `repos/${targetRepo()}/pulls/${number}`,
-      "--jq",
-      "{draft,head:{sha:.head.sha}}",
-    ]),
-  );
-  const headSha = stringOrUndefined(asRecord(pull.head).sha)?.trim().toLowerCase() ?? "";
-  return { headSha, draft: pull.draft === true };
-}
-
-function proofMutationLabelStateCursor(labels: readonly string[]): string {
-  return sha256(stableJson([...normalizedLabelSet(labels)].sort()));
-}
-
-function proofMutationEligibilityStateCursor(item: Item, state: string): string {
-  return sha256(
-    stableJson({
-      state,
-      number: item.number,
-      kind: item.kind,
-      title: item.title,
-      author: item.author,
-      authorAssociation: item.authorAssociation,
-      labels: [...normalizedLabelSet(item.labels)].sort(),
-      locked: item.locked === true,
-      activeLockReason: item.activeLockReason ?? null,
-    }),
-  );
-}
-
-function readProofMutationFreshnessSnapshot(
-  number: number,
-  activityAuthor?: string,
-): ProofMutationRequestSnapshot {
-  const readOnce = (): ProofMutationRequestSnapshot => {
-    const openingHeadSha = pullRequestHeadSha(number);
-    if (!openingHeadSha) throw new Error(`live PR head could not be read for #${number}`);
-    const reviewActivityCursor = fetchReviewedPrActivityCursor(number);
-    if (!reviewActivityCursor) {
-      throw new Error(`review activity exceeds the bounded proof mutation cursor for #${number}`);
-    }
-    const conversationActivityCursor = fetchProofConversationActivityCursor(number);
-    if (!conversationActivityCursor) {
-      throw new Error(
-        `conversation activity exceeds the bounded proof mutation cursor for #${number}`,
-      );
-    }
-    const openingLive = fetchItem(number);
-    const openingEligibilityCursor = proofMutationEligibilityStateCursor(
-      openingLive.item,
-      openingLive.state,
-    );
-    const comments = activityAuthor ? proofNudgeComments(number) : [];
-    const authorEditedAt = activityAuthor
-      ? latestAuthorPullRequestEditAt(number, activityAuthor)
-      : undefined;
-    const authorReviewActivityAt = activityAuthor
-      ? latestAuthorPullRequestReviewActivityAt(number, activityAuthor)
-      : undefined;
-    const closingPull = fetchProofMutationClosingPullState(number);
-    if (!closingPull.headSha) throw new Error(`live PR head could not be re-read for #${number}`);
-    if (closingPull.headSha !== openingHeadSha) {
-      throw new ProofMutationFreshnessError({
-        reason: "head_changed",
-        message: "live PR head changed while hydrating proof mutation activity",
-      });
-    }
-    const closingLive = fetchItem(number);
-    if (
-      proofMutationEligibilityStateCursor(closingLive.item, closingLive.state) !==
-      openingEligibilityCursor
-    ) {
-      throw new ProofMutationFreshnessError(
-        proofMutationEligibilityChanged(
-          "live PR eligibility changed while hydrating proof mutation activity",
-        ),
-      );
-    }
-    return {
-      headSha: closingPull.headSha,
-      reviewActivityCursor,
-      conversationActivityCursor,
-      item: closingLive.item,
-      state: closingLive.state,
-      draft: closingPull.draft,
-      labelStateCursor: proofMutationLabelStateCursor(closingLive.item.labels),
-      comments,
-      authorEditedAt,
-      authorReviewActivityAt,
-    };
-  };
-  const first = readOnce();
-  const second = readOnce();
-  const block = proofMutationFreshnessBlock(first, second);
-  if (block) throw new ProofMutationFreshnessError(block);
-  return second;
 }
 
 export interface ContextHydration<T> {
@@ -8634,7 +8219,7 @@ function fetchReviewStructuralRecord(options: {
     if (!headSha) return null;
     const pullChecks = pullChecksContext(options.item.number, headSha);
     if (!completePullChecksContext(pullChecks)) return null;
-    pullChecksDigest = canonicalPullChecksDigest(pullChecks);
+    pullChecksDigest = sha256(stableJson(pullChecks));
   }
   return reviewStructuralRecordFromGraphql({
     response,
@@ -8777,10 +8362,7 @@ function collectItemContext(
     filteredPullReviewComments = filterReviewContextComments(pullReviewComments, item.number);
     const fullPullReviewComments =
       options.reviewCacheDigest && pullReviewCommentsWindow.truncated
-        ? ghPagedLimit<unknown>(
-            `repos/${targetRepo()}/pulls/${item.number}/comments`,
-            MAX_REVIEWED_PR_ACTIVITY + 1,
-          )
+        ? ghPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/comments`)
         : pullReviewComments;
     digestPullReviewComments =
       fullPullReviewComments === pullReviewComments
@@ -8824,11 +8406,9 @@ function collectItemContext(
       compactComment,
     );
     if (options.reviewCacheDigest) {
-      if (fullPullReviewComments.length <= MAX_REVIEWED_PR_ACTIVITY) {
-        context.pullReviewCommentsRevision = reviewCommentContentRevision(
-          digestPullReviewComments.included.map(compactComment),
-        );
-      }
+      context.pullReviewCommentsRevision = reviewCommentContentRevision(
+        digestPullReviewComments.included.map(compactComment),
+      );
       const pullReviewActivityCursor = fetchReviewedPrActivityCursor(
         item.number,
         fullPullReviewComments,
@@ -15066,71 +14646,6 @@ function latestProofNudgeAt(
   );
 }
 
-function proofNudgeMarkerExistsAt(
-  comments: readonly ProofNudgeComment[],
-  options: { number: number; headSha: string; timestamp: string },
-): boolean {
-  return proofNudgeMarkersFromComments(comments).some(
-    (marker) =>
-      marker.item === options.number &&
-      marker.sha === options.headSha &&
-      marker.at === options.timestamp,
-  );
-}
-
-function proofNudgeCommentsWithLiveMarkers(
-  comments: readonly ProofNudgeComment[],
-  liveComments: readonly ProofNudgeComment[],
-  options: { number: number; headSha: string },
-): ProofNudgeComment[] {
-  const liveMarkerTimestamps = new Set(
-    proofNudgeMarkersFromComments(liveComments)
-      .filter(
-        (marker) =>
-          marker.item === options.number &&
-          marker.sha === options.headSha &&
-          timestampMs(marker.at) !== null,
-      )
-      .map((marker) => marker.at),
-  );
-  const reconciledComments = comments.filter((comment) => {
-    if (!isProofNudgeMarkerCommentAuthor(comment.author)) return true;
-    const matchingMarkers = proofNudgeMarkersFromCommentBody(comment.body).filter(
-      (marker) =>
-        marker.item === options.number &&
-        marker.sha === options.headSha &&
-        timestampMs(marker.at) !== null,
-    );
-    return (
-      matchingMarkers.length === 0 ||
-      matchingMarkers.some((marker) => liveMarkerTimestamps.has(marker.at))
-    );
-  });
-  const reconciledMarkerTimestamps = new Set(
-    proofNudgeMarkersFromComments(reconciledComments)
-      .filter(
-        (marker) =>
-          marker.item === options.number &&
-          marker.sha === options.headSha &&
-          timestampMs(marker.at) !== null,
-      )
-      .map((marker) => marker.at),
-  );
-  for (const liveComment of liveComments) {
-    if (!isProofNudgeMarkerCommentAuthor(liveComment.author)) continue;
-    const matchingMarkers = proofNudgeMarkersFromCommentBody(liveComment.body).filter(
-      (marker) =>
-        marker.item === options.number &&
-        marker.sha === options.headSha &&
-        timestampMs(marker.at) !== null,
-    );
-    if (!matchingMarkers.some((marker) => !reconciledMarkerTimestamps.has(marker.at))) continue;
-    reconciledComments.push(liveComment);
-    for (const marker of matchingMarkers) reconciledMarkerTimestamps.add(marker.at);
-  }
-  return reconciledComments;
-}
-
 function staleProofNudgeReportHead(markdown: string, headSha: string | undefined): boolean {
   if (!headSha) return false;
   const reportHeadSha = frontMatterValue(markdown, "pull_head_sha");
@@ -15358,13 +14873,6 @@ function botProofEligibility(options: BotProofEligibilityOptions): BotProofEligi
       action: "skipped_policy_exempt",
       reason: "proof is already sufficient or overridden",
     };
-  }
-  const protectedLabelsForDecision = proofNudgeProtectedLabels(options.item.labels);
-  if (protectedLabelsForDecision.length > 0 || isReleaseTitle(options.item.title)) {
-    const reason = protectedLabelsForDecision.length
-      ? `protected label: ${protectedLabelsForDecision.join(", ")}`
-      : "release-style PR title";
-    return { eligible: false, action: "skipped_protected_label", reason };
   }
   if (!realBehaviorProofBlocksBotOwnedMerge(options.markdown)) {
     return {
@@ -18911,7 +18419,6 @@ function reviewVersionMarkerFromReport(markdown: string): string {
   const reviewedAt = frontMatterValue(markdown, "reviewed_at") ?? "unknown";
   const headSha = pullHeadShaFromReport(markdown) ?? "na";
   const sourceRevision = frontMatterValue(markdown, "item_source_revision") ?? "unknown";
-  const reviewActivityCursor = frontMatterValue(markdown, "review_activity_cursor") ?? "unknown";
   const leaseOwner = frontMatterValue(markdown, "review_lease_owner") ?? "unknown";
   const leaseCommentId = frontMatterValue(markdown, "review_lease_comment_id") ?? "unknown";
   const attrs = [
@@ -18919,7 +18426,6 @@ function reviewVersionMarkerFromReport(markdown: string): string {
     `reviewed_at=${markerAttributeValue(reviewedAt)}`,
     `sha=${markerAttributeValue(headSha)}`,
     `source_revision=${markerAttributeValue(sourceRevision)}`,
-    `review_activity_cursor=${markerAttributeValue(reviewActivityCursor)}`,
     `lease_owner=${markerAttributeValue(leaseOwner)}`,
     `lease_comment_id=${markerAttributeValue(leaseCommentId)}`,
     "v=1",
@@ -18957,7 +18463,6 @@ export function reviewAutomationMarkersFromReport(markdown: string): string {
   const reviewLeaseOwner = frontMatterValue(markdown, "review_lease_owner") ?? "unknown";
   const reviewLeaseCommentId = frontMatterValue(markdown, "review_lease_comment_id") ?? "unknown";
   const sourceRevision = frontMatterValue(markdown, "item_source_revision") ?? "unknown";
-  const reviewActivityCursor = frontMatterValue(markdown, "review_activity_cursor") ?? "unknown";
   const baseAttrs = [
     `item=${markerAttributeValue(number)}`,
     `sha=${markerAttributeValue(headSha)}`,
@@ -18967,7 +18472,6 @@ export function reviewAutomationMarkersFromReport(markdown: string): string {
     `lease_owner=${markerAttributeValue(reviewLeaseOwner)}`,
     `lease_comment_id=${markerAttributeValue(reviewLeaseCommentId)}`,
     `source_revision=${markerAttributeValue(sourceRevision)}`,
-    `review_activity_cursor=${markerAttributeValue(reviewActivityCursor)}`,
   ].join(" ");
   const securityNeedsAttention = reportSecurityReview(markdown).status === "needs_attention";
   const humanReviewMarkers = (): string => {
@@ -19803,27 +19307,6 @@ function issueCommentWithMarker(
     const body = candidate.body;
     return typeof body === "string" && body.includes(marker);
   });
-}
-
-function ownedIssueCommentWithMarker(
-  number: number,
-  marker: string,
-): Record<string, unknown> | undefined {
-  const comments = ghPagedLimit<unknown>(
-    `repos/${targetRepo()}/issues/${number}/comments`,
-    MAX_PROOF_CONVERSATION_ACTIVITY + 1,
-  );
-  if (comments.length > MAX_PROOF_CONVERSATION_ACTIVITY) {
-    throw new Error(`conversation activity exceeds the bounded proof lane limit for #${number}`);
-  }
-  return comments
-    .map(asRecord)
-    .find(
-      (comment) =>
-        canPatchReviewComment(comment) &&
-        typeof comment.body === "string" &&
-        comment.body.includes(marker),
-    );
 }
 
 function closeAppliedEvidenceLink(markdown: string, itemUrl: string): string {
@@ -22093,14 +21576,15 @@ function reviewCommand(args: Args): void {
           `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start #${item.number} (${completed + 1}/${candidates.length})`,
         );
       }
-      const priorReview = localRangeData ? null : existingReview(item, itemsDir);
-      const priorReviewActivityCursor = priorReview
-        ? frontMatterValue(priorReview.markdown, "review_activity_cursor")
-        : null;
-      const cacheReview =
-        item.kind === "pull_request" && !isReviewedPrActivityCursor(priorReviewActivityCursor)
+      const existingPriorReview = localRangeData ? null : existingReview(item, itemsDir);
+      const priorReview =
+        item.kind === "pull_request" &&
+        existingPriorReview &&
+        !isReviewedPrActivityCursor(
+          frontMatterValue(existingPriorReview.markdown, "review_activity_cursor"),
+        )
           ? null
-          : priorReview;
+          : existingPriorReview;
       const expectedPreviousReviewDigest = priorReview
         ? previousClawSweeperReviewDigestFromReport(priorReview.markdown)
         : null;
@@ -22112,7 +21596,7 @@ function reviewCommand(args: Args): void {
       if (!localRangeData) {
         structuralCacheChecks += 1;
         const structuralProbeDecision = reviewStructuralCacheProbeDecision({
-          review: cacheReview,
+          review: priorReview,
           reviewPolicy,
           reviewModel: PUBLIC_CODEX_MODEL,
           explicitDispatch,
@@ -22150,7 +21634,7 @@ function reviewCommand(args: Args): void {
           preHydrationStructuralRecord = structuralRecord;
           if (structuralRecord) item.updatedAt = structuralRecord.activityUpdatedAt;
           const structuralDecision = reviewStructuralCacheDecision({
-            review: cacheReview,
+            review: priorReview,
             priorRecord: priorReview?.structuralRecord ?? null,
             currentRecord: structuralRecord,
             reviewPolicy,
@@ -22209,7 +21693,6 @@ function reviewCommand(args: Args): void {
             const structuralRevalidationStartedAt = Date.now();
             let revalidatedStructuralRecord: ReviewStructuralRecord | null = null;
             let revalidatedPreviousReviewDigest: string | null = null;
-            let revalidatedReviewActivityCursor: string | null = null;
             try {
               git = loadReviewGitInfo();
               revalidatedStructuralRecord = fetchReviewStructuralRecord({
@@ -22224,11 +21707,6 @@ function reviewCommand(args: Args): void {
                 revalidatedStructuralRecord = null;
               }
               revalidatedPreviousReviewDigest = liveClawSweeperReviewDigest(item.number);
-              if (item.kind === "pull_request") {
-                revalidatedReviewActivityCursor = readStableReviewedPrActivityCursor(() =>
-                  fetchReviewedPrActivityCursor(item.number),
-                );
-              }
             } catch (error) {
               structuralCacheRevalidationFailures += 1;
               console.error(
@@ -22240,9 +21718,9 @@ function reviewCommand(args: Args): void {
               structuralCacheRevalidationMs += Date.now() - structuralRevalidationStartedAt;
             }
             const revalidationDecision = reviewStructuralCacheDecision({
-              review: cacheReview
+              review: priorReview
                 ? {
-                    ...cacheReview,
+                    ...priorReview,
                     reviewCommentSyncedAt: new Date().toISOString(),
                   }
                 : null,
@@ -22258,20 +21736,14 @@ function reviewCommand(args: Args): void {
               expectedPreviousReviewDigest !== null &&
               revalidatedPreviousReviewDigest !== null &&
               expectedPreviousReviewDigest === revalidatedPreviousReviewDigest;
-            const reviewActivityMatches =
-              item.kind !== "pull_request" ||
-              (revalidatedReviewActivityCursor !== null &&
-                revalidatedReviewActivityCursor === priorReviewActivityCursor);
-            const revalidationReason = !previousReviewIdentityMatches
-              ? "previous_review_changed"
-              : !reviewActivityMatches
-                ? "review_activity_changed"
-                : revalidationDecision.reason;
+            const revalidationReason = previousReviewIdentityMatches
+              ? revalidationDecision.reason
+              : "previous_review_changed";
             structuralCacheRevalidationReasons.set(
               revalidationReason,
               (structuralCacheRevalidationReasons.get(revalidationReason) ?? 0) + 1,
             );
-            if (!revalidationDecision.hit || !previousReviewIdentityMatches || !reviewActivityMatches) {
+            if (!revalidationDecision.hit || !previousReviewIdentityMatches) {
               const leaseToRelease = acquiredReviewLease!;
               if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
                 leaseAcquisitionFailures += 1;
@@ -22302,13 +21774,6 @@ function reviewCommand(args: Args): void {
               let carried = priorReview!.markdown;
               carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());
               carried = replaceFrontMatterValue(carried, "item_updated_at", item.updatedAt);
-              if (item.kind === "pull_request") {
-                carried = replaceFrontMatterValue(
-                  carried,
-                  "review_activity_cursor",
-                  revalidatedReviewActivityCursor!,
-                );
-              }
               carried = replaceFrontMatterValue(
                 carried,
                 "review_lease_owner",
@@ -22410,9 +21875,6 @@ function reviewCommand(args: Args): void {
             reviewCacheGitDir: openclawDir,
           });
       const contextElapsedMs = Date.now() - contextStartedAt;
-      const hydratedReviewActivityCursorAvailable =
-        item.kind !== "pull_request" ||
-        isReviewedPrActivityCursor(context.pullReviewActivityCursor);
       const contextItemUpdatedAt = stringOrUndefined(asRecord(context.issue).updatedAt);
       if (contextItemUpdatedAt) item.updatedAt = contextItemUpdatedAt;
       if (!localRangeData && contextItemUpdatedAt && preHydrationStructuralRecord) {
@@ -22633,7 +22095,7 @@ function reviewCommand(args: Args): void {
           !currentPreviousReviewDigest ||
           expectedPreviousReviewDigest !== currentPreviousReviewDigest;
         semanticDecision = reviewSemanticCacheDecision({
-          review: cacheReview,
+          review: priorReview,
           priorRecord: priorReview?.semanticRecord ?? null,
           currentRecord: semanticRecord,
           expectedPreviousReviewDigest,
@@ -22649,7 +22111,7 @@ function reviewCommand(args: Args): void {
           (semanticCacheReasons.get(semanticDecision.reason) ?? 0) + 1,
         );
       }
-      if (semanticDecision?.hit && hydratedReviewActivityCursorAvailable) {
+      if (semanticDecision?.hit) {
         semanticCacheRevalidations += 1;
         const initialSemanticRecord = semanticRecord;
         const semanticRevalidationStartedAt = Date.now();
@@ -22673,17 +22135,11 @@ function reviewCommand(args: Args): void {
           pullChecks: revalidatedChecks,
         };
         let revalidatedPreviousReview: PreviousClawSweeperReview | null;
-        let revalidatedReviewActivityCursor: string | null = null;
         try {
           revalidatedPreviousReview = extractLatestClawSweeperReview(
             fetchIssueReviewComments(item.number),
             item.number,
           );
-          if (item.kind === "pull_request") {
-            revalidatedReviewActivityCursor = readStableReviewedPrActivityCursor(() =>
-              fetchReviewedPrActivityCursor(item.number),
-            );
-          }
         } catch (error) {
           const revalidationReason = "durable_review_refresh_failed";
           semanticCacheRevalidationFailures += 1;
@@ -22754,24 +22210,14 @@ function reviewCommand(args: Args): void {
           reviewModel: PUBLIC_CODEX_MODEL,
         });
         semanticCacheRevalidationMs += Date.now() - semanticRevalidationStartedAt;
-        const reviewActivityMatches =
-          item.kind !== "pull_request" ||
-          (revalidatedReviewActivityCursor !== null &&
-            revalidatedReviewActivityCursor === context.pullReviewActivityCursor);
-        const revalidationReason = !revalidatedStructuralRecord
-          ? "structural_verdict_input_changed"
-          : !reviewActivityMatches
-            ? "review_activity_changed"
-            : semanticRevalidationDecision.reason;
+        const revalidationReason = revalidatedStructuralRecord
+          ? semanticRevalidationDecision.reason
+          : "structural_verdict_input_changed";
         semanticCacheRevalidationReasons.set(
           revalidationReason,
           (semanticCacheRevalidationReasons.get(revalidationReason) ?? 0) + 1,
         );
-        if (
-          !revalidatedStructuralRecord ||
-          !semanticRevalidationDecision.hit ||
-          !reviewActivityMatches
-        ) {
+        if (!revalidatedStructuralRecord || !semanticRevalidationDecision.hit) {
           const leaseToRelease = acquiredReviewLease!;
           if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
             leaseAcquisitionFailures += 1;
@@ -22816,13 +22262,6 @@ function reviewCommand(args: Args): void {
           itemSnapshotHash(item, context),
         );
         carried = replaceFrontMatterValue(carried, "review_content_digest", contentDigest);
-        if (item.kind === "pull_request") {
-          carried = replaceFrontMatterValue(
-            carried,
-            "review_activity_cursor",
-            revalidatedReviewActivityCursor!,
-          );
-        }
         carried = replaceFrontMatterValue(
           carried,
           "item_source_revision",
@@ -22871,32 +22310,10 @@ function reviewCommand(args: Args): void {
         maintainerRequest ||
         previousReviewIdentityChanged ||
         !git.releaseStateComplete ||
-        (item.kind === "pull_request" &&
-          (!completePullChecksContext(context.pullChecks) ||
-            !hydratedReviewActivityCursorAvailable))
+        (item.kind === "pull_request" && !completePullChecksContext(context.pullChecks))
           ? null
-          : cacheReview;
-      let contentCacheReviewActivityMatches = true;
-      let revalidatedContentCacheReviewActivityCursor: string | null = null;
-      if (item.kind === "pull_request" && contentCacheReview) {
-        try {
-          revalidatedContentCacheReviewActivityCursor = readStableReviewedPrActivityCursor(() =>
-            fetchReviewedPrActivityCursor(item.number),
-          );
-          contentCacheReviewActivityMatches =
-            revalidatedContentCacheReviewActivityCursor !== null &&
-            revalidatedContentCacheReviewActivityCursor === context.pullReviewActivityCursor;
-        } catch (error) {
-          contentCacheReviewActivityMatches = false;
-          console.error(
-            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} content-cache=activity-refresh-failed #${item.number}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-      }
+          : priorReview;
       if (
-        contentCacheReviewActivityMatches &&
         reviewContentCacheHit({
           review: contentCacheReview,
           reviewPolicy,
@@ -22926,13 +22343,6 @@ function reviewCommand(args: Args): void {
           "item_snapshot_hash",
           itemSnapshotHash(item, context),
         );
-        if (item.kind === "pull_request") {
-          carried = replaceFrontMatterValue(
-            carried,
-            "review_activity_cursor",
-            revalidatedContentCacheReviewActivityCursor!,
-          );
-        }
         carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
         carried = structuralRecord
           ? updateReviewStructuralFrontMatter(carried, structuralRecord, false)
@@ -25799,9 +25209,8 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     startApplyActionLedgerItem(applyLedger, entry);
     const applyItemResultStart = results.length;
     let applyItemFailed = false;
-    let recordApplyMutationGuardBlock:
-      | ((block: ApplyMutationReviewBlock) => boolean)
-      | null = null;
+    let currentApplyMutationGuard: (() => string | null) | null = null;
+    let recordApplyMutationGuardReason: ((reason: string) => boolean) | null = null;
     const previousApplyMutationRunner = activeApplyMutationRunner;
     try {
     const markMutationObserved = (): void => {
@@ -25830,8 +25239,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       if (!attempt) return options.operation();
       try {
         if (!options.identity.startsWith("review_lease_")) {
-          const mutationLeaseBlock = currentApplyMutationLeaseBlock();
-          if (mutationLeaseBlock) throw new ApplyMutationReviewGuardError(mutationLeaseBlock);
+          const mutationGuardReason = currentApplyMutationGuard?.();
+          if (mutationGuardReason) {
+            throw new ApplyMutationReviewGuardError(mutationGuardReason);
+          }
         }
         const result = options.operation();
         const mutated = options.didMutate?.(result) ?? true;
@@ -26036,6 +25447,38 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       return currentContext;
     };
     const markdownBeforeApplyDecisionMutations = markdown;
+    const expectedReviewActivityCursor = frontMatterValue(
+      markdownBeforeApplyDecisionMutations,
+      "review_activity_cursor",
+    );
+    const currentReviewActivityBlock = (): string | null => {
+      if (item.kind !== "pull_request") return null;
+      if (!isReviewedPrActivityCursor(expectedReviewActivityCursor)) {
+        return "stored pull request review activity cursor is missing or invalid; fresh review required";
+      }
+      try {
+        const currentReviewActivityCursor = readStableReviewedPrActivityCursor(() =>
+          fetchReviewedPrActivityCursor(number),
+        );
+        if (!currentReviewActivityCursor) {
+          return "pull request review activity exceeds the bounded reviewed cursor";
+        }
+        if (currentReviewActivityCursor !== expectedReviewActivityCursor) {
+          return "pull request review activity changed since review";
+        }
+        return null;
+      } catch (error) {
+        if (error instanceof GitHubRuntimeBudgetError) throw error;
+        if (error instanceof ReviewedPrActivityChangedDuringReadError) {
+          return "pull request review activity changed since review";
+        }
+        const detail = trimMiddle(
+          (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " "),
+          180,
+        );
+        return `pull request review activity could not be refreshed; next apply will retry: ${detail}`;
+      }
+    };
     const reportReviewRevision = reviewLeaseRevisionFromReport(
       markdownBeforeApplyDecisionMutations,
     );
@@ -26151,9 +25594,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         };
       }
     };
-    const ownedApplyMutationLeaseBlock = (
+    const ownedApplyMutationLeaseBlockReason = (
       lease: AcquiredReviewStartLease,
-    ): { sourceChanged: boolean; reason: string } | null => {
+    ): string | null => {
       try {
         const reviewActivityBlock = currentReviewActivityBlock();
         if (reviewActivityBlock) return reviewActivityBlock;
@@ -26168,10 +25611,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             reportReviewRevision !== null &&
             revisionAfter !== reportReviewRevision)
         ) {
-          return {
-            sourceChanged: true,
-            reason: `${item.kind === "pull_request" ? "PR head" : "issue source revision"} changed while holding the apply mutation lease`,
-          };
+          return `${item.kind === "pull_request" ? "PR head" : "issue source revision"} changed while holding the apply mutation lease`;
         }
         const winner = freshExactHeadReviewStartLease({
           comments: refreshed.leaseComments,
@@ -26186,39 +25626,29 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           winner.commentId !== lease.commentId ||
           lease.headSha !== revisionAfter
         ) {
-          return {
-            sourceChanged: false,
-            reason: `apply mutation lease ${lease.commentId} is no longer the elected ${item.kind === "pull_request" ? "same-head" : "same-revision"} lease`,
-          };
+          return `apply mutation lease ${lease.commentId} is no longer the elected ${item.kind === "pull_request" ? "same-head" : "same-revision"} lease`;
         }
-        const staleReviewReason = canonicalBoundStaleReviewReason(
+        return canonicalBoundStaleReviewReason(
           markdownBeforeApplyDecisionMutations,
           refreshed.reviewComment,
         );
-        return staleReviewReason ? { sourceChanged: false, reason: staleReviewReason } : null;
       } catch (error) {
         if (error instanceof GitHubRuntimeBudgetError) throw error;
         const detail = trimMiddle(
           (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " "),
           180,
         );
-        return {
-          sourceChanged: false,
-          reason: `apply mutation lease verification failed; next apply will retry: ${detail}`,
-        };
+        return `apply mutation lease verification failed; next apply will retry: ${detail}`;
       }
     };
     const acquireApplyMutationLease = (
       leaseState: ReturnType<typeof refreshReviewStartLeaseState>,
-    ): { sourceChanged: boolean; reason: string } | null => {
+    ): string | null => {
       if (dryRun || !requiresApplyMutationLease) return null;
       let lease: AcquiredReviewStartLease | null = null;
       if (leaseState.lease && !leaseState.preserve) {
         if (!leaseState.lease.owner || leaseState.lease.commentId === null) {
-          return {
-            sourceChanged: false,
-            reason: "matching review lease lacks a server-confirmed owner and comment id",
-          };
+          return "matching review lease lacks a server-confirmed owner and comment id";
         }
         lease = {
           owner: leaseState.lease.owner,
@@ -26237,29 +25667,22 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           purpose: "apply",
         });
         if (posted.status !== "posted") {
-          return {
-            sourceChanged: false,
-            reason: `${item.kind === "pull_request" ? "same-head" : "same-revision"} ClawSweeper lease was acquired concurrently`,
-          };
+          return `${item.kind === "pull_request" ? "same-head" : "same-revision"} ClawSweeper lease was acquired concurrently`;
         }
         lease = posted.lease;
       }
       activeApplyMutationLease = { itemNumber: number, lease };
-      return ownedApplyMutationLeaseBlock(lease);
+      return ownedApplyMutationLeaseBlockReason(lease);
     };
-    const currentApplyMutationLeaseBlock = (): {
-      sourceChanged: boolean;
-      reason: string;
-    } | null => {
+    const currentApplyMutationLeaseBlockReason = (): string | null => {
       const reviewActivityBlock = currentReviewActivityBlock();
       if (reviewActivityBlock) return reviewActivityBlock;
       if (dryRun || !requiresApplyMutationLease) return null;
       const active = activeApplyMutationLease;
-      if (!active || active.itemNumber !== number) {
-        return { sourceChanged: false, reason: "apply mutation lease is not held" };
-      }
-      return ownedApplyMutationLeaseBlock(active.lease);
+      if (!active || active.itemNumber !== number) return "apply mutation lease is not held";
+      return ownedApplyMutationLeaseBlockReason(active.lease);
     };
+    currentApplyMutationGuard = currentApplyMutationLeaseBlockReason;
     const recordReviewGuardSkip = (
       action: "kept_open" | "skipped_stale_review_comment_sync",
       reason: string,
@@ -26276,113 +25699,19 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       maybeLogProgress(`skipped #${number}: ${reason}`);
       return processedCount >= processedLimit;
     };
+    const reviewActivitySourceChanged = (reason: string): boolean =>
+      reason === "pull request review activity changed since review" ||
+      reason === "pull request review activity exceeds the bounded reviewed cursor";
     const recordReviewLeaseSkip = (reason: string, restoreOriginal = true): boolean =>
-      staleCanonicalCommentSyncPending
+      reviewActivitySourceChanged(reason)
+        ? markApplySkipped("skipped_changed_since_review", reason)
+        : staleCanonicalCommentSyncPending
         ? markApplySkipped(
             "retry_stale_canonical_comment_sync",
             `${reason}; stale canonical comment correction remains pending`,
           )
         : recordReviewGuardSkip("kept_open", reason, restoreOriginal);
-    const markChangedSinceReview = (options: {
-      reason: string;
-      currentUpdatedAt?: string | undefined;
-      currentSnapshotHash?: string | undefined;
-    }): boolean => {
-      markdown = replaceFrontMatterValue(
-        markdown,
-        "action_taken",
-        "skipped_changed_since_review",
-      );
-      if (options.currentUpdatedAt) {
-        markdown = replaceFrontMatterValue(
-          markdown,
-          "current_item_updated_at",
-          options.currentUpdatedAt,
-        );
-      }
-      if (options.currentSnapshotHash) {
-        markdown = replaceFrontMatterValue(
-          markdown,
-          "current_item_snapshot_hash",
-          options.currentSnapshotHash,
-        );
-      }
-      markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
-      if (!dryRun) writeReportMarkdown(path, markdown);
-      results.push({
-        number,
-        action: "skipped_changed_since_review",
-        reason: options.reason,
-        ...eventApplyDispositionProof("skipped_changed_since_review"),
-      });
-      processedCount += 1;
-      maybeLogProgress(`skipped #${number}: ${options.reason}`);
-      return processedCount >= processedLimit;
-    };
-    const expectedReviewActivityCursor = frontMatterValue(
-      markdownBeforeApplyDecisionMutations,
-      "review_activity_cursor",
-    );
-    const currentReviewActivityBlock = (): {
-      sourceChanged: boolean;
-      reason: string;
-    } | null => {
-      if (item.kind !== "pull_request") return null;
-      if (!expectedReviewActivityCursor || expectedReviewActivityCursor === "unknown") {
-        return {
-          sourceChanged: false,
-          reason: "stored pull request review activity cursor is missing; fresh review required",
-        };
-      }
-      if (!isReviewedPrActivityCursor(expectedReviewActivityCursor)) {
-        return {
-          sourceChanged: false,
-          reason: "stored pull request review activity cursor is invalid; fresh review required",
-        };
-      }
-      try {
-        const currentReviewActivityCursor = readStableReviewedPrActivityCursor(() =>
-          fetchReviewedPrActivityCursor(number),
-        );
-        if (!currentReviewActivityCursor) {
-          return {
-            sourceChanged: true,
-            reason: "pull request review activity exceeds the bounded reviewed cursor",
-          };
-        }
-        if (currentReviewActivityCursor !== expectedReviewActivityCursor) {
-          return {
-            sourceChanged: true,
-            reason: "pull request review activity changed since review",
-          };
-        }
-        return null;
-      } catch (error) {
-        if (error instanceof GitHubRuntimeBudgetError) throw error;
-        if (error instanceof ReviewedPrActivityChangedDuringReadError) {
-          return {
-            sourceChanged: true,
-            reason: "pull request review activity changed since review",
-          };
-        }
-        const detail = trimMiddle(
-          (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " "),
-          180,
-        );
-        return {
-          sourceChanged: false,
-          reason: `pull request review activity could not be refreshed; next apply will retry: ${detail}`,
-        };
-      }
-    };
-    const recordReviewActivityBlock = (
-      block: { sourceChanged: boolean; reason: string },
-      restoreOriginal = true,
-    ): boolean =>
-      block.sourceChanged
-        ? markChangedSinceReview({ reason: block.reason })
-        : recordReviewLeaseSkip(block.reason, restoreOriginal);
-    recordApplyMutationGuardBlock = (block) => recordReviewActivityBlock(block, false);
+    recordApplyMutationGuardReason = (reason) => recordReviewLeaseSkip(reason, false);
     const recordActiveReviewLeaseSkip = (expiresAt: string): boolean =>
       recordReviewLeaseSkip(
         `${item.kind === "pull_request" ? "same-head" : "same-revision"} ClawSweeper review is active until ${expiresAt}`,
@@ -27181,7 +26510,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     if (state === "open") {
       const reviewActivityBlock = currentReviewActivityBlock();
       if (reviewActivityBlock) {
-        if (recordReviewActivityBlock(reviewActivityBlock)) break;
+        if (recordReviewLeaseSkip(reviewActivityBlock)) break;
         continue;
       }
       const lateLeaseState = refreshReviewStartLeaseState();
@@ -27198,9 +26527,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         if (recordActiveReviewLeaseSkip(lateLeaseState.lease.expiresAt)) break;
         continue;
       }
-      const mutationLeaseBlock = acquireApplyMutationLease(lateLeaseState);
-      if (mutationLeaseBlock) {
-        if (recordReviewActivityBlock(mutationLeaseBlock)) break;
+      const mutationLeaseBlockReason = acquireApplyMutationLease(lateLeaseState);
+      if (mutationLeaseBlockReason) {
+        if (recordReviewLeaseSkip(mutationLeaseBlockReason)) break;
         continue;
       }
     }
@@ -27348,6 +26677,42 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         break;
       continue;
     }
+    const markChangedSinceReview = (options: {
+      reason: string;
+      currentUpdatedAt?: string | undefined;
+      currentSnapshotHash?: string | undefined;
+    }): boolean => {
+      markdown = replaceFrontMatterValue(
+        markdown,
+        "action_taken",
+        "skipped_changed_since_review",
+      );
+      if (options.currentUpdatedAt) {
+        markdown = replaceFrontMatterValue(
+          markdown,
+          "current_item_updated_at",
+          options.currentUpdatedAt,
+        );
+      }
+      if (options.currentSnapshotHash) {
+        markdown = replaceFrontMatterValue(
+          markdown,
+          "current_item_snapshot_hash",
+          options.currentSnapshotHash,
+        );
+      }
+      markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
+      if (!dryRun) writeReportMarkdown(path, markdown);
+      results.push({
+        number,
+        action: "skipped_changed_since_review",
+        reason: options.reason,
+        ...eventApplyDispositionProof("skipped_changed_since_review"),
+      });
+      processedCount += 1;
+      maybeLogProgress(`skipped #${number}: ${options.reason}`);
+      return processedCount >= processedLimit;
+    };
     const postProofFreshnessBlock = (): {
       reason: string;
       currentUpdatedAt?: string;
@@ -27553,9 +26918,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       !stalePrReviewHead &&
       labelSyncFreshEnough();
     if (state === "open" && isCurrentCompleteReport) {
-      const mutationLeaseBlock = currentApplyMutationLeaseBlock();
-      if (mutationLeaseBlock) {
-        if (recordReviewActivityBlock(mutationLeaseBlock, false)) break;
+      const mutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
+      if (mutationLeaseBlockReason) {
+        if (recordReviewLeaseSkip(mutationLeaseBlockReason, false)) break;
         continue;
       }
       try {
@@ -27623,9 +26988,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       !isCloseProposal &&
       isCurrentCompleteReport
     ) {
-      const mutationLeaseBlock = currentApplyMutationLeaseBlock();
-      if (mutationLeaseBlock) {
-        if (recordReviewActivityBlock(mutationLeaseBlock, false)) break;
+      const mutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
+      if (mutationLeaseBlockReason) {
+        if (recordReviewLeaseSkip(mutationLeaseBlockReason, false)) break;
         continue;
       }
       currentClosingPullRequests = closingPullRequestsForIssue(number);
@@ -27917,9 +27282,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           const preLeaseCanonicalGuard = applyCanonicalCommentSyncGuard(true);
           if (preLeaseCanonicalGuard.stopApply) break;
           if (preLeaseCanonicalGuard.skipCurrentItem) continue;
-          const mutationLeaseBlock = currentApplyMutationLeaseBlock();
-          if (mutationLeaseBlock) {
-            if (recordReviewActivityBlock(mutationLeaseBlock, false)) break;
+          const mutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
+          if (mutationLeaseBlockReason) {
+            if (recordReviewLeaseSkip(mutationLeaseBlockReason, false)) break;
             continue;
           }
           const latestLeaseState = refreshReviewStartLeaseState();
@@ -28204,9 +27569,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       if (markApplySkipped("kept_open", inactivityCloseBlockReason)) break;
       continue;
     }
-    const closeMutationLeaseBlock = currentApplyMutationLeaseBlock();
-    if (closeMutationLeaseBlock) {
-      if (recordReviewActivityBlock(closeMutationLeaseBlock, false)) break;
+    const closeMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
+    if (closeMutationLeaseBlockReason) {
+      if (recordReviewLeaseSkip(closeMutationLeaseBlockReason, false)) break;
       continue;
     }
     logProgress(`closing #${number}`);
@@ -28248,9 +27613,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             dryRun,
           })
         : null;
-    const preCloseMutationLeaseBlock = currentApplyMutationLeaseBlock();
-    if (preCloseMutationLeaseBlock) {
-      if (recordReviewActivityBlock(preCloseMutationLeaseBlock, false)) break;
+    const preCloseMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
+    if (preCloseMutationLeaseBlockReason) {
+      if (recordReviewLeaseSkip(preCloseMutationLeaseBlockReason, false)) break;
       continue;
     }
     ensureRuntimeDelayFits(closeDelayMs, "before close");
@@ -28288,8 +27653,8 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     }
     if (processedCount >= processedLimit) break;
     } catch (error) {
-      if (error instanceof ApplyMutationReviewGuardError && recordApplyMutationGuardBlock) {
-        if (recordApplyMutationGuardBlock(error.block)) break;
+      if (error instanceof ApplyMutationReviewGuardError && recordApplyMutationGuardReason) {
+        if (recordApplyMutationGuardReason(error.message)) break;
         continue;
       }
       applyItemFailed = true;
@@ -28359,14 +27724,7 @@ function orderedApplyItemNumbers(
 }
 
 function proofNudgeComments(number: number): ProofNudgeComment[] {
-  const comments = ghPagedLimit<unknown>(
-    `repos/${targetRepo()}/issues/${number}/comments`,
-    MAX_PROOF_CONVERSATION_ACTIVITY + 1,
-  );
-  if (comments.length > MAX_PROOF_CONVERSATION_ACTIVITY) {
-    throw new Error(`conversation activity exceeds the bounded proof lane limit for #${number}`);
-  }
-  return comments.map((comment) => {
+  return ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`).map((comment) => {
     const record = asRecord(comment);
     return {
       author: login(record.user),
@@ -28412,85 +27770,33 @@ function fetchPullRequestProofNudgeDetails(number: number): ProofNudgePullReques
   return details;
 }
 
-interface ProofCommentMutationResult {
-  comment: Record<string, unknown>;
-  reconciled: boolean;
-}
-
-function postProofNudgeComment(options: {
-  number: number;
-  headSha: string;
-  timestamp: string;
-  body: string;
-  session: ProofMutationSession;
-}): ProofCommentMutationResult {
-  const marker = proofNudgeMarker(options);
-  const mutationIdentity = proofNudgeCommentMutationIdentity(options);
-  const existing = ownedIssueCommentWithMarker(options.number, marker);
-  if (existing) {
-    refreshProofMutationSession(options.session);
-    reconcileProofMutation(options.session, mutationIdentity);
-    return { comment: existing, reconciled: true };
-  }
-  const payload = writeCommentPayload(options.number, options.body);
-  const args = [
+function postProofNudgeComment(number: number, body: string): Record<string, unknown> {
+  const payload = writeCommentPayload(number, body);
+  return ghJson<Record<string, unknown>>([
     "api",
-    `repos/${targetRepo()}/issues/${options.number}/comments`,
+    `repos/${targetRepo()}/issues/${number}/comments`,
     "--method",
     "POST",
     "--input",
     payload,
     "--jq",
     "{id,html_url}",
-  ];
-  const response = ghObservedMutationCommand({
-    identity: mutationIdentity,
-    args,
-    knownNoMutation: (error) =>
-      isGitHubRequiresAuthenticationError(error) || isLockedConversationCommentError(error),
-  });
-  const written = reviewCommentFromMutationResponse(response, args);
-  if (written) return { comment: written, reconciled: false };
-  const fallback = ownedIssueCommentWithMarker(options.number, marker);
-  if (fallback) return { comment: fallback, reconciled: false };
-  throw new Error(
-    `GitHub proof nudge mutation for #${options.number} did not return or expose the posted comment`,
-  );
+  ]);
 }
 
 function upsertBotProofDecisionComment(
   number: number,
   headSha: string,
   body: string,
-  session: ProofMutationSession,
-): ProofCommentMutationResult {
+): Record<string, unknown> {
   const marker = botProofDecisionMarker({ number, headSha });
-  const comments = ghPagedLimit<unknown>(
-    `repos/${targetRepo()}/issues/${number}/comments`,
-    MAX_PROOF_CONVERSATION_ACTIVITY + 1,
-  );
-  if (comments.length > MAX_PROOF_CONVERSATION_ACTIVITY) {
-    throw new Error(`conversation activity exceeds the bounded proof lane limit for #${number}`);
-  }
-  const existing = comments
+  const existing = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments?per_page=100`)
     .map(asRecord)
-    .find(
-      (comment) =>
-        canPatchReviewComment(comment) &&
-        typeof comment.body === "string" &&
-        comment.body.includes(marker),
-    );
-  const mutationIdentity = botProofCommentMutationIdentity(number, headSha, body);
-  if (existing && commentBody(existing)?.trim() === body.trim()) {
-    refreshProofMutationSession(session);
-    reconcileProofMutation(session, mutationIdentity);
-    return { comment: existing, reconciled: true };
-  }
+    .find((comment) => typeof comment.body === "string" && comment.body.includes(marker));
   const payload = writeCommentPayload(number, body);
   const existingId = commentId(existing);
-  let args: string[];
-  if (existingId !== null) {
-    args = [
+  if (existingId !== null && canPatchReviewComment(existing)) {
+    return ghJson<Record<string, unknown>>([
       "api",
       `repos/${targetRepo()}/issues/comments/${existingId}`,
       "--method",
@@ -28499,32 +27805,18 @@ function upsertBotProofDecisionComment(
       payload,
       "--jq",
       "{id,html_url}",
-    ];
-  } else {
-    args = [
-      "api",
-      `repos/${targetRepo()}/issues/${number}/comments`,
-      "--method",
-      "POST",
-      "--input",
-      payload,
-      "--jq",
-      "{id,html_url}",
-    ];
+    ]);
   }
-  const response = ghObservedMutationCommand({
-    identity: mutationIdentity,
-    args,
-    knownNoMutation: (error) =>
-      isGitHubRequiresAuthenticationError(error) || isLockedConversationCommentError(error),
-  });
-  const written = reviewCommentFromMutationResponse(response, args);
-  if (written) return { comment: written, reconciled: false };
-  const fallback = ownedIssueCommentWithMarker(number, marker);
-  if (fallback) return { comment: fallback, reconciled: false };
-  throw new Error(
-    `GitHub bot proof mutation for #${number} did not return or expose the synced comment`,
-  );
+  return ghJson<Record<string, unknown>>([
+    "api",
+    `repos/${targetRepo()}/issues/${number}/comments`,
+    "--method",
+    "POST",
+    "--input",
+    payload,
+    "--jq",
+    "{id,html_url}",
+  ]);
 }
 
 function syncBotProofDecisionLabels(options: {
@@ -28542,7 +27834,7 @@ function syncBotProofDecisionLabels(options: {
   const nextLabels = statusResult.labels.filter((label) => normalizeLabelName(label) !== "stale");
   if (!options.dryRun) {
     for (const label of staleLabels) {
-      removeIssueLabel(options.number, label);
+      ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
     }
   }
   const changed = statusResult.changed || staleLabels.length > 0;
@@ -28615,138 +27907,6 @@ function proofLaneCursorPath(args: Args, requestedItemNumbers: readonly number[]
   if (requestedItemNumbers.length > 0) return null;
   const rawPath = stringArg(args.cursor_path, "").trim();
   return rawPath ? resolve(rawPath) : null;
-}
-
-function proofNudgeMutationStateDir(args: Args, reportPath: string): string {
-  const targetSlug = targetRepo().replace("/", "-");
-  return resolve(
-    stringArg(
-      args.mutation_state_dir,
-      join(dirname(reportPath), "proof-nudge-mutations", targetSlug),
-    ),
-  );
-}
-
-function botProofMutationStateDir(args: Args, reportPath: string): string {
-  const targetSlug = targetRepo().replace("/", "-");
-  return resolve(
-    stringArg(
-      args.mutation_state_dir,
-      join(dirname(reportPath), "bot-proof-mutations", targetSlug),
-    ),
-  );
-}
-
-function proofNudgeMutationCyclePath(stateDir: string, number: number): string {
-  return join(stateDir, `${number}.json`);
-}
-
-function botProofCommentMutationCyclePath(stateDir: string, number: number): string {
-  return join(stateDir, `${number}.json`);
-}
-
-function readProofNudgeMutationCycle(path: string, number: number): ProofNudgeMutationCycle | null {
-  if (!existsSync(path)) return null;
-  const parsed = asRecord(
-    JSON.parse(readBoundedUtf8File(path, 4_096, "proof nudge mutation cycle")),
-  );
-  const headSha = stringOrUndefined(parsed.head_sha)?.trim().toLowerCase();
-  const markerTimestamp = stringOrUndefined(parsed.marker_timestamp);
-  const createdAt = stringOrUndefined(parsed.created_at);
-  if (
-    parsed.schema_version !== 1 ||
-    parsed.repository !== targetRepo() ||
-    parsed.number !== number ||
-    !headSha ||
-    !/^[0-9a-f]{40}$/.test(headSha) ||
-    !markerTimestamp ||
-    timestampMs(markerTimestamp) === null ||
-    !createdAt ||
-    timestampMs(createdAt) === null
-  ) {
-    throw new Error(`invalid proof nudge mutation cycle for #${number}`);
-  }
-  return {
-    schema_version: 1,
-    repository: targetRepo(),
-    number,
-    head_sha: headSha,
-    marker_timestamp: markerTimestamp,
-    created_at: createdAt,
-  };
-}
-
-function writeProofNudgeMutationCycle(path: string, cycle: ProofNudgeMutationCycle): void {
-  ensureDir(dirname(path));
-  const temporaryPath = join(
-    dirname(path),
-    `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`,
-  );
-  try {
-    writeFileSync(temporaryPath, `${JSON.stringify(cycle, null, 2)}\n`, "utf8");
-    renameSync(temporaryPath, path);
-  } finally {
-    if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
-  }
-}
-
-function clearProofNudgeMutationCycle(path: string): void {
-  if (existsSync(path)) unlinkSync(path);
-}
-
-function readBotProofCommentMutationCycle(
-  path: string,
-  number: number,
-): BotProofCommentMutationCycle | null {
-  if (!existsSync(path)) return null;
-  const parsed = asRecord(
-    JSON.parse(readBoundedUtf8File(path, 4_096, "bot proof comment mutation cycle")),
-  );
-  const headSha = stringOrUndefined(parsed.head_sha)?.trim().toLowerCase();
-  const commentBodySha256 = stringOrUndefined(parsed.comment_body_sha256)?.trim().toLowerCase();
-  const createdAt = stringOrUndefined(parsed.created_at);
-  if (
-    parsed.schema_version !== 1 ||
-    parsed.repository !== targetRepo() ||
-    parsed.number !== number ||
-    !headSha ||
-    !/^[0-9a-f]{40}$/.test(headSha) ||
-    !commentBodySha256 ||
-    !/^[0-9a-f]{64}$/.test(commentBodySha256) ||
-    !createdAt ||
-    timestampMs(createdAt) === null
-  ) {
-    throw new Error(`invalid bot proof comment mutation cycle for #${number}`);
-  }
-  return {
-    schema_version: 1,
-    repository: targetRepo(),
-    number,
-    head_sha: headSha,
-    comment_body_sha256: commentBodySha256,
-    created_at: createdAt,
-  };
-}
-
-function writeBotProofCommentMutationCycle(
-  path: string,
-  cycle: BotProofCommentMutationCycle,
-): void {
-  ensureDir(dirname(path));
-  const temporaryPath = join(
-    dirname(path),
-    `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`,
-  );
-  try {
-    writeFileSync(temporaryPath, `${JSON.stringify(cycle, null, 2)}\n`, "utf8");
-    renameSync(temporaryPath, path);
-  } finally {
-    if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
-  }
-}
-
-function clearBotProofCommentMutationCycle(path: string): void {
-  if (existsSync(path)) unlinkSync(path);
 }
 
 function proofLaneProcessedLimit(args: Args, fallback: number): number {
@@ -28837,222 +27997,6 @@ function proofNudgeLiveFetchFailureReason(error: unknown): string {
   return `live GitHub state could not be fetched: ${detail.slice(0, 300)}`;
 }
 
-function proofMutationFailureResult(error: unknown): {
-  action: "skipped_changed_before_mutation" | "skipped_live_fetch_failed";
-  reason: string;
-} {
-  if (error instanceof ProofMutationFreshnessError) {
-    return {
-      action:
-        error.block.reason === "freshness_unavailable"
-          ? "skipped_live_fetch_failed"
-          : "skipped_changed_before_mutation",
-      reason: error.block.message,
-    };
-  }
-  return {
-    action: "skipped_live_fetch_failed",
-    reason: proofNudgeLiveFetchFailureReason(error),
-  };
-}
-
-function proofMutationEligibilityChanged(message: string): ProofMutationFreshnessBlock {
-  return {
-    reason: "eligibility_changed",
-    message: `proof mutation is no longer eligible before the request: ${message}`,
-  };
-}
-
-function proofNudgeRequestBoundaryBlock(
-  snapshot: ProofMutationRequestSnapshot,
-  options: {
-    markdown: string;
-    headCommittedAt?: string | undefined;
-    minAgeDays: number;
-    cooldownDays: number;
-  },
-): ProofMutationFreshnessBlock | null {
-  if (snapshot.state !== "open") {
-    return proofMutationEligibilityChanged(`state is ${snapshot.state}`);
-  }
-  const eligibility = proofNudgeEligibility({
-    item: snapshot.item,
-    markdown: options.markdown,
-    comments: snapshot.comments,
-    headSha: snapshot.headSha,
-    headCommittedAt: options.headCommittedAt,
-    authorEditedAt: snapshot.authorEditedAt,
-    authorReviewActivityAt: snapshot.authorReviewActivityAt,
-    minAgeDays: options.minAgeDays,
-    cooldownDays: options.cooldownDays,
-  });
-  return eligibility.eligible ? null : proofMutationEligibilityChanged(eligibility.reason);
-}
-
-function botProofRequestBoundaryBlock(
-  snapshot: ProofMutationRequestSnapshot,
-  markdown: string,
-): ProofMutationFreshnessBlock | null {
-  if (snapshot.state !== "open") {
-    return proofMutationEligibilityChanged(`state is ${snapshot.state}`);
-  }
-  const eligibility = botProofEligibility({
-    item: snapshot.item,
-    markdown,
-    headSha: snapshot.headSha,
-    draft: snapshot.draft,
-  });
-  return eligibility.eligible ? null : proofMutationEligibilityChanged(eligibility.reason);
-}
-
-function createProofMutationSession(options: {
-  lane: ProofMutationLane;
-  number: number;
-  headSha: string;
-  activityAuthor?: string | undefined;
-  bindLabelState?: boolean | undefined;
-  validateRequest: (snapshot: ProofMutationRequestSnapshot) => ProofMutationFreshnessBlock | null;
-}): ProofMutationSession {
-  const expectedFreshness = readProofMutationFreshnessSnapshot(
-    options.number,
-    options.activityAuthor,
-  );
-  if (expectedFreshness.headSha !== options.headSha.trim().toLowerCase()) {
-    throw new ProofMutationFreshnessError({
-      reason: "head_changed",
-      message: "live PR head changed while preparing the proof mutation",
-    });
-  }
-  return {
-    context: {
-      root: ROOT,
-      lane: options.lane,
-      repository: targetRepo(),
-      number: options.number,
-      headSha: expectedFreshness.headSha,
-      component: options.lane,
-      evidence: workflowRunEvidence(),
-      privacy: actionLedgerPrivacy(),
-    },
-    expectedFreshness,
-    refreshFreshness: () =>
-      readProofMutationFreshnessSnapshot(options.number, options.activityAuthor),
-    validateRequest: options.validateRequest,
-    bindLabelState: options.bindLabelState === true,
-    nextAttemptByMutation: new Map(),
-    latestEventIdByMutation: new Map(),
-    knownNoMutationIdentities: new Set(),
-    unknownMutationIdentities: new Set(),
-    unknownMutationObserved: false,
-  };
-}
-
-function proofNudgeCommentMutationIdentity(options: {
-  number: number;
-  headSha: string;
-  timestamp: string;
-}): string {
-  return `proof_nudge_comment:${options.number}:${options.headSha}:${options.timestamp}`;
-}
-
-function botProofCommentMutationIdentity(number: number, headSha: string, body: string): string {
-  return `bot_proof_comment:${number}:${headSha}:${sha256(body)}`;
-}
-
-function botProofCommentMutationIdentityFromCycle(cycle: BotProofCommentMutationCycle): string {
-  return `bot_proof_comment:${cycle.number}:${cycle.head_sha}:${cycle.comment_body_sha256}`;
-}
-
-function ownedBotProofCommentMatchingCycle(
-  cycle: BotProofCommentMutationCycle,
-): Record<string, unknown> | undefined {
-  const marker = botProofDecisionMarker({
-    number: cycle.number,
-    headSha: cycle.head_sha,
-  });
-  const comments = ghPagedLimit<unknown>(
-    `repos/${targetRepo()}/issues/${cycle.number}/comments`,
-    MAX_PROOF_CONVERSATION_ACTIVITY + 1,
-  );
-  if (comments.length > MAX_PROOF_CONVERSATION_ACTIVITY) {
-    throw new Error(
-      `conversation activity exceeds the bounded proof lane limit for #${cycle.number}`,
-    );
-  }
-  return comments.map(asRecord).find((comment) => {
-    const body = commentBody(comment);
-    return (
-      canPatchReviewComment(comment) &&
-      typeof body === "string" &&
-      body.includes(marker) &&
-      sha256(body) === cycle.comment_body_sha256
-    );
-  });
-}
-
-function satisfiedBotProofLabelMutationIdentities(
-  number: number,
-  labels: readonly string[],
-): string[] {
-  const target = prStatusLabelForKind("needs_maintainer_proof_decision").name;
-  const normalized = normalizedLabelSet(labels);
-  const identities: string[] = [];
-  if (normalized.has(normalizeLabelName(target))) {
-    identities.push(`label_create:${target}`, `issue_label_add:${number}:${target}`);
-  }
-  for (const label of PR_STATUS_LABELS) {
-    if (label.name !== target && !normalized.has(normalizeLabelName(label.name))) {
-      identities.push(`issue_label_remove:${number}:${label.name}`);
-    }
-  }
-  if (!normalized.has("stale")) {
-    identities.push(`issue_label_remove:${number}:stale`);
-  }
-  return identities;
-}
-
-export function satisfiedBotProofLabelMutationIdentitiesForTest(
-  number: number,
-  labels: readonly string[],
-): string[] {
-  return satisfiedBotProofLabelMutationIdentities(number, labels);
-}
-
-function reconcileSatisfiedBotProofLabelMutations(
-  session: ProofMutationSession,
-  number: number,
-  labels: readonly string[],
-): number {
-  let recoveredAttempts = 0;
-  for (const identity of satisfiedBotProofLabelMutationIdentities(number, labels)) {
-    const attempted = (session.nextAttemptByMutation.get(identity) ?? 0) > 0;
-    const recoverableAttempt =
-      session.unknownMutationIdentities.has(identity) ||
-      session.knownNoMutationIdentities.has(identity);
-    if (attempted && !recoverableAttempt) continue;
-    reconcileProofMutation(session, identity);
-    if (attempted) recoveredAttempts += 1;
-  }
-  return recoveredAttempts;
-}
-
-function botProofDecisionLabelsAreSynchronized(labels: readonly string[]): boolean {
-  const expected = syncBotProofDecisionLabels({
-    number: 1,
-    labels,
-    dryRun: true,
-  }).labels;
-  const current = [...labels].map(normalizeLabelName).sort();
-  const desired = [...expected].map(normalizeLabelName).sort();
-  return (
-    current.length === desired.length && current.every((label, index) => label === desired[index])
-  );
-}
-
-function proofMutationUnknownReason(): string {
-  return "GitHub may have accepted the proof mutation, but the response was not conclusive; same-head marker reconciliation is required before retry";
-}
-
 export function proofNudgeCandidateRecordsForTest(
   itemsDir: string,
   requestedItemNumbers: readonly number[] = [],
@@ -29088,7 +28032,6 @@ function proofNudgesCommand(args: Args): void {
   const dryRun = !execute;
   const maxRuntimeMs = numberArg(args.max_runtime_ms, 0);
   const reportPath = resolve(stringArg(args.report_path, join(ROOT, "proof-nudge-report.json")));
-  const mutationStateDir = proofNudgeMutationStateDir(args, reportPath);
   const requestedItemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
   const cursorPath = proofLaneCursorPath(args, requestedItemNumbers);
 
@@ -29159,7 +28102,8 @@ function proofNudgesCommand(args: Args): void {
     } catch (error) {
       results.push({
         ...resultBase,
-        ...proofMutationFailureResult(error),
+        action: "skipped_live_fetch_failed",
+        reason: proofNudgeLiveFetchFailureReason(error),
       });
       markProcessed(candidate);
       continue;
@@ -29177,9 +28121,6 @@ function proofNudgesCommand(args: Args): void {
     let comments: ProofNudgeComment[] = [];
     let authorEditedAt: string | undefined;
     let authorReviewActivityAt: string | undefined;
-    let mutationSession: ProofMutationSession | null = null;
-    let pendingMutationCycle: ProofNudgeMutationCycle | null = null;
-    const mutationCyclePath = proofNudgeMutationCyclePath(mutationStateDir, candidate.number);
     try {
       pullDetails =
         item.kind === "pull_request" ? fetchPullRequestProofNudgeDetails(candidate.number) : {};
@@ -29192,127 +28133,19 @@ function proofNudgesCommand(args: Args): void {
         item.kind === "pull_request"
           ? latestAuthorPullRequestReviewActivityAt(candidate.number, item.author)
           : undefined;
-      if (execute && pullDetails.headSha) {
-        mutationSession = createProofMutationSession({
-          lane: "proof_nudges",
-          number: candidate.number,
-          headSha: pullDetails.headSha,
-          activityAuthor: item.author,
-          validateRequest: (snapshot) =>
-            proofNudgeRequestBoundaryBlock(snapshot, {
-              markdown: candidate.markdown,
-              headCommittedAt: pullDetails.headCommittedAt,
-              minAgeDays,
-              cooldownDays,
-            }),
-        });
-        pendingMutationCycle = readProofNudgeMutationCycle(mutationCyclePath, candidate.number);
-        if (
-          pendingMutationCycle &&
-          pendingMutationCycle.head_sha !== pullDetails.headSha.trim().toLowerCase()
-        ) {
-          clearProofNudgeMutationCycle(mutationCyclePath);
-          pendingMutationCycle = null;
-        }
-      }
     } catch (error) {
       results.push({
         ...resultBase,
-        ...proofMutationFailureResult(error),
+        action: "skipped_live_fetch_failed",
+        reason: proofNudgeLiveFetchFailureReason(error),
       });
       markProcessed(candidate);
       continue;
     }
-    const hydratedComments =
-      execute && mutationSession ? mutationSession.expectedFreshness.comments : comments;
-    if (
-      execute &&
-      mutationSession &&
-      pullDetails.headSha &&
-      pendingMutationCycle &&
-      !proofNudgeMarkerExistsAt(hydratedComments, {
-        number: candidate.number,
-        headSha: pullDetails.headSha,
-        timestamp: pendingMutationCycle.marker_timestamp,
-      })
-    ) {
-      recordProofMutationPendingReconciliation({
-        context: mutationSession.context,
-        mutationIdentity: proofNudgeCommentMutationIdentity({
-          number: candidate.number,
-          headSha: pullDetails.headSha,
-          timestamp: pendingMutationCycle.marker_timestamp,
-        }),
-      });
-      results.push({
-        ...resultBase,
-        action: "proof_nudge_reconciliation_pending",
-        reason:
-          "a prior same-head proof nudge outcome is still unknown; waiting for its exact marker before any retry",
-        headSha: pullDetails.headSha,
-      });
-      markProcessed(candidate);
-      logProgress(`proof_nudge_reconciliation_pending proof nudge #${candidate.number}`);
-      continue;
-    }
-    const reconciledPendingNudge = Boolean(
-      execute &&
-      mutationSession &&
-      pullDetails.headSha &&
-      pendingMutationCycle &&
-      proofNudgeMarkerExistsAt(hydratedComments, {
-        number: candidate.number,
-        headSha: pullDetails.headSha,
-        timestamp: pendingMutationCycle.marker_timestamp,
-      }),
-    );
-    if (reconciledPendingNudge && mutationSession && pullDetails.headSha && pendingMutationCycle) {
-      reconcileProofMutation(
-        mutationSession,
-        proofNudgeCommentMutationIdentity({
-          number: candidate.number,
-          headSha: pullDetails.headSha,
-          timestamp: pendingMutationCycle.marker_timestamp,
-        }),
-      );
-      clearProofNudgeMutationCycle(mutationCyclePath);
-    }
-    const sameHeadNudgeAt = pullDetails.headSha
-      ? latestProofNudgeAt(hydratedComments, {
-          number: candidate.number,
-          headSha: pullDetails.headSha,
-        })
-      : undefined;
-    const reconciledPriorNudge = Boolean(
-      reconciledPendingNudge ||
-      (execute && mutationSession && pullDetails.headSha && sameHeadNudgeAt),
-    );
-    if (
-      mutationSession &&
-      pullDetails.headSha &&
-      sameHeadNudgeAt &&
-      sameHeadNudgeAt !== pendingMutationCycle?.marker_timestamp
-    ) {
-      reconcileProofMutation(
-        mutationSession,
-        proofNudgeCommentMutationIdentity({
-          number: candidate.number,
-          headSha: pullDetails.headSha,
-          timestamp: sameHeadNudgeAt,
-        }),
-      );
-    }
-    const eligibilityComments =
-      execute && mutationSession && pullDetails.headSha
-        ? proofNudgeCommentsWithLiveMarkers(comments, hydratedComments, {
-            number: candidate.number,
-            headSha: pullDetails.headSha,
-          })
-        : comments;
     const eligibility = proofNudgeEligibility({
       item,
       markdown: candidate.markdown,
-      comments: eligibilityComments,
+      comments,
       headSha: pullDetails.headSha,
       headCommittedAt: pullDetails.headCommittedAt,
       authorEditedAt,
@@ -29321,26 +28154,12 @@ function proofNudgesCommand(args: Args): void {
       cooldownDays,
     });
     if (!eligibility.eligible) {
-      if (
-        reconciledPriorNudge &&
-        pullDetails.headSha &&
-        eligibility.action === "skipped_recent_nudge" &&
-        eligibility.latestNudgeAt
-      ) {
-        results.push({
-          ...resultBase,
-          action: "proof_nudge_reconciled",
-          reason: "same-head proof nudge marker already exists",
-          headSha: pullDetails.headSha,
-        });
-      } else {
-        results.push({
-          ...resultBase,
-          action: eligibility.action,
-          reason: eligibility.reason,
-          headSha: pullDetails.headSha,
-        });
-      }
+      results.push({
+        ...resultBase,
+        action: eligibility.action,
+        reason: eligibility.reason,
+        headSha: pullDetails.headSha,
+      });
       markProcessed(candidate);
       continue;
     }
@@ -29365,118 +28184,18 @@ function proofNudgesCommand(args: Args): void {
         headSha,
       });
     } else {
-      if (!mutationSession) {
-        results.push({
-          ...resultBase,
-          action: "skipped_live_fetch_failed",
-          reason: "live proof mutation freshness could not be established",
-          headSha,
-        });
-        markProcessed(candidate);
-        continue;
-      }
-      const previousProofMutationRunner = activeProofMutationRunner;
-      activeProofMutationRunner = proofMutationRunner(mutationSession, () => {
-        writeProofNudgeMutationCycle(mutationCyclePath, {
-          schema_version: 1,
-          repository: targetRepo(),
-          number: candidate.number,
-          head_sha: headSha.trim().toLowerCase(),
-          marker_timestamp: timestamp,
-          created_at: timestamp,
-        });
+      const comment = postProofNudgeComment(candidate.number, body);
+      results.push({
+        ...resultBase,
+        action: "proof_nudge_posted",
+        reason: eligibility.reason,
+        url: commentUrl(comment) ?? undefined,
+        headSha,
       });
-      try {
-        const mutation = postProofNudgeComment({
-          number: candidate.number,
-          headSha,
-          timestamp,
-          body,
-          session: mutationSession,
-        });
-        clearProofNudgeMutationCycle(mutationCyclePath);
-        results.push({
-          ...resultBase,
-          action: mutation.reconciled ? "proof_nudge_reconciled" : "proof_nudge_posted",
-          reason: mutation.reconciled
-            ? "same-head proof nudge marker already exists"
-            : [
-                reconciledPriorNudge ? "prior same-head proof nudge receipt reconciled" : null,
-                eligibility.reason,
-              ]
-                .filter(Boolean)
-                .join("; "),
-          url: commentUrl(mutation.comment) ?? undefined,
-          headSha,
-        });
-      } catch (error) {
-        const marker = proofNudgeMarker({ number: candidate.number, headSha, timestamp });
-        let reconciled: Record<string, unknown> | undefined;
-        if (mutationSession.unknownMutationObserved) {
-          try {
-            reconciled = ownedIssueCommentWithMarker(candidate.number, marker);
-          } catch {
-            reconciled = undefined;
-          }
-        }
-        if (reconciled) {
-          reconcileProofMutation(
-            mutationSession,
-            proofNudgeCommentMutationIdentity({
-              number: candidate.number,
-              headSha,
-              timestamp,
-            }),
-          );
-          clearProofNudgeMutationCycle(mutationCyclePath);
-          results.push({
-            ...resultBase,
-            action: "proof_nudge_reconciled",
-            reason: "same-head proof nudge marker confirmed after an inconclusive response",
-            url: commentUrl(reconciled) ?? undefined,
-            headSha,
-          });
-        } else if (error instanceof ProofMutationFreshnessError) {
-          clearProofNudgeMutationCycle(mutationCyclePath);
-          results.push({
-            ...resultBase,
-            action:
-              error.block.reason === "freshness_unavailable"
-                ? "skipped_live_fetch_failed"
-                : "skipped_changed_before_mutation",
-            reason: error.block.message,
-            headSha,
-          });
-        } else if (mutationSession.unknownMutationObserved) {
-          results.push({
-            ...resultBase,
-            action: "proof_nudge_outcome_unknown",
-            reason: proofMutationUnknownReason(),
-            headSha,
-          });
-        } else {
-          clearProofNudgeMutationCycle(mutationCyclePath);
-          results.push({
-            ...resultBase,
-            action: "skipped_live_fetch_failed",
-            reason: proofNudgeLiveFetchFailureReason(error),
-            headSha,
-          });
-        }
-      } finally {
-        activeProofMutationRunner = previousProofMutationRunner;
-      }
     }
     markProcessed(candidate);
-    const finalAction = results.at(-1)?.action;
-    if (
-      finalAction === "proof_nudge_planned" ||
-      finalAction === "proof_nudge_posted" ||
-      finalAction === "proof_nudge_outcome_unknown"
-    ) {
-      nudgeCount += 1;
-    }
-    logProgress(`${finalAction ?? "processed"} proof nudge #${candidate.number}`);
+    nudgeCount += 1;
+    logProgress(`${dryRun ? "planned" : "posted"} proof nudge #${candidate.number}`);
   }
   if (!dryRun && cursorPath && lastProcessedCandidate) {
     writeProofLaneCursor(cursorPath, "proof_nudges", lastProcessedCandidate);
@@ -29496,7 +28215,6 @@ function botProofCommand(args: Args): void {
   const dryRun = !execute;
   const maxRuntimeMs = numberArg(args.max_runtime_ms, 0);
   const reportPath = resolve(stringArg(args.report_path, join(ROOT, "bot-proof-report.json")));
-  const mutationStateDir = botProofMutationStateDir(args, reportPath);
   const requestedItemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
   const cursorPath = proofLaneCursorPath(args, requestedItemNumbers);
 
@@ -29561,39 +28279,17 @@ function botProofCommand(args: Args): void {
     let item: Item;
     let state: string;
     let pullDetails: Partial<ProofNudgePullRequestDetails> = {};
-    let mutationSession: ProofMutationSession | null = null;
-    let pendingCommentMutation: BotProofCommentMutationCycle | null = null;
-    const mutationCyclePath = botProofCommentMutationCyclePath(mutationStateDir, candidate.number);
     try {
       const fetched = fetchItem(candidate.number);
       item = fetched.item;
       state = fetched.state;
       pullDetails =
         item.kind === "pull_request" ? fetchPullRequestProofNudgeDetails(candidate.number) : {};
-      if (execute && pullDetails.headSha) {
-        mutationSession = createProofMutationSession({
-          lane: "bot_proof",
-          number: candidate.number,
-          headSha: pullDetails.headSha,
-          bindLabelState: true,
-          validateRequest: (snapshot) => botProofRequestBoundaryBlock(snapshot, candidate.markdown),
-        });
-        pendingCommentMutation = readBotProofCommentMutationCycle(
-          mutationCyclePath,
-          candidate.number,
-        );
-        if (
-          pendingCommentMutation &&
-          pendingCommentMutation.head_sha !== pullDetails.headSha.trim().toLowerCase()
-        ) {
-          clearBotProofCommentMutationCycle(mutationCyclePath);
-          pendingCommentMutation = null;
-        }
-      }
     } catch (error) {
       results.push({
         ...resultBase,
-        ...proofMutationFailureResult(error),
+        action: "skipped_live_fetch_failed",
+        reason: proofNudgeLiveFetchFailureReason(error),
       });
       markProcessed(candidate);
       continue;
@@ -29633,58 +28329,19 @@ function botProofCommand(args: Args): void {
       markProcessed(candidate);
       continue;
     }
-    const renderedCommentBody = renderBotProofDecisionComment({
+    const commentBody = renderBotProofDecisionComment({
       item,
       headSha,
       markdown: candidate.markdown,
-      timestamp:
-        candidate.reviewedAt ??
-        frontMatterValue(candidate.markdown, "item_updated_at") ??
-        "unknown",
+      timestamp: new Date().toISOString(),
       mantisRecommendation: eligibility.mantisRecommendation,
     });
-    if (execute && mutationSession && pendingCommentMutation) {
-      let reconciledComment: Record<string, unknown> | undefined;
-      try {
-        reconciledComment = ownedBotProofCommentMatchingCycle(pendingCommentMutation);
-      } catch {
-        reconciledComment = undefined;
-      }
-      if (!reconciledComment) {
-        recordProofMutationPendingReconciliation({
-          context: mutationSession.context,
-          mutationIdentity: botProofCommentMutationIdentityFromCycle(pendingCommentMutation),
-        });
-        results.push({
-          ...resultBase,
-          action: "bot_proof_reconciliation_pending",
-          reason:
-            "a prior same-head bot proof comment outcome is still unknown; waiting for its exact body before any retry",
-          headSha,
-        });
-        markProcessed(candidate);
-        logProgress(`bot_proof_reconciliation_pending bot proof handling #${candidate.number}`);
-        continue;
-      }
-      const pendingMutationIdentity =
-        botProofCommentMutationIdentityFromCycle(pendingCommentMutation);
-      const desiredMutationIdentity = botProofCommentMutationIdentity(
-        candidate.number,
-        headSha,
-        renderedCommentBody,
-      );
-      if (pendingMutationIdentity !== desiredMutationIdentity) {
-        reconcileProofMutation(mutationSession, pendingMutationIdentity);
-        clearBotProofCommentMutationCycle(mutationCyclePath);
-        pendingCommentMutation = null;
-      }
-    }
+    const labelResult = syncBotProofDecisionLabels({
+      number: candidate.number,
+      labels: item.labels,
+      dryRun,
+    });
     if (dryRun) {
-      const labelResult = syncBotProofDecisionLabels({
-        number: candidate.number,
-        labels: item.labels,
-        dryRun: true,
-      });
       results.push({
         ...resultBase,
         action: eligibility.action,
@@ -29692,168 +28349,21 @@ function botProofCommand(args: Args): void {
         headSha,
       });
     } else {
-      if (!mutationSession) {
-        results.push({
-          ...resultBase,
-          action: "skipped_live_fetch_failed",
-          reason: "live proof mutation freshness could not be established",
-          headSha,
-        });
-        markProcessed(candidate);
-        continue;
-      }
-      const previousProofMutationRunner = activeProofMutationRunner;
-      const commentMutationIdentity = botProofCommentMutationIdentity(
-        candidate.number,
+      const comment = upsertBotProofDecisionComment(candidate.number, headSha, commentBody);
+      results.push({
+        ...resultBase,
+        action:
+          eligibility.action === "bot_proof_mantis_request_planned"
+            ? "bot_proof_mantis_request_posted"
+            : "bot_proof_decision_posted",
+        reason: [eligibility.reason, labelResult.reason].filter(Boolean).join("; "),
+        url: commentUrl(comment) ?? undefined,
         headSha,
-        renderedCommentBody,
-      );
-      activeProofMutationRunner = proofMutationRunner(mutationSession, (mutationIdentity) => {
-        if (mutationIdentity !== commentMutationIdentity) return;
-        writeBotProofCommentMutationCycle(mutationCyclePath, {
-          schema_version: 1,
-          repository: targetRepo(),
-          number: candidate.number,
-          head_sha: headSha.trim().toLowerCase(),
-          comment_body_sha256: sha256(renderedCommentBody),
-          created_at: new Date().toISOString(),
-        });
       });
-      try {
-        const labelResult = syncBotProofDecisionLabels({
-          number: candidate.number,
-          labels: mutationSession.expectedFreshness.item.labels,
-          dryRun: false,
-        });
-        const recoveredLabelAttempts = botProofDecisionLabelsAreSynchronized(labelResult.labels)
-          ? reconcileSatisfiedBotProofLabelMutations(
-              mutationSession,
-              candidate.number,
-              labelResult.labels,
-            )
-          : 0;
-        const mutation = upsertBotProofDecisionComment(
-          candidate.number,
-          headSha,
-          renderedCommentBody,
-          mutationSession,
-        );
-        const reconciled = mutation.reconciled && !labelResult.changed;
-        clearBotProofCommentMutationCycle(mutationCyclePath);
-        results.push({
-          ...resultBase,
-          action: reconciled
-            ? "bot_proof_decision_reconciled"
-            : eligibility.action === "bot_proof_mantis_request_planned"
-              ? "bot_proof_mantis_request_posted"
-              : "bot_proof_decision_posted",
-          reason: reconciled
-            ? "same-head proof decision comment and label state already exist"
-            : [
-                eligibility.reason,
-                labelResult.reason,
-                recoveredLabelAttempts > 0
-                  ? `reconciled ${recoveredLabelAttempts} completed label operation receipt(s)`
-                  : null,
-              ]
-                .filter(Boolean)
-                .join("; "),
-          url: commentUrl(mutation.comment) ?? undefined,
-          headSha,
-        });
-      } catch (error) {
-        let reconciledComment: Record<string, unknown> | undefined;
-        let reconciledLabels = false;
-        if (mutationSession.unknownMutationObserved) {
-          try {
-            const marker = botProofDecisionMarker({ number: candidate.number, headSha });
-            const existing = ownedIssueCommentWithMarker(candidate.number, marker);
-            if (existing && commentBody(existing)?.trim() === renderedCommentBody.trim()) {
-              reconciledComment = existing;
-            }
-            const refreshed = fetchItem(candidate.number);
-            reconciledLabels =
-              refreshed.state === "open" &&
-              botProofDecisionLabelsAreSynchronized(refreshed.item.labels);
-            if (reconciledLabels) {
-              reconcileSatisfiedBotProofLabelMutations(
-                mutationSession,
-                candidate.number,
-                refreshed.item.labels,
-              );
-            }
-          } catch {
-            reconciledComment = undefined;
-            reconciledLabels = false;
-          }
-        }
-        if (reconciledComment && reconciledLabels) {
-          reconcileProofMutation(
-            mutationSession,
-            botProofCommentMutationIdentity(candidate.number, headSha, renderedCommentBody),
-          );
-          clearBotProofCommentMutationCycle(mutationCyclePath);
-          results.push({
-            ...resultBase,
-            action: "bot_proof_decision_reconciled",
-            reason:
-              "same-head proof decision comment and label state were confirmed after an inconclusive response",
-            url: commentUrl(reconciledComment) ?? undefined,
-            headSha,
-          });
-        } else if (error instanceof ProofMutationFreshnessError) {
-          clearBotProofCommentMutationCycle(mutationCyclePath);
-          results.push({
-            ...resultBase,
-            action:
-              error.block.reason === "freshness_unavailable"
-                ? "skipped_live_fetch_failed"
-                : "skipped_changed_before_mutation",
-            reason: error.block.message,
-            headSha,
-          });
-        } else if (mutationSession.unknownMutationObserved) {
-          results.push({
-            ...resultBase,
-            action: "bot_proof_mutation_outcome_unknown",
-            reason: proofMutationUnknownReason(),
-            headSha,
-          });
-        } else if (error instanceof ProofMutationOutcomeUnknownError) {
-          clearBotProofCommentMutationCycle(mutationCyclePath);
-          results.push({
-            ...resultBase,
-            action: "skipped_live_fetch_failed",
-            reason:
-              "the uncertain proof mutation was reconciled, but proof decision publication remains incomplete",
-            headSha,
-          });
-        } else {
-          clearBotProofCommentMutationCycle(mutationCyclePath);
-          results.push({
-            ...resultBase,
-            action: "skipped_live_fetch_failed",
-            reason: proofNudgeLiveFetchFailureReason(error),
-            headSha,
-          });
-        }
-      } finally {
-        activeProofMutationRunner = previousProofMutationRunner;
-      }
     }
     markProcessed(candidate);
-    const finalAction = results.at(-1)?.action;
-    if (
-      finalAction === "bot_proof_mantis_request_planned" ||
-      finalAction === "bot_proof_mantis_request_posted" ||
-      finalAction === "bot_proof_decision_planned" ||
-      finalAction === "bot_proof_decision_posted" ||
-      finalAction === "bot_proof_decision_reconciled" ||
-      finalAction === "bot_proof_mutation_outcome_unknown"
-    ) {
-      actionCount += 1;
-    }
-    logProgress(`${finalAction ?? "processed"} bot proof handling #${candidate.number}`);
+    actionCount += 1;
+    logProgress(`${dryRun ? "planned" : "posted"} bot proof handling #${candidate.number}`);
   }
   if (!dryRun && cursorPath && lastProcessedCandidate) {
     writeProofLaneCursor(cursorPath, "bot_proof", lastProcessedCandidate);
@@ -31896,31 +30406,83 @@ function publishActionEventsCommand(args: Args): void {
   if (!expectedProducerJob) {
     throw new UserFacingCommandError("--expected-producer-job is required");
   }
-  const result = importWorkflowActionEvents({
-    sourceRoot,
-    stateRoot,
-    expectedProducerJob,
+  const currentProducer = workflowActionProducer("action_event_publisher");
+  const result = importActionEventShards(sourceRoot, stateRoot, {
+    expectedProducer: {
+      repository: currentProducer.repository,
+      sha: currentProducer.sha,
+      workflow: currentProducer.workflow,
+      job: expectedProducerJob,
+      runId: currentProducer.runId,
+      runAttempt: currentProducer.runAttempt,
+    },
   });
   console.log(JSON.stringify(result, null, 2));
 }
 
+const ACTION_EVENT_PUBLISH_PATH_PATTERN =
+  /^ledger\/v1\/(?:events\/\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl|import-bindings\/(?:producer-runs|events|shard-sets|completed-shard-sets)\/[a-f0-9]{64}\.json)$/;
+const ACTION_EVENT_PUBLISH_PATH_FILE_MAX_BYTES = ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS * 512;
+
+export function actionEventPublishPathsForTest(content: string): string[] {
+  if (Buffer.byteLength(content, "utf8") > ACTION_EVENT_PUBLISH_PATH_FILE_MAX_BYTES) {
+    throw new Error(
+      `action event publish path manifest exceeds ${ACTION_EVENT_PUBLISH_PATH_FILE_MAX_BYTES} bytes`,
+    );
+  }
+  const paths = content.split("\n").filter(Boolean);
+  if (paths.length === 0) throw new Error("action event publish path manifest is empty");
+  if (paths.length > ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS) {
+    throw new Error(
+      `action event publish path manifest exceeds ${ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS} paths`,
+    );
+  }
+  let previous = "";
+  for (const path of paths) {
+    if (!ACTION_EVENT_PUBLISH_PATH_PATTERN.test(path)) {
+      throw new Error(`invalid action event publish path: ${path}`);
+    }
+    if (previous && path <= previous) {
+      throw new Error("action event publish paths must be sorted and unique");
+    }
+    previous = path;
+  }
+  return paths;
+}
+
 function publishActionEventPathsCommand(args: Args): void {
-  const pathsFile = stringArg(args.paths_file, "");
+  const pathsFile = resolve(stringArg(args.paths_file, ""));
   const message = stringArg(args.message, "");
-  if (!pathsFile) throw new UserFacingCommandError("--paths-file is required");
+  if (!pathsFile || pathsFile === ROOT) {
+    throw new UserFacingCommandError("--paths-file is required");
+  }
   if (!message) throw new UserFacingCommandError("--message is required");
-  const result = publishActionEventPaths({
-    pathsFile,
+  const stat = statSync(pathsFile);
+  if (!stat.isFile())
+    throw new Error(`action event publish path manifest is not a file: ${pathsFile}`);
+  if (stat.size > ACTION_EVENT_PUBLISH_PATH_FILE_MAX_BYTES) {
+    throw new Error(
+      `action event publish path manifest exceeds ${ACTION_EVENT_PUBLISH_PATH_FILE_MAX_BYTES} bytes`,
+    );
+  }
+  const paths = actionEventPublishPathsForTest(readFileSync(pathsFile, "utf8"));
+  for (const path of paths) {
+    const source = resolve(ROOT, path);
+    const rootRelativeSource = relative(ROOT, source);
+    if (
+      rootRelativeSource.startsWith("..") ||
+      resolve(ROOT, rootRelativeSource) !== source ||
+      !statSync(source).isFile()
+    ) {
+      throw new Error(`action event publish path is not a regular file: ${path}`);
+    }
+  }
+  const result = publishMainCommit({
     message,
-    workspaceRoot: ROOT,
+    paths,
+    rebaseStrategy: "normal",
   });
-  console.log(
-    JSON.stringify({
-      result: result.result,
-      path_count: result.pathCount,
-      coordination: result.coordination,
-    }),
-  );
+  console.log(JSON.stringify({ result, path_count: paths.length }));
 }
 
 function isExplicitActionLedgerCommand(command: string): boolean {

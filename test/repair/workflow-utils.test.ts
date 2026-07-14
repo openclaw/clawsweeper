@@ -249,57 +249,6 @@ test("worker scheduler keeps 104 slots available for steady background work", ()
   assert.ok(quietBackgroundCapacity >= Math.floor(WORKER_CONFIG.workers.max * 0.8));
 });
 
-test("exact-review pressure caps only background review lanes", () => {
-  assert.equal(
-    workerLimit("normal_review", { exactReviewPressure: "congested" }),
-    AUTOMATION_LIMITS.exact_review.background_congested_max_workers,
-  );
-  assert.equal(
-    workerLimit("hot_intake", { exactReviewPressure: "saturated" }),
-    AUTOMATION_LIMITS.exact_review.background_saturated_max_workers,
-  );
-  assert.equal(
-    workerLimit("commit_review", { exactReviewPressure: "saturated" }),
-    AUTOMATION_LIMITS.exact_review.background_saturated_max_workers,
-  );
-  assert.equal(
-    workerLimit("commit_review", {
-      activeBackground: AUTOMATION_LIMITS.exact_review.background_saturated_max_workers - 1,
-      exactReviewPressure: "saturated",
-    }),
-    1,
-  );
-  assert.equal(
-    workerLimit("normal_review", {
-      activeBackground: AUTOMATION_LIMITS.exact_review.background_saturated_max_workers,
-      exactReviewPressure: "saturated",
-    }),
-    0,
-  );
-  assert.equal(
-    workerLimit("repair", { exactReviewPressure: "saturated" }),
-    AUTOMATION_LIMITS.repair_live_runs.default,
-  );
-});
-
-test("workflow utility CLI rejects pressure states outside the dashboard contract", () => {
-  assert.throws(
-    () =>
-      execFileSync(
-        process.execPath,
-        [
-          path.resolve("dist/repair/workflow-utils.js"),
-          "worker-limit",
-          "normal_review",
-          "--exact-review-pressure",
-          "unknown",
-        ],
-        { cwd: process.cwd(), encoding: "utf8", stdio: "pipe" },
-      ),
-    /Command failed/,
-  );
-});
-
 test("worker config defaults imported cluster repair capacity for older configs", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-limits-"));
   const configPath = path.join(root, "automation-limits.json");
@@ -979,33 +928,6 @@ test("workflow utilities expose review capacity telemetry from plans", () => {
       due_backlog: "17",
       oldest_unreviewed_at: "2026-01-01T00:00:00Z",
       capacity_reason: "under capacity: due backlog below planned capacity",
-    },
-  );
-});
-
-test("workflow utilities preserve a zero-capacity deferred review plan", () => {
-  assert.deepEqual(
-    planOutputFields(
-      {
-        capacity: 0,
-        candidates: [],
-        matrix: [],
-        activeCodexTarget: 0,
-        dueBacklog: 0,
-        capacityReason: "deferred: exact-review background cap occupied",
-      },
-      { batchSize: 3, shardCount: 1 },
-    ),
-    {
-      matrix: "[]",
-      planned_count: "0",
-      planned_capacity: "0",
-      planned_item_numbers: "",
-      planned_shards: "0",
-      active_codex_target: "0",
-      due_backlog: "0",
-      oldest_unreviewed_at: "",
-      capacity_reason: "deferred: exact-review background cap occupied",
     },
   );
 });

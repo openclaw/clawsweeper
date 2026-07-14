@@ -58,31 +58,6 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
-- Bounded immutable action-ledger publishers' priority yield to exclusive state
-  leases and expanded their retry budget for 64-worker bursts; exclusive
-  publishers still rebuild around branch races.
-- Kept immutable action-ledger publication available in repair-only workflow
-  jobs by moving shard import and path-manifest admission behind repair-native
-  CLIs, while retaining the root commands as compatibility entrypoints.
-- Added a priority-aware optimistic publisher for immutable action ledgers that
-  yields to exclusive state mutations, accepts replay-equivalent event shards,
-  rejects content collisions, and converges disjoint branch races without the
-  global state lease. GitHub activity publication and receipt replay remain on
-  exclusive publication after the live immutable canary could not converge
-  under saturated state writes; every action, review, and repair ledger still
-  enters through the same validated path-manifest boundary.
-- Serialized generated-state publishers through lightweight detached,
-  versioned, protocol-bounded remote leases with composable workflow
-  deadlines, bounded stale-owner recovery, deadline-bounded multi-race
-  convergence, and remote blob verification.
-- Preserved finalized GitHub activity dispatch receipts as a replayable artifact
-  before state publication, while keeping direct publication independent of the
-  recovery-copy upload and automatically replaying failed, cancelled, or
-  timed-out producers without redispatch.
-- Included action-ledger source dependencies in the spam scanner's sparse
-  checkout so its repair build matches the full repository build.
-- Preserved crawl-remote's reviewed `limits.cpu_ms` value through immutable
-  release packaging and post-transfer deployment verification.
 - Reverted the action-lifecycle expansion from PR #521, restoring the pre-merge ClawSweeper paths while retaining later exact-review throughput fixes and retrying coalesced reconciliations after any partial lookup failure.
 - Raised exact-review capacity from 48/44 global/per-target workers to 64/60, shortened unclaimed dispatch recovery from ten to six minutes, and coalesced terminal-run reconciliation bursts into one bounded aggregate claim scan.
 - Expanded exact-review backlog capacity while making background review yield, released exact-review leases before ledger publication, and aggregated healthy retry scans into one bounded ledger summary.
@@ -130,26 +105,6 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
-- Kept dispatch receipts durable across superseding spam edits, notifier
-  failures, concurrent outcome completion, unavailable comment dispatch, and
-  idle receipt expiry scheduling.
-- Published crash-safe `workflow.attempt` and `repair.execute` receipts around
-  repair-cluster execution, terminalizing dangling child mutations before their
-  parent, terminating the complete credentialed execute process group before
-  timeout finalization, and allowing later observed outcomes to supersede stale
-  unknown state.
-- Preserved the repair worker's original replay-safe Action inputs in an early,
-  attempt-scoped artifact so bounded requeues and failed-run self-heal retries
-  reuse the actual effective mode, runners, sandbox, model, and dry-run state
-  instead of mutable workflow defaults.
-- Revalidated the exact pull request head and bounded review, thread, and
-  conversation activity before every proof comment or label request, including
-  a post-hydration head read, fresh contributor activity, and bound live
-  policy/label state, with privacy-bounded immutable request receipts,
-  conservative unknown outcomes, exact comment/label crash reconciliation,
-  replay-safe bot-proof POST/PATCH recovery, and best-effort recovery-state
-  publication before cursor progress.
-- Bound pull-request review reuse, apply, and automerge actions to a size-capped digest of reviews, inline comments, and review-thread resolution state, so legacy reports, late activity, or resolved-thread drift force a fresh verdict before mutation.
 - Stopped narrow OpenClaw automerge repairs from chasing unrelated full-repository lint and typecheck failures.
 - Removed the synthetic Codex write preflight that could block repair before Codex saw the real task.
 - Kept exact-review handoff health live when the dashboard serves a stale fleet snapshot, so recovered claims no longer leave the operator rail stuck in a delayed or stalled state.

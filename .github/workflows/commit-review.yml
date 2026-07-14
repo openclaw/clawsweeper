@@ -63,12 +63,6 @@ jobs:
     if: ${{ !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    concurrency:
-      # The shared admission lock is an opt-in experiment. With the variable
-      # unset, each commit plan keeps its current independent admission group.
-      group: ${{ vars.CLAWSWEEPER_ENABLE_EXACT_REVIEW_BACKGROUND_YIELD == '1' && 'clawsweeper-review-admission-background' || format('commit-review-plan-{0}', github.run_id) }}
-      cancel-in-progress: false
-      queue: max
     outputs:
       create_checks: ${{ steps.mode.outputs.create_checks }}
       enabled: ${{ steps.mode.outputs.enabled }}
@@ -166,28 +160,12 @@ jobs:
           COMMIT_SHA: ${{ github.event.inputs.commit_sha || github.event.client_payload.after_sha || github.event.client_payload.commit_sha || '' }}
           BEFORE_SHA: ${{ github.event.inputs.before_sha || github.event.client_payload.before_sha || '' }}
           COMMIT_OFFSET: ${{ github.event.inputs.commit_offset || github.event.client_payload.commit_offset || '0' }}
-          CREATE_CHECKS: ${{ steps.mode.outputs.create_checks }}
           ENABLED: ${{ steps.mode.outputs.enabled }}
-          ADDITIONAL_PROMPT: ${{ github.event.inputs.additional_prompt || github.event.client_payload.additional_prompt || '' }}
           SOURCE_REF: ${{ github.event.client_payload.ref || 'refs/heads/main' }}
           SETTLE_SECONDS: ${{ vars.CLAWSWEEPER_COMMIT_REVIEW_SETTLE_SECONDS || '60' }}
           PAGE_SIZE: ${{ vars.CLAWSWEEPER_COMMIT_REVIEW_PAGE_SIZE || '' }}
-          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          CLAWSWEEPER_EXACT_REVIEW_QUEUE_MAX_AGE_SECONDS: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_MAX_AGE_SECONDS || '900' }}
-          EXACT_REVIEW_BACKGROUND_YIELD_ENABLED: ${{ vars.CLAWSWEEPER_ENABLE_EXACT_REVIEW_BACKGROUND_YIELD || '0' }}
         run: |
           set -euo pipefail
-          limit() {
-            pnpm --dir clawsweeper run --silent workflow -- limit "$1"
-          }
-          page_size_hard_cap="$(limit commit_review.page_size_hard_cap)"
-          reservation_page_size="$PAGE_SIZE"
-          if ! [[ "$reservation_page_size" =~ ^[0-9]+$ ]] || [ "$reservation_page_size" -lt 1 ]; then
-            reservation_page_size="$(limit commit_review.page_size_default)"
-          fi
-          if [ "$reservation_page_size" -gt "$page_size_hard_cap" ]; then
-            reservation_page_size="$page_size_hard_cap"
-          fi
           active_runs_json() {
             {
               for run_status in in_progress pending queued waiting requested; do
@@ -205,59 +183,13 @@ jobs:
               | WORKFLOW_PATH="$1" STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq '[.[] | select(.workflowPath == env.WORKFLOW_PATH) | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF)))] | length' 2>/dev/null \
               || printf '0'
           }
-          exact_review_pressure_status() {
-            local queue_url response generated_at generated_epoch now_epoch queue_max_age_seconds age_seconds pressure
-            queue_url="${QUEUE_URL%/}"
-            response="$(curl --fail --silent --connect-timeout 5 --max-time 10 "$queue_url/api/status" 2>/dev/null)" || return 1
-            generated_at="$(printf '%s' "$response" | jq -r '.exact_review_queue.generated_at // "" | if type == "string" then . else "" end' 2>/dev/null)" || return 1
-            if [ -z "$generated_at" ]; then
-              echo "::warning::Exact-review queue telemetry missing exact_review_queue.generated_at; using idle pressure (fail open)." >&2
-              return 1
-            fi
-            if ! generated_epoch="$(GENERATED_AT="$generated_at" node -e '
-              const value = process.env.GENERATED_AT || "";
-              if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(value)) process.exit(1);
-              const timestamp = Date.parse(value);
-              if (!Number.isFinite(timestamp)) process.exit(1);
-              process.stdout.write(String(Math.floor(timestamp / 1000)));
-            ' 2>/dev/null)"; then
-              echo "::warning::Exact-review queue telemetry has invalid generated_at; using idle pressure (fail open)." >&2
-              return 1
-            fi
-            now_epoch="$(node -e 'process.stdout.write(String(Math.floor(Date.now() / 1000)))')"
-            queue_max_age_seconds="${CLAWSWEEPER_EXACT_REVIEW_QUEUE_MAX_AGE_SECONDS:-900}"
-            if ! [[ "$queue_max_age_seconds" =~ ^[0-9]+$ ]] || [ "$queue_max_age_seconds" -lt 60 ]; then
-              queue_max_age_seconds=900
-            fi
-            age_seconds=$((now_epoch - generated_epoch))
-            if [ "$age_seconds" -gt "$queue_max_age_seconds" ]; then
-              echo "::warning::Exact-review queue telemetry snapshot is stale (generated_at=$generated_at, age_seconds=$age_seconds); using idle pressure (fail open)." >&2
-              return 1
-            fi
-            if [ "$age_seconds" -lt -300 ]; then
-              echo "::warning::Exact-review queue telemetry generated_at is too far in the future (generated_at=$generated_at); using idle pressure (fail open)." >&2
-              return 1
-            fi
-            pressure="$(printf '%s' "$response" | jq -r '.exact_review_queue.pressure.status // "" | if type == "string" then . else "" end' 2>/dev/null)" || return 1
-            case "$pressure" in
-              idle|congested|saturated)
-                printf '%s' "$pressure"
-                ;;
-              unknown|"")
-                echo "::warning::Exact-review pressure is unavailable; using idle pressure (fail open)." >&2
-                return 1
-                ;;
-              *)
-                echo "::warning::Exact-review pressure has unknown status '$pressure'; using idle pressure (fail open)." >&2
-                return 1
-                ;;
-            esac
-          }
           active_sweep_background_workers() {
             local runs total id title status jobs_json active_shards total_shards
+            local reserved_shards hard_cap requested_shards item_numbers commas item_count
             total=0
+            hard_cap="$(pnpm --dir clawsweeper run --silent workflow -- limit review_shards.hard_cap)"
             runs="$(printf '%s' "$ACTIVE_RUNS_JSON" \
-              | jq -r '.[] | select(.workflowPath == ".github/workflows/sweep.yml" and .status == "in_progress") | select(.displayTitle == "Review ClawSweeper items" or .displayTitle == "Review hot ClawSweeper items" or (.displayTitle | startswith("Review target repo ")) or (.displayTitle | startswith("Review hot target repo "))) | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
+              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select(.displayTitle == "Review ClawSweeper items" or .displayTitle == "Review hot ClawSweeper items" or (.displayTitle | startswith("Review event items "))) | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
             while IFS=$'\t' read -r id title status; do
               if [ -z "$id" ]; then
                 continue
@@ -282,8 +214,30 @@ jobs:
               # Planning, queued, and not-yet-expanded matrix runs reserve their lane
               # size. Completed matrices are publishing and consume no Codex slots.
               if [ "$active_shards" -lt 1 ] && [ "$total_shards" -lt 1 ]; then
-                if [ "$title" = "Review hot ClawSweeper items" ] || [[ "$title" == Review\ hot\ target\ repo\ * ]]; then
+                if [ "$title" = "Review hot ClawSweeper items" ]; then
                   active_shards="$(pnpm --dir clawsweeper run --silent workflow -- limit review_shards.hot_intake_default)"
+                elif [[ "$title" == Review\ event\ items\ * ]]; then
+                  reserved_shards="$hard_cap"
+                  if [[ "$title" =~ \[shards=([0-9]+)\]$ ]]; then
+                    requested_shards="${BASH_REMATCH[1]}"
+                    item_numbers="${title#*#}"
+                    item_numbers="${item_numbers%% *}"
+                    if [[ "$item_numbers" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+                      if [ "$requested_shards" -lt 1 ]; then
+                        requested_shards=1
+                      fi
+                      commas="${item_numbers//[^,]/}"
+                      item_count=$((${#commas} + 1))
+                      reserved_shards="$requested_shards"
+                      if [ "$reserved_shards" -gt "$item_count" ]; then
+                        reserved_shards="$item_count"
+                      fi
+                      if [ "$reserved_shards" -gt "$hard_cap" ]; then
+                        reserved_shards="$hard_cap"
+                      fi
+                    fi
+                  fi
+                  active_shards="$reserved_shards"
                 else
                   active_shards="$(pnpm --dir clawsweeper run --silent workflow -- limit review_shards.normal_default)"
                 fi
@@ -292,138 +246,17 @@ jobs:
             done <<< "$runs"
             printf '%s' "$total"
           }
-          active_sweep_exact_workers() {
-            local runs total id title status jobs_json active_shards total_shards
-            local reserved_shards hard_cap requested_shards item_numbers commas item_count
-            total=0
-            hard_cap="$(pnpm --dir clawsweeper run --silent workflow -- limit review_shards.hard_cap)"
-            runs="$(printf '%s' "$ACTIVE_RUNS_JSON" \
-              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select((.displayTitle | startswith("Review event item ")) or (.displayTitle | startswith("Review event items "))) | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
-            while IFS=$'\t' read -r id title status; do
-              if [ -z "$id" ]; then
-                continue
-              fi
-              active_shards=0
-              total_shards=0
-              if [[ "$title" == Review\ event\ item\ * ]]; then
-                total=$((total + 1))
-                continue
-              fi
-              if [ "$status" = "in_progress" ]; then
-                jobs_json="$(gh run view "$id" --repo "${{ github.repository }}" --json jobs 2>/dev/null || printf '{"jobs":[]}')"
-                active_shards="$(printf '%s' "$jobs_json" \
-                  | jq '[.jobs[]? | select(.name | startswith("Review shard ")) | select(.status == "in_progress" or .status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested")] | length' 2>/dev/null \
-                  || printf '0')"
-                total_shards="$(printf '%s' "$jobs_json" \
-                  | jq '[.jobs[]? | select(.name | startswith("Review shard "))] | length' 2>/dev/null \
-                  || printf '0')"
-              fi
-              if ! [[ "$active_shards" =~ ^[0-9]+$ ]]; then
-                active_shards=0
-              fi
-              if ! [[ "$total_shards" =~ ^[0-9]+$ ]]; then
-                total_shards=0
-              fi
-              # Explicit exact batches are priority work. Reserve the batch shape
-              # until its matrix exists, then account only for live shard jobs.
-              if [ "$active_shards" -lt 1 ] && [ "$total_shards" -lt 1 ]; then
-                reserved_shards="$hard_cap"
-                if [[ "$title" =~ \[shards=([0-9]+)\]$ ]]; then
-                  requested_shards="${BASH_REMATCH[1]}"
-                  item_numbers="${title#*#}"
-                  item_numbers="${item_numbers%% *}"
-                  if [[ "$item_numbers" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
-                    if [ "$requested_shards" -lt 1 ]; then
-                      requested_shards=1
-                    fi
-                    commas="${item_numbers//[^,]/}"
-                    item_count=$((${#commas} + 1))
-                    reserved_shards="$requested_shards"
-                    if [ "$reserved_shards" -gt "$item_count" ]; then
-                      reserved_shards="$item_count"
-                    fi
-                    if [ "$reserved_shards" -gt "$hard_cap" ]; then
-                      reserved_shards="$hard_cap"
-                    fi
-                  fi
-                fi
-                active_shards="$reserved_shards"
-              fi
-              total=$((total + active_shards))
-            done <<< "$runs"
-            printf '%s' "$total"
+          active_sweep_exact_count() {
+            printf '%s' "$ACTIVE_RUNS_JSON" \
+              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq '[.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select((.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) and (.displayTitle | startswith("Review event item ")))] | length' 2>/dev/null \
+              || printf '0'
           }
-          active_commit_review_workers() {
-            local runs total id status jobs_json active_reviews total_reviews zero_review_plan zero_review_name
-            total=0
-            runs="$(printf '%s' "$ACTIVE_RUNS_JSON" \
-              | CURRENT_RUN_ID="${GITHUB_RUN_ID:-0}" jq -r '.[] | select((.databaseId | tostring) != env.CURRENT_RUN_ID) | select(.workflowPath == ".github/workflows/commit-review.yml" and .status == "in_progress") | [.databaseId, .status] | @tsv' 2>/dev/null || true)"
-            while IFS=$'\t' read -r id status; do
-              if [ -z "$id" ]; then
-                continue
-              fi
-              active_reviews=0
-              total_reviews=0
-              zero_review_plan=false
-              if [ "$status" = "in_progress" ]; then
-                if ! jobs_json="$(gh run view "$id" --repo "${{ github.repository }}" --json jobs 2>/dev/null)"; then
-                  # An unavailable job list cannot identify a completed zero
-                  # matrix, so retain the conservative planner reservation.
-                  jobs_json='{"jobs":[]}'
-                fi
-                active_reviews="$(printf '%s' "$jobs_json" \
-                  | jq '[.jobs[]? | select(.name | startswith("Review commit ")) | select(.status == "in_progress" or .status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested")] | length' 2>/dev/null \
-                  || printf '0')"
-                total_reviews="$(printf '%s' "$jobs_json" \
-                  | jq '[.jobs[]? | select(.name | startswith("Review commit "))] | length' 2>/dev/null \
-                  || printf '0')"
-                # GitHub represents an empty dynamic matrix as this literal,
-                # skipped job. Construct the name in Bash so Actions does not
-                # evaluate the literal matrix expression in this plan job.
-                zero_review_name='Review commit $'
-                zero_review_name+='{{ matrix.sha }}'
-                if printf '%s' "$jobs_json" | ZERO_REVIEW_NAME="$zero_review_name" \
-                  jq -e '[.jobs[]? | select(.name == env.ZERO_REVIEW_NAME) | select(.status == "completed" and .conclusion == "skipped")] | length > 0' >/dev/null 2>&1; then
-                  zero_review_plan=true
-                fi
-              fi
-              if ! [[ "$active_reviews" =~ ^[0-9]+$ ]]; then
-                active_reviews=0
-              fi
-              if ! [[ "$total_reviews" =~ ^[0-9]+$ ]]; then
-                total_reviews=0
-              fi
-              # An absent review job is either a queued/planning run or a matrix
-              # that GitHub is still materializing, so reserve its configured,
-              # hard-capped page size. The literal skipped job above proves an
-              # empty matrix and releases the reservation while it publishes.
-              if [ "$active_reviews" -lt 1 ] && [ "$total_reviews" -lt 1 ] \
-                && [ "$zero_review_plan" != "true" ]; then
-                active_reviews="$reservation_page_size"
-              fi
-              total=$((total + active_reviews))
-            done <<< "$runs"
-            printf '%s' "$total"
-          }
-          active_critical_workers="$(( $(active_run_count ".github/workflows/repair-cluster-worker.yml") + $(active_sweep_exact_workers) ))"
-          active_background_workers="$(( $(active_sweep_background_workers) + $(active_commit_review_workers) ))"
-          exact_review_pressure="idle"
-          if [ "$EXACT_REVIEW_BACKGROUND_YIELD_ENABLED" = "1" ]; then
-            if ! exact_review_pressure="$(exact_review_pressure_status)"; then
-              exact_review_pressure="idle"
-              echo "::warning::Exact-review queue telemetry was unavailable; using idle pressure (fail open)."
-            fi
-          fi
-          scheduler_page_size="$(pnpm --dir clawsweeper run --silent workflow -- worker-limit commit_review --active-critical "$active_critical_workers" --active-background "$active_background_workers" --exact-review-pressure "$exact_review_pressure")"
           if [ -z "$PAGE_SIZE" ]; then
-            PAGE_SIZE="$scheduler_page_size"
-          elif [ "$exact_review_pressure" != "idle" ] && [[ "$PAGE_SIZE" =~ ^[0-9]+$ ]] && [ "$PAGE_SIZE" -gt "$scheduler_page_size" ]; then
-            echo "::notice::Capping commit-review page size from $PAGE_SIZE to $scheduler_page_size because exact-review queue is $exact_review_pressure."
-            PAGE_SIZE="$scheduler_page_size"
+            active_critical_workers="$(( $(active_run_count ".github/workflows/repair-cluster-worker.yml") + $(active_sweep_exact_count) ))"
+            active_background_workers="$(active_sweep_background_workers)"
+            PAGE_SIZE="$(pnpm --dir clawsweeper run --silent workflow -- worker-limit commit_review --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
           fi
-          if [ "$exact_review_pressure" != "idle" ]; then
-            echo "::notice::Exact-review pressure is $exact_review_pressure; throttling commit review intake to page_size=$PAGE_SIZE."
-          fi
+          page_size_hard_cap="$(pnpm --dir clawsweeper run --silent workflow -- limit commit_review.page_size_hard_cap)"
           if [ "$ENABLED" = "false" ]; then
             {
               echo "matrix=[]"
@@ -463,42 +296,6 @@ jobs:
             exit 1
           fi
           if [ "$PAGE_SIZE" -lt 1 ]; then
-            if [ "$exact_review_pressure" != "idle" ]; then
-              echo "::notice::Deferring commit review because the exact-review pressure cap is occupied."
-              # Keep this plan job in the shared admission group while it waits,
-              # then requeue the same range instead of treating it as exhausted.
-              sleep 300
-              requeued=false
-              for attempt in 1 2 3; do
-                if gh workflow run commit-review.yml \
-                  --repo "${{ github.repository }}" \
-                  -f enabled=true \
-                  -f target_repo="$TARGET_REPO" \
-                  -f commit_sha="$COMMIT_SHA" \
-                  -f before_sha="$BEFORE_SHA" \
-                  -f commit_offset="$COMMIT_OFFSET" \
-                  -f create_checks="$CREATE_CHECKS" \
-                  -f additional_prompt="$ADDITIONAL_PROMPT"; then
-                  requeued=true
-                  break
-                fi
-                echo "::warning::Deferred commit-review requeue attempt $attempt failed."
-                sleep "$((attempt * 10))"
-              done
-              if [ "$requeued" != "true" ]; then
-                echo "Unable to requeue the deferred commit-review range after three attempts." >&2
-                exit 1
-              fi
-              echo "::notice::Requeued deferred commit-review range at offset $COMMIT_OFFSET."
-              {
-                echo "matrix=[]"
-                echo "has_more=false"
-                echo "next_offset=0"
-                echo "planned_count=0"
-                echo "skipped_count=0"
-              } >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
             PAGE_SIZE=1
           fi
           if [ "$PAGE_SIZE" -gt "$page_size_hard_cap" ]; then

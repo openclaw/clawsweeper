@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -15,7 +14,7 @@ env:
 concurrency:
   group: >-
     spam-comment-intake-${{ github.event.client_payload.target_repo || github.event.client_payload.activity.repo || 'openclaw/openclaw' }}-${{ github.event.client_payload.event_name || github.event.client_payload.activity.type || 'activity' }}-${{ github.event.client_payload.comment_id || github.event.client_payload.review_comment_id || github.event.client_payload.activity.comment.id || github.event.client_payload.activity.issue.number || github.event.client_payload.activity.pull_request.number || github.run_id }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   intake:
@@ -25,7 +24,7 @@ jobs:
         (github.event.client_payload.activity.action == 'created' || github.event.client_payload.activity.action == 'edited' || github.event.client_payload.action == 'created' || github.event.client_payload.action == 'edited')
       }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - name: Check core API budget
         id: core-budget
@@ -50,16 +49,12 @@ jobs:
         if: steps.core-budget.outputs.skip != 'true'
         with:
           filter: blob:none
-          fetch-depth: 0
           persist-credentials: false
           sparse-checkout: |
             .github/actions
             config/automation-limits.json
             prompts/pr-close-coverage-proof.md
             schema/clawsweeper-pr-close-coverage-proof.schema.json
-            src/action-ledger-files.ts
-            src/action-ledger-runtime.ts
-            src/action-ledger.ts
             src/clawsweeper-text.ts
             src/command.ts
             src/codex-env.ts
@@ -71,43 +66,15 @@ jobs:
             src/github-json.ts
             src/github-retry.ts
             src/pr-close-coverage-proof.ts
-            src/review-activity-cursor.ts
-            src/stable-json.ts
             src/repair
             src/repository-profiles.ts
-            scripts/hydrate-state.ts
             package.json
             pnpm-lock.yaml
             pnpm-workspace.yaml
             tsconfig.repair.json
           sparse-checkout-cone-mode: false
 
-      - name: Create state token
-        if: steps.core-budget.outputs.skip != 'true'
-        id: state-token
-        uses: ./.github/actions/create-state-token
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-
-      - uses: ./.github/actions/setup-state
-        if: steps.core-budget.outputs.skip != 'true'
-        id: setup-spam-intake-state
-        with:
-          token: ${{ steps.state-token.outputs.token }}
-          persist-credentials: "false"
-
-      - uses: ./.github/actions/setup-pnpm
-        if: steps.core-budget.outputs.skip != 'true'
-        id: setup-spam-intake-pnpm
-        with:
-          build-script: build:repair
-
-      - uses: ./.github/actions/setup-action-ledger
-        if: steps.core-budget.outputs.skip != 'true'
-        id: setup-spam-intake-ledger
-
-      - name: Create repository-scoped GitHub App token
+      - name: Create GitHub App token
         if: steps.core-budget.outputs.skip != 'true'
         id: app_token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -115,69 +82,15 @@ jobs:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: clawsweeper
           permission-contents: write
 
+      - uses: ./.github/actions/setup-pnpm
+        if: steps.core-budget.outputs.skip != 'true'
+        with:
+          build-script: build:repair
+
       - name: Dispatch exact spam scan
-        id: dispatch-exact-spam-scan
         if: steps.core-budget.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: pnpm run repair:spam-comment-intake -- --write-report
-
-      - name: Finalize spam intake dispatch action ledger
-        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-spam-intake-state.outcome == 'success' && steps.setup-spam-intake-pnpm.outcome == 'success' && steps.setup-spam-intake-ledger.outcome == 'success' }}
-        run: |
-          set -euo pipefail
-          : "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
-          mkdir -p .artifacts
-          node dist/repair/dispatch-action-ledger-cli.js finalize \
-            --lane spam-intake-dispatch \
-            --allow-empty \
-            > .artifacts/spam-intake-dispatch-action-ledger-manifest.json
-
-      - name: Publish spam intake dispatch action ledger
-        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-spam-intake-state.outcome == 'success' && steps.setup-spam-intake-pnpm.outcome == 'success' && steps.setup-spam-intake-ledger.outcome == 'success' }}
-        env:
-          PUBLISH_TOKEN: ${{ steps.state-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          test -n "${CLAWSWEEPER_STATE_DIR:-}"
-          source_root="${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
-          manifest_file=".artifacts/spam-intake-dispatch-action-ledger-manifest.json"
-          if [ ! -s "$manifest_file" ]; then
-            echo "No spam intake dispatch action events to publish."
-            exit 0
-          fi
-          event_paths_file=".artifacts/spam-intake-dispatch-action-ledger-paths.txt"
-          import_result_file=".artifacts/spam-intake-dispatch-action-ledger-import.json"
-          node dist/repair/dispatch-action-ledger-cli.js publish \
-            --lane spam-intake-dispatch \
-            --manifest "$manifest_file" \
-            --source-root "$source_root" \
-            --state-root "$CLAWSWEEPER_STATE_DIR" > "$import_result_file"
-          if ! jq -e --slurpfile manifest "$manifest_file" \
-            '.eventPaths == $manifest[0].event_paths' \
-            "$import_result_file" >/dev/null; then
-            echo "Imported spam intake dispatch paths do not match the finalized manifest." >&2
-            exit 1
-          fi
-          jq -r '.paths[]?' "$import_result_file" |
-            sort -u > "$event_paths_file"
-          if [ ! -s "$event_paths_file" ]; then
-            echo "Spam intake dispatch shards existed but no paths were imported." >&2
-            exit 1
-          fi
-          while IFS= read -r event_path; do
-            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
-            test -f "$durable_event_path"
-            mkdir -p "$(dirname "$event_path")"
-            cp "$durable_event_path" "$event_path"
-          done < "$event_paths_file"
-          auth_header="$(printf 'x-access-token:%s' "$PUBLISH_TOKEN" | base64 | tr -d '\n')"
-          export GIT_CONFIG_COUNT=1
-          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
-          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
-          node dist/repair/publish-action-event-paths.js \
-            --paths-file "$event_paths_file" \
-            --message "chore: append spam intake dispatch action ledger"

@@ -25,15 +25,7 @@ test("repair workflow and executor share coherent production timeout defaults", 
     workflow,
     /CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS: \$\{\{ vars\.CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS \|\| '1800000' \}\}/,
   );
-  assert.match(
-    workflow,
-    /name: Record execute recovery deadline[\s\S]*CLAWSWEEPER_EXECUTE_DEADLINE_EPOCH/,
-  );
-  assert.match(
-    workflow,
-    /name: Execute credited fix artifact[\s\S]*timeout --signal=TERM --kill-after=30s "\$\{execute_timeout_seconds\}s"[\s\S]*node dist\/repair\/execute-fix-attempt\.js/,
-  );
-  assert.doesNotMatch(workflow, /timeout --foreground/);
+  assert.match(workflow, /name: Execute credited fix artifact[\s\S]*timeout-minutes: 70/);
 });
 
 test("no-op automerge repair updates outcome and re-enters router before exit", () => {

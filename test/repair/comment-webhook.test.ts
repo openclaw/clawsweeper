@@ -1,8 +1,5 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
 
 import {
@@ -14,62 +11,6 @@ import {
   renderFastAckComment,
   verifyGitHubSignature,
 } from "../../dist/repair/comment-webhook.js";
-
-const ACTION_LEDGER_ENV_KEYS = [
-  "CLAWSWEEPER_ACTION_LEDGER_FORCE",
-  "CLAWSWEEPER_ACTION_LEDGER_ROOT",
-  "CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT",
-  "CLAWSWEEPER_ACTION_LEDGER_INVOCATION",
-  "CLAWSWEEPER_ACTION_LEDGER_LOCAL_ROOT",
-  "CLAWSWEEPER_ACTION_LEDGER_DISABLED",
-  "GITHUB_ACTIONS",
-  "GITHUB_REPOSITORY",
-  "GITHUB_SHA",
-  "GITHUB_WORKFLOW",
-  "GITHUB_WORKFLOW_REF",
-  "GITHUB_JOB",
-  "GITHUB_RUN_ID",
-  "GITHUB_RUN_ATTEMPT",
-  "GITHUB_RUN_STARTED_AT",
-  "GITHUB_ACTION",
-] as const;
-let cleanupActionLedgerFixture: (() => void) | undefined;
-
-test.beforeEach(() => {
-  const previous = new Map(
-    ACTION_LEDGER_ENV_KEYS.map((name) => [name, process.env[name]] as const),
-  );
-  const root = fs.realpathSync(
-    fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-webhook-receipts-")),
-  );
-  const outputRoot = path.join(root, "output");
-  fs.mkdirSync(outputRoot);
-  Object.assign(process.env, {
-    CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
-    CLAWSWEEPER_ACTION_LEDGER_ROOT: root,
-    CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: outputRoot,
-    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "webhook-test",
-    GITHUB_REPOSITORY: "openclaw/clawsweeper",
-    GITHUB_SHA: "a".repeat(40),
-    GITHUB_WORKFLOW: "comment webhook",
-    GITHUB_WORKFLOW_REF:
-      "openclaw/clawsweeper/.github/workflows/comment-webhook.yml@refs/heads/main",
-    GITHUB_JOB: "webhook",
-    GITHUB_RUN_ID: "12345",
-    GITHUB_RUN_ATTEMPT: "1",
-    GITHUB_RUN_STARTED_AT: "2026-07-14T12:00:00Z",
-    GITHUB_ACTION: "comment-webhook",
-  });
-  cleanupActionLedgerFixture = () => {
-    for (const [name, value] of previous) restoreEnv(name, value);
-    fs.rmSync(root, { recursive: true, force: true });
-  };
-});
-
-test.afterEach(() => {
-  cleanupActionLedgerFixture?.();
-  cleanupActionLedgerFixture = undefined;
-});
 
 test("comment webhook accepts maintainer ClawSweeper commands", () => {
   const result = classifyIssueCommentWebhook({
@@ -97,314 +38,6 @@ test("comment webhook accepts maintainer ClawSweeper commands", () => {
     installationId: 123,
     sourceAction: "created",
   });
-});
-
-test("comment webhook repository dispatches use bounded attempt and outcome receipts", () => {
-  const source = fs.readFileSync("src/repair/comment-webhook.ts", "utf8");
-  const itemStart = source.indexOf("async function dispatchItemReview(");
-  const commentStart = source.indexOf("async function dispatchCommentRouter(");
-  const fetchStart = source.indexOf("async function githubFetch(", commentStart);
-  const itemDispatch = source.slice(itemStart, commentStart);
-  const commentDispatch = source.slice(commentStart, fetchStart);
-
-  assert.match(itemDispatch, /runDispatchWithReceipt\(\{/);
-  assert.match(itemDispatch, /dispatchTarget: "clawsweeper_item"/);
-  assert.match(itemDispatch, /dispatchInput: \{[\s\S]*?media_proof_timeout_ms:/);
-  assert.match(commentDispatch, /runDispatchWithReceipt\(\{/);
-  assert.match(commentDispatch, /dispatchTarget: "clawsweeper_comment"/);
-  assert.match(commentDispatch, /comment_body_sha256: commentBodyDigest \?\? null/);
-  const itemInput = itemDispatch.slice(
-    itemDispatch.indexOf("dispatchInput:"),
-    itemDispatch.indexOf("operation: async"),
-  );
-  const commentInput = commentDispatch.slice(
-    commentDispatch.indexOf("dispatchInput:"),
-    commentDispatch.indexOf("operation: async"),
-  );
-  assert.doesNotMatch(itemInput, /token:|body:/);
-  assert.doesNotMatch(commentInput, /token:|body:/);
-  assert.match(
-    source,
-    /await flushDispatchActionEvents\(receiptContext\.root,[\s\S]*?outputRoot: receiptContext\.outputRoot/,
-  );
-});
-
-test("comment webhook refuses accepted events before GitHub access when receipts are disabled", async () => {
-  const previousFetch = globalThis.fetch;
-  let requests = 0;
-  delete process.env.CLAWSWEEPER_ACTION_LEDGER_FORCE;
-  process.env.CLAWSWEEPER_ACTION_LEDGER_DISABLED = "1";
-  globalThis.fetch = async () => {
-    requests += 1;
-    throw new Error("GitHub must not be called without authoritative receipts");
-  };
-  try {
-    await assert.rejects(
-      handleGitHubWebhook({
-        event: "issues",
-        deliveryId: "disabled-receipts",
-        payload: {
-          action: "opened",
-          repository: {
-            full_name: "openclaw/openclaw",
-            default_branch: "main",
-            private: false,
-            archived: false,
-            fork: false,
-            has_issues: true,
-          },
-          issue: { number: 71898 },
-          installation: { id: 123 },
-        },
-      }),
-      /without authoritative action receipts/,
-    );
-    assert.equal(requests, 0);
-  } finally {
-    globalThis.fetch = previousFetch;
-  }
-});
-
-test("comment webhook dispatches locally with durable process receipt context", async () => {
-  const previousFetch = globalThis.fetch;
-  const previousAppId = process.env.CLAWSWEEPER_APP_ID;
-  const previousPrivateKey = process.env.CLAWSWEEPER_APP_PRIVATE_KEY;
-  const localRoot = fs.realpathSync(
-    fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-local-webhook-")),
-  );
-  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
-  for (const key of ACTION_LEDGER_ENV_KEYS) delete process.env[key];
-  Object.assign(process.env, {
-    CLAWSWEEPER_ACTION_LEDGER_LOCAL_ROOT: localRoot,
-    GITHUB_REPOSITORY: "openclaw/clawsweeper",
-    GITHUB_SHA: "c".repeat(40),
-    CLAWSWEEPER_APP_ID: "12345",
-    CLAWSWEEPER_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs1", format: "pem" }).toString(),
-  });
-  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = new URL(String(input));
-    if (url.pathname === "/repos/openclaw/clawsweeper/installation") {
-      return jsonResponse({ id: 999 });
-    }
-    if (url.pathname === "/app/installations/999/access_tokens") {
-      return jsonResponse({ token: "dispatch-token" });
-    }
-    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
-      assert.equal(init?.method, "POST");
-      return jsonResponse({});
-    }
-    throw new Error(`unexpected fetch ${url}`);
-  }) as typeof fetch;
-
-  try {
-    const result = await handleGitHubWebhook({
-      event: "issues",
-      deliveryId: "local-webhook-delivery",
-      payload: {
-        action: "opened",
-        repository: {
-          full_name: "openclaw/openclaw",
-          default_branch: "main",
-          private: false,
-          archived: false,
-          fork: false,
-          has_issues: true,
-        },
-        issue: { number: 71898 },
-        installation: { id: 123 },
-      },
-    });
-
-    assert.deepEqual(result, {
-      statusCode: 202,
-      body: { ok: true, dispatched: "clawsweeper_item" },
-    });
-    const receiptPaths = fs
-      .readdirSync(localRoot, { recursive: true })
-      .filter((entry): entry is string => typeof entry === "string" && entry.endsWith(".jsonl"));
-    assert.ok(receiptPaths.length > 0);
-    const receipts = receiptPaths.flatMap((entry) =>
-      fs
-        .readFileSync(path.join(localRoot, entry), "utf8")
-        .trim()
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => JSON.parse(line)),
-    );
-    assert.deepEqual(
-      receipts.map((event) => event.attributes.completion_reason),
-      ["dispatch_attempted", "dispatch_accepted"],
-    );
-    assert.equal(receipts[0]?.producer.workflow, "local-dispatch");
-  } finally {
-    globalThis.fetch = previousFetch;
-    restoreEnv("CLAWSWEEPER_APP_ID", previousAppId);
-    restoreEnv("CLAWSWEEPER_APP_PRIVATE_KEY", previousPrivateKey);
-    fs.rmSync(localRoot, { recursive: true, force: true });
-  }
-});
-
-test("comment webhook reports success after accepted outcome persistence failure", async (t) => {
-  const previousFetch = globalThis.fetch;
-  const previousAppId = process.env.CLAWSWEEPER_APP_ID;
-  const previousClientId = process.env.CLAWSWEEPER_APP_CLIENT_ID;
-  const previousPrivateKey = process.env.CLAWSWEEPER_APP_PRIVATE_KEY;
-  const originalWriteFileSync = fs.writeFileSync;
-  const errors: string[] = [];
-  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
-  let dispatches = 0;
-  let failed = false;
-  process.env.CLAWSWEEPER_APP_ID = "12345";
-  delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
-  process.env.CLAWSWEEPER_APP_PRIVATE_KEY = privateKey
-    .export({ type: "pkcs1", format: "pem" })
-    .toString();
-  t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof fs.writeFileSync>) => {
-    if (!failed && String(args[1]).includes('"completion_reason":"dispatch_accepted"')) {
-      failed = true;
-      throw new Error("injected accepted outcome persistence failure");
-    }
-    Reflect.apply(originalWriteFileSync, fs, args);
-  });
-  t.mock.method(console, "error", (...args: unknown[]) => {
-    errors.push(args.map(String).join(" "));
-  });
-  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = new URL(String(input));
-    const method = String(init?.method ?? "GET").toUpperCase();
-    const requestPath = `${url.pathname}${url.search}`;
-    if (requestPath === "/repos/openclaw/clawsweeper/installation" && method === "GET") {
-      return jsonResponse({ id: 999 });
-    }
-    if (requestPath === "/app/installations/999/access_tokens" && method === "POST") {
-      return jsonResponse({ token: "dispatch-token" });
-    }
-    if (requestPath === "/repos/openclaw/clawsweeper/dispatches" && method === "POST") {
-      dispatches += 1;
-      return jsonResponse({});
-    }
-    throw new Error(`unexpected fetch ${method} ${requestPath}`);
-  }) as typeof fetch;
-
-  try {
-    const result = await handleGitHubWebhook({
-      event: "issues",
-      deliveryId: "accepted-outcome-failure",
-      payload: {
-        action: "opened",
-        repository: {
-          full_name: "openclaw/openclaw",
-          default_branch: "main",
-          private: false,
-          archived: false,
-          fork: false,
-          has_issues: true,
-        },
-        issue: { number: 71898 },
-        installation: { id: 123 },
-      },
-    });
-
-    assert.deepEqual(result, {
-      statusCode: 202,
-      body: { ok: true, dispatched: "clawsweeper_item" },
-    });
-    assert.equal(dispatches, 1);
-    assert.equal(failed, true);
-    assert.match(
-      errors.join("\n"),
-      /\[action-ledger\] dispatch accepted but failed to record outcome: injected accepted outcome persistence failure/,
-    );
-    assert.deepEqual(
-      readReceiptEvents().map((event) => event.attributes.completion_reason),
-      ["dispatch_attempted"],
-    );
-  } finally {
-    globalThis.fetch = previousFetch;
-    restoreEnv("CLAWSWEEPER_APP_ID", previousAppId);
-    restoreEnv("CLAWSWEEPER_APP_CLIENT_ID", previousClientId);
-    restoreEnv("CLAWSWEEPER_APP_PRIVATE_KEY", previousPrivateKey);
-  }
-});
-
-test("comment webhook reports success after accepted receipt flush failure", async (t) => {
-  const previousFetch = globalThis.fetch;
-  const previousAppId = process.env.CLAWSWEEPER_APP_ID;
-  const previousClientId = process.env.CLAWSWEEPER_APP_CLIENT_ID;
-  const previousPrivateKey = process.env.CLAWSWEEPER_APP_PRIVATE_KEY;
-  const originalLinkSync = fs.linkSync;
-  const errors: string[] = [];
-  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
-  let dispatches = 0;
-  let failed = false;
-  process.env.CLAWSWEEPER_APP_ID = "12345";
-  delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
-  process.env.CLAWSWEEPER_APP_PRIVATE_KEY = privateKey
-    .export({ type: "pkcs1", format: "pem" })
-    .toString();
-  t.mock.method(fs, "linkSync", (...args: Parameters<typeof fs.linkSync>) => {
-    if (!failed && String(args[1]).endsWith(".jsonl")) {
-      failed = true;
-      throw new Error("injected accepted receipt flush failure");
-    }
-    Reflect.apply(originalLinkSync, fs, args);
-  });
-  t.mock.method(console, "error", (...args: unknown[]) => {
-    errors.push(args.map(String).join(" "));
-  });
-  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = new URL(String(input));
-    const method = String(init?.method ?? "GET").toUpperCase();
-    const requestPath = `${url.pathname}${url.search}`;
-    if (requestPath === "/repos/openclaw/clawsweeper/installation" && method === "GET") {
-      return jsonResponse({ id: 999 });
-    }
-    if (requestPath === "/app/installations/999/access_tokens" && method === "POST") {
-      return jsonResponse({ token: "dispatch-token" });
-    }
-    if (requestPath === "/repos/openclaw/clawsweeper/dispatches" && method === "POST") {
-      dispatches += 1;
-      return jsonResponse({});
-    }
-    throw new Error(`unexpected fetch ${method} ${requestPath}`);
-  }) as typeof fetch;
-
-  try {
-    const result = await handleGitHubWebhook({
-      event: "issues",
-      deliveryId: "accepted-flush-failure",
-      payload: {
-        action: "opened",
-        repository: {
-          full_name: "openclaw/openclaw",
-          default_branch: "main",
-          private: false,
-          archived: false,
-          fork: false,
-          has_issues: true,
-        },
-        issue: { number: 71898 },
-        installation: { id: 123 },
-      },
-    });
-
-    assert.deepEqual(result, {
-      statusCode: 202,
-      body: { ok: true, dispatched: "clawsweeper_item" },
-    });
-    assert.equal(dispatches, 1);
-    assert.equal(failed, true);
-    assert.match(
-      errors.join("\n"),
-      /\[action-ledger\] accepted webhook dispatch receipt flush failed: injected accepted receipt flush failure/,
-    );
-    assert.deepEqual(readReceiptEvents(), []);
-  } finally {
-    globalThis.fetch = previousFetch;
-    restoreEnv("CLAWSWEEPER_APP_ID", previousAppId);
-    restoreEnv("CLAWSWEEPER_APP_CLIENT_ID", previousClientId);
-    restoreEnv("CLAWSWEEPER_APP_PRIVATE_KEY", previousPrivateKey);
-  }
 });
 
 test("comment webhook ignores ClawSweeper proof-nudge comments", () => {
@@ -811,45 +444,37 @@ test("pull request webhooks dispatch adaptive Codex timeout payload", async () =
   }) as typeof fetch;
 
   try {
-    const payload = {
-      action: "synchronize",
-      repository: {
-        full_name: "openclaw/openclaw",
-        default_branch: "main",
-        private: false,
-        archived: false,
-        fork: false,
-        has_issues: true,
-      },
-      pull_request: {
-        number: 91093,
-        changed_files: 71,
-        additions: 4176,
-        deletions: 0,
-        body: [
-          "Proof:",
-          "https://uploads.example.invalid/proof-a.mov",
-          "https://uploads.example.invalid/proof-b.mp4",
-        ].join("\n"),
-      },
-      installation: { id: 123 },
-    };
     const result = await handleGitHubWebhook({
       event: "pull_request",
-      deliveryId: "sequential-delivery-one",
-      payload,
-    });
-    const repeated = await handleGitHubWebhook({
-      event: "pull_request",
-      deliveryId: "sequential-delivery-two",
-      payload,
+      payload: {
+        action: "synchronize",
+        repository: {
+          full_name: "openclaw/openclaw",
+          default_branch: "main",
+          private: false,
+          archived: false,
+          fork: false,
+          has_issues: true,
+        },
+        pull_request: {
+          number: 91093,
+          changed_files: 71,
+          additions: 4176,
+          deletions: 0,
+          body: [
+            "Proof:",
+            "https://uploads.example.invalid/proof-a.mov",
+            "https://uploads.example.invalid/proof-b.mp4",
+          ].join("\n"),
+        },
+        installation: { id: 123 },
+      },
     });
 
     assert.deepEqual(result, {
       statusCode: 202,
       body: { ok: true, dispatched: "clawsweeper_item" },
     });
-    assert.deepEqual(repeated, result);
     assert.equal(dispatchedBody?.event_type, "clawsweeper_item");
     assert.equal(
       (dispatchedBody?.client_payload as Record<string, unknown>)?.codex_timeout_ms,
@@ -858,13 +483,6 @@ test("pull request webhooks dispatch adaptive Codex timeout payload", async () =
     assert.equal(
       (dispatchedBody?.client_payload as Record<string, unknown>)?.media_proof_timeout_ms,
       240_000,
-    );
-    const receiptEvents = readReceiptEvents();
-    assert.equal(receiptEvents.length, 4);
-    assert.equal(new Set(receiptEvents.map((event) => event.producer.component)).size, 2);
-    assert.doesNotMatch(
-      JSON.stringify(receiptEvents),
-      /sequential-delivery-one|sequential-delivery-two/,
     );
   } finally {
     globalThis.fetch = previousFetch;
@@ -1066,7 +684,7 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
   const dispatchBodies: Array<Record<string, unknown>> = [];
   process.env.CLAWSWEEPER_APP_ID = "12345";
   delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
-  process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS = "0";
+  process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS = "0,0,0";
   process.env.CLAWSWEEPER_APP_PRIVATE_KEY = privateKey
     .export({ type: "pkcs1", format: "pem" })
     .toString();
@@ -1132,16 +750,8 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
       },
     };
     const [left, right] = await Promise.all([
-      handleGitHubWebhook({
-        event: "issue_comment",
-        deliveryId: "concurrent-delivery-one",
-        payload,
-      }),
-      handleGitHubWebhook({
-        event: "issue_comment",
-        deliveryId: "concurrent-delivery-two",
-        payload,
-      }),
+      handleGitHubWebhook({ event: "issue_comment", payload }),
+      handleGitHubWebhook({ event: "issue_comment", payload }),
     ]);
 
     assert.deepEqual(left, { statusCode: 202, body: { ok: true, status_comment_id: 9001 } });
@@ -1189,7 +799,6 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
   const previousAppId = process.env.CLAWSWEEPER_APP_ID;
   const previousClientId = process.env.CLAWSWEEPER_APP_CLIENT_ID;
   const previousPrivateKey = process.env.CLAWSWEEPER_APP_PRIVATE_KEY;
-  const previousSettleDelays = process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS;
   const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   let commentLookups = 0;
   let deletedAck = 0;
@@ -1199,7 +808,6 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
   });
   process.env.CLAWSWEEPER_APP_ID = "12345";
   delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
-  process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS = "0,0";
   process.env.CLAWSWEEPER_APP_PRIVATE_KEY = privateKey
     .export({ type: "pkcs1", format: "pem" })
     .toString();
@@ -1270,7 +878,6 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
   try {
     const result = await handleGitHubWebhook({
       event: "issue_comment",
-      deliveryId: "settle-delivery",
       payload: {
         action: "created",
         repository: { full_name: "openclaw/openclaw" },
@@ -1293,7 +900,6 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
     restoreEnv("CLAWSWEEPER_APP_ID", previousAppId);
     restoreEnv("CLAWSWEEPER_APP_CLIENT_ID", previousClientId);
     restoreEnv("CLAWSWEEPER_APP_PRIVATE_KEY", previousPrivateKey);
-    restoreEnv("CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS", previousSettleDelays);
   }
 });
 
@@ -1314,17 +920,6 @@ function jsonResponse(value: unknown) {
     status: 200,
     headers: { "content-type": "application/json" },
   });
-}
-
-function readReceiptEvents(): Array<Record<string, any>> {
-  const outputRoot = process.env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT;
-  assert.ok(outputRoot);
-  return fs
-    .readdirSync(outputRoot, { recursive: true })
-    .filter((entry): entry is string => typeof entry === "string" && entry.endsWith(".jsonl"))
-    .flatMap((entry) => fs.readFileSync(path.join(outputRoot, entry), "utf8").trim().split("\n"))
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
 }
 
 function restoreEnv(name: string, value: string | undefined) {

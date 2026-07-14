@@ -11,10 +11,6 @@ run-name: >-
       'Retry failed Codex reviews' ||
     (github.event_name == 'repository_dispatch' &&
       github.event.action == 'clawsweeper_target_sweep' &&
-      github.event.client_payload.item_number != '') &&
-      format('Review event item {0}#{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number) ||
-    (github.event_name == 'repository_dispatch' &&
-      github.event.action == 'clawsweeper_target_sweep' &&
       github.event.client_payload.hot_intake == 'true') &&
       format('Review hot target repo {0}', github.event.client_payload.target_repo || 'openclaw/openclaw') ||
     (github.event_name == 'repository_dispatch' &&
@@ -1269,7 +1265,7 @@ jobs:
           fi
           event_paths_file=".artifacts/exact-event-action-ledger-paths.txt"
           mkdir -p .artifacts
-          pnpm run --silent repair:publish-action-events -- \
+          pnpm run --silent publish-action-events -- \
             --source-root "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT" \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job "$GITHUB_JOB" |
@@ -1285,7 +1281,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$event_paths_file"
-          node dist/repair/publish-action-event-paths.js \
+          node dist/clawsweeper.js publish-action-event-paths \
             --paths-file "$event_paths_file" \
             --message "chore: append exact event action ledger"
 
@@ -1350,15 +1346,18 @@ jobs:
             echo "Late command status action shards existed but no paths were imported." >&2
             exit 1
           fi
+          action_ledger_args=()
           while IFS= read -r event_path; do
             durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
             test -f "$durable_event_path"
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
           done < "$event_paths_file"
-          node dist/repair/publish-action-event-paths.js \
-            --paths-file "$event_paths_file" \
-            --message "chore: append command status action ledger"
+          pnpm run repair:publish-main -- \
+            --message "chore: append command status action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal
 
   target-fanout:
     name: Fan out target repository sweeps
@@ -1382,17 +1381,12 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
       - uses: ./.github/actions/setup-state
-        id: setup-target-fanout-state
         with:
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
-        id: setup-target-fanout-pnpm
         with:
           build-script: build:repair
-
-      - uses: ./.github/actions/setup-action-ledger
-        id: setup-target-fanout-ledger
 
       - name: Create OpenClaw inventory token
         id: openclaw-token
@@ -1412,7 +1406,6 @@ jobs:
           owner: steipete
 
       - name: Dispatch selected targets
-        id: dispatch-selected-targets
         env:
           GH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
@@ -1429,59 +1422,7 @@ jobs:
             --workflow sweep.yml \
             --ref main
 
-      - name: Finalize target fanout dispatch action ledger
-        if: ${{ always() && steps.setup-target-fanout-state.outcome == 'success' && steps.setup-target-fanout-pnpm.outcome == 'success' && steps.setup-target-fanout-ledger.outcome == 'success' }}
-        run: |
-          set -euo pipefail
-          : "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
-          mkdir -p .artifacts
-          node dist/repair/dispatch-action-ledger-cli.js finalize \
-            --lane target-fanout-dispatch \
-            --allow-empty \
-            > .artifacts/target-fanout-dispatch-action-ledger-manifest.json
-
-      - name: Publish target fanout dispatch action ledger
-        if: ${{ always() && steps.setup-target-fanout-state.outcome == 'success' && steps.setup-target-fanout-pnpm.outcome == 'success' && steps.setup-target-fanout-ledger.outcome == 'success' }}
-        run: |
-          set -euo pipefail
-          test -n "${CLAWSWEEPER_STATE_DIR:-}"
-          source_root="${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
-          manifest_file=".artifacts/target-fanout-dispatch-action-ledger-manifest.json"
-          if [ ! -s "$manifest_file" ]; then
-            echo "No target fanout dispatch action events to publish."
-            exit 0
-          fi
-          event_paths_file=".artifacts/target-fanout-dispatch-action-ledger-paths.txt"
-          import_result_file=".artifacts/target-fanout-dispatch-action-ledger-import.json"
-          node dist/repair/dispatch-action-ledger-cli.js publish \
-            --lane target-fanout-dispatch \
-            --manifest "$manifest_file" \
-            --source-root "$source_root" \
-            --state-root "$CLAWSWEEPER_STATE_DIR" > "$import_result_file"
-          if ! jq -e --slurpfile manifest "$manifest_file" \
-            '.eventPaths == $manifest[0].event_paths' \
-            "$import_result_file" >/dev/null; then
-            echo "Imported target fanout dispatch paths do not match the finalized manifest." >&2
-            exit 1
-          fi
-          jq -r '.paths[]?' "$import_result_file" |
-            sort -u > "$event_paths_file"
-          if [ ! -s "$event_paths_file" ]; then
-            echo "Target fanout dispatch shards existed but no paths were imported." >&2
-            exit 1
-          fi
-          while IFS= read -r event_path; do
-            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
-            test -f "$durable_event_path"
-            mkdir -p "$(dirname "$event_path")"
-            cp "$durable_event_path" "$event_path"
-          done < "$event_paths_file"
-          node dist/repair/publish-action-event-paths.js \
-            --paths-file "$event_paths_file" \
-            --message "chore: append target fanout dispatch action ledger"
-
       - name: Publish fanout cursor
-        if: ${{ always() && steps.setup-target-fanout-state.outcome == 'success' && steps.setup-target-fanout-pnpm.outcome == 'success' }}
         run: |
           pnpm run repair:publish-main -- \
             --message "chore: update target fanout cursor" \
@@ -1494,11 +1435,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      # The shared background-admission lock is an opt-in experiment. With the
-      # variable unset, preserve the current-main per-target planner grouping.
-      group: ${{ (github.event.client_payload.item_number || github.event.client_payload.item_numbers || github.event.inputs.item_number || github.event.inputs.item_numbers) && format('clawsweeper-review-admission-{0}', github.run_id) || vars.CLAWSWEEPER_ENABLE_EXACT_REVIEW_BACKGROUND_YIELD == '1' && 'clawsweeper-review-admission-background' || format('clawsweeper-planner-{0}', (github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo) || ((github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '')) && (github.event.inputs.target_repo || ((github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *') && 'openclaw/clawhub' || 'openclaw/openclaw'))) || github.run_id) }}
+      group: ${{ format('clawsweeper-planner-{0}', (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '')) && (github.event.inputs.target_repo || ((github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *') && 'openclaw/clawhub' || 'openclaw/openclaw')) || github.run_id) }}
       cancel-in-progress: false
-      queue: max
     outputs:
       batch_size: ${{ steps.mode.outputs.batch_size }}
       codex_timeout_ms: ${{ steps.mode.outputs.codex_timeout_ms }}
@@ -1596,10 +1534,6 @@ jobs:
         if: ${{ !((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true' && github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) }}
         continue-on-error: true
         working-directory: clawsweeper
-        env:
-          CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "15000"
-          CLAWSWEEPER_PUBLISH_DEADLINE_MS: "15000"
-          CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "5000"
         run: |
           target_slug="${{ steps.target.outputs.target_repo }}"
           target_slug="${target_slug//\//-}"
@@ -1608,7 +1542,7 @@ jobs:
             --state "Planning review" \
             --detail "Planner is scanning GitHub for the next review candidates. Candidate counts and shard details will be posted after planning completes." \
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          pnpm run repair:publish-main -- \
+          timeout 20s pnpm run repair:publish-main -- \
             --message "chore: mark sweep planning started" \
             --path "results/sweep-status/${target_slug}.json" \
             --rebase-strategy theirs || echo "::warning::Skipped slow planning-started dashboard publish so candidate selection can start."
@@ -1616,64 +1550,12 @@ jobs:
       - id: mode
         env:
           GH_TOKEN: ${{ github.token }}
-          COMMIT_REVIEW_PAGE_SIZE: ${{ vars.CLAWSWEEPER_COMMIT_REVIEW_PAGE_SIZE || '' }}
-          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          CLAWSWEEPER_EXACT_REVIEW_QUEUE_MAX_AGE_SECONDS: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_MAX_AGE_SECONDS || '900' }}
-          EXACT_REVIEW_BACKGROUND_YIELD_ENABLED: ${{ vars.CLAWSWEEPER_ENABLE_EXACT_REVIEW_BACKGROUND_YIELD || '0' }}
         run: |
           limit() {
             pnpm --dir clawsweeper run --silent workflow -- limit "$1"
           }
           worker_limit() {
             pnpm --dir clawsweeper run --silent workflow -- worker-limit "$@"
-          }
-          exact_review_pressure_status() {
-            local queue_url response generated_at generated_epoch now_epoch queue_max_age_seconds age_seconds pressure
-            queue_url="${QUEUE_URL%/}"
-            response="$(curl --fail --silent --connect-timeout 5 --max-time 10 "$queue_url/api/status" 2>/dev/null)" || return 1
-            generated_at="$(printf '%s' "$response" | jq -r '.exact_review_queue.generated_at // "" | if type == "string" then . else "" end' 2>/dev/null)" || return 1
-            if [ -z "$generated_at" ]; then
-              echo "::warning::Exact-review queue telemetry missing exact_review_queue.generated_at; using idle pressure (fail open)." >&2
-              return 1
-            fi
-            if ! generated_epoch="$(GENERATED_AT="$generated_at" node -e '
-              const value = process.env.GENERATED_AT || "";
-              if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(value)) process.exit(1);
-              const timestamp = Date.parse(value);
-              if (!Number.isFinite(timestamp)) process.exit(1);
-              process.stdout.write(String(Math.floor(timestamp / 1000)));
-            ' 2>/dev/null)"; then
-              echo "::warning::Exact-review queue telemetry has invalid generated_at; using idle pressure (fail open)." >&2
-              return 1
-            fi
-            now_epoch="$(node -e 'process.stdout.write(String(Math.floor(Date.now() / 1000)))')"
-            queue_max_age_seconds="${CLAWSWEEPER_EXACT_REVIEW_QUEUE_MAX_AGE_SECONDS:-900}"
-            if ! [[ "$queue_max_age_seconds" =~ ^[0-9]+$ ]] || [ "$queue_max_age_seconds" -lt 60 ]; then
-              queue_max_age_seconds=900
-            fi
-            age_seconds=$((now_epoch - generated_epoch))
-            if [ "$age_seconds" -gt "$queue_max_age_seconds" ]; then
-              echo "::warning::Exact-review queue telemetry snapshot is stale (generated_at=$generated_at, age_seconds=$age_seconds); using idle pressure (fail open)." >&2
-              return 1
-            fi
-            if [ "$age_seconds" -lt -300 ]; then
-              echo "::warning::Exact-review queue telemetry generated_at is too far in the future (generated_at=$generated_at); using idle pressure (fail open)." >&2
-              return 1
-            fi
-            pressure="$(printf '%s' "$response" | jq -r '.exact_review_queue.pressure.status // "" | if type == "string" then . else "" end' 2>/dev/null)" || return 1
-            case "$pressure" in
-              idle|congested|saturated)
-                printf '%s' "$pressure"
-                ;;
-              unknown|"")
-                echo "::warning::Exact-review pressure is unavailable; using idle pressure (fail open)." >&2
-                return 1
-                ;;
-              *)
-                echo "::warning::Exact-review pressure has unknown status '$pressure'; using idle pressure (fail open)." >&2
-                return 1
-                ;;
-            esac
           }
           active_runs_json() {
             {
@@ -1762,7 +1644,7 @@ jobs:
             local runs total id title status jobs_json active_shards total_shards
             total=0
             runs="$(printf '%s' "$ACTIVE_RUNS_JSON" \
-              | CURRENT_RUN_ID="${GITHUB_RUN_ID:-0}" jq -r '.[] | select((.databaseId | tostring) != env.CURRENT_RUN_ID) | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress") | select(.displayTitle == "Review ClawSweeper items" or .displayTitle == "Review hot ClawSweeper items" or (.displayTitle | startswith("Review target repo ")) or (.displayTitle | startswith("Review hot target repo "))) | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
+              | CURRENT_RUN_ID="${GITHUB_RUN_ID:-0}" STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select((.databaseId | tostring) != env.CURRENT_RUN_ID) | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select(.displayTitle == "Review ClawSweeper items" or .displayTitle == "Review hot ClawSweeper items" or (.displayTitle | startswith("Review target repo ")) or (.displayTitle | startswith("Review hot target repo "))) | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
             while IFS=$'\t' read -r id title status; do
               if [ -z "$id" ]; then
                 continue
@@ -1798,75 +1680,14 @@ jobs:
             done <<< "$runs"
             printf '%s' "$total"
           }
-          active_commit_review_workers() {
-            local runs total id jobs_json active_reviews total_reviews zero_review_plan zero_review_name
-            local reservation_page_size page_size_hard_cap
-            total=0
-            page_size_hard_cap="$(limit commit_review.page_size_hard_cap)"
-            reservation_page_size="${COMMIT_REVIEW_PAGE_SIZE:-}"
-            if ! [[ "$reservation_page_size" =~ ^[0-9]+$ ]] || [ "$reservation_page_size" -lt 1 ]; then
-              reservation_page_size="$(limit commit_review.page_size_default)"
-            fi
-            if [ "$reservation_page_size" -gt "$page_size_hard_cap" ]; then
-              reservation_page_size="$page_size_hard_cap"
-            fi
-            runs="$(printf '%s' "$ACTIVE_RUNS_JSON" \
-              | CURRENT_RUN_ID="${GITHUB_RUN_ID:-0}" jq -r '.[] | select((.databaseId | tostring) != env.CURRENT_RUN_ID) | select(.workflowPath == ".github/workflows/commit-review.yml" and .status == "in_progress") | .databaseId' 2>/dev/null || true)"
-            while IFS= read -r id; do
-              if [ -z "$id" ]; then
-                continue
-              fi
-              jobs_json="$(gh run view "$id" --repo "${{ github.repository }}" --json jobs 2>/dev/null || printf '{"jobs":[]}')"
-              total_reviews="$(printf '%s' "$jobs_json" \
-                | jq '[.jobs[]? | select(.name | startswith("Review commit "))] | length' 2>/dev/null \
-                || printf '0')"
-              active_reviews="$(printf '%s' "$jobs_json" \
-                | jq '[.jobs[]? | select(.name | startswith("Review commit ")) | select(.status == "in_progress" or .status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested")] | length' 2>/dev/null \
-                || printf '0')"
-              zero_review_plan=false
-              # A skipped dynamic-matrix job proves this run planned no review
-              # workers, so its publishing phase should not reserve capacity.
-              zero_review_name='Review commit $'
-              zero_review_name+='{{ matrix.sha }}'
-              if printf '%s' "$jobs_json" | ZERO_REVIEW_NAME="$zero_review_name" \
-                jq -e '[.jobs[]? | select(.name == env.ZERO_REVIEW_NAME) | select(.status == "completed" and .conclusion == "skipped")] | length > 0' >/dev/null 2>&1; then
-                zero_review_plan=true
-              fi
-              if ! [[ "$active_reviews" =~ ^[0-9]+$ ]]; then
-                active_reviews=0
-              fi
-              if ! [[ "$total_reviews" =~ ^[0-9]+$ ]]; then
-                total_reviews=0
-              fi
-              # Between plan completion and matrix materialization, reserve the
-              # configured page size so the next serialized broad planner cannot
-              # claim the same pressure allowance. Queued whole workflows are
-              # excluded above; only an in-progress planner can reserve here.
-              if [ "$active_reviews" -lt 1 ] && [ "$total_reviews" -lt 1 ] \
-                && [ "$zero_review_plan" != "true" ]; then
-                active_reviews="$reservation_page_size"
-              fi
-              total=$((total + active_reviews))
-            done <<< "$runs"
-            printf '%s' "$total"
-          }
           exact_item_shards="$(limit review_shards.exact_item_default)"
           normal_active_floor="$(limit review_shards.normal_active_floor)"
           hard_shard_cap="$(limit review_shards.hard_cap)"
-          exact_review_pressure="idle"
-          if [ "$EXACT_REVIEW_BACKGROUND_YIELD_ENABLED" = "1" ]; then
-            if ! exact_review_pressure="$(exact_review_pressure_status)"; then
-              exact_review_pressure="idle"
-              echo "::warning::Exact-review queue telemetry was unavailable; using idle pressure (fail open)."
-            fi
-          fi
+          commit_page_size="$(limit commit_review.page_size_default)"
           active_critical_workers="$(( $(active_run_count ".github/workflows/repair-cluster-worker.yml") + $(active_sweep_exact_workers) ))"
-          active_background_workers="$(( $(active_commit_review_workers) + $(active_sweep_background_workers) ))"
-          hot_intake_shards="$(worker_limit hot_intake --active-critical "$active_critical_workers" --active-background "$active_background_workers" --exact-review-pressure "$exact_review_pressure")"
-          normal_shards="$(worker_limit normal_review --active-critical "$active_critical_workers" --active-background "$active_background_workers" --exact-review-pressure "$exact_review_pressure")"
-          if [ "$exact_review_pressure" != "idle" ]; then
-            echo "::notice::Exact-review pressure is $exact_review_pressure; throttling broad review intake to normal=$normal_shards and hot=$hot_intake_shards."
-          fi
+          active_background_workers="$(( $(active_run_count ".github/workflows/commit-review.yml") * commit_page_size + $(active_sweep_background_workers) ))"
+          hot_intake_shards="$(worker_limit hot_intake --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
+          normal_shards="$(worker_limit normal_review --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
           hot_intake="${{ ((github.event_name == 'repository_dispatch' && github.event.client_payload.hot_intake == 'true') || (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'true' || 'false' }}"
           exact_item="${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}"
           target_repo="${{ steps.target.outputs.target_repo }}"
@@ -1916,13 +1737,10 @@ jobs:
             if [ "$hot_intake" = "true" ]; then
               lane_shard_cap="$hot_intake_shards"
             fi
-            if ! [[ "$lane_shard_cap" =~ ^[0-9]+$ ]]; then
-              lane_shard_cap="0"
+            if ! [[ "$lane_shard_cap" =~ ^[0-9]+$ ]] || [ "$lane_shard_cap" -lt 1 ]; then
+              lane_shard_cap="1"
             fi
-            if [ "$lane_shard_cap" -lt 1 ]; then
-              echo "::notice::Deferring broad background review because the exact-review pressure cap is occupied."
-              shard_count="0"
-            elif [ "$shard_count" -gt "$lane_shard_cap" ]; then
+            if [ "$shard_count" -gt "$lane_shard_cap" ]; then
               echo "::notice::Capping broad background review shards from $shard_count to scheduler allowance $lane_shard_cap."
               shard_count="$lane_shard_cap"
             fi
@@ -1954,19 +1772,6 @@ jobs:
           GH_TOKEN: ${{ steps.target-read-token.outputs.token || github.token }}
         run: |
           set -euo pipefail
-          if ! [[ "$SHARD_COUNT" =~ ^[0-9]+$ ]]; then
-            echo "Invalid review shard count: $SHARD_COUNT" >&2
-            exit 1
-          fi
-          if [ "$SHARD_COUNT" -lt 1 ]; then
-            echo "::notice::Deferring broad review planning because the exact-review pressure cap is occupied."
-            printf '%s\n' '{"matrix":[],"candidates":[],"capacity":0,"activeCodexTarget":0,"dueBacklog":0,"capacityReason":"deferred: exact-review background cap occupied"}' > plan.json
-            pnpm run --silent workflow -- plan-output \
-              --plan plan.json \
-              --batch-size "$BATCH_SIZE" \
-              --shard-count 1 >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           item_arg=()
           if [ -n "$ITEM_NUMBER" ]; then
             item_arg=(--item-number "$ITEM_NUMBER")
@@ -2022,9 +1827,6 @@ jobs:
         continue-on-error: true
         working-directory: clawsweeper
         env:
-          CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "15000"
-          CLAWSWEEPER_PUBLISH_DEADLINE_MS: "15000"
-          CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "5000"
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
         run: |
@@ -2042,7 +1844,7 @@ jobs:
             --due-backlog "${{ steps.select.outputs.due_backlog }}" \
             --oldest-unreviewed-at "${{ steps.select.outputs.oldest_unreviewed_at }}" \
             --capacity-reason "${{ steps.select.outputs.capacity_reason }}"
-          pnpm run repair:publish-main -- \
+          timeout 20s pnpm run repair:publish-main -- \
             --message "chore: mark sweep review in progress" \
             --path "results/sweep-status/${target_slug}.json" \
             --rebase-strategy theirs || echo "::warning::Skipped slow in-progress dashboard publish so review shards can start."
@@ -2474,12 +2276,12 @@ jobs:
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
           mkdir -p .artifacts
           : > .artifacts/action-ledger-paths.txt
-          pnpm run --silent repair:publish-action-events -- \
+          pnpm run --silent publish-action-events -- \
             --source-root .clawsweeper-repair/action-ledger-download \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job review |
             jq -r '.paths[]?' >> .artifacts/action-ledger-paths.txt
-          pnpm run --silent repair:publish-action-events -- \
+          pnpm run --silent publish-action-events -- \
             --source-root "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT" \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job "$GITHUB_JOB" |
@@ -2500,7 +2302,7 @@ jobs:
             echo "No immutable review action events to publish."
             exit 0
           fi
-          node dist/repair/publish-action-event-paths.js \
+          node dist/clawsweeper.js publish-action-event-paths \
             --paths-file .artifacts/action-ledger-paths.txt \
             --message "chore: append review action ledger"
 
@@ -2523,9 +2325,7 @@ jobs:
           set -euo pipefail
           apply_artifacts_args=(--target-repo "$TARGET_REPO" --artifact-dir artifacts --skip-dashboard --skip-reconcile)
           publish_state="Review publish complete"
-          # download-artifact succeeds without creating its destination when a
-          # zero-cap plan produces no matrix, so initialize both empty inputs.
-          mkdir -p artifacts review-metrics
+          mkdir -p review-metrics
           reviewed_count="$(find artifacts -type f -name '*.md' | wc -l | tr -d ' ')"
           metric_count="$(find review-metrics -type f -name '*.json' | wc -l | tr -d ' ')"
           non_success_metric_count="$(find review-metrics -type f -name '*.json' -print0 | xargs -0 -r jq -r 'select(.review_outcome != "success") | .shard' | wc -l | tr -d ' ')"
@@ -2569,7 +2369,7 @@ jobs:
           fi
           event_paths_file=".artifacts/review-artifact-action-ledger-paths.txt"
           mkdir -p .artifacts
-          pnpm run --silent repair:publish-action-events -- \
+          pnpm run --silent publish-action-events -- \
             --source-root "$source_root" \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job "$GITHUB_JOB" |
@@ -2585,7 +2385,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$event_paths_file"
-          node dist/repair/publish-action-event-paths.js \
+          node dist/clawsweeper.js publish-action-event-paths \
             --paths-file "$event_paths_file" \
             --message "chore: append review artifact action ledger"
 
@@ -2888,7 +2688,7 @@ jobs:
           fi
           event_paths_file=".artifacts/selected-comment-action-ledger-paths.txt"
           mkdir -p .artifacts
-          pnpm run --silent repair:publish-action-events -- \
+          pnpm run --silent publish-action-events -- \
             --source-root "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT" \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job "$GITHUB_JOB" |
@@ -2904,7 +2704,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$event_paths_file"
-          node dist/repair/publish-action-event-paths.js \
+          node dist/clawsweeper.js publish-action-event-paths \
             --paths-file "$event_paths_file" \
             --message "chore: append selected review comment action ledger"
 
@@ -3217,7 +3017,7 @@ jobs:
           fi
           event_paths_file=".artifacts/failed-review-retry-action-ledger-paths.txt"
           mkdir -p .artifacts
-          pnpm run --silent repair:publish-action-events -- \
+          pnpm run --silent publish-action-events -- \
             --source-root "$source_root" \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job "$GITHUB_JOB" |
@@ -3233,7 +3033,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$event_paths_file"
-          node dist/repair/publish-action-event-paths.js \
+          node dist/clawsweeper.js publish-action-event-paths \
             --paths-file "$event_paths_file" \
             --message "chore: append failed review retry action ledger"
 
@@ -3597,7 +3397,6 @@ jobs:
     needs: apply-proof
     if: ${{ always() && needs.apply-proof.result != 'skipped' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -3644,7 +3443,7 @@ jobs:
           fi
           event_paths_file=".artifacts/apply-proof-action-ledger-paths.txt"
           mkdir -p .artifacts
-          pnpm run --silent repair:publish-action-events -- \
+          pnpm run --silent publish-action-events -- \
             --source-root "$source_root" \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job apply-proof |
@@ -3660,7 +3459,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$event_paths_file"
-          node dist/repair/publish-action-event-paths.js \
+          node dist/clawsweeper.js publish-action-event-paths \
             --paths-file "$event_paths_file" \
             --message "chore: append apply proof action ledger"
 
@@ -4190,7 +3989,7 @@ jobs:
           fi
           event_paths_file=".artifacts/apply-action-ledger-paths.txt"
           mkdir -p .artifacts
-          pnpm run --silent repair:publish-action-events -- \
+          pnpm run --silent publish-action-events -- \
             --source-root "$source_root" \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job "$GITHUB_JOB" |
@@ -4206,7 +4005,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$event_paths_file"
-          node dist/repair/publish-action-event-paths.js \
+          node dist/clawsweeper.js publish-action-event-paths \
             --paths-file "$event_paths_file" \
             --message "chore: append apply action ledger"
 

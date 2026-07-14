@@ -5,13 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "./lib.js";
 import { isJsonObject } from "./json-types.js";
-import {
-  AUTOMATION_LIMITS,
-  WORKER_CONFIG,
-  workerLimit,
-  type ExactReviewQueuePressure,
-  type WorkerLane,
-} from "./limits.js";
+import { AUTOMATION_LIMITS, WORKER_CONFIG, workerLimit, type WorkerLane } from "./limits.js";
 
 type ApplyAction = {
   action: string;
@@ -273,9 +267,6 @@ function runCli(): void {
           workerLimit(requiredWorkerLane(optionalString("lane") || positionalString(1)), {
             activeCritical: numberArg("active-critical", 0),
             activeBackground: numberArg("active-background", 0),
-            exactReviewPressure: optionalExactReviewQueuePressure(
-              optionalString("exact-review-pressure"),
-            ),
           }),
         ),
       );
@@ -340,12 +331,6 @@ function requiredWorkerLane(value: string): WorkerLane {
   ]);
   if (allowed.has(value as WorkerLane)) return value as WorkerLane;
   throw new Error(`unknown worker lane: ${value}`);
-}
-
-function optionalExactReviewQueuePressure(value: string): ExactReviewQueuePressure {
-  if (!value || value === "idle") return "idle";
-  if (value === "congested" || value === "saturated") return value;
-  throw new Error(`unknown exact-review pressure: ${value}`);
 }
 
 export function automationLimit(limitPath: string): number {

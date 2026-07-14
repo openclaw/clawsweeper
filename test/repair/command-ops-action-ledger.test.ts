@@ -30,10 +30,7 @@ test("direct repair requeues forward a stable dispatch receipt and publish it", 
   const publishStart = workflow.indexOf("- name: Publish immutable repair requeue action ledger");
   const nextStep = workflow.indexOf("- name: Record requeued work", publishStart);
   const executeFixStart = workflow.indexOf("- name: Execute credited fix artifact");
-  const ledgerSetupStart = workflow.indexOf(
-    "- uses: ./.github/actions/setup-action-ledger",
-    executeFixStart,
-  );
+  const ledgerSetupStart = workflow.indexOf("- uses: ./.github/actions/setup-action-ledger");
   const requeueStart = workflow.indexOf("- name: Requeue source-head repair races");
   const finalizeStep = workflow.slice(finalizeStart, publishStart);
   const publishStep = workflow.slice(publishStart, nextStep);
@@ -42,28 +39,11 @@ test("direct repair requeues forward a stable dispatch receipt and publish it", 
   assert.ok(receiptIndex > dispatchIndex);
   assert.match(source, /deterministicRequeueDispatchKey\(\{/);
   assert.match(source, /authorizationSha256/);
-  assert.match(source, /const dispatchInput = \{/);
-  for (const field of [
-    "repository",
-    "workflow",
-    "job",
-    "dispatch_key",
-    "mode",
-    "runner",
-    "execution_runner",
-    "planner_sandbox",
-    "model",
-    "dry_run",
-    "requeue",
-    "requeue_depth",
-  ]) {
-    assert.match(source, new RegExp(`\\b${field}(?:\\s*:|,)`));
-  }
+  assert.match(source, /depth: nextRequeueDepth/);
   assert.match(source, /boundedNextRequeueDepth\(requeueDepth, maxRequeueDepth\)/);
-  assert.match(source, /identity: dispatchInput/);
-  assert.match(source, /`dispatch_key=\$\{dispatchInput\.dispatch_key\}`/);
-  assert.match(source, /`job=\$\{dispatchInput\.job\}`/);
-  assert.match(source, /`requeue_depth=\$\{dispatchInput\.requeue_depth\}`/);
+  assert.match(source, /`dispatch_key=\$\{dispatchKey\}`/);
+  assert.match(source, /`job=\$\{jobPath\}`/);
+  assert.match(source, /`requeue_depth=\$\{nextRequeueDepth\}`/);
   assert.match(source, /operationKey: `repair-requeue:/);
   assert.match(source, /sourceRevision: authorizationSha256/);
   assert.match(source, /runCommandLifecycleMutation\(lifecycle,/);
@@ -94,106 +74,6 @@ test("direct repair requeues forward a stable dispatch receipt and publish it", 
   assert.match(workflow, /--source-job-path "\$\{\{ inputs\.job \}\}"/);
   assert.match(workflow, /--requeue-depth "\$\{\{ inputs\.requeue_depth \}\}"/);
   assert.match(workflow, /--max-requeue-depth 1/);
-});
-
-test("repair execution publishes crash-safe workflow attempt receipts", () => {
-  const setupAction = readText(".github/actions/setup-action-ledger/action.yml");
-  const workflow = readText(".github/workflows/repair-cluster-worker.yml");
-  const executeJobStart = workflow.indexOf("\n  execute:");
-  const deadlineStart = workflow.indexOf(
-    "- name: Record execute recovery deadline",
-    executeJobStart,
-  );
-  const checkoutStart = workflow.indexOf("- uses: actions/checkout@v7", executeJobStart);
-  const setupStart = workflow.indexOf(
-    "- uses: ./.github/actions/setup-action-ledger",
-    executeJobStart,
-  );
-  const pnpmStart = workflow.indexOf("- uses: ./.github/actions/setup-pnpm", setupStart);
-  const executeStart = workflow.indexOf("- name: Execute credited fix artifact", pnpmStart);
-  const finalizeStart = workflow.indexOf(
-    "- name: Finalize execute-fix action ledger",
-    executeStart,
-  );
-  const publishStart = workflow.indexOf(
-    "- name: Publish immutable execute-fix action ledger",
-    finalizeStart,
-  );
-  const postFlightTokenStart = workflow.indexOf(
-    "- name: Renew target write token for post-flight",
-    publishStart,
-  );
-  const requeueStart = workflow.indexOf("- name: Detect repair requeue requests", publishStart);
-  const executeStep = workflow.slice(executeStart, finalizeStart);
-  const finalizeStep = workflow.slice(finalizeStart, publishStart);
-  const publishStep = workflow.slice(publishStart, postFlightTokenStart);
-
-  assert.ok(executeJobStart >= 0);
-  assert.ok(deadlineStart > executeJobStart);
-  assert.ok(checkoutStart > deadlineStart);
-  assert.ok(setupStart > executeJobStart);
-  assert.ok(pnpmStart > setupStart);
-  assert.ok(executeStart > pnpmStart);
-  assert.ok(finalizeStart > executeStart);
-  assert.ok(publishStart > finalizeStart);
-  assert.ok(postFlightTokenStart > publishStart);
-  assert.ok(requeueStart > publishStart);
-  assert.match(workflow.slice(executeJobStart, deadlineStart), /timeout-minutes: 120/);
-  assert.match(
-    workflow.slice(executeJobStart, deadlineStart),
-    /CLAWSWEEPER_EXECUTE_JOB_WINDOW_SECONDS: "5400"/,
-  );
-  assert.match(
-    workflow.slice(executeJobStart, deadlineStart),
-    /CLAWSWEEPER_EXECUTE_RECOVERY_RESERVE_SECONDS: "900"/,
-  );
-  assert.match(
-    workflow.slice(deadlineStart, checkoutStart),
-    /deadline="\$\(\(started_at \+ CLAWSWEEPER_EXECUTE_JOB_WINDOW_SECONDS\)\)"/,
-  );
-  assert.match(workflow.slice(deadlineStart, checkoutStart), /CLAWSWEEPER_EXECUTE_DEADLINE_EPOCH/);
-  assert.match(setupAction, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT=\$output_root/);
-  assert.match(workflow.slice(pnpmStart, executeStart), /build-script: build:worker/);
-  assert.match(executeStep, /CLAWSWEEPER_ACTION_LEDGER_INVOCATION: execute-fix/);
-  assert.match(
-    executeStep,
-    /node dist\/repair\/execute-fix-attempt\.js "\$\{\{ inputs\.job \}\}" --latest --defer-publication/,
-  );
-  assert.match(
-    executeStep,
-    /remaining_seconds="\$\(\(CLAWSWEEPER_EXECUTE_DEADLINE_EPOCH - now - CLAWSWEEPER_EXECUTE_RECOVERY_RESERVE_SECONDS\)\)"/,
-  );
-  assert.match(
-    executeStep,
-    /timeout --signal=TERM --kill-after=30s "\$\{execute_timeout_seconds\}s"/,
-  );
-  assert.doesNotMatch(executeStep, /timeout --foreground/);
-  assert.doesNotMatch(executeStep, /pnpm run repair:execute-fix-attempt/);
-  assert.doesNotMatch(executeStep, /timeout-minutes:/);
-  assert.match(executeStep, /execute_exit_code=\$\?/);
-  assert.match(executeStep, /echo "exit_code=\$execute_exit_code" >> "\$GITHUB_OUTPUT"/);
-  assert.match(executeStep, /exit "\$execute_exit_code"/);
-  assert.match(
-    finalizeStep,
-    /if: \$\{\{ always\(\) && steps\.execute-action-ledger\.outcome == 'success' && steps\.execute-setup-pnpm\.outcome == 'success' \}\}/,
-  );
-  assert.match(finalizeStep, /EXECUTE_EXIT_CODE:/);
-  assert.match(finalizeStep, /reason=cancelled/);
-  assert.match(finalizeStep, /reason=timeout/);
-  assert.match(finalizeStep, /reason=workflow_failed/);
-  assert.match(finalizeStep, /finalize-action-events/);
-  assert.match(finalizeStep, /--interrupt-open-attempts/);
-  assert.match(finalizeStep, /--reason "\$reason"/);
-  assert.match(publishStep, /steps\.finalize-execute-fix-action-ledger\.outcome == 'success'/);
-  assert.match(
-    publishStep,
-    /source_root="\$\{CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:\?setup-action-ledger output root is required\}"/,
-  );
-  assert.match(publishStep, /repair:publish-action-events/);
-  assert.match(publishStep, /--expected-producer-job "\$GITHUB_JOB"/);
-  assert.match(publishStep, /--state-root "\$CLAWSWEEPER_STATE_DIR"/);
-  assert.match(publishStep, /publish-action-event-paths/);
-  assert.match(publishStep, /--message "chore: append execute-fix action ledger"/);
 });
 
 test("exact review publishes status receipts created after its first ledger publication", () => {
@@ -250,10 +130,6 @@ function assertCommandPublisherUsesCanonicalRoot(step: string): void {
   );
   assert.match(step, /jq -r '\.paths\[\]\?' "\$import_result_file"/);
   assert.match(step, /if \[ ! -s "\$event_paths_file" \]; then[\s\S]*?exit 1[\s\S]*?fi/);
-  assert.match(step, /cp "\$durable_event_path" "\$event_path"/);
-  assert.match(step, /publish-action-event-paths/);
-  assert.match(step, /--paths-file "\$event_paths_file"/);
-  assert.doesNotMatch(step, /action_ledger_args|repair:publish-main/);
   assert.doesNotMatch(step, /command_shard_found/);
   assert.doesNotMatch(step, /\.created > 0/);
   assert.doesNotMatch(step, /exit 0/);

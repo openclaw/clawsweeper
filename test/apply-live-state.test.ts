@@ -317,7 +317,7 @@ test("apply-decisions revalidates review activity before each mutation request",
         pull_head_sha: "head-sha",
         review_activity_cursor: reviewedCursor,
         triage_priority: "P1",
-        merge_risk_labels: JSON.stringify(["merge-risk: 🚨 automation"]),
+        merge_risk_labels: JSON.stringify(["merge-risk: automation"]),
       }),
       321,
       "implemented_on_main",
@@ -368,68 +368,6 @@ test("apply-decisions revalidates review activity before each mutation request",
       readText(join(itemsDir, "321.md")),
       /^action_taken: skipped_changed_since_review$/m,
     );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("apply-decisions fails closed without a reviewed PR activity cursor", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    const mutationLogPath = join(root, "mutations.log");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
-    const synced = reportWithSyncedReviewComment(
-      implementedCloseReport({
-        repository: "openclaw/openclaw",
-        number: 321,
-        type: "pull_request",
-        title: "Legacy reviewed PR",
-        url: "https://github.com/openclaw/openclaw/pull/321",
-        author: "reporter",
-        author_association: "CONTRIBUTOR",
-        labels: JSON.stringify([]),
-        pull_head_sha: "head-sha",
-        review_activity_cursor: "unknown",
-      }),
-      321,
-      "implemented_on_main",
-    );
-    writeFileSync(join(itemsDir, "321.md"), synced.report, "utf8");
-
-    withMockGh(
-      root,
-      promotionGhMock({
-        number: 321,
-        title: "Legacy reviewed PR",
-        labels: [],
-        comment: synced.comment,
-        itemUpdatedAtAfterLabelSyncLogPath: mutationLogPath,
-      }),
-      () => {
-        runApplyDecisionsForTest({
-          targetRepo: "openclaw/openclaw",
-          itemsDir,
-          closedDir,
-          plansDir,
-          reportPath,
-        });
-      },
-    );
-
-    assert.deepEqual(JSON.parse(readText(reportPath)), [
-      {
-        number: 321,
-        action: "kept_open",
-        reason: "stored pull request review activity cursor is missing; fresh review required",
-      },
-    ]);
-    assert.equal(existsSync(mutationLogPath), false);
-    assert.match(readText(join(itemsDir, "321.md")), /^action_taken: proposed_close$/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -428,13 +428,10 @@ export async function flushWorkflowActionEvents(
 function workflowActionEventIsRecoverableStart(event: ActionEvent): boolean {
   return (
     (event.event_type === ACTION_EVENT_TYPES.reviewBatch ||
-      event.event_type === ACTION_EVENT_TYPES.workflowAttempt ||
       event.event_type === ACTION_EVENT_TYPES.reviewItem ||
       event.event_type === ACTION_EVENT_TYPES.reviewRetry ||
-      event.event_type === ACTION_EVENT_TYPES.repairExecute ||
       event.event_type === ACTION_EVENT_TYPES.applyBatch ||
-      event.event_type === ACTION_EVENT_TYPES.applyAction ||
-      event.event_type === ACTION_EVENT_TYPES.proofStage) &&
+      event.event_type === ACTION_EVENT_TYPES.applyAction) &&
     event.action.status === ACTION_EVENT_STATUSES.started
   );
 }
@@ -450,29 +447,8 @@ function workflowActionEventIsUncertainMutationStart(event: ActionEvent): boolea
 function workflowActionEventIsMutationOutcome(event: ActionEvent): boolean {
   return (
     event.attributes?.completion_reason === "mutation_accepted" ||
-    event.attributes?.completion_reason === "mutation_observed" ||
     event.attributes?.completion_reason === "mutation_rejected" ||
-    event.attributes?.completion_reason === "mutation_outcome_unknown" ||
-    event.attributes?.completion_reason === "dispatch_outcome_unknown"
-  );
-}
-
-function latestWorkflowMutationOutcomes(events: readonly ActionEvent[]): ActionEvent[] {
-  const latestByIdempotencyKey = new Map<string, ActionEvent>();
-  for (const event of [...events].sort(
-    (left, right) =>
-      left.phase_seq - right.phase_seq ||
-      left.recorded_at.localeCompare(right.recorded_at) ||
-      left.event_id.localeCompare(right.event_id),
-  )) {
-    if (!workflowActionEventIsMutationOutcome(event)) continue;
-    latestByIdempotencyKey.set(event.idempotency_key_sha256, event);
-  }
-  return [...latestByIdempotencyKey.values()].sort(
-    (left, right) =>
-      left.phase_seq - right.phase_seq ||
-      left.recorded_at.localeCompare(right.recorded_at) ||
-      left.event_id.localeCompare(right.event_id),
+    event.attributes?.completion_reason === "mutation_outcome_unknown"
   );
 }
 
@@ -598,18 +574,15 @@ export function interruptOpenWorkflowActionEvents(
         if (lifecycleEvents.some((event) => workflowActionEventClosesLifecycle(start, event))) {
           continue;
         }
-        const aggregatesChildMutations =
-          start.event_type === ACTION_EVENT_TYPES.workflowAttempt ||
-          start.event_type === ACTION_EVENT_TYPES.reviewBatch ||
-          start.event_type === ACTION_EVENT_TYPES.applyBatch ||
-          (start.event_type === ACTION_EVENT_TYPES.reviewRetry &&
-            start.subject.kind === "workflow");
         const uncertainMutationStarts = current
           .filter(
             (event) =>
               event.operation_id === start.operation_id &&
               event.attempt_id === start.attempt_id &&
-              (aggregatesChildMutations ||
+              (start.event_type === ACTION_EVENT_TYPES.reviewBatch ||
+                start.event_type === ACTION_EVENT_TYPES.applyBatch ||
+                (start.event_type === ACTION_EVENT_TYPES.reviewRetry &&
+                  start.subject.kind === "workflow") ||
                 actionLedgerJson(workflowActionSubjectIdentity(event)) ===
                   actionLedgerJson(workflowActionSubjectIdentity(start))) &&
               workflowActionEventIsUncertainMutationStart(event),
@@ -655,18 +628,21 @@ export function interruptOpenWorkflowActionEvents(
         const openUncertainMutation =
           workflowActionEventIsUncertainMutationStart(start) ||
           openUncertainMutationStarts.length > 0;
+        const aggregatesChildMutations =
+          start.event_type === ACTION_EVENT_TYPES.reviewBatch ||
+          start.event_type === ACTION_EVENT_TYPES.applyBatch ||
+          (start.event_type === ACTION_EVENT_TYPES.reviewRetry &&
+            start.subject.kind === "workflow");
         const relevantMutationEvents = aggregatesChildMutations
           ? mutationEvents
           : lifecycleMutations;
-        const latestMutationOutcomes = latestWorkflowMutationOutcomes(relevantMutationEvents);
-        const unknownMutationOutcome = latestMutationOutcomes
+        const unknownMutationOutcome = relevantMutationEvents
           .filter(
             (event) =>
               event.attributes?.completion_reason === "mutation_outcome_unknown" ||
               event.attributes?.completion_reason === "dispatch_outcome_unknown",
           )
           .at(-1);
-        const latestMutationOutcome = latestMutationOutcomes.at(-1);
         const uncertainMutation = openUncertainMutation || unknownMutationOutcome !== undefined;
         const mutationOccurred =
           workflowActionEventIsUncertainMutationStart(start) ||
@@ -680,11 +656,9 @@ export function interruptOpenWorkflowActionEvents(
           openReceipt?.event_id ??
           (unknownMutationOutcome
             ? unknownMutationOutcome.event_id
-            : latestMutationOutcome
-              ? latestMutationOutcome.event_id
-              : start.event_type === ACTION_EVENT_TYPES.applyAction && lifecycleMutation
-                ? lifecycleMutation.event_id
-                : (lifecycleOutcome?.event_id ?? start.event_id));
+            : start.event_type === ACTION_EVENT_TYPES.applyAction && lifecycleMutation
+              ? lifecycleMutation.event_id
+              : (lifecycleOutcome?.event_id ?? start.event_id));
         const eventInput: ActionEventInput = {
           eventKey: actionEventKey("workflow.interrupted", {
             startEventId: start.event_id,
@@ -2397,22 +2371,14 @@ function actionEventMessage(event: ActionEvent): string {
 
 function machineIdentifier(value: string, maxLength: number): string {
   const source = value.trim();
-  const readable = trimHyphenEdges(source.replace(/[^A-Za-z0-9_.:/@+-]+/g, "-"));
+  const readable = source.replace(/[^A-Za-z0-9_.:/@+-]+/g, "-").replace(/^-+|-+$/g, "");
   if (!readable) throw new Error("workflow action identifier is required");
   if (readable === source && readable.length <= maxLength) return readable;
   const digest = createHash("sha256").update(source).digest("hex").slice(0, 12);
   const prefixLength = maxLength - digest.length - 1;
   if (prefixLength < 1) throw new Error("workflow action identifier limit is too small");
-  const prefix = trimHyphenEdges(readable.slice(0, prefixLength)) || "id";
+  const prefix = readable.slice(0, prefixLength).replace(/-+$/g, "") || "id";
   return `${prefix}-${digest}`;
-}
-
-function trimHyphenEdges(value: string): string {
-  let start = 0;
-  while (start < value.length && value.charCodeAt(start) === 45) start += 1;
-  let end = value.length;
-  while (end > start && value.charCodeAt(end - 1) === 45) end -= 1;
-  return value.slice(start, end);
 }
 
 function workflowPathFromRef(workflowRef: string): string {

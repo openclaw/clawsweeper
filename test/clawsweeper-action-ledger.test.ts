@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  actionEventPublishCoordinationForTest,
   actionEventPublishPathsForTest,
   actionLedgerFailureDisposition,
   applyActionEventDisposition,
@@ -260,22 +259,6 @@ test("action event publication accepts only sorted canonical event and binding p
   assert.throws(
     () => actionEventPublishPathsForTest("ledger/v1/import-bindings/private/raw.json\n"),
     /invalid action event publish path/,
-  );
-});
-
-test("immutable action event publication is explicitly staged", () => {
-  assert.equal(actionEventPublishCoordinationForTest({}), "exclusive");
-  assert.equal(
-    actionEventPublishCoordinationForTest({
-      CLAWSWEEPER_ACTION_LEDGER_IMMUTABLE_PUBLISH: "1",
-    }),
-    "immutable",
-  );
-  assert.equal(
-    actionEventPublishCoordinationForTest({
-      CLAWSWEEPER_ACTION_LEDGER_IMMUTABLE_PUBLISH: "true",
-    }),
-    "exclusive",
   );
 });
 
@@ -537,18 +520,6 @@ test("apply receipts start per item and persist mutation observation before fina
   assert.match(source, /idempotencyIdentity: options\.identity/);
   assert.match(
     applyLoop,
-    /if \(!options\.identity\.startsWith\("review_lease_"\)\) \{[\s\S]*currentApplyMutationLeaseBlock\(\)[\s\S]*throw new ApplyMutationReviewGuardError/,
-  );
-  assert.match(
-    applyLoop,
-    /error instanceof ApplyMutationReviewGuardError \|\|[\s\S]*options\.knownNoMutation\?\.\(error\) === true/,
-  );
-  assert.match(
-    applyLoop,
-    /error instanceof ApplyMutationReviewGuardError && recordApplyMutationGuardBlock[\s\S]*recordApplyMutationGuardBlock\(error\.block\)/,
-  );
-  assert.match(
-    applyLoop,
     /finally \{[\s\S]*recordApplyActionLedgerItemResults\(\{[\s\S]*activeApplyItem = null;/,
   );
   const yieldStart = source.indexOf(
@@ -805,7 +776,7 @@ test("sweep publishes complete immutable shards for every review and apply produ
   assert.match(workflow, /include-hidden-files: true/);
   assert.match(workflow, /--state-root "\$CLAWSWEEPER_STATE_DIR"/);
   assert.match(workflow, /durable_event_path="\$CLAWSWEEPER_STATE_DIR\/\$event_path"/);
-  assert.equal((workflow.match(/publish-action-event-paths/g) ?? []).length, 9);
+  assert.equal((workflow.match(/publish-action-event-paths/g) ?? []).length, 7);
   assert.doesNotMatch(
     workflow,
     /--message "chore: append (?:review|apply).*action ledger"[\s\S]{0,180}--path "ledger\/v1\/events"/,
@@ -837,10 +808,7 @@ test("comment router publishes immutable command receipts for initial and retry 
   assert.match(publishStep, /--lane comment-router/);
   assert.match(publishStep, /repair:action-ledger -- publish/);
   assert.match(publishStep, /--message "chore: append command action ledger"/);
-  assert.match(publishStep, /cp "\$durable_event_path" "\$event_path"/);
-  assert.match(publishStep, /publish-action-event-paths/);
-  assert.match(publishStep, /--paths-file "\$event_paths_file"/);
-  assert.doesNotMatch(publishStep, /action_ledger_args|repair:publish-main/);
+  assert.match(publishStep, /action_ledger_args\+=\(--path "\$event_path"\)/);
   assert.doesNotMatch(
     publishStep,
     /--message "chore: append command action ledger"[\s\S]{0,180}--path "ledger\/v1\/events"/,

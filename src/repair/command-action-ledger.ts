@@ -4,7 +4,6 @@ import {
   ACTION_EVENT_REASON_CODES,
   ACTION_EVENT_STATUSES,
   ACTION_EVENT_TYPES,
-  type ActionEventEvidence,
   type ActionEventReasonCode,
   type ActionEventStatus,
 } from "../action-ledger.js";
@@ -28,7 +27,6 @@ type CommandEventOptions = {
   state?: string;
   dispatchKind?: string;
   queueDepth?: number;
-  evidence?: readonly ActionEventEvidence[];
 };
 
 export type CommandLifecycleInput = {
@@ -44,7 +42,6 @@ type CommandEventChain = {
   phaseSeq: number;
   mutationObserved: boolean;
   uncertainMutationObserved: boolean;
-  mutationRequestSha256ByKind: Map<string, string>;
 };
 
 const eventChains = new Map<string, CommandEventChain>();
@@ -245,8 +242,6 @@ export function runCommandMutation<T>(command: LooseRecord, options: CommandMuta
     mutation: kind,
     requestSha256: stableDigest(options.identity),
   };
-  const chain = commandEventChain(command);
-  chain.mutationRequestSha256ByKind.set(kind, mutationIdentity.requestSha256);
   recordCommandEvent(command, ACTION_EVENT_TYPES.commandMutation, {
     status: ACTION_EVENT_STATUSES.started,
     reasonCode: ACTION_EVENT_REASON_CODES.selected,
@@ -261,7 +256,6 @@ export function runCommandMutation<T>(command: LooseRecord, options: CommandMuta
     idempotencyIdentity: mutationIdentity,
     completionReason: "mutation_attempted",
     state: "mutation_attempted",
-    evidence: [{ kind: "mutation_request", sha256: mutationIdentity.requestSha256 }],
   });
 
   let result: T;
@@ -379,7 +373,6 @@ function recordCommandMutationOutcome(
           ? "mutation_rejected"
           : "mutation_outcome_unknown",
     state: `mutation_${options.outcome}`,
-    evidence: [{ kind: "mutation_request", sha256: options.mutationIdentity.requestSha256 }],
   });
 }
 
@@ -428,11 +421,6 @@ export function recordCommandRequeue(
   },
 ): void {
   const command = lifecycleCommand(input);
-  const dispatchInputSha256 =
-    commandEventChain(command).mutationRequestSha256ByKind.get("requeue_dispatch");
-  if (!dispatchInputSha256) {
-    throw new Error("repair requeue receipt is missing its exact dispatch input digest");
-  }
   recordCommandEvent(command, ACTION_EVENT_TYPES.commandRequeue, {
     status: ACTION_EVENT_STATUSES.requeued,
     reasonCode: ACTION_EVENT_REASON_CODES.retryScheduled,
@@ -443,7 +431,6 @@ export function recordCommandRequeue(
       sourceJobPath: options.sourceJobPath,
       sourceJobSha256: options.sourceJobSha256,
       depth: options.depth,
-      dispatchInputSha256,
     },
     idempotencyIdentity: {
       operation: commandOperationIdentity(command),
@@ -452,12 +439,10 @@ export function recordCommandRequeue(
       sourceJobPath: options.sourceJobPath,
       sourceJobSha256: options.sourceJobSha256,
       depth: options.depth,
-      dispatchInputSha256,
     },
     state: "requeued",
     dispatchKind: "dispatch_repair",
     queueDepth: options.depth,
-    evidence: [{ kind: "dispatch_input", sha256: dispatchInputSha256 }],
   });
 }
 
@@ -530,7 +515,6 @@ function recordCommandEvent(
       retryable: options.retryable ?? options.status === ACTION_EVENT_STATUSES.waiting,
       mutation: options.mutation,
     },
-    ...(options.evidence ? { evidence: options.evidence } : {}),
     attributes: {
       state: machineState(options.state ?? options.status, "unknown"),
       ...(options.completionReason
@@ -591,7 +575,6 @@ function commandEventChain(command: LooseRecord): CommandEventChain {
     phaseSeq: 0,
     mutationObserved: false,
     uncertainMutationObserved: false,
-    mutationRequestSha256ByKind: new Map(),
   };
   eventChains.set(chainKey, created);
   return created;

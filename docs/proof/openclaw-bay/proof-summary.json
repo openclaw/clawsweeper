@@ -1,6 +1,6 @@
 {
   "proof": "OpenClaw Bay deterministic Playwright browser proof",
-  "source_sha": "working-tree-patch-ec0f64c822983d6b630602c7183578a312127a88",
+  "source_sha": "a59c19f698393955404e46fe7bd413a7828adb4a",
   "route": "/bay-demo",
   "data_classification": "fully synthetic and redacted; no live/private dashboard payloads",
   "fixture_sha256": "F766EE78A4E8E4F41EA9F2F64C9C85DFE3D04D7962B647007F073F40AF94ADA5",
@@ -19,7 +19,7 @@
     }
   ],
   "derived_real_tide_snapshot_sha256": "18FAF63BD6529D1F4EB03BF880343E20244413F82FE62029F055AABC13F44DA9",
-  "generated_at": "2026-07-14T13:03:37.833Z",
+  "generated_at": "2026-07-13T23:55:31.448Z",
   "assertions": [
     {
       "name": "real Bay route loaded",
@@ -50,11 +50,6 @@
       "text": "LAST HOUR\nAVG TRIGGER → FINAL REVIEW 12M\n4 JOURNEYS"
     },
     {
-      "name": "handoff pressure shows an observed three-hour trend without browser polling",
-      "status": "PASS",
-      "text": "REVIEW HANDOFF PRESSURE · LAST 3 HOURS\nrising · +87 since first observation\n405\nWAITING TO ADMIT"
-    },
-    {
       "name": "portrait layout stacks the workflow from sand to waterline without horizontal overflow",
       "status": "PASS",
       "scroll_width": 390,
@@ -63,31 +58,31 @@
       "stages": [
         {
           "left": 13,
-          "top": 715,
-          "bottom": 935
+          "top": 576,
+          "bottom": 796
         },
         {
           "left": 13,
-          "top": 935,
-          "bottom": 1155
+          "top": 796,
+          "bottom": 1016
         },
         {
           "left": 13,
-          "top": 1155,
-          "bottom": 1375
+          "top": 1016,
+          "bottom": 1236
         },
         {
           "left": 13,
-          "top": 1375,
-          "bottom": 1595
+          "top": 1236,
+          "bottom": 1456
         },
         {
           "left": 13,
-          "top": 1595,
-          "bottom": 1815
+          "top": 1456,
+          "bottom": 1676
         }
       ],
-      "terminal_top": 1843
+      "terminal_top": 1704
     },
     {
       "name": "crustacean claw animation advances",
@@ -114,7 +109,7 @@
       "status": "PASS",
       "source_hole": 1,
       "target_hole": 1,
-      "target_hole_opacity": 0.430917,
+      "target_hole_opacity": 0.352369,
       "label": "openclaw/openclaw#97722 burrowing"
     },
     {
@@ -131,7 +126,10 @@
     {
       "name": "repository filter isolates selected repo",
       "status": "PASS",
-      "visible_keys": ["openclaw/clawhub#3058", "openclaw/clawhub#97002"]
+      "visible_keys": [
+        "openclaw/clawhub#3058",
+        "openclaw/clawhub#97002"
+      ]
     },
     {
       "name": "drawer exposes safe GitHub links",
@@ -166,14 +164,19 @@
     {
       "name": "preview tide follows explicit visual phases",
       "status": "PASS",
-      "phases": ["incoming", "crest", "receding", "idle"]
+      "phases": [
+        "incoming",
+        "crest",
+        "receding",
+        "idle"
+      ]
     },
     {
       "name": "reduced-motion tide is brief and non-spatial",
       "status": "PASS",
       "duration": "520ms",
       "animation_name": "none",
-      "elapsed_ms": 621
+      "elapsed_ms": 626
     },
     {
       "name": "tide previews do not poll status",
@@ -356,7 +359,12 @@
     }
   ],
   "tide_isolation": {
-    "phases": ["incoming", "crest", "receding", "idle"],
+    "phases": [
+      "incoming",
+      "crest",
+      "receding",
+      "idle"
+    ],
     "before_keys": [
       "openclaw/clawhub#97002",
       "openclaw/clawsweeper#97003",

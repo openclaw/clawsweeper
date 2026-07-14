@@ -119,7 +119,6 @@ import {
   ghErrorText,
   ghJsonWithRetry as ghJson,
   ghJsonWithRetryAsync as ghJsonAsync,
-  ghPagedLimitWithRetry as ghPagedLimit,
   ghPagedWithRetry as ghPaged,
   ghPagedWithRetryAsync as ghPagedAsync,
   ghSpawn,
@@ -129,16 +128,6 @@ import {
 import { ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
 import { compactText, escapeRegExp } from "./text-utils.js";
-import {
-  MAX_REVIEWED_PR_ACTIVITY,
-  REVIEWED_PR_ACTIVITY_THREADS_QUERY,
-  ReviewedPrActivityGuardError,
-  createReviewedPrActivityCursor,
-  isReviewedPrActivityCursor,
-  readStableReviewedPrActivityCursor,
-  reviewedPrActivityThreadsPageFromGraphql,
-  runReviewedPrActivityGuardedMutation,
-} from "../review-activity-cursor.js";
 import {
   flushCommandActionEvents,
   recordCommandClaimed,
@@ -489,7 +478,6 @@ function routedCommandForComment(comment: JsonValue): LooseRecord | null {
     review_lease_comment_id: parsed.review_lease_comment_id ?? null,
     expected_item_updated_at: parsed.expected_item_updated_at ?? null,
     expected_source_revision: parsed.expected_source_revision ?? null,
-    expected_review_activity_cursor: parsed.expected_review_activity_cursor ?? null,
     finding_id: parsed.finding_id ?? null,
     ...forcedReplayCommandFields({ forceReprocess, attemptId }),
     status: "pending",
@@ -1151,7 +1139,6 @@ function classifyCommand(command: LooseRecord): JsonValue {
         ? {
             intent: "clawsweeper_auto_merge",
             expected_head_sha: approvedProofOverride.expected_head_sha,
-            expected_review_activity_cursor: approvedProofOverride.expected_review_activity_cursor,
             repair_reason: approvedProofOverride.reason,
           }
         : activationRepairReason
@@ -1725,7 +1712,6 @@ function approvedMissingProofNeedsHuman(command: LooseRecord, target: LooseRecor
   return {
     reason,
     expected_head_sha: latest.parsed.expected_head_sha,
-    expected_review_activity_cursor: (latest.parsed as LooseRecord).expected_review_activity_cursor,
     note: proofOverrideDescriptionNote({
       ...command,
       repair_reason: reason,
@@ -1902,18 +1888,6 @@ function executeCommand(command: LooseRecord) {
         ...action,
         status,
         reason: trustedAutomationLeaseBlock.reason,
-      }));
-      return;
-    }
-    const trustedAutomationActivityBlock = trustedAutomationReviewActivityBlockReason(command);
-    if (trustedAutomationActivityBlock) {
-      const status = trustedAutomationActivityBlock.retryable ? "waiting" : "skipped";
-      command.status = status;
-      command.reason = trustedAutomationActivityBlock.reason;
-      command.actions = command.actions.map((action: JsonValue) => ({
-        ...action,
-        status,
-        reason: trustedAutomationActivityBlock.reason,
       }));
       return;
     }
@@ -2353,19 +2327,6 @@ function executeCommand(command: LooseRecord) {
       : commandHasWaitingRepairDispatch(command)
         ? "waiting"
         : "executed";
-  } catch (error) {
-    if (!(error instanceof ReviewedPrActivityGuardError)) throw error;
-    const status = error.block.retryable ? "waiting" : "skipped";
-    command.status = status;
-    command.reason = error.block.reason;
-    command.review_activity_blocked_mutation = error.mutationKind;
-    command.actions = command.actions.map((action: JsonValue) => {
-      const actionStatus = String(action.status ?? "");
-      if (["active", "claimed", "dispatched", "executed", "recovered"].includes(actionStatus)) {
-        return action;
-      }
-      return { ...action, status, reason: error.block.reason };
-    });
   } finally {
     clearTerminalMaintainerCommandReaction(command);
   }
@@ -2391,20 +2352,12 @@ function runGitHubTextMutation(
 ) {
   const attempts = githubMutationRetryAttempts(options);
   const { attempts: _attempts, ...runOptions } = options;
-  const operation = () =>
-    runReviewedPrActivityGuardedMutation({
-      intent: String(command.intent ?? ""),
-      mutationKind: kind,
-      refresh: () => trustedAutomationReviewActivityBlockReason(command),
-      operation: () => ghText(ghArgs, runOptions),
-    });
   return runCommandMutationWithRetry(command, {
     kind,
     identity,
-    operation,
+    operation: () => ghText(ghArgs, runOptions),
     attempts,
     shouldRetry: (error) => {
-      if (error instanceof ReviewedPrActivityGuardError) return false;
       try {
         if (knownNoMutation?.(error)) return false;
       } catch {
@@ -2413,8 +2366,7 @@ function runGitHubTextMutation(
       return ghRetryKind(error) !== "none";
     },
     beforeRetry: (error, attempt) => sleepMs(ghRetryWaitMs(ghRetryKind(error), attempt - 1)),
-    knownNoMutation: (error) =>
-      error instanceof ReviewedPrActivityGuardError || knownNoMutation?.(error) === true,
+    ...(knownNoMutation ? { knownNoMutation } : {}),
   });
 }
 
@@ -2429,15 +2381,8 @@ function runGitHubTextMutationOnce(
   return runCommandMutation(command, {
     kind,
     identity,
-    operation: () =>
-      runReviewedPrActivityGuardedMutation({
-        intent: String(command.intent ?? ""),
-        mutationKind: kind,
-        refresh: () => trustedAutomationReviewActivityBlockReason(command),
-        operation: () => ghText(ghArgs, options),
-      }),
-    knownNoMutation: (error) =>
-      error instanceof ReviewedPrActivityGuardError || knownNoMutation?.(error) === true,
+    operation: () => ghText(ghArgs, options),
+    ...(knownNoMutation ? { knownNoMutation } : {}),
   });
 }
 
@@ -2451,15 +2396,8 @@ function runGitHubSpawnMutation(
   return runCommandMutation(command, {
     kind,
     identity,
-    operation: () =>
-      runReviewedPrActivityGuardedMutation({
-        intent: String(command.intent ?? ""),
-        mutationKind: kind,
-        refresh: () => trustedAutomationReviewActivityBlockReason(command),
-        operation: () => ghSpawn(ghArgs, options),
-      }),
+    operation: () => ghSpawn(ghArgs, options),
     outcome: (result) => (result.status === 0 && !result.error ? "accepted" : "unknown"),
-    knownNoMutation: (error) => error instanceof ReviewedPrActivityGuardError,
   });
 }
 
@@ -2473,8 +2411,7 @@ function runGitHubBestEffortMutation(
   try {
     runGitHubTextMutationOnce(command, kind, identity, ghArgs, {}, knownNoMutation);
     return true;
-  } catch (error) {
-    if (error instanceof ReviewedPrActivityGuardError) throw error;
+  } catch {
     return false;
   }
 }
@@ -3678,7 +3615,7 @@ function postIssueComment(command: LooseRecord, number: number, body: string) {
   const payloadPath = writePayload(repoRoot(), `autoclose-comment-${number}`, { body });
   runGitHubTextMutation(
     command,
-    "autoclose_preclose_comment",
+    "comment_create",
     { repository: command.repo, number, bodySha256: commentBodySha256(body) },
     [
       "api",
@@ -3718,15 +3655,6 @@ function executeAutomerge(command: LooseRecord) {
   const stoppedReason = repairLoopStoppedReason(command);
   if (stoppedReason) {
     return { action: "merge", status: "blocked", reason: stoppedReason, merge_method: "squash" };
-  }
-  const initialReviewActivityBlock = trustedAutomationReviewActivityBlockReason(command);
-  if (initialReviewActivityBlock) {
-    return {
-      action: "merge",
-      status: initialReviewActivityBlock.retryable ? "waiting" : "blocked",
-      reason: initialReviewActivityBlock.reason,
-      merge_method: "squash",
-    };
   }
   const transientWait = automergeTransientWaitConfig(process.env);
   const transientObservations: LooseRecord[] = [];
@@ -3818,15 +3746,6 @@ function executeAutomerge(command: LooseRecord) {
       action: "merge",
       status: reviewLeaseBlock.retryable ? "waiting" : "blocked",
       reason: reviewLeaseBlock.reason,
-      merge_method: "squash",
-    };
-  }
-  const reviewActivityBlock = trustedAutomationReviewActivityBlockReason(command);
-  if (reviewActivityBlock) {
-    return {
-      action: "merge",
-      status: reviewActivityBlock.retryable ? "waiting" : "blocked",
-      reason: reviewActivityBlock.reason,
       merge_method: "squash",
     };
   }
@@ -4363,113 +4282,6 @@ function fetchIssue(number: JsonValue) {
   return ghJson(["api", `repos/${targetRepo}/issues/${number}`], {
     attempts: TARGET_LOOKUP_RETRY_ATTEMPTS,
   });
-}
-
-function trustedAutomationReviewThreads(number: number, limit: number): unknown[] {
-  const max = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
-  if (max === 0) return [];
-  const [owner, name] = targetRepo.split("/");
-  if (!owner || !name) throw new Error(`invalid target repository: ${targetRepo}`);
-  const threads: unknown[] = [];
-  const seenCursors = new Set<string>();
-  let after: string | null = null;
-  while (threads.length < max) {
-    const args = [
-      "api",
-      "graphql",
-      "-f",
-      `owner=${owner}`,
-      "-f",
-      `name=${name}`,
-      "-F",
-      `number=${number}`,
-      "-f",
-      `query=${REVIEWED_PR_ACTIVITY_THREADS_QUERY}`,
-    ];
-    if (after) args.push("-f", `after=${after}`);
-    const page = reviewedPrActivityThreadsPageFromGraphql(ghJson<unknown>(args));
-    if (!page) throw new Error(`malformed review thread response for PR #${number}`);
-    threads.push(...page.threads);
-    if (!page.hasNextPage) break;
-    if (!page.endCursor || seenCursors.has(page.endCursor) || page.threads.length === 0) {
-      throw new Error(`review thread pagination did not advance for PR #${number}`);
-    }
-    seenCursors.add(page.endCursor);
-    after = page.endCursor;
-  }
-  return threads.slice(0, max);
-}
-
-function trustedAutomationReviewActivityCursorOnce(number: number): string | null {
-  let remaining = MAX_REVIEWED_PR_ACTIVITY;
-  const reviews = ghPagedLimit<unknown>(
-    `repos/${targetRepo}/pulls/${number}/reviews`,
-    remaining + 1,
-  );
-  if (reviews.length > remaining) return null;
-  remaining -= reviews.length;
-  const inlineComments = ghPagedLimit<unknown>(
-    `repos/${targetRepo}/pulls/${number}/comments`,
-    remaining + 1,
-  );
-  if (inlineComments.length > remaining) return null;
-  remaining -= inlineComments.length;
-  const reviewThreads =
-    inlineComments.length === 0 ? [] : trustedAutomationReviewThreads(number, remaining + 1);
-  if (reviewThreads.length > remaining) return null;
-  return createReviewedPrActivityCursor({ reviews, inlineComments, reviewThreads });
-}
-
-function trustedAutomationReviewActivityCursor(number: number): string | null {
-  return readStableReviewedPrActivityCursor(() =>
-    trustedAutomationReviewActivityCursorOnce(number),
-  );
-}
-
-function trustedAutomationReviewActivityBlockReason(
-  command: LooseRecord,
-): { reason: string; retryable: boolean } | null {
-  if (!command.trusted_bot) return null;
-  const intent = String(command.intent);
-  if (
-    ![
-      "autoclose",
-      "clawsweeper_auto_merge",
-      "clawsweeper_auto_repair",
-      "clawsweeper_needs_human",
-    ].includes(intent)
-  ) {
-    return null;
-  }
-  if (intent === "autoclose" && command.target?.kind !== "pull_request") return null;
-  const expected = command.expected_review_activity_cursor;
-  if (!isReviewedPrActivityCursor(expected)) {
-    return {
-      reason: "trusted ClawSweeper verdict is missing the reviewed PR activity cursor",
-      retryable: false,
-    };
-  }
-  try {
-    const current = trustedAutomationReviewActivityCursor(Number(command.issue_number));
-    if (!current) {
-      return {
-        reason: "pull request review activity exceeds the bounded trusted-automation cursor",
-        retryable: false,
-      };
-    }
-    if (current !== expected) {
-      return {
-        reason: "pull request review activity changed since the trusted ClawSweeper verdict",
-        retryable: false,
-      };
-    }
-    return null;
-  } catch (error) {
-    return {
-      reason: `pull request review activity could not be refreshed: ${compactGhError(error)}`,
-      retryable: true,
-    };
-  }
 }
 
 function fetchIssueAsync(number: JsonValue) {

@@ -1285,7 +1285,7 @@ test("parseTrustedAutomation accepts only trusted ClawSweeper repair signals", (
   const trustedAuthors = new Set(["clawsweeper[bot]"]);
   const comment = {
     user: { login: "clawsweeper[bot]" },
-    body: "Codex review:\n<!-- clawsweeper-action: fix-required review_activity_cursor=v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->\nPlease fix this before merge.",
+    body: "Codex review:\n<!-- clawsweeper-action: fix-required reviewed_at=2026-07-09T21:00:00.000Z -->\nPlease fix this before merge.",
   };
 
   const parsed = parseTrustedAutomation(comment, { trustedAuthors });
@@ -1293,10 +1293,6 @@ test("parseTrustedAutomation accepts only trusted ClawSweeper repair signals", (
   assert.equal(parsed.trusted_bot, true);
   assert.equal(parsed.trusted_bot_author, "clawsweeper[bot]");
   assert.equal(parsed.reviewed_at, "2026-07-09T21:00:00.000Z");
-  assert.equal(
-    parsed.expected_review_activity_cursor,
-    "v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  );
   assert.match(parsed.repair_reason, /structured ClawSweeper/);
 
   assert.equal(
@@ -1390,7 +1386,7 @@ test("parseTrustedAutomation accepts trusted ClawSweeper pass verdicts for autom
   const parsed = parseTrustedAutomation(
     {
       user: { login: "clawsweeper[bot]" },
-      body: "ClawSweeper review passed.\n<!-- clawsweeper-verdict:pass sha=abc123 source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef review_activity_cursor=v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->",
+      body: "ClawSweeper review passed.\n<!-- clawsweeper-verdict:pass sha=abc123 source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->",
     },
     { trustedAuthors },
   );
@@ -1402,10 +1398,6 @@ test("parseTrustedAutomation accepts trusted ClawSweeper pass verdicts for autom
     parsed.expected_source_revision,
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   );
-  assert.equal(
-    parsed.expected_review_activity_cursor,
-    "v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  );
   assert.match(parsed.repair_reason, /verdict: pass/);
 });
 
@@ -1416,8 +1408,8 @@ test("parseTrustedAutomation accepts trusted ClawSweeper close markers for autoc
       user: { login: "clawsweeper[bot]" },
       body: [
         "ClawSweeper proposed closing this PR.",
-        "<!-- clawsweeper-verdict:close item=96097 sha=abc123 confidence=high review_activity_cursor=v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reason=duplicate_or_superseded -->",
-        "<!-- clawsweeper-action:close-required item=96097 sha=abc123 confidence=high review_activity_cursor=v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reason=duplicate_or_superseded -->",
+        "<!-- clawsweeper-verdict:close item=96097 sha=abc123 confidence=high reason=duplicate_or_superseded -->",
+        "<!-- clawsweeper-action:close-required item=96097 sha=abc123 confidence=high reason=duplicate_or_superseded -->",
       ].join("\n"),
     },
     { trustedAuthors },
@@ -1427,10 +1419,6 @@ test("parseTrustedAutomation accepts trusted ClawSweeper close markers for autoc
   assert.equal(parsed.trusted_bot, true);
   assert.equal(parsed.expected_head_sha, "abc123");
   assert.equal(parsed.close_reason, "duplicate_or_superseded");
-  assert.equal(
-    parsed.expected_review_activity_cursor,
-    "v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  );
   assert.match(parsed.autoclose_message, /close-required/);
 
   const issueParsed = parseTrustedAutomation(
@@ -2117,8 +2105,6 @@ test("trusted autoclose markers are live close gated before close execution", ()
   assert.match(autocloseClassifier, /fetchPullRequestApi\(command\.issue_number\)/);
   assert.match(autocloseClassifier, /requestedReviewers:\s*pullApi\.requested_reviewers/);
   assert.match(autocloseExecutor, /liveTrustedCloseBlockReason\(command,\s*liveTarget\)/);
-  assert.match(autocloseExecutor, /postIssueComment\(/);
-  assert.match(source, /function postIssueComment[\s\S]*"autoclose_preclose_comment"/);
   assert.match(trustedCloseGate, /reviewedHeadShaBlockReason\(\{/);
   assert.match(trustedCloseGate, /markerName:\s*"close"/);
   assert.match(autocloseClassifier, /status:\s*"skipped"/);
@@ -2497,7 +2483,7 @@ test("parseTrustedAutomation treats trusted ClawSweeper needs-human as a pause",
   const parsed = parseTrustedAutomation(
     {
       user: { login: "clawsweeper[bot]" },
-      body: "ClawSweeper needs maintainer judgment.\n<!-- clawsweeper-verdict:needs-human sha=abc123 source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef review_activity_cursor=v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->",
+      body: "ClawSweeper needs maintainer judgment.\n<!-- clawsweeper-verdict:needs-human sha=abc123 source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->",
     },
     { trustedAuthors },
   );
@@ -2509,10 +2495,6 @@ test("parseTrustedAutomation treats trusted ClawSweeper needs-human as a pause",
   );
   assert.equal(parsed.expected_head_sha, "abc123");
   assert.equal(parsed.reviewed_at, "2026-07-09T21:00:00.000Z");
-  assert.equal(
-    parsed.expected_review_activity_cursor,
-    "v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  );
   assert.match(parsed.repair_reason, /needs-human/);
 });
 

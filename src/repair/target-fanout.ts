@@ -1,14 +1,9 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveCommand } from "../command.js";
-import {
-  flushDispatchActionEvents,
-  runDispatchWithReceiptSync,
-} from "./dispatch-action-receipts.js";
 import { parseArgs, repoRoot } from "./lib.js";
 
 type JsonRecord = Record<string, unknown>;
@@ -76,10 +71,9 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   };
 
   const repositories = await loadEligibleRepositories(config, options.owners);
-  const initialCursor = readCursor(options.cursorPath);
   const selection = selectRepositories(repositories, {
     limit: options.limit,
-    cursor: initialCursor,
+    cursor: readCursor(options.cursorPath),
   });
 
   const commands = selection.repositories.map((repository) =>
@@ -99,49 +93,29 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   }
 
   const dispatched: string[] = [];
-  let checkpointCursor = initialCursor;
-  let dispatchError: unknown = null;
-  try {
-    for (const [index, repository] of selection.repositories.entries()) {
-      const commandArgs = commands[index];
-      if (!commandArgs) continue;
-      if (options.dryRun) {
-        console.log(`dry-run ${commandArgs.join(" ")}`);
-      } else {
-        runDispatchWithReceiptSync({
-          ...workflowDispatchReceipt(repository, options),
-          operation: () => runGh(commandArgs, dispatchEnv()),
-        });
-        checkpointCursor = cursorAfterSelections(initialCursor, index + 1, selection.total);
-        writeCursor(options.cursorPath, checkpointCursor);
-      }
-      dispatched.push(repository.targetRepo);
+  for (const [index, repository] of selection.repositories.entries()) {
+    const commandArgs = commands[index];
+    if (!commandArgs) continue;
+    if (options.dryRun) {
+      console.log(`dry-run ${commandArgs.join(" ")}`);
+    } else {
+      runGh(commandArgs, dispatchEnv());
     }
-  } catch (error) {
-    dispatchError = error;
+    dispatched.push(repository.targetRepo);
   }
-  try {
-    await flushDispatchActionEvents();
-  } catch (error) {
-    if (!dispatchError) dispatchError = error;
-    else
-      console.error(
-        `[target-fanout] failed to finalize dispatch receipts: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-  }
-  if (dispatchError) throw dispatchError;
 
+  if (!options.dryRun) {
+    writeCursor(options.cursorPath, selection.cursor);
+  }
   process.stdout.write(
     `${JSON.stringify(
       {
         mode: options.mode,
         total: selection.total,
         dispatched,
-        next_cursor: options.dryRun ? selection.cursor : checkpointCursor,
+        next_cursor: selection.cursor,
         dry_run: options.dryRun,
-        cursor_written: !options.dryRun && dispatched.length > 0,
+        cursor_written: !options.dryRun,
       },
       null,
       2,
@@ -295,40 +269,6 @@ function workflowDispatchArgs(repository: SelectedRepository, options: FanoutOpt
   return args;
 }
 
-function workflowDispatchReceipt(repository: SelectedRepository, options: FanoutOptions) {
-  const targetBranch = repository.defaultBranch || "main";
-  if (options.mode !== "audit") {
-    return {
-      component: "target_fanout",
-      operationKey: `target-fanout:${options.mode}:${repository.targetRepo}`,
-      dispatchKind: "repository" as const,
-      repository: options.dispatchRepo,
-      dispatchTarget: "clawsweeper_target_sweep",
-      dispatchInput: {
-        event_type: "clawsweeper_target_sweep",
-        target_repo: repository.targetRepo,
-        target_branch: targetBranch,
-        hot_intake: options.mode === "hot-intake",
-        batch_size: 1,
-        shard_count: 1,
-      },
-    };
-  }
-  return {
-    component: "target_fanout",
-    operationKey: `target-fanout:audit:${repository.targetRepo}`,
-    dispatchKind: "workflow" as const,
-    repository: options.dispatchRepo,
-    dispatchTarget: options.workflow,
-    dispatchInput: {
-      workflow: options.workflow,
-      ref: options.ref,
-      target_repo: repository.targetRepo,
-      audit_dashboard: true,
-    },
-  };
-}
-
 function readCursor(cursorPath: string): number {
   if (!existsSync(cursorPath)) return 0;
   const parsed = JSON.parse(readFileSync(cursorPath, "utf8")) as unknown;
@@ -345,13 +285,7 @@ function writeCursor(cursorPath: string, cursor: number): void {
 function writeFileSyncWithDirs(filePath: string, content: string): void {
   const dir = dirname(filePath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const temporaryPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
-  try {
-    writeFileSync(temporaryPath, content);
-    renameSync(temporaryPath, filePath);
-  } finally {
-    rmSync(temporaryPath, { force: true });
-  }
+  writeFileSync(filePath, content);
 }
 
 function runGh(args: readonly string[], env: NodeJS.ProcessEnv): string {
@@ -408,10 +342,6 @@ function positiveNumber(value: string, label: string): number {
 
 function normalizeCursor(cursor: number, length: number): number {
   return ((cursor % length) + length) % length;
-}
-
-function cursorAfterSelections(initialCursor: number, selected: number, total: number): number {
-  return total > 0 ? normalizeCursor(initialCursor + selected, total) : 0;
 }
 
 function csvArg(value: unknown): string[] | undefined {
