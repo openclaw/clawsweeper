@@ -210,15 +210,22 @@ test("issue implementation rechecks opt-out labels immediately before branch pus
 
 test("repair publication pushes the accepted checkout through isolated Git auth", () => {
   const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  const isolation = readText(path.join(process.cwd(), "src/repair/git-network-isolation.ts"));
   assert.match(source, /assertTargetPublicationGitConfiguration\(cwd, timeoutMs\)/);
-  assert.match(source, /GIT_ASKPASS: askpassPath/);
-  assert.match(source, /\["-c", "credential\.helper=", "-c", `core\.hooksPath=\$\{hooksPath\}`/);
+  assert.match(source, /runIsolatedGitNetwork\(\{ args, cwd, env, timeoutMs, token \}\)/);
+  assert.match(isolation, /GIT_ASKPASS: askpassPath/);
+  assert.match(isolation, /`--git-dir=\$\{networkGitDir\}`/);
+  assert.match(isolation, /GIT_OBJECT_DIRECTORY: source\.objectDirectory/);
+  assert.match(isolation, /"push\.gpgSign=false"/);
+  assert.match(isolation, /"push\.recurseSubmodules=no"/);
+  assert.match(isolation, /"submodule\.recurse=false"/);
   assert.match(source, /assertTargetCheckoutBinding\(targetDir, checkoutBinding/);
   assert.match(source, /sourceRef: checkoutBinding\.headSha/);
   assert.match(
     source,
     /\["push", "--no-verify", remote, `\$\{sourceRef\}:\$\{pull\.head\.ref\}`\]/,
   );
+  assert.match(source, /if \(publishedSha !== sourceRef\)/);
   assert.doesNotMatch(source, /gh", \["auth", "setup-git"\]/);
   assert.doesNotMatch(source, /`HEAD:\$\{pull\.head\.ref\}`/);
 });
@@ -231,7 +238,10 @@ test("repair contract gates the final cumulative tree, not individual checkpoint
     "four checkpoint call sites plus the ordinary commit helper should remain",
   );
   assert.doesNotMatch(source, /commitRepairCheckpointIfNeeded|checkpointBaseHead/);
-  assert.match(source, /enforceFinalRepairContract\(\{ fixArtifact, targetDir, baseBranch \}\)/);
+  assert.match(
+    source,
+    /enforceFinalRepairContract\(\{ fixArtifact, targetDir, baseSha: acceptedBaseSha \}\)/,
+  );
   assert.doesNotMatch(source, /pushIntermediateCheckpoint|pushCheckpoint/);
   assert.match(source, /captureFinalTargetCheckoutBinding\(/);
   assert.match(source, /checkout_binding: checkoutBinding/);
@@ -246,15 +256,19 @@ test("repair contract gates the final cumulative tree, not individual checkpoint
   assert.ok(compact < enforce && enforce < binding && binding < result);
 });
 
-test("final repair contract compares the repaired tree with the latest base", () => {
+test("final repair contract and compaction use the exact accepted base SHA", () => {
   const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
   const start = source.indexOf("function enforceFinalRepairContract(");
   const end = source.indexOf("function pushRecoverableBranch(", start);
   const helper = source.slice(start, end);
   assert.match(source, /\.\/repair-contract\.js/);
-  assert.match(helper, /const baseRef = `origin\/\$\{baseBranch\}`/);
-  assert.match(helper, /"diff", "--name-only", "-z", `\$\{baseRef\}\.\.HEAD`/);
+  assert.match(source, /let acceptedBaseSha = targetBaseSha/);
+  assert.match(source, /acceptedBaseSha = synchronizedBaseSha/);
+  assert.match(source, /baseRef: baseSha/);
+  assert.match(source, /target_base_sha: acceptedBaseSha/);
+  assert.match(helper, /"diff", "--name-only", "-z", `\$\{baseSha\}\.\.HEAD`/);
   assert.match(helper, /enforceRepairContract\(\{ fixArtifact, changedFiles \}\)/);
+  assert.doesNotMatch(helper, /origin\//);
   assert.doesNotMatch(helper, /--porcelain=v1|phase|checkpoint/);
 });
 

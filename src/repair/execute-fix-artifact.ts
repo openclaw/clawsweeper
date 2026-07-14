@@ -20,6 +20,7 @@ import {
   replacementSourceLinkComment,
 } from "./external-messages.js";
 import { runCommand as run } from "./command-runner.js";
+import { runIsolatedGitNetwork } from "./git-network-isolation.js";
 import {
   remainingRepairBudgetMs,
   repairTimeoutBudgetFromEnv,
@@ -325,51 +326,11 @@ function currentCheckoutCloneTimeoutMs() {
 function runGitNetwork(args: string[], cwd: string = targetDir) {
   const timeoutMs = currentNetworkCommandTimeoutMs();
   assertTargetPublicationGitConfiguration(cwd, timeoutMs);
-  const authRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-git-auth-"));
-  const askpassPath = path.join(authRoot, "askpass.sh");
-  const globalConfigPath = path.join(authRoot, "gitconfig");
-  const hooksPath = path.join(authRoot, "hooks");
-  fs.mkdirSync(hooksPath, { mode: 0o700 });
-  fs.writeFileSync(globalConfigPath, "", { mode: 0o600 });
-  fs.writeFileSync(
-    askpassPath,
-    [
-      "#!/bin/sh",
-      'case "$1" in',
-      '  *Username*) printf "%s\\n" "x-access-token" ;;',
-      '  *) printf "%s\\n" "$CLAWSWEEPER_GIT_TOKEN" ;;',
-      "esac",
-      "",
-    ].join("\n"),
-    { mode: 0o700 },
-  );
   const env = ghEnv();
-  for (const name of Object.keys(env)) {
-    if (/^GIT_/i.test(name) || /^(?:SSH_ASKPASS|SSH_ASKPASS_REQUIRE)$/i.test(name)) {
-      delete env[name];
-    }
-  }
   const token =
     String(env.GH_TOKEN ?? env.GITHUB_TOKEN ?? "").trim() ||
     run("gh", ["auth", "token"], { cwd, env, timeoutMs }).trim();
-  Object.assign(env, {
-    CLAWSWEEPER_GIT_TOKEN: token,
-    GIT_ASKPASS: askpassPath,
-    GIT_ASKPASS_REQUIRE: "force",
-    GIT_CONFIG_GLOBAL: globalConfigPath,
-    GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_SYSTEM: globalConfigPath,
-    GIT_TERMINAL_PROMPT: "0",
-  });
-  try {
-    return run("git", ["-c", "credential.helper=", "-c", `core.hooksPath=${hooksPath}`, ...args], {
-      cwd,
-      env,
-      timeoutMs,
-    });
-  } finally {
-    fs.rmSync(authRoot, { recursive: true, force: true });
-  }
+  return runIsolatedGitNetwork({ args, cwd, env, timeoutMs, token });
 }
 
 function currentCodexTimeoutMs(preserveLateWorkerBudget = false) {
@@ -1228,7 +1189,7 @@ function openReplacementPrFromPreparedRepairCheckout({
   });
   const historyCompaction = compactReplacementHistory({
     targetDir,
-    baseBranch,
+    baseSha: prep.target_base_sha,
     fixArtifact,
     contributorCredits,
     checkpointCommits: prep.checkpoint_commits,
@@ -2341,6 +2302,7 @@ function editValidatePrepareMerge({
       }
     },
   });
+  let acceptedBaseSha = targetBaseSha;
   const finalSyncRepairDeltaPaths = run(
     "git",
     ["diff", "--name-only", `${repairDeltaBaseHead}..HEAD`],
@@ -2372,6 +2334,7 @@ function editValidatePrepareMerge({
     const synchronizedBaseSha = run("git", ["rev-parse", `origin/${baseBranch}`], {
       cwd: targetDir,
     }).trim();
+    acceptedBaseSha = synchronizedBaseSha;
     codexReview = reviewAfterFinalBaseSync({
       syncChanged: true,
       currentReview: codexReview,
@@ -2430,14 +2393,14 @@ function editValidatePrepareMerge({
     mode === "replacement"
       ? compactReplacementHistory({
           targetDir,
-          baseBranch,
+          baseSha: acceptedBaseSha,
           fixArtifact,
           contributorCredits,
           checkpointCommits,
         })
       : null;
   if (historyCompaction?.commit) expectedCommit = String(historyCompaction.commit);
-  enforceFinalRepairContract({ fixArtifact, targetDir, baseBranch });
+  enforceFinalRepairContract({ fixArtifact, targetDir, baseSha: acceptedBaseSha });
   const checkoutBinding = captureFinalTargetCheckoutBinding(
     targetDir,
     acceptedCheckoutBinding,
@@ -2450,19 +2413,20 @@ function editValidatePrepareMerge({
     checkpoint_commits: checkpointCommits,
     history_compaction: historyCompaction,
     merge_preflight: buildMergePreflight({ fixArtifact, codexReview }),
+    target_base_sha: acceptedBaseSha,
   };
 }
 
 function compactReplacementHistory({
   targetDir,
-  baseBranch,
+  baseSha,
   fixArtifact,
   contributorCredits,
   checkpointCommits,
 }: LooseRecord) {
   const compaction = compactTargetHistoryWithPlumbing({
     cwd: targetDir,
-    baseRef: `origin/${baseBranch}`,
+    baseRef: baseSha,
     messages: [fixArtifact.pr_title, ...uniqueStrings(coAuthorTrailers(contributorCredits))],
     identity: {
       name: clawsweeperGitUserName(),
@@ -3556,11 +3520,10 @@ function commitCheckpointIfNeeded({ targetDir, message, trailers = [] }: LooseRe
   return checkpoint.status === "committed" ? checkpoint.commit : "";
 }
 
-function enforceFinalRepairContract({ fixArtifact, targetDir, baseBranch }: LooseRecord) {
+function enforceFinalRepairContract({ fixArtifact, targetDir, baseSha }: LooseRecord) {
   if (!repairContract(fixArtifact)) return;
-  const baseRef = `origin/${baseBranch}`;
   const changedFiles = changedFilesFromNameOnlyZ(
-    run("git", ["diff", "--name-only", "-z", `${baseRef}..HEAD`], { cwd: targetDir }),
+    run("git", ["diff", "--name-only", "-z", `${baseSha}..HEAD`], { cwd: targetDir }),
   );
   enforceRepairContract({ fixArtifact, changedFiles });
 }
@@ -3585,8 +3548,17 @@ function pushRecoverableBranch({ targetDir, branch, checkoutBinding = null }: Lo
     : ["push", "--no-verify", remote, `${sourceRef}:${targetRef}`];
   assertIssueImplementationNotPaused();
   runGitNetwork(args, targetDir);
-  if (fetchRemoteRecoverableBranch({ targetDir, branch, required: false })) return;
-  throw new Error(`git push reported success, but refs/heads/${branch} was not visible on origin`);
+  const publishedSha = fetchRemoteRecoverableBranch({ targetDir, branch, required: false });
+  if (!publishedSha) {
+    throw new Error(
+      `git push reported success, but refs/heads/${branch} was not visible on origin`,
+    );
+  }
+  if (publishedSha !== sourceRef) {
+    throw new Error(
+      `published replacement branch moved after validation: expected ${sourceRef}, found ${publishedSha}`,
+    );
+  }
 }
 
 function assertIssueImplementationNotPaused() {
@@ -3625,11 +3597,17 @@ function fetchRemoteRecoverableBranch({ targetDir, branch, required = true }: Lo
       ],
       targetDir,
     );
-    return true;
+    const sha = run("git", ["rev-parse", "--verify", `refs/remotes/origin/${branch}`], {
+      cwd: targetDir,
+    }).trim();
+    if (!/^[0-9a-f]{40,64}$/.test(sha)) {
+      throw new Error(`fetched replacement branch has an invalid object id: ${branch}`);
+    }
+    return sha;
   } catch (error) {
     const detail = String((error as Error).message ?? error);
     if (!required && /couldn't find remote ref|could not find remote ref|not found/i.test(detail)) {
-      return false;
+      return "";
     }
     throw error;
   }
