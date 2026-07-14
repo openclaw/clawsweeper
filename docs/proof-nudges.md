@@ -52,6 +52,47 @@ requests use `bot_proof_mantis_request_planned` or
 `bot_proof_mantis_request_posted`. Hosted dashboard events with those tokens are
 counted in the proof operation counters.
 
+## Mutation Freshness And Receipts
+
+Execute mode establishes one exact-head baseline before proof eligibility reads.
+Immediately before every proof comment, label creation, label addition, and
+label removal request, ClawSweeper reads two consecutive live snapshots and
+requires both to match the baseline:
+
+- the exact pull request head SHA;
+- at most 1,000 combined reviews, inline comments, and review threads,
+  including thread resolution state;
+- at most 1,000 pull request conversation comments.
+
+The activity snapshots are SHA-256 cursors. Raw comment and review bodies are
+never written to reports or receipts. Activity beyond either bound, an
+incomplete read, or any head, review, thread, or conversation drift blocks the
+request. A successful earlier label request does not authorize the next one;
+each request gets its own freshness check.
+
+When action-ledger context is enabled, every request writes an immutable
+pre-request receipt and then one accepted, rejected-before-write, or
+outcome-unknown receipt. Retries retain one business idempotency key while each
+request attempt has a distinct receipt pair. An outcome-unknown response is not
+automatically retried, even when it resembles a transient GitHub error.
+
+Proof comments contain same-head markers, and bot-proof comments use a stable
+body plus the desired label state. After a response loss or process crash, a
+later run checks those public facts before another write. A match records
+`proof_nudge_reconciled` or `bot_proof_decision_reconciled` without claiming a
+new mutation. An open pre-request receipt and its later reconciliation share
+the same hashed business idempotency key.
+
+Reports expose only bounded status and reason strings:
+
+- `skipped_changed_before_mutation` when head or bounded activity changed;
+- `proof_nudge_outcome_unknown` or `bot_proof_mutation_outcome_unknown` when
+  GitHub may have accepted a request but public state cannot confirm it;
+- the reconciliation actions above when public state confirms completion.
+
+Receipts and reports do not contain raw prompts, command logs, comment bodies,
+or review bodies.
+
 ## Marker
 
 Cooldown state lives in the reminder comment body:

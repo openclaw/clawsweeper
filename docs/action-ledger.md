@@ -94,6 +94,13 @@ confidential-identifier checks as every other durable machine-text field.
   idempotency identity but receive separate causal receipt pairs; best-effort
   metadata writes remain one-shot. A later command failure inherits accepted or
   uncertain mutation state instead of being finalized as `mutation: false`.
+- Proof-nudge and bot-proof comment and label writes use the same receipt
+  boundary after revalidating the exact head plus bounded review, inline-comment,
+  review-thread, and conversation activity. Outcome-unknown requests stop
+  automatic retry. Same-head comment markers and desired label state reconcile
+  response loss or crash-open attempts under the original hashed business
+  idempotency key without storing raw prompts, logs, review bodies, or comment
+  bodies and without claiming a second mutation.
 - Explicit command replays require a durable command `attempt_id` derived from
   or forwarded through the production workflow. It scopes command operation,
   attempt, mutation idempotency, dispatch claims, and worker receipt keys to that

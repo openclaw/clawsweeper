@@ -184,3 +184,33 @@ test("proof reconciliation reuses the business idempotency identity without clai
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a crash-open proof attempt reconciles under the same business idempotency key", () => {
+  const root = realpathSync(mkdtempSync(tmpPrefix));
+  try {
+    const context = receiptContext(root, "4202");
+    const mutationIdentity = `proof_nudge_comment:42:${"b".repeat(40)}:2026-07-14T12:00:00Z`;
+    startProofMutationReceipt({
+      context,
+      receiptIdentity: `${mutationIdentity}:request_attempt:1`,
+      mutationIdentity,
+      requestAttempt: 1,
+    });
+    recordProofMutationReconciliation({ context, mutationIdentity });
+
+    const events = readAllSpooledActionEvents(root);
+    const attempt = events.find(
+      (event) => event.attributes?.completion_reason === "mutation_attempted",
+    );
+    const reconciliation = events.find(
+      (event) => event.attributes?.completion_reason === "mutation_reconciled",
+    );
+
+    assert.equal(attempt?.action.status, "started");
+    assert.equal(reconciliation?.action.status, "recovered");
+    assert.equal(reconciliation?.action.mutation, false);
+    assert.equal(attempt?.idempotency_key_sha256, reconciliation?.idempotency_key_sha256);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
