@@ -262,6 +262,7 @@ test("recoverable branch publication carries the pre-validation remote lease", (
   );
   assert.match(replacement, /expectedRemoteSha: branchState\.remote_lease_sha/);
   assert.match(recovery, /const remoteLeaseSha = trustedRemoteBranchSha\(branch, targetDir\)/);
+  assert.match(recovery, /if \(recoveredHeadSha !== remoteLeaseSha\)/);
   assert.match(recovery, /remote_lease_sha: remoteLeaseSha/);
   assert.match(push, /typeof expectedRemoteSha !== "string"/);
   assert.doesNotMatch(push, /trustedRemoteBranchSha\(/);
@@ -273,11 +274,13 @@ test("replacement recovery materializes the fetched commit before branch attachm
   const recoveryEnd = source.indexOf("function commitCheckpointIfNeeded(", recoveryStart);
   const recovery = source.slice(recoveryStart, recoveryEnd);
 
+  const leaseCheck = recovery.indexOf("if (recoveredHeadSha !== remoteLeaseSha)");
   const materialize = recovery.indexOf("materializeTargetCommitWithIsolation({");
   const branchSwitch = recovery.indexOf("switchTargetBranchWithPlumbing({");
+  assert.notEqual(leaseCheck, -1);
   assert.notEqual(materialize, -1);
   assert.notEqual(branchSwitch, -1);
-  assert.ok(materialize < branchSwitch);
+  assert.ok(leaseCheck < materialize && materialize < branchSwitch);
   assert.match(recovery, /expectedHeadSha: recoveredHeadSha/);
 });
 
@@ -303,6 +306,14 @@ test("all repair rebase transitions use isolated Git plumbing", () => {
   assert.doesNotMatch(source, /\brebaseOntoBase\(/);
   assert.doesNotMatch(source, /\bcompleteRebaseIfResolved\(/);
   assert.doesNotMatch(mechanical, /run\("git", \["add"/);
+  const resolverStart = source.indexOf("function resolveAndCompleteMechanicalRebase(");
+  const resolverEnd = source.indexOf("function branchUpdateState(", resolverStart);
+  const resolver = source.slice(resolverStart, resolverEnd);
+  assert.ok(
+    resolver.indexOf("tryResolveMechanicalRebaseConflicts({") <
+      resolver.indexOf("completeMechanicallyResolvedRebase({"),
+  );
+  assert.doesNotMatch(resolver, /unmergedPaths\(/);
   assert.ok(
     [...source.matchAll(/rebaseTargetOntoVerifiedBase\(\{/g)].length >= 3,
     "initial, replacement, and final-base rebases must use isolated plumbing",
@@ -353,6 +364,11 @@ test("final repair contract and compaction use the exact accepted base SHA", () 
   assert.match(helper, /enforceRepairContract\(\{ fixArtifact, changedFiles \}\)/);
   assert.doesNotMatch(helper, /origin\//);
   assert.doesNotMatch(helper, /--porcelain=v1|phase|checkpoint/);
+
+  const syncStart = source.indexOf("const sync = reconcileLatestBaseBeforePush({");
+  const alreadyCurrent = source.indexOf('if (sync.status !== "already-current")', syncStart);
+  const acceptedUpdate = source.indexOf("acceptedBaseSha = synchronizedBaseSha", syncStart);
+  assert.ok(syncStart < acceptedUpdate && acceptedUpdate < alreadyCurrent);
 });
 
 test("contributor repair review loop stays on one pinned target base", () => {

@@ -40,6 +40,7 @@ import {
   currentHead,
   ensureMergeBaseAvailable,
   isAncestor,
+  type RebaseOntoBaseResult,
   unmergedPaths,
 } from "./git-repo-utils.js";
 import {
@@ -915,13 +916,11 @@ function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
       previous_head: rebaseResult.previous_head,
       current_head: rebaseResult.current_head,
     });
-    const mechanicalConflictResolution = tryResolveMechanicalRebaseConflicts({
+    rebaseResult = resolveAndCompleteMechanicalRebase({
       targetDir,
       rebaseResult,
+      progressLabel: "mechanically resolved rebase conflicts",
     });
-    if (mechanicalConflictResolution.status === "resolved") {
-      logProgress("mechanically resolved rebase conflicts", mechanicalConflictResolution);
-    }
 
     fastRepair = tryAutomergeFastRebaseRepair({
       baseBranch,
@@ -1528,6 +1527,30 @@ function completeMechanicallyResolvedRebase({ targetDir }: { targetDir: string }
   throw new Error("mechanical rebase did not complete after resolving repeated conflicts");
 }
 
+function resolveAndCompleteMechanicalRebase({
+  targetDir,
+  rebaseResult,
+  progressLabel,
+}: {
+  targetDir: string;
+  rebaseResult: RebaseOntoBaseResult;
+  progressLabel: string;
+}): RebaseOntoBaseResult {
+  const resolution = tryResolveMechanicalRebaseConflicts({ targetDir, rebaseResult });
+  if (resolution.status !== "resolved") return rebaseResult;
+  logProgress(progressLabel, resolution);
+  const completed = completeMechanicallyResolvedRebase({ targetDir });
+  if (completed.status !== "continued") {
+    throw new Error("mechanically resolved rebase was not continued");
+  }
+  return {
+    ...rebaseResult,
+    status: "rebased",
+    current_head: completed.current_head,
+    detail: [rebaseResult.detail, resolution.reason, completed.detail].filter(Boolean).join("\n"),
+  };
+}
+
 function branchUpdateState({ targetDir, sourceHead }: LooseRecord) {
   const rewritten =
     /^[0-9a-f]{40}$/i.test(String(sourceHead ?? "")) &&
@@ -1616,18 +1639,16 @@ function executeReplacementBranch({
     fixArtifact,
   });
   prepareTargetToolchain(targetDir, currentTargetValidationOptions());
-  const rebaseResult = rebaseTargetOntoVerifiedBase({
+  let rebaseResult = rebaseTargetOntoVerifiedBase({
     cwd: targetDir,
     baseRef: `origin/${baseBranch}`,
     timeoutMs: targetValidationTimeoutMs,
   });
-  const mechanicalConflictResolution = tryResolveMechanicalRebaseConflicts({
+  rebaseResult = resolveAndCompleteMechanicalRebase({
     targetDir,
     rebaseResult,
+    progressLabel: "mechanically resolved replacement rebase conflicts",
   });
-  if (mechanicalConflictResolution.status === "resolved") {
-    logProgress("mechanically resolved replacement rebase conflicts", mechanicalConflictResolution);
-  }
 
   const prep = editValidatePrepareMerge({
     fixArtifact,
@@ -2360,6 +2381,10 @@ function editValidatePrepareMerge({
     repositoryContext,
     sourceHead,
   });
+  const synchronizedBaseSha = run("git", ["rev-parse", `origin/${baseBranch}`], {
+    cwd: targetDir,
+  }).trim();
+  acceptedBaseSha = synchronizedBaseSha;
   logProgress("final base sync result", { mode, attempt: 1, status: sync.status });
   updateAutomergeProgressStatus({
     id: `validation-review-${mode}-1`,
@@ -2369,10 +2394,6 @@ function editValidatePrepareMerge({
     headSha: currentHead(targetDir),
   });
   if (sync.status !== "already-current") {
-    const synchronizedBaseSha = run("git", ["rev-parse", `origin/${baseBranch}`], {
-      cwd: targetDir,
-    }).trim();
-    acceptedBaseSha = synchronizedBaseSha;
     codexReview = reviewAfterFinalBaseSync({
       syncChanged: true,
       currentReview: codexReview,
@@ -3502,6 +3523,11 @@ function checkoutRecoverableReplacementBranch({
     const recoveredHeadSha = run("git", ["rev-parse", `origin/${branch}`], {
       cwd: targetDir,
     }).trim();
+    if (recoveredHeadSha !== remoteLeaseSha) {
+      throw new Error(
+        `recoverable branch ${branch} changed between API lease and fetch: expected ${remoteLeaseSha}, fetched ${recoveredHeadSha}`,
+      );
+    }
     materializeTargetCommitWithIsolation({
       cwd: targetDir,
       expectedHeadSha: recoveredHeadSha,
