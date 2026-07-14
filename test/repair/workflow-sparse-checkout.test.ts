@@ -91,6 +91,19 @@ test("repair comment router sparse checkout includes action ledger runtime", () 
   }
 });
 
+test("spam scanner sparse checkout includes action ledger runtime", () => {
+  const workflow = readText(".github/workflows/spam-scanner.yml");
+  const entries = sparseCheckoutEntries(workflow);
+
+  for (const requiredPath of [
+    "src/action-ledger-files.ts",
+    "src/action-ledger-runtime.ts",
+    "src/action-ledger.ts",
+  ]) {
+    assert.ok(entries.has(requiredPath), `spam scanner missing ${requiredPath}`);
+  }
+});
+
 test("sweep workflow preserves manual target branches and hydrates exact branches live", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const dispatchTargetBranchResolver =

@@ -63,6 +63,8 @@ checkpoint, and status-only commits are intentionally omitted.
   retry, and remote blob verification.
 - Preserved finalized GitHub activity dispatch receipts as a replayable artifact
   before state publication, with idempotent recovery that never redispatches.
+- Included action-ledger source dependencies in the spam scanner's sparse
+  checkout so its repair build matches the full repository build.
 - Preserved crawl-remote's reviewed `limits.cpu_ms` value through immutable
   release packaging and post-transfer deployment verification.
 - Reverted the action-lifecycle expansion from PR #521, restoring the pre-merge ClawSweeper paths while retaining later exact-review throughput fixes and retrying coalesced reconciliations after any partial lookup failure.
