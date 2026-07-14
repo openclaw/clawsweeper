@@ -13,6 +13,7 @@ import {
   publishMainCommit,
   refreshSourceAfterStatePublish,
   setTokenOrigin,
+  STATE_PUBLISH_TIMING_DEFAULTS,
   stagePaths,
   uniqueNonEmpty,
 } from "../../dist/repair/git-publish.js";
@@ -22,6 +23,7 @@ for (const key of [
   "CLAWSWEEPER_PUBLISH_ROOT",
   "CLAWSWEEPER_PUBLISH_BRANCH",
   "CLAWSWEEPER_PUBLISH_LEASE",
+  "CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS",
   "CLAWSWEEPER_PUBLISH_DEADLINE_MS",
   "CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS",
   "CLAWSWEEPER_PUBLISH_LEASE_TTL_MS",
@@ -34,6 +36,22 @@ for (const key of [
 process.env.CLAWSWEEPER_PUBLISH_LEASE = "false";
 
 const STATE_PUBLISH_LEASE_REF = "refs/heads/clawsweeper-publish-lease/state";
+
+test("default lease timing can recover a crashed owner within the workflow budget", () => {
+  const timing = STATE_PUBLISH_TIMING_DEFAULTS;
+  assert.ok(
+    timing.acquisitionDeadlineMs >
+      timing.leaseTtlMs + timing.leaseMaxWaitMs + timing.commandTimeoutMs,
+  );
+  assert.ok(timing.operationDeadlineMs < timing.leaseTtlMs);
+  assert.ok(
+    timing.acquisitionDeadlineMs +
+      timing.operationDeadlineMs +
+      timing.commandTimeoutMs +
+      timing.workflowMarginMs <=
+      timing.workflowTimeoutMs,
+  );
+});
 
 test("uniqueNonEmpty trims, drops blanks, and deduplicates paths", () => {
   assert.deepEqual(uniqueNonEmpty([" jobs ", "", "results", "jobs", "results "]), [
@@ -1495,8 +1513,9 @@ test("state publishers serialize concurrent workflow commits through the remote 
   installStatePushSleepHook(firstState, 0.3);
 
   const env = leasedPublishEnv({
-    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
-    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
+    CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "5000",
+    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "2000",
+    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
     CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "3000",
     CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "80",
     CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
@@ -1559,8 +1578,9 @@ test("lease backoff outlives the former fixed retry window", async () => {
   const formerRetryWindowMs = waitMs * 4;
   const releaseDelayMs = formerRetryWindowMs + 150;
   const env = leasedPublishEnv({
-    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
-    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
+    CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "3000",
+    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "1000",
+    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "500",
     CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "2000",
     CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "5",
     CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: String(waitMs),
@@ -1692,10 +1712,11 @@ test("state publisher caps far-future remote lease expiry to one local ttl", () 
     result = withEnv(
       leasedPublishEnv({
         CLAWSWEEPER_STATE_DIR: state,
-        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "2000",
-        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
-        CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "500",
-        CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "8",
+        CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "2000",
+        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "600",
+        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "250",
+        CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "800",
+        CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "10",
         CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
       }),
       () =>
@@ -1783,40 +1804,50 @@ test("crashed publisher leaves an expiring lease that a later workflow recovers"
   write(path.join(crashedSource, "results/crashed.txt"), "must not publish\n");
   write(path.join(recoveredSource, "results/recovered.txt"), "recovered\n");
   installStatePushSleepHook(crashedState, 30);
+  const ttlMs = 800;
+  const env = leasedPublishEnv({
+    CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "2000",
+    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "500",
+    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "250",
+    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: String(ttlMs),
+    CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "12",
+    CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
+  });
 
   const crashed = startPublishCli(
     crashedSource,
     crashedState,
     "chore: crash while publishing",
-    leasedPublishEnv({
-      CLAWSWEEPER_PUBLISH_DEADLINE_MS: "60000",
-      CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "60000",
-      CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "100",
-      CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
-    }),
+    env,
   );
   const crashedResult = waitForChild(crashed);
   await waitForRemoteRef(fixture.origin, STATE_PUBLISH_LEASE_REF);
+  const expiresAtMs = remoteLeaseExpiryMs(fixture.origin);
   process.kill(-crashed.pid, "SIGKILL");
   const crashedCompleted = await crashedResult;
   assert.equal(crashedCompleted.signal, "SIGKILL");
   assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), true);
-  await delay(160);
 
-  const recovered = await waitForChild(
-    startPublishCli(
-      recoveredSource,
-      recoveredState,
-      "chore: recover crashed publisher",
-      leasedPublishEnv({
-        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
-        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
-        CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "1000",
-        CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
-      }),
-    ),
+  const recoveryStartedAtMs = Date.now();
+  assert.ok(
+    recoveryStartedAtMs < expiresAtMs,
+    "recovery must start while the crashed lease is live",
   );
+  const recovered = await waitForChild(
+    startPublishCli(recoveredSource, recoveredState, "chore: recover crashed publisher", env),
+  );
+  const recoveryCompletedAtMs = Date.now();
   assert.equal(recovered.status, 0, recovered.stderr);
+  assert.ok(
+    recoveryCompletedAtMs >= expiresAtMs,
+    "recovery must wait until the crashed lease expires",
+  );
+  assert.ok(
+    recoveryCompletedAtMs - recoveryStartedAtMs < 2500,
+    `crashed lease recovered in ${recoveryCompletedAtMs - recoveryStartedAtMs}ms`,
+  );
+  assert.match(recovered.stdout, /State publish lease busy/);
+  assert.match(recovered.stdout, /stale_recovery=true/);
   assert.equal(
     run("git", ["--git-dir", fixture.origin, "show", "state:results/recovered.txt"], fixture.root),
     "recovered\n",
@@ -1848,6 +1879,7 @@ test("lease contention deadline bounds the waiting git process budget", () => {
           withEnv(
             leasedPublishEnv({
               CLAWSWEEPER_STATE_DIR: state,
+              CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "100",
               CLAWSWEEPER_PUBLISH_DEADLINE_MS: "100",
               CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
               CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "100",
@@ -1891,6 +1923,7 @@ test("state publisher bounds repeated unaccepted lease push timeouts", () => {
       withEnv(
         leasedPublishEnv({
           CLAWSWEEPER_STATE_DIR: state,
+          CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "300",
           CLAWSWEEPER_PUBLISH_DEADLINE_MS: "300",
           CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "50",
           CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
@@ -1922,7 +1955,8 @@ test("state publisher recovers an accepted lease acquisition after client timeou
     withEnv(
       leasedPublishEnv({
         CLAWSWEEPER_STATE_DIR: state,
-        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
+        CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "5000",
+        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
         CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1200",
       }),
       () =>
@@ -1971,7 +2005,8 @@ test("state publisher retries a lease acquisition timeout not accepted remotely"
     withEnv(
       leasedPublishEnv({
         CLAWSWEEPER_STATE_DIR: state,
-        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
+        CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "5000",
+        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
         CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1200",
         CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
       }),
@@ -2046,6 +2081,57 @@ test("leased publisher verifies an accepted branch push after the client times o
       fixture.root,
     ),
     "accepted\n",
+  );
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+});
+
+test("leased publisher adopts a path-equivalent remote race before source refresh", () => {
+  const fixture = createStatePublishRemote("path-equivalent-race");
+  const state = path.join(fixture.root, "state");
+  const other = path.join(fixture.root, "other");
+  const source = path.join(fixture.root, "source");
+  const selectedPath = "results/shared.txt";
+  const remoteOnlyPath = "results/remote-only.txt";
+  cloneState(fixture.origin, state);
+  cloneState(fixture.origin, other);
+  fs.mkdirSync(source);
+  write(path.join(source, selectedPath), "same selected blob\n");
+  write(path.join(other, selectedPath), "same selected blob\n");
+  write(path.join(other, remoteOnlyPath), "unrelated remote state\n");
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "publish matching blob and unrelated state"], other);
+  installStateRaceHook(state, other);
+
+  const lines = captureConsoleLog(() =>
+    withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
+      withCwd(source, () =>
+        publishMainCommit({
+          message: "chore: publish path-equivalent state",
+          paths: [selectedPath],
+        }),
+      ),
+    ),
+  );
+
+  assert.equal(
+    lines.some((line) => line.includes("expected blobs are remote")),
+    true,
+  );
+  assert.equal(
+    run("git", ["rev-parse", "HEAD"], state),
+    run("git", ["--git-dir", fixture.origin, "rev-parse", "state"], fixture.root),
+  );
+  assert.equal(
+    fs.readFileSync(path.join(source, remoteOnlyPath), "utf8"),
+    "unrelated remote state\n",
+  );
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${selectedPath}`], fixture.root),
+    "same selected blob\n",
+  );
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${remoteOnlyPath}`], fixture.root),
+    "unrelated remote state\n",
   );
   assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
 });
@@ -3248,6 +3334,18 @@ function remoteRefExists(origin, ref) {
   } catch {
     return false;
   }
+}
+
+function remoteLeaseExpiryMs(origin) {
+  const message = run(
+    "git",
+    ["--git-dir", origin, "show", "-s", "--format=%B", STATE_PUBLISH_LEASE_REF],
+    path.dirname(origin),
+  );
+  const expiresAt = /^expires_at: (.+)$/m.exec(message)?.[1];
+  const expiresAtMs = Date.parse(expiresAt ?? "");
+  assert.ok(Number.isFinite(expiresAtMs), "remote lease must have a valid expiry");
+  return expiresAtMs;
 }
 
 function createRemoteLease(state, { owner, expiresAt }) {

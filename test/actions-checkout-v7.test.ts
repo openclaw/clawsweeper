@@ -14,6 +14,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { parse } from "yaml";
 
+import { STATE_PUBLISH_TIMING_DEFAULTS } from "../dist/repair/git-publish.js";
+
 interface CheckoutStep {
   "continue-on-error"?: boolean;
   env?: Record<string, unknown>;
@@ -26,7 +28,7 @@ interface CheckoutStep {
 }
 
 interface WorkflowDocument {
-  jobs?: Record<string, { if?: string; steps?: CheckoutStep[] }>;
+  jobs?: Record<string, { if?: string; steps?: CheckoutStep[]; "timeout-minutes"?: number }>;
   on?: {
     workflow_dispatch?: { inputs?: Record<string, unknown> };
     workflow_run?: { types?: string[]; workflows?: string[] };
@@ -137,6 +139,26 @@ test("GitHub activity replay builds trusted code before downloading receipts", (
   assert.equal(steps[setupIndex]?.with?.["build-script"], "build:repair");
   assert.ok(selectIndex > setupIndex, "replay job must select receipts after the trusted build");
   assert.ok(downloadIndex > selectIndex, "replay job must select receipts before downloading");
+});
+
+test("GitHub activity publishers reserve the default lease recovery budget", () => {
+  const jobs = [
+    [".github/workflows/github-activity.yml", "notify"],
+    [".github/workflows/github-activity-receipt-replay.yml", "replay-dispatch-receipts"],
+  ];
+  const timing = STATE_PUBLISH_TIMING_DEFAULTS;
+  const requiredMs =
+    timing.acquisitionDeadlineMs +
+    timing.operationDeadlineMs +
+    timing.commandTimeoutMs +
+    timing.workflowMarginMs;
+
+  for (const [workflowPath, jobName] of jobs) {
+    const workflow = parse(readFileSync(workflowPath, "utf8")) as WorkflowDocument;
+    const timeoutMs = (workflow.jobs?.[jobName]?.["timeout-minutes"] ?? 0) * 60 * 1000;
+    assert.equal(timeoutMs, timing.workflowTimeoutMs, workflowPath);
+    assert.ok(requiredMs <= timeoutMs, workflowPath);
+  }
 });
 
 test("GitHub activity rerun attempt two replays attempt one without redispatch", () => {

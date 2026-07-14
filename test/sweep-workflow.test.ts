@@ -2149,6 +2149,7 @@ test("sweep planning status publishers use releasable internal deadlines", () =>
   ];
 
   for (const block of blocks) {
+    assert.match(block, /CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "15000"/);
     assert.match(block, /CLAWSWEEPER_PUBLISH_DEADLINE_MS: "15000"/);
     assert.match(block, /CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "5000"/);
     assert.match(block, /pnpm run repair:publish-main/);

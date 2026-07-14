@@ -72,12 +72,17 @@ const GIT_OBJECT_BATCH_SIZE = 512;
 const GIT_OBJECT_BATCH_MAX_BUFFER = 64 * 1024 * 1024;
 const RECONCILIATION_TUPLE_CHUNK_SIZE = 128;
 const STATE_PUBLISH_LEASE_REF_ROOT = "refs/heads/clawsweeper-publish-lease";
-const STATE_PUBLISH_DEADLINE_MS = 4 * 60 * 1000;
-const STATE_PUBLISH_COMMAND_TIMEOUT_MS = 30 * 1000;
-const STATE_PUBLISH_LEASE_TTL_MS = 5 * 60 * 1000;
+export const STATE_PUBLISH_TIMING_DEFAULTS = Object.freeze({
+  acquisitionDeadlineMs: 7 * 60 * 1000,
+  operationDeadlineMs: 4 * 60 * 1000,
+  commandTimeoutMs: 30 * 1000,
+  leaseTtlMs: 5 * 60 * 1000,
+  leaseMaxWaitMs: 30 * 1000,
+  workflowMarginMs: 2 * 60 * 1000,
+  workflowTimeoutMs: 15 * 60 * 1000,
+});
 const STATE_PUBLISH_LEASE_ATTEMPTS = 24;
 const STATE_PUBLISH_LEASE_WAIT_MS = 3 * 1000;
-const STATE_PUBLISH_LEASE_MAX_WAIT_MS = 30 * 1000;
 const STATE_PUBLISH_STALE_RECOVERY_ATTEMPTS = 2;
 const SKIP_CI_DIRECTIVE_PATTERN =
   /\[(?:skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks:\s*true$/im;
@@ -86,6 +91,8 @@ type GitPublishMetrics = {
   startedAtMs: number;
   deadlineAtMs: number | null;
   commandTimeoutMs: number | null;
+  operationDeadlineMs: number | null;
+  leaseTtlMs: number | null;
   processes: number;
   actions: Map<string, number>;
   phase: string;
@@ -105,6 +112,8 @@ type ObservedStatePublishLease = {
 };
 
 let activeGitPublishMetrics: GitPublishMetrics | null = null;
+
+validateStatePublishTimingDefaults();
 
 export function configureGitUser(): void {
   runGit(["config", "user.name", clawsweeperGitUserName()]);
@@ -269,14 +278,13 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
   const previousMetrics = activeGitPublishMetrics;
   const startedAtMs = Date.now();
   const leased = statePublishLeaseEnabled();
+  const timing = leased ? statePublishTiming() : null;
   const metrics: GitPublishMetrics = {
     startedAtMs,
-    deadlineAtMs: leased
-      ? startedAtMs + positiveEnvInt("CLAWSWEEPER_PUBLISH_DEADLINE_MS", STATE_PUBLISH_DEADLINE_MS)
-      : null,
-    commandTimeoutMs: leased
-      ? positiveEnvInt("CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS", STATE_PUBLISH_COMMAND_TIMEOUT_MS)
-      : null,
+    deadlineAtMs: timing ? startedAtMs + timing.acquisitionDeadlineMs : null,
+    commandTimeoutMs: timing?.commandTimeoutMs ?? null,
+    operationDeadlineMs: timing?.operationDeadlineMs ?? null,
+    leaseTtlMs: timing?.leaseTtlMs ?? null,
     processes: 0,
     actions: new Map(),
     phase: "start",
@@ -308,6 +316,7 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
   configureGitUser();
   gitPublishPhase("lease", `branch=${branch}`);
   const lease = acquireStatePublishLease(remote, branch);
+  startStatePublishOperationDeadline(lease);
   try {
     return publishMainCommitWhileLeased(options, lease);
   } finally {
@@ -592,6 +601,7 @@ function publishLeasedCommit(options: {
   }
   if (remotePublishedPathsMatch(expectedCommit, options.remote, options.branch, options.paths)) {
     console.log("Leased publish push was ambiguous but the expected blobs are remote");
+    adoptVerifiedRemoteHead(options.remote, options.branch);
     return "committed";
   }
 
@@ -637,6 +647,7 @@ function publishLeasedReconciliationHead(options: {
     remotePublishExpectationMatches(expectedCommit, options.remote, options.branch, options.paths)
   ) {
     console.log("Leased reconciliation push was ambiguous but the expected state is remote");
+    adoptVerifiedRemoteHead(options.remote, options.branch);
     return;
   }
 
@@ -683,6 +694,7 @@ function verifyRemotePublishedPaths(
   if (!remotePublishedPathsMatch(expectedCommit, remote, branch, paths)) {
     throw new Error(`Remote ${remote}/${branch} failed expected-blob verification`);
   }
+  adoptVerifiedRemoteHead(remote, branch);
 }
 
 function remotePublishedPathsMatch(
@@ -710,6 +722,7 @@ function verifyRemotePublishExpectation(
   if (!remotePublishExpectationMatches(expectedCommit, remote, branch, paths)) {
     throw new Error(`Remote ${remote}/${branch} failed expected-state verification`);
   }
+  adoptVerifiedRemoteHead(remote, branch);
 }
 
 function remotePublishExpectationMatches(
@@ -721,6 +734,10 @@ function remotePublishExpectationMatches(
   if (paths) return remotePublishedPathsMatch(expectedCommit, remote, branch, paths);
   runGit(["fetch", remote, branch]);
   return runGit(["rev-parse", `${remote}/${branch}`], { quiet: true }).trim() === expectedCommit;
+}
+
+function adoptVerifiedRemoteHead(remote: string, branch: string): void {
+  runGit(["reset", "--hard", `${remote}/${branch}`]);
 }
 
 function pushReconciliationCommit(options: {
@@ -1029,11 +1046,74 @@ function statePublishLeaseEnabled(): boolean {
   return configured !== "0" && configured !== "false" && configured !== "off";
 }
 
+function validateStatePublishTimingDefaults(): void {
+  const timing = STATE_PUBLISH_TIMING_DEFAULTS;
+  const recoveryFloorMs = timing.leaseTtlMs + timing.leaseMaxWaitMs + timing.commandTimeoutMs;
+  if (timing.acquisitionDeadlineMs <= recoveryFloorMs) {
+    throw new Error("Default state publish acquisition deadline cannot recover an expired lease");
+  }
+  if (timing.operationDeadlineMs >= timing.leaseTtlMs) {
+    throw new Error("Default state publish operation deadline must be shorter than the lease TTL");
+  }
+  const workflowBoundMs =
+    timing.acquisitionDeadlineMs +
+    timing.operationDeadlineMs +
+    timing.commandTimeoutMs +
+    timing.workflowMarginMs;
+  if (workflowBoundMs > timing.workflowTimeoutMs) {
+    throw new Error("Default state publish deadlines exceed the workflow timeout margin");
+  }
+}
+
+function statePublishTiming(): {
+  acquisitionDeadlineMs: number;
+  operationDeadlineMs: number;
+  commandTimeoutMs: number;
+  leaseTtlMs: number;
+} {
+  const acquisitionDeadlineMs = positiveEnvInt(
+    "CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS",
+    STATE_PUBLISH_TIMING_DEFAULTS.acquisitionDeadlineMs,
+  );
+  const operationDeadlineMs = positiveEnvInt(
+    "CLAWSWEEPER_PUBLISH_DEADLINE_MS",
+    STATE_PUBLISH_TIMING_DEFAULTS.operationDeadlineMs,
+  );
+  const commandTimeoutMs = positiveEnvInt(
+    "CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS",
+    STATE_PUBLISH_TIMING_DEFAULTS.commandTimeoutMs,
+  );
+  const leaseTtlMs = positiveEnvInt(
+    "CLAWSWEEPER_PUBLISH_LEASE_TTL_MS",
+    STATE_PUBLISH_TIMING_DEFAULTS.leaseTtlMs,
+  );
+  if (operationDeadlineMs >= leaseTtlMs) {
+    throw new Error(
+      `State publish operation deadline ${operationDeadlineMs}ms must be shorter than lease TTL ${leaseTtlMs}ms`,
+    );
+  }
+  return {
+    acquisitionDeadlineMs,
+    operationDeadlineMs,
+    commandTimeoutMs,
+    leaseTtlMs,
+  };
+}
+
+function startStatePublishOperationDeadline(lease: StatePublishLease): void {
+  const metrics = activeGitPublishMetrics;
+  if (!metrics?.operationDeadlineMs) return;
+  metrics.deadlineAtMs = Math.min(Date.now() + metrics.operationDeadlineMs, lease.expiresAtMs - 1);
+  assertStatePublishDeadline("starting the leased state publication");
+}
+
 function acquireStatePublishLease(remote: string, branch: string): StatePublishLease {
   const leaseRef = `${STATE_PUBLISH_LEASE_REF_ROOT}/${branch}`;
   runGit(["check-ref-format", leaseRef], { quiet: true });
   const owner = randomUUID();
-  const ttlMs = positiveEnvInt("CLAWSWEEPER_PUBLISH_LEASE_TTL_MS", STATE_PUBLISH_LEASE_TTL_MS);
+  const ttlMs =
+    activeGitPublishMetrics?.leaseTtlMs ??
+    positiveEnvInt("CLAWSWEEPER_PUBLISH_LEASE_TTL_MS", STATE_PUBLISH_TIMING_DEFAULTS.leaseTtlMs);
   const maxAttempts = positiveEnvInt(
     "CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS",
     STATE_PUBLISH_LEASE_ATTEMPTS,
@@ -1110,7 +1190,7 @@ function acquireStatePublishLease(remote: string, branch: string): StatePublishL
 
 function statePublishLeaseWaitMs(waitMs: number, attempt: number): number {
   const multiplier = 2 ** Math.min(Math.max(attempt - 1, 0), 10);
-  return Math.min(waitMs * multiplier, STATE_PUBLISH_LEASE_MAX_WAIT_MS);
+  return Math.min(waitMs * multiplier, STATE_PUBLISH_TIMING_DEFAULTS.leaseMaxWaitMs);
 }
 
 function observeStatePublishLease(

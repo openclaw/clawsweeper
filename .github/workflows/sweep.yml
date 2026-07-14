@@ -1603,6 +1603,7 @@ jobs:
         continue-on-error: true
         working-directory: clawsweeper
         env:
+          CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "15000"
           CLAWSWEEPER_PUBLISH_DEADLINE_MS: "15000"
           CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "5000"
         run: |
@@ -2027,6 +2028,7 @@ jobs:
         continue-on-error: true
         working-directory: clawsweeper
         env:
+          CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "15000"
           CLAWSWEEPER_PUBLISH_DEADLINE_MS: "15000"
           CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "5000"
           GH_TOKEN: ${{ github.token }}

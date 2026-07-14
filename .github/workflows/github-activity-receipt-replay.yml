@@ -38,7 +38,7 @@ jobs:
         contains(fromJSON('["failure","cancelled"]'), github.event.workflow_run.conclusion)
       }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
