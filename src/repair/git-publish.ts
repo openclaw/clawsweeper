@@ -690,6 +690,7 @@ function waitForExclusiveStatePublishLeaseGap(
 }
 
 function immutableExclusiveLeasePriorityDeadlineMs(): number {
+  const startedAtMs = activeGitPublishMetrics?.startedAtMs ?? Date.now();
   const operationDeadlineMs =
     activeGitPublishMetrics?.operationDeadlineMs ??
     STATE_PUBLISH_TIMING_DEFAULTS.operationDeadlineMs;
@@ -697,7 +698,7 @@ function immutableExclusiveLeasePriorityDeadlineMs(): number {
     STATE_PUBLISH_TIMING_DEFAULTS.immutableLeasePriorityMaxMs,
     Math.max(1, Math.floor(operationDeadlineMs / 6)),
   );
-  const priorityDeadlineMs = Date.now() + priorityBudgetMs;
+  const priorityDeadlineMs = startedAtMs + priorityBudgetMs;
   return Math.min(priorityDeadlineMs, activeGitPublishMetrics?.deadlineAtMs ?? priorityDeadlineMs);
 }
 

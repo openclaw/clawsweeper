@@ -4065,6 +4065,54 @@ test("slow lease observation cannot consume the immutable CAS reserve", async ()
   );
 });
 
+test("pre-convergence work consumes the shared immutable priority budget", async () => {
+  const fixture = createStatePublishRemote("immutable-pre-convergence-priority");
+  const leaseState = path.join(fixture.root, "state-lease");
+  const immutableState = path.join(fixture.root, "state-immutable");
+  const immutableSource = path.join(fixture.root, "source-immutable");
+  const immutablePath =
+    "ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-pre-convergence-review-a.jsonl";
+  const ttlMs = 10_000;
+  cloneState(fixture.origin, leaseState);
+  cloneState(fixture.origin, immutableState);
+  fs.mkdirSync(immutableSource);
+  write(path.join(immutableSource, immutablePath), "immutable\n");
+  const issuedAt = new Date();
+  createRemoteLease(leaseState, {
+    owner: "44444444-4444-4444-8444-444444444444",
+    issuedAt: issuedAt.toISOString(),
+    expiresAt: new Date(issuedAt.getTime() + ttlMs).toISOString(),
+    ttlMs,
+  });
+  const wrapper = installDelayedPreConvergenceGitWrapper(fixture.root, 1);
+  const env = leasedPublishEnv({
+    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
+    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
+    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: String(ttlMs),
+    PATH: `${wrapper.bin}:${process.env.PATH ?? ""}`,
+    REAL_GIT: wrapper.realGit,
+  });
+
+  const immutable = startImmutablePublishProcess(
+    immutableSource,
+    immutableState,
+    "chore: append after delayed pre-convergence work",
+    immutablePath,
+    env,
+  );
+  const immutableCompleted = await waitForChild(immutable);
+
+  assert.equal(immutableCompleted.status, 0, immutableCompleted.stderr);
+  assert.equal(fs.existsSync(wrapper.delayMarker), true);
+  assert.equal(fs.existsSync(wrapper.leaseProbeMarker), false);
+  assert.doesNotMatch(immutableCompleted.stdout, /State publication deadline exceeded/);
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), true);
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${immutablePath}`], fixture.root),
+    "immutable\n",
+  );
+});
+
 test("immutable publisher converges when an exclusive lease appears before its push", () => {
   const fixture = createStatePublishRemote("immutable-exclusive-acquisition-race");
   const immutableState = path.join(fixture.root, "state-immutable");
@@ -4430,6 +4478,36 @@ exec "$REAL_GIT" "$@"
   );
   fs.chmodSync(wrapper, 0o755);
   return { bin, marker, realGit };
+}
+
+function installDelayedPreConvergenceGitWrapper(root, seconds) {
+  const bin = path.join(root, "git-wrapper-delayed-pre-convergence");
+  const delayMarker = path.join(root, "pre-convergence-delay");
+  const leaseProbeMarker = path.join(root, "pre-convergence-lease-probe");
+  const realGit = run("sh", ["-c", "command -v git"], root).trim();
+  fs.mkdirSync(bin);
+  const wrapper = path.join(bin, "git");
+  fs.writeFileSync(
+    wrapper,
+    `#!/bin/sh
+: "\${REAL_GIT:?real git path is required}"
+if test "$1" = "fetch" &&
+   test "$2" = "origin" &&
+   test "$3" = "state" &&
+   test ! -f "${delayMarker}"; then
+  touch "${delayMarker}"
+  sleep "${seconds}"
+fi
+if test "$1" = "ls-remote" &&
+   test "$2" = "--refs" &&
+   test "$4" = "${STATE_PUBLISH_LEASE_REF}"; then
+  touch "${leaseProbeMarker}"
+fi
+exec "$REAL_GIT" "$@"
+`,
+  );
+  fs.chmodSync(wrapper, 0o755);
+  return { bin, delayMarker, leaseProbeMarker, realGit };
 }
 
 function installAcceptedStatePushTimeoutHook(origin, seconds) {
