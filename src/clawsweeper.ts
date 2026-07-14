@@ -2770,6 +2770,30 @@ function runObservedApplyMutation<T>(options: {
   return result;
 }
 
+function refreshProofMutationSession(session: ProofMutationSession): ProofMutationRequestSnapshot {
+  let currentFreshness: ProofMutationRequestSnapshot;
+  try {
+    currentFreshness = session.refreshFreshness();
+  } catch (error) {
+    if (error instanceof ProofMutationFreshnessError) throw error;
+    throw new ProofMutationFreshnessError({
+      reason: "freshness_unavailable",
+      message: "proof mutation freshness could not be refreshed before the request",
+    });
+  }
+  const block =
+    proofMutationFreshnessBlock(session.expectedFreshness, currentFreshness) ??
+    (session.bindLabelState &&
+    currentFreshness.labelStateCursor !== session.expectedFreshness.labelStateCursor
+      ? proofMutationEligibilityChanged("live labels changed before the request")
+      : null) ??
+    session.validateRequest(currentFreshness);
+  if (block) {
+    throw new ProofMutationFreshnessError(block);
+  }
+  return currentFreshness;
+}
+
 function proofMutationRunner(session: ProofMutationSession): MutationRunner {
   return <T>(options: {
     identity: string;
@@ -2778,26 +2802,7 @@ function proofMutationRunner(session: ProofMutationSession): MutationRunner {
     didMutate?: ((result: T) => boolean) | undefined;
     knownNoMutation?: ((error: unknown) => boolean) | undefined;
   }): T => {
-    let currentFreshness: ProofMutationRequestSnapshot;
-    try {
-      currentFreshness = session.refreshFreshness();
-    } catch (error) {
-      if (error instanceof ProofMutationFreshnessError) throw error;
-      throw new ProofMutationFreshnessError({
-        reason: "freshness_unavailable",
-        message: "proof mutation freshness could not be refreshed before the request",
-      });
-    }
-    const block =
-      proofMutationFreshnessBlock(session.expectedFreshness, currentFreshness) ??
-      (session.bindLabelState &&
-      currentFreshness.labelStateCursor !== session.expectedFreshness.labelStateCursor
-        ? proofMutationEligibilityChanged("live labels changed before the request")
-        : null) ??
-      session.validateRequest(currentFreshness);
-    if (block) {
-      throw new ProofMutationFreshnessError(block);
-    }
+    const currentFreshness = refreshProofMutationSession(session);
     const requestAttempt =
       (session.nextAttemptByMutation.get(options.idempotencyIdentity) ?? 0) + 1;
     session.nextAttemptByMutation.set(options.idempotencyIdentity, requestAttempt);
@@ -14982,6 +14987,36 @@ function latestProofNudgeAt(
       )
       .map((marker) => marker.at),
   );
+}
+
+function proofNudgeCommentsWithLiveMarkers(
+  comments: readonly ProofNudgeComment[],
+  liveComments: readonly ProofNudgeComment[],
+  options: { number: number; headSha: string },
+): ProofNudgeComment[] {
+  const liveMarkerTimestamps = new Set(
+    proofNudgeMarkersFromComments(liveComments)
+      .filter(
+        (marker) =>
+          marker.item === options.number &&
+          marker.sha === options.headSha &&
+          timestampMs(marker.at) !== null,
+      )
+      .map((marker) => marker.at),
+  );
+  return comments.filter((comment) => {
+    if (!isProofNudgeMarkerCommentAuthor(comment.author)) return true;
+    const matchingMarkers = proofNudgeMarkersFromCommentBody(comment.body).filter(
+      (marker) =>
+        marker.item === options.number &&
+        marker.sha === options.headSha &&
+        timestampMs(marker.at) !== null,
+    );
+    return (
+      matchingMarkers.length === 0 ||
+      matchingMarkers.some((marker) => liveMarkerTimestamps.has(marker.at))
+    );
+  });
 }
 
 function staleProofNudgeReportHead(markdown: string, headSha: string | undefined): boolean {
@@ -28281,6 +28316,7 @@ function postProofNudgeComment(options: {
   const mutationIdentity = proofNudgeCommentMutationIdentity(options);
   const existing = ownedIssueCommentWithMarker(options.number, marker);
   if (existing) {
+    refreshProofMutationSession(options.session);
     reconcileProofMutation(options.session, mutationIdentity);
     return { comment: existing, reconciled: true };
   }
@@ -28334,6 +28370,7 @@ function upsertBotProofDecisionComment(
     );
   const mutationIdentity = botProofCommentMutationIdentity(number, headSha, body);
   if (existing && commentBody(existing)?.trim() === body.trim()) {
+    refreshProofMutationSession(session);
     reconcileProofMutation(session, mutationIdentity);
     return { comment: existing, reconciled: true };
   }
@@ -28900,8 +28937,10 @@ function proofNudgesCommand(args: Args): void {
       markProcessed(candidate);
       continue;
     }
+    const hydratedComments =
+      execute && mutationSession ? mutationSession.expectedFreshness.comments : comments;
     const sameHeadNudgeAt = pullDetails.headSha
-      ? latestProofNudgeAt(comments, {
+      ? latestProofNudgeAt(hydratedComments, {
           number: candidate.number,
           headSha: pullDetails.headSha,
         })
@@ -28919,10 +28958,17 @@ function proofNudgesCommand(args: Args): void {
         }),
       );
     }
+    const eligibilityComments =
+      execute && mutationSession && pullDetails.headSha
+        ? proofNudgeCommentsWithLiveMarkers(comments, hydratedComments, {
+            number: candidate.number,
+            headSha: pullDetails.headSha,
+          })
+        : comments;
     const eligibility = proofNudgeEligibility({
       item,
       markdown: candidate.markdown,
-      comments,
+      comments: eligibilityComments,
       headSha: pullDetails.headSha,
       headCommittedAt: pullDetails.headCommittedAt,
       authorEditedAt,
