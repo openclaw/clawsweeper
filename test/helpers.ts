@@ -10,7 +10,7 @@ import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.j
 
 export const tmpPrefix = join(tmpdir(), "clawsweeper-test-");
 export const emptyReviewedPrActivityCursor =
-  createReviewedPrActivityCursor({ reviews: [], inlineComments: [] }) ??
+  createReviewedPrActivityCursor({ reviews: [], inlineComments: [], reviewThreads: [] }) ??
   (() => {
     throw new Error("empty reviewed PR activity must produce a cursor");
   })();
@@ -463,6 +463,8 @@ export function promotionGhMock(options: {
   reviews?: unknown[];
   reviewsAfterFirstRead?: unknown[];
   pullReviewComments?: unknown[];
+  reviewThreads?: unknown[];
+  reviewThreadsAfterFirstRead?: unknown[];
   timeline?: unknown[];
   mergeable?: boolean | null;
   mergeableState?: string | null;
@@ -507,8 +509,10 @@ export function promotionGhMock(options: {
 	const commentsAfterFirstRead = ${JSON.stringify(options.commentsAfterFirstRead ?? null)};
 	const commentsAfterCommentWrite = ${JSON.stringify(options.commentsAfterCommentWrite ?? null)};
 	const reviews = ${JSON.stringify(options.reviews ?? [])};
-	const reviewsAfterFirstRead = ${JSON.stringify(options.reviewsAfterFirstRead ?? null)};
-	const pullReviewComments = ${JSON.stringify(options.pullReviewComments ?? [])};
+		const reviewsAfterFirstRead = ${JSON.stringify(options.reviewsAfterFirstRead ?? null)};
+		const pullReviewComments = ${JSON.stringify(options.pullReviewComments ?? [])};
+		const reviewThreads = ${JSON.stringify(options.reviewThreads ?? [])};
+		const reviewThreadsAfterFirstRead = ${JSON.stringify(options.reviewThreadsAfterFirstRead ?? null)};
 	const timeline = ${JSON.stringify(timeline)};
 	const linkedPulls = ${JSON.stringify(linkedPulls)};
 	const linkedPullsAfterProof = ${JSON.stringify(options.linkedPullsAfterProof ?? {})};
@@ -522,7 +526,8 @@ export function promotionGhMock(options: {
 	const number = ${options.number};
 	const commentStatePath = join(__dirname, "..", "comment-state-" + number + ".json");
 	const commentReadStatePath = join(__dirname, "..", "comment-read-" + number);
-	const reviewReadStatePath = join(__dirname, "..", "review-read-" + number);
+		const reviewReadStatePath = join(__dirname, "..", "review-read-" + number);
+		const reviewThreadReadStatePath = join(__dirname, "..", "review-thread-read-" + number);
 	const mutationComment = (id, body) => ({
 	  id,
 	  html_url: "https://github.com/openclaw/openclaw/pull/" + number + "#issuecomment-" + id,
@@ -597,7 +602,25 @@ export function promotionGhMock(options: {
 		      ? itemUpdatedAtAfterLabelSync
 		      : itemUpdatedAt;
 	const issueCommentCount = ${issueCommentCount};
-	if (args[0] === "api" && args[1] === "-i" && new RegExp("/issues/" + number + "/timeline(?:\\\\?|$)").test(args[2] || "")) {
+		if (args[0] === "api" && args[1] === "graphql") {
+		  const currentReviewThreads =
+		    reviewThreadsAfterFirstRead && existsSync(reviewThreadReadStatePath)
+		      ? reviewThreadsAfterFirstRead
+		      : reviewThreads;
+		  if (!existsSync(reviewThreadReadStatePath)) writeFileSync(reviewThreadReadStatePath, "read", "utf8");
+		  console.log(JSON.stringify({
+		    data: {
+		      repository: {
+		        pullRequest: {
+		          reviewThreads: {
+		            nodes: currentReviewThreads,
+		            pageInfo: { hasNextPage: false, endCursor: null }
+		          }
+		        }
+		      }
+		    }
+		  }));
+		} else if (args[0] === "api" && args[1] === "-i" && new RegExp("/issues/" + number + "/timeline(?:\\\\?|$)").test(args[2] || "")) {
 	  console.log("HTTP/2 200\\n\\n" + JSON.stringify(timeline));
 	} else if (args[0] === "api" && new RegExp("/issues/" + number + "/comments$").test(path) && args.includes("--method")) {
 	  if (commentWriteLogPath) appendFileSync(commentWriteLogPath, args.join(" ") + "\\n");

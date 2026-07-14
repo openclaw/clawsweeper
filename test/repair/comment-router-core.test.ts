@@ -1386,7 +1386,7 @@ test("parseTrustedAutomation accepts trusted ClawSweeper pass verdicts for autom
   const parsed = parseTrustedAutomation(
     {
       user: { login: "clawsweeper[bot]" },
-      body: "ClawSweeper review passed.\n<!-- clawsweeper-verdict:pass sha=abc123 source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef review_activity_cursor=v1:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->",
+      body: "ClawSweeper review passed.\n<!-- clawsweeper-verdict:pass sha=abc123 source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef review_activity_cursor=v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->",
     },
     { trustedAuthors },
   );
@@ -1400,7 +1400,7 @@ test("parseTrustedAutomation accepts trusted ClawSweeper pass verdicts for autom
   );
   assert.equal(
     parsed.expected_review_activity_cursor,
-    "v1:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   );
   assert.match(parsed.repair_reason, /verdict: pass/);
 });

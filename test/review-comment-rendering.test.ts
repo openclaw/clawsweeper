@@ -33,7 +33,7 @@ function implementedCloseReport(overrides = {}) {
     work_status: "none",
     item_snapshot_hash: "reviewed-snapshot",
     item_source_revision: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    review_activity_cursor: "v1:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    review_activity_cursor: "v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     item_created_at: "2026-05-01T00:00:00Z",
     item_updated_at: "2026-05-01T00:00:00Z",
     reproduction_status: "reproduced",
@@ -111,6 +111,7 @@ test("structural cache probes before hydration but acquires a lease before carry
     source.indexOf("for (const item of candidates)"),
     source.indexOf("let decision: Decision", source.indexOf("for (const item of candidates)")),
   );
+  const cacheEligibility = reviewLoop.indexOf("const cacheReview =");
   const structuralEligibility = reviewLoop.indexOf("reviewStructuralCacheProbeDecision({");
   const structuralProbe = reviewLoop.indexOf(
     "structuralRecord = fetchReviewStructuralRecord({",
@@ -128,7 +129,13 @@ test("structural cache probes before hydration but acquires a lease before carry
   const hydration = reviewLoop.indexOf("collectItemContext(item");
   const mediaPrep = reviewLoop.indexOf("prepareMediaProofArtifacts(context", contentCache);
 
-  assert.ok(structuralEligibility >= 0);
+  assert.ok(cacheEligibility >= 0);
+  assert.ok(structuralEligibility > cacheEligibility);
+  assert.match(
+    reviewLoop.slice(cacheEligibility, structuralEligibility),
+    /isReviewedPrActivityCursor\(priorReviewActivityCursor\)/,
+  );
+  assert.match(reviewLoop.slice(structuralEligibility, structuralProbe), /review: cacheReview/);
   assert.ok(structuralProbe > structuralEligibility);
   assert.ok(structuralCache >= 0);
   assert.ok(structuralCache < hydration);
@@ -160,6 +167,10 @@ test("structural cache probes before hydration but acquires a lease before carry
   assert.match(
     reviewLoop.slice(structuralRevalidation, structuralWrite),
     /liveClawSweeperReviewDigest\(item\.number\)[\s\S]*previousReviewIdentityMatches/,
+  );
+  assert.match(
+    reviewLoop.slice(structuralRevalidation, structuralWrite),
+    /fetchReviewedPrActivityCursor\(item\.number\)[\s\S]*reviewActivityMatches[\s\S]*review_activity_cursor/,
   );
   const structuralProbeSource = source.slice(
     source.indexOf("function fetchReviewStructuralRecord"),
@@ -246,6 +257,10 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
     /refreshStructuralRecordForVerdict\(\)/,
   );
   assert.match(
+    reviewLoop.slice(semanticRevalidation, semanticWrite),
+    /fetchReviewedPrActivityCursor\(item\.number\)[\s\S]*reviewActivityMatches[\s\S]*review_activity_cursor/,
+  );
+  assert.match(
     reviewLoop.slice(localRangeGuard, semanticDecision),
     /expectedPreviousReviewDigest[\s\S]*currentPreviousReviewDigest/,
   );
@@ -263,7 +278,7 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
   );
   assert.match(
     reviewLoop.slice(semanticWrite, contentCache),
-    /previousReviewIdentityChanged[\s\S]*!git\.releaseStateComplete/,
+    /previousReviewIdentityChanged[\s\S]*!git\.releaseStateComplete[\s\S]*contentCacheReviewActivityMatches/,
   );
   const verdictRefresh = source.slice(
     source.indexOf("const refreshStructuralRecordForVerdict"),
@@ -856,11 +871,11 @@ test("pull request close comments emit close-required automation markers", () =>
 
   assert.match(
     comment,
-    /<!-- clawsweeper-verdict:close item=74270 sha=abc123def456 confidence=high updated_at=2026-05-01T00:00:00Z reviewed_at=[^ ]+ lease_owner=unknown lease_comment_id=unknown source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef review_activity_cursor=v1:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef action_taken=proposed_close reason=implemented_on_main -->/,
+    /<!-- clawsweeper-verdict:close item=74270 sha=abc123def456 confidence=high updated_at=2026-05-01T00:00:00Z reviewed_at=[^ ]+ lease_owner=unknown lease_comment_id=unknown source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef review_activity_cursor=v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef action_taken=proposed_close reason=implemented_on_main -->/,
   );
   assert.match(
     comment,
-    /<!-- clawsweeper-action:close-required item=74270 sha=abc123def456 confidence=high updated_at=2026-05-01T00:00:00Z reviewed_at=[^ ]+ lease_owner=unknown lease_comment_id=unknown source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef review_activity_cursor=v1:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef action_taken=proposed_close reason=implemented_on_main -->/,
+    /<!-- clawsweeper-action:close-required item=74270 sha=abc123def456 confidence=high updated_at=2026-05-01T00:00:00Z reviewed_at=[^ ]+ lease_owner=unknown lease_comment_id=unknown source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef review_activity_cursor=v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef action_taken=proposed_close reason=implemented_on_main -->/,
   );
   assert.doesNotMatch(comment, /clawsweeper-verdict:needs-human/);
 });

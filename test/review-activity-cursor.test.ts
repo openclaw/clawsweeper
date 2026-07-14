@@ -3,8 +3,10 @@ import test from "node:test";
 
 import {
   MAX_REVIEWED_PR_ACTIVITY,
+  MAX_REVIEWED_PR_ACTIVITY_CURSOR_BYTES,
   createReviewedPrActivityCursor,
   isReviewedPrActivityCursor,
+  reviewedPrActivityThreadsPageFromGraphql,
 } from "../dist/review-activity-cursor.js";
 
 test("review activity cursors bind same-second reviews and inline comments", () => {
@@ -19,6 +21,7 @@ test("review activity cursors bind same-second reviews and inline comments", () 
       },
     ],
     inlineComments: [],
+    reviewThreads: [],
   });
   const changed = createReviewedPrActivityCursor({
     reviews: [
@@ -30,6 +33,7 @@ test("review activity cursors bind same-second reviews and inline comments", () 
         body: "looks close",
       },
     ],
+    reviewThreads: [],
     inlineComments: [
       {
         id: 2,
@@ -68,14 +72,17 @@ test("review activity cursors are order-independent and edit-sensitive", () => {
   const forward = createReviewedPrActivityCursor({
     reviews: [],
     inlineComments: [first, second],
+    reviewThreads: [],
   });
   const reverse = createReviewedPrActivityCursor({
     reviews: [],
     inlineComments: [second, first],
+    reviewThreads: [],
   });
   const edited = createReviewedPrActivityCursor({
     reviews: [],
     inlineComments: [first, { ...second, body: "edited" }],
+    reviewThreads: [],
   });
 
   assert.equal(reverse, forward);
@@ -85,10 +92,91 @@ test("review activity cursors are order-independent and edit-sensitive", () => {
 test("review activity cursors fail closed beyond the bounded history", () => {
   const inlineComments = Array.from({ length: MAX_REVIEWED_PR_ACTIVITY + 1 }, (_, id) => ({ id }));
 
-  assert.equal(createReviewedPrActivityCursor({ reviews: [], inlineComments }), null);
+  assert.equal(
+    createReviewedPrActivityCursor({ reviews: [], inlineComments, reviewThreads: [] }),
+    null,
+  );
   assert.equal(isReviewedPrActivityCursor({ toString: () => `v1:0:${"a".repeat(64)}` }), false);
   assert.equal(
-    isReviewedPrActivityCursor(`v1:${MAX_REVIEWED_PR_ACTIVITY + 1}:${"a".repeat(64)}`),
+    isReviewedPrActivityCursor(`v2:${MAX_REVIEWED_PR_ACTIVITY + 1}:${"a".repeat(64)}`),
     false,
+  );
+});
+
+test("review activity cursors bind review thread resolution", () => {
+  const open = createReviewedPrActivityCursor({
+    reviews: [],
+    inlineComments: [],
+    reviewThreads: [{ id: "thread-1", isResolved: false }],
+  });
+  const resolved = createReviewedPrActivityCursor({
+    reviews: [],
+    inlineComments: [],
+    reviewThreads: [{ id: "thread-1", isResolved: true }],
+  });
+
+  assert.ok(isReviewedPrActivityCursor(open));
+  assert.ok(isReviewedPrActivityCursor(resolved));
+  assert.notEqual(resolved, open);
+});
+
+test("review activity cursors digest bodies and bound canonical metadata", () => {
+  const largeBody = "x".repeat(MAX_REVIEWED_PR_ACTIVITY_CURSOR_BYTES * 2);
+  assert.ok(
+    createReviewedPrActivityCursor({
+      reviews: [{ id: 1, body: largeBody }],
+      inlineComments: [],
+      reviewThreads: [],
+    }),
+  );
+
+  const oversizedMetadata = Array.from({ length: MAX_REVIEWED_PR_ACTIVITY }, (_, id) => ({
+    id,
+    path: `src/${"x".repeat(2_000)}/${id}.ts`,
+  }));
+  assert.equal(
+    createReviewedPrActivityCursor({
+      reviews: [],
+      inlineComments: oversizedMetadata,
+      reviewThreads: [],
+    }),
+    null,
+  );
+});
+
+test("review thread GraphQL pages are parsed fail-closed", () => {
+  assert.deepEqual(
+    reviewedPrActivityThreadsPageFromGraphql({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: [{ id: "thread-1", isResolved: false }],
+              pageInfo: { hasNextPage: true, endCursor: "cursor-1" },
+            },
+          },
+        },
+      },
+    }),
+    {
+      threads: [{ id: "thread-1", isResolved: false }],
+      hasNextPage: true,
+      endCursor: "cursor-1",
+    },
+  );
+  assert.equal(
+    reviewedPrActivityThreadsPageFromGraphql({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: [{ id: "thread-1", isResolved: "false" }],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        },
+      },
+    }),
+    null,
   );
 });

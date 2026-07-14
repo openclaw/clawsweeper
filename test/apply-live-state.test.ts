@@ -69,6 +69,7 @@ test("apply-decisions rejects recorded PR review activity drift before mutations
   const reviewedCursor = createReviewedPrActivityCursor({
     reviews: [],
     inlineComments: [],
+    reviewThreads: [],
   });
   assert.ok(reviewedCursor);
 
@@ -104,6 +105,13 @@ test("apply-decisions rejects recorded PR review activity drift before mutations
           commit_id: "head-sha",
         },
       ],
+      reviewThreads: [],
+    },
+    {
+      name: "review thread resolution",
+      reviews: [],
+      inlineComments: [],
+      reviewThreads: [{ id: "thread-1", isResolved: true }],
     },
   ]) {
     const root = mkdtempSync(tmpPrefix);
@@ -143,6 +151,7 @@ test("apply-decisions rejects recorded PR review activity drift before mutations
           comment: synced.comment,
           reviews: scenario.reviews,
           pullReviewComments: scenario.inlineComments,
+          reviewThreads: scenario.reviewThreads,
           itemUpdatedAtAfterLabelSyncLogPath: mutationLogPath,
         }),
         () => {
@@ -183,6 +192,7 @@ test("apply-decisions records review activity that changes after lease acquisiti
   const reviewedCursor = createReviewedPrActivityCursor({
     reviews: [],
     inlineComments: [],
+    reviewThreads: [],
   });
   assert.ok(reviewedCursor);
   const root = mkdtempSync(tmpPrefix);

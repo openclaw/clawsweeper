@@ -119,6 +119,7 @@ import {
   ghErrorText,
   ghJsonWithRetry as ghJson,
   ghJsonWithRetryAsync as ghJsonAsync,
+  ghPagedLimitWithRetry as ghPagedLimit,
   ghPagedWithRetry as ghPaged,
   ghPagedWithRetryAsync as ghPagedAsync,
   ghSpawn,
@@ -129,8 +130,11 @@ import { ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
 import { compactText, escapeRegExp } from "./text-utils.js";
 import {
+  MAX_REVIEWED_PR_ACTIVITY,
+  REVIEWED_PR_ACTIVITY_THREADS_QUERY,
   createReviewedPrActivityCursor,
   isReviewedPrActivityCursor,
+  reviewedPrActivityThreadsPageFromGraphql,
 } from "../review-activity-cursor.js";
 import {
   flushCommandActionEvents,
@@ -4298,6 +4302,60 @@ function fetchIssue(number: JsonValue) {
   });
 }
 
+function trustedAutomergeReviewThreads(number: number, limit: number): unknown[] {
+  const max = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
+  if (max === 0) return [];
+  const [owner, name] = targetRepo.split("/");
+  if (!owner || !name) throw new Error(`invalid target repository: ${targetRepo}`);
+  const threads: unknown[] = [];
+  const seenCursors = new Set<string>();
+  let after: string | null = null;
+  while (threads.length < max) {
+    const args = [
+      "api",
+      "graphql",
+      "-f",
+      `owner=${owner}`,
+      "-f",
+      `name=${name}`,
+      "-F",
+      `number=${number}`,
+      "-f",
+      `query=${REVIEWED_PR_ACTIVITY_THREADS_QUERY}`,
+    ];
+    if (after) args.push("-f", `after=${after}`);
+    const page = reviewedPrActivityThreadsPageFromGraphql(ghJson<unknown>(args));
+    if (!page) throw new Error(`malformed review thread response for PR #${number}`);
+    threads.push(...page.threads);
+    if (!page.hasNextPage) break;
+    if (!page.endCursor || seenCursors.has(page.endCursor) || page.threads.length === 0) {
+      throw new Error(`review thread pagination did not advance for PR #${number}`);
+    }
+    seenCursors.add(page.endCursor);
+    after = page.endCursor;
+  }
+  return threads.slice(0, max);
+}
+
+function trustedAutomergeReviewActivityCursor(number: number): string | null {
+  let remaining = MAX_REVIEWED_PR_ACTIVITY;
+  const reviews = ghPagedLimit<unknown>(
+    `repos/${targetRepo}/pulls/${number}/reviews`,
+    remaining + 1,
+  );
+  if (reviews.length > remaining) return null;
+  remaining -= reviews.length;
+  const inlineComments = ghPagedLimit<unknown>(
+    `repos/${targetRepo}/pulls/${number}/comments`,
+    remaining + 1,
+  );
+  if (inlineComments.length > remaining) return null;
+  remaining -= inlineComments.length;
+  const reviewThreads = trustedAutomergeReviewThreads(number, remaining + 1);
+  if (reviewThreads.length > remaining) return null;
+  return createReviewedPrActivityCursor({ reviews, inlineComments, reviewThreads });
+}
+
 function trustedAutomergeReviewActivityBlockReason(
   command: LooseRecord,
 ): { reason: string; retryable: boolean } | null {
@@ -4310,12 +4368,7 @@ function trustedAutomergeReviewActivityBlockReason(
     };
   }
   try {
-    const current = createReviewedPrActivityCursor({
-      reviews: ghPaged<unknown>(`repos/${targetRepo}/pulls/${command.issue_number}/reviews`),
-      inlineComments: ghPaged<unknown>(
-        `repos/${targetRepo}/pulls/${command.issue_number}/comments`,
-      ),
-    });
+    const current = trustedAutomergeReviewActivityCursor(Number(command.issue_number));
     if (!current) {
       return {
         reason: "pull request review activity exceeds the bounded automerge cursor",

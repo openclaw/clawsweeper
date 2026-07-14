@@ -184,8 +184,11 @@ import {
 } from "./review-history.js";
 import { trailingHtmlComments } from "./review-comment-markers.js";
 import {
+  MAX_REVIEWED_PR_ACTIVITY,
+  REVIEWED_PR_ACTIVITY_THREADS_QUERY,
   createReviewedPrActivityCursor,
   isReviewedPrActivityCursor,
+  reviewedPrActivityThreadsPageFromGraphql,
 } from "./review-activity-cursor.js";
 import {
   ACTION_EVENT_REASON_CODES,
@@ -6514,6 +6517,74 @@ function ghPaged<T>(path: string): T[] {
   return pages.flatMap((page) => (Array.isArray(page) ? (page as T[]) : []));
 }
 
+function ghPagedLimit<T>(path: string, limit: number): T[] {
+  const max = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
+  if (max === 0) return [];
+  const entries: T[] = [];
+  for (let page = 1; entries.length < max; page += 1) {
+    const current = ghPage<T>(path, page);
+    entries.push(...current);
+    if (current.length < 100) break;
+  }
+  return entries.slice(0, max);
+}
+
+function reviewedPrActivityThreads(number: number, limit: number): unknown[] {
+  const max = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
+  if (max === 0) return [];
+  const [owner, name] = targetRepo().split("/");
+  if (!owner || !name) throw new Error(`invalid target repository: ${targetRepo()}`);
+  const threads: unknown[] = [];
+  const seenCursors = new Set<string>();
+  let after: string | null = null;
+  while (threads.length < max) {
+    const args = [
+      "api",
+      "graphql",
+      "-f",
+      `owner=${owner}`,
+      "-f",
+      `name=${name}`,
+      "-F",
+      `number=${number}`,
+      "-f",
+      `query=${REVIEWED_PR_ACTIVITY_THREADS_QUERY}`,
+    ];
+    if (after) args.push("-f", `after=${after}`);
+    const page = reviewedPrActivityThreadsPageFromGraphql(ghJson<unknown>(args));
+    if (!page) throw new Error(`malformed review thread response for PR #${number}`);
+    threads.push(...page.threads);
+    if (!page.hasNextPage) break;
+    if (!page.endCursor || seenCursors.has(page.endCursor) || page.threads.length === 0) {
+      throw new Error(`review thread pagination did not advance for PR #${number}`);
+    }
+    seenCursors.add(page.endCursor);
+    after = page.endCursor;
+  }
+  return threads.slice(0, max);
+}
+
+function fetchReviewedPrActivityCursor(
+  number: number,
+  prefetchedInlineComments?: unknown[],
+): string | null {
+  let remaining = MAX_REVIEWED_PR_ACTIVITY;
+  const reviews = ghPagedLimit<unknown>(
+    `repos/${targetRepo()}/pulls/${number}/reviews`,
+    remaining + 1,
+  );
+  if (reviews.length > remaining) return null;
+  remaining -= reviews.length;
+  const inlineComments =
+    prefetchedInlineComments ??
+    ghPagedLimit<unknown>(`repos/${targetRepo()}/pulls/${number}/comments`, remaining + 1);
+  if (inlineComments.length > remaining) return null;
+  remaining -= inlineComments.length;
+  const reviewThreads = reviewedPrActivityThreads(number, remaining + 1);
+  if (reviewThreads.length > remaining) return null;
+  return createReviewedPrActivityCursor({ reviews, inlineComments, reviewThreads });
+}
+
 export interface ContextHydration<T> {
   items: T[];
   total: number;
@@ -8303,7 +8374,10 @@ function collectItemContext(
     filteredPullReviewComments = filterReviewContextComments(pullReviewComments, item.number);
     const fullPullReviewComments =
       options.reviewCacheDigest && pullReviewCommentsWindow.truncated
-        ? ghPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/comments`)
+        ? ghPagedLimit<unknown>(
+            `repos/${targetRepo()}/pulls/${item.number}/comments`,
+            MAX_REVIEWED_PR_ACTIVITY + 1,
+          )
         : pullReviewComments;
     digestPullReviewComments =
       fullPullReviewComments === pullReviewComments
@@ -8347,13 +8421,15 @@ function collectItemContext(
       compactComment,
     );
     if (options.reviewCacheDigest) {
-      context.pullReviewCommentsRevision = reviewCommentContentRevision(
-        digestPullReviewComments.included.map(compactComment),
+      if (fullPullReviewComments.length <= MAX_REVIEWED_PR_ACTIVITY) {
+        context.pullReviewCommentsRevision = reviewCommentContentRevision(
+          digestPullReviewComments.included.map(compactComment),
+        );
+      }
+      const pullReviewActivityCursor = fetchReviewedPrActivityCursor(
+        item.number,
+        fullPullReviewComments,
       );
-      const pullReviewActivityCursor = createReviewedPrActivityCursor({
-        reviews: ghPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/reviews`),
-        inlineComments: fullPullReviewComments,
-      });
       if (pullReviewActivityCursor) context.pullReviewActivityCursor = pullReviewActivityCursor;
       const headSha = stringOrUndefined(asRecord(pullRecord.head).sha);
       context.pullChecks = headSha
@@ -21522,6 +21598,13 @@ function reviewCommand(args: Args): void {
         );
       }
       const priorReview = localRangeData ? null : existingReview(item, itemsDir);
+      const priorReviewActivityCursor = priorReview
+        ? frontMatterValue(priorReview.markdown, "review_activity_cursor")
+        : null;
+      const cacheReview =
+        item.kind === "pull_request" && !isReviewedPrActivityCursor(priorReviewActivityCursor)
+          ? null
+          : priorReview;
       const expectedPreviousReviewDigest = priorReview
         ? previousClawSweeperReviewDigestFromReport(priorReview.markdown)
         : null;
@@ -21533,7 +21616,7 @@ function reviewCommand(args: Args): void {
       if (!localRangeData) {
         structuralCacheChecks += 1;
         const structuralProbeDecision = reviewStructuralCacheProbeDecision({
-          review: priorReview,
+          review: cacheReview,
           reviewPolicy,
           reviewModel: PUBLIC_CODEX_MODEL,
           explicitDispatch,
@@ -21571,7 +21654,7 @@ function reviewCommand(args: Args): void {
           preHydrationStructuralRecord = structuralRecord;
           if (structuralRecord) item.updatedAt = structuralRecord.activityUpdatedAt;
           const structuralDecision = reviewStructuralCacheDecision({
-            review: priorReview,
+            review: cacheReview,
             priorRecord: priorReview?.structuralRecord ?? null,
             currentRecord: structuralRecord,
             reviewPolicy,
@@ -21630,6 +21713,7 @@ function reviewCommand(args: Args): void {
             const structuralRevalidationStartedAt = Date.now();
             let revalidatedStructuralRecord: ReviewStructuralRecord | null = null;
             let revalidatedPreviousReviewDigest: string | null = null;
+            let revalidatedReviewActivityCursor: string | null = null;
             try {
               git = loadReviewGitInfo();
               revalidatedStructuralRecord = fetchReviewStructuralRecord({
@@ -21644,6 +21728,9 @@ function reviewCommand(args: Args): void {
                 revalidatedStructuralRecord = null;
               }
               revalidatedPreviousReviewDigest = liveClawSweeperReviewDigest(item.number);
+              if (item.kind === "pull_request") {
+                revalidatedReviewActivityCursor = fetchReviewedPrActivityCursor(item.number);
+              }
             } catch (error) {
               structuralCacheRevalidationFailures += 1;
               console.error(
@@ -21655,9 +21742,9 @@ function reviewCommand(args: Args): void {
               structuralCacheRevalidationMs += Date.now() - structuralRevalidationStartedAt;
             }
             const revalidationDecision = reviewStructuralCacheDecision({
-              review: priorReview
+              review: cacheReview
                 ? {
-                    ...priorReview,
+                    ...cacheReview,
                     reviewCommentSyncedAt: new Date().toISOString(),
                   }
                 : null,
@@ -21673,14 +21760,20 @@ function reviewCommand(args: Args): void {
               expectedPreviousReviewDigest !== null &&
               revalidatedPreviousReviewDigest !== null &&
               expectedPreviousReviewDigest === revalidatedPreviousReviewDigest;
-            const revalidationReason = previousReviewIdentityMatches
-              ? revalidationDecision.reason
-              : "previous_review_changed";
+            const reviewActivityMatches =
+              item.kind !== "pull_request" ||
+              (revalidatedReviewActivityCursor !== null &&
+                revalidatedReviewActivityCursor === priorReviewActivityCursor);
+            const revalidationReason = !previousReviewIdentityMatches
+              ? "previous_review_changed"
+              : !reviewActivityMatches
+                ? "review_activity_changed"
+                : revalidationDecision.reason;
             structuralCacheRevalidationReasons.set(
               revalidationReason,
               (structuralCacheRevalidationReasons.get(revalidationReason) ?? 0) + 1,
             );
-            if (!revalidationDecision.hit || !previousReviewIdentityMatches) {
+            if (!revalidationDecision.hit || !previousReviewIdentityMatches || !reviewActivityMatches) {
               const leaseToRelease = acquiredReviewLease!;
               if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
                 leaseAcquisitionFailures += 1;
@@ -21711,6 +21804,13 @@ function reviewCommand(args: Args): void {
               let carried = priorReview!.markdown;
               carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());
               carried = replaceFrontMatterValue(carried, "item_updated_at", item.updatedAt);
+              if (item.kind === "pull_request") {
+                carried = replaceFrontMatterValue(
+                  carried,
+                  "review_activity_cursor",
+                  revalidatedReviewActivityCursor!,
+                );
+              }
               carried = replaceFrontMatterValue(
                 carried,
                 "review_lease_owner",
@@ -21812,6 +21912,9 @@ function reviewCommand(args: Args): void {
             reviewCacheGitDir: openclawDir,
           });
       const contextElapsedMs = Date.now() - contextStartedAt;
+      const hydratedReviewActivityCursorAvailable =
+        item.kind !== "pull_request" ||
+        isReviewedPrActivityCursor(context.pullReviewActivityCursor);
       const contextItemUpdatedAt = stringOrUndefined(asRecord(context.issue).updatedAt);
       if (contextItemUpdatedAt) item.updatedAt = contextItemUpdatedAt;
       if (!localRangeData && contextItemUpdatedAt && preHydrationStructuralRecord) {
@@ -22032,7 +22135,7 @@ function reviewCommand(args: Args): void {
           !currentPreviousReviewDigest ||
           expectedPreviousReviewDigest !== currentPreviousReviewDigest;
         semanticDecision = reviewSemanticCacheDecision({
-          review: priorReview,
+          review: cacheReview,
           priorRecord: priorReview?.semanticRecord ?? null,
           currentRecord: semanticRecord,
           expectedPreviousReviewDigest,
@@ -22048,7 +22151,7 @@ function reviewCommand(args: Args): void {
           (semanticCacheReasons.get(semanticDecision.reason) ?? 0) + 1,
         );
       }
-      if (semanticDecision?.hit) {
+      if (semanticDecision?.hit && hydratedReviewActivityCursorAvailable) {
         semanticCacheRevalidations += 1;
         const initialSemanticRecord = semanticRecord;
         const semanticRevalidationStartedAt = Date.now();
@@ -22072,11 +22175,15 @@ function reviewCommand(args: Args): void {
           pullChecks: revalidatedChecks,
         };
         let revalidatedPreviousReview: PreviousClawSweeperReview | null;
+        let revalidatedReviewActivityCursor: string | null = null;
         try {
           revalidatedPreviousReview = extractLatestClawSweeperReview(
             fetchIssueReviewComments(item.number),
             item.number,
           );
+          if (item.kind === "pull_request") {
+            revalidatedReviewActivityCursor = fetchReviewedPrActivityCursor(item.number);
+          }
         } catch (error) {
           const revalidationReason = "durable_review_refresh_failed";
           semanticCacheRevalidationFailures += 1;
@@ -22147,14 +22254,24 @@ function reviewCommand(args: Args): void {
           reviewModel: PUBLIC_CODEX_MODEL,
         });
         semanticCacheRevalidationMs += Date.now() - semanticRevalidationStartedAt;
-        const revalidationReason = revalidatedStructuralRecord
-          ? semanticRevalidationDecision.reason
-          : "structural_verdict_input_changed";
+        const reviewActivityMatches =
+          item.kind !== "pull_request" ||
+          (revalidatedReviewActivityCursor !== null &&
+            revalidatedReviewActivityCursor === context.pullReviewActivityCursor);
+        const revalidationReason = !revalidatedStructuralRecord
+          ? "structural_verdict_input_changed"
+          : !reviewActivityMatches
+            ? "review_activity_changed"
+            : semanticRevalidationDecision.reason;
         semanticCacheRevalidationReasons.set(
           revalidationReason,
           (semanticCacheRevalidationReasons.get(revalidationReason) ?? 0) + 1,
         );
-        if (!revalidatedStructuralRecord || !semanticRevalidationDecision.hit) {
+        if (
+          !revalidatedStructuralRecord ||
+          !semanticRevalidationDecision.hit ||
+          !reviewActivityMatches
+        ) {
           const leaseToRelease = acquiredReviewLease!;
           if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
             leaseAcquisitionFailures += 1;
@@ -22199,6 +22316,13 @@ function reviewCommand(args: Args): void {
           itemSnapshotHash(item, context),
         );
         carried = replaceFrontMatterValue(carried, "review_content_digest", contentDigest);
+        if (item.kind === "pull_request") {
+          carried = replaceFrontMatterValue(
+            carried,
+            "review_activity_cursor",
+            revalidatedReviewActivityCursor!,
+          );
+        }
         carried = replaceFrontMatterValue(
           carried,
           "item_source_revision",
@@ -22247,10 +22371,30 @@ function reviewCommand(args: Args): void {
         maintainerRequest ||
         previousReviewIdentityChanged ||
         !git.releaseStateComplete ||
-        (item.kind === "pull_request" && !completePullChecksContext(context.pullChecks))
+        (item.kind === "pull_request" &&
+          (!completePullChecksContext(context.pullChecks) ||
+            !hydratedReviewActivityCursorAvailable))
           ? null
-          : priorReview;
+          : cacheReview;
+      let contentCacheReviewActivityMatches = true;
+      let revalidatedContentCacheReviewActivityCursor: string | null = null;
+      if (item.kind === "pull_request" && contentCacheReview) {
+        try {
+          revalidatedContentCacheReviewActivityCursor = fetchReviewedPrActivityCursor(item.number);
+          contentCacheReviewActivityMatches =
+            revalidatedContentCacheReviewActivityCursor !== null &&
+            revalidatedContentCacheReviewActivityCursor === context.pullReviewActivityCursor;
+        } catch (error) {
+          contentCacheReviewActivityMatches = false;
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} content-cache=activity-refresh-failed #${item.number}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
       if (
+        contentCacheReviewActivityMatches &&
         reviewContentCacheHit({
           review: contentCacheReview,
           reviewPolicy,
@@ -22280,6 +22424,13 @@ function reviewCommand(args: Args): void {
           "item_snapshot_hash",
           itemSnapshotHash(item, context),
         );
+        if (item.kind === "pull_request") {
+          carried = replaceFrontMatterValue(
+            carried,
+            "review_activity_cursor",
+            revalidatedContentCacheReviewActivityCursor!,
+          );
+        }
         carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
         carried = structuralRecord
           ? updateReviewStructuralFrontMatter(carried, structuralRecord, false)
@@ -25679,10 +25830,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         };
       }
       try {
-        const currentReviewActivityCursor = createReviewedPrActivityCursor({
-          reviews: ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/reviews`),
-          inlineComments: ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/comments`),
-        });
+        const currentReviewActivityCursor = fetchReviewedPrActivityCursor(number);
         if (!currentReviewActivityCursor) {
           return {
             sourceChanged: true,
