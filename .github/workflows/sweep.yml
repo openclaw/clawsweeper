@@ -1438,7 +1438,7 @@ jobs:
           set -euo pipefail
           : "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
           mkdir -p .artifacts
-          pnpm run --silent repair:action-ledger -- finalize \
+          node dist/repair/dispatch-action-ledger-cli.js finalize \
             --lane target-fanout-dispatch \
             --allow-empty \
             > .artifacts/target-fanout-dispatch-action-ledger-manifest.json
@@ -1456,7 +1456,7 @@ jobs:
           fi
           event_paths_file=".artifacts/target-fanout-dispatch-action-ledger-paths.txt"
           import_result_file=".artifacts/target-fanout-dispatch-action-ledger-import.json"
-          pnpm run --silent repair:action-ledger -- publish \
+          node dist/repair/dispatch-action-ledger-cli.js publish \
             --lane target-fanout-dispatch \
             --manifest "$manifest_file" \
             --source-root "$source_root" \

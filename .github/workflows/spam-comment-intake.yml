@@ -46,22 +46,12 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create GitHub App token
-        if: steps.core-budget.outputs.skip != 'true'
-        id: app_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          permission-contents: write
-
       - uses: actions/checkout@v7
         if: steps.core-budget.outputs.skip != 'true'
         with:
           filter: blob:none
           fetch-depth: 0
-          token: ${{ steps.app_token.outputs.token }}
+          persist-credentials: false
           sparse-checkout: |
             .github/actions
             config/automation-limits.json
@@ -113,6 +103,17 @@ jobs:
         if: steps.core-budget.outputs.skip != 'true'
         id: setup-spam-intake-ledger
 
+      - name: Create repository-scoped GitHub App token
+        if: steps.core-budget.outputs.skip != 'true'
+        id: app_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: clawsweeper
+          permission-contents: write
+
       - name: Dispatch exact spam scan
         id: dispatch-exact-spam-scan
         if: steps.core-budget.outputs.skip != 'true'
@@ -126,13 +127,15 @@ jobs:
           set -euo pipefail
           : "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
           mkdir -p .artifacts
-          pnpm run --silent repair:action-ledger -- finalize \
+          node dist/repair/dispatch-action-ledger-cli.js finalize \
             --lane spam-intake-dispatch \
             --allow-empty \
             > .artifacts/spam-intake-dispatch-action-ledger-manifest.json
 
       - name: Publish spam intake dispatch action ledger
         if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-spam-intake-state.outcome == 'success' && steps.setup-spam-intake-pnpm.outcome == 'success' && steps.setup-spam-intake-ledger.outcome == 'success' }}
+        env:
+          PUBLISH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
@@ -144,7 +147,7 @@ jobs:
           fi
           event_paths_file=".artifacts/spam-intake-dispatch-action-ledger-paths.txt"
           import_result_file=".artifacts/spam-intake-dispatch-action-ledger-import.json"
-          pnpm run --silent repair:action-ledger -- publish \
+          node dist/repair/dispatch-action-ledger-cli.js publish \
             --lane spam-intake-dispatch \
             --manifest "$manifest_file" \
             --source-root "$source_root" \
@@ -169,6 +172,10 @@ jobs:
             cp "$durable_event_path" "$event_path"
             action_ledger_args+=(--path "$event_path")
           done < "$event_paths_file"
+          auth_header="$(printf 'x-access-token:%s' "$PUBLISH_TOKEN" | base64 | tr -d '\n')"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
           pnpm run repair:publish-main -- \
             --message "chore: append spam intake dispatch action ledger" \
             "${action_ledger_args[@]}" \

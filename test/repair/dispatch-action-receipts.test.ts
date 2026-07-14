@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { ACTION_EVENT_TYPES } from "../../dist/action-ledger.js";
+import {
+  parseDispatchActionLedgerManifest,
+  serializeDispatchActionLedgerManifest,
+} from "../../dist/repair/dispatch-action-ledger-manifest.js";
 import {
   DispatchOutcomeUnknownError,
   DispatchRejectedError,
@@ -305,6 +311,65 @@ test("process dispatch outcomes treat every non-success exit as ambiguous", () =
   );
 });
 
+test("dispatch action ledger CLI finalizes and publishes dispatch lifecycle shards", () => {
+  const fixture = actionLedgerFixture("dispatch-manifest");
+  const stateRoot = path.join(fixture.root, "state");
+  const manifestPath = path.join(fixture.root, "dispatch-manifest.json");
+  fs.mkdirSync(stateRoot);
+  try {
+    runDispatchWithReceiptSync({
+      ...baseOptions(fixture),
+      operationKey: "dispatch:manifest",
+      dispatchInput: { event_type: "manifest_test" },
+      operation: () => undefined,
+    });
+
+    const finalize = spawnSync(
+      process.execPath,
+      [
+        path.resolve("dist/repair/dispatch-action-ledger-cli.js"),
+        "finalize",
+        "--lane",
+        "dispatch-test",
+      ],
+      { encoding: "utf8", env: fixture.env },
+    );
+    assert.equal(finalize.status, 0, finalize.stderr);
+    const manifest = parseDispatchActionLedgerManifest(
+      finalize.stdout,
+      "dispatch-test",
+      fixture.env,
+    );
+    assert.ok(manifest.event_paths.length > 0);
+    fs.writeFileSync(manifestPath, serializeDispatchActionLedgerManifest(manifest));
+
+    const publish = spawnSync(
+      process.execPath,
+      [
+        path.resolve("dist/repair/dispatch-action-ledger-cli.js"),
+        "publish",
+        "--lane",
+        "dispatch-test",
+        "--manifest",
+        manifestPath,
+        "--source-root",
+        fixture.outputRoot,
+        "--state-root",
+        stateRoot,
+      ],
+      { encoding: "utf8", env: fixture.env },
+    );
+    assert.equal(publish.status, 0, publish.stderr);
+    assert.deepEqual(JSON.parse(publish.stdout).eventPaths, manifest.event_paths);
+    assert.deepEqual(
+      readEvents(stateRoot).map((event) => event.event_type),
+      [ACTION_EVENT_TYPES.dispatchLifecycle, ACTION_EVENT_TYPES.dispatchLifecycle],
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("every workflow-backed dispatch producer publishes finalized receipt shards", () => {
   const workflows = [
     [".github/workflows/sweep.yml", "target-fanout-dispatch"],
@@ -316,24 +381,38 @@ test("every workflow-backed dispatch producer publishes finalized receipt shards
     const workflow = fs.readFileSync(workflowPath, "utf8");
     assert.match(workflow, /uses: \.\/\.github\/actions\/setup-action-ledger/);
     assert.match(workflow, new RegExp(`--lane ${lane}`));
-    assert.match(workflow, /repair:action-ledger -- finalize/);
-    assert.match(workflow, /repair:action-ledger -- publish/);
+    assert.match(workflow, /dist\/repair\/dispatch-action-ledger-cli\.js finalize/);
+    assert.match(workflow, /dist\/repair\/dispatch-action-ledger-cli\.js publish/);
     assert.match(workflow, /repair:publish-main/);
   }
 });
 
-test("activity intake receipt publishers authenticate the root checkout", () => {
+test("activity intake receipt publishers keep checkout credentials ephemeral", () => {
   for (const workflowPath of [
     ".github/workflows/github-activity.yml",
     ".github/workflows/spam-comment-intake.yml",
   ]) {
     const workflow = fs.readFileSync(workflowPath, "utf8");
-    assert.match(workflow, /id: app_token[\s\S]*?permission-contents: write/);
     assert.match(
       workflow,
-      /uses: actions\/checkout@v7[\s\S]*?fetch-depth: 0[\s\S]*?token: \$\{\{ steps\.app_token\.outputs\.token \}\}/,
+      /uses: actions\/checkout@v7[\s\S]{0,400}?fetch-depth: 0[\s\S]{0,400}?persist-credentials: false/,
     );
+    assert.doesNotMatch(
+      workflow,
+      /uses: actions\/checkout@v7[\s\S]{0,300}?token: \$\{\{ steps\.app_token\.outputs\.token \}\}/,
+    );
+    assert.match(workflow, /auth_header="\$\(printf 'x-access-token:%s'/);
+    assert.match(workflow, /export GIT_CONFIG_COUNT=1/);
+    assert.match(workflow, /export GIT_CONFIG_KEY_0=http\.https:\/\/github\.com\/\.extraheader/);
+    assert.match(workflow, /export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic \$auth_header"/);
   }
+  const spamWorkflow = fs.readFileSync(".github/workflows/spam-comment-intake.yml", "utf8");
+  assert.match(spamWorkflow, /id: app_token[\s\S]*?repositories: clawsweeper/);
+  assert.match(spamWorkflow, /id: app_token[\s\S]*?permission-contents: write/);
+  const activityWorkflow = fs.readFileSync(".github/workflows/github-activity.yml", "utf8");
+  assert.doesNotMatch(activityWorkflow, /id: app_token/);
+  assert.match(activityWorkflow, /PUBLISH_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(spamWorkflow, /PUBLISH_TOKEN: \$\{\{ steps\.app_token\.outputs\.token \}\}/);
 });
 
 function baseOptions(fixture: ReturnType<typeof actionLedgerFixture>) {

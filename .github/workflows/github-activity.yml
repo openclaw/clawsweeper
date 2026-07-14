@@ -92,23 +92,13 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create GitHub App token
-        if: steps.core-budget.outputs.skip != 'true'
-        id: app_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || github.repository_owner }}
-          permission-contents: write
-
       - uses: actions/checkout@v7
         if: steps.core-budget.outputs.skip != 'true'
         with:
           ref: ${{ github.event.repository.default_branch }}
           filter: blob:none
           fetch-depth: 0
-          token: ${{ steps.app_token.outputs.token }}
+          persist-credentials: false
 
       - name: Create state token
         if: steps.core-budget.outputs.skip != 'true'
@@ -183,7 +173,7 @@ jobs:
         id: dispatch-spam-scan-candidate
         if: steps.core-budget.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           pnpm run repair:spam-comment-intake -- --write-report
@@ -194,13 +184,15 @@ jobs:
           set -euo pipefail
           : "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
           mkdir -p .artifacts
-          pnpm run --silent repair:action-ledger -- finalize \
+          node dist/repair/dispatch-action-ledger-cli.js finalize \
             --lane github-activity-dispatch \
             --allow-empty \
             > .artifacts/github-activity-dispatch-action-ledger-manifest.json
 
       - name: Publish GitHub activity dispatch action ledger
         if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-state.outcome == 'success' && steps.setup-activity-pnpm.outcome == 'success' && steps.setup-activity-ledger.outcome == 'success' }}
+        env:
+          PUBLISH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
@@ -212,7 +204,7 @@ jobs:
           fi
           event_paths_file=".artifacts/github-activity-dispatch-action-ledger-paths.txt"
           import_result_file=".artifacts/github-activity-dispatch-action-ledger-import.json"
-          pnpm run --silent repair:action-ledger -- publish \
+          node dist/repair/dispatch-action-ledger-cli.js publish \
             --lane github-activity-dispatch \
             --manifest "$manifest_file" \
             --source-root "$source_root" \
@@ -237,6 +229,10 @@ jobs:
             cp "$durable_event_path" "$event_path"
             action_ledger_args+=(--path "$event_path")
           done < "$event_paths_file"
+          auth_header="$(printf 'x-access-token:%s' "$PUBLISH_TOKEN" | base64 | tr -d '\n')"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
           pnpm run repair:publish-main -- \
             --message "chore: append GitHub activity dispatch action ledger" \
             "${action_ledger_args[@]}" \
