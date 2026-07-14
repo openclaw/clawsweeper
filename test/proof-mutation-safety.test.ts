@@ -113,18 +113,23 @@ test("proof freshness distinguishes head, review, and conversation drift", () =>
 
 test("proof mutation receipts start only after request-boundary validation", () => {
   const source = readFileSync("src/clawsweeper.ts", "utf8");
+  const freshnessStart = source.indexOf("function refreshProofMutationSession(");
   const runnerStart = source.indexOf("function proofMutationRunner(");
   const runnerEnd = source.indexOf("\nfunction reconcileProofMutation(", runnerStart);
+  const freshness = source.slice(freshnessStart, runnerStart);
   const runner = source.slice(runnerStart, runnerEnd);
 
-  const refresh = runner.indexOf("session.refreshFreshness()");
-  const validate = runner.indexOf("session.validateRequest(currentFreshness)");
+  const refresh = freshness.indexOf("session.refreshFreshness()");
+  const validate = freshness.indexOf("session.validateRequest(currentFreshness)");
+  const boundaryValidation = runner.indexOf("refreshProofMutationSession(session)");
   const receipt = runner.indexOf("startProofMutationReceipt({");
   const request = runner.indexOf("const result = options.operation()");
 
+  assert.ok(freshnessStart >= 0);
   assert.ok(refresh >= 0);
   assert.ok(refresh < validate);
-  assert.ok(validate < receipt);
+  assert.ok(boundaryValidation >= 0);
+  assert.ok(boundaryValidation < receipt);
   assert.ok(receipt < request);
 });
 
