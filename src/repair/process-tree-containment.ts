@@ -3,12 +3,136 @@ import ctypes
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import time
 
 PR_SET_CHILD_SUBREAPER = 36
+PR_SET_NO_NEW_PRIVS = 38
 PROTOCOL_FD = 3
+LANDLOCK_CREATE_RULESET_VERSION = 1
+LANDLOCK_RULE_PATH_BENEATH = 1
+LANDLOCK_ACCESS_FS_WRITE_FILE = 1 << 1
+LANDLOCK_ACCESS_FS_REMOVE_DIR = 1 << 4
+LANDLOCK_ACCESS_FS_REMOVE_FILE = 1 << 5
+LANDLOCK_ACCESS_FS_MAKE_CHAR = 1 << 6
+LANDLOCK_ACCESS_FS_MAKE_DIR = 1 << 7
+LANDLOCK_ACCESS_FS_MAKE_REG = 1 << 8
+LANDLOCK_ACCESS_FS_MAKE_SOCK = 1 << 9
+LANDLOCK_ACCESS_FS_MAKE_FIFO = 1 << 10
+LANDLOCK_ACCESS_FS_MAKE_BLOCK = 1 << 11
+LANDLOCK_ACCESS_FS_MAKE_SYM = 1 << 12
+LANDLOCK_ACCESS_FS_REFER = 1 << 13
+LANDLOCK_ACCESS_FS_TRUNCATE = 1 << 14
+LANDLOCK_WRITE_ACCESS = (
+    LANDLOCK_ACCESS_FS_WRITE_FILE
+    | LANDLOCK_ACCESS_FS_REMOVE_DIR
+    | LANDLOCK_ACCESS_FS_REMOVE_FILE
+    | LANDLOCK_ACCESS_FS_MAKE_CHAR
+    | LANDLOCK_ACCESS_FS_MAKE_DIR
+    | LANDLOCK_ACCESS_FS_MAKE_REG
+    | LANDLOCK_ACCESS_FS_MAKE_SOCK
+    | LANDLOCK_ACCESS_FS_MAKE_FIFO
+    | LANDLOCK_ACCESS_FS_MAKE_BLOCK
+    | LANDLOCK_ACCESS_FS_MAKE_SYM
+    | LANDLOCK_ACCESS_FS_REFER
+    | LANDLOCK_ACCESS_FS_TRUNCATE
+)
+SYS_LANDLOCK_CREATE_RULESET = 444
+SYS_LANDLOCK_ADD_RULE = 445
+SYS_LANDLOCK_RESTRICT_SELF = 446
+
+
+class LandlockRulesetAttr(ctypes.Structure):
+    _fields_ = [("handled_access_fs", ctypes.c_uint64)]
+
+
+class LandlockPathBeneathAttr(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("allowed_access", ctypes.c_uint64),
+        ("parent_fd", ctypes.c_int32),
+    ]
+
+
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
+
+
+def checked_syscall(number, *arguments):
+    result = libc.syscall(ctypes.c_long(number), *arguments)
+    if result < 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number))
+    return result
+
+
+def landlock_abi():
+    return checked_syscall(
+        SYS_LANDLOCK_CREATE_RULESET,
+        ctypes.c_void_p(),
+        ctypes.c_size_t(0),
+        ctypes.c_uint32(LANDLOCK_CREATE_RULESET_VERSION),
+    )
+
+
+def add_writable_path(ruleset_fd, path, allowed_access):
+    path_fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
+    try:
+        rule = LandlockPathBeneathAttr(
+            allowed_access=allowed_access,
+            parent_fd=path_fd,
+        )
+        checked_syscall(
+            SYS_LANDLOCK_ADD_RULE,
+            ctypes.c_int(ruleset_fd),
+            ctypes.c_int(LANDLOCK_RULE_PATH_BENEATH),
+            ctypes.byref(rule),
+            ctypes.c_uint32(0),
+        )
+    finally:
+        os.close(path_fd)
+
+
+def restrict_filesystem_writes(writable_roots):
+    abi = landlock_abi()
+    if abi < 3:
+        raise RuntimeError("Landlock ABI 3 or newer is required")
+    ruleset = LandlockRulesetAttr(handled_access_fs=LANDLOCK_WRITE_ACCESS)
+    ruleset_fd = checked_syscall(
+        SYS_LANDLOCK_CREATE_RULESET,
+        ctypes.byref(ruleset),
+        ctypes.sizeof(ruleset),
+        ctypes.c_uint32(0),
+    )
+    try:
+        canonical_roots = []
+        for root in writable_roots:
+            canonical = os.path.realpath(root)
+            if not stat.S_ISDIR(os.stat(canonical).st_mode):
+                raise RuntimeError("validation writable root is not a directory: " + root)
+            if canonical not in canonical_roots:
+                canonical_roots.append(canonical)
+        for root in canonical_roots:
+            add_writable_path(ruleset_fd, root, LANDLOCK_WRITE_ACCESS)
+        for device in ("/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom"):
+            if os.path.exists(device):
+                add_writable_path(
+                    ruleset_fd,
+                    device,
+                    LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_TRUNCATE,
+                )
+        if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+            error_number = ctypes.get_errno()
+            raise OSError(error_number, os.strerror(error_number))
+        checked_syscall(
+            SYS_LANDLOCK_RESTRICT_SELF,
+            ctypes.c_int(ruleset_fd),
+            ctypes.c_uint32(0),
+        )
+    finally:
+        os.close(ruleset_fd)
 
 
 def write_protocol(payload):
@@ -34,21 +158,12 @@ def process_rows():
     return rows
 
 
-def descendant_pids():
-    children = {}
-    for pid, parent_pid in process_rows():
-        children.setdefault(parent_pid, []).append(pid)
-    descendants = []
-    pending = list(children.get(os.getpid(), []))
-    while pending:
-        pid = pending.pop()
-        descendants.append(pid)
-        pending.extend(children.get(pid, []))
-    return descendants
+def target_pids():
+    return [pid for pid, _parent_pid in process_rows() if pid != os.getpid()]
 
 
-def signal_descendants(signum):
-    for pid in reversed(descendant_pids()):
+def signal_target_processes(signum):
+    for pid in reversed(target_pids()):
         try:
             os.kill(pid, signum)
         except ProcessLookupError:
@@ -61,7 +176,7 @@ termination_signal = None
 def request_termination(signum, _frame):
     global termination_signal
     termination_signal = signal.SIGKILL if signum == signal.SIGUSR1 else signal.SIGTERM
-    signal_descendants(termination_signal)
+    signal_target_processes(termination_signal)
 
 
 def reap_exited_children(primary_pid, background_pids):
@@ -90,17 +205,18 @@ def reap_adopted_children(primary_pid, background_pids):
 def terminate_and_reap_descendants(primary_pid, background_pids):
     graceful_deadline = time.monotonic() + 0.25
     while True:
-        if reap_exited_children(primary_pid, background_pids):
+        remaining_pids = target_pids()
+        background_pids.update(pid for pid in remaining_pids if pid != primary_pid)
+        no_children = reap_exited_children(primary_pid, background_pids)
+        if no_children and not remaining_pids:
             return len(background_pids)
-        descendants = descendant_pids()
-        background_pids.update(descendants)
-        if descendants:
+        if remaining_pids:
             signum = (
                 signal.SIGKILL
                 if termination_signal == signal.SIGKILL or time.monotonic() >= graceful_deadline
                 else signal.SIGTERM
             )
-            for pid in reversed(descendants):
+            for pid in reversed(remaining_pids):
                 try:
                     os.kill(pid, signum)
                 except ProcessLookupError:
@@ -109,15 +225,20 @@ def terminate_and_reap_descendants(primary_pid, background_pids):
 
 
 def main():
-    libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
         error_number = ctypes.get_errno()
         raise OSError(error_number, os.strerror(error_number))
     signal.signal(signal.SIGTERM, request_termination)
     signal.signal(signal.SIGUSR1, request_termination)
-    command = sys.argv[1:]
+    writable_roots = json.loads(sys.argv[1])
+    if not isinstance(writable_roots, list) or not all(
+        isinstance(root, str) and root for root in writable_roots
+    ):
+        raise RuntimeError("validation writable roots are invalid")
+    command = sys.argv[2:]
     if not command:
         raise RuntimeError("validation command is missing")
+    restrict_filesystem_writes(writable_roots)
     child = subprocess.Popen(command, close_fds=True)
     background_pids = set()
     while True:
@@ -126,7 +247,7 @@ def main():
         if return_code is not None:
             break
         if termination_signal is not None:
-            signal_descendants(termination_signal)
+            signal_target_processes(termination_signal)
         time.sleep(0.01)
     background_processes = terminate_and_reap_descendants(child.pid, background_pids)
     write_protocol(

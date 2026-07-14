@@ -1,4 +1,5 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolveSpawnCommand } from "../command.js";
 
@@ -10,6 +11,7 @@ export type CommandRunOptions = {
   input?: string;
   maxBuffer?: number;
   timeoutMs?: number;
+  writableRoots?: readonly string[];
 };
 
 export function runCommand(
@@ -49,6 +51,7 @@ export function runContainedCommand(
         input: options.input,
         maxBuffer,
         timeoutMs: options.timeoutMs,
+        writableRoots: options.writableRoots?.map((root) => fs.realpathSync(root)) ?? [],
         windowsVerbatimArguments: invocation.windowsVerbatimArguments === true,
       }),
       encoding: "utf8",

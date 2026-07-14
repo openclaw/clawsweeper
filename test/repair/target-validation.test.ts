@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -2000,6 +2000,8 @@ test("repair execution provisions pinned Bun before target validation can invoke
   assert.match(containmentStep, /\/usr\/bin\/unshare/);
   assert.match(containmentStep, /--map-root-user/);
   assert.match(containmentStep, /--kill-child=SIGKILL/);
+  assert.match(containmentStep, /ctypes\.c_long\(444\)/);
+  assert.match(containmentStep, /Landlock ABI 3 or newer is required/);
   const setupBunStep = workflow.slice(setupBunIndex, executeFixIndex);
   assert.match(setupBunStep, /uses: oven-sh\/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6/);
   assert.match(setupBunStep, /bun-version: 1\.3\.14/);
@@ -2261,6 +2263,64 @@ if (args.includes("second")) {
         ),
       /unsafe validation command mutated checkout identity/,
     );
+    assert.equal(fs.existsSync(secondCommandMarker), false);
+  },
+);
+
+test(
+  "validation binds ignored runtime symlink target contents between commands",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({
+      first: 'node -e ""',
+      second: 'node -e ""',
+    });
+    fs.writeFileSync(path.join(cwd, ".gitignore"), "node_modules/\nruntime-input/\n");
+    const externalInput = path.join(cwd, "runtime-input", "state.js");
+    const dependencyDir = path.join(cwd, "node_modules", "fixture-dependency");
+    fs.mkdirSync(path.dirname(externalInput), { recursive: true });
+    fs.mkdirSync(dependencyDir, { recursive: true });
+    fs.writeFileSync(externalInput, "safe\n");
+    fs.symlinkSync(
+      path.relative(dependencyDir, externalInput),
+      path.join(dependencyDir, "state.js"),
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-runtime-symlink-"));
+    const secondCommandMarker = path.join(binDir, "second-command-ran");
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args.includes("first")) {
+  fs.writeFileSync("node_modules/fixture-dependency/state.js", "poisoned\\n");
+}
+if (args.includes("second")) {
+  fs.writeFileSync(${JSON.stringify(secondCommandMarker)}, "ran");
+}
+`,
+    );
+    const options = validationOptions("steipete/example", {
+      toolchain: {
+        packageManager: "pnpm",
+        baseValidationCommands: [],
+        changedGate: null,
+      },
+    });
+
+    assert.throws(
+      () =>
+        withPathOnlyPrefix(binDir, () =>
+          runAllowedValidationCommands(["pnpm first", "pnpm second"], cwd, options),
+        ),
+      /unsafe validation command mutated checkout identity/,
+    );
+    assert.equal(fs.readFileSync(externalInput, "utf8"), "poisoned\n");
     assert.equal(fs.existsSync(secondCommandMarker), false);
   },
 );
@@ -4077,7 +4137,11 @@ setTimeout(() => {}, 5000);
 test(
   "validation rejects and reaps an immediate detached double fork",
   { skip: process.platform !== "linux" },
-  () => {
+  (context) => {
+    if (!linuxValidationContainmentAvailable()) {
+      context.skip("runner does not provide delegated user namespaces and Landlock ABI 3+");
+      return;
+    }
     const marker = path.join(
       os.tmpdir(),
       `clawsweeper-detached-validation-${process.pid}-${Date.now()}`,
@@ -4103,25 +4167,32 @@ child.unref();
 `,
     );
 
-    assert.throws(
-      () =>
-        withMockCommand("pnpm", pnpmPath, () =>
-          runAllowedValidationCommands(
-            ["pnpm verify"],
-            cwd,
-            validationOptions("steipete/example", {
-              toolchain: {
-                packageManager: "pnpm",
-                baseValidationCommands: [],
-                changedGate: null,
-              },
-            }),
+    const previousForceContainment = process.env.CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT;
+    process.env.CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT = "1";
+    try {
+      assert.throws(
+        () =>
+          withMockCommand("pnpm", pnpmPath, () =>
+            runAllowedValidationCommands(
+              ["pnpm verify"],
+              cwd,
+              validationOptions("steipete/example", {
+                toolchain: {
+                  packageManager: "pnpm",
+                  baseValidationCommands: [],
+                  changedGate: null,
+                },
+              }),
+            ),
           ),
-        ),
-      /background process/,
-    );
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
-    assert.equal(fs.existsSync(marker), false);
+        /background process/,
+      );
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
+      assert.equal(fs.existsSync(marker), false);
+    } finally {
+      restoreEnv("CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT", previousForceContainment);
+      fs.rmSync(marker, { force: true });
+    }
   },
 );
 
@@ -4522,6 +4593,32 @@ if (process.argv[2] === "--version") console.log("1.3.10");
 function restoreEnv(key, previous) {
   if (previous === undefined) delete process.env[key];
   else process.env[key] = previous;
+}
+
+function linuxValidationContainmentAvailable() {
+  const probe = spawnSync(
+    "/usr/bin/unshare",
+    [
+      "--user",
+      "--map-root-user",
+      "--pid",
+      "--fork",
+      "--mount-proc",
+      "--kill-child=SIGKILL",
+      "/usr/bin/python3",
+      "-c",
+      [
+        "import ctypes, os",
+        "libc = ctypes.CDLL(None, use_errno=True)",
+        "libc.syscall.restype = ctypes.c_long",
+        "abi = libc.syscall(ctypes.c_long(444), ctypes.c_void_p(), ctypes.c_size_t(0), ctypes.c_uint32(1))",
+        "assert os.getpid() == 1",
+        "assert abi >= 3",
+      ].join("; "),
+    ],
+    { stdio: "ignore" },
+  );
+  return probe.status === 0;
 }
 
 function withMockCommand(command, scriptPath, callback) {

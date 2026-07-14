@@ -583,6 +583,7 @@ export function runAllowedValidationCommandsWithBinding(
               cwd,
               env: validationEnv,
               timeoutMs: executionBudgetMs,
+              writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
             });
           } catch (error) {
             executionError = error as Error;
@@ -624,6 +625,7 @@ export function runAllowedValidationCommandsWithBinding(
                   cwd,
                   env: validationEnv,
                   timeoutMs: fallbackBudgetMs,
+                  writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
                 });
               } catch (error) {
                 fallbackError = error as Error;
@@ -1811,7 +1813,7 @@ function validationRuntimeInputsSha256(cwd: string, deadlineAt: number) {
       updateIdentityHash(hash, "runtime-state", "absent");
       continue;
     }
-    updateRuntimeInputDigest(hash, root, entryPath, relativePath, deadlineAt, new Set());
+    updateRuntimeInputDigest(hash, root, entryPath, relativePath, deadlineAt, new Map());
   }
   assertValidationIdentityDeadline(deadlineAt, "runtime input digest");
   return hash.digest("hex");
@@ -1852,7 +1854,7 @@ function updateRuntimeInputDigest(
   entryPath: string,
   logicalPath: string,
   deadlineAt: number,
-  activeDirectories: Set<string>,
+  coveredEntries: Map<string, string>,
 ) {
   assertValidationIdentityDeadline(deadlineAt, logicalPath);
   const stat = fs.lstatSync(entryPath);
@@ -1863,8 +1865,23 @@ function updateRuntimeInputDigest(
     const targetPath = fs.realpathSync(entryPath);
     assertPathWithin(root, targetPath, logicalPath);
     updateIdentityHash(hash, "runtime-symlink-target", path.relative(root, targetPath));
+    updateRuntimeInputDigest(
+      hash,
+      root,
+      targetPath,
+      `${logicalPath}\0target`,
+      deadlineAt,
+      coveredEntries,
+    );
     return;
   }
+  const realPath = fs.realpathSync(entryPath);
+  const coveredBy = coveredEntries.get(realPath);
+  if (coveredBy !== undefined) {
+    updateIdentityHash(hash, "runtime-reference", `${path.relative(root, realPath)}\0${coveredBy}`);
+    return;
+  }
+  coveredEntries.set(realPath, logicalPath);
   if (stat.isFile()) {
     updateFileDigest(hash, entryPath, logicalPath, deadlineAt);
     return;
@@ -1872,26 +1889,17 @@ function updateRuntimeInputDigest(
   if (!stat.isDirectory()) {
     throw new Error(`unsupported validation runtime input: ${logicalPath}`);
   }
-  const realDirectory = fs.realpathSync(entryPath);
-  if (activeDirectories.has(realDirectory)) {
-    throw new Error(`validation runtime input directory cycle: ${logicalPath}`);
-  }
-  activeDirectories.add(realDirectory);
-  try {
-    const children = fs.readdirSync(entryPath).sort();
-    updateIdentityHash(hash, "runtime-children", children.join("\0"));
-    for (const child of children) {
-      updateRuntimeInputDigest(
-        hash,
-        root,
-        path.join(entryPath, child),
-        `${logicalPath}/${child}`,
-        deadlineAt,
-        activeDirectories,
-      );
-    }
-  } finally {
-    activeDirectories.delete(realDirectory);
+  const children = fs.readdirSync(entryPath).sort();
+  updateIdentityHash(hash, "runtime-children", children.join("\0"));
+  for (const child of children) {
+    updateRuntimeInputDigest(
+      hash,
+      root,
+      path.join(entryPath, child),
+      `${logicalPath}/${child}`,
+      deadlineAt,
+      coveredEntries,
+    );
   }
 }
 
@@ -2756,6 +2764,7 @@ function withTargetValidationEnvironment<T>(
   const data = path.join(root, "data");
   const state = path.join(root, "state");
   const runtime = path.join(root, "runtime");
+  const temporary = path.join(root, "tmp");
   const cargoHome = path.join(root, "cargo");
   const corepackHome = path.join(root, "corepack");
   const corepackBin = path.join(corepackHome, "bin");
@@ -2775,6 +2784,9 @@ function withTargetValidationEnvironment<T>(
     HOME: home,
     LOCALAPPDATA: data,
     NPM_CONFIG_USERCONFIG: npmConfig,
+    TEMP: temporary,
+    TMP: temporary,
+    TMPDIR: temporary,
     USERPROFILE: home,
     XDG_CACHE_HOME: cache,
     XDG_CONFIG_HOME: config,
@@ -2791,10 +2803,20 @@ function withTargetValidationEnvironment<T>(
     ) {
       throw new Error("disposable target validation profile root changed");
     }
-    for (const directory of [home, config, cache, data, state, runtime, cargoHome, corepackHome]) {
+    for (const directory of [
+      home,
+      config,
+      cache,
+      data,
+      state,
+      runtime,
+      temporary,
+      cargoHome,
+      corepackHome,
+    ]) {
       fs.rmSync(directory, { recursive: true, force: true });
     }
-    for (const directory of [home, config, cache, data, state, runtime, cargoHome]) {
+    for (const directory of [home, config, cache, data, state, runtime, temporary, cargoHome]) {
       fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     }
     if (copyPreparedRuntime && preparedPnpmRuntime) {

@@ -11,6 +11,7 @@ type WorkerInput = {
   input?: string;
   maxBuffer: number;
   timeoutMs?: number;
+  writableRoots: string[];
   windowsVerbatimArguments: boolean;
 };
 
@@ -42,6 +43,9 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
     process.platform === "linux" &&
     (process.env.NODE_TEST_CONTEXT === undefined ||
       process.env.CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT === "1");
+  if (useLinuxNamespace && input.writableRoots.length === 0) {
+    throw new Error("validation filesystem isolation requires explicit writable roots");
+  }
   const invocation = useLinuxNamespace
     ? {
         command: "/usr/bin/unshare",
@@ -55,6 +59,7 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
           "/usr/bin/python3",
           "-c",
           LINUX_SUBREAPER_SCRIPT,
+          JSON.stringify(input.writableRoots),
           input.command,
           ...input.args,
         ],

@@ -29,7 +29,7 @@ on:
         default: blacksmith-4vcpu-ubuntu-2404
         type: string
       execution_runner:
-        description: "Linux runner label for fix/apply execution work with delegated user namespaces"
+        description: "Linux runner label for fix/apply execution work with delegated user namespaces and Landlock ABI 3+"
         required: true
         default: blacksmith-16vcpu-ubuntu-2404
         type: string
@@ -568,7 +568,7 @@ jobs:
             --fork \
              --mount-proc \
              --kill-child=SIGKILL \
-             /usr/bin/python3 -c 'import os; assert os.getpid() == 1'
+             /usr/bin/python3 -c 'import ctypes, os; libc = ctypes.CDLL(None, use_errno=True); libc.syscall.restype = ctypes.c_long; abi = libc.syscall(ctypes.c_long(444), ctypes.c_void_p(), ctypes.c_size_t(0), ctypes.c_uint32(1)); assert abi >= 0, os.strerror(ctypes.get_errno()); assert os.getpid() == 1; assert abi >= 3, f"Landlock ABI 3 or newer is required, found {abi}"'
 
       - uses: actions/checkout@v7
         with:

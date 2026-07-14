@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -76,11 +76,75 @@ test(
 );
 
 test(
+  "Linux containment grants writes only to configured validation roots",
+  { skip: process.platform !== "linux" },
+  (context) => {
+    if (!linuxValidationContainmentAvailable()) {
+      context.skip("runner does not provide delegated user namespaces and Landlock ABI 3+");
+      return;
+    }
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-filesystem-isolation-"));
+    const target = join(root, "target");
+    const profile = join(root, "profile");
+    const trustedBin = join(root, "trusted-bin");
+    const trustedTool = join(trustedBin, "git");
+    const targetMarker = join(target, "target-write");
+    const profileMarker = join(profile, "profile-write");
+    mkdirSync(target);
+    mkdirSync(profile);
+    mkdirSync(trustedBin);
+    writeFileSync(trustedTool, "trusted\n", { mode: 0o755 });
+    try {
+      const output = runContainedCommand(
+        process.execPath,
+        [
+          "-e",
+          [
+            'const fs = require("node:fs");',
+            "const [targetMarker, profileMarker, trustedTool] = process.argv.slice(1);",
+            'fs.writeFileSync(targetMarker, "target");',
+            'fs.writeFileSync(profileMarker, "profile");',
+            "let blocked = false;",
+            "try { fs.writeFileSync(trustedTool, 'poisoned'); }",
+            "catch (error) {",
+            "  if (!['EACCES', 'EPERM', 'EROFS'].includes(error.code)) throw error;",
+            "  blocked = true;",
+            "}",
+            "if (!blocked) process.exit(70);",
+            'process.stdout.write("blocked");',
+          ].join("\n"),
+          targetMarker,
+          profileMarker,
+          trustedTool,
+        ],
+        {
+          cwd: target,
+          env: {
+            ...process.env,
+            CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT: "1",
+            PATH: `${trustedBin}:${process.env.PATH ?? ""}`,
+          },
+          timeoutMs: 3_000,
+          writableRoots: [target, profile],
+        },
+      );
+
+      assert.equal(output, "blocked");
+      assert.equal(readFileSync(targetMarker, "utf8"), "target");
+      assert.equal(readFileSync(profileMarker, "utf8"), "profile");
+      assert.equal(readFileSync(trustedTool, "utf8"), "trusted\n");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "Linux containment kills the namespace when target code terminates its inner supervisor",
   { skip: process.platform !== "linux" },
   (context) => {
-    if (!linuxUserNamespaceAvailable()) {
-      context.skip("runner does not delegate unprivileged user namespaces");
+    if (!linuxValidationContainmentAvailable()) {
+      context.skip("runner does not provide delegated user namespaces and Landlock ABI 3+");
       return;
     }
     const root = mkdtempSync(join(tmpdir(), "clawsweeper-supervisor-kill-"));
@@ -106,6 +170,7 @@ test(
                 CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT: "1",
               },
               timeoutMs: 3_000,
+              writableRoots: [root],
             },
           ),
         /validation subreaper exited without a result|validation process containment failed/,
@@ -185,7 +250,7 @@ test("shared spawn resolver escapes Windows batch launcher arguments", () => {
   }
 });
 
-function linuxUserNamespaceAvailable() {
+function linuxValidationContainmentAvailable() {
   const probe = spawnSync(
     "/usr/bin/unshare",
     [
@@ -197,7 +262,14 @@ function linuxUserNamespaceAvailable() {
       "--kill-child=SIGKILL",
       "/usr/bin/python3",
       "-c",
-      "import os; assert os.getpid() == 1",
+      [
+        "import ctypes, os",
+        "libc = ctypes.CDLL(None, use_errno=True)",
+        "libc.syscall.restype = ctypes.c_long",
+        "abi = libc.syscall(ctypes.c_long(444), ctypes.c_void_p(), ctypes.c_size_t(0), ctypes.c_uint32(1))",
+        "assert os.getpid() == 1",
+        "assert abi >= 3",
+      ].join("; "),
     ],
     { stdio: "ignore" },
   );
