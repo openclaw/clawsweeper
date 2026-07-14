@@ -1602,6 +1602,9 @@ jobs:
         if: ${{ !((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true' && github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) }}
         continue-on-error: true
         working-directory: clawsweeper
+        env:
+          CLAWSWEEPER_PUBLISH_DEADLINE_MS: "15000"
+          CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "5000"
         run: |
           target_slug="${{ steps.target.outputs.target_repo }}"
           target_slug="${target_slug//\//-}"
@@ -1610,7 +1613,7 @@ jobs:
             --state "Planning review" \
             --detail "Planner is scanning GitHub for the next review candidates. Candidate counts and shard details will be posted after planning completes." \
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          timeout 20s pnpm run repair:publish-main -- \
+          pnpm run repair:publish-main -- \
             --message "chore: mark sweep planning started" \
             --path "results/sweep-status/${target_slug}.json" \
             --rebase-strategy theirs || echo "::warning::Skipped slow planning-started dashboard publish so candidate selection can start."
@@ -2024,6 +2027,8 @@ jobs:
         continue-on-error: true
         working-directory: clawsweeper
         env:
+          CLAWSWEEPER_PUBLISH_DEADLINE_MS: "15000"
+          CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "5000"
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
         run: |
@@ -2041,7 +2046,7 @@ jobs:
             --due-backlog "${{ steps.select.outputs.due_backlog }}" \
             --oldest-unreviewed-at "${{ steps.select.outputs.oldest_unreviewed_at }}" \
             --capacity-reason "${{ steps.select.outputs.capacity_reason }}"
-          timeout 20s pnpm run repair:publish-main -- \
+          pnpm run repair:publish-main -- \
             --message "chore: mark sweep review in progress" \
             --path "results/sweep-status/${target_slug}.json" \
             --rebase-strategy theirs || echo "::warning::Skipped slow in-progress dashboard publish so review shards can start."

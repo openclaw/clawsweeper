@@ -2135,15 +2135,28 @@ test("target sweep dispatches preserve disabled ClawHub guard", () => {
   );
 });
 
-test("sweep planning-started status publish is bounded", () => {
+test("sweep planning status publishers use releasable internal deadlines", () => {
   const workflow = readText(".github/workflows/sweep.yml");
-  const block = workflow.slice(
-    workflow.indexOf("- name: Publish planning-started status"),
-    workflow.indexOf("- id: mode"),
-  );
+  const blocks = [
+    workflow.slice(
+      workflow.indexOf("- name: Publish planning-started status"),
+      workflow.indexOf("- id: mode"),
+    ),
+    workflow.slice(
+      workflow.indexOf("- name: Publish planning status"),
+      workflow.indexOf("\n  review:"),
+    ),
+  ];
 
-  assert.match(block, /timeout 20s pnpm run repair:publish-main/);
-  assert.match(block, /Skipped slow planning-started dashboard publish/);
+  for (const block of blocks) {
+    assert.match(block, /CLAWSWEEPER_PUBLISH_DEADLINE_MS: "15000"/);
+    assert.match(block, /CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "5000"/);
+    assert.match(block, /pnpm run repair:publish-main/);
+    assert.doesNotMatch(block, /\btimeout\s+\S+\s+pnpm run repair:publish-main/);
+  }
+  assert.doesNotMatch(workflow, /\btimeout\s+\S+\s+pnpm run repair:publish-main/);
+  assert.match(blocks[0], /Skipped slow planning-started dashboard publish/);
+  assert.match(blocks[1], /Skipped slow in-progress dashboard publish/);
 });
 
 test("review capacity probes use REST actions run listing", () => {
