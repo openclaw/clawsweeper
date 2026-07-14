@@ -1285,7 +1285,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$event_paths_file"
-          node dist/clawsweeper.js publish-action-event-paths \
+          node dist/repair/publish-action-event-paths.js \
             --paths-file "$event_paths_file" \
             --message "chore: append exact event action ledger"
 
@@ -1356,7 +1356,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$event_paths_file"
-          node dist/clawsweeper.js publish-action-event-paths \
+          node dist/repair/publish-action-event-paths.js \
             --paths-file "$event_paths_file" \
             --message "chore: append command status action ledger"
 
@@ -1476,7 +1476,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$event_paths_file"
-          node dist/clawsweeper.js publish-action-event-paths \
+          node dist/repair/publish-action-event-paths.js \
             --paths-file "$event_paths_file" \
             --message "chore: append target fanout dispatch action ledger"
 
@@ -2500,7 +2500,7 @@ jobs:
             echo "No immutable review action events to publish."
             exit 0
           fi
-          node dist/clawsweeper.js publish-action-event-paths \
+          node dist/repair/publish-action-event-paths.js \
             --paths-file .artifacts/action-ledger-paths.txt \
             --message "chore: append review action ledger"
 
@@ -2585,7 +2585,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$event_paths_file"
-          node dist/clawsweeper.js publish-action-event-paths \
+          node dist/repair/publish-action-event-paths.js \
             --paths-file "$event_paths_file" \
             --message "chore: append review artifact action ledger"
 
@@ -2904,7 +2904,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$event_paths_file"
-          node dist/clawsweeper.js publish-action-event-paths \
+          node dist/repair/publish-action-event-paths.js \
             --paths-file "$event_paths_file" \
             --message "chore: append selected review comment action ledger"
 
@@ -3233,7 +3233,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$event_paths_file"
-          node dist/clawsweeper.js publish-action-event-paths \
+          node dist/repair/publish-action-event-paths.js \
             --paths-file "$event_paths_file" \
             --message "chore: append failed review retry action ledger"
 
@@ -3660,7 +3660,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$event_paths_file"
-          node dist/clawsweeper.js publish-action-event-paths \
+          node dist/repair/publish-action-event-paths.js \
             --paths-file "$event_paths_file" \
             --message "chore: append apply proof action ledger"
 
@@ -4206,7 +4206,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$event_paths_file"
-          node dist/clawsweeper.js publish-action-event-paths \
+          node dist/repair/publish-action-event-paths.js \
             --paths-file "$event_paths_file" \
             --message "chore: append apply action ledger"
 

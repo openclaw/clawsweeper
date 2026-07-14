@@ -37,6 +37,7 @@ test("immutable action ledger publishers use path-manifest admission", () => {
       ".github/workflows/github-activity-receipt-replay.yml",
       ["Replay GitHub activity dispatch action ledger"],
     ],
+    [".github/workflows/proof-nudges.yml", ["Publish immutable proof handling action ledger"]],
     [".github/workflows/spam-comment-intake.yml", ["Publish spam intake dispatch action ledger"]],
     [".github/workflows/repair-self-heal.yml", ["Publish self-heal dispatch action ledger"]],
     [".github/workflows/repair-comment-router.yml", ["Publish immutable command action ledger"]],
@@ -71,9 +72,12 @@ test("immutable action ledger publishers use path-manifest admission", () => {
     for (const publisherName of publisherNames) {
       const publisher = steps.find((step) => step.name === publisherName);
       assert.ok(publisher, `missing ${workflowPath} step ${publisherName}`);
-      assert.match(publisher.run ?? "", /publish-action-event-paths/);
+      assert.match(publisher.run ?? "", /node dist\/repair\/publish-action-event-paths\.js/);
       assert.match(publisher.run ?? "", /--paths-file /);
-      assert.doesNotMatch(publisher.run ?? "", /repair:publish-main|action_ledger_args/);
+      assert.doesNotMatch(
+        publisher.run ?? "",
+        /dist\/clawsweeper\.js publish-action-event-paths|repair:publish-main|action_ledger_args/,
+      );
     }
     for (const step of steps) {
       if (!/(?:action (?:ledger|events)|dispatch receipt)/i.test(step.name ?? "")) continue;
@@ -84,6 +88,13 @@ test("immutable action ledger publishers use path-manifest admission", () => {
       );
     }
   }
+
+  const workflowSource = inventory.map(([workflowPath]) => readText(workflowPath)).join("\n");
+  assert.equal(
+    (workflowSource.match(/node dist\/repair\/publish-action-event-paths\.js/g) ?? []).length,
+    17,
+  );
+  assert.doesNotMatch(workflowSource, /node dist\/clawsweeper\.js publish-action-event-paths/);
 });
 
 test("ledger-producing jobs initialize immutable workflow context", () => {

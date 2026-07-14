@@ -894,7 +894,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$event_paths_file"
-          node dist/clawsweeper.js publish-action-event-paths \
+          node dist/repair/publish-action-event-paths.js \
             --paths-file "$event_paths_file" \
             --message "chore: append execute-fix action ledger"
 
@@ -1126,7 +1126,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$event_paths_file"
-          node dist/clawsweeper.js publish-action-event-paths \
+          node dist/repair/publish-action-event-paths.js \
             --paths-file "$event_paths_file" \
             --message "chore: append repair requeue action ledger"
 

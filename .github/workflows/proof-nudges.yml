@@ -264,7 +264,7 @@ jobs:
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
           done < "$paths_file"
-          node dist/clawsweeper.js publish-action-event-paths \
+          node dist/repair/publish-action-event-paths.js \
             --paths-file "$paths_file" \
             --message "chore: append proof handling action ledger"
 

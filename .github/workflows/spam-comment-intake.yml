@@ -178,6 +178,6 @@ jobs:
           export GIT_CONFIG_COUNT=1
           export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
           export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
-          node dist/clawsweeper.js publish-action-event-paths \
+          node dist/repair/publish-action-event-paths.js \
             --paths-file "$event_paths_file" \
             --message "chore: append spam intake dispatch action ledger"
