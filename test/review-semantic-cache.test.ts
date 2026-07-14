@@ -200,8 +200,12 @@ test("TypeScript whitespace and ordinary comments do not perturb the semantic di
 
 test("semantic file ordering is locale-independent", () => {
   const moduleUrl = new URL("../dist/review-semantic-cache.js", import.meta.url).href;
+  const clawsweeperModuleUrl = new URL("../dist/clawsweeper.js", import.meta.url).href;
   const script = `
     const { createReviewSemanticRecord } = await import(${JSON.stringify(moduleUrl)});
+    const { pullChecksContextForTest, pullChecksDigestForTest } =
+      await import(${JSON.stringify(clawsweeperModuleUrl)});
+    const names = ["I", "\\u0131", "i", "\\u0130"];
     const files = ["I", "\\u0131", "i", "\\u0130"].map((name, index) => ({
       filename: "src/" + name + ".ts",
       status: "added",
@@ -214,6 +218,19 @@ test("semantic file ordering is locale-independent", () => {
       headType: "blob",
       treeModesComplete: true,
     }));
+    const pullChecks = pullChecksContextForTest(
+      names.map((name) => ({
+        name,
+        status: "completed",
+        conclusion: "success",
+        app: { slug: "github-actions" },
+      })),
+      names.map((context) => ({
+        context,
+        state: "success",
+        description: context,
+      })),
+    );
     const record = createReviewSemanticRecord({
       item: { repo: "openclaw/openclaw", number: 123, kind: "pull_request" },
       context: {
@@ -243,13 +260,7 @@ test("semantic file ordering is locale-independent", () => {
         pullCommitsRevision: "d".repeat(64),
         pullReviewComments: [],
         pullReviewCommentsRevision: "review-comments-1",
-        pullChecks: {
-          complete: true,
-          checkRuns: [],
-          checkRunsTruncated: false,
-          statuses: [],
-          statusesTruncated: false,
-        },
+        pullChecks,
         counts: {
           comments: 0,
           commentsTruncated: false,
@@ -281,6 +292,7 @@ test("semantic file ordering is locale-independent", () => {
       exactDigest: record.exactDigest,
       contextDigest: record.contextDigest,
       fingerprint: record.fingerprint,
+      pullChecksDigest: pullChecksDigestForTest(pullChecks),
     }));
   `;
   const run = (locale: string) => {
@@ -296,6 +308,7 @@ test("semantic file ordering is locale-independent", () => {
       exactDigest: string;
       contextDigest: string;
       fingerprint: string;
+      pullChecksDigest: string;
     };
   };
 

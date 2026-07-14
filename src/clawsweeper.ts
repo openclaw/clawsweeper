@@ -53,7 +53,7 @@ import {
   summarizeGhArgs,
 } from "./github-retry.js";
 import { parseGhJson, parseGhJsonLinesWithRetry, parseGhJsonWithRetry } from "./github-json.js";
-import { stableJson } from "./stable-json.js";
+import { stableJson, stableJsonCodeUnit } from "./stable-json.js";
 import {
   REVIEW_STRUCTURAL_CACHE_VERSION,
   reviewStructuralRecordAtLeastAsFresh,
@@ -5290,6 +5290,41 @@ function compactCommitStatus(value: unknown): unknown {
   };
 }
 
+function compareCanonicalJson(left: unknown, right: unknown): number {
+  const leftJson = stableJsonCodeUnit(left);
+  const rightJson = stableJsonCodeUnit(right);
+  return leftJson < rightJson ? -1 : leftJson > rightJson ? 1 : 0;
+}
+
+function canonicalPullChecksContext(
+  rawCheckRuns: unknown[],
+  rawStatuses: unknown[],
+  checkRunsTruncated: boolean,
+  statusesTruncated: boolean,
+): unknown {
+  const checkRuns = rawCheckRuns.slice(0, 100).map(compactCheckRun).sort(compareCanonicalJson);
+  const statuses = rawStatuses.slice(0, 100).map(compactCommitStatus).sort(compareCanonicalJson);
+  return {
+    complete: !checkRunsTruncated && !statusesTruncated,
+    checkRuns,
+    checkRunsTruncated,
+    statuses,
+    statusesTruncated,
+  };
+}
+
+export function pullChecksContextForTest(checkRuns: unknown[], statuses: unknown[]): unknown {
+  return canonicalPullChecksContext(checkRuns, statuses, false, false);
+}
+
+function canonicalPullChecksDigest(pullChecks: unknown): string {
+  return sha256(stableJsonCodeUnit(pullChecks));
+}
+
+export function pullChecksDigestForTest(pullChecks: unknown): string {
+  return canonicalPullChecksDigest(pullChecks);
+}
+
 function pullChecksContext(number: number, headSha: string): unknown {
   try {
     const checkResponse = asRecord(
@@ -5313,21 +5348,12 @@ function pullChecksContext(number: number, headSha: string): unknown {
     }
     const checkRunsTruncated = checkRunsTotal > rawCheckRuns.length || rawCheckRuns.length > 100;
     const statusesTruncated = statusesTotal > rawStatuses.length || rawStatuses.length > 100;
-    const checkRuns = rawCheckRuns
-      .slice(0, 100)
-      .map(compactCheckRun)
-      .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
-    const statuses = rawStatuses
-      .slice(0, 100)
-      .map(compactCommitStatus)
-      .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
-    return {
-      complete: !checkRunsTruncated && !statusesTruncated,
-      checkRuns,
+    return canonicalPullChecksContext(
+      rawCheckRuns,
+      rawStatuses,
       checkRunsTruncated,
-      statuses,
       statusesTruncated,
-    };
+    );
   } catch (error) {
     console.error(
       `[review] ${new Date().toISOString()} check-state=unavailable #${number}: ${
@@ -8129,7 +8155,7 @@ function fetchReviewStructuralRecord(options: {
     if (!headSha) return null;
     const pullChecks = pullChecksContext(options.item.number, headSha);
     if (!completePullChecksContext(pullChecks)) return null;
-    pullChecksDigest = sha256(stableJson(pullChecks));
+    pullChecksDigest = canonicalPullChecksDigest(pullChecks);
   }
   return reviewStructuralRecordFromGraphql({
     response,
