@@ -214,6 +214,73 @@ test("runSpamCommentIntake posts repository dispatch for accepted comments", asy
   assert.doesNotMatch(serialized, /credential-value/);
 });
 
+test("spam intake reports success after an accepted receipt flush failure", async (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-spam-intake-")));
+  const outputRoot = path.join(root, "action-ledger-output");
+  fs.mkdirSync(outputRoot);
+  const eventPath = path.join(root, "event.json");
+  fs.writeFileSync(eventPath, `${JSON.stringify(spamActivity())}\n`);
+  const originalLinkSync = fs.linkSync;
+  const logs: string[] = [];
+  let dispatches = 0;
+  let failed = false;
+  t.mock.method(fs, "linkSync", (...args: Parameters<typeof fs.linkSync>) => {
+    if (!failed && String(args[1]).endsWith(".jsonl")) {
+      failed = true;
+      throw new Error("injected accepted spam receipt flush failure");
+    }
+    Reflect.apply(originalLinkSync, fs, args);
+  });
+
+  try {
+    const summary = await runSpamCommentIntake(["--write-report"], {
+      root,
+      log: (message) => logs.push(message),
+      env: {
+        GITHUB_EVENT_PATH: eventPath,
+        GITHUB_EVENT_NAME: "repository_dispatch",
+        GH_TOKEN: "credential-value",
+        GITHUB_ACTIONS: "true",
+        CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
+        CLAWSWEEPER_ACTION_LEDGER_ROOT: root,
+        CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: outputRoot,
+        CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "spam-intake-flush-failure",
+        GITHUB_REPOSITORY: "openclaw/clawsweeper",
+        GITHUB_SHA: "b".repeat(40),
+        GITHUB_WORKFLOW: "spam comment intake",
+        GITHUB_WORKFLOW_REF:
+          "openclaw/clawsweeper/.github/workflows/spam-comment-intake.yml@refs/heads/main",
+        GITHUB_JOB: "intake",
+        GITHUB_RUN_ID: "12346",
+        GITHUB_RUN_ATTEMPT: "1",
+        GITHUB_ACTION: "dispatch-exact-spam-scan",
+        GITHUB_RUN_STARTED_AT: "2026-07-14T12:00:00Z",
+        CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "",
+        CLAWSWEEPER_CRABFLEET_SESSION_ID: "",
+      },
+      fetch: async () => {
+        dispatches += 1;
+        return new Response(null, { status: 204 });
+      },
+    });
+
+    assert.deepEqual(
+      { status: summary.status, dispatched: summary.dispatched },
+      { status: "ok", dispatched: 1 },
+    );
+    assert.equal(dispatches, 1);
+    assert.equal(failed, true);
+    assert.ok(fs.existsSync(path.join(root, "notifications/spam-comment-intake-report.json")));
+    assert.match(
+      logs.join("\n"),
+      /\[action-ledger\] accepted spam dispatch receipt flush failed: injected accepted spam receipt flush failure/,
+    );
+    assert.deepEqual(readActionEvents(outputRoot), []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("spam intake workflows publish authoritative dispatch receipts", () => {
   const workflows = [
     [".github/workflows/github-activity.yml", "github-activity-dispatch"],

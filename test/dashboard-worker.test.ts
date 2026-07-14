@@ -3239,6 +3239,65 @@ test("exact-review queue prunes complete dispatch receipt chains atomically", as
   }
 });
 
+test("exact-review queue schedules dispatch receipt expiry while idle", async () => {
+  const originalFetch = globalThis.fetch;
+  const storage = new MemoryDurableStorage();
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml")
+      return jsonResponse({ state: "active" });
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation")
+      return jsonResponse({ id: 999 });
+    if (url.pathname === "/app/installations/999/access_tokens")
+      return jsonResponse({ token: "dispatch-token" });
+    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches")
+      return new Response(null, { status: 204 });
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+      },
+    );
+    assert.equal(
+      (await queue.fetch(buildExactReviewQueueRequest("idle-receipt-expiry", 603, "opened")))
+        .status,
+      202,
+    );
+    await queue.alarm();
+    assert.equal(storage.sql.readDispatchReceipts().length, 2);
+
+    await storage.put("exact-review-queue", { deliveries: {}, items: {} });
+    await storage.deleteAlarm();
+    const recordedAt = Date.now() - 29 * 24 * 60 * 60 * 1000;
+    storage.setExactReviewDispatchReceiptTime("attempt", recordedAt);
+    storage.setExactReviewDispatchReceiptTime("outcome", recordedAt);
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
+    const expiryAlarm = await storage.getAlarm();
+    const expectedExpiry = recordedAt + 30 * 24 * 60 * 60 * 1000;
+    assert.ok(expiryAlarm !== null);
+    assert.ok(Math.abs(expiryAlarm - expectedExpiry) < 1_000);
+
+    const expiredAt = Date.now() - 31 * 24 * 60 * 60 * 1000;
+    storage.setExactReviewDispatchReceiptTime("attempt", expiredAt);
+    storage.setExactReviewDispatchReceiptTime("outcome", expiredAt);
+    await queue.alarm();
+    assert.deepEqual(storage.sql.readDispatchReceipts(), []);
+    assert.equal(await storage.getAlarm(), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("exact-review queue preserves a claimed lease after an ambiguous dispatch failure", async () => {
   const originalFetch = globalThis.fetch;
   const storage = new MemoryDurableStorage();

@@ -150,6 +150,7 @@ export async function runSpamCommentIntake(
   }
 
   let dispatchError: unknown = null;
+  let dispatchAccepted = false;
   try {
     await dispatchSpamScanner({
       fetcher,
@@ -159,19 +160,28 @@ export async function runSpamCommentIntake(
       root,
       env,
     });
+    dispatchAccepted = true;
   } catch (error) {
     dispatchError = error;
   }
   try {
     await flushDispatchActionEvents(root, { env });
   } catch (error) {
-    if (!dispatchError) dispatchError = error;
-    else
+    if (dispatchAccepted) {
+      log(
+        `[action-ledger] accepted spam dispatch receipt flush failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    } else if (!dispatchError) {
+      dispatchError = error;
+    } else {
       log(
         `[action-ledger] failed to finalize spam dispatch receipts: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
+    }
   }
   if (dispatchError) throw dispatchError;
   return finish({

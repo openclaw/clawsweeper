@@ -171,8 +171,9 @@ test("self-heal writes and publishes dispatch attempts before legacy summaries",
   assert.match(dispatchFunction, /runDispatchWithReceiptSync\(\{/);
   assert.match(
     dispatchFunction,
-    /operation: \(\) => \{[\s\S]*?transportStarted = true;[\s\S]*?return spawnSync\(/,
+    /operation: \(\) => \{[\s\S]*?operationInvoked = true;[\s\S]*?const dispatch = spawnSync\(/,
   );
+  assert.match(dispatchFunction, /if \(spawnSyncDidNotStart\(dispatch\)\)/);
   assert.match(dispatchFunction, /outcome: dispatchProcessOutcome/);
   assert.match(dispatchFunction, /operationKey: `self-heal:/);
   assert.match(dispatchFunction, /dispatchInput: \{[\s\S]*?requeue_depth:/);
@@ -351,6 +352,55 @@ candidates:
   }
 });
 
+test("self-heal rolls back a checkpoint when the dispatch process never starts", () => {
+  const fixture = createRecoveryFixture("dispatch-not-started", { snapshot: false });
+  try {
+    const first = runFixture(
+      fixture,
+      ["self-heal-failed-runs.js", "--max-age-hours", "24", "--max-jobs", "1", "--execute"],
+      {
+        PATH: fixture.binDir,
+        GH_BIN: path.join(fixture.binDir, "gh"),
+        CLAWSWEEPER_TEST_REMOVE_GH_AFTER_API_CALLS: "5",
+      },
+    );
+    assert.notEqual(first.status, 0);
+    assert.match(first.stderr, /ENOENT|spawnSync gh/);
+    const firstLedger = JSON.parse(
+      fs.readFileSync(path.join(fixture.root, "results", "self-heal.json"), "utf8"),
+    );
+    assert.deepEqual(firstLedger.attempts, []);
+    assert.doesNotMatch(fs.readFileSync(fixture.ghLog, "utf8"), /^workflow run /m);
+
+    writeFakeGh(fixture.binDir, { recoveredInputs: null, legacyWorker: null });
+    const retry = runFixture(fixture, [
+      "self-heal-failed-runs.js",
+      "--max-age-hours",
+      "24",
+      "--max-jobs",
+      "1",
+      "--execute",
+    ]);
+    assert.equal(retry.status, 0, retry.stderr);
+    const retryLedger = JSON.parse(
+      fs.readFileSync(path.join(fixture.root, "results", "self-heal.json"), "utf8"),
+    );
+    assert.deepEqual(
+      retryLedger.attempts.map((attempt) => [attempt.source_run_id, attempt.status]),
+      [[fixture.runId, "dispatched"]],
+    );
+    assert.equal(
+      fs
+        .readFileSync(fixture.ghLog, "utf8")
+        .split("\n")
+        .filter((line) => line.startsWith("workflow run repair-cluster-worker.yml")).length,
+      1,
+    );
+  } finally {
+    cleanupFixture(fixture);
+  }
+});
+
 function createRecoveryFixture(
   label: string,
   options: { snapshot?: boolean; runRecord?: boolean; legacyWorker?: boolean } = {},
@@ -486,6 +536,18 @@ if [ "$1" = "run" ] && [ "$2" = "list" ]; then
   exit 0
 fi
 if [ "$1" = "api" ]; then
+  if [ -n "\${CLAWSWEEPER_TEST_REMOVE_GH_AFTER_API_CALLS:-}" ]; then
+    count_file="\${CLAWSWEEPER_TEST_GH_LOG}.api-count"
+    count=0
+    if [ -f "$count_file" ]; then
+      read -r count < "$count_file"
+    fi
+    count=$((count + 1))
+    printf '%s\\n' "$count" > "$count_file"
+    if [ "$count" -ge "$CLAWSWEEPER_TEST_REMOVE_GH_AFTER_API_CALLS" ]; then
+      /bin/rm -f "$0"
+    fi
+  fi
   printf '[]\\n'
   exit 0
 fi

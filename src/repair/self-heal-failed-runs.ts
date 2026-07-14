@@ -41,6 +41,18 @@ const ACTIVE_STATUSES = new Set([...QUEUED_STATUSES, "in_progress"]);
 const WORKFLOW_INPUT_DOWNLOAD_TIMEOUT_MS = 60_000;
 const RECOVERY_SCAN_BUDGET_MS = 3 * 60_000;
 const MAX_RECOVERY_CANDIDATE_SCANS = 200;
+const SPAWN_SYNC_NO_START_CODES = new Set([
+  "E2BIG",
+  "EACCES",
+  "EAGAIN",
+  "EMFILE",
+  "ENFILE",
+  "ENOENT",
+  "ENOEXEC",
+  "ENOMEM",
+  "ENOTDIR",
+  "EPERM",
+]);
 
 class SelfHealDispatchNotStartedError extends Error {
   readonly dispatchError: unknown;
@@ -421,7 +433,7 @@ function sourceJobFromRunTitle(title: string) {
 }
 
 function dispatchCandidate(candidate: LooseRecord) {
-  let transportStarted = false;
+  let operationInvoked = false;
   let result;
   try {
     result = runDispatchWithReceiptSync({
@@ -445,8 +457,8 @@ function dispatchCandidate(candidate: LooseRecord) {
         requeue_depth: Number(candidate.requeue_depth ?? 0),
       },
       operation: () => {
-        transportStarted = true;
-        return spawnSync(
+        operationInvoked = true;
+        const dispatch = spawnSync(
           "gh",
           [
             "workflow",
@@ -475,11 +487,16 @@ function dispatchCandidate(candidate: LooseRecord) {
           ],
           { cwd: repoRoot(), encoding: "utf8", stdio: "pipe" },
         );
+        if (spawnSyncDidNotStart(dispatch)) {
+          throw new SelfHealDispatchNotStartedError(dispatch.error);
+        }
+        return dispatch;
       },
       outcome: dispatchProcessOutcome,
     });
   } catch (error) {
-    if (!transportStarted) throw new SelfHealDispatchNotStartedError(error);
+    if (error instanceof SelfHealDispatchNotStartedError) throw error;
+    if (!operationInvoked) throw new SelfHealDispatchNotStartedError(error);
     throw error;
   }
   if (result.status !== 0) {
@@ -488,6 +505,20 @@ function dispatchCandidate(candidate: LooseRecord) {
     );
   }
   console.log(`dispatched ${candidate.source_job} from failed run ${candidate.run_id}`);
+}
+
+function spawnSyncDidNotStart(result: {
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  error?: Error;
+}) {
+  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  return (
+    result.status === null &&
+    result.signal === null &&
+    typeof code === "string" &&
+    SPAWN_SYNC_NO_START_CODES.has(code)
+  );
 }
 
 function waitForStartedRuns({ expectedCount, headSha, since }: LooseRecord) {

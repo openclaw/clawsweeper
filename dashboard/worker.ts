@@ -1683,6 +1683,35 @@ export class ExactReviewQueue {
     return Number(row?.receipt_count || 0);
   }
 
+  private nextReceiptExpirySync() {
+    const delivery = Array.from(
+      this.storage.sql.exec(
+        `SELECT MIN(received_at) AS oldest_recorded_at
+           FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}`,
+      ),
+    )[0] as { oldest_recorded_at?: number | null } | undefined;
+    const dispatch = Array.from(
+      this.storage.sql.exec(
+        `SELECT MIN(latest_recorded_at) AS oldest_recorded_at
+           FROM (
+             SELECT MAX(recorded_at) AS latest_recorded_at
+               FROM ${EXACT_REVIEW_DISPATCH_RECEIPT_TABLE}
+              GROUP BY operation_sha256, attempt
+           )`,
+      ),
+    )[0] as { oldest_recorded_at?: number | null } | undefined;
+    const expiries = [
+      [delivery?.oldest_recorded_at, EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS],
+      [dispatch?.oldest_recorded_at, EXACT_REVIEW_DISPATCH_RECEIPT_TTL_MS],
+    ]
+      .filter(
+        (entry): entry is [number, number] =>
+          typeof entry[0] === "number" && Number.isFinite(entry[0]),
+      )
+      .map(([recordedAt, ttl]) => Math.min(Number.MAX_SAFE_INTEGER, recordedAt + ttl));
+    return expiries.length ? Math.min(...expiries) : null;
+  }
+
   private legacyReceiptTimestamp(receivedAt: number) {
     return Math.min(
       Number.MAX_SAFE_INTEGER,
@@ -1780,12 +1809,19 @@ export class ExactReviewQueue {
   }
 
   private async scheduleNext(state: ExactReviewQueueState, now: number) {
-    const next = exactReviewQueueNextWakeAt(
+    const queueNext = exactReviewQueueNextWakeAt(
       state,
       now,
       exactReviewQueueCapacity(this.env),
       exactReviewTargetCapacity(this.env),
     );
+    const receiptNext = this.nextReceiptExpirySync();
+    const next =
+      queueNext === null
+        ? receiptNext
+        : receiptNext === null
+          ? queueNext
+          : Math.min(queueNext, receiptNext);
     if (next === null) {
       await this.storage.deleteAlarm();
       return;
