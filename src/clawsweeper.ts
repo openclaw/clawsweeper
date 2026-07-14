@@ -2778,20 +2778,10 @@ function proofMutationRunner(session: ProofMutationSession): MutationRunner {
     didMutate?: ((result: T) => boolean) | undefined;
     knownNoMutation?: ((error: unknown) => boolean) | undefined;
   }): T => {
-    const requestAttempt =
-      (session.nextAttemptByMutation.get(options.idempotencyIdentity) ?? 0) + 1;
-    session.nextAttemptByMutation.set(options.idempotencyIdentity, requestAttempt);
-    const attempt = startProofMutationReceipt({
-      context: session.context,
-      receiptIdentity: options.identity,
-      mutationIdentity: options.idempotencyIdentity,
-      requestAttempt,
-    });
     let currentFreshness: ProofMutationRequestSnapshot;
     try {
       currentFreshness = session.refreshFreshness();
     } catch (error) {
-      finishProofMutationReceipt({ attempt, outcome: "rejected" });
       if (error instanceof ProofMutationFreshnessError) throw error;
       throw new ProofMutationFreshnessError({
         reason: "freshness_unavailable",
@@ -2806,9 +2796,17 @@ function proofMutationRunner(session: ProofMutationSession): MutationRunner {
         : null) ??
       session.validateRequest(currentFreshness);
     if (block) {
-      finishProofMutationReceipt({ attempt, outcome: "rejected" });
       throw new ProofMutationFreshnessError(block);
     }
+    const requestAttempt =
+      (session.nextAttemptByMutation.get(options.idempotencyIdentity) ?? 0) + 1;
+    session.nextAttemptByMutation.set(options.idempotencyIdentity, requestAttempt);
+    const attempt = startProofMutationReceipt({
+      context: session.context,
+      receiptIdentity: options.identity,
+      mutationIdentity: options.idempotencyIdentity,
+      requestAttempt,
+    });
     try {
       const result = options.operation();
       const outcome = finishProofMutationReceipt({

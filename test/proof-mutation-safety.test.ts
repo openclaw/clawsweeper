@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import test from "node:test";
 
 import { readAllSpooledActionEvents } from "../dist/action-ledger.js";
@@ -109,6 +109,23 @@ test("proof freshness distinguishes head, review, and conversation drift", () =>
     })?.reason,
     "conversation_activity_changed",
   );
+});
+
+test("proof mutation receipts start only after request-boundary validation", () => {
+  const source = readFileSync("src/clawsweeper.ts", "utf8");
+  const runnerStart = source.indexOf("function proofMutationRunner(");
+  const runnerEnd = source.indexOf("\nfunction reconcileProofMutation(", runnerStart);
+  const runner = source.slice(runnerStart, runnerEnd);
+
+  const refresh = runner.indexOf("session.refreshFreshness()");
+  const validate = runner.indexOf("session.validateRequest(currentFreshness)");
+  const receipt = runner.indexOf("startProofMutationReceipt({");
+  const request = runner.indexOf("const result = options.operation()");
+
+  assert.ok(refresh >= 0);
+  assert.ok(refresh < validate);
+  assert.ok(validate < receipt);
+  assert.ok(receipt < request);
 });
 
 test("proof mutation receipts pair attempts with stable privacy-bounded idempotency", () => {

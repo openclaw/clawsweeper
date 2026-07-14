@@ -225,6 +225,15 @@ jobs:
           fi
           pnpm run --silent finalize-action-events -- "${args[@]}"
 
+      - name: Upload finalized proof handling action ledger
+        if: ${{ always() && steps.finalize-action-ledger.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-handling-action-ledger-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT }}/ledger
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Publish immutable proof handling action ledger
         if: ${{ always() && steps.setup-state.outcome == 'success' && steps.finalize-action-ledger.outcome == 'success' }}
         run: |
