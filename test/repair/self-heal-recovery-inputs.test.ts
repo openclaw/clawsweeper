@@ -194,7 +194,13 @@ test("self-heal writes and publishes dispatch attempts before legacy summaries",
   assert.match(setupAction, /CLAWSWEEPER_ACTION_LEDGER_ROOT=\$ledger_root/);
   assert.match(workflow, /uses: \.\/\.github\/actions\/setup-action-ledger/);
   assert.match(workflow, /--lane self-heal-dispatch/);
+  assert.match(workflow, /publish-action-event-paths/);
+  assert.match(workflow, /--paths-file "\$event_paths_file"/);
   assert.match(workflow, /--message "chore: append self-heal dispatch action ledger"/);
+  assert.doesNotMatch(
+    workflow,
+    /repair:publish-main[\s\S]{0,240}--rebase-strategy normal|action_ledger_args/,
+  );
 });
 
 test("executing self-heal uses durable local dispatch receipts outside Actions", () => {

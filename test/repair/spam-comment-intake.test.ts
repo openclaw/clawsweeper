@@ -292,7 +292,12 @@ test("spam intake workflows publish authoritative dispatch receipts", () => {
     assert.match(workflow, new RegExp(`--lane ${lane}`));
     assert.match(workflow, /dist\/repair\/dispatch-action-ledger-cli\.js finalize/);
     assert.match(workflow, /dist\/repair\/dispatch-action-ledger-cli\.js publish/);
-    assert.match(workflow, /repair:publish-main/);
+    assert.match(workflow, /publish-action-event-paths/);
+    assert.match(workflow, /--paths-file "\$event_paths_file"/);
+    assert.doesNotMatch(
+      workflow,
+      /repair:publish-main[\s\S]{0,240}--rebase-strategy normal|action_ledger_args/,
+    );
   }
 });
 

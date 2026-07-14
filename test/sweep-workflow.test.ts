@@ -22,6 +22,70 @@ test("sweep keeps optional media tooling out of review startup", () => {
   assert.doesNotMatch(workflow, /setup-media-proof-tools/);
 });
 
+test("immutable action ledger publishers use path-manifest admission", () => {
+  type WorkflowStep = {
+    name?: string;
+    run?: string;
+  };
+  type WorkflowJob = {
+    steps?: WorkflowStep[];
+  };
+
+  const inventory = [
+    [".github/workflows/github-activity.yml", ["Publish GitHub activity dispatch action ledger"]],
+    [
+      ".github/workflows/github-activity-receipt-replay.yml",
+      ["Replay GitHub activity dispatch action ledger"],
+    ],
+    [".github/workflows/spam-comment-intake.yml", ["Publish spam intake dispatch action ledger"]],
+    [".github/workflows/repair-self-heal.yml", ["Publish self-heal dispatch action ledger"]],
+    [".github/workflows/repair-comment-router.yml", ["Publish immutable command action ledger"]],
+    [
+      ".github/workflows/repair-cluster-worker.yml",
+      [
+        "Publish immutable execute-fix action ledger",
+        "Publish immutable repair requeue action ledger",
+      ],
+    ],
+    [
+      ".github/workflows/sweep.yml",
+      [
+        "Publish exact event action ledger",
+        "Publish late command status action ledger",
+        "Publish target fanout dispatch action ledger",
+        "Publish immutable review action ledger",
+        "Publish review artifact action ledger",
+        "Publish selected review comment action ledger",
+        "Publish failed-review retry action ledger",
+        "Publish apply proof action events",
+        "Publish apply action events",
+      ],
+    ],
+  ] as const;
+
+  for (const [workflowPath, publisherNames] of inventory) {
+    const workflow = YAML.parse(readText(workflowPath)) as {
+      jobs: Record<string, WorkflowJob>;
+    };
+    const steps = Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
+    for (const publisherName of publisherNames) {
+      const publisher = steps.find((step) => step.name === publisherName);
+      assert.ok(publisher, `missing ${workflowPath} step ${publisherName}`);
+      assert.match(publisher.run ?? "", /publish-action-event-paths/);
+      assert.match(publisher.run ?? "", /--paths-file /);
+      assert.doesNotMatch(publisher.run ?? "", /repair:publish-main|action_ledger_args/);
+    }
+    for (const step of steps) {
+      if (!/(?:action (?:ledger|events)|dispatch receipt)/i.test(step.name ?? "")) continue;
+      assert.doesNotMatch(
+        step.run ?? "",
+        /repair:publish-main[\s\S]*--rebase-strategy normal/,
+        `${workflowPath} step ${step.name} bypasses path-manifest admission`,
+      );
+    }
+  }
+});
+
 test("ledger-producing jobs initialize immutable workflow context", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   for (const jobName of [

@@ -788,7 +788,7 @@ test("sweep publishes complete immutable shards for every review and apply produ
   assert.match(workflow, /include-hidden-files: true/);
   assert.match(workflow, /--state-root "\$CLAWSWEEPER_STATE_DIR"/);
   assert.match(workflow, /durable_event_path="\$CLAWSWEEPER_STATE_DIR\/\$event_path"/);
-  assert.equal((workflow.match(/publish-action-event-paths/g) ?? []).length, 7);
+  assert.equal((workflow.match(/publish-action-event-paths/g) ?? []).length, 9);
   assert.doesNotMatch(
     workflow,
     /--message "chore: append (?:review|apply).*action ledger"[\s\S]{0,180}--path "ledger\/v1\/events"/,
@@ -820,7 +820,10 @@ test("comment router publishes immutable command receipts for initial and retry 
   assert.match(publishStep, /--lane comment-router/);
   assert.match(publishStep, /repair:action-ledger -- publish/);
   assert.match(publishStep, /--message "chore: append command action ledger"/);
-  assert.match(publishStep, /action_ledger_args\+=\(--path "\$event_path"\)/);
+  assert.match(publishStep, /cp "\$durable_event_path" "\$event_path"/);
+  assert.match(publishStep, /publish-action-event-paths/);
+  assert.match(publishStep, /--paths-file "\$event_paths_file"/);
+  assert.doesNotMatch(publishStep, /action_ledger_args|repair:publish-main/);
   assert.doesNotMatch(
     publishStep,
     /--message "chore: append command action ledger"[\s\S]{0,180}--path "ledger\/v1\/events"/,

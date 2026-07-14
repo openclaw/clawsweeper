@@ -1120,18 +1120,15 @@ jobs:
             echo "Repair requeue action event shards existed but no paths were imported." >&2
             exit 1
           fi
-          action_ledger_args=()
           while IFS= read -r event_path; do
             durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
             test -f "$durable_event_path"
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
-            action_ledger_args+=(--path "$event_path")
           done < "$event_paths_file"
-          pnpm run repair:publish-main -- \
-            --message "chore: append repair requeue action ledger" \
-            "${action_ledger_args[@]}" \
-            --rebase-strategy normal
+          node dist/clawsweeper.js publish-action-event-paths \
+            --paths-file "$event_paths_file" \
+            --message "chore: append repair requeue action ledger"
 
       - name: Record requeued work
         if: ${{ always() && steps.crabfleet_session.outcome == 'success' && steps.repair_requeue.outputs.count != '' && steps.repair_requeue.outputs.count != '0' && steps.requeue_dispatch.outcome == 'success' }}

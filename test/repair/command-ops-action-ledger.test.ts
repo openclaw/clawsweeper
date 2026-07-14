@@ -250,6 +250,10 @@ function assertCommandPublisherUsesCanonicalRoot(step: string): void {
   );
   assert.match(step, /jq -r '\.paths\[\]\?' "\$import_result_file"/);
   assert.match(step, /if \[ ! -s "\$event_paths_file" \]; then[\s\S]*?exit 1[\s\S]*?fi/);
+  assert.match(step, /cp "\$durable_event_path" "\$event_path"/);
+  assert.match(step, /publish-action-event-paths/);
+  assert.match(step, /--paths-file "\$event_paths_file"/);
+  assert.doesNotMatch(step, /action_ledger_args|repair:publish-main/);
   assert.doesNotMatch(step, /command_shard_found/);
   assert.doesNotMatch(step, /\.created > 0/);
   assert.doesNotMatch(step, /exit 0/);

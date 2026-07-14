@@ -711,7 +711,8 @@ test("every workflow-backed dispatch producer publishes finalized receipt shards
     assert.match(workflow, new RegExp(`--lane ${lane}`));
     assert.match(workflow, /dist\/repair\/dispatch-action-ledger-cli\.js finalize/);
     assert.match(workflow, /dist\/repair\/dispatch-action-ledger-cli\.js publish/);
-    assert.match(workflow, /repair:publish-main/);
+    assert.match(workflow, /publish-action-event-paths/);
+    assert.doesNotMatch(workflow, /repair:publish-main[\s\S]{0,240}--rebase-strategy normal/);
   }
 });
 
@@ -846,7 +847,9 @@ test("failed, cancelled, and timed-out GitHub activity runs replay receipts", ()
     /run-id: \$\{\{ steps\.select-activity-dispatch-ledger\.outputs\.source_run_id \}\}/,
   );
   assert.match(workflow, /dispatch-action-ledger-cli\.js replay/);
-  assert.match(workflow, /repair:publish-main/);
+  assert.match(workflow, /publish-action-event-paths/);
+  assert.match(workflow, /--paths-file "\$event_paths_file"/);
+  assert.doesNotMatch(workflow, /repair:publish-main|action_ledger_args/);
   assert.match(workflow, /\.run_id == \$run_id/);
   assert.match(workflow, /\.run_attempt == \$run_attempt/);
   assert.doesNotMatch(workflow, /continue-on-error/);

@@ -208,19 +208,16 @@ jobs:
             echo "GitHub activity dispatch replay imported no paths." >&2
             exit 1
           fi
-          action_ledger_args=()
           while IFS= read -r event_path; do
             durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
             test -f "$durable_event_path"
             mkdir -p "$(dirname "$event_path")"
             cp "$durable_event_path" "$event_path"
-            action_ledger_args+=(--path "$event_path")
           done < "$event_paths_file"
           auth_header="$(printf 'x-access-token:%s' "$PUBLISH_TOKEN" | base64 | tr -d '\n')"
           export GIT_CONFIG_COUNT=1
           export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
           export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
-          pnpm run repair:publish-main -- \
-            --message "chore: replay GitHub activity dispatch action ledger" \
-            "${action_ledger_args[@]}" \
-            --rebase-strategy normal
+          node dist/clawsweeper.js publish-action-event-paths \
+            --paths-file "$event_paths_file" \
+            --message "chore: replay GitHub activity dispatch action ledger"
