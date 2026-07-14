@@ -655,7 +655,18 @@ function assertDependencySpecValue(value: JsonValue, registryOrigin: string): vo
 function assertDependencySpec(rawSpec: string, registryOrigin: string) {
   const spec = rawSpec.trim();
   if (!spec) return;
-  if (/^workspace:/i.test(spec)) return;
+  if (/^workspace:/i.test(spec)) {
+    const workspaceSpec = spec.slice("workspace:".length).trim();
+    if (
+      !workspaceSpec ||
+      /^workspace:/i.test(workspaceSpec) ||
+      isLocalDependencySpec(workspaceSpec)
+    ) {
+      throw new Error("target dependency install local dependencies are not allowed");
+    }
+    assertDependencySpec(workspaceSpec, registryOrigin);
+    return;
+  }
   if (isLocalDependencySpec(spec)) {
     throw new Error("target dependency install local dependencies are not allowed");
   }

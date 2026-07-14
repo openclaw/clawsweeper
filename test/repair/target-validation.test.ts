@@ -2183,6 +2183,46 @@ test("dependency setup rejects target-controlled network destinations", () => {
       },
     },
     {
+      expected: /local dependencies are not allowed/,
+      prepare() {
+        const cwd = gitPackageFixture({ check: 'node -e ""' });
+        const packagePath = path.join(cwd, "package.json");
+        const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+        packageJson.dependencies = { payload: "workspace:../outside" };
+        fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+        return {
+          cwd,
+          options: validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: ["pnpm check"],
+              changedGate: null,
+            },
+          }),
+        };
+      },
+    },
+    {
+      expected: /local dependencies are not allowed/,
+      prepare() {
+        const cwd = gitPackageFixture({ check: 'node -e ""' });
+        const packagePath = path.join(cwd, "package.json");
+        const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+        packageJson.dependencies = { payload: "workspace:..\\outside" };
+        fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+        return {
+          cwd,
+          options: validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: ["pnpm check"],
+              changedGate: null,
+            },
+          }),
+        };
+      },
+    },
+    {
       expected: /(?:validation symlink escapes target checkout|local dependencies are not allowed)/,
       prepare() {
         const cwd = gitPackageFixture({ check: 'node -e ""' });
