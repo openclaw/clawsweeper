@@ -1984,15 +1984,29 @@ test("sweep workflow_dispatch input count stays under GitHub limit", () => {
   assert.ok(inputNames.length <= 25, `workflow_dispatch has ${inputNames.length} inputs`);
 });
 
-test("sweep review continuations stay workflow-dispatch compatible", () => {
+test("sweep review continuations reapply the current pressure cap", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const continueBlock = workflow.slice(
     workflow.indexOf("- name: Continue sweep"),
     workflow.indexOf("\n\n  recover-review-failures:"),
   );
-
   assert.match(continueBlock, /-f target_repo="\$\{\{ needs\.plan\.outputs\.target_repo \}\}"/);
   assert.match(continueBlock, /-f target_branch="\$\{\{ needs\.plan\.outputs\.target_branch \}\}"/);
+  const modeBlock = workflow.slice(
+    workflow.indexOf("- id: mode"),
+    workflow.indexOf("- id: select"),
+  );
+
+  assert.match(continueBlock, /-f shard_count="\$\{\{ needs\.plan\.outputs\.shard_count \}\}"/);
+  assert.match(
+    modeBlock,
+    /shard_count="\$\{\{ github\.event\.client_payload\.shard_count \|\| github\.event\.inputs\.shard_count \|\| '' \}\}"/,
+  );
+  assert.match(modeBlock, /if \[ -z "\$exact_item" \]; then/);
+  assert.match(modeBlock, /lane_shard_cap="\$normal_shards"/);
+  assert.match(modeBlock, /lane_shard_cap="\$hot_intake_shards"/);
+  assert.match(modeBlock, /if \[ "\$shard_count" -gt "\$lane_shard_cap" \]; then/);
+  assert.match(modeBlock, /Capping broad background review shards/);
 });
 
 test("failed review recovery waits for durable exact-review queue acknowledgement", () => {
@@ -2060,7 +2074,6 @@ test("review capacity probes use REST actions run listing", () => {
     commitWorkflow.indexOf("- name: Select commits"),
     commitWorkflow.indexOf('if [ "$ENABLED" = "false" ]'),
   );
-
   for (const block of [sweepBlock, commitBlock]) {
     assert.match(block, /active_runs_json\(\)/);
     assert.match(block, /actions\/runs\?per_page=100/);
@@ -2088,6 +2101,17 @@ test("background review capacity reserves expanding matrices and caps broad manu
     commitWorkflow.indexOf("- name: Select commits"),
     commitWorkflow.indexOf('if [ "$ENABLED" = "false" ]'),
   );
+  const selectBlock = workflow.slice(
+    workflow.indexOf("- id: select"),
+    workflow.indexOf("- name: Prepare review runtime artifact"),
+  );
+  const commitSelectBlock = commitWorkflow.slice(
+    commitWorkflow.indexOf("- name: Select commits"),
+    commitWorkflow.indexOf(
+      'url="https://x-access-token:',
+      commitWorkflow.indexOf("- name: Select commits"),
+    ),
+  );
 
   assert.match(modeBlock, /limit review_shards\.hot_intake_default/);
   assert.match(modeBlock, /limit review_shards\.normal_default/);
@@ -2102,13 +2126,21 @@ test("background review capacity reserves expanding matrices and caps broad manu
   assert.match(modeBlock, /\[ "\$active_shards" -lt 1 \] && \[ "\$total_shards" -lt 1 \]/);
   assert.match(modeBlock, /lane_shard_cap="\$normal_shards"/);
   assert.match(modeBlock, /lane_shard_cap="\$hot_intake_shards"/);
+  assert.match(modeBlock, /if \[ "\$lane_shard_cap" -lt 1 \]; then/);
+  assert.match(modeBlock, /shard_count="0"/);
+  assert.match(modeBlock, /Deferring broad background review/);
   assert.match(modeBlock, /Capping broad background review shards/);
+  assert.match(selectBlock, /if \[ "\$SHARD_COUNT" -lt 1 \]; then/);
+  assert.match(selectBlock, /"capacity":0/);
+  assert.match(selectBlock, /deferred: exact-review background cap occupied/);
   assert.match(commitBlock, /limit review_shards\.hot_intake_default/);
   assert.match(commitBlock, /limit review_shards\.normal_default/);
   assert.match(commitBlock, /STALE_QUEUED_CUTOFF/);
   assert.match(commitBlock, /updatedAt:\.updated_at/);
   assert.match(commitBlock, /workflowPath == "\.github\/workflows\/sweep\.yml"/);
   assert.match(commitBlock, /\.displayTitle \| startswith\("Review event items "\)/);
+  assert.match(commitBlock, /\.displayTitle \| startswith\("Review target repo "\)/);
+  assert.match(commitBlock, /\.displayTitle \| startswith\("Review hot target repo "\)/);
   assert.match(commitBlock, /WORKFLOW_PATH="\$1"/);
   assert.doesNotMatch(commitBlock, /workflowName == "ClawSweeper"/);
   assert.doesNotMatch(commitBlock, /WORKFLOW_NAME="\$1"/);
@@ -2116,6 +2148,214 @@ test("background review capacity reserves expanding matrices and caps broad manu
   assert.match(commitBlock, /limit review_shards\.hard_cap/);
   assert.match(commitBlock, /reserved_shards="\$requested_shards"/);
   assert.match(commitBlock, /reserved_shards="\$item_count"/);
+  assert.match(commitBlock, /active_commit_review_workers\(\)/);
+  assert.match(commitBlock, /workflowPath == "\.github\/workflows\/commit-review\.yml"/);
+  assert.match(commitBlock, /\(\.databaseId \| tostring\) != env\.CURRENT_RUN_ID/);
+  assert.match(commitBlock, /startswith\("Review commit "\)/);
+  assert.match(modeBlock, /COMMIT_REVIEW_PAGE_SIZE/);
+  assert.match(modeBlock, /page_size_hard_cap="\$\(limit commit_review\.page_size_hard_cap\)"/);
+  assert.match(modeBlock, /reservation_page_size="\$\(limit commit_review\.page_size_default\)"/);
+  assert.match(modeBlock, /zero_review_name='Review commit \$'/);
+  assert.match(modeBlock, /zero_review_name\+='\{\{ matrix\.sha \}\}'/);
+  assert.match(modeBlock, /only an in-progress planner can reserve here/);
+  assert.doesNotMatch(
+    modeBlock,
+    /active_run_count "\.github\/workflows\/commit-review\.yml"\) \* commit_page_size/,
+  );
+  for (const liveWorkerFunction of [
+    extractWorkflowShellFunction(modeBlock, "active_sweep_background_workers"),
+    extractWorkflowShellFunction(modeBlock, "active_commit_review_workers"),
+    extractWorkflowShellFunction(commitBlock, "active_sweep_background_workers"),
+    extractWorkflowShellFunction(commitBlock, "active_commit_review_workers"),
+  ]) {
+    assert.match(liveWorkerFunction, /(?:select\(|and )\.status == "in_progress"/);
+    assert.doesNotMatch(
+      liveWorkerFunction,
+      /(?:select\(|and \()\.status == "in_progress" or \(\(\.status == "pending"/,
+    );
+  }
+  const commitBackgroundWorkers = extractWorkflowShellFunction(
+    commitBlock,
+    "active_sweep_background_workers",
+  );
+  const commitExactWorkers = extractWorkflowShellFunction(
+    commitBlock,
+    "active_sweep_exact_workers",
+  );
+  assert.match(commitBackgroundWorkers, /Review\\ hot\\ target\\ repo/);
+  assert.doesNotMatch(commitBackgroundWorkers, /Review event items/);
+  assert.match(commitExactWorkers, /startswith\("Review event item "\)/);
+  assert.match(commitExactWorkers, /startswith\("Review event items "\)/);
+  assert.match(commitExactWorkers, /Explicit exact batches are priority work/);
+  assert.match(commitBlock, /\$\(active_sweep_exact_workers\)/);
+  assert.match(commitBlock, /page_size_hard_cap="\$\(limit commit_review\.page_size_hard_cap\)"/);
+  assert.match(commitBlock, /reservation_page_size="\$PAGE_SIZE"/);
+  assert.match(commitBlock, /reservation_page_size="\$\(limit commit_review\.page_size_default\)"/);
+  assert.match(commitSelectBlock, /if \[ "\$PAGE_SIZE" -lt 1 \]; then/);
+  assert.match(commitSelectBlock, /Deferring commit review/);
+  assert.match(commitSelectBlock, /sleep 300/);
+  assert.match(commitSelectBlock, /gh workflow run commit-review\.yml/);
+  assert.match(commitSelectBlock, /for attempt in 1 2 3; do/);
+  assert.match(commitSelectBlock, /Deferred commit-review requeue attempt \$attempt failed/);
+  assert.match(
+    commitSelectBlock,
+    /Unable to requeue the deferred commit-review range after three attempts/,
+  );
+  assert.match(commitSelectBlock, /-f commit_offset="\$COMMIT_OFFSET"/);
+  assert.match(commitSelectBlock, /Requeued deferred commit-review range/);
+  assert.match(commitSelectBlock, /echo "matrix=\[\]"/);
+  assert.match(commitBlock, /zero_review_plan=false/);
+  assert.match(commitBlock, /zero_review_name='Review commit \$'/);
+  assert.match(commitBlock, /zero_review_name\+='\{\{ matrix\.sha \}\}'/);
+  assert.match(commitBlock, /\.name == env\.ZERO_REVIEW_NAME/);
+  assert.match(commitBlock, /\[ "\$zero_review_plan" != "true" \]/);
+  assert.match(commitBlock, /active_reviews="\$reservation_page_size"/);
+  assert.match(
+    commitBlock,
+    /active_background_workers="\$\(\( \$\(active_sweep_background_workers\) \+ \$\(active_commit_review_workers\) \)\)"/,
+  );
+});
+
+test("background review schedulers yield to a saturated exact-review queue", () => {
+  const sweepWorkflow = readText(".github/workflows/sweep.yml");
+  const sweepBlock = sweepWorkflow.slice(
+    sweepWorkflow.indexOf("- id: mode"),
+    sweepWorkflow.indexOf("- id: select"),
+  );
+  const commitWorkflow = readText(".github/workflows/commit-review.yml");
+  const commitBlock = commitWorkflow.slice(
+    commitWorkflow.indexOf("- name: Select commits"),
+    commitWorkflow.indexOf('if [ "$ENABLED" = "false" ]'),
+  );
+
+  for (const block of [sweepBlock, commitBlock]) {
+    assert.match(
+      block,
+      /EXACT_REVIEW_BACKGROUND_YIELD_ENABLED: \$\{\{ vars\.CLAWSWEEPER_ENABLE_EXACT_REVIEW_BACKGROUND_YIELD \|\| '0' \}\}/,
+    );
+    assert.match(
+      block,
+      /if \[ "\$EXACT_REVIEW_BACKGROUND_YIELD_ENABLED" = "1" \]; then\s+if ! exact_review_pressure=/,
+    );
+    assert.match(block, /QUEUE_URL: \$\{\{ vars\.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL/);
+    assert.match(
+      block,
+      /CLAWSWEEPER_EXACT_REVIEW_QUEUE_MAX_AGE_SECONDS: \$\{\{ vars\.CLAWSWEEPER_EXACT_REVIEW_QUEUE_MAX_AGE_SECONDS/,
+    );
+    assert.match(block, /exact_review_pressure_status\(\)/);
+    assert.match(block, /\$queue_url\/api\/status/);
+    assert.match(block, /exact_review_queue\.generated_at/);
+    assert.match(block, /exact_review_queue\.pressure\.status/);
+    assert.match(block, /CLAWSWEEPER_EXACT_REVIEW_QUEUE_MAX_AGE_SECONDS/);
+    assert.match(block, /GENERATED_AT="\$generated_at" node -e/);
+    assert.match(block, /Date\.parse\(value\)/);
+    assert.match(block, /queue telemetry snapshot is stale/);
+    assert.doesNotMatch(block, /admissible_pending/);
+    assert.doesNotMatch(block, /dispatcher\.state/);
+    assert.doesNotMatch(block, /handoff_health\.status/);
+    assert.match(block, /--exact-review-pressure "\$exact_review_pressure"/);
+    assert.doesNotMatch(block, /workflow -- exact-review-pressure/);
+    assert.match(block, /queue telemetry was unavailable; using idle pressure \(fail open\)/);
+    assert.match(block, /throttling .*review intake/);
+  }
+  assert.match(sweepBlock, /worker_limit hot_intake.*--exact-review-pressure/);
+  assert.match(sweepBlock, /worker_limit normal_review.*--exact-review-pressure/);
+  assert.match(commitBlock, /scheduler_page_size=.*worker-limit commit_review/);
+  assert.match(
+    commitBlock,
+    /elif \[ "\$exact_review_pressure" != "idle" \] && \[\[ "\$PAGE_SIZE" =~ \^\[0-9\]\+\$ \]\]/,
+  );
+  assert.match(commitBlock, /Capping commit-review page size/);
+  assert.match(commitBlock, /throttling commit review intake to page_size=\$PAGE_SIZE/);
+  assert.match(
+    sweepBlock,
+    /throttling broad review intake to normal=\$normal_shards and hot=\$hot_intake_shards/,
+  );
+});
+
+function extractWorkflowShellFunction(block: string, functionName: string): string {
+  const header = `${functionName}() {`;
+  const start = block.indexOf(header);
+  assert.notEqual(start, -1, `missing shell function ${functionName}`);
+  const rest = block.slice(start);
+  const next = rest.slice(header.length).search(/\n          [a-zA-Z0-9_]+\(\) \{/);
+  const end = next === -1 ? rest.length : header.length + next;
+  return rest.slice(0, end).replace(/^          /gm, "");
+}
+
+function runExactReviewPressureStatus(block: string, response: Record<string, unknown>): string {
+  const functionBody = extractWorkflowShellFunction(block, "exact_review_pressure_status");
+  const script = [
+    functionBody,
+    `jq() {
+      if [[ "$*" == *generated_at* ]]; then
+        node -e 'const fs=require("fs");const data=JSON.parse(fs.readFileSync(0,"utf8"));const q=data.exact_review_queue||{};const value=typeof q.generated_at==="string"?q.generated_at:"";process.stdout.write(value+"\\n");'
+      else
+        node -e 'const fs=require("fs");const data=JSON.parse(fs.readFileSync(0,"utf8"));const value=data.exact_review_queue?.pressure?.status;process.stdout.write((typeof value==="string"?value:"")+"\\n");'
+      fi
+    }`,
+    'curl() { printf "%s" "$QUEUE_RESPONSE"; }',
+    'QUEUE_URL="https://queue.example"',
+    'output="$(exact_review_pressure_status 2>&1)"',
+    "status=$?",
+    'printf "status=%s\\n%s" "$status" "$output"',
+  ].join("\n");
+  return execFileSync("bash", ["-lc", script], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CLAWSWEEPER_EXACT_REVIEW_QUEUE_MAX_AGE_SECONDS: "60",
+      QUEUE_RESPONSE: JSON.stringify(response),
+    },
+  });
+}
+
+test("background review schedulers consume fresh pressure and fail open otherwise", () => {
+  const sweepWorkflow = readText(".github/workflows/sweep.yml");
+  const sweepBlock = sweepWorkflow.slice(
+    sweepWorkflow.indexOf("- id: mode"),
+    sweepWorkflow.indexOf("- id: select"),
+  );
+  const commitWorkflow = readText(".github/workflows/commit-review.yml");
+  const commitBlock = commitWorkflow.slice(
+    commitWorkflow.indexOf("- name: Select commits"),
+    commitWorkflow.indexOf('if [ "$ENABLED" = "false" ]'),
+  );
+  const freshGeneratedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const saturatedQueue = {
+    generated_at: "1970-01-01T00:00:00Z",
+    exact_review_queue: {
+      generated_at: freshGeneratedAt,
+      pressure: { status: "saturated" },
+    },
+  };
+  const staleSaturatedQueue = {
+    ...saturatedQueue,
+    exact_review_queue: {
+      ...saturatedQueue.exact_review_queue,
+      generated_at: "1970-01-01T00:00:00Z",
+    },
+  };
+  const unknownQueue = {
+    ...saturatedQueue,
+    exact_review_queue: {
+      ...saturatedQueue.exact_review_queue,
+      pressure: { status: "unknown" },
+    },
+  };
+
+  for (const block of [sweepBlock, commitBlock]) {
+    const freshOutput = runExactReviewPressureStatus(block, saturatedQueue);
+    assert.match(freshOutput, /^status=0\nsaturated$/);
+
+    const staleOutput = runExactReviewPressureStatus(block, staleSaturatedQueue);
+    assert.match(staleOutput, /^status=1\n/);
+    assert.match(staleOutput, /queue telemetry snapshot is stale/);
+
+    const unknownOutput = runExactReviewPressureStatus(block, unknownQueue);
+    assert.match(unknownOutput, /^status=1\n/);
+    assert.match(unknownOutput, /pressure is unavailable/);
+  }
 });
 
 test("review backstops identify sweep runs by stable workflow path", () => {
@@ -2129,7 +2369,7 @@ test("review backstops identify sweep runs by stable workflow path", () => {
   assert.doesNotMatch(block, /run\.workflowName/);
 });
 
-test("target review queues coalesce background work without delaying exact planners", () => {
+test("background-yield admission is opt-in and keeps exact planners independent", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const concurrencyBlock = workflow.slice(
     workflow.indexOf("concurrency:"),
@@ -2138,6 +2378,11 @@ test("target review queues coalesce background work without delaying exact plann
   const planHeader = workflow.slice(
     workflow.indexOf("\n  plan:"),
     workflow.indexOf("\n    outputs:", workflow.indexOf("\n  plan:")),
+  );
+  const commitWorkflow = readText(".github/workflows/commit-review.yml");
+  const commitPlanHeader = commitWorkflow.slice(
+    commitWorkflow.indexOf("\n  plan:"),
+    commitWorkflow.indexOf("\n    outputs:", commitWorkflow.indexOf("\n  plan:")),
   );
 
   assert.match(concurrencyBlock, /&& 'clawsweeper-intake-v2'/);
@@ -2153,16 +2398,28 @@ test("target review queues coalesce background work without delaying exact plann
   assert.match(concurrencyBlock, /format\('clawsweeper-comment-sync-\{0\}', github\.run_id\)/);
   assert.match(concurrencyBlock, /format\('clawsweeper-apply-\{0\}', github\.run_id\)/);
   assert.doesNotMatch(concurrencyBlock, /queue: max/);
-  assert.match(planHeader, /group: \$\{\{ format\('clawsweeper-planner-\{0\}'/);
+  assert.match(planHeader, /format\('clawsweeper-review-admission-\{0\}', github\.run_id\)/);
+  assert.match(planHeader, /github\.event\.client_payload\.item_number/);
+  assert.match(planHeader, /github\.event\.client_payload\.item_numbers/);
+  assert.match(planHeader, /github\.event\.inputs\.item_number/);
+  assert.match(planHeader, /github\.event\.inputs\.item_numbers/);
   assert.match(
     planHeader,
-    /github\.event_name == 'schedule' \|\| \(github\.event_name == 'workflow_dispatch'/,
+    /vars\.CLAWSWEEPER_ENABLE_EXACT_REVIEW_BACKGROUND_YIELD == '1' && 'clawsweeper-review-admission-background'/,
   );
-  assert.match(planHeader, /github\.event\.inputs\.item_number == ''/);
-  assert.match(planHeader, /github\.event\.inputs\.item_numbers == ''/);
-  assert.match(planHeader, /\|\| github\.run_id/);
-  assert.doesNotMatch(planHeader, /queue: max/);
+  assert.match(planHeader, /format\('clawsweeper-planner-\{0\}'/);
+  assert.match(
+    planHeader,
+    /github\.event_name == 'repository_dispatch' && github\.event\.client_payload\.target_repo/,
+  );
+  assert.match(
+    commitPlanHeader,
+    /vars\.CLAWSWEEPER_ENABLE_EXACT_REVIEW_BACKGROUND_YIELD == '1' && 'clawsweeper-review-admission-background'/,
+  );
+  assert.match(commitPlanHeader, /format\('commit-review-plan-\{0\}', github\.run_id\)/);
+  assert.match(planHeader, /queue: max/);
   assert.match(planHeader, /cancel-in-progress: false/);
+  assert.match(commitPlanHeader, /queue: max/);
 });
 
 test("scheduled normal review uses one item per shard for lease coverage", () => {
