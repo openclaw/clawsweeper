@@ -170,7 +170,7 @@ test("structural cache probes before hydration but acquires a lease before carry
   );
   assert.match(
     reviewLoop.slice(structuralRevalidation, structuralWrite),
-    /fetchReviewedPrActivityCursor\(item\.number\)[\s\S]*reviewActivityMatches[\s\S]*review_activity_cursor/,
+    /readStableReviewedPrActivityCursor\(\(\) =>[\s\S]*fetchReviewedPrActivityCursor\(item\.number\)[\s\S]*reviewActivityMatches[\s\S]*review_activity_cursor/,
   );
   const structuralProbeSource = source.slice(
     source.indexOf("function fetchReviewStructuralRecord"),
@@ -258,7 +258,11 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
   );
   assert.match(
     reviewLoop.slice(semanticRevalidation, semanticWrite),
-    /fetchReviewedPrActivityCursor\(item\.number\)[\s\S]*reviewActivityMatches[\s\S]*review_activity_cursor/,
+    /readStableReviewedPrActivityCursor\(\(\) =>[\s\S]*fetchReviewedPrActivityCursor\(item\.number\)[\s\S]*reviewActivityMatches[\s\S]*review_activity_cursor/,
+  );
+  assert.match(
+    reviewLoop.slice(semanticWrite, contentCache),
+    /readStableReviewedPrActivityCursor\(\(\) =>[\s\S]*fetchReviewedPrActivityCursor\(item\.number\)[\s\S]*contentCacheReviewActivityMatches/,
   );
   assert.match(
     reviewLoop.slice(localRangeGuard, semanticDecision),

@@ -21751,7 +21751,9 @@ function reviewCommand(args: Args): void {
               }
               revalidatedPreviousReviewDigest = liveClawSweeperReviewDigest(item.number);
               if (item.kind === "pull_request") {
-                revalidatedReviewActivityCursor = fetchReviewedPrActivityCursor(item.number);
+                revalidatedReviewActivityCursor = readStableReviewedPrActivityCursor(() =>
+                  fetchReviewedPrActivityCursor(item.number),
+                );
               }
             } catch (error) {
               structuralCacheRevalidationFailures += 1;
@@ -22204,7 +22206,9 @@ function reviewCommand(args: Args): void {
             item.number,
           );
           if (item.kind === "pull_request") {
-            revalidatedReviewActivityCursor = fetchReviewedPrActivityCursor(item.number);
+            revalidatedReviewActivityCursor = readStableReviewedPrActivityCursor(() =>
+              fetchReviewedPrActivityCursor(item.number),
+            );
           }
         } catch (error) {
           const revalidationReason = "durable_review_refresh_failed";
@@ -22402,7 +22406,9 @@ function reviewCommand(args: Args): void {
       let revalidatedContentCacheReviewActivityCursor: string | null = null;
       if (item.kind === "pull_request" && contentCacheReview) {
         try {
-          revalidatedContentCacheReviewActivityCursor = fetchReviewedPrActivityCursor(item.number);
+          revalidatedContentCacheReviewActivityCursor = readStableReviewedPrActivityCursor(() =>
+            fetchReviewedPrActivityCursor(item.number),
+          );
           contentCacheReviewActivityMatches =
             revalidatedContentCacheReviewActivityCursor !== null &&
             revalidatedContentCacheReviewActivityCursor === context.pullReviewActivityCursor;
