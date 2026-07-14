@@ -2707,6 +2707,7 @@ type ProofMutationSession = {
   expectedFreshness: ProofMutationRequestSnapshot;
   refreshFreshness: () => ProofMutationRequestSnapshot;
   validateRequest: (snapshot: ProofMutationRequestSnapshot) => ProofMutationFreshnessBlock | null;
+  bindLabelState: boolean;
   nextAttemptByMutation: Map<string, number>;
   latestEventIdByMutation: Map<string, string>;
   unknownMutationIdentities: Set<string>;
@@ -2716,6 +2717,29 @@ type ProofMutationSession = {
 let activeApplyMutationRunner: MutationRunner | null = null;
 let activeReviewMutationRunner: MutationRunner | null = null;
 let activeProofMutationRunner: MutationRunner | null = null;
+
+function expectedProofMutationSnapshotAfterLabelRequest(
+  snapshot: ProofMutationRequestSnapshot,
+  mutationIdentity: string,
+): ProofMutationRequestSnapshot {
+  const match = mutationIdentity.match(/^issue_label_(add|remove):(\d+):([\s\S]+)$/);
+  if (!match || Number(match[2]) !== snapshot.item.number) return snapshot;
+  const operation = match[1];
+  const label = match[3];
+  if (!operation || !label) return snapshot;
+  const normalizedLabel = normalizeLabelName(label);
+  const labels =
+    operation === "add"
+      ? snapshot.item.labels.some((entry) => normalizeLabelName(entry) === normalizedLabel)
+        ? [...snapshot.item.labels]
+        : [...snapshot.item.labels, label]
+      : snapshot.item.labels.filter((entry) => normalizeLabelName(entry) !== normalizedLabel);
+  return {
+    ...snapshot,
+    item: { ...snapshot.item, labels },
+    labelStateCursor: proofMutationLabelStateCursor(labels),
+  };
+}
 
 function mutationErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -2775,6 +2799,10 @@ function proofMutationRunner(session: ProofMutationSession): MutationRunner {
     }
     const block =
       proofMutationFreshnessBlock(session.expectedFreshness, currentFreshness) ??
+      (session.bindLabelState &&
+      currentFreshness.labelStateCursor !== session.expectedFreshness.labelStateCursor
+        ? proofMutationEligibilityChanged("live labels changed before the request")
+        : null) ??
       session.validateRequest(currentFreshness);
     if (block) {
       finishProofMutationReceipt({ attempt, outcome: "rejected" });
@@ -2788,6 +2816,12 @@ function proofMutationRunner(session: ProofMutationSession): MutationRunner {
       });
       if (outcome) {
         session.latestEventIdByMutation.set(options.idempotencyIdentity, outcome.event_id);
+      }
+      if (session.bindLabelState && options.didMutate?.(result) !== false) {
+        session.expectedFreshness = expectedProofMutationSnapshotAfterLabelRequest(
+          currentFreshness,
+          options.idempotencyIdentity,
+        );
       }
       return result;
     } catch (error) {
@@ -6758,6 +6792,10 @@ type ProofMutationRequestSnapshot = ProofMutationFreshnessSnapshot & {
   item: Item;
   state: string;
   draft: boolean;
+  labelStateCursor: string;
+  comments: ProofNudgeComment[];
+  authorEditedAt?: string | undefined;
+  authorReviewActivityAt?: string | undefined;
 };
 
 function fetchProofMutationClosingPullState(number: number): {
@@ -6776,7 +6814,14 @@ function fetchProofMutationClosingPullState(number: number): {
   return { headSha, draft: pull.draft === true };
 }
 
-function readProofMutationFreshnessSnapshot(number: number): ProofMutationRequestSnapshot {
+function proofMutationLabelStateCursor(labels: readonly string[]): string {
+  return sha256(stableJson([...normalizedLabelSet(labels)].sort()));
+}
+
+function readProofMutationFreshnessSnapshot(
+  number: number,
+  activityAuthor?: string,
+): ProofMutationRequestSnapshot {
   const readOnce = (): ProofMutationRequestSnapshot => {
     const openingHeadSha = pullRequestHeadSha(number);
     if (!openingHeadSha) throw new Error(`live PR head could not be read for #${number}`);
@@ -6791,6 +6836,13 @@ function readProofMutationFreshnessSnapshot(number: number): ProofMutationReques
       );
     }
     const live = fetchItem(number);
+    const comments = activityAuthor ? proofNudgeComments(number) : [];
+    const authorEditedAt = activityAuthor
+      ? latestAuthorPullRequestEditAt(number, activityAuthor)
+      : undefined;
+    const authorReviewActivityAt = activityAuthor
+      ? latestAuthorPullRequestReviewActivityAt(number, activityAuthor)
+      : undefined;
     const closingPull = fetchProofMutationClosingPullState(number);
     if (!closingPull.headSha) throw new Error(`live PR head could not be re-read for #${number}`);
     if (closingPull.headSha !== openingHeadSha) {
@@ -6806,6 +6858,10 @@ function readProofMutationFreshnessSnapshot(number: number): ProofMutationReques
       item: live.item,
       state: live.state,
       draft: closingPull.draft,
+      labelStateCursor: proofMutationLabelStateCursor(live.item.labels),
+      comments,
+      authorEditedAt,
+      authorReviewActivityAt,
     };
   };
   const first = readOnce();
@@ -28475,10 +28531,7 @@ function proofNudgeRequestBoundaryBlock(
   snapshot: ProofMutationRequestSnapshot,
   options: {
     markdown: string;
-    comments: readonly ProofNudgeComment[];
     headCommittedAt?: string | undefined;
-    authorEditedAt?: string | undefined;
-    authorReviewActivityAt?: string | undefined;
     minAgeDays: number;
     cooldownDays: number;
   },
@@ -28489,11 +28542,11 @@ function proofNudgeRequestBoundaryBlock(
   const eligibility = proofNudgeEligibility({
     item: snapshot.item,
     markdown: options.markdown,
-    comments: options.comments,
+    comments: snapshot.comments,
     headSha: snapshot.headSha,
     headCommittedAt: options.headCommittedAt,
-    authorEditedAt: options.authorEditedAt,
-    authorReviewActivityAt: options.authorReviewActivityAt,
+    authorEditedAt: snapshot.authorEditedAt,
+    authorReviewActivityAt: snapshot.authorReviewActivityAt,
     minAgeDays: options.minAgeDays,
     cooldownDays: options.cooldownDays,
   });
@@ -28520,9 +28573,14 @@ function createProofMutationSession(options: {
   lane: ProofMutationLane;
   number: number;
   headSha: string;
+  activityAuthor?: string | undefined;
+  bindLabelState?: boolean | undefined;
   validateRequest: (snapshot: ProofMutationRequestSnapshot) => ProofMutationFreshnessBlock | null;
 }): ProofMutationSession {
-  const expectedFreshness = readProofMutationFreshnessSnapshot(options.number);
+  const expectedFreshness = readProofMutationFreshnessSnapshot(
+    options.number,
+    options.activityAuthor,
+  );
   if (expectedFreshness.headSha !== options.headSha.trim().toLowerCase()) {
     throw new ProofMutationFreshnessError({
       reason: "head_changed",
@@ -28541,8 +28599,10 @@ function createProofMutationSession(options: {
       privacy: actionLedgerPrivacy(),
     },
     expectedFreshness,
-    refreshFreshness: () => readProofMutationFreshnessSnapshot(options.number),
+    refreshFreshness: () =>
+      readProofMutationFreshnessSnapshot(options.number, options.activityAuthor),
     validateRequest: options.validateRequest,
+    bindLabelState: options.bindLabelState === true,
     nextAttemptByMutation: new Map(),
     latestEventIdByMutation: new Map(),
     unknownMutationIdentities: new Set(),
@@ -28761,13 +28821,11 @@ function proofNudgesCommand(args: Args): void {
           lane: "proof_nudges",
           number: candidate.number,
           headSha: pullDetails.headSha,
+          activityAuthor: item.author,
           validateRequest: (snapshot) =>
             proofNudgeRequestBoundaryBlock(snapshot, {
               markdown: candidate.markdown,
-              comments,
               headCommittedAt: pullDetails.headCommittedAt,
-              authorEditedAt,
-              authorReviewActivityAt,
               minAgeDays,
               cooldownDays,
             }),
@@ -29047,6 +29105,7 @@ function botProofCommand(args: Args): void {
           lane: "bot_proof",
           number: candidate.number,
           headSha: pullDetails.headSha,
+          bindLabelState: true,
           validateRequest: (snapshot) => botProofRequestBoundaryBlock(snapshot, candidate.markdown),
         });
       }
@@ -29132,7 +29191,7 @@ function botProofCommand(args: Args): void {
       try {
         const labelResult = syncBotProofDecisionLabels({
           number: candidate.number,
-          labels: item.labels,
+          labels: mutationSession.expectedFreshness.item.labels,
           dryRun: false,
         });
         if (botProofDecisionLabelsAreSynchronized(labelResult.labels)) {

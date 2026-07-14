@@ -68,9 +68,12 @@ The activity snapshots are SHA-256 cursors. Raw comment and review bodies are
 never written to reports or receipts. Activity beyond either bound, an
 incomplete read, or any head, review, thread, or conversation drift blocks the
 request. The same boundary also revalidates open, unlocked, non-draft, and
-non-protected proof eligibility from live state. A successful earlier label
-request does not authorize the next one; each request gets its own freshness
-check.
+non-protected proof eligibility from live state. Nudge author comments, PR body
+edits, and review activity are hydrated inside that boundary instead of reused
+from the earlier planning read. Bot-proof label plans start from the bound live
+label set, and the expected label cursor advances only after an accepted owned
+label operation. A successful earlier label request does not authorize the next
+one; each request gets its own freshness check.
 
 The production proof workflow enables the action ledger before either command.
 Every request writes an immutable pre-request receipt and then one accepted,
