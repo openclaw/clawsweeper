@@ -43,7 +43,9 @@ test("Linux validation containment uses an externally owned PID namespace and su
   assert.match(worker, /"--pid"/);
   assert.match(worker, /"--mount-proc"/);
   assert.match(worker, /"--kill-child=SIGKILL"/);
-  assert.match(worker, /fs\.mkdtempSync\(path\.join\(os\.tmpdir\(\)/);
+  assert.match(worker, /createTrustedSandboxRoot\(input\.writableRoots\)/);
+  assert.match(worker, /for \(const candidate of \["\/var\/tmp", "\/tmp", os\.tmpdir\(\)\]\)/);
+  assert.match(worker, /validation sandbox requires a trusted root outside writable roots/);
   assert.match(worker, /sandboxRoot!/);
   assert.match(worker, /fs\.rmSync\(sandboxRoot/);
   assert.match(worker, /await reapProcessGroup\(child\.pid\)/);

@@ -50,9 +50,7 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
   if (useLinuxNamespace && input.writableRoots.length === 0) {
     throw new Error("validation filesystem isolation requires explicit writable roots");
   }
-  const sandboxRoot = useLinuxNamespace
-    ? fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-validation-root-"))
-    : undefined;
+  const sandboxRoot = useLinuxNamespace ? createTrustedSandboxRoot(input.writableRoots) : undefined;
   const invocation = useLinuxNamespace
     ? {
         command: "/usr/bin/unshare",
@@ -293,6 +291,40 @@ function signalProcessGroup(pid: number, signal: NodeJS.Signals) {
 
 function sleep(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function createTrustedSandboxRoot(writableRoots: readonly string[]): string {
+  const canonicalWritableRoots = writableRoots.map((root) => fs.realpathSync(root));
+  for (const candidate of ["/var/tmp", "/tmp", os.tmpdir()]) {
+    if (!path.isAbsolute(candidate) || !fs.existsSync(candidate)) continue;
+    const stat = fs.lstatSync(candidate);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
+    const canonical = fs.realpathSync(candidate);
+    if (
+      canonicalWritableRoots.some(
+        (root) => pathWithin(canonical, root) || pathWithin(root, canonical),
+      )
+    ) {
+      continue;
+    }
+    const sandboxRoot = fs.mkdtempSync(path.join(canonical, "clawsweeper-validation-root-"));
+    const resolved = fs.realpathSync(sandboxRoot);
+    if (
+      canonicalWritableRoots.some(
+        (root) => pathWithin(resolved, root) || pathWithin(root, resolved),
+      )
+    ) {
+      fs.rmSync(sandboxRoot, { recursive: true, force: true });
+      continue;
+    }
+    return sandboxRoot;
+  }
+  throw new Error("validation sandbox requires a trusted root outside writable roots");
+}
+
+function pathWithin(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 async function readStdin() {
