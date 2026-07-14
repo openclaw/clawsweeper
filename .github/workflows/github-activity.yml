@@ -225,7 +225,7 @@ jobs:
 
       - name: Publish GitHub activity dispatch action ledger
         id: publish-activity-dispatch-ledger
-        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-state.outcome == 'success' && steps.setup-activity-pnpm.outcome == 'success' && steps.upload-activity-dispatch-ledger.outcome == 'success' }}
+        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-state.outcome == 'success' && steps.setup-activity-pnpm.outcome == 'success' && steps.bundle-activity-dispatch-ledger.outputs.ready == 'true' }}
         continue-on-error: true
         env:
           PUBLISH_TOKEN: ${{ steps.activity-state-token.outputs.token }}
@@ -285,7 +285,7 @@ jobs:
           pnpm run repair:notify-github-activity -- --write-report
 
       - name: Report GitHub activity dispatch ledger failure
-        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && (steps.finalize-activity-dispatch-ledger.outcome == 'failure' || steps.bundle-activity-dispatch-ledger.outcome == 'failure' || steps.upload-activity-dispatch-ledger.outcome == 'failure' || steps.publish-activity-dispatch-ledger.outcome == 'failure') }}
+        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && (steps.finalize-activity-dispatch-ledger.outcome == 'failure' || steps.bundle-activity-dispatch-ledger.outcome == 'failure' || steps.publish-activity-dispatch-ledger.outcome == 'failure') }}
         run: |
           echo "::error::GitHub activity dispatch receipts were not durably published."
           exit 1

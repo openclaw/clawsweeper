@@ -689,6 +689,12 @@ test("activity dispatch publishes receipts before the noncritical notifier", () 
   const bundleOffset = workflow.indexOf("- name: Freeze GitHub activity dispatch receipt bundle");
   const uploadOffset = workflow.indexOf("- name: Upload GitHub activity dispatch receipt bundle");
   const publishOffset = workflow.indexOf("- name: Publish GitHub activity dispatch action ledger");
+  const dispatchFailureOffset = workflow.indexOf(
+    "- name: Report GitHub activity dispatch ledger failure",
+  );
+  const notificationFailureOffset = workflow.indexOf(
+    "- name: Report GitHub activity notification failure",
+  );
   assert.ok(feedOffset >= 0);
   assert.ok(dispatchOffset < finalizeOffset);
   assert.ok(finalizeOffset < bundleOffset);
@@ -701,15 +707,20 @@ test("activity dispatch publishes receipts before the noncritical notifier", () 
     workflow,
     /id: upload-activity-dispatch-ledger[\s\S]*?uses: actions\/upload-artifact@v7/,
   );
-  assert.match(workflow, /id: publish-activity-dispatch-ledger[\s\S]*?continue-on-error: true/);
+  const publishStep = workflow.slice(publishOffset, feedOffset);
+  assert.match(publishStep, /bundle-activity-dispatch-ledger\.outputs\.ready == 'true'/);
+  assert.doesNotMatch(publishStep, /upload-activity-dispatch-ledger\.outcome/);
+  assert.match(publishStep, /continue-on-error: true/);
   assert.match(
     workflow,
     /- name: Feed activity to OpenClaw\n\s+id: notify-openclaw\n\s+if: \$\{\{ always\(\)[^\n]+\}\}\n\s+continue-on-error: true/,
   );
+  const dispatchFailureStep = workflow.slice(dispatchFailureOffset, notificationFailureOffset);
   assert.match(
-    workflow,
-    /- name: Report GitHub activity dispatch ledger failure[\s\S]*?finalize-activity-dispatch-ledger\.outcome == 'failure'[\s\S]*?bundle-activity-dispatch-ledger\.outcome == 'failure'[\s\S]*?upload-activity-dispatch-ledger\.outcome == 'failure'[\s\S]*?publish-activity-dispatch-ledger\.outcome == 'failure'/,
+    dispatchFailureStep,
+    /finalize-activity-dispatch-ledger\.outcome == 'failure'[\s\S]*?bundle-activity-dispatch-ledger\.outcome == 'failure'[\s\S]*?publish-activity-dispatch-ledger\.outcome == 'failure'/,
   );
+  assert.doesNotMatch(dispatchFailureStep, /upload-activity-dispatch-ledger\.outcome/);
   assert.match(
     workflow,
     /- name: Report GitHub activity notification failure[\s\S]*?steps\.notify-openclaw\.outcome == 'failure'/,

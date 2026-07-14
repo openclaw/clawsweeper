@@ -58,11 +58,12 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
-- Serialized generated-state publishers through an expiring remote lease with
-  bounded stale-owner recovery, command and overall deadlines, one rebuild
-  retry, and remote blob verification.
+- Serialized generated-state publishers through a versioned, protocol-bounded
+  remote lease with composable workflow deadlines, bounded stale-owner
+  recovery, one rebuild retry, and remote blob verification.
 - Preserved finalized GitHub activity dispatch receipts as a replayable artifact
-  before state publication, with idempotent recovery that never redispatches.
+  before state publication, while keeping direct publication independent of the
+  recovery-copy upload and idempotent replay free of redispatch.
 - Included action-ledger source dependencies in the spam scanner's sparse
   checkout so its repair build matches the full repository build.
 - Preserved crawl-remote's reviewed `limits.cpu_ms` value through immutable

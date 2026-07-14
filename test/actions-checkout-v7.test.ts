@@ -28,12 +28,14 @@ interface CheckoutStep {
 }
 
 interface WorkflowJob {
+  env?: Record<string, unknown>;
   if?: string;
   steps?: CheckoutStep[];
   "timeout-minutes"?: number;
 }
 
 interface WorkflowDocument {
+  env?: Record<string, unknown>;
   jobs?: Record<string, WorkflowJob>;
   on?: {
     workflow_dispatch?: { inputs?: Record<string, unknown> };
@@ -66,6 +68,12 @@ const checkoutReferences = actionFiles.flatMap((path) =>
     })),
 );
 const checkoutV7Commit = "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0";
+const statePublisherPattern = /\bpnpm run repair:publish-main\b/g;
+const statePublishTimingEnv = {
+  acquisitionDeadlineMs: "CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS",
+  commandTimeoutMs: "CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS",
+  operationDeadlineMs: "CLAWSWEEPER_PUBLISH_DEADLINE_MS",
+} as const;
 
 test("every checkout uses v7 without disabling its fork-PR guard", () => {
   assert.ok(checkoutReferences.length > 0, "expected checkout action references");
@@ -150,27 +158,69 @@ test("GitHub activity replay builds trusted code before downloading receipts", (
   assert.ok(downloadIndex > selectIndex, "replay job must select receipts before downloading");
 });
 
-test("every state publisher job reserves the default lease recovery budget", () => {
+test("every state publisher job composes all calls within its timeout", () => {
+  assert.ok(
+    STATE_PUBLISH_TIMING_DEFAULTS.workflowMarginMs >= 5 * 60 * 1000,
+    "publisher jobs must reserve at least five minutes for checkout, build, and non-publish work",
+  );
   const publisherJobs = workflowFiles.flatMap((workflowPath) => {
     const workflow = parse(readFileSync(workflowPath, "utf8")) as WorkflowDocument;
     return Object.entries(workflow.jobs ?? {})
-      .filter(([, job]) =>
-        job.steps?.some((step) => step.run?.includes("pnpm run repair:publish-main")),
-      )
-      .map(([jobName, job]) => ({ job, jobName, workflowPath }));
+      .map(([jobName, job]) => {
+        const calls = (job.steps ?? []).flatMap((step) => {
+          const callCount = step.run?.match(statePublisherPattern)?.length ?? 0;
+          const env = { ...workflow.env, ...job.env, ...step.env };
+          return Array.from({ length: callCount }, () => ({
+            acquisitionDeadlineMs: statePublishTimingMs(
+              env,
+              statePublishTimingEnv.acquisitionDeadlineMs,
+              STATE_PUBLISH_TIMING_DEFAULTS.acquisitionDeadlineMs,
+              workflowPath,
+              jobName,
+            ),
+            commandTimeoutMs: statePublishTimingMs(
+              env,
+              statePublishTimingEnv.commandTimeoutMs,
+              STATE_PUBLISH_TIMING_DEFAULTS.commandTimeoutMs,
+              workflowPath,
+              jobName,
+            ),
+            operationDeadlineMs: statePublishTimingMs(
+              env,
+              statePublishTimingEnv.operationDeadlineMs,
+              STATE_PUBLISH_TIMING_DEFAULTS.operationDeadlineMs,
+              workflowPath,
+              jobName,
+            ),
+          }));
+        });
+        return { calls, job, jobName, workflowPath };
+      })
+      .filter(({ calls }) => calls.length > 0);
   });
 
-  assert.ok(publisherJobs.length > 0, "expected at least one state publisher workflow job");
-  for (const { job, jobName, workflowPath } of publisherJobs) {
+  assert.equal(new Set(publisherJobs.map(({ workflowPath }) => workflowPath)).size, 16);
+  assert.equal(
+    publisherJobs.reduce((total, { calls }) => total + calls.length, 0),
+    33,
+  );
+  for (const { calls, job, jobName, workflowPath } of publisherJobs) {
     const timeoutMinutes = job["timeout-minutes"];
     assert.equal(
       typeof timeoutMinutes,
       "number",
       `${workflowPath}:${jobName} publisher job must set timeout-minutes`,
     );
+    const requiredMs =
+      STATE_PUBLISH_TIMING_DEFAULTS.workflowMarginMs +
+      calls.reduce(
+        (total, call) =>
+          total + call.acquisitionDeadlineMs + call.operationDeadlineMs + call.commandTimeoutMs,
+        0,
+      );
     assert.ok(
-      timeoutMinutes * 60 * 1000 >= STATE_PUBLISH_TIMING_DEFAULTS.workflowTimeoutMs,
-      `${workflowPath}:${jobName} publisher timeout ${timeoutMinutes}m is below the default lease recovery budget`,
+      timeoutMinutes * 60 * 1000 >= requiredMs,
+      `${workflowPath}:${jobName} publisher calls require ${requiredMs}ms plus prework margin but the job timeout is ${timeoutMinutes}m`,
     );
   }
 });
@@ -282,6 +332,23 @@ test("trusted-event state checkout remains pinned to the state repository branch
   assert.equal(checkout?.with?.repository, "openclaw/clawsweeper-state");
   assert.equal(checkout?.with?.ref, "state");
 });
+
+function statePublishTimingMs(
+  env: Record<string, unknown>,
+  name: string,
+  fallback: number,
+  workflowPath: string,
+  jobName: string,
+): number {
+  const raw = env[name];
+  if (raw === undefined) return fallback;
+  const parsed = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+  assert.ok(
+    Number.isSafeInteger(parsed) && parsed > 0,
+    `${workflowPath}:${jobName} ${name} must be a positive integer`,
+  );
+  return parsed;
+}
 
 function runReplayArtifactSelection(
   script: string,

@@ -39,9 +39,10 @@ const STATE_PUBLISH_LEASE_REF = "refs/heads/clawsweeper-publish-lease/state";
 
 test("default lease timing can recover a crashed owner within the workflow budget", () => {
   const timing = STATE_PUBLISH_TIMING_DEFAULTS;
+  assert.ok(timing.leaseTtlMs <= timing.leaseProtocolMaxTtlMs);
   assert.ok(
     timing.acquisitionDeadlineMs >
-      timing.leaseTtlMs + timing.leaseMaxWaitMs + timing.commandTimeoutMs,
+      timing.leaseProtocolMaxTtlMs + timing.leaseMaxWaitMs + timing.commandTimeoutMs,
   );
   assert.ok(timing.operationDeadlineMs < timing.leaseTtlMs);
   assert.ok(
@@ -50,6 +51,34 @@ test("default lease timing can recover a crashed owner within the workflow budge
       timing.commandTimeoutMs +
       timing.workflowMarginMs <=
       timing.workflowTimeoutMs,
+  );
+});
+
+test("state publisher rejects a lease TTL above the protocol maximum", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-lease-protocol-"));
+  const state = path.join(root, "state");
+  const source = path.join(root, "source");
+  fs.mkdirSync(state);
+  fs.mkdirSync(source);
+
+  assert.throws(
+    () =>
+      withEnv(
+        leasedPublishEnv({
+          CLAWSWEEPER_STATE_DIR: state,
+          CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: String(
+            STATE_PUBLISH_TIMING_DEFAULTS.leaseProtocolMaxTtlMs + 1,
+          ),
+        }),
+        () =>
+          withCwd(source, () =>
+            publishMainCommit({
+              message: "chore: reject oversized lease",
+              paths: ["results/protocol.txt"],
+            }),
+          ),
+      ),
+    /exceeds protocol maximum/,
   );
 });
 
@@ -1659,7 +1688,9 @@ test("state publisher atomically recovers an expired remote lease", () => {
   write(path.join(source, "results/stale-recovery.txt"), "recovered\n");
   createRemoteLease(state, {
     owner: "00000000-0000-4000-8000-000000000001",
+    issuedAt: "2025-12-31T23:59:59.000Z",
     expiresAt: "2026-01-01T00:00:00.000Z",
+    ttlMs: 1000,
   });
 
   const lines = captureConsoleLog(() =>
@@ -1695,19 +1726,24 @@ test("state publisher atomically recovers an expired remote lease", () => {
   assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
 });
 
-test("state publisher caps far-future remote lease expiry to one local ttl", () => {
+test("state publisher caps far-future remote lease expiry to the owner protocol TTL", () => {
   const fixture = createStatePublishRemote("far-future");
   const state = path.join(fixture.root, "state");
   const source = path.join(fixture.root, "source");
   cloneState(fixture.origin, state);
   fs.mkdirSync(source);
   write(path.join(source, "results/far-future-recovery.txt"), "recovered\n");
+  const issuedAtMs = Date.now();
+  const ownerTtlMs = 800;
   createRemoteLease(state, {
     owner: "00000000-0000-4000-8000-000000000002",
+    issuedAt: new Date(issuedAtMs).toISOString(),
     expiresAt: "9999-12-31T23:59:59.999Z",
+    ttlMs: ownerTtlMs,
   });
 
   let result;
+  const startedAtMs = Date.now();
   const lines = captureConsoleLog(() => {
     result = withEnv(
       leasedPublishEnv({
@@ -1715,7 +1751,7 @@ test("state publisher caps far-future remote lease expiry to one local ttl", () 
         CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "2000",
         CLAWSWEEPER_PUBLISH_DEADLINE_MS: "600",
         CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "250",
-        CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "800",
+        CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: String(ownerTtlMs),
         CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "10",
         CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
       }),
@@ -1728,7 +1764,12 @@ test("state publisher caps far-future remote lease expiry to one local ttl", () 
         ),
     );
   });
+  const elapsedMs = Date.now() - startedAtMs;
   assert.equal(result, "committed");
+  assert.ok(
+    elapsedMs >= ownerTtlMs / 2 && elapsedMs < 2000,
+    `far-future lease recovered in ${elapsedMs}ms`,
+  );
   assert.equal(
     lines.some((line) => line.includes("State publish lease busy")),
     true,
@@ -1748,6 +1789,69 @@ test("state publisher caps far-future remote lease expiry to one local ttl", () 
   assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
 });
 
+test("shorter-TTL contender cannot replace a live longer-TTL owner", () => {
+  const fixture = createStatePublishRemote("mixed-ttl");
+  const state = path.join(fixture.root, "state");
+  const source = path.join(fixture.root, "source");
+  cloneState(fixture.origin, state);
+  fs.mkdirSync(source);
+  write(path.join(source, "results/mixed-ttl.txt"), "must not publish\n");
+  const issuedAtMs = Date.now();
+  const ownerTtlMs = 1500;
+  const ownerExpiresAtMs = issuedAtMs + ownerTtlMs;
+  const ownerLeaseOid = createRemoteLease(state, {
+    owner: "00000000-0000-4000-8000-000000000004",
+    issuedAt: new Date(issuedAtMs).toISOString(),
+    expiresAt: new Date(ownerExpiresAtMs).toISOString(),
+    ttlMs: ownerTtlMs,
+  });
+  const lines = [];
+  const startedAtMs = Date.now();
+
+  assert.throws(
+    () =>
+      captureConsoleLog(
+        () =>
+          withEnv(
+            leasedPublishEnv({
+              CLAWSWEEPER_STATE_DIR: state,
+              CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "500",
+              CLAWSWEEPER_PUBLISH_DEADLINE_MS: "100",
+              CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "100",
+              CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "200",
+              CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "100",
+              CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
+            }),
+            () =>
+              withCwd(source, () =>
+                publishMainCommit({
+                  message: "chore: reject mixed TTL lease theft",
+                  paths: ["results/mixed-ttl.txt"],
+                }),
+              ),
+          ),
+        lines,
+      ),
+    /deadline exceeded|timed out/,
+  );
+  const elapsedMs = Date.now() - startedAtMs;
+
+  assert.ok(elapsedMs >= 400 && elapsedMs < 1200, `mixed-TTL wait completed in ${elapsedMs}ms`);
+  assert.ok(Date.now() < ownerExpiresAtMs, "owner lease must still be live");
+  assert.match(lines.join("\n"), /State publish lease busy/);
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", fixture.origin, "rev-parse", STATE_PUBLISH_LEASE_REF],
+      fixture.root,
+    ).trim(),
+    ownerLeaseOid,
+  );
+  assert.throws(() =>
+    run("git", ["--git-dir", fixture.origin, "show", "state:results/mixed-ttl.txt"], fixture.root),
+  );
+});
+
 test("state publisher retries when the observed lease disappears before fetch", () => {
   const fixture = createStatePublishRemote("vanished-lease");
   const state = path.join(fixture.root, "state");
@@ -1757,7 +1861,9 @@ test("state publisher retries when the observed lease disappears before fetch", 
   write(path.join(source, "results/vanished-lease.txt"), "published\n");
   createRemoteLease(state, {
     owner: "00000000-0000-4000-8000-000000000003",
+    issuedAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    ttlMs: 60_000,
   });
   const wrapper = installVanishingLeaseGitWrapper(fixture.root);
 
@@ -1822,6 +1928,13 @@ test("crashed publisher leaves an expiring lease that a later workflow recovers"
   );
   const crashedResult = waitForChild(crashed);
   await waitForRemoteRef(fixture.origin, STATE_PUBLISH_LEASE_REF);
+  const remoteLeaseMessage = readRemoteLeaseMessage(fixture.origin);
+  assert.match(
+    remoteLeaseMessage,
+    new RegExp(`^lease_protocol: ${STATE_PUBLISH_TIMING_DEFAULTS.leaseProtocolVersion}$`, "m"),
+  );
+  assert.match(remoteLeaseMessage, /^issued_at: .+$/m);
+  assert.match(remoteLeaseMessage, new RegExp(`^ttl_ms: ${ttlMs}$`, "m"));
   const expiresAtMs = remoteLeaseExpiryMs(fixture.origin);
   process.kill(-crashed.pid, "SIGKILL");
   const crashedCompleted = await crashedResult;
@@ -1867,7 +1980,9 @@ test("lease contention deadline bounds the waiting git process budget", () => {
   write(path.join(source, "results/deadline.txt"), "deadline\n");
   createRemoteLease(state, {
     owner: "00000000-0000-4000-8000-000000000002",
+    issuedAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    ttlMs: 60_000,
   });
   const lines = [];
   const startedAt = Date.now();
@@ -3337,21 +3452,25 @@ function remoteRefExists(origin, ref) {
 }
 
 function remoteLeaseExpiryMs(origin) {
-  const message = run(
-    "git",
-    ["--git-dir", origin, "show", "-s", "--format=%B", STATE_PUBLISH_LEASE_REF],
-    path.dirname(origin),
-  );
+  const message = readRemoteLeaseMessage(origin);
   const expiresAt = /^expires_at: (.+)$/m.exec(message)?.[1];
   const expiresAtMs = Date.parse(expiresAt ?? "");
   assert.ok(Number.isFinite(expiresAtMs), "remote lease must have a valid expiry");
   return expiresAtMs;
 }
 
-function createRemoteLease(state, { owner, expiresAt }) {
+function readRemoteLeaseMessage(origin) {
+  return run(
+    "git",
+    ["--git-dir", origin, "show", "-s", "--format=%B", STATE_PUBLISH_LEASE_REF],
+    path.dirname(origin),
+  );
+}
+
+function createRemoteLease(state, { owner, issuedAt, expiresAt, ttlMs }) {
   const tree = run("git", ["rev-parse", "HEAD^{tree}"], state).trim();
   const parent = run("git", ["rev-parse", "HEAD"], state).trim();
-  const lease = run(
+  const lease = execFileSync(
     "git",
     [
       "commit-tree",
@@ -3364,10 +3483,22 @@ function createRemoteLease(state, { owner, expiresAt }) {
         "",
         `owner: ${owner}`,
         "branch: state",
+        `lease_protocol: ${STATE_PUBLISH_TIMING_DEFAULTS.leaseProtocolVersion}`,
+        `issued_at: ${issuedAt}`,
+        `ttl_ms: ${ttlMs}`,
         `expires_at: ${expiresAt}`,
       ].join("\n"),
     ],
-    state,
+    {
+      cwd: state,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_AUTHOR_DATE: issuedAt,
+        GIT_COMMITTER_DATE: issuedAt,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
   ).trim();
   run(
     "git",
@@ -3379,6 +3510,7 @@ function createRemoteLease(state, { owner, expiresAt }) {
     ],
     state,
   );
+  return lease;
 }
 
 function installVanishingLeaseGitWrapper(root) {

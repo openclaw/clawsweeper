@@ -73,14 +73,17 @@ const GIT_OBJECT_BATCH_MAX_BUFFER = 64 * 1024 * 1024;
 const RECONCILIATION_TUPLE_CHUNK_SIZE = 128;
 const STATE_PUBLISH_LEASE_REF_ROOT = "refs/heads/clawsweeper-publish-lease";
 export const STATE_PUBLISH_TIMING_DEFAULTS = Object.freeze({
-  acquisitionDeadlineMs: 7 * 60 * 1000,
-  operationDeadlineMs: 4 * 60 * 1000,
+  acquisitionDeadlineMs: 3 * 60 * 1000,
+  operationDeadlineMs: 90 * 1000,
   commandTimeoutMs: 30 * 1000,
-  leaseTtlMs: 5 * 60 * 1000,
-  leaseMaxWaitMs: 30 * 1000,
-  workflowMarginMs: 2 * 60 * 1000,
+  leaseTtlMs: 2 * 60 * 1000,
+  leaseMaxWaitMs: 15 * 1000,
+  leaseProtocolVersion: 1,
+  leaseProtocolMaxTtlMs: 2 * 60 * 1000,
+  workflowMarginMs: 5 * 60 * 1000,
   workflowTimeoutMs: 15 * 60 * 1000,
 });
+const STATE_PUBLISH_LEASE_ISSUED_AT_SKEW_MS = 5 * 1000;
 const STATE_PUBLISH_LEASE_ATTEMPTS = 24;
 const STATE_PUBLISH_LEASE_WAIT_MS = 3 * 1000;
 const STATE_PUBLISH_STALE_RECOVERY_ATTEMPTS = 2;
@@ -1048,7 +1051,11 @@ function statePublishLeaseEnabled(): boolean {
 
 function validateStatePublishTimingDefaults(): void {
   const timing = STATE_PUBLISH_TIMING_DEFAULTS;
-  const recoveryFloorMs = timing.leaseTtlMs + timing.leaseMaxWaitMs + timing.commandTimeoutMs;
+  if (timing.leaseTtlMs > timing.leaseProtocolMaxTtlMs) {
+    throw new Error("Default state publish lease TTL exceeds the protocol maximum");
+  }
+  const recoveryFloorMs =
+    timing.leaseProtocolMaxTtlMs + timing.leaseMaxWaitMs + timing.commandTimeoutMs;
   if (timing.acquisitionDeadlineMs <= recoveryFloorMs) {
     throw new Error("Default state publish acquisition deadline cannot recover an expired lease");
   }
@@ -1087,6 +1094,11 @@ function statePublishTiming(): {
     "CLAWSWEEPER_PUBLISH_LEASE_TTL_MS",
     STATE_PUBLISH_TIMING_DEFAULTS.leaseTtlMs,
   );
+  if (leaseTtlMs > STATE_PUBLISH_TIMING_DEFAULTS.leaseProtocolMaxTtlMs) {
+    throw new Error(
+      `State publish lease TTL ${leaseTtlMs}ms exceeds protocol maximum ${STATE_PUBLISH_TIMING_DEFAULTS.leaseProtocolMaxTtlMs}ms`,
+    );
+  }
   if (operationDeadlineMs >= leaseTtlMs) {
     throw new Error(
       `State publish operation deadline ${operationDeadlineMs}ms must be shorter than lease TTL ${leaseTtlMs}ms`,
@@ -1128,7 +1140,7 @@ function acquireStatePublishLease(remote: string, branch: string): StatePublishL
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     assertStatePublishDeadline("acquiring the remote state publish lease");
-    const observed = observeStatePublishLease(remote, leaseRef, ttlMs, observedByOid);
+    const observed = observeStatePublishLease(remote, leaseRef, observedByOid);
     const now = Date.now();
     if (!observed || observed.expiresAtMs <= now) {
       if (observed && staleRecoveries >= maxStaleRecoveries) {
@@ -1140,7 +1152,9 @@ function acquireStatePublishLease(remote: string, branch: string): StatePublishL
       const leaseOid = createStatePublishLeaseCommit({
         branch,
         owner,
+        issuedAtMs: now,
         expiresAtMs,
+        ttlMs,
       });
       const expectedOid = observed?.oid ?? "";
       let acquired = false;
@@ -1196,7 +1210,6 @@ function statePublishLeaseWaitMs(waitMs: number, attempt: number): number {
 function observeStatePublishLease(
   remote: string,
   leaseRef: string,
-  ttlMs: number,
   observedByOid: Map<string, ObservedStatePublishLease>,
 ): ObservedStatePublishLease | null {
   const oid = remoteRefOid(remote, leaseRef);
@@ -1227,17 +1240,37 @@ function observeStatePublishLease(
   const committedAtMs = Number(committedAtRaw) * 1000;
   const message = messageParts.join("\0");
   const owner = /^owner: ([0-9a-f-]+)$/m.exec(message)?.[1] ?? "unknown";
+  const protocolVersion = Number(/^lease_protocol: ([0-9]+)$/m.exec(message)?.[1] ?? "");
+  const advertisedTtlMs = Number(/^ttl_ms: ([0-9]+)$/m.exec(message)?.[1] ?? "");
+  const validAdvertisedTtl =
+    protocolVersion === STATE_PUBLISH_TIMING_DEFAULTS.leaseProtocolVersion &&
+    Number.isSafeInteger(advertisedTtlMs) &&
+    advertisedTtlMs > 0 &&
+    advertisedTtlMs <= STATE_PUBLISH_TIMING_DEFAULTS.leaseProtocolMaxTtlMs;
+  const ownerTtlMs = validAdvertisedTtl
+    ? advertisedTtlMs
+    : STATE_PUBLISH_TIMING_DEFAULTS.leaseProtocolMaxTtlMs;
+  const parsedIssuedAt = Date.parse(/^issued_at: (.+)$/m.exec(message)?.[1] ?? "");
+  const validCommittedAt = Number.isFinite(committedAtMs) && committedAtMs > 0;
+  const validIssuedAt =
+    Number.isFinite(parsedIssuedAt) &&
+    parsedIssuedAt > 0 &&
+    validCommittedAt &&
+    Math.abs(parsedIssuedAt - committedAtMs) <= STATE_PUBLISH_LEASE_ISSUED_AT_SKEW_MS;
+  const issuedAtMs = validIssuedAt ? parsedIssuedAt : Date.now();
   const parsedExpiry = Date.parse(/^expires_at: (.+)$/m.exec(message)?.[1] ?? "");
   const reportedExpiresAtMs =
-    Number.isFinite(parsedExpiry) && parsedExpiry > 0
+    Number.isFinite(parsedExpiry) && parsedExpiry >= issuedAtMs
       ? parsedExpiry
-      : Number.isFinite(committedAtMs)
-        ? committedAtMs + ttlMs
-        : 0;
+      : issuedAtMs + ownerTtlMs;
   const observed = {
     oid: fetchedOid,
     owner,
-    expiresAtMs: Math.min(reportedExpiresAtMs, Date.now() + ttlMs),
+    expiresAtMs: Math.min(
+      reportedExpiresAtMs,
+      issuedAtMs + ownerTtlMs,
+      Date.now() + STATE_PUBLISH_TIMING_DEFAULTS.leaseProtocolMaxTtlMs,
+    ),
   };
   observedByOid.set(observed.oid, observed);
   return observed;
@@ -1246,7 +1279,9 @@ function observeStatePublishLease(
 function createStatePublishLeaseCommit(options: {
   branch: string;
   owner: string;
+  issuedAtMs: number;
   expiresAtMs: number;
+  ttlMs: number;
 }): string {
   const [parent, tree] = runGit(["rev-parse", "HEAD", "HEAD^{tree}"], { quiet: true })
     .trim()
@@ -1257,6 +1292,9 @@ function createStatePublishLeaseCommit(options: {
     "",
     `owner: ${options.owner}`,
     `branch: ${options.branch}`,
+    `lease_protocol: ${STATE_PUBLISH_TIMING_DEFAULTS.leaseProtocolVersion}`,
+    `issued_at: ${new Date(options.issuedAtMs).toISOString()}`,
+    `ttl_ms: ${options.ttlMs}`,
     `expires_at: ${new Date(options.expiresAtMs).toISOString()}`,
     "",
   ].join("\n");
