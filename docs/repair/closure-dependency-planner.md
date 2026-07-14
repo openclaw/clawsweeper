@@ -53,7 +53,9 @@ not mutated, and input permutation does not change plans or diagnostics.
 
 - `canonical`, `duplicate_of`, or `candidate_fix` identifies the root that
   remains open;
-- optional `depends_on` refs add prerequisite edges between closure targets;
+- required nullable `depends_on` refs add prerequisite edges between closure
+  targets; every listed ref must have its own planned closure action in the
+  same canonical group;
 - actions without a distinct root remain independent and are reported
   separately; and
 - deterministic `closureLayers` expose closure batches that can run together.

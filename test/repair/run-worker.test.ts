@@ -32,6 +32,23 @@ test("repair output schema keeps every strict object property required", () => {
   visit(schema, "schema");
 });
 
+test("repair action schema exposes bounded nullable closure dependencies", () => {
+  const schema = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, "schema/repair/codex-result.schema.json"), "utf8"),
+  );
+  const action = schema.properties.actions.items;
+
+  assert.ok(action.required.includes("depends_on"));
+  assert.deepEqual(action.properties.depends_on, {
+    type: ["array", "null"],
+    maxItems: 255,
+    items: {
+      type: "string",
+      pattern: "^#?[0-9]+$",
+    },
+  });
+});
+
 test("run-worker starts Codex in the target checkout when one is available", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-run-worker-"));
   const fakeBin = path.join(tmp, "bin");

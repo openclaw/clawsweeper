@@ -16,6 +16,7 @@ For each target action, include:
 - `target_updated_at`: the live GitHub `updatedAt`/`updated_at` value you fetched for the target
 - `canonical`, `duplicate_of`, or `candidate_fix` when the close depends on another issue/PR; use an issue/PR ref like `#123`, never a date, year, bare unrelated number, or prose-only link
 - Use `canonical`, `duplicate_of`, and `candidate_fix` only for refs present in the hydrated preflight item matrix. If a candidate PR is only mentioned in comments or prior automation notes, keep it in evidence/fix artifact context and leave `candidate_fix` null.
+- `depends_on`: `null` unless this closure must wait for other planned closure targets in the same canonical group; otherwise list those exact refs. A dependency ref means that target must close successfully before this action. Never list the canonical root, an unrelated item, or a ref without its own planned closure action.
 - `comment`: the exact close comment you recommend, preserving contributor credit and linking the canonical or candidate fix
 - `idempotency_key`: stable key such as `clawsweeper-repair:<cluster_id>:<target>:<action>:<canonical-or-fix>`
 - `evidence`: short concrete evidence strings

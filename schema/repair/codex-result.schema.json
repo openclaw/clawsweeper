@@ -48,6 +48,7 @@
           "canonical",
           "duplicate_of",
           "candidate_fix",
+          "depends_on",
           "comment",
           "evidence",
           "reason"
@@ -120,6 +121,14 @@
           "candidate_fix": {
             "type": ["string", "null"],
             "pattern": "^#?[0-9]+$"
+          },
+          "depends_on": {
+            "type": ["array", "null"],
+            "maxItems": 255,
+            "items": {
+              "type": "string",
+              "pattern": "^#?[0-9]+$"
+            }
           },
           "comment": {
             "type": ["string", "null"]

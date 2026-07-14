@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { planRepairClosureResult } from "../../dist/repair/closure-result-plan.js";
 
@@ -70,6 +74,72 @@ test("cycles and missing dependency targets fail closed", () => {
   assert.equal(missing.status, "needs_human");
   if (missing.status === "needs_human") {
     assert.ok(missing.diagnostics.some((entry) => entry.code === "missing_referenced_node"));
+  }
+});
+
+test("review-results rejects a cyclic dependency artifact", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-closure-result-"));
+  const updatedAt = "2026-07-14T12:00:00Z";
+  const action = (target: string, dependsOn: string[]) => ({
+    target,
+    action: "close_duplicate",
+    status: "planned",
+    idempotency_key: `closure:${target}`,
+    classification: "duplicate",
+    target_kind: "issue",
+    target_updated_at: updatedAt,
+    canonical: "#100",
+    duplicate_of: null,
+    candidate_fix: null,
+    depends_on: dependsOn,
+    comment: `Closing ${target} in favor of #100.`,
+    evidence: ["Hydrated duplicate evidence."],
+    reason: "Duplicate of the canonical issue.",
+  });
+
+  fs.writeFileSync(
+    path.join(directory, "cluster-plan.json"),
+    `${JSON.stringify({
+      item_matrix: [
+        { ref: "#100", kind: "issue", state: "open", updated_at: updatedAt },
+        { ref: "#101", kind: "issue", state: "open", updated_at: updatedAt },
+        { ref: "#102", kind: "issue", state: "open", updated_at: updatedAt },
+      ],
+    })}\n`,
+  );
+  fs.writeFileSync(
+    path.join(directory, "result.json"),
+    `${JSON.stringify({
+      status: "planned",
+      repo: "openclaw/openclaw",
+      cluster_id: "closure-cycle",
+      mode: "plan",
+      summary: "Cyclic closure proposal.",
+      actions: [action("#101", ["#102"]), action("#102", ["#101"])],
+      needs_human: [],
+      canonical: "#100",
+      canonical_issue: "#100",
+      canonical_pr: null,
+      merge_preflight: [],
+      fix_artifact: null,
+    })}\n`,
+  );
+
+  try {
+    const result = spawnSync(process.execPath, ["dist/repair/review-results.js", directory], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 1, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.status, "failed");
+    assert.ok(
+      output.reports[0].failures.some((failure: string) =>
+        failure.includes("closure dependency plan dependency_cycle"),
+      ),
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 
