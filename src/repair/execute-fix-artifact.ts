@@ -119,10 +119,13 @@ import {
   captureFinalTargetCheckoutBinding,
   captureTargetCheckoutBinding,
   classifyExternalBaseValidationFailure,
+  completeTargetRebaseWithIsolation,
   compactTargetHistoryWithPlumbing,
   createTargetCheckpointWithPlumbing,
+  materializeTargetCommitWithIsolation,
   prepareTargetToolchain,
   preflightTargetValidationPlan,
+  rebaseTargetOntoVerifiedBase,
   repairDeltaValidationPlan,
   reproduceValidationFailureAtPinnedBase,
   runAllowedValidationCommandsWithBinding,
@@ -986,7 +989,12 @@ function pushRepairBranchAndUpdateStatus({
   }
 
   if (!sameRepoBranch) {
-    assertRepairBranchWritable({ targetDir, pull, rewritten: branchUpdate.rewritten });
+    assertRepairBranchWritable({
+      targetDir,
+      pull,
+      sourceRef: prep.commit,
+      rewritten: branchUpdate.rewritten,
+    });
   }
   const settleSeconds = repairPushSettleSeconds();
   if (settleSeconds > 0) {
@@ -1528,9 +1536,9 @@ function repairBranchPushArgs({ pull, sourceRef = "HEAD" }: LooseRecord) {
   ];
 }
 
-function assertRepairBranchWritable({ targetDir, pull }: LooseRecord) {
+function assertRepairBranchWritable({ targetDir, pull, sourceRef }: LooseRecord) {
   assertTargetPublicationGitConfiguration(targetDir, targetValidationTimeoutMs);
-  const args = repairBranchPushArgs({ pull });
+  const args = repairBranchPushArgs({ pull, sourceRef });
   runGitNetwork(["push", "--dry-run", ...args.slice(1)], targetDir);
 }
 
@@ -2516,7 +2524,11 @@ function reconcileLatestBaseBeforePush({
     return { status: "already-current" };
   }
 
-  const rebaseResult = rebaseOntoBase({ targetDir, baseBranch });
+  const rebaseResult = rebaseTargetOntoVerifiedBase({
+    cwd: targetDir,
+    baseRef,
+    timeoutMs: targetValidationTimeoutMs,
+  });
   if (rebaseResult.status !== "conflicts") return rebaseResult;
 
   runCodexBaseReconcile({
@@ -2530,7 +2542,10 @@ function reconcileLatestBaseBeforePush({
     sourceHead,
     rebaseResult,
   });
-  const completed = completeRebaseIfResolved({ targetDir });
+  const completed = completeTargetRebaseWithIsolation({
+    cwd: targetDir,
+    timeoutMs: targetValidationTimeoutMs,
+  });
   return {
     status: "codex-reconciled",
     rebase_result: rebaseResult,
@@ -3449,10 +3464,18 @@ function checkoutRecoverableReplacementBranch({
       ],
       targetDir,
     );
+    const recoveredHeadSha = run("git", ["rev-parse", `origin/${branch}`], {
+      cwd: targetDir,
+    }).trim();
+    materializeTargetCommitWithIsolation({
+      cwd: targetDir,
+      expectedHeadSha: recoveredHeadSha,
+      timeoutMs: targetValidationTimeoutMs,
+    });
     switchTargetBranchWithPlumbing({
       cwd: targetDir,
       branch,
-      expectedHeadSha: run("git", ["rev-parse", `origin/${branch}`], { cwd: targetDir }).trim(),
+      expectedHeadSha: recoveredHeadSha,
       timeoutMs: targetValidationTimeoutMs,
     });
     if (sourcePr) {

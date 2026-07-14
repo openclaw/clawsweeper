@@ -115,6 +115,22 @@ export type TargetHistoryCompaction =
       tree: string;
     };
 
+export type TargetRebaseResult = {
+  status: "already-current" | "rebased" | "conflicts";
+  base_ref: string;
+  base_sha: string;
+  previous_head: string;
+  current_head: string;
+  detail?: string;
+};
+
+export type TargetCompleteRebaseResult = {
+  status: "not-in-progress" | "continued";
+  previous_head: string;
+  current_head: string;
+  detail?: string;
+};
+
 export function classifyExternalBaseValidationFailure({
   targetDir,
   pinnedBaseRef,
@@ -1036,6 +1052,206 @@ export function switchTargetBranchWithPlumbing({
     }
     return currentHead;
   });
+}
+
+export function materializeTargetCommitWithIsolation({
+  cwd,
+  expectedHeadSha,
+  timeoutMs = DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
+}: {
+  cwd: string;
+  expectedHeadSha: string;
+  timeoutMs?: number;
+}) {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(expectedHeadSha)) {
+    throw new Error("invalid target commit object id");
+  }
+  const deadlineAt = Date.now() + timeoutMs;
+  assertCallbackFreeGitConfig(cwd, deadlineAt);
+  assertNoHiddenIndexEntries(cwd, deadlineAt);
+  return withIsolatedTargetGit(cwd, deadlineAt, (git) => {
+    const commit = git.run(
+      ["rev-parse", "--verify", `${expectedHeadSha}^{commit}`],
+      "materialized target commit",
+    );
+    if (commit !== expectedHeadSha) {
+      throw new Error("target commit resolved to an unexpected object");
+    }
+    const previousHead = git.run(["rev-parse", "HEAD"], "materialized target previous head");
+    const status = git.run(
+      ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      "materialized target initial status",
+      { trim: false },
+    );
+    if (status) {
+      throw new Error("cannot materialize target commit over a changed checkout");
+    }
+    git.run(
+      ["reset", "--hard", "--no-recurse-submodules", expectedHeadSha],
+      "materialize target commit",
+    );
+    const materializedHead = git.run(["rev-parse", "HEAD"], "materialized target result");
+    const materializedStatus = git.run(
+      ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      "materialized target result status",
+      { trim: false },
+    );
+    if (materializedHead !== expectedHeadSha || materializedStatus) {
+      throw new Error("target commit materialization did not produce the expected clean checkout");
+    }
+    return {
+      previous_head: previousHead,
+      current_head: materializedHead,
+    };
+  });
+}
+
+export function rebaseTargetOntoVerifiedBase({
+  cwd,
+  baseRef,
+  timeoutMs = DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
+}: {
+  cwd: string;
+  baseRef: string;
+  timeoutMs?: number;
+}): TargetRebaseResult {
+  if (!baseRef || baseRef.includes("\0")) throw new Error("invalid target rebase base");
+  const deadlineAt = Date.now() + timeoutMs;
+  assertCallbackFreeGitConfig(cwd, deadlineAt);
+  assertNoHiddenIndexEntries(cwd, deadlineAt);
+  return withIsolatedTargetGit(cwd, deadlineAt, (git) => {
+    const baseSha = git.run(["rev-parse", "--verify", `${baseRef}^{commit}`], "target rebase base");
+    const previousHead = git.run(["rev-parse", "HEAD"], "target rebase previous head");
+    const mergeBase = git.run(["merge-base", baseSha, previousHead], "target rebase merge base");
+    if (mergeBase === baseSha) {
+      return {
+        status: "already-current",
+        base_ref: baseRef,
+        base_sha: baseSha,
+        previous_head: previousHead,
+        current_head: previousHead,
+      };
+    }
+    try {
+      const detail = git.run(
+        ["-c", "rebase.autoStash=false", "-c", "rebase.updateRefs=false", "rebase", baseSha],
+        "isolated target rebase",
+        { env: isolatedTargetRebaseEnv() },
+      );
+      return {
+        status: "rebased",
+        base_ref: baseRef,
+        base_sha: baseSha,
+        previous_head: previousHead,
+        current_head: git.run(["rev-parse", "HEAD"], "target rebase result"),
+        detail,
+      };
+    } catch (error) {
+      if (
+        targetRebaseInProgress(cwd, git) ||
+        targetUnmergedPaths(git, "target rebase conflicts").length > 0
+      ) {
+        return {
+          status: "conflicts",
+          base_ref: baseRef,
+          base_sha: baseSha,
+          previous_head: previousHead,
+          current_head: git.run(["rev-parse", "HEAD"], "target conflicted rebase head"),
+          detail: String((error as Error).message ?? error),
+        };
+      }
+      throw error;
+    }
+  });
+}
+
+export function completeTargetRebaseWithIsolation({
+  cwd,
+  timeoutMs = DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
+}: {
+  cwd: string;
+  timeoutMs?: number;
+}): TargetCompleteRebaseResult {
+  const deadlineAt = Date.now() + timeoutMs;
+  assertCallbackFreeGitConfig(cwd, deadlineAt);
+  assertNoHiddenIndexEntries(cwd, deadlineAt);
+  return withIsolatedTargetGit(cwd, deadlineAt, (git) => {
+    const previousHead = git.run(["rev-parse", "HEAD"], "target rebase continuation head");
+    if (!targetRebaseInProgress(cwd, git)) {
+      return {
+        status: "not-in-progress",
+        previous_head: previousHead,
+        current_head: previousHead,
+      };
+    }
+    const unresolved = targetUnmergedPaths(git, "target rebase unresolved paths");
+    assertNoTargetConflictMarkers(cwd, unresolved);
+    git.run(["add", "--all"], "stage resolved target rebase");
+    const remaining = targetUnmergedPaths(git, "target rebase remaining paths");
+    if (remaining.length > 0) {
+      throw new Error(`rebase conflicts remain unresolved: ${remaining.join(", ")}`);
+    }
+    let detail = "";
+    while (targetRebaseInProgress(cwd, git)) {
+      try {
+        detail = git.run(
+          ["-c", "core.editor=true", "rebase", "--continue"],
+          "continue isolated target rebase",
+          { env: isolatedTargetRebaseEnv() },
+        );
+      } catch (error) {
+        const newConflicts = targetUnmergedPaths(git, "target rebase continuation conflicts");
+        if (newConflicts.length > 0) {
+          throw new Error(`rebase produced additional conflicts: ${newConflicts.join(", ")}`, {
+            cause: error,
+          });
+        }
+        throw error;
+      }
+    }
+    return {
+      status: "continued",
+      previous_head: previousHead,
+      current_head: git.run(["rev-parse", "HEAD"], "continued target rebase result"),
+      detail,
+    };
+  });
+}
+
+function isolatedTargetRebaseEnv(): NodeJS.ProcessEnv {
+  return {
+    GIT_EDITOR: "true",
+    GIT_MERGE_AUTOEDIT: "no",
+    GIT_SEQUENCE_EDITOR: "true",
+  };
+}
+
+function targetRebaseInProgress(cwd: string, git: IsolatedTargetGit) {
+  const gitDir = fs.realpathSync(
+    path.resolve(cwd, git.run(["rev-parse", "--absolute-git-dir"], "target rebase Git directory")),
+  );
+  return (
+    fs.existsSync(path.join(gitDir, "rebase-merge")) ||
+    fs.existsSync(path.join(gitDir, "rebase-apply"))
+  );
+}
+
+function targetUnmergedPaths(git: IsolatedTargetGit, operation: string) {
+  return git
+    .run(["diff", "--name-only", "--diff-filter=U", "-z"], operation, { trim: false })
+    .split("\0")
+    .filter(Boolean);
+}
+
+function assertNoTargetConflictMarkers(cwd: string, paths: readonly string[]) {
+  const unresolved = paths.filter((relativePath) => {
+    const absolutePath = path.join(cwd, relativePath);
+    if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) return false;
+    return /^<{7} |^={7}$|^>{7} /m.test(fs.readFileSync(absolutePath, "utf8"));
+  });
+  if (unresolved.length > 0) {
+    throw new Error(`rebase conflicts remain unresolved: ${unresolved.join(", ")}`);
+  }
 }
 
 function assertTargetBranchNotAttachedElsewhere(

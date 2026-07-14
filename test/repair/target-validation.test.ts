@@ -11,11 +11,14 @@ import {
   captureFinalTargetCheckoutBinding,
   captureTargetCheckoutBinding,
   classifyExternalBaseValidationFailure,
+  completeTargetRebaseWithIsolation,
   compactTargetHistoryWithPlumbing,
   commitTargetCheckoutWithPlumbing,
   createTargetCheckpointWithPlumbing,
+  materializeTargetCommitWithIsolation,
   preflightTargetValidationPlan,
   prepareTargetToolchain,
+  rebaseTargetOntoVerifiedBase,
   repairDeltaValidationPlan,
   reproduceValidationFailureAtPinnedBase,
   requiredValidationCommands,
@@ -3212,6 +3215,74 @@ test("checkpoint plumbing rejects changed external filters and working-tree enco
       expected,
     );
   }
+});
+
+test("recovery materializes an exact fetched commit without running target hooks", () => {
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  fs.writeFileSync(path.join(cwd, "source.txt"), "base\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "base");
+  const previousHead = git(cwd, "rev-parse", "HEAD");
+  fs.writeFileSync(path.join(cwd, "source.txt"), "recovered\n");
+  git(cwd, "commit", "-am", "recovered");
+  const recoveredHead = git(cwd, "rev-parse", "HEAD");
+  git(cwd, "reset", "--hard", previousHead);
+
+  const marker = path.join(cwd, "post-checkout-ran");
+  const hook = path.join(cwd, ".git", "hooks", "post-checkout");
+  fs.writeFileSync(
+    hook,
+    `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");\n`,
+  );
+  fs.chmodSync(hook, 0o755);
+
+  const result = materializeTargetCommitWithIsolation({
+    cwd,
+    expectedHeadSha: recoveredHead,
+  });
+
+  assert.equal(result.previous_head, previousHead);
+  assert.equal(result.current_head, recoveredHead);
+  assert.equal(git(cwd, "rev-parse", "HEAD"), recoveredHead);
+  assert.equal(fs.readFileSync(path.join(cwd, "source.txt"), "utf8"), "recovered\n");
+  assert.equal(fs.existsSync(marker), false);
+});
+
+test("verified target rebase and continuation do not run target hooks", () => {
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  fs.writeFileSync(path.join(cwd, "shared.txt"), "base\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "base");
+  git(cwd, "checkout", "-b", "feature");
+  fs.writeFileSync(path.join(cwd, "shared.txt"), "feature\n");
+  git(cwd, "commit", "-am", "feature");
+  git(cwd, "checkout", "main");
+  fs.writeFileSync(path.join(cwd, "shared.txt"), "main\n");
+  git(cwd, "commit", "-am", "main");
+  const updatedBase = git(cwd, "rev-parse", "HEAD");
+  git(cwd, "checkout", "feature");
+  const previousHead = git(cwd, "rev-parse", "HEAD");
+
+  const marker = path.join(cwd, "rebase-hook-ran");
+  for (const hookName of ["pre-rebase", "post-rewrite"]) {
+    const hook = path.join(cwd, ".git", "hooks", hookName);
+    fs.writeFileSync(
+      hook,
+      `#!/usr/bin/env node\nrequire("node:fs").appendFileSync(${JSON.stringify(marker)}, ${JSON.stringify(hookName)});\n`,
+    );
+    fs.chmodSync(hook, 0o755);
+  }
+
+  const result = rebaseTargetOntoVerifiedBase({ cwd, baseRef: updatedBase });
+  assert.equal(result.status, "conflicts");
+  assert.equal(result.base_sha, updatedBase);
+  assert.equal(result.previous_head, previousHead);
+  fs.writeFileSync(path.join(cwd, "shared.txt"), "main\nfeature\n");
+  const completed = completeTargetRebaseWithIsolation({ cwd });
+
+  assert.equal(completed.status, "continued");
+  git(cwd, "merge-base", "--is-ancestor", updatedBase, "HEAD");
+  assert.equal(fs.existsSync(marker), false);
 });
 
 test(

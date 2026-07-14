@@ -220,12 +220,44 @@ test("repair publication pushes the accepted checkout through isolated Git auth"
   assert.match(isolation, /"push\.recurseSubmodules=no"/);
   assert.match(isolation, /"submodule\.recurse=false"/);
   assert.match(source, /assertTargetCheckoutBinding\(targetDir, checkoutBinding/);
+  assert.match(
+    source,
+    /assertRepairBranchWritable\(\{[\s\S]*?sourceRef: prep\.commit,[\s\S]*?\}\)/,
+  );
+  assert.match(source, /const args = repairBranchPushArgs\(\{ pull, sourceRef \}\)/);
   assert.match(source, /sourceRef: checkoutBinding\.headSha/);
   assert.match(source, /`--force-with-lease=refs\/heads\/\$\{pull\.head\.ref\}:\$\{headSha\}`/);
   assert.match(source, /`--force-with-lease=\$\{targetRef\}:\$\{remoteSha \?\? ""\}`/);
   assert.match(source, /if \(publishedSha !== sourceRef\)/);
   assert.doesNotMatch(source, /gh", \["auth", "setup-git"\]/);
   assert.doesNotMatch(source, /`HEAD:\$\{pull\.head\.ref\}`/);
+});
+
+test("replacement recovery materializes the fetched commit before branch attachment", () => {
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  const recoveryStart = source.indexOf("function checkoutRecoverableReplacementBranch(");
+  const recoveryEnd = source.indexOf("function commitCheckpointIfNeeded(", recoveryStart);
+  const recovery = source.slice(recoveryStart, recoveryEnd);
+
+  const materialize = recovery.indexOf("materializeTargetCommitWithIsolation({");
+  const branchSwitch = recovery.indexOf("switchTargetBranchWithPlumbing({");
+  assert.notEqual(materialize, -1);
+  assert.notEqual(branchSwitch, -1);
+  assert.ok(materialize < branchSwitch);
+  assert.match(recovery, /expectedHeadSha: recoveredHeadSha/);
+});
+
+test("final publication rebase uses the verified isolated Git path", () => {
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  const reconcileStart = source.indexOf("function reconcileLatestBaseBeforePush(");
+  const reconcileEnd = source.indexOf("function runCodexBaseReconcile(", reconcileStart);
+  const reconcile = source.slice(reconcileStart, reconcileEnd);
+
+  assert.match(reconcile, /rebaseTargetOntoVerifiedBase\(\{/);
+  assert.match(reconcile, /baseRef,/);
+  assert.match(reconcile, /completeTargetRebaseWithIsolation\(\{/);
+  assert.doesNotMatch(reconcile, /rebaseOntoBase\(/);
+  assert.doesNotMatch(reconcile, /completeRebaseIfResolved\(/);
 });
 
 test("repair contract gates the final cumulative tree, not individual checkpoints", () => {
