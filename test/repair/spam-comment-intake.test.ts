@@ -223,8 +223,8 @@ test("spam intake workflows publish authoritative dispatch receipts", () => {
     const workflow = fs.readFileSync(workflowPath, "utf8");
     assert.match(workflow, /uses: \.\/\.github\/actions\/setup-action-ledger/);
     assert.match(workflow, new RegExp(`--lane ${lane}`));
-    assert.match(workflow, /repair:action-ledger -- finalize/);
-    assert.match(workflow, /repair:action-ledger -- publish/);
+    assert.match(workflow, /dist\/repair\/dispatch-action-ledger-cli\.js finalize/);
+    assert.match(workflow, /dist\/repair\/dispatch-action-ledger-cli\.js publish/);
     assert.match(workflow, /repair:publish-main/);
   }
 });
