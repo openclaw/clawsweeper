@@ -59,7 +59,7 @@ Immediately before every proof comment, label creation, label addition, and
 label removal request, ClawSweeper reads two consecutive live snapshots and
 requires both to match the baseline:
 
-- the exact pull request head SHA;
+- the exact pull request head SHA, read before and after activity hydration;
 - at most 1,000 combined reviews, inline comments, and review threads,
   including thread resolution state;
 - at most 1,000 pull request conversation comments.
@@ -67,8 +67,10 @@ requires both to match the baseline:
 The activity snapshots are SHA-256 cursors. Raw comment and review bodies are
 never written to reports or receipts. Activity beyond either bound, an
 incomplete read, or any head, review, thread, or conversation drift blocks the
-request. A successful earlier label request does not authorize the next one;
-each request gets its own freshness check.
+request. The same boundary also revalidates open, unlocked, non-draft, and
+non-protected proof eligibility from live state. A successful earlier label
+request does not authorize the next one; each request gets its own freshness
+check.
 
 The production proof workflow enables the action ledger before either command.
 Every request writes an immutable pre-request receipt and then one accepted,
@@ -83,7 +85,10 @@ body plus the desired label state. After a response loss or process crash, a
 later run checks those public facts before another write. A match records
 `proof_nudge_reconciled` or `bot_proof_decision_reconciled` without claiming a
 new mutation. An open pre-request receipt and its later reconciliation share
-the same hashed business idempotency key.
+the same hashed business idempotency key. Label recovery uses the exact
+`label_create`, `issue_label_add`, or `issue_label_remove` request identity that
+the public postcondition satisfies. Existing same-head nudge markers are
+reconciled even after their cooldown expires, before a new reminder is posted.
 
 Reports expose only bounded status and reason strings:
 

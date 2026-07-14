@@ -12,6 +12,7 @@ import {
   startProofMutationReceipt,
   type ProofMutationReceiptContext,
 } from "../dist/proof-mutation-safety.js";
+import { satisfiedBotProofLabelMutationIdentitiesForTest } from "../dist/clawsweeper.js";
 import { tmpPrefix } from "./helpers.ts";
 
 function ledgerEnv(runId: string): NodeJS.ProcessEnv {
@@ -243,6 +244,39 @@ test("a crash-open proof attempt reconciles under the same business idempotency 
     assert.equal(reconciliation?.action.mutation, false);
     assert.equal(attempt?.idempotency_key_sha256, reconciliation?.idempotency_key_sha256);
     assert.notEqual(attempt?.attempt_id, reconciliation?.attempt_id);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bot proof label recovery receipts use concrete private mutation identities", () => {
+  const root = realpathSync(mkdtempSync(tmpPrefix));
+  try {
+    const context: ProofMutationReceiptContext = {
+      ...receiptContext(root, "4205"),
+      lane: "bot_proof",
+      component: "bot_proof",
+    };
+    const identities = satisfiedBotProofLabelMutationIdentitiesForTest(42, [
+      "triage: needs-real-behavior-proof",
+      "status: needs maintainer proof decision",
+    ]);
+    for (const mutationIdentity of identities) {
+      recordProofMutationReconciliation({ context, mutationIdentity });
+    }
+
+    const events = readAllSpooledActionEvents(root);
+    assert.equal(events.length, identities.length);
+    assert.equal(
+      new Set(events.map((event) => event.idempotency_key_sha256)).size,
+      identities.length,
+    );
+    const serialized = JSON.stringify(events);
+    assert.doesNotMatch(
+      serialized,
+      /issue_label_(?:add|remove)|label_create|maintainer proof|stale/,
+    );
+    assert.doesNotMatch(identities.join("\n"), /bot_proof_label_state/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

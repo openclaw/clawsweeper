@@ -120,9 +120,10 @@ checkpoint, and status-only commits are intentionally omitted.
   reuse the actual effective mode, runners, sandbox, model, and dry-run state
   instead of mutable workflow defaults.
 - Revalidated the exact pull request head and bounded review, thread, and
-  conversation activity before every proof comment or label request, with
-  privacy-bounded immutable request receipts, conservative unknown outcomes,
-  and same-head crash reconciliation.
+  conversation activity before every proof comment or label request, including
+  a post-hydration head read and live policy gates, with privacy-bounded
+  immutable request receipts, conservative unknown outcomes, and exact
+  comment/label crash reconciliation.
 - Bound pull-request review reuse, apply, and automerge actions to a size-capped digest of reviews, inline comments, and review-thread resolution state, so legacy reports, late activity, or resolved-thread drift force a fresh verdict before mutation.
 - Stopped narrow OpenClaw automerge repairs from chasing unrelated full-repository lint and typecheck failures.
 - Removed the synthetic Codex write preflight that could block repair before Codex saw the real task.

@@ -28,6 +28,7 @@ export interface ProofMutationFreshnessBlock {
     | "head_changed"
     | "review_activity_changed"
     | "conversation_activity_changed"
+    | "eligibility_changed"
     | "freshness_unavailable";
   message: string;
 }

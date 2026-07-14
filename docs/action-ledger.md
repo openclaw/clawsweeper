@@ -95,15 +95,17 @@ confidential-identifier checks as every other durable machine-text field.
   metadata writes remain one-shot. A later command failure inherits accepted or
   uncertain mutation state instead of being finalized as `mutation: false`.
 - Proof-nudge and bot-proof comment and label writes use the same receipt
-  boundary after revalidating the exact head plus bounded review, inline-comment,
-  review-thread, and conversation activity. Outcome-unknown requests stop
-  automatic retry. Same-head comment markers and desired label state reconcile
+  boundary after revalidating the exact head before and after bounded review,
+  inline-comment, review-thread, and conversation activity hydration. Live
+  open, locked, draft, proof-policy, and protected-label state is enforced at
+  that same request boundary. Outcome-unknown requests stop automatic retry.
+  Same-head comment markers and exact label-operation postconditions reconcile
   response loss or crash-open attempts under the original hashed business
   idempotency key without storing raw prompts, logs, review bodies, or comment
   bodies and without claiming a second mutation. Same-run recovery follows and
   parents the request outcome; a later workflow run records a new recovery
-  attempt under that same business idempotency key. The proof workflow publishes
-  its finalized shards to the state repository.
+  attempt under that same business idempotency key. The proof workflow
+  publishes its finalized shards to the state repository.
 - Explicit command replays require a durable command `attempt_id` derived from
   or forwarded through the production workflow. It scopes command operation,
   attempt, mutation idempotency, dispatch claims, and worker receipt keys to that

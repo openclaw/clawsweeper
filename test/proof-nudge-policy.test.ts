@@ -13,6 +13,7 @@ import {
   renderBotProofDecisionCommentForTest,
   renderProofNudgeCommentForTest,
   rotateProofLaneCandidatesForTest,
+  satisfiedBotProofLabelMutationIdentitiesForTest,
 } from "../dist/clawsweeper.js";
 import { item, tmpPrefix, withMockGh } from "./helpers.ts";
 
@@ -139,7 +140,14 @@ function proofMutationGhMockScript(options: {
   driftHeadAtPullRead?: number;
   driftReviewAtRead?: number;
   driftConversationAtRead?: number;
+  driftLabelAtIssueRead?: number;
+  driftLabel?: string;
+  lockAtIssueRead?: number;
+  closeAtIssueRead?: number;
+  draftAtPullRead?: number;
   postUnknown?: boolean;
+  unknownMutation?: string;
+  initialComments?: unknown[];
 }): string {
   return `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -151,7 +159,14 @@ const initialLabels = config.bot
   : ["triage: needs-real-behavior-proof"];
 const state = fs.existsSync(config.statePath)
   ? JSON.parse(fs.readFileSync(config.statePath, "utf8"))
-  : { pullReads: 0, reviewReads: 0, conversationReads: 0, labels: initialLabels, comments: [] };
+  : {
+      pullReads: 0,
+      issueReads: 0,
+      reviewReads: 0,
+      conversationReads: 0,
+      labels: initialLabels,
+      comments: config.initialComments || []
+    };
 const save = () => fs.writeFileSync(config.statePath, JSON.stringify(state));
 const logMutation = (value) => fs.appendFileSync(config.mutationLogPath, value + "\\n");
 const output = (value) => {
@@ -169,6 +184,12 @@ const currentHead = () => {
   return config.driftHeadAtPullRead && state.pullReads >= config.driftHeadAtPullRead
     ? newHead
     : oldHead;
+};
+const unknownAfterMutation = (identity) => {
+  if (config.unknownMutation !== identity) return;
+  save();
+  console.error("HTTP 502: write acknowledgement unavailable");
+  process.exit(1);
 };
 const currentReviews = () => {
   state.reviewReads += 1;
@@ -201,6 +222,7 @@ const currentComments = () => {
 };
 if (commandArgs[0] === "label" && commandArgs[1] === "create") {
   logMutation("label_create:" + commandArgs[2]);
+  unknownAfterMutation("label_create:" + commandArgs[2]);
   output({ name: commandArgs[2] });
 }
 if (commandArgs[0] === "issue" && commandArgs[1] === "edit") {
@@ -210,23 +232,34 @@ if (commandArgs[0] === "issue" && commandArgs[1] === "edit") {
     const label = commandArgs[addIndex + 1];
     logMutation("label_add:" + label);
     if (!state.labels.includes(label)) state.labels.push(label);
+    unknownAfterMutation("label_add:" + label);
   }
   if (removeIndex >= 0) {
     const label = commandArgs[removeIndex + 1];
     logMutation("label_remove:" + label);
     state.labels = state.labels.filter((entry) => entry !== label);
+    unknownAfterMutation("label_remove:" + label);
   }
   output({ labels: state.labels });
 }
 if (path === "repos/openclaw/openclaw/issues/42") {
+  state.issueReads = (state.issueReads || 0) + 1;
+  if (
+    config.driftLabelAtIssueRead &&
+    state.issueReads >= config.driftLabelAtIssueRead &&
+    config.driftLabel &&
+    !state.labels.includes(config.driftLabel)
+  ) {
+    state.labels.push(config.driftLabel);
+  }
   output({
     number: 42,
     title: "Proof nudge sample",
     html_url: "https://github.com/openclaw/openclaw/pull/42",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-02T00:00:00Z",
-    state: "open",
-    locked: false,
+    state: config.closeAtIssueRead && state.issueReads >= config.closeAtIssueRead ? "closed" : "open",
+    locked: Boolean(config.lockAtIssueRead && state.issueReads >= config.lockAtIssueRead),
     active_lock_reason: null,
     author_association: config.bot ? "NONE" : "CONTRIBUTOR",
     user: { login: config.bot ? "app/clawsweeper" : "contributor" },
@@ -235,9 +268,10 @@ if (path === "repos/openclaw/openclaw/issues/42") {
   });
 }
 if (path === "repos/openclaw/openclaw/pulls/42") {
+  const head = currentHead();
   output({
-    draft: false,
-    head: { sha: currentHead(), repo: { full_name: "openclaw/openclaw" } }
+    draft: Boolean(config.draftAtPullRead && state.pullReads >= config.draftAtPullRead),
+    head: { sha: head, repo: { full_name: "openclaw/openclaw" } }
   });
 }
 if (path === "repos/openclaw/openclaw/commits/" + oldHead ||
@@ -499,6 +533,17 @@ test("bot proof handling skips overrides, stale heads, drafts, and non-ClawSweep
       "skipped_policy_exempt",
     );
   }
+  assert.equal(
+    botProofEligibilityForTest({
+      item: proofNudgeItem({
+        author: "app/clawsweeper",
+        labels: ["triage: needs-real-behavior-proof", "security"],
+      }),
+      markdown: proofNudgeReport({ author: "app/clawsweeper" }),
+      headSha: "abc123def456",
+    }).action,
+    "skipped_protected_label",
+  );
   assert.equal(
     botProofEligibilityForTest({
       item: baseItem,
@@ -765,6 +810,127 @@ test("proof nudges block a comment when conversation activity changes at the req
   }
 });
 
+test("proof nudges block when the head changes after request-boundary activity hydration", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const reportPath = join(root, "proof-nudge-report.json");
+    const statePath = join(root, "gh-state.json");
+    const mutationLogPath = join(root, "mutations.log");
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(join(itemsDir, "42.md"), proofNudgeReport({ headSha: "a".repeat(40) }));
+
+    withMockGh(
+      root,
+      proofMutationGhMockScript({
+        statePath,
+        mutationLogPath,
+        driftHeadAtPullRead: 7,
+      }),
+      () => {
+        execFileSync(process.execPath, [
+          "dist/clawsweeper.js",
+          "proof-nudges",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--item-numbers",
+          "42",
+          "--limit",
+          "1",
+          "--processed-limit",
+          "1",
+          "--min-age-days",
+          "0",
+          "--report-path",
+          reportPath,
+          "--execute",
+        ]);
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.equal(report[0].action, "skipped_changed_before_mutation");
+    assert.match(report[0].reason, /head changed while hydrating/);
+    assert.equal(existsSync(mutationLogPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("proof nudges revalidate open, unlocked, and unprotected state before posting", () => {
+  const scenarios = [
+    {
+      name: "protected label",
+      config: { driftLabelAtIssueRead: 4, driftLabel: "security" },
+      reason: /protected label: security/,
+    },
+    {
+      name: "locked conversation",
+      config: { lockAtIssueRead: 4 },
+      reason: /conversation is locked/,
+    },
+    {
+      name: "closed pull request",
+      config: { closeAtIssueRead: 4 },
+      reason: /state is closed/,
+    },
+  ];
+  for (const scenario of scenarios) {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const itemsDir = join(root, "items");
+      const reportPath = join(root, "proof-nudge-report.json");
+      const statePath = join(root, "gh-state.json");
+      const mutationLogPath = join(root, "mutations.log");
+      mkdirSync(itemsDir, { recursive: true });
+      writeFileSync(join(itemsDir, "42.md"), proofNudgeReport({ headSha: "a".repeat(40) }));
+
+      withMockGh(
+        root,
+        proofMutationGhMockScript({
+          statePath,
+          mutationLogPath,
+          ...scenario.config,
+        }),
+        () => {
+          execFileSync(process.execPath, [
+            "dist/clawsweeper.js",
+            "proof-nudges",
+            "--target-repo",
+            "openclaw/openclaw",
+            "--items-dir",
+            itemsDir,
+            "--item-numbers",
+            "42",
+            "--limit",
+            "1",
+            "--processed-limit",
+            "1",
+            "--min-age-days",
+            "0",
+            "--report-path",
+            reportPath,
+            "--execute",
+          ]);
+        },
+      );
+
+      const report = JSON.parse(readFileSync(reportPath, "utf8"));
+      assert.equal(
+        report[0].action,
+        "skipped_changed_before_mutation",
+        `${scenario.name}: ${JSON.stringify(report)}`,
+      );
+      assert.match(report[0].reason, scenario.reason);
+      assert.equal(existsSync(mutationLogPath), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("proof nudges reconcile a marker when GitHub accepts the comment before losing the response", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -814,6 +980,74 @@ test("proof nudges reconcile a marker when GitHub accepts the comment before los
   }
 });
 
+test("proof nudges reconcile an expired same-head marker before posting the next nudge", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const reportPath = join(root, "proof-nudge-report.json");
+    const statePath = join(root, "gh-state.json");
+    const mutationLogPath = join(root, "mutations.log");
+    const headSha = "a".repeat(40);
+    const priorBody = renderProofNudgeCommentForTest({
+      number: 42,
+      author: "contributor",
+      headSha,
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(join(itemsDir, "42.md"), proofNudgeReport({ headSha }));
+
+    withMockGh(
+      root,
+      proofMutationGhMockScript({
+        statePath,
+        mutationLogPath,
+        initialComments: [
+          {
+            id: 71,
+            user: { login: "clawsweeper[bot]" },
+            author_association: "NONE",
+            body: priorBody,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+            html_url: "https://github.com/openclaw/openclaw/pull/42#issuecomment-71",
+          },
+        ],
+      }),
+      () => {
+        execFileSync(process.execPath, [
+          "dist/clawsweeper.js",
+          "proof-nudges",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--item-numbers",
+          "42",
+          "--limit",
+          "1",
+          "--processed-limit",
+          "1",
+          "--min-age-days",
+          "0",
+          "--cooldown-days",
+          "0",
+          "--report-path",
+          reportPath,
+          "--execute",
+        ]);
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.equal(report[0].action, "proof_nudge_posted");
+    assert.match(report[0].reason, /prior same-head proof nudge receipt reconciled/);
+    assert.equal(readFileSync(mutationLogPath, "utf8").trim(), "comment_post");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("bot proof revalidates before each label request and stops after head drift", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -837,7 +1071,7 @@ test("bot proof revalidates before each label request and stops after head drift
         statePath,
         mutationLogPath,
         bot: true,
-        driftHeadAtPullRead: 6,
+        driftHeadAtPullRead: 10,
       }),
       () => {
         execFileSync(process.execPath, [
@@ -876,6 +1110,149 @@ test("bot proof revalidates before each label request and stops after head drift
       readFileSync(mutationLogPath, "utf8"),
       /label_add|label_remove|comment_post/,
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bot proof revalidates draft state before its first mutation", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const reportPath = join(root, "bot-proof-report.json");
+    const statePath = join(root, "gh-state.json");
+    const mutationLogPath = join(root, "mutations.log");
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(
+      join(itemsDir, "42.md"),
+      proofNudgeReport({
+        author: "app/clawsweeper",
+        authorAssociation: "NONE",
+        headSha: "a".repeat(40),
+      }),
+    );
+
+    withMockGh(
+      root,
+      proofMutationGhMockScript({
+        statePath,
+        mutationLogPath,
+        bot: true,
+        draftAtPullRead: 6,
+      }),
+      () => {
+        execFileSync(process.execPath, [
+          "dist/clawsweeper.js",
+          "bot-proof",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--item-numbers",
+          "42",
+          "--limit",
+          "1",
+          "--processed-limit",
+          "1",
+          "--report-path",
+          reportPath,
+          "--execute",
+        ]);
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.equal(report[0].action, "skipped_changed_before_mutation");
+    assert.match(report[0].reason, /pull request is draft/);
+    assert.equal(existsSync(mutationLogPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bot proof reconciles an applied label removal under its concrete mutation identity", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const reportPath = join(root, "bot-proof-report.json");
+    const statePath = join(root, "gh-state.json");
+    const mutationLogPath = join(root, "mutations.log");
+    const headSha = "a".repeat(40);
+    const body = renderBotProofDecisionCommentForTest({
+      number: 42,
+      title: "Proof nudge sample",
+      headSha,
+      timestamp: "2026-01-01T00:00:00Z",
+      markdown: proofNudgeReport({
+        author: "app/clawsweeper",
+        authorAssociation: "NONE",
+        headSha,
+      }),
+    });
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(
+      join(itemsDir, "42.md"),
+      proofNudgeReport({
+        author: "app/clawsweeper",
+        authorAssociation: "NONE",
+        headSha,
+      }),
+    );
+
+    withMockGh(
+      root,
+      proofMutationGhMockScript({
+        statePath,
+        mutationLogPath,
+        bot: true,
+        unknownMutation: "label_remove:stale",
+        initialComments: [
+          {
+            id: 77,
+            user: { login: "clawsweeper[bot]" },
+            author_association: "NONE",
+            body,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+            html_url: "https://github.com/openclaw/openclaw/pull/42#issuecomment-77",
+          },
+        ],
+      }),
+      () => {
+        execFileSync(process.execPath, [
+          "dist/clawsweeper.js",
+          "bot-proof",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--item-numbers",
+          "42",
+          "--limit",
+          "1",
+          "--processed-limit",
+          "1",
+          "--report-path",
+          reportPath,
+          "--execute",
+        ]);
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.equal(report[0].action, "bot_proof_decision_reconciled");
+    assert.deepEqual(readFileSync(mutationLogPath, "utf8").trim().split("\n"), [
+      "label_create:status: needs maintainer proof decision",
+      "label_add:status: needs maintainer proof decision",
+      "label_remove:stale",
+    ]);
+    const identities = satisfiedBotProofLabelMutationIdentitiesForTest(42, [
+      "triage: needs-real-behavior-proof",
+      "status: needs maintainer proof decision",
+    ]);
+    assert.ok(identities.includes("issue_label_remove:42:stale"));
+    assert.ok(identities.includes("issue_label_add:42:status: needs maintainer proof decision"));
+    assert.doesNotMatch(identities.join("\n"), /bot_proof_label_state/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

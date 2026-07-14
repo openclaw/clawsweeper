@@ -1112,6 +1112,7 @@ type BotProofAction =
   | "skipped_stale_report_head"
   | "skipped_no_live_head"
   | "skipped_locked_conversation"
+  | "skipped_protected_label"
   | "skipped_changed_before_mutation"
   | "skipped_live_fetch_failed"
   | "skipped_runtime_budget";
@@ -2703,10 +2704,12 @@ class ProofMutationOutcomeUnknownError extends Error {
 
 type ProofMutationSession = {
   context: ProofMutationReceiptContext;
-  expectedFreshness: ProofMutationFreshnessSnapshot;
-  refreshFreshness: () => ProofMutationFreshnessSnapshot;
+  expectedFreshness: ProofMutationRequestSnapshot;
+  refreshFreshness: () => ProofMutationRequestSnapshot;
+  validateRequest: (snapshot: ProofMutationRequestSnapshot) => ProofMutationFreshnessBlock | null;
   nextAttemptByMutation: Map<string, number>;
   latestEventIdByMutation: Map<string, string>;
+  unknownMutationIdentities: Set<string>;
   unknownMutationObserved: boolean;
 };
 
@@ -2759,7 +2762,7 @@ function proofMutationRunner(session: ProofMutationSession): MutationRunner {
       mutationIdentity: options.idempotencyIdentity,
       requestAttempt,
     });
-    let currentFreshness: ProofMutationFreshnessSnapshot;
+    let currentFreshness: ProofMutationRequestSnapshot;
     try {
       currentFreshness = session.refreshFreshness();
     } catch (error) {
@@ -2770,7 +2773,9 @@ function proofMutationRunner(session: ProofMutationSession): MutationRunner {
         message: "proof mutation freshness could not be refreshed before the request",
       });
     }
-    const block = proofMutationFreshnessBlock(session.expectedFreshness, currentFreshness);
+    const block =
+      proofMutationFreshnessBlock(session.expectedFreshness, currentFreshness) ??
+      session.validateRequest(currentFreshness);
     if (block) {
       finishProofMutationReceipt({ attempt, outcome: "rejected" });
       throw new ProofMutationFreshnessError(block);
@@ -2798,6 +2803,7 @@ function proofMutationRunner(session: ProofMutationSession): MutationRunner {
         session.latestEventIdByMutation.set(options.idempotencyIdentity, outcome.event_id);
       }
       if (!rejected) {
+        session.unknownMutationIdentities.add(options.idempotencyIdentity);
         session.unknownMutationObserved = true;
         throw new ProofMutationOutcomeUnknownError(error);
       }
@@ -2814,6 +2820,8 @@ function reconcileProofMutation(session: ProofMutationSession, mutationIdentity:
     parentEventId: session.latestEventIdByMutation.get(mutationIdentity) ?? null,
     phaseSeq: requestAttempt * 2 + 1,
   });
+  session.unknownMutationIdentities.delete(mutationIdentity);
+  session.unknownMutationObserved = session.unknownMutationIdentities.size > 0;
 }
 
 function ghObservedMutationCommand(options: {
@@ -6746,10 +6754,32 @@ function fetchProofConversationActivityCursor(number: number): string | null {
   return createProofConversationActivityCursor(comments);
 }
 
-function readProofMutationFreshnessSnapshot(number: number): ProofMutationFreshnessSnapshot {
-  const readOnce = (): ProofMutationFreshnessSnapshot => {
-    const headSha = pullRequestHeadSha(number);
-    if (!headSha) throw new Error(`live PR head could not be read for #${number}`);
+type ProofMutationRequestSnapshot = ProofMutationFreshnessSnapshot & {
+  item: Item;
+  state: string;
+  draft: boolean;
+};
+
+function fetchProofMutationClosingPullState(number: number): {
+  headSha: string;
+  draft: boolean;
+} {
+  const pull = asRecord(
+    ghJson<unknown>([
+      "api",
+      `repos/${targetRepo()}/pulls/${number}`,
+      "--jq",
+      "{draft,head:{sha:.head.sha}}",
+    ]),
+  );
+  const headSha = stringOrUndefined(asRecord(pull.head).sha)?.trim().toLowerCase() ?? "";
+  return { headSha, draft: pull.draft === true };
+}
+
+function readProofMutationFreshnessSnapshot(number: number): ProofMutationRequestSnapshot {
+  const readOnce = (): ProofMutationRequestSnapshot => {
+    const openingHeadSha = pullRequestHeadSha(number);
+    if (!openingHeadSha) throw new Error(`live PR head could not be read for #${number}`);
     const reviewActivityCursor = fetchReviewedPrActivityCursor(number);
     if (!reviewActivityCursor) {
       throw new Error(`review activity exceeds the bounded proof mutation cursor for #${number}`);
@@ -6760,7 +6790,23 @@ function readProofMutationFreshnessSnapshot(number: number): ProofMutationFreshn
         `conversation activity exceeds the bounded proof mutation cursor for #${number}`,
       );
     }
-    return { headSha, reviewActivityCursor, conversationActivityCursor };
+    const live = fetchItem(number);
+    const closingPull = fetchProofMutationClosingPullState(number);
+    if (!closingPull.headSha) throw new Error(`live PR head could not be re-read for #${number}`);
+    if (closingPull.headSha !== openingHeadSha) {
+      throw new ProofMutationFreshnessError({
+        reason: "head_changed",
+        message: "live PR head changed while hydrating proof mutation activity",
+      });
+    }
+    return {
+      headSha: closingPull.headSha,
+      reviewActivityCursor,
+      conversationActivityCursor,
+      item: live.item,
+      state: live.state,
+      draft: closingPull.draft,
+    };
   };
   const first = readOnce();
   const second = readOnce();
@@ -15074,6 +15120,13 @@ function botProofEligibility(options: BotProofEligibilityOptions): BotProofEligi
       action: "skipped_policy_exempt",
       reason: "proof is already sufficient or overridden",
     };
+  }
+  const protectedLabelsForDecision = proofNudgeProtectedLabels(options.item.labels);
+  if (protectedLabelsForDecision.length > 0 || isReleaseTitle(options.item.title)) {
+    const reason = protectedLabelsForDecision.length
+      ? `protected label: ${protectedLabelsForDecision.join(", ")}`
+      : "release-style PR title";
+    return { eligible: false, action: "skipped_protected_label", reason };
   }
   if (!realBehaviorProofBlocksBotOwnedMerge(options.markdown)) {
     return {
@@ -28411,10 +28464,63 @@ function proofNudgeLiveFetchFailureReason(error: unknown): string {
   return `live GitHub state could not be fetched: ${detail.slice(0, 300)}`;
 }
 
+function proofMutationEligibilityChanged(message: string): ProofMutationFreshnessBlock {
+  return {
+    reason: "eligibility_changed",
+    message: `proof mutation is no longer eligible before the request: ${message}`,
+  };
+}
+
+function proofNudgeRequestBoundaryBlock(
+  snapshot: ProofMutationRequestSnapshot,
+  options: {
+    markdown: string;
+    comments: readonly ProofNudgeComment[];
+    headCommittedAt?: string | undefined;
+    authorEditedAt?: string | undefined;
+    authorReviewActivityAt?: string | undefined;
+    minAgeDays: number;
+    cooldownDays: number;
+  },
+): ProofMutationFreshnessBlock | null {
+  if (snapshot.state !== "open") {
+    return proofMutationEligibilityChanged(`state is ${snapshot.state}`);
+  }
+  const eligibility = proofNudgeEligibility({
+    item: snapshot.item,
+    markdown: options.markdown,
+    comments: options.comments,
+    headSha: snapshot.headSha,
+    headCommittedAt: options.headCommittedAt,
+    authorEditedAt: options.authorEditedAt,
+    authorReviewActivityAt: options.authorReviewActivityAt,
+    minAgeDays: options.minAgeDays,
+    cooldownDays: options.cooldownDays,
+  });
+  return eligibility.eligible ? null : proofMutationEligibilityChanged(eligibility.reason);
+}
+
+function botProofRequestBoundaryBlock(
+  snapshot: ProofMutationRequestSnapshot,
+  markdown: string,
+): ProofMutationFreshnessBlock | null {
+  if (snapshot.state !== "open") {
+    return proofMutationEligibilityChanged(`state is ${snapshot.state}`);
+  }
+  const eligibility = botProofEligibility({
+    item: snapshot.item,
+    markdown,
+    headSha: snapshot.headSha,
+    draft: snapshot.draft,
+  });
+  return eligibility.eligible ? null : proofMutationEligibilityChanged(eligibility.reason);
+}
+
 function createProofMutationSession(options: {
   lane: ProofMutationLane;
   number: number;
   headSha: string;
+  validateRequest: (snapshot: ProofMutationRequestSnapshot) => ProofMutationFreshnessBlock | null;
 }): ProofMutationSession {
   const expectedFreshness = readProofMutationFreshnessSnapshot(options.number);
   if (expectedFreshness.headSha !== options.headSha.trim().toLowerCase()) {
@@ -28436,8 +28542,10 @@ function createProofMutationSession(options: {
     },
     expectedFreshness,
     refreshFreshness: () => readProofMutationFreshnessSnapshot(options.number),
+    validateRequest: options.validateRequest,
     nextAttemptByMutation: new Map(),
     latestEventIdByMutation: new Map(),
+    unknownMutationIdentities: new Set(),
     unknownMutationObserved: false,
   };
 }
@@ -28450,12 +28558,48 @@ function proofNudgeCommentMutationIdentity(options: {
   return `proof_nudge_comment:${options.number}:${options.headSha}:${options.timestamp}`;
 }
 
-function botProofLabelStateMutationIdentity(number: number, headSha: string): string {
-  return `bot_proof_label_state:${number}:${headSha}:needs_maintainer_proof_decision`;
-}
-
 function botProofCommentMutationIdentity(number: number, headSha: string, body: string): string {
   return `bot_proof_comment:${number}:${headSha}:${sha256(body)}`;
+}
+
+function satisfiedBotProofLabelMutationIdentities(
+  number: number,
+  labels: readonly string[],
+): string[] {
+  const target = prStatusLabelForKind("needs_maintainer_proof_decision").name;
+  const normalized = normalizedLabelSet(labels);
+  const identities: string[] = [];
+  if (normalized.has(normalizeLabelName(target))) {
+    identities.push(`label_create:${target}`, `issue_label_add:${number}:${target}`);
+  }
+  for (const label of PR_STATUS_LABELS) {
+    if (label.name !== target && !normalized.has(normalizeLabelName(label.name))) {
+      identities.push(`issue_label_remove:${number}:${label.name}`);
+    }
+  }
+  if (!normalized.has("stale")) {
+    identities.push(`issue_label_remove:${number}:stale`);
+  }
+  return identities;
+}
+
+export function satisfiedBotProofLabelMutationIdentitiesForTest(
+  number: number,
+  labels: readonly string[],
+): string[] {
+  return satisfiedBotProofLabelMutationIdentities(number, labels);
+}
+
+function reconcileSatisfiedBotProofLabelMutations(
+  session: ProofMutationSession,
+  number: number,
+  labels: readonly string[],
+): void {
+  for (const identity of satisfiedBotProofLabelMutationIdentities(number, labels)) {
+    const attempted = (session.nextAttemptByMutation.get(identity) ?? 0) > 0;
+    if (attempted && !session.unknownMutationIdentities.has(identity)) continue;
+    reconcileProofMutation(session, identity);
+  }
 }
 
 function botProofDecisionLabelsAreSynchronized(labels: readonly string[]): boolean {
@@ -28603,13 +28747,6 @@ function proofNudgesCommand(args: Args): void {
     try {
       pullDetails =
         item.kind === "pull_request" ? fetchPullRequestProofNudgeDetails(candidate.number) : {};
-      if (execute && pullDetails.headSha) {
-        mutationSession = createProofMutationSession({
-          lane: "proof_nudges",
-          number: candidate.number,
-          headSha: pullDetails.headSha,
-        });
-      }
       comments = item.kind === "pull_request" ? proofNudgeComments(candidate.number) : [];
       authorEditedAt =
         item.kind === "pull_request"
@@ -28619,6 +28756,23 @@ function proofNudgesCommand(args: Args): void {
         item.kind === "pull_request"
           ? latestAuthorPullRequestReviewActivityAt(candidate.number, item.author)
           : undefined;
+      if (execute && pullDetails.headSha) {
+        mutationSession = createProofMutationSession({
+          lane: "proof_nudges",
+          number: candidate.number,
+          headSha: pullDetails.headSha,
+          validateRequest: (snapshot) =>
+            proofNudgeRequestBoundaryBlock(snapshot, {
+              markdown: candidate.markdown,
+              comments,
+              headCommittedAt: pullDetails.headCommittedAt,
+              authorEditedAt,
+              authorReviewActivityAt,
+              minAgeDays,
+              cooldownDays,
+            }),
+        });
+      }
     } catch (error) {
       results.push({
         ...resultBase,
@@ -28627,6 +28781,25 @@ function proofNudgesCommand(args: Args): void {
       });
       markProcessed(candidate);
       continue;
+    }
+    const sameHeadNudgeAt = pullDetails.headSha
+      ? latestProofNudgeAt(comments, {
+          number: candidate.number,
+          headSha: pullDetails.headSha,
+        })
+      : undefined;
+    const reconciledPriorNudge = Boolean(
+      execute && mutationSession && pullDetails.headSha && sameHeadNudgeAt,
+    );
+    if (reconciledPriorNudge && mutationSession && pullDetails.headSha && sameHeadNudgeAt) {
+      reconcileProofMutation(
+        mutationSession,
+        proofNudgeCommentMutationIdentity({
+          number: candidate.number,
+          headSha: pullDetails.headSha,
+          timestamp: sameHeadNudgeAt,
+        }),
+      );
     }
     const eligibility = proofNudgeEligibility({
       item,
@@ -28641,20 +28814,11 @@ function proofNudgesCommand(args: Args): void {
     });
     if (!eligibility.eligible) {
       if (
-        execute &&
-        mutationSession &&
+        reconciledPriorNudge &&
         pullDetails.headSha &&
         eligibility.action === "skipped_recent_nudge" &&
         eligibility.latestNudgeAt
       ) {
-        reconcileProofMutation(
-          mutationSession,
-          proofNudgeCommentMutationIdentity({
-            number: candidate.number,
-            headSha: pullDetails.headSha,
-            timestamp: eligibility.latestNudgeAt,
-          }),
-        );
         results.push({
           ...resultBase,
           action: "proof_nudge_reconciled",
@@ -28718,7 +28882,12 @@ function proofNudgesCommand(args: Args): void {
           action: mutation.reconciled ? "proof_nudge_reconciled" : "proof_nudge_posted",
           reason: mutation.reconciled
             ? "same-head proof nudge marker already exists"
-            : eligibility.reason,
+            : [
+                reconciledPriorNudge ? "prior same-head proof nudge receipt reconciled" : null,
+                eligibility.reason,
+              ]
+                .filter(Boolean)
+                .join("; "),
           url: commentUrl(mutation.comment) ?? undefined,
           headSha,
         });
@@ -28878,6 +29047,7 @@ function botProofCommand(args: Args): void {
           lane: "bot_proof",
           number: candidate.number,
           headSha: pullDetails.headSha,
+          validateRequest: (snapshot) => botProofRequestBoundaryBlock(snapshot, candidate.markdown),
         });
       }
     } catch (error) {
@@ -28965,10 +29135,11 @@ function botProofCommand(args: Args): void {
           labels: item.labels,
           dryRun: false,
         });
-        if (!labelResult.changed) {
-          reconcileProofMutation(
+        if (botProofDecisionLabelsAreSynchronized(labelResult.labels)) {
+          reconcileSatisfiedBotProofLabelMutations(
             mutationSession,
-            botProofLabelStateMutationIdentity(candidate.number, headSha),
+            candidate.number,
+            labelResult.labels,
           );
         }
         const mutation = upsertBotProofDecisionComment(
@@ -29005,6 +29176,13 @@ function botProofCommand(args: Args): void {
             reconciledLabels =
               refreshed.state === "open" &&
               botProofDecisionLabelsAreSynchronized(refreshed.item.labels);
+            if (reconciledLabels) {
+              reconcileSatisfiedBotProofLabelMutations(
+                mutationSession,
+                candidate.number,
+                refreshed.item.labels,
+              );
+            }
           } catch {
             reconciledComment = undefined;
             reconciledLabels = false;
@@ -29014,10 +29192,6 @@ function botProofCommand(args: Args): void {
           reconcileProofMutation(
             mutationSession,
             botProofCommentMutationIdentity(candidate.number, headSha, renderedCommentBody),
-          );
-          reconcileProofMutation(
-            mutationSession,
-            botProofLabelStateMutationIdentity(candidate.number, headSha),
           );
           results.push({
             ...resultBase,
@@ -29042,6 +29216,14 @@ function botProofCommand(args: Args): void {
             ...resultBase,
             action: "bot_proof_mutation_outcome_unknown",
             reason: proofMutationUnknownReason(),
+            headSha,
+          });
+        } else if (error instanceof ProofMutationOutcomeUnknownError) {
+          results.push({
+            ...resultBase,
+            action: "skipped_live_fetch_failed",
+            reason:
+              "the uncertain proof mutation was reconciled, but proof decision publication remains incomplete",
             headSha,
           });
         } else {
