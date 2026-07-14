@@ -1,8 +1,7 @@
 # Closure dependency planner
 
-`planClosureDependencies` is a pure, fail-closed planning primitive for a future
-root-cause closeout lane. It does not read or mutate GitHub and is not wired
-into review or apply.
+`planClosureDependencies` is a pure, fail-closed planning primitive used by
+repair result review. It does not read or mutate GitHub.
 
 ## Contract
 
@@ -47,3 +46,18 @@ partial plan, for:
 
 Input arrays and declarations are copied before sorting. Caller-owned data is
 not mutated, and input permutation does not change plans or diagnostics.
+
+## Repair result review
+
+`review-results` derives a graph from planned closure actions:
+
+- `canonical`, `duplicate_of`, or `candidate_fix` identifies the root that
+  remains open;
+- optional `depends_on` refs add prerequisite edges between closure targets;
+- actions without a distinct root remain independent and are reported
+  separately; and
+- deterministic `closureLayers` expose closure batches that can run together.
+
+Mixed canonical roots, missing dependency targets, duplicate declarations, and
+cycles fail result review before the applicator can consume the proposal. The
+planner does not reorder or execute GitHub mutations.

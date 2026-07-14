@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { planRepairClosureResult } from "./closure-result-plan.js";
 import { validateRepairContractShape } from "./repair-contract.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -278,6 +279,12 @@ function reviewResult(resultPath: string): JsonValue {
     mergeActions,
     failures,
   });
+  const closurePlan = planRepairClosureResult(result);
+  if (closurePlan.status === "needs_human") {
+    for (const diagnostic of closurePlan.diagnostics) {
+      failures.push(`closure dependency plan ${diagnostic.code}: ${diagnostic.message}`);
+    }
+  }
 
   if (result.canonical) {
     const canonicalRef = normalizeRef(result.canonical);
@@ -313,6 +320,7 @@ function reviewResult(resultPath: string): JsonValue {
     result_status: result.status,
     actions: actions.length,
     action_counts: actionCounts,
+    closure_plan: closurePlan,
     failures,
     warnings,
   };
