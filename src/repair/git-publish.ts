@@ -14,6 +14,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
+import {
+  actionEventPublishContentsEquivalent,
+  isActionEventPublishPath,
+} from "../action-ledger.js";
 import { clawsweeperGitUserEmail, clawsweeperGitUserName } from "./process-env.js";
 import {
   chooseRecordTupleWinner,
@@ -44,9 +48,11 @@ export type GitPublishOptions = {
   pushAttempts?: number | undefined;
   remote?: string;
   branch?: string;
+  coordination?: PublishCoordination | undefined;
   rebaseStrategy?: RebaseStrategy | undefined;
 };
 
+export type PublishCoordination = "exclusive" | "immutable";
 export type RebaseStrategy = "normal" | "theirs" | "apply-records" | "reconcile-records";
 
 export type GitRunOptions = {
@@ -66,6 +72,7 @@ const GENERATED_PUBLISH_PATHS = [
   "records",
   "results",
   "assets",
+  "ledger",
 ] as const;
 const GIT_PATHSPEC_BATCH_SIZE = 256;
 const GIT_OBJECT_BATCH_SIZE = 512;
@@ -286,14 +293,19 @@ export function hasWorktreePath(path: string): boolean {
 export function publishMainCommit(options: GitPublishOptions): PublishResult {
   const previousMetrics = activeGitPublishMetrics;
   const startedAtMs = Date.now();
-  const leased = statePublishLeaseEnabled();
-  const timing = leased ? statePublishTiming() : null;
+  const coordination = options.coordination ?? "exclusive";
+  validatePublishCoordination(options, coordination);
+  const leased = coordination === "exclusive" && statePublishLeaseEnabled();
+  const boundedImmutable = coordination === "immutable" && publishRoot() !== undefined;
+  const timing = leased || boundedImmutable ? statePublishTiming() : null;
   const metrics: GitPublishMetrics = {
     startedAtMs,
-    deadlineAtMs: timing ? startedAtMs + timing.acquisitionDeadlineMs : null,
+    deadlineAtMs: timing
+      ? startedAtMs + (leased ? timing.acquisitionDeadlineMs : timing.operationDeadlineMs)
+      : null,
     commandTimeoutMs: timing?.commandTimeoutMs ?? null,
     operationDeadlineMs: timing?.operationDeadlineMs ?? null,
-    leaseTtlMs: timing?.leaseTtlMs ?? null,
+    leaseTtlMs: leased ? (timing?.leaseTtlMs ?? null) : null,
     processes: 0,
     actions: new Map(),
     phase: "start",
@@ -319,6 +331,9 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
 }
 
 function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
+  if (options.coordination === "immutable") {
+    return publishImmutableMainCommit(options);
+  }
   if (!statePublishLeaseEnabled()) return publishMainCommitWithoutLease(options);
   const remote = options.remote ?? "origin";
   const branch = options.branch ?? publishDefaultBranch();
@@ -331,6 +346,286 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
   } finally {
     releaseStatePublishLease(remote, lease);
   }
+}
+
+function validatePublishCoordination(
+  options: GitPublishOptions,
+  coordination: PublishCoordination,
+): void {
+  if (coordination !== "immutable") return;
+  if ((options.rebaseStrategy ?? "normal") !== "normal") {
+    throw new Error("Immutable action ledger publication requires the normal rebase strategy");
+  }
+  const paths = uniqueNonEmpty(options.paths);
+  if (paths.length === 0 || paths.some((path) => !isActionEventPublishPath(path))) {
+    throw new Error(
+      "Immutable publication accepts only exact action ledger event and import-binding paths",
+    );
+  }
+}
+
+function publishImmutableMainCommit(options: GitPublishOptions): PublishResult {
+  const remote = options.remote ?? "origin";
+  const branch = options.branch ?? publishDefaultBranch();
+  const maxAttempts = positiveInt(options.maxAttempts, 32);
+  const paths = uniqueNonEmpty(options.paths);
+  const stateBaseCommit = captureStatePublishBaseline();
+  const stateRoot = publishRoot();
+  let stateCheckoutAdvanced = false;
+
+  gitPublishPhase("sync", `paths=${paths.length} coordination=immutable`);
+  try {
+    if (stateRoot && resolve(stateRoot) !== resolve(process.cwd())) {
+      runGit(["fetch", remote, branch]);
+      runGit(["reset", "--hard", `${remote}/${branch}`]);
+      stateCheckoutAdvanced = true;
+    }
+
+    syncPublishPaths(paths, { rebaseStrategy: "normal" });
+    configureGitUser();
+    gitPublishPhase("stage", `paths=${paths.length} coordination=immutable`);
+    stagePaths(paths);
+    if (!hasStagedChanges()) {
+      console.log("No immutable publish changes");
+      verifyRemotePublishedPaths("HEAD", remote, branch, paths);
+      return completeStatePublish("unchanged", paths, stateBaseCommit);
+    }
+
+    const message = commitMessageForPublishedPaths(options.message, paths);
+    runGit(["commit", "-m", message]);
+    const sourceCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
+    restoreWorktree(options.restorePaths ?? []);
+    gitPublishPhase("push", `coordination=immutable`);
+    const result = convergeImmutablePublish({
+      remote,
+      branch,
+      paths,
+      message,
+      sourceCommit,
+      maxAttempts,
+    });
+    return completeStatePublish(result, paths, stateBaseCommit);
+  } catch (error) {
+    if (stateCheckoutAdvanced) {
+      try {
+        restoreFailedLeasedStatePublish({
+          remote,
+          branch,
+          paths,
+          stateBaseCommit,
+        });
+      } catch (recoveryError) {
+        throw new Error(
+          `Immutable state publish failed: ${errorMessage(error)}; state/source recovery failed: ${errorMessage(recoveryError)}`,
+        );
+      }
+    }
+    throw error;
+  }
+}
+
+function convergeImmutablePublish(options: {
+  remote: string;
+  branch: string;
+  paths: readonly string[];
+  message: string;
+  sourceCommit: string;
+  maxAttempts: number;
+}): PublishResult {
+  const observedLeases = new Map<string, ObservedStatePublishLease>();
+  for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
+    assertStatePublishDeadline("publishing immutable action ledger paths");
+    waitForExclusiveStatePublishLeaseGap(options.remote, options.branch, observedLeases);
+    const compatibility = immutableRemoteCompatibility({
+      remote: options.remote,
+      branch: options.branch,
+      paths: options.paths,
+      sourceCommit: options.sourceCommit,
+    });
+    if (compatibility.missing.length === 0) {
+      verifyRemoteImmutablePaths(
+        options.sourceCommit,
+        options.remote,
+        options.branch,
+        options.paths,
+      );
+      return "unchanged";
+    }
+    const expectedCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
+    let pushed = false;
+    try {
+      pushed =
+        spawnGit(["push", options.remote, `HEAD:${options.branch}`], {
+          allowFailure: true,
+        }).status === 0;
+    } catch (error) {
+      if (!isGitTimeoutError(error)) throw error;
+      console.log(
+        `Immutable ${options.branch} push timed out attempt=${attempt}; verifying remote blobs`,
+      );
+    }
+    if (
+      pushed ||
+      remotePublishedPathsMatch(expectedCommit, options.remote, options.branch, options.paths)
+    ) {
+      verifyRemoteImmutablePaths(expectedCommit, options.remote, options.branch, options.paths);
+      return "committed";
+    }
+
+    const rebuild = rebuildImmutablePublishCommit({
+      remote: options.remote,
+      branch: options.branch,
+      paths: options.paths,
+      message: options.message,
+      sourceCommit: options.sourceCommit,
+    });
+    if (rebuild === "unchanged") {
+      verifyRemoteImmutablePaths(
+        options.sourceCommit,
+        options.remote,
+        options.branch,
+        options.paths,
+      );
+      return "unchanged";
+    }
+    if (attempt === options.maxAttempts) break;
+    const waitMs = immutablePublishRetryWaitMs(attempt);
+    console.log(
+      `Immutable publish lost ${options.branch} race attempt=${attempt}/${options.maxAttempts}; retrying in ${waitMs}ms`,
+    );
+    sleepWithinStatePublishDeadline(waitMs, "waiting to retry immutable action ledger publication");
+  }
+  throw new Error(
+    `Failed to publish immutable action ledger paths after ${options.maxAttempts} attempts`,
+  );
+}
+
+function verifyRemoteImmutablePaths(
+  sourceCommit: string,
+  remote: string,
+  branch: string,
+  paths: readonly string[],
+): void {
+  gitPublishPhase("verify", `paths=${uniqueNonEmpty(paths).length} coordination=immutable`);
+  const compatibility = immutableRemoteCompatibility({
+    remote,
+    branch,
+    paths,
+    sourceCommit,
+  });
+  if (compatibility.missing.length > 0) {
+    throw new Error(`Remote ${remote}/${branch} is missing immutable action ledger paths`);
+  }
+  adoptVerifiedRemoteHead(remote, branch);
+}
+
+function rebuildImmutablePublishCommit(options: {
+  remote: string;
+  branch: string;
+  paths: readonly string[];
+  message: string;
+  sourceCommit: string;
+}): PublishResult {
+  const compatibility = immutableRemoteCompatibility(options);
+  const remoteCommit = compatibility.remoteCommit;
+  const missing = compatibility.missing;
+
+  runGit(["reset", "--hard", remoteCommit]);
+  if (missing.length === 0) {
+    console.log("Immutable action ledger paths are already published");
+    return "unchanged";
+  }
+  for (const batch of chunked(missing, GIT_PATHSPEC_BATCH_SIZE)) {
+    runGit(["checkout", options.sourceCommit, "--", ...batch]);
+  }
+  stagePaths(missing);
+  if (!hasStagedChanges()) {
+    throw new Error("Immutable action ledger rebuild produced no candidate changes");
+  }
+  runGit(["commit", "-m", options.message]);
+  return "committed";
+}
+
+function immutableRemoteCompatibility(options: {
+  remote: string;
+  branch: string;
+  paths: readonly string[];
+  sourceCommit: string;
+}): { remoteCommit: string; missing: string[] } {
+  runGit(["fetch", options.remote, options.branch]);
+  const remoteCommit = runGit(["rev-parse", `${options.remote}/${options.branch}`], {
+    quiet: true,
+  }).trim();
+  const sourceObjects = gitObjectOids(
+    options.paths.map((path) => ({ commit: options.sourceCommit, path })),
+  );
+  const remoteObjects = gitObjectOids(
+    options.paths.map((path) => ({ commit: remoteCommit, path })),
+  );
+  const missing: string[] = [];
+  const differing: string[] = [];
+  for (const path of options.paths) {
+    const sourceSpec = gitObjectSpec(options.sourceCommit, path);
+    const remoteSpec = gitObjectSpec(remoteCommit, path);
+    const sourceOid = sourceObjects.get(sourceSpec);
+    if (!sourceOid) {
+      throw new Error(`Immutable action ledger source path is missing: ${path}`);
+    }
+    const remoteOid = remoteObjects.get(remoteSpec);
+    if (!remoteOid) {
+      missing.push(path);
+      continue;
+    }
+    if (remoteOid !== sourceOid) {
+      differing.push(path);
+    }
+  }
+  if (differing.length > 0) {
+    const contents = readGitObjects(
+      differing.flatMap((path) => [
+        { commit: options.sourceCommit, path },
+        { commit: remoteCommit, path },
+      ]),
+    );
+    for (const path of differing) {
+      const sourceContent = contents.get(gitObjectSpec(options.sourceCommit, path));
+      const remoteContent = contents.get(gitObjectSpec(remoteCommit, path));
+      if (
+        sourceContent === null ||
+        sourceContent === undefined ||
+        remoteContent === null ||
+        remoteContent === undefined ||
+        !actionEventPublishContentsEquivalent(path, sourceContent, remoteContent)
+      ) {
+        throw new Error(`Immutable action ledger path conflict: ${path}`);
+      }
+    }
+  }
+  return { remoteCommit, missing };
+}
+
+function waitForExclusiveStatePublishLeaseGap(
+  remote: string,
+  branch: string,
+  observedByOid: Map<string, ObservedStatePublishLease>,
+): void {
+  const leaseRef = `${STATE_PUBLISH_LEASE_REF_ROOT}/${branch}`;
+  for (;;) {
+    assertStatePublishDeadline("waiting for exclusive state publication");
+    const observed = observeStatePublishLease(remote, leaseRef, observedByOid);
+    const remainingMs = observed ? observed.expiresAtMs - Date.now() : 0;
+    if (!observed || remainingMs <= 0) return;
+    const waitMs = Math.min(remainingMs, 1_000);
+    console.log(
+      `Immutable publish yielding to exclusive state lease owner=${observed.owner} wait_ms=${waitMs}`,
+    );
+    sleepWithinStatePublishDeadline(waitMs, "waiting for exclusive state publication");
+  }
+}
+
+function immutablePublishRetryWaitMs(attempt: number): number {
+  const ceilingMs = Math.min(50 * 2 ** Math.min(Math.max(attempt - 1, 0), 5), 1_000);
+  return Math.max(25, Math.floor(Math.random() * ceilingMs));
 }
 
 function publishMainCommitWithoutLease(options: GitPublishOptions): PublishResult {
@@ -1343,14 +1638,17 @@ function assertStatePublishDeadline(action: string): void {
   }
 }
 
-function sleepWithinStatePublishDeadline(milliseconds: number): void {
+function sleepWithinStatePublishDeadline(
+  milliseconds: number,
+  action = "waiting for the remote lease",
+): void {
   const deadlineAtMs = activeGitPublishMetrics?.deadlineAtMs;
   const remaining =
     deadlineAtMs === null || deadlineAtMs === undefined
       ? milliseconds
       : Math.min(milliseconds, deadlineAtMs - Date.now());
   if (remaining <= 0) {
-    throw new Error("State publication deadline exceeded while waiting for the remote lease");
+    throw new Error(`State publication deadline exceeded while ${action}`);
   }
   sleep(remaining);
 }
@@ -2015,8 +2313,14 @@ function readGitObjects(requests: readonly GitObjectRequest[]): Map<string, stri
 }
 
 function gitObjectExistence(requests: readonly GitObjectRequest[]): Set<string> {
+  return new Set(
+    [...gitObjectOids(requests)].filter(([, oid]) => oid !== null).map(([spec]) => spec),
+  );
+}
+
+function gitObjectOids(requests: readonly GitObjectRequest[]): Map<string, string | null> {
   const specs = uniqueNonEmpty(requests.map(({ commit, path }) => gitObjectSpec(commit, path)));
-  const existing = new Set<string>();
+  const objects = new Map<string, string | null>();
   for (const batch of chunked(specs, GIT_OBJECT_BATCH_SIZE)) {
     const lines = runGitObjectBatch("--batch-check", batch).toString("utf8").split("\n");
     if (lines.at(-1) === "") lines.pop();
@@ -2026,14 +2330,19 @@ function gitObjectExistence(requests: readonly GitObjectRequest[]): Set<string> 
       );
     }
     for (const [index, line] of lines.entries()) {
-      if (line!.endsWith(" missing")) continue;
-      if (!/^[0-9a-f]+ [^ ]+ \d+$/.test(line!)) {
+      const spec = batch[index]!;
+      if (line!.endsWith(" missing")) {
+        objects.set(spec, null);
+        continue;
+      }
+      const match = /^([0-9a-f]+) [^ ]+ \d+$/.exec(line!);
+      if (!match) {
         throw new Error(`Unexpected git cat-file batch-check response: ${line}`);
       }
-      existing.add(batch[index]!);
+      objects.set(spec, match[1]!);
     }
   }
-  return existing;
+  return objects;
 }
 
 function runGitObjectBatch(mode: "--batch" | "--batch-check", specs: readonly string[]): Buffer {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  actionEventPublishCoordinationForTest,
   actionEventPublishPathsForTest,
   actionLedgerFailureDisposition,
   applyActionEventDisposition,
@@ -259,6 +260,22 @@ test("action event publication accepts only sorted canonical event and binding p
   assert.throws(
     () => actionEventPublishPathsForTest("ledger/v1/import-bindings/private/raw.json\n"),
     /invalid action event publish path/,
+  );
+});
+
+test("immutable action event publication is explicitly staged", () => {
+  assert.equal(actionEventPublishCoordinationForTest({}), "exclusive");
+  assert.equal(
+    actionEventPublishCoordinationForTest({
+      CLAWSWEEPER_ACTION_LEDGER_IMMUTABLE_PUBLISH: "1",
+    }),
+    "immutable",
+  );
+  assert.equal(
+    actionEventPublishCoordinationForTest({
+      CLAWSWEEPER_ACTION_LEDGER_IMMUTABLE_PUBLISH: "true",
+    }),
+    "exclusive",
   );
 });
 

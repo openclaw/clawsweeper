@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   captureStatePublishBaseline,
@@ -17,6 +18,17 @@ import {
   stagePaths,
   uniqueNonEmpty,
 } from "../../dist/repair/git-publish.js";
+import {
+  ACTION_EVENT_TYPES,
+  actionAttemptId,
+  actionEventKey,
+  actionEventShardRelativePath,
+  actionIdempotencyKey,
+  actionLedgerJson,
+  actionOperationId,
+  createActionEvent,
+  type ActionEventInput,
+} from "../../dist/action-ledger.js";
 
 for (const key of [
   "CLAWSWEEPER_STATE_DIR",
@@ -35,6 +47,81 @@ for (const key of [
 }
 process.env.CLAWSWEEPER_PUBLISH_LEASE = "false";
 
+function replayEquivalentActionShards() {
+  const repository = "openclaw/clawsweeper";
+  const sourceRevision = "a".repeat(40);
+  const operationId = actionOperationId(repository, "review", {
+    number: 1,
+    sourceRevision,
+  });
+  const attemptId = actionAttemptId(operationId, { runId: "1", runAttempt: 1 });
+  const input: ActionEventInput = {
+    eventKey: actionEventKey("review.completed", {
+      repository,
+      number: 1,
+      sourceRevision,
+    }),
+    operationId,
+    attemptId,
+    parentEventId: null,
+    phaseSeq: 1,
+    idempotencyKeySha256: actionIdempotencyKey({
+      repository,
+      number: 1,
+      sourceRevision,
+      action: "review",
+    }),
+    type: ACTION_EVENT_TYPES.reviewCompleted,
+    producer: {
+      repository,
+      sha: sourceRevision,
+      workflow: "sweep.yml",
+      job: "review",
+      runId: "1",
+      runAttempt: 1,
+      component: "review.test",
+    },
+    subject: {
+      repository,
+      kind: "pull_request",
+      number: 1,
+      sourceRevision,
+    },
+    action: {
+      name: "review",
+      status: "completed",
+      reasonCode: "completed",
+      retryable: false,
+      mutation: false,
+    },
+    evidence: [],
+  };
+  const first = createActionEvent(input, {
+    now: () => new Date("2026-07-14T20:00:00.000Z"),
+  });
+  const second = createActionEvent(input, {
+    now: () => new Date("2026-07-14T20:00:01.000Z"),
+  });
+  const publishPath = actionEventShardRelativePath(
+    {
+      repository,
+      sha: sourceRevision,
+      producer: "review.test",
+      workflow: "sweep.yml",
+      job: "review",
+      runId: "1",
+      runAttempt: 1,
+      partitionDate: "2026-07-14",
+    },
+    [first],
+  ).replaceAll(path.sep, "/");
+  return {
+    publishPath,
+    first: `${actionLedgerJson(first)}\n`,
+    second: `${actionLedgerJson(second)}\n`,
+  };
+}
+
 const STATE_PUBLISH_LEASE_REF = "refs/heads/clawsweeper-publish-lease/state";
 
 test("default lease timing can recover a crashed owner within the workflow budget", () => {
@@ -51,6 +138,28 @@ test("default lease timing can recover a crashed owner within the workflow budge
       timing.commandTimeoutMs +
       timing.workflowMarginMs <=
       timing.workflowTimeoutMs,
+  );
+});
+
+test("immutable coordination accepts only exact action ledger paths", () => {
+  assert.throws(
+    () =>
+      publishMainCommit({
+        message: "chore: reject mutable optimistic state",
+        paths: ["results/latest.json"],
+        coordination: "immutable",
+      }),
+    /only exact action ledger event and import-binding paths/,
+  );
+  assert.throws(
+    () =>
+      publishMainCommit({
+        message: "chore: reject mutable optimistic strategy",
+        paths: ["ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-1-review-a.jsonl"],
+        coordination: "immutable",
+        rebaseStrategy: "theirs",
+      }),
+    /requires the normal rebase strategy/,
   );
 });
 
@@ -104,6 +213,12 @@ test("commitMessageForPublishedPaths skips CI for generated-only publishes", () 
   assert.equal(
     commitMessageForPublishedPaths("fix: update scheduler", ["src/repair/git-publish.ts"]),
     "fix: update scheduler",
+  );
+  assert.equal(
+    commitMessageForPublishedPaths("chore: append action ledger", [
+      "ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-1-review-a.jsonl",
+    ]),
+    "chore: append action ledger\n\n[skip ci]",
   );
 });
 
@@ -3485,6 +3600,312 @@ test("publish-main CLI accepts package-manager double dash separators", () => {
   );
 });
 
+test("immutable publisher treats identical paths as idempotent and rejects collisions", () => {
+  const fixture = createStatePublishRemote("immutable-collision");
+  const state = path.join(fixture.root, "state");
+  const source = path.join(fixture.root, "source");
+  const shard = replayEquivalentActionShards();
+  const publishPath = shard.publishPath;
+  cloneState(fixture.origin, state);
+  write(path.join(state, publishPath), shard.first);
+  run("git", ["add", publishPath], state);
+  run("git", ["commit", "-m", "seed immutable event"], state);
+  run("git", ["push", "origin", "HEAD:state"], state);
+  fs.mkdirSync(source);
+  write(path.join(source, publishPath), shard.first);
+
+  const replay = withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
+    withCwd(source, () =>
+      publishMainCommit({
+        message: "chore: replay immutable event",
+        paths: [publishPath],
+        coordination: "immutable",
+      }),
+    ),
+  );
+  assert.equal(replay, "unchanged");
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+
+  write(path.join(source, publishPath), shard.second);
+  const equivalentReplay = withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
+    withCwd(source, () =>
+      publishMainCommit({
+        message: "chore: replay equivalent immutable event",
+        paths: [publishPath],
+        coordination: "immutable",
+      }),
+    ),
+  );
+  assert.equal(equivalentReplay, "unchanged");
+
+  write(path.join(source, publishPath), "conflicting event\n");
+  assert.throws(
+    () =>
+      withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
+        withCwd(source, () =>
+          publishMainCommit({
+            message: "chore: reject immutable collision",
+            paths: [publishPath],
+            coordination: "immutable",
+          }),
+        ),
+      ),
+    /Immutable action ledger path conflict/,
+  );
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${publishPath}`], fixture.root),
+    shard.first,
+  );
+});
+
+test("immutable publisher adds only missing paths during a partial replay", () => {
+  const fixture = createStatePublishRemote("immutable-partial-replay");
+  const state = path.join(fixture.root, "state");
+  const source = path.join(fixture.root, "source");
+  const existingPath = `ledger/v1/import-bindings/events/${"a".repeat(64)}.json`;
+  const missingPath = `ledger/v1/import-bindings/events/${"b".repeat(64)}.json`;
+  cloneState(fixture.origin, state);
+  write(path.join(state, existingPath), '{"event":"existing"}\n');
+  run("git", ["add", existingPath], state);
+  run("git", ["commit", "-m", "seed immutable binding"], state);
+  run("git", ["push", "origin", "HEAD:state"], state);
+  fs.mkdirSync(source);
+  write(path.join(source, existingPath), '{"event":"existing"}\n');
+  write(path.join(source, missingPath), '{"event":"missing"}\n');
+
+  const result = withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
+    withCwd(source, () =>
+      publishMainCommit({
+        message: "chore: partially replay immutable bindings",
+        paths: [existingPath, missingPath],
+        coordination: "immutable",
+      }),
+    ),
+  );
+
+  assert.equal(result, "committed");
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${existingPath}`], fixture.root),
+    '{"event":"existing"}\n',
+  );
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${missingPath}`], fixture.root),
+    '{"event":"missing"}\n',
+  );
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+});
+
+test("immutable publisher verifies an accepted branch push after client timeout", () => {
+  const fixture = createStatePublishRemote("immutable-accepted-timeout");
+  const state = path.join(fixture.root, "state");
+  const source = path.join(fixture.root, "source");
+  const publishPath = `ledger/v1/import-bindings/events/${"c".repeat(64)}.json`;
+  cloneState(fixture.origin, state);
+  fs.mkdirSync(source);
+  write(path.join(source, publishPath), '{"event":"accepted"}\n');
+  installAcceptedStatePushTimeoutHook(fixture.origin, 0.3);
+
+  const result = withEnv(
+    leasedPublishEnv({
+      CLAWSWEEPER_STATE_DIR: state,
+      CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
+      CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "100",
+    }),
+    () =>
+      withCwd(source, () =>
+        publishMainCommit({
+          message: "chore: verify immutable accepted timeout",
+          paths: [publishPath],
+          coordination: "immutable",
+        }),
+      ),
+  );
+
+  assert.equal(result, "committed");
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${publishPath}`], fixture.root),
+    '{"event":"accepted"}\n',
+  );
+});
+
+test("immutable publishers converge concurrent disjoint action ledger paths without a lease", async () => {
+  const fixture = createStatePublishRemote("immutable-concurrency");
+  const publisherCount = 12;
+  const env = leasedPublishEnv({
+    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "15000",
+    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "3000",
+  });
+  const publishers = Array.from({ length: publisherCount }, (_, index) => {
+    const state = path.join(fixture.root, `state-${index}`);
+    const source = path.join(fixture.root, `source-${index}`);
+    const publishPath = `ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-${index + 1}-review-${String(index).padStart(2, "0")}.jsonl`;
+    cloneState(fixture.origin, state);
+    fs.mkdirSync(source);
+    write(path.join(source, publishPath), `event ${index}\n`);
+    return {
+      publishPath,
+      child: startImmutablePublishProcess(
+        source,
+        state,
+        `chore: append immutable event ${index}`,
+        publishPath,
+        env,
+      ),
+    };
+  });
+
+  const completed = await Promise.all(publishers.map(({ child }) => waitForChild(child)));
+  for (const result of completed) {
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  }
+  for (const [index, { publishPath }] of publishers.entries()) {
+    assert.equal(
+      run("git", ["--git-dir", fixture.origin, "show", `state:${publishPath}`], fixture.root),
+      `event ${index}\n`,
+    );
+  }
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+});
+
+test("immutable publisher converges through unrelated mutable branch updates", () => {
+  const fixture = createStatePublishRemote("immutable-mutable-storm");
+  const state = path.join(fixture.root, "state");
+  const other = path.join(fixture.root, "other");
+  const source = path.join(fixture.root, "source");
+  const publishPath = `ledger/v1/import-bindings/events/${"d".repeat(64)}.json`;
+  cloneState(fixture.origin, state);
+  cloneState(fixture.origin, other);
+  fs.mkdirSync(source);
+  write(path.join(source, publishPath), '{"event":"storm"}\n');
+  installRepeatedStateRaceHook(state, other, 3);
+
+  const result = withEnv(
+    leasedPublishEnv({
+      CLAWSWEEPER_STATE_DIR: state,
+      CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
+      CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
+    }),
+    () =>
+      withCwd(source, () =>
+        publishMainCommit({
+          message: "chore: append immutable event through mutable storm",
+          paths: [publishPath],
+          coordination: "immutable",
+        }),
+      ),
+  );
+
+  assert.equal(result, "committed");
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${publishPath}`], fixture.root),
+    '{"event":"storm"}\n',
+  );
+  for (let race = 1; race <= 3; race += 1) {
+    assert.equal(
+      run(
+        "git",
+        ["--git-dir", fixture.origin, "show", `state:results/remote-race-${race}.txt`],
+        fixture.root,
+      ),
+      `remote race ${race}\n`,
+    );
+  }
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+});
+
+test("immutable publishers yield to an active exclusive state mutation", async () => {
+  const fixture = createStatePublishRemote("immutable-exclusive-priority");
+  const exclusiveState = path.join(fixture.root, "state-exclusive");
+  const immutableState = path.join(fixture.root, "state-immutable");
+  const exclusiveSource = path.join(fixture.root, "source-exclusive");
+  const immutableSource = path.join(fixture.root, "source-immutable");
+  const releaseSignal = path.join(fixture.root, "release-exclusive");
+  const releaseObserved = path.join(fixture.root, "exclusive-released");
+  const immutablePath =
+    "ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-priority-review-a.jsonl";
+  cloneState(fixture.origin, exclusiveState);
+  cloneState(fixture.origin, immutableState);
+  fs.mkdirSync(exclusiveSource);
+  fs.mkdirSync(immutableSource);
+  write(path.join(exclusiveSource, "results/exclusive.txt"), "exclusive\n");
+  write(path.join(immutableSource, immutablePath), "immutable\n");
+  installStatePushReleaseHook(exclusiveState, releaseSignal, releaseObserved);
+  const env = leasedPublishEnv({
+    CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "5000",
+    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
+    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
+    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "4000",
+    CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
+  });
+
+  const exclusive = startPublishCli(
+    exclusiveSource,
+    exclusiveState,
+    "chore: publish exclusive mutation",
+    env,
+  );
+  const exclusiveResult = waitForChild(exclusive);
+  await waitForRemoteRef(fixture.origin, STATE_PUBLISH_LEASE_REF);
+  const immutable = startImmutablePublishProcess(
+    immutableSource,
+    immutableState,
+    "chore: append priority event",
+    immutablePath,
+    env,
+  );
+  const immutableResult = waitForChild(immutable);
+  await waitForChildOutput(immutable, "Immutable publish yielding to exclusive state lease");
+  write(releaseSignal, "release\n");
+
+  const [exclusiveCompleted, immutableCompleted] = await Promise.all([
+    exclusiveResult,
+    immutableResult,
+  ]);
+  assert.equal(exclusiveCompleted.status, 0, exclusiveCompleted.stderr);
+  assert.equal(immutableCompleted.status, 0, immutableCompleted.stderr);
+  assert.equal(fs.existsSync(releaseObserved), true);
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${immutablePath}`], fixture.root),
+    "immutable\n",
+  );
+});
+
+test("immutable publication deadline bounds continuous rejected branch pushes", () => {
+  const fixture = createStatePublishRemote("immutable-deadline");
+  const state = path.join(fixture.root, "state");
+  const source = path.join(fixture.root, "source");
+  const publishPath =
+    "ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-deadline-review-a.jsonl";
+  cloneState(fixture.origin, state);
+  fs.mkdirSync(source);
+  write(path.join(source, publishPath), "deadline event\n");
+  installStatePushRejectHook(fixture.origin);
+  const startedAt = Date.now();
+
+  assert.throws(
+    () =>
+      withEnv(
+        leasedPublishEnv({
+          CLAWSWEEPER_STATE_DIR: state,
+          CLAWSWEEPER_PUBLISH_DEADLINE_MS: "120",
+          CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "100",
+        }),
+        () =>
+          withCwd(source, () =>
+            publishMainCommit({
+              message: "chore: bound immutable retries",
+              paths: [publishPath],
+              coordination: "immutable",
+              maxAttempts: 100,
+            }),
+          ),
+      ),
+    /State publication deadline exceeded/,
+  );
+  assert.ok(Date.now() - startedAt < 1500);
+});
+
 test("setTokenOrigin redacts tokens from command logs", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   run("git", ["init"], root);
@@ -3547,6 +3968,26 @@ function startPublishCli(cwd, stateDir, message, env) {
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
+}
+
+function startImmutablePublishProcess(cwd, stateDir, message, publishPath, env) {
+  const moduleUrl = pathToFileURL(path.resolve("dist/repair/git-publish.js")).href;
+  const script = `const { publishMainCommit } = await import(${JSON.stringify(moduleUrl)});
+publishMainCommit({
+  message: process.argv[1],
+  paths: [process.argv[2]],
+  coordination: "immutable",
+});`;
+  return spawn(process.execPath, ["--input-type=module", "--eval", script, message, publishPath], {
+    cwd,
+    detached: true,
+    env: {
+      ...process.env,
+      ...env,
+      CLAWSWEEPER_STATE_DIR: stateDir,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
 }
 
 function listFixtureFiles(root) {

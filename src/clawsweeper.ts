@@ -6,6 +6,7 @@ import {
   closeSync,
   existsSync,
   fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readSync,
@@ -209,6 +210,7 @@ import {
   ACTION_EVENT_REASON_CODES,
   ACTION_EVENT_STATUSES,
   ACTION_EVENT_TYPES,
+  isActionEventPublishPath,
   type ActionEvent,
   type ActionEventEvidence,
   type ActionEventReasonCode,
@@ -31908,8 +31910,6 @@ function publishActionEventsCommand(args: Args): void {
   console.log(JSON.stringify(result, null, 2));
 }
 
-const ACTION_EVENT_PUBLISH_PATH_PATTERN =
-  /^ledger\/v1\/(?:events\/\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl|import-bindings\/(?:producer-runs|events|shard-sets|completed-shard-sets)\/[a-f0-9]{64}\.json)$/;
 const ACTION_EVENT_PUBLISH_PATH_FILE_MAX_BYTES = ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS * 512;
 
 export function actionEventPublishPathsForTest(content: string): string[] {
@@ -31927,7 +31927,7 @@ export function actionEventPublishPathsForTest(content: string): string[] {
   }
   let previous = "";
   for (const path of paths) {
-    if (!ACTION_EVENT_PUBLISH_PATH_PATTERN.test(path)) {
+    if (!isActionEventPublishPath(path)) {
       throw new Error(`invalid action event publish path: ${path}`);
     }
     if (previous && path <= previous) {
@@ -31936,6 +31936,12 @@ export function actionEventPublishPathsForTest(content: string): string[] {
     previous = path;
   }
   return paths;
+}
+
+export function actionEventPublishCoordinationForTest(
+  env: NodeJS.ProcessEnv = process.env,
+): "exclusive" | "immutable" {
+  return env.CLAWSWEEPER_ACTION_LEDGER_IMMUTABLE_PUBLISH === "1" ? "immutable" : "exclusive";
 }
 
 function publishActionEventPathsCommand(args: Args): void {
@@ -31960,17 +31966,25 @@ function publishActionEventPathsCommand(args: Args): void {
     if (
       rootRelativeSource.startsWith("..") ||
       resolve(ROOT, rootRelativeSource) !== source ||
-      !statSync(source).isFile()
+      !lstatSync(source).isFile()
     ) {
       throw new Error(`action event publish path is not a regular file: ${path}`);
     }
   }
+  const coordination = actionEventPublishCoordinationForTest();
   const result = publishMainCommit({
     message,
     paths,
+    coordination,
     rebaseStrategy: "normal",
   });
-  console.log(JSON.stringify({ result, path_count: paths.length }));
+  console.log(
+    JSON.stringify({
+      result,
+      path_count: paths.length,
+      coordination,
+    }),
+  );
 }
 
 function isExplicitActionLedgerCommand(command: string): boolean {
