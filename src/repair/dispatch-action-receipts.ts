@@ -9,6 +9,8 @@ import {
   ACTION_EVENT_TYPES,
   actionIdempotencyKey,
   actionLedgerJson,
+  actionOperationId,
+  readSpooledActionEvents,
   type ActionEvent,
   type ActionEventReasonCode,
 } from "../action-ledger.js";
@@ -340,12 +342,17 @@ function startDispatchReceipt(options: DispatchReceiptConfig): {
     dispatchTarget: options.dispatchTarget,
     inputSha256,
   });
-  const { chain, key: chainKey } = acquireDispatchChain(operationIdentity, options.component, env);
+  const root = fs.realpathSync(options.root ?? dispatchActionLedgerRoot(options.env));
+  const { chain, key: chainKey } = acquireDispatchChain(
+    root,
+    operationIdentity,
+    options.component,
+    env,
+  );
   const attempt = chain.nextAttempt;
   const phaseSeq = chain.nextPhaseSeq;
   chain.nextAttempt += 1;
   chain.nextPhaseSeq += 2;
-  const root = options.root ?? dispatchActionLedgerRoot(options.env);
   let event: ActionEvent | null;
   try {
     event = recordDispatchEvent(
@@ -547,19 +554,18 @@ function dispatchOperationIdentity(options: {
 }
 
 function acquireDispatchChain(
+  root: string,
   operationIdentity: ReturnType<typeof dispatchOperationIdentity>,
   component: string,
   env: NodeJS.ProcessEnv,
 ): { chain: DispatchChain; key: string } {
+  const producer = workflowActionProducer(component, env);
   const key = createHash("sha256")
     .update(
       actionLedgerJson({
+        root,
         operationIdentity,
-        component,
-        runId: env.GITHUB_RUN_ID ?? "",
-        runAttempt: env.GITHUB_RUN_ATTEMPT ?? "",
-        action: env.GITHUB_ACTION ?? "",
-        invocation: env.CLAWSWEEPER_ACTION_LEDGER_INVOCATION ?? "",
+        producer,
       }),
     )
     .digest("hex");
@@ -573,16 +579,71 @@ function acquireDispatchChain(
     dispatchChains.set(key, existing);
     return { chain: existing, key };
   }
+  const recovered = recoverDispatchChain(root, operationIdentity, producer);
   const created = {
-    parentEventId: null,
-    nextPhaseSeq: 1,
-    nextAttempt: 1,
+    ...recovered,
     activeAttempts: 1,
     lastTouchedAtMs: now,
   };
   dispatchChains.set(key, created);
   pruneDispatchChains(now);
   return { chain: created, key };
+}
+
+function recoverDispatchChain(
+  root: string,
+  operationIdentity: ReturnType<typeof dispatchOperationIdentity>,
+  producer: ReturnType<typeof workflowActionProducer>,
+): Pick<DispatchChain, "parentEventId" | "nextPhaseSeq" | "nextAttempt"> {
+  const operationId = actionOperationId(
+    operationIdentity.repository,
+    "dispatch",
+    operationIdentity,
+  );
+  let latestEvent: ActionEvent | null = null;
+  let maxAttempt = 0;
+  let maxPhaseSeq = 0;
+  for (const event of readSpooledActionEvents(root, operationIdentity.repository)) {
+    if (
+      event.event_type !== ACTION_EVENT_TYPES.dispatchLifecycle ||
+      event.operation_id !== operationId ||
+      !dispatchEventProducerMatches(event, producer)
+    ) {
+      continue;
+    }
+    const attempt = event.attributes?.attempt;
+    if (!Number.isSafeInteger(attempt) || Number(attempt) < 1) {
+      throw new Error("dispatch receipt spool contains an invalid attempt sequence");
+    }
+    if (event.phase_seq === maxPhaseSeq && latestEvent?.event_id !== event.event_id) {
+      throw new Error("dispatch receipt spool contains an ambiguous phase sequence");
+    }
+    maxAttempt = Math.max(maxAttempt, Number(attempt));
+    if (event.phase_seq > maxPhaseSeq) {
+      maxPhaseSeq = event.phase_seq;
+      latestEvent = event;
+    }
+  }
+  return {
+    parentEventId: latestEvent?.event_id ?? null,
+    nextPhaseSeq: Math.max(maxPhaseSeq, maxAttempt * 2) + 1,
+    nextAttempt: maxAttempt + 1,
+  };
+}
+
+function dispatchEventProducerMatches(
+  event: ActionEvent,
+  producer: ReturnType<typeof workflowActionProducer>,
+): boolean {
+  return (
+    event.producer.repository === producer.repository &&
+    event.producer.sha === producer.sha &&
+    event.producer.workflow === producer.workflow &&
+    event.producer.job === producer.job &&
+    event.producer.run_id === producer.runId &&
+    event.producer.run_attempt === producer.runAttempt &&
+    event.producer.component === producer.component
+  );
 }
 
 function releaseDispatchChain(key: string, chain: DispatchChain): void {

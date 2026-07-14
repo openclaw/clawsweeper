@@ -198,13 +198,21 @@ export async function handleGitHubWebhook({
       outputRoot: receiptContext.outputRoot,
     });
   } catch (error) {
-    if (!webhookError) webhookError = error;
-    else
+    if (result) {
+      console.error(
+        `[action-ledger] accepted webhook dispatch receipt flush failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    } else if (!webhookError) {
+      webhookError = error;
+    } else {
       console.error(
         `[action-ledger] failed to finalize webhook dispatch receipts: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
+    }
   }
   if (webhookError) throw webhookError;
   if (!result) throw new Error("webhook dispatch completed without a result");

@@ -42,6 +42,18 @@ const WORKFLOW_INPUT_DOWNLOAD_TIMEOUT_MS = 60_000;
 const RECOVERY_SCAN_BUDGET_MS = 3 * 60_000;
 const MAX_RECOVERY_CANDIDATE_SCANS = 200;
 
+class SelfHealDispatchNotStartedError extends Error {
+  readonly dispatchError: unknown;
+
+  constructor(dispatchError: unknown) {
+    super(dispatchError instanceof Error ? dispatchError.message : String(dispatchError), {
+      cause: dispatchError,
+    });
+    this.name = "SelfHealDispatchNotStartedError";
+    this.dispatchError = dispatchError;
+  }
+}
+
 const args = parseArgs(process.argv.slice(2));
 const repo = String(args.repo ?? DEFAULT_REPO);
 const workflow = String(args.workflow ?? DEFAULT_WORKFLOW);
@@ -146,8 +158,28 @@ try {
     : assertLiveWorkerCapacity({ repo, workflow, requested: candidates.length, maxLiveWorkers });
 
   for (let i = 0; i < candidates.length; i += 1) {
-    dispatchCandidate(candidates[i]);
-    attempts[i].status = "dispatched";
+    const attempt = attempts[i];
+    appendAttempts(ledger, [attempt]);
+    writeSelfHealLedger(ledger);
+    try {
+      dispatchCandidate(candidates[i]);
+    } catch (error) {
+      if (error instanceof SelfHealDispatchNotStartedError) {
+        removeAttempt(ledger, attempt);
+        try {
+          writeSelfHealLedger(ledger);
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [error.dispatchError, rollbackError],
+            "self-heal dispatch did not start and its pending checkpoint could not be removed",
+          );
+        }
+        throw error.dispatchError;
+      }
+      throw error;
+    }
+    attempt.status = "dispatched";
+    writeSelfHealLedger(ledger);
   }
 
   const observedRuns = openExecuteWindow
@@ -169,7 +201,6 @@ try {
     }));
   }
 
-  appendAttempts(ledger, attempts);
   writeSelfHealLedger(ledger);
 
   summary.status = "dispatched";
@@ -390,58 +421,67 @@ function sourceJobFromRunTitle(title: string) {
 }
 
 function dispatchCandidate(candidate: LooseRecord) {
-  const result = runDispatchWithReceiptSync({
-    root: dispatchReceiptContext.root,
-    env: dispatchReceiptContext.env,
-    component: "repair_self_heal",
-    operationKey: `self-heal:${candidate.run_id}:${candidate.source_job}`,
-    dispatchKind: "workflow",
-    repository: repo,
-    dispatchTarget: workflow,
-    dispatchInput: {
-      workflow,
-      job: String(candidate.source_job ?? ""),
-      mode: String(candidate.mode ?? ""),
-      runner: String(candidate.runner ?? ""),
-      execution_runner: String(candidate.execution_runner ?? ""),
-      planner_sandbox: String(candidate.planner_sandbox ?? ""),
-      model: String(candidate.model ?? ""),
-      dry_run: Boolean(candidate.dry_run),
-      requeue: Boolean(candidate.requeue),
-      requeue_depth: Number(candidate.requeue_depth ?? 0),
-    },
-    operation: () =>
-      spawnSync(
-        "gh",
-        [
-          "workflow",
-          "run",
-          workflow,
-          "--repo",
-          repo,
-          "-f",
-          `job=${candidate.source_job}`,
-          "-f",
-          `mode=${candidate.mode}`,
-          "-f",
-          `runner=${candidate.runner}`,
-          "-f",
-          `execution_runner=${candidate.execution_runner}`,
-          "-f",
-          `planner_sandbox=${candidate.planner_sandbox}`,
-          "-f",
-          `model=${candidate.model}`,
-          "-f",
-          `dry_run=${candidate.dry_run}`,
-          "-f",
-          `requeue=${candidate.requeue}`,
-          "-f",
-          `requeue_depth=${candidate.requeue_depth}`,
-        ],
-        { cwd: repoRoot(), encoding: "utf8", stdio: "pipe" },
-      ),
-    outcome: dispatchProcessOutcome,
-  });
+  let transportStarted = false;
+  let result;
+  try {
+    result = runDispatchWithReceiptSync({
+      root: dispatchReceiptContext.root,
+      env: dispatchReceiptContext.env,
+      component: "repair_self_heal",
+      operationKey: `self-heal:${candidate.run_id}:${candidate.source_job}`,
+      dispatchKind: "workflow",
+      repository: repo,
+      dispatchTarget: workflow,
+      dispatchInput: {
+        workflow,
+        job: String(candidate.source_job ?? ""),
+        mode: String(candidate.mode ?? ""),
+        runner: String(candidate.runner ?? ""),
+        execution_runner: String(candidate.execution_runner ?? ""),
+        planner_sandbox: String(candidate.planner_sandbox ?? ""),
+        model: String(candidate.model ?? ""),
+        dry_run: Boolean(candidate.dry_run),
+        requeue: Boolean(candidate.requeue),
+        requeue_depth: Number(candidate.requeue_depth ?? 0),
+      },
+      operation: () => {
+        transportStarted = true;
+        return spawnSync(
+          "gh",
+          [
+            "workflow",
+            "run",
+            workflow,
+            "--repo",
+            repo,
+            "-f",
+            `job=${candidate.source_job}`,
+            "-f",
+            `mode=${candidate.mode}`,
+            "-f",
+            `runner=${candidate.runner}`,
+            "-f",
+            `execution_runner=${candidate.execution_runner}`,
+            "-f",
+            `planner_sandbox=${candidate.planner_sandbox}`,
+            "-f",
+            `model=${candidate.model}`,
+            "-f",
+            `dry_run=${candidate.dry_run}`,
+            "-f",
+            `requeue=${candidate.requeue}`,
+            "-f",
+            `requeue_depth=${candidate.requeue_depth}`,
+          ],
+          { cwd: repoRoot(), encoding: "utf8", stdio: "pipe" },
+        );
+      },
+      outcome: dispatchProcessOutcome,
+    });
+  } catch (error) {
+    if (!transportStarted) throw new SelfHealDispatchNotStartedError(error);
+    throw error;
+  }
   if (result.status !== 0) {
     throw new Error(
       `failed to dispatch ${candidate.source_job}: ${result.stderr || result.stdout}`,
@@ -539,6 +579,13 @@ function readSelfHealLedger() {
 function appendAttempts(ledger: LooseRecord, attempts: LooseRecord[]) {
   ledger.updated_at = new Date().toISOString();
   ledger.attempts = [...(ledger.attempts ?? []), ...attempts];
+}
+
+function removeAttempt(ledger: LooseRecord, attempt: LooseRecord) {
+  ledger.updated_at = new Date().toISOString();
+  ledger.attempts = (ledger.attempts ?? []).filter(
+    (candidate: LooseRecord) => candidate !== attempt,
+  );
 }
 
 function writeSelfHealLedger(ledger: LooseRecord) {

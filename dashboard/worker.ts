@@ -1658,11 +1658,12 @@ export class ExactReviewQueue {
       const deleted = Array.from(
         this.storage.sql.exec(
           `DELETE FROM ${EXACT_REVIEW_DISPATCH_RECEIPT_TABLE}
-            WHERE receipt_id IN (
-              SELECT receipt_id
+            WHERE (operation_sha256, attempt) IN (
+              SELECT operation_sha256, attempt
                 FROM ${EXACT_REVIEW_DISPATCH_RECEIPT_TABLE}
-               WHERE recorded_at <= ?
-               ORDER BY recorded_at, receipt_id
+               GROUP BY operation_sha256, attempt
+              HAVING MAX(recorded_at) <= ?
+               ORDER BY MIN(recorded_at), operation_sha256, attempt
                LIMIT ${EXACT_REVIEW_DISPATCH_RECEIPT_PRUNE_BATCH}
             )
           RETURNING receipt_id`,

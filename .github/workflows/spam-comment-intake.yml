@@ -93,6 +93,7 @@ jobs:
         id: setup-spam-intake-state
         with:
           token: ${{ steps.state-token.outputs.token }}
+          persist-credentials: "false"
 
       - uses: ./.github/actions/setup-pnpm
         if: steps.core-budget.outputs.skip != 'true'

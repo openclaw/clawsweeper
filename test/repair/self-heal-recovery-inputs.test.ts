@@ -169,7 +169,10 @@ test("self-heal writes and publishes dispatch attempts before legacy summaries",
   assert.ok(dispatchStart >= 0);
   assert.ok(dispatchEnd > dispatchStart);
   assert.match(dispatchFunction, /runDispatchWithReceiptSync\(\{/);
-  assert.match(dispatchFunction, /operation: \(\) =>\s+spawnSync\(/);
+  assert.match(
+    dispatchFunction,
+    /operation: \(\) => \{[\s\S]*?transportStarted = true;[\s\S]*?return spawnSync\(/,
+  );
   assert.match(dispatchFunction, /outcome: dispatchProcessOutcome/);
   assert.match(dispatchFunction, /operationKey: `self-heal:/);
   assert.match(dispatchFunction, /dispatchInput: \{[\s\S]*?requeue_depth:/);
@@ -177,7 +180,10 @@ test("self-heal writes and publishes dispatch attempts before legacy summaries",
     source,
     /await flushDispatchActionEvents\(dispatchReceiptContext\.root,[\s\S]*?outputRoot: dispatchReceiptContext\.outputRoot/,
   );
-  assert.match(source, /appendAttempts\(ledger, attempts\)/);
+  assert.match(
+    source,
+    /appendAttempts\(ledger, \[attempt\]\);[\s\S]*?dispatchCandidate\(candidates\[i\]\)/,
+  );
   assert.match(setupAction, /ACTION_LEDGER_WORKTREE_PATH: \$\{\{ inputs\.worktree-path \}\}/);
   assert.match(setupAction, /worktree path must be workspace-relative/);
   assert.match(setupAction, /workspace_root="\$\(pwd -P\)"/);
@@ -269,6 +275,77 @@ test("executing self-heal accepts canonical setup-action-ledger Actions context"
       receipts.map((event) => event.attributes.completion_reason),
       ["dispatch_attempted", "dispatch_accepted"],
     );
+  } finally {
+    cleanupFixture(fixture);
+  }
+});
+
+test("self-heal checkpoints accepted dispatches before a later candidate fails", () => {
+  const fixture = createRecoveryFixture("partial-dispatch", { snapshot: false });
+  const secondJob = "jobs/test/inbox/recovery-second.md";
+  const secondRunId = "910002";
+  fs.writeFileSync(
+    path.join(fixture.root, secondJob),
+    `---
+repo: openclaw/openclaw
+cluster_id: recovery-second
+mode: plan
+allowed_actions:
+  - fix
+candidates:
+  - "#2"
+---
+
+# second recovery fixture
+`,
+  );
+  fs.writeFileSync(
+    path.join(fixture.root, "results", "runs", `${secondRunId}.json`),
+    `${JSON.stringify({
+      run_id: secondRunId,
+      source_job: secondJob,
+      workflow_conclusion: "failure",
+      workflow_updated_at: new Date().toISOString(),
+      mode: "plan",
+    })}\n`,
+  );
+  try {
+    const first = runFixture(
+      fixture,
+      ["self-heal-failed-runs.js", "--max-age-hours", "24", "--max-jobs", "2", "--execute"],
+      { CLAWSWEEPER_TEST_FAIL_WORKFLOW_JOB: "jobs/test/inbox/recovery.md" },
+    );
+    assert.notEqual(first.status, 0);
+    assert.match(first.stderr, /failed to dispatch jobs\/test\/inbox\/recovery\.md/);
+
+    const ledger = JSON.parse(
+      fs.readFileSync(path.join(fixture.root, "results", "self-heal.json"), "utf8"),
+    );
+    assert.deepEqual(
+      ledger.attempts.map((attempt) => [attempt.source_run_id, attempt.status]),
+      [
+        [secondRunId, "dispatched"],
+        [fixture.runId, "pending"],
+      ],
+    );
+    const dispatchesBeforeRetry = fs
+      .readFileSync(fixture.ghLog, "utf8")
+      .split("\n")
+      .filter((line) => line.startsWith("workflow run repair-cluster-worker.yml")).length;
+    assert.equal(dispatchesBeforeRetry, 2);
+
+    const retry = runFixture(
+      fixture,
+      ["self-heal-failed-runs.js", "--max-age-hours", "24", "--max-jobs", "2", "--execute"],
+      { CLAWSWEEPER_TEST_FAIL_WORKFLOW_JOB: "jobs/test/inbox/recovery.md" },
+    );
+    assert.equal(retry.status, 0, retry.stderr);
+    assert.equal(JSON.parse(retry.stdout).status, "no_candidates");
+    const dispatchesAfterRetry = fs
+      .readFileSync(fixture.ghLog, "utf8")
+      .split("\n")
+      .filter((line) => line.startsWith("workflow run repair-cluster-worker.yml")).length;
+    assert.equal(dispatchesAfterRetry, dispatchesBeforeRetry);
   } finally {
     cleanupFixture(fixture);
   }
@@ -458,6 +535,12 @@ JSON
   exit 1
 fi
 if [ "$1" = "workflow" ] && [ "$2" = "run" ]; then
+  case "$*" in
+    *"job=\${CLAWSWEEPER_TEST_FAIL_WORKFLOW_JOB:-__never__}"*)
+      echo "injected workflow dispatch failure" >&2
+      exit 1
+      ;;
+  esac
   exit 0
 fi
 echo "unsupported gh invocation: $*" >&2

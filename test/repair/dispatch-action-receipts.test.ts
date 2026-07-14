@@ -359,6 +359,55 @@ test("dispatch receipt chains remain bounded in long-lived processes", () => {
   }
 });
 
+test("dispatch receipt chains recover sequence state after cache eviction", async () => {
+  const fixture = actionLedgerFixture("evicted-chain");
+  const repeatedInput = { event_type: "evicted_chain" };
+  const repeatedOptions = {
+    ...baseOptions(fixture),
+    operationKey: "dispatch:evicted-chain",
+    dispatchInput: repeatedInput,
+    operation: () => undefined,
+  };
+  try {
+    runDispatchWithReceiptSync(repeatedOptions);
+    for (let index = 0; index < 80; index += 1) {
+      runDispatchWithReceiptSync({
+        ...baseOptions(fixture),
+        operationKey: `dispatch:eviction-pressure:${index}`,
+        dispatchInput: { event_type: `eviction_pressure_${index}` },
+        operation: () => undefined,
+      });
+    }
+    assert.ok(dispatchChainCacheSizeForTest() <= 64);
+
+    runDispatchWithReceiptSync(repeatedOptions);
+    await flushDispatchActionEvents(fixture.root, {
+      env: fixture.env,
+      outputRoot: fixture.outputRoot,
+    });
+
+    const repeatedDigest = dispatchInputSha256(repeatedInput);
+    const repeatedEvents = readEvents(fixture.outputRoot)
+      .filter((event) => event.evidence[0]?.sha256 === repeatedDigest)
+      .sort((left, right) => Number(left.phase_seq) - Number(right.phase_seq));
+    assert.deepEqual(
+      repeatedEvents.map((event) => [event.phase_seq, event.attributes.attempt]),
+      [
+        [1, 1],
+        [2, 1],
+        [3, 2],
+        [4, 2],
+      ],
+    );
+    assert.equal(new Set(repeatedEvents.map((event) => event.event_id)).size, 4);
+    assert.equal(repeatedEvents[1]?.parent_event_id, repeatedEvents[0]?.event_id);
+    assert.equal(repeatedEvents[2]?.parent_event_id, repeatedEvents[1]?.event_id);
+    assert.equal(repeatedEvents[3]?.parent_event_id, repeatedEvents[2]?.event_id);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("concurrent receipt attempts keep distinct causal phase sequences", async () => {
   const fixture = actionLedgerFixture("concurrent-attempts");
   let releaseFirst: (() => void) | undefined;
@@ -539,6 +588,10 @@ test("activity intake receipt publishers keep checkout credentials ephemeral", (
       workflow,
       /uses: actions\/checkout@v7[\s\S]{0,300}?token: \$\{\{ steps\.app_token\.outputs\.token \}\}/,
     );
+    assert.match(
+      workflow,
+      /uses: \.\/\.github\/actions\/setup-state[\s\S]{0,300}?persist-credentials: "false"/,
+    );
     assert.match(workflow, /auth_header="\$\(printf 'x-access-token:%s'/);
     assert.match(workflow, /export GIT_CONFIG_COUNT=1/);
     assert.match(workflow, /export GIT_CONFIG_KEY_0=http\.https:\/\/github\.com\/\.extraheader/);
@@ -558,11 +611,21 @@ test("activity intake receipt publishers keep checkout credentials ephemeral", (
 
 test("activity feed runs independently of durable ledger publication and reports failures", () => {
   const workflow = fs.readFileSync(".github/workflows/github-activity.yml", "utf8");
+  const feedOffset = workflow.indexOf("- name: Feed activity to OpenClaw");
+  const stateTokenOffset = workflow.indexOf("- name: Create state token");
+  const ledgerOffset = workflow.indexOf("uses: ./.github/actions/setup-action-ledger");
+  assert.ok(feedOffset >= 0);
+  assert.ok(feedOffset < stateTokenOffset);
+  assert.ok(feedOffset < ledgerOffset);
   assert.match(workflow, /id: finalize-activity-dispatch-ledger[\s\S]*?continue-on-error: true/);
   assert.match(workflow, /id: publish-activity-dispatch-ledger[\s\S]*?continue-on-error: true/);
   assert.match(
     workflow,
-    /- name: Feed activity to OpenClaw\n\s+if: \$\{\{ always\(\)[^\n]+dispatch-spam-scan-candidate\.outcome == 'success'/,
+    /- name: Feed activity to OpenClaw\n\s+if: steps\.core-budget\.outputs\.skip != 'true' && steps\.setup-activity-pnpm\.outcome == 'success'/,
+  );
+  assert.doesNotMatch(
+    workflow.slice(feedOffset, stateTokenOffset),
+    /setup-activity-state|setup-activity-ledger|dispatch-spam-scan-candidate/,
   );
   assert.match(
     workflow,

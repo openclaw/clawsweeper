@@ -100,24 +100,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Create state token
-        if: steps.core-budget.outputs.skip != 'true'
-        id: activity-state-token
-        uses: ./.github/actions/create-state-token
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-
-      - uses: ./.github/actions/setup-state
-        if: steps.core-budget.outputs.skip != 'true'
-        id: setup-activity-state
-        with:
-          token: ${{ steps.activity-state-token.outputs.token }}
-
-      - uses: ./.github/actions/setup-action-ledger
-        if: steps.core-budget.outputs.skip != 'true'
-        id: setup-activity-ledger
-
       - uses: actions/setup-node@v6
         if: steps.core-budget.outputs.skip != 'true'
         with:
@@ -168,6 +150,36 @@ jobs:
             sleep "$((attempt * 10))"
           done
           pnpm run build:repair
+
+      - name: Feed activity to OpenClaw
+        if: steps.core-budget.outputs.skip != 'true' && steps.setup-activity-pnpm.outcome == 'success'
+        env:
+          CLAWSWEEPER_OPENCLAW_HOOK_URL: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_URL }}
+          CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_TOKEN }}
+          CLAWSWEEPER_OPENCLAW_AGENT_ID: ${{ vars.CLAWSWEEPER_OPENCLAW_AGENT_ID || 'clawsweeper' }}
+          CLAWSWEEPER_DISCORD_TARGET: ${{ vars.CLAWSWEEPER_DISCORD_TARGET }}
+        run: |
+          set -euo pipefail
+          pnpm run repair:notify-github-activity -- --write-report
+
+      - name: Create state token
+        if: steps.core-budget.outputs.skip != 'true'
+        id: activity-state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        if: steps.core-budget.outputs.skip != 'true'
+        id: setup-activity-state
+        with:
+          token: ${{ steps.activity-state-token.outputs.token }}
+          persist-credentials: "false"
+
+      - uses: ./.github/actions/setup-action-ledger
+        if: steps.core-budget.outputs.skip != 'true'
+        id: setup-activity-ledger
 
       - name: Dispatch spam scan candidate
         id: dispatch-spam-scan-candidate
@@ -241,17 +253,6 @@ jobs:
             --message "chore: append GitHub activity dispatch action ledger" \
             "${action_ledger_args[@]}" \
             --rebase-strategy normal
-
-      - name: Feed activity to OpenClaw
-        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-pnpm.outcome == 'success' && steps.dispatch-spam-scan-candidate.outcome == 'success' }}
-        env:
-          CLAWSWEEPER_OPENCLAW_HOOK_URL: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_URL }}
-          CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_TOKEN }}
-          CLAWSWEEPER_OPENCLAW_AGENT_ID: ${{ vars.CLAWSWEEPER_OPENCLAW_AGENT_ID || 'clawsweeper' }}
-          CLAWSWEEPER_DISCORD_TARGET: ${{ vars.CLAWSWEEPER_DISCORD_TARGET }}
-        run: |
-          set -euo pipefail
-          pnpm run repair:notify-github-activity -- --write-report
 
       - name: Report GitHub activity dispatch ledger failure
         if: ${{ always() && steps.core-budget.outputs.skip != 'true' && (steps.finalize-activity-dispatch-ledger.outcome == 'failure' || steps.publish-activity-dispatch-ledger.outcome == 'failure') }}
