@@ -1385,12 +1385,17 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
       - uses: ./.github/actions/setup-state
+        id: setup-target-fanout-state
         with:
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
+        id: setup-target-fanout-pnpm
         with:
           build-script: build:repair
+
+      - uses: ./.github/actions/setup-action-ledger
+        id: setup-target-fanout-ledger
 
       - name: Create OpenClaw inventory token
         id: openclaw-token
@@ -1410,6 +1415,7 @@ jobs:
           owner: steipete
 
       - name: Dispatch selected targets
+        id: dispatch-selected-targets
         env:
           GH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
@@ -1425,6 +1431,60 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --workflow sweep.yml \
             --ref main
+
+      - name: Finalize target fanout dispatch action ledger
+        if: ${{ always() && steps.setup-target-fanout-state.outcome == 'success' && steps.setup-target-fanout-pnpm.outcome == 'success' && steps.setup-target-fanout-ledger.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          : "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
+          mkdir -p .artifacts
+          pnpm run --silent repair:action-ledger -- finalize \
+            --lane target-fanout-dispatch \
+            --allow-empty \
+            > .artifacts/target-fanout-dispatch-action-ledger-manifest.json
+
+      - name: Publish target fanout dispatch action ledger
+        if: ${{ always() && steps.setup-target-fanout-state.outcome == 'success' && steps.setup-target-fanout-pnpm.outcome == 'success' && steps.setup-target-fanout-ledger.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          source_root="${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
+          manifest_file=".artifacts/target-fanout-dispatch-action-ledger-manifest.json"
+          if [ ! -s "$manifest_file" ]; then
+            echo "No target fanout dispatch action events to publish."
+            exit 0
+          fi
+          event_paths_file=".artifacts/target-fanout-dispatch-action-ledger-paths.txt"
+          import_result_file=".artifacts/target-fanout-dispatch-action-ledger-import.json"
+          pnpm run --silent repair:action-ledger -- publish \
+            --lane target-fanout-dispatch \
+            --manifest "$manifest_file" \
+            --source-root "$source_root" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" > "$import_result_file"
+          if ! jq -e --slurpfile manifest "$manifest_file" \
+            '.eventPaths == $manifest[0].event_paths' \
+            "$import_result_file" >/dev/null; then
+            echo "Imported target fanout dispatch paths do not match the finalized manifest." >&2
+            exit 1
+          fi
+          jq -r '.paths[]?' "$import_result_file" |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "Target fanout dispatch shards existed but no paths were imported." >&2
+            exit 1
+          fi
+          action_ledger_args=()
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
+          done < "$event_paths_file"
+          pnpm run repair:publish-main -- \
+            --message "chore: append target fanout dispatch action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal
 
       - name: Publish fanout cursor
         run: |

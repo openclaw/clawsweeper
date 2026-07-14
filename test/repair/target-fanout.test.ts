@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -88,6 +95,7 @@ process.exit(2);
       env: {
         ...process.env,
         GITHUB_ACTIONS: "true",
+        ...actionLedgerEnv(dir, "missing-owner"),
         ...mockGhBinEnv(ghPath),
         GH_TOKEN: "workflow-token",
         CLAWSWEEPER_DISPATCH_TOKEN: "dispatch-token",
@@ -154,6 +162,7 @@ process.exit(2);
       env: {
         ...process.env,
         GITHUB_ACTIONS: "true",
+        ...actionLedgerEnv(dir, "public-inventory"),
         ...mockGhBinEnv(ghPath),
         CLAWSWEEPER_DISPATCH_TOKEN: "dispatch-token",
         CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: "inventory-openclaw",
@@ -359,5 +368,28 @@ function repo(nameWithOwner: string, overrides: Partial<ListedRepository> = {}):
     visibility: "PUBLIC",
     defaultBranch: "main",
     ...overrides,
+  };
+}
+
+function actionLedgerEnv(root: string, invocation: string) {
+  const canonicalRoot = realpathSync(root);
+  const outputRoot = join(canonicalRoot, "action-ledger-output");
+  mkdirSync(outputRoot);
+  return {
+    CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
+    CLAWSWEEPER_ACTION_LEDGER_ROOT: canonicalRoot,
+    CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: outputRoot,
+    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: invocation,
+    GITHUB_REPOSITORY: "openclaw/clawsweeper",
+    GITHUB_SHA: "a".repeat(40),
+    GITHUB_WORKFLOW: "sweep",
+    GITHUB_WORKFLOW_REF: "openclaw/clawsweeper/.github/workflows/sweep.yml@refs/heads/main",
+    GITHUB_JOB: "target-fanout",
+    GITHUB_RUN_ID: "12345",
+    GITHUB_RUN_ATTEMPT: "1",
+    GITHUB_ACTION: "dispatch-selected-targets",
+    GITHUB_RUN_STARTED_AT: "2026-07-14T12:00:00Z",
+    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: "",
   };
 }

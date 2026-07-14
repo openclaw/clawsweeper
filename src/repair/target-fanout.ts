@@ -4,6 +4,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveCommand } from "../command.js";
+import {
+  flushDispatchActionEvents,
+  runDispatchWithReceiptSync,
+} from "./dispatch-action-receipts.js";
 import { parseArgs, repoRoot } from "./lib.js";
 
 type JsonRecord = Record<string, unknown>;
@@ -93,16 +97,36 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   }
 
   const dispatched: string[] = [];
-  for (const [index, repository] of selection.repositories.entries()) {
-    const commandArgs = commands[index];
-    if (!commandArgs) continue;
-    if (options.dryRun) {
-      console.log(`dry-run ${commandArgs.join(" ")}`);
-    } else {
-      runGh(commandArgs, dispatchEnv());
+  let dispatchError: unknown = null;
+  try {
+    for (const [index, repository] of selection.repositories.entries()) {
+      const commandArgs = commands[index];
+      if (!commandArgs) continue;
+      if (options.dryRun) {
+        console.log(`dry-run ${commandArgs.join(" ")}`);
+      } else {
+        runDispatchWithReceiptSync({
+          ...workflowDispatchReceipt(repository, options),
+          operation: () => runGh(commandArgs, dispatchEnv()),
+        });
+      }
+      dispatched.push(repository.targetRepo);
     }
-    dispatched.push(repository.targetRepo);
+  } catch (error) {
+    dispatchError = error;
   }
+  try {
+    await flushDispatchActionEvents();
+  } catch (error) {
+    if (!dispatchError) dispatchError = error;
+    else
+      console.error(
+        `[target-fanout] failed to finalize dispatch receipts: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+  }
+  if (dispatchError) throw dispatchError;
 
   if (!options.dryRun) {
     writeCursor(options.cursorPath, selection.cursor);
@@ -267,6 +291,40 @@ function workflowDispatchArgs(repository: SelectedRepository, options: FanoutOpt
   ];
   args.push("-f", "audit_dashboard=true");
   return args;
+}
+
+function workflowDispatchReceipt(repository: SelectedRepository, options: FanoutOptions) {
+  const targetBranch = repository.defaultBranch || "main";
+  if (options.mode !== "audit") {
+    return {
+      component: "target_fanout",
+      operationKey: `target-fanout:${options.mode}:${repository.targetRepo}`,
+      dispatchKind: "repository" as const,
+      repository: options.dispatchRepo,
+      dispatchTarget: "clawsweeper_target_sweep",
+      dispatchInput: {
+        event_type: "clawsweeper_target_sweep",
+        target_repo: repository.targetRepo,
+        target_branch: targetBranch,
+        hot_intake: options.mode === "hot-intake",
+        batch_size: 1,
+        shard_count: 1,
+      },
+    };
+  }
+  return {
+    component: "target_fanout",
+    operationKey: `target-fanout:audit:${repository.targetRepo}`,
+    dispatchKind: "workflow" as const,
+    repository: options.dispatchRepo,
+    dispatchTarget: options.workflow,
+    dispatchInput: {
+      workflow: options.workflow,
+      ref: options.ref,
+      target_repo: repository.targetRepo,
+      audit_dashboard: true,
+    },
+  };
 }
 
 function readCursor(cursorPath: string): number {

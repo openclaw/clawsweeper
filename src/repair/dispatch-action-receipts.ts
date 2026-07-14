@@ -8,7 +8,11 @@ import {
   type ActionEvent,
   type ActionEventReasonCode,
 } from "../action-ledger.js";
-import { flushWorkflowActionEvents, recordWorkflowPhaseEvent } from "../action-ledger-runtime.js";
+import {
+  flushWorkflowActionEvents,
+  recordWorkflowPhaseEvent,
+  workflowActionEventsEnabled,
+} from "../action-ledger-runtime.js";
 import { normalizeRepo } from "../repository-profiles.js";
 import { repoRoot } from "./paths.js";
 
@@ -186,6 +190,10 @@ function startDispatchReceipt(options: DispatchReceiptConfig): {
   operationIdentity: ReturnType<typeof dispatchOperationIdentity>;
   options: DispatchReceiptConfig;
 } {
+  const env = options.env ?? process.env;
+  if (env.GITHUB_ACTIONS === "true" && !workflowActionEventsEnabled(env)) {
+    throw new Error("refusing GitHub Actions dispatch without authoritative action receipts");
+  }
   const repository = normalizeRepo(options.repository);
   const inputSha256 = dispatchInputSha256(options.dispatchInput);
   const operationIdentity = dispatchOperationIdentity({
@@ -195,7 +203,7 @@ function startDispatchReceipt(options: DispatchReceiptConfig): {
     dispatchTarget: options.dispatchTarget,
     inputSha256,
   });
-  const chain = dispatchChain(operationIdentity, options.component, options.env ?? process.env);
+  const chain = dispatchChain(operationIdentity, options.component, env);
   const attempt = chain.nextAttempt;
   const phaseSeq = chain.nextPhaseSeq;
   chain.nextAttempt += 1;
