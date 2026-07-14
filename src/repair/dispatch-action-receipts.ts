@@ -7,6 +7,7 @@ import {
   ACTION_EVENT_REASON_CODES,
   ACTION_EVENT_STATUSES,
   ACTION_EVENT_TYPES,
+  actionIdempotencyKey,
   actionLedgerJson,
   type ActionEvent,
   type ActionEventReasonCode,
@@ -117,7 +118,7 @@ export class DispatchOutcomeUnknownError extends Error {
 
 export function dispatchInputSha256(input: BoundedDispatchInput): string {
   const normalized = normalizedDispatchInput(input);
-  return createHash("sha256").update(actionLedgerJson(normalized)).digest("hex");
+  return actionIdempotencyKey(normalized);
 }
 
 export function assertDispatchActionReceiptsEnabled(env: NodeJS.ProcessEnv = process.env): void {

@@ -3099,6 +3099,84 @@ test("exact-review queue retries dispatch failures and reclaims an unclaimed lea
   }
 });
 
+test("exact-review queue keeps accepted dispatches terminal when outcome receipt storage fails", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const storage = new MemoryDurableStorage();
+  const errors: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => {
+    errors.push(args.map(String).join(" "));
+  });
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  let dispatchAttempts = 0;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml")
+      return jsonResponse({ state: "active" });
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation")
+      return jsonResponse({ id: 999 });
+    if (url.pathname === "/app/installations/999/access_tokens")
+      return jsonResponse({ token: "dispatch-token" });
+    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
+      dispatchAttempts += 1;
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+      },
+    );
+    assert.equal(
+      (await queue.fetch(buildExactReviewQueueRequest("accepted-receipt-failure", 600, "opened")))
+        .status,
+      202,
+    );
+    storage.failNextSql(
+      /VALUES\s*\(\?, \?, \?, \?, \?, 'outcome'/,
+      new Error("accepted receipt unavailable"),
+    );
+
+    await queue.alarm();
+
+    const stats = await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(dispatchAttempts, 1);
+    assert.deepEqual(
+      { pending: stats.pending, dispatching: stats.dispatching, leased: stats.leased },
+      { pending: 0, dispatching: 1, leased: 0 },
+    );
+    const state = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { state: string; attempts: number; leaseId?: string }>;
+    };
+    const item = state.items["openclaw/gogcli#600"];
+    assert.equal(item.state, "dispatching");
+    assert.equal(item.attempts, 0);
+    assert.ok(item.leaseId);
+    assert.deepEqual(
+      storage.sql
+        .readDispatchReceipts()
+        .map((receipt) => [receipt.phase, receipt.outcome, receipt.status_kind]),
+      [["attempt", "attempted", "attempted"]],
+    );
+    assert.match(
+      errors.join("\n"),
+      /ClawSweeper dispatch accepted but outcome receipt failed: accepted receipt unavailable/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("exact-review queue preserves a claimed lease after an ambiguous dispatch failure", async () => {
   const originalFetch = globalThis.fetch;
   const storage = new MemoryDurableStorage();

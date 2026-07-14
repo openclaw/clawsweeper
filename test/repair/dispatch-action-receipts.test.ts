@@ -154,6 +154,12 @@ test("dispatch receipt inputs reject raw payload, body, token, nested, and overs
     () => dispatchInputSha256({ token: "credential" }),
     /field is not receipt-safe: token/,
   );
+  for (const key of ["api_key", "access_token", "client_secret", "password"]) {
+    assert.throws(
+      () => dispatchInputSha256({ [key]: "credential" }),
+      /identity contains a high-risk credential field/,
+    );
+  }
   assert.throws(
     () =>
       dispatchInputSha256({

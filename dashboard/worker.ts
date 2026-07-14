@@ -1114,18 +1114,9 @@ export class ExactReviewQueue {
       return { attempt: nextAttempt, receiptId };
     });
 
+    let result: unknown;
     try {
-      const result = await operation();
-      this.recordDispatchOutcomeSync({
-        operationSha256,
-        requestSha256,
-        dispatchTarget,
-        attempt: attempt.attempt,
-        parentReceiptId: attempt.receiptId,
-        outcome: "accepted",
-        statusKind: "accepted",
-      });
-      return result;
+      result = await operation();
     } catch (error) {
       const disposition = dashboardDispatchErrorDisposition(error);
       try {
@@ -1147,6 +1138,25 @@ export class ExactReviewQueue {
       }
       throw error;
     }
+
+    try {
+      this.recordDispatchOutcomeSync({
+        operationSha256,
+        requestSha256,
+        dispatchTarget,
+        attempt: attempt.attempt,
+        parentReceiptId: attempt.receiptId,
+        outcome: "accepted",
+        statusKind: "accepted",
+      });
+    } catch (receiptError) {
+      console.error(
+        `ClawSweeper dispatch accepted but outcome receipt failed: ${
+          receiptError instanceof Error ? receiptError.message : String(receiptError)
+        }`,
+      );
+    }
+    return result;
   }
 
   private recordDispatchOutcomeSync({
