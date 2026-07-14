@@ -181,7 +181,6 @@ jobs:
 
       - name: Replay GitHub activity dispatch action ledger
         env:
-          CLAWSWEEPER_ACTION_LEDGER_IMMUTABLE_PUBLISH: "1"
           PUBLISH_TOKEN: ${{ steps.replay-state-token.outputs.token }}
         run: |
           set -euo pipefail

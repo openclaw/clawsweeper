@@ -228,7 +228,6 @@ jobs:
         if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-state.outcome == 'success' && steps.setup-activity-pnpm.outcome == 'success' && steps.bundle-activity-dispatch-ledger.outputs.ready == 'true' }}
         continue-on-error: true
         env:
-          CLAWSWEEPER_ACTION_LEDGER_IMMUTABLE_PUBLISH: "1"
           PUBLISH_TOKEN: ${{ steps.activity-state-token.outputs.token }}
         run: |
           set -euo pipefail

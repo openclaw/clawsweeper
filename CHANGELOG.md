@@ -67,9 +67,10 @@ checkpoint, and status-only commits are intentionally omitted.
 - Added a priority-aware optimistic publisher for immutable action ledgers that
   yields to exclusive state mutations, accepts replay-equivalent event shards,
   rejects content collisions, and converges disjoint branch races without the
-  global state lease. GitHub activity publication and receipt replay use the
-  staged mode first; every action, review, and repair ledger now enters through
-  the same validated path-manifest boundary.
+  global state lease. GitHub activity publication and receipt replay remain on
+  exclusive publication after the live immutable canary could not converge
+  under saturated state writes; every action, review, and repair ledger still
+  enters through the same validated path-manifest boundary.
 - Serialized generated-state publishers through lightweight detached,
   versioned, protocol-bounded remote leases with composable workflow
   deadlines, bounded stale-owner recovery, deadline-bounded multi-race

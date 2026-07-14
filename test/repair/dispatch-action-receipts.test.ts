@@ -793,7 +793,7 @@ test("activity dispatch publishes receipts before the noncritical notifier", () 
   assert.match(publishStep, /bundle-activity-dispatch-ledger\.outputs\.ready == 'true'/);
   assert.doesNotMatch(publishStep, /upload-activity-dispatch-ledger\.outcome/);
   assert.match(publishStep, /continue-on-error: true/);
-  assert.match(publishStep, /CLAWSWEEPER_ACTION_LEDGER_IMMUTABLE_PUBLISH: "1"/);
+  assert.doesNotMatch(publishStep, /CLAWSWEEPER_ACTION_LEDGER_IMMUTABLE_PUBLISH/);
   assert.match(
     workflow,
     /- name: Feed activity to OpenClaw\n\s+id: notify-openclaw\n\s+if: \$\{\{ always\(\)[^\n]+\}\}\n\s+continue-on-error: true/,
@@ -849,7 +849,7 @@ test("failed, cancelled, and timed-out GitHub activity runs replay receipts", ()
   );
   assert.match(workflow, /dispatch-action-ledger-cli\.js replay/);
   assert.match(workflow, /publish-action-event-paths/);
-  assert.match(workflow.slice(replayOffset), /CLAWSWEEPER_ACTION_LEDGER_IMMUTABLE_PUBLISH: "1"/);
+  assert.doesNotMatch(workflow.slice(replayOffset), /CLAWSWEEPER_ACTION_LEDGER_IMMUTABLE_PUBLISH/);
   assert.match(workflow, /--paths-file "\$event_paths_file"/);
   assert.doesNotMatch(workflow, /repair:publish-main|action_ledger_args/);
   assert.match(workflow, /\.run_id == \$run_id/);
