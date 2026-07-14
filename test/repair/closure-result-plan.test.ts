@@ -43,6 +43,25 @@ test("derives deterministic closure layers from reviewed actions", () => {
   });
 });
 
+test("normalizes bare numeric refs throughout closure planning", () => {
+  const result = planRepairClosureResult({
+    actions: [
+      close("103", "100", ["101", "102"]),
+      close("102", "100", ["101"]),
+      close("101", "100"),
+    ],
+  });
+
+  assert.deepEqual(result, {
+    status: "safe",
+    canonicalRoot: "#100",
+    closureLayers: [["#101"], ["#102"], ["#103"]],
+    independentClosures: [],
+    nodeCount: 4,
+    edgeCount: 3,
+  });
+});
+
 test("action permutation does not change the derived plan", () => {
   const actions = [
     close("#103", "#100", ["#101", "#102"]),

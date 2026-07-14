@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { deterministicAutomergeResult } from "../../dist/repair/deterministic-automerge-result.js";
+import { assertCodexActionMatchesSchema } from "./codex-result-schema.ts";
 
 function job() {
   return {
@@ -80,6 +81,8 @@ test("deterministic automerge result emits generic direct-Codex repair artifact"
   assert.equal(result?.status, "planned");
   assert.equal(result?.actions[0].action, "build_fix_artifact");
   assert.equal(result?.actions[0].target, "#71898");
+  assert.equal(result?.actions[0].depends_on, null);
+  assertCodexActionMatchesSchema(result?.actions[0]);
   assert.match(result?.actions[0].reason, /direct Codex edit loop/);
   assert.equal(result?.fix_artifact.repair_strategy, "repair_contributor_branch");
   assert.deepEqual(result?.fix_artifact.likely_files, [

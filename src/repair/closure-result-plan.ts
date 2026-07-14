@@ -3,6 +3,7 @@ import {
   planClosureDependencies,
   type ClosureDependencyDiagnostic,
 } from "./closure-dependency-planner.js";
+import { issueNumberFromRef } from "./github-ref.js";
 
 const PLANNED_CLOSE_ACTIONS = new Set([
   "close",
@@ -312,7 +313,7 @@ function repairClosureRelationshipRoot({
 
 function dependencyRefs(value: JsonValue): string[] {
   if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) return [String(value)];
+  if (!Array.isArray(value)) return [normalizeRef(value) || String(value)];
   return value.map((entry) => normalizeRef(entry) || String(entry));
 }
 
@@ -321,10 +322,7 @@ function dependencyDiagnosticNodes(target: string, dependencies: readonly string
 }
 
 function normalizeRef(value: JsonValue): string {
-  const text = String(value ?? "").trim();
-  const match = text.match(/(?:^#|\/(?:issues|pull)\/)(\d+)$/);
-  if (!match) return "";
-  const number = Number(match[1]);
+  const number = issueNumberFromRef(value);
   return Number.isSafeInteger(number) && number > 0 ? `#${number}` : "";
 }
 

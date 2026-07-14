@@ -99,6 +99,7 @@ export function deterministicAutomergeResult({
         canonical: ref,
         duplicate_of: null,
         candidate_fix: ref,
+        depends_on: null,
         comment: null,
         evidence,
         reason,

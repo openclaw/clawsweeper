@@ -310,6 +310,7 @@ function writeSyntheticRun(context: LooseRecord) {
         canonical: null,
         duplicate_of: null,
         candidate_fix: null,
+        depends_on: null,
         comment: null,
         evidence: [
           `ClawSweeper report: ${context.reportUrl}`,
