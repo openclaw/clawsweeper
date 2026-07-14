@@ -1576,6 +1576,61 @@ test("bot proof revalidates before each label request and stops after head drift
   }
 });
 
+test("bot proof preserves head drift detected during mutation baseline hydration", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const reportPath = join(root, "bot-proof-report.json");
+    const statePath = join(root, "gh-state.json");
+    const mutationLogPath = join(root, "mutations.log");
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(
+      join(itemsDir, "42.md"),
+      proofNudgeReport({
+        author: "app/clawsweeper",
+        authorAssociation: "NONE",
+        headSha: "a".repeat(40),
+      }),
+    );
+
+    withMockGh(
+      root,
+      proofMutationGhMockScript({
+        statePath,
+        mutationLogPath,
+        bot: true,
+        driftHeadAtPullRead: 2,
+      }),
+      () => {
+        execFileSync(process.execPath, [
+          "dist/clawsweeper.js",
+          "bot-proof",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--item-numbers",
+          "42",
+          "--limit",
+          "1",
+          "--processed-limit",
+          "1",
+          "--report-path",
+          reportPath,
+          "--execute",
+        ]);
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.equal(report[0].action, "skipped_changed_before_mutation");
+    assert.match(report[0].reason, /head changed while preparing/);
+    assert.equal(existsSync(mutationLogPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("bot proof revalidates draft state before its first mutation", () => {
   const root = mkdtempSync(tmpPrefix);
   try {

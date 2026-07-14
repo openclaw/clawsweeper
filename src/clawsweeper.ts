@@ -29591,8 +29591,7 @@ function botProofCommand(args: Args): void {
     } catch (error) {
       results.push({
         ...resultBase,
-        action: "skipped_live_fetch_failed",
-        reason: proofNudgeLiveFetchFailureReason(error),
+        ...proofMutationFailureResult(error),
       });
       markProcessed(candidate);
       continue;
