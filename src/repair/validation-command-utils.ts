@@ -430,8 +430,10 @@ export function packageManagerWorkspaceScoped(parts: readonly string[]) {
     normalizedPackageCommand(invocation.command) === "run"
       ? (packageRunInvocation(invocation)?.workspaceOptions ?? [])
       : [];
-  return [...invocation.globalOptions, ...runOptions].some((option) =>
-    PACKAGE_MANAGER_WORKSPACE_OPTIONS[invocation.executable].has(option.name),
+  return [...invocation.globalOptions, ...runOptions].some(
+    (option) =>
+      PACKAGE_MANAGER_WORKSPACE_OPTIONS[invocation.executable].has(option.name) &&
+      (option.kind === "value" || packageBooleanOptionEnabled(option.value)),
   );
 }
 

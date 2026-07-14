@@ -1995,6 +1995,7 @@ function withIsolatedTargetGit<T>(
       GIT_CONFIG_GLOBAL: globalConfig,
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_CONFIG_SYSTEM: globalConfig,
+      GIT_NO_REPLACE_OBJECTS: "1",
       GIT_OPTIONAL_LOCKS: "0",
       GIT_TERMINAL_PROMPT: "0",
       HOME: isolationRoot,
@@ -2128,6 +2129,7 @@ function runIdentityGit(cwd: string, args: string[], deadlineAt: number, operati
   env.GIT_ATTR_NOSYSTEM = "1";
   env.GIT_CONFIG_GLOBAL = os.devNull;
   env.GIT_CONFIG_NOSYSTEM = "1";
+  env.GIT_NO_REPLACE_OBJECTS = "1";
   env.GIT_OPTIONAL_LOCKS = "0";
   return run("git", ["-c", "core.fsmonitor=false", "-c", "diff.external=", ...args], {
     cwd,
@@ -2260,7 +2262,7 @@ function gitAdministrativeSha256(cwd: string, deadlineAt: number) {
     },
     {
       root: commonDir,
-      paths: ["config", "hooks", "info", "objects/info", "shallow"],
+      paths: ["config", "hooks", "info", "objects/info", "refs/replace", "shallow"],
     },
   ];
   for (const { root, paths } of roots) {

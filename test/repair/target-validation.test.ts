@@ -31,6 +31,7 @@ import {
   resolveTargetRepoToolchain,
 } from "../../dist/repair/target-toolchain-config.js";
 import {
+  packageManagerWorkspaceScoped,
   packageScriptRequirement,
   parseAllowedValidationCommand,
   requireWorkspaceMatchFailure,
@@ -653,6 +654,42 @@ test("pnpm path normalization honors global options before the command", () => {
       status: "passed",
       resolved_commands: ["pnpm check:changed"],
       available_scripts: ["check:changed"],
+    },
+  );
+});
+
+test("disabled pnpm workspace flags do not bypass test path normalization", () => {
+  const cwd = gitPackageFixture({ "check:changed": 'node -e ""', test: 'node -e ""' });
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  assert.equal(
+    packageManagerWorkspaceScoped(
+      parseAllowedValidationCommand("pnpm --recursive=false test ../outside.test.ts"),
+    ),
+    false,
+  );
+  assert.deepEqual(
+    preflightTargetValidationPlan(
+      {
+        fixArtifact: {
+          validation_commands: ["pnpm --recursive=false test ../outside.test.ts"],
+        },
+        targetDir: cwd,
+      },
+      validationOptions("steipete/example", {
+        toolchain: {
+          packageManager: "pnpm",
+          baseValidationCommands: [],
+          changedGate: null,
+        },
+      }),
+    ),
+    {
+      status: "passed",
+      resolved_commands: ["pnpm check:changed"],
+      available_scripts: ["check:changed", "test"],
     },
   );
 });
@@ -2445,6 +2482,33 @@ test("publication checkout bindings reject later Git administrative mutation", (
 
   fs.writeFileSync(path.join(cwd, ".git", "hooks", "pre-push"), "#!/bin/sh\nexit 0\n");
 
+  assert.throws(
+    () => assertTargetCheckoutBinding(cwd, binding),
+    /target checkout changed after validation/,
+  );
+});
+
+test("checkout bindings ignore replacement refs and detect later replacement-ref mutation", () => {
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  fs.writeFileSync(path.join(cwd, "source.txt"), "original\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "original");
+  const originalHead = git(cwd, "rev-parse", "HEAD");
+  const originalTree = git(cwd, "rev-parse", "HEAD^{tree}");
+
+  fs.writeFileSync(path.join(cwd, "source.txt"), "replacement\n");
+  git(cwd, "add", "source.txt");
+  const replacementTree = git(cwd, "write-tree");
+  const replacementCommit = git(cwd, "commit-tree", replacementTree, "-m", "replacement");
+  git(cwd, "reset", "--hard", originalHead);
+  git(cwd, "replace", originalHead, replacementCommit);
+
+  const binding = captureTargetCheckoutBinding(cwd);
+  assert.equal(binding.headSha, originalHead);
+  assert.equal(binding.treeSha, originalTree);
+  assert.notEqual(git(cwd, "rev-parse", "HEAD^{tree}"), originalTree);
+
+  git(cwd, "replace", "-d", originalHead);
   assert.throws(
     () => assertTargetCheckoutBinding(cwd, binding),
     /target checkout changed after validation/,
