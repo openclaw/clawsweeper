@@ -269,30 +269,32 @@ test("trusted review activity is revalidated at the mutation boundary", () => {
   });
 
   assert.equal(preflight(), null);
-  for (const mutationKind of [
-    "description_update",
-    "label_add",
-    "label_create",
-    "label_remove",
-    "pull_request_merge",
-    "repair_dispatch",
-    "review_dispatch",
-  ]) {
-    assert.throws(
-      () =>
-        runReviewedPrActivityGuardedMutation({
-          intent: "clawsweeper_auto_merge",
-          mutationKind,
-          refresh: changedAtMutation,
-          operation: () => {
-            operationCalls += 1;
-          },
-        }),
-      (error) =>
-        error instanceof ReviewedPrActivityGuardError &&
-        error.mutationKind === mutationKind &&
-        error.block.retryable === false,
-    );
+  for (const intent of ["clawsweeper_auto_merge", "clawsweeper_auto_repair"]) {
+    for (const mutationKind of [
+      "description_update",
+      "label_add",
+      "label_create",
+      "label_remove",
+      "pull_request_merge",
+      "repair_dispatch",
+      "review_dispatch",
+    ]) {
+      assert.throws(
+        () =>
+          runReviewedPrActivityGuardedMutation({
+            intent,
+            mutationKind,
+            refresh: changedAtMutation,
+            operation: () => {
+              operationCalls += 1;
+            },
+          }),
+        (error) =>
+          error instanceof ReviewedPrActivityGuardError &&
+          error.mutationKind === mutationKind &&
+          error.block.retryable === false,
+      );
+    }
   }
   assert.equal(operationCalls, 0);
 

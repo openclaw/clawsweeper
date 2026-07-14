@@ -1285,7 +1285,7 @@ test("parseTrustedAutomation accepts only trusted ClawSweeper repair signals", (
   const trustedAuthors = new Set(["clawsweeper[bot]"]);
   const comment = {
     user: { login: "clawsweeper[bot]" },
-    body: "Codex review:\n<!-- clawsweeper-action: fix-required reviewed_at=2026-07-09T21:00:00.000Z -->\nPlease fix this before merge.",
+    body: "Codex review:\n<!-- clawsweeper-action: fix-required review_activity_cursor=v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->\nPlease fix this before merge.",
   };
 
   const parsed = parseTrustedAutomation(comment, { trustedAuthors });
@@ -1293,6 +1293,10 @@ test("parseTrustedAutomation accepts only trusted ClawSweeper repair signals", (
   assert.equal(parsed.trusted_bot, true);
   assert.equal(parsed.trusted_bot_author, "clawsweeper[bot]");
   assert.equal(parsed.reviewed_at, "2026-07-09T21:00:00.000Z");
+  assert.equal(
+    parsed.expected_review_activity_cursor,
+    "v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  );
   assert.match(parsed.repair_reason, /structured ClawSweeper/);
 
   assert.equal(

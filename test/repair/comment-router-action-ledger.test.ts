@@ -54,7 +54,7 @@ test("comment router wraps every GitHub mutation at the request boundary", () =>
   }
 });
 
-test("trusted verdict automerge refreshes reviewed PR activity before merge dispatch", () => {
+test("trusted verdict mutations refresh reviewed PR activity before dispatch", () => {
   const source = readText("src/repair/comment-router.ts");
   const executeCommand = source.slice(
     source.indexOf("function executeCommand("),
@@ -65,18 +65,18 @@ test("trusted verdict automerge refreshes reviewed PR activity before merge disp
     source.indexOf("function latestAutomergeTarget("),
   );
   const commandPreflight = executeCommand.indexOf(
-    "const trustedAutomationActivityBlock = trustedAutomergeReviewActivityBlockReason(command)",
+    "const trustedAutomationActivityBlock = trustedAutomationReviewActivityBlockReason(command)",
   );
   const labelMutation = executeCommand.indexOf("applyLabelActions(command)");
   const waitLoop = executeAutomerge.indexOf("while (block && isTransientAutomergeBlock(block)");
   const initialReviewActivity = executeAutomerge.indexOf(
-    "const initialReviewActivityBlock = trustedAutomergeReviewActivityBlockReason(command)",
+    "const initialReviewActivityBlock = trustedAutomationReviewActivityBlockReason(command)",
   );
   const reviewLease = executeAutomerge.indexOf(
     "const reviewLeaseBlock = trustedAutomationReviewLeaseBlockReason(command)",
   );
   const reviewActivity = executeAutomerge.indexOf(
-    "const reviewActivityBlock = trustedAutomergeReviewActivityBlockReason(command)",
+    "const reviewActivityBlock = trustedAutomationReviewActivityBlockReason(command)",
   );
   const merge = executeAutomerge.indexOf("const result = runGitHubSpawnMutation(");
 
@@ -94,11 +94,11 @@ test("trusted verdict automerge refreshes reviewed PR activity before merge disp
   );
   assert.match(
     source,
-    /function trustedAutomergeReviewActivityCursorOnce[\s\S]*pulls\/\$\{number\}\/reviews[\s\S]*pulls\/\$\{number\}\/comments[\s\S]*function trustedAutomergeReviewActivityCursor[\s\S]*readStableReviewedPrActivityCursor[\s\S]*function trustedAutomergeReviewActivityBlockReason[\s\S]*isReviewedPrActivityCursor\(expected\)/,
+    /function trustedAutomationReviewActivityCursorOnce[\s\S]*pulls\/\$\{number\}\/reviews[\s\S]*pulls\/\$\{number\}\/comments[\s\S]*function trustedAutomationReviewActivityCursor[\s\S]*readStableReviewedPrActivityCursor[\s\S]*function trustedAutomationReviewActivityBlockReason[\s\S]*clawsweeper_auto_repair[\s\S]*isReviewedPrActivityCursor\(expected\)/,
   );
   assert.match(
     source,
-    /inlineComments\.length === 0 \? \[\] : trustedAutomergeReviewThreads\(number, remaining \+ 1\)/,
+    /inlineComments\.length === 0 \? \[\] : trustedAutomationReviewThreads\(number, remaining \+ 1\)/,
   );
   for (const wrapper of [
     "runGitHubTextMutation",
@@ -111,12 +111,16 @@ test("trusted verdict automerge refreshes reviewed PR activity before merge disp
     assert.match(implementation, /runReviewedPrActivityGuardedMutation/);
     assert.match(
       implementation,
-      /refresh: \(\) => trustedAutomergeReviewActivityBlockReason\(command\)/,
+      /refresh: \(\) => trustedAutomationReviewActivityBlockReason\(command\)/,
     );
   }
   assert.match(
     source,
     /function runGitHubBestEffortMutation[\s\S]*error instanceof ReviewedPrActivityGuardError[\s\S]*throw error/,
+  );
+  assert.match(
+    readText("src/repair/comment-router-core.ts"),
+    /function trustedRepair[\s\S]*expected_review_activity_cursor: marker\?\.attrs\?\.review_activity_cursor \?\? null/,
   );
 });
 

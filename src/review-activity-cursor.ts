@@ -70,6 +70,11 @@ const REVIEW_ACTIVITY_AUTHORIZED_MUTATIONS = new Set([
   "review_dispatch",
 ]);
 
+const REVIEW_ACTIVITY_AUTHORIZED_INTENTS = new Set([
+  "clawsweeper_auto_merge",
+  "clawsweeper_auto_repair",
+]);
+
 export function createReviewedPrActivityCursor(options: {
   reviews: unknown[];
   inlineComments: unknown[];
@@ -109,7 +114,7 @@ export function runReviewedPrActivityGuardedMutation<T>(options: {
   operation: () => T;
 }): T {
   if (
-    options.intent === "clawsweeper_auto_merge" &&
+    REVIEW_ACTIVITY_AUTHORIZED_INTENTS.has(options.intent) &&
     REVIEW_ACTIVITY_AUTHORIZED_MUTATIONS.has(options.mutationKind)
   ) {
     const block = options.refresh();

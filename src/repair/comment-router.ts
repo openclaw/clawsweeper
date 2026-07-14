@@ -1905,7 +1905,7 @@ function executeCommand(command: LooseRecord) {
       }));
       return;
     }
-    const trustedAutomationActivityBlock = trustedAutomergeReviewActivityBlockReason(command);
+    const trustedAutomationActivityBlock = trustedAutomationReviewActivityBlockReason(command);
     if (trustedAutomationActivityBlock) {
       const status = trustedAutomationActivityBlock.retryable ? "waiting" : "skipped";
       command.status = status;
@@ -2395,7 +2395,7 @@ function runGitHubTextMutation(
     runReviewedPrActivityGuardedMutation({
       intent: String(command.intent ?? ""),
       mutationKind: kind,
-      refresh: () => trustedAutomergeReviewActivityBlockReason(command),
+      refresh: () => trustedAutomationReviewActivityBlockReason(command),
       operation: () => ghText(ghArgs, runOptions),
     });
   return runCommandMutationWithRetry(command, {
@@ -2433,7 +2433,7 @@ function runGitHubTextMutationOnce(
       runReviewedPrActivityGuardedMutation({
         intent: String(command.intent ?? ""),
         mutationKind: kind,
-        refresh: () => trustedAutomergeReviewActivityBlockReason(command),
+        refresh: () => trustedAutomationReviewActivityBlockReason(command),
         operation: () => ghText(ghArgs, options),
       }),
     knownNoMutation: (error) =>
@@ -2455,7 +2455,7 @@ function runGitHubSpawnMutation(
       runReviewedPrActivityGuardedMutation({
         intent: String(command.intent ?? ""),
         mutationKind: kind,
-        refresh: () => trustedAutomergeReviewActivityBlockReason(command),
+        refresh: () => trustedAutomationReviewActivityBlockReason(command),
         operation: () => ghSpawn(ghArgs, options),
       }),
     outcome: (result) => (result.status === 0 && !result.error ? "accepted" : "unknown"),
@@ -3719,7 +3719,7 @@ function executeAutomerge(command: LooseRecord) {
   if (stoppedReason) {
     return { action: "merge", status: "blocked", reason: stoppedReason, merge_method: "squash" };
   }
-  const initialReviewActivityBlock = trustedAutomergeReviewActivityBlockReason(command);
+  const initialReviewActivityBlock = trustedAutomationReviewActivityBlockReason(command);
   if (initialReviewActivityBlock) {
     return {
       action: "merge",
@@ -3821,7 +3821,7 @@ function executeAutomerge(command: LooseRecord) {
       merge_method: "squash",
     };
   }
-  const reviewActivityBlock = trustedAutomergeReviewActivityBlockReason(command);
+  const reviewActivityBlock = trustedAutomationReviewActivityBlockReason(command);
   if (reviewActivityBlock) {
     return {
       action: "merge",
@@ -4365,7 +4365,7 @@ function fetchIssue(number: JsonValue) {
   });
 }
 
-function trustedAutomergeReviewThreads(number: number, limit: number): unknown[] {
+function trustedAutomationReviewThreads(number: number, limit: number): unknown[] {
   const max = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
   if (max === 0) return [];
   const [owner, name] = targetRepo.split("/");
@@ -4400,7 +4400,7 @@ function trustedAutomergeReviewThreads(number: number, limit: number): unknown[]
   return threads.slice(0, max);
 }
 
-function trustedAutomergeReviewActivityCursorOnce(number: number): string | null {
+function trustedAutomationReviewActivityCursorOnce(number: number): string | null {
   let remaining = MAX_REVIEWED_PR_ACTIVITY;
   const reviews = ghPagedLimit<unknown>(
     `repos/${targetRepo}/pulls/${number}/reviews`,
@@ -4415,19 +4415,23 @@ function trustedAutomergeReviewActivityCursorOnce(number: number): string | null
   if (inlineComments.length > remaining) return null;
   remaining -= inlineComments.length;
   const reviewThreads =
-    inlineComments.length === 0 ? [] : trustedAutomergeReviewThreads(number, remaining + 1);
+    inlineComments.length === 0 ? [] : trustedAutomationReviewThreads(number, remaining + 1);
   if (reviewThreads.length > remaining) return null;
   return createReviewedPrActivityCursor({ reviews, inlineComments, reviewThreads });
 }
 
-function trustedAutomergeReviewActivityCursor(number: number): string | null {
-  return readStableReviewedPrActivityCursor(() => trustedAutomergeReviewActivityCursorOnce(number));
+function trustedAutomationReviewActivityCursor(number: number): string | null {
+  return readStableReviewedPrActivityCursor(() =>
+    trustedAutomationReviewActivityCursorOnce(number),
+  );
 }
 
-function trustedAutomergeReviewActivityBlockReason(
+function trustedAutomationReviewActivityBlockReason(
   command: LooseRecord,
 ): { reason: string; retryable: boolean } | null {
-  if (command.intent !== "clawsweeper_auto_merge") return null;
+  if (!["clawsweeper_auto_merge", "clawsweeper_auto_repair"].includes(String(command.intent))) {
+    return null;
+  }
   const expected = command.expected_review_activity_cursor;
   if (!isReviewedPrActivityCursor(expected)) {
     return {
@@ -4436,10 +4440,10 @@ function trustedAutomergeReviewActivityBlockReason(
     };
   }
   try {
-    const current = trustedAutomergeReviewActivityCursor(Number(command.issue_number));
+    const current = trustedAutomationReviewActivityCursor(Number(command.issue_number));
     if (!current) {
       return {
-        reason: "pull request review activity exceeds the bounded automerge cursor",
+        reason: "pull request review activity exceeds the bounded trusted-automation cursor",
         retryable: false,
       };
     }

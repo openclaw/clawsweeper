@@ -2787,6 +2787,7 @@ function trustedRepair({ author, reason, marker = null }: LooseRecord) {
     review_lease_owner: marker?.attrs?.lease_owner ?? null,
     review_lease_comment_id: marker?.attrs?.lease_comment_id ?? null,
     expected_source_revision: marker?.attrs?.source_revision ?? null,
+    expected_review_activity_cursor: marker?.attrs?.review_activity_cursor ?? null,
     finding_id: marker?.attrs?.finding ?? null,
   };
 }
