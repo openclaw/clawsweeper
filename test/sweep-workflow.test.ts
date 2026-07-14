@@ -786,7 +786,7 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
   assert.match(workflow, /permissions: \{\}/);
   assert.match(
     workflow,
-    /group: exact-review-reconcile-\$\{\{ github\.event\.workflow_run\.id \}\}/,
+    /group: exact-review-reconcile-\$\{\{ github\.event\.workflow_run\.event == 'repository_dispatch' && startsWith\([\s\S]*'queue' \|\| github\.event\.workflow_run\.id \}\}/,
   );
   assert.match(workflow, /cancel-in-progress: false/);
   assert.match(workflow, /github\.event\.workflow_run\.event == 'repository_dispatch'/);
@@ -809,6 +809,7 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
   );
   assert.match(client, /run_id: sourceRunId/);
   assert.match(client, /run_attempt: sourceRunAttempt/);
+  assert.match(client, /include_all_claimed: true/);
   assert.match(client, /createHmac\("sha256"/);
   assert.match(client, /"x-clawsweeper-exact-review-signature": signature/);
   assert.doesNotMatch(producer, /create-state-token|setup-state/);

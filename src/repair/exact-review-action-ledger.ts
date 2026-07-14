@@ -38,7 +38,7 @@ export async function runExactReviewQueueCommand(
   const fetchImpl = dependencies.fetch ?? fetch;
   const sleep = dependencies.sleep ?? defaultSleep;
   const attempts = dependencies.attempts ?? 3;
-  const timeoutMs = dependencies.timeoutMs ?? 20_000;
+  const timeoutMs = dependencies.timeoutMs ?? (command === "reconcile" ? 120_000 : 20_000);
   if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 10) {
     throw new Error("exact-review request attempt count is invalid");
   }
@@ -260,6 +260,7 @@ function reconcileRequest(env: NodeJS.ProcessEnv): ExactReviewQueueRequest {
         run_attempt: sourceRunAttempt,
       },
     ],
+    include_all_claimed: true,
   };
   const repository = normalizedRepository(env.GITHUB_REPOSITORY ?? "openclaw/clawsweeper");
   return signedRequest("reconcile", env, payload, repository, null, {

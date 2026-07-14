@@ -37,8 +37,8 @@ The mental model:
 | `workers.reserve_for_interactive`          |      16 | Worker slots background lanes leave open for exact/manual/urgent work.                |
 | `workers.expansion_reserve`                |       8 | Extra slots background lanes leave open for independently planned matrix expansion.   |
 | `workers.minimum_background`               |      16 | Target floor for background progress when enough global capacity is available.        |
-| `lanes.exact_review.max_concurrent`        |      48 | Maximum concurrent exact-item review workflow runs admitted to Codex.                 |
-| `lanes.exact_review.target_max_concurrent` |      44 | Maximum concurrent exact-item review workflow runs one target repository may consume. |
+| `lanes.exact_review.max_concurrent`        |      64 | Maximum concurrent exact-item review workflow runs admitted to Codex.                 |
+| `lanes.exact_review.target_max_concurrent` |      60 | Maximum concurrent exact-item review workflow runs one target repository may consume. |
 | `lanes.assist.max`                         |      10 | Maximum concurrent lightweight assist jobs.                                           |
 | `lanes.repair.cluster_max_live_runs`       |       2 | Default live repair workflow cap for imported gitcrawl cluster dispatches.            |
 
@@ -53,8 +53,8 @@ by default.
 
 | Name                                                | Current | Meaning                                                                               |
 | --------------------------------------------------- | ------: | ------------------------------------------------------------------------------------- |
-| `exact_review.concurrent_max`                       |      48 | Exact-item review admission cap, clamped to `workers.max`.                            |
-| `exact_review.target_concurrent_max`                |      44 | Exact-item per-target admission cap, clamped to global exact-review capacity.         |
+| `exact_review.concurrent_max`                       |      64 | Exact-item review admission cap, clamped to `workers.max`.                            |
+| `exact_review.target_concurrent_max`                |      60 | Exact-item per-target admission cap, clamped to global exact-review capacity.         |
 | `assist.default`                                    |      10 | Maintainer assist job cap.                                                            |
 | `review_shards.normal_default`                      |      89 | Quiet-system normal review shard ceiling.                                             |
 | `review_shards.normal_active_floor`                 |      38 | Minimum active normal review shards to keep queued for `openclaw/openclaw`.           |
@@ -117,9 +117,9 @@ Exact-item webhooks are admitted by the dashboard Worker's durable
 deliveries by repository and item number, so a new webhook updates the latest
 desired review rather than consuming another runner. Only
 `EXACT_REVIEW_QUEUE_MAX_CONCURRENT` leased items may dispatch an exact-review
-workflow at once; the default is 48. `EXACT_REVIEW_TARGET_MAX_CONCURRENT` bounds
+workflow at once; the default is 64. `EXACT_REVIEW_TARGET_MAX_CONCURRENT` bounds
 how many of those slots one target repository may consume; production sets it
-to 44 so other target repositories retain four global slots during an OpenClaw
+to 60 so other target repositories retain four global slots during an OpenClaw
 backlog drain. Exact capacity is consumed only while queue work is pending. As
 those priority workers start, normal, hot-intake, and commit-review planners
 count them and reduce their next background wave.
@@ -134,7 +134,14 @@ immediately schedules a known newer revision. Failed and cancelled executors
 requeue their item with bounded retry backoff. Successful finalizer reports stay
 leased until a signed terminal-run reconciliation backstop confirms that exact
 GitHub attempt completed successfully; this backstop can also recover terminal
-failed or cancelled runs before lease expiry.
+failed or cancelled runs before lease expiry. Completion triggers share one
+running and one pending reconciler; each surviving run inspects every live claim
+against bounded workflow-run pages, then verifies only matching terminal attempts.
+Candidates absent from those pages fall back to exact run lookup. This keeps
+steady-state GitHub API work constant without losing an older claim, while a
+terminal burst does not consume one Actions runner per review. Unclaimed
+dispatches expire after six minutes and receive a new opaque lease; delayed
+workflows holding the expired lease cannot claim it.
 Run-attempt binding and a per-claim generation check keep delayed terminal
 decisions from releasing a later rerun; queued and in-progress runs are never
 released. If a workflow never claims or completes, the Durable Object reclaims

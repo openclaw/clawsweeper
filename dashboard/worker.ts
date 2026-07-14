@@ -123,16 +123,17 @@ const CLOSED_STATS_PAGE_LIMIT = 10;
 const DEFAULT_CLAWSWEEPER_BOT_LOGINS = ["clawsweeper[bot]", "openclaw-clawsweeper[bot]"];
 const GITHUB_TIMEOUT_MS = 4500;
 const DEFAULT_STALE_QUEUED_WORKFLOW_MS = 6 * 60 * 60 * 1000;
-const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 48;
-const DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT = 44;
-const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 10 * 60 * 1000;
+const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 64;
+const DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT = 60;
+const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 6 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS = 130 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_RETRY_MS = 30_000;
 const DEFAULT_EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = 60_000;
 const EXACT_REVIEW_COMPLETION_RETRY_MAX_MS = 2 * 60 * 60 * 1000;
-const EXACT_REVIEW_RECONCILE_RUN_LIMIT = 32;
+const EXACT_REVIEW_RECONCILE_RUN_LIMIT = 128;
 const EXACT_REVIEW_RECONCILE_CLAIM_MATCH_LIMIT = EXACT_REVIEW_RECONCILE_RUN_LIMIT * 2;
-const EXACT_REVIEW_RECONCILE_CONCURRENCY = 4;
+const EXACT_REVIEW_RECONCILE_CONCURRENCY = 8;
+const EXACT_REVIEW_RECONCILE_LIST_PAGE_LIMIT = 3;
 // This is an idempotency policy, not a storage-size control. Receipts live in
 // individual indexed SQLite rows and are pruned in bounded batches.
 const EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -795,11 +796,14 @@ export class ExactReviewQueue {
       const body = objectValue(await request.json().catch(() => null));
       const requestedRuns = exactReviewRequestedRuns(body.runs);
       if (!requestedRuns) return json({ error: "invalid_requested_runs" }, 400);
+      const includeAllClaimed = body.include_all_claimed === true;
+      if (body.include_all_claimed !== undefined && typeof body.include_all_claimed !== "boolean") {
+        return json({ error: "invalid_include_all_claimed" }, 400);
+      }
 
-      // The workflow_run hook names the exact terminal run. Return at most two matches for
-      // each requested id so a corrupt duplicate remains ambiguous without sampling the first
-      // N unrelated leases. This keeps the response bounded while allowing any live claim in
-      // the durable queue to be reconciled.
+      // A coalesced workflow_run backstop can scan every live claim. Keep two matches per run
+      // so corrupt duplicates remain ambiguous, and bound the snapshot to the global worker
+      // budget so one reconciliation never becomes an unbounded GitHub API fan-out.
       const requestedRunIds = new Set(requestedRuns.map((run) => run.runId));
       const matchesByRunId = new Map<string, ExactReviewQueueItem[]>();
       const state = this.readStateSync();
@@ -807,7 +811,7 @@ export class ExactReviewQueue {
         if (
           item.state !== "leased" ||
           !item.claimedRunId ||
-          !requestedRunIds.has(item.claimedRunId)
+          (!includeAllClaimed && !requestedRunIds.has(item.claimedRunId))
         ) {
           continue;
         }
@@ -815,13 +819,15 @@ export class ExactReviewQueue {
         if (matches.length < 2) matches.push(item);
         matchesByRunId.set(item.claimedRunId, matches);
       }
-      const runs = [...matchesByRunId.values()].flatMap((matches) =>
-        matches.map((item) => ({
-          run_id: String(item.claimedRunId),
-          run_attempt: item.claimedRunAttempt ?? null,
-          claim_generation: exactReviewClaimGeneration(item.claimGeneration),
-        })),
-      );
+      const runs = [...matchesByRunId.values()]
+        .flatMap((matches) =>
+          matches.map((item) => ({
+            run_id: String(item.claimedRunId),
+            run_attempt: item.claimedRunAttempt ?? null,
+            claim_generation: exactReviewClaimGeneration(item.claimGeneration),
+          })),
+        )
+        .slice(0, EXACT_REVIEW_RECONCILE_RUN_LIMIT);
       return json({ runs });
     }
 
@@ -2213,6 +2219,10 @@ async function authenticatedExactReviewReconcile(request, env) {
   if (!body) return json({ error: "invalid_json" }, 400);
   const requestedRuns = exactReviewRequestedRuns(body.runs ?? body.run_ids);
   if (!requestedRuns) return json({ error: "invalid_runs" }, 400);
+  const includeAllClaimed = body.include_all_claimed === true;
+  if (body.include_all_claimed !== undefined && typeof body.include_all_claimed !== "boolean") {
+    return json({ error: "invalid_include_all_claimed" }, 400);
+  }
 
   const claimedResponse = await exactReviewQueueRequest(
     env,
@@ -2225,6 +2235,7 @@ async function authenticatedExactReviewReconcile(request, env) {
           run_id: run.runId,
           ...(run.runAttempt ? { run_attempt: run.runAttempt } : {}),
         })),
+        ...(includeAllClaimed ? { include_all_claimed: true } : {}),
       }),
     }),
   );
@@ -2233,10 +2244,19 @@ async function authenticatedExactReviewReconcile(request, env) {
   const claimedRuns = exactReviewClaimedRuns(claimedBody.runs);
   if (!claimedRuns) return json({ error: "exact_review_queue_unavailable" }, 503);
   const candidates: Array<ExactReviewClaimedRun & { requestedRunAttempt?: number }> = [];
-  for (const requested of requestedRuns) {
+  const candidateRequests = includeAllClaimed
+    ? [...new Set(claimedRuns.map((claimed) => claimed.runId))].map((runId) => ({
+        runId,
+        runAttempt: undefined,
+      }))
+    : requestedRuns;
+  for (const requested of candidateRequests) {
     const matches = claimedRuns.filter((claimed) => claimed.runId === requested.runId);
     if (matches.length !== 1) continue;
-    candidates.push({ ...matches[0], requestedRunAttempt: requested.runAttempt });
+    candidates.push({
+      ...matches[0],
+      requestedRunAttempt: includeAllClaimed ? matches[0].runAttempt : requested.runAttempt,
+    });
   }
   if (!candidates.length) {
     return json({
@@ -2257,17 +2277,19 @@ async function authenticatedExactReviewReconcile(request, env) {
   } catch {
     return json({ error: "github_run_status_unavailable" }, 502);
   }
-  const checked = await mapWithConcurrency(
-    candidates,
-    EXACT_REVIEW_RECONCILE_CONCURRENCY,
-    async (candidate) => {
-      try {
-        return await exactReviewTerminalRun(token, candidate);
-      } catch {
-        return undefined;
-      }
-    },
-  );
+  const checked = includeAllClaimed
+    ? await exactReviewTerminalRunsFromBatch(token, candidates)
+    : await mapWithConcurrency(
+        candidates,
+        EXACT_REVIEW_RECONCILE_CONCURRENCY,
+        async (candidate) => {
+          try {
+            return await exactReviewTerminalRun(token, candidate);
+          } catch {
+            return undefined;
+          }
+        },
+      );
   const unavailable = checked.filter((result) => result === undefined).length;
   const terminalRuns = checked.filter(
     (
@@ -2984,7 +3006,6 @@ async function exactReviewTerminalRun(
   token: string,
   candidate: ExactReviewClaimedRun & { requestedRunAttempt?: number },
 ) {
-  const expectedRunAttempt = candidate.requestedRunAttempt ?? candidate.runAttempt;
   const latest = await githubTokenJson({
     token,
     path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/actions/runs/${candidate.runId}`,
@@ -2992,6 +3013,56 @@ async function exactReviewTerminalRun(
     body: undefined,
     errorLabel: "ClawSweeper run status",
   });
+  return exactReviewTerminalRunFromSummary(token, candidate, latest);
+}
+
+async function exactReviewTerminalRunsFromBatch(
+  token: string,
+  candidates: Array<ExactReviewClaimedRun & { requestedRunAttempt?: number }>,
+) {
+  const runsById = new Map<string, Record<string, unknown>>();
+  const unresolved = new Set(candidates.map((candidate) => candidate.runId));
+  for (let page = 1; page <= EXACT_REVIEW_RECONCILE_LIST_PAGE_LIMIT; page += 1) {
+    let payload;
+    try {
+      payload = await githubTokenJson({
+        token,
+        path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/actions/workflows/sweep.yml/runs?event=repository_dispatch&per_page=100&page=${page}`,
+        method: "GET",
+        body: undefined,
+        errorLabel: "ClawSweeper run batch",
+      });
+    } catch {
+      break;
+    }
+    const workflowRuns = Array.isArray(payload.workflow_runs) ? payload.workflow_runs : [];
+    for (const entry of workflowRuns) {
+      const summary = objectValue(entry);
+      const runId = String(summary.id || "").trim();
+      if (!unresolved.has(runId)) continue;
+      runsById.set(runId, summary);
+      unresolved.delete(runId);
+    }
+    if (!unresolved.size || workflowRuns.length < 100) break;
+  }
+  return mapWithConcurrency(candidates, EXACT_REVIEW_RECONCILE_CONCURRENCY, async (candidate) => {
+    const summary = runsById.get(candidate.runId);
+    try {
+      return summary
+        ? await exactReviewTerminalRunFromSummary(token, candidate, summary)
+        : await exactReviewTerminalRun(token, candidate);
+    } catch {
+      return undefined;
+    }
+  });
+}
+
+async function exactReviewTerminalRunFromSummary(
+  token: string,
+  candidate: ExactReviewClaimedRun & { requestedRunAttempt?: number },
+  latest: Record<string, unknown>,
+) {
+  const expectedRunAttempt = candidate.requestedRunAttempt ?? candidate.runAttempt;
   if (String(latest.id || "") !== candidate.runId) {
     throw new Error("ClawSweeper run status response id mismatch");
   }

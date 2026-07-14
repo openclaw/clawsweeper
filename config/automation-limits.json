@@ -7,8 +7,8 @@
   },
   "lanes": {
     "exact_review": {
-      "max_concurrent": 48,
-      "target_max_concurrent": 44
+      "max_concurrent": 64,
+      "target_max_concurrent": 60
     },
     "assist": {
       "max": 10

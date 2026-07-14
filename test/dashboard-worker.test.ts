@@ -21,8 +21,8 @@ import {
   triageRoutingGroupsForLabels,
 } from "../dashboard/triage-routing-groups.ts";
 
-test("exact-review queue defaults to 48 of the 128 global workers", () => {
-  assert.equal(exactReviewQueueCapacity({}), 48);
+test("exact-review queue defaults to 64 of the 128 global workers", () => {
+  assert.equal(exactReviewQueueCapacity({}), 64);
   assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "32" }), 32);
   assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "100" }), 100);
   assert.equal(
@@ -2797,7 +2797,6 @@ test("exact-review queue retries dispatch failures and reclaims an unclaimed lea
       {
         CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
-        EXACT_REVIEW_DISPATCH_LEASE_MS: "60000",
       },
     );
     assert.equal(
@@ -2851,9 +2850,12 @@ test("exact-review queue retries dispatch failures and reclaims an unclaimed lea
     );
 
     const leased = (await storage.get("exact-review-queue")) as {
-      items: Record<string, { leaseExpiresAt: number }>;
+      items: Record<string, { leaseExpiresAt: number; leaseId: string; leaseRevision: number }>;
     };
-    leased.items["openclaw/gogcli#599"].leaseExpiresAt = Date.now() - 1;
+    const firstLease = leased.items["openclaw/gogcli#599"];
+    assert.ok(firstLease.leaseExpiresAt - Date.now() > 350_000);
+    assert.ok(firstLease.leaseExpiresAt - Date.now() <= 360_000);
+    firstLease.leaseExpiresAt = Date.now() - 1;
     await storage.put("exact-review-queue", leased);
     await queue.alarm();
     state = await (
@@ -2864,6 +2866,19 @@ test("exact-review queue retries dispatch failures and reclaims an unclaimed lea
       { pending: 0, dispatching: 1, leased: 0 },
     );
     assert.equal(dispatchAttempts, 3);
+    const staleClaim = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/claim", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: firstLease.leaseId,
+          item_key: "openclaw/gogcli#599",
+          lease_revision: firstLease.leaseRevision,
+          run_id: "5990",
+          run_attempt: 1,
+        }),
+      }),
+    );
+    assert.equal(staleClaim.status, 409);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -3587,8 +3602,29 @@ test("signed exact-review reconciliation releases only immutable terminal runs",
       assert.deepEqual(JSON.parse(String(init?.body)).permissions, { actions: "read" });
       return jsonResponse({ token: "t" });
     }
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/9001") {
-      return jsonResponse({ id: 9001, run_attempt: 1, status: "completed" });
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml/runs") {
+      assert.equal(url.searchParams.get("event"), "repository_dispatch");
+      assert.equal(url.searchParams.get("status"), null);
+      assert.equal(url.searchParams.get("per_page"), "100");
+      const page = url.searchParams.get("page");
+      if (page === "1") {
+        return jsonResponse({
+          workflow_runs: Array.from({ length: 100 }, (_, index) => ({
+            id: 10_000 + index,
+            run_attempt: 1,
+            status: "completed",
+            conclusion: "success",
+          })),
+        });
+      }
+      assert.equal(page, "2");
+      return jsonResponse({
+        workflow_runs: [
+          { id: 9001, run_attempt: 1, status: "completed", conclusion: "cancelled" },
+          { id: 9002, run_attempt: 1, status: "in_progress", conclusion: null },
+          { id: 9003, run_attempt: 1, status: "completed", conclusion: "success" },
+        ],
+      });
     }
     if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/9001/attempts/1") {
       return jsonResponse({
@@ -3597,12 +3633,6 @@ test("signed exact-review reconciliation releases only immutable terminal runs",
         status: "completed",
         conclusion: "cancelled",
       });
-    }
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/9002") {
-      return jsonResponse({ id: 9002, run_attempt: 1, status: "in_progress", conclusion: null });
-    }
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/9003") {
-      return jsonResponse({ id: 9003, run_attempt: 1, status: "completed" });
     }
     if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/9003/attempts/1") {
       return jsonResponse({
@@ -3624,11 +3654,8 @@ test("signed exact-review reconciliation releases only immutable terminal runs",
       EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
     };
     const body = JSON.stringify({
-      runs: [
-        { run_id: "9001", run_attempt: 1 },
-        { run_id: "9002", run_attempt: 1 },
-        { run_id: "9003", run_attempt: 1 },
-      ],
+      runs: [{ run_id: "9001", run_attempt: 1 }],
+      include_all_claimed: true,
     });
     const unsigned = await worker.fetch(
       new Request("https://clawsweeper.openclaw.ai/internal/exact-review/reconcile", {
@@ -3640,7 +3667,7 @@ test("signed exact-review reconciliation releases only immutable terminal runs",
     assert.equal(unsigned.status, 401);
 
     const oversizedBody = JSON.stringify({
-      run_ids: Array.from({ length: 33 }, (_, index) => String(index + 1)),
+      run_ids: Array.from({ length: 129 }, (_, index) => String(index + 1)),
     });
     const oversizedSignature = `sha256=${createHmac("sha256", "test-secret").update(oversizedBody).digest("hex")}`;
     const oversized = await worker.fetch(
@@ -3666,7 +3693,7 @@ test("signed exact-review reconciliation releases only immutable terminal runs",
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
       ok: true,
-      requested: 3,
+      requested: 1,
       claimed: 3,
       terminal: 2,
       unavailable: 0,

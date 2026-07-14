@@ -446,6 +446,7 @@ test("exact-review completion and reconciliation emit accepted mutation boundari
     });
     assert.deepEqual(JSON.parse(requests[1]?.body ?? "{}"), {
       runs: [{ run_id: "4242", run_attempt: 3 }],
+      include_all_claimed: true,
     });
     assert.equal(
       requests[1]?.headers.get("x-clawsweeper-exact-review-signature"),

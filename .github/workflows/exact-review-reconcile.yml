@@ -12,7 +12,9 @@ env:
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
 
 concurrency:
-  group: exact-review-reconcile-${{ github.event.workflow_run.id }}
+  # Exact-review completions share one pending slot. Each surviving run scans all
+  # live claims, so GitHub may safely coalesce a burst without losing a terminal run.
+  group: exact-review-reconcile-${{ github.event.workflow_run.event == 'repository_dispatch' && startsWith(github.event.workflow_run.display_title, 'Review event item ') && 'queue' || github.event.workflow_run.id }}
   cancel-in-progress: false
 
 jobs:
