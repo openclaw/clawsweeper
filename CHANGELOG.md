@@ -57,11 +57,6 @@ checkpoint, and status-only commits are intentionally omitted.
 - Added a system, light, and dark theme switcher to the generated documentation site. Thanks @joshka.
 
 ### Changed
-
-- Added a default-off shared admission policy that consumes fresh exact-review
-  pressure to cap normal, hot-intake, and commit review at 16 or 4 background
-  workers, re-evaluates continuations, and defers saturated work without
-  changing exact-review capacity. Thanks @brokemac79.
 - Preserved crawl-remote's reviewed `limits.cpu_ms` value through immutable
   release packaging and post-transfer deployment verification.
 - Reverted the action-lifecycle expansion from PR #521, restoring the pre-merge ClawSweeper paths while retaining later exact-review throughput fixes and retrying coalesced reconciliations after any partial lookup failure.
