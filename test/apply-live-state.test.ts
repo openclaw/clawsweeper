@@ -4,9 +4,12 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { guardedOpenApplyProofFields } from "../dist/clawsweeper.js";
+import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
 import {
   implementedCloseReport,
+  promotionGhMock,
   readText,
+  reportWithSyncedReviewComment,
   runApplyDecisionsForTest,
   tmpPrefix,
   withMockGh,
@@ -59,6 +62,262 @@ test("event apply proof marks only live deterministic remain-open guards", () =>
       {},
       action,
     );
+  }
+});
+
+test("apply-decisions rejects recorded PR review activity drift before mutations", () => {
+  const reviewedCursor = createReviewedPrActivityCursor({
+    reviews: [],
+    inlineComments: [],
+  });
+  assert.ok(reviewedCursor);
+
+  for (const scenario of [
+    {
+      name: "review",
+      reviews: [
+        {
+          id: 7001,
+          user: { login: "maintainer" },
+          state: "COMMENTED",
+          body: "please recheck this",
+          submitted_at: "2026-05-01T00:30:00Z",
+          commit_id: "head-sha",
+        },
+      ],
+      inlineComments: [],
+    },
+    {
+      name: "inline comment",
+      reviews: [],
+      inlineComments: [
+        {
+          id: 7002,
+          pull_request_review_id: 7001,
+          user: { login: "maintainer" },
+          body: "this line still needs work",
+          created_at: "2026-05-01T00:30:00Z",
+          updated_at: "2026-05-01T00:30:00Z",
+          path: "src/example.ts",
+          line: 12,
+          side: "RIGHT",
+          commit_id: "head-sha",
+        },
+      ],
+    },
+  ]) {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const itemsDir = join(root, "items");
+      const closedDir = join(root, "closed");
+      const plansDir = join(root, "plans");
+      const reportPath = join(root, "apply-report.json");
+      const mutationLogPath = join(root, "mutations.log");
+      mkdirSync(itemsDir, { recursive: true });
+      mkdirSync(plansDir, { recursive: true });
+
+      const synced = reportWithSyncedReviewComment(
+        implementedCloseReport({
+          repository: "openclaw/openclaw",
+          number: 321,
+          type: "pull_request",
+          title: "Reviewed PR",
+          url: "https://github.com/openclaw/openclaw/pull/321",
+          author: "reporter",
+          author_association: "CONTRIBUTOR",
+          labels: JSON.stringify([]),
+          pull_head_sha: "head-sha",
+          review_activity_cursor: reviewedCursor,
+        }),
+        321,
+        "implemented_on_main",
+      );
+      writeFileSync(join(itemsDir, "321.md"), synced.report, "utf8");
+
+      withMockGh(
+        root,
+        promotionGhMock({
+          number: 321,
+          title: "Reviewed PR",
+          labels: [],
+          comment: synced.comment,
+          reviews: scenario.reviews,
+          pullReviewComments: scenario.inlineComments,
+          itemUpdatedAtAfterLabelSyncLogPath: mutationLogPath,
+        }),
+        () => {
+          runApplyDecisionsForTest({
+            targetRepo: "openclaw/openclaw",
+            itemsDir,
+            closedDir,
+            plansDir,
+            reportPath,
+          });
+        },
+      );
+
+      assert.deepEqual(
+        JSON.parse(readText(reportPath)),
+        [
+          {
+            number: 321,
+            action: "skipped_changed_since_review",
+            reason: "pull request review activity changed since review",
+          },
+        ],
+        scenario.name,
+      );
+      assert.equal(existsSync(mutationLogPath), false, scenario.name);
+      assert.match(
+        readText(join(itemsDir, "321.md")),
+        /^action_taken: skipped_changed_since_review$/m,
+        scenario.name,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("apply-decisions records review activity that changes after lease acquisition", () => {
+  const reviewedCursor = createReviewedPrActivityCursor({
+    reviews: [],
+    inlineComments: [],
+  });
+  assert.ok(reviewedCursor);
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+
+    const synced = reportWithSyncedReviewComment(
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        number: 321,
+        type: "pull_request",
+        title: "Reviewed PR",
+        url: "https://github.com/openclaw/openclaw/pull/321",
+        author: "reporter",
+        author_association: "CONTRIBUTOR",
+        labels: JSON.stringify([]),
+        pull_head_sha: "head-sha",
+        review_activity_cursor: reviewedCursor,
+      }),
+      321,
+      "implemented_on_main",
+    );
+    writeFileSync(join(itemsDir, "321.md"), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 321,
+        title: "Reviewed PR",
+        labels: [],
+        comment: synced.comment,
+        reviews: [],
+        reviewsAfterFirstRead: [
+          {
+            id: 7001,
+            user: { login: "maintainer" },
+            state: "COMMENTED",
+            body: "please recheck this",
+            submitted_at: "2026-05-01T00:30:00Z",
+            commit_id: "head-sha",
+          },
+        ],
+        pullReviewComments: [],
+      }),
+      () => {
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+        });
+      },
+    );
+
+    assert.deepEqual(JSON.parse(readText(reportPath)), [
+      {
+        number: 321,
+        action: "skipped_changed_since_review",
+        reason: "pull request review activity changed since review",
+      },
+    ]);
+    assert.match(
+      readText(join(itemsDir, "321.md")),
+      /^action_taken: skipped_changed_since_review$/m,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions fails closed without a reviewed PR activity cursor", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const mutationLogPath = join(root, "mutations.log");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const synced = reportWithSyncedReviewComment(
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        number: 321,
+        type: "pull_request",
+        title: "Legacy reviewed PR",
+        url: "https://github.com/openclaw/openclaw/pull/321",
+        author: "reporter",
+        author_association: "CONTRIBUTOR",
+        labels: JSON.stringify([]),
+        pull_head_sha: "head-sha",
+        review_activity_cursor: "unknown",
+      }),
+      321,
+      "implemented_on_main",
+    );
+    writeFileSync(join(itemsDir, "321.md"), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 321,
+        title: "Legacy reviewed PR",
+        labels: [],
+        comment: synced.comment,
+        itemUpdatedAtAfterLabelSyncLogPath: mutationLogPath,
+      }),
+      () => {
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+        });
+      },
+    );
+
+    assert.deepEqual(JSON.parse(readText(reportPath)), [
+      {
+        number: 321,
+        action: "kept_open",
+        reason: "stored pull request review activity cursor is missing; fresh review required",
+      },
+    ]);
+    assert.equal(existsSync(mutationLogPath), false);
+    assert.match(readText(join(itemsDir, "321.md")), /^action_taken: proposed_close$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

@@ -6,8 +6,14 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
 import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
+import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
 
 export const tmpPrefix = join(tmpdir(), "clawsweeper-test-");
+export const emptyReviewedPrActivityCursor =
+  createReviewedPrActivityCursor({ reviews: [], inlineComments: [] }) ??
+  (() => {
+    throw new Error("empty reviewed PR activity must produce a cursor");
+  })();
 
 export function readText(filePath: string): string {
   return readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
@@ -334,6 +340,12 @@ export function workPlanCandidateReport(overrides = {}) {
     work_cluster_refs: JSON.stringify(["openclaw/clawsweeper#26"]),
     ...overrides,
   };
+  if (
+    frontmatter.type === "pull_request" &&
+    !Object.hasOwn(frontmatter, "review_activity_cursor")
+  ) {
+    Object.assign(frontmatter, { review_activity_cursor: emptyReviewedPrActivityCursor });
+  }
   return `---
 ${Object.entries(frontmatter)
   .map(([key, value]) => `${key}: ${value}`)
@@ -446,6 +458,7 @@ export function promotionGhMock(options: {
   commentsAfterFirstRead?: unknown[];
   commentsAfterCommentWrite?: unknown[];
   reviews?: unknown[];
+  reviewsAfterFirstRead?: unknown[];
   pullReviewComments?: unknown[];
   timeline?: unknown[];
   mergeable?: boolean | null;
@@ -491,6 +504,7 @@ export function promotionGhMock(options: {
 	const commentsAfterFirstRead = ${JSON.stringify(options.commentsAfterFirstRead ?? null)};
 	const commentsAfterCommentWrite = ${JSON.stringify(options.commentsAfterCommentWrite ?? null)};
 	const reviews = ${JSON.stringify(options.reviews ?? [])};
+	const reviewsAfterFirstRead = ${JSON.stringify(options.reviewsAfterFirstRead ?? null)};
 	const pullReviewComments = ${JSON.stringify(options.pullReviewComments ?? [])};
 	const timeline = ${JSON.stringify(timeline)};
 	const linkedPulls = ${JSON.stringify(linkedPulls)};
@@ -505,6 +519,7 @@ export function promotionGhMock(options: {
 	const number = ${options.number};
 	const commentStatePath = join(__dirname, "..", "comment-state-" + number + ".json");
 	const commentReadStatePath = join(__dirname, "..", "comment-read-" + number);
+	const reviewReadStatePath = join(__dirname, "..", "review-read-" + number);
 	const mutationComment = (id, body) => ({
 	  id,
 	  html_url: "https://github.com/openclaw/openclaw/pull/" + number + "#issuecomment-" + id,
@@ -609,7 +624,11 @@ export function promotionGhMock(options: {
 } else if (args[0] === "api" && new RegExp("/issues/" + number + "/timeline(?:\\\\?|$)").test(path)) {
   console.log(JSON.stringify(slurp ? [timeline] : timeline));
 } else if (args[0] === "api" && new RegExp("/pulls/" + number + "/reviews(?:\\\\?|$)").test(path)) {
-  console.log(JSON.stringify(slurp ? [reviews] : reviews));
+  const currentReviews = reviewsAfterFirstRead && existsSync(reviewReadStatePath)
+    ? reviewsAfterFirstRead
+    : reviews;
+  if (!existsSync(reviewReadStatePath)) writeFileSync(reviewReadStatePath, "read", "utf8");
+  console.log(JSON.stringify(slurp ? [currentReviews] : currentReviews));
 } else if (args[0] === "api" && new RegExp("/issues/" + number + "$").test(path)) {
   console.log(JSON.stringify({
     number,

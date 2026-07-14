@@ -183,7 +183,10 @@ import {
   type ReviewHistoryLedger,
 } from "./review-history.js";
 import { trailingHtmlComments } from "./review-comment-markers.js";
-import { createReviewedPrActivityCursor } from "./review-activity-cursor.js";
+import {
+  createReviewedPrActivityCursor,
+  isReviewedPrActivityCursor,
+} from "./review-activity-cursor.js";
 import {
   ACTION_EVENT_REASON_CODES,
   ACTION_EVENT_STATUSES,
@@ -25486,10 +25489,12 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         };
       }
     };
-    const ownedApplyMutationLeaseBlockReason = (
+    const ownedApplyMutationLeaseBlock = (
       lease: AcquiredReviewStartLease,
-    ): string | null => {
+    ): { sourceChanged: boolean; reason: string } | null => {
       try {
+        const reviewActivityBlock = currentReviewActivityBlock();
+        if (reviewActivityBlock) return reviewActivityBlock;
         const revisionBefore = fetchLiveReviewHeadSha();
         const refreshed = issueReviewCommentState(number);
         const revisionAfter = fetchLiveReviewHeadSha();
@@ -25501,7 +25506,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             reportReviewRevision !== null &&
             revisionAfter !== reportReviewRevision)
         ) {
-          return `${item.kind === "pull_request" ? "PR head" : "issue source revision"} changed while holding the apply mutation lease`;
+          return {
+            sourceChanged: true,
+            reason: `${item.kind === "pull_request" ? "PR head" : "issue source revision"} changed while holding the apply mutation lease`,
+          };
         }
         const winner = freshExactHeadReviewStartLease({
           comments: refreshed.leaseComments,
@@ -25516,29 +25524,39 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           winner.commentId !== lease.commentId ||
           lease.headSha !== revisionAfter
         ) {
-          return `apply mutation lease ${lease.commentId} is no longer the elected ${item.kind === "pull_request" ? "same-head" : "same-revision"} lease`;
+          return {
+            sourceChanged: false,
+            reason: `apply mutation lease ${lease.commentId} is no longer the elected ${item.kind === "pull_request" ? "same-head" : "same-revision"} lease`,
+          };
         }
-        return canonicalBoundStaleReviewReason(
+        const staleReviewReason = canonicalBoundStaleReviewReason(
           markdownBeforeApplyDecisionMutations,
           refreshed.reviewComment,
         );
+        return staleReviewReason ? { sourceChanged: false, reason: staleReviewReason } : null;
       } catch (error) {
         if (error instanceof GitHubRuntimeBudgetError) throw error;
         const detail = trimMiddle(
           (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " "),
           180,
         );
-        return `apply mutation lease verification failed; next apply will retry: ${detail}`;
+        return {
+          sourceChanged: false,
+          reason: `apply mutation lease verification failed; next apply will retry: ${detail}`,
+        };
       }
     };
     const acquireApplyMutationLease = (
       leaseState: ReturnType<typeof refreshReviewStartLeaseState>,
-    ): string | null => {
+    ): { sourceChanged: boolean; reason: string } | null => {
       if (dryRun || !requiresApplyMutationLease) return null;
       let lease: AcquiredReviewStartLease | null = null;
       if (leaseState.lease && !leaseState.preserve) {
         if (!leaseState.lease.owner || leaseState.lease.commentId === null) {
-          return "matching review lease lacks a server-confirmed owner and comment id";
+          return {
+            sourceChanged: false,
+            reason: "matching review lease lacks a server-confirmed owner and comment id",
+          };
         }
         lease = {
           owner: leaseState.lease.owner,
@@ -25557,18 +25575,28 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           purpose: "apply",
         });
         if (posted.status !== "posted") {
-          return `${item.kind === "pull_request" ? "same-head" : "same-revision"} ClawSweeper lease was acquired concurrently`;
+          return {
+            sourceChanged: false,
+            reason: `${item.kind === "pull_request" ? "same-head" : "same-revision"} ClawSweeper lease was acquired concurrently`,
+          };
         }
         lease = posted.lease;
       }
       activeApplyMutationLease = { itemNumber: number, lease };
-      return ownedApplyMutationLeaseBlockReason(lease);
+      return ownedApplyMutationLeaseBlock(lease);
     };
-    const currentApplyMutationLeaseBlockReason = (): string | null => {
+    const currentApplyMutationLeaseBlock = (): {
+      sourceChanged: boolean;
+      reason: string;
+    } | null => {
+      const reviewActivityBlock = currentReviewActivityBlock();
+      if (reviewActivityBlock) return reviewActivityBlock;
       if (dryRun || !requiresApplyMutationLease) return null;
       const active = activeApplyMutationLease;
-      if (!active || active.itemNumber !== number) return "apply mutation lease is not held";
-      return ownedApplyMutationLeaseBlockReason(active.lease);
+      if (!active || active.itemNumber !== number) {
+        return { sourceChanged: false, reason: "apply mutation lease is not held" };
+      }
+      return ownedApplyMutationLeaseBlock(active.lease);
     };
     const recordReviewGuardSkip = (
       action: "kept_open" | "skipped_stale_review_comment_sync",
@@ -25593,6 +25621,100 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             `${reason}; stale canonical comment correction remains pending`,
           )
         : recordReviewGuardSkip("kept_open", reason, restoreOriginal);
+    const markChangedSinceReview = (options: {
+      reason: string;
+      currentUpdatedAt?: string | undefined;
+      currentSnapshotHash?: string | undefined;
+    }): boolean => {
+      markdown = replaceFrontMatterValue(
+        markdown,
+        "action_taken",
+        "skipped_changed_since_review",
+      );
+      if (options.currentUpdatedAt) {
+        markdown = replaceFrontMatterValue(
+          markdown,
+          "current_item_updated_at",
+          options.currentUpdatedAt,
+        );
+      }
+      if (options.currentSnapshotHash) {
+        markdown = replaceFrontMatterValue(
+          markdown,
+          "current_item_snapshot_hash",
+          options.currentSnapshotHash,
+        );
+      }
+      markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
+      if (!dryRun) writeReportMarkdown(path, markdown);
+      results.push({
+        number,
+        action: "skipped_changed_since_review",
+        reason: options.reason,
+        ...eventApplyDispositionProof("skipped_changed_since_review"),
+      });
+      processedCount += 1;
+      maybeLogProgress(`skipped #${number}: ${options.reason}`);
+      return processedCount >= processedLimit;
+    };
+    const expectedReviewActivityCursor = frontMatterValue(
+      markdownBeforeApplyDecisionMutations,
+      "review_activity_cursor",
+    );
+    const currentReviewActivityBlock = (): {
+      sourceChanged: boolean;
+      reason: string;
+    } | null => {
+      if (item.kind !== "pull_request") return null;
+      if (!expectedReviewActivityCursor || expectedReviewActivityCursor === "unknown") {
+        return {
+          sourceChanged: false,
+          reason: "stored pull request review activity cursor is missing; fresh review required",
+        };
+      }
+      if (!isReviewedPrActivityCursor(expectedReviewActivityCursor)) {
+        return {
+          sourceChanged: false,
+          reason: "stored pull request review activity cursor is invalid; fresh review required",
+        };
+      }
+      try {
+        const currentReviewActivityCursor = createReviewedPrActivityCursor({
+          reviews: ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/reviews`),
+          inlineComments: ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/comments`),
+        });
+        if (!currentReviewActivityCursor) {
+          return {
+            sourceChanged: true,
+            reason: "pull request review activity exceeds the bounded reviewed cursor",
+          };
+        }
+        if (currentReviewActivityCursor !== expectedReviewActivityCursor) {
+          return {
+            sourceChanged: true,
+            reason: "pull request review activity changed since review",
+          };
+        }
+        return null;
+      } catch (error) {
+        if (error instanceof GitHubRuntimeBudgetError) throw error;
+        const detail = trimMiddle(
+          (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " "),
+          180,
+        );
+        return {
+          sourceChanged: false,
+          reason: `pull request review activity could not be refreshed; next apply will retry: ${detail}`,
+        };
+      }
+    };
+    const recordReviewActivityBlock = (
+      block: { sourceChanged: boolean; reason: string },
+      restoreOriginal = true,
+    ): boolean =>
+      block.sourceChanged
+        ? markChangedSinceReview({ reason: block.reason })
+        : recordReviewLeaseSkip(block.reason, restoreOriginal);
     const recordActiveReviewLeaseSkip = (expiresAt: string): boolean =>
       recordReviewLeaseSkip(
         `${item.kind === "pull_request" ? "same-head" : "same-revision"} ClawSweeper review is active until ${expiresAt}`,
@@ -26389,6 +26511,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         : null;
     let currentPrStatusKind: PrStatusLabelKind | null = null;
     if (state === "open") {
+      const reviewActivityBlock = currentReviewActivityBlock();
+      if (reviewActivityBlock) {
+        if (recordReviewActivityBlock(reviewActivityBlock)) break;
+        continue;
+      }
       const lateLeaseState = refreshReviewStartLeaseState();
       if (lateLeaseState.blockReason) {
         if (recordReviewLeaseSkip(lateLeaseState.blockReason)) break;
@@ -26403,9 +26530,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         if (recordActiveReviewLeaseSkip(lateLeaseState.lease.expiresAt)) break;
         continue;
       }
-      const mutationLeaseBlockReason = acquireApplyMutationLease(lateLeaseState);
-      if (mutationLeaseBlockReason) {
-        if (recordReviewLeaseSkip(mutationLeaseBlockReason)) break;
+      const mutationLeaseBlock = acquireApplyMutationLease(lateLeaseState);
+      if (mutationLeaseBlock) {
+        if (recordReviewActivityBlock(mutationLeaseBlock)) break;
         continue;
       }
     }
@@ -26553,42 +26680,6 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         break;
       continue;
     }
-    const markChangedSinceReview = (options: {
-      reason: string;
-      currentUpdatedAt?: string | undefined;
-      currentSnapshotHash?: string | undefined;
-    }): boolean => {
-      markdown = replaceFrontMatterValue(
-        markdown,
-        "action_taken",
-        "skipped_changed_since_review",
-      );
-      if (options.currentUpdatedAt) {
-        markdown = replaceFrontMatterValue(
-          markdown,
-          "current_item_updated_at",
-          options.currentUpdatedAt,
-        );
-      }
-      if (options.currentSnapshotHash) {
-        markdown = replaceFrontMatterValue(
-          markdown,
-          "current_item_snapshot_hash",
-          options.currentSnapshotHash,
-        );
-      }
-      markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
-      if (!dryRun) writeReportMarkdown(path, markdown);
-      results.push({
-        number,
-        action: "skipped_changed_since_review",
-        reason: options.reason,
-        ...eventApplyDispositionProof("skipped_changed_since_review"),
-      });
-      processedCount += 1;
-      maybeLogProgress(`skipped #${number}: ${options.reason}`);
-      return processedCount >= processedLimit;
-    };
     const postProofFreshnessBlock = (): {
       reason: string;
       currentUpdatedAt?: string;
@@ -26794,9 +26885,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       !stalePrReviewHead &&
       labelSyncFreshEnough();
     if (state === "open" && isCurrentCompleteReport) {
-      const mutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
-      if (mutationLeaseBlockReason) {
-        if (recordReviewLeaseSkip(mutationLeaseBlockReason, false)) break;
+      const mutationLeaseBlock = currentApplyMutationLeaseBlock();
+      if (mutationLeaseBlock) {
+        if (recordReviewActivityBlock(mutationLeaseBlock, false)) break;
         continue;
       }
       try {
@@ -26864,9 +26955,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       !isCloseProposal &&
       isCurrentCompleteReport
     ) {
-      const mutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
-      if (mutationLeaseBlockReason) {
-        if (recordReviewLeaseSkip(mutationLeaseBlockReason, false)) break;
+      const mutationLeaseBlock = currentApplyMutationLeaseBlock();
+      if (mutationLeaseBlock) {
+        if (recordReviewActivityBlock(mutationLeaseBlock, false)) break;
         continue;
       }
       currentClosingPullRequests = closingPullRequestsForIssue(number);
@@ -27158,9 +27249,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           const preLeaseCanonicalGuard = applyCanonicalCommentSyncGuard(true);
           if (preLeaseCanonicalGuard.stopApply) break;
           if (preLeaseCanonicalGuard.skipCurrentItem) continue;
-          const mutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
-          if (mutationLeaseBlockReason) {
-            if (recordReviewLeaseSkip(mutationLeaseBlockReason, false)) break;
+          const mutationLeaseBlock = currentApplyMutationLeaseBlock();
+          if (mutationLeaseBlock) {
+            if (recordReviewActivityBlock(mutationLeaseBlock, false)) break;
             continue;
           }
           const latestLeaseState = refreshReviewStartLeaseState();
@@ -27445,9 +27536,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       if (markApplySkipped("kept_open", inactivityCloseBlockReason)) break;
       continue;
     }
-    const closeMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
-    if (closeMutationLeaseBlockReason) {
-      if (recordReviewLeaseSkip(closeMutationLeaseBlockReason, false)) break;
+    const closeMutationLeaseBlock = currentApplyMutationLeaseBlock();
+    if (closeMutationLeaseBlock) {
+      if (recordReviewActivityBlock(closeMutationLeaseBlock, false)) break;
       continue;
     }
     logProgress(`closing #${number}`);
@@ -27489,9 +27580,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             dryRun,
           })
         : null;
-    const preCloseMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
-    if (preCloseMutationLeaseBlockReason) {
-      if (recordReviewLeaseSkip(preCloseMutationLeaseBlockReason, false)) break;
+    const preCloseMutationLeaseBlock = currentApplyMutationLeaseBlock();
+    if (preCloseMutationLeaseBlock) {
+      if (recordReviewActivityBlock(preCloseMutationLeaseBlock, false)) break;
       continue;
     }
     ensureRuntimeDelayFits(closeDelayMs, "before close");
