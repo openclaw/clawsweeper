@@ -629,6 +629,37 @@ test("validation parser keeps script arguments after the package-manager separat
   ]);
 });
 
+test("validation parser rejects unsupported npm options after the script", () => {
+  for (const command of [
+    "npm run check --script-shell /tmp/runner",
+    "npm run check --script-shell=/tmp/runner",
+    "npm run check --cache /tmp/cache",
+    "npm run check --prefix=/tmp/project",
+    "npm run check --userconfig .npmrc",
+    "npm run check --unknown-option value",
+    "npm test --script-shell /tmp/runner",
+  ]) {
+    assert.throws(() => parseAllowedValidationCommand(command), /unsafe validation command/);
+  }
+
+  assert.deepEqual(parseAllowedValidationCommand("npm run check --workspace worker --silent"), [
+    "npm",
+    "run",
+    "check",
+    "--workspace",
+    "worker",
+    "--silent",
+  ]);
+  assert.deepEqual(parseAllowedValidationCommand("npm run check -- --script-shell /tmp/runner"), [
+    "npm",
+    "run",
+    "check",
+    "--",
+    "--script-shell",
+    "/tmp/runner",
+  ]);
+});
+
 test("pnpm path normalization honors global options before the command", () => {
   const cwd = gitPackageFixture({ "check:changed": 'node -e ""' });
   git(cwd, "add", ".");
@@ -2210,12 +2241,67 @@ if (args[0] === "enable") {
 
     assert.equal(fs.existsSync(maliciousMarker), false);
     assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/), [
-      "install --frozen-lockfile --prefer-offline --ignore-scripts --config.engine-strict=false --config.enable-pre-post-scripts=false",
+      "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.engine-strict=false --config.enable-pre-post-scripts=false",
       "--config.enable-pre-post-scripts=false first",
       "--config.enable-pre-post-scripts=false second",
     ]);
   },
 );
+
+test("pnpm setup disables target pnpmfile hooks", { skip: process.platform === "win32" }, () => {
+  const cwd = gitPackageFixture({ verify: 'node -e ""' });
+  const hostBin = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-pnpmfile-"));
+  const maliciousMarker = path.join(hostBin, "pnpmfile-ran");
+  fs.writeFileSync(
+    path.join(cwd, ".pnpmfile.cjs"),
+    `require("node:fs").writeFileSync(${JSON.stringify(maliciousMarker)}, "ran");\n`,
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const pnpmSource = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args.includes("install")) {
+  if (!args.includes("--ignore-pnpmfile")) require(path.resolve(".pnpmfile.cjs"));
+  fs.mkdirSync("node_modules", { recursive: true });
+}
+`;
+  writeNodeCommandShim(
+    hostBin,
+    "corepack",
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args[0] === "enable") {
+  const destination = args[args.indexOf("--install-directory") + 1];
+  fs.mkdirSync(destination, { recursive: true });
+  fs.writeFileSync(path.join(destination, "pnpm"), ${JSON.stringify(pnpmSource)}, { mode: 0o755 });
+}
+`,
+  );
+  const options = {
+    ...validationOptions("steipete/example", {
+      toolchain: {
+        packageManager: "pnpm",
+        baseValidationCommands: [],
+        changedGate: null,
+      },
+    }),
+    installTargetDeps: true,
+    installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+    setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+  };
+
+  withCommandOverridesUnset(["corepack", "pnpm"], () =>
+    withPathOnlyPrefix(hostBin, () => prepareTargetToolchain(cwd, options)),
+  );
+
+  assert.equal(fs.existsSync(maliciousMarker), false);
+});
 
 test(
   "validation rejects ignored dependency poisoning before the next command",
@@ -2264,6 +2350,107 @@ if (args.includes("second")) {
       /unsafe validation command mutated checkout identity/,
     );
     assert.equal(fs.existsSync(secondCommandMarker), false);
+  },
+);
+
+test(
+  "validation rejects ignored vendor poisoning before the next command",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({
+      first: 'node -e ""',
+      second: 'node -e ""',
+    });
+    fs.writeFileSync(path.join(cwd, ".gitignore"), "vendor/\n");
+    fs.mkdirSync(path.join(cwd, "vendor", "fixture-dependency"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, "vendor", "fixture-dependency", "state.php"), "safe\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-vendor-poison-"));
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args.includes("first")) {
+  fs.writeFileSync("vendor/fixture-dependency/state.php", "poisoned\\n");
+}
+if (args.includes("second")) process.exit(70);
+`,
+    );
+    const options = validationOptions("steipete/example", {
+      toolchain: {
+        packageManager: "pnpm",
+        baseValidationCommands: [],
+        changedGate: null,
+      },
+    });
+
+    assert.throws(
+      () =>
+        withPathOnlyPrefix(binDir, () =>
+          runAllowedValidationCommands(["pnpm first", "pnpm second"], cwd, options),
+        ),
+      /unsafe validation command mutated checkout identity/,
+    );
+  },
+);
+
+test(
+  "validation clears ignored build roots between commands",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({
+      first: 'node -e ""',
+      second: 'node -e ""',
+    });
+    const runtimeRoots = [".build", ".gradle", "dist", "target"];
+    fs.writeFileSync(
+      path.join(cwd, ".gitignore"),
+      runtimeRoots.map((runtimeRoot) => `${runtimeRoot}/`).join("\n") + "\n",
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-build-roots-"));
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+const runtimeRoots = ${JSON.stringify(runtimeRoots)};
+if (args.includes("first")) {
+  for (const root of runtimeRoots) {
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, "state"), "poisoned\\n");
+  }
+}
+if (args.includes("second") && runtimeRoots.some((root) => fs.existsSync(root))) process.exit(70);
+`,
+    );
+    const options = validationOptions("steipete/example", {
+      toolchain: {
+        packageManager: "pnpm",
+        baseValidationCommands: [],
+        changedGate: null,
+      },
+    });
+
+    assert.deepEqual(
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(["pnpm first", "pnpm second"], cwd, options),
+      ),
+      ["pnpm first", "pnpm second"],
+    );
+    for (const runtimeRoot of runtimeRoots) {
+      assert.equal(fs.existsSync(path.join(cwd, runtimeRoot)), false);
+    }
   },
 );
 
@@ -2486,7 +2673,7 @@ if (args[0] === "enable") {
 
     assert.equal(fs.existsSync(maliciousMarker), false);
     assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/), [
-      "install --frozen-lockfile --prefer-offline --ignore-scripts --config.engine-strict=false --config.enable-pre-post-scripts=false",
+      "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.engine-strict=false --config.enable-pre-post-scripts=false",
       "--config.enable-pre-post-scripts=false verify",
     ]);
   },
@@ -3242,6 +3429,35 @@ test("checkpoint plumbing rejects mismatched and dirty submodules", () => {
   );
 });
 
+test("checkpoint plumbing rejects residual repositories at removed gitlinks", () => {
+  const submoduleRepo = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-residual-source-"));
+  git(submoduleRepo, "init", "-b", "main");
+  git(submoduleRepo, "config", "user.email", "clawsweeper@example.invalid");
+  git(submoduleRepo, "config", "user.name", "ClawSweeper Test");
+  fs.writeFileSync(path.join(submoduleRepo, "source.txt"), "initial\n");
+  git(submoduleRepo, "add", ".");
+  git(submoduleRepo, "commit", "-m", "initial");
+
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  git(cwd, "-c", "protocol.file.allow=always", "submodule", "add", submoduleRepo, "vendor/lib");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  git(cwd, "rm", "--cached", "vendor/lib");
+
+  assert.throws(
+    () =>
+      createTargetCheckpointWithPlumbing({
+        cwd,
+        messages: ["removed gitlink"],
+        identity: {
+          name: "clawsweeper",
+          email: "274271284+clawsweeper[bot]@users.noreply.github.com",
+        },
+      }),
+    /residual target repository at removed gitlink path: vendor\/lib/,
+  );
+});
+
 test("checkpoint plumbing recursively rejects ignored nested submodule dirt", () => {
   const nestedRepo = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-nested-source-"));
   git(nestedRepo, "init", "-b", "main");
@@ -3776,9 +3992,9 @@ if (args.includes("--frozen-lockfile")) {
   );
 
   assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/), [
-    "install --frozen-lockfile --prefer-offline --ignore-scripts --config.engine-strict=false --config.enable-pre-post-scripts=false",
-    "install --no-frozen-lockfile --prefer-offline --ignore-scripts --config.engine-strict=false --config.enable-pre-post-scripts=false",
-    "install --frozen-lockfile --prefer-offline --ignore-scripts --config.engine-strict=false --config.enable-pre-post-scripts=false",
+    "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.engine-strict=false --config.enable-pre-post-scripts=false",
+    "install --no-frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.engine-strict=false --config.enable-pre-post-scripts=false",
+    "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.engine-strict=false --config.enable-pre-post-scripts=false",
   ]);
 });
 

@@ -40,6 +40,20 @@ const DEFAULT_TARGET_SETUP_TIMEOUT_MS = 2 * 60 * 1000;
 const DEFAULT_TARGET_INSTALL_TIMEOUT_MS = 12 * 60 * 1000;
 const DEFAULT_TARGET_VALIDATION_TIMEOUT_MS = 12 * 60 * 1000;
 const MIN_VALIDATION_RETRY_BUDGET_MS = 1_000;
+const IMMUTABLE_VALIDATION_RUNTIME_BASENAMES = new Set([".venv", "node_modules", "venv", "vendor"]);
+const DISPOSABLE_VALIDATION_RUNTIME_BASENAMES = new Set([
+  ".build",
+  ".gradle",
+  ".next",
+  ".nuxt",
+  ".svelte-kit",
+  ".turbo",
+  "build",
+  "coverage",
+  "dist",
+  "out",
+  "target",
+]);
 const verifiedRustupToolchainBins = new Map<string, VerifiedRustupToolchain>();
 const preparedTargetPnpmRuntimes = new Map<string, PreparedTargetPnpmRuntime>();
 let preparedTargetPnpmRuntimeCleanupRegistered = false;
@@ -360,41 +374,29 @@ function preparePnpmToolchain({
     "--frozen-lockfile",
     "--prefer-offline",
     "--ignore-scripts",
+    "--ignore-pnpmfile",
     "--config.engine-strict=false",
     "--config.enable-pre-post-scripts=false",
   ];
+  const runPnpmInstall = (args: string[], operation: string) =>
+    runContainedCommand("pnpm", args, {
+      cwd,
+      env: validationEnv,
+      isolateNetwork: false,
+      timeoutMs: targetToolchainCommandTimeout(deadlineAt, installTimeoutMs, operation),
+      writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
+    });
   const lockfileSnapshot = captureTargetFile(cwd, "pnpm-lock.yaml");
   try {
-    run("pnpm", installArgs, {
-      cwd,
-      env: validationEnv,
-      timeoutMs: targetToolchainCommandTimeout(deadlineAt, installTimeoutMs, "pnpm install"),
-    });
+    runPnpmInstall(installArgs, "pnpm install");
   } catch (error) {
     if (!/ERR_PNPM_OUTDATED_LOCKFILE/i.test(String(error.message))) throw error;
-    run(
-      "pnpm",
+    runPnpmInstall(
       installArgs.map((arg) => (arg === "--frozen-lockfile" ? "--no-frozen-lockfile" : arg)),
-      {
-        cwd,
-        env: validationEnv,
-        timeoutMs: targetToolchainCommandTimeout(
-          deadlineAt,
-          installTimeoutMs,
-          "pnpm install fallback",
-        ),
-      },
+      "pnpm install fallback",
     );
     restoreTargetFile(cwd, lockfileSnapshot);
-    run("pnpm", installArgs, {
-      cwd,
-      env: validationEnv,
-      timeoutMs: targetToolchainCommandTimeout(
-        deadlineAt,
-        installTimeoutMs,
-        "pnpm frozen reinstall",
-      ),
-    });
+    runPnpmInstall(installArgs, "pnpm frozen reinstall");
   }
   return packageManager;
 }
@@ -534,6 +536,7 @@ export function runAllowedValidationCommandsWithBinding(
       options.validationTimeoutMs ?? DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
       options.validationTimeoutMs,
     );
+    clearDisposableValidationRuntimePaths(cwd, Date.now() + validationTimeoutMs);
     const checkoutIdentity = validationCheckoutIdentity(
       cwd,
       baseRef,
@@ -588,6 +591,11 @@ export function runAllowedValidationCommandsWithBinding(
           } catch (error) {
             executionError = error as Error;
           }
+          try {
+            clearDisposableValidationRuntimePaths(cwd, deadlineAt);
+          } catch (error) {
+            executionError ??= error as Error;
+          }
           assertValidationCheckoutIdentityWithinCommand(
             cwd,
             baseRef,
@@ -629,6 +637,11 @@ export function runAllowedValidationCommandsWithBinding(
                 });
               } catch (error) {
                 fallbackError = error as Error;
+              }
+              try {
+                clearDisposableValidationRuntimePaths(cwd, deadlineAt);
+              } catch (error) {
+                fallbackError ??= error as Error;
               }
               assertValidationCheckoutIdentityWithinCommand(
                 cwd,
@@ -1820,22 +1833,43 @@ function validationRuntimeInputsSha256(cwd: string, deadlineAt: number) {
 }
 
 function validationRuntimeInputPaths(cwd: string, deadlineAt: number) {
-  const paths = new Set([".venv", "node_modules", "venv"]);
-  const ignored = runIdentityGit(
+  const paths = new Set(IMMUTABLE_VALIDATION_RUNTIME_BASENAMES);
+  for (const relativePath of ignoredValidationRuntimePaths(cwd, deadlineAt)) {
+    if (IMMUTABLE_VALIDATION_RUNTIME_BASENAMES.has(path.posix.basename(relativePath))) {
+      paths.add(relativePath);
+    }
+  }
+  return minimalValidationRuntimeRoots(paths);
+}
+
+function clearDisposableValidationRuntimePaths(cwd: string, deadlineAt: number) {
+  const root = fs.realpathSync(cwd);
+  const paths = ignoredValidationRuntimePaths(cwd, deadlineAt).filter((relativePath) =>
+    DISPOSABLE_VALIDATION_RUNTIME_BASENAMES.has(path.posix.basename(relativePath)),
+  );
+  for (const relativePath of minimalValidationRuntimeRoots(paths)) {
+    assertValidationIdentityDeadline(deadlineAt, relativePath);
+    const absolutePath = path.resolve(root, relativePath);
+    assertPathWithin(root, absolutePath, relativePath);
+    fs.rmSync(absolutePath, { force: true, maxRetries: 2, recursive: true });
+  }
+}
+
+function ignoredValidationRuntimePaths(cwd: string, deadlineAt: number) {
+  return runIdentityGit(
     cwd,
     ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
     deadlineAt,
     "ignored runtime input listing",
   )
     .split("\0")
-    .filter(Boolean);
-  for (const entry of ignored) {
-    const relativePath = entry.replace(/\/+$/, "");
-    if ([".venv", "node_modules", "venv"].includes(path.posix.basename(relativePath))) {
-      paths.add(relativePath);
-    }
-  }
-  const candidates = [...paths].sort(
+    .filter(Boolean)
+    .map((entry) => entry.replace(/\/+$/, ""))
+    .filter((entry) => entry !== "");
+}
+
+function minimalValidationRuntimeRoots(paths: Iterable<string>) {
+  const candidates = [...new Set(paths)].sort(
     (left, right) => left.length - right.length || (left < right ? -1 : left > right ? 1 : 0),
   );
   const roots: string[] = [];
@@ -1995,6 +2029,9 @@ function buildRawWorktreeTree(
       continue;
     }
     if (stat.isDirectory()) {
+      if (sourceEntry?.mode === "160000") {
+        throw new Error(`residual target repository at removed gitlink path: ${relativePath}`);
+      }
       if (sourceEntry) updates.push(`0 ${zeroOid}\t${relativePath}\0`);
       continue;
     }

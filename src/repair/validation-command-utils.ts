@@ -76,6 +76,17 @@ const PACKAGE_MANAGER_WORKSPACE_OPTIONS: Record<PackageManagerExecutable, Readon
   bun: new Set(["--filter"]),
 };
 
+const NPM_SCRIPT_BOOLEAN_OPTIONS = new Set([
+  "-s",
+  "--foreground-scripts",
+  "--if-present",
+  "--ignore-scripts",
+  "--silent",
+  "--workspaces",
+  "--ws",
+]);
+const NPM_SCRIPT_VALUE_OPTIONS = new Set(["-w", "--loglevel", "--workspace"]);
+
 const UNSAFE_PACKAGE_MANAGER_PATH_OPTIONS: Record<PackageManagerExecutable, ReadonlySet<string>> = {
   pnpm: new Set(["-C", "--config-dir", "--dir", "--store-dir", "--virtual-store-dir"]),
   npm: new Set(["--cache", "--prefix", "--userconfig"]),
@@ -392,7 +403,7 @@ export function packageScriptRequirement(
     ...invocation.globalOptions,
     ...(runInvocation?.workspaceOptions ?? []),
     ...(invocation.executable === "npm" && command === "test"
-      ? npmWorkspaceOptions(invocation.args)
+      ? (npmScriptOptions(invocation.args) ?? [])
       : []),
   ].filter((option) => PACKAGE_MANAGER_WORKSPACE_OPTIONS[invocation.executable].has(option.name));
   const workspaceSelectors = workspaceOptions.flatMap((option) =>
@@ -547,13 +558,13 @@ export function validationCommandForExecution(parts: readonly string[]): string[
   const guardedParts = requireWorkspaceMatchFailure(parts);
   const commandParts = stripEnvPrefix(guardedParts);
   const invocation = packageManagerInvocation(commandParts);
+  if (commandParts[0] === "npm" && npmIgnoreScriptsMode(guardedParts) === "disabled") {
+    throw new Error("unsafe validation command: npm lifecycle suppression is overridden");
+  }
   if (!invocation || !packageScriptRequirement(commandParts)) return guardedParts;
   const envPrefix = guardedParts.slice(0, guardedParts.length - commandParts.length);
   if (invocation.executable === "npm") {
     const ignoreScripts = npmIgnoreScriptsMode(guardedParts);
-    if (ignoreScripts === "disabled") {
-      throw new Error("unsafe validation command: npm lifecycle suppression is overridden");
-    }
     if (ignoreScripts === "enabled") return guardedParts;
     return [...envPrefix, "npm", "--ignore-scripts", ...commandParts.slice(1)];
   }
@@ -728,36 +739,38 @@ function packageRunInvocation(invocation: PackageManagerInvocation): {
   if (invocation.executable !== "npm") {
     return { script, scriptArgIndex, workspaceOptions };
   }
-  workspaceOptions.push(...npmWorkspaceOptions(invocation.args.slice(scriptArgIndex + 1)));
+  const postScriptOptions = npmScriptOptions(invocation.args.slice(scriptArgIndex + 1));
+  if (!postScriptOptions) return null;
+  workspaceOptions.push(...postScriptOptions);
   return { script, scriptArgIndex, workspaceOptions };
 }
 
-function npmWorkspaceOptions(args: readonly string[]) {
-  const workspaceOptions: PackageManagerInvocation["globalOptions"] = [];
+function npmScriptOptions(args: readonly string[]) {
+  const options: PackageManagerInvocation["globalOptions"] = [];
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index]!;
     if (token === "--") break;
+    if (!token.startsWith("-")) continue;
     const name = token.split("=", 1)[0]!;
-    if (name === "--workspaces" || name === "--ws") {
+    if (NPM_SCRIPT_BOOLEAN_OPTIONS.has(name)) {
       const value = token.includes("=") ? token.slice(token.indexOf("=") + 1) : null;
-      if (value === null || isPackageBooleanOptionValue(value)) {
-        workspaceOptions.push({ kind: "boolean", name, value });
-      }
+      if (value !== null && !isPackageBooleanOptionValue(value)) return null;
+      options.push({ kind: "boolean", name, value });
       continue;
     }
-    if (name !== "-w" && name !== "--workspace") continue;
+    if (!NPM_SCRIPT_VALUE_OPTIONS.has(name)) return null;
     if (token.includes("=")) {
       const value = token.slice(token.indexOf("=") + 1);
-      if (value) workspaceOptions.push({ kind: "value", name, value });
+      if (!value) return null;
+      options.push({ kind: "value", name, value });
       continue;
     }
     const value = args[index + 1];
-    if (value && value !== "--" && !value.startsWith("-")) {
-      workspaceOptions.push({ kind: "value", name, value });
-      index += 1;
-    }
+    if (!value || value === "--" || value.startsWith("-")) return null;
+    options.push({ kind: "value", name, value });
+    index += 1;
   }
-  return workspaceOptions;
+  return options;
 }
 
 function packageRunWorkspaceOption(invocation: PackageManagerInvocation, index: number) {
@@ -913,7 +926,9 @@ function hasUnsupportedPackageManagerInvocation(parts: readonly string[]) {
     return !script || script.startsWith("-") || MUTATING_PACKAGE_LIFECYCLE_SCRIPTS.has(script);
   }
   if (invocation.executable === "pnpm" && command === "exec") return false;
-  if (invocation.executable === "npm") return command !== "test";
+  if (invocation.executable === "npm") {
+    return command !== "test" || npmScriptOptions(invocation.args) === null;
+  }
   if (invocation.executable === "bun") return command !== "test";
   return (
     PACKAGE_MANAGER_NON_SCRIPT_COMMANDS.has(command) ||
