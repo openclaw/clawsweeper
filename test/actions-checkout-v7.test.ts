@@ -68,7 +68,8 @@ const checkoutReferences = actionFiles.flatMap((path) =>
     })),
 );
 const checkoutV7Commit = "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0";
-const statePublisherPattern = /\bpnpm run repair:publish-main\b/g;
+const statePublisherPattern =
+  /\b(?:pnpm run repair:publish-main|node dist\/clawsweeper\.js publish-action-event-paths)\b/g;
 const statePublishTimingEnv = {
   acquisitionDeadlineMs: "CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS",
   commandTimeoutMs: "CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS",
@@ -202,7 +203,7 @@ test("every state publisher job composes all calls within its timeout", () => {
   assert.equal(new Set(publisherJobs.map(({ workflowPath }) => workflowPath)).size, 16);
   assert.equal(
     publisherJobs.reduce((total, { calls }) => total + calls.length, 0),
-    33,
+    42,
   );
   for (const { calls, job, jobName, workflowPath } of publisherJobs) {
     const timeoutMinutes = job["timeout-minutes"];

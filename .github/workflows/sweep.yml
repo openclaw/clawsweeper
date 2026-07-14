@@ -3597,6 +3597,7 @@ jobs:
     needs: apply-proof
     if: ${{ always() && needs.apply-proof.result != 'skipped' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
