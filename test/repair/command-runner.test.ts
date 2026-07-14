@@ -158,7 +158,7 @@ test(
               "-e",
               [
                 'const { spawn } = require("node:child_process");',
-                `const child = spawn(process.execPath, ["-e", ${JSON.stringify(`setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "escaped"), 750);`)}], { detached: true, stdio: "ignore" });`,
+                `const child = spawn(process.execPath, ["-e", ${JSON.stringify(`setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "escaped"), 1000);`)}], { detached: true, stdio: "ignore" });`,
                 "child.unref();",
                 'process.kill(process.ppid, "SIGKILL");',
                 "setInterval(() => {}, 1000);",
@@ -169,13 +169,13 @@ test(
                 ...process.env,
                 CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT: "1",
               },
-              timeoutMs: 3_000,
+              timeoutMs: 250,
               writableRoots: [root],
             },
           ),
-        /command timed out after 3000ms/,
+        /command timed out after 250ms/,
       );
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_250);
       assert.equal(existsSync(marker), false);
     } finally {
       rmSync(root, { recursive: true, force: true });
