@@ -959,6 +959,8 @@ test("release artifact is immutable, bounded, canonical, and hash verified", () 
   assert.match(packaging, /entry\.isFile\(\)/);
   assert.match(packaging, /isSymbolicLink\(\)/);
   assert.match(packaging, /source Wrangler config has an unexpected deployment identity/);
+  assert.match(packaging, /sourceConfig\.limits.*cpu_ms: 300000/s);
+  assert.match(packaging, /limits: sourceConfig\.limits/);
   assert.match(packaging, /sourceConfig\.vars\?\.CRAWL_REMOTE_RELEASE_SHA/);
   assert.match(packaging, /source Wrangler config targets unexpected production resources/);
   assert.match(packaging, /allowedBundleEntries/);
@@ -1013,6 +1015,7 @@ test("release artifact is immutable, bounded, canonical, and hash verified", () 
   assert.match(verify, /wrangler\.json/);
   assert.match(verify, /\^migrations\\\/\[0-9\]\{4\}/);
   assert.match(verify, /deployment Wrangler config has unsafe execution fields/);
+  assert.match(verify, /config\.limits.*cpu_ms: 300000/s);
   assert.match(verify, /config\.vars\?\.CRAWL_REMOTE_RELEASE_SHA/);
   assert.match(verify, /Object\.hasOwn\(config, 'build'\)/);
   assert.match(verify, /deployment Wrangler config targets unexpected resources/);
@@ -1068,6 +1071,7 @@ test("release packaging accepts Wrangler metadata and rejects unsupported output
       compatibility_date: "2026-05-27",
       workers_dev: true,
       observability: { enabled: true },
+      limits: { cpu_ms: 300000 },
       vars: {},
       routes: [
         {
@@ -1120,6 +1124,22 @@ test("release packaging accepts Wrangler metadata and rejects unsupported output
 
   try {
     assert.equal(packageBundle().status, 0);
+    const packagedConfig = JSON.parse(readFileSync(join(artifactRoot, "wrangler.json"), "utf8"));
+    assert.deepEqual(packagedConfig.limits, { cpu_ms: 300000 });
+
+    const sourceConfigPath = join(directory, "wrangler.jsonc");
+    const sourceConfig = JSON.parse(readFileSync(sourceConfigPath, "utf8"));
+    writeFileSync(
+      sourceConfigPath,
+      JSON.stringify({ ...sourceConfig, limits: { cpu_ms: 299999 } }),
+    );
+    const changedLimit = packageBundle();
+    assert.notEqual(changedLimit.status, 0);
+    assert.match(
+      changedLimit.stdout + changedLimit.stderr,
+      /source Wrangler config has an unexpected deployment identity/,
+    );
+    writeFileSync(sourceConfigPath, JSON.stringify(sourceConfig));
 
     rmSync(join(directory, "migrations", "0007_gitcrawl_snapshot_provenance.sql"));
     const missingMigration = packageBundle();
@@ -1204,6 +1224,7 @@ test("artifact verifier rejects tampering, extras, cross-state reuse, and oversi
         compatibility_date: "2026-05-27",
         workers_dev: true,
         observability: { enabled: true },
+        limits: { cpu_ms: 300000 },
         vars: {},
         routes: [
           {

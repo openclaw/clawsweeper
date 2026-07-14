@@ -58,6 +58,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Preserved crawl-remote's reviewed `limits.cpu_ms` value through immutable
+  release packaging and post-transfer deployment verification.
 - Reverted the action-lifecycle expansion from PR #521, restoring the pre-merge ClawSweeper paths while retaining later exact-review throughput fixes and retrying coalesced reconciliations after any partial lookup failure.
 - Raised exact-review capacity from 48/44 global/per-target workers to 64/60, shortened unclaimed dispatch recovery from ten to six minutes, and coalesced terminal-run reconciliation bursts into one bounded aggregate claim scan.
 - Expanded exact-review backlog capacity while making background review yield, released exact-review leases before ledger publication, and aggregated healthy retry scans into one bounded ledger summary.

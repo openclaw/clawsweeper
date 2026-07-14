@@ -244,6 +244,7 @@ jobs:
               '$schema',
               'compatibility_date',
               'd1_databases',
+              'limits',
               'main',
               'name',
               'observability',
@@ -258,6 +259,7 @@ jobs:
             sourceConfig.name !== 'crawl-remote' ||
             sourceConfig.main !== 'src/index.ts' ||
             sourceConfig.workers_dev !== true ||
+            JSON.stringify(sourceConfig.limits) !== JSON.stringify({ cpu_ms: 300000 }) ||
             sourceConfig.vars?.CRAWL_REMOTE_RELEASE_SHA !== undefined
           ) {
             throw new Error('source Wrangler config has an unexpected deployment identity');
@@ -294,6 +296,7 @@ jobs:
             compatibility_date: sourceConfig.compatibility_date,
             workers_dev: sourceConfig.workers_dev,
             observability: sourceConfig.observability,
+            limits: sourceConfig.limits,
             vars: sourceConfig.vars,
             routes: sourceConfig.routes,
             d1_databases: sourceConfig.d1_databases,
@@ -1180,6 +1183,7 @@ jobs:
             [
               'compatibility_date',
               'd1_databases',
+              'limits',
               'name',
               'observability',
               'r2_buckets',
@@ -1192,6 +1196,7 @@ jobs:
           if (
             config.name !== 'crawl-remote' ||
             config.workers_dev !== true ||
+            JSON.stringify(config.limits) !== JSON.stringify({ cpu_ms: 300000 }) ||
             config.vars?.CRAWL_REMOTE_RELEASE_SHA !== undefined ||
             Object.hasOwn(config, 'main') ||
             Object.hasOwn(config, 'build')
