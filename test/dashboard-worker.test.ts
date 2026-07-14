@@ -43,12 +43,99 @@ test("dashboard status reads the exact-review handoff model from the durable que
   });
 
   assert.ok(status);
+  assert.match(status.generated_at, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(status.pending, 1);
+  assert.equal(status.ready_pending, 1);
+  assert.equal(status.admissible_pending, 1);
   assert.equal(status.dispatching, 0);
   assert.equal(status.leased, 0);
   assert.equal(status.handoff_health.status, "healthy");
   assert.equal(status.handoff_health.phases.pending.count, 1);
+  assert.equal(status.pressure.status, "idle");
+  assert.equal(status.pressure.reason, "capacity_available");
   assert.equal(await exactReviewQueueStatusSnapshot({}), null);
+});
+
+test("dashboard status excludes retry-delayed exact reviews from dispatchable backlog", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(buildExactReviewQueueRequest("delayed-status", 598, "opened"));
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { nextAttemptAt: number }>;
+  };
+  state.items["openclaw/gogcli#598"].nextAttemptAt = Date.now() + 60_000;
+  await storage.put("exact-review-queue", state);
+
+  const status = await exactReviewQueueStatusSnapshot({
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  });
+
+  assert.ok(status);
+  assert.equal(status.pending, 1);
+  assert.equal(status.ready_pending, 0);
+  assert.equal(status.admissible_pending, 0);
+  assert.equal(status.pressure.reason, "no_ready_backlog");
+});
+
+test("dashboard status excludes ready reviews blocked by a target exact-review cap", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_TARGET_MAX_CONCURRENT: "1" });
+  await queue.fetch(
+    buildExactReviewQueueRequest("target-cap-status", 599, "opened", "issue", "openclaw/openclaw"),
+  );
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, ReturnType<typeof leasedExactReviewQueueItem>>;
+  };
+  state.items["openclaw/openclaw#600"] = leasedExactReviewQueueItem(600, "run-600");
+  await storage.put("exact-review-queue", state);
+
+  const status = await exactReviewQueueStatusSnapshot({
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  });
+
+  assert.ok(status);
+  assert.equal(status.pending, 1);
+  assert.equal(status.ready_pending, 1);
+  assert.equal(status.admissible_pending, 0);
+  assert.equal(status.pressure.reason, "no_admissible_backlog");
+});
+
+test("dashboard status reports saturated exact-review pressure at full capacity", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "1",
+      EXACT_REVIEW_TARGET_MAX_CONCURRENT: "1",
+    },
+  );
+  await queue.fetch(
+    buildExactReviewQueueRequest("pressure-status", 601, "opened", "issue", "openclaw/gogcli"),
+  );
+  const state = (await storage.get("exact-review-queue")) as {
+    dispatcher?: { state: "active"; checkedAt: number; workflowState: string };
+    items: Record<string, ReturnType<typeof leasedExactReviewQueueItem>>;
+  };
+  state.dispatcher = { state: "active", checkedAt: Date.now(), workflowState: "active" };
+  state.items["openclaw/openclaw#602"] = leasedExactReviewQueueItem(602, "run-602");
+  await storage.put("exact-review-queue", state);
+
+  const status = await exactReviewQueueStatusSnapshot({
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  });
+
+  assert.ok(status);
+  assert.equal(status.ready_pending, 1);
+  assert.equal(status.admissible_pending, 1);
+  assert.deepEqual(status.pressure, {
+    status: "saturated",
+    reason: "capacity_full_with_backlog",
+    capacity: 1,
+    active: 1,
+    pending: 1,
+    ready_pending: 1,
+    admissible_pending: 1,
+  });
 });
 
 test("triage routing groups classify impact labels without forcing one primary group", () => {

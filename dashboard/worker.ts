@@ -5,7 +5,10 @@ import {
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
 import { stableJson } from "../src/stable-json.ts";
 import { bayHtml } from "./bay-page.ts";
-import { summarizeExactReviewHandoff } from "./exact-review-health.ts";
+import {
+  summarizeExactReviewHandoff,
+  summarizeExactReviewPressure,
+} from "./exact-review-health.ts";
 import { TRIAGE_ROUTING_GROUPS, triageRoutingGroupsForLabels } from "./triage-routing-groups.ts";
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
@@ -2773,8 +2776,30 @@ function exactReviewQueueStats(
         left.target_repo.localeCompare(right.target_repo),
     );
   const nextWakeAt = exactReviewQueueNextWakeAt(state, now, capacity, targetCapacity);
-  return {
+  const readyPending = items.filter(
+    (item) => item.state === "pending" && item.nextAttemptAt <= now,
+  ).length;
+  const admissiblePending = exactReviewQueueAdmittedItems(
+    state,
+    now,
+    Number.MAX_SAFE_INTEGER,
+    targetCapacity,
+  ).length;
+  const pressure = summarizeExactReviewPressure({
     pending: handoffHealth.phases.pending.count,
+    readyPending,
+    admissiblePending,
+    dispatching: handoffHealth.phases.dispatching.count,
+    leased: handoffHealth.phases.leased.count,
+    capacity,
+    dispatcherState: state.dispatcher?.state,
+    handoffStatus: handoffHealth.status,
+  });
+  return {
+    generated_at: handoffHealth.observed_at,
+    pending: handoffHealth.phases.pending.count,
+    ready_pending: readyPending,
+    admissible_pending: admissiblePending,
     dispatching: handoffHealth.phases.dispatching.count,
     leased: handoffHealth.phases.leased.count,
     oldest_pending_at: handoffHealth.phases.pending.oldest_at,
@@ -2784,6 +2809,7 @@ function exactReviewQueueStats(
     oldest_leased_at: handoffHealth.phases.leased.oldest_at,
     oldest_leased_age_seconds: handoffHealth.phases.leased.oldest_age_seconds,
     handoff_health: handoffHealth,
+    pressure,
     next_wake_at: nextWakeAt === null ? null : new Date(nextWakeAt).toISOString(),
     dispatcher: {
       state: state.dispatcher?.state || "unknown",
