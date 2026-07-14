@@ -3871,6 +3871,62 @@ test("immutable publishers yield to an active exclusive state mutation", async (
   );
 });
 
+test("immutable publisher converges when an exclusive lease appears before its push", () => {
+  const fixture = createStatePublishRemote("immutable-exclusive-acquisition-race");
+  const immutableState = path.join(fixture.root, "state-immutable");
+  const exclusiveState = path.join(fixture.root, "state-exclusive");
+  const immutableSource = path.join(fixture.root, "source-immutable");
+  const exclusiveSource = path.join(fixture.root, "source-exclusive");
+  const immutablePath = `ledger/v1/import-bindings/events/${"e".repeat(64)}.json`;
+  const exclusivePath = "results/exclusive-after-check.txt";
+  cloneState(fixture.origin, immutableState);
+  cloneState(fixture.origin, exclusiveState);
+  fs.mkdirSync(immutableSource);
+  fs.mkdirSync(exclusiveSource);
+  write(path.join(immutableSource, immutablePath), '{"event":"immutable"}\n');
+  write(path.join(exclusiveSource, exclusivePath), "exclusive\n");
+  const marker = installExclusivePublishDuringStatePushHook(
+    immutableState,
+    exclusiveSource,
+    exclusiveState,
+  );
+  const lines = captureConsoleLog(() =>
+    withEnv(
+      leasedPublishEnv({
+        CLAWSWEEPER_STATE_DIR: immutableState,
+        CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "5000",
+        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
+        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
+        CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "4000",
+        CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
+      }),
+      () =>
+        withCwd(immutableSource, () =>
+          publishMainCommit({
+            message: "chore: append immutable event after exclusive acquisition",
+            paths: [immutablePath],
+            coordination: "immutable",
+          }),
+        ),
+    ),
+  );
+
+  assert.equal(fs.existsSync(marker), true);
+  assert.equal(
+    lines.some((line) => line.includes("Immutable publish lost state race attempt=1/32")),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${immutablePath}`], fixture.root),
+    '{"event":"immutable"}\n',
+  );
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${exclusivePath}`], fixture.root),
+    "exclusive\n",
+  );
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+});
+
 test("immutable publication deadline bounds continuous rejected branch pushes", () => {
   const fixture = createStatePublishRemote("immutable-deadline");
   const state = path.join(fixture.root, "state");
@@ -4268,6 +4324,31 @@ done
 `,
   );
   fs.chmodSync(hook, 0o755);
+}
+
+function installExclusivePublishDuringStatePushHook(state, source, exclusiveState) {
+  const hook = path.join(state, ".git/hooks/pre-push");
+  const marker = path.join(state, ".git/hooks/exclusive-publish-completed");
+  const publishCli = path.resolve("dist/repair/publish-main.js");
+  fs.writeFileSync(
+    hook,
+    `#!/bin/sh
+while read -r local_ref local_oid remote_ref remote_oid; do
+  if test "$remote_ref" = "refs/heads/state" && test ! -f "${marker}"; then
+    (
+      cd "${source}"
+      CLAWSWEEPER_STATE_DIR="${exclusiveState}" \
+      "${process.execPath}" "${publishCli}" \
+        --message "chore: publish exclusive mutation during immutable push" \
+        --path "results/exclusive-after-check.txt"
+    )
+    touch "${marker}"
+  fi
+done
+`,
+  );
+  fs.chmodSync(hook, 0o755);
+  return marker;
 }
 
 function installLeasePushSleepHook(state, seconds) {
