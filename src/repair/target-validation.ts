@@ -41,21 +41,11 @@ const DEFAULT_TARGET_INSTALL_TIMEOUT_MS = 12 * 60 * 1000;
 const DEFAULT_TARGET_VALIDATION_TIMEOUT_MS = 12 * 60 * 1000;
 const DEFAULT_TARGET_INSTALL_REGISTRY = "https://registry.npmjs.org/";
 const MAX_TARGET_INSTALL_METADATA_BYTES = 16 * 1024 * 1024;
+const MAX_TARGET_INSTALL_GIT_PATH_BYTES = 16 * 1024 * 1024;
+const MAX_TARGET_INSTALL_GIT_PATHS = 250_000;
+const MAX_VALIDATION_IGNORED_PATH_BYTES = 16 * 1024 * 1024;
+const MAX_VALIDATION_IGNORED_PATHS = 250_000;
 const MIN_VALIDATION_RETRY_BUDGET_MS = 1_000;
-const IMMUTABLE_VALIDATION_RUNTIME_BASENAMES = new Set([".venv", "node_modules", "venv", "vendor"]);
-const DISPOSABLE_VALIDATION_RUNTIME_BASENAMES = new Set([
-  ".build",
-  ".gradle",
-  ".next",
-  ".nuxt",
-  ".svelte-kit",
-  ".turbo",
-  "build",
-  "coverage",
-  "dist",
-  "out",
-  "target",
-]);
 const verifiedRustupToolchainBins = new Map<string, VerifiedRustupToolchain>();
 const preparedTargetPnpmRuntimes = new Map<string, PreparedTargetPnpmRuntime>();
 let preparedTargetPnpmRuntimeCleanupRegistered = false;
@@ -553,20 +543,59 @@ function assertTargetInstallNetworkPolicy(
   if (workspacePatterns === null) {
     throw new Error("target dependency install network policy could not read workspace metadata");
   }
-  const workspacePaths = workspacePackagePaths(cwd, workspacePatterns, {
+  const discoveredWorkspacePaths = workspacePackagePaths(cwd, workspacePatterns, {
     timeoutMs: Math.max(1, deadlineAt - Date.now()),
   });
-  const packageDirectories = [cwd, ...workspacePaths.map((entry) => path.join(cwd, entry))];
-  for (const directory of packageDirectories) {
+  const trackedPaths = targetInstallTrackedPaths(cwd, deadlineAt);
+  const trackedManifestPaths = [...trackedPaths]
+    .filter((entry) => entry === "package.json" || entry.endsWith("/package.json"))
+    .sort();
+  if (!trackedManifestPaths.includes("package.json")) {
+    throw new Error("target dependency install root package.json must be tracked");
+  }
+  const trackedWorkspacePaths = trackedManifestPaths
+    .map((entry) => path.posix.dirname(entry))
+    .filter((entry) => entry !== "." && workspacePathMatchesPatterns(entry, workspacePatterns));
+  const trackedWorkspaceSet = new Set(trackedWorkspacePaths);
+  for (const workspacePath of discoveredWorkspacePaths) {
+    if (!trackedWorkspaceSet.has(workspacePath)) {
+      throw new Error(
+        `target dependency install workspace manifest is not tracked: ${workspacePath}/package.json`,
+      );
+    }
+  }
+  const manifestPaths = [
+    "package.json",
+    ...trackedWorkspacePaths.map((entry) => path.posix.join(entry, "package.json")),
+  ];
+  const manifests = new Map<string, LooseRecord>();
+  const workspaceNames = new Map<string, string[]>();
+  for (const manifestPath of manifestPaths) {
+    const manifest = JSON.parse(
+      readTargetInstallMetadataText(path.join(cwd, manifestPath), deadlineAt),
+    ) as LooseRecord;
+    const relativeDir = path.posix.dirname(manifestPath);
+    manifests.set(relativeDir, manifest);
+    if (typeof manifest.name === "string" && manifest.name) {
+      const entries = workspaceNames.get(manifest.name) ?? [];
+      entries.push(relativeDir);
+      workspaceNames.set(manifest.name, entries);
+    }
+  }
+  const localPolicy: TargetInstallLocalPolicy = {
+    root: fs.realpathSync(cwd),
+    trackedManifestDirs: new Set(manifests.keys()),
+    trackedPaths,
+    workspaceNames,
+  };
+  for (const [relativeDir, manifest] of manifests) {
+    const directory = relativeDir === "." ? cwd : path.join(cwd, relativeDir);
     for (const configName of [".npmrc", "bunfig.toml"]) {
       if (fs.existsSync(path.join(directory, configName))) {
         throw new Error(`target dependency install network config is not allowed: ${configName}`);
       }
     }
-    const manifest = JSON.parse(
-      readTargetInstallMetadataText(path.join(directory, "package.json"), deadlineAt),
-    ) as LooseRecord;
-    assertManifestDependencyDestinations(manifest, registryOrigin);
+    assertManifestDependencyDestinations(manifest, relativeDir, localPolicy, registryOrigin);
   }
   for (const lockfile of [
     "package-lock.json",
@@ -581,10 +610,17 @@ function assertTargetInstallNetworkPolicy(
     if (lockfile.endsWith(".json")) {
       assertStructuredInstallMetadataDestinations(
         JSON.parse(metadata) as JsonValue,
+        ".",
+        localPolicy,
         registryOrigin,
       );
     } else if (lockfile.endsWith(".yaml")) {
-      assertStructuredInstallMetadataDestinations(parseYaml(metadata) as JsonValue, registryOrigin);
+      assertStructuredInstallMetadataDestinations(
+        parseYaml(metadata) as JsonValue,
+        ".",
+        localPolicy,
+        registryOrigin,
+      );
     } else {
       if (/\\(?:\/|u00(?:2f|3a))/i.test(metadata)) {
         throw new Error("target dependency install network policy cannot inspect escaped Bun URLs");
@@ -622,7 +658,19 @@ function approvedTargetInstallRegistry(validationEnv: NodeJS.ProcessEnv) {
   return normalized;
 }
 
-function assertManifestDependencyDestinations(manifest: LooseRecord, registryOrigin: string) {
+type TargetInstallLocalPolicy = {
+  root: string;
+  trackedManifestDirs: ReadonlySet<string>;
+  trackedPaths: ReadonlySet<string>;
+  workspaceNames: ReadonlyMap<string, readonly string[]>;
+};
+
+function assertManifestDependencyDestinations(
+  manifest: LooseRecord,
+  ownerDir: string,
+  localPolicy: TargetInstallLocalPolicy,
+  registryOrigin: string,
+) {
   for (const field of [
     "dependencies",
     "devDependencies",
@@ -631,53 +679,85 @@ function assertManifestDependencyDestinations(manifest: LooseRecord, registryOri
     "resolutions",
     "overrides",
   ]) {
-    assertDependencySpecValue(manifest[field], registryOrigin);
+    assertDependencySpecValue(manifest[field], ownerDir, localPolicy, registryOrigin);
   }
-  assertDependencySpecValue(manifest.pnpm?.overrides, registryOrigin);
+  assertDependencySpecValue(manifest.pnpm?.overrides, ownerDir, localPolicy, registryOrigin);
 }
 
-function assertDependencySpecValue(value: JsonValue, registryOrigin: string): void {
+function assertDependencySpecValue(
+  value: JsonValue,
+  ownerDir: string,
+  localPolicy: TargetInstallLocalPolicy,
+  registryOrigin: string,
+  dependencyName?: string,
+): void {
   if (typeof value === "string") {
-    assertDependencySpec(value, registryOrigin);
+    assertDependencySpec(value, ownerDir, localPolicy, registryOrigin, dependencyName);
     return;
   }
   if (Array.isArray(value)) {
-    for (const entry of value) assertDependencySpecValue(entry, registryOrigin);
+    for (const entry of value) {
+      assertDependencySpecValue(entry, ownerDir, localPolicy, registryOrigin, dependencyName);
+    }
     return;
   }
   if (value && typeof value === "object") {
-    for (const entry of Object.values(value)) {
-      assertDependencySpecValue(entry, registryOrigin);
+    for (const [name, entry] of Object.entries(value)) {
+      assertDependencySpecValue(entry, ownerDir, localPolicy, registryOrigin, name);
     }
   }
 }
 
-function assertDependencySpec(rawSpec: string, registryOrigin: string) {
+function assertDependencySpec(
+  rawSpec: string,
+  ownerDir: string,
+  localPolicy: TargetInstallLocalPolicy,
+  registryOrigin: string,
+  dependencyName?: string,
+) {
   const spec = rawSpec.trim();
   if (!spec) return;
   if (/^workspace:/i.test(spec)) {
     const workspaceSpec = spec.slice("workspace:".length).trim();
-    if (
-      !workspaceSpec ||
-      /^workspace:/i.test(workspaceSpec) ||
-      isLocalDependencySpec(workspaceSpec)
-    ) {
-      throw new Error("target dependency install local dependencies are not allowed");
+    if (!workspaceSpec || /^workspace:/i.test(workspaceSpec)) {
+      throw new Error("target dependency install workspace dependency is invalid");
     }
-    assertDependencySpec(workspaceSpec, registryOrigin);
+    if (isLocalDependencySpec(workspaceSpec)) {
+      assertLocalPackageDependency(workspaceSpec, ownerDir, localPolicy);
+      return;
+    }
+    if (dependencyName) {
+      const matches = localPolicy.workspaceNames.get(dependencyName) ?? [];
+      if (matches.length !== 1) {
+        throw new Error(
+          `target dependency install workspace dependency is not uniquely tracked: ${dependencyName}`,
+        );
+      }
+    }
+    assertDependencySpec(workspaceSpec, ownerDir, localPolicy, registryOrigin, dependencyName);
     return;
   }
   if (isLocalDependencySpec(spec)) {
-    throw new Error("target dependency install local dependencies are not allowed");
+    if (/^patch:/i.test(spec)) {
+      assertTrackedPatchDependency(spec, ownerDir, localPolicy, registryOrigin);
+    } else {
+      assertLocalPackageDependency(spec, ownerDir, localPolicy);
+    }
+    return;
   }
   if (/^npm:/i.test(spec)) {
     const alias = spec.slice("npm:".length);
     if (isLocalDependencySpec(alias)) {
-      throw new Error("target dependency install local dependencies are not allowed");
+      throw new Error("target dependency install npm alias cannot use a local dependency");
     }
     const versionSeparator = alias.lastIndexOf("@");
     if (versionSeparator > 0) {
-      assertDependencySpec(alias.slice(versionSeparator + 1), registryOrigin);
+      assertDependencySpec(
+        alias.slice(versionSeparator + 1),
+        ownerDir,
+        localPolicy,
+        registryOrigin,
+      );
     }
     return;
   }
@@ -705,8 +785,101 @@ function isLocalDependencySpec(spec: string) {
     /^[\\/]/.test(spec) ||
     /^[a-z]:[\\/]/i.test(spec) ||
     /\\/.test(spec) ||
-    /\.(?:tgz|tar|tar\.gz|tar\.bz2|tar\.xz)(?:#.*)?$/i.test(spec)
+    (!/^(?:https?:)?\/\//i.test(spec) &&
+      /\.(?:tgz|tar|tar\.gz|tar\.bz2|tar\.xz)(?:#.*)?$/i.test(spec))
   );
+}
+
+function assertLocalPackageDependency(
+  spec: string,
+  ownerDir: string,
+  policy: TargetInstallLocalPolicy,
+) {
+  const localPath = localDependencyPath(spec);
+  const target = resolveTrackedLocalPath(localPath, ownerDir, policy, "package");
+  const relativeDir = path.relative(policy.root, target).split(path.sep).join("/") || ".";
+  if (!policy.trackedManifestDirs.has(relativeDir)) {
+    throw new Error(
+      `target dependency install local package is not a tracked workspace: ${localPath}`,
+    );
+  }
+  const manifestPath =
+    relativeDir === "." ? "package.json" : path.posix.join(relativeDir, "package.json");
+  if (!policy.trackedPaths.has(manifestPath)) {
+    throw new Error(
+      `target dependency install local package manifest is not tracked: ${localPath}`,
+    );
+  }
+}
+
+function localDependencyPath(spec: string) {
+  const protocol = spec.match(/^(?:file|link|portal|path):/i)?.[0];
+  const localPath = protocol ? spec.slice(protocol.length) : spec;
+  if (
+    !localPath ||
+    localPath.startsWith("~") ||
+    path.posix.isAbsolute(localPath) ||
+    path.win32.isAbsolute(localPath) ||
+    containsUnsafePathCharacters(localPath) ||
+    /%(?:2e|2f|5c)/i.test(localPath) ||
+    /[?#]/.test(localPath) ||
+    /\.(?:tgz|tar|tar\.gz|tar\.bz2|tar\.xz)$/i.test(localPath)
+  ) {
+    throw new Error("target dependency install local path is outside the supported bounds");
+  }
+  return localPath;
+}
+
+function resolveTrackedLocalPath(
+  localPath: string,
+  ownerDir: string,
+  policy: TargetInstallLocalPolicy,
+  kind: "package" | "patch",
+) {
+  const owner = ownerDir === "." ? policy.root : path.join(policy.root, ownerDir);
+  const target = path.resolve(owner, localPath);
+  assertPathWithin(policy.root, target, localPath);
+  let realTarget: string;
+  try {
+    realTarget = fs.realpathSync(target);
+  } catch {
+    throw new Error(`target dependency install local ${kind} could not be resolved: ${localPath}`);
+  }
+  assertPathWithin(policy.root, realTarget, localPath);
+  const stat = fs.lstatSync(target);
+  if (stat.isSymbolicLink() || (kind === "package" ? !stat.isDirectory() : !stat.isFile())) {
+    throw new Error(`target dependency install local ${kind} is not canonical: ${localPath}`);
+  }
+  return realTarget;
+}
+
+function assertTrackedPatchDependency(
+  spec: string,
+  ownerDir: string,
+  policy: TargetInstallLocalPolicy,
+  registryOrigin: string,
+) {
+  const separator = spec.lastIndexOf("#");
+  if (separator <= "patch:".length || separator === spec.length - 1) {
+    throw new Error("target dependency install patch dependency is not inspectable");
+  }
+  const patchedSpec = spec.slice("patch:".length, separator);
+  if (/^patch:/i.test(patchedSpec)) {
+    throw new Error("target dependency install nested patch dependency is not allowed");
+  }
+  assertDependencySpec(patchedSpec, ownerDir, policy, registryOrigin);
+  let patchPath: string;
+  try {
+    patchPath = decodeURIComponent(spec.slice(separator + 1).split("&", 1)[0]!);
+  } catch {
+    throw new Error("target dependency install patch dependency is not inspectable");
+  }
+  const boundedPath = localDependencyPath(patchPath);
+  const target = resolveTrackedLocalPath(boundedPath, ownerDir, policy, "patch");
+  const relativePath = path.relative(policy.root, target).split(path.sep).join("/");
+  if (!policy.trackedPaths.has(relativePath)) {
+    throw new Error(`target dependency install patch file is not tracked: ${patchPath}`);
+  }
 }
 
 function assertApprovedInstallMetadataDestinations(text: string, registryOrigin: string) {
@@ -722,23 +895,110 @@ function assertApprovedInstallMetadataDestinations(text: string, registryOrigin:
 
 function assertStructuredInstallMetadataDestinations(
   value: JsonValue,
+  ownerDir: string,
+  localPolicy: TargetInstallLocalPolicy,
   registryOrigin: string,
+  fieldName?: string,
 ): void {
   if (typeof value === "string") {
+    if (
+      isLocalDependencySpec(value.trim()) ||
+      /^workspace:/i.test(value.trim()) ||
+      (isLocalResolutionField(fieldName) && looksLikeLocalResolution(value.trim()))
+    ) {
+      assertDependencySpec(value, ownerDir, localPolicy, registryOrigin);
+    }
     assertApprovedInstallMetadataDestinations(value, registryOrigin);
     return;
   }
   if (Array.isArray(value)) {
     for (const entry of value) {
-      assertStructuredInstallMetadataDestinations(entry, registryOrigin);
+      assertStructuredInstallMetadataDestinations(
+        entry,
+        ownerDir,
+        localPolicy,
+        registryOrigin,
+        fieldName,
+      );
     }
     return;
   }
   if (value && typeof value === "object") {
-    for (const entry of Object.values(value)) {
-      assertStructuredInstallMetadataDestinations(entry, registryOrigin);
+    for (const [name, entry] of Object.entries(value)) {
+      if (name === "importers" && entry && typeof entry === "object" && !Array.isArray(entry)) {
+        for (const [importer, importerValue] of Object.entries(entry)) {
+          const importerDir = resolveTrackedImporterDir(importer, localPolicy);
+          assertStructuredInstallMetadataDestinations(
+            importerValue,
+            importerDir,
+            localPolicy,
+            registryOrigin,
+          );
+        }
+        continue;
+      }
+      assertStructuredInstallMetadataDestinations(
+        entry,
+        ownerDir,
+        localPolicy,
+        registryOrigin,
+        name,
+      );
     }
   }
+}
+
+function isLocalResolutionField(fieldName: string | undefined) {
+  return Boolean(
+    fieldName &&
+    /^(?:directory|file|link|path|portal|resolved|resolution|source|tarball)$/i.test(fieldName),
+  );
+}
+
+function looksLikeLocalResolution(value: string) {
+  return (
+    /^(?:\.{1,2}[\\/]|[\\/]|[a-z]:[\\/])/i.test(value) || /^[^:@\s][^:\s]*\/[^:\s]+$/.test(value)
+  );
+}
+
+function resolveTrackedImporterDir(importer: string, policy: TargetInstallLocalPolicy) {
+  const normalized = importer.replace(/^\.\//, "").replace(/\/+$/, "") || ".";
+  if (
+    normalized !== "." &&
+    (path.posix.isAbsolute(normalized) ||
+      path.win32.isAbsolute(normalized) ||
+      normalized.split("/").includes("..") ||
+      containsUnsafePathCharacters(normalized))
+  ) {
+    throw new Error(`target dependency install lockfile importer is invalid: ${importer}`);
+  }
+  if (!policy.trackedManifestDirs.has(normalized)) {
+    throw new Error(`target dependency install lockfile importer is not tracked: ${importer}`);
+  }
+  return normalized;
+}
+
+function targetInstallTrackedPaths(cwd: string, deadlineAt: number) {
+  const output = runIdentityGit(cwd, ["ls-files", "-z"], deadlineAt, "install tracked paths", {
+    maxBuffer: MAX_TARGET_INSTALL_GIT_PATH_BYTES,
+  });
+  return new Set(
+    parseBoundedGitPathList(output, {
+      maxPaths: MAX_TARGET_INSTALL_GIT_PATHS,
+      operation: "target dependency install tracked path discovery",
+    }),
+  );
+}
+
+function workspacePathMatchesPatterns(relativePath: string, patterns: readonly string[]) {
+  const included = patterns.filter((pattern) => !pattern.startsWith("!"));
+  const excluded = patterns
+    .filter((pattern) => pattern.startsWith("!"))
+    .map((entry) => entry.slice(1));
+  return (
+    included.some((pattern) => workspacePatternMatches(pattern, relativePath)) &&
+    !excluded.some((pattern) => workspacePatternMatches(pattern, relativePath))
+  );
 }
 
 function assertApprovedInstallUrl(rawUrl: string, registryOrigin: string) {
@@ -802,7 +1062,10 @@ export function runAllowedValidationCommandsWithBinding(
       options.validationTimeoutMs ?? DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
       options.validationTimeoutMs,
     );
-    clearDisposableValidationRuntimePaths(cwd, Date.now() + validationTimeoutMs);
+    const ignoredValidationInputs = ignoredValidationRuntimePaths(
+      cwd,
+      Date.now() + validationTimeoutMs,
+    );
     const checkoutIdentity = validationCheckoutIdentity(
       cwd,
       baseRef,
@@ -858,7 +1121,7 @@ export function runAllowedValidationCommandsWithBinding(
             executionError = error as Error;
           }
           try {
-            clearDisposableValidationRuntimePaths(cwd, deadlineAt);
+            clearNewIgnoredValidationRuntimePaths(cwd, ignoredValidationInputs, deadlineAt);
           } catch (error) {
             executionError ??= error as Error;
           }
@@ -905,7 +1168,7 @@ export function runAllowedValidationCommandsWithBinding(
                 fallbackError = error as Error;
               }
               try {
-                clearDisposableValidationRuntimePaths(cwd, deadlineAt);
+                clearNewIgnoredValidationRuntimePaths(cwd, ignoredValidationInputs, deadlineAt);
               } catch (error) {
                 fallbackError ??= error as Error;
               }
@@ -985,18 +1248,28 @@ export function preflightTargetValidationPlan(
   const missing = requiredScripts.find(
     (script: JsonValue) => !targetPackageScriptIsAvailable(targetDir, scripts, script),
   );
-  const unsafe = requiredScripts
+  const bunInspection = requiredScripts
     .map((script) => unsafeBunLifecycleHook(targetDir, script))
-    .find((value): value is NonNullable<typeof value> => value !== null);
-  if (unsafe) {
+    .find((value) => value.status !== "safe");
+  if (bunInspection?.status === "unsafe") {
     return {
       status: "blocked",
       code: "validation_script_unsafe",
-      required: unsafe.command,
-      unsafe_hook: unsafe.hook,
+      required: bunInspection.command,
+      unsafe_hook: bunInspection.hook,
       available_scripts: availableScripts,
       resolved_commands: resolved,
-      reason: `validation_script_unsafe: Bun would execute ${unsafe.hook} around ${unsafe.command}`,
+      reason: `validation_script_unsafe: Bun would execute ${bunInspection.hook} around ${bunInspection.command}`,
+    };
+  }
+  if (bunInspection?.status === "inconclusive") {
+    return {
+      status: "blocked",
+      code: "validation_script_unsafe",
+      required: bunInspection.command,
+      available_scripts: availableScripts,
+      resolved_commands: resolved,
+      reason: `validation_script_unsafe: Bun lifecycle hook inspection was inconclusive for ${bunInspection.command}: ${bunInspection.reason}`,
     };
   }
   if (!missing) {
@@ -2088,7 +2361,10 @@ function validationRuntimeInputsSha256(cwd: string, deadlineAt: number) {
     assertValidationIdentityDeadline(deadlineAt, relativePath);
     const entryPath = path.join(root, relativePath);
     updateIdentityHash(hash, "runtime-input", relativePath);
-    if (!fs.existsSync(entryPath)) {
+    try {
+      fs.lstatSync(entryPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       updateIdentityHash(hash, "runtime-state", "absent");
       continue;
     }
@@ -2099,19 +2375,21 @@ function validationRuntimeInputsSha256(cwd: string, deadlineAt: number) {
 }
 
 function validationRuntimeInputPaths(cwd: string, deadlineAt: number) {
-  const paths = new Set(IMMUTABLE_VALIDATION_RUNTIME_BASENAMES);
-  for (const relativePath of ignoredValidationRuntimePaths(cwd, deadlineAt)) {
-    if (IMMUTABLE_VALIDATION_RUNTIME_BASENAMES.has(path.posix.basename(relativePath))) {
-      paths.add(relativePath);
-    }
-  }
-  return minimalValidationRuntimeRoots(paths);
+  return ignoredValidationRuntimePaths(cwd, deadlineAt);
 }
 
-function clearDisposableValidationRuntimePaths(cwd: string, deadlineAt: number) {
+function clearNewIgnoredValidationRuntimePaths(
+  cwd: string,
+  baselinePaths: readonly string[],
+  deadlineAt: number,
+) {
   const root = fs.realpathSync(cwd);
-  const paths = ignoredValidationRuntimePaths(cwd, deadlineAt).filter((relativePath) =>
-    DISPOSABLE_VALIDATION_RUNTIME_BASENAMES.has(path.posix.basename(relativePath)),
+  const paths = ignoredValidationRuntimePaths(cwd, deadlineAt).filter(
+    (relativePath) =>
+      !baselinePaths.some(
+        (baselinePath) =>
+          relativePath === baselinePath || relativePath.startsWith(`${baselinePath}/`),
+      ),
   );
   for (const relativePath of minimalValidationRuntimeRoots(paths)) {
     assertValidationIdentityDeadline(deadlineAt, relativePath);
@@ -2122,16 +2400,20 @@ function clearDisposableValidationRuntimePaths(cwd: string, deadlineAt: number) 
 }
 
 function ignoredValidationRuntimePaths(cwd: string, deadlineAt: number) {
-  return runIdentityGit(
+  const output = runIdentityGit(
     cwd,
     ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
     deadlineAt,
     "ignored runtime input listing",
-  )
-    .split("\0")
-    .filter(Boolean)
-    .map((entry) => entry.replace(/\/+$/, ""))
-    .filter((entry) => entry !== "");
+    { maxBuffer: MAX_VALIDATION_IGNORED_PATH_BYTES },
+  );
+  return minimalValidationRuntimeRoots(
+    parseBoundedGitPathList(output, {
+      maxPaths: MAX_VALIDATION_IGNORED_PATHS,
+      operation: "ignored validation input discovery",
+      stripTrailingSlash: true,
+    }),
+  );
 }
 
 function minimalValidationRuntimeRoots(paths: Iterable<string>) {
@@ -2768,7 +3050,13 @@ function assertNoHiddenIndexEntries(cwd: string, deadlineAt: number) {
   }
 }
 
-function runIdentityGit(cwd: string, args: string[], deadlineAt: number, operation: string) {
+function runIdentityGit(
+  cwd: string,
+  args: string[],
+  deadlineAt: number,
+  operation: string,
+  options: { maxBuffer?: number } = {},
+) {
   const env = targetValidationEnv();
   env.GIT_ATTR_NOSYSTEM = "1";
   env.GIT_CONFIG_GLOBAL = os.devNull;
@@ -2778,8 +3066,51 @@ function runIdentityGit(cwd: string, args: string[], deadlineAt: number, operati
   return run("git", ["-c", "core.fsmonitor=false", "-c", "diff.external=", ...args], {
     cwd,
     env,
+    ...(options.maxBuffer === undefined ? {} : { maxBuffer: options.maxBuffer }),
     timeoutMs: validationIdentityTimeoutMs(deadlineAt, operation),
   });
+}
+
+function parseBoundedGitPathList(
+  output: string,
+  {
+    maxPaths,
+    operation,
+    stripTrailingSlash = false,
+  }: {
+    maxPaths: number;
+    operation: string;
+    stripTrailingSlash?: boolean;
+  },
+) {
+  if (output && !output.endsWith("\0")) {
+    throw new Error(`${operation} returned an incomplete path list`);
+  }
+  const entries = output ? output.slice(0, -1).split("\0") : [];
+  if (entries.length > maxPaths) {
+    throw new Error(`${operation} exceeded the supported path count`);
+  }
+  return entries.map((rawEntry) => {
+    const entry = stripTrailingSlash ? rawEntry.replace(/\/+$/, "") : rawEntry;
+    if (
+      !entry ||
+      entry.length > MAX_WORKSPACE_PATH_LENGTH ||
+      path.posix.isAbsolute(entry) ||
+      path.win32.isAbsolute(entry) ||
+      path.posix.normalize(entry) !== entry ||
+      entry.split("/").includes("..") ||
+      containsUnsafePathCharacters(entry)
+    ) {
+      throw new Error(`${operation} returned an unsafe path`);
+    }
+    return entry;
+  });
+}
+
+function containsUnsafePathCharacters(value: string) {
+  return (
+    value.includes("\\") || value.includes("\0") || value.includes("\r") || value.includes("\n")
+  );
 }
 
 function updateSymlinkTargetDigest(
@@ -3888,18 +4219,34 @@ function targetPackageScriptIsAvailable(
 
 function assertNoUnsafeBunLifecycleHooks(cwd: string, parts: readonly string[]) {
   const requirement = packageScriptRequirement(parts);
-  const unsafe = requirement ? unsafeBunLifecycleHook(cwd, requirement) : null;
-  if (unsafe) {
+  const inspection = requirement
+    ? unsafeBunLifecycleHook(cwd, requirement)
+    : { status: "safe" as const };
+  if (inspection.status === "unsafe") {
     throw new Error(
-      `unsafe validation command: Bun would execute ${unsafe.hook} around ${unsafe.command}`,
+      `unsafe validation command: Bun would execute ${inspection.hook} around ${inspection.command}`,
+    );
+  }
+  if (inspection.status === "inconclusive") {
+    throw new Error(
+      `unsafe validation command: Bun lifecycle hook inspection was inconclusive for ${inspection.command}: ${inspection.reason}`,
     );
   }
 }
 
-function unsafeBunLifecycleHook(cwd: string, requirement: LooseRecord) {
-  if (requirement.packageManager !== "bun") return null;
+function unsafeBunLifecycleHook(
+  cwd: string,
+  requirement: LooseRecord,
+):
+  | { status: "safe" }
+  | { status: "unsafe"; command: string; hook: string }
+  | { status: "inconclusive"; command: string; reason: string } {
+  if (requirement.packageManager !== "bun") return { status: "safe" };
+  const command = String(requirement.command);
   const manifests = readWorkspacePackageManifests(cwd, requirement.packageManager);
-  if (manifests === null) return null;
+  if (manifests === null) {
+    return { status: "inconclusive", command, reason: "workspace metadata or traversal failed" };
+  }
   const selected = requirement.workspaceScoped
     ? selectWorkspacePackageManifests(
         manifests,
@@ -3907,15 +4254,20 @@ function unsafeBunLifecycleHook(cwd: string, requirement: LooseRecord) {
         requirement.workspaceAll,
       )
     : manifests.filter((manifest) => manifest.relativeDir === ".");
-  if (selected === null) return null;
+  if (selected === null) {
+    return { status: "inconclusive", command, reason: "workspace selector could not be inspected" };
+  }
+  if (!requirement.workspaceScoped && selected.length !== 1) {
+    return { status: "inconclusive", command, reason: "root manifest could not be selected" };
+  }
   for (const manifest of selected) {
     for (const hook of [`pre${requirement.name}`, `post${requirement.name}`]) {
       if (manifest.scripts.has(hook)) {
-        return { command: requirement.command, hook };
+        return { status: "unsafe", command, hook };
       }
     }
   }
-  return null;
+  return { status: "safe" };
 }
 
 function readWorkspacePackageManifests(
@@ -3981,7 +4333,7 @@ function readWorkspacePatterns(
       ? workspaces.filter((value): value is string => typeof value === "string")
       : [];
   } catch {
-    return [];
+    return null;
   }
 }
 
