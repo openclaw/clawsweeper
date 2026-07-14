@@ -57,6 +57,7 @@ export type RebaseStrategy = "normal" | "theirs" | "apply-records" | "reconcile-
 
 export type GitRunOptions = {
   allowFailure?: boolean;
+  deadlineAtMs?: number;
   displayArgs?: readonly string[];
   ignorePublishDeadline?: boolean;
   input?: string;
@@ -83,6 +84,7 @@ export const STATE_PUBLISH_TIMING_DEFAULTS = Object.freeze({
   acquisitionDeadlineMs: 3 * 60 * 1000,
   operationDeadlineMs: 90 * 1000,
   commandTimeoutMs: 30 * 1000,
+  immutableLeasePriorityMaxMs: 15 * 1000,
   leaseTtlMs: 2 * 60 * 1000,
   leaseMaxWaitMs: 15 * 1000,
   leaseProtocolVersion: 1,
@@ -198,15 +200,31 @@ export function spawnGit(args: readonly string[], options: GitRunOptions = {}): 
 
 function gitCommandTimeoutMs(options: GitRunOptions): number | undefined {
   const metrics = activeGitPublishMetrics;
-  if (!metrics?.commandTimeoutMs) return undefined;
-  if (options.ignorePublishDeadline || metrics.deadlineAtMs === null) {
-    return metrics.commandTimeoutMs;
+  const publishDeadlineAtMs =
+    options.ignorePublishDeadline || metrics?.deadlineAtMs === null
+      ? undefined
+      : (metrics?.deadlineAtMs ?? undefined);
+  const deadlineAtMs =
+    options.deadlineAtMs === undefined
+      ? publishDeadlineAtMs
+      : Math.min(options.deadlineAtMs, publishDeadlineAtMs ?? options.deadlineAtMs);
+  if (!metrics?.commandTimeoutMs && deadlineAtMs === undefined) return undefined;
+  if (deadlineAtMs === undefined) {
+    return metrics?.commandTimeoutMs ?? undefined;
   }
-  const remaining = metrics.deadlineAtMs - Date.now();
+  const remaining = deadlineAtMs - Date.now();
   if (remaining <= 0) {
+    if (
+      options.deadlineAtMs !== undefined &&
+      (publishDeadlineAtMs === undefined || options.deadlineAtMs < publishDeadlineAtMs)
+    ) {
+      const error = new Error("Git command-specific deadline elapsed during state publication");
+      (error as NodeJS.ErrnoException).code = "ETIMEDOUT";
+      throw error;
+    }
     throw new Error("State publication deadline exceeded before the next git command");
   }
-  return Math.max(1, Math.min(metrics.commandTimeoutMs, remaining));
+  return Math.max(1, Math.min(metrics?.commandTimeoutMs ?? remaining, remaining));
 }
 
 function recordGitProcess(action: string | undefined): void {
@@ -433,9 +451,22 @@ function convergeImmutablePublish(options: {
   maxAttempts: number;
 }): PublishResult {
   const observedLeases = new Map<string, ObservedStatePublishLease>();
+  const exclusiveLeasePriorityDeadlineMs = immutableExclusiveLeasePriorityDeadlineMs();
+  let exclusiveLeasePriorityExhausted = false;
+  let exclusiveLeaseObserved = false;
   for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
     assertStatePublishDeadline("publishing immutable action ledger paths");
-    waitForExclusiveStatePublishLeaseGap(options.remote, options.branch, observedLeases);
+    if (!exclusiveLeasePriorityExhausted) {
+      const priority = waitForExclusiveStatePublishLeaseGap(
+        options.remote,
+        options.branch,
+        observedLeases,
+        exclusiveLeasePriorityDeadlineMs,
+        exclusiveLeaseObserved,
+      );
+      exclusiveLeasePriorityExhausted = priority.exhausted;
+      exclusiveLeaseObserved = priority.observed;
+    }
     const compatibility = immutableRemoteCompatibility({
       remote: options.remote,
       branch: options.branch,
@@ -608,19 +639,66 @@ function waitForExclusiveStatePublishLeaseGap(
   remote: string,
   branch: string,
   observedByOid: Map<string, ObservedStatePublishLease>,
-): void {
+  priorityDeadlineMs: number,
+  previouslyObserved: boolean,
+): { exhausted: boolean; observed: boolean } {
   const leaseRef = `${STATE_PUBLISH_LEASE_REF_ROOT}/${branch}`;
+  let lastObserved: ObservedStatePublishLease | null = null;
   for (;;) {
     assertStatePublishDeadline("waiting for exclusive state publication");
-    const observed = observeStatePublishLease(remote, leaseRef, observedByOid);
-    const remainingMs = observed ? observed.expiresAtMs - Date.now() : 0;
-    if (!observed || remainingMs <= 0) return;
-    const waitMs = Math.min(remainingMs, 1_000);
+    if (Date.now() >= priorityDeadlineMs) {
+      if (lastObserved) {
+        console.log(
+          `Immutable publish priority yield exhausted; proceeding alongside active exclusive state lease owner=${lastObserved.owner}`,
+        );
+      } else if (previouslyObserved) {
+        console.log(
+          "Immutable publish priority yield exhausted after earlier exclusive lease contention; proceeding without further lease preference",
+        );
+      }
+      return { exhausted: true, observed: previouslyObserved || lastObserved !== null };
+    }
+    let observed: ObservedStatePublishLease | null;
+    try {
+      observed = observeStatePublishLease(remote, leaseRef, observedByOid, priorityDeadlineMs);
+    } catch (error) {
+      if (!isGitTimeoutError(error)) throw error;
+      console.log(
+        "Immutable publish priority yield exhausted during lease observation; proceeding without further exclusive lease preference",
+      );
+      return { exhausted: true, observed: true };
+    }
+    lastObserved = observed;
+    const now = Date.now();
+    const remainingMs = observed ? observed.expiresAtMs - now : 0;
+    if (!observed || remainingMs <= 0) {
+      return { exhausted: false, observed: previouslyObserved || observed !== null };
+    }
+    const priorityRemainingMs = priorityDeadlineMs - now;
+    if (priorityRemainingMs <= 0) {
+      console.log(
+        `Immutable publish priority yield exhausted; proceeding alongside active exclusive state lease owner=${observed.owner}`,
+      );
+      return { exhausted: true, observed: true };
+    }
+    const waitMs = Math.min(remainingMs, priorityRemainingMs, 1_000);
     console.log(
       `Immutable publish yielding to exclusive state lease owner=${observed.owner} wait_ms=${waitMs}`,
     );
     sleepWithinStatePublishDeadline(waitMs, "waiting for exclusive state publication");
   }
+}
+
+function immutableExclusiveLeasePriorityDeadlineMs(): number {
+  const operationDeadlineMs =
+    activeGitPublishMetrics?.operationDeadlineMs ??
+    STATE_PUBLISH_TIMING_DEFAULTS.operationDeadlineMs;
+  const priorityBudgetMs = Math.min(
+    STATE_PUBLISH_TIMING_DEFAULTS.immutableLeasePriorityMaxMs,
+    Math.max(1, Math.floor(operationDeadlineMs / 6)),
+  );
+  const priorityDeadlineMs = Date.now() + priorityBudgetMs;
+  return Math.min(priorityDeadlineMs, activeGitPublishMetrics?.deadlineAtMs ?? priorityDeadlineMs);
 }
 
 function immutablePublishRetryWaitMs(attempt: number): number {
@@ -1342,6 +1420,11 @@ function validateStatePublishTimingDefaults(): void {
   if (timing.operationDeadlineMs >= timing.leaseTtlMs) {
     throw new Error("Default state publish operation deadline must be shorter than the lease TTL");
   }
+  if (timing.immutableLeasePriorityMaxMs >= timing.operationDeadlineMs) {
+    throw new Error(
+      "Default immutable lease priority budget must be shorter than the operation deadline",
+    );
+  }
   const workflowBoundMs =
     timing.acquisitionDeadlineMs +
     timing.operationDeadlineMs +
@@ -1491,18 +1574,20 @@ function observeStatePublishLease(
   remote: string,
   leaseRef: string,
   observedByOid: Map<string, ObservedStatePublishLease>,
+  deadlineAtMs?: number,
 ): ObservedStatePublishLease | null {
-  const oid = remoteRefOid(remote, leaseRef);
+  const oid = remoteRefOid(remote, leaseRef, deadlineAtMs);
   if (!oid) return null;
   const cached = observedByOid.get(oid);
   if (cached) return cached;
 
   const fetch = spawnGit(["fetch", "--no-tags", "--quiet", remote, leaseRef], {
     allowFailure: true,
+    ...(deadlineAtMs === undefined ? {} : { deadlineAtMs }),
     quiet: true,
   });
   if (fetch.status !== 0) {
-    if (!remoteRefOid(remote, leaseRef)) {
+    if (!remoteRefOid(remote, leaseRef, deadlineAtMs)) {
       observedByOid.delete(oid);
       return null;
     }
@@ -1511,6 +1596,7 @@ function observeStatePublishLease(
     );
   }
   const raw = runGit(["show", "-s", "--format=%H%x00%ct%x00%B", "FETCH_HEAD"], {
+    ...(deadlineAtMs === undefined ? {} : { deadlineAtMs }),
     quiet: true,
   });
   const [fetchedOid, committedAtRaw, ...messageParts] = raw.split("\0");
@@ -1616,9 +1702,10 @@ function assertStatePublishLeaseOwner(remote: string, lease: StatePublishLease):
   }
 }
 
-function remoteRefOid(remote: string, ref: string): string | null {
+function remoteRefOid(remote: string, ref: string, deadlineAtMs?: number): string | null {
   const result = spawnGit(["ls-remote", "--refs", remote, ref], {
     allowFailure: true,
+    ...(deadlineAtMs === undefined ? {} : { deadlineAtMs }),
     quiet: true,
   });
   if (result.status !== 0) {

@@ -132,6 +132,7 @@ test("default lease timing can recover a crashed owner within the workflow budge
       timing.leaseProtocolMaxTtlMs + timing.leaseMaxWaitMs + timing.commandTimeoutMs,
   );
   assert.ok(timing.operationDeadlineMs < timing.leaseTtlMs);
+  assert.ok(timing.immutableLeasePriorityMaxMs < timing.operationDeadlineMs);
   assert.ok(
     timing.acquisitionDeadlineMs +
       timing.operationDeadlineMs +
@@ -3855,6 +3856,9 @@ test("immutable publishers yield to an active exclusive state mutation", async (
   );
   const immutableResult = waitForChild(immutable);
   await waitForChildOutput(immutable, "Immutable publish yielding to exclusive state lease");
+  assert.throws(() =>
+    run("git", ["--git-dir", fixture.origin, "show", `state:${immutablePath}`], fixture.root),
+  );
   write(releaseSignal, "release\n");
 
   const [exclusiveCompleted, immutableCompleted] = await Promise.all([
@@ -3865,6 +3869,196 @@ test("immutable publishers yield to an active exclusive state mutation", async (
   assert.equal(immutableCompleted.status, 0, immutableCompleted.stderr);
   assert.equal(fs.existsSync(releaseObserved), true);
   assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${immutablePath}`], fixture.root),
+    "immutable\n",
+  );
+  const subjects = run(
+    "git",
+    ["--git-dir", fixture.origin, "log", "--reverse", "--format=%s", "state"],
+    fixture.root,
+  );
+  assert.ok(
+    subjects.indexOf("chore: publish exclusive mutation") <
+      subjects.indexOf("chore: append priority event"),
+  );
+});
+
+test("immutable publishers make progress after the exclusive priority budget", async () => {
+  const fixture = createStatePublishRemote("immutable-exclusive-bounded-priority");
+  const exclusiveState = path.join(fixture.root, "state-exclusive");
+  const immutableState = path.join(fixture.root, "state-immutable");
+  const exclusiveSource = path.join(fixture.root, "source-exclusive");
+  const immutableSource = path.join(fixture.root, "source-immutable");
+  const releaseSignal = path.join(fixture.root, "release-exclusive");
+  const releaseObserved = path.join(fixture.root, "exclusive-released");
+  const exclusivePath = "results/exclusive-bounded-priority.txt";
+  const immutablePath =
+    "ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-bounded-priority-review-a.jsonl";
+  cloneState(fixture.origin, exclusiveState);
+  cloneState(fixture.origin, immutableState);
+  fs.mkdirSync(exclusiveSource);
+  fs.mkdirSync(immutableSource);
+  write(path.join(exclusiveSource, exclusivePath), "exclusive\n");
+  write(path.join(immutableSource, immutablePath), "immutable\n");
+  installStatePushReleaseHook(exclusiveState, releaseSignal, releaseObserved);
+  const env = leasedPublishEnv({
+    CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "5000",
+    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
+    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
+    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "4000",
+    CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
+  });
+
+  const exclusive = startPublishCli(
+    exclusiveSource,
+    exclusiveState,
+    "chore: publish bounded-priority exclusive mutation",
+    env,
+  );
+  const exclusiveResult = waitForChild(exclusive);
+  await waitForRemoteRef(fixture.origin, STATE_PUBLISH_LEASE_REF);
+  const immutable = startImmutablePublishProcess(
+    immutableSource,
+    immutableState,
+    "chore: append bounded-priority event",
+    immutablePath,
+    env,
+  );
+  const immutableResult = waitForChild(immutable);
+  await waitForChildOutput(
+    immutable,
+    "Immutable publish priority yield exhausted",
+    "proceeding alongside active exclusive state lease",
+  );
+  const immutableCompleted = await immutableResult;
+  assert.equal(immutableCompleted.status, 0, immutableCompleted.stderr);
+  assert.equal(fs.existsSync(releaseObserved), false);
+
+  write(releaseSignal, "release\n");
+  const exclusiveCompleted = await exclusiveResult;
+  assert.equal(exclusiveCompleted.status, 0, exclusiveCompleted.stderr);
+  assert.equal(fs.existsSync(releaseObserved), true);
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${exclusivePath}`], fixture.root),
+    "exclusive\n",
+  );
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${immutablePath}`], fixture.root),
+    "immutable\n",
+  );
+});
+
+test("replacement exclusive leases share one immutable priority budget", async () => {
+  const fixture = createStatePublishRemote("immutable-replacement-lease-priority");
+  const leaseState = path.join(fixture.root, "state-lease");
+  const immutableState = path.join(fixture.root, "state-immutable");
+  const immutableSource = path.join(fixture.root, "source-immutable");
+  const immutablePath =
+    "ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-replacement-priority-review-a.jsonl";
+  const firstOwner = "11111111-1111-4111-8111-111111111111";
+  const secondOwner = "22222222-2222-4222-8222-222222222222";
+  const ttlMs = 12_000;
+  cloneState(fixture.origin, leaseState);
+  cloneState(fixture.origin, immutableState);
+  fs.mkdirSync(immutableSource);
+  write(path.join(immutableSource, immutablePath), "immutable\n");
+  const firstIssuedAt = new Date();
+  const firstLeaseOid = createRemoteLease(leaseState, {
+    owner: firstOwner,
+    issuedAt: firstIssuedAt.toISOString(),
+    expiresAt: new Date(firstIssuedAt.getTime() + ttlMs).toISOString(),
+    ttlMs,
+  });
+  const env = leasedPublishEnv({
+    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "9000",
+    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
+    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: String(ttlMs),
+  });
+
+  const immutable = startImmutablePublishProcess(
+    immutableSource,
+    immutableState,
+    "chore: append replacement-priority event",
+    immutablePath,
+    env,
+  );
+  const immutableResult = waitForChild(immutable);
+  await waitForChildOutput(immutable, `owner=${firstOwner}`);
+  const secondIssuedAt = new Date();
+  createRemoteLease(leaseState, {
+    owner: secondOwner,
+    issuedAt: secondIssuedAt.toISOString(),
+    expiresAt: new Date(secondIssuedAt.getTime() + ttlMs).toISOString(),
+    ttlMs,
+    expectedOid: firstLeaseOid,
+  });
+  await waitForChildOutput(immutable, `owner=${secondOwner}`);
+
+  const immutableCompleted = await immutableResult;
+  assert.equal(immutableCompleted.status, 0, immutableCompleted.stderr);
+  const firstWaitMs = Number(
+    new RegExp(`owner=${firstOwner} wait_ms=(\\d+)`).exec(immutableCompleted.stdout)?.[1],
+  );
+  const secondWaitMs = Number(
+    new RegExp(`owner=${secondOwner} wait_ms=(\\d+)`).exec(immutableCompleted.stdout)?.[1],
+  );
+  assert.ok(firstWaitMs > 0);
+  assert.ok(secondWaitMs > 0 && secondWaitMs < firstWaitMs);
+  assert.match(immutableCompleted.stdout, /Immutable publish priority yield exhausted/);
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), true);
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${immutablePath}`], fixture.root),
+    "immutable\n",
+  );
+});
+
+test("slow lease observation cannot consume the immutable CAS reserve", async () => {
+  const fixture = createStatePublishRemote("immutable-slow-lease-observation");
+  const leaseState = path.join(fixture.root, "state-lease");
+  const immutableState = path.join(fixture.root, "state-immutable");
+  const immutableSource = path.join(fixture.root, "source-immutable");
+  const immutablePath =
+    "ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-slow-observation-review-a.jsonl";
+  const ttlMs = 10_000;
+  cloneState(fixture.origin, leaseState);
+  cloneState(fixture.origin, immutableState);
+  fs.mkdirSync(immutableSource);
+  write(path.join(immutableSource, immutablePath), "immutable\n");
+  const issuedAt = new Date();
+  createRemoteLease(leaseState, {
+    owner: "33333333-3333-4333-8333-333333333333",
+    issuedAt: issuedAt.toISOString(),
+    expiresAt: new Date(issuedAt.getTime() + ttlMs).toISOString(),
+    ttlMs,
+  });
+  const wrapper = installSlowLeaseObservationGitWrapper(fixture.root, 2);
+  const env = leasedPublishEnv({
+    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
+    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
+    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: String(ttlMs),
+    PATH: `${wrapper.bin}:${process.env.PATH ?? ""}`,
+    REAL_GIT: wrapper.realGit,
+  });
+
+  const immutable = startImmutablePublishProcess(
+    immutableSource,
+    immutableState,
+    "chore: append after slow lease observation",
+    immutablePath,
+    env,
+  );
+  const immutableCompleted = await waitForChild(immutable);
+
+  assert.equal(immutableCompleted.status, 0, immutableCompleted.stderr);
+  assert.equal(fs.existsSync(wrapper.marker), true);
+  assert.match(
+    immutableCompleted.stdout,
+    /priority yield exhausted during lease observation; proceeding without further exclusive lease preference/,
+  );
+  assert.doesNotMatch(immutableCompleted.stdout, /State publication deadline exceeded/);
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), true);
   assert.equal(
     run("git", ["--git-dir", fixture.origin, "show", `state:${immutablePath}`], fixture.root),
     "immutable\n",
@@ -4143,7 +4337,7 @@ function readRemoteLeaseMessage(origin) {
   );
 }
 
-function createRemoteLease(state, { owner, issuedAt, expiresAt, ttlMs }) {
+function createRemoteLease(state, { owner, issuedAt, expiresAt, ttlMs, expectedOid = "" }) {
   const tree = run("git", ["rev-parse", "HEAD^{tree}"], state).trim();
   const parent = run("git", ["rev-parse", "HEAD"], state).trim();
   const lease = execFileSync(
@@ -4180,7 +4374,7 @@ function createRemoteLease(state, { owner, issuedAt, expiresAt, ttlMs }) {
     "git",
     [
       "push",
-      `--force-with-lease=${STATE_PUBLISH_LEASE_REF}:`,
+      `--force-with-lease=${STATE_PUBLISH_LEASE_REF}:${expectedOid}`,
       "origin",
       `${lease}:${STATE_PUBLISH_LEASE_REF}`,
     ],
@@ -4206,6 +4400,30 @@ if test "$1" = "fetch" &&
    test ! -f "\${VANISHING_LEASE_MARKER}"; then
   touch "\${VANISHING_LEASE_MARKER}"
   "$REAL_GIT" --git-dir="\${VANISHING_LEASE_ORIGIN}" update-ref -d "${STATE_PUBLISH_LEASE_REF}"
+fi
+exec "$REAL_GIT" "$@"
+`,
+  );
+  fs.chmodSync(wrapper, 0o755);
+  return { bin, marker, realGit };
+}
+
+function installSlowLeaseObservationGitWrapper(root, seconds) {
+  const bin = path.join(root, "git-wrapper-slow-lease");
+  const marker = path.join(root, "slow-lease-observation");
+  const realGit = run("sh", ["-c", "command -v git"], root).trim();
+  fs.mkdirSync(bin);
+  const wrapper = path.join(bin, "git");
+  fs.writeFileSync(
+    wrapper,
+    `#!/bin/sh
+: "\${REAL_GIT:?real git path is required}"
+if test "$1" = "ls-remote" &&
+   test "$2" = "--refs" &&
+   test "$4" = "${STATE_PUBLISH_LEASE_REF}" &&
+   test ! -f "${marker}"; then
+  touch "${marker}"
+  sleep "${seconds}"
 fi
 exec "$REAL_GIT" "$@"
 `,
