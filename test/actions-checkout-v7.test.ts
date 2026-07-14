@@ -311,8 +311,14 @@ test("GitHub activity rerun attempt two replays attempt one without redispatch",
     "source_run_attempt",
     "source_run_id",
   ]);
-  assert.match(workflow.jobs?.["replay-dispatch-receipts"]?.if ?? "", /failure/);
-  assert.match(workflow.jobs?.["replay-dispatch-receipts"]?.if ?? "", /cancelled/);
+  const replayCondition = workflow.jobs?.["replay-dispatch-receipts"]?.if ?? "";
+  const automaticConclusions = JSON.parse(
+    /fromJSON\('([^']+)'\)/.exec(replayCondition)?.[1] ?? "[]",
+  ) as string[];
+  assert.deepEqual(automaticConclusions, ["failure", "cancelled", "timed_out"]);
+  for (const conclusion of ["success", "neutral", "skipped"]) {
+    assert.equal(automaticConclusions.includes(conclusion), false);
+  }
   const replay = workflowSource.slice(workflowSource.indexOf("replay-dispatch-receipts:"));
   assert.doesNotMatch(
     replay,

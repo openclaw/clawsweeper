@@ -35,7 +35,7 @@ jobs:
     if: >-
       ${{
         github.event_name == 'workflow_dispatch' ||
-        contains(fromJSON('["failure","cancelled"]'), github.event.workflow_run.conclusion)
+        contains(fromJSON('["failure","cancelled","timed_out"]'), github.event.workflow_run.conclusion)
       }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15

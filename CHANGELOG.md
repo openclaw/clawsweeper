@@ -63,7 +63,8 @@ checkpoint, and status-only commits are intentionally omitted.
   recovery, one rebuild retry, and remote blob verification.
 - Preserved finalized GitHub activity dispatch receipts as a replayable artifact
   before state publication, while keeping direct publication independent of the
-  recovery-copy upload and idempotent replay free of redispatch.
+  recovery-copy upload and automatically replaying failed, cancelled, or
+  timed-out producers without redispatch.
 - Included action-ledger source dependencies in the spam scanner's sparse
   checkout so its repair build matches the full repository build.
 - Preserved crawl-remote's reviewed `limits.cpu_ms` value through immutable

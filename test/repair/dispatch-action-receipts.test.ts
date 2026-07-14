@@ -728,17 +728,22 @@ test("activity dispatch publishes receipts before the noncritical notifier", () 
   assert.doesNotMatch(workflow, /replay-dispatch-receipts/);
 });
 
-test("failed GitHub activity runs replay receipts in a standalone no-dispatch workflow", () => {
+test("failed, cancelled, and timed-out GitHub activity runs replay receipts", () => {
   const workflow = fs.readFileSync(".github/workflows/github-activity-receipt-replay.yml", "utf8");
   assert.match(
     workflow,
     /workflow_run:\s+workflows:\s+- github activity to openclaw\s+types:\s+- completed/,
   );
   assert.match(workflow, /workflow_dispatch:[\s\S]*?source_run_id:[\s\S]*?source_run_attempt:/);
-  assert.match(
-    workflow,
-    /contains\(fromJSON\('\["failure","cancelled"\]'\), github\.event\.workflow_run\.conclusion\)/,
+  const replayCondition = workflow.slice(
+    workflow.indexOf("    if: >-"),
+    workflow.indexOf("    runs-on:"),
   );
+  assert.match(
+    replayCondition,
+    /contains\(fromJSON\('\["failure","cancelled","timed_out"\]'\), github\.event\.workflow_run\.conclusion\)/,
+  );
+  assert.doesNotMatch(replayCondition, /"success"|"neutral"|"skipped"/);
   const checkoutOffset = workflow.indexOf("uses: actions/checkout@v7");
   const setupOffset = workflow.indexOf("uses: ./.github/actions/setup-pnpm");
   const selectOffset = workflow.indexOf("id: select-activity-dispatch-ledger");
