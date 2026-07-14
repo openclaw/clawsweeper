@@ -31,8 +31,9 @@ test("repair workflow and executor share coherent production timeout defaults", 
   );
   assert.match(
     workflow,
-    /name: Execute credited fix artifact[\s\S]*timeout --foreground --signal=TERM --kill-after=30s "\$\{execute_timeout_seconds\}s"/,
+    /name: Execute credited fix artifact[\s\S]*timeout --signal=TERM --kill-after=30s "\$\{execute_timeout_seconds\}s"[\s\S]*node dist\/repair\/execute-fix-attempt\.js/,
   );
+  assert.doesNotMatch(workflow, /timeout --foreground/);
 });
 
 test("no-op automerge repair updates outcome and re-enters router before exit", () => {

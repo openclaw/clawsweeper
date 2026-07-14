@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -419,6 +420,65 @@ test("successful execution leaves recoverable starts when terminal receipt writi
   }
 });
 
+test("GNU timeout terminates the complete execute process group before returning", (t) => {
+  if (process.platform === "win32") {
+    t.skip("GNU process-group timeout is used only by the Linux repair runner");
+    return;
+  }
+  const version = spawnSync("timeout", ["--version"], { encoding: "utf8" });
+  if (version.status !== 0 || !version.stdout.includes("GNU coreutils")) {
+    t.skip("GNU timeout is unavailable");
+    return;
+  }
+
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "execute-timeout-group-")));
+  const childPath = path.join(root, "child.mjs");
+  const parentPath = path.join(root, "parent.mjs");
+  const childPidPath = path.join(root, "child.pid");
+  fs.writeFileSync(
+    childPath,
+    [
+      'import fs from "node:fs";',
+      `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(process.pid));`,
+      'process.on("SIGTERM", () => {});',
+      "setInterval(() => {}, 1_000);",
+    ].join("\n"),
+  );
+  fs.writeFileSync(
+    parentPath,
+    [
+      'import { spawn } from "node:child_process";',
+      `spawn(process.execPath, [${JSON.stringify(childPath)}], { stdio: "ignore" });`,
+      'process.on("SIGTERM", () => {});',
+      "setInterval(() => {}, 1_000);",
+    ].join("\n"),
+  );
+
+  try {
+    const result = spawnSync(
+      "timeout",
+      ["--signal=TERM", "--kill-after=0.25s", "2s", process.execPath, parentPath],
+      { encoding: "utf8", timeout: 5_000 },
+    );
+
+    assert.ok(
+      [124, 137].includes(result.status ?? -1) || result.signal === "SIGKILL",
+      JSON.stringify({
+        status: result.status,
+        signal: result.signal,
+        error: result.error?.message,
+        stderr: result.stderr,
+      }),
+    );
+    assert.equal(fs.existsSync(childPidPath), true, "nested executor never started");
+    const childPid = Number(fs.readFileSync(childPidPath, "utf8"));
+    assert.equal(Number.isSafeInteger(childPid) && childPid > 0, true);
+    assert.equal(waitForProcessExit(childPid, 2_000), true, `nested process ${childPid} survived`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function repairJob(relativePath: string): ParsedJob {
   return {
     path: `/public/repo/${relativePath}`,
@@ -441,6 +501,20 @@ function repairJob(relativePath: string): ParsedJob {
       candidates: [],
     },
   };
+}
+
+function waitForProcessExit(pid: number, timeoutMs: number): boolean {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+      throw error;
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+  }
+  return false;
 }
 
 function workflowEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {

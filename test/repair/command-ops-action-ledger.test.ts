@@ -140,7 +140,7 @@ test("repair execution publishes crash-safe workflow attempt receipts", () => {
   assert.match(executeStep, /CLAWSWEEPER_ACTION_LEDGER_INVOCATION: execute-fix/);
   assert.match(
     executeStep,
-    /pnpm run repair:execute-fix-attempt -- "\$\{\{ inputs\.job \}\}" --latest --defer-publication/,
+    /node dist\/repair\/execute-fix-attempt\.js "\$\{\{ inputs\.job \}\}" --latest --defer-publication/,
   );
   assert.match(
     executeStep,
@@ -148,8 +148,10 @@ test("repair execution publishes crash-safe workflow attempt receipts", () => {
   );
   assert.match(
     executeStep,
-    /timeout --foreground --signal=TERM --kill-after=30s "\$\{execute_timeout_seconds\}s"/,
+    /timeout --signal=TERM --kill-after=30s "\$\{execute_timeout_seconds\}s"/,
   );
+  assert.doesNotMatch(executeStep, /timeout --foreground/);
+  assert.doesNotMatch(executeStep, /pnpm run repair:execute-fix-attempt/);
   assert.doesNotMatch(executeStep, /timeout-minutes:/);
   assert.match(executeStep, /execute_exit_code=\$\?/);
   assert.match(executeStep, /echo "exit_code=\$execute_exit_code" >> "\$GITHUB_OUTPUT"/);

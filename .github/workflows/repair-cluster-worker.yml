@@ -626,8 +626,8 @@ jobs:
             fi
             echo "::notice title=Bounded execute-fix::timeout=${execute_timeout_seconds}s recovery_reserve=${CLAWSWEEPER_EXECUTE_RECOVERY_RESERVE_SECONDS}s"
             set +e
-            timeout --foreground --signal=TERM --kill-after=30s "${execute_timeout_seconds}s" \
-              pnpm run repair:execute-fix-attempt -- "${{ inputs.job }}" --latest --defer-publication
+            timeout --signal=TERM --kill-after=30s "${execute_timeout_seconds}s" \
+              node dist/repair/execute-fix-attempt.js "${{ inputs.job }}" --latest --defer-publication
             execute_exit_code=$?
             set -e
           fi
