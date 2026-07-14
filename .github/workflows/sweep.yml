@@ -11,6 +11,10 @@ run-name: >-
       'Retry failed Codex reviews' ||
     (github.event_name == 'repository_dispatch' &&
       github.event.action == 'clawsweeper_target_sweep' &&
+      github.event.client_payload.item_number != '') &&
+      format('Review event item {0}#{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number) ||
+    (github.event_name == 'repository_dispatch' &&
+      github.event.action == 'clawsweeper_target_sweep' &&
       github.event.client_payload.hot_intake == 'true') &&
       format('Review hot target repo {0}', github.event.client_payload.target_repo || 'openclaw/openclaw') ||
     (github.event_name == 'repository_dispatch' &&

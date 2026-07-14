@@ -1934,7 +1934,7 @@ test("sweep target checkouts retry without cached references", () => {
   }
 });
 
-test("target sweep runs count as background review capacity", () => {
+test("broad target sweep runs count as background review capacity", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const capacityBlock = workflow.slice(
     workflow.indexOf("active_sweep_background_workers()"),
@@ -1948,6 +1948,53 @@ test("target sweep runs count as background review capacity", () => {
   assert.match(capacityBlock, /startswith\("Review target repo "\)/);
   assert.match(capacityBlock, /startswith\("Review hot target repo "\)/);
   assert.match(capacityBlock, /Review\\ hot\\ target\\ repo/);
+});
+
+test("item-bearing target sweeps count as exact review capacity", () => {
+  const sweepWorkflow = readText(".github/workflows/sweep.yml");
+  const runName = sweepWorkflow.slice(
+    sweepWorkflow.indexOf("run-name:"),
+    sweepWorkflow.indexOf("\non:"),
+  );
+  const exactTargetName = runName.indexOf(
+    "github.event.action == 'clawsweeper_target_sweep' &&\n" +
+      "      github.event.client_payload.item_number != ''",
+  );
+  const broadTargetName = runName.indexOf("github.event.action == 'clawsweeper_target_sweep') &&");
+  const sweepModeBlock = sweepWorkflow.slice(
+    sweepWorkflow.indexOf("- id: mode"),
+    sweepWorkflow.indexOf("- id: select"),
+  );
+  const commitWorkflow = readText(".github/workflows/commit-review.yml");
+  const commitBlock = commitWorkflow.slice(
+    commitWorkflow.indexOf("- name: Select commits"),
+    commitWorkflow.indexOf('if [ "$ENABLED" = "false" ]'),
+  );
+  const requeueBlock = sweepWorkflow.slice(
+    sweepWorkflow.indexOf("\n  requeue-source-revision-drift:"),
+    sweepWorkflow.indexOf(
+      "\n  publish:",
+      sweepWorkflow.indexOf("\n  requeue-source-revision-drift:"),
+    ),
+  );
+
+  assert.ok(exactTargetName >= 0);
+  assert.ok(exactTargetName < broadTargetName);
+  assert.match(
+    runName,
+    /format\('Review event item \{0\}#\{1\}', github\.event\.client_payload\.target_repo \|\| 'openclaw\/openclaw', github\.event\.client_payload\.item_number\)/,
+  );
+  for (const block of [sweepModeBlock, commitBlock]) {
+    const exactWorkers = extractWorkflowShellFunction(block, "active_sweep_exact_workers");
+    const backgroundWorkers = extractWorkflowShellFunction(
+      block,
+      "active_sweep_background_workers",
+    );
+    assert.match(exactWorkers, /startswith\("Review event item "\)/);
+    assert.doesNotMatch(backgroundWorkers, /Review event item/);
+  }
+  assert.match(requeueBlock, /event_type: "clawsweeper_target_sweep"/);
+  assert.match(requeueBlock, /item_number: \$item_number/);
 });
 
 test("target hot sweep dispatches honor shard cap payload", () => {
