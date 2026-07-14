@@ -2697,7 +2697,7 @@ test("sweep exact event reviews preserve the configured fallback without an adap
   assert.match(resolveBlock, /codex_timeout_ms: Math\.max\(configuredTimeout, adaptiveTimeout\)/);
 });
 
-test("github activity workflow scopes cancellation to matching item activity", () => {
+test("github activity workflow serializes matching item activity through receipt publication", () => {
   const workflow = readText(".github/workflows/github-activity.yml");
   const concurrencyBlock = workflow.slice(
     workflow.indexOf("concurrency:"),
@@ -2738,7 +2738,7 @@ test("github activity workflow scopes cancellation to matching item activity", (
   assert.match(workflow, /Dispatch spam scan candidate/);
   assert.match(workflow, /repair:spam-comment-intake -- --write-report/);
   assert.doesNotMatch(workflow, /gh api "repos\/\$\{GITHUB_REPOSITORY\}\/dispatches"/);
-  assert.match(concurrencyBlock, /cancel-in-progress: true/);
+  assert.match(concurrencyBlock, /cancel-in-progress: false/);
   assert.match(workflow, /runs-on: ubuntu-24\.04/);
   assert.doesNotMatch(workflow, /runs-on: blacksmith-/);
   assert.doesNotMatch(

@@ -15,7 +15,10 @@ import test from "node:test";
 import { parse } from "yaml";
 
 interface CheckoutStep {
+  "continue-on-error"?: boolean;
+  env?: Record<string, unknown>;
   id?: string;
+  if?: string;
   name?: string;
   run?: string;
   uses?: string;
@@ -23,7 +26,11 @@ interface CheckoutStep {
 }
 
 interface WorkflowDocument {
-  jobs?: Record<string, { steps?: CheckoutStep[] }>;
+  jobs?: Record<string, { if?: string; steps?: CheckoutStep[] }>;
+  on?: {
+    workflow_dispatch?: { inputs?: Record<string, unknown> };
+    workflow_run?: { types?: string[]; workflows?: string[] };
+  };
 }
 
 function yamlFiles(directory: string): string[] {
@@ -98,20 +105,26 @@ test("trusted-event workflows explicitly checkout the default branch", () => {
     );
   }
 
-  const activityPath = ".github/workflows/github-activity.yml";
-  const activity = parse(readFileSync(activityPath, "utf8")) as WorkflowDocument;
-  const activityCheckouts = Object.values(activity.jobs ?? {})
-    .flatMap((job) => job.steps ?? [])
-    .filter((step) => step.uses === "actions/checkout@v7");
-  assert.equal(activityCheckouts.length, 2, activityPath);
-  for (const checkout of activityCheckouts) {
-    assert.equal(checkout.with?.ref, "${{ github.event.repository.default_branch }}");
+  for (const path of [
+    ".github/workflows/github-activity.yml",
+    ".github/workflows/github-activity-receipt-replay.yml",
+  ]) {
+    const workflow = parse(readFileSync(path, "utf8")) as WorkflowDocument;
+    const checkoutSteps = Object.values(workflow.jobs ?? {})
+      .flatMap((job) => job.steps ?? [])
+      .filter((step) => step.uses === "actions/checkout@v7");
+    assert.equal(checkoutSteps.length, 1, path);
+    assert.equal(
+      checkoutSteps[0]?.with?.ref,
+      "${{ github.event.repository.default_branch }}",
+      path,
+    );
   }
 });
 
 test("GitHub activity replay builds trusted code before downloading receipts", () => {
   const workflow = parse(
-    readFileSync(".github/workflows/github-activity.yml", "utf8"),
+    readFileSync(".github/workflows/github-activity-receipt-replay.yml", "utf8"),
   ) as WorkflowDocument;
   const steps = workflow.jobs?.["replay-dispatch-receipts"]?.steps ?? [];
   const checkoutIndex = steps.findIndex((step) => step.uses === "actions/checkout@v7");
@@ -127,7 +140,7 @@ test("GitHub activity replay builds trusted code before downloading receipts", (
 });
 
 test("GitHub activity rerun attempt two replays attempt one without redispatch", () => {
-  const workflowPath = ".github/workflows/github-activity.yml";
+  const workflowPath = ".github/workflows/github-activity-receipt-replay.yml";
   const workflowSource = readFileSync(workflowPath, "utf8");
   const workflow = parse(workflowSource) as WorkflowDocument;
   const steps = workflow.jobs?.["replay-dispatch-receipts"]?.steps ?? [];
@@ -152,6 +165,8 @@ test("GitHub activity rerun attempt two replays attempt one without redispatch",
       artifact_id: "101",
       artifact_name: `github-activity-dispatch-receipts-${runId}-1`,
       producer_attempt: "1",
+      source_run_id: runId,
+      source_sha: "a".repeat(40),
     },
   );
   assert.equal(
@@ -167,16 +182,40 @@ test("GitHub activity rerun attempt two replays attempt one without redispatch",
     "multiple replay-only reruns must select the latest prior producer attempt",
   );
 
-  assert.match(selector.run, /actions\/runs\/\$\{GITHUB_RUN_ID\}\/artifacts/);
-  assert.doesNotMatch(selector.run, /GITHUB_RUN_ATTEMPT\s*-\s*1/);
+  assert.match(selector.run, /actions\/runs\/\$\{SOURCE_RUN_ID\}\/artifacts/);
+  assert.match(
+    selector.run,
+    /actions\/runs\/\$\{SOURCE_RUN_ID\}\/attempts\/\$\{SOURCE_RUN_ATTEMPT\}/,
+  );
+  assert.doesNotMatch(selector.run, /SOURCE_RUN_ATTEMPT\s*-\s*1/);
   assert.equal(
     download?.with?.["artifact-ids"],
     "${{ steps.select-activity-dispatch-ledger.outputs.artifact_id }}",
   );
   assert.equal(download?.with?.["github-token"], "${{ github.token }}");
-  assert.equal(download?.with?.["run-id"], "${{ github.run_id }}");
+  assert.equal(
+    download?.with?.["run-id"],
+    "${{ steps.select-activity-dispatch-ledger.outputs.source_run_id }}",
+  );
+  assert.deepEqual(workflow.on?.workflow_run, {
+    workflows: ["github activity to openclaw"],
+    types: ["completed"],
+  });
+  assert.deepEqual(Object.keys(workflow.on?.workflow_dispatch?.inputs ?? {}).sort(), [
+    "source_run_attempt",
+    "source_run_id",
+  ]);
+  assert.match(workflow.jobs?.["replay-dispatch-receipts"]?.if ?? "", /failure/);
+  assert.match(workflow.jobs?.["replay-dispatch-receipts"]?.if ?? "", /cancelled/);
   const replay = workflowSource.slice(workflowSource.indexOf("replay-dispatch-receipts:"));
-  assert.doesNotMatch(replay, /repair:spam-comment-intake|Dispatch spam scan candidate/);
+  assert.doesNotMatch(
+    replay,
+    /continue-on-error|repair:spam-comment-intake|repair:notify-github-activity|Dispatch spam scan candidate/,
+  );
+  assert.doesNotMatch(
+    readFileSync(".github/workflows/github-activity.yml", "utf8"),
+    /replay-dispatch-receipts/,
+  );
 });
 
 test("trusted-event state checkout remains pinned to the state repository branch", () => {
@@ -200,7 +239,15 @@ function runReplayArtifactSelection(
     const output = join(root, "github-output");
     mkdirSync(bin);
     const gh = join(bin, "gh");
-    writeFileSync(gh, "#!/bin/sh\nprintf '%s\\n' \"$GH_ARTIFACT_RESPONSE\"\n");
+    writeFileSync(
+      gh,
+      `#!/bin/sh
+case "$*" in
+  *"/artifacts"*) printf '%s\\n' "$GH_ARTIFACT_RESPONSE" ;;
+  *) printf '%s\\n' "$GH_RUN_RESPONSE" ;;
+esac
+`,
+    );
     chmodSync(gh, 0o755);
     const result = spawnSync("bash", ["-c", script], {
       encoding: "utf8",
@@ -208,11 +255,18 @@ function runReplayArtifactSelection(
         ...process.env,
         GITHUB_OUTPUT: output,
         GITHUB_REPOSITORY: "openclaw/clawsweeper",
-        GITHUB_RUN_ATTEMPT: String(runAttempt),
-        GITHUB_RUN_ID: runId,
         GH_ARTIFACT_RESPONSE: JSON.stringify([{ artifacts }]),
+        GH_RUN_RESPONSE: JSON.stringify({
+          head_sha: "a".repeat(40),
+          id: Number(runId),
+          path: ".github/workflows/github-activity.yml",
+          run_attempt: runAttempt,
+          status: "completed",
+        }),
         PATH: `${bin}:${process.env.PATH ?? ""}`,
         RUNNER_TEMP: root,
+        SOURCE_RUN_ATTEMPT: String(runAttempt),
+        SOURCE_RUN_ID: runId,
       },
     });
     assert.equal(result.status, 0, result.stderr);

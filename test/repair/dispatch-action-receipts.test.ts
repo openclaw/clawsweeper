@@ -637,6 +637,7 @@ test("every workflow-backed dispatch producer publishes finalized receipt shards
 test("activity intake receipt publishers keep checkout credentials ephemeral", () => {
   for (const workflowPath of [
     ".github/workflows/github-activity.yml",
+    ".github/workflows/github-activity-receipt-replay.yml",
     ".github/workflows/spam-comment-intake.yml",
   ]) {
     const workflow = fs.readFileSync(workflowPath, "utf8");
@@ -661,10 +662,19 @@ test("activity intake receipt publishers keep checkout credentials ephemeral", (
   assert.match(spamWorkflow, /id: app_token[\s\S]*?repositories: clawsweeper/);
   assert.match(spamWorkflow, /id: app_token[\s\S]*?permission-contents: write/);
   const activityWorkflow = fs.readFileSync(".github/workflows/github-activity.yml", "utf8");
+  const replayWorkflow = fs.readFileSync(
+    ".github/workflows/github-activity-receipt-replay.yml",
+    "utf8",
+  );
   assert.doesNotMatch(activityWorkflow, /id: app_token/);
+  assert.doesNotMatch(replayWorkflow, /id: app_token/);
   assert.match(
     activityWorkflow,
     /PUBLISH_TOKEN: \$\{\{ steps\.activity-state-token\.outputs\.token \}\}/,
+  );
+  assert.match(
+    replayWorkflow,
+    /PUBLISH_TOKEN: \$\{\{ steps\.replay-state-token\.outputs\.token \}\}/,
   );
   assert.match(spamWorkflow, /PUBLISH_TOKEN: \$\{\{ steps\.state-token\.outputs\.token \}\}/);
 });
@@ -704,19 +714,49 @@ test("activity dispatch publishes receipts before the noncritical notifier", () 
     workflow,
     /- name: Report GitHub activity notification failure[\s\S]*?steps\.notify-openclaw\.outcome == 'failure'/,
   );
+  assert.doesNotMatch(workflow, /replay-dispatch-receipts/);
+});
 
-  const replayOffset = workflow.indexOf("replay-dispatch-receipts:");
-  assert.ok(replayOffset > feedOffset);
-  const replay = workflow.slice(replayOffset);
-  assert.match(replay, /needs: notify/);
+test("failed GitHub activity runs replay receipts in a standalone no-dispatch workflow", () => {
+  const workflow = fs.readFileSync(".github/workflows/github-activity-receipt-replay.yml", "utf8");
   assert.match(
-    replay,
-    /contains\(fromJSON\('\["failure","cancelled"\]'\), needs\.notify\.result\)/,
+    workflow,
+    /workflow_run:\s+workflows:\s+- github activity to openclaw\s+types:\s+- completed/,
   );
-  assert.match(replay, /uses: actions\/download-artifact@v8/);
-  assert.match(replay, /dispatch-action-ledger-cli\.js replay/);
-  assert.match(replay, /repair:publish-main/);
-  assert.doesNotMatch(replay, /repair:spam-comment-intake|Dispatch spam scan candidate/);
+  assert.match(workflow, /workflow_dispatch:[\s\S]*?source_run_id:[\s\S]*?source_run_attempt:/);
+  assert.match(
+    workflow,
+    /contains\(fromJSON\('\["failure","cancelled"\]'\), github\.event\.workflow_run\.conclusion\)/,
+  );
+  const checkoutOffset = workflow.indexOf("uses: actions/checkout@v7");
+  const setupOffset = workflow.indexOf("uses: ./.github/actions/setup-pnpm");
+  const selectOffset = workflow.indexOf("id: select-activity-dispatch-ledger");
+  const downloadOffset = workflow.indexOf("uses: actions/download-artifact@v8");
+  const validateOffset = workflow.indexOf(
+    "- name: Validate GitHub activity dispatch receipt provenance",
+  );
+  const tokenOffset = workflow.indexOf("- name: Create replay state token");
+  const replayOffset = workflow.indexOf("- name: Replay GitHub activity dispatch action ledger");
+  assert.ok(checkoutOffset >= 0);
+  assert.ok(checkoutOffset < setupOffset);
+  assert.ok(setupOffset < selectOffset);
+  assert.ok(selectOffset < downloadOffset);
+  assert.ok(downloadOffset < validateOffset);
+  assert.ok(validateOffset < tokenOffset);
+  assert.ok(tokenOffset < replayOffset);
+  assert.match(
+    workflow,
+    /run-id: \$\{\{ steps\.select-activity-dispatch-ledger\.outputs\.source_run_id \}\}/,
+  );
+  assert.match(workflow, /dispatch-action-ledger-cli\.js replay/);
+  assert.match(workflow, /repair:publish-main/);
+  assert.match(workflow, /\.run_id == \$run_id/);
+  assert.match(workflow, /\.run_attempt == \$run_attempt/);
+  assert.doesNotMatch(workflow, /continue-on-error/);
+  assert.doesNotMatch(
+    workflow,
+    /repository_dispatch:|repair:spam-comment-intake|repair:notify-github-activity|Dispatch spam scan candidate/,
+  );
 });
 
 test("spam intake dispatch receipt publication cannot be cancelled by a later edit", () => {
