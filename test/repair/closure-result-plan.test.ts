@@ -81,6 +81,56 @@ test("mixed canonical roots require human review", () => {
   assert.ok(result.diagnostics.some((entry) => entry.code === "multiple_canonical_roots"));
 });
 
+test("independent closures cannot collide with canonical roots", () => {
+  const result = planRepairClosureResult({
+    actions: [
+      {
+        action: "close_low_signal",
+        status: "planned",
+        target: "#100",
+      },
+      close("#101", "#100"),
+    ],
+  });
+
+  assert.deepEqual(result, {
+    status: "needs_human",
+    diagnostics: [
+      {
+        code: "duplicate_node_declaration",
+        message: "#100 is declared as both an independent closure and canonical root",
+        nodes: ["#100"],
+      },
+    ],
+    independentClosures: ["#100"],
+  });
+});
+
+test("independent closures cannot collide with grouped candidates", () => {
+  const result = planRepairClosureResult({
+    actions: [
+      close("#101", "#100"),
+      {
+        action: "close_low_signal",
+        status: "planned",
+        target: "#101",
+      },
+    ],
+  });
+
+  assert.deepEqual(result, {
+    status: "needs_human",
+    diagnostics: [
+      {
+        code: "duplicate_node_declaration",
+        message: "#101 is declared as both an independent closure and grouped closure candidate",
+        nodes: ["#101"],
+      },
+    ],
+    independentClosures: ["#101"],
+  });
+});
+
 test("resolves the surviving root with apply action semantics", () => {
   assert.equal(
     resolveRepairClosureRelationship({

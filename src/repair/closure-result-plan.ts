@@ -82,6 +82,7 @@ export function planRepairClosureResult(result: LooseRecord): RepairClosureResul
   const sortedIndependent = [...new Set(independentClosures)].sort(compareAscii);
   const resultDiagnostics = [
     ...validateRelationshipRoots(plannedCloseActions),
+    ...validateIndependentClosureCollisions(plannedCloseActions),
     ...validateDependencyTargets(plannedCloseActions),
   ];
   if (resultDiagnostics.length > 0) {
@@ -287,6 +288,42 @@ function validateDependencyTargets(
       `${right.nodes.join("\0")}\0${right.message}`,
     ),
   );
+}
+
+function validateIndependentClosureCollisions(
+  plannedCloseActions: readonly PlannedCloseAction[],
+): ClosureDependencyDiagnostic[] {
+  const independentTargets = new Set(
+    plannedCloseActions
+      .filter((entry) => !entry.isClosureCandidate && entry.target)
+      .map((entry) => entry.target),
+  );
+  const canonicalRoots = new Set(
+    plannedCloseActions.filter((entry) => entry.isClosureCandidate).map((entry) => entry.canonical),
+  );
+  const candidateTargets = new Set(
+    plannedCloseActions.filter((entry) => entry.isClosureCandidate).map((entry) => entry.target),
+  );
+  const diagnostics: ClosureDependencyDiagnostic[] = [];
+
+  for (const target of [...independentTargets].sort(compareAscii)) {
+    if (canonicalRoots.has(target)) {
+      diagnostics.push({
+        code: "duplicate_node_declaration",
+        message: `${target} is declared as both an independent closure and canonical root`,
+        nodes: [target],
+      });
+    }
+    if (candidateTargets.has(target)) {
+      diagnostics.push({
+        code: "duplicate_node_declaration",
+        message: `${target} is declared as both an independent closure and grouped closure candidate`,
+        nodes: [target],
+      });
+    }
+  }
+
+  return diagnostics;
 }
 
 function repairClosureRelationshipRoot({
