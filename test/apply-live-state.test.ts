@@ -66,16 +66,24 @@ test("event apply proof marks only live deterministic remain-open guards", () =>
 });
 
 test("apply-decisions rejects recorded PR review activity drift before mutations", () => {
-  const reviewedCursor = createReviewedPrActivityCursor({
-    reviews: [],
-    inlineComments: [],
-    reviewThreads: [],
-  });
-  assert.ok(reviewedCursor);
+  const reviewThreadComment = {
+    id: 7003,
+    pull_request_review_id: 7001,
+    user: { login: "maintainer" },
+    body: "thread state must remain reviewed",
+    created_at: "2026-05-01T00:30:00Z",
+    updated_at: "2026-05-01T00:30:00Z",
+    path: "src/example.ts",
+    line: 14,
+    side: "RIGHT",
+    commit_id: "head-sha",
+  };
 
   for (const scenario of [
     {
       name: "review",
+      reviewedInlineComments: [],
+      reviewedThreads: [],
       reviews: [
         {
           id: 7001,
@@ -90,6 +98,8 @@ test("apply-decisions rejects recorded PR review activity drift before mutations
     },
     {
       name: "inline comment",
+      reviewedInlineComments: [],
+      reviewedThreads: [],
       reviews: [],
       inlineComments: [
         {
@@ -109,8 +119,10 @@ test("apply-decisions rejects recorded PR review activity drift before mutations
     },
     {
       name: "review thread resolution",
+      reviewedInlineComments: [reviewThreadComment],
+      reviewedThreads: [{ id: "thread-1", isResolved: false }],
       reviews: [],
-      inlineComments: [],
+      inlineComments: [reviewThreadComment],
       reviewThreads: [{ id: "thread-1", isResolved: true }],
     },
   ]) {
@@ -123,6 +135,12 @@ test("apply-decisions rejects recorded PR review activity drift before mutations
       const mutationLogPath = join(root, "mutations.log");
       mkdirSync(itemsDir, { recursive: true });
       mkdirSync(plansDir, { recursive: true });
+      const reviewedCursor = createReviewedPrActivityCursor({
+        reviews: [],
+        inlineComments: scenario.reviewedInlineComments,
+        reviewThreads: scenario.reviewedThreads,
+      });
+      assert.ok(reviewedCursor);
 
       const synced = reportWithSyncedReviewComment(
         implementedCloseReport({

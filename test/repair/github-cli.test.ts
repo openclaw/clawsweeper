@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
-import { githubLimitedPagePath, githubPaginatedPath } from "../../dist/repair/github-cli.js";
+import {
+  ghPagedLimit,
+  githubLimitedPagePath,
+  githubPaginatedPath,
+} from "../../dist/repair/github-cli.js";
+import { withMockGh } from "../helpers.ts";
 
 test("githubPaginatedPath requests maximum REST page size by default", () => {
   assert.equal(
@@ -35,4 +43,29 @@ test("githubLimitedPagePath caps one REST page and preserves existing filters", 
     githubLimitedPagePath("repos/openclaw/openclaw/pulls/123/files", 0, 0),
     "repos/openclaw/openclaw/pulls/123/files?per_page=1&page=1",
   );
+});
+
+test("ghPagedLimit accepts legacy slurp-shaped single-page responses", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-github-cli-"));
+  try {
+    withMockGh(
+      root,
+      `#!/usr/bin/env node
+const path = process.argv[3] || "";
+if (path.includes("page=1")) {
+  console.log(JSON.stringify([[{ id: 1 }, { id: 2 }]]));
+} else {
+  console.log(JSON.stringify([[]]));
+}
+`,
+      () => {
+        assert.deepEqual(ghPagedLimit<{ id: number }>("repos/example/repo/pulls/1/files", 3), [
+          { id: 1 },
+          { id: 2 },
+        ]);
+      },
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

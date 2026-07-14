@@ -6522,11 +6522,15 @@ function ghPagedLimit<T>(path: string, limit: number): T[] {
   if (max === 0) return [];
   const entries: T[] = [];
   for (let page = 1; entries.length < max; page += 1) {
-    const current = ghPage<T>(path, page);
+    const current = normalizeLimitedPage(ghPage<T>(path, page));
     entries.push(...current);
     if (current.length < 100) break;
   }
   return entries.slice(0, max);
+}
+
+function normalizeLimitedPage<T>(entries: T[]): T[] {
+  return entries.length === 1 && Array.isArray(entries[0]) ? (entries[0] as T[]) : entries;
 }
 
 function reviewedPrActivityThreads(number: number, limit: number): unknown[] {
@@ -6580,7 +6584,8 @@ function fetchReviewedPrActivityCursor(
     ghPagedLimit<unknown>(`repos/${targetRepo()}/pulls/${number}/comments`, remaining + 1);
   if (inlineComments.length > remaining) return null;
   remaining -= inlineComments.length;
-  const reviewThreads = reviewedPrActivityThreads(number, remaining + 1);
+  const reviewThreads =
+    inlineComments.length === 0 ? [] : reviewedPrActivityThreads(number, remaining + 1);
   if (reviewThreads.length > remaining) return null;
   return createReviewedPrActivityCursor({ reviews, inlineComments, reviewThreads });
 }

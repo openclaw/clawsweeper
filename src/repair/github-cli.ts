@@ -122,9 +122,11 @@ export function ghPagedLimit<T = JsonValue>(
       ["api", githubLimitedPagePath(apiPath, perPage, page)],
       options,
     );
-    if (!Array.isArray(entries) || entries.length === 0) break;
-    out.push(...(entries as T[]));
-    if (entries.length < perPage) break;
+    if (!Array.isArray(entries)) break;
+    const pageEntries = entries.length === 1 && Array.isArray(entries[0]) ? entries[0] : entries;
+    if (pageEntries.length === 0) break;
+    out.push(...(pageEntries as T[]));
+    if (pageEntries.length < perPage) break;
   }
   return out.slice(0, max);
 }
