@@ -30,7 +30,7 @@ test("proof workflow enables and publishes immutable mutation receipts", () => {
   );
   assert.match(
     workflow.slice(publish),
-    /publish-action-events -- \\\n\s+--source-root "\$source_root" \\\n\s+--state-root "\$CLAWSWEEPER_STATE_DIR" \\\n\s+--expected-producer-job "\$GITHUB_JOB"/,
+    /repair:publish-action-events -- \\\n\s+--source-root "\$source_root" \\\n\s+--state-root "\$CLAWSWEEPER_STATE_DIR" \\\n\s+--expected-producer-job "\$GITHUB_JOB"/,
   );
   assert.match(workflow.slice(publish), /publish-action-event-paths/);
   assert.match(

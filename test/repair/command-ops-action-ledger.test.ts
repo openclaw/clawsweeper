@@ -189,7 +189,7 @@ test("repair execution publishes crash-safe workflow attempt receipts", () => {
     publishStep,
     /source_root="\$\{CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:\?setup-action-ledger output root is required\}"/,
   );
-  assert.match(publishStep, /publish-action-events/);
+  assert.match(publishStep, /repair:publish-action-events/);
   assert.match(publishStep, /--expected-producer-job "\$GITHUB_JOB"/);
   assert.match(publishStep, /--state-root "\$CLAWSWEEPER_STATE_DIR"/);
   assert.match(publishStep, /publish-action-event-paths/);

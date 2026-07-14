@@ -1269,7 +1269,7 @@ jobs:
           fi
           event_paths_file=".artifacts/exact-event-action-ledger-paths.txt"
           mkdir -p .artifacts
-          pnpm run --silent publish-action-events -- \
+          pnpm run --silent repair:publish-action-events -- \
             --source-root "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT" \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job "$GITHUB_JOB" |
@@ -2474,12 +2474,12 @@ jobs:
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
           mkdir -p .artifacts
           : > .artifacts/action-ledger-paths.txt
-          pnpm run --silent publish-action-events -- \
+          pnpm run --silent repair:publish-action-events -- \
             --source-root .clawsweeper-repair/action-ledger-download \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job review |
             jq -r '.paths[]?' >> .artifacts/action-ledger-paths.txt
-          pnpm run --silent publish-action-events -- \
+          pnpm run --silent repair:publish-action-events -- \
             --source-root "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT" \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job "$GITHUB_JOB" |
@@ -2569,7 +2569,7 @@ jobs:
           fi
           event_paths_file=".artifacts/review-artifact-action-ledger-paths.txt"
           mkdir -p .artifacts
-          pnpm run --silent publish-action-events -- \
+          pnpm run --silent repair:publish-action-events -- \
             --source-root "$source_root" \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job "$GITHUB_JOB" |
@@ -2888,7 +2888,7 @@ jobs:
           fi
           event_paths_file=".artifacts/selected-comment-action-ledger-paths.txt"
           mkdir -p .artifacts
-          pnpm run --silent publish-action-events -- \
+          pnpm run --silent repair:publish-action-events -- \
             --source-root "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT" \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job "$GITHUB_JOB" |
@@ -3217,7 +3217,7 @@ jobs:
           fi
           event_paths_file=".artifacts/failed-review-retry-action-ledger-paths.txt"
           mkdir -p .artifacts
-          pnpm run --silent publish-action-events -- \
+          pnpm run --silent repair:publish-action-events -- \
             --source-root "$source_root" \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job "$GITHUB_JOB" |
@@ -3644,7 +3644,7 @@ jobs:
           fi
           event_paths_file=".artifacts/apply-proof-action-ledger-paths.txt"
           mkdir -p .artifacts
-          pnpm run --silent publish-action-events -- \
+          pnpm run --silent repair:publish-action-events -- \
             --source-root "$source_root" \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job apply-proof |
@@ -4190,7 +4190,7 @@ jobs:
           fi
           event_paths_file=".artifacts/apply-action-ledger-paths.txt"
           mkdir -p .artifacts
-          pnpm run --silent publish-action-events -- \
+          pnpm run --silent repair:publish-action-events -- \
             --source-root "$source_root" \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job "$GITHUB_JOB" |

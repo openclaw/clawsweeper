@@ -878,7 +878,7 @@ jobs:
           fi
           event_paths_file=".artifacts/execute-fix-action-ledger-paths.txt"
           mkdir -p .artifacts
-          pnpm run --silent publish-action-events -- \
+          pnpm run --silent repair:publish-action-events -- \
             --source-root "$source_root" \
             --state-root "$CLAWSWEEPER_STATE_DIR" \
             --expected-producer-job "$GITHUB_JOB" |

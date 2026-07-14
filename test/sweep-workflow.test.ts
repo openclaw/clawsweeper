@@ -97,8 +97,17 @@ test("immutable action ledger publishers use path-manifest admission", () => {
   assert.doesNotMatch(workflowSource, /node dist\/clawsweeper\.js publish-action-event-paths/);
   assert.match(
     readText("package.json"),
-    /"publish-action-events": "node dist\/repair\/publish-action-events\.js"/,
+    /"publish-action-events": "node dist\/clawsweeper\.js publish-action-events"/,
   );
+  assert.match(
+    readText("package.json"),
+    /"repair:publish-action-events": "node dist\/repair\/publish-action-events\.js"/,
+  );
+  assert.equal(
+    (workflowSource.match(/pnpm run --silent repair:publish-action-events/g) ?? []).length,
+    10,
+  );
+  assert.doesNotMatch(workflowSource, /pnpm run --silent publish-action-events/);
 });
 
 test("ledger-producing jobs initialize immutable workflow context", () => {
@@ -2753,7 +2762,7 @@ test("review finalizers recover start-only ledger attempts after hard timeout", 
 test("every action-ledger publication authenticates the expected producer job", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const commands = workflow.match(
-    /pnpm run --silent publish-action-events -- \\\n(?:\s+.*\\\n)*\s+--expected-producer-job [^\n]+/g,
+    /pnpm run --silent repair:publish-action-events -- \\\n(?:\s+.*\\\n)*\s+--expected-producer-job [^\n]+/g,
   );
   assert.ok(commands);
   assert.equal(commands.length, 8);
