@@ -896,6 +896,8 @@ test("OpenClaw Bay joins an out-of-order reused status completion to its later t
 });
 
 test("hosted webhook records an edited review command through its final command update without GitHub reads", async () => {
+  const triggerAtMs = Date.now() - 2 * 60 * 60 * 1000;
+  const at = (offsetMs = 0) => new Date(triggerAtMs + offsetMs).toISOString();
   const statusStore = new MemoryKv();
   const env = {
     CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
@@ -920,8 +922,8 @@ test("hosted webhook records an edited review command through its final command 
           id: 456,
           body: "@clawsweeper review",
           author_association: "MEMBER",
-          created_at: "2026-07-12T18:03:07Z",
-          updated_at: "2026-07-13T18:03:07Z",
+          created_at: at(-60_000),
+          updated_at: at(),
           user: { login: "brokemac79" },
         },
       },
@@ -947,10 +949,10 @@ test("hosted webhook records an edited review command through its final command 
         comment: {
           id: 789,
           body: [
-            "<!-- clawsweeper-verdict:needs-human item=540 sha=abc reviewed_at=2026-07-13T19:21:05Z -->",
+            `<!-- clawsweeper-verdict:needs-human item=540 sha=abc reviewed_at=${at(4_678_000)} -->`,
           ].join("\n"),
-          created_at: "2026-07-13T19:23:12Z",
-          updated_at: "2026-07-13T19:23:12Z",
+          created_at: at(4_805_000),
+          updated_at: at(4_805_000),
           user: { login: "clawsweeper[bot]" },
         },
       },
@@ -983,8 +985,8 @@ test("hosted webhook records an edited review command through its final command 
             "- State: Complete",
             "<!-- clawsweeper-command-progress:end -->",
           ].join("\n"),
-          created_at: "2026-07-13T18:03:10Z",
-          updated_at: "2026-07-13T19:23:27Z",
+          created_at: at(3_000),
+          updated_at: at(4_820_000),
           user: { login: "clawsweeper[bot]" },
         },
       },
@@ -1007,13 +1009,13 @@ test("hosted webhook records an edited review command through its final command 
       number: 540,
       source_comment_id: 456,
       source_delivery_id: "test-delivery",
-      triggered_at: "2026-07-13T18:03:07Z",
-      completed_at: "2026-07-13T19:23:27Z",
+      triggered_at: at(),
+      completed_at: at(4_820_000),
       completion_kind: "final_command_status",
       completion_comment_id: 790,
     },
   ]);
-  const timings = summarizeBayJourneyTimings(state.journeys, "2026-07-13T19:30:00Z");
+  const timings = summarizeBayJourneyTimings(state.journeys, at(5_213_000));
   assert.deepEqual(timings.overall, { average_ms: 4_820_000, samples: 1 });
 });
 
