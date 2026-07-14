@@ -462,6 +462,7 @@ export function promotionGhMock(options: {
   commentsAfterCommentWrite?: unknown[];
   reviews?: unknown[];
   reviewsAfterFirstRead?: unknown[];
+  reviewsAfterFirstMutation?: unknown[];
   pullReviewComments?: unknown[];
   reviewThreads?: unknown[];
   reviewThreadsAfterFirstRead?: unknown[];
@@ -510,6 +511,7 @@ export function promotionGhMock(options: {
 	const commentsAfterCommentWrite = ${JSON.stringify(options.commentsAfterCommentWrite ?? null)};
 	const reviews = ${JSON.stringify(options.reviews ?? [])};
 		const reviewsAfterFirstRead = ${JSON.stringify(options.reviewsAfterFirstRead ?? null)};
+		const reviewsAfterFirstMutation = ${JSON.stringify(options.reviewsAfterFirstMutation ?? null)};
 		const pullReviewComments = ${JSON.stringify(options.pullReviewComments ?? [])};
 		const reviewThreads = ${JSON.stringify(options.reviewThreads ?? [])};
 		const reviewThreadsAfterFirstRead = ${JSON.stringify(options.reviewThreadsAfterFirstRead ?? null)};
@@ -650,9 +652,14 @@ export function promotionGhMock(options: {
 } else if (args[0] === "api" && new RegExp("/issues/" + number + "/timeline(?:\\\\?|$)").test(path)) {
   console.log(JSON.stringify(slurp ? [timeline] : timeline));
 } else if (args[0] === "api" && new RegExp("/pulls/" + number + "/reviews(?:\\\\?|$)").test(path)) {
-  const currentReviews = reviewsAfterFirstRead && existsSync(reviewReadStatePath)
-    ? reviewsAfterFirstRead
-    : reviews;
+  const currentReviews =
+    reviewsAfterFirstMutation &&
+    itemUpdatedAtAfterLabelSyncLogPath &&
+    existsSync(itemUpdatedAtAfterLabelSyncLogPath)
+      ? reviewsAfterFirstMutation
+      : reviewsAfterFirstRead && existsSync(reviewReadStatePath)
+        ? reviewsAfterFirstRead
+        : reviews;
   if (!existsSync(reviewReadStatePath)) writeFileSync(reviewReadStatePath, "read", "utf8");
   console.log(JSON.stringify(slurp ? [currentReviews] : currentReviews));
 } else if (args[0] === "api" && new RegExp("/issues/" + number + "$").test(path)) {

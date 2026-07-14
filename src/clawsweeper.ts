@@ -186,8 +186,10 @@ import { trailingHtmlComments } from "./review-comment-markers.js";
 import {
   MAX_REVIEWED_PR_ACTIVITY,
   REVIEWED_PR_ACTIVITY_THREADS_QUERY,
+  ReviewedPrActivityChangedDuringReadError,
   createReviewedPrActivityCursor,
   isReviewedPrActivityCursor,
+  readStableReviewedPrActivityCursor,
   reviewedPrActivityThreadsPageFromGraphql,
 } from "./review-activity-cursor.js";
 import {
@@ -2637,6 +2639,21 @@ type MutationRunner = <T>(options: {
   didMutate?: ((result: T) => boolean) | undefined;
   knownNoMutation?: ((error: unknown) => boolean) | undefined;
 }) => T;
+
+type ApplyMutationReviewBlock = {
+  sourceChanged: boolean;
+  reason: string;
+};
+
+class ApplyMutationReviewGuardError extends Error {
+  readonly block: ApplyMutationReviewBlock;
+
+  constructor(block: ApplyMutationReviewBlock) {
+    super(block.reason);
+    this.name = "ApplyMutationReviewGuardError";
+    this.block = block;
+  }
+}
 
 let activeApplyMutationRunner: MutationRunner | null = null;
 let activeReviewMutationRunner: MutationRunner | null = null;
@@ -25302,6 +25319,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     startApplyActionLedgerItem(applyLedger, entry);
     const applyItemResultStart = results.length;
     let applyItemFailed = false;
+    let recordApplyMutationGuardBlock:
+      | ((block: ApplyMutationReviewBlock) => boolean)
+      | null = null;
     const previousApplyMutationRunner = activeApplyMutationRunner;
     try {
     const markMutationObserved = (): void => {
@@ -25329,6 +25349,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       );
       if (!attempt) return options.operation();
       try {
+        if (!options.identity.startsWith("review_lease_")) {
+          const mutationLeaseBlock = currentApplyMutationLeaseBlock();
+          if (mutationLeaseBlock) throw new ApplyMutationReviewGuardError(mutationLeaseBlock);
+        }
         const result = options.operation();
         const mutated = options.didMutate?.(result) ?? true;
         const outcomeEventId = finishApplyMutationAttempt({
@@ -25340,7 +25364,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         if (mutated) recordMutation(outcomeEventId);
         return result;
       } catch (error) {
-        const rejected = options.knownNoMutation?.(error) === true;
+        const rejected =
+          error instanceof ApplyMutationReviewGuardError ||
+          options.knownNoMutation?.(error) === true;
         finishApplyMutationAttempt({
           ledger: applyLedger,
           entry,
@@ -25835,7 +25861,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         };
       }
       try {
-        const currentReviewActivityCursor = fetchReviewedPrActivityCursor(number);
+        const currentReviewActivityCursor = readStableReviewedPrActivityCursor(() =>
+          fetchReviewedPrActivityCursor(number),
+        );
         if (!currentReviewActivityCursor) {
           return {
             sourceChanged: true,
@@ -25851,6 +25879,12 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         return null;
       } catch (error) {
         if (error instanceof GitHubRuntimeBudgetError) throw error;
+        if (error instanceof ReviewedPrActivityChangedDuringReadError) {
+          return {
+            sourceChanged: true,
+            reason: "pull request review activity changed since review",
+          };
+        }
         const detail = trimMiddle(
           (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " "),
           180,
@@ -25868,6 +25902,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       block.sourceChanged
         ? markChangedSinceReview({ reason: block.reason })
         : recordReviewLeaseSkip(block.reason, restoreOriginal);
+    recordApplyMutationGuardBlock = (block) => recordReviewActivityBlock(block, false);
     const recordActiveReviewLeaseSkip = (expiresAt: string): boolean =>
       recordReviewLeaseSkip(
         `${item.kind === "pull_request" ? "same-head" : "same-revision"} ClawSweeper review is active until ${expiresAt}`,
@@ -27773,6 +27808,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     }
     if (processedCount >= processedLimit) break;
     } catch (error) {
+      if (error instanceof ApplyMutationReviewGuardError && recordApplyMutationGuardBlock) {
+        if (recordApplyMutationGuardBlock(error.block)) break;
+        continue;
+      }
       applyItemFailed = true;
       throw error;
     } finally {

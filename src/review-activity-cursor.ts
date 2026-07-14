@@ -41,6 +41,13 @@ export interface ReviewedPrActivityBlock {
   retryable: boolean;
 }
 
+export class ReviewedPrActivityChangedDuringReadError extends Error {
+  constructor() {
+    super("pull request review activity changed while refreshing the bounded cursor");
+    this.name = "ReviewedPrActivityChangedDuringReadError";
+  }
+}
+
 export class ReviewedPrActivityGuardError extends Error {
   readonly block: ReviewedPrActivityBlock;
   readonly mutationKind: string;
@@ -90,7 +97,7 @@ export function readStableReviewedPrActivityCursor(readCursor: () => string | nu
   const first = readCursor();
   const second = readCursor();
   if (first !== second) {
-    throw new Error("pull request review activity changed while refreshing the bounded cursor");
+    throw new ReviewedPrActivityChangedDuringReadError();
   }
   return second;
 }

@@ -520,6 +520,18 @@ test("apply receipts start per item and persist mutation observation before fina
   assert.match(source, /idempotencyIdentity: options\.identity/);
   assert.match(
     applyLoop,
+    /if \(!options\.identity\.startsWith\("review_lease_"\)\) \{[\s\S]*currentApplyMutationLeaseBlock\(\)[\s\S]*throw new ApplyMutationReviewGuardError/,
+  );
+  assert.match(
+    applyLoop,
+    /error instanceof ApplyMutationReviewGuardError \|\|[\s\S]*options\.knownNoMutation\?\.\(error\) === true/,
+  );
+  assert.match(
+    applyLoop,
+    /error instanceof ApplyMutationReviewGuardError && recordApplyMutationGuardBlock[\s\S]*recordApplyMutationGuardBlock\(error\.block\)/,
+  );
+  assert.match(
+    applyLoop,
     /finally \{[\s\S]*recordApplyActionLedgerItemResults\(\{[\s\S]*activeApplyItem = null;/,
   );
   const yieldStart = source.indexOf(
