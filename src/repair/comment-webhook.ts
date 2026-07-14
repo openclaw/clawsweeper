@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import crypto from "node:crypto";
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
 
 import { repositoryProfileFor } from "../repository-profiles.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
@@ -37,6 +39,7 @@ const PULL_ITEM_ACTIONS = new Set([
   "unlabeled",
 ]);
 const DEFAULT_FAST_ACK_SETTLE_DELAYS_MS = [250, 1500, 10_000];
+const MAX_GITHUB_DELIVERY_ID_BYTES = 256;
 const inFlightFastAcks = new Map<string, Promise<number>>();
 
 type AcceptedIssueCommentWebhook = {
@@ -69,6 +72,12 @@ type AcceptedItemWebhook = {
 
 type AcceptedWebhook = AcceptedIssueCommentWebhook | AcceptedItemWebhook;
 
+type DispatchReceiptContext = {
+  root: string;
+  outputRoot: string;
+  env: NodeJS.ProcessEnv;
+};
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   startServer();
 }
@@ -97,8 +106,9 @@ async function handleRequest(request: http.IncomingMessage, response: http.Serve
       body,
     });
     const event = String(request.headers["x-github-event"] ?? "");
+    const deliveryId = String(request.headers["x-github-delivery"] ?? "");
     const payload = JSON.parse(body) as LooseRecord;
-    const result = await handleGitHubWebhook({ event, payload });
+    const result = await handleGitHubWebhook({ event, payload, deliveryId });
     response.writeHead(result.statusCode, { "content-type": "application/json" });
     response.end(`${JSON.stringify(result.body)}\n`);
   } catch (error) {
@@ -112,14 +122,16 @@ async function handleRequest(request: http.IncomingMessage, response: http.Serve
 export async function handleGitHubWebhook({
   event,
   payload,
+  deliveryId,
 }: {
   event: string;
   payload: LooseRecord;
+  deliveryId?: string;
 }) {
   const decision = classifyWebhook({ event, payload });
   if (!decision.accepted) return { statusCode: 202, body: decision };
   const accepted = decision as AcceptedWebhook;
-  assertDispatchActionReceiptsEnabled();
+  const receiptContext = createDispatchReceiptContext(deliveryId);
 
   const appJwt = createAppJwt();
   const dispatchToken = await createReviewRepoDispatchToken({ appJwt });
@@ -131,7 +143,7 @@ export async function handleGitHubWebhook({
     | null = null;
   try {
     if (accepted.type === "item") {
-      await dispatchItemReview({ token: dispatchToken, accepted });
+      await dispatchItemReview({ token: dispatchToken, accepted, receiptContext });
       result = { statusCode: 202, body: { ok: true, dispatched: "clawsweeper_item" } };
     } else {
       const targetToken = await createInstallationToken({
@@ -164,6 +176,7 @@ export async function handleGitHubWebhook({
         commentId: accepted.commentId,
         statusCommentId,
         sourceAction: accepted.sourceAction,
+        receiptContext,
         ...(accepted.commentUpdatedAt ? { commentUpdatedAt: accepted.commentUpdatedAt } : {}),
         ...(accepted.commentBodySha256 ? { commentBodyDigest: accepted.commentBodySha256 } : {}),
       });
@@ -180,7 +193,10 @@ export async function handleGitHubWebhook({
     webhookError = error;
   }
   try {
-    await flushDispatchActionEvents();
+    await flushDispatchActionEvents(receiptContext.root, {
+      env: receiptContext.env,
+      outputRoot: receiptContext.outputRoot,
+    });
   } catch (error) {
     if (!webhookError) webhookError = error;
     else
@@ -193,6 +209,58 @@ export async function handleGitHubWebhook({
   if (webhookError) throw webhookError;
   if (!result) throw new Error("webhook dispatch completed without a result");
   return result;
+}
+
+function createDispatchReceiptContext(
+  deliveryId: string | undefined,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): DispatchReceiptContext {
+  assertDispatchActionReceiptsEnabled(baseEnv);
+  const normalizedDeliveryId = String(deliveryId ?? "").trim();
+  if (
+    !normalizedDeliveryId ||
+    Buffer.byteLength(normalizedDeliveryId, "utf8") > MAX_GITHUB_DELIVERY_ID_BYTES
+  ) {
+    throw new Error("accepted GitHub webhooks require a bounded delivery id");
+  }
+  const baseRoot = requiredReceiptRoot(
+    baseEnv.CLAWSWEEPER_ACTION_LEDGER_ROOT,
+    "CLAWSWEEPER_ACTION_LEDGER_ROOT",
+  );
+  const baseOutputRoot = requiredReceiptRoot(
+    baseEnv.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT,
+    "CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT",
+  );
+  const deliverySha256 = crypto.createHash("sha256").update(normalizedDeliveryId).digest("hex");
+  const receiptKey = crypto
+    .createHash("sha256")
+    .update(`${deliverySha256}:${crypto.randomUUID()}`)
+    .digest("hex");
+  const root = createReceiptDirectory(
+    path.join(baseRoot, ".clawsweeper-repair", "webhook-dispatch-receipts", receiptKey),
+  );
+  const outputRoot = createReceiptDirectory(
+    path.join(baseOutputRoot, "webhook-dispatch-receipts", receiptKey),
+  );
+  const env = {
+    ...baseEnv,
+    CLAWSWEEPER_ACTION_LEDGER_ROOT: root,
+    CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: outputRoot,
+    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: `webhook-${receiptKey.slice(0, 24)}`,
+  };
+  assertDispatchActionReceiptsEnabled(env);
+  return { root, outputRoot, env };
+}
+
+function requiredReceiptRoot(value: string | undefined, name: string): string {
+  const configured = String(value ?? "").trim();
+  if (!configured) throw new Error(`${name} is required for webhook dispatch receipts`);
+  return fs.realpathSync(configured);
+}
+
+function createReceiptDirectory(directory: string): string {
+  fs.mkdirSync(directory, { recursive: true });
+  return fs.realpathSync(directory);
 }
 
 export function classifyWebhook({ event, payload }: { event: string; payload: LooseRecord }) {
@@ -738,11 +806,15 @@ async function addReaction({
 async function dispatchItemReview({
   token,
   accepted,
+  receiptContext,
 }: {
   token: string;
   accepted: AcceptedItemWebhook;
+  receiptContext: DispatchReceiptContext;
 }) {
   await runDispatchWithReceipt({
+    root: receiptContext.root,
+    env: receiptContext.env,
     component: "comment_webhook",
     operationKey: `webhook-item:${accepted.targetRepo}:${accepted.itemKind}:${accepted.itemNumber}:${accepted.sourceEvent}:${accepted.sourceAction}`,
     dispatchKind: "repository",
@@ -798,6 +870,7 @@ async function dispatchCommentRouter({
   commentId,
   statusCommentId,
   sourceAction,
+  receiptContext,
   commentUpdatedAt,
   commentBodyDigest,
 }: {
@@ -808,10 +881,13 @@ async function dispatchCommentRouter({
   commentId: number;
   statusCommentId: number;
   sourceAction: string;
+  receiptContext: DispatchReceiptContext;
   commentUpdatedAt?: string;
   commentBodyDigest?: string;
 }) {
   await runDispatchWithReceipt({
+    root: receiptContext.root,
+    env: receiptContext.env,
     component: "comment_webhook",
     operationKey: `webhook-comment:${targetRepo}:${itemNumber}:${commentId}:${sourceAction}`,
     dispatchKind: "repository",

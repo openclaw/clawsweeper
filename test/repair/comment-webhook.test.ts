@@ -120,7 +120,10 @@ test("comment webhook repository dispatches use bounded attempt and outcome rece
   );
   assert.doesNotMatch(itemInput, /token:|body:/);
   assert.doesNotMatch(commentInput, /token:|body:/);
-  assert.match(source, /await flushDispatchActionEvents\(\)/);
+  assert.match(
+    source,
+    /await flushDispatchActionEvents\(receiptContext\.root,[\s\S]*?outputRoot: receiptContext\.outputRoot/,
+  );
 });
 
 test("comment webhook refuses accepted events before GitHub access when receipts are disabled", async () => {
@@ -135,6 +138,7 @@ test("comment webhook refuses accepted events before GitHub access when receipts
     await assert.rejects(
       handleGitHubWebhook({
         event: "issues",
+        deliveryId: "disabled-receipts",
         payload: {
           action: "opened",
           repository: {
@@ -561,37 +565,45 @@ test("pull request webhooks dispatch adaptive Codex timeout payload", async () =
   }) as typeof fetch;
 
   try {
+    const payload = {
+      action: "synchronize",
+      repository: {
+        full_name: "openclaw/openclaw",
+        default_branch: "main",
+        private: false,
+        archived: false,
+        fork: false,
+        has_issues: true,
+      },
+      pull_request: {
+        number: 91093,
+        changed_files: 71,
+        additions: 4176,
+        deletions: 0,
+        body: [
+          "Proof:",
+          "https://uploads.example.invalid/proof-a.mov",
+          "https://uploads.example.invalid/proof-b.mp4",
+        ].join("\n"),
+      },
+      installation: { id: 123 },
+    };
     const result = await handleGitHubWebhook({
       event: "pull_request",
-      payload: {
-        action: "synchronize",
-        repository: {
-          full_name: "openclaw/openclaw",
-          default_branch: "main",
-          private: false,
-          archived: false,
-          fork: false,
-          has_issues: true,
-        },
-        pull_request: {
-          number: 91093,
-          changed_files: 71,
-          additions: 4176,
-          deletions: 0,
-          body: [
-            "Proof:",
-            "https://uploads.example.invalid/proof-a.mov",
-            "https://uploads.example.invalid/proof-b.mp4",
-          ].join("\n"),
-        },
-        installation: { id: 123 },
-      },
+      deliveryId: "sequential-delivery-one",
+      payload,
+    });
+    const repeated = await handleGitHubWebhook({
+      event: "pull_request",
+      deliveryId: "sequential-delivery-two",
+      payload,
     });
 
     assert.deepEqual(result, {
       statusCode: 202,
       body: { ok: true, dispatched: "clawsweeper_item" },
     });
+    assert.deepEqual(repeated, result);
     assert.equal(dispatchedBody?.event_type, "clawsweeper_item");
     assert.equal(
       (dispatchedBody?.client_payload as Record<string, unknown>)?.codex_timeout_ms,
@@ -600,6 +612,13 @@ test("pull request webhooks dispatch adaptive Codex timeout payload", async () =
     assert.equal(
       (dispatchedBody?.client_payload as Record<string, unknown>)?.media_proof_timeout_ms,
       240_000,
+    );
+    const receiptEvents = readReceiptEvents();
+    assert.equal(receiptEvents.length, 4);
+    assert.equal(new Set(receiptEvents.map((event) => event.producer.component)).size, 2);
+    assert.doesNotMatch(
+      JSON.stringify(receiptEvents),
+      /sequential-delivery-one|sequential-delivery-two/,
     );
   } finally {
     globalThis.fetch = previousFetch;
@@ -867,8 +886,16 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
       },
     };
     const [left, right] = await Promise.all([
-      handleGitHubWebhook({ event: "issue_comment", payload }),
-      handleGitHubWebhook({ event: "issue_comment", payload }),
+      handleGitHubWebhook({
+        event: "issue_comment",
+        deliveryId: "concurrent-delivery-one",
+        payload,
+      }),
+      handleGitHubWebhook({
+        event: "issue_comment",
+        deliveryId: "concurrent-delivery-two",
+        payload,
+      }),
     ]);
 
     assert.deepEqual(left, { statusCode: 202, body: { ok: true, status_comment_id: 9001 } });
@@ -997,6 +1024,7 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
   try {
     const result = await handleGitHubWebhook({
       event: "issue_comment",
+      deliveryId: "settle-delivery",
       payload: {
         action: "created",
         repository: { full_name: "openclaw/openclaw" },
@@ -1040,6 +1068,17 @@ function jsonResponse(value: unknown) {
     status: 200,
     headers: { "content-type": "application/json" },
   });
+}
+
+function readReceiptEvents(): Array<Record<string, any>> {
+  const outputRoot = process.env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT;
+  assert.ok(outputRoot);
+  return fs
+    .readdirSync(outputRoot, { recursive: true })
+    .filter((entry): entry is string => typeof entry === "string" && entry.endsWith(".jsonl"))
+    .flatMap((entry) => fs.readFileSync(path.join(outputRoot, entry), "utf8").trim().split("\n"))
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
 }
 
 function restoreEnv(name: string, value: string | undefined) {
