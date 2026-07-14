@@ -3147,7 +3147,7 @@ test("renderResponse reports terminal autofix success without merge", () => {
   assert.doesNotMatch(body, /did not merge yet/);
 });
 
-test("renderResponse reports maintainer re-review dispatches", () => {
+test("renderResponse reports the durable review comment create-or-update lifecycle", () => {
   const body = renderResponse(
     {
       comment_id: "461",
@@ -3166,7 +3166,11 @@ test("renderResponse reports maintainer re-review dispatches", () => {
   assert.match(body, /re-review requested/);
   assert.match(body, /review this item again/);
   assert.match(body, /Action: item re-review queued/);
-  assert.match(body, /existing ClawSweeper review comment will be edited in place/);
+  assert.match(body, /when the review finishes/);
+  assert.match(body, /create the durable review comment if needed/);
+  assert.match(body, /or update the existing comment in place/);
+  assert.doesNotMatch(body, /then update/);
+  assert.doesNotMatch(body, /the existing ClawSweeper review comment/);
   assert.match(body, /clawsweeper-command-status:74107:re_review:def461/);
   assert.doesNotMatch(body, /repair worker/);
 });
