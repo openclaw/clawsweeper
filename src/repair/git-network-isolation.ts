@@ -357,6 +357,7 @@ function mirrorFetchedRef({
   delete localEnv.GIT_ASKPASS;
   delete localEnv.GIT_ASKPASS_REQUIRE;
   delete localEnv.GIT_OBJECT_DIRECTORY;
+  assertUnredirectedTargetRefStorage(source.commonDir, destination);
   run(
     "git",
     [
@@ -373,6 +374,35 @@ function mirrorFetchedRef({
     ],
     { cwd, env: localEnv, timeoutMs },
   );
+}
+
+function assertUnredirectedTargetRefStorage(commonDir: string, destination: string) {
+  const destinationParts = destination.split("/");
+  for (const storagePath of [
+    path.join(commonDir, ...destinationParts),
+    path.join(commonDir, "logs", ...destinationParts),
+    path.join(commonDir, "packed-refs"),
+  ]) {
+    assertUnredirectedGitStoragePath(commonDir, storagePath);
+  }
+}
+
+function assertUnredirectedGitStoragePath(commonDir: string, storagePath: string) {
+  const relative = path.relative(commonDir, storagePath);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("redirected target Git ref or reflog storage is not allowed");
+  }
+  const parts = relative.split(path.sep);
+  let current = commonDir;
+  for (const [index, part] of parts.entries()) {
+    current = path.join(current, part);
+    if (!fs.existsSync(current)) break;
+    const stat = fs.lstatSync(current);
+    const isLeaf = index === parts.length - 1;
+    if (stat.isSymbolicLink() || (isLeaf ? !stat.isFile() : !stat.isDirectory())) {
+      throw new Error("redirected target Git ref or reflog storage is not allowed");
+    }
+  }
 }
 
 function isolatedFetchDestination(args: readonly string[]) {

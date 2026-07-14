@@ -209,6 +209,53 @@ test(
   },
 );
 
+test(
+  "isolated fetch rejects redirected target ref and reflog storage",
+  { skip: process.platform === "win32" },
+  () => {
+    for (const variant of ["ref", "reflog"]) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `clawsweeper-${variant}-redirect-`));
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      const remote = path.join(root, "remote.git");
+      const external = path.join(root, "external");
+      fs.mkdirSync(source);
+      fs.mkdirSync(target);
+      fs.mkdirSync(external);
+      git(source, "init", "-b", "main");
+      git(source, "config", "user.email", "clawsweeper@example.invalid");
+      git(source, "config", "user.name", "ClawSweeper Test");
+      fs.writeFileSync(path.join(source, "source.txt"), "validated\n");
+      git(source, "add", ".");
+      git(source, "commit", "-m", "validated");
+      git(root, "init", "--bare", remote);
+      git(source, "push", remote, "main");
+      git(target, "init", "-b", "main");
+      git(target, "config", "core.logAllRefUpdates", "true");
+
+      const redirected =
+        variant === "ref"
+          ? path.join(target, ".git", "refs", "remotes")
+          : path.join(target, ".git", "logs", "refs", "remotes");
+      fs.mkdirSync(path.dirname(redirected), { recursive: true });
+      fs.symlinkSync(external, redirected, "dir");
+
+      assert.throws(
+        () =>
+          runIsolatedGitNetwork({
+            args: ["fetch", remote, "+refs/heads/main:refs/remotes/origin/main"],
+            cwd: target,
+            env: process.env,
+            timeoutMs: 10_000,
+            token: "test-token",
+          }),
+        /redirected target Git ref or reflog storage/,
+      );
+      assert.equal(fs.existsSync(path.join(external, "origin", "main")), false);
+    }
+  },
+);
+
 test("isolated push rejects an ancestor reset after the expected head was read", () => {
   const fixture = pushLeaseFixture();
   const expectedHead = git(fixture.target, "rev-parse", "HEAD");

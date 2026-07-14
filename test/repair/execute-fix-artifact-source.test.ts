@@ -294,11 +294,11 @@ test("final publication rebase uses the verified isolated Git path", () => {
   const codexReconcile = source.slice(codexStart, codexEnd);
 
   assert.match(reconcile, /rebaseTargetOntoVerifiedBase\(\{/);
-  assert.match(reconcile, /baseRef,/);
+  assert.match(reconcile, /baseRef: baseSha/);
   assert.match(reconcile, /const completed = runCodexBaseReconcile\(\{/);
   assert.match(codexReconcile, /buildFinalBaseReconcilePrompt\(\{/);
   assert.match(codexReconcile, /completeTargetRebaseWithIsolation\(\{/);
-  assert.match(codexReconcile, /expectedBaseRef: `origin\/\$\{baseBranch\}`/);
+  assert.match(codexReconcile, /expectedBaseRef: baseSha/);
   assert.match(codexReconcile, /requireInProgress: true/);
   assert.match(
     codexReconcile,
@@ -315,6 +315,34 @@ test("final publication rebase uses the verified isolated Git path", () => {
   );
   assert.doesNotMatch(reconcile, /rebaseOntoBase\(/);
   assert.doesNotMatch(reconcile, /completeRebaseIfResolved\(/);
+});
+
+test("final rebase checks stay pinned across the workspace-write Codex handoff", () => {
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  const reconcileStart = source.indexOf("function reconcileLatestBaseBeforePush(");
+  const reconcileEnd = source.indexOf("function runCodexBaseReconcile(", reconcileStart);
+  const reconcile = source.slice(reconcileStart, reconcileEnd);
+  const codexEnd = source.indexOf("function readTextIfExists(", reconcileEnd);
+  const codexReconcile = source.slice(reconcileEnd, codexEnd);
+  const syncStart = source.indexOf("const sync = reconcileLatestBaseBeforePush({");
+  const syncEnd = source.indexOf('logProgress("final base sync result"', syncStart);
+  const syncCaller = source.slice(syncStart, syncEnd);
+
+  assert.match(
+    reconcile,
+    /const baseSha = pinRepairBase\(\(\) =>[\s\S]*?`\$\{baseRef\}\^\{commit\}`/,
+  );
+  assert.match(reconcile, /ancestor: baseSha/);
+  assert.match(reconcile, /baseRef: baseSha/);
+  assert.match(reconcile, /runCodexBaseReconcile\(\{[\s\S]*?baseSha,/);
+  assert.match(reconcile, /base_sha: baseSha/);
+  assert.match(codexReconcile, /expectedBaseRef: baseSha/);
+  assert.doesNotMatch(codexReconcile, /expectedBaseRef: `origin\//);
+  assert.match(
+    syncCaller,
+    /const synchronizedBaseSha = pinRepairBase\(\(\) => String\(sync\.base_sha \?\? ""\)\)\.sha/,
+  );
+  assert.doesNotMatch(syncCaller, /rev-parse/);
 });
 
 test("all repair rebase transitions use isolated Git plumbing", () => {

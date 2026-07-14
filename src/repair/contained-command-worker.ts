@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 
 import { windowsSystemExecutable } from "../command.js";
+import { createTrustedSandboxRoot } from "./contained-command-sandbox.js";
 import { LINUX_SUBREAPER_SCRIPT } from "./process-tree-containment.js";
 
 type WorkerInput = {
@@ -291,40 +290,6 @@ function signalProcessGroup(pid: number, signal: NodeJS.Signals) {
 
 function sleep(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function createTrustedSandboxRoot(writableRoots: readonly string[]): string {
-  const canonicalWritableRoots = writableRoots.map((root) => fs.realpathSync(root));
-  for (const candidate of ["/var/tmp", "/tmp", os.tmpdir()]) {
-    if (!path.isAbsolute(candidate) || !fs.existsSync(candidate)) continue;
-    const stat = fs.lstatSync(candidate);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
-    const canonical = fs.realpathSync(candidate);
-    if (
-      canonicalWritableRoots.some(
-        (root) => pathWithin(canonical, root) || pathWithin(root, canonical),
-      )
-    ) {
-      continue;
-    }
-    const sandboxRoot = fs.mkdtempSync(path.join(canonical, "clawsweeper-validation-root-"));
-    const resolved = fs.realpathSync(sandboxRoot);
-    if (
-      canonicalWritableRoots.some(
-        (root) => pathWithin(resolved, root) || pathWithin(root, resolved),
-      )
-    ) {
-      fs.rmSync(sandboxRoot, { recursive: true, force: true });
-      continue;
-    }
-    return sandboxRoot;
-  }
-  throw new Error("validation sandbox requires a trusted root outside writable roots");
-}
-
-function pathWithin(candidate: string, root: string): boolean {
-  const relative = path.relative(root, candidate);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 async function readStdin() {

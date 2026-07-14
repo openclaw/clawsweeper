@@ -2381,9 +2381,7 @@ function editValidatePrepareMerge({
     repositoryContext,
     sourceHead,
   });
-  const synchronizedBaseSha = run("git", ["rev-parse", `origin/${baseBranch}`], {
-    cwd: targetDir,
-  }).trim();
+  const synchronizedBaseSha = pinRepairBase(() => String(sync.base_sha ?? "")).sha;
   acceptedBaseSha = synchronizedBaseSha;
   logProgress("final base sync result", { mode, attempt: 1, status: sync.status });
   updateAutomergeProgressStatus({
@@ -2572,23 +2570,28 @@ function reconcileLatestBaseBeforePush({
     targetDir,
   );
   const baseRef = `origin/${baseBranch}`;
-  if (isAncestor({ targetDir, ancestor: baseRef, descendant: "HEAD" })) {
-    return { status: "already-current" };
+  const baseSha = pinRepairBase(() =>
+    run("git", ["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: targetDir }),
+  ).sha;
+  if (isAncestor({ targetDir, ancestor: baseSha, descendant: "HEAD" })) {
+    return { status: "already-current", base_sha: baseSha };
   }
 
   const rebaseResult = rebaseTargetOntoVerifiedBase({
     cwd: targetDir,
-    baseRef,
+    baseRef: baseSha,
     timeoutMs: targetValidationTimeoutMs,
   });
-  if (rebaseResult.status !== "conflicts") return rebaseResult;
+  if (rebaseResult.status !== "conflicts") {
+    return { ...rebaseResult, base_sha: baseSha };
+  }
 
   const completed = runCodexBaseReconcile({
     fixArtifact,
     targetDir,
     branch,
     mode,
-    baseBranch,
+    baseSha,
     attempt,
     repositoryContext,
     sourceHead,
@@ -2596,6 +2599,7 @@ function reconcileLatestBaseBeforePush({
   });
   return {
     status: "codex-reconciled",
+    base_sha: baseSha,
     rebase_result: rebaseResult,
     completed_rebase: completed,
   };
@@ -2606,7 +2610,7 @@ function runCodexBaseReconcile({
   targetDir,
   branch,
   mode,
-  baseBranch,
+  baseSha,
   attempt,
   repositoryContext,
   sourceHead,
@@ -2676,7 +2680,7 @@ function runCodexBaseReconcile({
     try {
       const completed = completeTargetRebaseWithIsolation({
         cwd: targetDir,
-        expectedBaseRef: `origin/${baseBranch}`,
+        expectedBaseRef: baseSha,
         requireInProgress: true,
         timeoutMs: targetValidationTimeoutMs,
       });

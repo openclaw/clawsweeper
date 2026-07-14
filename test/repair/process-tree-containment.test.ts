@@ -6,6 +6,7 @@ import { readText } from "../helpers.ts";
 
 test("Linux validation containment uses an externally owned PID namespace and subreaper", () => {
   const worker = readText(path.join(process.cwd(), "src/repair/contained-command-worker.ts"));
+  const sandbox = readText(path.join(process.cwd(), "src/repair/contained-command-sandbox.ts"));
   const containment = readText(path.join(process.cwd(), "src/repair/process-tree-containment.ts"));
 
   assert.match(containment, /PR_SET_CHILD_SUBREAPER/);
@@ -44,8 +45,9 @@ test("Linux validation containment uses an externally owned PID namespace and su
   assert.match(worker, /"--mount-proc"/);
   assert.match(worker, /"--kill-child=SIGKILL"/);
   assert.match(worker, /createTrustedSandboxRoot\(input\.writableRoots\)/);
-  assert.match(worker, /for \(const candidate of \["\/var\/tmp", "\/tmp", os\.tmpdir\(\)\]\)/);
-  assert.match(worker, /validation sandbox requires a trusted root outside writable roots/);
+  assert.match(worker, /\.\/contained-command-sandbox\.js/);
+  assert.match(sandbox, /candidates = \["\/var\/tmp", "\/tmp", os\.tmpdir\(\)\]/);
+  assert.match(sandbox, /validation sandbox requires a trusted root outside writable roots/);
   assert.match(worker, /sandboxRoot!/);
   assert.match(worker, /fs\.rmSync\(sandboxRoot/);
   assert.match(worker, /await reapProcessGroup\(child\.pid\)/);
