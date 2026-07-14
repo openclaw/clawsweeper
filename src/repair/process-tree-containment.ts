@@ -49,6 +49,7 @@ class LandlockRulesetAttr(ctypes.Structure):
 
 
 class LandlockPathBeneathAttr(ctypes.Structure):
+    _layout_ = "gcc-sysv"
     _pack_ = 1
     _fields_ = [
         ("allowed_access", ctypes.c_uint64),

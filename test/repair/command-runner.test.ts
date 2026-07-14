@@ -140,7 +140,7 @@ test(
 );
 
 test(
-  "Linux containment kills the namespace when target code terminates its inner supervisor",
+  "Linux containment protects namespace init from target termination",
   { skip: process.platform !== "linux" },
   (context) => {
     if (!linuxValidationContainmentAvailable()) {
@@ -173,7 +173,7 @@ test(
               writableRoots: [root],
             },
           ),
-        /validation subreaper exited without a result|validation process containment failed/,
+        /command timed out after 3000ms/,
       );
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
       assert.equal(existsSync(marker), false);
