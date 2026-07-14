@@ -815,10 +815,15 @@ function validateFixFirstClose({
   if (["close_low_signal", "post_merge_close"].includes(actionName)) return "";
   if (classification === "duplicate") return "";
 
-  const priorMerge = report.actions.some(
-    (entry: JsonValue) => MERGE_ACTIONS.has(entry.action) && entry.status === "executed",
-  );
-  if (priorMerge) return "";
+  const priorCandidateMerge =
+    candidateFix &&
+    report.actions.some(
+      (entry: JsonValue) =>
+        MERGE_ACTIONS.has(entry.action) &&
+        entry.status === "executed" &&
+        normalizeIssueRef(entry.target, result.repo) === candidateFix,
+    );
+  if (priorCandidateMerge) return "";
 
   if (candidateFix && isMergedCandidateFix(result.repo, candidateFix)) {
     return "";
@@ -839,7 +844,7 @@ function validateFixFirstClose({
   );
   if (fixLanded) return "";
 
-  return "close requires ClawSweeper fix PR opened/pushed, merged candidate fix, or merge executed first";
+  return "close requires ClawSweeper fix PR opened/pushed, merged candidate fix, or candidate merge executed first";
 }
 
 function isMergedCandidateFix(repo: string, candidateFix: LooseRecord) {

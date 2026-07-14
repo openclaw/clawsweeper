@@ -1173,6 +1173,67 @@ test("repair apply executes dependent-first input in reviewed dependency order",
   }
 });
 
+test("repair apply does not let an unrelated merge authorize a fix-first close", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, [
+      {
+        action: "close_fixed_by_candidate",
+        classification: "fixed_by_candidate",
+        target: "#101",
+        target_kind: "issue",
+        candidate_fix: "#202",
+      },
+      {
+        action: "merge_candidate",
+        classification: "canonical",
+        target: "#303",
+        target_kind: "pull_request",
+      },
+    ]);
+    enableFixFirstMerges(paths.jobPath);
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Fixed issue", pullRequest: false }),
+        202: issue({ number: 202, title: "Candidate fix", pullRequest: true }),
+        303: issue({ number: 303, title: "Unrelated fix", pullRequest: true, state: "closed" }),
+      },
+      pulls: {
+        202: pull({ number: 202, title: "Candidate fix" }),
+        303: pull({
+          number: 303,
+          title: "Unrelated fix",
+          mergedAt: "2026-05-25T00:01:00Z",
+        }),
+      },
+      comments: { 101: [], 202: [], 303: [] },
+      logPath: paths.ghLogPath,
+    });
+
+    runApplyResult(paths, { proofDecision: "covered", failIfProofRuns: true });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.deepEqual(
+      report.actions.map((action: Record<string, unknown>) => [
+        action.target,
+        action.status,
+        action.reason,
+      ]),
+      [
+        ["#303", "executed", "already merged"],
+        [
+          "#101",
+          "blocked",
+          "close requires ClawSweeper fix PR opened/pushed, merged candidate fix, or candidate merge executed first",
+        ],
+      ],
+    );
+    assert.deepEqual(issueCloseTargets(paths.ghLogPath), []);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("repair second apply reuses a trusted first-pass close for dependent closure", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
   try {
@@ -1517,6 +1578,15 @@ function dependencyClose(
     depends_on: dependsOn ?? null,
     omitTargetUpdatedAt,
   };
+}
+
+function enableFixFirstMerges(jobPath: string): void {
+  const job = fs
+    .readFileSync(jobPath, "utf8")
+    .replace("  - close\n", "  - close\n  - merge\n")
+    .replace("allow_instant_close: true", "allow_instant_close: true\nallow_merge: true")
+    .replace("require_fix_before_close: false", "require_fix_before_close: true");
+  fs.writeFileSync(jobPath, job);
 }
 
 function runApplyResult(
