@@ -27,8 +27,14 @@ interface CheckoutStep {
   with?: Record<string, unknown>;
 }
 
+interface WorkflowJob {
+  if?: string;
+  steps?: CheckoutStep[];
+  "timeout-minutes"?: number;
+}
+
 interface WorkflowDocument {
-  jobs?: Record<string, { if?: string; steps?: CheckoutStep[]; "timeout-minutes"?: number }>;
+  jobs?: Record<string, WorkflowJob>;
   on?: {
     workflow_dispatch?: { inputs?: Record<string, unknown> };
     workflow_run?: { types?: string[]; workflows?: string[] };
@@ -44,6 +50,9 @@ function yamlFiles(directory: string): string[] {
 }
 
 const actionFiles = yamlFiles(".github");
+const workflowFiles = readdirSync(".github/workflows", { withFileTypes: true })
+  .filter((entry) => entry.isFile() && entry.name.endsWith(".yml"))
+  .map((entry) => join(".github/workflows", entry.name));
 const checkoutReferences = actionFiles.flatMap((path) =>
   readFileSync(path, "utf8")
     .split("\n")
@@ -141,7 +150,32 @@ test("GitHub activity replay builds trusted code before downloading receipts", (
   assert.ok(downloadIndex > selectIndex, "replay job must select receipts before downloading");
 });
 
-test("GitHub activity publishers reserve the default lease recovery budget", () => {
+test("every state publisher job reserves the default lease recovery budget", () => {
+  const publisherJobs = workflowFiles.flatMap((workflowPath) => {
+    const workflow = parse(readFileSync(workflowPath, "utf8")) as WorkflowDocument;
+    return Object.entries(workflow.jobs ?? {})
+      .filter(([, job]) =>
+        job.steps?.some((step) => step.run?.includes("pnpm run repair:publish-main")),
+      )
+      .map(([jobName, job]) => ({ job, jobName, workflowPath }));
+  });
+
+  assert.ok(publisherJobs.length > 0, "expected at least one state publisher workflow job");
+  for (const { job, jobName, workflowPath } of publisherJobs) {
+    const timeoutMinutes = job["timeout-minutes"];
+    assert.equal(
+      typeof timeoutMinutes,
+      "number",
+      `${workflowPath}:${jobName} publisher job must set timeout-minutes`,
+    );
+    assert.ok(
+      timeoutMinutes * 60 * 1000 >= STATE_PUBLISH_TIMING_DEFAULTS.workflowTimeoutMs,
+      `${workflowPath}:${jobName} publisher timeout ${timeoutMinutes}m is below the default lease recovery budget`,
+    );
+  }
+});
+
+test("GitHub activity publishers use the exact default lease recovery budget", () => {
   const jobs = [
     [".github/workflows/github-activity.yml", "notify"],
     [".github/workflows/github-activity-receipt-replay.yml", "replay-dispatch-receipts"],

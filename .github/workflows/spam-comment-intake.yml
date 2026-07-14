@@ -25,7 +25,7 @@ jobs:
         (github.event.client_payload.activity.action == 'created' || github.event.client_payload.activity.action == 'edited' || github.event.client_payload.action == 'created' || github.event.client_payload.action == 'edited')
       }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - name: Check core API budget
         id: core-budget
