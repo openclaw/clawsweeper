@@ -25,6 +25,7 @@ import {
   isUnsafeValidationEnvironmentName,
   looksLikePathArgument,
   packageManagerCommandIndex,
+  packageManagerWorkspaceScoped,
   packageScriptRequirement,
   parseAllowedValidationCommand,
   requireWorkspaceMatchFailure,
@@ -2953,6 +2954,7 @@ function resolveAllowedValidationCommandsWithoutWorkspaceBinding(
     const pnpmScript = commandParts[commandStart];
     const pnpmPrefix = commandParts.slice(0, commandStart);
     const packageRequirement = packageScriptRequirement(commandParts);
+    const workspaceScoped = packageManagerWorkspaceScoped(commandParts);
     if (
       !packageRequirement?.workspaceScoped &&
       isExpensivePnpmValidation(commandParts, commandStart, options.allowExpensiveValidation)
@@ -2968,6 +2970,7 @@ function resolveAllowedValidationCommandsWithoutWorkspaceBinding(
           ? commandStart + 3
           : -1;
     if (vitestArgsStart >= 0) {
+      if (workspaceScoped) return [parts];
       const vitestArgs = commandParts.slice(vitestArgsStart);
       const pathIndexes = vitestPathFilterIndexes(vitestArgs);
       return withEnvPrefix(
@@ -2983,6 +2986,7 @@ function resolveAllowedValidationCommandsWithoutWorkspaceBinding(
       );
     }
     if (pnpmScript === "test" || pnpmScript === "test:serial") {
+      if (workspaceScoped) return [parts];
       return withEnvPrefix(
         envPrefix,
         normalizePathValidationCommand(
@@ -3203,7 +3207,16 @@ function targetPackageScriptIsAvailable(
     requirement.workspaceSelectors,
     requirement.workspaceAll,
   );
-  if (selected === null) return false;
+  if (selected === null) {
+    return (
+      requirement.packageManager === "pnpm" &&
+      hasDeferredPnpmWorkspaceSelector(requirement.workspaceSelectors) &&
+      manifests.some(
+        (manifest) =>
+          manifest.relativeDir !== "." && manifest.scripts.has(String(requirement.name)),
+      )
+    );
+  }
   if (selected.length === 0) {
     return requirement.packageManager === "pnpm" && !requirement.workspaceAll;
   }
@@ -3523,9 +3536,13 @@ export function selectWorkspacePackageManifests(
   const selectors = Array.isArray(selectorsValue)
     ? selectorsValue.filter((value): value is string => typeof value === "string")
     : [];
+  const parsedSelectors = selectors.map((selector) =>
+    parseSupportedWorkspaceSelector(selector.replace(/^!/, "")),
+  );
   if (
     selectors.length > MAX_WORKSPACE_SELECTORS ||
-    selectors.some((selector) => !isSupportedWorkspaceSelector(selector.replace(/^!/, "")))
+    parsedSelectors.some((selector) => selector === null) ||
+    parsedSelectors.some((selector) => selector?.deferred)
   ) {
     return null;
   }
@@ -3570,19 +3587,62 @@ function workspaceSelectorLimits(overrides: Partial<WorkspaceSelectorLimits>) {
   return limits;
 }
 
-function isSupportedWorkspaceSelector(selector: string) {
-  const braces = selector.match(/^(.*?)\{([^{}]+)\}$/);
-  return (
-    Boolean(selector) &&
-    selector.length <= MAX_WORKSPACE_PATTERN_LENGTH &&
-    [...selector].filter((character) => "*?{}".includes(character)).length <=
-      MAX_WORKSPACE_PATTERN_OPERATORS &&
-    !selector.includes("[") &&
-    !selector.includes("]") &&
-    !selector.includes("...") &&
-    !selector.includes("\0") &&
-    ((!selector.includes("{") && !selector.includes("}")) || Boolean(braces))
-  );
+function parseSupportedWorkspaceSelector(selector: string) {
+  if (
+    !selector ||
+    selector.length > MAX_WORKSPACE_PATTERN_LENGTH ||
+    selector.includes("\0") ||
+    selector.includes("....") ||
+    [...selector].filter((character) => "*?{}[]".includes(character)).length >
+      MAX_WORKSPACE_PATTERN_OPERATORS
+  ) {
+    return null;
+  }
+  let value = selector;
+  let deferred = false;
+  if (value.startsWith("...^")) {
+    value = value.slice(4);
+    deferred = true;
+  } else if (value.startsWith("...")) {
+    value = value.slice(3);
+    deferred = true;
+  }
+  if (value.endsWith("^...")) {
+    value = value.slice(0, -4);
+    deferred = true;
+  } else if (value.endsWith("...")) {
+    value = value.slice(0, -3);
+    deferred = true;
+  }
+  if (value.includes("...")) return null;
+  const sinceOpen = value.indexOf("[");
+  const sinceClose = value.indexOf("]");
+  const hasSince = sinceOpen >= 0 || sinceClose >= 0;
+  if (hasSince) {
+    if (
+      sinceOpen < 0 ||
+      sinceClose <= sinceOpen ||
+      sinceClose !== value.length - 1 ||
+      value.indexOf("[", sinceOpen + 1) >= 0 ||
+      value.indexOf("]", sinceClose + 1) >= 0
+    ) {
+      return null;
+    }
+    const since = value.slice(sinceOpen + 1, sinceClose);
+    if (!/^[A-Za-z0-9_./@:+-]{1,256}$/.test(since)) return null;
+    value = `${value.slice(0, sinceOpen)}${value.slice(sinceClose + 1)}`;
+    deferred = true;
+  }
+  if (value.includes("[") || value.includes("]") || value.includes("^")) return null;
+  if (!value && !hasSince) return null;
+  const braces = value.match(/^(.*?)\{([^{}]+)\}$/);
+  if ((value.includes("{") || value.includes("}")) && !braces) return null;
+  return value || deferred
+    ? {
+        deferred,
+        selector: value,
+      }
+    : null;
 }
 
 function workspaceSelectorMatches(
@@ -3590,7 +3650,9 @@ function workspaceSelectorMatches(
   selector: string,
   budget: { deadlineAt: number; maxOperations: number; operations: number },
 ) {
-  if (!isSupportedWorkspaceSelector(selector)) return false;
+  const parsed = parseSupportedWorkspaceSelector(selector);
+  if (!parsed || parsed.deferred) return false;
+  selector = parsed.selector;
   assertWorkspaceDeadline(budget.deadlineAt, "selector evaluation");
   budget.operations += 1;
   if (budget.operations > budget.maxOperations) {
@@ -3619,6 +3681,18 @@ function workspaceSelectorMatches(
     !selector.includes("/") &&
     !selector.includes("*") &&
     manifest.name!.endsWith(`/${selector}`)
+  );
+}
+
+function hasDeferredPnpmWorkspaceSelector(selectorsValue: JsonValue) {
+  if (!Array.isArray(selectorsValue)) return false;
+  const selectors = selectorsValue.filter((value): value is string => typeof value === "string");
+  return (
+    selectors.length > 0 &&
+    selectors.every((selector) => parseSupportedWorkspaceSelector(selector.replace(/^!/, ""))) &&
+    selectors.some(
+      (selector) => parseSupportedWorkspaceSelector(selector.replace(/^!/, ""))?.deferred,
+    )
   );
 }
 

@@ -423,6 +423,18 @@ export function packageManagerCommandIndex(parts: readonly string[]): number | n
   return packageManagerInvocation(parts)?.commandIndex ?? null;
 }
 
+export function packageManagerWorkspaceScoped(parts: readonly string[]) {
+  const invocation = packageManagerInvocation(parts);
+  if (!invocation) return false;
+  const runOptions =
+    normalizedPackageCommand(invocation.command) === "run"
+      ? (packageRunInvocation(invocation)?.workspaceOptions ?? [])
+      : [];
+  return [...invocation.globalOptions, ...runOptions].some((option) =>
+    PACKAGE_MANAGER_WORKSPACE_OPTIONS[invocation.executable].has(option.name),
+  );
+}
+
 export function isExpensivePnpmValidation(
   parts: readonly string[],
   commandStart: number,

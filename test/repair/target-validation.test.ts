@@ -657,6 +657,49 @@ test("pnpm path normalization honors global options before the command", () => {
   );
 });
 
+test("workspace-filtered test paths remain relative to the selected package", () => {
+  const cwd = gitPackageFixture({});
+  fs.mkdirSync(path.join(cwd, "packages", "worker", "test"), { recursive: true });
+  fs.writeFileSync(
+    path.join(cwd, "packages", "worker", "package.json"),
+    `${JSON.stringify(
+      {
+        name: "@openclaw/worker",
+        scripts: { test: "vitest run", "test:serial": "vitest run" },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  fs.writeFileSync(path.join(cwd, "packages", "worker", "test", "worker.test.ts"), "export {};\n");
+  fs.writeFileSync(path.join(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  const options = validationOptions("steipete/example", {
+    toolchain: {
+      packageManager: "pnpm",
+      baseValidationCommands: [],
+      changedGate: null,
+    },
+  });
+
+  for (const command of [
+    "pnpm --filter @openclaw/worker test test/worker.test.ts",
+    "pnpm --filter @openclaw/worker test:serial test/worker.test.ts",
+    "pnpm --filter @openclaw/worker exec vitest run test/worker.test.ts",
+  ]) {
+    const result = preflightTargetValidationPlan(
+      { fixArtifact: { validation_commands: [command] }, targetDir: cwd },
+      options,
+    );
+    assert.equal(result.status, "passed");
+    assert.deepEqual(result.resolved_commands, [
+      command.replace("pnpm ", "pnpm --fail-if-no-match "),
+    ]);
+  }
+});
+
 test("bun test is treated as the built-in runner instead of a package script", () => {
   const cwd = gitBunPackageFixture({});
   fs.mkdirSync(path.join(cwd, "test"), { recursive: true });
@@ -1346,6 +1389,61 @@ test("workspace wildcard and selector inputs are bounded", () => {
       ).status,
       "blocked",
     );
+  }
+});
+
+test("pnpm documented dependency and changed-since selectors defer to bounded runtime matching", () => {
+  const cwd = packageFixture({});
+  for (const [directory, name] of [
+    ["packages/foo", "foo"],
+    ["packages/bar", "bar"],
+  ]) {
+    fs.mkdirSync(path.join(cwd, directory), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, directory, "package.json"),
+      `${JSON.stringify({ name, scripts: { check: "node --test" } }, null, 2)}\n`,
+    );
+  }
+  fs.writeFileSync(path.join(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+  const options = validationOptions("steipete/example", {
+    toolchain: {
+      packageManager: "pnpm",
+      baseValidationCommands: [],
+      changedGate: null,
+    },
+  });
+  for (const selector of [
+    "foo...",
+    "foo^...",
+    "...foo",
+    "...^foo",
+    "[origin/main]",
+    "...[origin/main]",
+    "{packages/**}[origin/main]...",
+    "...{packages/**}[origin/main]...",
+  ]) {
+    const command = `pnpm --filter '${selector}' check`;
+    const result = preflightTargetValidationPlan(
+      { fixArtifact: { validation_commands: [command] }, targetDir: cwd },
+      options,
+    );
+    assert.equal(result.status, "passed", selector);
+    assert.deepEqual(result.resolved_commands, [
+      `pnpm --fail-if-no-match --filter ${selector} check`,
+    ]);
+  }
+
+  const manifests = [
+    { name: null, relativeDir: ".", scriptCommands: new Map(), scripts: new Set() },
+    {
+      name: "foo",
+      relativeDir: "packages/foo",
+      scriptCommands: new Map([["check", "node --test"]]),
+      scripts: new Set(["check"]),
+    },
+  ];
+  for (const selector of ["...", "foo....", "foo[origin/main][other]", "foo[origin main]"]) {
+    assert.equal(selectWorkspacePackageManifests(manifests, [selector], false), null);
   }
 });
 
