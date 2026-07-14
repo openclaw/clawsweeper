@@ -37,6 +37,7 @@ for (const key of [
   "CLAWSWEEPER_PUBLISH_LEASE",
   "CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS",
   "CLAWSWEEPER_PUBLISH_DEADLINE_MS",
+  "CLAWSWEEPER_IMMUTABLE_PUBLISH_DEADLINE_MS",
   "CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS",
   "CLAWSWEEPER_PUBLISH_LEASE_TTL_MS",
   "CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS",
@@ -138,6 +139,10 @@ test("default lease timing can recover a crashed owner within the workflow budge
       timing.operationDeadlineMs +
       timing.commandTimeoutMs +
       timing.workflowMarginMs <=
+      timing.workflowTimeoutMs,
+  );
+  assert.ok(
+    timing.immutableOperationDeadlineMs + timing.commandTimeoutMs + timing.workflowMarginMs <=
       timing.workflowTimeoutMs,
   );
 });
@@ -3709,7 +3714,7 @@ test("immutable publisher verifies an accepted branch push after client timeout"
   const result = withEnv(
     leasedPublishEnv({
       CLAWSWEEPER_STATE_DIR: state,
-      CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
+      CLAWSWEEPER_IMMUTABLE_PUBLISH_DEADLINE_MS: "3000",
       CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "100",
     }),
     () =>
@@ -3729,35 +3734,41 @@ test("immutable publisher verifies an accepted branch push after client timeout"
   );
 });
 
-test("immutable publishers converge concurrent disjoint action ledger paths without a lease", async () => {
+test("64 bursty immutable publishers converge in production-shaped cohorts", async () => {
   const fixture = createStatePublishRemote("immutable-concurrency");
-  const publisherCount = 12;
+  const publisherCount = 64;
+  const cohortSize = 16;
   const env = leasedPublishEnv({
-    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "15000",
-    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "3000",
+    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "10000",
   });
-  const publishers = Array.from({ length: publisherCount }, (_, index) => {
+  const preparedPublishers = Array.from({ length: publisherCount }, (_, index) => {
     const state = path.join(fixture.root, `state-${index}`);
     const source = path.join(fixture.root, `source-${index}`);
     const publishPath = `ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-${index + 1}-review-${String(index).padStart(2, "0")}.jsonl`;
     cloneState(fixture.origin, state);
     fs.mkdirSync(source);
     write(path.join(source, publishPath), `event ${index}\n`);
-    return {
-      publishPath,
-      child: startImmutablePublishProcess(
-        source,
-        state,
-        `chore: append immutable event ${index}`,
-        publishPath,
-        env,
-      ),
-    };
+    return { index, state, source, publishPath };
   });
-
-  const completed = await Promise.all(publishers.map(({ child }) => waitForChild(child)));
-  for (const result of completed) {
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  const publishers = [];
+  for (let cohortStart = 0; cohortStart < publisherCount; cohortStart += cohortSize) {
+    const cohort = preparedPublishers
+      .slice(cohortStart, cohortStart + cohortSize)
+      .map(({ index, state, source, publishPath }) => ({
+        publishPath,
+        child: startImmutablePublishProcess(
+          source,
+          state,
+          `chore: append immutable event ${index}`,
+          publishPath,
+          env,
+        ),
+      }));
+    publishers.push(...cohort);
+    const completed = await Promise.all(cohort.map(({ child }) => waitForChild(child)));
+    for (const result of completed) {
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    }
   }
   for (const [index, { publishPath }] of publishers.entries()) {
     assert.equal(
@@ -3768,7 +3779,7 @@ test("immutable publishers converge concurrent disjoint action ledger paths with
   assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
 });
 
-test("immutable publisher converges through unrelated mutable branch updates", () => {
+test("immutable publisher survives more than the former 32-attempt race ceiling", () => {
   const fixture = createStatePublishRemote("immutable-mutable-storm");
   const state = path.join(fixture.root, "state");
   const other = path.join(fixture.root, "other");
@@ -3778,13 +3789,14 @@ test("immutable publisher converges through unrelated mutable branch updates", (
   cloneState(fixture.origin, other);
   fs.mkdirSync(source);
   write(path.join(source, publishPath), '{"event":"storm"}\n');
-  installRepeatedStateRaceHook(state, other, 3);
+  const raceCount = 33;
+  installRepeatedStateRaceHook(state, other, raceCount);
 
   const result = withEnv(
     leasedPublishEnv({
       CLAWSWEEPER_STATE_DIR: state,
-      CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
-      CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
+      CLAWSWEEPER_IMMUTABLE_PUBLISH_DEADLINE_MS: "60000",
+      CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "5000",
     }),
     () =>
       withCwd(source, () =>
@@ -3801,7 +3813,7 @@ test("immutable publisher converges through unrelated mutable branch updates", (
     run("git", ["--git-dir", fixture.origin, "show", `state:${publishPath}`], fixture.root),
     '{"event":"storm"}\n',
   );
-  for (let race = 1; race <= 3; race += 1) {
+  for (let race = 1; race <= raceCount; race += 1) {
     assert.equal(
       run(
         "git",
@@ -4138,6 +4150,7 @@ test("immutable publisher converges when an exclusive lease appears before its p
         CLAWSWEEPER_STATE_DIR: immutableState,
         CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "5000",
         CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
+        CLAWSWEEPER_IMMUTABLE_PUBLISH_DEADLINE_MS: "3000",
         CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
         CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "4000",
         CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
@@ -4155,7 +4168,7 @@ test("immutable publisher converges when an exclusive lease appears before its p
 
   assert.equal(fs.existsSync(marker), true);
   assert.equal(
-    lines.some((line) => line.includes("Immutable publish lost state race attempt=1/32")),
+    lines.some((line) => line.includes("Immutable publish lost state race attempt=1/128")),
     true,
   );
   assert.equal(
@@ -4186,7 +4199,7 @@ test("immutable publication deadline bounds continuous rejected branch pushes", 
       withEnv(
         leasedPublishEnv({
           CLAWSWEEPER_STATE_DIR: state,
-          CLAWSWEEPER_PUBLISH_DEADLINE_MS: "120",
+          CLAWSWEEPER_IMMUTABLE_PUBLISH_DEADLINE_MS: "120",
           CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "100",
         }),
         () =>

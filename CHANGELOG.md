@@ -59,8 +59,8 @@ checkpoint, and status-only commits are intentionally omitted.
 ### Changed
 
 - Bounded immutable action-ledger publishers' priority yield to exclusive state
-  leases so a valid long-lived lease cannot starve a shorter immutable
-  publication deadline; exclusive publishers still rebuild around branch races.
+  leases and expanded their retry budget for 64-worker bursts; exclusive
+  publishers still rebuild around branch races.
 - Kept immutable action-ledger publication available in repair-only workflow
   jobs by moving shard import and path-manifest admission behind repair-native
   CLIs, while retaining the root commands as compatibility entrypoints.

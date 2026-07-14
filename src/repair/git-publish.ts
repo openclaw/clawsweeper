@@ -83,6 +83,7 @@ const STATE_PUBLISH_LEASE_REF_ROOT = "refs/heads/clawsweeper-publish-lease";
 export const STATE_PUBLISH_TIMING_DEFAULTS = Object.freeze({
   acquisitionDeadlineMs: 3 * 60 * 1000,
   operationDeadlineMs: 90 * 1000,
+  immutableOperationDeadlineMs: 3 * 60 * 1000,
   commandTimeoutMs: 30 * 1000,
   immutableLeasePriorityMaxMs: 15 * 1000,
   leaseTtlMs: 2 * 60 * 1000,
@@ -96,6 +97,7 @@ const STATE_PUBLISH_LEASE_ISSUED_AT_SKEW_MS = 5 * 1000;
 const STATE_PUBLISH_LEASE_ATTEMPTS = 24;
 const STATE_PUBLISH_LEASE_WAIT_MS = 3 * 1000;
 const STATE_PUBLISH_STALE_RECOVERY_ATTEMPTS = 2;
+const IMMUTABLE_PUBLISH_MAX_ATTEMPTS = 128;
 const SKIP_CI_DIRECTIVE_PATTERN =
   /\[(?:skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks:\s*true$/im;
 
@@ -319,10 +321,14 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
   const metrics: GitPublishMetrics = {
     startedAtMs,
     deadlineAtMs: timing
-      ? startedAtMs + (leased ? timing.acquisitionDeadlineMs : timing.operationDeadlineMs)
+      ? startedAtMs +
+        (boundedImmutable ? timing.immutableOperationDeadlineMs : timing.acquisitionDeadlineMs)
       : null,
     commandTimeoutMs: timing?.commandTimeoutMs ?? null,
-    operationDeadlineMs: timing?.operationDeadlineMs ?? null,
+    operationDeadlineMs:
+      timing && boundedImmutable
+        ? timing.immutableOperationDeadlineMs
+        : (timing?.operationDeadlineMs ?? null),
     leaseTtlMs: leased ? (timing?.leaseTtlMs ?? null) : null,
     processes: 0,
     actions: new Map(),
@@ -385,7 +391,7 @@ function validatePublishCoordination(
 function publishImmutableMainCommit(options: GitPublishOptions): PublishResult {
   const remote = options.remote ?? "origin";
   const branch = options.branch ?? publishDefaultBranch();
-  const maxAttempts = positiveInt(options.maxAttempts, 32);
+  const maxAttempts = positiveInt(options.maxAttempts, IMMUTABLE_PUBLISH_MAX_ATTEMPTS);
   const paths = uniqueNonEmpty(options.paths);
   const stateBaseCommit = captureStatePublishBaseline();
   const stateRoot = publishRoot();
@@ -1434,11 +1440,17 @@ function validateStatePublishTimingDefaults(): void {
   if (workflowBoundMs > timing.workflowTimeoutMs) {
     throw new Error("Default state publish deadlines exceed the workflow timeout margin");
   }
+  const immutableWorkflowBoundMs =
+    timing.immutableOperationDeadlineMs + timing.commandTimeoutMs + timing.workflowMarginMs;
+  if (immutableWorkflowBoundMs > timing.workflowTimeoutMs) {
+    throw new Error("Default immutable publish deadlines exceed the workflow timeout margin");
+  }
 }
 
 function statePublishTiming(): {
   acquisitionDeadlineMs: number;
   operationDeadlineMs: number;
+  immutableOperationDeadlineMs: number;
   commandTimeoutMs: number;
   leaseTtlMs: number;
 } {
@@ -1449,6 +1461,15 @@ function statePublishTiming(): {
   const operationDeadlineMs = positiveEnvInt(
     "CLAWSWEEPER_PUBLISH_DEADLINE_MS",
     STATE_PUBLISH_TIMING_DEFAULTS.operationDeadlineMs,
+  );
+  const legacyOperationDeadlineConfigured = Boolean(
+    process.env.CLAWSWEEPER_PUBLISH_DEADLINE_MS?.trim(),
+  );
+  const immutableOperationDeadlineMs = positiveEnvInt(
+    "CLAWSWEEPER_IMMUTABLE_PUBLISH_DEADLINE_MS",
+    legacyOperationDeadlineConfigured
+      ? operationDeadlineMs
+      : STATE_PUBLISH_TIMING_DEFAULTS.immutableOperationDeadlineMs,
   );
   const commandTimeoutMs = positiveEnvInt(
     "CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS",
@@ -1471,6 +1492,7 @@ function statePublishTiming(): {
   return {
     acquisitionDeadlineMs,
     operationDeadlineMs,
+    immutableOperationDeadlineMs,
     commandTimeoutMs,
     leaseTtlMs,
   };
