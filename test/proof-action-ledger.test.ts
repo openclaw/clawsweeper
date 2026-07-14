@@ -15,7 +15,10 @@ test("proof workflow enables and publishes immutable mutation receipts", () => {
   assert.ok(setup < run);
   assert.ok(run < finalize);
   assert.ok(finalize < publish);
-  assert.match(workflow.slice(finalize, publish), /finalize-action-events/);
+  assert.match(
+    workflow.slice(finalize, publish),
+    /PROOF_OUTCOME:[\s\S]*--interrupt-open-attempts --reason cancelled[\s\S]*--interrupt-open-attempts --reason workflow_failed[\s\S]*finalize-action-events/,
+  );
   assert.match(
     workflow.slice(publish),
     /publish-action-events -- \\\n\s+--source-root "\$source_root" \\\n\s+--state-root "\$CLAWSWEEPER_STATE_DIR" \\\n\s+--expected-producer-job "\$GITHUB_JOB"/,

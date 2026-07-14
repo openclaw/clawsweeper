@@ -3,6 +3,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import test from "node:test";
 
 import { readAllSpooledActionEvents } from "../dist/action-ledger.js";
+import { interruptOpenWorkflowActionEvents } from "../dist/action-ledger-runtime.js";
 import {
   createProofConversationActivityCursor,
   finishProofMutationReceipt,
@@ -279,5 +280,45 @@ test("bot proof label recovery receipts use concrete private mutation identities
     assert.doesNotMatch(identities.join("\n"), /bot_proof_label_state/);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("failed and cancelled workflows terminalize open proof mutation receipts as unknown", () => {
+  for (const reasonCode of ["workflow_failed", "cancelled"] as const) {
+    const root = realpathSync(mkdtempSync(tmpPrefix));
+    try {
+      const context = receiptContext(root, reasonCode === "cancelled" ? "4206" : "4207");
+      const mutationIdentity = `proof_nudge_comment:42:${"b".repeat(40)}:2026-07-14T12:00:00Z`;
+      const attempt = startProofMutationReceipt({
+        context,
+        receiptIdentity: `${mutationIdentity}:request_attempt:1`,
+        mutationIdentity,
+        requestAttempt: 1,
+      });
+
+      assert.equal(
+        interruptOpenWorkflowActionEvents(root, {
+          env: context.env,
+          reasonCode,
+        }),
+        1,
+      );
+      const events = readAllSpooledActionEvents(root);
+      const start = events.find((event) => event.event_id === attempt.eventId);
+      const terminal = events.find(
+        (event) => event.attributes?.completion_reason === "mutation_outcome_unknown",
+      );
+      assert.ok(start);
+      assert.ok(terminal);
+      assert.equal(terminal.parent_event_id, attempt.eventId);
+      assert.equal(terminal.idempotency_key_sha256, start.idempotency_key_sha256);
+      assert.equal(terminal.action.mutation, true);
+      assert.equal(terminal.action.retryable, false);
+      assert.equal(terminal.action.reason_code, reasonCode);
+      assert.equal(terminal.action.status, reasonCode === "cancelled" ? "cancelled" : "failed");
+      assert.equal(interruptOpenWorkflowActionEvents(root, { env: context.env, reasonCode }), 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });

@@ -2710,6 +2710,7 @@ type ProofMutationSession = {
   bindLabelState: boolean;
   nextAttemptByMutation: Map<string, number>;
   latestEventIdByMutation: Map<string, string>;
+  knownNoMutationIdentities: Set<string>;
   unknownMutationIdentities: Set<string>;
   unknownMutationObserved: boolean;
 };
@@ -2825,16 +2826,20 @@ function proofMutationRunner(session: ProofMutationSession): MutationRunner {
       }
       return result;
     } catch (error) {
+      const knownNoMutation = options.knownNoMutation?.(error) === true;
       const rejected =
         isGitHubRequiresAuthenticationError(error) ||
         isLockedConversationCommentError(error) ||
-        options.knownNoMutation?.(error) === true;
+        knownNoMutation;
       const outcome = finishProofMutationReceipt({
         attempt,
         outcome: rejected ? "rejected" : "unknown",
       });
       if (outcome) {
         session.latestEventIdByMutation.set(options.idempotencyIdentity, outcome.event_id);
+      }
+      if (knownNoMutation) {
+        session.knownNoMutationIdentities.add(options.idempotencyIdentity);
       }
       if (!rejected) {
         session.unknownMutationIdentities.add(options.idempotencyIdentity);
@@ -2855,6 +2860,7 @@ function reconcileProofMutation(session: ProofMutationSession, mutationIdentity:
     phaseSeq: requestAttempt * 2 + 1,
   });
   session.unknownMutationIdentities.delete(mutationIdentity);
+  session.knownNoMutationIdentities.delete(mutationIdentity);
   session.unknownMutationObserved = session.unknownMutationIdentities.size > 0;
 }
 
@@ -28291,20 +28297,21 @@ function upsertBotProofDecisionComment(
   }
   const existing = comments
     .map(asRecord)
-    .find((comment) => typeof comment.body === "string" && comment.body.includes(marker));
+    .find(
+      (comment) =>
+        canPatchReviewComment(comment) &&
+        typeof comment.body === "string" &&
+        comment.body.includes(marker),
+    );
   const mutationIdentity = botProofCommentMutationIdentity(number, headSha, body);
-  if (
-    existing &&
-    canPatchReviewComment(existing) &&
-    commentBody(existing)?.trim() === body.trim()
-  ) {
+  if (existing && commentBody(existing)?.trim() === body.trim()) {
     reconcileProofMutation(session, mutationIdentity);
     return { comment: existing, reconciled: true };
   }
   const payload = writeCommentPayload(number, body);
   const existingId = commentId(existing);
   let args: string[];
-  if (existingId !== null && canPatchReviewComment(existing)) {
+  if (existingId !== null) {
     args = [
       "api",
       `repos/${targetRepo()}/issues/comments/${existingId}`,
@@ -28605,6 +28612,7 @@ function createProofMutationSession(options: {
     bindLabelState: options.bindLabelState === true,
     nextAttemptByMutation: new Map(),
     latestEventIdByMutation: new Map(),
+    knownNoMutationIdentities: new Set(),
     unknownMutationIdentities: new Set(),
     unknownMutationObserved: false,
   };
@@ -28654,12 +28662,18 @@ function reconcileSatisfiedBotProofLabelMutations(
   session: ProofMutationSession,
   number: number,
   labels: readonly string[],
-): void {
+): number {
+  let recoveredAttempts = 0;
   for (const identity of satisfiedBotProofLabelMutationIdentities(number, labels)) {
     const attempted = (session.nextAttemptByMutation.get(identity) ?? 0) > 0;
-    if (attempted && !session.unknownMutationIdentities.has(identity)) continue;
+    const recoverableAttempt =
+      session.unknownMutationIdentities.has(identity) ||
+      session.knownNoMutationIdentities.has(identity);
+    if (attempted && !recoverableAttempt) continue;
     reconcileProofMutation(session, identity);
+    if (attempted) recoveredAttempts += 1;
   }
+  return recoveredAttempts;
 }
 
 function botProofDecisionLabelsAreSynchronized(labels: readonly string[]): boolean {
@@ -28951,9 +28965,14 @@ function proofNudgesCommand(args: Args): void {
         });
       } catch (error) {
         const marker = proofNudgeMarker({ number: candidate.number, headSha, timestamp });
-        const reconciled = mutationSession.unknownMutationObserved
-          ? ownedIssueCommentWithMarker(candidate.number, marker)
-          : undefined;
+        let reconciled: Record<string, unknown> | undefined;
+        if (mutationSession.unknownMutationObserved) {
+          try {
+            reconciled = ownedIssueCommentWithMarker(candidate.number, marker);
+          } catch {
+            reconciled = undefined;
+          }
+        }
         if (reconciled) {
           reconcileProofMutation(
             mutationSession,
@@ -29194,13 +29213,13 @@ function botProofCommand(args: Args): void {
           labels: mutationSession.expectedFreshness.item.labels,
           dryRun: false,
         });
-        if (botProofDecisionLabelsAreSynchronized(labelResult.labels)) {
-          reconcileSatisfiedBotProofLabelMutations(
-            mutationSession,
-            candidate.number,
-            labelResult.labels,
-          );
-        }
+        const recoveredLabelAttempts = botProofDecisionLabelsAreSynchronized(labelResult.labels)
+          ? reconcileSatisfiedBotProofLabelMutations(
+              mutationSession,
+              candidate.number,
+              labelResult.labels,
+            )
+          : 0;
         const mutation = upsertBotProofDecisionComment(
           candidate.number,
           headSha,
@@ -29217,7 +29236,15 @@ function botProofCommand(args: Args): void {
               : "bot_proof_decision_posted",
           reason: reconciled
             ? "same-head proof decision comment and label state already exist"
-            : [eligibility.reason, labelResult.reason].filter(Boolean).join("; "),
+            : [
+                eligibility.reason,
+                labelResult.reason,
+                recoveredLabelAttempts > 0
+                  ? `reconciled ${recoveredLabelAttempts} completed label operation receipt(s)`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join("; "),
           url: commentUrl(mutation.comment) ?? undefined,
           headSha,
         });

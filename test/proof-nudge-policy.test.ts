@@ -148,15 +148,17 @@ function proofMutationGhMockScript(options: {
   postUnknown?: boolean;
   unknownMutation?: string;
   initialComments?: unknown[];
+  initialLabels?: string[];
+  failConversationReadsAfterUnknownPost?: boolean;
 }): string {
   return `#!/usr/bin/env node
 const fs = require("node:fs");
 const config = ${JSON.stringify(options)};
 const oldHead = "${"a".repeat(40)}";
 const newHead = "${"b".repeat(40)}";
-const initialLabels = config.bot
+const initialLabels = config.initialLabels || (config.bot
   ? ["triage: needs-real-behavior-proof", "stale"]
-  : ["triage: needs-real-behavior-proof"];
+  : ["triage: needs-real-behavior-proof"]);
 const state = fs.existsSync(config.statePath)
   ? JSON.parse(fs.readFileSync(config.statePath, "utf8"))
   : {
@@ -165,6 +167,7 @@ const state = fs.existsSync(config.statePath)
       reviewReads: 0,
       conversationReads: 0,
       labels: initialLabels,
+      createdLabels: [],
       comments: config.initialComments || []
     };
 const save = () => fs.writeFileSync(config.statePath, JSON.stringify(state));
@@ -206,6 +209,11 @@ const currentReviews = () => {
 };
 const currentComments = () => {
   state.conversationReads += 1;
+  if (config.failConversationReadsAfterUnknownPost && state.unknownPostAccepted) {
+    save();
+    console.error("fatal: simulated reconciliation read failure");
+    process.exit(1);
+  }
   const injected = config.driftConversationAtRead &&
       state.conversationReads >= config.driftConversationAtRead
     ? [{
@@ -221,9 +229,17 @@ const currentComments = () => {
   return [...state.comments, ...injected];
 };
 if (commandArgs[0] === "label" && commandArgs[1] === "create") {
-  logMutation("label_create:" + commandArgs[2]);
-  unknownAfterMutation("label_create:" + commandArgs[2]);
-  output({ name: commandArgs[2] });
+  const label = commandArgs[2];
+  state.createdLabels = state.createdLabels || [];
+  logMutation("label_create:" + label);
+  if (state.createdLabels.includes(label)) {
+    save();
+    console.error("label already exists");
+    process.exit(1);
+  }
+  state.createdLabels.push(label);
+  unknownAfterMutation("label_create:" + label);
+  output({ name: label });
 }
 if (commandArgs[0] === "issue" && commandArgs[1] === "edit") {
   const addIndex = commandArgs.indexOf("--add-label");
@@ -310,6 +326,7 @@ if (path.startsWith("repos/openclaw/openclaw/issues/42/comments") && method === 
   state.comments = state.comments.filter((entry) => entry.id !== 99);
   state.comments.push(comment);
   logMutation("comment_post");
+  state.unknownPostAccepted = config.postUnknown === true;
   save();
   if (config.postUnknown) {
     console.error("HTTP 502: write acknowledgement unavailable");
@@ -1030,6 +1047,55 @@ test("proof nudges reconcile a marker when GitHub accepts the comment before los
   }
 });
 
+test("proof nudges preserve unknown outcomes when marker reconciliation cannot be read", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const reportPath = join(root, "proof-nudge-report.json");
+    const statePath = join(root, "gh-state.json");
+    const mutationLogPath = join(root, "mutations.log");
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(join(itemsDir, "42.md"), proofNudgeReport({ headSha: "a".repeat(40) }));
+
+    withMockGh(
+      root,
+      proofMutationGhMockScript({
+        statePath,
+        mutationLogPath,
+        postUnknown: true,
+        failConversationReadsAfterUnknownPost: true,
+      }),
+      () => {
+        execFileSync(process.execPath, [
+          "dist/clawsweeper.js",
+          "proof-nudges",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--item-numbers",
+          "42",
+          "--limit",
+          "1",
+          "--processed-limit",
+          "1",
+          "--min-age-days",
+          "0",
+          "--report-path",
+          reportPath,
+          "--execute",
+        ]);
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.equal(report[0].action, "proof_nudge_outcome_unknown");
+    assert.equal(readFileSync(mutationLogPath, "utf8").trim(), "comment_post");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("proof nudges reconcile an expired same-head marker before posting the next nudge", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -1340,6 +1406,90 @@ test("bot proof stops when labels change between its own requests", () => {
   }
 });
 
+test("bot proof ignores unowned markers before selecting its upsert target", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const reportPath = join(root, "bot-proof-report.json");
+    const statePath = join(root, "gh-state.json");
+    const mutationLogPath = join(root, "mutations.log");
+    const headSha = "a".repeat(40);
+    const markdown = proofNudgeReport({
+      author: "app/clawsweeper",
+      authorAssociation: "NONE",
+      headSha,
+    });
+    const body = renderBotProofDecisionCommentForTest({
+      number: 42,
+      title: "Proof nudge sample",
+      headSha,
+      timestamp: "2026-01-01T00:00:00Z",
+      markdown,
+    });
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(join(itemsDir, "42.md"), markdown);
+
+    withMockGh(
+      root,
+      proofMutationGhMockScript({
+        statePath,
+        mutationLogPath,
+        bot: true,
+        initialLabels: [
+          "triage: needs-real-behavior-proof",
+          "status: needs maintainer proof decision",
+        ],
+        initialComments: [
+          {
+            id: 70,
+            user: { login: "contributor" },
+            author_association: "CONTRIBUTOR",
+            body,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+            html_url: "https://github.com/openclaw/openclaw/pull/42#issuecomment-70",
+          },
+          {
+            id: 71,
+            user: { login: "clawsweeper[bot]" },
+            author_association: "NONE",
+            body,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+            html_url: "https://github.com/openclaw/openclaw/pull/42#issuecomment-71",
+          },
+        ],
+      }),
+      () => {
+        execFileSync(process.execPath, [
+          "dist/clawsweeper.js",
+          "bot-proof",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--item-numbers",
+          "42",
+          "--limit",
+          "1",
+          "--processed-limit",
+          "1",
+          "--report-path",
+          reportPath,
+          "--execute",
+        ]);
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.equal(report[0].action, "bot_proof_decision_reconciled");
+    assert.equal(report[0].url, "https://github.com/openclaw/openclaw/pull/42#issuecomment-71");
+    assert.equal(existsSync(mutationLogPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("bot proof reconciles an applied label removal under its concrete mutation identity", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -1423,6 +1573,71 @@ test("bot proof reconciles an applied label removal under its concrete mutation 
     assert.ok(identities.includes("issue_label_remove:42:stale"));
     assert.ok(identities.includes("issue_label_add:42:status: needs maintainer proof decision"));
     assert.doesNotMatch(identities.join("\n"), /bot_proof_label_state/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bot proof reconciles an unknown label create when the retry proves it already exists", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const firstReportPath = join(root, "bot-proof-first.json");
+    const secondReportPath = join(root, "bot-proof-second.json");
+    const statePath = join(root, "gh-state.json");
+    const mutationLogPath = join(root, "mutations.log");
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(
+      join(itemsDir, "42.md"),
+      proofNudgeReport({
+        author: "app/clawsweeper",
+        authorAssociation: "NONE",
+        headSha: "a".repeat(40),
+      }),
+    );
+    const script = proofMutationGhMockScript({
+      statePath,
+      mutationLogPath,
+      bot: true,
+      unknownMutation: "label_create:status: needs maintainer proof decision",
+    });
+    const run = (reportPath: string) => {
+      execFileSync(process.execPath, [
+        "dist/clawsweeper.js",
+        "bot-proof",
+        "--target-repo",
+        "openclaw/openclaw",
+        "--items-dir",
+        itemsDir,
+        "--item-numbers",
+        "42",
+        "--limit",
+        "1",
+        "--processed-limit",
+        "1",
+        "--report-path",
+        reportPath,
+        "--execute",
+      ]);
+    };
+
+    withMockGh(root, script, () => {
+      run(firstReportPath);
+      run(secondReportPath);
+    });
+
+    const firstReport = JSON.parse(readFileSync(firstReportPath, "utf8"));
+    const secondReport = JSON.parse(readFileSync(secondReportPath, "utf8"));
+    assert.equal(firstReport[0].action, "bot_proof_mutation_outcome_unknown");
+    assert.equal(secondReport[0].action, "bot_proof_decision_posted");
+    assert.match(secondReport[0].reason, /reconciled 1 completed label operation receipt/);
+    assert.deepEqual(readFileSync(mutationLogPath, "utf8").trim().split("\n"), [
+      "label_create:status: needs maintainer proof decision",
+      "label_create:status: needs maintainer proof decision",
+      "label_add:status: needs maintainer proof decision",
+      "label_remove:stale",
+      "comment_post",
+    ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

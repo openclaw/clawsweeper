@@ -433,7 +433,8 @@ function workflowActionEventIsRecoverableStart(event: ActionEvent): boolean {
       event.event_type === ACTION_EVENT_TYPES.reviewRetry ||
       event.event_type === ACTION_EVENT_TYPES.repairExecute ||
       event.event_type === ACTION_EVENT_TYPES.applyBatch ||
-      event.event_type === ACTION_EVENT_TYPES.applyAction) &&
+      event.event_type === ACTION_EVENT_TYPES.applyAction ||
+      event.event_type === ACTION_EVENT_TYPES.proofStage) &&
     event.action.status === ACTION_EVENT_STATUSES.started
   );
 }
