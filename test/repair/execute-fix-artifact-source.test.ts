@@ -221,10 +221,8 @@ test("repair publication pushes the accepted checkout through isolated Git auth"
   assert.match(isolation, /"submodule\.recurse=false"/);
   assert.match(source, /assertTargetCheckoutBinding\(targetDir, checkoutBinding/);
   assert.match(source, /sourceRef: checkoutBinding\.headSha/);
-  assert.match(
-    source,
-    /\["push", "--no-verify", remote, `\$\{sourceRef\}:\$\{pull\.head\.ref\}`\]/,
-  );
+  assert.match(source, /`--force-with-lease=refs\/heads\/\$\{pull\.head\.ref\}:\$\{headSha\}`/);
+  assert.match(source, /`--force-with-lease=\$\{targetRef\}:\$\{remoteSha \?\? ""\}`/);
   assert.match(source, /if \(publishedSha !== sourceRef\)/);
   assert.doesNotMatch(source, /gh", \["auth", "setup-git"\]/);
   assert.doesNotMatch(source, /`HEAD:\$\{pull\.head\.ref\}`/);

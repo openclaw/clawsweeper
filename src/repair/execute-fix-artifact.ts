@@ -1508,12 +1508,11 @@ function branchUpdateState({ targetDir, sourceHead }: LooseRecord) {
   return { rewritten };
 }
 
-function repairBranchPushArgs({ pull, rewritten, sourceRef = "HEAD" }: LooseRecord) {
+function repairBranchPushArgs({ pull, sourceRef = "HEAD" }: LooseRecord) {
   const remote = `https://github.com/${pull.head.repo.full_name}.git`;
   if (!/^(?:HEAD|[0-9a-f]{40})$/i.test(String(sourceRef))) {
     throw new Error("cannot push repair branch: validated source ref is missing");
   }
-  if (!rewritten) return ["push", "--no-verify", remote, `${sourceRef}:${pull.head.ref}`];
   const headSha = String(pull.head?.sha ?? "");
   if (!/^[0-9a-f]{40}$/i.test(headSha)) {
     throw new Error(
@@ -1529,9 +1528,9 @@ function repairBranchPushArgs({ pull, rewritten, sourceRef = "HEAD" }: LooseReco
   ];
 }
 
-function assertRepairBranchWritable({ targetDir, pull, rewritten }: LooseRecord) {
+function assertRepairBranchWritable({ targetDir, pull }: LooseRecord) {
   assertTargetPublicationGitConfiguration(targetDir, targetValidationTimeoutMs);
-  const args = repairBranchPushArgs({ pull, rewritten });
+  const args = repairBranchPushArgs({ pull });
   runGitNetwork(["push", "--dry-run", ...args.slice(1)], targetDir);
 }
 
@@ -3537,15 +3536,13 @@ function pushRecoverableBranch({ targetDir, branch, checkoutBinding = null }: Lo
   const targetRef = `refs/heads/${branch}`;
   const remote = `https://github.com/${result.repo}.git`;
   const sourceRef = String(binding.headSha);
-  const args = remoteSha
-    ? [
-        "push",
-        "--no-verify",
-        `--force-with-lease=${targetRef}:${remoteSha}`,
-        remote,
-        `${sourceRef}:${targetRef}`,
-      ]
-    : ["push", "--no-verify", remote, `${sourceRef}:${targetRef}`];
+  const args = [
+    "push",
+    "--no-verify",
+    `--force-with-lease=${targetRef}:${remoteSha ?? ""}`,
+    remote,
+    `${sourceRef}:${targetRef}`,
+  ];
   assertIssueImplementationNotPaused();
   runGitNetwork(args, targetDir);
   const publishedSha = fetchRemoteRecoverableBranch({ targetDir, branch, required: false });

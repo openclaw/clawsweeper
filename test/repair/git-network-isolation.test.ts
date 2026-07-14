@@ -70,6 +70,75 @@ test("isolated authenticated fetch mirrors only the verified destination ref", (
   assert.equal(git(target, "rev-parse", "refs/remotes/origin/main"), head);
 });
 
+test("isolated push rejects an ancestor reset after the expected head was read", () => {
+  const fixture = pushLeaseFixture();
+  const expectedHead = git(fixture.target, "rev-parse", "HEAD");
+  fs.writeFileSync(path.join(fixture.target, "source.txt"), "validated\n");
+  git(fixture.target, "commit", "-am", "validated");
+  const sourceHead = git(fixture.target, "rev-parse", "HEAD");
+  const resetHead = git(fixture.target, "rev-parse", `${expectedHead}^`);
+  git(fixture.remote, "update-ref", "refs/heads/main", resetHead);
+
+  assert.throws(() =>
+    runIsolatedGitNetwork({
+      args: [
+        "push",
+        `--force-with-lease=refs/heads/main:${expectedHead}`,
+        fixture.remote,
+        `${sourceHead}:refs/heads/main`,
+      ],
+      cwd: fixture.target,
+      env: process.env,
+      timeoutMs: 10_000,
+      token: "test-token",
+    }),
+  );
+  assert.equal(git(fixture.remote, "rev-parse", "refs/heads/main"), resetHead);
+});
+
+test("isolated push atomically requires a replacement branch to remain absent", () => {
+  const fixture = pushLeaseFixture();
+  const sourceHead = git(fixture.target, "rev-parse", "HEAD");
+  git(fixture.remote, "update-ref", "refs/heads/replacement", sourceHead);
+  fs.writeFileSync(path.join(fixture.target, "source.txt"), "replacement\n");
+  git(fixture.target, "commit", "-am", "replacement");
+  const replacementHead = git(fixture.target, "rev-parse", "HEAD");
+
+  assert.throws(() =>
+    runIsolatedGitNetwork({
+      args: [
+        "push",
+        "--force-with-lease=refs/heads/replacement:",
+        fixture.remote,
+        `${replacementHead}:refs/heads/replacement`,
+      ],
+      cwd: fixture.target,
+      env: process.env,
+      timeoutMs: 10_000,
+      token: "test-token",
+    }),
+  );
+  assert.equal(git(fixture.remote, "rev-parse", "refs/heads/replacement"), sourceHead);
+});
+
+function pushLeaseFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-network-lease-"));
+  const target = path.join(root, "target");
+  const remote = path.join(root, "remote.git");
+  git(root, "init", "--bare", remote);
+  fs.mkdirSync(target);
+  git(target, "init", "-b", "main");
+  git(target, "config", "user.email", "clawsweeper@example.invalid");
+  git(target, "config", "user.name", "ClawSweeper Test");
+  fs.writeFileSync(path.join(target, "source.txt"), "initial\n");
+  git(target, "add", ".");
+  git(target, "commit", "-m", "initial");
+  fs.writeFileSync(path.join(target, "source.txt"), "expected\n");
+  git(target, "commit", "-am", "expected");
+  git(target, "push", remote, "HEAD:refs/heads/main");
+  return { remote, target };
+}
+
 function git(cwd: string, ...args: string[]) {
   return execFileSync("git", args, {
     cwd,
