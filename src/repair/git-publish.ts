@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   cpSync,
   existsSync,
@@ -51,6 +52,8 @@ export type RebaseStrategy = "normal" | "theirs" | "apply-records" | "reconcile-
 export type GitRunOptions = {
   allowFailure?: boolean;
   displayArgs?: readonly string[];
+  ignorePublishDeadline?: boolean;
+  input?: string;
   quiet?: boolean;
 };
 
@@ -68,14 +71,36 @@ const GIT_PATHSPEC_BATCH_SIZE = 256;
 const GIT_OBJECT_BATCH_SIZE = 512;
 const GIT_OBJECT_BATCH_MAX_BUFFER = 64 * 1024 * 1024;
 const RECONCILIATION_TUPLE_CHUNK_SIZE = 128;
+const STATE_PUBLISH_LEASE_REF_ROOT = "refs/heads/clawsweeper-publish-lease";
+const STATE_PUBLISH_DEADLINE_MS = 4 * 60 * 1000;
+const STATE_PUBLISH_COMMAND_TIMEOUT_MS = 30 * 1000;
+const STATE_PUBLISH_LEASE_TTL_MS = 5 * 60 * 1000;
+const STATE_PUBLISH_LEASE_ATTEMPTS = 24;
+const STATE_PUBLISH_LEASE_WAIT_MS = 3 * 1000;
+const STATE_PUBLISH_STALE_RECOVERY_ATTEMPTS = 2;
 const SKIP_CI_DIRECTIVE_PATTERN =
   /\[(?:skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks:\s*true$/im;
 
 type GitPublishMetrics = {
   startedAtMs: number;
+  deadlineAtMs: number | null;
+  commandTimeoutMs: number | null;
   processes: number;
   actions: Map<string, number>;
   phase: string;
+};
+
+type StatePublishLease = {
+  ref: string;
+  oid: string;
+  owner: string;
+  expiresAtMs: number;
+};
+
+type ObservedStatePublishLease = {
+  oid: string;
+  owner: string;
+  expiresAtMs: number;
 };
 
 let activeGitPublishMetrics: GitPublishMetrics | null = null;
@@ -117,12 +142,23 @@ export function runGit(args: readonly string[], options: GitRunOptions = {}): st
 export function spawnGit(args: readonly string[], options: GitRunOptions = {}): GitRunResult {
   recordGitProcess(args[0]);
   console.log(`$ ${formatGitDisplayCommand(options.displayArgs ?? args)}`);
+  const timeout = gitCommandTimeoutMs(options);
   const child = spawnSync("git", [...args], {
     cwd: publishRoot(),
     env: process.env,
     encoding: "utf8",
+    ...(options.input !== undefined ? { input: options.input } : {}),
     maxBuffer: 16 * 1024 * 1024,
+    ...(timeout !== undefined ? { timeout } : {}),
   });
+  if (child.error) {
+    if ("code" in child.error && child.error.code === "ETIMEDOUT") {
+      throw new Error(
+        `git ${safeGitDisplayAction(args[0])} timed out after ${timeout ?? 0}ms during state publication`,
+      );
+    }
+    throw child.error;
+  }
   if (!options.quiet && child.stdout) process.stdout.write(child.stdout);
   if (!options.quiet && child.stderr) process.stderr.write(child.stderr);
   return {
@@ -130,6 +166,19 @@ export function spawnGit(args: readonly string[], options: GitRunOptions = {}): 
     stdout: child.stdout ?? "",
     stderr: child.stderr ?? "",
   };
+}
+
+function gitCommandTimeoutMs(options: GitRunOptions): number | undefined {
+  const metrics = activeGitPublishMetrics;
+  if (!metrics?.commandTimeoutMs) return undefined;
+  if (options.ignorePublishDeadline || metrics.deadlineAtMs === null) {
+    return metrics.commandTimeoutMs;
+  }
+  const remaining = metrics.deadlineAtMs - Date.now();
+  if (remaining <= 0) {
+    throw new Error("State publication deadline exceeded before the next git command");
+  }
+  return Math.max(1, Math.min(metrics.commandTimeoutMs, remaining));
 }
 
 function recordGitProcess(action: string | undefined): void {
@@ -215,8 +264,16 @@ export function hasWorktreePath(path: string): boolean {
 
 export function publishMainCommit(options: GitPublishOptions): PublishResult {
   const previousMetrics = activeGitPublishMetrics;
+  const startedAtMs = Date.now();
+  const leased = statePublishLeaseEnabled();
   const metrics: GitPublishMetrics = {
-    startedAtMs: Date.now(),
+    startedAtMs,
+    deadlineAtMs: leased
+      ? startedAtMs + positiveEnvInt("CLAWSWEEPER_PUBLISH_DEADLINE_MS", STATE_PUBLISH_DEADLINE_MS)
+      : null,
+    commandTimeoutMs: leased
+      ? positiveEnvInt("CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS", STATE_PUBLISH_COMMAND_TIMEOUT_MS)
+      : null,
     processes: 0,
     actions: new Map(),
     phase: "start",
@@ -242,6 +299,20 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
 }
 
 function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
+  if (!statePublishLeaseEnabled()) return publishMainCommitWithoutLease(options);
+  const remote = options.remote ?? "origin";
+  const branch = options.branch ?? publishDefaultBranch();
+  configureGitUser();
+  gitPublishPhase("lease", `branch=${branch}`);
+  const lease = acquireStatePublishLease(remote, branch);
+  try {
+    return publishMainCommitWhileLeased(options, lease);
+  } finally {
+    releaseStatePublishLease(remote, lease);
+  }
+}
+
+function publishMainCommitWithoutLease(options: GitPublishOptions): PublishResult {
   const remote = options.remote ?? "origin";
   const branch = options.branch ?? publishDefaultBranch();
   const maxAttempts = positiveInt(options.maxAttempts, 8);
@@ -374,6 +445,231 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
   throw new Error(`Failed to publish commit after ${maxAttempts} attempts`);
 }
 
+function publishMainCommitWhileLeased(
+  options: GitPublishOptions,
+  lease: StatePublishLease,
+): PublishResult {
+  const remote = options.remote ?? "origin";
+  const branch = options.branch ?? publishDefaultBranch();
+  const rebaseStrategy = options.rebaseStrategy ?? "normal";
+  gitPublishPhase(
+    "sync",
+    `paths=${uniqueNonEmpty(options.paths).length} strategy=${rebaseStrategy} lease=${lease.owner}`,
+  );
+  runGit(["fetch", remote, branch]);
+  const remoteRef = `${remote}/${branch}`;
+  const stateRoot = publishRoot();
+  if (stateRoot && resolve(stateRoot) !== resolve(process.cwd())) {
+    runGit(["reset", "--hard", remoteRef]);
+  }
+  const stateBaseCommit = captureStatePublishBaseline();
+
+  syncPublishPaths(options.paths, { rebaseStrategy });
+  gitPublishPhase("stage", `paths=${uniqueNonEmpty(options.paths).length}`);
+  stagePaths(options.paths);
+  if (!hasStagedChanges()) {
+    console.log("No publish changes");
+    verifyRemotePublishedPaths("HEAD", remote, branch, options.paths);
+    return completeStatePublish("unchanged", options.paths, stateBaseCommit);
+  }
+
+  const commitMessage = commitMessageForPublishedPaths(options.message, options.paths);
+  runGit(["commit", "-m", commitMessage]);
+  let sourceCommit = runGit(["rev-parse", "HEAD"]).trim();
+  const reconciliationSourceCommit =
+    rebaseStrategy === "reconcile-records" ? sourceCommit : undefined;
+  let reconciliationTupleKeys: ReadonlySet<string> | undefined;
+  if (rebaseStrategy === "reconcile-records") {
+    gitPublishPhase("normalize");
+    const normalized = normalizeReconciliationCommit(sourceCommit);
+    sourceCommit = normalized.commit;
+    if (!normalized.changed) {
+      restoreWorktree(options.restorePaths ?? []);
+      verifyRemotePublishedPaths("HEAD", remote, branch, options.paths);
+      return completeStatePublish("unchanged", options.paths, stateBaseCommit);
+    }
+    const tupleKeys = reconciliationTupleKeysForCommit(sourceCommit);
+    reconciliationTupleKeys = new Set(tupleKeys);
+    if (tupleKeys.length > RECONCILIATION_TUPLE_CHUNK_SIZE) {
+      restoreWorktree(options.restorePaths ?? []);
+      const result = publishReconciliationChunks({
+        remote,
+        branch,
+        pushAttempts: 1,
+        maxAttempts: 1,
+        sourceCommit: reconciliationSourceCommit ?? sourceCommit,
+        tupleKeys,
+        lease,
+      });
+      verifyRemotePublishedPaths("HEAD", remote, branch, options.paths);
+      return completeStatePublish(result, options.paths, stateBaseCommit);
+    }
+  }
+  restoreWorktree(options.restorePaths ?? []);
+
+  gitPublishPhase("push");
+  if (rebaseStrategy === "reconcile-records") {
+    publishLeasedReconciliationHead({
+      remote,
+      branch,
+      lease,
+      paths: options.paths,
+      ...(reconciliationSourceCommit ? { reconciliationSourceCommit } : {}),
+      ...(reconciliationTupleKeys ? { reconciliationTupleKeys } : {}),
+    });
+    return completeStatePublish("committed", options.paths, stateBaseCommit);
+  }
+
+  const result = publishLeasedCommit({
+    remote,
+    branch,
+    lease,
+    message: commitMessage,
+    paths: options.paths,
+    sourceCommit,
+  });
+  return completeStatePublish(result, options.paths, stateBaseCommit);
+}
+
+function publishLeasedCommit(options: {
+  remote: string;
+  branch: string;
+  lease: StatePublishLease;
+  message: string;
+  paths: readonly string[];
+  sourceCommit: string;
+}): PublishResult {
+  const expectedCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
+  if (pushLeasedHead(options.remote, options.branch, options.lease)) {
+    verifyRemotePublishedPaths(expectedCommit, options.remote, options.branch, options.paths);
+    return "committed";
+  }
+  if (remotePublishedPathsMatch(expectedCommit, options.remote, options.branch, options.paths)) {
+    console.log("Leased publish push was ambiguous but the expected blobs are remote");
+    return "committed";
+  }
+
+  console.log(`Leased publish lost one unexpected ${options.branch} race; rebuilding once`);
+  const rebuildResult = rebuildPublishCommit({
+    remote: options.remote,
+    branch: options.branch,
+    message: options.message,
+    paths: options.paths,
+    sourceCommit: options.sourceCommit,
+  });
+  if (rebuildResult === "unchanged") {
+    verifyRemotePublishedPaths("HEAD", options.remote, options.branch, options.paths);
+    return "unchanged";
+  }
+
+  const rebuiltCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
+  if (
+    !pushLeasedHead(options.remote, options.branch, options.lease) &&
+    !remotePublishedPathsMatch(rebuiltCommit, options.remote, options.branch, options.paths)
+  ) {
+    throw new Error("Leased state publish failed after its single rebuild/push retry");
+  }
+  verifyRemotePublishedPaths(rebuiltCommit, options.remote, options.branch, options.paths);
+  return "committed";
+}
+
+function publishLeasedReconciliationHead(options: {
+  remote: string;
+  branch: string;
+  lease: StatePublishLease;
+  paths?: readonly string[];
+  reconciliationSourceCommit?: string;
+  reconciliationTupleKeys?: ReadonlySet<string>;
+}): void {
+  const expectedCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
+  if (pushLeasedHead(options.remote, options.branch, options.lease)) {
+    verifyRemotePublishExpectation(expectedCommit, options.remote, options.branch, options.paths);
+    return;
+  }
+  if (
+    remotePublishExpectationMatches(expectedCommit, options.remote, options.branch, options.paths)
+  ) {
+    console.log("Leased reconciliation push was ambiguous but the expected state is remote");
+    return;
+  }
+
+  console.log(`Leased reconciliation lost one unexpected ${options.branch} race; rebuilding once`);
+  runGit(["fetch", options.remote, options.branch]);
+  const remoteRef = `${options.remote}/${options.branch}`;
+  if (
+    !rebuildReconciliationCommit(
+      remoteRef,
+      options.reconciliationSourceCommit,
+      options.reconciliationTupleKeys,
+    )
+  ) {
+    throw new Error("Failed to rebuild leased reconciliation publish");
+  }
+  const rebuiltCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
+  if (
+    !pushLeasedHead(options.remote, options.branch, options.lease) &&
+    !remotePublishExpectationMatches(rebuiltCommit, options.remote, options.branch, options.paths)
+  ) {
+    throw new Error("Leased reconciliation failed after its single rebuild/push retry");
+  }
+  verifyRemotePublishExpectation(rebuiltCommit, options.remote, options.branch, options.paths);
+}
+
+function pushLeasedHead(remote: string, branch: string, lease: StatePublishLease): boolean {
+  assertStatePublishLeaseOwner(remote, lease);
+  return spawnGit(["push", remote, `HEAD:${branch}`]).status === 0;
+}
+
+function verifyRemotePublishedPaths(
+  expectedCommit: string,
+  remote: string,
+  branch: string,
+  paths: readonly string[],
+): void {
+  gitPublishPhase("verify", `paths=${uniqueNonEmpty(paths).length}`);
+  if (!remotePublishedPathsMatch(expectedCommit, remote, branch, paths)) {
+    throw new Error(`Remote ${remote}/${branch} failed expected-blob verification`);
+  }
+}
+
+function remotePublishedPathsMatch(
+  expectedCommit: string,
+  remote: string,
+  branch: string,
+  paths: readonly string[],
+): boolean {
+  runGit(["fetch", remote, branch]);
+  const result = spawnGit(
+    ["diff", "--quiet", expectedCommit, `${remote}/${branch}`, "--", ...uniqueNonEmpty(paths)],
+    { allowFailure: true, quiet: true },
+  );
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  throw new Error(result.stderr.trim() || `Failed to verify expected blobs on ${remote}/${branch}`);
+}
+
+function verifyRemotePublishExpectation(
+  expectedCommit: string,
+  remote: string,
+  branch: string,
+  paths?: readonly string[],
+): void {
+  if (!remotePublishExpectationMatches(expectedCommit, remote, branch, paths)) {
+    throw new Error(`Remote ${remote}/${branch} failed expected-state verification`);
+  }
+}
+
+function remotePublishExpectationMatches(
+  expectedCommit: string,
+  remote: string,
+  branch: string,
+  paths?: readonly string[],
+): boolean {
+  if (paths) return remotePublishedPathsMatch(expectedCommit, remote, branch, paths);
+  runGit(["fetch", remote, branch]);
+  return runGit(["rev-parse", `${remote}/${branch}`], { quiet: true }).trim() === expectedCommit;
+}
+
 function pushReconciliationCommit(options: {
   remote: string;
   branch: string;
@@ -482,6 +778,7 @@ function publishReconciliationChunks(options: {
   maxAttempts: number;
   sourceCommit: string;
   tupleKeys: readonly string[];
+  lease?: StatePublishLease;
 }): PublishResult {
   const chunks = chunked(options.tupleKeys, RECONCILIATION_TUPLE_CHUNK_SIZE);
   console.log(
@@ -503,7 +800,15 @@ function publishReconciliationChunks(options: {
       continue;
     }
     committed = true;
-    if (
+    if (options.lease) {
+      publishLeasedReconciliationHead({
+        remote: options.remote,
+        branch: options.branch,
+        lease: options.lease,
+        reconciliationSourceCommit: options.sourceCommit,
+        reconciliationTupleKeys: allowedTupleKeys,
+      });
+    } else if (
       !pushReconciliationCommit({
         remote: options.remote,
         branch: options.branch,
@@ -659,6 +964,200 @@ function pathIsWithin(root: string, path: string): boolean {
 
 function isGeneratedPublishPath(path: string): boolean {
   return GENERATED_PUBLISH_PATHS.some((root) => pathIsWithin(root, path));
+}
+
+function statePublishLeaseEnabled(): boolean {
+  if (!publishRoot()) return false;
+  const configured = process.env.CLAWSWEEPER_PUBLISH_LEASE?.trim().toLowerCase();
+  return configured !== "0" && configured !== "false" && configured !== "off";
+}
+
+function acquireStatePublishLease(remote: string, branch: string): StatePublishLease {
+  const leaseRef = `${STATE_PUBLISH_LEASE_REF_ROOT}/${branch}`;
+  runGit(["check-ref-format", leaseRef], { quiet: true });
+  const owner = randomUUID();
+  const ttlMs = positiveEnvInt("CLAWSWEEPER_PUBLISH_LEASE_TTL_MS", STATE_PUBLISH_LEASE_TTL_MS);
+  const maxAttempts = positiveEnvInt(
+    "CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS",
+    STATE_PUBLISH_LEASE_ATTEMPTS,
+  );
+  const waitMs = positiveEnvInt("CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS", STATE_PUBLISH_LEASE_WAIT_MS);
+  const maxStaleRecoveries = positiveEnvInt(
+    "CLAWSWEEPER_PUBLISH_STALE_RECOVERY_ATTEMPTS",
+    STATE_PUBLISH_STALE_RECOVERY_ATTEMPTS,
+  );
+  const observedByOid = new Map<string, ObservedStatePublishLease>();
+  let staleRecoveries = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    assertStatePublishDeadline("acquiring the remote state publish lease");
+    const observed = observeStatePublishLease(remote, leaseRef, ttlMs, observedByOid);
+    const now = Date.now();
+    if (!observed || observed.expiresAtMs <= now) {
+      if (observed && staleRecoveries >= maxStaleRecoveries) {
+        throw new Error(
+          `State publish lease remained stale after ${maxStaleRecoveries} recovery attempts`,
+        );
+      }
+      const expiresAtMs = now + ttlMs;
+      const leaseOid = createStatePublishLeaseCommit({
+        branch,
+        owner,
+        expiresAtMs,
+      });
+      const expectedOid = observed?.oid ?? "";
+      const result = spawnGit(
+        [
+          "push",
+          `--force-with-lease=${leaseRef}:${expectedOid}`,
+          remote,
+          `${leaseOid}:${leaseRef}`,
+        ],
+        { allowFailure: true, quiet: true },
+      );
+      if (result.status === 0) {
+        console.log(
+          `Acquired state publish lease owner=${owner} attempt=${attempt} stale_recovery=${observed ? "true" : "false"}`,
+        );
+        return { ref: leaseRef, oid: leaseOid, owner, expiresAtMs };
+      }
+      if (observed) staleRecoveries += 1;
+    } else {
+      console.log(
+        `State publish lease busy owner=${observed.owner} attempt=${attempt}/${maxAttempts}`,
+      );
+    }
+    if (attempt < maxAttempts) {
+      sleepWithinStatePublishDeadline(waitMs + Math.floor(Math.random() * waitMs));
+    }
+  }
+  throw new Error(`Failed to acquire state publish lease after ${maxAttempts} attempts`);
+}
+
+function observeStatePublishLease(
+  remote: string,
+  leaseRef: string,
+  ttlMs: number,
+  observedByOid: Map<string, ObservedStatePublishLease>,
+): ObservedStatePublishLease | null {
+  const oid = remoteRefOid(remote, leaseRef);
+  if (!oid) return null;
+  const cached = observedByOid.get(oid);
+  if (cached) return cached;
+
+  runGit(["fetch", "--no-tags", "--quiet", remote, leaseRef]);
+  const raw = runGit(["show", "-s", "--format=%H%x00%ct%x00%B", "FETCH_HEAD"], {
+    quiet: true,
+  });
+  const [fetchedOid, committedAtRaw, ...messageParts] = raw.split("\0");
+  if (!fetchedOid || !/^[a-f0-9]{40,64}$/.test(fetchedOid)) {
+    throw new Error("Remote state publish lease did not resolve to a commit");
+  }
+  const committedAtMs = Number(committedAtRaw) * 1000;
+  const message = messageParts.join("\0");
+  const owner = /^owner: ([0-9a-f-]+)$/m.exec(message)?.[1] ?? "unknown";
+  const parsedExpiry = Date.parse(/^expires_at: (.+)$/m.exec(message)?.[1] ?? "");
+  const observed = {
+    oid: fetchedOid,
+    owner,
+    expiresAtMs:
+      Number.isFinite(parsedExpiry) && parsedExpiry > 0
+        ? parsedExpiry
+        : Number.isFinite(committedAtMs)
+          ? committedAtMs + ttlMs
+          : 0,
+  };
+  observedByOid.set(observed.oid, observed);
+  return observed;
+}
+
+function createStatePublishLeaseCommit(options: {
+  branch: string;
+  owner: string;
+  expiresAtMs: number;
+}): string {
+  const parent = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
+  const tree = runGit(["rev-parse", "HEAD^{tree}"], { quiet: true }).trim();
+  const message = [
+    "ClawSweeper state publish lease",
+    "",
+    `owner: ${options.owner}`,
+    `branch: ${options.branch}`,
+    `expires_at: ${new Date(options.expiresAtMs).toISOString()}`,
+    "",
+  ].join("\n");
+  return runGit(["commit-tree", tree, "-p", parent], {
+    input: message,
+    quiet: true,
+  }).trim();
+}
+
+function releaseStatePublishLease(remote: string, lease: StatePublishLease): void {
+  try {
+    const result = spawnGit(
+      ["push", `--force-with-lease=${lease.ref}:${lease.oid}`, remote, `:${lease.ref}`],
+      {
+        allowFailure: true,
+        ignorePublishDeadline: true,
+        quiet: true,
+      },
+    );
+    if (result.status === 0) {
+      console.log(`Released state publish lease owner=${lease.owner}`);
+    } else {
+      console.log(
+        `State publish lease release skipped owner=${lease.owner}; ownership changed or remote cleanup failed`,
+      );
+    }
+  } catch (error) {
+    console.log(
+      `State publish lease release failed owner=${lease.owner}; expiry will recover it: ${errorMessage(error)}`,
+    );
+  }
+}
+
+function assertStatePublishLeaseOwner(remote: string, lease: StatePublishLease): void {
+  if (Date.now() >= lease.expiresAtMs) {
+    throw new Error("State publish lease expired before branch publication");
+  }
+  const remoteOid = remoteRefOid(remote, lease.ref);
+  if (remoteOid !== lease.oid) {
+    throw new Error("State publish lease ownership changed before branch publication");
+  }
+}
+
+function remoteRefOid(remote: string, ref: string): string | null {
+  const result = spawnGit(["ls-remote", "--refs", remote, ref], {
+    allowFailure: true,
+    quiet: true,
+  });
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || `Failed to inspect remote ref ${ref}`);
+  }
+  const output = result.stdout.trim();
+  if (!output) return null;
+  const match = /^([a-f0-9]{40,64})\s+(.+)$/.exec(output);
+  if (!match || match[2] !== ref) throw new Error(`Malformed remote ref response for ${ref}`);
+  return match[1]!;
+}
+
+function assertStatePublishDeadline(action: string): void {
+  const deadlineAtMs = activeGitPublishMetrics?.deadlineAtMs;
+  if (deadlineAtMs !== null && deadlineAtMs !== undefined && Date.now() >= deadlineAtMs) {
+    throw new Error(`State publication deadline exceeded while ${action}`);
+  }
+}
+
+function sleepWithinStatePublishDeadline(milliseconds: number): void {
+  const deadlineAtMs = activeGitPublishMetrics?.deadlineAtMs;
+  const remaining =
+    deadlineAtMs === null || deadlineAtMs === undefined
+      ? milliseconds
+      : Math.min(milliseconds, deadlineAtMs - Date.now());
+  if (remaining <= 0) {
+    throw new Error("State publication deadline exceeded while waiting for the remote lease");
+  }
+  sleep(remaining);
 }
 
 export function publishRoot(): string | undefined {
@@ -1345,13 +1844,20 @@ function gitObjectExistence(requests: readonly GitObjectRequest[]): Set<string> 
 function runGitObjectBatch(mode: "--batch" | "--batch-check", specs: readonly string[]): Buffer {
   recordGitProcess("cat-file");
   console.log("$ git cat-file <redacted-args>");
+  const timeout = gitCommandTimeoutMs({});
   const child = spawnSync("git", ["cat-file", mode], {
     cwd: publishRoot(),
     env: process.env,
     input: Buffer.from(`${specs.join("\n")}\n`, "utf8"),
     maxBuffer: GIT_OBJECT_BATCH_MAX_BUFFER,
+    ...(timeout !== undefined ? { timeout } : {}),
   });
-  if (child.error) throw child.error;
+  if (child.error) {
+    if ("code" in child.error && child.error.code === "ETIMEDOUT") {
+      throw new Error(`git cat-file timed out after ${timeout ?? 0}ms during state publication`);
+    }
+    throw child.error;
+  }
   const stdout = Buffer.isBuffer(child.stdout) ? child.stdout : Buffer.from(child.stdout ?? "");
   const stderr = Buffer.isBuffer(child.stderr)
     ? child.stderr.toString("utf8")
@@ -1502,6 +2008,16 @@ function onlyGeneratedPublishPaths(paths: readonly string[]): boolean {
 
 function positiveInt(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function positiveEnvInt(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return parsed;
 }
 
 type SweepStatusMerge = {
