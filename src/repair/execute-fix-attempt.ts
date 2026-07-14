@@ -12,6 +12,11 @@ import {
   type ActionEventStatus,
 } from "../action-ledger.js";
 import { recordWorkflowPhaseEvent } from "../action-ledger-runtime.js";
+import {
+  executionReportEvidence,
+  prepareExecutionReportProbe,
+  type ExecuteFixMutationEvidence,
+} from "./execute-fix-report.js";
 import { parseJob, repoRoot, type ParsedJob } from "./lib.js";
 
 type ExecuteResult = {
@@ -25,6 +30,7 @@ type ExecuteFixAttemptDependencies = {
   env?: NodeJS.ProcessEnv;
   executorPath?: string;
   loadJob?: (filePath: string) => ParsedJob;
+  loadExecutionReport?: () => unknown;
   recordPhaseEvent?: typeof recordWorkflowPhaseEvent;
   execute?: (
     command: string,
@@ -108,6 +114,9 @@ export function runExecuteFixAttempt(
     throw new Error("execute-fix mutation start was not recorded");
   }
 
+  const reportProbe = dependencies.loadExecutionReport
+    ? { read: dependencies.loadExecutionReport }
+    : prepareExecutionReportProbe(argv, root);
   const executorPath =
     dependencies.executorPath ?? path.join(repoRoot(), "dist", "repair", "execute-fix-artifact.js");
   const execute =
@@ -125,7 +134,10 @@ export function runExecuteFixAttempt(
     env,
     stdio: "inherit",
   });
-  const disposition = executeFixDisposition(result);
+  const disposition = executeFixDisposition(
+    result,
+    executionReportEvidence(reportProbe.read(), job),
+  );
 
   try {
     const mutationOutcome = recordPhaseEvent(
@@ -247,7 +259,10 @@ function executeFixIdentity(job: ParsedJob) {
   };
 }
 
-function executeFixDisposition(result: ExecuteResult): {
+function executeFixDisposition(
+  result: ExecuteResult,
+  evidence: ExecuteFixMutationEvidence,
+): {
   exitCode: number;
   mutationStatus: ActionEventStatus;
   workflowStatus: ActionEventStatus;
@@ -269,18 +284,6 @@ function executeFixDisposition(result: ExecuteResult): {
       workflowCompletionReason: "workflow_failed",
     };
   }
-  if (result.status === 0) {
-    return {
-      exitCode: 0,
-      mutationStatus: ACTION_EVENT_STATUSES.executed,
-      workflowStatus: ACTION_EVENT_STATUSES.completed,
-      reasonCode: ACTION_EVENT_REASON_CODES.completed,
-      retryable: false,
-      mutation: true,
-      completionReason: "mutation_observed",
-      workflowCompletionReason: "workflow_completed",
-    };
-  }
   const exitCode = result.status ?? signalExitCode(result.signal);
   const cancelled =
     result.signal === "SIGINT" ||
@@ -289,16 +292,54 @@ function executeFixDisposition(result: ExecuteResult): {
     exitCode === 143;
   const timedOut =
     !cancelled && (result.signal === "SIGKILL" || exitCode === 124 || exitCode === 137);
-  return {
-    exitCode,
-    mutationStatus: cancelled ? ACTION_EVENT_STATUSES.cancelled : ACTION_EVENT_STATUSES.failed,
-    workflowStatus: cancelled ? ACTION_EVENT_STATUSES.cancelled : ACTION_EVENT_STATUSES.failed,
-    reasonCode: cancelled
+  const commandSucceeded = result.status === 0;
+  const workflowStatus = commandSucceeded
+    ? ACTION_EVENT_STATUSES.completed
+    : cancelled
+      ? ACTION_EVENT_STATUSES.cancelled
+      : ACTION_EVENT_STATUSES.failed;
+  const workflowReasonCode = commandSucceeded
+    ? ACTION_EVENT_REASON_CODES.completed
+    : cancelled
       ? ACTION_EVENT_REASON_CODES.cancelled
       : timedOut
         ? ACTION_EVENT_REASON_CODES.timeout
-        : ACTION_EVENT_REASON_CODES.exception,
-    retryable: false,
+        : ACTION_EVENT_REASON_CODES.exception;
+
+  if (evidence.outcome === "observed") {
+    return {
+      exitCode,
+      mutationStatus: ACTION_EVENT_STATUSES.executed,
+      workflowStatus,
+      reasonCode: commandSucceeded ? evidence.reasonCode : workflowReasonCode,
+      retryable: false,
+      mutation: true,
+      completionReason: "mutation_observed",
+      workflowCompletionReason: commandSucceeded ? "workflow_completed" : "mutation_observed",
+    };
+  }
+  if (evidence.outcome === "rejected") {
+    return {
+      exitCode,
+      mutationStatus: ACTION_EVENT_STATUSES.skipped,
+      workflowStatus,
+      reasonCode: commandSucceeded ? evidence.reasonCode : workflowReasonCode,
+      retryable: false,
+      mutation: false,
+      completionReason: "mutation_rejected",
+      workflowCompletionReason: commandSucceeded ? "workflow_completed" : "workflow_failed",
+    };
+  }
+  return {
+    exitCode,
+    mutationStatus: commandSucceeded
+      ? ACTION_EVENT_STATUSES.failed
+      : cancelled
+        ? ACTION_EVENT_STATUSES.cancelled
+        : ACTION_EVENT_STATUSES.failed,
+    workflowStatus: commandSucceeded ? ACTION_EVENT_STATUSES.failed : workflowStatus,
+    reasonCode: commandSucceeded ? evidence.reasonCode : workflowReasonCode,
+    retryable: commandSucceeded,
     mutation: true,
     completionReason: "mutation_outcome_unknown",
     workflowCompletionReason: "mutation_outcome_unknown",

@@ -71,13 +71,28 @@ test("execute-fix attempt wrapper forwards the exact command exit with bounded r
 test("execute-fix attempt wrapper records observed success without changing exit zero", () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "execute-fix-success-")));
   const jobPath = "jobs/openclaw/inbox/cluster-42.md";
+  const resultPath = path.join(root, ".clawsweeper-repair", "runs", "run-42", "result.json");
+  const reportPath = path.join(path.dirname(resultPath), "fix-execution-report.json");
+  fs.mkdirSync(path.dirname(resultPath), { recursive: true });
+  fs.writeFileSync(resultPath, "{}");
 
   try {
     const result = runExecuteFixAttempt([jobPath, "--latest"], {
       root,
       env: workflowEnv({ CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "success" }),
       loadJob: () => repairJob(jobPath),
-      execute: () => ({ status: 0, signal: null }),
+      execute: () => {
+        fs.writeFileSync(
+          reportPath,
+          JSON.stringify({
+            repo: "openclaw/openclaw",
+            cluster_id: "cluster-42",
+            status: "opened",
+            actions: [{ action: "open_fix_pr", status: "opened" }],
+          }),
+        );
+        return { status: 0, signal: null };
+      },
     });
 
     assert.deepEqual(result, { exitCode: 0, signal: null });
@@ -102,6 +117,127 @@ test("execute-fix attempt wrapper records observed success without changing exit
   }
 });
 
+test("execute-fix attempt wrapper records a zero-exit skipped report as no mutation", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "execute-fix-skipped-")));
+  const jobPath = "jobs/openclaw/inbox/cluster-42.md";
+  const resultPath = path.join(root, "run", "result.json");
+  const reportPath = path.join(path.dirname(resultPath), "fix-execution-report.json");
+  fs.mkdirSync(path.dirname(resultPath), { recursive: true });
+
+  try {
+    const result = runExecuteFixAttempt([jobPath, resultPath], {
+      root,
+      env: workflowEnv({ CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "skipped" }),
+      loadJob: () => repairJob(jobPath),
+      execute: () => {
+        fs.writeFileSync(
+          reportPath,
+          JSON.stringify({
+            repo: "openclaw/openclaw",
+            cluster_id: "cluster-42",
+            status: "skipped",
+            actions: [],
+          }),
+        );
+        return { status: 0, signal: null };
+      },
+    });
+
+    assert.deepEqual(result, { exitCode: 0, signal: null });
+    const events = readAllSpooledActionEvents(root).sort(
+      (left, right) => left.phase_seq - right.phase_seq,
+    );
+    assert.equal(events[2]?.action.status, "skipped");
+    assert.equal(events[2]?.action.mutation, false);
+    assert.equal(events[2]?.action.reason_code, ACTION_EVENT_REASON_CODES.noChanges);
+    assert.equal(events[2]?.attributes?.completion_reason, "mutation_rejected");
+    assert.equal(events[3]?.action.status, "completed");
+    assert.equal(events[3]?.action.mutation, false);
+    assert.equal(events[3]?.attributes?.completion_reason, "workflow_completed");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("execute-fix attempt wrapper records a zero-exit blocked report as no mutation", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "execute-fix-blocked-")));
+  const jobPath = "jobs/openclaw/inbox/cluster-42.md";
+  const resultPath = path.join(root, "run", "result.json");
+  const reportPath = path.join(path.dirname(resultPath), "fix-execution-report.json");
+  fs.mkdirSync(path.dirname(resultPath), { recursive: true });
+
+  try {
+    const result = runExecuteFixAttempt([jobPath, resultPath], {
+      root,
+      env: workflowEnv({ CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "blocked" }),
+      loadJob: () => repairJob(jobPath),
+      execute: () => {
+        fs.writeFileSync(
+          reportPath,
+          JSON.stringify({
+            repo: "openclaw/openclaw",
+            cluster_id: "cluster-42",
+            status: "blocked",
+            actions: [{ action: "execute_fix", status: "blocked" }],
+          }),
+        );
+        return { status: 0, signal: null };
+      },
+    });
+
+    assert.deepEqual(result, { exitCode: 0, signal: null });
+    const events = readAllSpooledActionEvents(root).sort(
+      (left, right) => left.phase_seq - right.phase_seq,
+    );
+    assert.equal(events[2]?.action.status, "skipped");
+    assert.equal(events[2]?.action.mutation, false);
+    assert.equal(events[2]?.action.reason_code, ACTION_EVENT_REASON_CODES.policyBlocked);
+    assert.equal(events[2]?.attributes?.completion_reason, "mutation_rejected");
+    assert.equal(events[3]?.action.status, "completed");
+    assert.equal(events[3]?.action.mutation, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("execute-fix attempt wrapper rejects a stale success report", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "execute-fix-stale-")));
+  const jobPath = "jobs/openclaw/inbox/cluster-42.md";
+  const resultPath = path.join(root, "run", "result.json");
+  const reportPath = path.join(path.dirname(resultPath), "fix-execution-report.json");
+  fs.mkdirSync(path.dirname(resultPath), { recursive: true });
+  fs.writeFileSync(
+    reportPath,
+    JSON.stringify({
+      repo: "openclaw/openclaw",
+      cluster_id: "cluster-42",
+      status: "opened",
+      actions: [{ action: "open_fix_pr", status: "opened" }],
+    }),
+  );
+
+  try {
+    const result = runExecuteFixAttempt([jobPath, resultPath], {
+      root,
+      env: workflowEnv({ CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "stale-report" }),
+      loadJob: () => repairJob(jobPath),
+      execute: () => ({ status: 0, signal: null }),
+    });
+
+    assert.deepEqual(result, { exitCode: 0, signal: null });
+    const events = readAllSpooledActionEvents(root).sort(
+      (left, right) => left.phase_seq - right.phase_seq,
+    );
+    assert.equal(events[2]?.action.status, "failed");
+    assert.equal(events[2]?.action.mutation, true);
+    assert.equal(events[2]?.attributes?.completion_reason, "mutation_outcome_unknown");
+    assert.equal(events[3]?.action.status, "failed");
+    assert.equal(events[3]?.action.retryable, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("execute-fix attempt wrapper marks a spawn failure as a retryable rejection", () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "execute-fix-spawn-")));
   const jobPath = "jobs/openclaw/inbox/cluster-42.md";
@@ -111,6 +247,7 @@ test("execute-fix attempt wrapper marks a spawn failure as a retryable rejection
       root,
       env: workflowEnv({ CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "spawn-failure" }),
       loadJob: () => repairJob(jobPath),
+      loadExecutionReport: () => null,
       execute: () => ({
         status: null,
         signal: null,
@@ -143,6 +280,12 @@ test("successful execution leaves recoverable starts when terminal receipt writi
       root,
       env,
       loadJob: () => repairJob(jobPath),
+      loadExecutionReport: () => ({
+        repo: "openclaw/openclaw",
+        cluster_id: "cluster-42",
+        status: "opened",
+        actions: [{ action: "open_fix_pr", status: "opened" }],
+      }),
       execute: () => ({ status: 0, signal: null }),
       recordPhaseEvent(eventRoot, input, options) {
         writes += 1;
