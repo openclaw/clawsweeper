@@ -1545,34 +1545,67 @@ test("lease backoff outlives the former fixed retry window", async () => {
   const secondState = path.join(fixture.root, "state-second");
   const firstSource = path.join(fixture.root, "source-first");
   const secondSource = path.join(fixture.root, "source-second");
+  const releaseSignal = path.join(fixture.root, "release-first-publisher");
+  const releaseObserved = path.join(fixture.root, "first-publisher-released");
   cloneState(fixture.origin, firstState);
   cloneState(fixture.origin, secondState);
   fs.mkdirSync(firstSource);
   fs.mkdirSync(secondSource);
   write(path.join(firstSource, "results/first.txt"), "first\n");
   write(path.join(secondSource, "results/second.txt"), "second\n");
-  installStatePushSleepHook(firstState, 0.18);
+  installStatePushReleaseHook(firstState, releaseSignal, releaseObserved);
 
+  const waitMs = 100;
+  const formerRetryWindowMs = waitMs * 4;
+  const releaseDelayMs = formerRetryWindowMs + 150;
   const env = leasedPublishEnv({
-    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "2000",
+    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
     CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
-    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "1500",
+    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "2000",
     CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "5",
-    CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "20",
+    CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: String(waitMs),
   });
-  const startedAt = Date.now();
   const first = startPublishCli(firstSource, firstState, "chore: publish first", env);
   const firstResult = waitForChild(first);
   await waitForRemoteRef(fixture.origin, STATE_PUBLISH_LEASE_REF);
+  const startedAt = Date.now();
   const second = startPublishCli(secondSource, secondState, "chore: publish second", env);
-  const [firstCompleted, secondCompleted] = await Promise.all([firstResult, waitForChild(second)]);
+  const secondResult = waitForChild(second);
+  const observationError = await waitForChildOutput(second, "State publish lease busy owner=").then(
+    () => null,
+    (error) => error,
+  );
+  let survivalError = null;
+  if (!observationError) {
+    await delay(releaseDelayMs);
+    try {
+      assert.equal(second.exitCode, null, "publisher exhausted the former fixed retry window");
+    } catch (error) {
+      survivalError = error;
+    }
+  }
+  write(releaseSignal, "release\n");
+  let removalError = null;
+  if (!observationError) {
+    try {
+      await waitForRemoteRefRemoval(fixture.origin, STATE_PUBLISH_LEASE_REF);
+    } catch (error) {
+      removalError = error;
+    }
+  }
+  const [firstCompleted, secondCompleted] = await Promise.all([firstResult, secondResult]);
   const elapsedMs = Date.now() - startedAt;
+  if (observationError) throw observationError;
+  if (survivalError) throw survivalError;
+  if (removalError) throw removalError;
 
   assert.equal(firstCompleted.status, 0, firstCompleted.stderr);
   assert.equal(secondCompleted.status, 0, secondCompleted.stderr);
-  assert.match(secondCompleted.stdout, /Acquired state publish lease .* attempt=5 /);
+  assert.match(secondCompleted.stdout, /State publish lease busy/);
+  assert.match(secondCompleted.stdout, /Acquired state publish lease/);
+  assert.equal(fs.existsSync(releaseObserved), true);
   assert.ok(
-    elapsedMs >= 180 && elapsedMs < 1500,
+    elapsedMs >= releaseDelayMs && elapsedMs < 2500,
     `scaled lease backoff completed in ${elapsedMs}ms`,
   );
   assert.equal(
@@ -1638,6 +1671,58 @@ test("state publisher atomically recovers an expired remote lease", () => {
   assert.equal(
     lines.some((line) => line.includes("stale_recovery=true")),
     true,
+  );
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+});
+
+test("state publisher caps far-future remote lease expiry to one local ttl", () => {
+  const fixture = createStatePublishRemote("far-future");
+  const state = path.join(fixture.root, "state");
+  const source = path.join(fixture.root, "source");
+  cloneState(fixture.origin, state);
+  fs.mkdirSync(source);
+  write(path.join(source, "results/far-future-recovery.txt"), "recovered\n");
+  createRemoteLease(state, {
+    owner: "00000000-0000-4000-8000-000000000002",
+    expiresAt: "9999-12-31T23:59:59.999Z",
+  });
+
+  let result;
+  const lines = captureConsoleLog(() => {
+    result = withEnv(
+      leasedPublishEnv({
+        CLAWSWEEPER_STATE_DIR: state,
+        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "2000",
+        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
+        CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "500",
+        CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "8",
+        CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
+      }),
+      () =>
+        withCwd(source, () =>
+          publishMainCommit({
+            message: "chore: recover far-future lease",
+            paths: ["results/far-future-recovery.txt"],
+          }),
+        ),
+    );
+  });
+  assert.equal(result, "committed");
+  assert.equal(
+    lines.some((line) => line.includes("State publish lease busy")),
+    true,
+  );
+  assert.equal(
+    lines.some((line) => line.includes("stale_recovery=true")),
+    true,
+  );
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", fixture.origin, "show", "state:results/far-future-recovery.txt"],
+      fixture.root,
+    ),
+    "recovered\n",
   );
   assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
 });
@@ -1903,7 +1988,79 @@ test("publishMainCommit publishes generated paths to state branch when state roo
   assert.throws(() => run("git", ["--git-dir", origin, "show", "main:results/ledger.txt"], root));
 });
 
-test("publishMainCommit refreshes merged health before the next state-root status publish", () => {
+test("leased normal publish refreshes remote generated state before a broad publish", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const state = path.join(root, "state");
+  const other = path.join(root, "other");
+  const checkpoint = "results/checkpoint.txt";
+  const concurrentCursor = "results/apply-cursors/openclaw-openclaw.json";
+  const concurrentJob = "jobs/openclaw/closed/123.md";
+  const report = "apply-report.json";
+
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, state], root);
+  configureUser(state);
+  write(path.join(state, checkpoint), "base\n");
+  run("git", ["add", "."], state);
+  run("git", ["commit", "-m", "initial state"], state);
+  run("git", ["push", "origin", "HEAD:state"], state);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["checkout", "-B", "state", "origin/state"], state);
+
+  fs.mkdirSync(work);
+  fs.cpSync(path.join(state, "results"), path.join(work, "results"), { recursive: true });
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  write(path.join(other, concurrentCursor), '{"cursor":"remote"}\n');
+  write(path.join(other, concurrentJob), "remote job\n");
+  write(path.join(other, report), '[{"report":"remote"}]\n');
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "concurrent generated state"], other);
+  run("git", ["push", "origin", "HEAD:state"], other);
+
+  write(path.join(work, checkpoint), "local\n");
+  const results = withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
+    withCwd(work, () => {
+      const first = publishMainCommit({
+        message: "chore: publish narrow checkpoint",
+        paths: [checkpoint],
+        rebaseStrategy: "normal",
+      });
+      assert.equal(
+        fs.readFileSync(path.join(work, concurrentCursor), "utf8"),
+        '{"cursor":"remote"}\n',
+      );
+      assert.equal(fs.readFileSync(path.join(work, concurrentJob), "utf8"), "remote job\n");
+      assert.equal(fs.readFileSync(path.join(work, report), "utf8"), '[{"report":"remote"}]\n');
+
+      const second = publishMainCommit({
+        message: "chore: publish broad generated state",
+        paths: ["jobs", "results/apply-cursors", report],
+        rebaseStrategy: "normal",
+      });
+      return [first, second];
+    }),
+  );
+
+  assert.deepEqual(results, ["committed", "unchanged"]);
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${concurrentCursor}`], root),
+    '{"cursor":"remote"}\n',
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${concurrentJob}`], root),
+    "remote job\n",
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${report}`], root),
+    '[{"report":"remote"}]\n',
+  );
+  assert.equal(remoteRefExists(origin, STATE_PUBLISH_LEASE_REF), false);
+});
+
+test("leased theirs publish refreshes merged health before the next status publish", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");
   const work = path.join(root, "work");
@@ -1941,7 +2098,7 @@ test("publishMainCommit refreshes merged health before the next state-root statu
     path.join(work, statusFile),
     sweepStatus("2026-07-09T20:03:00Z", "Local checkpoint", initialHealth, initialHealth),
   );
-  const results = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+  const results = withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
     withCwd(work, () => {
       const first = publishMainCommit({
         message: "chore: publish checkpoint status",
@@ -1977,6 +2134,107 @@ test("publishMainCommit refreshes merged health before the next state-root statu
   assert.equal(published.state, "Local final");
   assert.deepEqual(published.apply_health, closeHealth);
   assert.deepEqual(published.last_close_apply_health, closeHealth);
+});
+
+test("leased reconcile-records publish preserves a remote close before a broad publish", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const state = path.join(root, "state");
+  const other = path.join(root, "other");
+  const recordsRoot = "records/openclaw-openclaw";
+  const itemTwo = `${recordsRoot}/items/2.md`;
+  const closedTwo = `${recordsRoot}/closed/2.md`;
+  const planTwo = `${recordsRoot}/plans/2.md`;
+  const packetTwo = `${recordsRoot}/decision-packets/2.json`;
+  const tupleOnePaths = [
+    `${recordsRoot}/items/1.md`,
+    `${recordsRoot}/plans/1.md`,
+    `${recordsRoot}/decision-packets/1.json`,
+  ];
+
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, state], root);
+  configureUser(state);
+  writeRecordTuple(state, {
+    number: 1,
+    marker: "record one base",
+    reviewedAt: "2026-07-09T20:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T19:59:00Z",
+  });
+  writeRecordTuple(state, {
+    number: 2,
+    marker: "record two base",
+    reviewedAt: "2026-07-09T20:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T19:59:00Z",
+  });
+  run("git", ["add", "."], state);
+  run("git", ["commit", "-m", "initial state"], state);
+  run("git", ["push", "origin", "HEAD:state"], state);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["checkout", "-B", "state", "origin/state"], state);
+
+  fs.mkdirSync(work);
+  fs.cpSync(path.join(state, "records"), path.join(work, "records"), { recursive: true });
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  const remoteClose = writeRecordTuple(other, {
+    number: 2,
+    marker: "record two closed remotely",
+    reviewedAt: "2026-07-09T20:02:00.000Z",
+    itemUpdatedAt: "2026-07-09T20:01:00Z",
+    location: "closed",
+    packet: false,
+    plan: false,
+  });
+  run("git", ["add", "-A"], other);
+  run("git", ["commit", "-m", "close record two remotely"], other);
+  run("git", ["push", "origin", "HEAD:state"], other);
+
+  writeRecordTuple(work, {
+    number: 1,
+    marker: "record one checkpoint",
+    reviewedAt: "2026-07-09T20:03:00.000Z",
+    itemUpdatedAt: "2026-07-09T20:02:00Z",
+  });
+  const result = withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
+    withCwd(work, () => {
+      const first = publishMainCommit({
+        message: "chore: publish one record tuple",
+        paths: tupleOnePaths,
+        rebaseStrategy: "reconcile-records",
+      });
+      assert.equal(fs.existsSync(path.join(work, itemTwo)), false);
+      assert.equal(fs.existsSync(path.join(work, planTwo)), false);
+      assert.equal(fs.existsSync(path.join(work, packetTwo)), false);
+      assert.equal(fs.readFileSync(path.join(work, closedTwo), "utf8"), remoteClose.primary);
+
+      const localFinal = writeRecordTuple(work, {
+        number: 1,
+        marker: "record one final",
+        reviewedAt: "2026-07-09T20:04:00.000Z",
+        itemUpdatedAt: "2026-07-09T20:03:00Z",
+      });
+      const second = publishMainCommit({
+        message: "chore: publish broad record snapshot",
+        paths: [recordsRoot],
+        rebaseStrategy: "reconcile-records",
+      });
+      return { localFinal, results: [first, second] };
+    }),
+  );
+
+  assert.deepEqual(result.results, ["committed", "committed"]);
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${closedTwo}`], root),
+    remoteClose.primary,
+  );
+  assert.throws(() => run("git", ["--git-dir", origin, "show", `state:${itemTwo}`], root));
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/1.md`], root),
+    result.localFinal.primary,
+  );
+  assert.equal(remoteRefExists(origin, STATE_PUBLISH_LEASE_REF), false);
 });
 
 test("state refresh reconciles retried direct publisher resets before broad publishes", () => {
@@ -2039,7 +2297,7 @@ test("state refresh reconciles retried direct publisher resets before broad publ
   );
 });
 
-test("publishMainCommit refreshes published source paths after a state rebase", () => {
+test("leased apply-records publish refreshes source paths before broad publishes", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");
   const work = path.join(root, "work");
@@ -2121,7 +2379,7 @@ test("publishMainCommit refreshes published source paths after a state rebase", 
     path.join(work, sweepStatusPath),
     sweepStatus("2026-07-09T20:01:00Z", "Checkpoint", refreshHealth, refreshHealth),
   );
-  const results = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+  const results = withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
     withCwd(work, () => {
       const first = publishMainCommit({
         message: "chore: update checkpoint status",
@@ -2631,6 +2889,38 @@ function waitForChild(child) {
   });
 }
 
+function waitForChildOutput(child, ...needles) {
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`timed out waiting for child output: ${needles.join(" ... ")}`));
+    }, 5000);
+    const onData = (chunk) => {
+      stdout += chunk;
+      if (needles.every((needle) => stdout.includes(needle))) {
+        cleanup();
+        resolve(stdout);
+      }
+    };
+    const onClose = (status) => {
+      cleanup();
+      reject(
+        new Error(
+          `child exited with status ${status} before output appeared: ${needles.join(" ... ")}`,
+        ),
+      );
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      child.stdout.off("data", onData);
+      child.off("close", onClose);
+    };
+    child.stdout.on("data", onData);
+    child.once("close", onClose);
+  });
+}
+
 async function waitForRemoteRef(origin, ref) {
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
@@ -2638,6 +2928,15 @@ async function waitForRemoteRef(origin, ref) {
     await delay(10);
   }
   throw new Error(`timed out waiting for ${ref}`);
+}
+
+async function waitForRemoteRefRemoval(origin, ref) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (!remoteRefExists(origin, ref)) return;
+    await delay(10);
+  }
+  throw new Error(`timed out waiting for ${ref} removal`);
 }
 
 function remoteRefExists(origin, ref) {
@@ -2690,6 +2989,30 @@ function installStatePushSleepHook(state, seconds) {
 while read -r local_ref local_oid remote_ref remote_oid; do
   if test "$remote_ref" = "refs/heads/state"; then
     sleep "${seconds}"
+  fi
+done
+`,
+  );
+  fs.chmodSync(hook, 0o755);
+}
+
+function installStatePushReleaseHook(state, releaseSignal, releaseObserved) {
+  const hook = path.join(state, ".git/hooks/pre-push");
+  fs.writeFileSync(
+    hook,
+    `#!/bin/sh
+while read -r local_ref local_oid remote_ref remote_oid; do
+  if test "$remote_ref" = "refs/heads/state"; then
+    attempts=0
+    while test ! -f "${releaseSignal}"; do
+      attempts=$((attempts + 1))
+      if test "$attempts" -ge 500; then
+        echo "timed out waiting for publisher release signal" >&2
+        exit 1
+      fi
+      sleep 0.01
+    done
+    printf 'released\\n' > "${releaseObserved}"
   fi
 done
 `,

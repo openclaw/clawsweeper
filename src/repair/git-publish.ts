@@ -457,13 +457,13 @@ function publishMainCommitWhileLeased(
     "sync",
     `paths=${uniqueNonEmpty(options.paths).length} strategy=${rebaseStrategy} lease=${lease.owner}`,
   );
+  const stateBaseCommit = captureStatePublishBaseline();
   runGit(["fetch", remote, branch]);
   const remoteRef = `${remote}/${branch}`;
   const stateRoot = publishRoot();
   if (stateRoot && resolve(stateRoot) !== resolve(process.cwd())) {
     runGit(["reset", "--hard", remoteRef]);
   }
-  const stateBaseCommit = captureStatePublishBaseline();
 
   syncPublishPaths(options.paths, { rebaseStrategy });
   gitPublishPhase("stage", `paths=${uniqueNonEmpty(options.paths).length}`);
@@ -1063,15 +1063,16 @@ function observeStatePublishLease(
   const message = messageParts.join("\0");
   const owner = /^owner: ([0-9a-f-]+)$/m.exec(message)?.[1] ?? "unknown";
   const parsedExpiry = Date.parse(/^expires_at: (.+)$/m.exec(message)?.[1] ?? "");
+  const reportedExpiresAtMs =
+    Number.isFinite(parsedExpiry) && parsedExpiry > 0
+      ? parsedExpiry
+      : Number.isFinite(committedAtMs)
+        ? committedAtMs + ttlMs
+        : 0;
   const observed = {
     oid: fetchedOid,
     owner,
-    expiresAtMs:
-      Number.isFinite(parsedExpiry) && parsedExpiry > 0
-        ? parsedExpiry
-        : Number.isFinite(committedAtMs)
-          ? committedAtMs + ttlMs
-          : 0,
+    expiresAtMs: Math.min(reportedExpiresAtMs, Date.now() + ttlMs),
   };
   observedByOid.set(observed.oid, observed);
   return observed;
