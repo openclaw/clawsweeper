@@ -192,21 +192,49 @@ jobs:
             --allow-empty \
             > .artifacts/github-activity-dispatch-action-ledger-manifest.json
 
+      - name: Freeze GitHub activity dispatch receipt bundle
+        id: bundle-activity-dispatch-ledger
+        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-pnpm.outcome == 'success' && steps.setup-activity-ledger.outcome == 'success' && steps.finalize-activity-dispatch-ledger.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          manifest_file=".artifacts/github-activity-dispatch-action-ledger-manifest.json"
+          if [ ! -s "$manifest_file" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "No GitHub activity dispatch action events to bundle."
+            exit 0
+          fi
+          bundle_root="artifacts/github-activity-dispatch-receipts"
+          node dist/repair/dispatch-action-ledger-cli.js bundle \
+            --lane github-activity-dispatch \
+            --manifest "$manifest_file" \
+            --source-root "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}" \
+            --bundle-root "$bundle_root"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload GitHub activity dispatch receipt bundle
+        id: upload-activity-dispatch-ledger
+        if: ${{ always() && steps.bundle-activity-dispatch-ledger.outputs.ready == 'true' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: github-activity-dispatch-receipts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/github-activity-dispatch-receipts
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Publish GitHub activity dispatch action ledger
         id: publish-activity-dispatch-ledger
-        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-state.outcome == 'success' && steps.setup-activity-pnpm.outcome == 'success' && steps.setup-activity-ledger.outcome == 'success' }}
+        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-state.outcome == 'success' && steps.setup-activity-pnpm.outcome == 'success' && steps.upload-activity-dispatch-ledger.outcome == 'success' }}
         continue-on-error: true
         env:
           PUBLISH_TOKEN: ${{ steps.activity-state-token.outputs.token }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
-          source_root="${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
-          manifest_file=".artifacts/github-activity-dispatch-action-ledger-manifest.json"
-          if [ ! -s "$manifest_file" ]; then
-            echo "No GitHub activity dispatch action events to publish."
-            exit 0
-          fi
+          bundle_root="artifacts/github-activity-dispatch-receipts"
+          source_root="$bundle_root/source"
+          manifest_file="$bundle_root/manifest.json"
           event_paths_file=".artifacts/github-activity-dispatch-action-ledger-paths.txt"
           import_result_file=".artifacts/github-activity-dispatch-action-ledger-import.json"
           node dist/repair/dispatch-action-ledger-cli.js publish \
@@ -257,7 +285,7 @@ jobs:
           pnpm run repair:notify-github-activity -- --write-report
 
       - name: Report GitHub activity dispatch ledger failure
-        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && (steps.finalize-activity-dispatch-ledger.outcome == 'failure' || steps.publish-activity-dispatch-ledger.outcome == 'failure') }}
+        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && (steps.finalize-activity-dispatch-ledger.outcome == 'failure' || steps.bundle-activity-dispatch-ledger.outcome == 'failure' || steps.upload-activity-dispatch-ledger.outcome == 'failure' || steps.publish-activity-dispatch-ledger.outcome == 'failure') }}
         run: |
           echo "::error::GitHub activity dispatch receipts were not durably published."
           exit 1
@@ -267,3 +295,89 @@ jobs:
         run: |
           echo "::error::GitHub activity notification failed after dispatch receipt publication."
           exit 1
+
+  replay-dispatch-receipts:
+    name: Replay GitHub activity dispatch receipts
+    needs: notify
+    if: ${{ always() && contains(fromJSON('["failure","cancelled"]'), needs.notify.result) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          filter: blob:none
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download GitHub activity dispatch receipt bundle
+        id: download-activity-dispatch-ledger
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: github-activity-dispatch-receipts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/github-activity-dispatch-receipts
+
+      - uses: ./.github/actions/setup-pnpm
+        if: steps.download-activity-dispatch-ledger.outcome == 'success'
+        with:
+          build-script: build:repair
+
+      - name: Create replay state token
+        if: steps.download-activity-dispatch-ledger.outcome == 'success'
+        id: replay-state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        if: steps.download-activity-dispatch-ledger.outcome == 'success'
+        id: setup-replay-state
+        with:
+          token: ${{ steps.replay-state-token.outputs.token }}
+          persist-credentials: "false"
+
+      - name: Replay GitHub activity dispatch action ledger
+        if: steps.download-activity-dispatch-ledger.outcome == 'success'
+        env:
+          PUBLISH_TOKEN: ${{ steps.replay-state-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          bundle_root="artifacts/github-activity-dispatch-receipts"
+          source_root="$bundle_root/source"
+          manifest_file="$bundle_root/manifest.json"
+          event_paths_file=".artifacts/github-activity-dispatch-replay-paths.txt"
+          import_result_file=".artifacts/github-activity-dispatch-replay-import.json"
+          mkdir -p .artifacts
+          node dist/repair/dispatch-action-ledger-cli.js replay \
+            --lane github-activity-dispatch \
+            --manifest "$manifest_file" \
+            --source-root "$source_root" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" > "$import_result_file"
+          if ! jq -e --slurpfile manifest "$manifest_file" \
+            '.eventPaths == $manifest[0].event_paths' \
+            "$import_result_file" >/dev/null; then
+            echo "Replayed GitHub activity dispatch paths do not match the finalized manifest." >&2
+            exit 1
+          fi
+          jq -r '.paths[]?' "$import_result_file" |
+            sort -u > "$event_paths_file"
+          test -s "$event_paths_file"
+          action_ledger_args=()
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
+          done < "$event_paths_file"
+          auth_header="$(printf 'x-access-token:%s' "$PUBLISH_TOKEN" | base64 | tr -d '\n')"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
+          pnpm run repair:publish-main -- \
+            --message "chore: replay GitHub activity dispatch action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal

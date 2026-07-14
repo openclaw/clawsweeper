@@ -20,10 +20,49 @@ if (command === "finalize") {
     allowEmpty: args.allowEmpty === true,
   });
   if (manifest) process.stdout.write(serializeDispatchActionLedgerManifest(manifest));
-} else if (command === "publish") {
+} else if (command === "bundle") {
   const lane = requiredArg(args.lane, "--lane");
   const manifestPath = path.resolve(requiredArg(args.manifest, "--manifest"));
   const manifest = parseDispatchActionLedgerManifest(fs.readFileSync(manifestPath, "utf8"), lane);
+  const sourceRoot = path.resolve(args.sourceRoot ?? actionLedgerOutputRoot());
+  const bundleRoot = path.resolve(requiredArg(args.bundleRoot, "--bundle-root"));
+  const bundleSourceRoot = path.join(bundleRoot, "source");
+  fs.rmSync(bundleRoot, { force: true, recursive: true });
+  fs.mkdirSync(bundleSourceRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(bundleRoot, "manifest.json"),
+    serializeDispatchActionLedgerManifest(manifest),
+    { flag: "wx" },
+  );
+  for (const relativePath of manifest.event_paths) {
+    const source = resolveInside(sourceRoot, relativePath, "dispatch bundle source");
+    const target = resolveInside(bundleSourceRoot, relativePath, "dispatch bundle target");
+    if (!fs.statSync(source).isFile()) {
+      throw new Error(`dispatch bundle source is not a file: ${relativePath}`);
+    }
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
+  }
+  console.log(
+    JSON.stringify(
+      {
+        eventPaths: manifest.event_paths,
+        manifest: "manifest.json",
+        sourceRoot: "source",
+      },
+      null,
+      2,
+    ),
+  );
+} else if (command === "publish" || command === "replay") {
+  const lane = requiredArg(args.lane, "--lane");
+  const manifestPath = path.resolve(requiredArg(args.manifest, "--manifest"));
+  const manifest = parseDispatchActionLedgerManifest(
+    fs.readFileSync(manifestPath, "utf8"),
+    lane,
+    process.env,
+    { validateCurrentProducer: command !== "replay" },
+  );
   const sourceRoot = path.resolve(args.sourceRoot ?? actionLedgerOutputRoot());
   const stateRoot = path.resolve(args.stateRoot ?? repoRoot());
   console.log(
@@ -45,7 +84,7 @@ if (command === "finalize") {
   );
 } else {
   throw new Error(
-    "usage: dispatch-action-ledger-cli.ts <finalize|publish> --lane name [--allow-empty --manifest path --source-root path --state-root path]",
+    "usage: dispatch-action-ledger-cli.ts <finalize|bundle|publish|replay> --lane name [--allow-empty --manifest path --source-root path --state-root path --bundle-root path]",
   );
 }
 
@@ -62,6 +101,7 @@ function parseArgs(argv: readonly string[]) {
     manifest?: string;
     sourceRoot?: string;
     stateRoot?: string;
+    bundleRoot?: string;
     allowEmpty?: boolean;
   } = {};
   for (let index = 0; index < argv.length; index += 1) {
@@ -70,6 +110,7 @@ function parseArgs(argv: readonly string[]) {
     else if (arg === "--manifest") parsed.manifest = requiredValue(argv, ++index, arg);
     else if (arg === "--source-root") parsed.sourceRoot = requiredValue(argv, ++index, arg);
     else if (arg === "--state-root") parsed.stateRoot = requiredValue(argv, ++index, arg);
+    else if (arg === "--bundle-root") parsed.bundleRoot = requiredValue(argv, ++index, arg);
     else if (arg === "--allow-empty") parsed.allowEmpty = true;
     else throw new Error(`unknown argument: ${arg}`);
   }
@@ -85,4 +126,16 @@ function requiredValue(argv: readonly string[], index: number, flag: string): st
 function requiredArg(value: string | undefined, flag: string): string {
   if (!value) throw new Error(`${flag} is required`);
   return value;
+}
+
+function resolveInside(root: string, relativePath: string, label: string): string {
+  if (!relativePath || path.isAbsolute(relativePath) || relativePath.includes("\0")) {
+    throw new Error(`${label} path is invalid: ${relativePath}`);
+  }
+  const target = path.resolve(root, relativePath);
+  const relative = path.relative(root, target);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`${label} path escapes its root: ${relativePath}`);
+  }
+  return target;
 }

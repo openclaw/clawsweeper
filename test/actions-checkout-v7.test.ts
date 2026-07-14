@@ -71,7 +71,6 @@ test("production crawl-remote checkout is pinned to the audited v7 commit", () =
 test("trusted-event workflows explicitly checkout the default branch", () => {
   for (const path of [
     ".github/workflows/dashboard-ci.yml",
-    ".github/workflows/github-activity.yml",
     ".github/workflows/repair-publish-results.yml",
   ]) {
     const workflow = parse(readFileSync(path, "utf8")) as WorkflowDocument;
@@ -84,6 +83,16 @@ test("trusted-event workflows explicitly checkout the default branch", () => {
       "${{ github.event.repository.default_branch }}",
       path,
     );
+  }
+
+  const activityPath = ".github/workflows/github-activity.yml";
+  const activity = parse(readFileSync(activityPath, "utf8")) as WorkflowDocument;
+  const activityCheckouts = Object.values(activity.jobs ?? {})
+    .flatMap((job) => job.steps ?? [])
+    .filter((step) => step.uses === "actions/checkout@v7");
+  assert.equal(activityCheckouts.length, 2, activityPath);
+  for (const checkout of activityCheckouts) {
+    assert.equal(checkout.with?.ref, "${{ github.event.repository.default_branch }}");
   }
 });
 

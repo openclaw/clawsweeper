@@ -92,6 +92,7 @@ export function parseDispatchActionLedgerManifest(
   content: string,
   expectedLane: string,
   env: NodeJS.ProcessEnv = process.env,
+  options: { validateCurrentProducer?: boolean } = {},
 ): DispatchActionLedgerManifest {
   assertDispatchActionLedgerLane(expectedLane);
   if (Buffer.byteLength(content, "utf8") > DISPATCH_ACTION_LEDGER_MANIFEST_MAX_BYTES) {
@@ -163,21 +164,23 @@ export function parseDispatchActionLedgerManifest(
     throw new Error("dispatch action ledger manifest is not canonical");
   }
 
-  const currentProducer = workflowActionProducer("dispatch_manifest", env);
-  const mismatched = (
-    [
-      ["repository", parsed.repository, currentProducer.repository],
-      ["sha", parsed.sha, currentProducer.sha],
-      ["workflow", parsed.workflow, currentProducer.workflow],
-      ["job", parsed.job, currentProducer.job],
-      ["run_id", parsed.run_id, currentProducer.runId],
-      ["run_attempt", parsed.run_attempt, currentProducer.runAttempt],
-    ] as const
-  ).find(([, actual, expected]) => actual !== expected);
-  if (mismatched) {
-    throw new Error(
-      `dispatch action ledger manifest identity mismatch for ${mismatched[0]}: expected ${mismatched[2]}, got ${mismatched[1]}`,
-    );
+  if (options.validateCurrentProducer !== false) {
+    const currentProducer = workflowActionProducer("dispatch_manifest", env);
+    const mismatched = (
+      [
+        ["repository", parsed.repository, currentProducer.repository],
+        ["sha", parsed.sha, currentProducer.sha],
+        ["workflow", parsed.workflow, currentProducer.workflow],
+        ["job", parsed.job, currentProducer.job],
+        ["run_id", parsed.run_id, currentProducer.runId],
+        ["run_attempt", parsed.run_attempt, currentProducer.runAttempt],
+      ] as const
+    ).find(([, actual, expected]) => actual !== expected);
+    if (mismatched) {
+      throw new Error(
+        `dispatch action ledger manifest identity mismatch for ${mismatched[0]}: expected ${mismatched[2]}, got ${mismatched[1]}`,
+      );
+    }
   }
   return parsed;
 }

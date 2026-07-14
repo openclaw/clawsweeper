@@ -507,8 +507,11 @@ test("process dispatch outcomes treat every non-success exit as ambiguous", () =
 test("dispatch action ledger CLI finalizes and publishes dispatch lifecycle shards", () => {
   const fixture = actionLedgerFixture("dispatch-manifest");
   const stateRoot = path.join(fixture.root, "state");
+  const replayStateRoot = path.join(fixture.root, "replay-state");
+  const bundleRoot = path.join(fixture.root, "receipt-bundle");
   const manifestPath = path.join(fixture.root, "dispatch-manifest.json");
   fs.mkdirSync(stateRoot);
+  fs.mkdirSync(replayStateRoot);
   try {
     runDispatchWithReceiptSync({
       ...baseOptions(fixture),
@@ -536,6 +539,29 @@ test("dispatch action ledger CLI finalizes and publishes dispatch lifecycle shar
     assert.ok(manifest.event_paths.length > 0);
     fs.writeFileSync(manifestPath, serializeDispatchActionLedgerManifest(manifest));
 
+    const bundle = spawnSync(
+      process.execPath,
+      [
+        path.resolve("dist/repair/dispatch-action-ledger-cli.js"),
+        "bundle",
+        "--lane",
+        "dispatch-test",
+        "--manifest",
+        manifestPath,
+        "--source-root",
+        fixture.outputRoot,
+        "--bundle-root",
+        bundleRoot,
+      ],
+      { encoding: "utf8", env: fixture.env },
+    );
+    assert.equal(bundle.status, 0, bundle.stderr);
+    assert.deepEqual(JSON.parse(bundle.stdout).eventPaths, manifest.event_paths);
+    assert.equal(fs.existsSync(path.join(bundleRoot, "manifest.json")), true);
+    for (const eventPath of manifest.event_paths) {
+      assert.equal(fs.existsSync(path.join(bundleRoot, "source", eventPath)), true);
+    }
+
     const publish = spawnSync(
       process.execPath,
       [
@@ -558,6 +584,34 @@ test("dispatch action ledger CLI finalizes and publishes dispatch lifecycle shar
       readEvents(stateRoot).map((event) => event.event_type),
       [ACTION_EVENT_TYPES.dispatchLifecycle, ACTION_EVENT_TYPES.dispatchLifecycle],
     );
+
+    const replayArgs = [
+      path.resolve("dist/repair/dispatch-action-ledger-cli.js"),
+      "replay",
+      "--lane",
+      "dispatch-test",
+      "--manifest",
+      path.join(bundleRoot, "manifest.json"),
+      "--source-root",
+      path.join(bundleRoot, "source"),
+      "--state-root",
+      replayStateRoot,
+    ];
+    const replayEnv = { ...fixture.env, GITHUB_JOB: "receipt-replay" };
+    const firstReplay = spawnSync(process.execPath, replayArgs, {
+      encoding: "utf8",
+      env: replayEnv,
+    });
+    assert.equal(firstReplay.status, 0, firstReplay.stderr);
+    assert.ok(JSON.parse(firstReplay.stdout).created > 0);
+    const secondReplay = spawnSync(process.execPath, replayArgs, {
+      encoding: "utf8",
+      env: replayEnv,
+    });
+    assert.equal(secondReplay.status, 0, secondReplay.stderr);
+    assert.equal(JSON.parse(secondReplay.stdout).created, 0);
+    assert.ok(JSON.parse(secondReplay.stdout).unchanged > 0);
+    assert.deepEqual(readEvents(replayStateRoot), readEvents(stateRoot));
   } finally {
     fixture.cleanup();
   }
@@ -622,12 +676,21 @@ test("activity dispatch publishes receipts before the noncritical notifier", () 
   const finalizeOffset = workflow.indexOf(
     "- name: Finalize GitHub activity dispatch action ledger",
   );
+  const bundleOffset = workflow.indexOf("- name: Freeze GitHub activity dispatch receipt bundle");
+  const uploadOffset = workflow.indexOf("- name: Upload GitHub activity dispatch receipt bundle");
   const publishOffset = workflow.indexOf("- name: Publish GitHub activity dispatch action ledger");
   assert.ok(feedOffset >= 0);
   assert.ok(dispatchOffset < finalizeOffset);
-  assert.ok(finalizeOffset < publishOffset);
+  assert.ok(finalizeOffset < bundleOffset);
+  assert.ok(bundleOffset < uploadOffset);
+  assert.ok(uploadOffset < publishOffset);
   assert.ok(publishOffset < feedOffset);
   assert.match(workflow, /id: finalize-activity-dispatch-ledger[\s\S]*?continue-on-error: true/);
+  assert.match(workflow, /id: bundle-activity-dispatch-ledger[\s\S]*?continue-on-error: true/);
+  assert.match(
+    workflow,
+    /id: upload-activity-dispatch-ledger[\s\S]*?uses: actions\/upload-artifact@v7/,
+  );
   assert.match(workflow, /id: publish-activity-dispatch-ledger[\s\S]*?continue-on-error: true/);
   assert.match(
     workflow,
@@ -635,12 +698,25 @@ test("activity dispatch publishes receipts before the noncritical notifier", () 
   );
   assert.match(
     workflow,
-    /- name: Report GitHub activity dispatch ledger failure[\s\S]*?finalize-activity-dispatch-ledger\.outcome == 'failure'[\s\S]*?publish-activity-dispatch-ledger\.outcome == 'failure'/,
+    /- name: Report GitHub activity dispatch ledger failure[\s\S]*?finalize-activity-dispatch-ledger\.outcome == 'failure'[\s\S]*?bundle-activity-dispatch-ledger\.outcome == 'failure'[\s\S]*?upload-activity-dispatch-ledger\.outcome == 'failure'[\s\S]*?publish-activity-dispatch-ledger\.outcome == 'failure'/,
   );
   assert.match(
     workflow,
     /- name: Report GitHub activity notification failure[\s\S]*?steps\.notify-openclaw\.outcome == 'failure'/,
   );
+
+  const replayOffset = workflow.indexOf("replay-dispatch-receipts:");
+  assert.ok(replayOffset > feedOffset);
+  const replay = workflow.slice(replayOffset);
+  assert.match(replay, /needs: notify/);
+  assert.match(
+    replay,
+    /contains\(fromJSON\('\["failure","cancelled"\]'\), needs\.notify\.result\)/,
+  );
+  assert.match(replay, /uses: actions\/download-artifact@v8/);
+  assert.match(replay, /dispatch-action-ledger-cli\.js replay/);
+  assert.match(replay, /repair:publish-main/);
+  assert.doesNotMatch(replay, /repair:spam-comment-intake|Dispatch spam scan candidate/);
 });
 
 test("spam intake dispatch receipt publication cannot be cancelled by a later edit", () => {

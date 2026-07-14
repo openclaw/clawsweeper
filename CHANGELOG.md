@@ -61,6 +61,8 @@ checkpoint, and status-only commits are intentionally omitted.
 - Serialized generated-state publishers through an expiring remote lease with
   bounded stale-owner recovery, command and overall deadlines, one rebuild
   retry, and remote blob verification.
+- Preserved finalized GitHub activity dispatch receipts as a replayable artifact
+  before state publication, with idempotent recovery that never redispatches.
 - Preserved crawl-remote's reviewed `limits.cpu_ms` value through immutable
   release packaging and post-transfer deployment verification.
 - Reverted the action-lifecycle expansion from PR #521, restoring the pre-merge ClawSweeper paths while retaining later exact-review throughput fixes and retrying coalesced reconciliations after any partial lookup failure.
