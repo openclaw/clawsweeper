@@ -2813,6 +2813,58 @@ test("checkpoint plumbing rejects mismatched and dirty submodules", () => {
   );
 });
 
+test("checkpoint plumbing recursively rejects ignored nested submodule dirt", () => {
+  const nestedRepo = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-nested-source-"));
+  git(nestedRepo, "init", "-b", "main");
+  git(nestedRepo, "config", "user.email", "clawsweeper@example.invalid");
+  git(nestedRepo, "config", "user.name", "ClawSweeper Test");
+  fs.writeFileSync(path.join(nestedRepo, "source.txt"), "nested\n");
+  git(nestedRepo, "add", ".");
+  git(nestedRepo, "commit", "-m", "nested");
+
+  const middleRepo = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-middle-source-"));
+  git(middleRepo, "init", "-b", "main");
+  git(middleRepo, "config", "user.email", "clawsweeper@example.invalid");
+  git(middleRepo, "config", "user.name", "ClawSweeper Test");
+  git(
+    middleRepo,
+    "-c",
+    "protocol.file.allow=always",
+    "submodule",
+    "add",
+    nestedRepo,
+    "vendor/nested",
+  );
+  git(middleRepo, "add", ".");
+  git(middleRepo, "commit", "-m", "middle");
+
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  git(cwd, "-c", "protocol.file.allow=always", "submodule", "add", middleRepo, "vendor/middle");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "root");
+  git(cwd, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive");
+  const middlePath = path.join(cwd, "vendor/middle");
+  const nestedPath = path.join(middlePath, "vendor/nested");
+  git(cwd, "config", "diff.ignoreSubmodules", "all");
+  git(cwd, "config", "submodule.vendor/middle.ignore", "all");
+  git(middlePath, "config", "diff.ignoreSubmodules", "all");
+  git(middlePath, "config", "submodule.vendor/nested.ignore", "all");
+  fs.writeFileSync(path.join(nestedPath, "source.txt"), "dirty nested worktree\n");
+
+  assert.throws(
+    () =>
+      createTargetCheckpointWithPlumbing({
+        cwd,
+        messages: ["must reject hidden nested dirt"],
+        identity: {
+          name: "clawsweeper",
+          email: "274271284+clawsweeper[bot]@users.noreply.github.com",
+        },
+      }),
+    /target submodule worktree is dirty: vendor\/middle\/vendor\/nested/,
+  );
+});
+
 test("checkpoint plumbing preserves clean uninitialized gitlinks", () => {
   const submoduleRepo = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-submodule-source-"));
   git(submoduleRepo, "init", "-b", "main");

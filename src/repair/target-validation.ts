@@ -1758,31 +1758,67 @@ function assertCleanTargetSubmodule(
   relativePath: string,
   expectedOid: string,
   git: IsolatedTargetGit,
+  ancestors: Set<string> = new Set(),
 ) {
   const submodulePath = path.join(cwd, relativePath);
-  assertCallbackFreeGitConfig(submodulePath, git.deadlineAt, {
-    allowedCoreWorktree: fs.realpathSync(submodulePath),
-  });
-  assertNoHiddenIndexEntries(submodulePath, git.deadlineAt);
-  const head = git.run(
-    ["-C", submodulePath, "rev-parse", "HEAD"],
-    `target submodule head: ${relativePath}`,
-  );
-  if (head !== expectedOid) {
-    throw new Error(`target submodule HEAD does not match indexed gitlink: ${relativePath}`);
+  const realSubmodulePath = fs.realpathSync(submodulePath);
+  if (ancestors.has(realSubmodulePath)) {
+    throw new Error(`cyclic target submodule worktree: ${relativePath}`);
   }
-  const changed = git.run(
-    ["-C", submodulePath, "diff-index", "--name-only", "-z", "HEAD", "--"],
-    `target submodule changes: ${relativePath}`,
-    { trim: false },
-  );
-  const untracked = git.run(
-    ["-C", submodulePath, "ls-files", "--others", "--exclude-standard", "-z"],
-    `target submodule untracked files: ${relativePath}`,
-    { trim: false },
-  );
-  if (changed || untracked) {
-    throw new Error(`target submodule worktree is dirty: ${relativePath}`);
+  ancestors.add(realSubmodulePath);
+  try {
+    assertCallbackFreeGitConfig(submodulePath, git.deadlineAt, {
+      allowedCoreWorktree: realSubmodulePath,
+    });
+    assertNoHiddenIndexEntries(submodulePath, git.deadlineAt);
+    const head = git.run(
+      ["-C", submodulePath, "rev-parse", "HEAD"],
+      `target submodule head: ${relativePath}`,
+    );
+    if (head !== expectedOid) {
+      throw new Error(`target submodule HEAD does not match indexed gitlink: ${relativePath}`);
+    }
+    const nestedEntries = parseTargetTreeEntries(
+      git.run(
+        ["-C", submodulePath, "ls-tree", "-r", "-z", "--full-tree", "HEAD"],
+        `target nested submodules: ${relativePath}`,
+        { trim: false },
+      ),
+      "tree",
+    );
+    for (const [nestedPath, entry] of nestedEntries) {
+      if (entry.mode !== "160000") continue;
+      const nestedRelativePath = path.posix.join(relativePath, nestedPath);
+      const nestedSubmodulePath = path.join(cwd, nestedRelativePath);
+      if (!targetSubmoduleWorktreeIsInitialized(nestedSubmodulePath, nestedRelativePath)) continue;
+      assertCleanTargetSubmodule(cwd, nestedRelativePath, entry.oid, git, ancestors);
+    }
+    const changed = git.run(
+      [
+        "-C",
+        submodulePath,
+        "-c",
+        "diff.ignoreSubmodules=none",
+        "diff-index",
+        "--ignore-submodules=none",
+        "--name-only",
+        "-z",
+        "HEAD",
+        "--",
+      ],
+      `target submodule changes: ${relativePath}`,
+      { trim: false },
+    );
+    const untracked = git.run(
+      ["-C", submodulePath, "ls-files", "--others", "--exclude-standard", "-z"],
+      `target submodule untracked files: ${relativePath}`,
+      { trim: false },
+    );
+    if (changed || untracked) {
+      throw new Error(`target submodule worktree is dirty: ${relativePath}`);
+    }
+  } finally {
+    ancestors.delete(realSubmodulePath);
   }
 }
 
@@ -1799,7 +1835,12 @@ function targetSubmoduleWorktreeIsInitialized(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  if (fs.readdirSync(submodulePath).length === 0) return false;
+  try {
+    if (fs.readdirSync(submodulePath).length === 0) return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
   throw new Error(`target submodule worktree is dirty: ${relativePath}`);
 }
 
