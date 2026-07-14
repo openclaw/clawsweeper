@@ -81,6 +81,7 @@ export function planRepairClosureResult(result: LooseRecord): RepairClosureResul
 
   const sortedIndependent = [...new Set(independentClosures)].sort(compareAscii);
   const resultDiagnostics = [
+    ...validateDuplicateClosureTargets(plannedCloseActions),
     ...validateRelationshipRoots(plannedCloseActions),
     ...validateIndependentClosureCollisions(plannedCloseActions),
     ...validateDependencyTargets(plannedCloseActions),
@@ -308,6 +309,24 @@ function validateDependencyTargets(
   );
 }
 
+function validateDuplicateClosureTargets(
+  plannedCloseActions: readonly PlannedCloseAction[],
+): ClosureDependencyDiagnostic[] {
+  const targetCounts = new Map<string, number>();
+  for (const entry of plannedCloseActions) {
+    if (!entry.target) continue;
+    targetCounts.set(entry.target, (targetCounts.get(entry.target) ?? 0) + 1);
+  }
+  return [...targetCounts]
+    .filter(([, count]) => count > 1)
+    .map(([target]) => ({
+      code: "duplicate_node_declaration" as const,
+      message: `${target} is declared by multiple planned close actions`,
+      nodes: [target],
+    }))
+    .sort((left, right) => compareAscii(left.nodes[0] ?? "", right.nodes[0] ?? ""));
+}
+
 function validateIndependentClosureCollisions(
   plannedCloseActions: readonly PlannedCloseAction[],
 ): ClosureDependencyDiagnostic[] {
@@ -319,9 +338,6 @@ function validateIndependentClosureCollisions(
   const canonicalRoots = new Set(
     plannedCloseActions.filter((entry) => entry.isClosureCandidate).map((entry) => entry.canonical),
   );
-  const candidateTargets = new Set(
-    plannedCloseActions.filter((entry) => entry.isClosureCandidate).map((entry) => entry.target),
-  );
   const diagnostics: ClosureDependencyDiagnostic[] = [];
 
   for (const target of [...independentTargets].sort(compareAscii)) {
@@ -329,13 +345,6 @@ function validateIndependentClosureCollisions(
       diagnostics.push({
         code: "duplicate_node_declaration",
         message: `${target} is declared as both an independent closure and canonical root`,
-        nodes: [target],
-      });
-    }
-    if (candidateTargets.has(target)) {
-      diagnostics.push({
-        code: "duplicate_node_declaration",
-        message: `${target} is declared as both an independent closure and grouped closure candidate`,
         nodes: [target],
       });
     }

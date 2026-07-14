@@ -72,6 +72,46 @@ test("action permutation does not change the derived plan", () => {
   assert.deepEqual(planRepairClosureResult({ actions: [...actions].reverse() }), expected);
 });
 
+test("repeated closure targets fail closed before target deduplication", () => {
+  const duplicateDiagnostic = [
+    {
+      code: "duplicate_node_declaration",
+      message: "#101 is declared by multiple planned close actions",
+      nodes: ["#101"],
+    },
+  ];
+
+  assert.deepEqual(
+    planRepairClosureResult({
+      actions: [
+        { action: "close_low_signal", status: "planned", target: "#101" },
+        { action: "close_low_signal", status: "planned", target: "#101" },
+      ],
+    }),
+    {
+      status: "needs_human",
+      diagnostics: duplicateDiagnostic,
+      independentClosures: ["#101"],
+    },
+  );
+  assert.deepEqual(
+    planRepairClosureResult({ actions: [close("#101", "#101"), close("#101", "#101")] }),
+    {
+      status: "needs_human",
+      diagnostics: duplicateDiagnostic,
+      independentClosures: ["#101"],
+    },
+  );
+  assert.deepEqual(
+    planRepairClosureResult({ actions: [close("#101", "#100"), close("#101", "#100")] }),
+    {
+      status: "needs_human",
+      diagnostics: duplicateDiagnostic,
+      independentClosures: [],
+    },
+  );
+});
+
 test("mixed canonical roots require human review", () => {
   const result = planRepairClosureResult({
     actions: [close("#101", "#100"), close("#201", "#200")],
@@ -106,7 +146,7 @@ test("independent closures cannot collide with canonical roots", () => {
   });
 });
 
-test("independent closures cannot collide with grouped candidates", () => {
+test("independent closures cannot duplicate grouped candidates", () => {
   const result = planRepairClosureResult({
     actions: [
       close("#101", "#100"),
@@ -123,7 +163,7 @@ test("independent closures cannot collide with grouped candidates", () => {
     diagnostics: [
       {
         code: "duplicate_node_declaration",
-        message: "#101 is declared as both an independent closure and grouped closure candidate",
+        message: "#101 is declared by multiple planned close actions",
         nodes: ["#101"],
       },
     ],
