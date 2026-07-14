@@ -18,8 +18,14 @@ test("Linux validation containment uses an externally owned PID namespace and su
   assert.match(containment, /except ChildProcessError/);
   assert.match(containment, /struct\.pack\("=Qi", allowed_access, path_fd\)/);
   assert.match(containment, /struct\.pack\(\s+"=QQQQ"/);
-  assert.match(containment, /set_mount_readonly\("\/", True\)/);
-  assert.match(containment, /set_mount_readonly\(root, False\)/);
+  assert.match(containment, /checked_mount\(\s+"tmpfs",\s+sandbox_root/);
+  assert.match(containment, /checked_mount\(\s+"tmpfs",\s+root_path\(sandbox_root, "\/run"\)/);
+  assert.match(containment, /set_mount_readonly\(sandbox_root, True\)/);
+  assert.match(containment, /set_mount_readonly\(target, False, recursive\)/);
+  assert.match(containment, /os\.chroot\(sandbox_root\)/);
+  assert.match(containment, /validation working directory is outside writable roots/);
+  assert.match(containment, /validation writable root is unsafe/);
+  assert.doesNotMatch(containment, /checked_mount\("\/", "\/", MS_BIND/);
   assert.match(containment, /bring_up_loopback\(\)/);
   assert.match(containment, /PR_CAPBSET_DROP/);
   assert.match(containment, /PR_CAP_AMBIENT_CLEAR_ALL/);
@@ -37,7 +43,30 @@ test("Linux validation containment uses an externally owned PID namespace and su
   assert.match(worker, /"--pid"/);
   assert.match(worker, /"--mount-proc"/);
   assert.match(worker, /"--kill-child=SIGKILL"/);
+  assert.match(worker, /fs\.mkdtempSync\(path\.join\(os\.tmpdir\(\)/);
+  assert.match(worker, /sandboxRoot!/);
+  assert.match(worker, /fs\.rmSync\(sandboxRoot/);
   assert.match(worker, /await reapProcessGroup\(child\.pid\)/);
   assert.match(worker, /validation process containment requires Linux/);
   assert.doesNotMatch(worker, /ProcessTreeTracker/);
+});
+
+test("Linux validation containment applies every fail-closed stage before target spawn", () => {
+  const containment = readText(path.join(process.cwd(), "src/repair/process-tree-containment.ts"));
+  const main = containment.slice(containment.indexOf("def main():"));
+
+  const loopback = main.indexOf("bring_up_loopback()");
+  const filesystem = main.indexOf("isolate_filesystem(");
+  const landlock = main.indexOf("restrict_filesystem_writes(canonical_roots)");
+  const capabilities = main.indexOf("drop_capabilities()");
+  const spawn = main.indexOf("subprocess.Popen(command, close_fds=True)");
+
+  assert.ok(loopback >= 0);
+  assert.ok(filesystem > loopback);
+  assert.ok(landlock > filesystem);
+  assert.ok(capabilities > landlock);
+  assert.ok(spawn > capabilities);
+  assert.match(containment, /forbidden_exact_roots = \{/);
+  assert.match(containment, /"\/run",/);
+  assert.match(containment, /os\.symlink\("\/run", root_path\(sandbox_root, "\/var\/run"\)\)/);
 });

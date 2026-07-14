@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { windowsSystemExecutable } from "../command.js";
 import { LINUX_SUBREAPER_SCRIPT } from "./process-tree-containment.js";
@@ -47,6 +50,9 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
   if (useLinuxNamespace && input.writableRoots.length === 0) {
     throw new Error("validation filesystem isolation requires explicit writable roots");
   }
+  const sandboxRoot = useLinuxNamespace
+    ? fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-validation-root-"))
+    : undefined;
   const invocation = useLinuxNamespace
     ? {
         command: "/usr/bin/unshare",
@@ -64,6 +70,7 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
           LINUX_SUBREAPER_SCRIPT,
           JSON.stringify(input.writableRoots),
           JSON.stringify(input.isolateNetwork),
+          sandboxRoot!,
           input.command,
           ...input.args,
         ],
@@ -154,6 +161,7 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
   );
   if (timeout) clearTimeout(timeout);
   if (forcedTermination) clearTimeout(forcedTermination);
+  if (sandboxRoot) fs.rmSync(sandboxRoot, { recursive: true, force: true });
 
   let contained: {
     backgroundProcesses: number;

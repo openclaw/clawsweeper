@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 import signal
+import shutil
 import socket
 import stat
 import struct
@@ -20,6 +21,8 @@ PROTOCOL_FD = 3
 AT_FDCWD = -100
 AT_RECURSIVE = 0x8000
 MOUNT_ATTR_RDONLY = 1 << 0
+MS_NOSUID = 1 << 1
+MS_NODEV = 1 << 2
 MS_BIND = 1 << 12
 MS_REC = 1 << 14
 MS_PRIVATE = 1 << 18
@@ -100,20 +103,24 @@ def landlock_abi():
     )
 
 
-def checked_mount(source, target, flags):
+def checked_mount(source, target, flags, filesystem_type=None, data=None):
     encoded_source = None if source is None else os.fsencode(source)
+    encoded_filesystem_type = (
+        None if filesystem_type is None else os.fsencode(filesystem_type)
+    )
+    encoded_data = None if data is None else os.fsencode(data)
     if libc.mount(
         encoded_source,
         os.fsencode(target),
-        None,
+        encoded_filesystem_type,
         ctypes.c_ulong(flags),
-        None,
+        encoded_data,
     ) != 0:
         error_number = ctypes.get_errno()
         raise OSError(error_number, os.strerror(error_number))
 
 
-def set_mount_readonly(path, readonly):
+def set_mount_readonly(path, readonly, recursive=True):
     attributes = (ctypes.c_ubyte * 32).from_buffer_copy(
         struct.pack(
             "=QQQQ",
@@ -127,20 +134,267 @@ def set_mount_readonly(path, readonly):
         SYS_MOUNT_SETATTR,
         ctypes.c_int(AT_FDCWD),
         ctypes.c_char_p(os.fsencode(path)),
-        ctypes.c_uint32(AT_RECURSIVE),
+        ctypes.c_uint32(AT_RECURSIVE if recursive else 0),
         ctypes.byref(attributes),
         ctypes.c_size_t(len(attributes)),
     )
 
 
-def isolate_filesystem_writes(canonical_roots):
+def path_within(path, root):
+    try:
+        return os.path.commonpath((path, root)) == root
+    except ValueError:
+        return False
+
+
+def root_path(sandbox_root, absolute_path):
+    if not os.path.isabs(absolute_path):
+        raise RuntimeError("validation mount path must be absolute: " + absolute_path)
+    return os.path.join(sandbox_root, absolute_path.lstrip("/"))
+
+
+def ensure_mount_target(sandbox_root, source, target_path):
+    target = root_path(sandbox_root, target_path)
+    os.makedirs(os.path.dirname(target), mode=0o755, exist_ok=True)
+    source_stat = os.stat(source)
+    if stat.S_ISDIR(source_stat.st_mode):
+        os.makedirs(target, mode=0o755, exist_ok=True)
+        return True
+    if not stat.S_ISREG(source_stat.st_mode) and not stat.S_ISCHR(source_stat.st_mode):
+        raise RuntimeError("unsupported validation runtime mount: " + source)
+    with open(target, "ab"):
+        pass
+    return False
+
+
+def bind_mount(sandbox_root, source, target_path=None):
+    target_path = target_path or source
+    recursive = ensure_mount_target(sandbox_root, source, target_path)
+    target = root_path(sandbox_root, target_path)
+    checked_mount(source, target, MS_BIND | (MS_REC if recursive else 0))
+    return target, recursive
+
+
+def selected_runtime_paths(command):
+    selected = [
+        "/usr",
+        "/etc/alternatives",
+        "/etc/group",
+        "/etc/hosts",
+        "/etc/ld.so.cache",
+        "/etc/ld.so.conf",
+        "/etc/ld.so.conf.d",
+        "/etc/localtime",
+        "/etc/nsswitch.conf",
+        "/etc/os-release",
+        "/etc/passwd",
+        "/etc/resolv.conf",
+        "/etc/ssl/certs",
+    ]
+    for system_path in ("/bin", "/sbin", "/lib", "/lib64"):
+        if os.path.exists(system_path) and not os.path.islink(system_path):
+            selected.append(system_path)
+    path_entries = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry or not os.path.isabs(entry) or not os.path.exists(entry):
+            continue
+        normalized = os.path.abspath(entry)
+        if os.path.basename(normalized) not in {"bin", "sbin", ".bin"}:
+            continue
+        path_entries.append(normalized)
+    selected.extend(path_entries)
+    executable = command[0]
+    resolved_executable = (
+        executable
+        if os.path.isabs(executable)
+        else shutil.which(executable, path=os.environ.get("PATH", ""))
+    )
+    if resolved_executable and os.path.exists(resolved_executable):
+        selected.append(resolved_executable)
+        executable_parent = os.path.dirname(resolved_executable)
+        if os.path.basename(executable_parent) in {"bin", "sbin", ".bin"}:
+            selected.append(executable_parent)
+        canonical_executable = os.path.realpath(resolved_executable)
+        selected.append(canonical_executable)
+        canonical_parent = os.path.dirname(canonical_executable)
+        if os.path.basename(canonical_parent) in {"bin", "sbin", ".bin"}:
+            selected.append(canonical_parent)
+        node_modules_marker = os.sep + "node_modules" + os.sep
+        if node_modules_marker in canonical_executable:
+            package_suffix = canonical_executable.split(node_modules_marker, 1)[1]
+            package_parts = package_suffix.split(os.sep)
+            package_depth = 2 if package_parts[0].startswith("@") else 1
+            package_root = canonical_executable.split(node_modules_marker, 1)[0]
+            selected.append(
+                os.path.join(
+                    package_root,
+                    "node_modules",
+                    *package_parts[:package_depth],
+                )
+            )
+    for entry in path_entries:
+        marker_roots = (
+            (os.sep + ".rustup" + os.sep + "toolchains" + os.sep, 1),
+            (os.sep + ".nvm" + os.sep + "versions" + os.sep + "node" + os.sep, 1),
+            (os.sep + "hostedtoolcache" + os.sep + "node" + os.sep, 2),
+        )
+        for marker, component_count in marker_roots:
+            if marker not in entry:
+                continue
+            prefix, suffix = entry.split(marker, 1)
+            components = [part for part in suffix.split(os.sep) if part]
+            selected.append(
+                prefix
+                + marker
+                + os.path.join(*components[:component_count])
+            )
+    return selected
+
+
+def normalized_runtime_paths(command, canonical_roots, sandbox_root):
+    forbidden_exact_roots = {
+        "/",
+        "/dev",
+        "/home",
+        "/media",
+        "/mnt",
+        "/proc",
+        "/root",
+        "/run",
+        "/srv",
+        "/tmp",
+        "/var",
+    }
+    candidates = []
+    for source in selected_runtime_paths(command):
+        normalized = os.path.normpath(source)
+        if normalized in forbidden_exact_roots or not os.path.exists(normalized):
+            continue
+        canonical = os.path.realpath(normalized)
+        if path_within(canonical, sandbox_root):
+            raise RuntimeError("validation runtime path overlaps sandbox root")
+        if any(path_within(canonical, root) for root in canonical_roots):
+            continue
+        if normalized not in candidates:
+            candidates.append(normalized)
+    directories = [
+        path
+        for path in candidates
+        if stat.S_ISDIR(os.stat(path).st_mode)
+    ]
+    return [
+        path
+        for path in candidates
+        if not any(
+            path != parent
+            and path_within(os.path.realpath(path), os.path.realpath(parent))
+            for parent in directories
+        )
+    ]
+
+
+def recreate_system_links(sandbox_root):
+    for system_path in ("/bin", "/sbin", "/lib", "/lib64"):
+        if not os.path.islink(system_path):
+            continue
+        target = root_path(sandbox_root, system_path)
+        os.makedirs(os.path.dirname(target), mode=0o755, exist_ok=True)
+        os.symlink(os.readlink(system_path), target)
+    os.makedirs(root_path(sandbox_root, "/var"), mode=0o755, exist_ok=True)
+    os.symlink("/run", root_path(sandbox_root, "/var/run"))
+    os.makedirs(root_path(sandbox_root, "/etc"), mode=0o755, exist_ok=True)
+    os.symlink("/proc/mounts", root_path(sandbox_root, "/etc/mtab"))
+    for name, target in (
+        ("fd", "/proc/self/fd"),
+        ("stdin", "/proc/self/fd/0"),
+        ("stdout", "/proc/self/fd/1"),
+        ("stderr", "/proc/self/fd/2"),
+    ):
+        os.symlink(target, root_path(sandbox_root, "/dev/" + name))
+
+
+def validate_filesystem_roots(canonical_roots, sandbox_root, original_cwd):
+    if not path_within(original_cwd, canonical_roots[0]) and not any(
+        path_within(original_cwd, root) for root in canonical_roots[1:]
+    ):
+        raise RuntimeError("validation working directory is outside writable roots")
+    for root in canonical_roots:
+        if root == "/" or path_within(sandbox_root, root) or path_within(root, sandbox_root):
+            raise RuntimeError("validation writable root is unsafe: " + root)
+
+
+def isolate_filesystem(canonical_roots, sandbox_root, original_cwd, command):
+    validate_filesystem_roots(canonical_roots, sandbox_root, original_cwd)
     checked_mount(None, "/", MS_REC | MS_PRIVATE)
-    checked_mount("/", "/", MS_BIND | MS_REC)
-    for root in canonical_roots:
-        checked_mount(root, root, MS_BIND | MS_REC)
-    set_mount_readonly("/", True)
-    for root in canonical_roots:
-        set_mount_readonly(root, False)
+    checked_mount(
+        "tmpfs",
+        sandbox_root,
+        MS_NOSUID | MS_NODEV,
+        "tmpfs",
+        "mode=0755,size=64m",
+    )
+    for directory in (
+        "/dev",
+        "/dev/shm",
+        "/etc",
+        "/home",
+        "/proc",
+        "/root",
+        "/run",
+        "/tmp",
+        "/var",
+        "/var/tmp",
+    ):
+        os.makedirs(root_path(sandbox_root, directory), mode=0o755, exist_ok=True)
+    checked_mount(
+        "tmpfs",
+        root_path(sandbox_root, "/dev"),
+        MS_NOSUID,
+        "tmpfs",
+        "mode=0755,size=1m",
+    )
+    checked_mount(
+        "tmpfs",
+        root_path(sandbox_root, "/run"),
+        MS_NOSUID | MS_NODEV,
+        "tmpfs",
+        "mode=0755,size=1m",
+    )
+    recreate_system_links(sandbox_root)
+    writable_targets = [
+        bind_mount(sandbox_root, root)
+        for root in canonical_roots
+    ]
+    runtime_targets = [
+        bind_mount(sandbox_root, runtime_path)
+        for runtime_path in normalized_runtime_paths(
+            command,
+            canonical_roots,
+            sandbox_root,
+        )
+    ]
+    proc_target = bind_mount(sandbox_root, "/proc")
+    device_targets = [
+        bind_mount(sandbox_root, device)
+        for device in (
+            "/dev/full",
+            "/dev/null",
+            "/dev/random",
+            "/dev/urandom",
+            "/dev/zero",
+        )
+        if os.path.exists(device)
+    ]
+    set_mount_readonly(sandbox_root, True)
+    for target, recursive in writable_targets:
+        set_mount_readonly(target, False, recursive)
+    for target, recursive in runtime_targets:
+        set_mount_readonly(target, True, recursive)
+    set_mount_readonly(proc_target[0], True, proc_target[1])
+    for target, recursive in device_targets:
+        set_mount_readonly(target, False, recursive)
+    os.chroot(sandbox_root)
+    os.chdir(original_cwd)
 
 
 def bring_up_loopback():
@@ -178,6 +432,8 @@ def canonical_writable_roots(writable_roots):
         canonical = os.path.realpath(root)
         if not stat.S_ISDIR(os.stat(canonical).st_mode):
             raise RuntimeError("validation writable root is not a directory: " + root)
+        if not os.path.isabs(canonical):
+            raise RuntimeError("validation writable root must be absolute: " + root)
         if canonical not in canonical_roots:
             canonical_roots.append(canonical)
     return canonical_roots
@@ -351,13 +607,22 @@ def main():
     isolate_network = json.loads(sys.argv[2])
     if not isinstance(isolate_network, bool):
         raise RuntimeError("validation network isolation flag is invalid")
-    command = sys.argv[3:]
+    sandbox_root = os.path.realpath(sys.argv[3])
+    if not stat.S_ISDIR(os.stat(sandbox_root).st_mode):
+        raise RuntimeError("validation sandbox root is not a directory")
+    command = sys.argv[4:]
     if not command:
         raise RuntimeError("validation command is missing")
     canonical_roots = canonical_writable_roots(writable_roots)
+    original_cwd = os.path.realpath(os.getcwd())
     if isolate_network:
         bring_up_loopback()
-    isolate_filesystem_writes(canonical_roots)
+    isolate_filesystem(
+        canonical_roots,
+        sandbox_root,
+        original_cwd,
+        command,
+    )
     restrict_filesystem_writes(canonical_roots)
     drop_capabilities()
     child = subprocess.Popen(command, close_fds=True)

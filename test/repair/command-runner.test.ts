@@ -84,7 +84,7 @@ test(
 );
 
 test(
-  "Linux containment grants writes only to configured validation roots",
+  "Linux containment exposes only configured writable roots and minimal runtime files",
   { skip: process.platform !== "linux" },
   (context) => {
     if (!linuxValidationContainmentAvailable()) {
@@ -94,14 +94,14 @@ test(
     const root = mkdtempSync(join(tmpdir(), "clawsweeper-filesystem-isolation-"));
     const target = join(root, "target");
     const profile = join(root, "profile");
-    const trustedBin = join(root, "trusted-bin");
-    const trustedTool = join(trustedBin, "git");
+    const hostSecret = join(root, "host-secret");
+    const trustedTool = "/usr/bin/python3";
     const targetMarker = join(target, "target-write");
     const profileMarker = join(profile, "profile-write");
     mkdirSync(target);
     mkdirSync(profile);
-    mkdirSync(trustedBin);
-    writeFileSync(trustedTool, "trusted\n", { mode: 0o755 });
+    writeFileSync(hostSecret, "host-only\n");
+    const trustedToolMode = statSync(trustedTool).mode & 0o777;
     try {
       const output = runContainedCommand(
         process.execPath,
@@ -109,22 +109,25 @@ test(
           "-e",
           [
             'const fs = require("node:fs");',
-            "const [targetMarker, profileMarker, trustedTool] = process.argv.slice(1);",
+            "const [targetMarker, profileMarker, trustedTool, hostSecret] = process.argv.slice(1);",
             'fs.writeFileSync(targetMarker, "target");',
             'fs.writeFileSync(profileMarker, "profile");',
+            "try { fs.readFileSync(hostSecret); process.exit(69); }",
+            "catch (error) { if (error.code !== 'ENOENT') throw error; }",
+            "if (fs.readdirSync('/run').length !== 0) process.exit(70);",
             "let blocked = false;",
             "try { fs.writeFileSync(trustedTool, 'poisoned'); }",
             "catch (error) {",
             "  if (!['EACCES', 'EPERM', 'EROFS'].includes(error.code)) throw error;",
             "  blocked = true;",
             "}",
-            "if (!blocked) process.exit(70);",
+            "if (!blocked) process.exit(71);",
             "for (const mutate of [",
             "  () => fs.chmodSync(trustedTool, 0o600),",
             "  () => fs.chownSync(trustedTool, process.getuid(), process.getgid()),",
             "  () => fs.utimesSync(trustedTool, new Date(0), new Date(0)),",
             "]) {",
-            "  try { mutate(); process.exit(71); }",
+            "  try { mutate(); process.exit(72); }",
             "  catch (error) {",
             "    if (!['EACCES', 'EPERM', 'EROFS'].includes(error.code)) throw error;",
             "  }",
@@ -134,11 +137,11 @@ test(
             "  ['-c', 'import os,sys; os.setxattr(sys.argv[1], b\"user.clawsweeper\", b\"poisoned\")', trustedTool],",
             "  { encoding: 'utf8' },",
             ");",
-            "if (xattr.status === 0) process.exit(72);",
+            "if (xattr.status === 0) process.exit(73);",
             "const status = fs.readFileSync('/proc/self/status', 'utf8');",
             "for (const name of ['CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb']) {",
             "  const value = status.match(new RegExp(`^${name}:\\\\s*([0-9a-f]+)$`, 'mi'))?.[1];",
-            "  if (value === undefined || BigInt(`0x${value}`) !== 0n) process.exit(73);",
+            "  if (value === undefined || BigInt(`0x${value}`) !== 0n) process.exit(74);",
             "}",
             "const remount = require('node:child_process').spawnSync(",
             "  '/usr/bin/python3',",
@@ -152,19 +155,19 @@ test(
             "  ].join('; '), trustedTool],",
             "  { encoding: 'utf8' },",
             ");",
-            "if (remount.status !== 0) process.exit(74);",
+            "if (remount.status !== 0) process.exit(75);",
             'process.stdout.write("blocked");',
           ].join("\n"),
           targetMarker,
           profileMarker,
           trustedTool,
+          hostSecret,
         ],
         {
           cwd: target,
           env: {
             ...process.env,
             CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT: "1",
-            PATH: `${trustedBin}:${process.env.PATH ?? ""}`,
           },
           timeoutMs: 3_000,
           writableRoots: [target, profile],
@@ -174,8 +177,8 @@ test(
       assert.equal(output, "blocked");
       assert.equal(readFileSync(targetMarker, "utf8"), "target");
       assert.equal(readFileSync(profileMarker, "utf8"), "profile");
-      assert.equal(readFileSync(trustedTool, "utf8"), "trusted\n");
-      assert.equal(statSync(trustedTool).mode & 0o777, 0o755);
+      assert.equal(readFileSync(hostSecret, "utf8"), "host-only\n");
+      assert.equal(statSync(trustedTool).mode & 0o777, trustedToolMode);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -208,6 +211,7 @@ test(
               ].join(" "),
             ],
             {
+              cwd: root,
               env: {
                 ...process.env,
                 CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT: "1",
