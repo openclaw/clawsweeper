@@ -37,11 +37,9 @@ import {
 import { codexAppServerProcessOptionsFromEnv, runCodexProcess } from "../codex-process.js";
 import {
   branchHasBaseDiff,
-  completeRebaseIfResolved,
   currentHead,
   ensureMergeBaseAvailable,
   isAncestor,
-  rebaseOntoBase,
   unmergedPaths,
 } from "./git-repo-utils.js";
 import {
@@ -857,6 +855,10 @@ function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
   const sameRepoBranch = pull.head.repo.full_name === result.repo;
   const branchBlock = sourceBranchWriteBlockReason(result.repo, pull);
   if (branchBlock) throw new Error(`source PR #${sourcePr.number} ${branchBlock}`);
+  const replacementRemoteLeaseSha = trustedRemoteBranchSha(
+    replacementBranchName(result.cluster_id),
+    targetDir,
+  );
 
   const branch = safeBranchName(
     `clawsweeper-repair/repair-${result.cluster_id}-${sourcePr.number}`,
@@ -903,7 +905,11 @@ function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
     });
   } else {
     logProgress("rebasing source branch", { branch, base_branch: baseBranch });
-    rebaseResult = rebaseOntoBase({ targetDir, baseBranch });
+    rebaseResult = rebaseTargetOntoVerifiedBase({
+      cwd: targetDir,
+      baseRef: `origin/${baseBranch}`,
+      timeoutMs: targetValidationTimeoutMs,
+    });
     logProgress("source branch rebase result", {
       status: rebaseResult.status,
       previous_head: rebaseResult.previous_head,
@@ -934,6 +940,7 @@ function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
         sourceHead,
         prep: fastRepair.prep,
         fastRepair,
+        replacementRemoteLeaseSha,
       });
     }
     if (fastRepair.status === "fallback") {
@@ -963,6 +970,7 @@ function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
     sourceHead,
     prep,
     fastRepair,
+    replacementRemoteLeaseSha,
   });
 }
 
@@ -975,6 +983,7 @@ function pushRepairBranchAndUpdateStatus({
   sourceHead,
   prep,
   fastRepair,
+  replacementRemoteLeaseSha,
 }: LooseRecord) {
   const branchUpdate = branchUpdateState({ targetDir, sourceHead });
   if (dryRun) {
@@ -1057,6 +1066,7 @@ function pushRepairBranchAndUpdateStatus({
         targetDir,
         prep,
         fallbackReason: blockedReason,
+        expectedRemoteSha: replacementRemoteLeaseSha,
       });
     }
     throw error;
@@ -1160,6 +1170,7 @@ function openReplacementPrFromPreparedRepairCheckout({
   targetDir,
   prep,
   fallbackReason,
+  expectedRemoteSha,
 }: LooseRecord) {
   const baseBranch = String(process.env.CLAWSWEEPER_FIX_BASE_BRANCH ?? DEFAULT_BASE_BRANCH);
   const contributorCredits = sourceContributorCredits({
@@ -1244,7 +1255,12 @@ function openReplacementPrFromPreparedRepairCheckout({
     };
   }
 
-  pushRecoverableBranch({ targetDir, branch, checkoutBinding: prep.checkout_binding });
+  pushRecoverableBranch({
+    targetDir,
+    branch,
+    checkoutBinding: prep.checkout_binding,
+    expectedRemoteSha,
+  });
   const provenance = externalMessageProvenance({
     model,
     reasoning: codexReasoningEffort,
@@ -1482,7 +1498,10 @@ function tryAutomergeFastRebaseRepair({
 function completeMechanicallyResolvedRebase({ targetDir }: { targetDir: string }) {
   for (let attempt = 1; attempt <= 6; attempt += 1) {
     try {
-      return completeRebaseIfResolved({ targetDir });
+      return completeTargetRebaseWithIsolation({
+        cwd: targetDir,
+        timeoutMs: targetValidationTimeoutMs,
+      });
     } catch (error) {
       const paths = unmergedPaths(targetDir);
       if (paths.length === 0) throw error;
@@ -1597,7 +1616,11 @@ function executeReplacementBranch({
     fixArtifact,
   });
   prepareTargetToolchain(targetDir, currentTargetValidationOptions());
-  const rebaseResult = rebaseOntoBase({ targetDir, baseBranch });
+  const rebaseResult = rebaseTargetOntoVerifiedBase({
+    cwd: targetDir,
+    baseRef: `origin/${baseBranch}`,
+    timeoutMs: targetValidationTimeoutMs,
+  });
   const mechanicalConflictResolution = tryResolveMechanicalRebaseConflicts({
     targetDir,
     rebaseResult,
@@ -1680,7 +1703,12 @@ function executeReplacementBranch({
     };
   }
 
-  pushRecoverableBranch({ targetDir, branch, checkoutBinding: prep.checkout_binding });
+  pushRecoverableBranch({
+    targetDir,
+    branch,
+    checkoutBinding: prep.checkout_binding,
+    expectedRemoteSha: branchState.remote_lease_sha,
+  });
   assertIssueImplementationNotPaused();
   const bodyPath = path.join(workRoot, "replacement-pr-body.md");
   fs.writeFileSync(bodyPath, body);
@@ -2266,7 +2294,10 @@ function editValidatePrepareMerge({
     );
   }
 
-  const completedRebase = completeRebaseIfResolved({ targetDir });
+  const completedRebase = completeTargetRebaseWithIsolation({
+    cwd: targetDir,
+    timeoutMs: targetValidationTimeoutMs,
+  });
   if (completedRebase.status === "continued") {
     logProgress("completed resolved rebase", {
       previous_head: completedRebase.previous_head,
@@ -2631,7 +2662,10 @@ function runCodexBaseReconcile({
       );
     }
     try {
-      completeRebaseIfResolved({ targetDir });
+      completeTargetRebaseWithIsolation({
+        cwd: targetDir,
+        timeoutMs: targetValidationTimeoutMs,
+      });
       return;
     } catch (error) {
       if (codexAttempt === maxEditAttempts) throw error;
@@ -3455,7 +3489,8 @@ function checkoutRecoverableReplacementBranch({
   const sourcePr = shouldSeedReplacementBranchFromSource(fixArtifact)
     ? firstTargetSourcePullRequest(fixArtifact.source_prs ?? [], result.repo)
     : null;
-  if (trustedRemoteBranchSha(branch, targetDir)) {
+  const remoteLeaseSha = trustedRemoteBranchSha(branch, targetDir);
+  if (remoteLeaseSha) {
     runGitNetwork(
       [
         "fetch",
@@ -3498,10 +3533,11 @@ function checkoutRecoverableReplacementBranch({
           branch,
           source_pr: checkout.sourcePr.url,
           source_head_sha: checkout.sourceHeadSha,
+          remote_lease_sha: remoteLeaseSha,
         };
       }
     }
-    return { resumed: true, branch };
+    return { resumed: true, branch, remote_lease_sha: remoteLeaseSha };
   }
   if (sourcePr) {
     const pull = fetchPullRequest(result.repo, sourcePr.number);
@@ -3518,6 +3554,7 @@ function checkoutRecoverableReplacementBranch({
       branch,
       source_pr: checkout.sourcePr.url,
       source_head_sha: checkout.sourceHeadSha,
+      remote_lease_sha: remoteLeaseSha,
     };
   }
   switchTargetBranchWithPlumbing({
@@ -3526,7 +3563,7 @@ function checkoutRecoverableReplacementBranch({
     expectedHeadSha: run("git", ["rev-parse", `origin/${baseBranch}`], { cwd: targetDir }).trim(),
     timeoutMs: targetValidationTimeoutMs,
   });
-  return { resumed: false, branch };
+  return { resumed: false, branch, remote_lease_sha: remoteLeaseSha };
 }
 
 function commitCheckpointIfNeeded({ targetDir, message, trailers = [] }: LooseRecord) {
@@ -3550,19 +3587,30 @@ function enforceFinalRepairContract({ fixArtifact, targetDir, baseSha }: LooseRe
   enforceRepairContract({ fixArtifact, changedFiles });
 }
 
-function pushRecoverableBranch({ targetDir, branch, checkoutBinding = null }: LooseRecord) {
+function pushRecoverableBranch({
+  targetDir,
+  branch,
+  checkoutBinding = null,
+  expectedRemoteSha,
+}: LooseRecord) {
   const binding =
     checkoutBinding ?? captureTargetCheckoutBinding(targetDir, targetValidationTimeoutMs);
   assertTargetCheckoutBinding(targetDir, binding, targetValidationTimeoutMs);
   assertTargetPublicationGitConfiguration(targetDir, targetValidationTimeoutMs);
-  const remoteSha = trustedRemoteBranchSha(branch, targetDir);
+  if (typeof expectedRemoteSha !== "string") {
+    throw new Error(`cannot push recoverable branch ${branch}: captured remote lease is missing`);
+  }
+  const remoteSha = expectedRemoteSha;
+  if (remoteSha !== "" && !/^[0-9a-f]{40}$/.test(remoteSha)) {
+    throw new Error(`cannot push recoverable branch ${branch}: captured remote lease is invalid`);
+  }
   const targetRef = `refs/heads/${branch}`;
   const remote = `https://github.com/${result.repo}.git`;
   const sourceRef = String(binding.headSha);
   const args = [
     "push",
     "--no-verify",
-    `--force-with-lease=${targetRef}:${remoteSha ?? ""}`,
+    `--force-with-lease=${targetRef}:${remoteSha}`,
     remote,
     `${sourceRef}:${targetRef}`,
   ];

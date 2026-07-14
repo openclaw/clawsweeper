@@ -227,10 +227,44 @@ test("repair publication pushes the accepted checkout through isolated Git auth"
   assert.match(source, /const args = repairBranchPushArgs\(\{ pull, sourceRef \}\)/);
   assert.match(source, /sourceRef: checkoutBinding\.headSha/);
   assert.match(source, /`--force-with-lease=refs\/heads\/\$\{pull\.head\.ref\}:\$\{headSha\}`/);
-  assert.match(source, /`--force-with-lease=\$\{targetRef\}:\$\{remoteSha \?\? ""\}`/);
+  assert.match(source, /`--force-with-lease=\$\{targetRef\}:\$\{remoteSha\}`/);
   assert.match(source, /if \(publishedSha !== sourceRef\)/);
   assert.doesNotMatch(source, /gh", \["auth", "setup-git"\]/);
   assert.doesNotMatch(source, /`HEAD:\$\{pull\.head\.ref\}`/);
+});
+
+test("recoverable branch publication carries the pre-validation remote lease", () => {
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  const contributorStart = source.indexOf("function executeRepairBranch(");
+  const contributorEnd = source.indexOf("function repairPushSettleSeconds(", contributorStart);
+  const contributor = source.slice(contributorStart, contributorEnd);
+  const replacementStart = source.indexOf("function executeReplacementBranch(");
+  const replacementEnd = source.indexOf(
+    "function updateAutomergeProgressStatus(",
+    replacementStart,
+  );
+  const replacement = source.slice(replacementStart, replacementEnd);
+  const recoveryStart = source.indexOf("function checkoutRecoverableReplacementBranch(");
+  const recoveryEnd = source.indexOf("function commitCheckpointIfNeeded(", recoveryStart);
+  const recovery = source.slice(recoveryStart, recoveryEnd);
+  const pushStart = source.indexOf("function pushRecoverableBranch(");
+  const pushEnd = source.indexOf("function assertIssueImplementationNotPaused(", pushStart);
+  const push = source.slice(pushStart, pushEnd);
+
+  assert.ok(
+    contributor.indexOf("const replacementRemoteLeaseSha = trustedRemoteBranchSha(") <
+      contributor.indexOf("prepareTargetToolchain("),
+  );
+  assert.match(contributor, /expectedRemoteSha: replacementRemoteLeaseSha/);
+  assert.ok(
+    replacement.indexOf("checkoutRecoverableReplacementBranch({") <
+      replacement.indexOf("prepareTargetToolchain("),
+  );
+  assert.match(replacement, /expectedRemoteSha: branchState\.remote_lease_sha/);
+  assert.match(recovery, /const remoteLeaseSha = trustedRemoteBranchSha\(branch, targetDir\)/);
+  assert.match(recovery, /remote_lease_sha: remoteLeaseSha/);
+  assert.match(push, /typeof expectedRemoteSha !== "string"/);
+  assert.doesNotMatch(push, /trustedRemoteBranchSha\(/);
 });
 
 test("replacement recovery materializes the fetched commit before branch attachment", () => {
@@ -258,6 +292,25 @@ test("final publication rebase uses the verified isolated Git path", () => {
   assert.match(reconcile, /completeTargetRebaseWithIsolation\(\{/);
   assert.doesNotMatch(reconcile, /rebaseOntoBase\(/);
   assert.doesNotMatch(reconcile, /completeRebaseIfResolved\(/);
+});
+
+test("all repair rebase transitions use isolated Git plumbing", () => {
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  const mechanical = readText(
+    path.join(process.cwd(), "src/repair/mechanical-rebase-conflicts.ts"),
+  );
+
+  assert.doesNotMatch(source, /\brebaseOntoBase\(/);
+  assert.doesNotMatch(source, /\bcompleteRebaseIfResolved\(/);
+  assert.doesNotMatch(mechanical, /run\("git", \["add"/);
+  assert.ok(
+    [...source.matchAll(/rebaseTargetOntoVerifiedBase\(\{/g)].length >= 3,
+    "initial, replacement, and final-base rebases must use isolated plumbing",
+  );
+  assert.ok(
+    [...source.matchAll(/completeTargetRebaseWithIsolation\(\{/g)].length >= 4,
+    "mechanical and post-Codex continuations must use isolated plumbing",
+  );
 });
 
 test("repair contract gates the final cumulative tree, not individual checkpoints", () => {

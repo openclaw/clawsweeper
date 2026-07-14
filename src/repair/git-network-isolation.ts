@@ -131,7 +131,8 @@ function targetGitObjectStore(
       }).trim(),
     ),
   );
-  const objectDirectory = fs.realpathSync(path.join(commonDir, "objects"));
+  const objectDirectory = path.join(commonDir, "objects");
+  assertUnredirectedTargetObjectStore(objectDirectory);
   const objectFormat = run("git", ["rev-parse", "--show-object-format"], {
     cwd,
     env,
@@ -148,6 +149,36 @@ function targetGitObjectStore(
     partialCloneFilter: targetPartialCloneFilter(commonDir, fetchDestination, cwd, env, timeoutMs),
     shallowOids: targetShallowOids(commonDir, validatedObjectFormat),
   };
+}
+
+function assertUnredirectedTargetObjectStore(objectDirectory: string) {
+  const resolvedRoot = path.resolve(objectDirectory);
+  const rootStat = fs.lstatSync(resolvedRoot);
+  if (
+    rootStat.isSymbolicLink() ||
+    !rootStat.isDirectory() ||
+    fs.realpathSync(resolvedRoot) !== resolvedRoot
+  ) {
+    throw new Error("redirected target Git object store is not allowed");
+  }
+  for (const alternateName of ["alternates", "http-alternates"]) {
+    if (fs.existsSync(path.join(resolvedRoot, "info", alternateName))) {
+      throw new Error("target Git object alternates are not allowed");
+    }
+  }
+
+  const pending = [resolvedRoot];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name);
+      const stat = fs.lstatSync(entryPath);
+      if (stat.isSymbolicLink()) {
+        throw new Error("redirected target Git object store entry is not allowed");
+      }
+      if (stat.isDirectory()) pending.push(entryPath);
+    }
+  }
 }
 
 function prepareIsolatedFetch({

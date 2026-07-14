@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { runCommand as run } from "./command-runner.js";
 import { unmergedPaths, type RebaseOntoBaseResult } from "./git-repo-utils.js";
 
 export type MechanicalRebaseConflictResult =
@@ -91,7 +90,6 @@ export function tryResolveMechanicalRebaseConflicts({
 
   for (const resolution of resolutions) {
     fs.writeFileSync(path.join(targetDir, resolution.filePath), resolution.text);
-    run("git", ["add", resolution.filePath], { cwd: targetDir });
   }
 
   return {

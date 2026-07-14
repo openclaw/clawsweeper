@@ -126,6 +126,53 @@ test("isolated authenticated fetch preserves partial-clone and shallow negotiati
   assert.match(missing, new RegExp(`^\\?${omittedBlob}$`, "m"));
 });
 
+test(
+  "isolated Git rejects redirected target object stores",
+  { skip: process.platform === "win32" },
+  () => {
+    for (const variant of ["objects-symlink", "alternates", "nested-symlink"]) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `clawsweeper-object-${variant}-`));
+      const target = path.join(root, "target");
+      const external = path.join(root, "external");
+      fs.mkdirSync(target);
+      fs.mkdirSync(external);
+      git(target, "init", "-b", "main");
+      git(target, "config", "user.email", "clawsweeper@example.invalid");
+      git(target, "config", "user.name", "ClawSweeper Test");
+      fs.writeFileSync(path.join(target, "source.txt"), "validated\n");
+      git(target, "add", ".");
+      git(target, "commit", "-m", "validated");
+      const objects = path.join(target, ".git", "objects");
+
+      if (variant === "objects-symlink") {
+        fs.renameSync(objects, path.join(external, "objects"));
+        fs.symlinkSync(path.join(external, "objects"), objects);
+      } else if (variant === "alternates") {
+        fs.mkdirSync(path.join(external, "objects"));
+        fs.writeFileSync(
+          path.join(objects, "info", "alternates"),
+          `${path.join(external, "objects")}\n`,
+        );
+      } else {
+        fs.writeFileSync(path.join(external, "object"), "redirected\n");
+        fs.symlinkSync(path.join(external, "object"), path.join(objects, "info", "redirected"));
+      }
+
+      assert.throws(
+        () =>
+          runIsolatedGitNetwork({
+            args: ["status"],
+            cwd: target,
+            env: process.env,
+            timeoutMs: 10_000,
+            token: "test-token",
+          }),
+        /redirected target Git object store|target Git object alternates/,
+      );
+    }
+  },
+);
+
 test("isolated push rejects an ancestor reset after the expected head was read", () => {
   const fixture = pushLeaseFixture();
   const expectedHead = git(fixture.target, "rev-parse", "HEAD");

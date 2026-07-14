@@ -251,12 +251,16 @@ def reap_adopted_children(primary_pid, background_pids):
 
 def terminate_and_reap_descendants(primary_pid, background_pids):
     graceful_deadline = time.monotonic() + 0.25
+    empty_deadline = time.monotonic() + 0.1
     while True:
         remaining_pids = target_pids()
         background_pids.update(pid for pid in remaining_pids if pid != primary_pid)
         no_children = reap_exited_children(primary_pid, background_pids)
         if no_children and not remaining_pids:
-            return len(background_pids)
+            if time.monotonic() >= empty_deadline:
+                return len(background_pids)
+        else:
+            empty_deadline = time.monotonic() + 0.1
         if remaining_pids:
             signum = (
                 signal.SIGKILL
