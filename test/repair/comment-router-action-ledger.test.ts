@@ -56,11 +56,22 @@ test("comment router wraps every GitHub mutation at the request boundary", () =>
 
 test("trusted verdict automerge refreshes reviewed PR activity before merge dispatch", () => {
   const source = readText("src/repair/comment-router.ts");
+  const executeCommand = source.slice(
+    source.indexOf("function executeCommand("),
+    source.indexOf("function executeCommandWithReceipt("),
+  );
   const executeAutomerge = source.slice(
     source.indexOf("function executeAutomerge("),
     source.indexOf("function latestAutomergeTarget("),
   );
+  const commandPreflight = executeCommand.indexOf(
+    "const trustedAutomationActivityBlock = trustedAutomergeReviewActivityBlockReason(command)",
+  );
+  const labelMutation = executeCommand.indexOf("applyLabelActions(command)");
   const waitLoop = executeAutomerge.indexOf("while (block && isTransientAutomergeBlock(block)");
+  const initialReviewActivity = executeAutomerge.indexOf(
+    "const initialReviewActivityBlock = trustedAutomergeReviewActivityBlockReason(command)",
+  );
   const reviewLease = executeAutomerge.indexOf(
     "const reviewLeaseBlock = trustedAutomationReviewLeaseBlockReason(command)",
   );
@@ -69,6 +80,10 @@ test("trusted verdict automerge refreshes reviewed PR activity before merge disp
   );
   const merge = executeAutomerge.indexOf("const result = runGitHubSpawnMutation(");
 
+  assert.ok(commandPreflight >= 0);
+  assert.ok(labelMutation > commandPreflight);
+  assert.ok(initialReviewActivity >= 0);
+  assert.ok(waitLoop > initialReviewActivity);
   assert.ok(waitLoop >= 0);
   assert.ok(reviewLease > waitLoop);
   assert.ok(reviewActivity > reviewLease);
@@ -79,7 +94,11 @@ test("trusted verdict automerge refreshes reviewed PR activity before merge disp
   );
   assert.match(
     source,
-    /function trustedAutomergeReviewActivityBlockReason[\s\S]*isReviewedPrActivityCursor\(expected\)[\s\S]*pulls\/\$\{command\.issue_number\}\/reviews[\s\S]*pulls\/\$\{command\.issue_number\}\/comments/,
+    /function trustedAutomergeReviewActivityCursor[\s\S]*pulls\/\$\{number\}\/reviews[\s\S]*pulls\/\$\{number\}\/comments[\s\S]*function trustedAutomergeReviewActivityBlockReason[\s\S]*isReviewedPrActivityCursor\(expected\)/,
+  );
+  assert.match(
+    source,
+    /inlineComments\.length === 0 \? \[\] : trustedAutomergeReviewThreads\(number, remaining \+ 1\)/,
   );
 });
 

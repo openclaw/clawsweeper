@@ -1148,6 +1148,7 @@ function classifyCommand(command: LooseRecord): JsonValue {
         ? {
             intent: "clawsweeper_auto_merge",
             expected_head_sha: approvedProofOverride.expected_head_sha,
+            expected_review_activity_cursor: approvedProofOverride.expected_review_activity_cursor,
             repair_reason: approvedProofOverride.reason,
           }
         : activationRepairReason
@@ -1721,6 +1722,7 @@ function approvedMissingProofNeedsHuman(command: LooseRecord, target: LooseRecor
   return {
     reason,
     expected_head_sha: latest.parsed.expected_head_sha,
+    expected_review_activity_cursor: (latest.parsed as LooseRecord).expected_review_activity_cursor,
     note: proofOverrideDescriptionNote({
       ...command,
       repair_reason: reason,
@@ -1897,6 +1899,18 @@ function executeCommand(command: LooseRecord) {
         ...action,
         status,
         reason: trustedAutomationLeaseBlock.reason,
+      }));
+      return;
+    }
+    const trustedAutomationActivityBlock = trustedAutomergeReviewActivityBlockReason(command);
+    if (trustedAutomationActivityBlock) {
+      const status = trustedAutomationActivityBlock.retryable ? "waiting" : "skipped";
+      command.status = status;
+      command.reason = trustedAutomationActivityBlock.reason;
+      command.actions = command.actions.map((action: JsonValue) => ({
+        ...action,
+        status,
+        reason: trustedAutomationActivityBlock.reason,
       }));
       return;
     }
@@ -3665,6 +3679,15 @@ function executeAutomerge(command: LooseRecord) {
   if (stoppedReason) {
     return { action: "merge", status: "blocked", reason: stoppedReason, merge_method: "squash" };
   }
+  const initialReviewActivityBlock = trustedAutomergeReviewActivityBlockReason(command);
+  if (initialReviewActivityBlock) {
+    return {
+      action: "merge",
+      status: initialReviewActivityBlock.retryable ? "waiting" : "blocked",
+      reason: initialReviewActivityBlock.reason,
+      merge_method: "squash",
+    };
+  }
   const transientWait = automergeTransientWaitConfig(process.env);
   const transientObservations: LooseRecord[] = [];
   let waitedMs = 0;
@@ -4351,7 +4374,8 @@ function trustedAutomergeReviewActivityCursor(number: number): string | null {
   );
   if (inlineComments.length > remaining) return null;
   remaining -= inlineComments.length;
-  const reviewThreads = trustedAutomergeReviewThreads(number, remaining + 1);
+  const reviewThreads =
+    inlineComments.length === 0 ? [] : trustedAutomergeReviewThreads(number, remaining + 1);
   if (reviewThreads.length > remaining) return null;
   return createReviewedPrActivityCursor({ reviews, inlineComments, reviewThreads });
 }
