@@ -123,7 +123,9 @@ checkpoint, and status-only commits are intentionally omitted.
   conversation activity before every proof comment or label request, including
   a post-hydration head read, fresh contributor activity, and bound live
   policy/label state, with privacy-bounded immutable request receipts,
-  conservative unknown outcomes, and exact comment/label crash reconciliation.
+  conservative unknown outcomes, exact comment/label crash reconciliation,
+  replay-safe bot-proof POST/PATCH recovery, and best-effort recovery-state
+  publication before cursor progress.
 - Bound pull-request review reuse, apply, and automerge actions to a size-capped digest of reviews, inline comments, and review-thread resolution state, so legacy reports, late activity, or resolved-thread drift force a fresh verdict before mutation.
 - Stopped narrow OpenClaw automerge repairs from chasing unrelated full-repository lint and typecheck failures.
 - Removed the synthetic Codex write preflight that could block repair before Codex saw the real task.

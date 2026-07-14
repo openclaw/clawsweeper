@@ -93,14 +93,17 @@ the same hashed business idempotency key. Label recovery uses the exact
 the public postcondition satisfies. Existing same-head nudge markers are
 reconciled even after their cooldown expires, before a new reminder is posted.
 
-Contributor nudges also write one bounded per-PR recovery record before the
-comment request. It contains only repository, PR number, head SHA, and the
-original marker timestamp. If the outcome is unknown and the marker is still
-not visible, later runs report `proof_nudge_reconciliation_pending`, reuse the
-same hashed business identity, and do not send another POST. The record is
-cleared only after rejection, confirmed publication, reconciliation, or a head
-change. Recovery-state publication runs after immutable receipt publication and
-does not advance the proof scan cursor.
+Both lanes write one bounded per-PR recovery record before the comment request.
+Contributor records contain repository, PR number, head SHA, and the original
+marker timestamp. Bot-proof records replace the timestamp with the desired
+comment-body digest, so the same fence covers both POST and PATCH attempts
+without storing comment text. If an unknown outcome is not yet visible, later
+runs report `proof_nudge_reconciliation_pending` or
+`bot_proof_reconciliation_pending`, reuse the same hashed business identity,
+and do not send another request. Records clear only after rejection, confirmed
+publication, reconciliation, or a head change. Recovery-state publication is
+best-effort even when receipt artifact or state publication fails, and it does
+not advance the proof scan cursor.
 
 Reports expose only bounded status and reason strings:
 
@@ -176,6 +179,8 @@ The workflow publishes only the exact target cursor files, for example
 `results/proof-nudge-cursors/openclaw-openclaw.json`, and only after the
 corresponding lane executed and wrote that file. Dry-runs do not publish cursor
 paths, and one target repo run does not replace another target's cursor file.
+Cursor publication also requires finalized receipt upload, immutable receipt
+publication, and successful recovery-state publication.
 
 Suggested rollout:
 

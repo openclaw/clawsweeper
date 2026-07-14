@@ -163,7 +163,8 @@ jobs:
           : > "$cursor_paths_file"
           target_slug="$TARGET_REPO"
           target_slug="${target_slug//\//-}"
-          mutation_state_path="results/proof-nudge-mutations/${target_slug}"
+          proof_mutation_state_path="results/proof-nudge-mutations/${target_slug}"
+          bot_mutation_state_path="results/bot-proof-mutations/${target_slug}"
           if [ -n "$PROOF_NUDGES_ITEM_NUMBERS" ]; then
             if [[ ! "$PROOF_NUDGES_ITEM_NUMBERS" =~ ^[0-9]+([[:space:]]*,[[:space:]]*[0-9]+)*$ ]]; then
               echo "::error::item_numbers must be a comma-separated list of pull request numbers"
@@ -180,7 +181,7 @@ jobs:
             --min-age-days "$PROOF_NUDGES_MIN_AGE_DAYS" \
             --cooldown-days "$PROOF_NUDGES_COOLDOWN_DAYS" \
             --report-path proof-nudge-report.json \
-            --mutation-state-dir "$mutation_state_path" \
+            --mutation-state-dir "$proof_mutation_state_path" \
             "${processed_limit_arg[@]}" \
             "${item_numbers_arg[@]}" \
             "${cursor_arg[@]}" \
@@ -199,6 +200,7 @@ jobs:
               --target-repo "$TARGET_REPO" \
               --limit "$PROOF_NUDGES_LIMIT" \
               --report-path bot-proof-report.json \
+              --mutation-state-dir "$bot_mutation_state_path" \
               "${processed_limit_arg[@]}" \
               "${item_numbers_arg[@]}" \
               "${bot_cursor_arg[@]}" \
@@ -268,7 +270,8 @@ jobs:
 
       - name: Publish proof mutation recovery state
         id: publish-mutation-state
-        if: ${{ always() && steps.setup-state.outcome == 'success' && steps.finalize-action-ledger.outcome == 'success' && steps.upload-finalized-ledger.outcome == 'success' && steps.publish-action-ledger.outcome == 'success' }}
+        if: ${{ always() && steps.setup-state.outcome == 'success' && steps.setup-pnpm.outcome == 'success' && steps.run-proof-nudges.outcome != 'skipped' }}
+        continue-on-error: true
         env:
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
         run: |
@@ -278,7 +281,8 @@ jobs:
           pnpm run repair:publish-main -- \
             --message "chore: update proof mutation recovery state" \
             --rebase-strategy theirs \
-            --path "results/proof-nudge-mutations/${target_slug}"
+            --path "results/proof-nudge-mutations/${target_slug}" \
+            --path "results/bot-proof-mutations/${target_slug}"
 
       - name: Publish proof handling cursors
         if: ${{ always() && steps.run-proof-nudges.outcome == 'success' && steps.finalize-action-ledger.outcome == 'success' && steps.upload-finalized-ledger.outcome == 'success' && steps.publish-action-ledger.outcome == 'success' && steps.publish-mutation-state.outcome == 'success' }}

@@ -1677,7 +1677,8 @@ test("proof nudge workflow is manual-first and scheduled behind repo vars", () =
   assert.match(job, /--processed-limit "\$PROOF_NUDGES_PROCESSED_LIMIT"/);
   assert.match(job, /--cursor-path "results\/proof-nudge-cursors\/\$\{target_slug\}\.json"/);
   assert.match(job, /--cursor-path "results\/bot-proof-cursors\/\$\{target_slug\}\.json"/);
-  assert.match(job, /--mutation-state-dir "\$mutation_state_path"/);
+  assert.match(job, /--mutation-state-dir "\$proof_mutation_state_path"/);
+  assert.match(job, /--mutation-state-dir "\$bot_mutation_state_path"/);
   assert.match(job, /pnpm run proof-nudges/);
   assert.match(job, /vars\.CLAWSWEEPER_PROOF_NUDGES_LIMIT/);
   assert.match(job, /vars\.CLAWSWEEPER_PROOF_NUDGES_PROCESSED_LIMIT/);
@@ -1685,11 +1686,13 @@ test("proof nudge workflow is manual-first and scheduled behind repo vars", () =
   assert.match(job, /results\/proof-nudge-cursors/);
   assert.match(job, /results\/bot-proof-cursors/);
   assert.match(job, /results\/proof-nudge-mutations/);
+  assert.match(job, /results\/bot-proof-mutations/);
 });
 
 test("proof nudge workflow defers exact executed-lane cursors until receipts are durable", () => {
   const workflow = readFileSync(".github/workflows/proof-nudges.yml", "utf8");
   const job = workflow.slice(workflow.indexOf("  proof-nudges:"), workflow.length);
+  const uploadLedger = job.indexOf("- name: Upload finalized proof handling action ledger");
   const publishLedger = job.indexOf("- name: Publish immutable proof handling action ledger");
   const publishMutationState = job.indexOf("- name: Publish proof mutation recovery state");
   const publishCursors = job.indexOf("- name: Publish proof handling cursors");
@@ -1705,18 +1708,29 @@ test("proof nudge workflow defers exact executed-lane cursors until receipts are
   );
   assert.match(
     job.slice(publishMutationState, publishCursors),
-    /always\(\)[\s\S]*--path "results\/proof-nudge-mutations\/\$\{target_slug\}"/,
+    /always\(\)[\s\S]*--path "results\/proof-nudge-mutations\/\$\{target_slug\}"[\s\S]*--path "results\/bot-proof-mutations\/\$\{target_slug\}"/,
   );
+  const mutationStateBlock = job.slice(publishMutationState, publishCursors);
+  assert.match(mutationStateBlock, /steps\.setup-state\.outcome == 'success'/);
+  assert.match(mutationStateBlock, /steps\.setup-pnpm\.outcome == 'success'/);
+  assert.match(mutationStateBlock, /steps\.run-proof-nudges\.outcome != 'skipped'/);
+  assert.match(mutationStateBlock, /continue-on-error: true/);
   assert.doesNotMatch(
-    job.slice(publishMutationState, publishCursors),
-    /steps\.run-proof-nudges\.outcome == 'success'/,
+    mutationStateBlock,
+    /steps\.(?:finalize-action-ledger|upload-finalized-ledger|publish-action-ledger)\.outcome/,
   );
-  assert.match(job.slice(publishMutationState, publishCursors), /id: publish-mutation-state/);
-  assert.match(job.slice(publishCursors), /steps\.publish-mutation-state\.outcome == 'success'/);
+  assert.match(mutationStateBlock, /id: publish-mutation-state/);
+  const cursorBlock = job.slice(publishCursors);
+  assert.match(cursorBlock, /steps\.run-proof-nudges\.outcome == 'success'/);
+  assert.match(cursorBlock, /steps\.finalize-action-ledger\.outcome == 'success'/);
+  assert.match(cursorBlock, /steps\.upload-finalized-ledger\.outcome == 'success'/);
+  assert.match(cursorBlock, /steps\.publish-action-ledger\.outcome == 'success'/);
+  assert.match(cursorBlock, /steps\.publish-mutation-state\.outcome == 'success'/);
   assert.match(
-    job.slice(publishCursors),
+    cursorBlock,
     /while IFS= read -r cursor_path[\s\S]*cursor_publish_args\+=\(--path "\$cursor_path"\)[\s\S]*repair:publish-main/,
   );
+  assert.ok(uploadLedger >= 0 && uploadLedger < publishMutationState);
   assert.doesNotMatch(job, /printf '%s\\n' "results\/(?:proof-nudge|bot-proof)-cursors/);
 });
 
