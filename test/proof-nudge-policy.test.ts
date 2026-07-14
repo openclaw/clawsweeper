@@ -152,6 +152,7 @@ function proofMutationGhMockScript(options: {
   initialComments?: unknown[];
   initialLabels?: string[];
   deleteCommentsAtConversationRead?: number;
+  revealCommentsAtConversationRead?: number;
   hideUnknownPostComment?: boolean;
   failConversationReadsAfterUnknownPost?: boolean;
   itemNumbers?: number[];
@@ -241,6 +242,12 @@ const currentComments = () => {
   const visibleComments = config.hideUnknownPostComment && state.unknownPostAccepted
     ? state.comments.filter((comment) => comment.id !== 99)
     : state.comments;
+  if (
+    config.revealCommentsAtConversationRead &&
+    state.conversationReads < config.revealCommentsAtConversationRead
+  ) {
+    return injected;
+  }
   return [...visibleComments, ...injected];
 };
 if (commandArgs[0] === "label" && commandArgs[1] === "create") {
@@ -1164,6 +1171,91 @@ test("reconciled proof nudges do not consume the delivery limit", () => {
       ],
     );
     assert.equal(readFileSync(mutationLogPath, "utf8").trim(), "comment_post");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("proof nudges apply hydrated same-head markers to cooldown eligibility", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const reportPath = join(root, "proof-nudge-report.json");
+    const mutationStateDir = join(root, "proof-nudge-mutations");
+    const statePath = join(root, "gh-state.json");
+    const mutationLogPath = join(root, "mutations.log");
+    const headSha = "a".repeat(40);
+    const markerTimestamp = "2026-07-14T12:00:00.000Z";
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(mutationStateDir, { recursive: true });
+    writeFileSync(join(itemsDir, "42.md"), proofNudgeReport({ headSha }));
+    writeFileSync(
+      join(mutationStateDir, "42.json"),
+      JSON.stringify({
+        schema_version: 1,
+        repository: "openclaw/openclaw",
+        number: 42,
+        head_sha: headSha,
+        marker_timestamp: markerTimestamp,
+        created_at: markerTimestamp,
+      }),
+    );
+
+    withMockGh(
+      root,
+      proofMutationGhMockScript({
+        statePath,
+        mutationLogPath,
+        revealCommentsAtConversationRead: 2,
+        initialComments: [
+          {
+            id: 98,
+            user: { login: "clawsweeper[bot]" },
+            author_association: "NONE",
+            body: renderProofNudgeCommentForTest({
+              number: 42,
+              author: "contributor",
+              headSha,
+              timestamp: markerTimestamp,
+            }),
+            created_at: markerTimestamp,
+            updated_at: markerTimestamp,
+            html_url: "https://github.com/openclaw/openclaw/pull/42#issuecomment-98",
+          },
+        ],
+      }),
+      () => {
+        execFileSync(process.execPath, [
+          "dist/clawsweeper.js",
+          "proof-nudges",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--item-numbers",
+          "42",
+          "--limit",
+          "1",
+          "--processed-limit",
+          "1",
+          "--min-age-days",
+          "0",
+          "--cooldown-days",
+          "36500",
+          "--report-path",
+          reportPath,
+          "--mutation-state-dir",
+          mutationStateDir,
+          "--execute",
+        ]);
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.equal(report[0].action, "proof_nudge_reconciled");
+    assert.match(report[0].reason, /same-head proof nudge marker already exists/);
+    assert.equal(existsSync(mutationLogPath), false);
+    assert.equal(existsSync(join(mutationStateDir, "42.json")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

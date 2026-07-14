@@ -15091,7 +15091,7 @@ function proofNudgeCommentsWithLiveMarkers(
       )
       .map((marker) => marker.at),
   );
-  return comments.filter((comment) => {
+  const reconciledComments = comments.filter((comment) => {
     if (!isProofNudgeMarkerCommentAuthor(comment.author)) return true;
     const matchingMarkers = proofNudgeMarkersFromCommentBody(comment.body).filter(
       (marker) =>
@@ -15104,6 +15104,29 @@ function proofNudgeCommentsWithLiveMarkers(
       matchingMarkers.some((marker) => liveMarkerTimestamps.has(marker.at))
     );
   });
+  const reconciledMarkerTimestamps = new Set(
+    proofNudgeMarkersFromComments(reconciledComments)
+      .filter(
+        (marker) =>
+          marker.item === options.number &&
+          marker.sha === options.headSha &&
+          timestampMs(marker.at) !== null,
+      )
+      .map((marker) => marker.at),
+  );
+  for (const liveComment of liveComments) {
+    if (!isProofNudgeMarkerCommentAuthor(liveComment.author)) continue;
+    const matchingMarkers = proofNudgeMarkersFromCommentBody(liveComment.body).filter(
+      (marker) =>
+        marker.item === options.number &&
+        marker.sha === options.headSha &&
+        timestampMs(marker.at) !== null,
+    );
+    if (!matchingMarkers.some((marker) => !reconciledMarkerTimestamps.has(marker.at))) continue;
+    reconciledComments.push(liveComment);
+    for (const marker of matchingMarkers) reconciledMarkerTimestamps.add(marker.at);
+  }
+  return reconciledComments;
 }
 
 function staleProofNudgeReportHead(markdown: string, headSha: string | undefined): boolean {
