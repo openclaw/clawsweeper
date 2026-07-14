@@ -58,9 +58,10 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
-- Serialized generated-state publishers through a versioned, protocol-bounded
-  remote lease with composable workflow deadlines, bounded stale-owner
-  recovery, one rebuild retry, and remote blob verification.
+- Serialized generated-state publishers through lightweight detached,
+  versioned, protocol-bounded remote leases with composable workflow
+  deadlines, bounded stale-owner recovery, deadline-bounded multi-race
+  convergence, and remote blob verification.
 - Preserved finalized GitHub activity dispatch receipts as a replayable artifact
   before state publication, while keeping direct publication independent of the
   recovery-copy upload and automatically replaying failed, cancelled, or

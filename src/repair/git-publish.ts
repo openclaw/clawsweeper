@@ -166,6 +166,12 @@ export function spawnGit(args: readonly string[], options: GitRunOptions = {}): 
   });
   if (child.error) {
     if ("code" in child.error && child.error.code === "ETIMEDOUT") {
+      const deadlineAtMs = activeGitPublishMetrics?.deadlineAtMs;
+      if (deadlineAtMs !== null && deadlineAtMs !== undefined && Date.now() >= deadlineAtMs) {
+        throw new Error(
+          `State publication deadline exceeded while running git ${safeGitDisplayAction(args[0])}`,
+        );
+      }
       const error = new Error(
         `git ${safeGitDisplayAction(args[0])} timed out after ${timeout ?? 0}ms during state publication`,
       );
@@ -597,40 +603,36 @@ function publishLeasedCommit(options: {
   sourceCommit: string;
   rebaseStrategy: RebaseStrategy;
 }): PublishResult {
-  const expectedCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
-  if (pushLeasedHead(options.remote, options.branch, options.lease)) {
-    verifyRemotePublishedPaths(expectedCommit, options.remote, options.branch, options.paths);
-    return "committed";
-  }
-  if (remotePublishedPathsMatch(expectedCommit, options.remote, options.branch, options.paths)) {
-    console.log("Leased publish push was ambiguous but the expected blobs are remote");
-    adoptVerifiedRemoteHead(options.remote, options.branch);
-    return "committed";
-  }
+  for (let attempt = 1; ; attempt += 1) {
+    const expectedCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
+    const pushed = pushLeasedHead(options.remote, options.branch, options.lease);
+    if (remotePublishedPathsMatch(expectedCommit, options.remote, options.branch, options.paths)) {
+      if (!pushed) {
+        console.log("Leased publish push was ambiguous but the expected blobs are remote");
+      }
+      adoptVerifiedRemoteHead(options.remote, options.branch);
+      return "committed";
+    }
 
-  console.log(`Leased publish lost one unexpected ${options.branch} race; rebuilding once`);
-  const rebuildResult = rebuildPublishCommit({
-    remote: options.remote,
-    branch: options.branch,
-    message: options.message,
-    paths: options.paths,
-    sourceCommit: options.sourceCommit,
-    rebaseStrategy: options.rebaseStrategy,
-  });
-  if (rebuildResult === "unchanged") {
-    verifyRemotePublishedPaths("HEAD", options.remote, options.branch, options.paths);
-    return "unchanged";
+    console.log(
+      `Leased publish ${pushed ? "was superseded after an accepted push" : `lost an unexpected ${options.branch} race`}; rebuilding attempt=${attempt}`,
+    );
+    const rebuildResult = rebuildPublishCommit({
+      remote: options.remote,
+      branch: options.branch,
+      message: options.message,
+      paths: options.paths,
+      sourceCommit: options.sourceCommit,
+      rebaseStrategy: options.rebaseStrategy,
+    });
+    if (rebuildResult === "unchanged") {
+      const rebuiltCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
+      if (remotePublishedPathsMatch(rebuiltCommit, options.remote, options.branch, options.paths)) {
+        adoptVerifiedRemoteHead(options.remote, options.branch);
+        return "unchanged";
+      }
+    }
   }
-
-  const rebuiltCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
-  if (
-    !pushLeasedHead(options.remote, options.branch, options.lease) &&
-    !remotePublishedPathsMatch(rebuiltCommit, options.remote, options.branch, options.paths)
-  ) {
-    throw new Error("Leased state publish failed after its single rebuild/push retry");
-  }
-  verifyRemotePublishedPaths(rebuiltCommit, options.remote, options.branch, options.paths);
-  return "committed";
 }
 
 function publishLeasedReconciliationHead(options: {
@@ -641,39 +643,34 @@ function publishLeasedReconciliationHead(options: {
   reconciliationSourceCommit?: string;
   reconciliationTupleKeys?: ReadonlySet<string>;
 }): void {
-  const expectedCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
-  if (pushLeasedHead(options.remote, options.branch, options.lease)) {
-    verifyRemotePublishExpectation(expectedCommit, options.remote, options.branch, options.paths);
-    return;
-  }
-  if (
-    remotePublishExpectationMatches(expectedCommit, options.remote, options.branch, options.paths)
-  ) {
-    console.log("Leased reconciliation push was ambiguous but the expected state is remote");
-    adoptVerifiedRemoteHead(options.remote, options.branch);
-    return;
-  }
+  for (let attempt = 1; ; attempt += 1) {
+    const expectedCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
+    const pushed = pushLeasedHead(options.remote, options.branch, options.lease);
+    if (
+      remotePublishExpectationMatches(expectedCommit, options.remote, options.branch, options.paths)
+    ) {
+      if (!pushed) {
+        console.log("Leased reconciliation push was ambiguous but the expected state is remote");
+      }
+      adoptVerifiedRemoteHead(options.remote, options.branch);
+      return;
+    }
 
-  console.log(`Leased reconciliation lost one unexpected ${options.branch} race; rebuilding once`);
-  runGit(["fetch", options.remote, options.branch]);
-  const remoteRef = `${options.remote}/${options.branch}`;
-  if (
-    !rebuildReconciliationCommit(
-      remoteRef,
-      options.reconciliationSourceCommit,
-      options.reconciliationTupleKeys,
-    )
-  ) {
-    throw new Error("Failed to rebuild leased reconciliation publish");
+    console.log(
+      `Leased reconciliation ${pushed ? "was superseded after an accepted push" : `lost an unexpected ${options.branch} race`}; rebuilding attempt=${attempt}`,
+    );
+    runGit(["fetch", options.remote, options.branch]);
+    const remoteRef = `${options.remote}/${options.branch}`;
+    if (
+      !rebuildReconciliationCommit(
+        remoteRef,
+        options.reconciliationSourceCommit,
+        options.reconciliationTupleKeys,
+      )
+    ) {
+      throw new Error("Failed to rebuild leased reconciliation publish");
+    }
   }
-  const rebuiltCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
-  if (
-    !pushLeasedHead(options.remote, options.branch, options.lease) &&
-    !remotePublishExpectationMatches(rebuiltCommit, options.remote, options.branch, options.paths)
-  ) {
-    throw new Error("Leased reconciliation failed after its single rebuild/push retry");
-  }
-  verifyRemotePublishExpectation(rebuiltCommit, options.remote, options.branch, options.paths);
 }
 
 function pushLeasedHead(remote: string, branch: string, lease: StatePublishLease): boolean {
@@ -714,18 +711,6 @@ function remotePublishedPathsMatch(
   if (result.status === 0) return true;
   if (result.status === 1) return false;
   throw new Error(result.stderr.trim() || `Failed to verify expected blobs on ${remote}/${branch}`);
-}
-
-function verifyRemotePublishExpectation(
-  expectedCommit: string,
-  remote: string,
-  branch: string,
-  paths?: readonly string[],
-): void {
-  if (!remotePublishExpectationMatches(expectedCommit, remote, branch, paths)) {
-    throw new Error(`Remote ${remote}/${branch} failed expected-state verification`);
-  }
-  adoptVerifiedRemoteHead(remote, branch);
 }
 
 function remotePublishExpectationMatches(
@@ -1283,10 +1268,8 @@ function createStatePublishLeaseCommit(options: {
   expiresAtMs: number;
   ttlMs: number;
 }): string {
-  const [parent, tree] = runGit(["rev-parse", "HEAD", "HEAD^{tree}"], { quiet: true })
-    .trim()
-    .split(/\r?\n/);
-  if (!parent || !tree) throw new Error("Failed to resolve state publish lease commit objects");
+  const tree = runGit(["mktree"], { input: "", quiet: true }).trim();
+  if (!tree) throw new Error("Failed to create the state publish lease tree");
   const message = [
     "ClawSweeper state publish lease",
     "",
@@ -1298,7 +1281,7 @@ function createStatePublishLeaseCommit(options: {
     `expires_at: ${new Date(options.expiresAtMs).toISOString()}`,
     "",
   ].join("\n");
-  return runGit(["commit-tree", tree, "-p", parent], {
+  return runGit(["commit-tree", tree], {
     input: message,
     quiet: true,
   }).trim();

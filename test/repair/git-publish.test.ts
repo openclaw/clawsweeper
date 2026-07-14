@@ -1527,6 +1527,62 @@ test("publishMainCommit rebuilds generated state commits without deleting concur
   assert.equal(run("git", ["--git-dir", origin, "show", "main:keep.txt"], root), "keep remote\n");
 });
 
+test("state publisher uses a detached empty-tree lease commit", async () => {
+  const fixture = createStatePublishRemote("detached-lease");
+  const state = path.join(fixture.root, "state");
+  const source = path.join(fixture.root, "source");
+  const releaseSignal = path.join(fixture.root, "release-publisher");
+  const releaseObserved = path.join(fixture.root, "publisher-released");
+  cloneState(fixture.origin, state);
+  fs.mkdirSync(source);
+  write(path.join(source, "results/detached-lease.txt"), "published\n");
+  installStatePushReleaseHook(state, releaseSignal, releaseObserved);
+
+  const child = startPublishCli(
+    source,
+    state,
+    "chore: publish through detached lease",
+    leasedPublishEnv({
+      CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "5000",
+      CLAWSWEEPER_PUBLISH_DEADLINE_MS: "2000",
+      CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
+      CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "3000",
+      CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
+    }),
+  );
+  const childResult = waitForChild(child);
+  let inspectionError;
+  try {
+    await waitForRemoteRef(fixture.origin, STATE_PUBLISH_LEASE_REF);
+    const commitAndParents = run(
+      "git",
+      ["--git-dir", fixture.origin, "rev-list", "--parents", "-n", "1", STATE_PUBLISH_LEASE_REF],
+      fixture.root,
+    )
+      .trim()
+      .split(/\s+/);
+    assert.equal(commitAndParents.length, 1);
+    assert.equal(
+      run(
+        "git",
+        ["--git-dir", fixture.origin, "ls-tree", "-r", STATE_PUBLISH_LEASE_REF],
+        fixture.root,
+      ),
+      "",
+    );
+  } catch (error) {
+    inspectionError = error;
+  } finally {
+    write(releaseSignal, "release\n");
+  }
+
+  const completed = await childResult;
+  if (inspectionError) throw inspectionError;
+  assert.equal(completed.status, 0, completed.stderr);
+  assert.equal(fs.existsSync(releaseObserved), true);
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+});
+
 test("state publishers serialize concurrent workflow commits through the remote lease", async () => {
   const fixture = createStatePublishRemote("concurrent");
   const firstState = path.join(fixture.root, "state-first");
@@ -2251,7 +2307,7 @@ test("leased publisher adopts a path-equivalent remote race before source refres
   assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
 });
 
-test("leased publisher performs only one rebuild after an unexpected state race", () => {
+test("leased publisher rebuilds after an unexpected state race", () => {
   const fixture = createStatePublishRemote("single-rebuild");
   const state = path.join(fixture.root, "state");
   const other = path.join(fixture.root, "other");
@@ -2294,7 +2350,113 @@ test("leased publisher performs only one rebuild after an unexpected state race"
     Number(fs.readFileSync(path.join(state, ".git/hooks/state-push-count"), "utf8").trim()),
     2,
   );
-  assert.equal(lines.filter((line) => line.includes("rebuilding once")).length, 1);
+  assert.equal(lines.filter((line) => line.includes("rebuilding attempt=1")).length, 1);
+});
+
+test("leased publisher converges after repeated unexpected state races", () => {
+  const fixture = createStatePublishRemote("repeated-races");
+  const state = path.join(fixture.root, "state");
+  const other = path.join(fixture.root, "other");
+  const source = path.join(fixture.root, "source");
+  cloneState(fixture.origin, state);
+  cloneState(fixture.origin, other);
+  fs.mkdirSync(source);
+  write(path.join(source, "results/local.txt"), "local\n");
+  installRepeatedStateRaceHook(state, other, 4);
+
+  const lines = captureConsoleLog(() =>
+    withEnv(
+      leasedPublishEnv({
+        CLAWSWEEPER_STATE_DIR: state,
+        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
+        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
+      }),
+      () =>
+        withCwd(source, () =>
+          publishMainCommit({
+            message: "chore: converge leased publish",
+            paths: ["results/local.txt"],
+          }),
+        ),
+    ),
+  );
+
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", "state:results/local.txt"], fixture.root),
+    "local\n",
+  );
+  for (let race = 1; race <= 4; race += 1) {
+    assert.equal(
+      run(
+        "git",
+        ["--git-dir", fixture.origin, "show", `state:results/remote-race-${race}.txt`],
+        fixture.root,
+      ),
+      `remote race ${race}\n`,
+    );
+  }
+  assert.equal(
+    Number(fs.readFileSync(path.join(state, ".git/hooks/state-push-count"), "utf8").trim()),
+    5,
+  );
+  assert.equal(lines.filter((line) => line.includes("rebuilding attempt=")).length, 4);
+});
+
+test("leased reconciliation converges after repeated unexpected state races", () => {
+  const fixture = createStatePublishRemote("repeated-reconciliation-races");
+  const state = path.join(fixture.root, "state");
+  const other = path.join(fixture.root, "other");
+  const source = path.join(fixture.root, "source");
+  const recordsRoot = "records/openclaw-openclaw";
+  const tuplePaths = [
+    `${recordsRoot}/items/1.md`,
+    `${recordsRoot}/plans/1.md`,
+    `${recordsRoot}/decision-packets/1.json`,
+  ];
+  cloneState(fixture.origin, state);
+  cloneState(fixture.origin, other);
+  fs.mkdirSync(source);
+  const localTuple = writeRecordTuple(source, {
+    number: 1,
+    marker: "local reconciliation",
+    reviewedAt: "2026-07-14T20:00:00.000Z",
+    itemUpdatedAt: "2026-07-14T19:59:00Z",
+  });
+  installRepeatedStateRaceHook(state, other, 2);
+
+  const lines = captureConsoleLog(() =>
+    withEnv(
+      leasedPublishEnv({
+        CLAWSWEEPER_STATE_DIR: state,
+        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
+        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
+      }),
+      () =>
+        withCwd(source, () =>
+          publishMainCommit({
+            message: "chore: converge leased reconciliation",
+            paths: tuplePaths,
+            rebaseStrategy: "reconcile-records",
+          }),
+        ),
+    ),
+  );
+
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "show", `state:${tuplePaths[0]}`], fixture.root),
+    localTuple.primary,
+  );
+  for (let race = 1; race <= 2; race += 1) {
+    assert.equal(
+      run(
+        "git",
+        ["--git-dir", fixture.origin, "show", `state:results/remote-race-${race}.txt`],
+        fixture.root,
+      ),
+      `remote race ${race}\n`,
+    );
+  }
+  assert.equal(lines.filter((line) => line.includes("rebuilding attempt=")).length, 2);
 });
 
 test("leased apply-records rebuild preserves a concurrent remote close", () => {
@@ -2364,7 +2526,7 @@ test("leased apply-records rebuild preserves a concurrent remote close", () => {
   );
 });
 
-test("leased publisher rejects a successful push whose remote blobs changed", () => {
+test("leased publisher rebuilds when an accepted push is overwritten before verification", () => {
   const fixture = createStatePublishRemote("verify");
   const state = path.join(fixture.root, "state");
   const poison = path.join(fixture.root, "poison");
@@ -2379,27 +2541,29 @@ test("leased publisher rejects a successful push whose remote blobs changed", ()
   installStatePoisonHook(fixture.origin);
   write(path.join(source, "results/verified.txt"), "expected\n");
 
-  assert.throws(
-    () =>
-      withEnv(
-        leasedPublishEnv({
-          CLAWSWEEPER_STATE_DIR: state,
-          CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
-          CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
-        }),
-        () =>
-          withCwd(source, () =>
-            publishMainCommit({
-              message: "chore: verify remote blobs",
-              paths: ["results/verified.txt"],
-            }),
-          ),
-      ),
-    /expected-blob verification/,
+  const lines = captureConsoleLog(() =>
+    withEnv(
+      leasedPublishEnv({
+        CLAWSWEEPER_STATE_DIR: state,
+        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
+        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
+      }),
+      () =>
+        withCwd(source, () =>
+          publishMainCommit({
+            message: "chore: verify remote blobs",
+            paths: ["results/verified.txt"],
+          }),
+        ),
+    ),
   );
   assert.equal(
     run("git", ["--git-dir", fixture.origin, "show", "state:results/verified.txt"], fixture.root),
-    "poison\n",
+    "expected\n",
+  );
+  assert.equal(
+    lines.some((line) => line.includes("superseded after an accepted push")),
+    true,
   );
   assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
 });
@@ -2420,18 +2584,33 @@ test("failed leased publish refreshes advanced remote state before a later broad
   write(path.join(source, "results/local-checkpoint.txt"), "local\n");
   const rejectingHook = installStatePushRejectHook(fixture.origin);
 
-  assert.throws(
-    () =>
-      withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
-        withCwd(source, () =>
-          publishMainCommit({
-            message: "chore: fail narrow checkpoint",
-            paths: ["results/local-checkpoint.txt"],
+  const startedAt = Date.now();
+  const lines = captureConsoleLog(() =>
+    assert.throws(
+      () =>
+        withEnv(
+          leasedPublishEnv({
+            CLAWSWEEPER_STATE_DIR: state,
+            CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "3000",
+            CLAWSWEEPER_PUBLISH_DEADLINE_MS: "300",
+            CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "500",
+            CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "1000",
           }),
+          () =>
+            withCwd(source, () =>
+              publishMainCommit({
+                message: "chore: fail narrow checkpoint",
+                paths: ["results/local-checkpoint.txt"],
+              }),
+            ),
         ),
-      ),
-    /single rebuild\/push retry/,
+      /State publication deadline exceeded/,
+    ),
   );
+  assert.ok(Date.now() - startedAt < 3000);
+  const metrics = lines.find((line) => line.includes("Git publish metrics:")) ?? "";
+  const processCount = Number(/processes=(\d+)/.exec(metrics)?.[1]);
+  assert.ok(Number.isInteger(processCount) && processCount < 256, metrics);
   fs.rmSync(rejectingHook);
 
   assert.equal(fs.readFileSync(path.join(source, remoteJob), "utf8"), "remote job\n");
@@ -3680,6 +3859,32 @@ while read -r local_ref local_oid remote_ref remote_oid; do
   count=$((count + 1))
   printf '%s\\n' "$count" > "${counter}"
   if test "$count" -eq 1; then
+    git -C "${other}" push origin HEAD:state
+  fi
+done
+`,
+  );
+  fs.chmodSync(hook, 0o755);
+}
+
+function installRepeatedStateRaceHook(state, other, races) {
+  const hook = path.join(state, ".git/hooks/pre-push");
+  const counter = path.join(state, ".git/hooks/state-push-count");
+  fs.writeFileSync(
+    hook,
+    `#!/bin/sh
+while read -r local_ref local_oid remote_ref remote_oid; do
+  if test "$remote_ref" != "refs/heads/state"; then
+    continue
+  fi
+  count=0
+  if test -f "${counter}"; then count=$(cat "${counter}"); fi
+  count=$((count + 1))
+  printf '%s\\n' "$count" > "${counter}"
+  if test "$count" -le "${races}"; then
+    printf 'remote race %s\\n' "$count" > "${other}/results/remote-race-$count.txt"
+    git -C "${other}" add "results/remote-race-$count.txt"
+    git -C "${other}" commit -m "remote state race $count"
     git -C "${other}" push origin HEAD:state
   fi
 done
