@@ -107,9 +107,9 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
-- Preserved exact-attempt child mutation outcomes when interrupted workflow
-  attempts are terminalized, preventing retries from erasing unknown mutation
-  state or borrowing evidence from another attempt.
+- Published crash-safe `workflow.attempt` and `repair.execute` receipts around
+  repair-cluster execution, terminalizing dangling child mutations before their
+  parent and allowing later observed outcomes to supersede stale unknown state.
 - Stopped narrow OpenClaw automerge repairs from chasing unrelated full-repository lint and typecheck failures.
 - Removed the synthetic Codex write preflight that could block repair before Codex saw the real task.
 - Kept exact-review handoff health live when the dashboard serves a stale fleet snapshot, so recovered claims no longer leave the operator rail stuck in a delayed or stalled state.
