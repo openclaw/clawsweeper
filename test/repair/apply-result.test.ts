@@ -949,6 +949,7 @@ test("repair apply skips target closed after proof when updated_at is missing", 
           title: "Add config validation",
           pullRequest: true,
           state: "closed",
+          updatedAt: "2026-05-25T00:05:00Z",
         }),
       },
       logPath: paths.ghLogPath,
@@ -985,6 +986,7 @@ test("repair apply treats already-closed PR duplicate close as idempotent before
           title: "Add config validation",
           pullRequest: true,
           state: "closed",
+          updatedAt: "2026-05-25T00:05:00Z",
         }),
         202: issue({ number: 202, title: "Rewrite config validation", pullRequest: true }),
       },
@@ -1018,6 +1020,51 @@ test("repair apply treats already-closed PR duplicate close as idempotent before
       "already closed with matching clawsweeper-repair comment",
     );
     assert.equal(hasPrCloseCall(paths.ghLogPath), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("repair apply does not trust a human-authored close marker", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close_duplicate",
+      classification: "duplicate",
+      canonical: "#202",
+    });
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({
+          number: 101,
+          title: "Add config validation",
+          pullRequest: true,
+          state: "closed",
+          updatedAt: "2026-05-25T00:05:00Z",
+        }),
+        202: issue({ number: 202, title: "Rewrite config validation", pullRequest: true }),
+      },
+      pulls: {
+        101: pull({ number: 101, title: "Add config validation" }),
+        202: pull({ number: 202, title: "Rewrite config validation" }),
+      },
+      comments: {
+        101: [
+          comment(
+            "alice",
+            "<!-- clawsweeper-repair:close:repair-pr-close-proof:#101:proof-gated-close -->",
+          ),
+        ],
+        202: [],
+      },
+      logPath: paths.ghLogPath,
+    });
+
+    runApplyResult(paths, { proofDecision: "keep_open", failIfProofRuns: true });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.actions[0].status, "skipped");
+    assert.equal(report.actions[0].reason, "already closed");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -1121,6 +1168,114 @@ test("repair apply executes dependent-first input in reviewed dependency order",
       ],
     );
     assert.deepEqual(issueCloseTargets(paths.ghLogPath), ["101", "102"]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("repair second apply reuses a trusted first-pass close for dependent closure", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, [
+      dependencyClose("#102", ["#101"]),
+      dependencyClose("#101"),
+    ]);
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({
+          number: 101,
+          title: "Prerequisite",
+          pullRequest: false,
+          state: "closed",
+          updatedAt: "2026-05-25T00:05:00Z",
+        }),
+        102: issue({ number: 102, title: "Dependent", pullRequest: false }),
+      },
+      pulls: {},
+      comments: {
+        101: [
+          comment(
+            "clawsweeper[bot]",
+            "<!-- clawsweeper-repair:close:repair-pr-close-proof:#101:proof-gated-close -->",
+          ),
+        ],
+        102: [],
+      },
+      logPath: paths.ghLogPath,
+    });
+
+    runApplyResult(paths, { proofDecision: "covered" });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.deepEqual(
+      report.actions.map((action: Record<string, unknown>) => [action.target, action.status]),
+      [
+        ["#101", "executed"],
+        ["#102", "executed"],
+      ],
+    );
+    assert.deepEqual(issueCloseTargets(paths.ghLogPath), ["102"]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("repair second apply promotes a fix-first close after post-flight merge authorization", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
+  try {
+    const paths = writeApplyFixture(tmp, {
+      action: "close_fixed_by_candidate",
+      classification: "fixed_by_candidate",
+      target_kind: "issue",
+      status: "blocked",
+      candidate_fix: "#202",
+      reason: "blocked-by-fix-first until the canonical fix PR lands",
+    });
+    fs.writeFileSync(
+      path.join(path.dirname(paths.resultPath), "post-flight-report.json"),
+      JSON.stringify(
+        {
+          repo: "openclaw/openclaw",
+          cluster_id: "repair-pr-close-proof",
+          closure_authorization: {
+            version: 1,
+            status: "authorized",
+            merged_fixes: [
+              {
+                fix_ref: "#202",
+                merge_commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Fixed issue", pullRequest: false }),
+      },
+      pulls: {},
+      comments: { 101: [] },
+      logPath: paths.ghLogPath,
+    });
+
+    runApplyResult(paths, { proofDecision: "covered" });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.deepEqual(report.closure_promotions, [
+      {
+        target: "#101",
+        action: "close_fixed_by_candidate",
+        source_status: "blocked",
+        effective_status: "planned",
+        candidate_fix: "#202",
+        reason: "authorized by merged ClawSweeper Repair fix",
+      },
+    ]);
+    assert.equal(report.actions[0].status, "executed");
+    assert.deepEqual(issueCloseTargets(paths.ghLogPath), ["101"]);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -1565,6 +1720,7 @@ function issue(options: {
   title: string;
   pullRequest: boolean;
   state?: string;
+  updatedAt?: string;
   labels?: string[];
 }) {
   return {
@@ -1572,7 +1728,7 @@ function issue(options: {
     title: options.title,
     html_url: `https://github.com/openclaw/openclaw/pull/${options.number}`,
     state: options.state ?? "open",
-    updated_at: "2026-05-25T00:00:00Z",
+    updated_at: options.updatedAt ?? "2026-05-25T00:00:00Z",
     author_association: "CONTRIBUTOR",
     user: { login: "contributor" },
     labels: (options.labels ?? []).map((name) => ({ name })),

@@ -190,6 +190,24 @@ export function repairClosureDependencyRefs(action: LooseRecord): readonly strin
   return dependencyRefs(action.depends_on);
 }
 
+export function isFixFirstBlockedCloseAction(
+  action: LooseRecord,
+  hasClusterFixPath: JsonValue,
+): boolean {
+  if (action.status !== "blocked") return false;
+  const text = [
+    action.reason,
+    action.comment,
+    action.idempotency_key,
+    ...(action.evidence ?? []),
+  ].join("\n");
+  const hasFixFirstText =
+    /fix[- ]first|blocked-by-fix-first|requires? a fix|requires? ClawSweeper Repair fix|fix PR|fix path|canonical fix (?:path|landing|lands?)|canonical repair (?:path|landing|lands?)|merged canonical fix|hydrated merged fix PR|replacement PR|replacement fix|pending .*fix|after .*fix .*lands?|open_fix_pr|build_fix_artifact/i.test(
+      text,
+    );
+  return hasFixFirstText || (Boolean(hasClusterFixPath) && /blocked|wait|pending/i.test(text));
+}
+
 export function orderRepairClosureActions(
   actions: readonly LooseRecord[],
   plan: RepairClosureResultPlan,

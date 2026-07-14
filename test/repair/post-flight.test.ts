@@ -346,6 +346,16 @@ test("merge post-flight leaves dependency-gated closeouts to the second apply pa
     assert.equal(report.actions.length, 1);
     assert.equal(report.actions[0]?.status, "executed");
     assert.equal(report.actions[0]?.merge_commit_sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    assert.deepEqual(report.closure_authorization, {
+      version: 1,
+      status: "authorized",
+      merged_fixes: [
+        {
+          fix_ref: "#123",
+          merge_commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        },
+      ],
+    });
     assert.equal(fs.readFileSync(viewCountPath, "utf8"), "2");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

@@ -119,7 +119,30 @@ if (report.actions.length === 0) {
   });
 }
 
+report.closure_authorization = buildClosureAuthorization(report.actions);
 writeReport(report, resultPath);
+
+function buildClosureAuthorization(actions: LooseRecord[]) {
+  const mergedFixes = actions
+    .filter(
+      (action) =>
+        action.action === "finalize_fix_pr" &&
+        action.status === "executed" &&
+        typeof action.pr === "string" &&
+        /^#\d+$/.test(action.pr) &&
+        typeof action.merge_commit_sha === "string" &&
+        action.merge_commit_sha.trim(),
+    )
+    .map((action) => ({
+      fix_ref: action.pr,
+      merge_commit_sha: action.merge_commit_sha,
+    }));
+  return {
+    version: 1,
+    status: mergedFixes.length > 0 ? "authorized" : "not_authorized",
+    merged_fixes: mergedFixes,
+  };
+}
 
 function finalizeFixPr(action: LooseRecord) {
   const base = {

@@ -42,6 +42,7 @@ import {
   type PrCloseCoverageProofPullRequestView,
 } from "../pr-close-coverage-proof.js";
 import {
+  isFixFirstBlockedCloseAction,
   orderRepairClosureActions,
   planRepairClosureResult,
   repairClosureDependencyRefs,
@@ -177,7 +178,9 @@ const maintainerCloseRefs = new Set(
     .filter(Boolean),
 );
 
-const closurePlan = planRepairClosureResult(result);
+const { effectiveResult, promotions } = applyPostFlightClosurePromotions(result);
+if (promotions.length > 0) report.closure_promotions = promotions;
+const closurePlan = planRepairClosureResult(effectiveResult);
 if (closurePlan.status === "needs_human") {
   throw new Error(
     `refusing apply: ${closurePlan.diagnostics
@@ -187,12 +190,23 @@ if (closurePlan.status === "needs_human") {
 }
 report.closure_plan = closurePlan;
 const closureOutcomes = new Map<string, LooseRecord>();
-const applicatorActions = (result.actions ?? []).filter(isApplicatorAction);
+const applicatorActions = (effectiveResult.actions ?? []).filter(isApplicatorAction);
 for (const action of orderRepairClosureActions(applicatorActions, closurePlan)) {
   if (!isApplicatorAction(action)) continue;
   const outcome =
-    blockedClosureDependencyOutcome({ result, action, dryRun, closureOutcomes }) ??
-    applyAction({ job, result, action, dryRun, allowMissingUpdatedAt });
+    blockedClosureDependencyOutcome({
+      result: effectiveResult,
+      action,
+      dryRun,
+      closureOutcomes,
+    }) ??
+    applyAction({
+      job,
+      result: effectiveResult,
+      action,
+      dryRun,
+      allowMissingUpdatedAt,
+    });
   report.actions.push(outcome);
   if (action.status === "planned" && CLOSE_ACTIONS.has(String(action.action ?? ""))) {
     const target = normalizeRepairClosureRef(action.target);
@@ -227,6 +241,70 @@ function readFixExecutionReport(_result?: JsonValue) {
   const reportPath = path.join(path.dirname(resultPath), "fix-execution-report.json");
   if (!fs.existsSync(reportPath)) return null;
   return JSON.parse(fs.readFileSync(reportPath, "utf8"));
+}
+
+function applyPostFlightClosurePromotions(sourceResult: LooseRecord): {
+  effectiveResult: LooseRecord;
+  promotions: LooseRecord[];
+} {
+  const postFlightReportPath = path.join(path.dirname(resultPath), "post-flight-report.json");
+  if (!fs.existsSync(postFlightReportPath)) {
+    return { effectiveResult: sourceResult, promotions: [] };
+  }
+  const postFlightReport = JSON.parse(fs.readFileSync(postFlightReportPath, "utf8"));
+  if (
+    postFlightReport.repo !== sourceResult.repo ||
+    postFlightReport.cluster_id !== sourceResult.cluster_id ||
+    postFlightReport.closure_authorization?.version !== 1 ||
+    postFlightReport.closure_authorization?.status !== "authorized"
+  ) {
+    return { effectiveResult: sourceResult, promotions: [] };
+  }
+
+  const mergedFixRefs = new Set(
+    (postFlightReport.closure_authorization.merged_fixes ?? [])
+      .filter(
+        (entry: JsonValue) =>
+          typeof entry?.merge_commit_sha === "string" && entry.merge_commit_sha.trim(),
+      )
+      .map((entry: JsonValue) => normalizeRepairClosureRef(entry.fix_ref))
+      .filter(Boolean),
+  );
+  if (mergedFixRefs.size === 0) return { effectiveResult: sourceResult, promotions: [] };
+
+  const actions = Array.isArray(sourceResult.actions) ? sourceResult.actions : [];
+  const hasFixPath = actions.some(
+    (action: JsonValue) =>
+      ["fix_needed", "build_fix_artifact", "open_fix_pr"].includes(String(action?.action ?? "")) &&
+      ["planned", "blocked"].includes(String(action?.status ?? "")),
+  );
+  const promotions: LooseRecord[] = [];
+  const effectiveActions = actions.map((action: LooseRecord) => {
+    if (
+      !CLOSE_ACTIONS.has(String(action.action ?? "")) ||
+      !isFixFirstBlockedCloseAction(action, hasFixPath)
+    ) {
+      return action;
+    }
+    const candidateFix = normalizeRepairClosureRef(
+      resolveRepairClosureRelationship(action).candidateFix,
+    );
+    if (!candidateFix || !mergedFixRefs.has(candidateFix)) return action;
+    promotions.push({
+      target: normalizeRepairClosureRef(action.target),
+      action: action.action,
+      source_status: action.status,
+      effective_status: "planned",
+      candidate_fix: candidateFix,
+      reason: "authorized by merged ClawSweeper Repair fix",
+    });
+    return { ...action, status: "planned" };
+  });
+  if (promotions.length === 0) return { effectiveResult: sourceResult, promotions };
+  return {
+    effectiveResult: { ...sourceResult, actions: effectiveActions },
+    promotions,
+  };
 }
 
 function applyAction({ job, result, action, dryRun, allowMissingUpdatedAt }: LooseRecord) {
@@ -388,6 +466,21 @@ function applyCloseAction({
     }
   }
 
+  const comment = renderCloseComment({ action, classification, result, target, live });
+  const marker = idempotencyMarker(result.cluster_id, target, idempotencyKey);
+  const body = comment.includes(marker) ? comment : `${comment.trim()}\n\n${marker}`;
+  const existingComment = findExistingComment(result.repo, target, marker, body);
+  if (live.state !== "open") {
+    return {
+      ...base,
+      status: existingComment ? "executed" : "skipped",
+      reason: existingComment
+        ? "already closed with matching clawsweeper-repair comment"
+        : "already closed",
+      live_state: live.state,
+    };
+  }
+
   const expectedUpdatedAt = action.target_updated_at ?? action.live_updated_at;
   if (!expectedUpdatedAt && !allowMissingUpdatedAt) {
     return {
@@ -409,21 +502,6 @@ function applyCloseAction({
     };
   }
 
-  const comment = renderCloseComment({ action, classification, result, target, live });
-  const marker = idempotencyMarker(result.cluster_id, target, idempotencyKey);
-  const body = comment.includes(marker) ? comment : `${comment.trim()}\n\n${marker}`;
-  const existingComment = findExistingComment(result.repo, target, marker, body);
-
-  if (live.state !== "open") {
-    return {
-      ...base,
-      status: existingComment ? "executed" : "skipped",
-      reason: existingComment
-        ? "already closed with matching clawsweeper-repair comment"
-        : "already closed",
-      live_state: live.state,
-    };
-  }
   const lockedSkip = lockedConversationSkipIfLocked(base, live);
   if (lockedSkip) return lockedSkip;
 
@@ -1735,7 +1813,8 @@ function fetchPullRequestView(repo: string, number: JsonValue) {
 function findExistingComment(repo: string, number: JsonValue, marker: LooseRecord, body: string) {
   const comments = ghPaged(`repos/${repo}/issues/${number}/comments`);
   return comments.find(
-    (comment: JsonValue) => comment.body?.includes(marker) || comment.body === body,
+    (comment: JsonValue) =>
+      isClawSweeperComment(comment) && (comment.body?.includes(marker) || comment.body === body),
   );
 }
 
