@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   DispatchOutcomeUnknownError,
   DispatchRejectedError,
+  dispatchErrorDisposition,
   dispatchHttpError,
   dispatchInputSha256,
   dispatchProcessOutcome,
@@ -179,6 +180,18 @@ test("GitHub Actions dispatches fail before the request when receipts are not co
   assert.equal(calls, 0);
 });
 
+test("error classifiers that throw remain an unknown dispatch outcome", () => {
+  assert.deepEqual(
+    dispatchErrorDisposition(new Error("request failed"), () => {
+      throw new Error("classifier failed");
+    }),
+    {
+      outcome: "unknown",
+      statusKind: "unknown",
+    },
+  );
+});
+
 test("HTTP dispatch failures separate known rejection from ambiguous acceptance", () => {
   assert.ok(dispatchHttpError(403, "forbidden") instanceof DispatchRejectedError);
   assert.ok(dispatchHttpError(422, "invalid") instanceof DispatchRejectedError);
@@ -205,6 +218,23 @@ test("process dispatch outcomes treat every non-success exit as ambiguous", () =
       statusKind: "timeout",
     },
   );
+});
+
+test("every workflow-backed dispatch producer publishes finalized receipt shards", () => {
+  const workflows = [
+    [".github/workflows/sweep.yml", "target-fanout-dispatch"],
+    [".github/workflows/repair-self-heal.yml", "self-heal-dispatch"],
+    [".github/workflows/github-activity.yml", "github-activity-dispatch"],
+    [".github/workflows/spam-comment-intake.yml", "spam-intake-dispatch"],
+  ] as const;
+  for (const [workflowPath, lane] of workflows) {
+    const workflow = fs.readFileSync(workflowPath, "utf8");
+    assert.match(workflow, /uses: \.\/\.github\/actions\/setup-action-ledger/);
+    assert.match(workflow, new RegExp(`--lane ${lane}`));
+    assert.match(workflow, /repair:action-ledger -- finalize/);
+    assert.match(workflow, /repair:action-ledger -- publish/);
+    assert.match(workflow, /repair:publish-main/);
+  }
 });
 
 function baseOptions(fixture: ReturnType<typeof actionLedgerFixture>) {

@@ -106,15 +106,22 @@ export function dispatchInputSha256(input: BoundedDispatchInput): string {
 
 export function runDispatchWithReceiptSync<T>(options: DispatchReceiptOptions<T>): T {
   const receipt = startDispatchReceipt(options);
+  let result: T;
   try {
-    const result = options.operation();
-    const disposition = options.outcome?.(result) ?? acceptedDispatch();
-    finishDispatchReceipt(receipt, disposition);
-    return result;
+    result = options.operation();
   } catch (error) {
-    finishDispatchReceipt(receipt, dispatchErrorDisposition(error, options.knownNoMutation));
+    finishFailedDispatchReceipt(receipt, error, options.knownNoMutation);
     throw error;
   }
+  let disposition: DispatchOutcomeDisposition;
+  try {
+    disposition = options.outcome?.(result) ?? acceptedDispatch();
+  } catch (error) {
+    finishFailedDispatchReceipt(receipt, error);
+    throw error;
+  }
+  finishDispatchReceipt(receipt, disposition);
+  return result;
 }
 
 export async function runDispatchWithReceipt<T>(
@@ -125,15 +132,22 @@ export async function runDispatchWithReceipt<T>(
   },
 ): Promise<T> {
   const receipt = startDispatchReceipt(options);
+  let result: T;
   try {
-    const result = await options.operation();
-    const disposition = options.outcome?.(result) ?? acceptedDispatch();
-    finishDispatchReceipt(receipt, disposition);
-    return result;
+    result = await options.operation();
   } catch (error) {
-    finishDispatchReceipt(receipt, dispatchErrorDisposition(error, options.knownNoMutation));
+    finishFailedDispatchReceipt(receipt, error, options.knownNoMutation);
     throw error;
   }
+  let disposition: DispatchOutcomeDisposition;
+  try {
+    disposition = options.outcome?.(result) ?? acceptedDispatch();
+  } catch (error) {
+    finishFailedDispatchReceipt(receipt, error);
+    throw error;
+  }
+  finishDispatchReceipt(receipt, disposition);
+  return result;
 }
 
 export function acceptedDispatch(): DispatchOutcomeDisposition {
@@ -165,7 +179,11 @@ export function dispatchErrorDisposition(
   knownNoMutation?: (error: unknown) => boolean,
 ): DispatchOutcomeDisposition {
   if (error instanceof DispatchRejectedError) return rejectedDispatch();
-  if (knownNoMutation?.(error) === true) return rejectedDispatch();
+  try {
+    if (knownNoMutation?.(error) === true) return rejectedDispatch();
+  } catch {
+    return unknownDispatch("unknown");
+  }
   if (error instanceof DispatchOutcomeUnknownError) {
     return unknownDispatch(error.timeout ? "timeout" : "unknown");
   }
@@ -271,6 +289,18 @@ function finishDispatchReceipt(
     receipt.options.env,
   );
   receipt.chain.parentEventId = event?.event_id ?? receipt.chain.parentEventId;
+}
+
+function finishFailedDispatchReceipt(
+  receipt: ReturnType<typeof startDispatchReceipt>,
+  error: unknown,
+  knownNoMutation?: (error: unknown) => boolean,
+): void {
+  try {
+    finishDispatchReceipt(receipt, dispatchErrorDisposition(error, knownNoMutation));
+  } catch {
+    console.error("[action-ledger] failed to record dispatch failure outcome");
+  }
 }
 
 function recordDispatchEvent(
