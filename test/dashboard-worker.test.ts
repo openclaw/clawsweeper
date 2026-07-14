@@ -4330,6 +4330,18 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
     automatic_work: [],
     pipeline: [],
     exact_review_queue: {
+      pending: 4,
+      ready_pending: 3,
+      admissible_pending: 2,
+      pressure: {
+        status: "congested",
+        reason: "capacity_full_with_backlog",
+        capacity: 28,
+        active: 28,
+        pending: 4,
+        ready_pending: 3,
+        admissible_pending: 2,
+      },
       handoff_health: {
         status: "healthy",
         message: "Dispatch-to-claim handoffs are within the expected window.",
@@ -4440,9 +4452,12 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(elementFor("exact-review-handoff").innerHTML, /Dispatching/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /2 of 28 exact-review slots open/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /health-badge healthy/);
+  assert.match(elementFor("exact-review-handoff").innerHTML, /pressure congested/);
+  assert.match(elementFor("exact-review-handoff").innerHTML, /4 total · 3 ready · 2 admissible/);
 
   status.recent.apply_health.items = [];
   status.exact_review_queue.handoff_health.status = "stalled";
+  status.exact_review_queue.pressure.status = "saturated";
   status.exact_review_queue.handoff_health.message =
     "A dispatched review has not been claimed within the expected handoff window.";
   context.renderDashboard(status, "");
@@ -4450,6 +4465,7 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.equal(elementFor("hero-dot").className, "hero-dot red");
   assert.match(elementFor("hero-headline").textContent, /^Needs attention/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /health-badge stalled/);
+  assert.match(elementFor("exact-review-handoff").innerHTML, /pressure saturated/);
 
   Object.assign(status, { exact_review_queue: null });
   status.diagnostics.exact_review_queue_error = "exact-review queue timed out";

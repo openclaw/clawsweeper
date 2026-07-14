@@ -8642,6 +8642,7 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .exact-handoff-title { display: grid; gap: 3px; }
 .exact-handoff-title strong { font-size: 13px; font-weight: 650; }
 .exact-handoff-title span { color: var(--muted); font-size: 12px; }
+.exact-handoff-badges { display: flex; flex-wrap: wrap; gap: 6px; }
 .health-badge {
   flex: 0 0 auto;
   padding: 3px 8px;
@@ -8654,8 +8655,10 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 }
 .health-badge.healthy,
 .health-badge.idle { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); }
-.health-badge.degraded { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
-.health-badge.stalled { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
+.health-badge.degraded,
+.health-badge.congested { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
+.health-badge.stalled,
+.health-badge.saturated { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
 .handoff-phases {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -9467,6 +9470,8 @@ function renderExactReviewHandoff(queue) {
     return;
   }
   const status = ["idle", "healthy", "degraded", "stalled"].includes(health.status) ? health.status : "unknown";
+  const pressure = queue?.pressure;
+  const pressureStatus = ["idle", "congested", "saturated", "unknown"].includes(pressure?.status) ? pressure.status : "unknown";
   const labels = {
     pending: ["Pending", "waiting for admission"],
     dispatching: ["Dispatching", "waiting for run claim"],
@@ -9480,8 +9485,9 @@ function renderExactReviewHandoff(queue) {
     return '<div class="handoff-phase"><span>' + esc(labels[phase][0]) + '</span><strong>' + fmt.format(summary.count || 0) + '</strong><small>' + esc(labels[phase][1] + " · " + age) + '</small></div>';
   }).join("");
   const slots = fmt.format(health.available_slots || 0) + " of " + fmt.format(health.capacity || 0) + " exact-review slots open";
+  const backlog = fmt.format(queue?.pending || 0) + " total · " + fmt.format(queue?.ready_pending || 0) + " ready · " + fmt.format(queue?.admissible_pending || 0) + " admissible";
   const threshold = "stalled after " + elapsed((health.stalled_after_seconds || 0) * 1000);
-  target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Exact-review handoff</strong><span>' + esc(health.message || "Queue phase telemetry") + '</span></div><span class="health-badge ' + esc(status) + '">' + esc(status) + '</span></div><div class="handoff-phases">' + phases + '</div><div class="handoff-foot"><span>' + esc(slots) + '</span><span>' + esc(threshold) + '</span></div></div>';
+  target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Exact-review handoff</strong><span>' + esc(health.message || "Queue phase telemetry") + '</span></div><div class="exact-handoff-badges"><span class="health-badge ' + esc(status) + '">' + esc(status) + '</span><span class="health-badge ' + esc(pressureStatus) + '">pressure ' + esc(pressureStatus) + '</span></div></div><div class="handoff-phases">' + phases + '</div><div class="handoff-foot"><span>' + esc(slots) + '</span><span>' + esc(backlog) + '</span><span>' + esc(threshold) + '</span></div></div>';
 }
 function renderWorkers(rows) {
   workerIndex = new Map(rows.map(worker => [String(worker.id), worker]));
