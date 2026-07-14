@@ -4429,9 +4429,19 @@ function trustedAutomationReviewActivityCursor(number: number): string | null {
 function trustedAutomationReviewActivityBlockReason(
   command: LooseRecord,
 ): { reason: string; retryable: boolean } | null {
-  if (!["clawsweeper_auto_merge", "clawsweeper_auto_repair"].includes(String(command.intent))) {
+  if (!command.trusted_bot) return null;
+  const intent = String(command.intent);
+  if (
+    ![
+      "autoclose",
+      "clawsweeper_auto_merge",
+      "clawsweeper_auto_repair",
+      "clawsweeper_needs_human",
+    ].includes(intent)
+  ) {
     return null;
   }
+  if (intent === "autoclose" && command.target?.kind !== "pull_request") return null;
   const expected = command.expected_review_activity_cursor;
   if (!isReviewedPrActivityCursor(expected)) {
     return {

@@ -62,17 +62,21 @@ export class ReviewedPrActivityGuardError extends Error {
 
 const REVIEW_ACTIVITY_AUTHORIZED_MUTATIONS = new Set([
   "description_update",
+  "issue_close",
   "label_add",
   "label_create",
   "label_remove",
+  "pull_request_close",
   "pull_request_merge",
   "repair_dispatch",
   "review_dispatch",
 ]);
 
 const REVIEW_ACTIVITY_AUTHORIZED_INTENTS = new Set([
+  "autoclose",
   "clawsweeper_auto_merge",
   "clawsweeper_auto_repair",
+  "clawsweeper_needs_human",
 ]);
 
 export function createReviewedPrActivityCursor(options: {

@@ -298,6 +298,29 @@ test("trusted review activity is revalidated at the mutation boundary", () => {
   }
   assert.equal(operationCalls, 0);
 
+  for (const [intent, mutationKind] of [
+    ["autoclose", "issue_close"],
+    ["autoclose", "pull_request_close"],
+    ["clawsweeper_needs_human", "label_add"],
+  ]) {
+    assert.throws(
+      () =>
+        runReviewedPrActivityGuardedMutation({
+          intent,
+          mutationKind,
+          refresh: changedAtMutation,
+          operation: () => {
+            operationCalls += 1;
+          },
+        }),
+      (error) =>
+        error instanceof ReviewedPrActivityGuardError &&
+        error.mutationKind === mutationKind &&
+        error.block.retryable === false,
+    );
+  }
+  assert.equal(operationCalls, 0);
+
   runReviewedPrActivityGuardedMutation({
     intent: "clawsweeper_auto_merge",
     mutationKind: "comment_update",

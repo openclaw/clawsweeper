@@ -1416,8 +1416,8 @@ test("parseTrustedAutomation accepts trusted ClawSweeper close markers for autoc
       user: { login: "clawsweeper[bot]" },
       body: [
         "ClawSweeper proposed closing this PR.",
-        "<!-- clawsweeper-verdict:close item=96097 sha=abc123 confidence=high reason=duplicate_or_superseded -->",
-        "<!-- clawsweeper-action:close-required item=96097 sha=abc123 confidence=high reason=duplicate_or_superseded -->",
+        "<!-- clawsweeper-verdict:close item=96097 sha=abc123 confidence=high review_activity_cursor=v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reason=duplicate_or_superseded -->",
+        "<!-- clawsweeper-action:close-required item=96097 sha=abc123 confidence=high review_activity_cursor=v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reason=duplicate_or_superseded -->",
       ].join("\n"),
     },
     { trustedAuthors },
@@ -1427,6 +1427,10 @@ test("parseTrustedAutomation accepts trusted ClawSweeper close markers for autoc
   assert.equal(parsed.trusted_bot, true);
   assert.equal(parsed.expected_head_sha, "abc123");
   assert.equal(parsed.close_reason, "duplicate_or_superseded");
+  assert.equal(
+    parsed.expected_review_activity_cursor,
+    "v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  );
   assert.match(parsed.autoclose_message, /close-required/);
 
   const issueParsed = parseTrustedAutomation(

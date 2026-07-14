@@ -122,6 +122,14 @@ test("trusted verdict mutations refresh reviewed PR activity before dispatch", (
     readText("src/repair/comment-router-core.ts"),
     /function trustedRepair[\s\S]*expected_review_activity_cursor: marker\?\.attrs\?\.review_activity_cursor \?\? null/,
   );
+  assert.match(
+    readText("src/repair/comment-router-core.ts"),
+    /function trustedClose[\s\S]*expected_review_activity_cursor: marker\?\.attrs\?\.review_activity_cursor \?\? null/,
+  );
+  assert.match(
+    source,
+    /function trustedAutomationReviewActivityBlockReason[\s\S]*!command\.trusted_bot[\s\S]*"autoclose"[\s\S]*"clawsweeper_needs_human"[\s\S]*intent === "autoclose" && command\.target\?\.kind !== "pull_request"/,
+  );
 });
 
 test("exact comment convergence classifies a missing comment as no mutation", () => {
