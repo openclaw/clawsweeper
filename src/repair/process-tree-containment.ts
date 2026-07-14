@@ -1,16 +1,21 @@
 export const LINUX_SUBREAPER_SCRIPT = String.raw`
 import ctypes
+import fcntl
 import json
 import os
 import signal
+import socket
 import stat
 import struct
 import subprocess
 import sys
 import time
 
+PR_CAPBSET_DROP = 24
 PR_SET_CHILD_SUBREAPER = 36
 PR_SET_NO_NEW_PRIVS = 38
+PR_CAP_AMBIENT = 47
+PR_CAP_AMBIENT_CLEAR_ALL = 4
 PROTOCOL_FD = 3
 AT_FDCWD = -100
 AT_RECURSIVE = 0x8000
@@ -50,15 +55,32 @@ SYS_LANDLOCK_CREATE_RULESET = 444
 SYS_LANDLOCK_ADD_RULE = 445
 SYS_LANDLOCK_RESTRICT_SELF = 446
 SYS_MOUNT_SETATTR = 442
+LINUX_CAPABILITY_VERSION_3 = 0x20080522
+SIOCGIFFLAGS = 0x8913
+SIOCSIFFLAGS = 0x8914
+IFF_UP = 1
 
 
 class LandlockRulesetAttr(ctypes.Structure):
     _fields_ = [("handled_access_fs", ctypes.c_uint64)]
 
 
+class CapabilityHeader(ctypes.Structure):
+    _fields_ = [("version", ctypes.c_uint32), ("pid", ctypes.c_int)]
+
+
+class CapabilityData(ctypes.Structure):
+    _fields_ = [
+        ("effective", ctypes.c_uint32),
+        ("permitted", ctypes.c_uint32),
+        ("inheritable", ctypes.c_uint32),
+    ]
+
+
 libc = ctypes.CDLL(None, use_errno=True)
 libc.syscall.restype = ctypes.c_long
 libc.mount.restype = ctypes.c_int
+libc.capset.restype = ctypes.c_int
 
 
 def checked_syscall(number, *arguments):
@@ -121,6 +143,18 @@ def isolate_filesystem_writes(canonical_roots):
         set_mount_readonly(root, False)
 
 
+def bring_up_loopback():
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as control:
+        request = struct.pack("16sh", b"lo", 0)
+        response = fcntl.ioctl(control.fileno(), SIOCGIFFLAGS, request)
+        _, flags = struct.unpack("16sh", response)
+        fcntl.ioctl(
+            control.fileno(),
+            SIOCSIFFLAGS,
+            struct.pack("16sh", b"lo", flags | IFF_UP),
+        )
+
+
 def add_writable_path(ruleset_fd, path, allowed_access):
     path_fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
     try:
@@ -180,6 +214,34 @@ def restrict_filesystem_writes(canonical_roots):
         )
     finally:
         os.close(ruleset_fd)
+
+
+def drop_capabilities():
+    with open("/proc/sys/kernel/cap_last_cap", "r", encoding="ascii") as handle:
+        last_capability = int(handle.read().strip())
+    for capability in range(last_capability + 1):
+        if libc.prctl(PR_CAPBSET_DROP, capability, 0, 0, 0) != 0:
+            error_number = ctypes.get_errno()
+            raise OSError(error_number, os.strerror(error_number))
+    if libc.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number))
+    header = CapabilityHeader(version=LINUX_CAPABILITY_VERSION_3, pid=0)
+    data = (CapabilityData * 2)()
+    if libc.capset(ctypes.byref(header), ctypes.byref(data)) != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number))
+    with open("/proc/self/status", "r", encoding="ascii") as handle:
+        status = handle.read()
+    capability_sets = {}
+    for line in status.splitlines():
+        name, separator, value = line.partition(":")
+        if separator and name in {"CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"}:
+            capability_sets[name] = int(value.strip(), 16)
+    if set(capability_sets) != {"CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"}:
+        raise RuntimeError("validation capability status is incomplete")
+    if any(capability_sets.values()):
+        raise RuntimeError("validation capabilities were not fully dropped")
 
 
 def write_protocol(payload):
@@ -286,12 +348,18 @@ def main():
         isinstance(root, str) and root for root in writable_roots
     ):
         raise RuntimeError("validation writable roots are invalid")
-    command = sys.argv[2:]
+    isolate_network = json.loads(sys.argv[2])
+    if not isinstance(isolate_network, bool):
+        raise RuntimeError("validation network isolation flag is invalid")
+    command = sys.argv[3:]
     if not command:
         raise RuntimeError("validation command is missing")
     canonical_roots = canonical_writable_roots(writable_roots)
+    if isolate_network:
+        bring_up_loopback()
     isolate_filesystem_writes(canonical_roots)
     restrict_filesystem_writes(canonical_roots)
+    drop_capabilities()
     child = subprocess.Popen(command, close_fds=True)
     background_pids = set()
     while True:

@@ -20,6 +20,11 @@ test("Linux validation containment uses an externally owned PID namespace and su
   assert.match(containment, /struct\.pack\(\s+"=QQQQ"/);
   assert.match(containment, /set_mount_readonly\("\/", True\)/);
   assert.match(containment, /set_mount_readonly\(root, False\)/);
+  assert.match(containment, /bring_up_loopback\(\)/);
+  assert.match(containment, /PR_CAPBSET_DROP/);
+  assert.match(containment, /PR_CAP_AMBIENT_CLEAR_ALL/);
+  assert.match(containment, /libc\.capset/);
+  assert.match(containment, /validation capabilities were not fully dropped/);
   assert.match(containment, /empty_deadline = time\.monotonic\(\) \+ 0\.1/);
   assert.match(containment, /if time\.monotonic\(\) >= empty_deadline/);
   assert.doesNotMatch(containment, /_pack_|_layout_/);

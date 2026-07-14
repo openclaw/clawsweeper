@@ -432,37 +432,25 @@ function prepareBunToolchain({
     timeoutMs: targetToolchainCommandTimeout(deadlineAt, setupTimeoutMs, "bun setup probe"),
   });
   const installArgs = ["install", "--frozen-lockfile", "--ignore-scripts"];
+  const runBunInstall = (args: string[], operation: string) =>
+    runContainedCommand("bun", args, {
+      cwd,
+      env: bunEnv,
+      isolateNetwork: false,
+      timeoutMs: targetToolchainCommandTimeout(deadlineAt, installTimeoutMs, operation),
+      writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
+    });
   const lockfileSnapshots = ["bun.lock", "bun.lockb"].map((lockfile) =>
     captureTargetFile(cwd, lockfile),
   );
   try {
-    run("bun", installArgs, {
-      cwd,
-      env: bunEnv,
-      timeoutMs: targetToolchainCommandTimeout(deadlineAt, installTimeoutMs, "bun install"),
-    });
+    runBunInstall(installArgs, "bun install");
   } catch (error) {
     const message = String(error?.message ?? "");
     if (!/lockfile|frozen|out of date|out-of-date/i.test(message)) throw error;
-    run("bun", ["install", "--no-frozen-lockfile", "--ignore-scripts"], {
-      cwd,
-      env: bunEnv,
-      timeoutMs: targetToolchainCommandTimeout(
-        deadlineAt,
-        installTimeoutMs,
-        "bun install fallback",
-      ),
-    });
+    runBunInstall(["install", "--no-frozen-lockfile", "--ignore-scripts"], "bun install fallback");
     for (const snapshot of lockfileSnapshots) restoreTargetFile(cwd, snapshot);
-    run("bun", installArgs, {
-      cwd,
-      env: bunEnv,
-      timeoutMs: targetToolchainCommandTimeout(
-        deadlineAt,
-        installTimeoutMs,
-        "bun frozen reinstall",
-      ),
-    });
+    runBunInstall(installArgs, "bun frozen reinstall");
   }
 }
 
@@ -504,10 +492,12 @@ function prepareNpmToolchain({
   const installArgs = fs.existsSync(path.join(cwd, "package-lock.json"))
     ? ["ci", "--ignore-scripts"]
     : ["install", "--no-package-lock", "--ignore-scripts"];
-  run("npm", installArgs, {
+  runContainedCommand("npm", installArgs, {
     cwd,
     env: validationEnv,
+    isolateNetwork: false,
     timeoutMs: targetToolchainCommandTimeout(deadlineAt, installTimeoutMs, "npm install"),
+    writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
   });
 }
 

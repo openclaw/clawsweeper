@@ -63,6 +63,7 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
           "-c",
           LINUX_SUBREAPER_SCRIPT,
           JSON.stringify(input.writableRoots),
+          JSON.stringify(input.isolateNetwork),
           input.command,
           ...input.args,
         ],

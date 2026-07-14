@@ -135,6 +135,24 @@ test(
             "  { encoding: 'utf8' },",
             ");",
             "if (xattr.status === 0) process.exit(72);",
+            "const status = fs.readFileSync('/proc/self/status', 'utf8');",
+            "for (const name of ['CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb']) {",
+            "  const value = status.match(new RegExp(`^${name}:\\\\s*([0-9a-f]+)$`, 'mi'))?.[1];",
+            "  if (value === undefined || BigInt(`0x${value}`) !== 0n) process.exit(73);",
+            "}",
+            "const remount = require('node:child_process').spawnSync(",
+            "  '/usr/bin/python3',",
+            "  ['-c', [",
+            "    'import ctypes, os, struct, sys',",
+            "    'libc = ctypes.CDLL(None, use_errno=True)',",
+            "    'libc.syscall.restype = ctypes.c_long',",
+            "    'attributes = (ctypes.c_ubyte * 32).from_buffer_copy(struct.pack(\"=QQQQ\", 0, 1, 0, 0))',",
+            "    'result = libc.syscall(ctypes.c_long(442), ctypes.c_int(-100), ctypes.c_char_p(os.fsencode(sys.argv[1])), ctypes.c_uint32(0x8000), ctypes.byref(attributes), ctypes.c_size_t(len(attributes)))',",
+            "    'sys.exit(0 if result < 0 and ctypes.get_errno() == 1 else 1)',",
+            "  ].join('; '), trustedTool],",
+            "  { encoding: 'utf8' },",
+            ");",
+            "if (remount.status !== 0) process.exit(74);",
             'process.stdout.write("blocked");',
           ].join("\n"),
           targetMarker,
@@ -202,6 +220,54 @@ test(
       );
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_250);
       assert.equal(existsSync(marker), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "Linux network containment preserves isolated loopback communication",
+  { skip: process.platform !== "linux" },
+  (context) => {
+    if (!linuxValidationContainmentAvailable()) {
+      context.skip("runner does not provide delegated validation namespaces");
+      return;
+    }
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-loopback-isolation-"));
+    try {
+      const output = runContainedCommand(
+        process.execPath,
+        [
+          "-e",
+          [
+            'const net = require("node:net");',
+            "const server = net.createServer((socket) => socket.end('local'));",
+            "server.listen(0, '127.0.0.1', () => {",
+            "  const address = server.address();",
+            "  if (!address || typeof address === 'string') process.exit(70);",
+            "  let body = '';",
+            "  const client = net.connect({ host: '127.0.0.1', port: address.port });",
+            "  client.on('data', (chunk) => { body += chunk; });",
+            "  client.on('end', () => server.close(() => {",
+            "    if (body !== 'local') process.exit(71);",
+            "    process.stdout.write('local');",
+            "  }));",
+            "});",
+          ].join("\n"),
+        ],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT: "1",
+          },
+          timeoutMs: 3_000,
+          writableRoots: [root],
+        },
+      );
+
+      assert.equal(output, "local");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

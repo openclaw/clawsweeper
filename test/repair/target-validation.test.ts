@@ -2069,6 +2069,114 @@ test("bun-based target toolchain installs deps and runs configured validation", 
   ]);
 });
 
+test(
+  "bun dependency setup rejects and reaps detached descendants",
+  { skip: process.platform !== "linux" },
+  (context) => {
+    if (!linuxValidationContainmentAvailable()) {
+      context.skip("runner does not provide delegated user namespaces and Landlock ABI 3+");
+      return;
+    }
+    const cwd = gitBunPackageFixture({ check: 'node -e ""' });
+    const marker = path.join(cwd, "node_modules", "detached-bun-ran");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-bun-setup-containment-"));
+    writeNodeCommandShim(
+      binDir,
+      "bun",
+      `#!/usr/bin/env node
+if (process.argv[2] === "--version") {
+  process.stdout.write("1.3.14");
+} else if (process.argv[2] === "install") {
+  const { spawn } = require("node:child_process");
+  const child = spawn(process.execPath, ["-e", ${JSON.stringify(
+    `setTimeout(() => { require("node:fs").mkdirSync(${JSON.stringify(path.dirname(marker))}, { recursive: true }); require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran"); }, 750);`,
+  )}], { detached: true, stdio: "ignore" });
+  child.unref();
+}
+`,
+    );
+
+    const previousForceContainment = process.env.CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT;
+    process.env.CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT = "1";
+    try {
+      assert.throws(
+        () =>
+          withPathPrefix(binDir, () =>
+            prepareTargetToolchain(cwd, {
+              ...validationOptions("openclaw/clawhub", clawhubToolchain()),
+              installTargetDeps: true,
+              installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+              setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+            }),
+          ),
+        /left [1-9]\d* background process/,
+      );
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
+      assert.equal(fs.existsSync(marker), false);
+    } finally {
+      restoreEnv("CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT", previousForceContainment);
+    }
+  },
+);
+
+test(
+  "npm dependency setup rejects and reaps detached descendants",
+  { skip: process.platform !== "linux" },
+  (context) => {
+    if (!linuxValidationContainmentAvailable()) {
+      context.skip("runner does not provide delegated user namespaces and Landlock ABI 3+");
+      return;
+    }
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    const marker = path.join(cwd, "node_modules", "detached-npm-ran");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-npm-setup-containment-"));
+    writeNodeCommandShim(
+      binDir,
+      "npm",
+      `#!/usr/bin/env node
+const { spawn } = require("node:child_process");
+const child = spawn(process.execPath, ["-e", ${JSON.stringify(
+        `setTimeout(() => { require("node:fs").mkdirSync(${JSON.stringify(path.dirname(marker))}, { recursive: true }); require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran"); }, 750);`,
+      )}], { detached: true, stdio: "ignore" });
+child.unref();
+`,
+    );
+
+    const previousForceContainment = process.env.CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT;
+    process.env.CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT = "1";
+    try {
+      assert.throws(
+        () =>
+          withPathOnlyPrefix(binDir, () =>
+            prepareTargetToolchain(cwd, {
+              ...validationOptions("steipete/example", {
+                toolchain: {
+                  packageManager: "npm",
+                  baseValidationCommands: ["npm run check"],
+                  changedGate: null,
+                },
+              }),
+              installTargetDeps: true,
+              installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+              setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+            }),
+          ),
+        /left [1-9]\d* background process/,
+      );
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
+      assert.equal(fs.existsSync(marker), false);
+    } finally {
+      restoreEnv("CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT", previousForceContainment);
+    }
+  },
+);
+
 test("pnpm validation reuses the prepared target version and rejects stale setup", () => {
   const cwd = gitPackageFixture({ verify: "node check.js" });
   const packagePath = path.join(cwd, "package.json");
@@ -4817,6 +4925,7 @@ function linuxValidationContainmentAvailable() {
     [
       "--user",
       "--map-root-user",
+      "--mount",
       "--pid",
       "--fork",
       "--mount-proc",
