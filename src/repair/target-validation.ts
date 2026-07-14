@@ -566,7 +566,7 @@ function assertTargetInstallNetworkPolicy(
     const manifest = JSON.parse(
       readTargetInstallMetadataText(path.join(directory, "package.json"), deadlineAt),
     ) as LooseRecord;
-    assertManifestDependencyDestinations(cwd, manifest, registryOrigin);
+    assertManifestDependencyDestinations(manifest, registryOrigin);
   }
   for (const lockfile of [
     "package-lock.json",
@@ -622,11 +622,7 @@ function approvedTargetInstallRegistry(validationEnv: NodeJS.ProcessEnv) {
   return normalized;
 }
 
-function assertManifestDependencyDestinations(
-  cwd: string,
-  manifest: LooseRecord,
-  registryOrigin: string,
-) {
+function assertManifestDependencyDestinations(manifest: LooseRecord, registryOrigin: string) {
   for (const field of [
     "dependencies",
     "devDependencies",
@@ -635,43 +631,43 @@ function assertManifestDependencyDestinations(
     "resolutions",
     "overrides",
   ]) {
-    assertDependencySpecValue(cwd, manifest[field], registryOrigin);
+    assertDependencySpecValue(manifest[field], registryOrigin);
   }
-  assertDependencySpecValue(cwd, manifest.pnpm?.overrides, registryOrigin);
+  assertDependencySpecValue(manifest.pnpm?.overrides, registryOrigin);
 }
 
-function assertDependencySpecValue(cwd: string, value: JsonValue, registryOrigin: string): void {
+function assertDependencySpecValue(value: JsonValue, registryOrigin: string): void {
   if (typeof value === "string") {
-    assertDependencySpec(cwd, value, registryOrigin);
+    assertDependencySpec(value, registryOrigin);
     return;
   }
   if (Array.isArray(value)) {
-    for (const entry of value) assertDependencySpecValue(cwd, entry, registryOrigin);
+    for (const entry of value) assertDependencySpecValue(entry, registryOrigin);
     return;
   }
   if (value && typeof value === "object") {
     for (const entry of Object.values(value)) {
-      assertDependencySpecValue(cwd, entry, registryOrigin);
+      assertDependencySpecValue(entry, registryOrigin);
     }
   }
 }
 
-function assertDependencySpec(cwd: string, rawSpec: string, registryOrigin: string) {
+function assertDependencySpec(rawSpec: string, registryOrigin: string) {
   const spec = rawSpec.trim();
   if (!spec) return;
-  if (/^(?:workspace|file|link):/i.test(spec)) {
-    if (/^(?:file|link):/i.test(spec)) {
-      const localPath = path.resolve(cwd, spec.slice(spec.indexOf(":") + 1));
-      const relative = path.relative(cwd, localPath);
-      if (relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-        throw new Error("target dependency install local path escapes the checkout");
-      }
-    }
-    return;
+  if (/^workspace:/i.test(spec)) return;
+  if (isLocalDependencySpec(spec)) {
+    throw new Error("target dependency install local dependencies are not allowed");
   }
   if (/^npm:/i.test(spec)) {
-    const aliasVersion = spec.slice(spec.lastIndexOf("@") + 1);
-    if (aliasVersion !== spec) assertDependencySpec(cwd, aliasVersion, registryOrigin);
+    const alias = spec.slice("npm:".length);
+    if (isLocalDependencySpec(alias)) {
+      throw new Error("target dependency install local dependencies are not allowed");
+    }
+    const versionSeparator = alias.lastIndexOf("@");
+    if (versionSeparator > 0) {
+      assertDependencySpec(alias.slice(versionSeparator + 1), registryOrigin);
+    }
     return;
   }
   if (/^(?:https?:)?\/\//i.test(spec)) {
@@ -686,6 +682,20 @@ function assertDependencySpec(cwd: string, rawSpec: string, registryOrigin: stri
   ) {
     throw new Error("target dependency install destination is not approved");
   }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(spec)) {
+    throw new Error("target dependency install protocol is not approved");
+  }
+}
+
+function isLocalDependencySpec(spec: string) {
+  return (
+    /^(?:file|link|portal|path|patch):/i.test(spec) ||
+    /^(?:\.{1,2}|~)[\\/]/.test(spec) ||
+    /^[\\/]/.test(spec) ||
+    /^[a-z]:[\\/]/i.test(spec) ||
+    /\\/.test(spec) ||
+    /\.(?:tgz|tar|tar\.gz|tar\.bz2|tar\.xz)(?:#.*)?$/i.test(spec)
+  );
 }
 
 function assertApprovedInstallMetadataDestinations(text: string, registryOrigin: string) {

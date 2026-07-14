@@ -2143,12 +2143,110 @@ test("dependency setup rejects target-controlled network destinations", () => {
       },
     },
     {
-      expected: /local path escapes the checkout/,
+      expected: /local dependencies are not allowed/,
       prepare() {
         const cwd = gitPackageFixture({ check: 'node -e ""' });
         const packagePath = path.join(cwd, "package.json");
         const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
         packageJson.dependencies = { payload: "file:../outside" };
+        fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+        return {
+          cwd,
+          options: validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "npm",
+              baseValidationCommands: ["npm run check"],
+              changedGate: null,
+            },
+          }),
+        };
+      },
+    },
+    {
+      expected: /local dependencies are not allowed/,
+      prepare() {
+        const cwd = gitPackageFixture({ check: 'node -e ""' });
+        const packagePath = path.join(cwd, "package.json");
+        const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+        packageJson.dependencies = { payload: "../outside" };
+        fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+        return {
+          cwd,
+          options: validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "npm",
+              baseValidationCommands: ["npm run check"],
+              changedGate: null,
+            },
+          }),
+        };
+      },
+    },
+    {
+      expected: /(?:validation symlink escapes target checkout|local dependencies are not allowed)/,
+      prepare() {
+        const cwd = gitPackageFixture({ check: 'node -e ""' });
+        const outside = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-local-dependency-"));
+        const vendorDir = path.join(cwd, "vendor");
+        fs.mkdirSync(vendorDir);
+        fs.symlinkSync(outside, path.join(vendorDir, "payload"));
+        const packagePath = path.join(cwd, "package.json");
+        const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+        packageJson.dependencies = { payload: "file:./vendor/payload" };
+        fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+        return {
+          cwd,
+          options: validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "npm",
+              baseValidationCommands: ["npm run check"],
+              changedGate: null,
+            },
+          }),
+        };
+      },
+    },
+    {
+      expected: /local dependencies are not allowed/,
+      prepare() {
+        const cwd = gitPackageFixture({ check: 'node -e ""' });
+        const localPackageDir = path.join(cwd, "packages", "payload");
+        fs.mkdirSync(localPackageDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(localPackageDir, "package.json"),
+          `${JSON.stringify(
+            {
+              name: "payload",
+              version: "1.0.0",
+              dependencies: { nested: "http://169.254.169.254/latest/meta-data/" },
+            },
+            null,
+            2,
+          )}\n`,
+        );
+        const packagePath = path.join(cwd, "package.json");
+        const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+        packageJson.dependencies = { payload: "file:./packages/payload" };
+        fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+        return {
+          cwd,
+          options: validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "npm",
+              baseValidationCommands: ["npm run check"],
+              changedGate: null,
+            },
+          }),
+        };
+      },
+    },
+    {
+      expected: /local dependencies are not allowed/,
+      prepare() {
+        const cwd = gitPackageFixture({ check: 'node -e ""' });
+        const packagePath = path.join(cwd, "package.json");
+        const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+        packageJson.dependencies = { payload: "./payload.tgz" };
         fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
         return {
           cwd,
