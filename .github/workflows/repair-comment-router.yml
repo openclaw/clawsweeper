@@ -111,6 +111,8 @@ jobs:
             src/github-json.ts
             src/github-retry.ts
             src/pr-close-coverage-proof.ts
+            src/review-activity-cursor.ts
+            src/stable-json.ts
             src/action-ledger-files.ts
             src/action-ledger-runtime.ts
             src/action-ledger.ts

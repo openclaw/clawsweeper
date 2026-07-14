@@ -89,6 +89,8 @@ jobs:
             src/github-json.ts
             src/github-retry.ts
             src/pr-close-coverage-proof.ts
+            src/review-activity-cursor.ts
+            src/stable-json.ts
             src/repair
             src/repository-profiles.ts
             package.json

@@ -16,6 +16,8 @@ const REPAIR_RUNTIME_PATHS = [
   "src/codex-transient.ts",
   "src/github-json.ts",
   "src/pr-close-coverage-proof.ts",
+  "src/review-activity-cursor.ts",
+  "src/stable-json.ts",
 ] as const;
 
 const SPARSE_REPAIR_BUILD_WORKFLOWS = [
