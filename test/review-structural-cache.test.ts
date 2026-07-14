@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
+  REVIEW_STRUCTURAL_CACHE_VERSION,
   createReviewStructuralRecord,
   reviewStructuralActivitiesForTest,
   reviewStructuralCacheDecision,
@@ -15,6 +16,7 @@ import {
   reviewStructuralRecordMatchesHydratedPull,
   reviewStructuralRecordMatchesObservedUpdate,
   reviewStructuralRecordsDescribeSameVerdictInput,
+  validReviewStructuralRecord,
   type ReviewStructuralRecord,
   type ReviewStructuralSnapshot,
 } from "../dist/review-structural-cache.js";
@@ -25,6 +27,11 @@ const TARGET_SHA = "a".repeat(40);
 const HEAD_SHA = "b".repeat(40);
 const BASE_SHA = "c".repeat(40);
 const CHECKS_DIGEST = "d".repeat(64);
+
+test("structural cache version rejects locale-sensitive legacy records", () => {
+  assert.equal(REVIEW_STRUCTURAL_CACHE_VERSION, 6);
+  assert.equal(validReviewStructuralRecord({ ...record(), version: 5 } as never), false);
+});
 
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -200,6 +207,7 @@ test("structural review ordering is locale-independent", () => {
     console.log(JSON.stringify({
       locale: Intl.Collator().resolvedOptions().locale,
       sourceRevision: record?.sourceRevision,
+      itemStateDigest: record?.itemStateDigest,
       contextRevision: record?.contextRevision,
       fingerprint: record?.fingerprint,
     }));
@@ -213,6 +221,7 @@ test("structural review ordering is locale-independent", () => {
     return JSON.parse(result.stdout.trim()) as {
       locale: string;
       sourceRevision: string;
+      itemStateDigest: string;
       contextRevision: string;
       fingerprint: string;
     };
@@ -220,9 +229,12 @@ test("structural review ordering is locale-independent", () => {
 
   const english = run("en_US.UTF-8");
   const turkish = run("tr_TR.UTF-8");
+  const czech = run("cs_CZ.UTF-8");
   assert.match(english.locale, /^en(?:-|$)/i);
   assert.match(turkish.locale, /^tr(?:-|$)/i);
+  assert.match(czech.locale, /^cs(?:-|$)/i);
   assert.deepEqual(turkish, { ...english, locale: turkish.locale });
+  assert.deepEqual(czech, { ...english, locale: czech.locale });
 });
 
 function review(overrides = {}) {

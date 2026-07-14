@@ -6,9 +6,9 @@ import { createVirtualFileSystem, type FileSystem } from "typescript/unstable/fs
 import { API } from "typescript/unstable/sync";
 
 import { REVIEW_CACHE_MAX_AGE_DAYS } from "./scheduler-policy.js";
-import { stableJson } from "./stable-json.js";
+import { stableJsonCodeUnit as stableJson } from "./stable-json.js";
 
-export const REVIEW_SEMANTIC_CACHE_VERSION = 9;
+export const REVIEW_SEMANTIC_CACHE_VERSION = 10;
 export const REVIEW_SEMANTIC_CACHE_MAX_AGE_DAYS = REVIEW_CACHE_MAX_AGE_DAYS;
 
 const DAY_MS = 24 * 60 * 60 * 1000;

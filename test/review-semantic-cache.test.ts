@@ -278,6 +278,9 @@ test("semantic file ordering is locale-independent", () => {
       locale: Intl.Collator().resolvedOptions().locale,
       eligible: record.eligible,
       codeDigest: record.codeDigest,
+      exactDigest: record.exactDigest,
+      contextDigest: record.contextDigest,
+      fingerprint: record.fingerprint,
     }));
   `;
   const run = (locale: string) => {
@@ -290,16 +293,21 @@ test("semantic file ordering is locale-independent", () => {
       locale: string;
       eligible: boolean;
       codeDigest: string;
+      exactDigest: string;
+      contextDigest: string;
+      fingerprint: string;
     };
   };
 
   const english = run("en_US.UTF-8");
   const turkish = run("tr_TR.UTF-8");
+  const czech = run("cs_CZ.UTF-8");
   assert.match(english.locale, /^en(?:-|$)/i);
   assert.match(turkish.locale, /^tr(?:-|$)/i);
+  assert.match(czech.locale, /^cs(?:-|$)/i);
   assert.equal(english.eligible, true);
-  assert.equal(turkish.eligible, true);
-  assert.equal(turkish.codeDigest, english.codeDigest);
+  assert.deepEqual(turkish, { ...english, locale: turkish.locale });
+  assert.deepEqual(czech, { ...english, locale: czech.locale });
 });
 
 test("semantic fingerprint uses the bounded full patch instead of prompt truncation", () => {
@@ -1349,8 +1357,8 @@ test("semantic records require a boolean eligibility value", () => {
 });
 
 test("semantic record version changes invalidate legacy directive digests", () => {
-  assert.equal(REVIEW_SEMANTIC_CACHE_VERSION, 9);
-  assert.equal(validReviewSemanticRecord({ ...record(), version: 8 } as never), false);
+  assert.equal(REVIEW_SEMANTIC_CACHE_VERSION, 10);
+  assert.equal(validReviewSemanticRecord({ ...record(), version: 9 } as never), false);
 });
 
 test("stale, failed, and future-dated reviews never reuse", () => {

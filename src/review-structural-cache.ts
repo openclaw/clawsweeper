@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 
 import { REVIEW_CACHE_MAX_AGE_DAYS } from "./scheduler-policy.js";
-import { stableJson } from "./stable-json.js";
+import { stableJsonCodeUnit as stableJson } from "./stable-json.js";
 
-export const REVIEW_STRUCTURAL_CACHE_VERSION = 5;
+export const REVIEW_STRUCTURAL_CACHE_VERSION = 6;
 export const REVIEW_STRUCTURAL_CACHE_MAX_AGE_DAYS = REVIEW_CACHE_MAX_AGE_DAYS;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
