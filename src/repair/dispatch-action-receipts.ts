@@ -193,6 +193,7 @@ export function prepareDispatchActionReceiptContext({
     GITHUB_REPOSITORY: repository,
     GITHUB_SHA: sha,
     GITHUB_WORKFLOW: "local-dispatch",
+    GITHUB_WORKFLOW_REF: "",
     GITHUB_JOB: normalizedComponent,
     GITHUB_RUN_ID: LOCAL_DISPATCH_RUN_ID,
     GITHUB_RUN_ATTEMPT: "1",
