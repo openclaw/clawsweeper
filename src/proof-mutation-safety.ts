@@ -274,6 +274,48 @@ export function recordProofMutationReconciliation(options: {
   );
 }
 
+export function recordProofMutationPendingReconciliation(options: {
+  context: ProofMutationReceiptContext;
+  mutationIdentity: string;
+}): ActionEvent | null {
+  const operationIdentity = proofMutationBusinessIdentityForTest({
+    lane: options.context.lane,
+    repository: options.context.repository,
+    number: options.context.number,
+    headSha: options.context.headSha,
+    mutationIdentity: options.mutationIdentity,
+  });
+  return recordWorkflowPhaseEvent(
+    options.context.root,
+    {
+      phase: ACTION_EVENT_TYPES.proofStage,
+      status: ACTION_EVENT_STATUSES.waiting,
+      reasonCode: ACTION_EVENT_REASON_CODES.unavailable,
+      retryable: false,
+      mutation: false,
+      identity: {
+        slot: "proof_mutation_reconciliation_pending",
+        mutationIdentitySha256: operationIdentity.mutationIdentitySha256,
+      },
+      operation: "proof",
+      operationIdentity,
+      phaseSeq: 1,
+      idempotencyIdentity: operationIdentity,
+      component: options.context.component,
+      subject: proofMutationSubject(options.context),
+      evidence: options.context.evidence,
+      attributes: {
+        action_count: 0,
+        partial: true,
+        completion_reason: "mutation_reconciliation_pending",
+        work_kind: options.context.lane,
+      },
+      privacy: options.context.privacy,
+    },
+    options.context.env ? { env: options.context.env } : {},
+  );
+}
+
 function proofMutationSubject(context: ProofMutationReceiptContext): ActionEventSubject {
   return {
     repository: context.repository,

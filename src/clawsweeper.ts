@@ -197,6 +197,7 @@ import {
   createProofConversationActivityCursor,
   finishProofMutationReceipt,
   proofMutationFreshnessBlock,
+  recordProofMutationPendingReconciliation,
   recordProofMutationReconciliation,
   startProofMutationReceipt,
   type ProofMutationFreshnessBlock,
@@ -1080,6 +1081,7 @@ type ProofNudgeAction =
   | "proof_nudge_posted"
   | "proof_nudge_planned"
   | "proof_nudge_reconciled"
+  | "proof_nudge_reconciliation_pending"
   | "proof_nudge_outcome_unknown"
   | "skipped_not_pull_request"
   | "skipped_not_open"
@@ -1125,6 +1127,15 @@ interface ProofNudgeResult {
   url?: string | undefined;
   headSha?: string | undefined;
   reviewedAt?: string | undefined;
+}
+
+interface ProofNudgeMutationCycle {
+  schema_version: 1;
+  repository: string;
+  number: number;
+  head_sha: string;
+  marker_timestamp: string;
+  created_at: string;
 }
 
 interface BotProofResult {
@@ -1198,6 +1209,7 @@ interface ProofNudgeEligibility {
     | "skipped_not_open"
     | "skipped_runtime_budget"
     | "proof_nudge_reconciled"
+    | "proof_nudge_reconciliation_pending"
     | "proof_nudge_outcome_unknown"
     | "skipped_changed_before_mutation"
   >;
@@ -14989,6 +15001,18 @@ function latestProofNudgeAt(
   );
 }
 
+function proofNudgeMarkerExistsAt(
+  comments: readonly ProofNudgeComment[],
+  options: { number: number; headSha: string; timestamp: string },
+): boolean {
+  return proofNudgeMarkersFromComments(comments).some(
+    (marker) =>
+      marker.item === options.number &&
+      marker.sha === options.headSha &&
+      marker.at === options.timestamp,
+  );
+}
+
 function proofNudgeCommentsWithLiveMarkers(
   comments: readonly ProofNudgeComment[],
   liveComments: readonly ProofNudgeComment[],
@@ -28505,6 +28529,69 @@ function proofLaneCursorPath(args: Args, requestedItemNumbers: readonly number[]
   return rawPath ? resolve(rawPath) : null;
 }
 
+function proofNudgeMutationStateDir(args: Args, reportPath: string): string {
+  const targetSlug = targetRepo().replace("/", "-");
+  return resolve(
+    stringArg(
+      args.mutation_state_dir,
+      join(dirname(reportPath), "proof-nudge-mutations", targetSlug),
+    ),
+  );
+}
+
+function proofNudgeMutationCyclePath(stateDir: string, number: number): string {
+  return join(stateDir, `${number}.json`);
+}
+
+function readProofNudgeMutationCycle(path: string, number: number): ProofNudgeMutationCycle | null {
+  if (!existsSync(path)) return null;
+  const parsed = asRecord(
+    JSON.parse(readBoundedUtf8File(path, 4_096, "proof nudge mutation cycle")),
+  );
+  const headSha = stringOrUndefined(parsed.head_sha)?.trim().toLowerCase();
+  const markerTimestamp = stringOrUndefined(parsed.marker_timestamp);
+  const createdAt = stringOrUndefined(parsed.created_at);
+  if (
+    parsed.schema_version !== 1 ||
+    parsed.repository !== targetRepo() ||
+    parsed.number !== number ||
+    !headSha ||
+    !/^[0-9a-f]{40}$/.test(headSha) ||
+    !markerTimestamp ||
+    timestampMs(markerTimestamp) === null ||
+    !createdAt ||
+    timestampMs(createdAt) === null
+  ) {
+    throw new Error(`invalid proof nudge mutation cycle for #${number}`);
+  }
+  return {
+    schema_version: 1,
+    repository: targetRepo(),
+    number,
+    head_sha: headSha,
+    marker_timestamp: markerTimestamp,
+    created_at: createdAt,
+  };
+}
+
+function writeProofNudgeMutationCycle(path: string, cycle: ProofNudgeMutationCycle): void {
+  ensureDir(dirname(path));
+  const temporaryPath = join(
+    dirname(path),
+    `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  try {
+    writeFileSync(temporaryPath, `${JSON.stringify(cycle, null, 2)}\n`, "utf8");
+    renameSync(temporaryPath, path);
+  } finally {
+    if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+  }
+}
+
+function clearProofNudgeMutationCycle(path: string): void {
+  if (existsSync(path)) unlinkSync(path);
+}
+
 function proofLaneProcessedLimit(args: Args, fallback: number): number {
   const value = numberArg(args.processed_limit, fallback);
   if (!Number.isInteger(value) || value < 1) {
@@ -28813,6 +28900,7 @@ function proofNudgesCommand(args: Args): void {
   const dryRun = !execute;
   const maxRuntimeMs = numberArg(args.max_runtime_ms, 0);
   const reportPath = resolve(stringArg(args.report_path, join(ROOT, "proof-nudge-report.json")));
+  const mutationStateDir = proofNudgeMutationStateDir(args, reportPath);
   const requestedItemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
   const cursorPath = proofLaneCursorPath(args, requestedItemNumbers);
 
@@ -28902,6 +28990,8 @@ function proofNudgesCommand(args: Args): void {
     let authorEditedAt: string | undefined;
     let authorReviewActivityAt: string | undefined;
     let mutationSession: ProofMutationSession | null = null;
+    let pendingMutationCycle: ProofNudgeMutationCycle | null = null;
+    const mutationCyclePath = proofNudgeMutationCyclePath(mutationStateDir, candidate.number);
     try {
       pullDetails =
         item.kind === "pull_request" ? fetchPullRequestProofNudgeDetails(candidate.number) : {};
@@ -28928,6 +29018,14 @@ function proofNudgesCommand(args: Args): void {
               cooldownDays,
             }),
         });
+        pendingMutationCycle = readProofNudgeMutationCycle(mutationCyclePath, candidate.number);
+        if (
+          pendingMutationCycle &&
+          pendingMutationCycle.head_sha !== pullDetails.headSha.trim().toLowerCase()
+        ) {
+          clearProofNudgeMutationCycle(mutationCyclePath);
+          pendingMutationCycle = null;
+        }
       }
     } catch (error) {
       results.push({
@@ -28939,6 +29037,58 @@ function proofNudgesCommand(args: Args): void {
     }
     const hydratedComments =
       execute && mutationSession ? mutationSession.expectedFreshness.comments : comments;
+    if (
+      execute &&
+      mutationSession &&
+      pullDetails.headSha &&
+      pendingMutationCycle &&
+      !proofNudgeMarkerExistsAt(hydratedComments, {
+        number: candidate.number,
+        headSha: pullDetails.headSha,
+        timestamp: pendingMutationCycle.marker_timestamp,
+      })
+    ) {
+      recordProofMutationPendingReconciliation({
+        context: mutationSession.context,
+        mutationIdentity: proofNudgeCommentMutationIdentity({
+          number: candidate.number,
+          headSha: pullDetails.headSha,
+          timestamp: pendingMutationCycle.marker_timestamp,
+        }),
+      });
+      results.push({
+        ...resultBase,
+        action: "proof_nudge_reconciliation_pending",
+        reason:
+          "a prior same-head proof nudge outcome is still unknown; waiting for its exact marker before any retry",
+        headSha: pullDetails.headSha,
+      });
+      markProcessed(candidate);
+      logProgress(`proof_nudge_reconciliation_pending proof nudge #${candidate.number}`);
+      continue;
+    }
+    const reconciledPendingNudge = Boolean(
+      execute &&
+      mutationSession &&
+      pullDetails.headSha &&
+      pendingMutationCycle &&
+      proofNudgeMarkerExistsAt(hydratedComments, {
+        number: candidate.number,
+        headSha: pullDetails.headSha,
+        timestamp: pendingMutationCycle.marker_timestamp,
+      }),
+    );
+    if (reconciledPendingNudge && mutationSession && pullDetails.headSha && pendingMutationCycle) {
+      reconcileProofMutation(
+        mutationSession,
+        proofNudgeCommentMutationIdentity({
+          number: candidate.number,
+          headSha: pullDetails.headSha,
+          timestamp: pendingMutationCycle.marker_timestamp,
+        }),
+      );
+      clearProofNudgeMutationCycle(mutationCyclePath);
+    }
     const sameHeadNudgeAt = pullDetails.headSha
       ? latestProofNudgeAt(hydratedComments, {
           number: candidate.number,
@@ -28946,9 +29096,15 @@ function proofNudgesCommand(args: Args): void {
         })
       : undefined;
     const reconciledPriorNudge = Boolean(
-      execute && mutationSession && pullDetails.headSha && sameHeadNudgeAt,
+      reconciledPendingNudge ||
+      (execute && mutationSession && pullDetails.headSha && sameHeadNudgeAt),
     );
-    if (reconciledPriorNudge && mutationSession && pullDetails.headSha && sameHeadNudgeAt) {
+    if (
+      mutationSession &&
+      pullDetails.headSha &&
+      sameHeadNudgeAt &&
+      sameHeadNudgeAt !== pendingMutationCycle?.marker_timestamp
+    ) {
       reconcileProofMutation(
         mutationSession,
         proofNudgeCommentMutationIdentity({
@@ -29034,6 +29190,14 @@ function proofNudgesCommand(args: Args): void {
       const previousProofMutationRunner = activeProofMutationRunner;
       activeProofMutationRunner = proofMutationRunner(mutationSession);
       try {
+        writeProofNudgeMutationCycle(mutationCyclePath, {
+          schema_version: 1,
+          repository: targetRepo(),
+          number: candidate.number,
+          head_sha: headSha.trim().toLowerCase(),
+          marker_timestamp: timestamp,
+          created_at: timestamp,
+        });
         const mutation = postProofNudgeComment({
           number: candidate.number,
           headSha,
@@ -29041,6 +29205,7 @@ function proofNudgesCommand(args: Args): void {
           body,
           session: mutationSession,
         });
+        clearProofNudgeMutationCycle(mutationCyclePath);
         results.push({
           ...resultBase,
           action: mutation.reconciled ? "proof_nudge_reconciled" : "proof_nudge_posted",
@@ -29074,6 +29239,7 @@ function proofNudgesCommand(args: Args): void {
               timestamp,
             }),
           );
+          clearProofNudgeMutationCycle(mutationCyclePath);
           results.push({
             ...resultBase,
             action: "proof_nudge_reconciled",
@@ -29082,6 +29248,7 @@ function proofNudgesCommand(args: Args): void {
             headSha,
           });
         } else if (error instanceof ProofMutationFreshnessError) {
+          clearProofNudgeMutationCycle(mutationCyclePath);
           results.push({
             ...resultBase,
             action:
@@ -29099,6 +29266,7 @@ function proofNudgesCommand(args: Args): void {
             headSha,
           });
         } else {
+          clearProofNudgeMutationCycle(mutationCyclePath);
           results.push({
             ...resultBase,
             action: "skipped_live_fetch_failed",

@@ -9,6 +9,7 @@ import {
   finishProofMutationReceipt,
   proofMutationBusinessIdentityForTest,
   proofMutationFreshnessBlock,
+  recordProofMutationPendingReconciliation,
   recordProofMutationReconciliation,
   startProofMutationReceipt,
   type ProofMutationReceiptContext,
@@ -232,6 +233,39 @@ test("same-run proof reconciliation follows and parents the unknown outcome", ()
     assert.equal(reconciliation?.phase_seq, 3);
     assert.equal(reconciliation?.parent_event_id, outcome?.event_id);
     assert.equal(outcome?.idempotency_key_sha256, reconciliation?.idempotency_key_sha256);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a later workflow waits under the original unknown mutation idempotency key", () => {
+  const root = realpathSync(mkdtempSync(tmpPrefix));
+  try {
+    const firstRun = receiptContext(root, "4208");
+    const secondRun = receiptContext(root, "4209");
+    const mutationIdentity = `proof_nudge_comment:42:${"b".repeat(40)}:2026-07-14T12:00:00Z`;
+    const attempt = startProofMutationReceipt({
+      context: firstRun,
+      receiptIdentity: `${mutationIdentity}:request_attempt:1`,
+      mutationIdentity,
+      requestAttempt: 1,
+    });
+    finishProofMutationReceipt({ attempt, outcome: "unknown" });
+    recordProofMutationPendingReconciliation({
+      context: secondRun,
+      mutationIdentity,
+    });
+
+    const events = readAllSpooledActionEvents(root);
+    assert.equal(new Set(events.map((event) => event.idempotency_key_sha256)).size, 1);
+    const pending = events.find(
+      (event) => event.attributes?.completion_reason === "mutation_reconciliation_pending",
+    );
+    assert.equal(pending?.action.status, "waiting");
+    assert.equal(pending?.action.mutation, false);
+    assert.equal(pending?.action.retryable, false);
+    assert.notEqual(attempt.eventId, pending?.event_id);
+    assert.doesNotMatch(JSON.stringify(events), /proof_nudge_comment|2026-07-14T12:00:00Z/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

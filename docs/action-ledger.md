@@ -105,10 +105,12 @@ confidential-identifier checks as every other durable machine-text field.
   exact label-operation postconditions reconcile response loss or crash-open
   attempts under the original hashed business idempotency key without storing
   raw prompts, logs, review bodies, or comment bodies and without claiming a
-  second mutation. Same-run recovery follows and parents the request outcome; a
-  later workflow run records a new recovery attempt under that same business
-  idempotency key. The proof workflow publishes its finalized shards to the
-  state repository.
+  second mutation. Contributor nudges persist the original marker timestamp
+  before the request. An unresolved same-head cycle blocks another POST while a
+  later workflow run records a non-mutating pending-reconciliation event under
+  that same business idempotency key. Same-run recovery follows and parents the
+  request outcome. The proof workflow publishes both finalized shards and the
+  bounded per-PR recovery state to the state repository before cursor progress.
 - Explicit command replays require a durable command `attempt_id` derived from
   or forwarded through the production workflow. It scopes command operation,
   attempt, mutation idempotency, dispatch claims, and worker receipt keys to that

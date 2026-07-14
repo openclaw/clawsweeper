@@ -151,6 +151,7 @@ function proofMutationGhMockScript(options: {
   initialComments?: unknown[];
   initialLabels?: string[];
   deleteCommentsAtConversationRead?: number;
+  hideUnknownPostComment?: boolean;
   failConversationReadsAfterUnknownPost?: boolean;
   itemNumbers?: number[];
 }): string {
@@ -236,7 +237,10 @@ const currentComments = () => {
         html_url: "https://github.com/openclaw/openclaw/pull/42#issuecomment-8"
       }]
     : [];
-  return [...state.comments, ...injected];
+  const visibleComments = config.hideUnknownPostComment && state.unknownPostAccepted
+    ? state.comments.filter((comment) => comment.id !== 99)
+    : state.comments;
+  return [...visibleComments, ...injected];
 };
 if (commandArgs[0] === "label" && commandArgs[1] === "create") {
   const label = commandArgs[2];
@@ -1250,6 +1254,72 @@ test("proof nudges preserve unknown outcomes when marker reconciliation cannot b
     const report = JSON.parse(readFileSync(reportPath, "utf8"));
     assert.equal(report[0].action, "proof_nudge_outcome_unknown");
     assert.equal(readFileSync(mutationLogPath, "utf8").trim(), "comment_post");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("proof nudges keep an unknown mutation cycle stable across workflow runs", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const firstReportPath = join(root, "proof-nudge-first.json");
+    const secondReportPath = join(root, "proof-nudge-second.json");
+    const mutationStateDir = join(root, "proof-nudge-mutations");
+    const statePath = join(root, "gh-state.json");
+    const mutationLogPath = join(root, "mutations.log");
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(join(itemsDir, "42.md"), proofNudgeReport({ headSha: "a".repeat(40) }));
+
+    const run = (reportPath: string) => {
+      execFileSync(process.execPath, [
+        "dist/clawsweeper.js",
+        "proof-nudges",
+        "--target-repo",
+        "openclaw/openclaw",
+        "--items-dir",
+        itemsDir,
+        "--item-numbers",
+        "42",
+        "--limit",
+        "1",
+        "--processed-limit",
+        "1",
+        "--min-age-days",
+        "0",
+        "--report-path",
+        reportPath,
+        "--mutation-state-dir",
+        mutationStateDir,
+        "--execute",
+      ]);
+    };
+
+    withMockGh(
+      root,
+      proofMutationGhMockScript({
+        statePath,
+        mutationLogPath,
+        postUnknown: true,
+        hideUnknownPostComment: true,
+      }),
+      () => {
+        run(firstReportPath);
+        run(secondReportPath);
+      },
+    );
+
+    const firstReport = JSON.parse(readFileSync(firstReportPath, "utf8"));
+    const secondReport = JSON.parse(readFileSync(secondReportPath, "utf8"));
+    assert.equal(firstReport[0].action, "proof_nudge_outcome_unknown");
+    assert.equal(secondReport[0].action, "proof_nudge_reconciliation_pending");
+    assert.match(secondReport[0].reason, /waiting for its exact marker/);
+    assert.equal(readFileSync(mutationLogPath, "utf8").trim(), "comment_post");
+    const cycle = JSON.parse(readFileSync(join(mutationStateDir, "42.json"), "utf8"));
+    assert.equal(cycle.repository, "openclaw/openclaw");
+    assert.equal(cycle.number, 42);
+    assert.equal(cycle.head_sha, "a".repeat(40));
+    assert.match(cycle.marker_timestamp, /^20\d{2}-/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
