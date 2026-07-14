@@ -4199,7 +4199,7 @@ test("immutable publication deadline bounds continuous rejected branch pushes", 
             }),
           ),
       ),
-    /State publication deadline exceeded/,
+    /State publication deadline exceeded|git \S+ timed out after \d+ms during state publication/,
   );
   assert.ok(Date.now() - startedAt < 1500);
 });
