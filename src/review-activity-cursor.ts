@@ -61,6 +61,7 @@ export class ReviewedPrActivityGuardError extends Error {
 }
 
 const REVIEW_ACTIVITY_AUTHORIZED_MUTATIONS = new Set([
+  "autoclose_preclose_comment",
   "description_update",
   "issue_close",
   "label_add",

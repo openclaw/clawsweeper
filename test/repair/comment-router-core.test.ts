@@ -2117,6 +2117,8 @@ test("trusted autoclose markers are live close gated before close execution", ()
   assert.match(autocloseClassifier, /fetchPullRequestApi\(command\.issue_number\)/);
   assert.match(autocloseClassifier, /requestedReviewers:\s*pullApi\.requested_reviewers/);
   assert.match(autocloseExecutor, /liveTrustedCloseBlockReason\(command,\s*liveTarget\)/);
+  assert.match(autocloseExecutor, /postIssueComment\(/);
+  assert.match(source, /function postIssueComment[\s\S]*"autoclose_preclose_comment"/);
   assert.match(trustedCloseGate, /reviewedHeadShaBlockReason\(\{/);
   assert.match(trustedCloseGate, /markerName:\s*"close"/);
   assert.match(autocloseClassifier, /status:\s*"skipped"/);

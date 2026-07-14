@@ -33,6 +33,7 @@ test("comment router wraps every GitHub mutation at the request boundary", () =>
   assert.match(source, /function runGitHubBestEffortMutation[\s\S]*runGitHubTextMutationOnce/);
   assert.match(source, /function runGitHubSpawnMutation[\s\S]*runCommandMutation/);
   for (const kind of [
+    "autoclose_preclose_comment",
     "label_create",
     "label_add",
     "label_remove",
@@ -129,6 +130,10 @@ test("trusted verdict mutations refresh reviewed PR activity before dispatch", (
   assert.match(
     source,
     /function trustedAutomationReviewActivityBlockReason[\s\S]*!command\.trusted_bot[\s\S]*"autoclose"[\s\S]*"clawsweeper_needs_human"[\s\S]*intent === "autoclose" && command\.target\?\.kind !== "pull_request"/,
+  );
+  assert.match(
+    source,
+    /function postIssueComment[\s\S]*"autoclose_preclose_comment"[\s\S]*function closeIssueOrPullRequest/,
   );
 });
 

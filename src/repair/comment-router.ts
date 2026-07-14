@@ -3678,7 +3678,7 @@ function postIssueComment(command: LooseRecord, number: number, body: string) {
   const payloadPath = writePayload(repoRoot(), `autoclose-comment-${number}`, { body });
   runGitHubTextMutation(
     command,
-    "comment_create",
+    "autoclose_preclose_comment",
     { repository: command.repo, number, bodySha256: commentBodySha256(body) },
     [
       "api",

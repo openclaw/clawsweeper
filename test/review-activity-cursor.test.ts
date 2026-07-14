@@ -299,6 +299,7 @@ test("trusted review activity is revalidated at the mutation boundary", () => {
   assert.equal(operationCalls, 0);
 
   for (const [intent, mutationKind] of [
+    ["autoclose", "autoclose_preclose_comment"],
     ["autoclose", "issue_close"],
     ["autoclose", "pull_request_close"],
     ["clawsweeper_needs_human", "label_add"],
