@@ -126,9 +126,7 @@ test("merged source replacement skip runs before publishing replacement PRs", ()
   assert.match(preparedReplacement, /skipMergedSourceReplacementWithoutDiff\(\{/);
 
   const preparedSkipIndex = preparedReplacement.indexOf("skipMergedSourceReplacementWithoutDiff({");
-  const preparedPushIndex = preparedReplacement.indexOf(
-    "pushRecoverableBranch({ targetDir, branch });",
-  );
+  const preparedPushIndex = preparedReplacement.indexOf("pushRecoverableBranch({");
   const preparedCreateIndex = preparedReplacement.indexOf('"pr",\n        "create"');
   assert.notEqual(preparedSkipIndex, -1);
   assert.notEqual(preparedPushIndex, -1);
@@ -210,6 +208,21 @@ test("issue implementation rechecks opt-out labels immediately before branch pus
   assert.match(source.slice(helperStart, helperEnd), /refusing to push or open a PR/);
 });
 
+test("repair publication pushes the accepted checkout through isolated Git auth", () => {
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  assert.match(source, /assertTargetPublicationGitConfiguration\(cwd, timeoutMs\)/);
+  assert.match(source, /GIT_ASKPASS: askpassPath/);
+  assert.match(source, /\["-c", "credential\.helper=", "-c", `core\.hooksPath=\$\{hooksPath\}`/);
+  assert.match(source, /assertTargetCheckoutBinding\(targetDir, checkoutBinding/);
+  assert.match(source, /sourceRef: checkoutBinding\.headSha/);
+  assert.match(
+    source,
+    /\["push", "--no-verify", remote, `\$\{sourceRef\}:\$\{pull\.head\.ref\}`\]/,
+  );
+  assert.doesNotMatch(source, /gh", \["auth", "setup-git"\]/);
+  assert.doesNotMatch(source, /`HEAD:\$\{pull\.head\.ref\}`/);
+});
+
 test("repair contract gates the final cumulative tree, not individual checkpoints", () => {
   const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
   assert.equal(
@@ -219,18 +232,18 @@ test("repair contract gates the final cumulative tree, not individual checkpoint
   );
   assert.doesNotMatch(source, /commitRepairCheckpointIfNeeded|checkpointBaseHead/);
   assert.match(source, /enforceFinalRepairContract\(\{ fixArtifact, targetDir, baseBranch \}\)/);
-  assert.equal(
-    [...source.matchAll(/pushIntermediateCheckpoint\?\.\(\)/g)].length,
-    4,
-    "contract jobs must defer all four recovery pushes until final validation",
-  );
-  assert.match(source, /if \(hasRepairContract \|\| historyCompaction\?\.status === "compacted"\)/);
+  assert.doesNotMatch(source, /pushIntermediateCheckpoint|pushCheckpoint/);
+  assert.match(source, /captureFinalTargetCheckoutBinding\(/);
+  assert.match(source, /checkout_binding: checkoutBinding/);
 
   const compact = source.indexOf("const historyCompaction =");
   const enforce = source.indexOf("enforceFinalRepairContract(", compact);
-  const publish = source.indexOf("if (hasRepairContract", enforce);
-  const commit = source.indexOf('const commit = run("git", ["rev-parse", "HEAD"]', publish);
-  assert.ok(compact < enforce && enforce < publish && publish < commit);
+  const binding = source.indexOf(
+    "const checkoutBinding = captureFinalTargetCheckoutBinding(",
+    enforce,
+  );
+  const result = source.indexOf("checkout_binding: checkoutBinding", binding);
+  assert.ok(compact < enforce && enforce < binding && binding < result);
 });
 
 test("final repair contract compares the repaired tree with the latest base", () => {
@@ -256,7 +269,10 @@ test("contributor repair review loop stays on one pinned target base", () => {
   );
   assert.match(source, /validateAndReviewLoop\(\{[\s\S]*targetBaseSha/);
   assert.match(source, /pinnedBaseRef: targetBaseSha/);
-  assert.match(source, /runDiffCheck\(\{ targetDir, baseRef: targetBaseSha \}\)/);
+  assert.match(
+    source,
+    /runDiffCheck\(\{[\s\S]*?baseRef: targetBaseSha,[\s\S]*?checkoutBinding[\s\S]*?\}\)/,
+  );
   assert.match(source, /pinned target base \$\{targetBaseSha\}/);
   assert.match(validation, /pinnedBaseRef\?: string/);
   assert.match(source, /classifyExternalBaseValidationFailure\(\{/);

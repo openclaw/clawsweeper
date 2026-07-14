@@ -6,7 +6,6 @@ import path from "node:path";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
 import {
   spawn,
-  spawnSync,
   type ChildProcess,
   type SpawnSyncOptionsWithStringEncoding,
 } from "node:child_process";
@@ -42,8 +41,6 @@ import {
   ensureMergeBaseAvailable,
   isAncestor,
   rebaseOntoBase,
-  remoteBranchExists,
-  remoteBranchSha,
   unmergedPaths,
 } from "./git-repo-utils.js";
 import {
@@ -94,7 +91,6 @@ import {
   reviewAfterFinalBaseSync,
 } from "./execution-finalization.js";
 import { tryResolveMechanicalRebaseConflicts } from "./mechanical-rebase-conflicts.js";
-import { compactGeneratedBranchHistory } from "./compact-generated-branch.js";
 import { compactText, escapeRegExp } from "./text-utils.js";
 import {
   shouldCloseSupersededSourcePrs,
@@ -116,13 +112,21 @@ import {
   repairBranchPushRaceReason,
 } from "./repair-branch-push-errors.js";
 import {
+  assertTargetCheckoutBinding,
+  assertTargetPublicationGitConfiguration,
   canSkipInternalCodexReviewForRepairDelta,
+  captureFinalTargetCheckoutBinding,
+  captureTargetCheckoutBinding,
   classifyExternalBaseValidationFailure,
+  compactTargetHistoryWithPlumbing,
+  createTargetCheckpointWithPlumbing,
   prepareTargetToolchain,
   preflightTargetValidationPlan,
   repairDeltaValidationPlan,
   reproduceValidationFailureAtPinnedBase,
-  runAllowedValidationCommands,
+  runAllowedValidationCommandsWithBinding,
+  runTargetDiffCheck,
+  switchTargetBranchWithPlumbing,
   type TargetValidationOptions,
 } from "./target-validation.js";
 import { uniqueStrings } from "./validation-command-utils.js";
@@ -319,10 +323,53 @@ function currentCheckoutCloneTimeoutMs() {
 }
 
 function runGitNetwork(args: string[], cwd: string = targetDir) {
-  return run("git", args, {
-    cwd,
-    timeoutMs: currentNetworkCommandTimeoutMs(),
+  const timeoutMs = currentNetworkCommandTimeoutMs();
+  assertTargetPublicationGitConfiguration(cwd, timeoutMs);
+  const authRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-git-auth-"));
+  const askpassPath = path.join(authRoot, "askpass.sh");
+  const globalConfigPath = path.join(authRoot, "gitconfig");
+  const hooksPath = path.join(authRoot, "hooks");
+  fs.mkdirSync(hooksPath, { mode: 0o700 });
+  fs.writeFileSync(globalConfigPath, "", { mode: 0o600 });
+  fs.writeFileSync(
+    askpassPath,
+    [
+      "#!/bin/sh",
+      'case "$1" in',
+      '  *Username*) printf "%s\\n" "x-access-token" ;;',
+      '  *) printf "%s\\n" "$CLAWSWEEPER_GIT_TOKEN" ;;',
+      "esac",
+      "",
+    ].join("\n"),
+    { mode: 0o700 },
+  );
+  const env = ghEnv();
+  for (const name of Object.keys(env)) {
+    if (/^GIT_/i.test(name) || /^(?:SSH_ASKPASS|SSH_ASKPASS_REQUIRE)$/i.test(name)) {
+      delete env[name];
+    }
+  }
+  const token =
+    String(env.GH_TOKEN ?? env.GITHUB_TOKEN ?? "").trim() ||
+    run("gh", ["auth", "token"], { cwd, env, timeoutMs }).trim();
+  Object.assign(env, {
+    CLAWSWEEPER_GIT_TOKEN: token,
+    GIT_ASKPASS: askpassPath,
+    GIT_ASKPASS_REQUIRE: "force",
+    GIT_CONFIG_GLOBAL: globalConfigPath,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_SYSTEM: globalConfigPath,
+    GIT_TERMINAL_PROMPT: "0",
   });
+  try {
+    return run("git", ["-c", "credential.helper=", "-c", `core.hooksPath=${hooksPath}`, ...args], {
+      cwd,
+      env,
+      timeoutMs,
+    });
+  } finally {
+    fs.rmSync(authRoot, { recursive: true, force: true });
+  }
 }
 
 function currentCodexTimeoutMs(preserveLateWorkerBudget = false) {
@@ -851,7 +898,14 @@ function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
     `clawsweeper-repair/repair-${result.cluster_id}-${sourcePr.number}`,
   );
   logProgress("fetching latest base for contributor repair", { base_branch: baseBranch });
-  runGitNetwork(["fetch", "origin", `${baseBranch}:refs/remotes/origin/${baseBranch}`], targetDir);
+  runGitNetwork(
+    [
+      "fetch",
+      `https://github.com/${result.repo}.git`,
+      `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`,
+    ],
+    targetDir,
+  );
   logProgress("fetching contributor PR head", {
     source_pr: sourcePr.url,
     head_repo: pull.head.repo.full_name,
@@ -900,6 +954,7 @@ function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
     }
 
     fastRepair = tryAutomergeFastRebaseRepair({
+      baseBranch,
       fixArtifact,
       targetDir,
       sourceHead,
@@ -969,7 +1024,6 @@ function pushRepairBranchAndUpdateStatus({
     };
   }
 
-  ghAuthSetupGit(targetDir);
   if (!sameRepoBranch) {
     assertRepairBranchWritable({ targetDir, pull, rewritten: branchUpdate.rewritten });
   }
@@ -999,7 +1053,16 @@ function pushRepairBranchAndUpdateStatus({
     branchUpdate,
   });
   if (liveHeadBlock) return liveHeadBlock;
-  const pushArgs = repairBranchPushArgs({ pull, rewritten: branchUpdate.rewritten });
+  const checkoutBinding = prep.checkout_binding;
+  if (!checkoutBinding) {
+    throw new Error("prepared repair is missing its accepted checkout binding");
+  }
+  assertTargetCheckoutBinding(targetDir, checkoutBinding, targetValidationTimeoutMs);
+  const pushArgs = repairBranchPushArgs({
+    pull,
+    rewritten: branchUpdate.rewritten,
+    sourceRef: checkoutBinding.headSha,
+  });
   try {
     runGitNetwork(pushArgs, targetDir);
   } catch (error) {
@@ -1157,8 +1220,12 @@ function openReplacementPrFromPreparedRepairCheckout({
     };
   }
 
-  ghAuthSetupGit(targetDir);
-  run("git", ["checkout", "-B", branch], { cwd: targetDir });
+  switchTargetBranchWithPlumbing({
+    cwd: targetDir,
+    branch,
+    expectedHeadSha: prep.commit,
+    timeoutMs: targetValidationTimeoutMs,
+  });
   const historyCompaction = compactReplacementHistory({
     targetDir,
     baseBranch,
@@ -1168,6 +1235,12 @@ function openReplacementPrFromPreparedRepairCheckout({
   });
   prep.commit = historyCompaction.commit;
   prep.history_compaction = historyCompaction;
+  prep.checkout_binding = captureFinalTargetCheckoutBinding(
+    targetDir,
+    prep.checkout_binding,
+    prep.commit,
+    targetValidationTimeoutMs,
+  );
   const mergedSourceSkip = skipMergedSourceReplacementWithoutDiff({
     mergedSource,
     targetDir,
@@ -1202,7 +1275,7 @@ function openReplacementPrFromPreparedRepairCheckout({
     };
   }
 
-  pushRecoverableBranch({ targetDir, branch });
+  pushRecoverableBranch({ targetDir, branch, checkoutBinding: prep.checkout_binding });
   const provenance = externalMessageProvenance({
     model,
     reasoning: codexReasoningEffort,
@@ -1323,6 +1396,7 @@ function liveRepairPauseBlock({
 }
 
 function tryAutomergeFastRebaseRepair({
+  baseBranch,
   fixArtifact,
   targetDir,
   sourceHead,
@@ -1367,10 +1441,35 @@ function tryAutomergeFastRebaseRepair({
     return { status: "fallback", reason: "deterministic rebase left working tree changes" };
   }
 
-  logProgress("automerge deterministic rebase ready; skipping Codex fix and local review pass", {
+  prepareTargetToolchain(targetDir, currentTargetValidationOptions());
+  const targetBaseSha = pinRepairBase(() =>
+    run("git", ["rev-parse", `origin/${baseBranch}`], { cwd: targetDir }),
+  ).sha;
+  const validationOptions = {
+    ...currentTargetValidationOptions(),
+    pinnedBaseRef: targetBaseSha,
+  };
+  const validationPlan = repairDeltaValidationPlan(
+    { fixArtifact, targetDir, sourceHead },
+    validationOptions,
+  );
+  const validationExecution = runAllowedValidationCommandsWithBinding(
+    validationPlan.commands,
+    targetDir,
+    validationPlan.options,
+    baseBranch,
+  );
+  runDiffCheck({
+    targetDir,
+    baseRef: targetBaseSha,
+    checkoutBinding: validationExecution.checkoutBinding,
+  });
+
+  logProgress("automerge deterministic rebase validated; skipping Codex edit and local review", {
     source_head: sourceHead,
     commit,
     detail,
+    validation_commands: validationExecution.commands,
   });
   return {
     status: "ready",
@@ -1379,6 +1478,7 @@ function tryAutomergeFastRebaseRepair({
     commit,
     prep: {
       commit,
+      checkout_binding: validationExecution.checkoutBinding,
       checkpoint_commits: [],
       merge_preflight: {
         target: null,
@@ -1398,7 +1498,7 @@ function tryAutomergeFastRebaseRepair({
             "Skipped Codex fix worker for deterministic rebase; review worker runs after push.",
           ],
         },
-        validation_commands: ["GitHub checks and exact-head ClawSweeper review gate this rebase"],
+        validation_commands: validationExecution.commands,
         final_base_sync: {
           status: "deterministic_rebase",
           previous_head: rebaseResult.previous_head,
@@ -1447,9 +1547,12 @@ function branchUpdateState({ targetDir, sourceHead }: LooseRecord) {
   return { rewritten };
 }
 
-function repairBranchPushArgs({ pull, rewritten }: LooseRecord) {
+function repairBranchPushArgs({ pull, rewritten, sourceRef = "HEAD" }: LooseRecord) {
   const remote = `https://github.com/${pull.head.repo.full_name}.git`;
-  if (!rewritten) return ["push", remote, `HEAD:${pull.head.ref}`];
+  if (!/^(?:HEAD|[0-9a-f]{40})$/i.test(String(sourceRef))) {
+    throw new Error("cannot push repair branch: validated source ref is missing");
+  }
+  if (!rewritten) return ["push", "--no-verify", remote, `${sourceRef}:${pull.head.ref}`];
   const headSha = String(pull.head?.sha ?? "");
   if (!/^[0-9a-f]{40}$/i.test(headSha)) {
     throw new Error(
@@ -1458,13 +1561,15 @@ function repairBranchPushArgs({ pull, rewritten }: LooseRecord) {
   }
   return [
     "push",
+    "--no-verify",
     `--force-with-lease=refs/heads/${pull.head.ref}:${headSha}`,
     remote,
-    `HEAD:${pull.head.ref}`,
+    `${sourceRef}:${pull.head.ref}`,
   ];
 }
 
 function assertRepairBranchWritable({ targetDir, pull, rewritten }: LooseRecord) {
+  assertTargetPublicationGitConfiguration(targetDir, targetValidationTimeoutMs);
   const args = repairBranchPushArgs({ pull, rewritten });
   runGitNetwork(["push", "--dry-run", ...args.slice(1)], targetDir);
 }
@@ -1509,7 +1614,14 @@ function executeReplacementBranch({
       ...areaCapacityBlock,
     };
   }
-  runGitNetwork(["fetch", "origin", baseBranch], targetDir);
+  runGitNetwork(
+    [
+      "fetch",
+      `https://github.com/${result.repo}.git`,
+      `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`,
+    ],
+    targetDir,
+  );
   const branchState = checkoutRecoverableReplacementBranch({
     targetDir,
     branch,
@@ -1526,7 +1638,6 @@ function executeReplacementBranch({
     logProgress("mechanically resolved replacement rebase conflicts", mechanicalConflictResolution);
   }
 
-  if (!dryRun) ghAuthSetupGit(targetDir);
   const prep = editValidatePrepareMerge({
     fixArtifact,
     targetDir,
@@ -1537,7 +1648,6 @@ function executeReplacementBranch({
     contributorCredits,
     allowExistingChanges: branchState.resumed && branchHasBaseDiff({ targetDir, baseBranch }),
     reconcileWithBase: branchState.resumed,
-    pushCheckpoint: dryRun ? null : () => pushRecoverableBranch({ targetDir, branch }),
     rebaseResult,
   });
   const provenance = externalMessageProvenance({
@@ -1602,7 +1712,7 @@ function executeReplacementBranch({
     };
   }
 
-  pushRecoverableBranch({ targetDir, branch });
+  pushRecoverableBranch({ targetDir, branch, checkoutBinding: prep.checkout_binding });
   assertIssueImplementationNotPaused();
   const bodyPath = path.join(workRoot, "replacement-pr-body.md");
   fs.writeFileSync(bodyPath, body);
@@ -1979,15 +2089,12 @@ function editValidatePrepareMerge({
   contributorCredits = [],
   allowExistingChanges = false,
   reconcileWithBase = false,
-  pushCheckpoint = null,
   sourceHead = null,
   rebaseResult = null,
 }: LooseRecord) {
   let producedChanges = allowExistingChanges;
   let previousSummary = "";
   const checkpointCommits: JsonValue[] = [];
-  const hasRepairContract = repairContract(fixArtifact) !== null;
-  const pushIntermediateCheckpoint = hasRepairContract ? null : pushCheckpoint;
   if (
     !producedChanges &&
     canTreatRebaseAsCompleteRepair({
@@ -2206,7 +2313,6 @@ function editValidatePrepareMerge({
   });
   if (firstCheckpoint) {
     checkpointCommits.push(firstCheckpoint);
-    pushIntermediateCheckpoint?.();
   }
 
   logProgress("starting validation/review loop", { mode, attempt: 1 });
@@ -2232,7 +2338,6 @@ function editValidatePrepareMerge({
       });
       if (checkpoint) {
         checkpointCommits.push(checkpoint);
-        pushIntermediateCheckpoint?.();
       }
     },
   });
@@ -2243,6 +2348,7 @@ function editValidatePrepareMerge({
   )
     .split(/\r?\n/)
     .filter(Boolean);
+  let finalSyncCheckpoint = "";
   const sync = reconcileLatestBaseBeforePush({
     fixArtifact,
     targetDir,
@@ -2287,7 +2393,7 @@ function editValidatePrepareMerge({
         });
         if (checkpoint) {
           checkpointCommits.push(checkpoint);
-          pushIntermediateCheckpoint?.();
+          finalSyncCheckpoint = checkpoint;
         }
       },
     });
@@ -2300,6 +2406,17 @@ function editValidatePrepareMerge({
       target_base_sha: synchronizedBaseSha,
     };
   }
+  let acceptedCheckoutBinding = codexReview.checkout_binding;
+  if (!acceptedCheckoutBinding) {
+    throw new Error("target validation did not return an accepted checkout binding");
+  }
+  let expectedCommit = finalSyncCheckpoint || String(acceptedCheckoutBinding.headSha);
+  acceptedCheckoutBinding = captureFinalTargetCheckoutBinding(
+    targetDir,
+    acceptedCheckoutBinding,
+    expectedCommit,
+    targetValidationTimeoutMs,
+  );
   const finalCheckpoint = commitCheckpointIfNeeded({
     targetDir,
     message: `fix(clawsweeper): finalize ${result.cluster_id}`,
@@ -2307,7 +2424,7 @@ function editValidatePrepareMerge({
   });
   if (finalCheckpoint) {
     checkpointCommits.push(finalCheckpoint);
-    pushIntermediateCheckpoint?.();
+    expectedCommit = finalCheckpoint;
   }
   const historyCompaction =
     mode === "replacement"
@@ -2319,13 +2436,17 @@ function editValidatePrepareMerge({
           checkpointCommits,
         })
       : null;
+  if (historyCompaction?.commit) expectedCommit = String(historyCompaction.commit);
   enforceFinalRepairContract({ fixArtifact, targetDir, baseBranch });
-  if (hasRepairContract || historyCompaction?.status === "compacted") {
-    pushCheckpoint?.();
-  }
-  const commit = run("git", ["rev-parse", "HEAD"], { cwd: targetDir }).trim();
+  const checkoutBinding = captureFinalTargetCheckoutBinding(
+    targetDir,
+    acceptedCheckoutBinding,
+    expectedCommit,
+    targetValidationTimeoutMs,
+  );
   return {
-    commit,
+    commit: expectedCommit,
+    checkout_binding: checkoutBinding,
     checkpoint_commits: checkpointCommits,
     history_compaction: historyCompaction,
     merge_preflight: buildMergePreflight({ fixArtifact, codexReview }),
@@ -2339,11 +2460,15 @@ function compactReplacementHistory({
   contributorCredits,
   checkpointCommits,
 }: LooseRecord) {
-  const compaction = compactGeneratedBranchHistory({
-    targetDir,
+  const compaction = compactTargetHistoryWithPlumbing({
+    cwd: targetDir,
     baseRef: `origin/${baseBranch}`,
-    message: fixArtifact.pr_title,
-    trailers: coAuthorTrailers(contributorCredits),
+    messages: [fixArtifact.pr_title, ...uniqueStrings(coAuthorTrailers(contributorCredits))],
+    identity: {
+      name: clawsweeperGitUserName(),
+      email: clawsweeperGitUserEmail(),
+    },
+    timeoutMs: targetValidationTimeoutMs,
   });
   if (compaction.status === "compacted") {
     checkpointCommits.splice(0, checkpointCommits.length, compaction.commit);
@@ -2415,7 +2540,14 @@ function reconcileLatestBaseBeforePush({
   repositoryContext,
   sourceHead,
 }: LooseRecord) {
-  runGitNetwork(["fetch", "origin", `${baseBranch}:refs/remotes/origin/${baseBranch}`], targetDir);
+  runGitNetwork(
+    [
+      "fetch",
+      `https://github.com/${result.repo}.git`,
+      `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`,
+    ],
+    targetDir,
+  );
   const baseRef = `origin/${baseBranch}`;
   if (isAncestor({ targetDir, ancestor: baseRef, descendant: "HEAD" })) {
     return { status: "already-current" };
@@ -2607,7 +2739,9 @@ function validateAndReviewLoop({
 }: LooseRecord) {
   let lastReview = null;
   let validationCommands: LooseRecord[] = [];
+  let checkoutBinding = null;
   for (let attempt = 1; attempt <= maxReviewAttempts; attempt += 1) {
+    prepareTargetToolchain(targetDir, currentTargetValidationOptions());
     const validationOptions = {
       ...currentTargetValidationOptions(),
       pinnedBaseRef: targetBaseSha,
@@ -2617,13 +2751,15 @@ function validateAndReviewLoop({
       validationOptions,
     );
     try {
-      validationCommands = runAllowedValidationCommands(
+      const validationExecution = runAllowedValidationCommandsWithBinding(
         validationPlan.commands,
         targetDir,
         validationPlan.options,
         baseBranch,
       );
-      runDiffCheck({ targetDir, baseRef: targetBaseSha });
+      validationCommands = validationExecution.commands;
+      checkoutBinding = validationExecution.checkoutBinding;
+      runDiffCheck({ targetDir, baseRef: targetBaseSha, checkoutBinding });
       if (canSkipInternalCodexReviewForRepairDelta(validationPlan)) {
         return {
           status: "passed_repair_delta_validation",
@@ -2637,6 +2773,7 @@ function validateAndReviewLoop({
             "Exact-head ClawSweeper review is dispatched after the branch push before automerge.",
           ],
           validation_commands_run: validationCommands,
+          checkout_binding: checkoutBinding,
         };
       }
     } catch (error) {
@@ -2696,6 +2833,7 @@ function validateAndReviewLoop({
       });
     } catch (error) {
       if (attempt < maxReviewAttempts && isRetryableCodexReviewError(error)) {
+        assertTargetCheckoutBinding(targetDir, checkoutBinding, targetValidationTimeoutMs);
         lastReview = {
           status: "retrying",
           summary: String(error?.message ?? error),
@@ -2709,6 +2847,8 @@ function validateAndReviewLoop({
       throw error;
     }
     lastReview.validation_commands_run = validationCommands;
+    assertTargetCheckoutBinding(targetDir, checkoutBinding, targetValidationTimeoutMs);
+    lastReview.checkout_binding = checkoutBinding;
     if (isCleanCodexReview(lastReview)) return lastReview;
     if (attempt === maxReviewAttempts) {
       const finalSummary = codexReviewFailureSummary(lastReview);
@@ -2721,17 +2861,20 @@ function validateAndReviewLoop({
         targetBaseSha,
       });
       onReviewFix?.(`${attempt}-final`);
+      prepareTargetToolchain(targetDir, currentTargetValidationOptions());
       const finalValidationPlan = repairDeltaValidationPlan(
         { fixArtifact, targetDir, sourceHead },
         validationOptions,
       );
-      validationCommands = runAllowedValidationCommands(
+      const validationExecution = runAllowedValidationCommandsWithBinding(
         finalValidationPlan.commands,
         targetDir,
         finalValidationPlan.options,
         baseBranch,
       );
-      runDiffCheck({ targetDir, baseRef: targetBaseSha });
+      validationCommands = validationExecution.commands;
+      checkoutBinding = validationExecution.checkoutBinding;
+      runDiffCheck({ targetDir, baseRef: targetBaseSha, checkoutBinding });
       return {
         status: "passed_after_final_review_fix",
         summary:
@@ -2744,6 +2887,7 @@ function validateAndReviewLoop({
           "Exact-head ClawSweeper review is dispatched after the branch push before automerge.",
         ],
         validation_commands_run: validationCommands,
+        checkout_binding: checkoutBinding,
         final_review_fix: {
           status: "validation_passed",
           previous_summary: compactText(finalSummary, 1000),
@@ -2773,6 +2917,7 @@ function validateAndReviewSynchronizedTree({
   sourceHead,
   repairDeltaPaths,
 }: LooseRecord) {
+  prepareTargetToolchain(targetDir, currentTargetValidationOptions());
   const validationOptions = {
     ...currentTargetValidationOptions(),
     pinnedBaseRef: targetBaseSha,
@@ -2782,13 +2927,16 @@ function validateAndReviewSynchronizedTree({
     validationOptions,
   );
   let validationCommands;
+  let checkoutBinding;
   try {
-    validationCommands = runAllowedValidationCommands(
+    const validationExecution = runAllowedValidationCommandsWithBinding(
       validationPlan.commands,
       targetDir,
       validationPlan.options,
       baseBranch,
     );
+    validationCommands = validationExecution.commands;
+    checkoutBinding = validationExecution.checkoutBinding;
   } catch (error) {
     const baseError = reproduceValidationFailureAtPinnedBase({
       commands: validationPlan.commands,
@@ -2812,7 +2960,7 @@ function validateAndReviewSynchronizedTree({
     }
     throw error;
   }
-  runDiffCheck({ targetDir, baseRef: targetBaseSha });
+  runDiffCheck({ targetDir, baseRef: targetBaseSha, checkoutBinding });
   const review = runCodexReview({
     fixArtifact,
     targetDir,
@@ -2824,6 +2972,8 @@ function validateAndReviewSynchronizedTree({
     validationPlan,
   });
   review.validation_commands_run = validationCommands;
+  assertTargetCheckoutBinding(targetDir, checkoutBinding, targetValidationTimeoutMs);
+  review.checkout_binding = checkoutBinding;
   if (!isCleanCodexReview(review)) {
     throw new Error(
       `Codex /review did not pass after final base synchronization: ${codexReviewFailureSummary(review)}`,
@@ -2853,10 +3003,8 @@ function isRetryableCodexReviewError(error: JsonValue) {
   );
 }
 
-function runDiffCheck({ targetDir, baseRef }: LooseRecord) {
-  run("git", ["merge-base", baseRef, "HEAD"], { cwd: targetDir });
-  run("git", ["diff", "--check", `${baseRef}...HEAD`], { cwd: targetDir });
-  run("git", ["diff", "--check"], { cwd: targetDir });
+function runDiffCheck({ targetDir, baseRef, checkoutBinding }: LooseRecord) {
+  runTargetDiffCheck(targetDir, baseRef, checkoutBinding, targetValidationTimeoutMs);
 }
 
 function runCodexReview({
@@ -3329,12 +3477,21 @@ function checkoutRecoverableReplacementBranch({
   const sourcePr = shouldSeedReplacementBranchFromSource(fixArtifact)
     ? firstTargetSourcePullRequest(fixArtifact.source_prs ?? [], result.repo)
     : null;
-  if (remoteBranchExists({ targetDir, branch })) {
+  if (trustedRemoteBranchSha(branch, targetDir)) {
     runGitNetwork(
-      ["fetch", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
+      [
+        "fetch",
+        `https://github.com/${result.repo}.git`,
+        `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+      ],
       targetDir,
     );
-    run("git", ["checkout", "-B", branch, `origin/${branch}`], { cwd: targetDir });
+    switchTargetBranchWithPlumbing({
+      cwd: targetDir,
+      branch,
+      expectedHeadSha: run("git", ["rev-parse", `origin/${branch}`], { cwd: targetDir }).trim(),
+      timeoutMs: targetValidationTimeoutMs,
+    });
     if (sourcePr) {
       const sourceRef = fetchSourcePullRequestHead({ targetDir, sourcePr });
       const sourceHeadSha = run("git", ["rev-parse", sourceRef], { cwd: targetDir }).trim();
@@ -3377,17 +3534,26 @@ function checkoutRecoverableReplacementBranch({
       source_head_sha: checkout.sourceHeadSha,
     };
   }
-  run("git", ["checkout", "-B", branch, `origin/${baseBranch}`], { cwd: targetDir });
+  switchTargetBranchWithPlumbing({
+    cwd: targetDir,
+    branch,
+    expectedHeadSha: run("git", ["rev-parse", `origin/${baseBranch}`], { cwd: targetDir }).trim(),
+    timeoutMs: targetValidationTimeoutMs,
+  });
   return { resumed: false, branch };
 }
 
 function commitCheckpointIfNeeded({ targetDir, message, trailers = [] }: LooseRecord) {
-  if (!run("git", ["status", "--porcelain"], { cwd: targetDir }).trim()) return "";
-  run("git", ["add", "--all"], { cwd: targetDir });
-  const args = ["commit", "-m", message];
-  for (const trailer of uniqueStrings(trailers)) args.push("-m", trailer);
-  runGitNetwork(args, targetDir);
-  return run("git", ["rev-parse", "HEAD"], { cwd: targetDir }).trim();
+  const checkpoint = createTargetCheckpointWithPlumbing({
+    cwd: targetDir,
+    messages: [message, ...uniqueStrings(trailers)],
+    identity: {
+      name: clawsweeperGitUserName(),
+      email: clawsweeperGitUserEmail(),
+    },
+    timeoutMs: targetValidationTimeoutMs,
+  });
+  return checkpoint.status === "committed" ? checkpoint.commit : "";
 }
 
 function enforceFinalRepairContract({ fixArtifact, targetDir, baseBranch }: LooseRecord) {
@@ -3399,13 +3565,25 @@ function enforceFinalRepairContract({ fixArtifact, targetDir, baseBranch }: Loos
   enforceRepairContract({ fixArtifact, changedFiles });
 }
 
-function pushRecoverableBranch({ targetDir, branch }: LooseRecord) {
-  assertIssueImplementationNotPaused();
-  const remoteSha = remoteBranchSha({ targetDir, branch });
+function pushRecoverableBranch({ targetDir, branch, checkoutBinding = null }: LooseRecord) {
+  const binding =
+    checkoutBinding ?? captureTargetCheckoutBinding(targetDir, targetValidationTimeoutMs);
+  assertTargetCheckoutBinding(targetDir, binding, targetValidationTimeoutMs);
+  assertTargetPublicationGitConfiguration(targetDir, targetValidationTimeoutMs);
+  const remoteSha = trustedRemoteBranchSha(branch, targetDir);
   const targetRef = `refs/heads/${branch}`;
+  const remote = `https://github.com/${result.repo}.git`;
+  const sourceRef = String(binding.headSha);
   const args = remoteSha
-    ? ["push", `--force-with-lease=${targetRef}:${remoteSha}`, "origin", `HEAD:${targetRef}`]
-    : ["push", "origin", `HEAD:${targetRef}`];
+    ? [
+        "push",
+        "--no-verify",
+        `--force-with-lease=${targetRef}:${remoteSha}`,
+        remote,
+        `${sourceRef}:${targetRef}`,
+      ]
+    : ["push", "--no-verify", remote, `${sourceRef}:${targetRef}`];
+  assertIssueImplementationNotPaused();
   runGitNetwork(args, targetDir);
   if (fetchRemoteRecoverableBranch({ targetDir, branch, required: false })) return;
   throw new Error(`git push reported success, but refs/heads/${branch} was not visible on origin`);
@@ -3438,21 +3616,42 @@ function assertIssueImplementationNotPaused() {
 }
 
 function fetchRemoteRecoverableBranch({ targetDir, branch, required = true }: LooseRecord) {
-  const child = spawnSync(
-    "git",
-    ["fetch", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
-    {
-      cwd: targetDir,
-      env: process.env,
-      encoding: "utf8",
-      timeout: currentNetworkCommandTimeoutMs(),
-    },
-  );
-  if (child.status === 0) return true;
-  const detail = `${child.stderr ?? ""}\n${child.stdout ?? ""}`.trim();
-  if (!required && /couldn't find remote ref|could not find remote ref|not found/i.test(detail))
-    return false;
-  throw new Error(detail || `failed to fetch remote branch ${branch}`);
+  try {
+    runGitNetwork(
+      [
+        "fetch",
+        `https://github.com/${result.repo}.git`,
+        `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+      ],
+      targetDir,
+    );
+    return true;
+  } catch (error) {
+    const detail = String((error as Error).message ?? error);
+    if (!required && /couldn't find remote ref|could not find remote ref|not found/i.test(detail)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function trustedRemoteBranchSha(branch: string, cwd: string) {
+  try {
+    const sha = run(
+      "gh",
+      [
+        "api",
+        `repos/${result.repo}/git/ref/heads/${encodeURIComponent(branch)}`,
+        "--jq",
+        ".object.sha",
+      ],
+      { cwd, env: ghEnv(), timeoutMs: currentNetworkCommandTimeoutMs() },
+    ).trim();
+    return /^[0-9a-f]{40}$/.test(sha) ? sha : "";
+  } catch (error) {
+    if (/\b404\b|not found/i.test(String((error as Error).message ?? error))) return "";
+    throw error;
+  }
 }
 
 function findOpenPullRequestForBranch(branch: string, cwd: JsonValue) {
@@ -4305,12 +4504,4 @@ function copyDebugFileWithTailCap(source: string, destination: string) {
     `[clawsweeper] debug file truncated from ${size} bytes to last ${readSize} bytes for final repair artifact; see dedicated Codex debug artifact when available.\n`,
   );
   fs.appendFileSync(destination, buffer);
-}
-
-function ghAuthSetupGit(cwd: JsonValue) {
-  run("gh", ["auth", "setup-git"], {
-    cwd,
-    env: ghEnv(),
-    timeoutMs: currentNetworkCommandTimeoutMs(),
-  });
 }

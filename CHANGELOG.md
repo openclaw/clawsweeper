@@ -127,6 +127,11 @@ checkpoint, and status-only commits are intentionally omitted.
   replay-safe bot-proof POST/PATCH recovery, and best-effort recovery-state
   publication before cursor progress.
 - Bound pull-request review reuse, apply, and automerge actions to a size-capped digest of reviews, inline comments, and review-thread resolution state, so legacy reports, late activity, or resolved-thread drift force a fresh verdict before mutation.
+- Hardened repair target validation and publication so package scripts run in
+  isolated disposable environments, checkout identity is rebound after every
+  accepted validation, checkpoint and compaction commits bypass target hooks,
+  and branch pushes publish the exact validated commit through isolated Git
+  authentication.
 - Stopped narrow OpenClaw automerge repairs from chasing unrelated full-repository lint and typecheck failures.
 - Removed the synthetic Codex write preflight that could block repair before Codex saw the real task.
 - Kept exact-review handoff health live when the dashboard serves a stale fleet snapshot, so recovered claims no longer leave the operator rail stuck in a delayed or stalled state.
