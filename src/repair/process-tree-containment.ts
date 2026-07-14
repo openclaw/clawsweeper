@@ -74,8 +74,18 @@ def reap_exited_children():
             return False
 
 
-def terminate_and_reap_descendants():
-    background_pids = set()
+def reap_adopted_children(primary_pid, background_pids):
+    for pid, parent_pid in process_rows():
+        if parent_pid != os.getpid() or pid == primary_pid:
+            continue
+        background_pids.add(pid)
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+
+
+def terminate_and_reap_descendants(background_pids):
     graceful_deadline = time.monotonic() + 0.25
     while True:
         if reap_exited_children():
@@ -107,14 +117,16 @@ def main():
     if not command:
         raise RuntimeError("validation command is missing")
     child = subprocess.Popen(command, close_fds=True)
+    background_pids = set()
     while True:
-        try:
-            return_code = child.wait(timeout=0.05)
+        reap_adopted_children(child.pid, background_pids)
+        return_code = child.poll()
+        if return_code is not None:
             break
-        except subprocess.TimeoutExpired:
-            if termination_signal is not None:
-                signal_descendants(termination_signal)
-    background_processes = terminate_and_reap_descendants()
+        if termination_signal is not None:
+            signal_descendants(termination_signal)
+        time.sleep(0.01)
+    background_processes = terminate_and_reap_descendants(background_pids)
     write_protocol(
         {
             "backgroundProcesses": background_processes,

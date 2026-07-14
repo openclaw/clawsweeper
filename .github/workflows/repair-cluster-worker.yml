@@ -29,7 +29,7 @@ on:
         default: blacksmith-4vcpu-ubuntu-2404
         type: string
       execution_runner:
-        description: "Runner label for fix/apply execution work"
+        description: "Linux runner label for fix/apply execution work with delegated user namespaces"
         required: true
         default: blacksmith-16vcpu-ubuntu-2404
         type: string
@@ -546,6 +546,29 @@ jobs:
           started_at="$(date +%s)"
           deadline="$((started_at + CLAWSWEEPER_EXECUTE_JOB_WINDOW_SECONDS))"
           echo "CLAWSWEEPER_EXECUTE_DEADLINE_EPOCH=$deadline" >> "$GITHUB_ENV"
+
+      - name: Verify Linux validation containment
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_OS:-}" != "Linux" ]; then
+            echo "Repair execution requires a Linux runner with delegated user namespaces." >&2
+            exit 1
+          fi
+          for tool in /usr/bin/unshare /usr/bin/python3; do
+            if [ ! -x "$tool" ]; then
+              echo "Repair execution requires $tool." >&2
+              exit 1
+            fi
+          done
+          /usr/bin/unshare \
+            --user \
+            --map-root-user \
+            --pid \
+            --fork \
+             --mount-proc \
+             --kill-child=SIGKILL \
+             /usr/bin/python3 -c 'import os; assert os.getpid() == 1'
 
       - uses: actions/checkout@v7
         with:

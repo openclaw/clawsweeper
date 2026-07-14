@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,6 +75,49 @@ test(
   },
 );
 
+test(
+  "Linux containment kills the namespace when target code terminates its inner supervisor",
+  { skip: process.platform !== "linux" },
+  (context) => {
+    if (!linuxUserNamespaceAvailable()) {
+      context.skip("runner does not delegate unprivileged user namespaces");
+      return;
+    }
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-supervisor-kill-"));
+    const marker = join(root, "escaped");
+    try {
+      assert.throws(
+        () =>
+          runContainedCommand(
+            process.execPath,
+            [
+              "-e",
+              [
+                'const { spawn } = require("node:child_process");',
+                `const child = spawn(process.execPath, ["-e", ${JSON.stringify(`setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "escaped"), 750);`)}], { detached: true, stdio: "ignore" });`,
+                "child.unref();",
+                'process.kill(process.ppid, "SIGKILL");',
+                "setInterval(() => {}, 1000);",
+              ].join(" "),
+            ],
+            {
+              env: {
+                ...process.env,
+                CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT: "1",
+              },
+              timeoutMs: 3_000,
+            },
+          ),
+        /validation subreaper exited without a result|validation process containment failed/,
+      );
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
+      assert.equal(existsSync(marker), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
 test("runCommand honors shared command bin overrides", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-command-runner-"));
   const commandPath = join(root, "validate.js");
@@ -140,3 +184,22 @@ test("shared spawn resolver escapes Windows batch launcher arguments", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+function linuxUserNamespaceAvailable() {
+  const probe = spawnSync(
+    "/usr/bin/unshare",
+    [
+      "--user",
+      "--map-root-user",
+      "--pid",
+      "--fork",
+      "--mount-proc",
+      "--kill-child=SIGKILL",
+      "/usr/bin/python3",
+      "-c",
+      "import os; assert os.getpid() == 1",
+    ],
+    { stdio: "ignore" },
+  );
+  return probe.status === 0;
+}

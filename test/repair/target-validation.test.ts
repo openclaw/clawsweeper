@@ -1932,13 +1932,21 @@ test("non-gated target repos replace stale changed gates with git validation", (
 
 test("repair execution provisions pinned Bun before target validation can invoke it", () => {
   const workflow = fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8");
+  const containmentIndex = workflow.indexOf("- name: Verify Linux validation containment");
   const setupBunIndex = workflow.indexOf("- name: Setup pinned Bun for target validation");
   const executeFixIndex = workflow.indexOf("- name: Execute credited fix artifact");
 
+  assert.ok(containmentIndex >= 0, "expected repair execution workflow to gate containment");
   assert.ok(setupBunIndex >= 0, "expected repair execution workflow to set up Bun");
   assert.ok(executeFixIndex >= 0, "expected repair execution workflow to execute fix artifacts");
+  assert.ok(containmentIndex < setupBunIndex, "expected containment preflight before target setup");
   assert.ok(setupBunIndex < executeFixIndex, "expected Bun setup before repair:execute-fix");
 
+  const containmentStep = workflow.slice(containmentIndex, setupBunIndex);
+  assert.match(containmentStep, /\$\{RUNNER_OS:-\}" != "Linux"/);
+  assert.match(containmentStep, /\/usr\/bin\/unshare/);
+  assert.match(containmentStep, /--map-root-user/);
+  assert.match(containmentStep, /--kill-child=SIGKILL/);
   const setupBunStep = workflow.slice(setupBunIndex, executeFixIndex);
   assert.match(setupBunStep, /uses: oven-sh\/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6/);
   assert.match(setupBunStep, /bun-version: 1\.3\.14/);

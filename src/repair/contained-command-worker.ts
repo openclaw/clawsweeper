@@ -38,23 +38,37 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
   if (process.platform !== "linux" && process.env.NODE_TEST_CONTEXT === undefined) {
     throw new Error("validation process containment requires Linux");
   }
-  const invocation =
-    process.platform === "linux"
-      ? {
-          command: "/usr/bin/python3",
-          args: ["-c", LINUX_SUBREAPER_SCRIPT, input.command, ...input.args],
-        }
-      : process.platform === "win32"
-        ? { command: input.command, args: input.args }
-        : {
-            command: "/bin/sh",
-            args: ["-c", 'exec "$@"', "clawsweeper-validation", input.command, ...input.args],
-          };
+  const useLinuxNamespace =
+    process.platform === "linux" &&
+    (process.env.NODE_TEST_CONTEXT === undefined ||
+      process.env.CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT === "1");
+  const invocation = useLinuxNamespace
+    ? {
+        command: "/usr/bin/unshare",
+        args: [
+          "--user",
+          "--map-root-user",
+          "--pid",
+          "--fork",
+          "--mount-proc",
+          "--kill-child=SIGKILL",
+          "/usr/bin/python3",
+          "-c",
+          LINUX_SUBREAPER_SCRIPT,
+          input.command,
+          ...input.args,
+        ],
+      }
+    : process.platform === "win32"
+      ? { command: input.command, args: input.args }
+      : {
+          command: "/bin/sh",
+          args: ["-c", 'exec "$@"', "clawsweeper-validation", input.command, ...input.args],
+        };
   const child = spawn(invocation.command, invocation.args, {
     cwd: input.cwd,
     env: process.env,
-    stdio:
-      process.platform === "linux" ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
+    stdio: useLinuxNamespace ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
     detached: process.platform !== "win32",
     windowsHide: true,
     ...(input.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
@@ -104,7 +118,7 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
     }
     stderr.push(chunk);
   });
-  const protocolStream = process.platform === "linux" ? child.stdio[3] : null;
+  const protocolStream = useLinuxNamespace ? child.stdio[3] : null;
   protocolStream?.on("data", (chunk: Buffer) => {
     protocolBytes += chunk.length;
     if (protocolBytes > 64 * 1024) {
@@ -132,14 +146,25 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
   if (timeout) clearTimeout(timeout);
   if (forcedTermination) clearTimeout(forcedTermination);
 
-  const contained =
-    process.platform === "linux"
-      ? parseContainmentProtocol(protocol, exit)
-      : {
-          backgroundProcesses: await reapProcessGroup(child.pid),
-          signal: exit.signal,
-          status: exit.status,
-        };
+  let contained: {
+    backgroundProcesses: number;
+    signal: NodeJS.Signals | null;
+    status: number | null;
+  };
+  if (useLinuxNamespace) {
+    try {
+      contained = parseContainmentProtocol(protocol, exit);
+    } catch (error) {
+      await reapProcessGroup(child.pid);
+      throw error;
+    }
+  } else {
+    contained = {
+      backgroundProcesses: await reapProcessGroup(child.pid),
+      signal: exit.signal,
+      status: exit.status,
+    };
+  }
   const error = spawnFailure.value
     ? { code: spawnFailure.value.code, message: spawnFailure.value.message }
     : timedOut
@@ -213,7 +238,7 @@ async function reapProcessGroup(pid: number | undefined) {
 function terminateProcessTree(pid: number | undefined) {
   if (!pid) return;
   if (process.platform === "linux") {
-    signalProcess(pid, "SIGTERM");
+    signalProcessGroup(pid, "SIGTERM");
     return;
   }
   if (process.platform === "win32") {
@@ -225,7 +250,7 @@ function terminateProcessTree(pid: number | undefined) {
 
 function forceTerminateProcessTree(pid: number) {
   if (process.platform === "linux") {
-    signalProcess(pid, "SIGUSR1");
+    signalProcessGroup(pid, "SIGKILL");
     return;
   }
   signalProcessGroup(pid, "SIGKILL");
@@ -237,16 +262,6 @@ function terminateWindowsProcessTree(pid: number) {
     ["/pid", String(pid), "/t", "/f"],
     { stdio: "ignore", windowsHide: true },
   );
-}
-
-function signalProcess(pid: number, signal: NodeJS.Signals) {
-  try {
-    process.kill(pid, signal);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
-    throw error;
-  }
 }
 
 function signalProcessGroup(pid: number, signal: NodeJS.Signals) {
