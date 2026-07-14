@@ -5,16 +5,20 @@ import { ACTION_EVENT_REASON_CODES, type ActionEventReasonCode } from "../action
 import { parseArgs, type ParsedJob } from "./lib.js";
 
 export type ExecuteFixMutationEvidence =
-  | { outcome: "observed"; reasonCode: ActionEventReasonCode }
-  | { outcome: "rejected"; reasonCode: ActionEventReasonCode }
-  | { outcome: "unknown"; reasonCode: ActionEventReasonCode };
+  | { outcome: "observed"; reasonCode: ActionEventReasonCode; retryable: boolean }
+  | { outcome: "rejected"; reasonCode: ActionEventReasonCode; retryable: false }
+  | { outcome: "unknown"; reasonCode: ActionEventReasonCode; retryable: boolean };
 
 export function executionReportEvidence(
   value: unknown,
   job: ParsedJob,
 ): ExecuteFixMutationEvidence {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { outcome: "unknown", reasonCode: ACTION_EVENT_REASON_CODES.unavailable };
+    return {
+      outcome: "unknown",
+      reasonCode: ACTION_EVENT_REASON_CODES.unavailable,
+      retryable: false,
+    };
   }
   const report = value as Record<string, unknown>;
   if (
@@ -22,11 +26,28 @@ export function executionReportEvidence(
     report.cluster_id !== job.frontmatter.cluster_id ||
     !Array.isArray(report.actions)
   ) {
-    return { outcome: "unknown", reasonCode: ACTION_EVENT_REASON_CODES.unavailable };
+    return {
+      outcome: "unknown",
+      reasonCode: ACTION_EVENT_REASON_CODES.unavailable,
+      retryable: false,
+    };
   }
   if (report.dry_run === true) {
-    return { outcome: "rejected", reasonCode: ACTION_EVENT_REASON_CODES.dryRun };
+    return {
+      outcome: "rejected",
+      reasonCode: ACTION_EVENT_REASON_CODES.dryRun,
+      retryable: false,
+    };
   }
+  const retryable =
+    report.requeue_required === true ||
+    report.actions.some(
+      (value) =>
+        value !== null &&
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        (value as Record<string, unknown>).requeue_required === true,
+    );
   const observed = report.actions.some((value) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     const action = value as Record<string, unknown>;
@@ -36,19 +57,17 @@ export function executionReportEvidence(
     );
   });
   if (observed) {
-    return { outcome: "observed", reasonCode: ACTION_EVENT_REASON_CODES.completed };
+    return {
+      outcome: "observed",
+      reasonCode: ACTION_EVENT_REASON_CODES.completed,
+      retryable,
+    };
   }
-  const status = String(report.status ?? "").toLowerCase();
-  if (status === "skipped") {
-    return { outcome: "rejected", reasonCode: ACTION_EVENT_REASON_CODES.noChanges };
-  }
-  if (status === "blocked" || status === "needs_human") {
-    return { outcome: "rejected", reasonCode: ACTION_EVENT_REASON_CODES.policyBlocked };
-  }
-  if (status === "planned") {
-    return { outcome: "rejected", reasonCode: ACTION_EVENT_REASON_CODES.dryRun };
-  }
-  return { outcome: "unknown", reasonCode: ACTION_EVENT_REASON_CODES.unavailable };
+  return {
+    outcome: "unknown",
+    reasonCode: ACTION_EVENT_REASON_CODES.unavailable,
+    retryable,
+  };
 }
 
 export function prepareExecutionReportProbe(
