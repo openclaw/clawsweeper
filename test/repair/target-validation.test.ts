@@ -507,6 +507,22 @@ test("validation parser rejects direct interpreter eval commands", () => {
   }
 });
 
+test("validation parser rejects Node and Bun preload or loader options", () => {
+  for (const command of [
+    "node --require ./hook.cjs --test test/example.test.ts",
+    "node -r./hook.cjs --test test/example.test.ts",
+    "node --import=./hook.mjs --test test/example.test.ts",
+    "node --loader ./loader.mjs --test test/example.test.ts",
+    "node --experimental-loader=./loader.mjs --test test/example.test.ts",
+    "bun --preload ./hook.ts test test/example.test.ts",
+    "bun -r./hook.ts test test/example.test.ts",
+    "pnpm exec node --import ./hook.mjs --test test/example.test.ts",
+    "pnpm exec bun --preload=./hook.ts test test/example.test.ts",
+  ]) {
+    assert.throws(() => parseAllowedValidationCommand(command), /unsafe validation command/);
+  }
+});
+
 test("validation parser rejects mutating package, Git, formatter, and environment forms", () => {
   for (const command of [
     "npm i",
@@ -716,6 +732,46 @@ test("package validation execution suppresses lifecycle hooks", () => {
     requireWorkspaceMatchFailure(["pnpm", "--fail-if-no-match=false", "--filter", "app", "check"]),
     ["pnpm", "--fail-if-no-match", "--filter", "app", "check"],
   );
+});
+
+test("Bun validation rejects selected pre and post lifecycle hooks", () => {
+  for (const hook of ["precheck", "postcheck"]) {
+    const cwd = gitBunPackageFixture({
+      [hook]: "node hook.js",
+      check: "node check.js",
+    });
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+    const command = "bun run check";
+    const options = validationOptions("steipete/example", {
+      toolchain: {
+        packageManager: "bun",
+        baseValidationCommands: [],
+        changedGate: null,
+      },
+    });
+
+    assert.deepEqual(
+      preflightTargetValidationPlan(
+        { fixArtifact: { validation_commands: [command] }, targetDir: cwd },
+        options,
+      ),
+      {
+        status: "blocked",
+        code: "validation_script_unsafe",
+        required: "bun run check",
+        unsafe_hook: hook,
+        available_scripts: ["check", hook].sort(),
+        resolved_commands: ["bun run check"],
+        reason: `validation_script_unsafe: Bun would execute ${hook} around bun run check`,
+      },
+    );
+    assert.throws(
+      () => runAllowedValidationCommands([command], cwd, options),
+      new RegExp(`Bun would execute ${hook}`),
+    );
+  }
 });
 
 test("implicit pnpm script names preserve package.json case", () => {

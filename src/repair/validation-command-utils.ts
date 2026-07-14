@@ -797,8 +797,18 @@ function hasInlineInterpreterCode(parts: readonly string[]) {
     "cmd.exe",
   ]);
   const deniedByExecutable: Record<string, readonly string[]> = {
-    node: ["-e", "--eval", "-p", "--print"],
-    bun: ["-e", "--eval", "-p", "--print"],
+    node: [
+      "-e",
+      "--eval",
+      "-p",
+      "--print",
+      "-r",
+      "--require",
+      "--import",
+      "--loader",
+      "--experimental-loader",
+    ],
+    bun: ["-e", "--eval", "-p", "--print", "-r", "--preload", "--require", "--import", "--loader"],
     deno: ["eval"],
     tsx: ["-e", "--eval", "-p", "--print"],
     "ts-node": ["-e", "--eval", "-p", "--print"],

@@ -545,6 +545,7 @@ export function runAllowedValidationCommandsWithBinding(
       for (const parts of resolvedCommands) {
         const rendered = parts.join(" ");
         if (executed.includes(rendered)) continue;
+        assertNoUnsafeBunLifecycleHooks(cwd, parts);
         const startedAt = Date.now();
         const deadlineAt = startedAt + validationTimeoutMs;
         const identityReserveMs = validationIdentityReserveMs(validationTimeoutMs);
@@ -685,6 +686,20 @@ export function preflightTargetValidationPlan(
   const missing = requiredScripts.find(
     (script: JsonValue) => !targetPackageScriptIsAvailable(targetDir, scripts, script),
   );
+  const unsafe = requiredScripts
+    .map((script) => unsafeBunLifecycleHook(targetDir, script))
+    .find((value): value is NonNullable<typeof value> => value !== null);
+  if (unsafe) {
+    return {
+      status: "blocked",
+      code: "validation_script_unsafe",
+      required: unsafe.command,
+      unsafe_hook: unsafe.hook,
+      available_scripts: availableScripts,
+      resolved_commands: resolved,
+      reason: `validation_script_unsafe: Bun would execute ${unsafe.hook} around ${unsafe.command}`,
+    };
+  }
   if (!missing) {
     return {
       status: "passed",
@@ -3196,6 +3211,38 @@ function targetPackageScriptIsAvailable(
     return selected.every((manifest) => manifest.scripts.has(requirement.name));
   }
   return selected.some((manifest) => manifest.scripts.has(requirement.name));
+}
+
+function assertNoUnsafeBunLifecycleHooks(cwd: string, parts: readonly string[]) {
+  const requirement = packageScriptRequirement(parts);
+  const unsafe = requirement ? unsafeBunLifecycleHook(cwd, requirement) : null;
+  if (unsafe) {
+    throw new Error(
+      `unsafe validation command: Bun would execute ${unsafe.hook} around ${unsafe.command}`,
+    );
+  }
+}
+
+function unsafeBunLifecycleHook(cwd: string, requirement: LooseRecord) {
+  if (requirement.packageManager !== "bun") return null;
+  const manifests = readWorkspacePackageManifests(cwd, requirement.packageManager);
+  if (manifests === null) return null;
+  const selected = requirement.workspaceScoped
+    ? selectWorkspacePackageManifests(
+        manifests,
+        requirement.workspaceSelectors,
+        requirement.workspaceAll,
+      )
+    : manifests.filter((manifest) => manifest.relativeDir === ".");
+  if (selected === null) return null;
+  for (const manifest of selected) {
+    for (const hook of [`pre${requirement.name}`, `post${requirement.name}`]) {
+      if (manifest.scripts.has(hook)) {
+        return { command: requirement.command, hook };
+      }
+    }
+  }
+  return null;
 }
 
 function readWorkspacePackageManifests(
