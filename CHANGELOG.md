@@ -8,6 +8,7 @@ checkpoint, and status-only commits are intentionally omitted.
 ## 0.3.1 - Unreleased
 
 ### Added
+- Added a pure, bounded closure dependency planner with fail-closed canonical selection, Tarjan cycle detection, and deterministic topological layers.
 - Added end-to-end exact-review handoff health with phase ages, delayed/stalled claim classification, and a phase-aware operator rail on the live dashboard.
 - Added a maintainer-only two-runner workflow that builds a hash-bound
   crawl-remote release artifact without production credentials, then requires
