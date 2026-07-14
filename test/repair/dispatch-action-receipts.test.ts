@@ -158,6 +158,27 @@ test("dispatch receipt inputs reject raw payload, body, token, nested, and overs
   );
 });
 
+test("GitHub Actions dispatches fail before the request when receipts are not configured", () => {
+  let calls = 0;
+  assert.throws(
+    () =>
+      runDispatchWithReceiptSync({
+        component: "missing_receipts",
+        operationKey: "missing-receipts",
+        dispatchKind: "repository",
+        repository: "openclaw/clawsweeper",
+        dispatchTarget: "test_dispatch",
+        dispatchInput: { event_type: "test_dispatch" },
+        env: { GITHUB_ACTIONS: "true" },
+        operation: () => {
+          calls += 1;
+        },
+      }),
+    /without authoritative action receipts/,
+  );
+  assert.equal(calls, 0);
+});
+
 test("HTTP dispatch failures separate known rejection from ambiguous acceptance", () => {
   assert.ok(dispatchHttpError(403, "forbidden") instanceof DispatchRejectedError);
   assert.ok(dispatchHttpError(422, "invalid") instanceof DispatchRejectedError);

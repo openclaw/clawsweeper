@@ -153,7 +153,9 @@ test("spam comment intake skips protected authors before dispatch", () => {
 });
 
 test("runSpamCommentIntake posts repository dispatch for accepted comments", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-spam-intake-"));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-spam-intake-")));
+  const outputRoot = path.join(root, "action-ledger-output");
+  fs.mkdirSync(outputRoot);
   const eventPath = path.join(root, "event.json");
   fs.writeFileSync(eventPath, `${JSON.stringify(spamActivity())}\n`);
   const requests: { url: string; body: Record<string, unknown> }[] = [];
@@ -164,7 +166,24 @@ test("runSpamCommentIntake posts repository dispatch for accepted comments", asy
     env: {
       GITHUB_EVENT_PATH: eventPath,
       GITHUB_EVENT_NAME: "repository_dispatch",
-      GH_TOKEN: "token",
+      GH_TOKEN: "credential-value",
+      GITHUB_ACTIONS: "true",
+      CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
+      CLAWSWEEPER_ACTION_LEDGER_ROOT: root,
+      CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: outputRoot,
+      CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "spam-intake-test",
+      GITHUB_REPOSITORY: "openclaw/clawsweeper",
+      GITHUB_SHA: "a".repeat(40),
+      GITHUB_WORKFLOW: "spam comment intake",
+      GITHUB_WORKFLOW_REF:
+        "openclaw/clawsweeper/.github/workflows/spam-comment-intake.yml@refs/heads/main",
+      GITHUB_JOB: "intake",
+      GITHUB_RUN_ID: "12345",
+      GITHUB_RUN_ATTEMPT: "1",
+      GITHUB_ACTION: "dispatch-exact-spam-scan",
+      GITHUB_RUN_STARTED_AT: "2026-07-14T12:00:00Z",
+      CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "",
+      CLAWSWEEPER_CRABFLEET_SESSION_ID: "",
     },
     fetch: async (input, init) => {
       requests.push({ url: String(input), body: JSON.parse(String(init?.body)) });
@@ -185,4 +204,36 @@ test("runSpamCommentIntake posts repository dispatch for accepted comments", asy
     },
   });
   assert.ok(fs.existsSync(path.join(root, "notifications/spam-comment-intake-report.json")));
+  const events = readActionEvents(outputRoot);
+  assert.deepEqual(
+    events.map((event) => event.attributes.completion_reason),
+    ["dispatch_attempted", "dispatch_accepted"],
+  );
+  const serialized = JSON.stringify(events);
+  assert.doesNotMatch(serialized, /Managed Revenue Engines/);
+  assert.doesNotMatch(serialized, /credential-value/);
 });
+
+test("spam intake workflows publish authoritative dispatch receipts", () => {
+  const workflows = [
+    [".github/workflows/github-activity.yml", "github-activity-dispatch"],
+    [".github/workflows/spam-comment-intake.yml", "spam-intake-dispatch"],
+  ] as const;
+  for (const [workflowPath, lane] of workflows) {
+    const workflow = fs.readFileSync(workflowPath, "utf8");
+    assert.match(workflow, /uses: \.\/\.github\/actions\/setup-action-ledger/);
+    assert.match(workflow, new RegExp(`--lane ${lane}`));
+    assert.match(workflow, /repair:action-ledger -- finalize/);
+    assert.match(workflow, /repair:action-ledger -- publish/);
+    assert.match(workflow, /repair:publish-main/);
+  }
+});
+
+function readActionEvents(root: string): Array<Record<string, any>> {
+  return fs
+    .readdirSync(root, { recursive: true })
+    .filter((entry): entry is string => typeof entry === "string" && entry.endsWith(".jsonl"))
+    .flatMap((entry) => fs.readFileSync(path.join(root, entry), "utf8").trim().split("\n"))
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}

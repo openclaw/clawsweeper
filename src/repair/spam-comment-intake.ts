@@ -4,6 +4,11 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { JsonObject, JsonValue } from "./json-types.js";
 import { asJsonObject } from "./json-types.js";
+import {
+  dispatchHttpError,
+  flushDispatchActionEvents,
+  runDispatchWithReceipt,
+} from "./dispatch-action-receipts.js";
 import { parseArgs, repoRoot } from "./lib.js";
 import {
   deterministicSpamSignals,
@@ -144,12 +149,31 @@ export async function runSpamCommentIntake(
     });
   }
 
-  await dispatchSpamScanner({
-    fetcher,
-    token,
-    dispatchRepo,
-    payload: decision.dispatch_payload,
-  });
+  let dispatchError: unknown = null;
+  try {
+    await dispatchSpamScanner({
+      fetcher,
+      token,
+      dispatchRepo,
+      payload: decision.dispatch_payload,
+      root,
+      env,
+    });
+  } catch (error) {
+    dispatchError = error;
+  }
+  try {
+    await flushDispatchActionEvents(root, { env });
+  } catch (error) {
+    if (!dispatchError) dispatchError = error;
+    else
+      log(
+        `[action-ledger] failed to finalize spam dispatch receipts: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+  }
+  if (dispatchError) throw dispatchError;
   return finish({
     summary: {
       status: "ok",
@@ -254,26 +278,53 @@ async function dispatchSpamScanner({
   token,
   dispatchRepo,
   payload,
+  root,
+  env,
 }: {
   fetcher: typeof fetch;
   token: string;
   dispatchRepo: string;
   payload: SpamScannerDispatchPayload;
+  root: string;
+  env: NodeJS.ProcessEnv;
 }) {
-  const response = await fetcher(`https://api.github.com/repos/${dispatchRepo}/dispatches`, {
-    method: "POST",
-    headers: {
-      accept: "application/vnd.github+json",
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-      "user-agent": "clawsweeper-spam-comment-intake",
-      "x-github-api-version": "2022-11-28",
+  const commentId =
+    payload.client_payload.comment_id ?? payload.client_payload.review_comment_id ?? "";
+  await runDispatchWithReceipt({
+    component: "spam_comment_intake",
+    operationKey: `spam-comment:${payload.client_payload.target_repo}:${commentId}`,
+    dispatchKind: "repository",
+    repository: dispatchRepo,
+    dispatchTarget: payload.event_type,
+    dispatchInput: {
+      event_type: payload.event_type,
+      target_repo: payload.client_payload.target_repo,
+      comment_kind: payload.client_payload.review_comment_id ? "review_comment" : "issue_comment",
+      comment_id: commentId,
+      max_comments: Number(payload.client_payload.max_comments),
     },
-    body: JSON.stringify(payload),
+    root,
+    env,
+    operation: async () => {
+      const response = await fetcher(`https://api.github.com/repos/${dispatchRepo}/dispatches`, {
+        method: "POST",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "user-agent": "clawsweeper-spam-comment-intake",
+          "x-github-api-version": "2022-11-28",
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        throw dispatchHttpError(
+          response.status,
+          `spam scanner dispatch failed with status ${response.status}`,
+        );
+      }
+    },
   });
-  if (!response.ok) {
-    throw new Error(`spam scanner dispatch failed: ${response.status} ${await response.text()}`);
-  }
 }
 
 function activityPayload(root: JsonObject) {

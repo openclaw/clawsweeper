@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -55,6 +56,9 @@ jobs:
             config/automation-limits.json
             prompts/pr-close-coverage-proof.md
             schema/clawsweeper-pr-close-coverage-proof.schema.json
+            src/action-ledger-files.ts
+            src/action-ledger-runtime.ts
+            src/action-ledger.ts
             src/clawsweeper-text.ts
             src/command.ts
             src/codex-env.ts
@@ -84,13 +88,87 @@ jobs:
           owner: ${{ github.repository_owner }}
           permission-contents: write
 
+      - name: Create state token
+        if: steps.core-budget.outputs.skip != 'true'
+        id: state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        if: steps.core-budget.outputs.skip != 'true'
+        id: setup-spam-intake-state
+        with:
+          token: ${{ steps.state-token.outputs.token }}
+
       - uses: ./.github/actions/setup-pnpm
         if: steps.core-budget.outputs.skip != 'true'
+        id: setup-spam-intake-pnpm
         with:
           build-script: build:repair
 
+      - uses: ./.github/actions/setup-action-ledger
+        if: steps.core-budget.outputs.skip != 'true'
+        id: setup-spam-intake-ledger
+
       - name: Dispatch exact spam scan
+        id: dispatch-exact-spam-scan
         if: steps.core-budget.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: pnpm run repair:spam-comment-intake -- --write-report
+
+      - name: Finalize spam intake dispatch action ledger
+        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-spam-intake-state.outcome == 'success' && steps.setup-spam-intake-pnpm.outcome == 'success' && steps.setup-spam-intake-ledger.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          : "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
+          mkdir -p .artifacts
+          pnpm run --silent repair:action-ledger -- finalize \
+            --lane spam-intake-dispatch \
+            --allow-empty \
+            > .artifacts/spam-intake-dispatch-action-ledger-manifest.json
+
+      - name: Publish spam intake dispatch action ledger
+        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-spam-intake-state.outcome == 'success' && steps.setup-spam-intake-pnpm.outcome == 'success' && steps.setup-spam-intake-ledger.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          source_root="${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
+          manifest_file=".artifacts/spam-intake-dispatch-action-ledger-manifest.json"
+          if [ ! -s "$manifest_file" ]; then
+            echo "No spam intake dispatch action events to publish."
+            exit 0
+          fi
+          event_paths_file=".artifacts/spam-intake-dispatch-action-ledger-paths.txt"
+          import_result_file=".artifacts/spam-intake-dispatch-action-ledger-import.json"
+          pnpm run --silent repair:action-ledger -- publish \
+            --lane spam-intake-dispatch \
+            --manifest "$manifest_file" \
+            --source-root "$source_root" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" > "$import_result_file"
+          if ! jq -e --slurpfile manifest "$manifest_file" \
+            '.eventPaths == $manifest[0].event_paths' \
+            "$import_result_file" >/dev/null; then
+            echo "Imported spam intake dispatch paths do not match the finalized manifest." >&2
+            exit 1
+          fi
+          jq -r '.paths[]?' "$import_result_file" |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "Spam intake dispatch shards existed but no paths were imported." >&2
+            exit 1
+          fi
+          action_ledger_args=()
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
+          done < "$event_paths_file"
+          pnpm run repair:publish-main -- \
+            --message "chore: append spam intake dispatch action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal

@@ -55,6 +55,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
 
 concurrency:
   group: >-
@@ -98,6 +99,24 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
+      - name: Create state token
+        if: steps.core-budget.outputs.skip != 'true'
+        id: activity-state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        if: steps.core-budget.outputs.skip != 'true'
+        id: setup-activity-state
+        with:
+          token: ${{ steps.activity-state-token.outputs.token }}
+
+      - uses: ./.github/actions/setup-action-ledger
+        if: steps.core-budget.outputs.skip != 'true'
+        id: setup-activity-ledger
+
       - uses: actions/setup-node@v6
         if: steps.core-budget.outputs.skip != 'true'
         with:
@@ -133,6 +152,7 @@ jobs:
             ${{ runner.os }}-pnpm-
 
       - name: Install dependencies
+        id: setup-activity-pnpm
         if: steps.core-budget.outputs.skip != 'true'
         shell: bash
         run: |
@@ -149,12 +169,67 @@ jobs:
           pnpm run build:repair
 
       - name: Dispatch spam scan candidate
+        id: dispatch-spam-scan-candidate
         if: steps.core-budget.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           pnpm run repair:spam-comment-intake -- --write-report
+
+      - name: Finalize GitHub activity dispatch action ledger
+        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-state.outcome == 'success' && steps.setup-activity-pnpm.outcome == 'success' && steps.setup-activity-ledger.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          : "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
+          mkdir -p .artifacts
+          pnpm run --silent repair:action-ledger -- finalize \
+            --lane github-activity-dispatch \
+            --allow-empty \
+            > .artifacts/github-activity-dispatch-action-ledger-manifest.json
+
+      - name: Publish GitHub activity dispatch action ledger
+        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-state.outcome == 'success' && steps.setup-activity-pnpm.outcome == 'success' && steps.setup-activity-ledger.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          source_root="${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
+          manifest_file=".artifacts/github-activity-dispatch-action-ledger-manifest.json"
+          if [ ! -s "$manifest_file" ]; then
+            echo "No GitHub activity dispatch action events to publish."
+            exit 0
+          fi
+          event_paths_file=".artifacts/github-activity-dispatch-action-ledger-paths.txt"
+          import_result_file=".artifacts/github-activity-dispatch-action-ledger-import.json"
+          pnpm run --silent repair:action-ledger -- publish \
+            --lane github-activity-dispatch \
+            --manifest "$manifest_file" \
+            --source-root "$source_root" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" > "$import_result_file"
+          if ! jq -e --slurpfile manifest "$manifest_file" \
+            '.eventPaths == $manifest[0].event_paths' \
+            "$import_result_file" >/dev/null; then
+            echo "Imported GitHub activity dispatch paths do not match the finalized manifest." >&2
+            exit 1
+          fi
+          jq -r '.paths[]?' "$import_result_file" |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "GitHub activity dispatch shards existed but no paths were imported." >&2
+            exit 1
+          fi
+          action_ledger_args=()
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
+          done < "$event_paths_file"
+          pnpm run repair:publish-main -- \
+            --message "chore: append GitHub activity dispatch action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal
 
       - name: Feed activity to OpenClaw
         if: steps.core-budget.outputs.skip != 'true'
