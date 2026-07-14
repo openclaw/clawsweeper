@@ -54,6 +54,35 @@ test("comment router wraps every GitHub mutation at the request boundary", () =>
   }
 });
 
+test("trusted verdict automerge refreshes reviewed PR activity before merge dispatch", () => {
+  const source = readText("src/repair/comment-router.ts");
+  const executeAutomerge = source.slice(
+    source.indexOf("function executeAutomerge("),
+    source.indexOf("function latestAutomergeTarget("),
+  );
+  const waitLoop = executeAutomerge.indexOf("while (block && isTransientAutomergeBlock(block)");
+  const reviewLease = executeAutomerge.indexOf(
+    "const reviewLeaseBlock = trustedAutomationReviewLeaseBlockReason(command)",
+  );
+  const reviewActivity = executeAutomerge.indexOf(
+    "const reviewActivityBlock = trustedAutomergeReviewActivityBlockReason(command)",
+  );
+  const merge = executeAutomerge.indexOf("const result = runGitHubSpawnMutation(");
+
+  assert.ok(waitLoop >= 0);
+  assert.ok(reviewLease > waitLoop);
+  assert.ok(reviewActivity > reviewLease);
+  assert.ok(merge > reviewActivity);
+  assert.match(
+    source,
+    /expected_review_activity_cursor: parsed\.expected_review_activity_cursor \?\? null/,
+  );
+  assert.match(
+    source,
+    /function trustedAutomergeReviewActivityBlockReason[\s\S]*isReviewedPrActivityCursor\(expected\)[\s\S]*pulls\/\$\{command\.issue_number\}\/reviews[\s\S]*pulls\/\$\{command\.issue_number\}\/comments/,
+  );
+});
+
 test("exact comment convergence classifies a missing comment as no mutation", () => {
   const source = readText("src/repair/comment-router.ts");
   const fastPath = source.slice(source.indexOf("function convergeExactCommentVersionFastPathAck"));

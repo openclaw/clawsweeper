@@ -129,6 +129,10 @@ import { ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
 import { compactText, escapeRegExp } from "./text-utils.js";
 import {
+  createReviewedPrActivityCursor,
+  isReviewedPrActivityCursor,
+} from "../review-activity-cursor.js";
+import {
   flushCommandActionEvents,
   recordCommandClaimed,
   recordCommandClaimRefreshed,
@@ -478,6 +482,7 @@ function routedCommandForComment(comment: JsonValue): LooseRecord | null {
     review_lease_comment_id: parsed.review_lease_comment_id ?? null,
     expected_item_updated_at: parsed.expected_item_updated_at ?? null,
     expected_source_revision: parsed.expected_source_revision ?? null,
+    expected_review_activity_cursor: parsed.expected_review_activity_cursor ?? null,
     finding_id: parsed.finding_id ?? null,
     ...forcedReplayCommandFields({ forceReprocess, attemptId }),
     status: "pending",
@@ -3749,6 +3754,15 @@ function executeAutomerge(command: LooseRecord) {
       merge_method: "squash",
     };
   }
+  const reviewActivityBlock = trustedAutomergeReviewActivityBlockReason(command);
+  if (reviewActivityBlock) {
+    return {
+      action: "merge",
+      status: reviewActivityBlock.retryable ? "waiting" : "blocked",
+      reason: reviewActivityBlock.reason,
+      merge_method: "squash",
+    };
+  }
   const result = runGitHubSpawnMutation(
     command,
     "pull_request_merge",
@@ -4282,6 +4296,45 @@ function fetchIssue(number: JsonValue) {
   return ghJson(["api", `repos/${targetRepo}/issues/${number}`], {
     attempts: TARGET_LOOKUP_RETRY_ATTEMPTS,
   });
+}
+
+function trustedAutomergeReviewActivityBlockReason(
+  command: LooseRecord,
+): { reason: string; retryable: boolean } | null {
+  if (command.intent !== "clawsweeper_auto_merge") return null;
+  const expected = command.expected_review_activity_cursor;
+  if (!isReviewedPrActivityCursor(expected)) {
+    return {
+      reason: "trusted ClawSweeper verdict is missing the reviewed PR activity cursor",
+      retryable: false,
+    };
+  }
+  try {
+    const current = createReviewedPrActivityCursor({
+      reviews: ghPaged<unknown>(`repos/${targetRepo}/pulls/${command.issue_number}/reviews`),
+      inlineComments: ghPaged<unknown>(
+        `repos/${targetRepo}/pulls/${command.issue_number}/comments`,
+      ),
+    });
+    if (!current) {
+      return {
+        reason: "pull request review activity exceeds the bounded automerge cursor",
+        retryable: false,
+      };
+    }
+    if (current !== expected) {
+      return {
+        reason: "pull request review activity changed since the trusted ClawSweeper verdict",
+        retryable: false,
+      };
+    }
+    return null;
+  } catch (error) {
+    return {
+      reason: `pull request review activity could not be refreshed: ${compactGhError(error)}`,
+      retryable: true,
+    };
+  }
 }
 
 function fetchIssueAsync(number: JsonValue) {
