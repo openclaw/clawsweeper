@@ -428,6 +428,7 @@ export async function flushWorkflowActionEvents(
 function workflowActionEventIsRecoverableStart(event: ActionEvent): boolean {
   return (
     (event.event_type === ACTION_EVENT_TYPES.reviewBatch ||
+      event.event_type === ACTION_EVENT_TYPES.workflowAttempt ||
       event.event_type === ACTION_EVENT_TYPES.reviewItem ||
       event.event_type === ACTION_EVENT_TYPES.reviewRetry ||
       event.event_type === ACTION_EVENT_TYPES.applyBatch ||
@@ -574,15 +575,18 @@ export function interruptOpenWorkflowActionEvents(
         if (lifecycleEvents.some((event) => workflowActionEventClosesLifecycle(start, event))) {
           continue;
         }
+        const aggregatesChildMutations =
+          start.event_type === ACTION_EVENT_TYPES.workflowAttempt ||
+          start.event_type === ACTION_EVENT_TYPES.reviewBatch ||
+          start.event_type === ACTION_EVENT_TYPES.applyBatch ||
+          (start.event_type === ACTION_EVENT_TYPES.reviewRetry &&
+            start.subject.kind === "workflow");
         const uncertainMutationStarts = current
           .filter(
             (event) =>
               event.operation_id === start.operation_id &&
               event.attempt_id === start.attempt_id &&
-              (start.event_type === ACTION_EVENT_TYPES.reviewBatch ||
-                start.event_type === ACTION_EVENT_TYPES.applyBatch ||
-                (start.event_type === ACTION_EVENT_TYPES.reviewRetry &&
-                  start.subject.kind === "workflow") ||
+              (aggregatesChildMutations ||
                 actionLedgerJson(workflowActionSubjectIdentity(event)) ===
                   actionLedgerJson(workflowActionSubjectIdentity(start))) &&
               workflowActionEventIsUncertainMutationStart(event),
@@ -628,11 +632,6 @@ export function interruptOpenWorkflowActionEvents(
         const openUncertainMutation =
           workflowActionEventIsUncertainMutationStart(start) ||
           openUncertainMutationStarts.length > 0;
-        const aggregatesChildMutations =
-          start.event_type === ACTION_EVENT_TYPES.reviewBatch ||
-          start.event_type === ACTION_EVENT_TYPES.applyBatch ||
-          (start.event_type === ACTION_EVENT_TYPES.reviewRetry &&
-            start.subject.kind === "workflow");
         const relevantMutationEvents = aggregatesChildMutations
           ? mutationEvents
           : lifecycleMutations;
