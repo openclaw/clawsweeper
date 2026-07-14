@@ -13,6 +13,8 @@ type WorkerConfig = {
     exact_review: {
       max_concurrent: number;
       target_max_concurrent: number;
+      background_congested_max_workers: number;
+      background_saturated_max_workers: number;
     };
     assist: {
       max: number;
@@ -27,6 +29,8 @@ type AutomationLimits = {
   exact_review: {
     concurrent_max: number;
     target_concurrent_max: number;
+    background_congested_max_workers: number;
+    background_saturated_max_workers: number;
   };
   assist: {
     default: number;
@@ -237,6 +241,14 @@ function deriveAutomationLimits(workerConfig: WorkerConfig): AutomationLimits {
       target_concurrent_max: Math.min(
         workerConfig.lanes.exact_review.target_max_concurrent,
         workerConfig.lanes.exact_review.max_concurrent,
+        max,
+      ),
+      background_congested_max_workers: Math.min(
+        workerConfig.lanes.exact_review.background_congested_max_workers,
+        max,
+      ),
+      background_saturated_max_workers: Math.min(
+        workerConfig.lanes.exact_review.background_saturated_max_workers,
         max,
       ),
     },

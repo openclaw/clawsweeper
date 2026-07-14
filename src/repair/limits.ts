@@ -13,6 +13,8 @@ export type WorkerConfig = {
     exact_review: {
       max_concurrent: number;
       target_max_concurrent: number;
+      background_congested_max_workers: number;
+      background_saturated_max_workers: number;
     };
     assist: {
       max: number;
@@ -27,6 +29,8 @@ export type AutomationLimits = {
   exact_review: {
     concurrent_max: number;
     target_concurrent_max: number;
+    background_congested_max_workers: number;
+    background_saturated_max_workers: number;
   };
   assist: {
     default: number;
@@ -65,6 +69,8 @@ export type WorkerLane =
   | "exact_item"
   | "assist";
 
+export type ExactReviewQueuePressure = "idle" | "congested" | "saturated";
+
 export const WORKER_CONFIG = readWorkerConfig();
 export const AUTOMATION_LIMITS = deriveAutomationLimits(WORKER_CONFIG);
 
@@ -84,6 +90,14 @@ export function deriveAutomationLimits(config: WorkerConfig): AutomationLimits {
       target_concurrent_max: Math.min(
         config.lanes.exact_review.target_max_concurrent,
         config.lanes.exact_review.max_concurrent,
+        max,
+      ),
+      background_congested_max_workers: Math.min(
+        config.lanes.exact_review.background_congested_max_workers,
+        max,
+      ),
+      background_saturated_max_workers: Math.min(
+        config.lanes.exact_review.background_saturated_max_workers,
         max,
       ),
     },
@@ -119,11 +133,13 @@ export function workerLimit(
   {
     activeCritical = 0,
     activeBackground = 0,
+    exactReviewPressure = "idle",
     config = WORKER_CONFIG,
     limits = AUTOMATION_LIMITS,
   }: {
     activeCritical?: number;
     activeBackground?: number;
+    exactReviewPressure?: ExactReviewQueuePressure;
     config?: WorkerConfig;
     limits?: AutomationLimits;
   } = {},
@@ -138,18 +154,16 @@ export function workerLimit(
   if (lane === "cluster_repair")
     return priorityLimit(limits.repair_live_runs.cluster_default, activeCritical);
   if (lane === "commit_review")
-    return backgroundLimit(
-      limits.commit_review.page_size_default,
-      activeCritical,
-      activeBackground,
+    return pressureLimitedBackground(
+      backgroundLimit(limits.commit_review.page_size_default, activeCritical, activeBackground),
     );
   if (lane === "hot_intake")
-    return backgroundLimit(
-      limits.review_shards.hot_intake_default,
-      activeCritical,
-      activeBackground,
+    return pressureLimitedBackground(
+      backgroundLimit(limits.review_shards.hot_intake_default, activeCritical, activeBackground),
     );
-  return backgroundLimit(limits.review_shards.normal_default, activeCritical, activeBackground);
+  return pressureLimitedBackground(
+    backgroundLimit(limits.review_shards.normal_default, activeCritical, activeBackground),
+  );
 
   function priorityLimit(laneMax: number, active: number): number {
     const available = Math.max(1, config.workers.max - nonNegative(active));
@@ -168,25 +182,59 @@ export function workerLimit(
       rawAvailable >= config.workers.minimum_background ? rawAvailable : Math.max(1, rawAvailable);
     return Math.max(1, Math.min(laneMax, withFloor));
   }
+
+  function pressureLimitedBackground(limit: number): number {
+    const pressureCap =
+      exactReviewPressure === "saturated"
+        ? limits.exact_review.background_saturated_max_workers
+        : exactReviewPressure === "congested"
+          ? limits.exact_review.background_congested_max_workers
+          : undefined;
+    if (pressureCap !== undefined) {
+      // The pressure cap is shared by broad lanes. Once in-flight matrices use
+      // that allowance, admit no more background workers until capacity drains.
+      return Math.min(limit, Math.max(0, pressureCap - nonNegative(activeBackground)));
+    }
+    return limit;
+  }
 }
 
 function validateWorkerConfig(value: unknown): WorkerConfig {
   if (!isRecord(value)) throw new Error("automation limits must be an object");
+  const workerMax = positiveInteger(value, "workers.max");
+  const exactReviewMax = positiveInteger(value, "lanes.exact_review.max_concurrent");
+  const backgroundCongestedMax = optionalPositiveInteger(
+    value,
+    "lanes.exact_review.background_congested_max_workers",
+    workerMax,
+  );
+  const backgroundSaturatedMax = optionalPositiveInteger(
+    value,
+    "lanes.exact_review.background_saturated_max_workers",
+    backgroundCongestedMax,
+  );
+  if (backgroundSaturatedMax > backgroundCongestedMax) {
+    throw new Error(
+      "automation limit lanes.exact_review.background_saturated_max_workers must not exceed lanes.exact_review.background_congested_max_workers",
+    );
+  }
   return {
     workers: {
-      max: positiveInteger(value, "workers.max"),
+      max: workerMax,
       reserve_for_interactive: nonNegativeInteger(value, "workers.reserve_for_interactive"),
       expansion_reserve: nonNegativeInteger(value, "workers.expansion_reserve"),
       minimum_background: positiveInteger(value, "workers.minimum_background"),
     },
     lanes: {
       exact_review: {
-        max_concurrent: positiveInteger(value, "lanes.exact_review.max_concurrent"),
+        max_concurrent: exactReviewMax,
         target_max_concurrent: optionalPositiveInteger(
           value,
           "lanes.exact_review.target_max_concurrent",
-          positiveInteger(value, "lanes.exact_review.max_concurrent"),
+          exactReviewMax,
         ),
+        background_congested_max_workers: backgroundCongestedMax,
+        background_saturated_max_workers: backgroundSaturatedMax,
       },
       assist: {
         max: positiveInteger(value, "lanes.assist.max"),
