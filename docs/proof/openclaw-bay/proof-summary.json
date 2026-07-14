@@ -126,10 +126,7 @@
     {
       "name": "repository filter isolates selected repo",
       "status": "PASS",
-      "visible_keys": [
-        "openclaw/clawhub#3058",
-        "openclaw/clawhub#97002"
-      ]
+      "visible_keys": ["openclaw/clawhub#3058", "openclaw/clawhub#97002"]
     },
     {
       "name": "drawer exposes safe GitHub links",
@@ -164,12 +161,7 @@
     {
       "name": "preview tide follows explicit visual phases",
       "status": "PASS",
-      "phases": [
-        "incoming",
-        "crest",
-        "receding",
-        "idle"
-      ]
+      "phases": ["incoming", "crest", "receding", "idle"]
     },
     {
       "name": "reduced-motion tide is brief and non-spatial",
@@ -359,12 +351,7 @@
     }
   ],
   "tide_isolation": {
-    "phases": [
-      "incoming",
-      "crest",
-      "receding",
-      "idle"
-    ],
+    "phases": ["incoming", "crest", "receding", "idle"],
     "before_keys": [
       "openclaw/clawhub#97002",
       "openclaw/clawsweeper#97003",
