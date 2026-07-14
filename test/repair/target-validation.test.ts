@@ -808,6 +808,59 @@ test("package validation execution suppresses lifecycle hooks", () => {
     /lifecycle suppression is overridden/,
   );
   assert.deepEqual(
+    validationCommandForExecution([
+      "npm",
+      "--ignore-scripts=false",
+      "--ignore-scripts=true",
+      "run",
+      "check",
+    ]),
+    ["npm", "--ignore-scripts=false", "--ignore-scripts=true", "run", "check"],
+  );
+  assert.throws(
+    () =>
+      validationCommandForExecution([
+        "npm",
+        "--ignore-scripts=true",
+        "--ignore-scripts=false",
+        "run",
+        "check",
+      ]),
+    /lifecycle suppression is overridden/,
+  );
+  assert.deepEqual(
+    validationCommandForExecution([
+      "npm",
+      "--foreground-scripts=true",
+      "--foreground-scripts=false",
+      "run",
+      "check",
+    ]),
+    [
+      "npm",
+      "--ignore-scripts",
+      "--foreground-scripts=true",
+      "--foreground-scripts=false",
+      "run",
+      "check",
+    ],
+  );
+  assert.throws(
+    () =>
+      validationCommandForExecution([
+        "npm",
+        "--foreground-scripts=false",
+        "--foreground-scripts=true",
+        "run",
+        "check",
+      ]),
+    /lifecycle suppression is overridden/,
+  );
+  assert.deepEqual(
+    validationCommandForExecution(["npm", "--no-ignore-scripts=false", "run", "check"]),
+    ["npm", "--no-ignore-scripts=false", "run", "check"],
+  );
+  assert.deepEqual(
     requireWorkspaceMatchFailure(["env", "CI=1", "pnpm", "--filter", "app", "check"]),
     ["env", "CI=1", "pnpm", "--fail-if-no-match", "--filter", "app", "check"],
   );
@@ -2159,6 +2212,56 @@ if (args[0] === "enable") {
       "--config.enable-pre-post-scripts=false first",
       "--config.enable-pre-post-scripts=false second",
     ]);
+  },
+);
+
+test(
+  "validation rejects ignored dependency poisoning before the next command",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({
+      first: 'node -e ""',
+      second: 'node -e ""',
+    });
+    fs.writeFileSync(path.join(cwd, ".gitignore"), "node_modules/\n");
+    fs.mkdirSync(path.join(cwd, "node_modules", "fixture-dependency"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, "node_modules", "fixture-dependency", "state.js"), "safe\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-runtime-poison-"));
+    const secondCommandMarker = path.join(binDir, "second-command-ran");
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args.includes("first")) {
+  fs.writeFileSync("node_modules/fixture-dependency/state.js", "poisoned\\n");
+}
+if (args.includes("second")) {
+  fs.writeFileSync(${JSON.stringify(secondCommandMarker)}, "ran");
+}
+`,
+    );
+    const options = validationOptions("steipete/example", {
+      toolchain: {
+        packageManager: "pnpm",
+        baseValidationCommands: [],
+        changedGate: null,
+      },
+    });
+
+    assert.throws(
+      () =>
+        withPathOnlyPrefix(binDir, () =>
+          runAllowedValidationCommands(["pnpm first", "pnpm second"], cwd, options),
+        ),
+      /unsafe validation command mutated checkout identity/,
+    );
+    assert.equal(fs.existsSync(secondCommandMarker), false);
   },
 );
 

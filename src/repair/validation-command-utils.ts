@@ -1179,34 +1179,50 @@ function hasMutatingValidationCommand(parts: readonly string[]): boolean {
 function npmIgnoreScriptsMode(parts: readonly string[]): "enabled" | "disabled" | null {
   const commandParts = stripEnvPrefix(parts);
   if (commandParts[0] !== "npm") return null;
-  let enabled = false;
+  let ignoreScripts: boolean | null = null;
+  let foregroundScripts: boolean | null = null;
   for (const token of commandParts.slice(1)) {
     if (token === "--") break;
     const option = token.split("=", 1)[0] ?? "";
     if (isAbbreviatedNpmLifecycleOption(option)) {
       return "disabled";
     }
-    if (option === "--ignore-scripts") {
-      const value = token.includes("=") ? token.slice(token.indexOf("=") + 1) : null;
-      if (value !== null && !packageBooleanOptionEnabled(value)) return "disabled";
-      enabled = true;
+    if (option === "--ignore-scripts" || option === "--no-ignore-scripts") {
+      const value = npmLifecycleBooleanValue(token);
+      if (value === null) return "disabled";
+      ignoreScripts = option === "--ignore-scripts" ? value : !value;
       continue;
     }
-    if (option === "--foreground-scripts") {
-      return "disabled";
+    if (option === "--foreground-scripts" || option === "--no-foreground-scripts") {
+      const value = npmLifecycleBooleanValue(token);
+      if (value === null) return "disabled";
+      foregroundScripts = option === "--foreground-scripts" ? value : !value;
     }
   }
-  return enabled ? "enabled" : null;
+  if (ignoreScripts === false || foregroundScripts === true) return "disabled";
+  return ignoreScripts === true ? "enabled" : null;
+}
+
+function npmLifecycleBooleanValue(token: string): boolean | null {
+  if (!token.includes("=")) return true;
+  const value = token.slice(token.indexOf("=") + 1);
+  if (!isPackageBooleanOptionValue(value)) return null;
+  return packageBooleanOptionEnabled(value);
 }
 
 function isAbbreviatedNpmLifecycleOption(option: string) {
   return (
     option.startsWith("--") &&
     option !== "--ignore-scripts" &&
+    option !== "--no-foreground-scripts" &&
+    option !== "--no-ignore-scripts" &&
     option !== "--foreground-scripts" &&
-    ["--ignore-scripts", "--no-ignore-scripts", "--foreground-scripts"].some((name) =>
-      name.startsWith(option),
-    )
+    [
+      "--ignore-scripts",
+      "--no-foreground-scripts",
+      "--no-ignore-scripts",
+      "--foreground-scripts",
+    ].some((name) => name.startsWith(option))
   );
 }
 

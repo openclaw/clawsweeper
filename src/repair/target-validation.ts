@@ -316,12 +316,13 @@ export function prepareTargetToolchain(cwd: string, options: TargetValidationOpt
     }
     if (setupError) throw setupError;
     if (preparedPnpmPackageManager) {
+      const preparedSourceIdentity = validationSourceIdentity(cwd, deadlineAt);
       storePreparedTargetPnpmRuntime({
         cwd,
         deadlineAt,
         packageManager: preparedPnpmPackageManager,
         sourceCorepackHome: String(validationEnv.COREPACK_HOME),
-        sourceIdentity,
+        sourceIdentity: preparedSourceIdentity,
       });
     }
   });
@@ -891,6 +892,7 @@ type ValidationSourceIdentity = {
   contentTreeSha: string;
   gitAdminSha256: string;
   headSha: string;
+  runtimeInputsSha256: string;
   treeSha: string;
   status: string;
   worktreeSha256: string;
@@ -915,6 +917,7 @@ function sourceIdentityFromCheckout(identity: ValidationCheckoutIdentity): Targe
     contentTreeSha: identity.contentTreeSha,
     gitAdminSha256: identity.gitAdminSha256,
     headSha: identity.headSha,
+    runtimeInputsSha256: identity.runtimeInputsSha256,
     treeSha: identity.treeSha,
     status: identity.status,
     worktreeSha256: identity.worktreeSha256,
@@ -960,6 +963,7 @@ export function captureFinalTargetCheckoutBinding(
     actual.status !== "" ||
     actual.treeSha !== accepted.contentTreeSha ||
     actual.contentTreeSha !== accepted.contentTreeSha ||
+    actual.runtimeInputsSha256 !== accepted.runtimeInputsSha256 ||
     actual.worktreeSha256 !== accepted.worktreeSha256
   ) {
     throw new Error("target checkout content changed after validation");
@@ -1653,6 +1657,7 @@ function validationSourceIdentity(cwd: string, deadlineAt: number): ValidationSo
     contentTreeSha,
     gitAdminSha256: gitAdministrativeSha256(cwd, deadlineAt),
     headSha,
+    runtimeInputsSha256: validationRuntimeInputsSha256(cwd, deadlineAt),
     treeSha,
     status,
     worktreeSha256,
@@ -1665,7 +1670,7 @@ function assertValidationSourceIdentity(
   deadlineAt: number,
 ) {
   const actual = validationSourceIdentity(cwd, deadlineAt);
-  if (!sameValidationSourceIdentity(actual, expected)) {
+  if (!sameValidationSourceIdentityExceptRuntime(actual, expected)) {
     throw new Error("target dependency setup mutated checkout identity");
   }
 }
@@ -1694,6 +1699,21 @@ function assertValidationCheckoutIdentity(
 }
 
 function sameValidationSourceIdentity(
+  actual: ValidationSourceIdentity,
+  expected: ValidationSourceIdentity,
+) {
+  return (
+    actual.contentTreeSha === expected.contentTreeSha &&
+    actual.gitAdminSha256 === expected.gitAdminSha256 &&
+    actual.headSha === expected.headSha &&
+    actual.runtimeInputsSha256 === expected.runtimeInputsSha256 &&
+    actual.treeSha === expected.treeSha &&
+    actual.status === expected.status &&
+    actual.worktreeSha256 === expected.worktreeSha256
+  );
+}
+
+function sameValidationSourceIdentityExceptRuntime(
   actual: ValidationSourceIdentity,
   expected: ValidationSourceIdentity,
 ) {
@@ -1775,6 +1795,23 @@ function worktreeContentSha256(cwd: string, deadlineAt: number) {
     );
   }
   assertValidationIdentityDeadline(deadlineAt, "worktree digest");
+  return hash.digest("hex");
+}
+
+function validationRuntimeInputsSha256(cwd: string, deadlineAt: number) {
+  const hash = createHash("sha256");
+  const root = fs.realpathSync(cwd);
+  for (const relativePath of [".venv", "node_modules", "venv"]) {
+    assertValidationIdentityDeadline(deadlineAt, relativePath);
+    const entryPath = path.join(root, relativePath);
+    updateIdentityHash(hash, "runtime-input", relativePath);
+    if (!fs.existsSync(entryPath)) {
+      updateIdentityHash(hash, "runtime-state", "absent");
+      continue;
+    }
+    updateResolvedPathDigest(hash, root, entryPath, relativePath, deadlineAt, new Set());
+  }
+  assertValidationIdentityDeadline(deadlineAt, "runtime input digest");
   return hash.digest("hex");
 }
 
