@@ -52,6 +52,7 @@
     "repair:issue-implementation-intake": "node dist/repair/issue-implementation-intake.js",
     "repair:issue-implementation-status": "node dist/repair/issue-implementation-status.js",
     "repair:publish-main": "node dist/repair/publish-main.js",
+    "repair:publish-action-event-paths": "node dist/repair/publish-action-event-paths.js",
     "repair:notify-merge": "node dist/repair/notify-merge.js",
     "repair:notify-events": "node dist/repair/notify-events.js",
     "repair:notify-maintainer-report": "node dist/repair/notify-maintainer-report.js",
