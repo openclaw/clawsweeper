@@ -2064,9 +2064,133 @@ test("bun-based target toolchain installs deps and runs configured validation", 
 
   assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/), [
     "--version",
-    "install --frozen-lockfile --ignore-scripts",
+    "install --frozen-lockfile --ignore-scripts --registry https://registry.npmjs.org/",
     "run check",
   ]);
+});
+
+test("dependency setup rejects target-controlled network destinations", () => {
+  const cases = [
+    {
+      expected: /network config is not allowed: \.npmrc/,
+      prepare() {
+        const cwd = gitPackageFixture({ check: 'node -e ""' });
+        fs.writeFileSync(path.join(cwd, ".npmrc"), "registry=http://127.0.0.1:4873/\n");
+        return {
+          cwd,
+          options: validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: ["pnpm check"],
+              changedGate: null,
+            },
+          }),
+        };
+      },
+    },
+    {
+      expected: /destination is not approved: http:\/\/169\.254\.169\.254/,
+      prepare() {
+        const cwd = gitPackageFixture({ check: 'node -e ""' });
+        fs.writeFileSync(
+          path.join(cwd, "pnpm-lock.yaml"),
+          "lockfileVersion: '9.0'\npackages:\n  payload:\n    resolution:\n      tarball: http://169.254.169.254/latest/meta-data/\n",
+        );
+        return {
+          cwd,
+          options: validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: ["pnpm check"],
+              changedGate: null,
+            },
+          }),
+        };
+      },
+    },
+    {
+      expected: /destination is not approved/,
+      prepare() {
+        const cwd = gitBunPackageFixture({ check: 'node -e ""' });
+        const packagePath = path.join(cwd, "package.json");
+        const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+        packageJson.dependencies = { payload: "github:example/payload" };
+        fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+        return {
+          cwd,
+          options: validationOptions("openclaw/clawhub", clawhubToolchain()),
+        };
+      },
+    },
+    {
+      expected: /destination is not approved: http:\/\/127\.0\.0\.1:8080/,
+      prepare() {
+        const cwd = gitPackageFixture({ check: 'node -e ""' });
+        fs.writeFileSync(
+          path.join(cwd, "package-lock.json"),
+          '{"lockfileVersion":3,"packages":{"node_modules/payload":{"resolved":"http:\\/\\/127.0.0.1:8080/payload.tgz"}}}\n',
+        );
+        return {
+          cwd,
+          options: validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "npm",
+              baseValidationCommands: ["npm run check"],
+              changedGate: null,
+            },
+          }),
+        };
+      },
+    },
+    {
+      expected: /local path escapes the checkout/,
+      prepare() {
+        const cwd = gitPackageFixture({ check: 'node -e ""' });
+        const packagePath = path.join(cwd, "package.json");
+        const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+        packageJson.dependencies = { payload: "file:../outside" };
+        fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+        return {
+          cwd,
+          options: validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "npm",
+              baseValidationCommands: ["npm run check"],
+              changedGate: null,
+            },
+          }),
+        };
+      },
+    },
+    {
+      expected: /cannot inspect bun\.lockb/,
+      prepare() {
+        const cwd = gitBunPackageFixture({ check: 'node -e ""' });
+        fs.rmSync(path.join(cwd, "bun.lock"));
+        fs.writeFileSync(path.join(cwd, "bun.lockb"), "opaque");
+        return {
+          cwd,
+          options: validationOptions("openclaw/clawhub", clawhubToolchain()),
+        };
+      },
+    },
+  ];
+
+  for (const fixture of cases) {
+    const { cwd, options } = fixture.prepare();
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    assert.throws(
+      () =>
+        prepareTargetToolchain(cwd, {
+          ...options,
+          installTargetDeps: true,
+          installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+          setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        }),
+      fixture.expected,
+    );
+  }
 });
 
 test(
@@ -2349,7 +2473,7 @@ if (args[0] === "enable") {
 
     assert.equal(fs.existsSync(maliciousMarker), false);
     assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/), [
-      "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.engine-strict=false --config.enable-pre-post-scripts=false",
+      "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.registry=https://registry.npmjs.org/ --config.engine-strict=false --config.enable-pre-post-scripts=false",
       "--config.enable-pre-post-scripts=false first",
       "--config.enable-pre-post-scripts=false second",
     ]);
@@ -2781,7 +2905,7 @@ if (args[0] === "enable") {
 
     assert.equal(fs.existsSync(maliciousMarker), false);
     assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/), [
-      "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.engine-strict=false --config.enable-pre-post-scripts=false",
+      "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.registry=https://registry.npmjs.org/ --config.engine-strict=false --config.enable-pre-post-scripts=false",
       "--config.enable-pre-post-scripts=false verify",
     ]);
   },
@@ -4100,9 +4224,9 @@ if (args.includes("--frozen-lockfile")) {
   );
 
   assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/), [
-    "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.engine-strict=false --config.enable-pre-post-scripts=false",
-    "install --no-frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.engine-strict=false --config.enable-pre-post-scripts=false",
-    "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.engine-strict=false --config.enable-pre-post-scripts=false",
+    "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.registry=https://registry.npmjs.org/ --config.engine-strict=false --config.enable-pre-post-scripts=false",
+    "install --no-frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.registry=https://registry.npmjs.org/ --config.engine-strict=false --config.enable-pre-post-scripts=false",
+    "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.registry=https://registry.npmjs.org/ --config.engine-strict=false --config.enable-pre-post-scripts=false",
   ]);
 });
 

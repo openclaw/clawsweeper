@@ -39,6 +39,8 @@ const DEFAULT_BASE_BRANCH = "main";
 const DEFAULT_TARGET_SETUP_TIMEOUT_MS = 2 * 60 * 1000;
 const DEFAULT_TARGET_INSTALL_TIMEOUT_MS = 12 * 60 * 1000;
 const DEFAULT_TARGET_VALIDATION_TIMEOUT_MS = 12 * 60 * 1000;
+const DEFAULT_TARGET_INSTALL_REGISTRY = "https://registry.npmjs.org/";
+const MAX_TARGET_INSTALL_METADATA_BYTES = 16 * 1024 * 1024;
 const MIN_VALIDATION_RETRY_BUDGET_MS = 1_000;
 const IMMUTABLE_VALIDATION_RUNTIME_BASENAMES = new Set([".venv", "node_modules", "venv", "vendor"]);
 const DISPOSABLE_VALIDATION_RUNTIME_BASENAMES = new Set([
@@ -284,6 +286,12 @@ export function prepareTargetToolchain(cwd: string, options: TargetValidationOpt
   const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
   const toolchain = getToolchain(options);
   return withTargetValidationEnvironment((validationEnv) => {
+    const installRegistry = assertTargetInstallNetworkPolicy(
+      cwd,
+      toolchain.packageManager,
+      validationEnv,
+      deadlineAt,
+    );
     let setupError: Error | null = null;
     let preparedPnpmPackageManager: string | null = null;
     try {
@@ -307,9 +315,16 @@ export function prepareTargetToolchain(cwd: string, options: TargetValidationOpt
           setupTimeoutMs,
           installTimeoutMs,
           deadlineAt,
+          installRegistry,
         });
       } else if (toolchain.packageManager === "npm") {
-        prepareNpmToolchain({ cwd, validationEnv, installTimeoutMs, deadlineAt });
+        prepareNpmToolchain({
+          cwd,
+          validationEnv,
+          installTimeoutMs,
+          deadlineAt,
+          installRegistry,
+        });
       } else {
         preparedPnpmPackageManager = preparePnpmToolchain({
           cwd,
@@ -318,6 +333,7 @@ export function prepareTargetToolchain(cwd: string, options: TargetValidationOpt
           setupTimeoutMs,
           installTimeoutMs,
           deadlineAt,
+          installRegistry,
         });
       }
     } catch (error) {
@@ -349,6 +365,7 @@ function preparePnpmToolchain({
   setupTimeoutMs,
   installTimeoutMs,
   deadlineAt,
+  installRegistry,
 }: {
   cwd: string;
   packageJson: LooseRecord;
@@ -356,6 +373,7 @@ function preparePnpmToolchain({
   setupTimeoutMs: number;
   installTimeoutMs: number;
   deadlineAt: number;
+  installRegistry: string;
 }) {
   const packageManager = targetPnpmPackageManager(packageJson);
   const corepackBin = path.join(String(validationEnv.COREPACK_HOME), "bin");
@@ -375,6 +393,7 @@ function preparePnpmToolchain({
     "--prefer-offline",
     "--ignore-scripts",
     "--ignore-pnpmfile",
+    `--config.registry=${installRegistry}`,
     "--config.engine-strict=false",
     "--config.enable-pre-post-scripts=false",
   ];
@@ -407,12 +426,14 @@ function prepareBunToolchain({
   setupTimeoutMs,
   installTimeoutMs,
   deadlineAt,
+  installRegistry,
 }: {
   cwd: string;
   validationEnv: NodeJS.ProcessEnv;
   setupTimeoutMs: number;
   installTimeoutMs: number;
   deadlineAt: number;
+  installRegistry: string;
 }) {
   // The repair execution workflow provisions pinned Bun before this path runs.
   // Keep a clear fail-fast probe so local/manual runners surface setup gaps early.
@@ -431,7 +452,13 @@ function prepareBunToolchain({
     env: bunEnv,
     timeoutMs: targetToolchainCommandTimeout(deadlineAt, setupTimeoutMs, "bun setup probe"),
   });
-  const installArgs = ["install", "--frozen-lockfile", "--ignore-scripts"];
+  const installArgs = [
+    "install",
+    "--frozen-lockfile",
+    "--ignore-scripts",
+    "--registry",
+    installRegistry,
+  ];
   const runBunInstall = (args: string[], operation: string) =>
     runContainedCommand("bun", args, {
       cwd,
@@ -448,7 +475,10 @@ function prepareBunToolchain({
   } catch (error) {
     const message = String(error?.message ?? "");
     if (!/lockfile|frozen|out of date|out-of-date/i.test(message)) throw error;
-    runBunInstall(["install", "--no-frozen-lockfile", "--ignore-scripts"], "bun install fallback");
+    runBunInstall(
+      ["install", "--no-frozen-lockfile", "--ignore-scripts", "--registry", installRegistry],
+      "bun install fallback",
+    );
     for (const snapshot of lockfileSnapshots) restoreTargetFile(cwd, snapshot);
     runBunInstall(installArgs, "bun frozen reinstall");
   }
@@ -483,15 +513,25 @@ function prepareNpmToolchain({
   validationEnv,
   installTimeoutMs,
   deadlineAt,
+  installRegistry,
 }: {
   cwd: string;
   validationEnv: NodeJS.ProcessEnv;
   installTimeoutMs: number;
   deadlineAt: number;
+  installRegistry: string;
 }) {
   const installArgs = fs.existsSync(path.join(cwd, "package-lock.json"))
-    ? ["ci", "--ignore-scripts"]
-    : ["install", "--no-package-lock", "--ignore-scripts"];
+    ? ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--registry", installRegistry]
+    : [
+        "install",
+        "--no-package-lock",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--registry",
+        installRegistry,
+      ];
   runContainedCommand("npm", installArgs, {
     cwd,
     env: validationEnv,
@@ -499,6 +539,221 @@ function prepareNpmToolchain({
     timeoutMs: targetToolchainCommandTimeout(deadlineAt, installTimeoutMs, "npm install"),
     writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
   });
+}
+
+function assertTargetInstallNetworkPolicy(
+  cwd: string,
+  packageManager: string,
+  validationEnv: NodeJS.ProcessEnv,
+  deadlineAt: number,
+) {
+  const installRegistry = approvedTargetInstallRegistry(validationEnv);
+  const registryOrigin = new URL(installRegistry).origin;
+  const workspacePatterns = readWorkspacePatterns(cwd, packageManager, deadlineAt);
+  if (workspacePatterns === null) {
+    throw new Error("target dependency install network policy could not read workspace metadata");
+  }
+  const workspacePaths = workspacePackagePaths(cwd, workspacePatterns, {
+    timeoutMs: Math.max(1, deadlineAt - Date.now()),
+  });
+  const packageDirectories = [cwd, ...workspacePaths.map((entry) => path.join(cwd, entry))];
+  for (const directory of packageDirectories) {
+    for (const configName of [".npmrc", "bunfig.toml"]) {
+      if (fs.existsSync(path.join(directory, configName))) {
+        throw new Error(`target dependency install network config is not allowed: ${configName}`);
+      }
+    }
+    const manifest = JSON.parse(
+      readTargetInstallMetadataText(path.join(directory, "package.json"), deadlineAt),
+    ) as LooseRecord;
+    assertManifestDependencyDestinations(cwd, manifest, registryOrigin);
+  }
+  for (const lockfile of [
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "bun.lock",
+  ]) {
+    const lockfilePath = path.join(cwd, lockfile);
+    if (!fs.existsSync(lockfilePath)) continue;
+    const metadata = readTargetInstallMetadataText(lockfilePath, deadlineAt);
+    if (lockfile.endsWith(".json")) {
+      assertStructuredInstallMetadataDestinations(
+        JSON.parse(metadata) as JsonValue,
+        registryOrigin,
+      );
+    } else if (lockfile.endsWith(".yaml")) {
+      assertStructuredInstallMetadataDestinations(parseYaml(metadata) as JsonValue, registryOrigin);
+    } else {
+      if (/\\(?:\/|u00(?:2f|3a))/i.test(metadata)) {
+        throw new Error("target dependency install network policy cannot inspect escaped Bun URLs");
+      }
+      assertApprovedInstallMetadataDestinations(metadata, registryOrigin);
+    }
+  }
+  if (fs.existsSync(path.join(cwd, "bun.lockb"))) {
+    throw new Error("target dependency install network policy cannot inspect bun.lockb");
+  }
+  return installRegistry;
+}
+
+function approvedTargetInstallRegistry(validationEnv: NodeJS.ProcessEnv) {
+  const configured =
+    validationEnv.NPM_CONFIG_REGISTRY ??
+    validationEnv.npm_config_registry ??
+    DEFAULT_TARGET_INSTALL_REGISTRY;
+  let registry: URL;
+  try {
+    registry = new URL(configured);
+  } catch {
+    throw new Error("target dependency install registry is invalid");
+  }
+  if (registry.protocol !== "https:" || registry.username || registry.password) {
+    throw new Error("target dependency install registry must be an unauthenticated HTTPS URL");
+  }
+  const normalized = registry.href.endsWith("/") ? registry.href : `${registry.href}/`;
+  for (const key of Object.keys(validationEnv)) {
+    if (/registry/i.test(key) && !/^npm_config_registry$/i.test(key)) delete validationEnv[key];
+  }
+  validationEnv.NPM_CONFIG_REGISTRY = normalized;
+  validationEnv.npm_config_registry = normalized;
+  validationEnv.COREPACK_NPM_REGISTRY = normalized;
+  return normalized;
+}
+
+function assertManifestDependencyDestinations(
+  cwd: string,
+  manifest: LooseRecord,
+  registryOrigin: string,
+) {
+  for (const field of [
+    "dependencies",
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+    "resolutions",
+    "overrides",
+  ]) {
+    assertDependencySpecValue(cwd, manifest[field], registryOrigin);
+  }
+  assertDependencySpecValue(cwd, manifest.pnpm?.overrides, registryOrigin);
+}
+
+function assertDependencySpecValue(cwd: string, value: JsonValue, registryOrigin: string): void {
+  if (typeof value === "string") {
+    assertDependencySpec(cwd, value, registryOrigin);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) assertDependencySpecValue(cwd, entry, registryOrigin);
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const entry of Object.values(value)) {
+      assertDependencySpecValue(cwd, entry, registryOrigin);
+    }
+  }
+}
+
+function assertDependencySpec(cwd: string, rawSpec: string, registryOrigin: string) {
+  const spec = rawSpec.trim();
+  if (!spec) return;
+  if (/^(?:workspace|file|link):/i.test(spec)) {
+    if (/^(?:file|link):/i.test(spec)) {
+      const localPath = path.resolve(cwd, spec.slice(spec.indexOf(":") + 1));
+      const relative = path.relative(cwd, localPath);
+      if (relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+        throw new Error("target dependency install local path escapes the checkout");
+      }
+    }
+    return;
+  }
+  if (/^npm:/i.test(spec)) {
+    const aliasVersion = spec.slice(spec.lastIndexOf("@") + 1);
+    if (aliasVersion !== spec) assertDependencySpec(cwd, aliasVersion, registryOrigin);
+    return;
+  }
+  if (/^(?:https?:)?\/\//i.test(spec)) {
+    assertApprovedInstallUrl(spec, registryOrigin);
+    return;
+  }
+  if (
+    /^(?:git(?:\+[^:]+)?|ssh|github|gitlab|bitbucket):/i.test(spec) ||
+    /^git@/i.test(spec) ||
+    /^(?:localhost|\[[^\]]+\]|(?:\d{1,3}\.){3}\d{1,3})(?::|\/)/i.test(spec) ||
+    /^[^@./\s][^/\s]*\/[^/\s]+(?:#.*)?$/.test(spec)
+  ) {
+    throw new Error("target dependency install destination is not approved");
+  }
+}
+
+function assertApprovedInstallMetadataDestinations(text: string, registryOrigin: string) {
+  const networkTokens =
+    text.match(/(?:https?:\/\/|\/\/|git\+[^:\s]+:\/\/|ssh:\/\/)[^\s"'`<>{}\x5b\x5d,]+/gi) ?? [];
+  for (const token of networkTokens) {
+    assertApprovedInstallUrl(token.replace(/[);]+$/, ""), registryOrigin);
+  }
+  if (/(?:^|[\s"'`])(?:git@|github:|gitlab:|bitbucket:)/im.test(text)) {
+    throw new Error("target dependency install destination is not approved");
+  }
+}
+
+function assertStructuredInstallMetadataDestinations(
+  value: JsonValue,
+  registryOrigin: string,
+): void {
+  if (typeof value === "string") {
+    assertApprovedInstallMetadataDestinations(value, registryOrigin);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      assertStructuredInstallMetadataDestinations(entry, registryOrigin);
+    }
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const entry of Object.values(value)) {
+      assertStructuredInstallMetadataDestinations(entry, registryOrigin);
+    }
+  }
+}
+
+function assertApprovedInstallUrl(rawUrl: string, registryOrigin: string) {
+  let destination: URL;
+  try {
+    destination = new URL(rawUrl.startsWith("//") ? `https:${rawUrl}` : rawUrl);
+  } catch {
+    throw new Error("target dependency install destination is invalid");
+  }
+  if (
+    destination.protocol !== "https:" ||
+    destination.username ||
+    destination.password ||
+    destination.origin !== registryOrigin
+  ) {
+    throw new Error(`target dependency install destination is not approved: ${destination.origin}`);
+  }
+}
+
+function readTargetInstallMetadataText(filePath: string, deadlineAt: number) {
+  assertWorkspaceDeadline(deadlineAt, "dependency install metadata reading");
+  const file = fs.openSync(
+    filePath,
+    fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | (fs.constants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    const stat = fs.fstatSync(file);
+    if (!stat.isFile())
+      throw new Error("target dependency install metadata must be a regular file");
+    if (stat.size > MAX_TARGET_INSTALL_METADATA_BYTES) {
+      throw new Error("target dependency install metadata exceeds the supported size budget");
+    }
+    return fs.readFileSync(file, "utf8");
+  } finally {
+    fs.closeSync(file);
+  }
 }
 
 export function runAllowedValidationCommands(
