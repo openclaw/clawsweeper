@@ -2397,14 +2397,22 @@ function actionEventMessage(event: ActionEvent): string {
 
 function machineIdentifier(value: string, maxLength: number): string {
   const source = value.trim();
-  const readable = source.replace(/[^A-Za-z0-9_.:/@+-]+/g, "-").replace(/^-+|-+$/g, "");
+  const readable = trimHyphenEdges(source.replace(/[^A-Za-z0-9_.:/@+-]+/g, "-"));
   if (!readable) throw new Error("workflow action identifier is required");
   if (readable === source && readable.length <= maxLength) return readable;
   const digest = createHash("sha256").update(source).digest("hex").slice(0, 12);
   const prefixLength = maxLength - digest.length - 1;
   if (prefixLength < 1) throw new Error("workflow action identifier limit is too small");
-  const prefix = readable.slice(0, prefixLength).replace(/-+$/g, "") || "id";
+  const prefix = trimHyphenEdges(readable.slice(0, prefixLength)) || "id";
   return `${prefix}-${digest}`;
+}
+
+function trimHyphenEdges(value: string): string {
+  let start = 0;
+  while (start < value.length && value.charCodeAt(start) === 45) start += 1;
+  let end = value.length;
+  while (end > start && value.charCodeAt(end - 1) === 45) end -= 1;
+  return value.slice(start, end);
 }
 
 function workflowPathFromRef(workflowRef: string): string {

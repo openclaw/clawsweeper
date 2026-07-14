@@ -2270,6 +2270,12 @@ test("workflow producer normalization preserves distinct original identities", (
   assert.ok(first.component.length <= 120 + 1 + 64 + 1 + 64);
   assert.match(first.component, /-[a-f0-9]{12}\.__run_5\.review-0$/);
 
+  const repeatedHyphens = workflowActionProducer(
+    `${"-".repeat(100_000)}review${"-".repeat(100_000)}`,
+    workflowEnv(),
+  );
+  assert.match(repeatedHyphens.component, /^review-[a-f0-9]{12}\.__run_5\.review-0$/);
+
   const root = tempRoot();
   const firstEvent = recordWorkflowActionEvent(
     root,
