@@ -85,19 +85,22 @@ jobs:
           CLAWSWEEPER_ALLOW_EXECUTE: ${{ vars.CLAWSWEEPER_ALLOW_EXECUTE || '0' }}
           CLAWSWEEPER_ALLOW_FIX_PR: ${{ vars.CLAWSWEEPER_ALLOW_FIX_PR || '0' }}
           CLAWSWEEPER_MODEL: internal
+          CLAWSWEEPER_WORKER_RUNNER: ${{ vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+          CLAWSWEEPER_EXECUTION_RUNNER: ${{ vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
           CLAWSWEEPER_SELF_HEAL_MAX_ATTEMPTS_PER_JOB: ${{ vars.CLAWSWEEPER_SELF_HEAL_MAX_ATTEMPTS_PER_JOB || '3' }}
         run: |
           execute="false"
           max_jobs="${{ github.event_name == 'workflow_dispatch' && inputs.max_jobs || vars.CLAWSWEEPER_SELF_HEAL_MAX_JOBS || '5' }}"
           max_age_hours="${{ github.event_name == 'workflow_dispatch' && inputs.max_age_hours || vars.CLAWSWEEPER_SELF_HEAL_MAX_AGE_HOURS || '6' }}"
-          runner="${{ github.event_name == 'workflow_dispatch' && inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}"
-          execution_runner="${{ github.event_name == 'workflow_dispatch' && inputs.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}"
           if { [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.execute }}" = "true" ]; } ||
              { [ "${{ github.event_name }}" = "schedule" ] && [ "${{ vars.CLAWSWEEPER_SELF_HEAL_EXECUTE || '0' }}" = "1" ]; }; then
             execute="true"
           fi
 
-          args=(--max-jobs "$max_jobs" --max-age-hours "$max_age_hours" --runner "$runner" --execution-runner "$execution_runner" --wait-for-capacity)
+          args=(--max-jobs "$max_jobs" --max-age-hours "$max_age_hours" --wait-for-capacity)
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            args+=(--runner "${{ inputs.runner }}" --execution-runner "${{ inputs.execution_runner }}")
+          fi
           if [ "$execute" = "true" ]; then
             args+=(--execute)
           fi
