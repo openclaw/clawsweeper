@@ -186,6 +186,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .artifacts
+          mkdir -p "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT"
           pnpm run --silent repair:action-ledger -- finalize \
             --repair-lane spam-comment-intake \
             --allow-empty \
