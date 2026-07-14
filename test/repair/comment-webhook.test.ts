@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import test from "node:test";
 
 import {
@@ -38,6 +39,33 @@ test("comment webhook accepts maintainer ClawSweeper commands", () => {
     installationId: 123,
     sourceAction: "created",
   });
+});
+
+test("comment webhook repository dispatches use bounded attempt and outcome receipts", () => {
+  const source = fs.readFileSync("src/repair/comment-webhook.ts", "utf8");
+  const itemStart = source.indexOf("async function dispatchItemReview(");
+  const commentStart = source.indexOf("async function dispatchCommentRouter(");
+  const fetchStart = source.indexOf("async function githubFetch(", commentStart);
+  const itemDispatch = source.slice(itemStart, commentStart);
+  const commentDispatch = source.slice(commentStart, fetchStart);
+
+  assert.match(itemDispatch, /runDispatchWithReceipt\(\{/);
+  assert.match(itemDispatch, /dispatchTarget: "clawsweeper_item"/);
+  assert.match(itemDispatch, /dispatchInput: \{[\s\S]*?media_proof_timeout_ms:/);
+  assert.match(commentDispatch, /runDispatchWithReceipt\(\{/);
+  assert.match(commentDispatch, /dispatchTarget: "clawsweeper_comment"/);
+  assert.match(commentDispatch, /comment_body_sha256: commentBodyDigest \?\? null/);
+  const itemInput = itemDispatch.slice(
+    itemDispatch.indexOf("dispatchInput:"),
+    itemDispatch.indexOf("operation: async"),
+  );
+  const commentInput = commentDispatch.slice(
+    commentDispatch.indexOf("dispatchInput:"),
+    commentDispatch.indexOf("operation: async"),
+  );
+  assert.doesNotMatch(itemInput, /token:|body:/);
+  assert.doesNotMatch(commentInput, /token:|body:/);
+  assert.match(source, /await flushDispatchActionEvents\(\)/);
 });
 
 test("comment webhook ignores ClawSweeper proof-nudge comments", () => {

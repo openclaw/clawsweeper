@@ -13,6 +13,11 @@ import {
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
 import { isExactReviewCloseGuardLabel } from "./exact-review-guard-labels.js";
 import { commentBodySha256 } from "./comment-router-utils.js";
+import {
+  dispatchHttpError,
+  flushDispatchActionEvents,
+  runDispatchWithReceipt,
+} from "./dispatch-action-receipts.js";
 
 const DEFAULT_PORT = 8787;
 const REVIEW_REPO = "openclaw/clawsweeper";
@@ -116,52 +121,75 @@ export async function handleGitHubWebhook({
   const appJwt = createAppJwt();
   const dispatchToken = await createReviewRepoDispatchToken({ appJwt });
 
-  if (accepted.type === "item") {
-    await dispatchItemReview({ token: dispatchToken, accepted });
-    return { statusCode: 202, body: { ok: true, dispatched: "clawsweeper_item" } };
+  let webhookError: unknown = null;
+  let result:
+    | { statusCode: number; body: { ok: true; dispatched: string } }
+    | { statusCode: number; body: { ok: true; status_comment_id: number } }
+    | null = null;
+  try {
+    if (accepted.type === "item") {
+      await dispatchItemReview({ token: dispatchToken, accepted });
+      result = { statusCode: 202, body: { ok: true, dispatched: "clawsweeper_item" } };
+    } else {
+      const targetToken = await createInstallationToken({
+        appJwt,
+        installationId: accepted.installationId,
+        label: accepted.targetRepo,
+        repositories: [repoName(accepted.targetRepo)],
+        permissions: {
+          issues: "write",
+          pull_requests: "write",
+        },
+      });
+      const statusCommentId = await createFastAckCommentOnce({
+        token: targetToken,
+        repo: accepted.targetRepo,
+        itemNumber: accepted.itemNumber,
+        sourceCommentId: accepted.commentId,
+      });
+      await addReaction({
+        token: targetToken,
+        repo: accepted.targetRepo,
+        commentId: accepted.commentId,
+        content: "eyes",
+      });
+      await dispatchCommentRouter({
+        token: dispatchToken,
+        targetRepo: accepted.targetRepo,
+        targetBranch: accepted.targetBranch,
+        itemNumber: accepted.itemNumber,
+        commentId: accepted.commentId,
+        statusCommentId,
+        sourceAction: accepted.sourceAction,
+        ...(accepted.commentUpdatedAt ? { commentUpdatedAt: accepted.commentUpdatedAt } : {}),
+        ...(accepted.commentBodySha256 ? { commentBodyDigest: accepted.commentBodySha256 } : {}),
+      });
+      settleFastAckComments({
+        token: targetToken,
+        repo: accepted.targetRepo,
+        itemNumber: accepted.itemNumber,
+        sourceCommentId: accepted.commentId,
+        delaysMs: fastAckSettleDelaysMs(process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS),
+      });
+      result = { statusCode: 202, body: { ok: true, status_comment_id: statusCommentId } };
+    }
+  } catch (error) {
+    webhookError = error;
   }
-
-  const targetToken = await createInstallationToken({
-    appJwt,
-    installationId: accepted.installationId,
-    label: accepted.targetRepo,
-    repositories: [repoName(accepted.targetRepo)],
-    permissions: {
-      issues: "write",
-      pull_requests: "write",
-    },
-  });
-  const statusCommentId = await createFastAckCommentOnce({
-    token: targetToken,
-    repo: accepted.targetRepo,
-    itemNumber: accepted.itemNumber,
-    sourceCommentId: accepted.commentId,
-  });
-  await addReaction({
-    token: targetToken,
-    repo: accepted.targetRepo,
-    commentId: accepted.commentId,
-    content: "eyes",
-  });
-  await dispatchCommentRouter({
-    token: dispatchToken,
-    targetRepo: accepted.targetRepo,
-    targetBranch: accepted.targetBranch,
-    itemNumber: accepted.itemNumber,
-    commentId: accepted.commentId,
-    statusCommentId,
-    sourceAction: accepted.sourceAction,
-    ...(accepted.commentUpdatedAt ? { commentUpdatedAt: accepted.commentUpdatedAt } : {}),
-    ...(accepted.commentBodySha256 ? { commentBodyDigest: accepted.commentBodySha256 } : {}),
-  });
-  settleFastAckComments({
-    token: targetToken,
-    repo: accepted.targetRepo,
-    itemNumber: accepted.itemNumber,
-    sourceCommentId: accepted.commentId,
-    delaysMs: fastAckSettleDelaysMs(process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS),
-  });
-  return { statusCode: 202, body: { ok: true, status_comment_id: statusCommentId } };
+  try {
+    await flushDispatchActionEvents();
+  } catch (error) {
+    if (!webhookError) webhookError = error;
+    else
+      console.error(
+        `[action-ledger] failed to finalize webhook dispatch receipts: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+  }
+  if (webhookError) throw webhookError;
+  if (!result) throw new Error("webhook dispatch completed without a result");
+  return result;
 }
 
 export function classifyWebhook({ event, payload }: { event: string; payload: LooseRecord }) {
@@ -711,25 +739,50 @@ async function dispatchItemReview({
   token: string;
   accepted: AcceptedItemWebhook;
 }) {
-  await githubFetch({
-    token,
-    path: `/repos/${REVIEW_REPO}/dispatches`,
-    method: "POST",
-    body: {
+  await runDispatchWithReceipt({
+    component: "comment_webhook",
+    operationKey: `webhook-item:${accepted.targetRepo}:${accepted.itemKind}:${accepted.itemNumber}:${accepted.sourceEvent}:${accepted.sourceAction}`,
+    dispatchKind: "repository",
+    repository: REVIEW_REPO,
+    dispatchTarget: "clawsweeper_item",
+    dispatchInput: {
       event_type: "clawsweeper_item",
-      client_payload: {
-        target_repo: accepted.targetRepo,
-        target_branch: accepted.targetBranch,
-        item_number: accepted.itemNumber,
-        item_kind: accepted.itemKind,
-        source_event: accepted.sourceEvent,
-        source_action: accepted.sourceAction,
-        supersedes_in_progress: accepted.supersedesInProgress,
-        ...(accepted.codexTimeoutMs ? { codex_timeout_ms: accepted.codexTimeoutMs } : {}),
-        ...(accepted.mediaProofTimeoutMs
-          ? { media_proof_timeout_ms: accepted.mediaProofTimeoutMs }
-          : {}),
-      },
+      target_repo: accepted.targetRepo,
+      target_branch: accepted.targetBranch,
+      item_number: accepted.itemNumber,
+      item_kind: accepted.itemKind,
+      source_event: accepted.sourceEvent,
+      source_action: accepted.sourceAction,
+      supersedes_in_progress: accepted.supersedesInProgress,
+      codex_timeout_ms: accepted.codexTimeoutMs ?? null,
+      media_proof_timeout_ms: accepted.mediaProofTimeoutMs ?? null,
+    },
+    operation: async () => {
+      try {
+        await githubFetch({
+          token,
+          path: `/repos/${REVIEW_REPO}/dispatches`,
+          method: "POST",
+          body: {
+            event_type: "clawsweeper_item",
+            client_payload: {
+              target_repo: accepted.targetRepo,
+              target_branch: accepted.targetBranch,
+              item_number: accepted.itemNumber,
+              item_kind: accepted.itemKind,
+              source_event: accepted.sourceEvent,
+              source_action: accepted.sourceAction,
+              supersedes_in_progress: accepted.supersedesInProgress,
+              ...(accepted.codexTimeoutMs ? { codex_timeout_ms: accepted.codexTimeoutMs } : {}),
+              ...(accepted.mediaProofTimeoutMs
+                ? { media_proof_timeout_ms: accepted.mediaProofTimeoutMs }
+                : {}),
+            },
+          },
+        });
+      } catch (error) {
+        throw dispatchErrorFromGitHub(error);
+      }
     },
   });
 }
@@ -755,26 +808,67 @@ async function dispatchCommentRouter({
   commentUpdatedAt?: string;
   commentBodyDigest?: string;
 }) {
-  await githubFetch({
-    token,
-    path: `/repos/${REVIEW_REPO}/dispatches`,
-    method: "POST",
-    body: {
+  await runDispatchWithReceipt({
+    component: "comment_webhook",
+    operationKey: `webhook-comment:${targetRepo}:${itemNumber}:${commentId}:${sourceAction}`,
+    dispatchKind: "repository",
+    repository: REVIEW_REPO,
+    dispatchTarget: "clawsweeper_comment",
+    dispatchInput: {
       event_type: "clawsweeper_comment",
-      client_payload: {
-        target_repo: targetRepo,
-        target_branch: targetBranch,
-        item_number: itemNumber,
-        comment_id: commentId,
-        status_comment_id: statusCommentId,
-        source_event: "issue_comment",
-        source_action: sourceAction,
-        comment_event_auth: "github_webhook_v1",
-        ...(commentUpdatedAt ? { comment_updated_at: commentUpdatedAt } : {}),
-        ...(commentBodyDigest ? { comment_body_sha256: commentBodyDigest } : {}),
-      },
+      target_repo: targetRepo,
+      target_branch: targetBranch,
+      item_number: itemNumber,
+      comment_id: commentId,
+      status_comment_id: statusCommentId,
+      source_event: "issue_comment",
+      source_action: sourceAction,
+      comment_event_auth: "github_webhook_v1",
+      comment_updated_at: commentUpdatedAt ?? null,
+      comment_body_sha256: commentBodyDigest ?? null,
+    },
+    operation: async () => {
+      try {
+        await githubFetch({
+          token,
+          path: `/repos/${REVIEW_REPO}/dispatches`,
+          method: "POST",
+          body: {
+            event_type: "clawsweeper_comment",
+            client_payload: {
+              target_repo: targetRepo,
+              target_branch: targetBranch,
+              item_number: itemNumber,
+              comment_id: commentId,
+              status_comment_id: statusCommentId,
+              source_event: "issue_comment",
+              source_action: sourceAction,
+              comment_event_auth: "github_webhook_v1",
+              ...(commentUpdatedAt ? { comment_updated_at: commentUpdatedAt } : {}),
+              ...(commentBodyDigest ? { comment_body_sha256: commentBodyDigest } : {}),
+            },
+          },
+        });
+      } catch (error) {
+        throw dispatchErrorFromGitHub(error);
+      }
     },
   });
+}
+
+class GitHubApiError extends Error {
+  readonly status: number;
+
+  constructor(method: string, path: string, status: number, detail: string) {
+    super(`GitHub API ${method} ${path} failed: ${status} ${detail}`);
+    this.name = "GitHubApiError";
+    this.status = status;
+  }
+}
+
+function dispatchErrorFromGitHub(error: unknown): unknown {
+  if (!(error instanceof GitHubApiError)) return error;
+  return dispatchHttpError(error.status, `GitHub dispatch failed with status ${error.status}`);
 }
 
 async function githubFetch({
@@ -803,8 +897,7 @@ async function githubFetch({
   if (body !== undefined) init.body = JSON.stringify(body);
   const response = await fetch(`https://api.github.com${path}`, init);
   const text = await response.text();
-  if (!response.ok)
-    throw new Error(`GitHub API ${method} ${path} failed: ${response.status} ${text}`);
+  if (!response.ok) throw new GitHubApiError(method, path, response.status, text);
   return text ? (JSON.parse(text) as LooseRecord) : {};
 }
 
