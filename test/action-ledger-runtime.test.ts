@@ -181,10 +181,26 @@ function workflowEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 function recordWorkflowAttemptMutationOutcome(
   root: string,
   env: NodeJS.ProcessEnv,
-  outcome: "unknown" | "observed",
+  outcome: "unknown" | "observed" | null,
   options: { workKey?: string; attempt?: number } = {},
-): { started: ActionEvent; mutationOutcome: ActionEvent } {
-  const workKey = options.workKey ?? `openclaw/openclaw:${outcome}`;
+): {
+  started: ActionEvent;
+  mutationAttempt: ActionEvent;
+  mutationOutcome: ActionEvent | null;
+  operationIdentity: { workKey: string };
+  attemptIdentity: { workKey: string; attempt: number };
+  idempotencyIdentity: {
+    operation: { workKey: string };
+    slot: string;
+    attempt: number;
+  };
+  subject: {
+    repository: string;
+    kind: "queue_item";
+    subjectId: string;
+  };
+} {
+  const workKey = options.workKey ?? `openclaw/openclaw:${outcome ?? "crash"}`;
   const attempt = options.attempt ?? 1;
   const operationIdentity = { workKey };
   const attemptIdentity = { workKey, attempt };
@@ -217,7 +233,6 @@ function recordWorkflowAttemptMutationOutcome(
     operation: operationIdentity,
     slot: "repair_mutation",
     attempt,
-    outcome,
   };
   const mutationAttempt = recordWorkflowPhaseEvent(
     root,
@@ -227,7 +242,7 @@ function recordWorkflowAttemptMutationOutcome(
       reasonCode: ACTION_EVENT_REASON_CODES.selected,
       retryable: true,
       mutation: false,
-      identity: { state: "mutation_attempted", attempt, outcome },
+      identity: { state: "mutation_attempted", attempt },
       operation: "repair",
       operationIdentity,
       attemptIdentity,
@@ -241,6 +256,17 @@ function recordWorkflowAttemptMutationOutcome(
     { env },
   );
   assert.ok(mutationAttempt);
+  if (outcome === null) {
+    return {
+      started,
+      mutationAttempt,
+      mutationOutcome: null,
+      operationIdentity,
+      attemptIdentity,
+      idempotencyIdentity,
+      subject,
+    };
+  }
   const mutationOutcome = recordWorkflowPhaseEvent(
     root,
     {
@@ -269,7 +295,15 @@ function recordWorkflowAttemptMutationOutcome(
     { env },
   );
   assert.ok(mutationOutcome);
-  return { started, mutationOutcome };
+  return {
+    started,
+    mutationAttempt,
+    mutationOutcome,
+    operationIdentity,
+    attemptIdentity,
+    idempotencyIdentity,
+    subject,
+  };
 }
 
 function recordReview(
@@ -1818,6 +1852,7 @@ test("interruption recovery preserves unknown child mutations on workflow attemp
     CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "repair-attempt-unknown-mutation",
   });
   const { mutationOutcome } = recordWorkflowAttemptMutationOutcome(root, env, "unknown");
+  assert.ok(mutationOutcome);
 
   assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 1);
   const terminal = readAllSpooledActionEvents(root).find(
@@ -1838,7 +1873,8 @@ test("interruption recovery preserves observed child mutations on workflow attem
   const env = workflowEnv({
     CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "repair-attempt-observed-mutation",
   });
-  const { started } = recordWorkflowAttemptMutationOutcome(root, env, "observed");
+  const { mutationOutcome } = recordWorkflowAttemptMutationOutcome(root, env, "observed");
+  assert.ok(mutationOutcome);
 
   assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 1);
   const terminal = readAllSpooledActionEvents(root).find(
@@ -1847,11 +1883,91 @@ test("interruption recovery preserves observed child mutations on workflow attem
       event.action.status === ACTION_EVENT_STATUSES.failed,
   );
   assert.ok(terminal);
-  assert.equal(terminal.parent_event_id, started.event_id);
+  assert.equal(terminal.parent_event_id, mutationOutcome.event_id);
   assert.equal(terminal.action.mutation, true);
   assert.equal(terminal.action.retryable, true);
   assert.equal(terminal.attributes?.completion_reason, "timeout");
   assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 0);
+});
+
+test("interruption recovery terminalizes dangling repair execution before its workflow attempt", () => {
+  const root = tempRoot();
+  const env = workflowEnv({
+    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "repair-attempt-crash-window",
+  });
+  const { mutationAttempt } = recordWorkflowAttemptMutationOutcome(root, env, null);
+
+  assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 2);
+  const events = readAllSpooledActionEvents(root);
+  const repairTerminal = events.find(
+    (event) =>
+      event.event_type === ACTION_EVENT_TYPES.repairExecute &&
+      event.action.status === ACTION_EVENT_STATUSES.failed,
+  );
+  assert.ok(repairTerminal);
+  assert.equal(repairTerminal.parent_event_id, mutationAttempt.event_id);
+  assert.equal(repairTerminal.idempotency_key_sha256, mutationAttempt.idempotency_key_sha256);
+  assert.equal(repairTerminal.attributes?.completion_reason, "mutation_outcome_unknown");
+  assert.equal(repairTerminal.action.retryable, false);
+
+  const attemptTerminal = events.find(
+    (event) =>
+      event.event_type === ACTION_EVENT_TYPES.workflowAttempt &&
+      event.action.status === ACTION_EVENT_STATUSES.failed,
+  );
+  assert.ok(attemptTerminal);
+  assert.equal(attemptTerminal.parent_event_id, repairTerminal.event_id);
+  assert.ok(repairTerminal.phase_seq < attemptTerminal.phase_seq);
+  assert.equal(attemptTerminal.attributes?.completion_reason, "mutation_outcome_unknown");
+  assert.equal(attemptTerminal.action.retryable, false);
+  assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 0);
+});
+
+test("later observed mutation truth supersedes an earlier unknown outcome", () => {
+  const root = tempRoot();
+  const env = workflowEnv({
+    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "repair-attempt-later-observation",
+  });
+  const recorded = recordWorkflowAttemptMutationOutcome(root, env, "unknown");
+  assert.ok(recorded.mutationOutcome);
+  const observed = recordWorkflowPhaseEvent(
+    root,
+    {
+      phase: ACTION_EVENT_PHASE_TYPES.repairExecute,
+      status: ACTION_EVENT_STATUSES.executed,
+      reasonCode: ACTION_EVENT_REASON_CODES.alreadyComplete,
+      retryable: false,
+      mutation: true,
+      identity: { state: "mutation_observed", attempt: 1 },
+      operation: "repair",
+      operationIdentity: recorded.operationIdentity,
+      attemptIdentity: recorded.attemptIdentity,
+      parentEventId: recorded.mutationAttempt.event_id,
+      phaseSeq: 4,
+      idempotencyIdentity: recorded.idempotencyIdentity,
+      component: "repair_worker",
+      subject: recorded.subject,
+      attributes: {
+        state: "mutation_observed",
+        completion_reason: "mutation_observed",
+      },
+    },
+    { env },
+  );
+  assert.ok(observed);
+  assert.equal(observed.idempotency_key_sha256, recorded.mutationOutcome.idempotency_key_sha256);
+
+  assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 1);
+  const terminal = readAllSpooledActionEvents(root).find(
+    (event) =>
+      event.event_type === ACTION_EVENT_TYPES.workflowAttempt &&
+      event.action.status === ACTION_EVENT_STATUSES.failed,
+  );
+  assert.ok(terminal);
+  assert.equal(terminal.parent_event_id, observed.event_id);
+  assert.equal(terminal.action.mutation, true);
+  assert.equal(terminal.action.retryable, true);
+  assert.equal(terminal.attributes?.completion_reason, "timeout");
 });
 
 test("workflow attempt mutation aggregation is bounded to the exact attempt", () => {
@@ -1881,6 +1997,7 @@ test("workflow attempt mutation aggregation is bounded to the exact attempt", ()
     (event) => event.attempt_id === unknown.started.attempt_id,
   );
   assert.ok(unknownTerminal);
+  assert.ok(unknown.mutationOutcome);
   assert.equal(unknownTerminal.parent_event_id, unknown.mutationOutcome.event_id);
   assert.equal(unknownTerminal.attributes?.completion_reason, "mutation_outcome_unknown");
   assert.equal(unknownTerminal.action.retryable, false);
@@ -1889,7 +2006,8 @@ test("workflow attempt mutation aggregation is bounded to the exact attempt", ()
     (event) => event.attempt_id === observed.started.attempt_id,
   );
   assert.ok(observedTerminal);
-  assert.equal(observedTerminal.parent_event_id, observed.started.event_id);
+  assert.ok(observed.mutationOutcome);
+  assert.equal(observedTerminal.parent_event_id, observed.mutationOutcome.event_id);
   assert.equal(observedTerminal.attributes?.completion_reason, "timeout");
   assert.equal(observedTerminal.action.retryable, true);
   assert.equal(interruptOpenWorkflowActionEvents(root, { env }), 0);
