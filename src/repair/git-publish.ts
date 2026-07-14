@@ -1063,18 +1063,35 @@ function acquireStatePublishLease(remote: string, branch: string): StatePublishL
         expiresAtMs,
       });
       const expectedOid = observed?.oid ?? "";
-      const result = spawnGit(
-        [
-          "push",
-          `--force-with-lease=${leaseRef}:${expectedOid}`,
-          remote,
-          `${leaseOid}:${leaseRef}`,
-        ],
-        { allowFailure: true, quiet: true },
-      );
-      if (result.status === 0) {
+      let acquired = false;
+      let timeoutRecovered = false;
+      try {
+        acquired =
+          spawnGit(
+            [
+              "push",
+              `--force-with-lease=${leaseRef}:${expectedOid}`,
+              remote,
+              `${leaseOid}:${leaseRef}`,
+            ],
+            { allowFailure: true, quiet: true },
+          ).status === 0;
+      } catch (error) {
+        if (!isGitTimeoutError(error)) throw error;
         console.log(
-          `Acquired state publish lease owner=${owner} attempt=${attempt} stale_recovery=${observed ? "true" : "false"}`,
+          `State publish lease push timed out owner=${owner} attempt=${attempt}; verifying remote ownership`,
+        );
+        acquired = remoteRefOid(remote, leaseRef) === leaseOid;
+        timeoutRecovered = acquired;
+        if (!acquired) {
+          console.log(
+            `State publish lease push timeout was not accepted owner=${owner} attempt=${attempt}; retrying`,
+          );
+        }
+      }
+      if (acquired) {
+        console.log(
+          `Acquired state publish lease owner=${owner} attempt=${attempt} stale_recovery=${observed ? "true" : "false"} timeout_recovered=${timeoutRecovered ? "true" : "false"}`,
         );
         return { ref: leaseRef, oid: leaseOid, owner, expiresAtMs };
       }

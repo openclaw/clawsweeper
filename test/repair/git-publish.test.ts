@@ -1876,7 +1876,7 @@ test("lease contention deadline bounds the waiting git process budget", () => {
   assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), true);
 });
 
-test("state publisher times out an individual blocked git command", () => {
+test("state publisher bounds repeated unaccepted lease push timeouts", () => {
   const fixture = createStatePublishRemote("command-timeout");
   const state = path.join(fixture.root, "state");
   const source = path.join(fixture.root, "source");
@@ -1891,8 +1891,9 @@ test("state publisher times out an individual blocked git command", () => {
       withEnv(
         leasedPublishEnv({
           CLAWSWEEPER_STATE_DIR: state,
-          CLAWSWEEPER_PUBLISH_DEADLINE_MS: "2000",
+          CLAWSWEEPER_PUBLISH_DEADLINE_MS: "300",
           CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "50",
+          CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
         }),
         () =>
           withCwd(source, () =>
@@ -1902,9 +1903,108 @@ test("state publisher times out an individual blocked git command", () => {
             }),
           ),
       ),
-    /timed out after 50ms/,
+    /deadline exceeded|timed out after \d+ms/,
   );
   assert.ok(Date.now() - startedAt < 1000);
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+});
+
+test("state publisher recovers an accepted lease acquisition after client timeout", () => {
+  const fixture = createStatePublishRemote("accepted-lease-timeout");
+  const state = path.join(fixture.root, "state");
+  const source = path.join(fixture.root, "source");
+  cloneState(fixture.origin, state);
+  fs.mkdirSync(source);
+  write(path.join(source, "results/accepted-lease-timeout.txt"), "accepted\n");
+  const hookMarker = installAcceptedLeasePushTimeoutHook(fixture.origin, 3);
+
+  const lines = captureConsoleLog(() =>
+    withEnv(
+      leasedPublishEnv({
+        CLAWSWEEPER_STATE_DIR: state,
+        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
+        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1200",
+      }),
+      () =>
+        withCwd(source, () =>
+          publishMainCommit({
+            message: "chore: recover accepted lease timeout",
+            paths: ["results/accepted-lease-timeout.txt"],
+          }),
+        ),
+    ),
+  );
+
+  assert.equal(fs.existsSync(hookMarker), true);
+  assert.equal(
+    lines.some((line) => line.includes("lease push timed out") && line.includes("verifying")),
+    true,
+  );
+  assert.equal(
+    lines.some(
+      (line) =>
+        line.includes("Acquired state publish lease") && line.includes("timeout_recovered=true"),
+    ),
+    true,
+  );
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", fixture.origin, "show", "state:results/accepted-lease-timeout.txt"],
+      fixture.root,
+    ),
+    "accepted\n",
+  );
+  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+});
+
+test("state publisher retries a lease acquisition timeout not accepted remotely", () => {
+  const fixture = createStatePublishRemote("unaccepted-lease-timeout");
+  const state = path.join(fixture.root, "state");
+  const source = path.join(fixture.root, "source");
+  cloneState(fixture.origin, state);
+  fs.mkdirSync(source);
+  write(path.join(source, "results/unaccepted-lease-timeout.txt"), "retried\n");
+  const hookMarker = installUnacceptedLeasePushTimeoutHook(state, 3);
+
+  const lines = captureConsoleLog(() =>
+    withEnv(
+      leasedPublishEnv({
+        CLAWSWEEPER_STATE_DIR: state,
+        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
+        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1200",
+        CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
+      }),
+      () =>
+        withCwd(source, () =>
+          publishMainCommit({
+            message: "chore: retry unaccepted lease timeout",
+            paths: ["results/unaccepted-lease-timeout.txt"],
+          }),
+        ),
+    ),
+  );
+
+  assert.equal(fs.existsSync(hookMarker), true);
+  assert.equal(
+    lines.some((line) => line.includes("lease push timeout was not accepted")),
+    true,
+  );
+  assert.equal(
+    lines.some(
+      (line) =>
+        line.includes("Acquired state publish lease") && line.includes("timeout_recovered=false"),
+    ),
+    true,
+  );
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", fixture.origin, "show", "state:results/unaccepted-lease-timeout.txt"],
+      fixture.root,
+    ),
+    "retried\n",
+  );
   assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
 });
 
@@ -3220,6 +3320,44 @@ while read -r old_oid new_oid ref; do
     sleep "${seconds}"
   fi
 done
+`,
+  );
+  fs.chmodSync(hook, 0o755);
+  return marker;
+}
+
+function installAcceptedLeasePushTimeoutHook(origin, seconds) {
+  const hook = path.join(origin, "hooks/post-receive");
+  const marker = path.join(origin, "accepted-lease-push-timeout");
+  fs.writeFileSync(
+    hook,
+    `#!/bin/sh
+while read -r old_oid new_oid ref; do
+  if test "$ref" = "${STATE_PUBLISH_LEASE_REF}" && test ! -f "${marker}"; then
+    touch "${marker}"
+    sleep "${seconds}"
+  fi
+done
+`,
+  );
+  fs.chmodSync(hook, 0o755);
+  return marker;
+}
+
+function installUnacceptedLeasePushTimeoutHook(state, seconds) {
+  const hook = path.join(state, ".git/hooks/pre-push");
+  const marker = path.join(state, ".git/hooks/unaccepted-lease-push-timeout");
+  fs.writeFileSync(
+    hook,
+    `#!/bin/sh
+if test ! -f "${marker}"; then
+  while read -r local_ref local_oid remote_ref remote_oid; do
+    if test "$remote_ref" = "${STATE_PUBLISH_LEASE_REF}"; then
+      touch "${marker}"
+      sleep "${seconds}"
+    fi
+  done
+fi
 `,
   );
   fs.chmodSync(hook, 0o755);
