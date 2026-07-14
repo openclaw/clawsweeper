@@ -58,6 +58,9 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Kept immutable action-ledger publication available in repair-only workflow
+  jobs by moving shard import and path-manifest admission behind repair-native
+  CLIs, while retaining the root commands as compatibility entrypoints.
 - Added a priority-aware optimistic publisher for immutable action ledgers that
   yields to exclusive state mutations, accepts replay-equivalent event shards,
   rejects content collisions, and converges disjoint branch races without the
