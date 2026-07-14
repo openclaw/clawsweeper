@@ -1051,6 +1051,7 @@ test("implicit pnpm script names preserve package.json case", () => {
 
 test("filtered pnpm validation fails when no workspace matches", () => {
   const cwd = gitPackageFixture({ check: "node --test" });
+  fs.writeFileSync(path.join(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
   git(cwd, "add", ".");
   git(cwd, "commit", "-m", "initial");
   attachOrigin(cwd);
@@ -1176,6 +1177,38 @@ test("workspace-scoped validation resolves scripts from the selected package", (
       available_scripts: [],
     },
   );
+});
+
+test("pnpm workspace scope ignores package.json workspaces without pnpm-workspace.yaml", () => {
+  const cwd = packageFixture({});
+  fs.mkdirSync(path.join(cwd, "packages", "worker"), { recursive: true });
+  fs.writeFileSync(
+    path.join(cwd, "packages", "worker", "package.json"),
+    `${JSON.stringify({ name: "@openclaw/worker", scripts: { check: "node --test" } }, null, 2)}\n`,
+  );
+  const packagePath = path.join(cwd, "package.json");
+  const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+  packageJson.workspaces = ["packages/*"];
+  fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+
+  const result = preflightTargetValidationPlan(
+    {
+      fixArtifact: {
+        validation_commands: ["pnpm --filter @openclaw/worker check"],
+      },
+      targetDir: cwd,
+    },
+    validationOptions("steipete/example", {
+      toolchain: {
+        packageManager: "pnpm",
+        baseValidationCommands: [],
+        changedGate: null,
+      },
+    }),
+  );
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.code, "validation_script_missing");
 });
 
 test("workspace-scoped validation blocks a matched package without the requested script", () => {
@@ -1382,7 +1415,32 @@ test("workspace-scoped validation parses npm test shorthand options", () => {
     },
   });
 
-  for (const command of ["npm test --workspace worker", "npm t --workspace=worker"]) {
+  for (const command of [
+    "npm test --workspace worker",
+    "npm t --workspace=worker",
+    "npm tst --workspace=worker",
+  ]) {
+    assert.equal(
+      preflightTargetValidationPlan(
+        { fixArtifact: { validation_commands: [command] }, targetDir: cwd },
+        options,
+      ).status,
+      "passed",
+    );
+  }
+});
+
+test("pnpm test shorthands validate the test script they execute", () => {
+  const cwd = packageFixture({ test: "node --test" });
+  const options = validationOptions("steipete/example", {
+    toolchain: {
+      packageManager: "pnpm",
+      baseValidationCommands: [],
+      changedGate: null,
+    },
+  });
+
+  for (const command of ["pnpm t", "pnpm tst"]) {
     assert.equal(
       preflightTargetValidationPlan(
         { fixArtifact: { validation_commands: [command] }, targetDir: cwd },
@@ -2469,6 +2527,91 @@ test("dependency setup preserves tracked in-checkout local workspace dependencie
   }
 });
 
+test("dependency setup accepts npm lockfile v3 tracked workspace links", () => {
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  const packagePath = path.join(cwd, "package.json");
+  const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+  packageJson.packageManager = "npm@11.0.0";
+  packageJson.workspaces = ["packages/*"];
+  fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+  const workspaceDir = path.join(cwd, "packages", "shared");
+  fs.mkdirSync(workspaceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(workspaceDir, "package.json"),
+    `${JSON.stringify({ name: "@example/shared", version: "1.0.0" }, null, 2)}\n`,
+  );
+  fs.writeFileSync(
+    path.join(cwd, "package-lock.json"),
+    `${JSON.stringify(
+      {
+        name: "root",
+        lockfileVersion: 3,
+        packages: {
+          "": { workspaces: ["packages/*"] },
+          "node_modules/@example/shared": { resolved: "packages/shared", link: true },
+          "packages/shared": { name: "@example/shared", version: "1.0.0" },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-npm-workspace-link-"));
+  const npmPath = path.join(binDir, "npm.js");
+  fs.writeFileSync(npmPath, 'require("node:fs").mkdirSync("node_modules", { recursive: true });\n');
+
+  withMockCommand("npm", npmPath, () =>
+    prepareTargetToolchain(cwd, {
+      ...validationOptions("steipete/example", {
+        toolchain: {
+          packageManager: "npm",
+          baseValidationCommands: [],
+          changedGate: null,
+        },
+      }),
+      installTargetDeps: true,
+      installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+    }),
+  );
+});
+
+test("pnpm dependency setup does not authorize package.json-only workspaces", () => {
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  const packagePath = path.join(cwd, "package.json");
+  const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+  packageJson.workspaces = ["packages/*"];
+  packageJson.dependencies = { payload: "file:./packages/payload" };
+  fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+  const workspaceDir = path.join(cwd, "packages", "payload");
+  fs.mkdirSync(workspaceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(workspaceDir, "package.json"),
+    `${JSON.stringify({ name: "payload", version: "1.0.0" }, null, 2)}\n`,
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+
+  assert.throws(
+    () =>
+      prepareTargetToolchain(cwd, {
+        ...validationOptions("steipete/example", {
+          toolchain: {
+            packageManager: "pnpm",
+            baseValidationCommands: [],
+            changedGate: null,
+          },
+        }),
+        installTargetDeps: true,
+        installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      }),
+    /local package is not a tracked workspace/,
+  );
+});
+
 test("dependency setup rejects unsafe structured lockfile local resolutions", () => {
   const cases = [
     {
@@ -2607,6 +2750,7 @@ test("dependency setup rejects untracked and symlink-external local workspaces",
         2,
       )}\n`,
     );
+    fs.writeFileSync(path.join(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
     git(cwd, "add", ".");
     git(cwd, "commit", "-m", "initial");
 

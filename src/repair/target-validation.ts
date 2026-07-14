@@ -934,7 +934,15 @@ function assertStructuredInstallMetadataDestinations(
     return;
   }
   if (value && typeof value === "object") {
+    const workspaceLink = value.link === true;
+    if (workspaceLink) {
+      if (typeof value.resolved !== "string" || !value.resolved.trim()) {
+        throw new Error("target dependency install workspace link is not inspectable");
+      }
+      assertLocalPackageDependency(value.resolved.trim(), ".", localPolicy);
+    }
     for (const [name, entry] of Object.entries(value)) {
+      if (workspaceLink && (name === "link" || name === "resolved")) continue;
       if (name === "importers" && entry && typeof entry === "object" && !Array.isArray(entry)) {
         for (const [importer, importerValue] of Object.entries(entry)) {
           const importerDir = resolveTrackedImporterDir(importer, localPolicy);
@@ -4253,7 +4261,11 @@ function targetPackageScriptIsAvailable(
     );
   }
   if (selected.length === 0) {
-    return requirement.packageManager === "pnpm" && !requirement.workspaceAll;
+    return (
+      requirement.packageManager === "pnpm" &&
+      !requirement.workspaceAll &&
+      fs.existsSync(path.join(cwd, "pnpm-workspace.yaml"))
+    );
   }
   if (requirement.packageManager === "npm") {
     return selected.every((manifest) => manifest.scripts.has(requirement.name));
@@ -4353,19 +4365,17 @@ function readWorkspacePatterns(
 ): string[] | null {
   if (packageManager === "pnpm") {
     const workspacePath = path.join(cwd, "pnpm-workspace.yaml");
-    if (fs.existsSync(workspacePath)) {
-      try {
-        const workspace = parseYaml(
-          readWorkspaceMetadataText(workspacePath, deadlineAt),
-        ) as LooseRecord;
-        if (Array.isArray(workspace?.packages)) {
-          return workspace.packages.filter(
-            (value: JsonValue): value is string => typeof value === "string",
-          );
-        }
-      } catch {
-        return null;
-      }
+    if (!fs.existsSync(workspacePath)) return [];
+    try {
+      const workspace = parseYaml(
+        readWorkspaceMetadataText(workspacePath, deadlineAt),
+      ) as LooseRecord;
+      if (workspace?.packages === undefined) return [];
+      if (!Array.isArray(workspace.packages)) return null;
+      if (workspace.packages.some((value: JsonValue) => typeof value !== "string")) return null;
+      return workspace.packages;
+    } catch {
+      return null;
     }
   }
   try {
