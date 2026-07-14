@@ -485,6 +485,7 @@ export class ExactReviewQueue {
   private storage;
   private env;
   private ready: Promise<void>;
+  private commentDispatchToken: { expiresAt: number; promise: Promise<string> } | undefined;
   private migratedAt = 0;
   private legacyMirrorDisabled = false;
   private legacyMirrorWarningReported = false;
@@ -588,6 +589,20 @@ export class ExactReviewQueue {
       return json({ ok: true, queued: true, item_key: accepted.key }, 202);
     }
 
+    if (request.method === "POST" && url.pathname === "/dispatch-comment/preflight") {
+      try {
+        await this.commentDispatchCapability();
+        return new Response(null, { status: 204 });
+      } catch (error) {
+        console.error(
+          `ClawSweeper comment dispatch preflight failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        return json({ error: "comment_dispatch_unavailable" }, 503);
+      }
+    }
+
     if (request.method === "POST" && url.pathname === "/dispatch-comment") {
       const body = objectValue(await request.json().catch(() => null));
       const deliveryId = String(body.delivery_id || "").trim();
@@ -597,7 +612,7 @@ export class ExactReviewQueue {
       }
       if (!dispatchBody) return json({ error: "invalid_comment_dispatch" }, 400);
       try {
-        const token = await exactReviewDispatchToken(this.env);
+        const token = await this.commentDispatchCapability();
         await this.dispatchWithReceipt({
           operationKey: {
             kind: "github_webhook_comment",
@@ -620,6 +635,8 @@ export class ExactReviewQueue {
           }`,
         );
         return json({ error: "comment_dispatch_failed" }, 502);
+      } finally {
+        await this.scheduleNext(this.readStateSync(), Date.now());
       }
     }
 
@@ -1831,6 +1848,24 @@ export class ExactReviewQueue {
       await this.storage.setAlarm(next);
     }
   }
+
+  private async commentDispatchCapability(): Promise<string> {
+    const now = Date.now();
+    if (this.commentDispatchToken && this.commentDispatchToken.expiresAt > now) {
+      return this.commentDispatchToken.promise;
+    }
+    const capability = {
+      expiresAt: now + 60_000,
+      promise: exactReviewDispatchToken(this.env),
+    };
+    this.commentDispatchToken = capability;
+    try {
+      return await capability.promise;
+    } catch (error) {
+      if (this.commentDispatchToken === capability) this.commentDispatchToken = undefined;
+      throw error;
+    }
+  }
 }
 
 export default {
@@ -2156,6 +2191,15 @@ async function githubWebhook(request, env, ctx) {
     deliveryId: request.headers.get("x-github-delivery"),
   });
   if (trigger) await recordBayJourneyTelemetry(env, ctx, [trigger], []);
+
+  const dispatchPreflight = await exactReviewQueueRequest(
+    env,
+    "/dispatch-comment/preflight",
+    new Request("https://clawsweeper-exact-review-queue/dispatch-comment/preflight", {
+      method: "POST",
+    }),
+  );
+  if (!dispatchPreflight.ok) return dispatchPreflight;
 
   const credentials = githubAppCredentials(env);
   if (!credentials) return json({ error: "github_app_not_configured" }, 503);

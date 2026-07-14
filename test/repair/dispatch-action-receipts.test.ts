@@ -408,7 +408,7 @@ test("dispatch receipt chains recover sequence state after cache eviction", asyn
   }
 });
 
-test("concurrent receipt attempts keep distinct causal phase sequences", async () => {
+test("concurrent receipt attempts keep the highest completed phase as the next parent", async () => {
   const fixture = actionLedgerFixture("concurrent-attempts");
   let releaseFirst: (() => void) | undefined;
   let releaseSecond: (() => void) | undefined;
@@ -432,10 +432,14 @@ test("concurrent receipt attempts keep distinct causal phase sequences", async (
       ...options,
       operation: async () => secondGate,
     });
-    releaseFirst?.();
-    await first;
     releaseSecond?.();
     await second;
+    releaseFirst?.();
+    await first;
+    runDispatchWithReceiptSync({
+      ...options,
+      operation: () => undefined,
+    });
 
     await flushDispatchActionEvents(fixture.root, {
       env: fixture.env,
@@ -447,12 +451,14 @@ test("concurrent receipt attempts keep distinct causal phase sequences", async (
     );
     assert.deepEqual(
       eventsByPhase.map((event) => event.phase_seq),
-      [1, 2, 3, 4],
+      [1, 2, 3, 4, 5, 6],
     );
     assert.deepEqual(
       eventsByPhase.map((event) => event.attributes.attempt),
-      [1, 1, 2, 2],
+      [1, 1, 2, 2, 3, 3],
     );
+    assert.equal(eventsByPhase[4]?.parent_event_id, eventsByPhase[3]?.event_id);
+    assert.notEqual(eventsByPhase[4]?.parent_event_id, eventsByPhase[1]?.event_id);
   } finally {
     fixture.cleanup();
   }
@@ -609,27 +615,46 @@ test("activity intake receipt publishers keep checkout credentials ephemeral", (
   assert.match(spamWorkflow, /PUBLISH_TOKEN: \$\{\{ steps\.state-token\.outputs\.token \}\}/);
 });
 
-test("activity feed runs independently of durable ledger publication and reports failures", () => {
+test("activity dispatch publishes receipts before the noncritical notifier", () => {
   const workflow = fs.readFileSync(".github/workflows/github-activity.yml", "utf8");
   const feedOffset = workflow.indexOf("- name: Feed activity to OpenClaw");
-  const stateTokenOffset = workflow.indexOf("- name: Create state token");
-  const ledgerOffset = workflow.indexOf("uses: ./.github/actions/setup-action-ledger");
+  const dispatchOffset = workflow.indexOf("- name: Dispatch spam scan candidate");
+  const finalizeOffset = workflow.indexOf(
+    "- name: Finalize GitHub activity dispatch action ledger",
+  );
+  const publishOffset = workflow.indexOf("- name: Publish GitHub activity dispatch action ledger");
   assert.ok(feedOffset >= 0);
-  assert.ok(feedOffset < stateTokenOffset);
-  assert.ok(feedOffset < ledgerOffset);
+  assert.ok(dispatchOffset < finalizeOffset);
+  assert.ok(finalizeOffset < publishOffset);
+  assert.ok(publishOffset < feedOffset);
   assert.match(workflow, /id: finalize-activity-dispatch-ledger[\s\S]*?continue-on-error: true/);
   assert.match(workflow, /id: publish-activity-dispatch-ledger[\s\S]*?continue-on-error: true/);
   assert.match(
     workflow,
-    /- name: Feed activity to OpenClaw\n\s+if: steps\.core-budget\.outputs\.skip != 'true' && steps\.setup-activity-pnpm\.outcome == 'success'/,
-  );
-  assert.doesNotMatch(
-    workflow.slice(feedOffset, stateTokenOffset),
-    /setup-activity-state|setup-activity-ledger|dispatch-spam-scan-candidate/,
+    /- name: Feed activity to OpenClaw\n\s+id: notify-openclaw\n\s+if: \$\{\{ always\(\)[^\n]+\}\}\n\s+continue-on-error: true/,
   );
   assert.match(
     workflow,
     /- name: Report GitHub activity dispatch ledger failure[\s\S]*?finalize-activity-dispatch-ledger\.outcome == 'failure'[\s\S]*?publish-activity-dispatch-ledger\.outcome == 'failure'/,
+  );
+  assert.match(
+    workflow,
+    /- name: Report GitHub activity notification failure[\s\S]*?steps\.notify-openclaw\.outcome == 'failure'/,
+  );
+});
+
+test("spam intake dispatch receipt publication cannot be cancelled by a later edit", () => {
+  const workflow = fs.readFileSync(".github/workflows/spam-comment-intake.yml", "utf8");
+  const concurrency = workflow.slice(workflow.indexOf("concurrency:"), workflow.indexOf("jobs:"));
+  assert.match(concurrency, /cancel-in-progress: false/);
+  assert.ok(workflow.indexOf("- name: Dispatch exact spam scan") >= 0);
+  assert.ok(
+    workflow.indexOf("- name: Dispatch exact spam scan") <
+      workflow.indexOf("- name: Finalize spam intake dispatch action ledger"),
+  );
+  assert.ok(
+    workflow.indexOf("- name: Finalize spam intake dispatch action ledger") <
+      workflow.indexOf("- name: Publish spam intake dispatch action ledger"),
   );
 });
 

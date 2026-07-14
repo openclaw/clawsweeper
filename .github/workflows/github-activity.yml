@@ -151,17 +151,6 @@ jobs:
           done
           pnpm run build:repair
 
-      - name: Feed activity to OpenClaw
-        if: steps.core-budget.outputs.skip != 'true' && steps.setup-activity-pnpm.outcome == 'success'
-        env:
-          CLAWSWEEPER_OPENCLAW_HOOK_URL: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_URL }}
-          CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_TOKEN }}
-          CLAWSWEEPER_OPENCLAW_AGENT_ID: ${{ vars.CLAWSWEEPER_OPENCLAW_AGENT_ID || 'clawsweeper' }}
-          CLAWSWEEPER_DISCORD_TARGET: ${{ vars.CLAWSWEEPER_DISCORD_TARGET }}
-        run: |
-          set -euo pipefail
-          pnpm run repair:notify-github-activity -- --write-report
-
       - name: Create state token
         if: steps.core-budget.outputs.skip != 'true'
         id: activity-state-token
@@ -254,8 +243,27 @@ jobs:
             "${action_ledger_args[@]}" \
             --rebase-strategy normal
 
+      - name: Feed activity to OpenClaw
+        id: notify-openclaw
+        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-pnpm.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          CLAWSWEEPER_OPENCLAW_HOOK_URL: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_URL }}
+          CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_TOKEN }}
+          CLAWSWEEPER_OPENCLAW_AGENT_ID: ${{ vars.CLAWSWEEPER_OPENCLAW_AGENT_ID || 'clawsweeper' }}
+          CLAWSWEEPER_DISCORD_TARGET: ${{ vars.CLAWSWEEPER_DISCORD_TARGET }}
+        run: |
+          set -euo pipefail
+          pnpm run repair:notify-github-activity -- --write-report
+
       - name: Report GitHub activity dispatch ledger failure
         if: ${{ always() && steps.core-budget.outputs.skip != 'true' && (steps.finalize-activity-dispatch-ledger.outcome == 'failure' || steps.publish-activity-dispatch-ledger.outcome == 'failure') }}
         run: |
           echo "::error::GitHub activity dispatch receipts were not durably published."
+          exit 1
+
+      - name: Report GitHub activity notification failure
+        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.notify-openclaw.outcome == 'failure' }}
+        run: |
+          echo "::error::GitHub activity notification failed after dispatch receipt publication."
           exit 1

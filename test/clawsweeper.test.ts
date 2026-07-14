@@ -2032,7 +2032,7 @@ test("runtime yield keeps the unfinished item out of the apply cursor trace", ()
   assert.deepEqual(examined, [10]);
 });
 
-test("spam comment intake coalesces duplicate comment deliveries", () => {
+test("spam comment intake serializes duplicate deliveries without cancelling publication", () => {
   const workflow = readText(".github/workflows/spam-comment-intake.yml");
 
   assert.match(workflow, /types: \[clawsweeper_spam_comment_intake\]/);
@@ -2047,7 +2047,7 @@ test("spam comment intake coalesces duplicate comment deliveries", () => {
   assert.match(workflow, /Check core API budget/);
   assert.match(workflow, /CLAWSWEEPER_MIN_CORE_REMAINING/);
   assert.match(workflow, /github\.run_id/);
-  assert.match(workflow, /cancel-in-progress: true/);
+  assert.match(workflow, /cancel-in-progress: false/);
 });
 
 test("spam scanner exact dispatches publish only per-comment audit records", () => {

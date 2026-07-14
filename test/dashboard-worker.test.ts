@@ -7534,7 +7534,7 @@ test("triage uses ClawSweeper GitHub App credentials when no static token is con
   }
 });
 
-test("hosted webhook accepts author read-only mention commands", async () => {
+test("hosted webhook accepts author read-only mention commands before dispatch config", async () => {
   for (const body of [
     "@clawsweeper Re-run",
     "@clawsweeper\nre-review based on latest comments",
@@ -7565,8 +7565,8 @@ test("hosted webhook accepts author read-only mention commands", async () => {
       }),
       { CLAWSWEEPER_WEBHOOK_SECRET: "test-secret" },
     );
-    assert.equal(response.status, 503, `${body} should pass classification before app config`);
-    assert.deepEqual(await response.json(), { error: "github_app_not_configured" });
+    assert.equal(response.status, 503, `${body} should pass classification before queue config`);
+    assert.deepEqual(await response.json(), { error: "exact_review_queue_not_configured" });
   }
 });
 
@@ -7775,6 +7775,124 @@ test("hosted webhook ignores removal of non-close-guard labels", async () => {
     accepted: false,
     reason: "unsupported action",
   });
+});
+
+test("hosted webhook requires comment dispatch capability before fast ack side effects", async () => {
+  const originalFetch = globalThis.fetch;
+  let githubCalls = 0;
+  globalThis.fetch = async () => {
+    githubCalls += 1;
+    throw new Error("GitHub should not be called before dispatch preflight succeeds");
+  };
+  const queue = new MemoryDurableNamespace({
+    async fetch(request: Request) {
+      assert.equal(new URL(request.url).pathname, "/dispatch-comment/preflight");
+      return new Response(JSON.stringify({ error: "comment_dispatch_unavailable" }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  try {
+    const response = await worker.fetch(
+      signedGithubWebhookRequest({
+        event: "issue_comment",
+        secret: "test-secret",
+        payload: {
+          action: "created",
+          repository: {
+            full_name: "openclaw/gogcli",
+            default_branch: "trunk",
+            private: false,
+            archived: false,
+            fork: false,
+            has_issues: true,
+          },
+          issue: { number: 597, user: { login: "steipete" } },
+          installation: { id: 123 },
+          comment: {
+            id: 456,
+            body: "@clawsweeper status",
+            author_association: "OWNER",
+            user: { login: "steipete" },
+          },
+        },
+      }),
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+        EXACT_REVIEW_QUEUE: queue,
+      },
+    );
+
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: "comment_dispatch_unavailable" });
+    assert.equal(githubCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("comment dispatch attempts schedule receipt expiry alarms after success and failure", async () => {
+  const originalFetch = globalThis.fetch;
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  let dispatchStatus = 204;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation") {
+      return jsonResponse({ id: 999 });
+    }
+    if (url.pathname === "/app/installations/999/access_tokens") {
+      return jsonResponse({ token: "dispatch-token" });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
+      return new Response(dispatchStatus === 204 ? null : "unavailable", {
+        status: dispatchStatus,
+      });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    for (const expected of [
+      { status: 204, response: 202 },
+      { status: 503, response: 502 },
+    ]) {
+      dispatchStatus = expected.status;
+      const dispatchQueue = exactReviewDispatchQueue(privateKey);
+      const queue = dispatchQueue.namespace.get();
+      const response = await queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/dispatch-comment", {
+          method: "POST",
+          body: JSON.stringify({
+            delivery_id: `delivery-${expected.status}`,
+            dispatch_body: {
+              event_type: "clawsweeper_comment",
+              client_payload: {
+                target_repo: "openclaw/gogcli",
+                target_branch: "trunk",
+                item_number: 597,
+                comment_id: 456,
+                status_comment_id: 777,
+                source_event: "issue_comment",
+                source_action: "created",
+              },
+            },
+          }),
+        }),
+      );
+
+      assert.equal(response.status, expected.response);
+      assert.ok((await dispatchQueue.storage.getAlarm())! > Date.now());
+      assert.equal(dispatchQueue.storage.sql.readDispatchReceipts().length, 2);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("hosted webhook reuses existing fast ack comments on redelivery", async () => {

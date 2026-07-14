@@ -90,6 +90,7 @@ type DispatchReceiptOptions<T> = DispatchReceiptConfig & {
 
 type DispatchChain = {
   parentEventId: string | null;
+  parentPhaseSeq: number;
   nextPhaseSeq: number;
   nextAttempt: number;
   activeAttempts: number;
@@ -373,7 +374,7 @@ function startDispatchReceipt(options: DispatchReceiptConfig): {
     releaseDispatchChain(chainKey, chain);
     throw error;
   }
-  chain.parentEventId = event?.event_id ?? chain.parentEventId;
+  advanceDispatchChainParent(chain, event);
   return {
     chain,
     chainKey,
@@ -413,7 +414,7 @@ function finishDispatchReceipt(
       },
       receipt.options.env,
     );
-    receipt.chain.parentEventId = event?.event_id ?? receipt.chain.parentEventId;
+    advanceDispatchChainParent(receipt.chain, event);
   } finally {
     releaseDispatchChain(receipt.chainKey, receipt.chain);
   }
@@ -594,7 +595,7 @@ function recoverDispatchChain(
   root: string,
   operationIdentity: ReturnType<typeof dispatchOperationIdentity>,
   producer: ReturnType<typeof workflowActionProducer>,
-): Pick<DispatchChain, "parentEventId" | "nextPhaseSeq" | "nextAttempt"> {
+): Pick<DispatchChain, "parentEventId" | "parentPhaseSeq" | "nextPhaseSeq" | "nextAttempt"> {
   const operationId = actionOperationId(
     operationIdentity.repository,
     "dispatch",
@@ -626,9 +627,16 @@ function recoverDispatchChain(
   }
   return {
     parentEventId: latestEvent?.event_id ?? null,
+    parentPhaseSeq: maxPhaseSeq,
     nextPhaseSeq: Math.max(maxPhaseSeq, maxAttempt * 2) + 1,
     nextAttempt: maxAttempt + 1,
   };
+}
+
+function advanceDispatchChainParent(chain: DispatchChain, event: ActionEvent | null): void {
+  if (!event || event.phase_seq <= chain.parentPhaseSeq) return;
+  chain.parentEventId = event.event_id;
+  chain.parentPhaseSeq = event.phase_seq;
 }
 
 function dispatchEventProducerMatches(

@@ -105,6 +105,9 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Kept dispatch receipts durable across superseding spam edits, notifier
+  failures, concurrent outcome completion, unavailable comment dispatch, and
+  idle receipt expiry scheduling.
 - Published crash-safe `workflow.attempt` and `repair.execute` receipts around
   repair-cluster execution, terminalizing dangling child mutations before their
   parent, terminating the complete credentialed execute process group before

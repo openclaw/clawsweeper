@@ -15,7 +15,7 @@ env:
 concurrency:
   group: >-
     spam-comment-intake-${{ github.event.client_payload.target_repo || github.event.client_payload.activity.repo || 'openclaw/openclaw' }}-${{ github.event.client_payload.event_name || github.event.client_payload.activity.type || 'activity' }}-${{ github.event.client_payload.comment_id || github.event.client_payload.review_comment_id || github.event.client_payload.activity.comment.id || github.event.client_payload.activity.issue.number || github.event.client_payload.activity.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   intake:
