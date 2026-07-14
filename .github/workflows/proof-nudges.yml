@@ -45,6 +45,7 @@ on:
     - cron: "0 10 * * *"
 
 permissions:
+  actions: read
   contents: read
   issues: write
   pull-requests: read
@@ -68,6 +69,7 @@ jobs:
         with:
           filter: blob:none
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Resolve target repository
         id: target
@@ -107,14 +109,20 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
       - uses: ./.github/actions/setup-state
+        id: setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
 
+      - uses: ./.github/actions/setup-action-ledger
+        id: setup-action-ledger
+
       - uses: ./.github/actions/setup-pnpm
+        id: setup-pnpm
         with:
           build-script: build:all
 
       - name: Run proof nudges
+        id: run-proof-nudges
         env:
           GH_TOKEN: ${{ steps.target-proof-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -202,6 +210,43 @@ jobs:
               --rebase-strategy theirs \
               "${cursor_publish_args[@]}"
           fi
+
+      - name: Finalize proof handling action ledger
+        id: finalize-action-ledger
+        if: ${{ always() && steps.setup-action-ledger.outcome == 'success' && steps.setup-pnpm.outcome == 'success' }}
+        run: pnpm run --silent finalize-action-events
+
+      - name: Publish immutable proof handling action ledger
+        if: ${{ always() && steps.setup-state.outcome == 'success' && steps.finalize-action-ledger.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          source_root="${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
+          if [ ! -d "$source_root/ledger" ]; then
+            echo "No immutable proof handling action events to publish."
+            exit 0
+          fi
+          paths_file=".artifacts/proof-action-ledger-paths.txt"
+          mkdir -p .artifacts
+          pnpm run --silent publish-action-events -- \
+            --source-root "$source_root" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --expected-producer-job "$GITHUB_JOB" |
+            jq -r '.paths[]?' |
+            sort -u > "$paths_file"
+          if [ ! -s "$paths_file" ]; then
+            echo "Proof action event shards existed but no paths were imported." >&2
+            exit 1
+          fi
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+          done < "$paths_file"
+          node dist/clawsweeper.js publish-action-event-paths \
+            --paths-file "$paths_file" \
+            --message "chore: append proof handling action ledger"
 
       - uses: actions/upload-artifact@v7
         if: ${{ always() }}

@@ -2706,6 +2706,7 @@ type ProofMutationSession = {
   expectedFreshness: ProofMutationFreshnessSnapshot;
   refreshFreshness: () => ProofMutationFreshnessSnapshot;
   nextAttemptByMutation: Map<string, number>;
+  latestEventIdByMutation: Map<string, string>;
   unknownMutationObserved: boolean;
 };
 
@@ -2776,20 +2777,26 @@ function proofMutationRunner(session: ProofMutationSession): MutationRunner {
     }
     try {
       const result = options.operation();
-      finishProofMutationReceipt({
+      const outcome = finishProofMutationReceipt({
         attempt,
         outcome: options.didMutate?.(result) === false ? "rejected" : "accepted",
       });
+      if (outcome) {
+        session.latestEventIdByMutation.set(options.idempotencyIdentity, outcome.event_id);
+      }
       return result;
     } catch (error) {
       const rejected =
         isGitHubRequiresAuthenticationError(error) ||
         isLockedConversationCommentError(error) ||
         options.knownNoMutation?.(error) === true;
-      finishProofMutationReceipt({
+      const outcome = finishProofMutationReceipt({
         attempt,
         outcome: rejected ? "rejected" : "unknown",
       });
+      if (outcome) {
+        session.latestEventIdByMutation.set(options.idempotencyIdentity, outcome.event_id);
+      }
       if (!rejected) {
         session.unknownMutationObserved = true;
         throw new ProofMutationOutcomeUnknownError(error);
@@ -2800,9 +2807,12 @@ function proofMutationRunner(session: ProofMutationSession): MutationRunner {
 }
 
 function reconcileProofMutation(session: ProofMutationSession, mutationIdentity: string): void {
+  const requestAttempt = session.nextAttemptByMutation.get(mutationIdentity) ?? 0;
   recordProofMutationReconciliation({
     context: session.context,
     mutationIdentity,
+    parentEventId: session.latestEventIdByMutation.get(mutationIdentity) ?? null,
+    phaseSeq: requestAttempt * 2 + 1,
   });
 }
 
@@ -28427,6 +28437,7 @@ function createProofMutationSession(options: {
     expectedFreshness,
     refreshFreshness: () => readProofMutationFreshnessSnapshot(options.number),
     nextAttemptByMutation: new Map(),
+    latestEventIdByMutation: new Map(),
     unknownMutationObserved: false,
   };
 }

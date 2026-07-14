@@ -185,18 +185,50 @@ test("proof reconciliation reuses the business idempotency identity without clai
   }
 });
 
-test("a crash-open proof attempt reconciles under the same business idempotency key", () => {
+test("same-run proof reconciliation follows and parents the unknown outcome", () => {
   const root = realpathSync(mkdtempSync(tmpPrefix));
   try {
     const context = receiptContext(root, "4202");
-    const mutationIdentity = `proof_nudge_comment:42:${"b".repeat(40)}:2026-07-14T12:00:00Z`;
-    startProofMutationReceipt({
+    const mutationIdentity = `bot_proof_comment:42:${"b".repeat(40)}:${"c".repeat(64)}`;
+    const attempt = startProofMutationReceipt({
       context,
       receiptIdentity: `${mutationIdentity}:request_attempt:1`,
       mutationIdentity,
       requestAttempt: 1,
     });
-    recordProofMutationReconciliation({ context, mutationIdentity });
+    const outcome = finishProofMutationReceipt({ attempt, outcome: "unknown" });
+    const reconciliation = recordProofMutationReconciliation({
+      context,
+      mutationIdentity,
+      parentEventId: outcome?.event_id,
+      phaseSeq: 3,
+    });
+
+    assert.equal(outcome?.phase_seq, 2);
+    assert.equal(reconciliation?.phase_seq, 3);
+    assert.equal(reconciliation?.parent_event_id, outcome?.event_id);
+    assert.equal(outcome?.idempotency_key_sha256, reconciliation?.idempotency_key_sha256);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a crash-open proof attempt reconciles under the same business idempotency key", () => {
+  const root = realpathSync(mkdtempSync(tmpPrefix));
+  try {
+    const attemptContext = receiptContext(root, "4203");
+    const reconciliationContext = receiptContext(root, "4204");
+    const mutationIdentity = `proof_nudge_comment:42:${"b".repeat(40)}:2026-07-14T12:00:00Z`;
+    startProofMutationReceipt({
+      context: attemptContext,
+      receiptIdentity: `${mutationIdentity}:request_attempt:1`,
+      mutationIdentity,
+      requestAttempt: 1,
+    });
+    recordProofMutationReconciliation({
+      context: reconciliationContext,
+      mutationIdentity,
+    });
 
     const events = readAllSpooledActionEvents(root);
     const attempt = events.find(
@@ -210,6 +242,7 @@ test("a crash-open proof attempt reconciles under the same business idempotency 
     assert.equal(reconciliation?.action.status, "recovered");
     assert.equal(reconciliation?.action.mutation, false);
     assert.equal(attempt?.idempotency_key_sha256, reconciliation?.idempotency_key_sha256);
+    assert.notEqual(attempt?.attempt_id, reconciliation?.attempt_id);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

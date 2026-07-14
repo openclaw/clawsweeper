@@ -100,7 +100,10 @@ confidential-identifier checks as every other durable machine-text field.
   automatic retry. Same-head comment markers and desired label state reconcile
   response loss or crash-open attempts under the original hashed business
   idempotency key without storing raw prompts, logs, review bodies, or comment
-  bodies and without claiming a second mutation.
+  bodies and without claiming a second mutation. Same-run recovery follows and
+  parents the request outcome; a later workflow run records a new recovery
+  attempt under that same business idempotency key. The proof workflow publishes
+  its finalized shards to the state repository.
 - Explicit command replays require a durable command `attempt_id` derived from
   or forwarded through the production workflow. It scopes command operation,
   attempt, mutation idempotency, dispatch claims, and worker receipt keys to that

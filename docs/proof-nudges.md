@@ -70,11 +70,13 @@ incomplete read, or any head, review, thread, or conversation drift blocks the
 request. A successful earlier label request does not authorize the next one;
 each request gets its own freshness check.
 
-When action-ledger context is enabled, every request writes an immutable
-pre-request receipt and then one accepted, rejected-before-write, or
-outcome-unknown receipt. Retries retain one business idempotency key while each
-request attempt has a distinct receipt pair. An outcome-unknown response is not
-automatically retried, even when it resembles a transient GitHub error.
+The production proof workflow enables the action ledger before either command.
+Every request writes an immutable pre-request receipt and then one accepted,
+rejected-before-write, or outcome-unknown receipt. Retries retain one business
+idempotency key while each request attempt has a distinct receipt pair. An
+outcome-unknown response is not automatically retried, even when it resembles a
+transient GitHub error. The workflow finalizes, imports, and publishes the exact
+proof-job shards to the state repository before completing.
 
 Proof comments contain same-head markers, and bot-proof comments use a stable
 body plus the desired label state. After a response loss or process crash, a

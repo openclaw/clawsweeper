@@ -231,6 +231,8 @@ export function finishProofMutationReceipt(options: {
 export function recordProofMutationReconciliation(options: {
   context: ProofMutationReceiptContext;
   mutationIdentity: string;
+  parentEventId?: string | null;
+  phaseSeq?: number;
 }): ActionEvent | null {
   const operationIdentity = proofMutationBusinessIdentityForTest({
     lane: options.context.lane,
@@ -253,7 +255,8 @@ export function recordProofMutationReconciliation(options: {
       },
       operation: "proof",
       operationIdentity,
-      phaseSeq: 1,
+      ...(options.parentEventId ? { parentEventId: options.parentEventId } : {}),
+      phaseSeq: options.phaseSeq ?? 1,
       idempotencyIdentity: operationIdentity,
       component: options.context.component,
       subject: proofMutationSubject(options.context),
