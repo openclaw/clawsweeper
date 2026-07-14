@@ -4,6 +4,7 @@ import json
 import os
 import signal
 import stat
+import struct
 import subprocess
 import sys
 import time
@@ -48,15 +49,6 @@ class LandlockRulesetAttr(ctypes.Structure):
     _fields_ = [("handled_access_fs", ctypes.c_uint64)]
 
 
-class LandlockPathBeneathAttr(ctypes.Structure):
-    _layout_ = "gcc-sysv"
-    _pack_ = 1
-    _fields_ = [
-        ("allowed_access", ctypes.c_uint64),
-        ("parent_fd", ctypes.c_int32),
-    ]
-
-
 libc = ctypes.CDLL(None, use_errno=True)
 libc.syscall.restype = ctypes.c_long
 
@@ -81,9 +73,8 @@ def landlock_abi():
 def add_writable_path(ruleset_fd, path, allowed_access):
     path_fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
     try:
-        rule = LandlockPathBeneathAttr(
-            allowed_access=allowed_access,
-            parent_fd=path_fd,
+        rule = (ctypes.c_ubyte * 12).from_buffer_copy(
+            struct.pack("=Qi", allowed_access, path_fd)
         )
         checked_syscall(
             SYS_LANDLOCK_ADD_RULE,
