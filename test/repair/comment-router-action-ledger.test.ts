@@ -94,11 +94,29 @@ test("trusted verdict automerge refreshes reviewed PR activity before merge disp
   );
   assert.match(
     source,
-    /function trustedAutomergeReviewActivityCursor[\s\S]*pulls\/\$\{number\}\/reviews[\s\S]*pulls\/\$\{number\}\/comments[\s\S]*function trustedAutomergeReviewActivityBlockReason[\s\S]*isReviewedPrActivityCursor\(expected\)/,
+    /function trustedAutomergeReviewActivityCursorOnce[\s\S]*pulls\/\$\{number\}\/reviews[\s\S]*pulls\/\$\{number\}\/comments[\s\S]*function trustedAutomergeReviewActivityCursor[\s\S]*readStableReviewedPrActivityCursor[\s\S]*function trustedAutomergeReviewActivityBlockReason[\s\S]*isReviewedPrActivityCursor\(expected\)/,
   );
   assert.match(
     source,
     /inlineComments\.length === 0 \? \[\] : trustedAutomergeReviewThreads\(number, remaining \+ 1\)/,
+  );
+  for (const wrapper of [
+    "runGitHubTextMutation",
+    "runGitHubTextMutationOnce",
+    "runGitHubSpawnMutation",
+  ]) {
+    const start = source.indexOf(`function ${wrapper}(`);
+    const end = source.indexOf("\nfunction ", start + 1);
+    const implementation = source.slice(start, end);
+    assert.match(implementation, /runReviewedPrActivityGuardedMutation/);
+    assert.match(
+      implementation,
+      /refresh: \(\) => trustedAutomergeReviewActivityBlockReason\(command\)/,
+    );
+  }
+  assert.match(
+    source,
+    /function runGitHubBestEffortMutation[\s\S]*error instanceof ReviewedPrActivityGuardError[\s\S]*throw error/,
   );
 });
 

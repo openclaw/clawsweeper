@@ -36,6 +36,33 @@ export interface ReviewedPrActivityThreadsPage {
   endCursor: string | null;
 }
 
+export interface ReviewedPrActivityBlock {
+  reason: string;
+  retryable: boolean;
+}
+
+export class ReviewedPrActivityGuardError extends Error {
+  readonly block: ReviewedPrActivityBlock;
+  readonly mutationKind: string;
+
+  constructor(mutationKind: string, block: ReviewedPrActivityBlock) {
+    super(`${block.reason} before ${mutationKind}`);
+    this.name = "ReviewedPrActivityGuardError";
+    this.block = block;
+    this.mutationKind = mutationKind;
+  }
+}
+
+const REVIEW_ACTIVITY_AUTHORIZED_MUTATIONS = new Set([
+  "description_update",
+  "label_add",
+  "label_create",
+  "label_remove",
+  "pull_request_merge",
+  "repair_dispatch",
+  "review_dispatch",
+]);
+
 export function createReviewedPrActivityCursor(options: {
   reviews: unknown[];
   inlineComments: unknown[];
@@ -57,6 +84,31 @@ export function createReviewedPrActivityCursor(options: {
   if (Buffer.byteLength(canonical, "utf8") > MAX_REVIEWED_PR_ACTIVITY_CURSOR_BYTES) return null;
   const digest = createHash("sha256").update(canonical).digest("hex");
   return `v2:${entries.length}:${digest}`;
+}
+
+export function readStableReviewedPrActivityCursor(readCursor: () => string | null): string | null {
+  const first = readCursor();
+  const second = readCursor();
+  if (first !== second) {
+    throw new Error("pull request review activity changed while refreshing the bounded cursor");
+  }
+  return second;
+}
+
+export function runReviewedPrActivityGuardedMutation<T>(options: {
+  intent: string;
+  mutationKind: string;
+  refresh: () => ReviewedPrActivityBlock | null;
+  operation: () => T;
+}): T {
+  if (
+    options.intent === "clawsweeper_auto_merge" &&
+    REVIEW_ACTIVITY_AUTHORIZED_MUTATIONS.has(options.mutationKind)
+  ) {
+    const block = options.refresh();
+    if (block) throw new ReviewedPrActivityGuardError(options.mutationKind, block);
+  }
+  return options.operation();
 }
 
 export function isReviewedPrActivityCursor(value: unknown): value is string {

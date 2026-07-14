@@ -132,9 +132,12 @@ import { compactText, escapeRegExp } from "./text-utils.js";
 import {
   MAX_REVIEWED_PR_ACTIVITY,
   REVIEWED_PR_ACTIVITY_THREADS_QUERY,
+  ReviewedPrActivityGuardError,
   createReviewedPrActivityCursor,
   isReviewedPrActivityCursor,
+  readStableReviewedPrActivityCursor,
   reviewedPrActivityThreadsPageFromGraphql,
+  runReviewedPrActivityGuardedMutation,
 } from "../review-activity-cursor.js";
 import {
   flushCommandActionEvents,
@@ -2350,6 +2353,19 @@ function executeCommand(command: LooseRecord) {
       : commandHasWaitingRepairDispatch(command)
         ? "waiting"
         : "executed";
+  } catch (error) {
+    if (!(error instanceof ReviewedPrActivityGuardError)) throw error;
+    const status = error.block.retryable ? "waiting" : "skipped";
+    command.status = status;
+    command.reason = error.block.reason;
+    command.review_activity_blocked_mutation = error.mutationKind;
+    command.actions = command.actions.map((action: JsonValue) => {
+      const actionStatus = String(action.status ?? "");
+      if (["active", "claimed", "dispatched", "executed", "recovered"].includes(actionStatus)) {
+        return action;
+      }
+      return { ...action, status, reason: error.block.reason };
+    });
   } finally {
     clearTerminalMaintainerCommandReaction(command);
   }
@@ -2375,12 +2391,20 @@ function runGitHubTextMutation(
 ) {
   const attempts = githubMutationRetryAttempts(options);
   const { attempts: _attempts, ...runOptions } = options;
+  const operation = () =>
+    runReviewedPrActivityGuardedMutation({
+      intent: String(command.intent ?? ""),
+      mutationKind: kind,
+      refresh: () => trustedAutomergeReviewActivityBlockReason(command),
+      operation: () => ghText(ghArgs, runOptions),
+    });
   return runCommandMutationWithRetry(command, {
     kind,
     identity,
-    operation: () => ghText(ghArgs, runOptions),
+    operation,
     attempts,
     shouldRetry: (error) => {
+      if (error instanceof ReviewedPrActivityGuardError) return false;
       try {
         if (knownNoMutation?.(error)) return false;
       } catch {
@@ -2389,7 +2413,8 @@ function runGitHubTextMutation(
       return ghRetryKind(error) !== "none";
     },
     beforeRetry: (error, attempt) => sleepMs(ghRetryWaitMs(ghRetryKind(error), attempt - 1)),
-    ...(knownNoMutation ? { knownNoMutation } : {}),
+    knownNoMutation: (error) =>
+      error instanceof ReviewedPrActivityGuardError || knownNoMutation?.(error) === true,
   });
 }
 
@@ -2404,8 +2429,15 @@ function runGitHubTextMutationOnce(
   return runCommandMutation(command, {
     kind,
     identity,
-    operation: () => ghText(ghArgs, options),
-    ...(knownNoMutation ? { knownNoMutation } : {}),
+    operation: () =>
+      runReviewedPrActivityGuardedMutation({
+        intent: String(command.intent ?? ""),
+        mutationKind: kind,
+        refresh: () => trustedAutomergeReviewActivityBlockReason(command),
+        operation: () => ghText(ghArgs, options),
+      }),
+    knownNoMutation: (error) =>
+      error instanceof ReviewedPrActivityGuardError || knownNoMutation?.(error) === true,
   });
 }
 
@@ -2419,8 +2451,15 @@ function runGitHubSpawnMutation(
   return runCommandMutation(command, {
     kind,
     identity,
-    operation: () => ghSpawn(ghArgs, options),
+    operation: () =>
+      runReviewedPrActivityGuardedMutation({
+        intent: String(command.intent ?? ""),
+        mutationKind: kind,
+        refresh: () => trustedAutomergeReviewActivityBlockReason(command),
+        operation: () => ghSpawn(ghArgs, options),
+      }),
     outcome: (result) => (result.status === 0 && !result.error ? "accepted" : "unknown"),
+    knownNoMutation: (error) => error instanceof ReviewedPrActivityGuardError,
   });
 }
 
@@ -2434,7 +2473,8 @@ function runGitHubBestEffortMutation(
   try {
     runGitHubTextMutationOnce(command, kind, identity, ghArgs, {}, knownNoMutation);
     return true;
-  } catch {
+  } catch (error) {
+    if (error instanceof ReviewedPrActivityGuardError) throw error;
     return false;
   }
 }
@@ -4360,7 +4400,7 @@ function trustedAutomergeReviewThreads(number: number, limit: number): unknown[]
   return threads.slice(0, max);
 }
 
-function trustedAutomergeReviewActivityCursor(number: number): string | null {
+function trustedAutomergeReviewActivityCursorOnce(number: number): string | null {
   let remaining = MAX_REVIEWED_PR_ACTIVITY;
   const reviews = ghPagedLimit<unknown>(
     `repos/${targetRepo}/pulls/${number}/reviews`,
@@ -4378,6 +4418,10 @@ function trustedAutomergeReviewActivityCursor(number: number): string | null {
     inlineComments.length === 0 ? [] : trustedAutomergeReviewThreads(number, remaining + 1);
   if (reviewThreads.length > remaining) return null;
   return createReviewedPrActivityCursor({ reviews, inlineComments, reviewThreads });
+}
+
+function trustedAutomergeReviewActivityCursor(number: number): string | null {
+  return readStableReviewedPrActivityCursor(() => trustedAutomergeReviewActivityCursorOnce(number));
 }
 
 function trustedAutomergeReviewActivityBlockReason(

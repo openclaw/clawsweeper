@@ -4,9 +4,12 @@ import test from "node:test";
 import {
   MAX_REVIEWED_PR_ACTIVITY,
   MAX_REVIEWED_PR_ACTIVITY_CURSOR_BYTES,
+  ReviewedPrActivityGuardError,
   createReviewedPrActivityCursor,
   isReviewedPrActivityCursor,
+  readStableReviewedPrActivityCursor,
   reviewedPrActivityThreadsPageFromGraphql,
+  runReviewedPrActivityGuardedMutation,
 } from "../dist/review-activity-cursor.js";
 
 test("review activity cursors bind same-second reviews and inline comments", () => {
@@ -179,4 +182,91 @@ test("review thread GraphQL pages are parsed fail-closed", () => {
     }),
     null,
   );
+});
+
+test("review activity cursor refresh rejects an interleaved review", () => {
+  const cursors = [
+    createReviewedPrActivityCursor({
+      reviews: [],
+      inlineComments: [],
+      reviewThreads: [],
+    }),
+    createReviewedPrActivityCursor({
+      reviews: [{ id: 1, user: { login: "reviewer" }, state: "COMMENTED" }],
+      inlineComments: [],
+      reviewThreads: [],
+    }),
+  ];
+  let reads = 0;
+
+  assert.throws(
+    () => readStableReviewedPrActivityCursor(() => cursors[reads++] ?? null),
+    /review activity changed while refreshing/,
+  );
+  assert.equal(reads, 2);
+});
+
+test("review activity cursor refresh accepts two matching complete scans", () => {
+  const cursor = createReviewedPrActivityCursor({
+    reviews: [{ id: 1, user: { login: "reviewer" }, state: "APPROVED" }],
+    inlineComments: [],
+    reviewThreads: [],
+  });
+  let reads = 0;
+
+  assert.equal(
+    readStableReviewedPrActivityCursor(() => {
+      reads += 1;
+      return cursor;
+    }),
+    cursor,
+  );
+  assert.equal(reads, 2);
+});
+
+test("trusted review activity is revalidated at the mutation boundary", () => {
+  let operationCalls = 0;
+  const preflight = () => null;
+  const changedAtMutation = () => ({
+    reason: "pull request review activity changed since the trusted ClawSweeper verdict",
+    retryable: false,
+  });
+
+  assert.equal(preflight(), null);
+  for (const mutationKind of [
+    "description_update",
+    "label_add",
+    "label_create",
+    "label_remove",
+    "pull_request_merge",
+    "repair_dispatch",
+    "review_dispatch",
+  ]) {
+    assert.throws(
+      () =>
+        runReviewedPrActivityGuardedMutation({
+          intent: "clawsweeper_auto_merge",
+          mutationKind,
+          refresh: changedAtMutation,
+          operation: () => {
+            operationCalls += 1;
+          },
+        }),
+      (error) =>
+        error instanceof ReviewedPrActivityGuardError &&
+        error.mutationKind === mutationKind &&
+        error.block.retryable === false,
+    );
+  }
+  assert.equal(operationCalls, 0);
+
+  runReviewedPrActivityGuardedMutation({
+    intent: "clawsweeper_auto_merge",
+    mutationKind: "comment_update",
+    refresh: changedAtMutation,
+    operation: () => {
+      operationCalls += 1;
+    },
+  });
+  assert.equal(operationCalls, 1);
 });
