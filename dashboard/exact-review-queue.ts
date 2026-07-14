@@ -1,5 +1,8 @@
 import { stableJson } from "../src/stable-json.ts";
-import { summarizeExactReviewHandoff } from "./exact-review-health.ts";
+import {
+  summarizeExactReviewHandoff,
+  summarizeExactReviewPressure,
+} from "./exact-review-health.ts";
 
 type GithubAppJsonOptions = { method?: string; body?: BodyInit; errorLabel?: string };
 const GITHUB_TIMEOUT_MS = 4500;
@@ -3559,8 +3562,31 @@ function exactReviewQueueStats(
       publicationCapacity,
     ),
   };
-  return {
+  const readyPending = items.filter(
+    (item) => item.state === "pending" && item.nextAttemptAt <= now,
+  ).length;
+  const admissiblePending = exactReviewQueueAdmittedItems(
+    state,
+    now,
+    Number.MAX_SAFE_INTEGER,
+    targetCapacity,
+    publicationCapacity,
+  ).length;
+  const pressure = summarizeExactReviewPressure({
     pending: handoffHealth.phases.pending.count,
+    readyPending,
+    admissiblePending,
+    dispatching: handoffHealth.phases.dispatching.count,
+    leased: handoffHealth.phases.leased.count,
+    capacity,
+    dispatcherState: state.dispatcher?.state,
+    handoffStatus: handoffHealth.status,
+  });
+  return {
+    generated_at: handoffHealth.observed_at,
+    pending: handoffHealth.phases.pending.count,
+    ready_pending: readyPending,
+    admissible_pending: admissiblePending,
     shed_since_reset: exactReviewShedSinceReset(state),
     dispatching: handoffHealth.phases.dispatching.count,
     leased: handoffHealth.phases.leased.count,
@@ -3573,6 +3599,7 @@ function exactReviewQueueStats(
     oldest_leased_age_seconds: handoffHealth.phases.leased.oldest_age_seconds,
     handoff_health: handoffHealth,
     lanes,
+    pressure,
     next_wake_at: nextWakeAt === null ? null : new Date(nextWakeAt).toISOString(),
     dispatcher: {
       state: state.dispatcher?.state || "unknown",

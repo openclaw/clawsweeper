@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { summarizeExactReviewHandoff } from "../dashboard/exact-review-health.ts";
+import {
+  summarizeExactReviewHandoff,
+  summarizeExactReviewPressure,
+} from "../dashboard/exact-review-health.ts";
 
 const NOW = Date.parse("2026-07-13T02:00:00.000Z");
 const DISPATCH_LEASE_MS = 10 * 60_000;
@@ -197,4 +200,73 @@ test("exact-review handoff health derives legacy leased age from its execution l
   assert.equal(health.status, "healthy");
   assert.equal(health.phases.leased.oldest_at, "2026-07-13T01:59:20.000Z");
   assert.equal(health.phases.leased.oldest_age_seconds, 40);
+});
+
+test("exact-review pressure distinguishes available, congested, and saturated capacity", () => {
+  const base = {
+    pending: 4,
+    readyPending: 4,
+    admissiblePending: 4,
+    dispatching: 4,
+    leased: 60,
+    capacity: 64,
+    dispatcherState: "active",
+    handoffStatus: "healthy",
+  };
+
+  assert.deepEqual(summarizeExactReviewPressure({ ...base, leased: 59 }), {
+    status: "idle",
+    reason: "capacity_available",
+    capacity: 64,
+    active: 63,
+    pending: 4,
+    ready_pending: 4,
+    admissible_pending: 4,
+  });
+  assert.equal(summarizeExactReviewPressure({ ...base, admissiblePending: 3 }).status, "congested");
+  assert.equal(
+    summarizeExactReviewPressure({ ...base, pending: 64, readyPending: 64, admissiblePending: 64 })
+      .status,
+    "saturated",
+  );
+});
+
+test("exact-review pressure preserves non-dispatchable and unknown states", () => {
+  const base = {
+    pending: 5,
+    readyPending: 5,
+    admissiblePending: 5,
+    dispatching: 4,
+    leased: 60,
+    capacity: 64,
+    dispatcherState: "active",
+    handoffStatus: "healthy",
+  };
+
+  assert.equal(
+    summarizeExactReviewPressure({ ...base, readyPending: 0 }).reason,
+    "no_ready_backlog",
+  );
+  assert.equal(
+    summarizeExactReviewPressure({ ...base, admissiblePending: 0 }).reason,
+    "no_admissible_backlog",
+  );
+  assert.deepEqual(
+    summarizeExactReviewPressure({
+      ...base,
+      pending: 2.9,
+      readyPending: 9,
+      admissiblePending: 8,
+      dispatcherState: "paused",
+    }),
+    {
+      status: "unknown",
+      reason: "dispatcher_inactive",
+      capacity: 64,
+      active: 64,
+      pending: 2,
+      ready_pending: 2,
+      admissible_pending: 2,
+    },
+  );
 });

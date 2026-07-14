@@ -149,6 +149,8 @@ is absent or a cache event lands in another Cloudflare colo.
   apply-ready candidate count and an estimated number of cursor windows to
   revisit the close queue; scheduled cadence time is explanatory only because
   successful windows can dispatch immediate continuations
+- exact-review queue backlog, retry-ready backlog, target-admissible backlog,
+  and pressure classification from the current durable queue snapshot
 
 The Worker fetches job details only for the bounded active-run set, limits that
 GitHub fanout to 12 concurrent requests, and caches each run's jobs for 60
@@ -287,9 +289,17 @@ workflow state, check time, and retry time so an intentional pause cannot look
 like occupied executor capacity. Re-enabling the workflow does not require a
 queue mutation; the next status check resumes normal admission.
 
-The same endpoint exposes `handoff_health` plus oldest timestamps and ages for
-the pending, dispatching, and leased phases. New dispatch and claim transitions
-carry explicit phase timestamps. Rows written by an older deployment derive
+The same endpoint exposes `generated_at`, `ready_pending`,
+`admissible_pending`, `pressure`, `handoff_health`, and oldest timestamps and
+ages for the pending, dispatching, and leased phases. `ready_pending` excludes
+retry-delayed items. `admissible_pending` further excludes ready items blocked
+by their target's exact-review cap. `pressure` is a deterministic observation
+from that same queue snapshot: it reports `congested` or `saturated` only when
+capacity is full, the dispatcher and handoff telemetry are known, and
+target-admissible backlog remains. The snapshot adds no GitHub API fanout, and
+no workflow, planner, admission, continuation, or dispatch decision consumes
+the pressure value. New dispatch and claim transitions carry explicit phase
+timestamps. Rows written by an older deployment derive
 their phase start from the active dispatch or execution lease; a stale timestamp
 left by a rollback cannot override that newer lease, and a wholly unknown legacy
 age stays non-alarming. A claim is degraded after one third of the dispatch

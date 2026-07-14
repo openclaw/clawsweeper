@@ -42,6 +42,25 @@ export type ExactReviewHandoffHealth = {
   phases: Record<ExactReviewPhase, ExactReviewPhaseSummary>;
 };
 
+export type ExactReviewPressureStatus = "idle" | "congested" | "saturated" | "unknown";
+
+export type ExactReviewPressureSummary = {
+  status: ExactReviewPressureStatus;
+  reason:
+    | "capacity_unavailable"
+    | "capacity_available"
+    | "no_ready_backlog"
+    | "no_admissible_backlog"
+    | "dispatcher_inactive"
+    | "handoff_unknown"
+    | "capacity_full_with_backlog";
+  capacity: number;
+  active: number;
+  pending: number;
+  ready_pending: number;
+  admissible_pending: number;
+};
+
 const PHASES: ExactReviewPhase[] = ["pending", "dispatching", "leased"];
 
 export function summarizeExactReviewHandoff({
@@ -176,6 +195,57 @@ export function summarizeExactReviewHandoff({
   };
 }
 
+export function summarizeExactReviewPressure({
+  pending,
+  readyPending,
+  admissiblePending,
+  dispatching,
+  leased,
+  capacity,
+  dispatcherState,
+  handoffStatus,
+}: {
+  pending: number;
+  readyPending: number;
+  admissiblePending: number;
+  dispatching: number;
+  leased: number;
+  capacity: number;
+  dispatcherState?: string;
+  handoffStatus?: string;
+}): ExactReviewPressureSummary {
+  const safePending = nonNegativeInteger(pending);
+  const safeReadyPending = Math.min(safePending, nonNegativeInteger(readyPending));
+  const safeAdmissiblePending = Math.min(safeReadyPending, nonNegativeInteger(admissiblePending));
+  const safeCapacity = nonNegativeInteger(capacity);
+  const active = nonNegativeInteger(dispatching) + nonNegativeInteger(leased);
+  const common = {
+    capacity: safeCapacity,
+    active,
+    pending: safePending,
+    ready_pending: safeReadyPending,
+    admissible_pending: safeAdmissiblePending,
+  };
+
+  if (safeCapacity < 1) return { status: "unknown", reason: "capacity_unavailable", ...common };
+  if (safeReadyPending < 1) return { status: "idle", reason: "no_ready_backlog", ...common };
+  if (safeAdmissiblePending < 1) {
+    return { status: "idle", reason: "no_admissible_backlog", ...common };
+  }
+  if (active < safeCapacity) return { status: "idle", reason: "capacity_available", ...common };
+  if (dispatcherState !== "active") {
+    return { status: "unknown", reason: "dispatcher_inactive", ...common };
+  }
+  if (!["healthy", "degraded", "stalled"].includes(String(handoffStatus || ""))) {
+    return { status: "unknown", reason: "handoff_unknown", ...common };
+  }
+  return {
+    status: safeAdmissiblePending >= safeCapacity ? "saturated" : "congested",
+    reason: "capacity_full_with_backlog",
+    ...common,
+  };
+}
+
 function exactReviewPhaseStartedAt(
   item: ExactReviewHealthItem,
   now: number,
@@ -229,4 +299,9 @@ function finiteTimestamp(value: unknown, fallback: number) {
 function finiteNumber(value: unknown, fallback: number) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function nonNegativeInteger(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : 0;
 }
