@@ -41,8 +41,12 @@ test("pnpm built-ins and aliases cannot fall back to same-named package scripts"
 
 test("pnpm script aliases resolve before implicit script fallback", () => {
   assert.equal(packageScriptRequirement(["pnpm", "run-script", "check"])?.name, "check");
-  for (const script of ["pub", "r", "t", "x"]) {
+  for (const script of ["pub", "r", "x"]) {
     assert.equal(packageScriptRequirement(["pnpm", script])?.name, script);
   }
+  for (const alias of ["t", "tst"]) {
+    assert.equal(packageScriptRequirement(["pnpm", alias])?.name, "test");
+  }
+  assert.equal(packageScriptRequirement(["npm", "tst"])?.name, "test");
   assert.equal(packageScriptRequirement(["pnpm", "Check"])?.name, "Check");
 });
