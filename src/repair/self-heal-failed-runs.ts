@@ -27,6 +27,7 @@ import {
 import {
   dispatchProcessOutcome,
   flushDispatchActionEvents,
+  prepareDispatchActionReceiptContext,
   runDispatchWithReceiptSync,
 } from "./dispatch-action-receipts.js";
 
@@ -102,6 +103,9 @@ if (!execute) {
   process.exit(0);
 }
 
+const dispatchReceiptContext = prepareDispatchActionReceiptContext({
+  component: "repair_self_heal",
+});
 const gateRestores: JsonValue[] = [];
 const dispatchStartedAt = new Date(Date.now() - 5000).toISOString();
 const headSha = currentHeadSha();
@@ -189,7 +193,10 @@ try {
     }
   }
   try {
-    await flushDispatchActionEvents();
+    await flushDispatchActionEvents(dispatchReceiptContext.root, {
+      env: dispatchReceiptContext.env,
+      outputRoot: dispatchReceiptContext.outputRoot,
+    });
   } catch (error) {
     if (!selfHealError) selfHealError = error;
     else
@@ -384,6 +391,8 @@ function sourceJobFromRunTitle(title: string) {
 
 function dispatchCandidate(candidate: LooseRecord) {
   const result = runDispatchWithReceiptSync({
+    root: dispatchReceiptContext.root,
+    env: dispatchReceiptContext.env,
     component: "repair_self_heal",
     operationKey: `self-heal:${candidate.run_id}:${candidate.source_job}`,
     dispatchKind: "workflow",

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveCommand } from "../command.js";
@@ -75,9 +76,10 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   };
 
   const repositories = await loadEligibleRepositories(config, options.owners);
+  const initialCursor = readCursor(options.cursorPath);
   const selection = selectRepositories(repositories, {
     limit: options.limit,
-    cursor: readCursor(options.cursorPath),
+    cursor: initialCursor,
   });
 
   const commands = selection.repositories.map((repository) =>
@@ -97,6 +99,7 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   }
 
   const dispatched: string[] = [];
+  let checkpointCursor = initialCursor;
   let dispatchError: unknown = null;
   try {
     for (const [index, repository] of selection.repositories.entries()) {
@@ -109,6 +112,8 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
           ...workflowDispatchReceipt(repository, options),
           operation: () => runGh(commandArgs, dispatchEnv()),
         });
+        checkpointCursor = cursorAfterSelections(initialCursor, index + 1, selection.total);
+        writeCursor(options.cursorPath, checkpointCursor);
       }
       dispatched.push(repository.targetRepo);
     }
@@ -128,18 +133,15 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   }
   if (dispatchError) throw dispatchError;
 
-  if (!options.dryRun) {
-    writeCursor(options.cursorPath, selection.cursor);
-  }
   process.stdout.write(
     `${JSON.stringify(
       {
         mode: options.mode,
         total: selection.total,
         dispatched,
-        next_cursor: selection.cursor,
+        next_cursor: options.dryRun ? selection.cursor : checkpointCursor,
         dry_run: options.dryRun,
-        cursor_written: !options.dryRun,
+        cursor_written: !options.dryRun && dispatched.length > 0,
       },
       null,
       2,
@@ -343,7 +345,13 @@ function writeCursor(cursorPath: string, cursor: number): void {
 function writeFileSyncWithDirs(filePath: string, content: string): void {
   const dir = dirname(filePath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(filePath, content);
+  const temporaryPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
+  try {
+    writeFileSync(temporaryPath, content);
+    renameSync(temporaryPath, filePath);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
 }
 
 function runGh(args: readonly string[], env: NodeJS.ProcessEnv): string {
@@ -400,6 +408,10 @@ function positiveNumber(value: string, label: string): number {
 
 function normalizeCursor(cursor: number, length: number): number {
   return ((cursor % length) + length) % length;
+}
+
+function cursorAfterSelections(initialCursor: number, selected: number, total: number): number {
+  return total > 0 ? normalizeCursor(initialCursor + selected, total) : 0;
 }
 
 function csvArg(value: unknown): string[] | undefined {

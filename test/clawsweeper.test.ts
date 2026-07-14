@@ -2110,7 +2110,8 @@ test("repair workers hydrate only durable jobs from generated state", () => {
   assert.match(workflow, /clawsweeper-repair-requeue-\{0\}-\{1\}.*clawsweeper-repair-\{0\}/);
   assert.match(workflow, /cancel-in-progress: false/);
   assert.match(workflow, /requeue:\n\s+description:/);
-  assert.match(requeue, /"requeue=true"/);
+  assert.match(requeue, /requeue: true/);
+  assert.match(requeue, /`requeue=\$\{dispatchInput\.requeue\}`/);
   assert.equal(workflow.match(/uses: \.\/\.github\/actions\/setup-state/g)?.length, 2);
   assert.match(workflow, /sparse-checkout: jobs/);
   assert.match(workflow, /sparse-checkout: \|\n\s+jobs\n\s+ledger/);

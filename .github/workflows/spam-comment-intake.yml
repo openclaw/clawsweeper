@@ -73,6 +73,7 @@ jobs:
             src/pr-close-coverage-proof.ts
             src/repair
             src/repository-profiles.ts
+            scripts/hydrate-state.ts
             package.json
             pnpm-lock.yaml
             pnpm-workspace.yaml
@@ -135,7 +136,7 @@ jobs:
       - name: Publish spam intake dispatch action ledger
         if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-spam-intake-state.outcome == 'success' && steps.setup-spam-intake-pnpm.outcome == 'success' && steps.setup-spam-intake-ledger.outcome == 'success' }}
         env:
-          PUBLISH_TOKEN: ${{ steps.app_token.outputs.token }}
+          PUBLISH_TOKEN: ${{ steps.state-token.outputs.token }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"

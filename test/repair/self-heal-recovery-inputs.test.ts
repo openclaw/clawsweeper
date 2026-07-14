@@ -172,11 +172,51 @@ test("self-heal writes and publishes dispatch attempts before legacy summaries",
   assert.match(dispatchFunction, /outcome: dispatchProcessOutcome/);
   assert.match(dispatchFunction, /operationKey: `self-heal:/);
   assert.match(dispatchFunction, /dispatchInput: \{[\s\S]*?requeue_depth:/);
-  assert.match(source, /await flushDispatchActionEvents\(\)/);
+  assert.match(
+    source,
+    /await flushDispatchActionEvents\(dispatchReceiptContext\.root,[\s\S]*?outputRoot: dispatchReceiptContext\.outputRoot/,
+  );
   assert.match(source, /appendAttempts\(ledger, attempts\)/);
   assert.match(workflow, /uses: \.\/\.github\/actions\/setup-action-ledger/);
   assert.match(workflow, /--lane self-heal-dispatch/);
   assert.match(workflow, /--message "chore: append self-heal dispatch action ledger"/);
+});
+
+test("executing self-heal uses durable local dispatch receipts outside Actions", () => {
+  const fixture = createRecoveryFixture("local-execute");
+  try {
+    const result = runFixture(fixture, [
+      "self-heal-failed-runs.js",
+      "--max-age-hours",
+      "24",
+      "--max-jobs",
+      "1",
+      "--execute",
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const ghCalls = fs.readFileSync(fixture.ghLog, "utf8").trim().split("\n").filter(Boolean);
+    assert.ok(ghCalls.some((line) => line.startsWith("workflow run repair-cluster-worker.yml")));
+    const receiptPaths = fs
+      .readdirSync(fixture.localReceiptRoot, { recursive: true })
+      .filter((entry): entry is string => typeof entry === "string" && entry.endsWith(".jsonl"));
+    assert.ok(receiptPaths.length > 0);
+    const receipts = receiptPaths.flatMap((entry) =>
+      fs
+        .readFileSync(path.join(fixture.localReceiptRoot, entry), "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)),
+    );
+    assert.deepEqual(
+      receipts.map((event) => event.attributes.completion_reason),
+      ["dispatch_attempted", "dispatch_accepted"],
+    );
+    assert.equal(receipts[0]?.producer.workflow, "local-dispatch");
+  } finally {
+    cleanupFixture(fixture);
+  }
 });
 
 function createRecoveryFixture(
@@ -238,28 +278,46 @@ candidates:
   };
   const binDir = path.join(root, "bin");
   fs.mkdirSync(binDir);
+  const ghLog = path.join(root, "gh.log");
+  const localReceiptRoot = path.join(root, "local-dispatch-receipts");
   writeFakeGh(binDir, {
     recoveredInputs: options.snapshot === false ? null : recoveredInputs,
     legacyWorker: options.legacyWorker === true ? { runId, sourceJob } : null,
   });
-  return { root, binDir, runId };
+  writeFakeGit(binDir);
+  return { root, binDir, runId, ghLog, localReceiptRoot };
 }
 
 function runFixture(fixture: ReturnType<typeof createRecoveryFixture>, args: string[]) {
   const [script, ...scriptArgs] = args;
+  const env = {
+    ...process.env,
+    PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    CLAWSWEEPER_REPO: "openclaw/clawsweeper",
+    CLAWSWEEPER_WORKER_RUNNER: "current-default-runner",
+    CLAWSWEEPER_EXECUTION_RUNNER: "current-default-execution-runner",
+    CLAWSWEEPER_ACTION_LEDGER_LOCAL_ROOT: fixture.localReceiptRoot,
+    CLAWSWEEPER_TEST_GH_LOG: fixture.ghLog,
+    GITHUB_REPOSITORY: "openclaw/clawsweeper",
+    GITHUB_SHA: "d".repeat(40),
+  };
+  for (const name of [
+    "GITHUB_ACTIONS",
+    "CLAWSWEEPER_ACTION_LEDGER_FORCE",
+    "CLAWSWEEPER_ACTION_LEDGER_ROOT",
+    "CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT",
+    "CLAWSWEEPER_ACTION_LEDGER_INVOCATION",
+    "CLAWSWEEPER_ACTION_LEDGER_DISABLED",
+  ]) {
+    delete env[name];
+  }
   return spawnSync(
     process.execPath,
     [path.join(fixture.root, "dist", "repair", script!), ...scriptArgs],
     {
       cwd: fixture.root,
       encoding: "utf8",
-      env: {
-        ...process.env,
-        PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-        CLAWSWEEPER_REPO: "openclaw/clawsweeper",
-        CLAWSWEEPER_WORKER_RUNNER: "current-default-runner",
-        CLAWSWEEPER_EXECUTION_RUNNER: "current-default-execution-runner",
-      },
+      env,
     },
   );
 }
@@ -283,7 +341,14 @@ function writeFakeGh(
     file,
     `#!/bin/sh
 set -eu
+if [ -n "\${CLAWSWEEPER_TEST_GH_LOG:-}" ]; then
+  printf '%s\\n' "$*" >> "$CLAWSWEEPER_TEST_GH_LOG"
+fi
 if [ "$1" = "run" ] && [ "$2" = "list" ]; then
+  printf '[]\\n'
+  exit 0
+fi
+if [ "$1" = "api" ]; then
   printf '[]\\n'
   exit 0
 fi
@@ -332,7 +397,27 @@ JSON
   echo "no valid artifacts found to download" >&2
   exit 1
 fi
+if [ "$1" = "workflow" ] && [ "$2" = "run" ]; then
+  exit 0
+fi
 echo "unsupported gh invocation: $*" >&2
+exit 1
+`,
+  );
+  fs.chmodSync(file, 0o755);
+}
+
+function writeFakeGit(binDir: string) {
+  const file = path.join(binDir, "git");
+  fs.writeFileSync(
+    file,
+    `#!/bin/sh
+set -eu
+if [ "$1" = "rev-parse" ]; then
+  printf '%s\\n' '${"d".repeat(40)}'
+  exit 0
+fi
+echo "unsupported git invocation: $*" >&2
 exit 1
 `,
   );

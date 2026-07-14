@@ -43,6 +43,13 @@ test("sparse CI checkout includes pnpm workspace policy", () => {
   assert.ok(entries.has("pnpm-workspace.yaml"));
 });
 
+test("spam intake sparse checkout includes the state hydrator used by setup-state", () => {
+  const workflow = readText(".github/workflows/spam-comment-intake.yml");
+  const entries = sparseCheckoutEntries(workflow);
+
+  assert.ok(entries.has("scripts/hydrate-state.ts"));
+});
+
 test("repair build emits the bounded Codex process worker", () => {
   const config = JSON.parse(fs.readFileSync("tsconfig.repair.json", "utf8")) as {
     include?: string[];

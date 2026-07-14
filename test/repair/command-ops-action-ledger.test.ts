@@ -42,11 +42,28 @@ test("direct repair requeues forward a stable dispatch receipt and publish it", 
   assert.ok(receiptIndex > dispatchIndex);
   assert.match(source, /deterministicRequeueDispatchKey\(\{/);
   assert.match(source, /authorizationSha256/);
-  assert.match(source, /depth: nextRequeueDepth/);
+  assert.match(source, /const dispatchInput = \{/);
+  for (const field of [
+    "repository",
+    "workflow",
+    "job",
+    "dispatch_key",
+    "mode",
+    "runner",
+    "execution_runner",
+    "planner_sandbox",
+    "model",
+    "dry_run",
+    "requeue",
+    "requeue_depth",
+  ]) {
+    assert.match(source, new RegExp(`\\b${field}(?:\\s*:|,)`));
+  }
   assert.match(source, /boundedNextRequeueDepth\(requeueDepth, maxRequeueDepth\)/);
-  assert.match(source, /`dispatch_key=\$\{dispatchKey\}`/);
-  assert.match(source, /`job=\$\{jobPath\}`/);
-  assert.match(source, /`requeue_depth=\$\{nextRequeueDepth\}`/);
+  assert.match(source, /identity: dispatchInput/);
+  assert.match(source, /`dispatch_key=\$\{dispatchInput\.dispatch_key\}`/);
+  assert.match(source, /`job=\$\{dispatchInput\.job\}`/);
+  assert.match(source, /`requeue_depth=\$\{dispatchInput\.requeue_depth\}`/);
   assert.match(source, /operationKey: `repair-requeue:/);
   assert.match(source, /sourceRevision: authorizationSha256/);
   assert.match(source, /runCommandLifecycleMutation\(lifecycle,/);

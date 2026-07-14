@@ -16,9 +16,9 @@ import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js"
 import { isExactReviewCloseGuardLabel } from "./exact-review-guard-labels.js";
 import { commentBodySha256 } from "./comment-router-utils.js";
 import {
-  assertDispatchActionReceiptsEnabled,
   dispatchHttpError,
   flushDispatchActionEvents,
+  prepareDispatchActionReceiptContext,
   runDispatchWithReceipt,
 } from "./dispatch-action-receipts.js";
 
@@ -83,7 +83,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 }
 
 export function startServer() {
-  assertDispatchActionReceiptsEnabled();
+  prepareDispatchActionReceiptContext({ component: "comment_webhook" });
   const port = Number.parseInt(process.env.PORT ?? String(DEFAULT_PORT), 10) || DEFAULT_PORT;
   const server = http.createServer((request, response) => {
     void handleRequest(request, response);
@@ -215,7 +215,10 @@ function createDispatchReceiptContext(
   deliveryId: string | undefined,
   baseEnv: NodeJS.ProcessEnv = process.env,
 ): DispatchReceiptContext {
-  assertDispatchActionReceiptsEnabled(baseEnv);
+  const baseContext = prepareDispatchActionReceiptContext({
+    component: "comment_webhook",
+    env: baseEnv,
+  });
   const normalizedDeliveryId = String(deliveryId ?? "").trim();
   if (
     !normalizedDeliveryId ||
@@ -223,39 +226,24 @@ function createDispatchReceiptContext(
   ) {
     throw new Error("accepted GitHub webhooks require a bounded delivery id");
   }
-  const baseRoot = requiredReceiptRoot(
-    baseEnv.CLAWSWEEPER_ACTION_LEDGER_ROOT,
-    "CLAWSWEEPER_ACTION_LEDGER_ROOT",
-  );
-  const baseOutputRoot = requiredReceiptRoot(
-    baseEnv.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT,
-    "CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT",
-  );
   const deliverySha256 = crypto.createHash("sha256").update(normalizedDeliveryId).digest("hex");
   const receiptKey = crypto
     .createHash("sha256")
     .update(`${deliverySha256}:${crypto.randomUUID()}`)
     .digest("hex");
   const root = createReceiptDirectory(
-    path.join(baseRoot, ".clawsweeper-repair", "webhook-dispatch-receipts", receiptKey),
+    path.join(baseContext.root, ".clawsweeper-repair", "webhook-dispatch-receipts", receiptKey),
   );
   const outputRoot = createReceiptDirectory(
-    path.join(baseOutputRoot, "webhook-dispatch-receipts", receiptKey),
+    path.join(baseContext.outputRoot, "webhook-dispatch-receipts", receiptKey),
   );
   const env = {
-    ...baseEnv,
+    ...baseContext.env,
     CLAWSWEEPER_ACTION_LEDGER_ROOT: root,
     CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: outputRoot,
     CLAWSWEEPER_ACTION_LEDGER_INVOCATION: `webhook-${receiptKey.slice(0, 24)}`,
   };
-  assertDispatchActionReceiptsEnabled(env);
   return { root, outputRoot, env };
-}
-
-function requiredReceiptRoot(value: string | undefined, name: string): string {
-  const configured = String(value ?? "").trim();
-  if (!configured) throw new Error(`${name} is required for webhook dispatch receipts`);
-  return fs.realpathSync(configured);
 }
 
 function createReceiptDirectory(directory: string): string {

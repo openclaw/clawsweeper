@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
@@ -357,6 +357,71 @@ process.exit(2);
     .split("\n")
     .map((line) => JSON.parse(line) as string[]);
   assert.equal(calls.filter((call) => call[0] === "api").length, 0);
+});
+
+test("target fanout checkpoints successful dispatches before receipt flush failure", () => {
+  const dir = mkdtempSync(join(tmpdir(), "clawsweeper-fanout-checkpoint-"));
+  const logPath = join(dir, "gh.log");
+  const cursorPath = join(dir, "cursor.json");
+  const ghPath = join(dir, "gh.js");
+  const ledgerEnv = actionLedgerEnv(dir, "checkpoint-before-flush");
+  writeFileSync(
+    ghPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + "\\n");
+if (args[0] === "repo" && args[1] === "list") {
+  process.stdout.write(JSON.stringify([
+    {nameWithOwner:"openclaw/A",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}},
+    {nameWithOwner:"openclaw/B",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}
+  ]));
+  process.exit(0);
+}
+if (args[0] === "api" && args[1].endsWith("/dispatches")) {
+  fs.rmSync(process.env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT, {recursive:true, force:true});
+  fs.writeFileSync(process.env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT, "blocked");
+  process.exit(0);
+}
+process.exit(2);
+`,
+  );
+  chmodSync(ghPath, 0o755);
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      "dist/repair/target-fanout.js",
+      "--mode",
+      "hot-intake",
+      "--limit",
+      "1",
+      "--cursor-path",
+      cursorPath,
+      "--owners",
+      "openclaw",
+    ],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ...ledgerEnv,
+        ...mockGhBinEnv(ghPath),
+        CLAWSWEEPER_DISPATCH_TOKEN: "dispatch-token",
+        CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: "inventory-openclaw",
+      },
+    },
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /action event shard output|not a directory|ENOTDIR/i);
+  assert.match(readFileSync(cursorPath, "utf8"), /"next_cursor": 1/);
+  const calls = readFileSync(logPath, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as string[]);
+  assert.equal(calls.filter((call) => call[0] === "api").length, 1);
 });
 
 function repo(nameWithOwner: string, overrides: Partial<ListedRepository> = {}): ListedRepository {

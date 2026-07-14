@@ -179,7 +179,9 @@ jobs:
           pnpm run repair:spam-comment-intake -- --write-report
 
       - name: Finalize GitHub activity dispatch action ledger
+        id: finalize-activity-dispatch-ledger
         if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-state.outcome == 'success' && steps.setup-activity-pnpm.outcome == 'success' && steps.setup-activity-ledger.outcome == 'success' }}
+        continue-on-error: true
         run: |
           set -euo pipefail
           : "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
@@ -190,9 +192,11 @@ jobs:
             > .artifacts/github-activity-dispatch-action-ledger-manifest.json
 
       - name: Publish GitHub activity dispatch action ledger
+        id: publish-activity-dispatch-ledger
         if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-state.outcome == 'success' && steps.setup-activity-pnpm.outcome == 'success' && steps.setup-activity-ledger.outcome == 'success' }}
+        continue-on-error: true
         env:
-          PUBLISH_TOKEN: ${{ github.token }}
+          PUBLISH_TOKEN: ${{ steps.activity-state-token.outputs.token }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
@@ -239,7 +243,7 @@ jobs:
             --rebase-strategy normal
 
       - name: Feed activity to OpenClaw
-        if: steps.core-budget.outputs.skip != 'true'
+        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && steps.setup-activity-pnpm.outcome == 'success' && steps.dispatch-spam-scan-candidate.outcome == 'success' }}
         env:
           CLAWSWEEPER_OPENCLAW_HOOK_URL: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_URL }}
           CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_TOKEN }}
@@ -248,3 +252,9 @@ jobs:
         run: |
           set -euo pipefail
           pnpm run repair:notify-github-activity -- --write-report
+
+      - name: Report GitHub activity dispatch ledger failure
+        if: ${{ always() && steps.core-budget.outputs.skip != 'true' && (steps.finalize-activity-dispatch-ledger.outcome == 'failure' || steps.publish-activity-dispatch-ledger.outcome == 'failure') }}
+        run: |
+          echo "::error::GitHub activity dispatch receipts were not durably published."
+          exit 1

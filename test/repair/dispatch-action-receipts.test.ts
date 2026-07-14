@@ -19,6 +19,7 @@ import {
   dispatchInputSha256,
   dispatchProcessOutcome,
   flushDispatchActionEvents,
+  prepareDispatchActionReceiptContext,
   runDispatchWithReceipt,
   runDispatchWithReceiptSync,
   unknownDispatch,
@@ -202,6 +203,45 @@ test("dispatches fail before the request when receipts are not configured", () =
     /without an authoritative action receipt output root/,
   );
   assert.equal(calls, 0);
+});
+
+test("documented local dispatches receive a persistent authoritative producer context", async () => {
+  const localRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "local-receipts-")));
+  try {
+    const context = prepareDispatchActionReceiptContext({
+      component: "local_dispatch_test",
+      env: {
+        CLAWSWEEPER_ACTION_LEDGER_LOCAL_ROOT: localRoot,
+        CLAWSWEEPER_REPO: "openclaw/clawsweeper",
+        GITHUB_SHA: "b".repeat(40),
+      },
+    });
+    runDispatchWithReceiptSync({
+      root: context.root,
+      env: context.env,
+      component: "local_dispatch_test",
+      operationKey: "local-dispatch",
+      dispatchKind: "repository",
+      repository: "openclaw/clawsweeper",
+      dispatchTarget: "local_dispatch",
+      dispatchInput: { event_type: "local_dispatch" },
+      operation: () => undefined,
+    });
+    await flushDispatchActionEvents(context.root, {
+      env: context.env,
+      outputRoot: context.outputRoot,
+    });
+
+    const events = readEvents(context.outputRoot);
+    assert.equal(events.length, 2);
+    assert.equal(events[0]?.producer.workflow, "local-dispatch");
+    assert.equal(events[0]?.producer.job, "local_dispatch_test");
+    assert.match(events[0]?.producer.run_id, /^local-\d+-\d+$/);
+    assert.ok(context.root.startsWith(localRoot));
+    assert.ok(context.outputRoot.startsWith(localRoot));
+  } finally {
+    fs.rmSync(localRoot, { recursive: true, force: true });
+  }
 });
 
 test("dispatch receipt chains remain bounded in long-lived processes", () => {
@@ -411,8 +451,33 @@ test("activity intake receipt publishers keep checkout credentials ephemeral", (
   assert.match(spamWorkflow, /id: app_token[\s\S]*?permission-contents: write/);
   const activityWorkflow = fs.readFileSync(".github/workflows/github-activity.yml", "utf8");
   assert.doesNotMatch(activityWorkflow, /id: app_token/);
-  assert.match(activityWorkflow, /PUBLISH_TOKEN: \$\{\{ github\.token \}\}/);
-  assert.match(spamWorkflow, /PUBLISH_TOKEN: \$\{\{ steps\.app_token\.outputs\.token \}\}/);
+  assert.match(
+    activityWorkflow,
+    /PUBLISH_TOKEN: \$\{\{ steps\.activity-state-token\.outputs\.token \}\}/,
+  );
+  assert.match(spamWorkflow, /PUBLISH_TOKEN: \$\{\{ steps\.state-token\.outputs\.token \}\}/);
+});
+
+test("activity feed runs independently of durable ledger publication and reports failures", () => {
+  const workflow = fs.readFileSync(".github/workflows/github-activity.yml", "utf8");
+  assert.match(workflow, /id: finalize-activity-dispatch-ledger[\s\S]*?continue-on-error: true/);
+  assert.match(workflow, /id: publish-activity-dispatch-ledger[\s\S]*?continue-on-error: true/);
+  assert.match(
+    workflow,
+    /- name: Feed activity to OpenClaw\n\s+if: \$\{\{ always\(\)[^\n]+dispatch-spam-scan-candidate\.outcome == 'success'/,
+  );
+  assert.match(
+    workflow,
+    /- name: Report GitHub activity dispatch ledger failure[\s\S]*?finalize-activity-dispatch-ledger\.outcome == 'failure'[\s\S]*?publish-activity-dispatch-ledger\.outcome == 'failure'/,
+  );
+});
+
+test("fanout cursor publication survives dispatch ledger finalization failures", () => {
+  const workflow = fs.readFileSync(".github/workflows/sweep.yml", "utf8");
+  assert.match(
+    workflow,
+    /- name: Publish fanout cursor\n\s+if: \$\{\{ always\(\) && steps\.setup-target-fanout-state\.outcome == 'success' && steps\.setup-target-fanout-pnpm\.outcome == 'success' \}\}/,
+  );
 });
 
 function baseOptions(fixture: ReturnType<typeof actionLedgerFixture>) {

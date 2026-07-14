@@ -20,6 +20,8 @@ const ACTION_LEDGER_ENV_KEYS = [
   "CLAWSWEEPER_ACTION_LEDGER_ROOT",
   "CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT",
   "CLAWSWEEPER_ACTION_LEDGER_INVOCATION",
+  "CLAWSWEEPER_ACTION_LEDGER_LOCAL_ROOT",
+  "CLAWSWEEPER_ACTION_LEDGER_DISABLED",
   "GITHUB_REPOSITORY",
   "GITHUB_SHA",
   "GITHUB_WORKFLOW",
@@ -130,6 +132,7 @@ test("comment webhook refuses accepted events before GitHub access when receipts
   const previousFetch = globalThis.fetch;
   let requests = 0;
   delete process.env.CLAWSWEEPER_ACTION_LEDGER_FORCE;
+  process.env.CLAWSWEEPER_ACTION_LEDGER_DISABLED = "1";
   globalThis.fetch = async () => {
     requests += 1;
     throw new Error("GitHub must not be called without authoritative receipts");
@@ -158,6 +161,85 @@ test("comment webhook refuses accepted events before GitHub access when receipts
     assert.equal(requests, 0);
   } finally {
     globalThis.fetch = previousFetch;
+  }
+});
+
+test("comment webhook dispatches locally with durable process receipt context", async () => {
+  const previousFetch = globalThis.fetch;
+  const previousAppId = process.env.CLAWSWEEPER_APP_ID;
+  const previousPrivateKey = process.env.CLAWSWEEPER_APP_PRIVATE_KEY;
+  const localRoot = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-local-webhook-")),
+  );
+  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  for (const key of ACTION_LEDGER_ENV_KEYS) delete process.env[key];
+  Object.assign(process.env, {
+    CLAWSWEEPER_ACTION_LEDGER_LOCAL_ROOT: localRoot,
+    GITHUB_REPOSITORY: "openclaw/clawsweeper",
+    GITHUB_SHA: "c".repeat(40),
+    CLAWSWEEPER_APP_ID: "12345",
+    CLAWSWEEPER_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs1", format: "pem" }).toString(),
+  });
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation") {
+      return jsonResponse({ id: 999 });
+    }
+    if (url.pathname === "/app/installations/999/access_tokens") {
+      return jsonResponse({ token: "dispatch-token" });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
+      assert.equal(init?.method, "POST");
+      return jsonResponse({});
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const result = await handleGitHubWebhook({
+      event: "issues",
+      deliveryId: "local-webhook-delivery",
+      payload: {
+        action: "opened",
+        repository: {
+          full_name: "openclaw/openclaw",
+          default_branch: "main",
+          private: false,
+          archived: false,
+          fork: false,
+          has_issues: true,
+        },
+        issue: { number: 71898 },
+        installation: { id: 123 },
+      },
+    });
+
+    assert.deepEqual(result, {
+      statusCode: 202,
+      body: { ok: true, dispatched: "clawsweeper_item" },
+    });
+    const receiptPaths = fs
+      .readdirSync(localRoot, { recursive: true })
+      .filter((entry): entry is string => typeof entry === "string" && entry.endsWith(".jsonl"));
+    assert.ok(receiptPaths.length > 0);
+    const receipts = receiptPaths.flatMap((entry) =>
+      fs
+        .readFileSync(path.join(localRoot, entry), "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)),
+    );
+    assert.deepEqual(
+      receipts.map((event) => event.attributes.completion_reason),
+      ["dispatch_attempted", "dispatch_accepted"],
+    );
+    assert.equal(receipts[0]?.producer.workflow, "local-dispatch");
+  } finally {
+    globalThis.fetch = previousFetch;
+    restoreEnv("CLAWSWEEPER_APP_ID", previousAppId);
+    restoreEnv("CLAWSWEEPER_APP_PRIVATE_KEY", previousPrivateKey);
+    fs.rmSync(localRoot, { recursive: true, force: true });
   }
 });
 

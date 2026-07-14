@@ -251,8 +251,9 @@ test("repair retries reuse immutable Action inputs without restoring lifecycle m
   assert.match(requeue, /assertGateOpenIfNeeded\(mode, dryRun\)/);
   assert.match(requeue, /function assertGateOpenIfNeeded\(mode: string, isDryRun: boolean\)/);
   assert.match(requeue, /if \(isDryRun\) return/);
-  assert.match(requeue, /`planner_sandbox=\$\{plannerSandbox\}`/);
-  assert.match(requeue, /`dry_run=\$\{dryRun\}`/);
+  assert.match(requeue, /`planner_sandbox=\$\{dispatchInput\.planner_sandbox\}`/);
+  assert.match(requeue, /`dry_run=\$\{dispatchInput\.dry_run\}`/);
+  assert.match(requeue, /identity: dispatchInput/);
   assert.match(
     selfHeal,
     /const boundedEligible = eligible\.slice\(0, MAX_RECOVERY_CANDIDATE_SCANS\)/,

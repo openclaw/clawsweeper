@@ -1487,6 +1487,7 @@ jobs:
             --rebase-strategy normal
 
       - name: Publish fanout cursor
+        if: ${{ always() && steps.setup-target-fanout-state.outcome == 'success' && steps.setup-target-fanout-pnpm.outcome == 'success' }}
         run: |
           pnpm run repair:publish-main -- \
             --message "chore: update target fanout cursor" \

@@ -1,4 +1,7 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
 import {
   ACTION_EVENT_REASON_CODES,
@@ -23,7 +26,10 @@ const MAX_DISPATCH_INPUT_STRING_BYTES = 512;
 const MAX_DISPATCH_INPUT_JSON_BYTES = 8 * 1024;
 const MAX_DISPATCH_CHAIN_CACHE_ENTRIES = 64;
 const DISPATCH_CHAIN_CACHE_TTL_MS = 10 * 60 * 1000;
+const LOCAL_DISPATCH_RUN_STARTED_AT = new Date().toISOString();
+const LOCAL_DISPATCH_RUN_ID = `local-${Date.now()}-${process.pid}`;
 const DISPATCH_INPUT_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
+const LOCAL_COMPONENT_PATTERN = /^[A-Za-z][A-Za-z0-9_-]*$/;
 const FORBIDDEN_DISPATCH_INPUT_KEYS = new Set([
   "authorization",
   "body",
@@ -55,6 +61,11 @@ export type DispatchOutcome = "accepted" | "rejected" | "unknown";
 export type DispatchOutcomeDisposition = {
   outcome: DispatchOutcome;
   statusKind: "accepted" | "error" | "timeout" | "unknown";
+};
+export type DispatchActionReceiptContext = {
+  root: string;
+  outputRoot: string;
+  env: NodeJS.ProcessEnv;
 };
 
 type DispatchReceiptConfig = {
@@ -120,6 +131,76 @@ export function assertDispatchActionReceiptsEnabled(env: NodeJS.ProcessEnv = pro
     throw new Error("refusing dispatch without an immutable action receipt start time");
   }
   workflowActionProducer("dispatch_receipt_preflight", env);
+}
+
+export function prepareDispatchActionReceiptContext({
+  component,
+  env = process.env,
+}: {
+  component: string;
+  env?: NodeJS.ProcessEnv;
+}): DispatchActionReceiptContext {
+  if (
+    env.GITHUB_ACTIONS === "true" ||
+    env.CLAWSWEEPER_ACTION_LEDGER_FORCE === "1" ||
+    env.CLAWSWEEPER_ACTION_LEDGER_ROOT?.trim() ||
+    env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT?.trim()
+  ) {
+    assertDispatchActionReceiptsEnabled(env);
+    return {
+      root: requiredExistingDirectory(
+        env.CLAWSWEEPER_ACTION_LEDGER_ROOT,
+        "CLAWSWEEPER_ACTION_LEDGER_ROOT",
+      ),
+      outputRoot: requiredExistingDirectory(
+        env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT,
+        "CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT",
+      ),
+      env,
+    };
+  }
+  if (env.CLAWSWEEPER_ACTION_LEDGER_DISABLED === "1") {
+    throw new Error("refusing dispatch without authoritative action receipts");
+  }
+
+  const normalizedComponent = boundedMachineText(component, "local receipt component", 64);
+  if (!LOCAL_COMPONENT_PATTERN.test(normalizedComponent)) {
+    throw new Error("local receipt component must be a machine identifier");
+  }
+  const repositoryRoot = repoRoot();
+  const repository = localDispatchRepository(repositoryRoot, env);
+  const sha = localDispatchSha(repositoryRoot, env);
+  const localRoot = createReceiptDirectory(
+    path.resolve(
+      env.CLAWSWEEPER_ACTION_LEDGER_LOCAL_ROOT?.trim() ||
+        path.join(repositoryRoot, ".clawsweeper-repair", "local-dispatch-action-ledger"),
+    ),
+  );
+  const runKey = createHash("sha256")
+    .update(`${repository}:${sha}:${LOCAL_DISPATCH_RUN_ID}`)
+    .digest("hex")
+    .slice(0, 24);
+  const root = createReceiptDirectory(path.join(localRoot, "runs", runKey, normalizedComponent));
+  const outputRoot = createReceiptDirectory(
+    path.join(localRoot, "output", runKey, normalizedComponent),
+  );
+  const localEnv = {
+    ...env,
+    CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
+    CLAWSWEEPER_ACTION_LEDGER_ROOT: root,
+    CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: outputRoot,
+    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: `${LOCAL_DISPATCH_RUN_ID}-${normalizedComponent}`,
+    GITHUB_REPOSITORY: repository,
+    GITHUB_SHA: sha,
+    GITHUB_WORKFLOW: "local-dispatch",
+    GITHUB_JOB: normalizedComponent,
+    GITHUB_RUN_ID: LOCAL_DISPATCH_RUN_ID,
+    GITHUB_RUN_ATTEMPT: "1",
+    GITHUB_RUN_STARTED_AT: LOCAL_DISPATCH_RUN_STARTED_AT,
+    GITHUB_ACTION: normalizedComponent,
+  };
+  assertDispatchActionReceiptsEnabled(localEnv);
+  return { root, outputRoot, env: localEnv };
 }
 
 export function dispatchChainCacheSizeForTest(): number {
@@ -569,4 +650,48 @@ function isTimeoutError(error: unknown): boolean {
 
 function dispatchActionLedgerRoot(env: NodeJS.ProcessEnv = process.env): string {
   return env.CLAWSWEEPER_ACTION_LEDGER_ROOT?.trim() || repoRoot();
+}
+
+function localDispatchRepository(root: string, env: NodeJS.ProcessEnv): string {
+  const configured = String(env.GITHUB_REPOSITORY || env.CLAWSWEEPER_REPO || "").trim();
+  if (configured) return normalizeRepo(configured);
+  try {
+    const remote = execFileSync("git", ["config", "--get", "remote.origin.url"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const match = remote.match(/github\.com[/:]([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/);
+    if (match?.[1]) return normalizeRepo(match[1]);
+  } catch {
+    // The explicit error below is more useful than the git failure.
+  }
+  throw new Error(
+    "local dispatch receipts require GITHUB_REPOSITORY, CLAWSWEEPER_REPO, or a GitHub origin",
+  );
+}
+
+function localDispatchSha(root: string, env: NodeJS.ProcessEnv): string {
+  const configured = String(env.GITHUB_SHA ?? "").trim();
+  if (configured) return configured;
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    throw new Error("local dispatch receipts require GITHUB_SHA or a Git HEAD");
+  }
+}
+
+function requiredExistingDirectory(value: string | undefined, name: string): string {
+  const configured = String(value ?? "").trim();
+  if (!configured) throw new Error(`${name} is required for dispatch receipts`);
+  return fs.realpathSync(configured);
+}
+
+function createReceiptDirectory(directory: string): string {
+  fs.mkdirSync(directory, { recursive: true });
+  return fs.realpathSync(directory);
 }
