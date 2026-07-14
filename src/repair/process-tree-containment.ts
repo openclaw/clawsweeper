@@ -1,140 +1,134 @@
-import { spawnSync } from "node:child_process";
-import fs from "node:fs";
+export const LINUX_SUBREAPER_SCRIPT = String.raw`
+import ctypes
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
 
-import { windowsSystemExecutable } from "../command.js";
+PR_SET_CHILD_SUBREAPER = 36
+PROTOCOL_FD = 3
 
-type ProcessRow = {
-  parentPid: number;
-  pid: number;
-};
 
-export class ProcessTreeTracker {
-  readonly #rootPid: number;
-  readonly #trackedPids = new Set<number>();
-  #failure: Error | null = null;
-  #timer: NodeJS.Timeout | null = null;
+def write_protocol(payload):
+    encoded = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
+    while encoded:
+        written = os.write(PROTOCOL_FD, encoded)
+        encoded = encoded[written:]
 
-  constructor(rootPid: number) {
-    this.#rootPid = rootPid;
-    this.#trackedPids.add(rootPid);
-  }
 
-  start() {
-    const rows = processRows();
-    if (!rows.some((row) => row.pid === this.#rootPid)) {
-      throw new Error("could not establish validation process containment before command exit");
-    }
-    this.#capture(rows);
-    this.#timer = setInterval(
-      () => {
-        try {
-          this.#capture(processRows());
-        } catch (error) {
-          this.#failure = error as Error;
+def process_rows():
+    rows = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open("/proc/" + entry + "/stat", "r", encoding="utf-8") as handle:
+                stat = handle.read()
+        except FileNotFoundError:
+            continue
+        fields = stat[stat.rfind(")") + 2:].split()
+        if len(fields) >= 2:
+            rows.append((int(entry), int(fields[1])))
+    return rows
+
+
+def descendant_pids():
+    children = {}
+    for pid, parent_pid in process_rows():
+        children.setdefault(parent_pid, []).append(pid)
+    descendants = []
+    pending = list(children.get(os.getpid(), []))
+    while pending:
+        pid = pending.pop()
+        descendants.append(pid)
+        pending.extend(children.get(pid, []))
+    return descendants
+
+
+def signal_descendants(signum):
+    for pid in reversed(descendant_pids()):
+        try:
+            os.kill(pid, signum)
+        except ProcessLookupError:
+            pass
+
+
+termination_signal = None
+
+
+def request_termination(signum, _frame):
+    global termination_signal
+    termination_signal = signal.SIGKILL if signum == signal.SIGUSR1 else signal.SIGTERM
+    signal_descendants(termination_signal)
+
+
+def reap_exited_children():
+    while True:
+        try:
+            pid, _status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return True
+        if pid == 0:
+            return False
+
+
+def terminate_and_reap_descendants():
+    background_pids = set()
+    graceful_deadline = time.monotonic() + 0.25
+    while True:
+        if reap_exited_children():
+            return len(background_pids)
+        descendants = descendant_pids()
+        background_pids.update(descendants)
+        if descendants:
+            signum = (
+                signal.SIGKILL
+                if termination_signal == signal.SIGKILL or time.monotonic() >= graceful_deadline
+                else signal.SIGTERM
+            )
+            for pid in reversed(descendants):
+                try:
+                    os.kill(pid, signum)
+                except ProcessLookupError:
+                    pass
+        time.sleep(0.01)
+
+
+def main():
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number))
+    signal.signal(signal.SIGTERM, request_termination)
+    signal.signal(signal.SIGUSR1, request_termination)
+    command = sys.argv[1:]
+    if not command:
+        raise RuntimeError("validation command is missing")
+    child = subprocess.Popen(command, close_fds=True)
+    while True:
+        try:
+            return_code = child.wait(timeout=0.05)
+            break
+        except subprocess.TimeoutExpired:
+            if termination_signal is not None:
+                signal_descendants(termination_signal)
+    background_processes = terminate_and_reap_descendants()
+    write_protocol(
+        {
+            "backgroundProcesses": background_processes,
+            "signal": signal.Signals(-return_code).name if return_code < 0 else None,
+            "status": return_code if return_code >= 0 else None,
         }
-      },
-      process.platform === "win32" ? 50 : 10,
-    );
-    this.#timer.unref();
-  }
+    )
 
-  stop() {
-    if (this.#timer) clearInterval(this.#timer);
-    this.#timer = null;
-    if (this.#failure) throw this.#failure;
-    const rows = processRows();
-    this.#capture(rows);
-    const livePids = new Set(rows.map((row) => row.pid));
-    return [...this.#trackedPids].filter((pid) => pid !== this.#rootPid && livePids.has(pid));
-  }
 
-  trackedPids() {
-    return [...this.#trackedPids];
-  }
-
-  #capture(rows: readonly ProcessRow[]) {
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const row of rows) {
-        if (
-          row.pid === process.pid ||
-          this.#trackedPids.has(row.pid) ||
-          !this.#trackedPids.has(row.parentPid)
-        ) {
-          continue;
-        }
-        this.#trackedPids.add(row.pid);
-        changed = true;
-      }
-    }
-  }
-}
-
-export function parseProcessRows(output: string): ProcessRow[] {
-  return output
-    .split(/\r?\n/)
-    .map((line) => line.trim().split(/\s+/))
-    .filter((parts) => parts.length >= 2)
-    .map(([pidText, parentPidText]) => ({
-      pid: Number.parseInt(pidText ?? "", 10),
-      parentPid: Number.parseInt(parentPidText ?? "", 10),
-    }))
-    .filter(
-      (row) =>
-        Number.isInteger(row.pid) &&
-        row.pid > 0 &&
-        Number.isInteger(row.parentPid) &&
-        row.parentPid >= 0,
-    );
-}
-
-function processRows() {
-  if (process.platform === "linux") return linuxProcessRows();
-  const result =
-    process.platform === "win32"
-      ? spawnSync(
-          windowsSystemExecutable("powershell.exe", process.env),
-          [
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }',
-          ],
-          { encoding: "utf8", windowsHide: true },
-        )
-      : spawnSync("/bin/ps", ["-axo", "pid=,ppid="], {
-          encoding: "utf8",
-          windowsHide: true,
-        });
-  if (result.error || result.status !== 0) {
-    throw new Error(
-      `could not inspect validation process tree: ${result.error?.message || result.stderr || result.status}`,
-    );
-  }
-  return parseProcessRows(String(result.stdout ?? ""));
-}
-
-function linuxProcessRows() {
-  const rows: ProcessRow[] = [];
-  let entries: string[];
-  try {
-    entries = fs.readdirSync("/proc");
-  } catch (error) {
-    throw new Error(`could not inspect validation process tree: ${(error as Error).message}`);
-  }
-  for (const entry of entries) {
-    if (!/^\d+$/.test(entry)) continue;
-    try {
-      const stat = fs.readFileSync(`/proc/${entry}/stat`, "utf8");
-      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/);
-      const pid = Number.parseInt(entry, 10);
-      const parentPid = Number.parseInt(fields[1] ?? "", 10);
-      if (Number.isInteger(parentPid) && parentPid >= 0) rows.push({ pid, parentPid });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-  return rows;
-}
+try:
+    main()
+except BaseException as error:
+    try:
+        write_protocol({"containmentError": str(error)})
+    finally:
+        sys.exit(125)
+`;

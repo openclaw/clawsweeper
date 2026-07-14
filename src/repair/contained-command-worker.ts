@@ -2,7 +2,7 @@
 import { spawn, spawnSync } from "node:child_process";
 
 import { windowsSystemExecutable } from "../command.js";
-import { ProcessTreeTracker } from "./process-tree-containment.js";
+import { LINUX_SUBREAPER_SCRIPT } from "./process-tree-containment.js";
 
 type WorkerInput = {
   args: string[];
@@ -23,37 +23,48 @@ type WorkerResult = {
   stdout: string;
 };
 
+type ContainmentProtocol = {
+  backgroundProcesses?: number;
+  containmentError?: string;
+  signal?: NodeJS.Signals | null;
+  status?: number | null;
+};
+
 const input = JSON.parse(await readStdin()) as WorkerInput;
 const result = await runContained(input);
 process.stdout.write(JSON.stringify(result));
 
 async function runContained(input: WorkerInput): Promise<WorkerResult> {
+  if (process.platform !== "linux" && process.env.NODE_TEST_CONTEXT === undefined) {
+    throw new Error("validation process containment requires Linux");
+  }
   const invocation =
-    process.platform === "win32"
-      ? { command: input.command, args: input.args }
-      : {
-          command: "/bin/sh",
-          args: [
-            "-c",
-            'kill -STOP "$$"; exec "$@"',
-            "clawsweeper-validation",
-            input.command,
-            ...input.args,
-          ],
-        };
+    process.platform === "linux"
+      ? {
+          command: "/usr/bin/python3",
+          args: ["-c", LINUX_SUBREAPER_SCRIPT, input.command, ...input.args],
+        }
+      : process.platform === "win32"
+        ? { command: input.command, args: input.args }
+        : {
+            command: "/bin/sh",
+            args: ["-c", 'exec "$@"', "clawsweeper-validation", input.command, ...input.args],
+          };
   const child = spawn(invocation.command, invocation.args, {
     cwd: input.cwd,
     env: process.env,
-    stdio: ["pipe", "pipe", "pipe"],
+    stdio:
+      process.platform === "linux" ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
     detached: process.platform !== "win32",
     windowsHide: true,
     ...(input.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   });
-  const tracker = child.pid ? new ProcessTreeTracker(child.pid) : null;
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
+  const protocol: Buffer[] = [];
   let stdoutBytes = 0;
   let stderrBytes = 0;
+  let protocolBytes = 0;
   const spawnFailure: {
     value: { code: string | undefined; message: string } | null;
   } = { value: null };
@@ -63,7 +74,7 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
   const requestTermination = () => {
     terminateProcessTree(child.pid);
     if (process.platform !== "win32" && child.pid && !forcedTermination) {
-      forcedTermination = setTimeout(() => signalProcessGroup(child.pid!, "SIGKILL"), 250);
+      forcedTermination = setTimeout(() => forceTerminateProcessTree(child.pid!), 250);
       forcedTermination.unref();
     }
   };
@@ -93,19 +104,16 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
     }
     stderr.push(chunk);
   });
-  if (process.platform !== "win32" && child.pid) {
-    await waitForStoppedProcess(child.pid);
-  }
-  try {
-    tracker?.start();
-  } catch (error) {
-    if (process.platform === "win32" && child.pid) terminateWindowsProcessTree(child.pid);
-    else if (child.pid) signalProcessGroup(child.pid, "SIGKILL");
-    throw error;
-  }
-  if (process.platform !== "win32" && child.pid) {
-    signalProcessGroup(child.pid, "SIGCONT");
-  }
+  const protocolStream = process.platform === "linux" ? child.stdio[3] : null;
+  protocolStream?.on("data", (chunk: Buffer) => {
+    protocolBytes += chunk.length;
+    if (protocolBytes > 64 * 1024) {
+      overflow = true;
+      requestTermination();
+      return;
+    }
+    protocol.push(chunk);
+  });
   if (input.input !== undefined) child.stdin.end(input.input);
   else child.stdin.end();
   const timeout =
@@ -123,18 +131,15 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
   );
   if (timeout) clearTimeout(timeout);
   if (forcedTermination) clearTimeout(forcedTermination);
-  let trackingError: Error | null = null;
-  let backgroundPids: number[] = [];
-  try {
-    backgroundPids = tracker?.stop() ?? [];
-  } catch (error) {
-    trackingError = error as Error;
-    backgroundPids = liveProcessIds(
-      (tracker?.trackedPids() ?? []).filter((trackedPid) => trackedPid !== child.pid),
-    );
-  }
-  const backgroundProcesses = await reapProcessTree(child.pid, backgroundPids);
-  if (trackingError) throw trackingError;
+
+  const contained =
+    process.platform === "linux"
+      ? parseContainmentProtocol(protocol, exit)
+      : {
+          backgroundProcesses: await reapProcessGroup(child.pid),
+          signal: exit.signal,
+          status: exit.status,
+        };
   const error = spawnFailure.value
     ? { code: spawnFailure.value.code, message: spawnFailure.value.message }
     : timedOut
@@ -143,48 +148,87 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
         ? { code: "ENOBUFS", message: "validation command output exceeded the buffer limit" }
         : undefined;
   return {
-    backgroundProcesses,
+    backgroundProcesses: contained.backgroundProcesses,
     ...(error ? { error } : {}),
-    signal: exit.signal,
-    status: exit.status,
+    signal: contained.signal,
+    status: contained.status,
     stderr: Buffer.concat(stderr).toString("utf8"),
     stdout: Buffer.concat(stdout).toString("utf8"),
   };
 }
 
-async function reapProcessTree(pid: number | undefined, backgroundPids: readonly number[]) {
+function parseContainmentProtocol(
+  chunks: readonly Buffer[],
+  exit: { signal: NodeJS.Signals | null; status: number | null },
+) {
+  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  if (!raw) {
+    throw new Error(
+      `validation subreaper exited without a result (${exit.status ?? exit.signal ?? "unknown"})`,
+    );
+  }
+  let result: ContainmentProtocol;
+  try {
+    result = JSON.parse(raw) as ContainmentProtocol;
+  } catch {
+    throw new Error("validation subreaper returned an invalid result");
+  }
+  if (result.containmentError) {
+    throw new Error(`validation process containment failed: ${result.containmentError}`);
+  }
+  if (
+    exit.status !== 0 ||
+    !Number.isInteger(result.backgroundProcesses) ||
+    result.backgroundProcesses! < 0 ||
+    (result.status !== null && !Number.isInteger(result.status)) ||
+    (result.signal !== null && typeof result.signal !== "string")
+  ) {
+    throw new Error("validation subreaper returned an invalid result");
+  }
+  return {
+    backgroundProcesses: result.backgroundProcesses!,
+    signal: result.signal ?? null,
+    status: result.status ?? null,
+  };
+}
+
+async function reapProcessGroup(pid: number | undefined) {
   if (!pid) return 0;
   if (process.platform === "win32") {
-    for (const trackedPid of new Set([pid, ...backgroundPids])) {
-      terminateWindowsProcessTree(trackedPid);
-    }
-    return backgroundPids.length;
+    terminateWindowsProcessTree(pid);
+    return 0;
   }
-
-  let found = signalProcessGroup(pid, "SIGTERM");
-  found ||= backgroundPids.length > 0;
-  signalProcesses(backgroundPids, "SIGTERM");
+  const found = signalProcessGroup(pid, "SIGTERM");
+  if (!found) return 0;
   for (let attempt = 0; attempt < 8; attempt += 1) {
     await sleep(25);
-    signalProcessGroup(pid, "SIGKILL");
-    const livePids = liveProcessIds(backgroundPids);
-    if (livePids.length === 0) return found ? 1 : 0;
-    signalProcesses(livePids, "SIGKILL");
+    if (!signalProcessGroup(pid, "SIGKILL")) return 1;
   }
-  const livePids = liveProcessIds(backgroundPids);
-  if (livePids.length > 0) {
-    throw new Error(`could not reap validation process tree: ${livePids.join(", ")}`);
+  if (signalProcessGroup(pid, "SIGKILL")) {
+    throw new Error("could not reap validation process group");
   }
-  return found ? 1 : 0;
+  return 1;
 }
 
 function terminateProcessTree(pid: number | undefined) {
   if (!pid) return;
+  if (process.platform === "linux") {
+    signalProcess(pid, "SIGTERM");
+    return;
+  }
   if (process.platform === "win32") {
     terminateWindowsProcessTree(pid);
     return;
   }
   signalProcessGroup(pid, "SIGTERM");
+}
+
+function forceTerminateProcessTree(pid: number) {
+  if (process.platform === "linux") {
+    signalProcess(pid, "SIGUSR1");
+    return;
+  }
+  signalProcessGroup(pid, "SIGKILL");
 }
 
 function terminateWindowsProcessTree(pid: number) {
@@ -195,6 +239,16 @@ function terminateWindowsProcessTree(pid: number) {
   );
 }
 
+function signalProcess(pid: number, signal: NodeJS.Signals) {
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+}
+
 function signalProcessGroup(pid: number, signal: NodeJS.Signals) {
   try {
     process.kill(-pid, signal);
@@ -203,49 +257,6 @@ function signalProcessGroup(pid: number, signal: NodeJS.Signals) {
     if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
     throw error;
   }
-}
-
-function signalProcesses(pids: readonly number[], signal: NodeJS.Signals) {
-  for (const pid of pids) {
-    try {
-      process.kill(pid, signal);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-    }
-  }
-}
-
-function liveProcessIds(pids: readonly number[]) {
-  return pids.filter((pid) => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
-      throw error;
-    }
-  });
-}
-
-async function waitForStoppedProcess(pid: number) {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    const result = spawnSync("/bin/ps", ["-o", "state=", "-p", String(pid)], {
-      encoding: "utf8",
-      windowsHide: true,
-    });
-    if (result.error || (result.status !== 0 && result.status !== 1)) {
-      throw new Error(
-        `could not establish validation process containment: ${result.error?.message || result.stderr || result.status}`,
-      );
-    }
-    const state = String(result.stdout ?? "").trim();
-    if (state.startsWith("T")) return;
-    if (!state) {
-      throw new Error("validation command exited before process containment was established");
-    }
-    await sleep(5);
-  }
-  throw new Error("timed out establishing validation process containment");
 }
 
 function sleep(milliseconds: number) {
