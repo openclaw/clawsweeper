@@ -2806,7 +2806,10 @@ function refreshProofMutationSession(session: ProofMutationSession): ProofMutati
   return currentFreshness;
 }
 
-function proofMutationRunner(session: ProofMutationSession): MutationRunner {
+function proofMutationRunner(
+  session: ProofMutationSession,
+  beforeRequest?: (mutationIdentity: string) => void,
+): MutationRunner {
   return <T>(options: {
     identity: string;
     idempotencyIdentity: string;
@@ -2824,7 +2827,10 @@ function proofMutationRunner(session: ProofMutationSession): MutationRunner {
       mutationIdentity: options.idempotencyIdentity,
       requestAttempt,
     });
+    let requestStarted = false;
     try {
+      beforeRequest?.(options.idempotencyIdentity);
+      requestStarted = true;
       const result = options.operation();
       const outcome = finishProofMutationReceipt({
         attempt,
@@ -2841,7 +2847,7 @@ function proofMutationRunner(session: ProofMutationSession): MutationRunner {
       }
       return result;
     } catch (error) {
-      const knownNoMutation = options.knownNoMutation?.(error) === true;
+      const knownNoMutation = !requestStarted || options.knownNoMutation?.(error) === true;
       const rejected =
         isGitHubRequiresAuthenticationError(error) ||
         isLockedConversationCommentError(error) ||
@@ -2864,6 +2870,52 @@ function proofMutationRunner(session: ProofMutationSession): MutationRunner {
       throw error;
     }
   };
+}
+
+export function runProofMutationPreRequestForTest(options: {
+  context: ProofMutationReceiptContext;
+  beforeRequest: () => void;
+  operation: () => string;
+}): string {
+  const snapshot: ProofMutationRequestSnapshot = {
+    item: {
+      repo: options.context.repository,
+      kind: "pull_request",
+      number: options.context.number,
+      title: "proof mutation pre-request test",
+      url: `https://github.com/${options.context.repository}/pull/${options.context.number}`,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+      author: "contributor",
+      authorAssociation: "CONTRIBUTOR",
+      locked: false,
+      labels: [],
+    },
+    state: "OPEN",
+    draft: false,
+    headSha: options.context.headSha,
+    reviewActivityCursor: "v2:0:test",
+    conversationActivityCursor: "v1:0:test",
+    labelStateCursor: proofMutationLabelStateCursor([]),
+    comments: [],
+  };
+  const session: ProofMutationSession = {
+    context: options.context,
+    expectedFreshness: snapshot,
+    refreshFreshness: () => snapshot,
+    validateRequest: () => null,
+    bindLabelState: false,
+    nextAttemptByMutation: new Map(),
+    latestEventIdByMutation: new Map(),
+    knownNoMutationIdentities: new Set(),
+    unknownMutationIdentities: new Set(),
+    unknownMutationObserved: false,
+  };
+  return proofMutationRunner(session, () => options.beforeRequest())({
+    identity: "proof_test_mutation:request_attempt:1",
+    idempotencyIdentity: "proof_test_mutation",
+    operation: options.operation,
+  });
 }
 
 function reconcileProofMutation(session: ProofMutationSession, mutationIdentity: string): void {
@@ -29188,8 +29240,7 @@ function proofNudgesCommand(args: Args): void {
         continue;
       }
       const previousProofMutationRunner = activeProofMutationRunner;
-      activeProofMutationRunner = proofMutationRunner(mutationSession);
-      try {
+      activeProofMutationRunner = proofMutationRunner(mutationSession, () => {
         writeProofNudgeMutationCycle(mutationCyclePath, {
           schema_version: 1,
           repository: targetRepo(),
@@ -29198,6 +29249,8 @@ function proofNudgesCommand(args: Args): void {
           marker_timestamp: timestamp,
           created_at: timestamp,
         });
+      });
+      try {
         const mutation = postProofNudgeComment({
           number: candidate.number,
           headSha,

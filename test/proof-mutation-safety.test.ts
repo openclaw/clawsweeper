@@ -14,7 +14,10 @@ import {
   startProofMutationReceipt,
   type ProofMutationReceiptContext,
 } from "../dist/proof-mutation-safety.js";
-import { satisfiedBotProofLabelMutationIdentitiesForTest } from "../dist/clawsweeper.js";
+import {
+  runProofMutationPreRequestForTest,
+  satisfiedBotProofLabelMutationIdentitiesForTest,
+} from "../dist/clawsweeper.js";
 import { tmpPrefix } from "./helpers.ts";
 
 function ledgerEnv(runId: string): NodeJS.ProcessEnv {
@@ -266,6 +269,44 @@ test("a later workflow waits under the original unknown mutation idempotency key
     assert.equal(pending?.action.retryable, false);
     assert.notEqual(attempt.eventId, pending?.event_id);
     assert.doesNotMatch(JSON.stringify(events), /proof_nudge_comment|2026-07-14T12:00:00Z/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("proof mutation recovery state opens only after its durable request attempt", () => {
+  const root = realpathSync(mkdtempSync(tmpPrefix));
+  try {
+    const context = receiptContext(root, "4210");
+    let requestStarted = false;
+    assert.throws(
+      () =>
+        runProofMutationPreRequestForTest({
+          context,
+          beforeRequest: () => {
+            const events = readAllSpooledActionEvents(root);
+            assert.equal(events.length, 1);
+            assert.equal(events[0]?.action.status, "started");
+            throw new Error("crash before request");
+          },
+          operation: () => {
+            requestStarted = true;
+            return "accepted";
+          },
+        }),
+      /crash before request/,
+    );
+
+    assert.equal(requestStarted, false);
+    const events = readAllSpooledActionEvents(root);
+    assert.deepEqual(
+      events.map((event) => [event.action.status, event.action.mutation]),
+      [
+        ["started", false],
+        ["skipped", false],
+      ],
+    );
+    assert.equal(events.at(-1)?.attributes?.completion_reason, "mutation_rejected");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
