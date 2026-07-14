@@ -150,6 +150,16 @@ export function unknownDispatch(
   return { outcome: "unknown", statusKind };
 }
 
+export function dispatchProcessOutcome(result: {
+  status: number | null;
+  signal?: string | null;
+  error?: unknown;
+}): DispatchOutcomeDisposition {
+  if (result.status === 0 && !result.error && !result.signal) return acceptedDispatch();
+  if (result.error && isTimeoutError(result.error)) return unknownDispatch("timeout");
+  return unknownDispatch(result.error || result.signal ? "unknown" : "error");
+}
+
 export function dispatchErrorDisposition(
   error: unknown,
   knownNoMutation?: (error: unknown) => boolean,

@@ -24,6 +24,11 @@ import {
   resolveRepairWorkflowRetryMode,
   type RepairWorkflowRecoveryInputs,
 } from "./workflow-recovery-inputs.js";
+import {
+  dispatchProcessOutcome,
+  flushDispatchActionEvents,
+  runDispatchWithReceiptSync,
+} from "./dispatch-action-receipts.js";
 
 const DEFAULT_REPO = currentProjectRepo();
 const DEFAULT_WORKFLOW = REPAIR_CLUSTER_WORKFLOW;
@@ -123,6 +128,7 @@ const attempts: LooseRecord[] = candidates.map((candidate: JsonValue) => ({
   status: "pending",
 }));
 
+let selfHealError: unknown = null;
 try {
   if (openExecuteWindow) {
     openGate("CLAWSWEEPER_ALLOW_EXECUTE");
@@ -166,11 +172,35 @@ try {
   summary.batch_id = batchId;
   summary.observed_runs = attempts[0]?.observed_runs ?? [];
   console.log(JSON.stringify(summary, null, 2));
+} catch (error) {
+  selfHealError = error;
 } finally {
   for (const gate of gateRestores.reverse()) {
-    setGate(gate.name, gate.previous || "1");
+    try {
+      setGate(gate.name, gate.previous || "1");
+    } catch (error) {
+      if (!selfHealError) selfHealError = error;
+      else
+        console.error(
+          `self-heal: failed to restore ${gate.name}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+    }
+  }
+  try {
+    await flushDispatchActionEvents();
+  } catch (error) {
+    if (!selfHealError) selfHealError = error;
+    else
+      console.error(
+        `[action-ledger] failed to finalize self-heal dispatch receipts: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
   }
 }
+if (selfHealError) throw selfHealError;
 
 function selectCandidates() {
   const records = readRunRecords();
@@ -353,35 +383,56 @@ function sourceJobFromRunTitle(title: string) {
 }
 
 function dispatchCandidate(candidate: LooseRecord) {
-  const result = spawnSync(
-    "gh",
-    [
-      "workflow",
-      "run",
+  const result = runDispatchWithReceiptSync({
+    component: "repair_self_heal",
+    operationKey: `self-heal:${candidate.run_id}:${candidate.source_job}`,
+    dispatchKind: "workflow",
+    repository: repo,
+    dispatchTarget: workflow,
+    dispatchInput: {
       workflow,
-      "--repo",
-      repo,
-      "-f",
-      `job=${candidate.source_job}`,
-      "-f",
-      `mode=${candidate.mode}`,
-      "-f",
-      `runner=${candidate.runner}`,
-      "-f",
-      `execution_runner=${candidate.execution_runner}`,
-      "-f",
-      `planner_sandbox=${candidate.planner_sandbox}`,
-      "-f",
-      `model=${candidate.model}`,
-      "-f",
-      `dry_run=${candidate.dry_run}`,
-      "-f",
-      `requeue=${candidate.requeue}`,
-      "-f",
-      `requeue_depth=${candidate.requeue_depth}`,
-    ],
-    { cwd: repoRoot(), encoding: "utf8", stdio: "pipe" },
-  );
+      job: String(candidate.source_job ?? ""),
+      mode: String(candidate.mode ?? ""),
+      runner: String(candidate.runner ?? ""),
+      execution_runner: String(candidate.execution_runner ?? ""),
+      planner_sandbox: String(candidate.planner_sandbox ?? ""),
+      model: String(candidate.model ?? ""),
+      dry_run: Boolean(candidate.dry_run),
+      requeue: Boolean(candidate.requeue),
+      requeue_depth: Number(candidate.requeue_depth ?? 0),
+    },
+    operation: () =>
+      spawnSync(
+        "gh",
+        [
+          "workflow",
+          "run",
+          workflow,
+          "--repo",
+          repo,
+          "-f",
+          `job=${candidate.source_job}`,
+          "-f",
+          `mode=${candidate.mode}`,
+          "-f",
+          `runner=${candidate.runner}`,
+          "-f",
+          `execution_runner=${candidate.execution_runner}`,
+          "-f",
+          `planner_sandbox=${candidate.planner_sandbox}`,
+          "-f",
+          `model=${candidate.model}`,
+          "-f",
+          `dry_run=${candidate.dry_run}`,
+          "-f",
+          `requeue=${candidate.requeue}`,
+          "-f",
+          `requeue_depth=${candidate.requeue_depth}`,
+        ],
+        { cwd: repoRoot(), encoding: "utf8", stdio: "pipe" },
+      ),
+    outcome: dispatchProcessOutcome,
+  });
   if (result.status !== 0) {
     throw new Error(
       `failed to dispatch ${candidate.source_job}: ${result.stderr || result.stdout}`,

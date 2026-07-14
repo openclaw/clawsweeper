@@ -9,6 +9,7 @@ import {
   DispatchRejectedError,
   dispatchHttpError,
   dispatchInputSha256,
+  dispatchProcessOutcome,
   flushDispatchActionEvents,
   runDispatchWithReceipt,
   runDispatchWithReceiptSync,
@@ -162,6 +163,27 @@ test("HTTP dispatch failures separate known rejection from ambiguous acceptance"
   assert.ok(dispatchHttpError(422, "invalid") instanceof DispatchRejectedError);
   assert.ok(dispatchHttpError(429, "rate limited") instanceof DispatchOutcomeUnknownError);
   assert.ok(dispatchHttpError(503, "unavailable") instanceof DispatchOutcomeUnknownError);
+});
+
+test("process dispatch outcomes treat every non-success exit as ambiguous", () => {
+  assert.deepEqual(dispatchProcessOutcome({ status: 0 }), {
+    outcome: "accepted",
+    statusKind: "accepted",
+  });
+  assert.deepEqual(dispatchProcessOutcome({ status: 1 }), {
+    outcome: "unknown",
+    statusKind: "error",
+  });
+  assert.deepEqual(
+    dispatchProcessOutcome({
+      status: null,
+      error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }),
+    }),
+    {
+      outcome: "unknown",
+      statusKind: "timeout",
+    },
+  );
 });
 
 function baseOptions(fixture: ReturnType<typeof actionLedgerFixture>) {

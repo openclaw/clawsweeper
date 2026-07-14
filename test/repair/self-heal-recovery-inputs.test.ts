@@ -158,6 +158,27 @@ test("self-heal backfills quota after a newer invalid candidate", () => {
   }
 });
 
+test("self-heal writes and publishes dispatch attempts before legacy summaries", () => {
+  const source = fs.readFileSync("src/repair/self-heal-failed-runs.ts", "utf8");
+  const workflow = fs.readFileSync(".github/workflows/repair-self-heal.yml", "utf8");
+  const dispatchStart = source.indexOf("function dispatchCandidate(");
+  const dispatchEnd = source.indexOf("function waitForStartedRuns(", dispatchStart);
+  const dispatchFunction = source.slice(dispatchStart, dispatchEnd);
+
+  assert.ok(dispatchStart >= 0);
+  assert.ok(dispatchEnd > dispatchStart);
+  assert.match(dispatchFunction, /runDispatchWithReceiptSync\(\{/);
+  assert.match(dispatchFunction, /operation: \(\) =>\s+spawnSync\(/);
+  assert.match(dispatchFunction, /outcome: dispatchProcessOutcome/);
+  assert.match(dispatchFunction, /operationKey: `self-heal:/);
+  assert.match(dispatchFunction, /dispatchInput: \{[\s\S]*?requeue_depth:/);
+  assert.match(source, /await flushDispatchActionEvents\(\)/);
+  assert.match(source, /appendAttempts\(ledger, attempts\)/);
+  assert.match(workflow, /uses: \.\/\.github\/actions\/setup-action-ledger/);
+  assert.match(workflow, /--lane self-heal-dispatch/);
+  assert.match(workflow, /--message "chore: append self-heal dispatch action ledger"/);
+});
+
 function createRecoveryFixture(
   label: string,
   options: { snapshot?: boolean; runRecord?: boolean; legacyWorker?: boolean } = {},

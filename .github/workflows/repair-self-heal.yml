@@ -72,14 +72,20 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
       - uses: ./.github/actions/setup-state
+        id: setup-self-heal-state
         with:
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
+        id: setup-self-heal-pnpm
         with:
           build-script: build:repair
 
+      - uses: ./.github/actions/setup-action-ledger
+        id: setup-self-heal-ledger
+
       - name: Self-heal failed cluster runs
+        id: self-heal-failed-runs
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           CLAWSWEEPER_ALLOW_EXECUTE: ${{ vars.CLAWSWEEPER_ALLOW_EXECUTE || '0' }}
@@ -105,6 +111,60 @@ jobs:
             args+=(--execute)
           fi
           pnpm run repair:self-heal -- "${args[@]}"
+
+      - name: Finalize self-heal dispatch action ledger
+        if: ${{ always() && steps.setup-self-heal-state.outcome == 'success' && steps.setup-self-heal-pnpm.outcome == 'success' && steps.setup-self-heal-ledger.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          : "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
+          mkdir -p .artifacts
+          pnpm run --silent repair:action-ledger -- finalize \
+            --lane self-heal-dispatch \
+            --allow-empty \
+            > .artifacts/self-heal-dispatch-action-ledger-manifest.json
+
+      - name: Publish self-heal dispatch action ledger
+        if: ${{ always() && steps.setup-self-heal-state.outcome == 'success' && steps.setup-self-heal-pnpm.outcome == 'success' && steps.setup-self-heal-ledger.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          source_root="${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
+          manifest_file=".artifacts/self-heal-dispatch-action-ledger-manifest.json"
+          if [ ! -s "$manifest_file" ]; then
+            echo "No self-heal dispatch action events to publish."
+            exit 0
+          fi
+          event_paths_file=".artifacts/self-heal-dispatch-action-ledger-paths.txt"
+          import_result_file=".artifacts/self-heal-dispatch-action-ledger-import.json"
+          pnpm run --silent repair:action-ledger -- publish \
+            --lane self-heal-dispatch \
+            --manifest "$manifest_file" \
+            --source-root "$source_root" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" > "$import_result_file"
+          if ! jq -e --slurpfile manifest "$manifest_file" \
+            '.eventPaths == $manifest[0].event_paths' \
+            "$import_result_file" >/dev/null; then
+            echo "Imported self-heal dispatch paths do not match the finalized manifest." >&2
+            exit 1
+          fi
+          jq -r '.paths[]?' "$import_result_file" |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "Self-heal dispatch shards existed but no paths were imported." >&2
+            exit 1
+          fi
+          action_ledger_args=()
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+            action_ledger_args+=(--path "$event_path")
+          done < "$event_paths_file"
+          pnpm run repair:publish-main -- \
+            --message "chore: append self-heal dispatch action ledger" \
+            "${action_ledger_args[@]}" \
+            --rebase-strategy normal
 
       - name: Commit self-heal ledger
         if: ${{ always() && ((github.event_name == 'workflow_dispatch' && inputs.execute) || (github.event_name == 'schedule' && vars.CLAWSWEEPER_SELF_HEAL_EXECUTE == '1')) }}
