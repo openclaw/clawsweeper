@@ -2412,6 +2412,7 @@ test("dependency setup preserves tracked in-checkout local workspace dependencie
     { dependencyName: "shared", spec: "file:../shared", version: "file:../shared" },
     { dependencyName: "shared", spec: "workspace:../shared", version: "link:../shared" },
     { dependencyName: "root", spec: "workspace:*", version: "workspace:*" },
+    { dependencyName: "alias", spec: "workspace:shared@*", version: "link:../shared" },
   ]) {
     const cwd = gitBunPackageFixture({});
     fs.writeFileSync(
@@ -4509,6 +4510,60 @@ test("verified target rebase and continuation do not run target hooks", () => {
   assert.equal(completed.status, "continued");
   git(cwd, "merge-base", "--is-ancestor", updatedBase, "HEAD");
   assert.equal(fs.existsSync(marker), false);
+});
+
+test("isolated rebase continuation rejects an aborted reconciliation", () => {
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  fs.writeFileSync(path.join(cwd, "shared.txt"), "base\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "base");
+  git(cwd, "checkout", "-b", "feature");
+  fs.writeFileSync(path.join(cwd, "shared.txt"), "feature\n");
+  git(cwd, "commit", "-am", "feature");
+  git(cwd, "checkout", "main");
+  fs.writeFileSync(path.join(cwd, "shared.txt"), "main\n");
+  git(cwd, "commit", "-am", "main");
+  const updatedBase = git(cwd, "rev-parse", "HEAD");
+  git(cwd, "checkout", "feature");
+  assert.equal(rebaseTargetOntoVerifiedBase({ cwd, baseRef: updatedBase }).status, "conflicts");
+  git(cwd, "rebase", "--abort");
+
+  assert.throws(
+    () =>
+      completeTargetRebaseWithIsolation({
+        cwd,
+        expectedBaseRef: updatedBase,
+        requireInProgress: true,
+      }),
+    /target rebase was aborted or completed outside the isolated continuation/,
+  );
+});
+
+test("isolated rebase continuation skips a commit emptied by conflict resolution", () => {
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  fs.writeFileSync(path.join(cwd, "shared.txt"), "base\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "base");
+  git(cwd, "checkout", "-b", "feature");
+  fs.writeFileSync(path.join(cwd, "shared.txt"), "feature\n");
+  git(cwd, "commit", "-am", "feature");
+  git(cwd, "checkout", "main");
+  fs.writeFileSync(path.join(cwd, "shared.txt"), "main\n");
+  git(cwd, "commit", "-am", "main");
+  const updatedBase = git(cwd, "rev-parse", "HEAD");
+  git(cwd, "checkout", "feature");
+  assert.equal(rebaseTargetOntoVerifiedBase({ cwd, baseRef: updatedBase }).status, "conflicts");
+  fs.writeFileSync(path.join(cwd, "shared.txt"), "main\n");
+
+  const completed = completeTargetRebaseWithIsolation({
+    cwd,
+    expectedBaseRef: updatedBase,
+    requireInProgress: true,
+  });
+
+  assert.equal(completed.status, "continued");
+  assert.equal(git(cwd, "rev-parse", "HEAD"), updatedBase);
+  assert.equal(git(cwd, "status", "--porcelain"), "");
 });
 
 test(

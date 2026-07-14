@@ -726,15 +726,16 @@ function assertDependencySpec(
       assertLocalPackageDependency(workspaceSpec, ownerDir, localPolicy);
       return;
     }
-    if (dependencyName) {
-      const matches = localPolicy.workspaceNames.get(dependencyName) ?? [];
+    const workspaceName = workspaceAliasTarget(workspaceSpec) ?? dependencyName;
+    if (workspaceName) {
+      const matches = localPolicy.workspaceNames.get(workspaceName) ?? [];
       if (matches.length !== 1) {
         throw new Error(
-          `target dependency install workspace dependency is not uniquely tracked: ${dependencyName}`,
+          `target dependency install workspace dependency is not uniquely tracked: ${workspaceName}`,
         );
       }
     }
-    assertDependencySpec(workspaceSpec, ownerDir, localPolicy, registryOrigin, dependencyName);
+    assertDependencySpec(workspaceSpec, ownerDir, localPolicy, registryOrigin);
     return;
   }
   if (isLocalDependencySpec(spec)) {
@@ -776,6 +777,15 @@ function assertDependencySpec(
   if (/^[a-z][a-z0-9+.-]*:/i.test(spec)) {
     throw new Error("target dependency install protocol is not approved");
   }
+}
+
+function workspaceAliasTarget(spec: string): string | null {
+  const separator = spec.lastIndexOf("@");
+  if (separator <= 0) return null;
+  const name = spec.slice(0, separator);
+  const range = spec.slice(separator + 1);
+  if (!range || !/^(?:\*|\^|~|>=?|<=?|=|\d)/.test(range)) return null;
+  return /^(?:[a-z0-9._~-]+|@[a-z0-9._~-]+\/[a-z0-9._~-]+)$/i.test(name) ? name : null;
 }
 
 function isLocalDependencySpec(spec: string) {
@@ -1725,9 +1735,13 @@ export function rebaseTargetOntoVerifiedBase({
 
 export function completeTargetRebaseWithIsolation({
   cwd,
+  expectedBaseRef,
+  requireInProgress = false,
   timeoutMs = DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
 }: {
   cwd: string;
+  expectedBaseRef?: string;
+  requireInProgress?: boolean;
   timeoutMs?: number;
 }): TargetCompleteRebaseResult {
   const deadlineAt = Date.now() + timeoutMs;
@@ -1736,6 +1750,9 @@ export function completeTargetRebaseWithIsolation({
   return withIsolatedTargetGit(cwd, deadlineAt, (git) => {
     const previousHead = git.run(["rev-parse", "HEAD"], "target rebase continuation head");
     if (!targetRebaseInProgress(cwd, git)) {
+      if (requireInProgress) {
+        throw new Error("target rebase was aborted or completed outside the isolated continuation");
+      }
       return {
         status: "not-in-progress",
         previous_head: previousHead,
@@ -1751,6 +1768,19 @@ export function completeTargetRebaseWithIsolation({
     }
     let detail = "";
     while (targetRebaseInProgress(cwd, git)) {
+      const stagedPaths = git.run(
+        ["diff", "--cached", "--name-only", "-z"],
+        "target rebase staged paths",
+        { trim: false },
+      );
+      if (!stagedPaths) {
+        detail = git.run(
+          ["-c", "core.editor=true", "rebase", "--skip"],
+          "skip empty isolated target rebase commit",
+          { env: isolatedTargetRebaseEnv() },
+        );
+        continue;
+      }
       try {
         detail = git.run(
           ["-c", "core.editor=true", "rebase", "--continue"],
@@ -1767,10 +1797,24 @@ export function completeTargetRebaseWithIsolation({
         throw error;
       }
     }
+    const currentHead = git.run(["rev-parse", "HEAD"], "continued target rebase result");
+    if (expectedBaseRef) {
+      const baseSha = git.run(
+        ["rev-parse", "--verify", `${expectedBaseRef}^{commit}`],
+        "continued target rebase base",
+      );
+      const mergeBase = git.run(
+        ["merge-base", baseSha, currentHead],
+        "continued target rebase ancestry",
+      );
+      if (mergeBase !== baseSha) {
+        throw new Error("continued target rebase did not retain the verified base");
+      }
+    }
     return {
       status: "continued",
       previous_head: previousHead,
-      current_head: git.run(["rev-parse", "HEAD"], "continued target rebase result"),
+      current_head: currentHead,
       detail,
     };
   });

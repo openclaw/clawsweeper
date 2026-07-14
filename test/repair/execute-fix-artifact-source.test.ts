@@ -289,10 +289,16 @@ test("final publication rebase uses the verified isolated Git path", () => {
   const reconcileStart = source.indexOf("function reconcileLatestBaseBeforePush(");
   const reconcileEnd = source.indexOf("function runCodexBaseReconcile(", reconcileStart);
   const reconcile = source.slice(reconcileStart, reconcileEnd);
+  const codexStart = reconcileEnd;
+  const codexEnd = source.indexOf("function readTextIfExists(", codexStart);
+  const codexReconcile = source.slice(codexStart, codexEnd);
 
   assert.match(reconcile, /rebaseTargetOntoVerifiedBase\(\{/);
   assert.match(reconcile, /baseRef,/);
-  assert.match(reconcile, /completeTargetRebaseWithIsolation\(\{/);
+  assert.match(reconcile, /const completed = runCodexBaseReconcile\(\{/);
+  assert.match(codexReconcile, /completeTargetRebaseWithIsolation\(\{/);
+  assert.match(codexReconcile, /expectedBaseRef: `origin\/\$\{baseBranch\}`/);
+  assert.match(codexReconcile, /requireInProgress: true/);
   assert.doesNotMatch(reconcile, /rebaseOntoBase\(/);
   assert.doesNotMatch(reconcile, /completeRebaseIfResolved\(/);
 });
@@ -319,7 +325,7 @@ test("all repair rebase transitions use isolated Git plumbing", () => {
     "initial, replacement, and final-base rebases must use isolated plumbing",
   );
   assert.ok(
-    [...source.matchAll(/completeTargetRebaseWithIsolation\(\{/g)].length >= 4,
+    [...source.matchAll(/completeTargetRebaseWithIsolation\(\{/g)].length >= 3,
     "mechanical and post-Codex continuations must use isolated plumbing",
   );
 });

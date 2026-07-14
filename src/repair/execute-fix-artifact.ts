@@ -2583,7 +2583,7 @@ function reconcileLatestBaseBeforePush({
   });
   if (rebaseResult.status !== "conflicts") return rebaseResult;
 
-  runCodexBaseReconcile({
+  const completed = runCodexBaseReconcile({
     fixArtifact,
     targetDir,
     branch,
@@ -2593,10 +2593,6 @@ function reconcileLatestBaseBeforePush({
     repositoryContext,
     sourceHead,
     rebaseResult,
-  });
-  const completed = completeTargetRebaseWithIsolation({
-    cwd: targetDir,
-    timeoutMs: targetValidationTimeoutMs,
   });
   return {
     status: "codex-reconciled",
@@ -2610,6 +2606,7 @@ function runCodexBaseReconcile({
   targetDir,
   branch,
   mode,
+  baseBranch,
   attempt,
   repositoryContext,
   sourceHead,
@@ -2683,11 +2680,13 @@ function runCodexBaseReconcile({
       );
     }
     try {
-      completeTargetRebaseWithIsolation({
+      const completed = completeTargetRebaseWithIsolation({
         cwd: targetDir,
+        expectedBaseRef: `origin/${baseBranch}`,
+        requireInProgress: true,
         timeoutMs: targetValidationTimeoutMs,
       });
-      return;
+      return completed;
     } catch (error) {
       if (codexAttempt === maxEditAttempts) throw error;
       previousSummary = readTextIfExists(summaryPath).trim();
