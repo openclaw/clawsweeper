@@ -147,6 +147,7 @@ function proofMutationGhMockScript(options: {
   closeAtIssueRead?: number;
   draftAtPullRead?: number;
   postUnknown?: boolean;
+  patchUnknown?: boolean;
   unknownMutation?: string;
   initialComments?: unknown[];
   initialLabels?: string[];
@@ -334,6 +335,29 @@ if (timelineMatch && handledNumbers.has(Number(timelineMatch[1]))) {
   output([]);
 }
 const issueCommentMatch = path.match(/^repos\\/openclaw\\/openclaw\\/issues\\/(\\d+)\\/comments/);
+const issueCommentPatchMatch = path.match(
+  /^repos\\/openclaw\\/openclaw\\/issues\\/comments\\/(\\d+)$/,
+);
+if (issueCommentPatchMatch && method === "PATCH") {
+  const commentId = Number(issueCommentPatchMatch[1]);
+  const inputIndex = commandArgs.indexOf("--input");
+  const payload = JSON.parse(fs.readFileSync(commandArgs[inputIndex + 1], "utf8"));
+  const comment = state.comments.find((entry) => entry.id === commentId);
+  if (!comment) {
+    save();
+    console.error("Not Found");
+    process.exit(1);
+  }
+  logMutation("comment_patch");
+  if (config.patchUnknown) {
+    save();
+    console.error("HTTP 502: write acknowledgement unavailable");
+    process.exit(1);
+  }
+  comment.body = payload.body;
+  comment.updated_at = "2026-07-14T12:00:00Z";
+  output({ id: comment.id, html_url: comment.html_url });
+}
 if (issueCommentMatch && handledNumbers.has(Number(issueCommentMatch[1])) && method === "POST") {
   const number = Number(issueCommentMatch[1]);
   const inputIndex = commandArgs.indexOf("--input");
@@ -1943,6 +1967,171 @@ test("bot proof reconciles an unknown label create when the retry proves it alre
       "label_remove:stale",
       "comment_post",
     ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bot proof does not replay an unknown comment POST across workflow runs", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const firstReportPath = join(root, "bot-proof-first.json");
+    const secondReportPath = join(root, "bot-proof-second.json");
+    const mutationStateDir = join(root, "bot-proof-mutations");
+    const statePath = join(root, "gh-state.json");
+    const mutationLogPath = join(root, "mutations.log");
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(
+      join(itemsDir, "42.md"),
+      proofNudgeReport({
+        author: "app/clawsweeper",
+        authorAssociation: "NONE",
+        headSha: "a".repeat(40),
+      }),
+    );
+    const run = (reportPath: string) => {
+      execFileSync(process.execPath, [
+        "dist/clawsweeper.js",
+        "bot-proof",
+        "--target-repo",
+        "openclaw/openclaw",
+        "--items-dir",
+        itemsDir,
+        "--item-numbers",
+        "42",
+        "--limit",
+        "1",
+        "--processed-limit",
+        "1",
+        "--report-path",
+        reportPath,
+        "--mutation-state-dir",
+        mutationStateDir,
+        "--execute",
+      ]);
+    };
+
+    withMockGh(
+      root,
+      proofMutationGhMockScript({
+        statePath,
+        mutationLogPath,
+        bot: true,
+        postUnknown: true,
+        hideUnknownPostComment: true,
+        initialLabels: [
+          "triage: needs-real-behavior-proof",
+          "status: needs maintainer proof decision",
+        ],
+      }),
+      () => {
+        run(firstReportPath);
+        run(secondReportPath);
+      },
+    );
+
+    const firstReport = JSON.parse(readFileSync(firstReportPath, "utf8"));
+    const secondReport = JSON.parse(readFileSync(secondReportPath, "utf8"));
+    assert.equal(firstReport[0].action, "bot_proof_mutation_outcome_unknown");
+    assert.equal(secondReport[0].action, "bot_proof_reconciliation_pending");
+    assert.match(secondReport[0].reason, /waiting for its exact body/);
+    assert.equal(readFileSync(mutationLogPath, "utf8").trim(), "comment_post");
+    const cycle = JSON.parse(readFileSync(join(mutationStateDir, "42.json"), "utf8"));
+    assert.equal(cycle.repository, "openclaw/openclaw");
+    assert.equal(cycle.number, 42);
+    assert.equal(cycle.head_sha, "a".repeat(40));
+    assert.match(cycle.comment_body_sha256, /^[0-9a-f]{64}$/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bot proof does not replay an unknown comment PATCH across workflow runs", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const firstReportPath = join(root, "bot-proof-first.json");
+    const secondReportPath = join(root, "bot-proof-second.json");
+    const mutationStateDir = join(root, "bot-proof-mutations");
+    const statePath = join(root, "gh-state.json");
+    const mutationLogPath = join(root, "mutations.log");
+    const headSha = "a".repeat(40);
+    const markdown = proofNudgeReport({
+      author: "app/clawsweeper",
+      authorAssociation: "NONE",
+      headSha,
+    });
+    const priorBody = `${renderBotProofDecisionCommentForTest({
+      number: 42,
+      title: "Proof nudge sample",
+      headSha,
+      timestamp: "2026-01-01T00:00:00Z",
+      markdown,
+    })}\n\nLegacy decision detail.`;
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(join(itemsDir, "42.md"), markdown);
+    const run = (reportPath: string) => {
+      execFileSync(process.execPath, [
+        "dist/clawsweeper.js",
+        "bot-proof",
+        "--target-repo",
+        "openclaw/openclaw",
+        "--items-dir",
+        itemsDir,
+        "--item-numbers",
+        "42",
+        "--limit",
+        "1",
+        "--processed-limit",
+        "1",
+        "--report-path",
+        reportPath,
+        "--mutation-state-dir",
+        mutationStateDir,
+        "--execute",
+      ]);
+    };
+
+    withMockGh(
+      root,
+      proofMutationGhMockScript({
+        statePath,
+        mutationLogPath,
+        bot: true,
+        patchUnknown: true,
+        initialLabels: [
+          "triage: needs-real-behavior-proof",
+          "status: needs maintainer proof decision",
+        ],
+        initialComments: [
+          {
+            id: 77,
+            user: { login: "clawsweeper[bot]" },
+            author_association: "NONE",
+            body: priorBody,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+            html_url: "https://github.com/openclaw/openclaw/pull/42#issuecomment-77",
+          },
+        ],
+      }),
+      () => {
+        run(firstReportPath);
+        run(secondReportPath);
+      },
+    );
+
+    const firstReport = JSON.parse(readFileSync(firstReportPath, "utf8"));
+    const secondReport = JSON.parse(readFileSync(secondReportPath, "utf8"));
+    assert.equal(firstReport[0].action, "bot_proof_mutation_outcome_unknown");
+    assert.equal(secondReport[0].action, "bot_proof_reconciliation_pending");
+    assert.match(secondReport[0].reason, /waiting for its exact body/);
+    assert.equal(readFileSync(mutationLogPath, "utf8").trim(), "comment_patch");
+    assert.match(
+      JSON.parse(readFileSync(join(mutationStateDir, "42.json"), "utf8")).comment_body_sha256,
+      /^[0-9a-f]{64}$/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

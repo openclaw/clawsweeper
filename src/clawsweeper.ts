@@ -1105,6 +1105,7 @@ type BotProofAction =
   | "bot_proof_decision_posted"
   | "bot_proof_decision_planned"
   | "bot_proof_decision_reconciled"
+  | "bot_proof_reconciliation_pending"
   | "bot_proof_mutation_outcome_unknown"
   | "skipped_not_pull_request"
   | "skipped_not_open"
@@ -1135,6 +1136,15 @@ interface ProofNudgeMutationCycle {
   number: number;
   head_sha: string;
   marker_timestamp: string;
+  created_at: string;
+}
+
+interface BotProofCommentMutationCycle {
+  schema_version: 1;
+  repository: string;
+  number: number;
+  head_sha: string;
+  comment_body_sha256: string;
   created_at: string;
 }
 
@@ -1235,6 +1245,7 @@ interface BotProofEligibility {
     | "bot_proof_mantis_request_posted"
     | "bot_proof_decision_posted"
     | "bot_proof_decision_reconciled"
+    | "bot_proof_reconciliation_pending"
     | "bot_proof_mutation_outcome_unknown"
     | "skipped_not_open"
     | "skipped_runtime_budget"
@@ -28591,7 +28602,21 @@ function proofNudgeMutationStateDir(args: Args, reportPath: string): string {
   );
 }
 
+function botProofMutationStateDir(args: Args, reportPath: string): string {
+  const targetSlug = targetRepo().replace("/", "-");
+  return resolve(
+    stringArg(
+      args.mutation_state_dir,
+      join(dirname(reportPath), "bot-proof-mutations", targetSlug),
+    ),
+  );
+}
+
 function proofNudgeMutationCyclePath(stateDir: string, number: number): string {
+  return join(stateDir, `${number}.json`);
+}
+
+function botProofCommentMutationCyclePath(stateDir: string, number: number): string {
   return join(stateDir, `${number}.json`);
 }
 
@@ -28641,6 +28666,61 @@ function writeProofNudgeMutationCycle(path: string, cycle: ProofNudgeMutationCyc
 }
 
 function clearProofNudgeMutationCycle(path: string): void {
+  if (existsSync(path)) unlinkSync(path);
+}
+
+function readBotProofCommentMutationCycle(
+  path: string,
+  number: number,
+): BotProofCommentMutationCycle | null {
+  if (!existsSync(path)) return null;
+  const parsed = asRecord(
+    JSON.parse(readBoundedUtf8File(path, 4_096, "bot proof comment mutation cycle")),
+  );
+  const headSha = stringOrUndefined(parsed.head_sha)?.trim().toLowerCase();
+  const commentBodySha256 = stringOrUndefined(parsed.comment_body_sha256)?.trim().toLowerCase();
+  const createdAt = stringOrUndefined(parsed.created_at);
+  if (
+    parsed.schema_version !== 1 ||
+    parsed.repository !== targetRepo() ||
+    parsed.number !== number ||
+    !headSha ||
+    !/^[0-9a-f]{40}$/.test(headSha) ||
+    !commentBodySha256 ||
+    !/^[0-9a-f]{64}$/.test(commentBodySha256) ||
+    !createdAt ||
+    timestampMs(createdAt) === null
+  ) {
+    throw new Error(`invalid bot proof comment mutation cycle for #${number}`);
+  }
+  return {
+    schema_version: 1,
+    repository: targetRepo(),
+    number,
+    head_sha: headSha,
+    comment_body_sha256: commentBodySha256,
+    created_at: createdAt,
+  };
+}
+
+function writeBotProofCommentMutationCycle(
+  path: string,
+  cycle: BotProofCommentMutationCycle,
+): void {
+  ensureDir(dirname(path));
+  const temporaryPath = join(
+    dirname(path),
+    `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  try {
+    writeFileSync(temporaryPath, `${JSON.stringify(cycle, null, 2)}\n`, "utf8");
+    renameSync(temporaryPath, path);
+  } finally {
+    if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+  }
+}
+
+function clearBotProofCommentMutationCycle(path: string): void {
   if (existsSync(path)) unlinkSync(path);
 }
 
@@ -28852,6 +28932,37 @@ function proofNudgeCommentMutationIdentity(options: {
 
 function botProofCommentMutationIdentity(number: number, headSha: string, body: string): string {
   return `bot_proof_comment:${number}:${headSha}:${sha256(body)}`;
+}
+
+function botProofCommentMutationIdentityFromCycle(cycle: BotProofCommentMutationCycle): string {
+  return `bot_proof_comment:${cycle.number}:${cycle.head_sha}:${cycle.comment_body_sha256}`;
+}
+
+function ownedBotProofCommentMatchingCycle(
+  cycle: BotProofCommentMutationCycle,
+): Record<string, unknown> | undefined {
+  const marker = botProofDecisionMarker({
+    number: cycle.number,
+    headSha: cycle.head_sha,
+  });
+  const comments = ghPagedLimit<unknown>(
+    `repos/${targetRepo()}/issues/${cycle.number}/comments`,
+    MAX_PROOF_CONVERSATION_ACTIVITY + 1,
+  );
+  if (comments.length > MAX_PROOF_CONVERSATION_ACTIVITY) {
+    throw new Error(
+      `conversation activity exceeds the bounded proof lane limit for #${cycle.number}`,
+    );
+  }
+  return comments.map(asRecord).find((comment) => {
+    const body = commentBody(comment);
+    return (
+      canPatchReviewComment(comment) &&
+      typeof body === "string" &&
+      body.includes(marker) &&
+      sha256(body) === cycle.comment_body_sha256
+    );
+  });
 }
 
 function satisfiedBotProofLabelMutationIdentities(
@@ -29360,6 +29471,7 @@ function botProofCommand(args: Args): void {
   const dryRun = !execute;
   const maxRuntimeMs = numberArg(args.max_runtime_ms, 0);
   const reportPath = resolve(stringArg(args.report_path, join(ROOT, "bot-proof-report.json")));
+  const mutationStateDir = botProofMutationStateDir(args, reportPath);
   const requestedItemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
   const cursorPath = proofLaneCursorPath(args, requestedItemNumbers);
 
@@ -29425,6 +29537,8 @@ function botProofCommand(args: Args): void {
     let state: string;
     let pullDetails: Partial<ProofNudgePullRequestDetails> = {};
     let mutationSession: ProofMutationSession | null = null;
+    let pendingCommentMutation: BotProofCommentMutationCycle | null = null;
+    const mutationCyclePath = botProofCommentMutationCyclePath(mutationStateDir, candidate.number);
     try {
       const fetched = fetchItem(candidate.number);
       item = fetched.item;
@@ -29439,6 +29553,17 @@ function botProofCommand(args: Args): void {
           bindLabelState: true,
           validateRequest: (snapshot) => botProofRequestBoundaryBlock(snapshot, candidate.markdown),
         });
+        pendingCommentMutation = readBotProofCommentMutationCycle(
+          mutationCyclePath,
+          candidate.number,
+        );
+        if (
+          pendingCommentMutation &&
+          pendingCommentMutation.head_sha !== pullDetails.headSha.trim().toLowerCase()
+        ) {
+          clearBotProofCommentMutationCycle(mutationCyclePath);
+          pendingCommentMutation = null;
+        }
       }
     } catch (error) {
       results.push({
@@ -29494,6 +29619,42 @@ function botProofCommand(args: Args): void {
         "unknown",
       mantisRecommendation: eligibility.mantisRecommendation,
     });
+    if (execute && mutationSession && pendingCommentMutation) {
+      let reconciledComment: Record<string, unknown> | undefined;
+      try {
+        reconciledComment = ownedBotProofCommentMatchingCycle(pendingCommentMutation);
+      } catch {
+        reconciledComment = undefined;
+      }
+      if (!reconciledComment) {
+        recordProofMutationPendingReconciliation({
+          context: mutationSession.context,
+          mutationIdentity: botProofCommentMutationIdentityFromCycle(pendingCommentMutation),
+        });
+        results.push({
+          ...resultBase,
+          action: "bot_proof_reconciliation_pending",
+          reason:
+            "a prior same-head bot proof comment outcome is still unknown; waiting for its exact body before any retry",
+          headSha,
+        });
+        markProcessed(candidate);
+        logProgress(`bot_proof_reconciliation_pending bot proof handling #${candidate.number}`);
+        continue;
+      }
+      const pendingMutationIdentity =
+        botProofCommentMutationIdentityFromCycle(pendingCommentMutation);
+      const desiredMutationIdentity = botProofCommentMutationIdentity(
+        candidate.number,
+        headSha,
+        renderedCommentBody,
+      );
+      if (pendingMutationIdentity !== desiredMutationIdentity) {
+        reconcileProofMutation(mutationSession, pendingMutationIdentity);
+        clearBotProofCommentMutationCycle(mutationCyclePath);
+        pendingCommentMutation = null;
+      }
+    }
     if (dryRun) {
       const labelResult = syncBotProofDecisionLabels({
         number: candidate.number,
@@ -29518,7 +29679,22 @@ function botProofCommand(args: Args): void {
         continue;
       }
       const previousProofMutationRunner = activeProofMutationRunner;
-      activeProofMutationRunner = proofMutationRunner(mutationSession);
+      const commentMutationIdentity = botProofCommentMutationIdentity(
+        candidate.number,
+        headSha,
+        renderedCommentBody,
+      );
+      activeProofMutationRunner = proofMutationRunner(mutationSession, (mutationIdentity) => {
+        if (mutationIdentity !== commentMutationIdentity) return;
+        writeBotProofCommentMutationCycle(mutationCyclePath, {
+          schema_version: 1,
+          repository: targetRepo(),
+          number: candidate.number,
+          head_sha: headSha.trim().toLowerCase(),
+          comment_body_sha256: sha256(renderedCommentBody),
+          created_at: new Date().toISOString(),
+        });
+      });
       try {
         const labelResult = syncBotProofDecisionLabels({
           number: candidate.number,
@@ -29539,6 +29715,7 @@ function botProofCommand(args: Args): void {
           mutationSession,
         );
         const reconciled = mutation.reconciled && !labelResult.changed;
+        clearBotProofCommentMutationCycle(mutationCyclePath);
         results.push({
           ...resultBase,
           action: reconciled
@@ -29591,6 +29768,7 @@ function botProofCommand(args: Args): void {
             mutationSession,
             botProofCommentMutationIdentity(candidate.number, headSha, renderedCommentBody),
           );
+          clearBotProofCommentMutationCycle(mutationCyclePath);
           results.push({
             ...resultBase,
             action: "bot_proof_decision_reconciled",
@@ -29600,6 +29778,7 @@ function botProofCommand(args: Args): void {
             headSha,
           });
         } else if (error instanceof ProofMutationFreshnessError) {
+          clearBotProofCommentMutationCycle(mutationCyclePath);
           results.push({
             ...resultBase,
             action:
@@ -29617,6 +29796,7 @@ function botProofCommand(args: Args): void {
             headSha,
           });
         } else if (error instanceof ProofMutationOutcomeUnknownError) {
+          clearBotProofCommentMutationCycle(mutationCyclePath);
           results.push({
             ...resultBase,
             action: "skipped_live_fetch_failed",
@@ -29625,6 +29805,7 @@ function botProofCommand(args: Args): void {
             headSha,
           });
         } else {
+          clearBotProofCommentMutationCycle(mutationCyclePath);
           results.push({
             ...resultBase,
             action: "skipped_live_fetch_failed",
