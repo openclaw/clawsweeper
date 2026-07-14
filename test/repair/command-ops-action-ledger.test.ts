@@ -30,7 +30,10 @@ test("direct repair requeues forward a stable dispatch receipt and publish it", 
   const publishStart = workflow.indexOf("- name: Publish immutable repair requeue action ledger");
   const nextStep = workflow.indexOf("- name: Record requeued work", publishStart);
   const executeFixStart = workflow.indexOf("- name: Execute credited fix artifact");
-  const ledgerSetupStart = workflow.indexOf("- uses: ./.github/actions/setup-action-ledger");
+  const ledgerSetupStart = workflow.indexOf(
+    "- uses: ./.github/actions/setup-action-ledger",
+    executeFixStart,
+  );
   const requeueStart = workflow.indexOf("- name: Requeue source-head repair races");
   const finalizeStep = workflow.slice(finalizeStart, publishStart);
   const publishStep = workflow.slice(publishStart, nextStep);
@@ -74,6 +77,67 @@ test("direct repair requeues forward a stable dispatch receipt and publish it", 
   assert.match(workflow, /--source-job-path "\$\{\{ inputs\.job \}\}"/);
   assert.match(workflow, /--requeue-depth "\$\{\{ inputs\.requeue_depth \}\}"/);
   assert.match(workflow, /--max-requeue-depth 1/);
+});
+
+test("repair execution publishes crash-safe workflow attempt receipts", () => {
+  const setupAction = readText(".github/actions/setup-action-ledger/action.yml");
+  const workflow = readText(".github/workflows/repair-cluster-worker.yml");
+  const executeJobStart = workflow.indexOf("\n  execute:");
+  const setupStart = workflow.indexOf(
+    "- uses: ./.github/actions/setup-action-ledger",
+    executeJobStart,
+  );
+  const pnpmStart = workflow.indexOf("- uses: ./.github/actions/setup-pnpm", setupStart);
+  const executeStart = workflow.indexOf("- name: Execute credited fix artifact", pnpmStart);
+  const finalizeStart = workflow.indexOf(
+    "- name: Finalize execute-fix action ledger",
+    executeStart,
+  );
+  const publishStart = workflow.indexOf(
+    "- name: Publish immutable execute-fix action ledger",
+    finalizeStart,
+  );
+  const requeueStart = workflow.indexOf("- name: Detect repair requeue requests", publishStart);
+  const executeStep = workflow.slice(executeStart, finalizeStart);
+  const finalizeStep = workflow.slice(finalizeStart, publishStart);
+  const publishStep = workflow.slice(publishStart, requeueStart);
+
+  assert.ok(executeJobStart >= 0);
+  assert.ok(setupStart > executeJobStart);
+  assert.ok(pnpmStart > setupStart);
+  assert.ok(executeStart > pnpmStart);
+  assert.ok(finalizeStart > executeStart);
+  assert.ok(publishStart > finalizeStart);
+  assert.ok(requeueStart > publishStart);
+  assert.match(setupAction, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT=\$output_root/);
+  assert.match(workflow.slice(pnpmStart, executeStart), /build-script: build:worker/);
+  assert.match(executeStep, /CLAWSWEEPER_ACTION_LEDGER_INVOCATION: execute-fix/);
+  assert.match(
+    executeStep,
+    /pnpm run repair:execute-fix-attempt -- "\$\{\{ inputs\.job \}\}" --latest --defer-publication/,
+  );
+  assert.match(executeStep, /execute_exit_code=\$\?/);
+  assert.match(executeStep, /echo "exit_code=\$execute_exit_code" >> "\$GITHUB_OUTPUT"/);
+  assert.match(executeStep, /exit "\$execute_exit_code"/);
+  assert.match(
+    finalizeStep,
+    /if: \$\{\{ always\(\) && steps\.execute-action-ledger\.outcome == 'success' && steps\.execute-setup-pnpm\.outcome == 'success' \}\}/,
+  );
+  assert.match(finalizeStep, /EXECUTE_EXIT_CODE:/);
+  assert.match(finalizeStep, /--interrupt-open-attempts --reason cancelled/);
+  assert.match(finalizeStep, /--interrupt-open-attempts --reason timeout/);
+  assert.match(finalizeStep, /--interrupt-open-attempts --reason workflow_failed/);
+  assert.match(finalizeStep, /finalize-action-events/);
+  assert.match(publishStep, /steps\.finalize-execute-fix-action-ledger\.outcome == 'success'/);
+  assert.match(
+    publishStep,
+    /source_root="\$\{CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:\?setup-action-ledger output root is required\}"/,
+  );
+  assert.match(publishStep, /publish-action-events/);
+  assert.match(publishStep, /--expected-producer-job "\$GITHUB_JOB"/);
+  assert.match(publishStep, /--state-root "\$CLAWSWEEPER_STATE_DIR"/);
+  assert.match(publishStep, /publish-action-event-paths/);
+  assert.match(publishStep, /--message "chore: append execute-fix action ledger"/);
 });
 
 test("exact review publishes status receipts created after its first ledger publication", () => {

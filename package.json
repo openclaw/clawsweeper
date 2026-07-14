@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "build:repair": "tsc -p tsconfig.repair.json",
     "build:dashboard": "tsc -p tsconfig.dashboard.json",
+    "build:worker": "pnpm run build && pnpm run build:repair",
     "build:all": "pnpm run build && pnpm run build:repair && pnpm run build:dashboard",
     "plan": "node dist/clawsweeper.js plan",
     "review": "node dist/clawsweeper.js review",
