@@ -103,12 +103,15 @@ test("exact-review queue keeps its core mutation available when pressure history
   const originalWarn = console.warn;
   console.warn = (...args) => warnings.push(args);
   try {
-    await queue.fetch(buildExactReviewQueueRequest("pressure-write-success", 605, "opened"));
+    const firstResponse = await queue.fetch(
+      buildExactReviewQueueRequest("pressure-write-success", 605, "opened"),
+    );
+    assert.equal(firstResponse.status, 202);
     storage.failNextPut("exact-review-queue-pressure-history:v1");
-    const response = await queue.fetch(
+    const secondResponse = await queue.fetch(
       buildExactReviewQueueRequest("pressure-write-failure", 606, "opened"),
     );
-    assert.equal(response.status, 202);
+    assert.equal(secondResponse.status, 202);
   } finally {
     console.warn = originalWarn;
   }
