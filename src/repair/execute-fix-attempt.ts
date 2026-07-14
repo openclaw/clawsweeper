@@ -25,6 +25,7 @@ type ExecuteFixAttemptDependencies = {
   env?: NodeJS.ProcessEnv;
   executorPath?: string;
   loadJob?: (filePath: string) => ParsedJob;
+  recordPhaseEvent?: typeof recordWorkflowPhaseEvent;
   execute?: (
     command: string,
     args: readonly string[],
@@ -52,7 +53,8 @@ export function runExecuteFixAttempt(
   const env = dependencies.env ?? process.env;
   const job = (dependencies.loadJob ?? parseJob)(jobPath);
   const identity = executeFixIdentity(job);
-  const workflowStart = recordWorkflowPhaseEvent(
+  const recordPhaseEvent = dependencies.recordPhaseEvent ?? recordWorkflowPhaseEvent;
+  const workflowStart = recordPhaseEvent(
     root,
     {
       phase: ACTION_EVENT_TYPES.workflowAttempt,
@@ -78,7 +80,7 @@ export function runExecuteFixAttempt(
     throw new Error("execute-fix attempt requires an enabled action ledger");
   }
 
-  const mutationStart = recordWorkflowPhaseEvent(
+  const mutationStart = recordPhaseEvent(
     root,
     {
       phase: ACTION_EVENT_TYPES.repairExecute,
@@ -126,7 +128,7 @@ export function runExecuteFixAttempt(
   const disposition = executeFixDisposition(result);
 
   try {
-    const mutationOutcome = recordWorkflowPhaseEvent(
+    const mutationOutcome = recordPhaseEvent(
       root,
       {
         phase: ACTION_EVENT_TYPES.repairExecute,
@@ -156,7 +158,7 @@ export function runExecuteFixAttempt(
     );
     if (!mutationOutcome) throw new Error("execute-fix mutation outcome was not recorded");
 
-    recordWorkflowPhaseEvent(
+    recordPhaseEvent(
       root,
       {
         phase: ACTION_EVENT_TYPES.workflowAttempt,

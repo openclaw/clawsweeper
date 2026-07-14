@@ -97,10 +97,14 @@ test("repair execution publishes crash-safe workflow attempt receipts", () => {
     "- name: Publish immutable execute-fix action ledger",
     finalizeStart,
   );
+  const postFlightTokenStart = workflow.indexOf(
+    "- name: Renew target write token for post-flight",
+    publishStart,
+  );
   const requeueStart = workflow.indexOf("- name: Detect repair requeue requests", publishStart);
   const executeStep = workflow.slice(executeStart, finalizeStart);
   const finalizeStep = workflow.slice(finalizeStart, publishStart);
-  const publishStep = workflow.slice(publishStart, requeueStart);
+  const publishStep = workflow.slice(publishStart, postFlightTokenStart);
 
   assert.ok(executeJobStart >= 0);
   assert.ok(setupStart > executeJobStart);
@@ -108,7 +112,9 @@ test("repair execution publishes crash-safe workflow attempt receipts", () => {
   assert.ok(executeStart > pnpmStart);
   assert.ok(finalizeStart > executeStart);
   assert.ok(publishStart > finalizeStart);
+  assert.ok(postFlightTokenStart > publishStart);
   assert.ok(requeueStart > publishStart);
+  assert.match(workflow.slice(executeJobStart, setupStart), /timeout-minutes: 90/);
   assert.match(setupAction, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT=\$output_root/);
   assert.match(workflow.slice(pnpmStart, executeStart), /build-script: build:worker/);
   assert.match(executeStep, /CLAWSWEEPER_ACTION_LEDGER_INVOCATION: execute-fix/);
@@ -124,10 +130,12 @@ test("repair execution publishes crash-safe workflow attempt receipts", () => {
     /if: \$\{\{ always\(\) && steps\.execute-action-ledger\.outcome == 'success' && steps\.execute-setup-pnpm\.outcome == 'success' \}\}/,
   );
   assert.match(finalizeStep, /EXECUTE_EXIT_CODE:/);
-  assert.match(finalizeStep, /--interrupt-open-attempts --reason cancelled/);
-  assert.match(finalizeStep, /--interrupt-open-attempts --reason timeout/);
-  assert.match(finalizeStep, /--interrupt-open-attempts --reason workflow_failed/);
+  assert.match(finalizeStep, /reason=cancelled/);
+  assert.match(finalizeStep, /reason=timeout/);
+  assert.match(finalizeStep, /reason=workflow_failed/);
   assert.match(finalizeStep, /finalize-action-events/);
+  assert.match(finalizeStep, /--interrupt-open-attempts/);
+  assert.match(finalizeStep, /--reason "\$reason"/);
   assert.match(publishStep, /steps\.finalize-execute-fix-action-ledger\.outcome == 'success'/);
   assert.match(
     publishStep,

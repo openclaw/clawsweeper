@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { readAllSpooledActionEvents } from "../../dist/action-ledger.js";
+import { ACTION_EVENT_REASON_CODES, readAllSpooledActionEvents } from "../../dist/action-ledger.js";
+import {
+  interruptOpenWorkflowActionEvents,
+  recordWorkflowPhaseEvent,
+} from "../../dist/action-ledger-runtime.js";
 import { runExecuteFixAttempt } from "../../dist/repair/execute-fix-attempt.js";
 import type { ParsedJob } from "../../dist/repair/lib.js";
 
@@ -122,6 +126,56 @@ test("execute-fix attempt wrapper marks a spawn failure as a retryable rejection
     assert.equal(events[2]?.action.mutation, false);
     assert.equal(events[3]?.attributes?.completion_reason, "workflow_failed");
     assert.equal(events[3]?.action.retryable, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("successful execution leaves recoverable starts when terminal receipt writing fails", (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "execute-fix-recovery-")));
+  const jobPath = "jobs/openclaw/inbox/cluster-42.md";
+  const env = workflowEnv({ CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "terminal-write-failure" });
+  let writes = 0;
+  t.mock.method(console, "error", () => {});
+
+  try {
+    const result = runExecuteFixAttempt([jobPath, "--latest"], {
+      root,
+      env,
+      loadJob: () => repairJob(jobPath),
+      execute: () => ({ status: 0, signal: null }),
+      recordPhaseEvent(eventRoot, input, options) {
+        writes += 1;
+        if (writes === 3) throw new Error("simulated terminal receipt failure");
+        return recordWorkflowPhaseEvent(eventRoot, input, options);
+      },
+    });
+
+    assert.deepEqual(result, { exitCode: 0, signal: null });
+    assert.equal(writes, 3);
+    assert.deepEqual(
+      readAllSpooledActionEvents(root).map((event) => [event.event_type, event.action.status]),
+      [
+        ["workflow.attempt", "started"],
+        ["repair.execute", "started"],
+      ],
+    );
+
+    assert.equal(
+      interruptOpenWorkflowActionEvents(root, {
+        env,
+        reasonCode: ACTION_EVENT_REASON_CODES.workflowFailed,
+      }),
+      2,
+    );
+    const recovered = readAllSpooledActionEvents(root).sort(
+      (left, right) => left.phase_seq - right.phase_seq,
+    );
+    assert.equal(recovered[2]?.event_type, "repair.execute");
+    assert.equal(recovered[2]?.attributes?.completion_reason, "mutation_outcome_unknown");
+    assert.equal(recovered[3]?.event_type, "workflow.attempt");
+    assert.equal(recovered[3]?.parent_event_id, recovered[2]?.event_id);
+    assert.equal(recovered[3]?.attributes?.completion_reason, "mutation_outcome_unknown");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -12,7 +12,7 @@ test("repair workflow and executor share coherent production timeout defaults", 
 
   assert.match(source, /repairTimeoutBudgetFromEnv\(\s*process\.env,?\s*\)/);
   assert.match(source, /currentCodexTimeoutMs\(true\)/);
-  assert.match(workflow, /timeout-minutes: 75/);
+  assert.match(workflow, /timeout-minutes: 90/);
   assert.match(
     workflow,
     /CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS: \$\{\{ vars\.CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS \|\| '1800000' \}\}/,

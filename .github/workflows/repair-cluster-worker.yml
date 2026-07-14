@@ -401,7 +401,7 @@ jobs:
     needs: cluster
     if: ${{ needs.cluster.result == 'success' && needs.cluster.outputs.job_exists == '1' && (inputs.mode == 'execute' || inputs.mode == 'autonomous') && !inputs.dry_run }}
     runs-on: ${{ inputs.execution_runner }}
-    timeout-minutes: 75
+    timeout-minutes: 90
     permissions:
       actions: read
       contents: read
@@ -602,6 +602,57 @@ jobs:
           echo "exit_code=$execute_exit_code" >> "$GITHUB_OUTPUT"
           exit "$execute_exit_code"
 
+      - name: Finalize execute-fix action ledger
+        id: finalize-execute-fix-action-ledger
+        if: ${{ always() && steps.execute-action-ledger.outcome == 'success' && steps.execute-setup-pnpm.outcome == 'success' }}
+        env:
+          EXECUTE_EXIT_CODE: ${{ steps.execute_fix.outputs.exit_code || '' }}
+          EXECUTE_OUTCOME: ${{ steps.execute_fix.outcome || 'not_started' }}
+        run: |
+          set -euo pipefail
+          if [ "$EXECUTE_OUTCOME" = "cancelled" ] || [ "$EXECUTE_EXIT_CODE" = "130" ] || [ "$EXECUTE_EXIT_CODE" = "143" ]; then
+            reason=cancelled
+          elif [ "$EXECUTE_EXIT_CODE" = "124" ] || [ "$EXECUTE_EXIT_CODE" = "137" ]; then
+            reason=timeout
+          else
+            reason=workflow_failed
+          fi
+          pnpm run --silent finalize-action-events -- \
+            --interrupt-open-attempts \
+            --reason "$reason"
+
+      - name: Publish immutable execute-fix action ledger
+        if: ${{ always() && steps.finalize-execute-fix-action-ledger.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          test -n "${CLAWSWEEPER_STATE_DIR:-}"
+          source_root="${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
+          if [ ! -d "$source_root/ledger" ]; then
+            echo "No execute-fix action event shards were finalized."
+            exit 0
+          fi
+          event_paths_file=".artifacts/execute-fix-action-ledger-paths.txt"
+          mkdir -p .artifacts
+          pnpm run --silent publish-action-events -- \
+            --source-root "$source_root" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --expected-producer-job "$GITHUB_JOB" |
+            jq -r '.paths[]?' |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "Execute-fix action event shards existed but no paths were imported." >&2
+            exit 1
+          fi
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+          done < "$event_paths_file"
+          node dist/clawsweeper.js publish-action-event-paths \
+            --paths-file "$event_paths_file" \
+            --message "chore: append execute-fix action ledger"
+
       - name: Renew target write token for post-flight
         id: target_post_flight_token
         if: ${{ always() && steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' }}
@@ -751,56 +802,6 @@ jobs:
             --detail "$detail" \
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --pr-url "$pr_url"
-
-      - name: Finalize execute-fix action ledger
-        id: finalize-execute-fix-action-ledger
-        if: ${{ always() && steps.execute-action-ledger.outcome == 'success' && steps.execute-setup-pnpm.outcome == 'success' }}
-        env:
-          EXECUTE_EXIT_CODE: ${{ steps.execute_fix.outputs.exit_code || '' }}
-          EXECUTE_OUTCOME: ${{ steps.execute_fix.outcome || 'not_started' }}
-        run: |
-          set -euo pipefail
-          args=()
-          if [ "$EXECUTE_OUTCOME" = "cancelled" ] || [ "$EXECUTE_EXIT_CODE" = "130" ] || [ "$EXECUTE_EXIT_CODE" = "143" ]; then
-            args=(--interrupt-open-attempts --reason cancelled)
-          elif [ "$EXECUTE_EXIT_CODE" = "124" ] || [ "$EXECUTE_EXIT_CODE" = "137" ]; then
-            args=(--interrupt-open-attempts --reason timeout)
-          elif [ "$EXECUTE_OUTCOME" != "success" ] && [ "$EXECUTE_OUTCOME" != "skipped" ]; then
-            args=(--interrupt-open-attempts --reason workflow_failed)
-          fi
-          pnpm run --silent finalize-action-events -- "${args[@]}"
-
-      - name: Publish immutable execute-fix action ledger
-        if: ${{ always() && steps.finalize-execute-fix-action-ledger.outcome == 'success' }}
-        run: |
-          set -euo pipefail
-          test -n "${CLAWSWEEPER_STATE_DIR:-}"
-          source_root="${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
-          if [ ! -d "$source_root/ledger" ]; then
-            echo "No execute-fix action event shards were finalized."
-            exit 0
-          fi
-          event_paths_file=".artifacts/execute-fix-action-ledger-paths.txt"
-          mkdir -p .artifacts
-          pnpm run --silent publish-action-events -- \
-            --source-root "$source_root" \
-            --state-root "$CLAWSWEEPER_STATE_DIR" \
-            --expected-producer-job "$GITHUB_JOB" |
-            jq -r '.paths[]?' |
-            sort -u > "$event_paths_file"
-          if [ ! -s "$event_paths_file" ]; then
-            echo "Execute-fix action event shards existed but no paths were imported." >&2
-            exit 1
-          fi
-          while IFS= read -r event_path; do
-            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
-            test -f "$durable_event_path"
-            mkdir -p "$(dirname "$event_path")"
-            cp "$durable_event_path" "$event_path"
-          done < "$event_paths_file"
-          node dist/clawsweeper.js publish-action-event-paths \
-            --paths-file "$event_paths_file" \
-            --message "chore: append execute-fix action ledger"
 
       - name: Detect repair requeue requests
         id: repair_requeue
