@@ -86,7 +86,7 @@ export function createReviewedPrActivityCursor(options: {
     ...options.inlineComments.map((comment) => compactReviewActivity("inline_comment", comment)),
     ...options.reviewThreads.map(compactReviewThread),
   ].map((entry) => stableJson(entry));
-  entries.sort((left, right) => left.localeCompare(right));
+  entries.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
   const canonical = `[${entries.join(",")}]`;
   if (Buffer.byteLength(canonical, "utf8") > MAX_REVIEWED_PR_ACTIVITY_CURSOR_BYTES) return null;
   const digest = createHash("sha256").update(canonical).digest("hex");

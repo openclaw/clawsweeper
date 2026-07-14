@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import {
@@ -90,6 +91,41 @@ test("review activity cursors are order-independent and edit-sensitive", () => {
 
   assert.equal(reverse, forward);
   assert.notEqual(edited, forward);
+});
+
+test("review activity cursor ordering is locale-independent", () => {
+  const moduleUrl = new URL("../dist/review-activity-cursor.js", import.meta.url).href;
+  const script = `
+    const { createReviewedPrActivityCursor } = await import(${JSON.stringify(moduleUrl)});
+    const cursor = createReviewedPrActivityCursor({
+      reviews: [],
+      inlineComments: [],
+      reviewThreads: [
+        { id: "I", isResolved: false },
+        { id: "\\u0131", isResolved: false },
+        { id: "i", isResolved: false },
+        { id: "\\u0130", isResolved: false },
+      ],
+    });
+    console.log(JSON.stringify({
+      locale: Intl.Collator().resolvedOptions().locale,
+      cursor,
+    }));
+  `;
+  const run = (locale: string) => {
+    const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+      encoding: "utf8",
+      env: { ...process.env, LANG: locale, LC_ALL: locale },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout.trim()) as { locale: string; cursor: string };
+  };
+
+  const english = run("en_US.UTF-8");
+  const turkish = run("tr_TR.UTF-8");
+  assert.match(english.locale, /^en(?:-|$)/i);
+  assert.match(turkish.locale, /^tr(?:-|$)/i);
+  assert.equal(turkish.cursor, english.cursor);
 });
 
 test("review activity cursors fail closed beyond the bounded history", () => {
