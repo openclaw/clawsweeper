@@ -132,6 +132,179 @@ process.exit(1);
 `;
 }
 
+function proofMutationGhMockScript(options: {
+  statePath: string;
+  mutationLogPath: string;
+  bot?: boolean;
+  driftHeadAtPullRead?: number;
+  driftReviewAtRead?: number;
+  driftConversationAtRead?: number;
+  postUnknown?: boolean;
+}): string {
+  return `#!/usr/bin/env node
+const fs = require("node:fs");
+const config = ${JSON.stringify(options)};
+const oldHead = "${"a".repeat(40)}";
+const newHead = "${"b".repeat(40)}";
+const initialLabels = config.bot
+  ? ["triage: needs-real-behavior-proof", "stale"]
+  : ["triage: needs-real-behavior-proof"];
+const state = fs.existsSync(config.statePath)
+  ? JSON.parse(fs.readFileSync(config.statePath, "utf8"))
+  : { pullReads: 0, reviewReads: 0, conversationReads: 0, labels: initialLabels, comments: [] };
+const save = () => fs.writeFileSync(config.statePath, JSON.stringify(state));
+const logMutation = (value) => fs.appendFileSync(config.mutationLogPath, value + "\\n");
+const output = (value) => {
+  save();
+  console.log(JSON.stringify(value));
+  process.exit(0);
+};
+const args = process.argv.slice(2);
+const commandArgs = args[0] === "--repo" ? args.slice(2) : args;
+const path = commandArgs[1] || "";
+const methodIndex = commandArgs.indexOf("--method");
+const method = methodIndex >= 0 ? commandArgs[methodIndex + 1] : "GET";
+const currentHead = () => {
+  state.pullReads += 1;
+  return config.driftHeadAtPullRead && state.pullReads >= config.driftHeadAtPullRead
+    ? newHead
+    : oldHead;
+};
+const currentReviews = () => {
+  state.reviewReads += 1;
+  return config.driftReviewAtRead && state.reviewReads >= config.driftReviewAtRead
+    ? [{
+        id: 9,
+        user: { login: "reviewer" },
+        state: "COMMENTED",
+        body: "new review activity",
+        submitted_at: "2026-07-14T12:00:00Z",
+        commit_id: oldHead
+      }]
+    : [];
+};
+const currentComments = () => {
+  state.conversationReads += 1;
+  const injected = config.driftConversationAtRead &&
+      state.conversationReads >= config.driftConversationAtRead
+    ? [{
+        id: 8,
+        user: { login: "contributor" },
+        author_association: "CONTRIBUTOR",
+        body: "new proof conversation activity",
+        created_at: "2026-07-14T12:00:00Z",
+        updated_at: "2026-07-14T12:00:00Z",
+        html_url: "https://github.com/openclaw/openclaw/pull/42#issuecomment-8"
+      }]
+    : [];
+  return [...state.comments, ...injected];
+};
+if (commandArgs[0] === "label" && commandArgs[1] === "create") {
+  logMutation("label_create:" + commandArgs[2]);
+  output({ name: commandArgs[2] });
+}
+if (commandArgs[0] === "issue" && commandArgs[1] === "edit") {
+  const addIndex = commandArgs.indexOf("--add-label");
+  const removeIndex = commandArgs.indexOf("--remove-label");
+  if (addIndex >= 0) {
+    const label = commandArgs[addIndex + 1];
+    logMutation("label_add:" + label);
+    if (!state.labels.includes(label)) state.labels.push(label);
+  }
+  if (removeIndex >= 0) {
+    const label = commandArgs[removeIndex + 1];
+    logMutation("label_remove:" + label);
+    state.labels = state.labels.filter((entry) => entry !== label);
+  }
+  output({ labels: state.labels });
+}
+if (path === "repos/openclaw/openclaw/issues/42") {
+  output({
+    number: 42,
+    title: "Proof nudge sample",
+    html_url: "https://github.com/openclaw/openclaw/pull/42",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-02T00:00:00Z",
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: config.bot ? "NONE" : "CONTRIBUTOR",
+    user: { login: config.bot ? "app/clawsweeper" : "contributor" },
+    labels: state.labels,
+    pull_request: {}
+  });
+}
+if (path === "repos/openclaw/openclaw/pulls/42") {
+  output({
+    draft: false,
+    head: { sha: currentHead(), repo: { full_name: "openclaw/openclaw" } }
+  });
+}
+if (path === "repos/openclaw/openclaw/commits/" + oldHead ||
+    path === "repos/openclaw/openclaw/commits/" + newHead) {
+  output({
+    commit: {
+      author: { date: "2026-01-01T00:00:00Z" },
+      committer: { date: "2026-01-01T00:00:00Z" }
+    },
+    authorDate: "2026-01-01T00:00:00Z",
+    committerDate: "2026-01-01T00:00:00Z"
+  });
+}
+if (path.startsWith("repos/openclaw/openclaw/pulls/42/reviews")) {
+  output(currentReviews());
+}
+if (path.startsWith("repos/openclaw/openclaw/pulls/42/comments")) {
+  output([]);
+}
+if (path.startsWith("repos/openclaw/openclaw/issues/42/timeline")) {
+  output([]);
+}
+if (path.startsWith("repos/openclaw/openclaw/issues/42/comments") && method === "POST") {
+  const inputIndex = commandArgs.indexOf("--input");
+  const payload = JSON.parse(fs.readFileSync(commandArgs[inputIndex + 1], "utf8"));
+  const comment = {
+    id: 99,
+    user: { login: "clawsweeper[bot]" },
+    author_association: "NONE",
+    body: payload.body,
+    created_at: "2026-07-14T12:00:00Z",
+    updated_at: "2026-07-14T12:00:00Z",
+    html_url: "https://github.com/openclaw/openclaw/pull/42#issuecomment-99"
+  };
+  state.comments = state.comments.filter((entry) => entry.id !== 99);
+  state.comments.push(comment);
+  logMutation("comment_post");
+  save();
+  if (config.postUnknown) {
+    console.error("HTTP 502: write acknowledgement unavailable");
+    process.exit(1);
+  }
+  output({ id: comment.id, html_url: comment.html_url });
+}
+if (path.startsWith("repos/openclaw/openclaw/issues/42/comments")) {
+  output(currentComments());
+}
+if (path === "graphql") {
+  output({
+    data: {
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: []
+          }
+        }
+      }
+    }
+  });
+}
+save();
+console.error("unexpected gh args: " + args.join(" "));
+process.exit(1);
+`;
+}
+
 test("bot proof candidate scan prioritizes ClawSweeper proof blockers", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -538,6 +711,171 @@ test("targeted proof lane execute scans ignore cursor paths", () => {
         assert.equal(existsSync(cursorPath), false);
       }
     });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("proof nudges block a comment when conversation activity changes at the request boundary", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const reportPath = join(root, "proof-nudge-report.json");
+    const statePath = join(root, "gh-state.json");
+    const mutationLogPath = join(root, "mutations.log");
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(join(itemsDir, "42.md"), proofNudgeReport({ headSha: "a".repeat(40) }));
+
+    withMockGh(
+      root,
+      proofMutationGhMockScript({
+        statePath,
+        mutationLogPath,
+        driftConversationAtRead: 4,
+      }),
+      () => {
+        execFileSync(process.execPath, [
+          "dist/clawsweeper.js",
+          "proof-nudges",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--item-numbers",
+          "42",
+          "--limit",
+          "1",
+          "--processed-limit",
+          "1",
+          "--min-age-days",
+          "0",
+          "--report-path",
+          reportPath,
+          "--execute",
+        ]);
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.equal(report[0].action, "skipped_changed_before_mutation");
+    assert.match(report[0].reason, /conversation activity changed/);
+    assert.equal(existsSync(mutationLogPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("proof nudges reconcile a marker when GitHub accepts the comment before losing the response", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const reportPath = join(root, "proof-nudge-report.json");
+    const statePath = join(root, "gh-state.json");
+    const mutationLogPath = join(root, "mutations.log");
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(join(itemsDir, "42.md"), proofNudgeReport({ headSha: "a".repeat(40) }));
+
+    withMockGh(
+      root,
+      proofMutationGhMockScript({
+        statePath,
+        mutationLogPath,
+        postUnknown: true,
+      }),
+      () => {
+        execFileSync(process.execPath, [
+          "dist/clawsweeper.js",
+          "proof-nudges",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--item-numbers",
+          "42",
+          "--limit",
+          "1",
+          "--processed-limit",
+          "1",
+          "--min-age-days",
+          "0",
+          "--report-path",
+          reportPath,
+          "--execute",
+        ]);
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.equal(report[0].action, "proof_nudge_reconciled");
+    assert.match(report[0].reason, /confirmed after an inconclusive response/);
+    assert.equal(readFileSync(mutationLogPath, "utf8").trim(), "comment_post");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bot proof revalidates before each label request and stops after head drift", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const reportPath = join(root, "bot-proof-report.json");
+    const statePath = join(root, "gh-state.json");
+    const mutationLogPath = join(root, "mutations.log");
+    mkdirSync(itemsDir, { recursive: true });
+    writeFileSync(
+      join(itemsDir, "42.md"),
+      proofNudgeReport({
+        author: "app/clawsweeper",
+        authorAssociation: "NONE",
+        headSha: "a".repeat(40),
+      }),
+    );
+
+    withMockGh(
+      root,
+      proofMutationGhMockScript({
+        statePath,
+        mutationLogPath,
+        bot: true,
+        driftHeadAtPullRead: 6,
+      }),
+      () => {
+        execFileSync(process.execPath, [
+          "dist/clawsweeper.js",
+          "bot-proof",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--item-numbers",
+          "42",
+          "--limit",
+          "1",
+          "--processed-limit",
+          "1",
+          "--report-path",
+          reportPath,
+          "--execute",
+        ]);
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.equal(
+      report[0].action,
+      "skipped_changed_before_mutation",
+      JSON.stringify({
+        report,
+        mutations: existsSync(mutationLogPath) ? readFileSync(mutationLogPath, "utf8") : "",
+        state: JSON.parse(readFileSync(statePath, "utf8")),
+      }),
+    );
+    assert.match(report[0].reason, /head changed/);
+    assert.match(readFileSync(mutationLogPath, "utf8"), /^label_create:/);
+    assert.doesNotMatch(
+      readFileSync(mutationLogPath, "utf8"),
+      /label_add|label_remove|comment_post/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

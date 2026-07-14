@@ -193,6 +193,18 @@ import {
   reviewedPrActivityThreadsPageFromGraphql,
 } from "./review-activity-cursor.js";
 import {
+  MAX_PROOF_CONVERSATION_ACTIVITY,
+  createProofConversationActivityCursor,
+  finishProofMutationReceipt,
+  proofMutationFreshnessBlock,
+  recordProofMutationReconciliation,
+  startProofMutationReceipt,
+  type ProofMutationFreshnessBlock,
+  type ProofMutationFreshnessSnapshot,
+  type ProofMutationLane,
+  type ProofMutationReceiptContext,
+} from "./proof-mutation-safety.js";
+import {
   ACTION_EVENT_REASON_CODES,
   ACTION_EVENT_STATUSES,
   ACTION_EVENT_TYPES,
@@ -1067,6 +1079,8 @@ interface FailedReviewRetryState {
 type ProofNudgeAction =
   | "proof_nudge_posted"
   | "proof_nudge_planned"
+  | "proof_nudge_reconciled"
+  | "proof_nudge_outcome_unknown"
   | "skipped_not_pull_request"
   | "skipped_not_open"
   | "skipped_policy_exempt"
@@ -1079,6 +1093,7 @@ type ProofNudgeAction =
   | "skipped_protected_label"
   | "skipped_locked_conversation"
   | "skipped_no_live_head"
+  | "skipped_changed_before_mutation"
   | "skipped_live_fetch_failed"
   | "skipped_runtime_budget";
 
@@ -1087,6 +1102,8 @@ type BotProofAction =
   | "bot_proof_mantis_request_planned"
   | "bot_proof_decision_posted"
   | "bot_proof_decision_planned"
+  | "bot_proof_decision_reconciled"
+  | "bot_proof_mutation_outcome_unknown"
   | "skipped_not_pull_request"
   | "skipped_not_open"
   | "skipped_not_bot_authored"
@@ -1095,6 +1112,7 @@ type BotProofAction =
   | "skipped_stale_report_head"
   | "skipped_no_live_head"
   | "skipped_locked_conversation"
+  | "skipped_changed_before_mutation"
   | "skipped_live_fetch_failed"
   | "skipped_runtime_budget";
 
@@ -1175,7 +1193,12 @@ interface ProofNudgeEligibility {
   eligible: boolean;
   action: Exclude<
     ProofNudgeAction,
-    "proof_nudge_posted" | "skipped_not_open" | "skipped_runtime_budget"
+    | "proof_nudge_posted"
+    | "skipped_not_open"
+    | "skipped_runtime_budget"
+    | "proof_nudge_reconciled"
+    | "proof_nudge_outcome_unknown"
+    | "skipped_changed_before_mutation"
   >;
   reason: string;
   latestActivityAt?: string | undefined;
@@ -1198,8 +1221,11 @@ interface BotProofEligibility {
     BotProofAction,
     | "bot_proof_mantis_request_posted"
     | "bot_proof_decision_posted"
+    | "bot_proof_decision_reconciled"
+    | "bot_proof_mutation_outcome_unknown"
     | "skipped_not_open"
     | "skipped_runtime_budget"
+    | "skipped_changed_before_mutation"
     | "skipped_live_fetch_failed"
   >;
   reason: string;
@@ -2655,8 +2681,37 @@ class ApplyMutationReviewGuardError extends Error {
   }
 }
 
+class ProofMutationFreshnessError extends Error {
+  readonly block: ProofMutationFreshnessBlock;
+
+  constructor(block: ProofMutationFreshnessBlock) {
+    super(block.message);
+    this.name = "ProofMutationFreshnessError";
+    this.block = block;
+  }
+}
+
+class ProofMutationOutcomeUnknownError extends Error {
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super("proof mutation request outcome is unknown");
+    this.name = "ProofMutationOutcomeUnknownError";
+    this.cause = cause;
+  }
+}
+
+type ProofMutationSession = {
+  context: ProofMutationReceiptContext;
+  expectedFreshness: ProofMutationFreshnessSnapshot;
+  refreshFreshness: () => ProofMutationFreshnessSnapshot;
+  nextAttemptByMutation: Map<string, number>;
+  unknownMutationObserved: boolean;
+};
+
 let activeApplyMutationRunner: MutationRunner | null = null;
 let activeReviewMutationRunner: MutationRunner | null = null;
+let activeProofMutationRunner: MutationRunner | null = null;
 
 function mutationErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -2670,7 +2725,8 @@ function runObservedApplyMutation<T>(options: {
   didMutate?: ((result: T) => boolean) | undefined;
   knownNoMutation?: ((error: unknown) => boolean) | undefined;
 }): T {
-  const runner = activeApplyMutationRunner ?? activeReviewMutationRunner;
+  const runner =
+    activeApplyMutationRunner ?? activeReviewMutationRunner ?? activeProofMutationRunner;
   if (runner) {
     return runner({
       identity: options.identity,
@@ -2683,6 +2739,71 @@ function runObservedApplyMutation<T>(options: {
   const result = options.operation();
   if (options.didMutate?.(result) ?? true) options.onMutation?.();
   return result;
+}
+
+function proofMutationRunner(session: ProofMutationSession): MutationRunner {
+  return <T>(options: {
+    identity: string;
+    idempotencyIdentity: string;
+    operation: () => T;
+    didMutate?: ((result: T) => boolean) | undefined;
+    knownNoMutation?: ((error: unknown) => boolean) | undefined;
+  }): T => {
+    const requestAttempt =
+      (session.nextAttemptByMutation.get(options.idempotencyIdentity) ?? 0) + 1;
+    session.nextAttemptByMutation.set(options.idempotencyIdentity, requestAttempt);
+    const attempt = startProofMutationReceipt({
+      context: session.context,
+      receiptIdentity: options.identity,
+      mutationIdentity: options.idempotencyIdentity,
+      requestAttempt,
+    });
+    let currentFreshness: ProofMutationFreshnessSnapshot;
+    try {
+      currentFreshness = session.refreshFreshness();
+    } catch (error) {
+      finishProofMutationReceipt({ attempt, outcome: "rejected" });
+      if (error instanceof ProofMutationFreshnessError) throw error;
+      throw new ProofMutationFreshnessError({
+        reason: "freshness_unavailable",
+        message: "proof mutation freshness could not be refreshed before the request",
+      });
+    }
+    const block = proofMutationFreshnessBlock(session.expectedFreshness, currentFreshness);
+    if (block) {
+      finishProofMutationReceipt({ attempt, outcome: "rejected" });
+      throw new ProofMutationFreshnessError(block);
+    }
+    try {
+      const result = options.operation();
+      finishProofMutationReceipt({
+        attempt,
+        outcome: options.didMutate?.(result) === false ? "rejected" : "accepted",
+      });
+      return result;
+    } catch (error) {
+      const rejected =
+        isGitHubRequiresAuthenticationError(error) ||
+        isLockedConversationCommentError(error) ||
+        options.knownNoMutation?.(error) === true;
+      finishProofMutationReceipt({
+        attempt,
+        outcome: rejected ? "rejected" : "unknown",
+      });
+      if (!rejected) {
+        session.unknownMutationObserved = true;
+        throw new ProofMutationOutcomeUnknownError(error);
+      }
+      throw error;
+    }
+  };
+}
+
+function reconcileProofMutation(session: ProofMutationSession, mutationIdentity: string): void {
+  recordProofMutationReconciliation({
+    context: session.context,
+    mutationIdentity,
+  });
 }
 
 function ghObservedMutationCommand(options: {
@@ -6605,6 +6726,37 @@ function fetchReviewedPrActivityCursor(
     inlineComments.length === 0 ? [] : reviewedPrActivityThreads(number, remaining + 1);
   if (reviewThreads.length > remaining) return null;
   return createReviewedPrActivityCursor({ reviews, inlineComments, reviewThreads });
+}
+
+function fetchProofConversationActivityCursor(number: number): string | null {
+  const comments = ghPagedLimit<unknown>(
+    `repos/${targetRepo()}/issues/${number}/comments`,
+    MAX_PROOF_CONVERSATION_ACTIVITY + 1,
+  );
+  return createProofConversationActivityCursor(comments);
+}
+
+function readProofMutationFreshnessSnapshot(number: number): ProofMutationFreshnessSnapshot {
+  const readOnce = (): ProofMutationFreshnessSnapshot => {
+    const headSha = pullRequestHeadSha(number);
+    if (!headSha) throw new Error(`live PR head could not be read for #${number}`);
+    const reviewActivityCursor = fetchReviewedPrActivityCursor(number);
+    if (!reviewActivityCursor) {
+      throw new Error(`review activity exceeds the bounded proof mutation cursor for #${number}`);
+    }
+    const conversationActivityCursor = fetchProofConversationActivityCursor(number);
+    if (!conversationActivityCursor) {
+      throw new Error(
+        `conversation activity exceeds the bounded proof mutation cursor for #${number}`,
+      );
+    }
+    return { headSha, reviewActivityCursor, conversationActivityCursor };
+  };
+  const first = readOnce();
+  const second = readOnce();
+  const block = proofMutationFreshnessBlock(first, second);
+  if (block) throw new ProofMutationFreshnessError(block);
+  return second;
 }
 
 export interface ContextHydration<T> {
@@ -19352,6 +19504,27 @@ function issueCommentWithMarker(
   });
 }
 
+function ownedIssueCommentWithMarker(
+  number: number,
+  marker: string,
+): Record<string, unknown> | undefined {
+  const comments = ghPagedLimit<unknown>(
+    `repos/${targetRepo()}/issues/${number}/comments`,
+    MAX_PROOF_CONVERSATION_ACTIVITY + 1,
+  );
+  if (comments.length > MAX_PROOF_CONVERSATION_ACTIVITY) {
+    throw new Error(`conversation activity exceeds the bounded proof lane limit for #${number}`);
+  }
+  return comments
+    .map(asRecord)
+    .find(
+      (comment) =>
+        canPatchReviewComment(comment) &&
+        typeof comment.body === "string" &&
+        comment.body.includes(marker),
+    );
+}
+
 function closeAppliedEvidenceLink(markdown: string, itemUrl: string): string {
   const reviewCommentUrl = frontMatterValue(markdown, "review_comment_url");
   if (reviewCommentUrl && reviewCommentUrl !== "unknown") {
@@ -27885,7 +28058,14 @@ function orderedApplyItemNumbers(
 }
 
 function proofNudgeComments(number: number): ProofNudgeComment[] {
-  return ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`).map((comment) => {
+  const comments = ghPagedLimit<unknown>(
+    `repos/${targetRepo()}/issues/${number}/comments`,
+    MAX_PROOF_CONVERSATION_ACTIVITY + 1,
+  );
+  if (comments.length > MAX_PROOF_CONVERSATION_ACTIVITY) {
+    throw new Error(`conversation activity exceeds the bounded proof lane limit for #${number}`);
+  }
+  return comments.map((comment) => {
     const record = asRecord(comment);
     return {
       author: login(record.user),
@@ -27931,33 +28111,82 @@ function fetchPullRequestProofNudgeDetails(number: number): ProofNudgePullReques
   return details;
 }
 
-function postProofNudgeComment(number: number, body: string): Record<string, unknown> {
-  const payload = writeCommentPayload(number, body);
-  return ghJson<Record<string, unknown>>([
+interface ProofCommentMutationResult {
+  comment: Record<string, unknown>;
+  reconciled: boolean;
+}
+
+function postProofNudgeComment(options: {
+  number: number;
+  headSha: string;
+  timestamp: string;
+  body: string;
+  session: ProofMutationSession;
+}): ProofCommentMutationResult {
+  const marker = proofNudgeMarker(options);
+  const mutationIdentity = proofNudgeCommentMutationIdentity(options);
+  const existing = ownedIssueCommentWithMarker(options.number, marker);
+  if (existing) {
+    reconcileProofMutation(options.session, mutationIdentity);
+    return { comment: existing, reconciled: true };
+  }
+  const payload = writeCommentPayload(options.number, options.body);
+  const args = [
     "api",
-    `repos/${targetRepo()}/issues/${number}/comments`,
+    `repos/${targetRepo()}/issues/${options.number}/comments`,
     "--method",
     "POST",
     "--input",
     payload,
     "--jq",
     "{id,html_url}",
-  ]);
+  ];
+  const response = ghObservedMutationCommand({
+    identity: mutationIdentity,
+    args,
+    knownNoMutation: (error) =>
+      isGitHubRequiresAuthenticationError(error) || isLockedConversationCommentError(error),
+  });
+  const written = reviewCommentFromMutationResponse(response, args);
+  if (written) return { comment: written, reconciled: false };
+  const fallback = ownedIssueCommentWithMarker(options.number, marker);
+  if (fallback) return { comment: fallback, reconciled: false };
+  throw new Error(
+    `GitHub proof nudge mutation for #${options.number} did not return or expose the posted comment`,
+  );
 }
 
 function upsertBotProofDecisionComment(
   number: number,
   headSha: string,
   body: string,
-): Record<string, unknown> {
+  session: ProofMutationSession,
+): ProofCommentMutationResult {
   const marker = botProofDecisionMarker({ number, headSha });
-  const existing = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments?per_page=100`)
+  const comments = ghPagedLimit<unknown>(
+    `repos/${targetRepo()}/issues/${number}/comments`,
+    MAX_PROOF_CONVERSATION_ACTIVITY + 1,
+  );
+  if (comments.length > MAX_PROOF_CONVERSATION_ACTIVITY) {
+    throw new Error(`conversation activity exceeds the bounded proof lane limit for #${number}`);
+  }
+  const existing = comments
     .map(asRecord)
     .find((comment) => typeof comment.body === "string" && comment.body.includes(marker));
+  const mutationIdentity = botProofCommentMutationIdentity(number, headSha, body);
+  if (
+    existing &&
+    canPatchReviewComment(existing) &&
+    commentBody(existing)?.trim() === body.trim()
+  ) {
+    reconcileProofMutation(session, mutationIdentity);
+    return { comment: existing, reconciled: true };
+  }
   const payload = writeCommentPayload(number, body);
   const existingId = commentId(existing);
+  let args: string[];
   if (existingId !== null && canPatchReviewComment(existing)) {
-    return ghJson<Record<string, unknown>>([
+    args = [
       "api",
       `repos/${targetRepo()}/issues/comments/${existingId}`,
       "--method",
@@ -27966,18 +28195,32 @@ function upsertBotProofDecisionComment(
       payload,
       "--jq",
       "{id,html_url}",
-    ]);
+    ];
+  } else {
+    args = [
+      "api",
+      `repos/${targetRepo()}/issues/${number}/comments`,
+      "--method",
+      "POST",
+      "--input",
+      payload,
+      "--jq",
+      "{id,html_url}",
+    ];
   }
-  return ghJson<Record<string, unknown>>([
-    "api",
-    `repos/${targetRepo()}/issues/${number}/comments`,
-    "--method",
-    "POST",
-    "--input",
-    payload,
-    "--jq",
-    "{id,html_url}",
-  ]);
+  const response = ghObservedMutationCommand({
+    identity: mutationIdentity,
+    args,
+    knownNoMutation: (error) =>
+      isGitHubRequiresAuthenticationError(error) || isLockedConversationCommentError(error),
+  });
+  const written = reviewCommentFromMutationResponse(response, args);
+  if (written) return { comment: written, reconciled: false };
+  const fallback = ownedIssueCommentWithMarker(number, marker);
+  if (fallback) return { comment: fallback, reconciled: false };
+  throw new Error(
+    `GitHub bot proof mutation for #${number} did not return or expose the synced comment`,
+  );
 }
 
 function syncBotProofDecisionLabels(options: {
@@ -27995,7 +28238,7 @@ function syncBotProofDecisionLabels(options: {
   const nextLabels = statusResult.labels.filter((label) => normalizeLabelName(label) !== "stale");
   if (!options.dryRun) {
     for (const label of staleLabels) {
-      ghWithRetry(["issue", "edit", String(options.number), "--remove-label", label]);
+      removeIssueLabel(options.number, label);
     }
   }
   const changed = statusResult.changed || staleLabels.length > 0;
@@ -28158,6 +28401,69 @@ function proofNudgeLiveFetchFailureReason(error: unknown): string {
   return `live GitHub state could not be fetched: ${detail.slice(0, 300)}`;
 }
 
+function createProofMutationSession(options: {
+  lane: ProofMutationLane;
+  number: number;
+  headSha: string;
+}): ProofMutationSession {
+  const expectedFreshness = readProofMutationFreshnessSnapshot(options.number);
+  if (expectedFreshness.headSha !== options.headSha.trim().toLowerCase()) {
+    throw new ProofMutationFreshnessError({
+      reason: "head_changed",
+      message: "live PR head changed while preparing the proof mutation",
+    });
+  }
+  return {
+    context: {
+      root: ROOT,
+      lane: options.lane,
+      repository: targetRepo(),
+      number: options.number,
+      headSha: expectedFreshness.headSha,
+      component: options.lane,
+      evidence: workflowRunEvidence(),
+      privacy: actionLedgerPrivacy(),
+    },
+    expectedFreshness,
+    refreshFreshness: () => readProofMutationFreshnessSnapshot(options.number),
+    nextAttemptByMutation: new Map(),
+    unknownMutationObserved: false,
+  };
+}
+
+function proofNudgeCommentMutationIdentity(options: {
+  number: number;
+  headSha: string;
+  timestamp: string;
+}): string {
+  return `proof_nudge_comment:${options.number}:${options.headSha}:${options.timestamp}`;
+}
+
+function botProofLabelStateMutationIdentity(number: number, headSha: string): string {
+  return `bot_proof_label_state:${number}:${headSha}:needs_maintainer_proof_decision`;
+}
+
+function botProofCommentMutationIdentity(number: number, headSha: string, body: string): string {
+  return `bot_proof_comment:${number}:${headSha}:${sha256(body)}`;
+}
+
+function botProofDecisionLabelsAreSynchronized(labels: readonly string[]): boolean {
+  const expected = syncBotProofDecisionLabels({
+    number: 1,
+    labels,
+    dryRun: true,
+  }).labels;
+  const current = [...labels].map(normalizeLabelName).sort();
+  const desired = [...expected].map(normalizeLabelName).sort();
+  return (
+    current.length === desired.length && current.every((label, index) => label === desired[index])
+  );
+}
+
+function proofMutationUnknownReason(): string {
+  return "GitHub may have accepted the proof mutation, but the response was not conclusive; same-head marker reconciliation is required before retry";
+}
+
 export function proofNudgeCandidateRecordsForTest(
   itemsDir: string,
   requestedItemNumbers: readonly number[] = [],
@@ -28282,9 +28588,17 @@ function proofNudgesCommand(args: Args): void {
     let comments: ProofNudgeComment[] = [];
     let authorEditedAt: string | undefined;
     let authorReviewActivityAt: string | undefined;
+    let mutationSession: ProofMutationSession | null = null;
     try {
       pullDetails =
         item.kind === "pull_request" ? fetchPullRequestProofNudgeDetails(candidate.number) : {};
+      if (execute && pullDetails.headSha) {
+        mutationSession = createProofMutationSession({
+          lane: "proof_nudges",
+          number: candidate.number,
+          headSha: pullDetails.headSha,
+        });
+      }
       comments = item.kind === "pull_request" ? proofNudgeComments(candidate.number) : [];
       authorEditedAt =
         item.kind === "pull_request"
@@ -28315,12 +28629,35 @@ function proofNudgesCommand(args: Args): void {
       cooldownDays,
     });
     if (!eligibility.eligible) {
-      results.push({
-        ...resultBase,
-        action: eligibility.action,
-        reason: eligibility.reason,
-        headSha: pullDetails.headSha,
-      });
+      if (
+        execute &&
+        mutationSession &&
+        pullDetails.headSha &&
+        eligibility.action === "skipped_recent_nudge" &&
+        eligibility.latestNudgeAt
+      ) {
+        reconcileProofMutation(
+          mutationSession,
+          proofNudgeCommentMutationIdentity({
+            number: candidate.number,
+            headSha: pullDetails.headSha,
+            timestamp: eligibility.latestNudgeAt,
+          }),
+        );
+        results.push({
+          ...resultBase,
+          action: "proof_nudge_reconciled",
+          reason: "same-head proof nudge marker already exists",
+          headSha: pullDetails.headSha,
+        });
+      } else {
+        results.push({
+          ...resultBase,
+          action: eligibility.action,
+          reason: eligibility.reason,
+          headSha: pullDetails.headSha,
+        });
+      }
       markProcessed(candidate);
       continue;
     }
@@ -28345,18 +28682,96 @@ function proofNudgesCommand(args: Args): void {
         headSha,
       });
     } else {
-      const comment = postProofNudgeComment(candidate.number, body);
-      results.push({
-        ...resultBase,
-        action: "proof_nudge_posted",
-        reason: eligibility.reason,
-        url: commentUrl(comment) ?? undefined,
-        headSha,
-      });
+      if (!mutationSession) {
+        results.push({
+          ...resultBase,
+          action: "skipped_live_fetch_failed",
+          reason: "live proof mutation freshness could not be established",
+          headSha,
+        });
+        markProcessed(candidate);
+        continue;
+      }
+      const previousProofMutationRunner = activeProofMutationRunner;
+      activeProofMutationRunner = proofMutationRunner(mutationSession);
+      try {
+        const mutation = postProofNudgeComment({
+          number: candidate.number,
+          headSha,
+          timestamp,
+          body,
+          session: mutationSession,
+        });
+        results.push({
+          ...resultBase,
+          action: mutation.reconciled ? "proof_nudge_reconciled" : "proof_nudge_posted",
+          reason: mutation.reconciled
+            ? "same-head proof nudge marker already exists"
+            : eligibility.reason,
+          url: commentUrl(mutation.comment) ?? undefined,
+          headSha,
+        });
+      } catch (error) {
+        const marker = proofNudgeMarker({ number: candidate.number, headSha, timestamp });
+        const reconciled = mutationSession.unknownMutationObserved
+          ? ownedIssueCommentWithMarker(candidate.number, marker)
+          : undefined;
+        if (reconciled) {
+          reconcileProofMutation(
+            mutationSession,
+            proofNudgeCommentMutationIdentity({
+              number: candidate.number,
+              headSha,
+              timestamp,
+            }),
+          );
+          results.push({
+            ...resultBase,
+            action: "proof_nudge_reconciled",
+            reason: "same-head proof nudge marker confirmed after an inconclusive response",
+            url: commentUrl(reconciled) ?? undefined,
+            headSha,
+          });
+        } else if (error instanceof ProofMutationFreshnessError) {
+          results.push({
+            ...resultBase,
+            action:
+              error.block.reason === "freshness_unavailable"
+                ? "skipped_live_fetch_failed"
+                : "skipped_changed_before_mutation",
+            reason: error.block.message,
+            headSha,
+          });
+        } else if (mutationSession.unknownMutationObserved) {
+          results.push({
+            ...resultBase,
+            action: "proof_nudge_outcome_unknown",
+            reason: proofMutationUnknownReason(),
+            headSha,
+          });
+        } else {
+          results.push({
+            ...resultBase,
+            action: "skipped_live_fetch_failed",
+            reason: proofNudgeLiveFetchFailureReason(error),
+            headSha,
+          });
+        }
+      } finally {
+        activeProofMutationRunner = previousProofMutationRunner;
+      }
     }
     markProcessed(candidate);
-    nudgeCount += 1;
-    logProgress(`${dryRun ? "planned" : "posted"} proof nudge #${candidate.number}`);
+    const finalAction = results.at(-1)?.action;
+    if (
+      finalAction === "proof_nudge_planned" ||
+      finalAction === "proof_nudge_posted" ||
+      finalAction === "proof_nudge_reconciled" ||
+      finalAction === "proof_nudge_outcome_unknown"
+    ) {
+      nudgeCount += 1;
+    }
+    logProgress(`${finalAction ?? "processed"} proof nudge #${candidate.number}`);
   }
   if (!dryRun && cursorPath && lastProcessedCandidate) {
     writeProofLaneCursor(cursorPath, "proof_nudges", lastProcessedCandidate);
@@ -28440,12 +28855,20 @@ function botProofCommand(args: Args): void {
     let item: Item;
     let state: string;
     let pullDetails: Partial<ProofNudgePullRequestDetails> = {};
+    let mutationSession: ProofMutationSession | null = null;
     try {
       const fetched = fetchItem(candidate.number);
       item = fetched.item;
       state = fetched.state;
       pullDetails =
         item.kind === "pull_request" ? fetchPullRequestProofNudgeDetails(candidate.number) : {};
+      if (execute && pullDetails.headSha) {
+        mutationSession = createProofMutationSession({
+          lane: "bot_proof",
+          number: candidate.number,
+          headSha: pullDetails.headSha,
+        });
+      }
     } catch (error) {
       results.push({
         ...resultBase,
@@ -28490,19 +28913,22 @@ function botProofCommand(args: Args): void {
       markProcessed(candidate);
       continue;
     }
-    const commentBody = renderBotProofDecisionComment({
+    const renderedCommentBody = renderBotProofDecisionComment({
       item,
       headSha,
       markdown: candidate.markdown,
-      timestamp: new Date().toISOString(),
+      timestamp:
+        candidate.reviewedAt ??
+        frontMatterValue(candidate.markdown, "item_updated_at") ??
+        "unknown",
       mantisRecommendation: eligibility.mantisRecommendation,
     });
-    const labelResult = syncBotProofDecisionLabels({
-      number: candidate.number,
-      labels: item.labels,
-      dryRun,
-    });
     if (dryRun) {
+      const labelResult = syncBotProofDecisionLabels({
+        number: candidate.number,
+        labels: item.labels,
+        dryRun: true,
+      });
       results.push({
         ...resultBase,
         action: eligibility.action,
@@ -28510,21 +28936,128 @@ function botProofCommand(args: Args): void {
         headSha,
       });
     } else {
-      const comment = upsertBotProofDecisionComment(candidate.number, headSha, commentBody);
-      results.push({
-        ...resultBase,
-        action:
-          eligibility.action === "bot_proof_mantis_request_planned"
-            ? "bot_proof_mantis_request_posted"
-            : "bot_proof_decision_posted",
-        reason: [eligibility.reason, labelResult.reason].filter(Boolean).join("; "),
-        url: commentUrl(comment) ?? undefined,
-        headSha,
-      });
+      if (!mutationSession) {
+        results.push({
+          ...resultBase,
+          action: "skipped_live_fetch_failed",
+          reason: "live proof mutation freshness could not be established",
+          headSha,
+        });
+        markProcessed(candidate);
+        continue;
+      }
+      const previousProofMutationRunner = activeProofMutationRunner;
+      activeProofMutationRunner = proofMutationRunner(mutationSession);
+      try {
+        const labelResult = syncBotProofDecisionLabels({
+          number: candidate.number,
+          labels: item.labels,
+          dryRun: false,
+        });
+        if (!labelResult.changed) {
+          reconcileProofMutation(
+            mutationSession,
+            botProofLabelStateMutationIdentity(candidate.number, headSha),
+          );
+        }
+        const mutation = upsertBotProofDecisionComment(
+          candidate.number,
+          headSha,
+          renderedCommentBody,
+          mutationSession,
+        );
+        const reconciled = mutation.reconciled && !labelResult.changed;
+        results.push({
+          ...resultBase,
+          action: reconciled
+            ? "bot_proof_decision_reconciled"
+            : eligibility.action === "bot_proof_mantis_request_planned"
+              ? "bot_proof_mantis_request_posted"
+              : "bot_proof_decision_posted",
+          reason: reconciled
+            ? "same-head proof decision comment and label state already exist"
+            : [eligibility.reason, labelResult.reason].filter(Boolean).join("; "),
+          url: commentUrl(mutation.comment) ?? undefined,
+          headSha,
+        });
+      } catch (error) {
+        let reconciledComment: Record<string, unknown> | undefined;
+        let reconciledLabels = false;
+        if (mutationSession.unknownMutationObserved) {
+          try {
+            const marker = botProofDecisionMarker({ number: candidate.number, headSha });
+            const existing = ownedIssueCommentWithMarker(candidate.number, marker);
+            if (existing && commentBody(existing)?.trim() === renderedCommentBody.trim()) {
+              reconciledComment = existing;
+            }
+            const refreshed = fetchItem(candidate.number);
+            reconciledLabels =
+              refreshed.state === "open" &&
+              botProofDecisionLabelsAreSynchronized(refreshed.item.labels);
+          } catch {
+            reconciledComment = undefined;
+            reconciledLabels = false;
+          }
+        }
+        if (reconciledComment && reconciledLabels) {
+          reconcileProofMutation(
+            mutationSession,
+            botProofCommentMutationIdentity(candidate.number, headSha, renderedCommentBody),
+          );
+          reconcileProofMutation(
+            mutationSession,
+            botProofLabelStateMutationIdentity(candidate.number, headSha),
+          );
+          results.push({
+            ...resultBase,
+            action: "bot_proof_decision_reconciled",
+            reason:
+              "same-head proof decision comment and label state were confirmed after an inconclusive response",
+            url: commentUrl(reconciledComment) ?? undefined,
+            headSha,
+          });
+        } else if (error instanceof ProofMutationFreshnessError) {
+          results.push({
+            ...resultBase,
+            action:
+              error.block.reason === "freshness_unavailable"
+                ? "skipped_live_fetch_failed"
+                : "skipped_changed_before_mutation",
+            reason: error.block.message,
+            headSha,
+          });
+        } else if (mutationSession.unknownMutationObserved) {
+          results.push({
+            ...resultBase,
+            action: "bot_proof_mutation_outcome_unknown",
+            reason: proofMutationUnknownReason(),
+            headSha,
+          });
+        } else {
+          results.push({
+            ...resultBase,
+            action: "skipped_live_fetch_failed",
+            reason: proofNudgeLiveFetchFailureReason(error),
+            headSha,
+          });
+        }
+      } finally {
+        activeProofMutationRunner = previousProofMutationRunner;
+      }
     }
     markProcessed(candidate);
-    actionCount += 1;
-    logProgress(`${dryRun ? "planned" : "posted"} bot proof handling #${candidate.number}`);
+    const finalAction = results.at(-1)?.action;
+    if (
+      finalAction === "bot_proof_mantis_request_planned" ||
+      finalAction === "bot_proof_mantis_request_posted" ||
+      finalAction === "bot_proof_decision_planned" ||
+      finalAction === "bot_proof_decision_posted" ||
+      finalAction === "bot_proof_decision_reconciled" ||
+      finalAction === "bot_proof_mutation_outcome_unknown"
+    ) {
+      actionCount += 1;
+    }
+    logProgress(`${finalAction ?? "processed"} bot proof handling #${candidate.number}`);
   }
   if (!dryRun && cursorPath && lastProcessedCandidate) {
     writeProofLaneCursor(cursorPath, "bot_proof", lastProcessedCandidate);
