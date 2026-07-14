@@ -303,6 +303,8 @@ test("GitHub activity rerun attempt two replays attempt one without redispatch",
     download?.with?.["run-id"],
     "${{ steps.select-activity-dispatch-ledger.outputs.source_run_id }}",
   );
+  assert.match(workflowSource, /\.workflow == "github-activity\.yml"/);
+  assert.doesNotMatch(workflowSource, /\.workflow == "github activity to openclaw"/);
   assert.deepEqual(workflow.on?.workflow_run, {
     workflows: ["github activity to openclaw"],
     types: ["completed"],

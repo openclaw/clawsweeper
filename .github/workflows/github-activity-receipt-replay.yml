@@ -160,7 +160,7 @@ jobs:
             --argjson run_attempt "$PRODUCER_ATTEMPT" '
               .repository == $repository and
               .sha == $sha and
-              .workflow == "github activity to openclaw" and
+              .workflow == "github-activity.yml" and
               .job == "notify" and
               .run_id == $run_id and
               .run_attempt == $run_attempt

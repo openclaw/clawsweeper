@@ -6,6 +6,7 @@ import path from "node:path";
 import test, { type TestContext } from "node:test";
 
 import { ACTION_EVENT_TYPES } from "../../dist/action-ledger.js";
+import { workflowActionProducer } from "../../dist/action-ledger-runtime.js";
 import {
   parseDispatchActionLedgerManifest,
   serializeDispatchActionLedgerManifest,
@@ -612,6 +613,86 @@ test("dispatch action ledger CLI finalizes and publishes dispatch lifecycle shar
     assert.equal(JSON.parse(secondReplay.stdout).created, 0);
     assert.ok(JSON.parse(secondReplay.stdout).unchanged > 0);
     assert.deepEqual(readEvents(replayStateRoot), readEvents(stateRoot));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("GitHub activity replay accepts the producer workflow filename contract", () => {
+  const fixture = actionLedgerFixture("github-activity-contract");
+  Object.assign(fixture.env, {
+    GITHUB_ACTION: "notify_openclaw",
+    GITHUB_JOB: "notify",
+    GITHUB_RUN_ATTEMPT: "2",
+    GITHUB_RUN_ID: "29361702909",
+    GITHUB_WORKFLOW: "github activity to openclaw",
+    GITHUB_WORKFLOW_REF:
+      "openclaw/clawsweeper/.github/workflows/github-activity.yml@refs/heads/main",
+  });
+  try {
+    runDispatchWithReceiptSync({
+      ...baseOptions(fixture),
+      operationKey: "dispatch:github-activity-contract",
+      dispatchInput: { event_type: "github_activity_contract" },
+      operation: () => undefined,
+    });
+    const finalize = spawnSync(
+      process.execPath,
+      [
+        path.resolve("dist/repair/dispatch-action-ledger-cli.js"),
+        "finalize",
+        "--lane",
+        "github-activity-dispatch",
+      ],
+      { encoding: "utf8", env: fixture.env },
+    );
+    assert.equal(finalize.status, 0, finalize.stderr);
+    const manifest = parseDispatchActionLedgerManifest(
+      finalize.stdout,
+      "github-activity-dispatch",
+      fixture.env,
+    );
+    const producer = workflowActionProducer("dispatch_manifest", fixture.env);
+    assert.equal(producer.workflow, "github-activity.yml");
+    assert.equal(manifest.workflow, producer.workflow);
+
+    const workflow = fs.readFileSync(
+      ".github/workflows/github-activity-receipt-replay.yml",
+      "utf8",
+    );
+    const validationStep = workflow.slice(
+      workflow.indexOf("- name: Validate GitHub activity dispatch receipt provenance"),
+      workflow.indexOf("- name: Create replay state token"),
+    );
+    const validationFilter =
+      /--argjson run_attempt "\$PRODUCER_ATTEMPT" '([\s\S]*?)'\s+"\$manifest_file"/.exec(
+        validationStep,
+      )?.[1];
+    assert.ok(validationFilter, "expected replay manifest validation filter");
+    const manifestPath = path.join(fixture.root, "github-activity-manifest.json");
+    fs.writeFileSync(manifestPath, finalize.stdout);
+    const validation = spawnSync(
+      "jq",
+      [
+        "-e",
+        "--arg",
+        "repository",
+        producer.repository,
+        "--arg",
+        "sha",
+        producer.sha,
+        "--arg",
+        "run_id",
+        producer.runId,
+        "--argjson",
+        "run_attempt",
+        String(producer.runAttempt),
+        validationFilter,
+        manifestPath,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(validation.status, 0, validation.stderr);
   } finally {
     fixture.cleanup();
   }
