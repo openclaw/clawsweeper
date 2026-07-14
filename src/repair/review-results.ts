@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import type { JsonValue, LooseRecord } from "./json-types.js";
-import { planRepairClosureResult } from "./closure-result-plan.js";
+import {
+  planRepairClosureResult,
+  resolveRepairClosureRelationship,
+} from "./closure-result-plan.js";
 import { validateRepairContractShape } from "./repair-contract.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -194,10 +197,9 @@ function reviewResult(resultPath: string): JsonValue {
       if (action.status !== "planned" && !isFixFirstBlockedCloseAction(action, hasFixPath)) {
         failures.push(`${target} close action status must be planned or fix-first blocked`);
       }
-      const canonicalRef = normalizeRef(action.canonical ?? action.duplicate_of);
-      const candidateRef = normalizeRef(
-        action.candidate_fix ?? action.fixed_by ?? action.fix_candidate,
-      );
+      const relationship = resolveRepairClosureRelationship(action);
+      const canonicalRef = relationship.canonical;
+      const candidateRef = relationship.candidateFix;
       if (name === "close_low_signal") {
         if (action.classification !== "low_signal") {
           failures.push(`${target} low-signal close action must use low_signal classification`);
@@ -292,10 +294,9 @@ function reviewResult(resultPath: string): JsonValue {
     if (!canonical) warnings.push(`canonical ${result.canonical} was not in preflight`);
     if (canonical && canonical.state !== "open") {
       const usedByUnsafeCloseAction = closeActions.some((action: JsonValue) => {
-        const actionCanonical = normalizeRef(action.canonical ?? action.duplicate_of);
-        const actionCandidate = normalizeRef(
-          action.candidate_fix ?? action.fixed_by ?? action.fix_candidate,
-        );
+        const relationship = resolveRepairClosureRelationship(action);
+        const actionCanonical = relationship.canonical;
+        const actionCandidate = relationship.candidateFix;
         if (actionCanonical !== canonicalRef && actionCandidate !== canonicalRef) return false;
         return !allowsHistoricalCanonicalForCloseout(action);
       });

@@ -51,8 +51,10 @@ not mutated, and input permutation does not change plans or diagnostics.
 
 `review-results` derives a graph from planned closure actions:
 
-- `canonical`, `duplicate_of`, or `candidate_fix` identifies the root that
-  remains open;
+- one shared action-specific resolver selects the surviving `canonical`,
+  `duplicate_of`, or `candidate_fix` root for both review and apply;
+- conflicting non-null relationship roots fail review instead of letting
+  planning and apply interpret the same action differently;
 - required nullable `depends_on` refs add prerequisite edges between closure
   targets; every listed ref must have its own planned closure action in the
   same canonical group;
@@ -60,6 +62,11 @@ not mutated, and input permutation does not change plans or diagnostics.
   separately; and
 - deterministic `closureLayers` expose closure batches that can run together.
 
-Mixed canonical roots, missing dependency targets, duplicate declarations, and
-cycles fail result review before the applicator can consume the proposal. The
-planner does not reorder or execute GitHub mutations.
+Mixed canonical roots, conflicting relationship fields, missing dependency
+targets, duplicate declarations, and cycles fail result review before the
+applicator can consume the proposal.
+
+Apply reproduces the reviewed plan before any mutation, executes planned
+closure candidates in dependency-first layer order, and blocks a dependent
+unless every declared prerequisite was successfully closed. Dry-run planning
+treats a successfully planned prerequisite as the simulated close outcome.
