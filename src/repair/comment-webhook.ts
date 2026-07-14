@@ -14,6 +14,7 @@ import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js"
 import { isExactReviewCloseGuardLabel } from "./exact-review-guard-labels.js";
 import { commentBodySha256 } from "./comment-router-utils.js";
 import {
+  assertDispatchActionReceiptsEnabled,
   dispatchHttpError,
   flushDispatchActionEvents,
   runDispatchWithReceipt,
@@ -73,6 +74,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 }
 
 export function startServer() {
+  assertDispatchActionReceiptsEnabled();
   const port = Number.parseInt(process.env.PORT ?? String(DEFAULT_PORT), 10) || DEFAULT_PORT;
   const server = http.createServer((request, response) => {
     void handleRequest(request, response);
@@ -117,6 +119,7 @@ export async function handleGitHubWebhook({
   const decision = classifyWebhook({ event, payload });
   if (!decision.accepted) return { statusCode: 202, body: decision };
   const accepted = decision as AcceptedWebhook;
+  assertDispatchActionReceiptsEnabled();
 
   const appJwt = createAppJwt();
   const dispatchToken = await createReviewRepoDispatchToken({ appJwt });

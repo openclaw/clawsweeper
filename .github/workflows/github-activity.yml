@@ -92,12 +92,23 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Create GitHub App token
+        if: steps.core-budget.outputs.skip != 'true'
+        id: app_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || github.repository_owner }}
+          permission-contents: write
+
       - uses: actions/checkout@v7
         if: steps.core-budget.outputs.skip != 'true'
         with:
           ref: ${{ github.event.repository.default_branch }}
           filter: blob:none
-          persist-credentials: false
+          fetch-depth: 0
+          token: ${{ steps.app_token.outputs.token }}
 
       - name: Create state token
         if: steps.core-budget.outputs.skip != 'true'
@@ -172,7 +183,7 @@ jobs:
         id: dispatch-spam-scan-candidate
         if: steps.core-budget.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
           set -euo pipefail
           pnpm run repair:spam-comment-intake -- --write-report

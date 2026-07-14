@@ -259,6 +259,7 @@ process.exit(2);
       encoding: "utf8",
       env: {
         ...process.env,
+        ...actionLedgerEnv(dir, "workflow-dispatch"),
         ...mockGhBinEnv(ghPath),
         GH_TOKEN: "workflow-token",
         CLAWSWEEPER_DISPATCH_TOKEN: "dispatch-token",

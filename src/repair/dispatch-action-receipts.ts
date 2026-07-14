@@ -11,6 +11,7 @@ import {
 import {
   flushWorkflowActionEvents,
   recordWorkflowPhaseEvent,
+  workflowActionProducer,
   workflowActionEventsEnabled,
 } from "../action-ledger-runtime.js";
 import { normalizeRepo } from "../repository-profiles.js";
@@ -20,6 +21,8 @@ const MAX_DISPATCH_INPUT_FIELDS = 32;
 const MAX_DISPATCH_INPUT_KEY_BYTES = 64;
 const MAX_DISPATCH_INPUT_STRING_BYTES = 512;
 const MAX_DISPATCH_INPUT_JSON_BYTES = 8 * 1024;
+const MAX_DISPATCH_CHAIN_CACHE_ENTRIES = 64;
+const DISPATCH_CHAIN_CACHE_TTL_MS = 10 * 60 * 1000;
 const DISPATCH_INPUT_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
 const FORBIDDEN_DISPATCH_INPUT_KEYS = new Set([
   "authorization",
@@ -75,6 +78,8 @@ type DispatchChain = {
   parentEventId: string | null;
   nextPhaseSeq: number;
   nextAttempt: number;
+  activeAttempts: number;
+  lastTouchedAtMs: number;
 };
 
 const dispatchChains = new Map<string, DispatchChain>();
@@ -102,6 +107,23 @@ export class DispatchOutcomeUnknownError extends Error {
 export function dispatchInputSha256(input: BoundedDispatchInput): string {
   const normalized = normalizedDispatchInput(input);
   return createHash("sha256").update(actionLedgerJson(normalized)).digest("hex");
+}
+
+export function assertDispatchActionReceiptsEnabled(env: NodeJS.ProcessEnv = process.env): void {
+  if (!workflowActionEventsEnabled(env)) {
+    throw new Error("refusing dispatch without authoritative action receipts");
+  }
+  if (!env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT?.trim()) {
+    throw new Error("refusing dispatch without an authoritative action receipt output root");
+  }
+  if (!env.GITHUB_RUN_STARTED_AT?.trim()) {
+    throw new Error("refusing dispatch without an immutable action receipt start time");
+  }
+  workflowActionProducer("dispatch_receipt_preflight", env);
+}
+
+export function dispatchChainCacheSizeForTest(): number {
+  return dispatchChains.size;
 }
 
 export function runDispatchWithReceiptSync<T>(options: DispatchReceiptOptions<T>): T {
@@ -216,12 +238,12 @@ function startDispatchReceipt(options: DispatchReceiptConfig): {
   attemptEventId: string | null;
   inputSha256: string;
   operationIdentity: ReturnType<typeof dispatchOperationIdentity>;
+  outcomePhaseSeq: number;
   options: DispatchReceiptConfig;
+  chainKey: string;
 } {
   const env = options.env ?? process.env;
-  if (env.GITHUB_ACTIONS === "true" && !workflowActionEventsEnabled(env)) {
-    throw new Error("refusing GitHub Actions dispatch without authoritative action receipts");
-  }
+  assertDispatchActionReceiptsEnabled(env);
   const repository = normalizeRepo(options.repository);
   const inputSha256 = dispatchInputSha256(options.dispatchInput);
   const operationIdentity = dispatchOperationIdentity({
@@ -231,33 +253,41 @@ function startDispatchReceipt(options: DispatchReceiptConfig): {
     dispatchTarget: options.dispatchTarget,
     inputSha256,
   });
-  const chain = dispatchChain(operationIdentity, options.component, env);
+  const { chain, key: chainKey } = acquireDispatchChain(operationIdentity, options.component, env);
   const attempt = chain.nextAttempt;
   const phaseSeq = chain.nextPhaseSeq;
   chain.nextAttempt += 1;
   chain.nextPhaseSeq += 2;
   const root = options.root ?? dispatchActionLedgerRoot(options.env);
-  const event = recordDispatchEvent(
-    {
-      ...options,
-      repository,
-      root,
-      inputSha256,
-      operationIdentity,
-      attempt,
-      parentEventId: chain.parentEventId,
-      phaseSeq,
-      disposition: null,
-    },
-    options.env,
-  );
+  let event: ActionEvent | null;
+  try {
+    event = recordDispatchEvent(
+      {
+        ...options,
+        repository,
+        root,
+        inputSha256,
+        operationIdentity,
+        attempt,
+        parentEventId: chain.parentEventId,
+        phaseSeq,
+        disposition: null,
+      },
+      options.env,
+    );
+  } catch (error) {
+    releaseDispatchChain(chainKey, chain);
+    throw error;
+  }
   chain.parentEventId = event?.event_id ?? chain.parentEventId;
   return {
     chain,
+    chainKey,
     attempt,
     attemptEventId: event?.event_id ?? null,
     inputSha256,
     operationIdentity,
+    outcomePhaseSeq: phaseSeq + 1,
     options: {
       component: options.component,
       operationKey: options.operationKey,
@@ -275,20 +305,24 @@ function finishDispatchReceipt(
   receipt: ReturnType<typeof startDispatchReceipt>,
   disposition: DispatchOutcomeDisposition,
 ): void {
-  const event = recordDispatchEvent(
-    {
-      ...receipt.options,
-      root: receipt.options.root ?? dispatchActionLedgerRoot(receipt.options.env),
-      inputSha256: receipt.inputSha256,
-      operationIdentity: receipt.operationIdentity,
-      attempt: receipt.attempt,
-      parentEventId: receipt.attemptEventId,
-      phaseSeq: receipt.chain.nextPhaseSeq - 1,
-      disposition,
-    },
-    receipt.options.env,
-  );
-  receipt.chain.parentEventId = event?.event_id ?? receipt.chain.parentEventId;
+  try {
+    const event = recordDispatchEvent(
+      {
+        ...receipt.options,
+        root: receipt.options.root ?? dispatchActionLedgerRoot(receipt.options.env),
+        inputSha256: receipt.inputSha256,
+        operationIdentity: receipt.operationIdentity,
+        attempt: receipt.attempt,
+        parentEventId: receipt.attemptEventId,
+        phaseSeq: receipt.outcomePhaseSeq,
+        disposition,
+      },
+      receipt.options.env,
+    );
+    receipt.chain.parentEventId = event?.event_id ?? receipt.chain.parentEventId;
+  } finally {
+    releaseDispatchChain(receipt.chainKey, receipt.chain);
+  }
 }
 
 function finishFailedDispatchReceipt(
@@ -406,11 +440,11 @@ function dispatchOperationIdentity(options: {
   };
 }
 
-function dispatchChain(
+function acquireDispatchChain(
   operationIdentity: ReturnType<typeof dispatchOperationIdentity>,
   component: string,
   env: NodeJS.ProcessEnv,
-): DispatchChain {
+): { chain: DispatchChain; key: string } {
   const key = createHash("sha256")
     .update(
       actionLedgerJson({
@@ -423,11 +457,48 @@ function dispatchChain(
       }),
     )
     .digest("hex");
+  const now = Date.now();
+  pruneDispatchChains(now);
   const existing = dispatchChains.get(key);
-  if (existing) return existing;
-  const created = { parentEventId: null, nextPhaseSeq: 1, nextAttempt: 1 };
+  if (existing) {
+    existing.activeAttempts += 1;
+    existing.lastTouchedAtMs = now;
+    dispatchChains.delete(key);
+    dispatchChains.set(key, existing);
+    return { chain: existing, key };
+  }
+  const created = {
+    parentEventId: null,
+    nextPhaseSeq: 1,
+    nextAttempt: 1,
+    activeAttempts: 1,
+    lastTouchedAtMs: now,
+  };
   dispatchChains.set(key, created);
-  return created;
+  pruneDispatchChains(now);
+  return { chain: created, key };
+}
+
+function releaseDispatchChain(key: string, chain: DispatchChain): void {
+  chain.activeAttempts = Math.max(0, chain.activeAttempts - 1);
+  chain.lastTouchedAtMs = Date.now();
+  if (dispatchChains.get(key) !== chain) return;
+  dispatchChains.delete(key);
+  dispatchChains.set(key, chain);
+  pruneDispatchChains(chain.lastTouchedAtMs);
+}
+
+function pruneDispatchChains(now: number): void {
+  for (const [key, chain] of dispatchChains) {
+    if (chain.activeAttempts === 0 && now - chain.lastTouchedAtMs >= DISPATCH_CHAIN_CACHE_TTL_MS) {
+      dispatchChains.delete(key);
+    }
+  }
+  while (dispatchChains.size > MAX_DISPATCH_CHAIN_CACHE_ENTRIES) {
+    const completed = [...dispatchChains].find(([, chain]) => chain.activeAttempts === 0);
+    if (!completed) return;
+    dispatchChains.delete(completed[0]);
+  }
 }
 
 function normalizedDispatchInput(input: BoundedDispatchInput): BoundedDispatchInput {

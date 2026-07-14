@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   DispatchOutcomeUnknownError,
   DispatchRejectedError,
+  dispatchChainCacheSizeForTest,
   dispatchErrorDisposition,
   dispatchHttpError,
   dispatchInputSha256,
@@ -159,7 +160,7 @@ test("dispatch receipt inputs reject raw payload, body, token, nested, and overs
   );
 });
 
-test("GitHub Actions dispatches fail before the request when receipts are not configured", () => {
+test("dispatches fail before the request when receipts are not configured", () => {
   let calls = 0;
   assert.throws(
     () =>
@@ -170,7 +171,7 @@ test("GitHub Actions dispatches fail before the request when receipts are not co
         repository: "openclaw/clawsweeper",
         dispatchTarget: "test_dispatch",
         dispatchInput: { event_type: "test_dispatch" },
-        env: { GITHUB_ACTIONS: "true" },
+        env: {},
         operation: () => {
           calls += 1;
         },
@@ -178,6 +179,90 @@ test("GitHub Actions dispatches fail before the request when receipts are not co
     /without authoritative action receipts/,
   );
   assert.equal(calls, 0);
+  assert.throws(
+    () =>
+      runDispatchWithReceiptSync({
+        component: "incomplete_receipts",
+        operationKey: "incomplete-receipts",
+        dispatchKind: "repository",
+        repository: "openclaw/clawsweeper",
+        dispatchTarget: "test_dispatch",
+        dispatchInput: { event_type: "test_dispatch" },
+        env: { CLAWSWEEPER_ACTION_LEDGER_FORCE: "1" },
+        operation: () => {
+          calls += 1;
+        },
+      }),
+    /without an authoritative action receipt output root/,
+  );
+  assert.equal(calls, 0);
+});
+
+test("dispatch receipt chains remain bounded in long-lived processes", () => {
+  const fixture = actionLedgerFixture("bounded-cache");
+  try {
+    for (let index = 0; index < 80; index += 1) {
+      runDispatchWithReceiptSync({
+        ...baseOptions(fixture),
+        operationKey: `dispatch:bounded-cache:${index}`,
+        dispatchInput: { event_type: `bounded_cache_${index}` },
+        operation: () => undefined,
+      });
+    }
+    assert.ok(dispatchChainCacheSizeForTest() <= 64);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("concurrent receipt attempts keep distinct causal phase sequences", async () => {
+  const fixture = actionLedgerFixture("concurrent-attempts");
+  let releaseFirst: (() => void) | undefined;
+  let releaseSecond: (() => void) | undefined;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const secondGate = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  try {
+    const options = {
+      ...baseOptions(fixture),
+      operationKey: "dispatch:concurrent",
+      dispatchInput: { event_type: "concurrent" },
+    };
+    const first = runDispatchWithReceipt({
+      ...options,
+      operation: async () => firstGate,
+    });
+    const second = runDispatchWithReceipt({
+      ...options,
+      operation: async () => secondGate,
+    });
+    releaseFirst?.();
+    await first;
+    releaseSecond?.();
+    await second;
+
+    await flushDispatchActionEvents(fixture.root, {
+      env: fixture.env,
+      outputRoot: fixture.outputRoot,
+    });
+    const events = readEvents(fixture.outputRoot);
+    const eventsByPhase = [...events].sort(
+      (left, right) => Number(left.phase_seq) - Number(right.phase_seq),
+    );
+    assert.deepEqual(
+      eventsByPhase.map((event) => event.phase_seq),
+      [1, 2, 3, 4],
+    );
+    assert.deepEqual(
+      eventsByPhase.map((event) => event.attributes.attempt),
+      [1, 1, 2, 2],
+    );
+  } finally {
+    fixture.cleanup();
+  }
 });
 
 test("error classifiers that throw remain an unknown dispatch outcome", () => {
@@ -234,6 +319,20 @@ test("every workflow-backed dispatch producer publishes finalized receipt shards
     assert.match(workflow, /repair:action-ledger -- finalize/);
     assert.match(workflow, /repair:action-ledger -- publish/);
     assert.match(workflow, /repair:publish-main/);
+  }
+});
+
+test("activity intake receipt publishers authenticate the root checkout", () => {
+  for (const workflowPath of [
+    ".github/workflows/github-activity.yml",
+    ".github/workflows/spam-comment-intake.yml",
+  ]) {
+    const workflow = fs.readFileSync(workflowPath, "utf8");
+    assert.match(workflow, /id: app_token[\s\S]*?permission-contents: write/);
+    assert.match(
+      workflow,
+      /uses: actions\/checkout@v7[\s\S]*?fetch-depth: 0[\s\S]*?token: \$\{\{ steps\.app_token\.outputs\.token \}\}/,
+    );
   }
 });
 

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -12,6 +14,59 @@ import {
   renderFastAckComment,
   verifyGitHubSignature,
 } from "../../dist/repair/comment-webhook.js";
+
+const ACTION_LEDGER_ENV_KEYS = [
+  "CLAWSWEEPER_ACTION_LEDGER_FORCE",
+  "CLAWSWEEPER_ACTION_LEDGER_ROOT",
+  "CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT",
+  "CLAWSWEEPER_ACTION_LEDGER_INVOCATION",
+  "GITHUB_REPOSITORY",
+  "GITHUB_SHA",
+  "GITHUB_WORKFLOW",
+  "GITHUB_WORKFLOW_REF",
+  "GITHUB_JOB",
+  "GITHUB_RUN_ID",
+  "GITHUB_RUN_ATTEMPT",
+  "GITHUB_RUN_STARTED_AT",
+  "GITHUB_ACTION",
+] as const;
+let cleanupActionLedgerFixture: (() => void) | undefined;
+
+test.beforeEach(() => {
+  const previous = new Map(
+    ACTION_LEDGER_ENV_KEYS.map((name) => [name, process.env[name]] as const),
+  );
+  const root = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-webhook-receipts-")),
+  );
+  const outputRoot = path.join(root, "output");
+  fs.mkdirSync(outputRoot);
+  Object.assign(process.env, {
+    CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
+    CLAWSWEEPER_ACTION_LEDGER_ROOT: root,
+    CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: outputRoot,
+    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "webhook-test",
+    GITHUB_REPOSITORY: "openclaw/clawsweeper",
+    GITHUB_SHA: "a".repeat(40),
+    GITHUB_WORKFLOW: "comment webhook",
+    GITHUB_WORKFLOW_REF:
+      "openclaw/clawsweeper/.github/workflows/comment-webhook.yml@refs/heads/main",
+    GITHUB_JOB: "webhook",
+    GITHUB_RUN_ID: "12345",
+    GITHUB_RUN_ATTEMPT: "1",
+    GITHUB_RUN_STARTED_AT: "2026-07-14T12:00:00Z",
+    GITHUB_ACTION: "comment-webhook",
+  });
+  cleanupActionLedgerFixture = () => {
+    for (const [name, value] of previous) restoreEnv(name, value);
+    fs.rmSync(root, { recursive: true, force: true });
+  };
+});
+
+test.afterEach(() => {
+  cleanupActionLedgerFixture?.();
+  cleanupActionLedgerFixture = undefined;
+});
 
 test("comment webhook accepts maintainer ClawSweeper commands", () => {
   const result = classifyIssueCommentWebhook({
@@ -66,6 +121,40 @@ test("comment webhook repository dispatches use bounded attempt and outcome rece
   assert.doesNotMatch(itemInput, /token:|body:/);
   assert.doesNotMatch(commentInput, /token:|body:/);
   assert.match(source, /await flushDispatchActionEvents\(\)/);
+});
+
+test("comment webhook refuses accepted events before GitHub access when receipts are disabled", async () => {
+  const previousFetch = globalThis.fetch;
+  let requests = 0;
+  delete process.env.CLAWSWEEPER_ACTION_LEDGER_FORCE;
+  globalThis.fetch = async () => {
+    requests += 1;
+    throw new Error("GitHub must not be called without authoritative receipts");
+  };
+  try {
+    await assert.rejects(
+      handleGitHubWebhook({
+        event: "issues",
+        payload: {
+          action: "opened",
+          repository: {
+            full_name: "openclaw/openclaw",
+            default_branch: "main",
+            private: false,
+            archived: false,
+            fork: false,
+            has_issues: true,
+          },
+          issue: { number: 71898 },
+          installation: { id: 123 },
+        },
+      }),
+      /without authoritative action receipts/,
+    );
+    assert.equal(requests, 0);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
 });
 
 test("comment webhook ignores ClawSweeper proof-nudge comments", () => {
@@ -712,7 +801,7 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
   const dispatchBodies: Array<Record<string, unknown>> = [];
   process.env.CLAWSWEEPER_APP_ID = "12345";
   delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
-  process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS = "0,0,0";
+  process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS = "0";
   process.env.CLAWSWEEPER_APP_PRIVATE_KEY = privateKey
     .export({ type: "pkcs1", format: "pem" })
     .toString();
@@ -827,6 +916,7 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
   const previousAppId = process.env.CLAWSWEEPER_APP_ID;
   const previousClientId = process.env.CLAWSWEEPER_APP_CLIENT_ID;
   const previousPrivateKey = process.env.CLAWSWEEPER_APP_PRIVATE_KEY;
+  const previousSettleDelays = process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS;
   const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   let commentLookups = 0;
   let deletedAck = 0;
@@ -836,6 +926,7 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
   });
   process.env.CLAWSWEEPER_APP_ID = "12345";
   delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
+  process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS = "0,0";
   process.env.CLAWSWEEPER_APP_PRIVATE_KEY = privateKey
     .export({ type: "pkcs1", format: "pem" })
     .toString();
@@ -928,6 +1019,7 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
     restoreEnv("CLAWSWEEPER_APP_ID", previousAppId);
     restoreEnv("CLAWSWEEPER_APP_CLIENT_ID", previousClientId);
     restoreEnv("CLAWSWEEPER_APP_PRIVATE_KEY", previousPrivateKey);
+    restoreEnv("CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS", previousSettleDelays);
   }
 });
 
