@@ -217,11 +217,10 @@ import {
 } from "./action-ledger.js";
 import {
   flushWorkflowActionEvents,
-  importActionEventShards,
   interruptOpenWorkflowActionEvents,
   recordWorkflowPhaseEvent,
-  workflowActionProducer,
 } from "./action-ledger-runtime.js";
+import { importWorkflowActionEvents } from "./repair/action-event-importer.js";
 import { publishActionEventPaths } from "./repair/action-event-publisher.js";
 
 export {
@@ -31897,16 +31896,10 @@ function publishActionEventsCommand(args: Args): void {
   if (!expectedProducerJob) {
     throw new UserFacingCommandError("--expected-producer-job is required");
   }
-  const currentProducer = workflowActionProducer("action_event_publisher");
-  const result = importActionEventShards(sourceRoot, stateRoot, {
-    expectedProducer: {
-      repository: currentProducer.repository,
-      sha: currentProducer.sha,
-      workflow: currentProducer.workflow,
-      job: expectedProducerJob,
-      runId: currentProducer.runId,
-      runAttempt: currentProducer.runAttempt,
-    },
+  const result = importWorkflowActionEvents({
+    sourceRoot,
+    stateRoot,
+    expectedProducerJob,
   });
   console.log(JSON.stringify(result, null, 2));
 }

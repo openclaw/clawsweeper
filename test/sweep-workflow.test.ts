@@ -95,6 +95,10 @@ test("immutable action ledger publishers use path-manifest admission", () => {
     17,
   );
   assert.doesNotMatch(workflowSource, /node dist\/clawsweeper\.js publish-action-event-paths/);
+  assert.match(
+    readText("package.json"),
+    /"publish-action-events": "node dist\/repair\/publish-action-events\.js"/,
+  );
 });
 
 test("ledger-producing jobs initialize immutable workflow context", () => {
