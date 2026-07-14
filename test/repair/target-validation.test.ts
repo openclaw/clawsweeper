@@ -3808,14 +3808,18 @@ test(
     fs.writeFileSync(
       pnpmPath,
       `const { spawn } = require("node:child_process");
+const env = Object.fromEntries(
+  Object.entries(process.env).filter(([name]) => !name.startsWith("CS_VALIDATION_"))
+);
 const child = spawn(process.execPath, ["-e", ${JSON.stringify(
         `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "escaped"), 800)`,
       )}], {
   detached: true,
-  env: process.env,
+  env,
   stdio: "ignore"
 });
 child.unref();
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
 `,
     );
 

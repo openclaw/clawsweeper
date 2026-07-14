@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 
 import { windowsSystemExecutable } from "../command.js";
+import { ProcessTreeTracker } from "./process-tree-containment.js";
 
 type WorkerInput = {
   args: string[];
@@ -28,15 +28,28 @@ const result = await runContained(input);
 process.stdout.write(JSON.stringify(result));
 
 async function runContained(input: WorkerInput): Promise<WorkerResult> {
-  const marker = `CS_VALIDATION_${randomUUID().replaceAll("-", "").toUpperCase()}`;
-  const child = spawn(input.command, input.args, {
+  const invocation =
+    process.platform === "win32"
+      ? { command: input.command, args: input.args }
+      : {
+          command: "/bin/sh",
+          args: [
+            "-c",
+            'kill -STOP "$$"; exec "$@"',
+            "clawsweeper-validation",
+            input.command,
+            ...input.args,
+          ],
+        };
+  const child = spawn(invocation.command, invocation.args, {
     cwd: input.cwd,
-    env: { ...process.env, [marker]: "1" },
+    env: process.env,
     stdio: ["pipe", "pipe", "pipe"],
     detached: process.platform !== "win32",
     windowsHide: true,
     ...(input.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   });
+  const tracker = child.pid ? new ProcessTreeTracker(child.pid) : null;
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
   let stdoutBytes = 0;
@@ -70,6 +83,19 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
     }
     stderr.push(chunk);
   });
+  if (process.platform !== "win32" && child.pid) {
+    await waitForStoppedProcess(child.pid);
+  }
+  try {
+    tracker?.start();
+  } catch (error) {
+    if (process.platform === "win32" && child.pid) terminateWindowsProcessTree(child.pid);
+    else if (child.pid) signalProcessGroup(child.pid, "SIGKILL");
+    throw error;
+  }
+  if (process.platform !== "win32" && child.pid) {
+    signalProcessGroup(child.pid, "SIGCONT");
+  }
   if (input.input !== undefined) child.stdin.end(input.input);
   else child.stdin.end();
   let forcedTermination: NodeJS.Timeout | undefined;
@@ -92,7 +118,18 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
   );
   if (timeout) clearTimeout(timeout);
   if (forcedTermination) clearTimeout(forcedTermination);
-  const backgroundProcesses = await reapProcessTree(child.pid, marker);
+  let trackingError: Error | null = null;
+  let backgroundPids: number[] = [];
+  try {
+    backgroundPids = tracker?.stop() ?? [];
+  } catch (error) {
+    trackingError = error as Error;
+    backgroundPids = liveProcessIds(
+      (tracker?.trackedPids() ?? []).filter((trackedPid) => trackedPid !== child.pid),
+    );
+  }
+  const backgroundProcesses = await reapProcessTree(child.pid, backgroundPids);
+  if (trackingError) throw trackingError;
   const error = spawnFailure.value
     ? { code: spawnFailure.value.code, message: spawnFailure.value.message }
     : timedOut
@@ -110,31 +147,28 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
   };
 }
 
-async function reapProcessTree(pid: number | undefined, marker: string) {
+async function reapProcessTree(pid: number | undefined, backgroundPids: readonly number[]) {
   if (!pid) return 0;
   if (process.platform === "win32") {
-    const result = spawnSync(
-      windowsSystemExecutable("taskkill.exe", process.env),
-      ["/pid", String(pid), "/t", "/f"],
-      { stdio: "ignore", windowsHide: true },
-    );
-    return result.status === 0 ? 1 : 0;
+    for (const trackedPid of new Set([pid, ...backgroundPids])) {
+      terminateWindowsProcessTree(trackedPid);
+    }
+    return backgroundPids.length;
   }
 
   let found = signalProcessGroup(pid, "SIGTERM");
-  let marked = markedProcessIds(marker);
-  found ||= marked.length > 0;
-  signalProcesses(marked, "SIGTERM");
+  found ||= backgroundPids.length > 0;
+  signalProcesses(backgroundPids, "SIGTERM");
   for (let attempt = 0; attempt < 8; attempt += 1) {
     await sleep(25);
     signalProcessGroup(pid, "SIGKILL");
-    marked = markedProcessIds(marker);
-    if (marked.length === 0) return found ? 1 : 0;
-    signalProcesses(marked, "SIGKILL");
+    const livePids = liveProcessIds(backgroundPids);
+    if (livePids.length === 0) return found ? 1 : 0;
+    signalProcesses(livePids, "SIGKILL");
   }
-  marked = markedProcessIds(marker);
-  if (marked.length > 0) {
-    throw new Error(`could not reap validation process tree: ${marked.join(", ")}`);
+  const livePids = liveProcessIds(backgroundPids);
+  if (livePids.length > 0) {
+    throw new Error(`could not reap validation process tree: ${livePids.join(", ")}`);
   }
   return found ? 1 : 0;
 }
@@ -142,14 +176,18 @@ async function reapProcessTree(pid: number | undefined, marker: string) {
 function terminateProcessTree(pid: number | undefined) {
   if (!pid) return;
   if (process.platform === "win32") {
-    spawnSync(
-      windowsSystemExecutable("taskkill.exe", process.env),
-      ["/pid", String(pid), "/t", "/f"],
-      { stdio: "ignore", windowsHide: true },
-    );
+    terminateWindowsProcessTree(pid);
     return;
   }
   signalProcessGroup(pid, "SIGTERM");
+}
+
+function terminateWindowsProcessTree(pid: number) {
+  spawnSync(
+    windowsSystemExecutable("taskkill.exe", process.env),
+    ["/pid", String(pid), "/t", "/f"],
+    { stdio: "ignore", windowsHide: true },
+  );
 }
 
 function signalProcessGroup(pid: number, signal: NodeJS.Signals) {
@@ -172,22 +210,37 @@ function signalProcesses(pids: readonly number[], signal: NodeJS.Signals) {
   }
 }
 
-function markedProcessIds(marker: string) {
-  const result = spawnSync(
-    "/bin/ps",
-    process.platform === "darwin" ? ["eww", "-axo", "pid=,command="] : ["eww", "-eo", "pid=,args="],
-    { encoding: "utf8", windowsHide: true },
-  );
-  if (result.error || result.status !== 0) {
-    throw new Error(
-      `could not inspect validation process tree: ${result.error?.message || result.stderr || result.status}`,
-    );
+function liveProcessIds(pids: readonly number[]) {
+  return pids.filter((pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+      throw error;
+    }
+  });
+}
+
+async function waitForStoppedProcess(pid: number) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const result = spawnSync("/bin/ps", ["-o", "state=", "-p", String(pid)], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (result.error || (result.status !== 0 && result.status !== 1)) {
+      throw new Error(
+        `could not establish validation process containment: ${result.error?.message || result.stderr || result.status}`,
+      );
+    }
+    const state = String(result.stdout ?? "").trim();
+    if (state.startsWith("T")) return;
+    if (!state) {
+      throw new Error("validation command exited before process containment was established");
+    }
+    await sleep(5);
   }
-  return String(result.stdout ?? "")
-    .split(/\r?\n/)
-    .filter((line) => line.includes(`${marker}=1`))
-    .map((line) => Number.parseInt(line.trimStart().split(/\s+/, 1)[0] ?? "", 10))
-    .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
+  throw new Error("timed out establishing validation process containment");
 }
 
 function sleep(milliseconds: number) {
