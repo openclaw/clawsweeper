@@ -20,6 +20,7 @@ import {
   TRIAGE_ROUTING_GROUPS,
   triageRoutingGroupsForLabels,
 } from "../dashboard/triage-routing-groups.ts";
+import { stableJson } from "../src/stable-json.ts";
 
 test("exact-review queue defaults to 64 of the 128 global workers", () => {
   assert.equal(exactReviewQueueCapacity({}), 64);
@@ -1162,6 +1163,17 @@ class MemorySqlStorage {
       .prepare("UPDATE exact_review_queue_deliveries SET received_at = ? WHERE delivery_id = ?")
       .run(receivedAt, deliveryId);
   }
+
+  readDispatchReceipts() {
+    return this.database
+      .prepare(
+        `SELECT receipt_id, operation_sha256, request_sha256, dispatch_target, attempt,
+                phase, outcome, status_kind, recorded_at, parent_receipt_id
+           FROM exact_review_dispatch_receipts
+          ORDER BY rowid`,
+      )
+      .all() as Array<Record<string, unknown>>;
+  }
 }
 
 class MemoryDurableStorage {
@@ -1333,6 +1345,21 @@ class MemoryDurableNamespace {
   get() {
     return this.stub;
   }
+}
+
+function exactReviewDispatchQueue(privateKey: string) {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    },
+  );
+  return {
+    storage,
+    namespace: new MemoryDurableNamespace(queue),
+  };
 }
 
 class MemoryCache {
@@ -3033,6 +3060,27 @@ test("exact-review queue retries dispatch failures and reclaims an unclaimed lea
       { pending: 0, dispatching: 1, leased: 0 },
     );
     assert.equal(dispatchAttempts, 3);
+    const receipts = storage.sql.readDispatchReceipts();
+    assert.equal(receipts.length, 6);
+    assert.deepEqual(
+      receipts.map((receipt) => [receipt.phase, receipt.outcome, receipt.status_kind]),
+      [
+        ["attempt", "attempted", "attempted"],
+        ["outcome", "unknown", "error"],
+        ["attempt", "attempted", "attempted"],
+        ["outcome", "accepted", "accepted"],
+        ["attempt", "attempted", "attempted"],
+        ["outcome", "accepted", "accepted"],
+      ],
+    );
+    assert.ok(
+      receipts.every(
+        (receipt) =>
+          /^[a-f0-9]{64}$/.test(String(receipt.operation_sha256)) &&
+          /^[a-f0-9]{64}$/.test(String(receipt.request_sha256)),
+      ),
+    );
+    assert.doesNotMatch(JSON.stringify(receipts), /openclaw\/gogcli|queue_lease_id/);
     const staleClaim = await queue.fetch(
       new Request("https://clawsweeper-exact-review-queue/claim", {
         method: "POST",
@@ -3125,6 +3173,15 @@ test("exact-review queue preserves a claimed lease after an ambiguous dispatch f
     assert.deepEqual(
       { pending: stats.pending, dispatching: stats.dispatching, leased: stats.leased },
       { pending: 0, dispatching: 0, leased: 1 },
+    );
+    assert.deepEqual(
+      storage.sql
+        .readDispatchReceipts()
+        .map((receipt) => [receipt.phase, receipt.outcome, receipt.status_kind]),
+      [
+        ["attempt", "attempted", "attempted"],
+        ["outcome", "unknown", "error"],
+      ],
     );
     const completed = await queue.fetch(
       new Request("https://clawsweeper-exact-review-queue/complete", {
@@ -7528,6 +7585,7 @@ test("hosted webhook reuses existing fast ack comments on redelivery", async () 
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
+  const dispatchQueue = exactReviewDispatchQueue(privateKey);
   let dispatchBody: unknown = null;
   let postedAck = false;
   globalThis.fetch = async (input, init) => {
@@ -7600,6 +7658,7 @@ test("hosted webhook reuses existing fast ack comments on redelivery", async () 
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
         CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
         CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS: "0",
+        EXACT_REVIEW_QUEUE: dispatchQueue.namespace,
       },
     );
 
@@ -7626,6 +7685,20 @@ test("hosted webhook reuses existing fast ack comments on redelivery", async () 
         .length,
       10,
     );
+    const receipts = dispatchQueue.storage.sql.readDispatchReceipts();
+    assert.deepEqual(
+      receipts.map((receipt) => [receipt.dispatch_target, receipt.phase, receipt.outcome]),
+      [
+        ["clawsweeper_comment", "attempt", "attempted"],
+        ["clawsweeper_comment", "outcome", "accepted"],
+      ],
+    );
+    assert.equal(receipts[0]?.request_sha256, receipts[1]?.request_sha256);
+    assert.equal(
+      receipts[0]?.request_sha256,
+      createHash("sha256").update(stableJson(dispatchBody)).digest("hex"),
+    );
+    assert.doesNotMatch(JSON.stringify(receipts), /openclaw\/gogcli|status_comment_id/);
     await new Promise((resolve) => setTimeout(resolve, 0));
   } finally {
     globalThis.fetch = originalFetch;
@@ -7639,6 +7712,7 @@ test("hosted webhook coalesces concurrent duplicate fast ack comments", async ()
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
+  const dispatchQueue = exactReviewDispatchQueue(privateKey);
   const comments: Array<{ id: number; body: string; created_at: string; user: { login: string } }> =
     [];
   const dispatchBodies: unknown[] = [];
@@ -7720,6 +7794,7 @@ test("hosted webhook coalesces concurrent duplicate fast ack comments", async ()
     CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
     CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
     CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS: "0",
+    EXACT_REVIEW_QUEUE: dispatchQueue.namespace,
   };
 
   try {
@@ -7766,6 +7841,7 @@ test("hosted webhook removes duplicate fast ack comments after concurrent redeli
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
+  const dispatchQueue = exactReviewDispatchQueue(privateKey);
   let commentLookups = 0;
   let deletedAck = 0;
   let dispatchBody: unknown = null;
@@ -7848,6 +7924,7 @@ test("hosted webhook removes duplicate fast ack comments after concurrent redeli
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
         CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
         CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS: "0",
+        EXACT_REVIEW_QUEUE: dispatchQueue.namespace,
       },
     );
 
@@ -7884,6 +7961,7 @@ test("hosted webhook schedules post-dispatch fast ack cleanup", async () => {
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
+  const dispatchQueue = exactReviewDispatchQueue(privateKey);
   let commentLookups = 0;
   let deletedAck = 0;
   const waitUntilPromises: Promise<unknown>[] = [];
@@ -7980,6 +8058,7 @@ test("hosted webhook schedules post-dispatch fast ack cleanup", async () => {
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
         CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
         CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS: "0,0,0",
+        EXACT_REVIEW_QUEUE: dispatchQueue.namespace,
       },
       {
         waitUntil(promise: Promise<unknown>) {
