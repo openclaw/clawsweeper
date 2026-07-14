@@ -2266,6 +2266,43 @@ if (args.includes("second")) {
 );
 
 test(
+  "runtime identity handles pnpm symlink graphs without duplicate traversal",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    const virtualStore = path.join(cwd, "node_modules", ".pnpm");
+    const packageA = path.join(virtualStore, "a@1.0.0", "node_modules", "a");
+    const packageB = path.join(virtualStore, "b@1.0.0", "node_modules", "b");
+    fs.mkdirSync(path.join(packageA, "node_modules"), { recursive: true });
+    fs.mkdirSync(path.join(packageB, "node_modules"), { recursive: true });
+    fs.writeFileSync(path.join(packageA, "index.js"), "module.exports = 'a';\n");
+    fs.writeFileSync(path.join(packageB, "index.js"), "module.exports = 'b';\n");
+    fs.symlinkSync(
+      path.relative(path.join(packageA, "node_modules"), packageB),
+      path.join(packageA, "node_modules", "b"),
+    );
+    fs.symlinkSync(
+      path.relative(path.join(packageB, "node_modules"), packageA),
+      path.join(packageB, "node_modules", "a"),
+    );
+    fs.symlinkSync(
+      path.relative(path.join(cwd, "node_modules"), packageA),
+      path.join(cwd, "node_modules", "a"),
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+
+    const before = captureTargetCheckoutBinding(cwd);
+    fs.writeFileSync(path.join(packageB, "index.js"), "module.exports = 'poisoned';\n");
+
+    assert.throws(
+      () => assertTargetCheckoutBinding(cwd, before),
+      /target checkout changed after validation/,
+    );
+  },
+);
+
+test(
   "pnpm setup rejects prepared executables that escape through symlinks",
   { skip: process.platform === "win32" },
   () => {

@@ -1801,7 +1801,9 @@ function worktreeContentSha256(cwd: string, deadlineAt: number) {
 function validationRuntimeInputsSha256(cwd: string, deadlineAt: number) {
   const hash = createHash("sha256");
   const root = fs.realpathSync(cwd);
-  for (const relativePath of [".venv", "node_modules", "venv"]) {
+  const runtimePaths = validationRuntimeInputPaths(cwd, deadlineAt);
+  updateIdentityHash(hash, "runtime-input-paths", runtimePaths.join("\0"));
+  for (const relativePath of runtimePaths) {
     assertValidationIdentityDeadline(deadlineAt, relativePath);
     const entryPath = path.join(root, relativePath);
     updateIdentityHash(hash, "runtime-input", relativePath);
@@ -1809,10 +1811,88 @@ function validationRuntimeInputsSha256(cwd: string, deadlineAt: number) {
       updateIdentityHash(hash, "runtime-state", "absent");
       continue;
     }
-    updateResolvedPathDigest(hash, root, entryPath, relativePath, deadlineAt, new Set());
+    updateRuntimeInputDigest(hash, root, entryPath, relativePath, deadlineAt, new Set());
   }
   assertValidationIdentityDeadline(deadlineAt, "runtime input digest");
   return hash.digest("hex");
+}
+
+function validationRuntimeInputPaths(cwd: string, deadlineAt: number) {
+  const paths = new Set([".venv", "node_modules", "venv"]);
+  const ignored = runIdentityGit(
+    cwd,
+    ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
+    deadlineAt,
+    "ignored runtime input listing",
+  )
+    .split("\0")
+    .filter(Boolean);
+  for (const entry of ignored) {
+    const relativePath = entry.replace(/\/+$/, "");
+    if ([".venv", "node_modules", "venv"].includes(path.posix.basename(relativePath))) {
+      paths.add(relativePath);
+    }
+  }
+  const candidates = [...paths].sort(
+    (left, right) => left.length - right.length || (left < right ? -1 : left > right ? 1 : 0),
+  );
+  const roots: string[] = [];
+  for (const candidate of candidates) {
+    if (roots.some((root) => candidate.startsWith(`${root}/`))) {
+      continue;
+    }
+    roots.push(candidate);
+  }
+  return roots.sort();
+}
+
+function updateRuntimeInputDigest(
+  hash: ReturnType<typeof createHash>,
+  root: string,
+  entryPath: string,
+  logicalPath: string,
+  deadlineAt: number,
+  activeDirectories: Set<string>,
+) {
+  assertValidationIdentityDeadline(deadlineAt, logicalPath);
+  const stat = fs.lstatSync(entryPath);
+  updateIdentityHash(hash, "runtime-path", logicalPath);
+  updateIdentityHash(hash, "runtime-mode", String(stat.mode));
+  if (stat.isSymbolicLink()) {
+    updateIdentityHash(hash, "runtime-symlink", fs.readlinkSync(entryPath));
+    const targetPath = fs.realpathSync(entryPath);
+    assertPathWithin(root, targetPath, logicalPath);
+    updateIdentityHash(hash, "runtime-symlink-target", path.relative(root, targetPath));
+    return;
+  }
+  if (stat.isFile()) {
+    updateFileDigest(hash, entryPath, logicalPath, deadlineAt);
+    return;
+  }
+  if (!stat.isDirectory()) {
+    throw new Error(`unsupported validation runtime input: ${logicalPath}`);
+  }
+  const realDirectory = fs.realpathSync(entryPath);
+  if (activeDirectories.has(realDirectory)) {
+    throw new Error(`validation runtime input directory cycle: ${logicalPath}`);
+  }
+  activeDirectories.add(realDirectory);
+  try {
+    const children = fs.readdirSync(entryPath).sort();
+    updateIdentityHash(hash, "runtime-children", children.join("\0"));
+    for (const child of children) {
+      updateRuntimeInputDigest(
+        hash,
+        root,
+        path.join(entryPath, child),
+        `${logicalPath}/${child}`,
+        deadlineAt,
+        activeDirectories,
+      );
+    }
+  } finally {
+    activeDirectories.delete(realDirectory);
+  }
 }
 
 type TargetTreeEntry = {
