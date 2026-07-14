@@ -310,6 +310,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:repair
+
       - name: Download GitHub activity dispatch receipt bundle
         id: download-activity-dispatch-ledger
         continue-on-error: true
@@ -317,11 +321,6 @@ jobs:
         with:
           name: github-activity-dispatch-receipts-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/github-activity-dispatch-receipts
-
-      - uses: ./.github/actions/setup-pnpm
-        if: steps.download-activity-dispatch-ledger.outcome == 'success'
-        with:
-          build-script: build:repair
 
       - name: Create replay state token
         if: steps.download-activity-dispatch-ledger.outcome == 'success'

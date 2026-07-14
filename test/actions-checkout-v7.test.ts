@@ -96,6 +96,21 @@ test("trusted-event workflows explicitly checkout the default branch", () => {
   }
 });
 
+test("GitHub activity replay builds trusted code before downloading receipts", () => {
+  const workflow = parse(
+    readFileSync(".github/workflows/github-activity.yml", "utf8"),
+  ) as WorkflowDocument;
+  const steps = workflow.jobs?.["replay-dispatch-receipts"]?.steps ?? [];
+  const checkoutIndex = steps.findIndex((step) => step.uses === "actions/checkout@v7");
+  const setupIndex = steps.findIndex((step) => step.uses === "./.github/actions/setup-pnpm");
+  const downloadIndex = steps.findIndex((step) => step.uses === "actions/download-artifact@v8");
+
+  assert.ok(checkoutIndex >= 0, "replay job must checkout trusted source");
+  assert.ok(setupIndex > checkoutIndex, "replay job must setup after trusted checkout");
+  assert.equal(steps[setupIndex]?.with?.["build-script"], "build:repair");
+  assert.ok(downloadIndex > setupIndex, "replay job must build before downloading receipts");
+});
+
 test("trusted-event state checkout remains pinned to the state repository branch", () => {
   const action = parse(readFileSync(".github/actions/setup-state/action.yml", "utf8")) as {
     runs?: { steps?: CheckoutStep[] };
