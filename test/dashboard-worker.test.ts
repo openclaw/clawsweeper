@@ -303,6 +303,46 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   assert.match(body, /Review handoff pressure · last 3 hours/);
   assert.match(body, /function updatePressureTrend/);
   assert.match(body, /pressure_history/);
+  const pressureScript = [...body.matchAll(/<script>\n([\s\S]*?)\n<\/script>/g)].at(-1)?.[1];
+  assert.ok(pressureScript);
+  const pressureStart = pressureScript.indexOf("function updatePressureTrend");
+  const pressureEnd = pressureScript.indexOf("function esc", pressureStart);
+  assert.ok(pressureStart > 0 && pressureEnd > pressureStart);
+  const pressureClasses = new Set<string>();
+  const pressureElements = {
+    "pressure-panel": {
+      classList: {
+        add: (value: string) => pressureClasses.add(value),
+        remove: (value: string) => pressureClasses.delete(value),
+      },
+    },
+    "pressure-summary": { textContent: "" },
+    "pressure-current": { textContent: "" },
+    "pressure-chart": { innerHTML: "", setAttribute: () => undefined },
+  };
+  const pressureContext = createContext({
+    document: {
+      getElementById: (id: keyof typeof pressureElements) => pressureElements[id],
+    },
+    queue: {
+      pending: 7,
+      pressure_history: [
+        {
+          observed_at: "2026-07-14T12:00:00Z",
+          pending: 7,
+          leased: 2,
+        },
+      ],
+    },
+  });
+  new Script(
+    `${pressureScript.slice(pressureStart, pressureEnd)};updatePressureTrend(queue);`,
+  ).runInContext(pressureContext);
+  assert.equal(pressureClasses.has("collecting"), true);
+  assert.equal(pressureElements["pressure-current"].textContent, "7");
+  assert.equal(pressureElements["pressure-summary"].textContent, "Collecting queue history");
+  assert.match(pressureElements["pressure-chart"].innerHTML, /after two observations/);
+  assert.doesNotMatch(pressureElements["pressure-chart"].innerHTML, /pressure-pending/);
   assert.doesNotMatch(body, /function laneTimingHtml/);
   assert.doesNotMatch(body, /lane-average/);
   assert.doesNotMatch(body, /AVG WAIT|AVG TIME|AVG RUN/);
