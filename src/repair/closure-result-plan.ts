@@ -1,6 +1,7 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import {
   planClosureDependencies,
+  type ClosureDependencyDiagnostic,
   type ClosureDependencyPlan,
 } from "./closure-dependency-planner.js";
 
@@ -36,8 +37,16 @@ export type RepairClosureResultPlan =
       independentClosures: readonly string[];
     }>;
 
+type PlannedCloseAction = Readonly<{
+  action: LooseRecord;
+  target: string;
+  canonical: string;
+  isClosureCandidate: boolean;
+}>;
+
 export function planRepairClosureResult(result: LooseRecord): RepairClosureResultPlan {
   const actions = Array.isArray(result.actions) ? result.actions : [];
+  const plannedCloseActions: PlannedCloseAction[] = [];
   const graphActions: LooseRecord[] = [];
   const independentClosures: string[] = [];
 
@@ -47,7 +56,9 @@ export function planRepairClosureResult(result: LooseRecord): RepairClosureResul
     }
     const target = normalizeRef(action.target);
     const canonical = closureCanonical(action);
-    if (!target || !canonical || target === canonical) {
+    const isClosureCandidate = Boolean(target && canonical && target !== canonical);
+    plannedCloseActions.push({ action, target, canonical, isClosureCandidate });
+    if (!isClosureCandidate) {
       if (target) independentClosures.push(target);
       continue;
     }
@@ -55,6 +66,14 @@ export function planRepairClosureResult(result: LooseRecord): RepairClosureResul
   }
 
   const sortedIndependent = [...new Set(independentClosures)].sort(compareAscii);
+  const dependencyDiagnostics = validateDependencyTargets(plannedCloseActions);
+  if (dependencyDiagnostics.length > 0) {
+    return {
+      status: "needs_human",
+      diagnostics: dependencyDiagnostics,
+      independentClosures: sortedIndependent,
+    };
+  }
   if (graphActions.length === 0) {
     return {
       status: "not_applicable",
@@ -96,6 +115,52 @@ export function planRepairClosureResult(result: LooseRecord): RepairClosureResul
   };
 }
 
+function validateDependencyTargets(
+  plannedCloseActions: readonly PlannedCloseAction[],
+): ClosureDependencyDiagnostic[] {
+  const candidateKeys = new Set(
+    plannedCloseActions
+      .filter((entry) => entry.isClosureCandidate)
+      .map((entry) => `${entry.canonical}\0${entry.target}`),
+  );
+
+  const diagnostics: ClosureDependencyDiagnostic[] = [];
+  for (const entry of plannedCloseActions) {
+    if (entry.action.depends_on === undefined || entry.action.depends_on === null) continue;
+    const dependencies = dependencyRefs(entry.action.depends_on);
+    if (!entry.isClosureCandidate) {
+      diagnostics.push({
+        code: "missing_referenced_node",
+        message: `${entry.target || "unknown closure"} declares depends_on but is not a planned closure candidate in a canonical group`,
+        nodes: dependencyDiagnosticNodes(entry.target, dependencies),
+      });
+      continue;
+    }
+    if (dependencies.length === 0) {
+      diagnostics.push({
+        code: "missing_referenced_node",
+        message: `${entry.target} has non-null depends_on but does not identify another planned closure candidate in canonical group ${entry.canonical}`,
+        nodes: [entry.target],
+      });
+      continue;
+    }
+    for (const dependency of new Set(dependencies)) {
+      if (candidateKeys.has(`${entry.canonical}\0${dependency}`)) continue;
+      diagnostics.push({
+        code: "missing_referenced_node",
+        message: `${entry.target} depends_on ${dependency || "an invalid ref"}, which is not another planned closure candidate in canonical group ${entry.canonical}`,
+        nodes: dependencyDiagnosticNodes(entry.target, [dependency]),
+      });
+    }
+  }
+  return diagnostics.sort((left, right) =>
+    compareAscii(
+      `${left.nodes.join("\0")}\0${left.message}`,
+      `${right.nodes.join("\0")}\0${right.message}`,
+    ),
+  );
+}
+
 function closureCanonical(action: LooseRecord): string {
   return normalizeRef(
     action.canonical ??
@@ -110,6 +175,10 @@ function dependencyRefs(value: JsonValue): string[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) return [String(value)];
   return value.map((entry) => normalizeRef(entry) || String(entry));
+}
+
+function dependencyDiagnosticNodes(target: string, dependencies: readonly string[]): string[] {
+  return [...new Set([target, ...dependencies].filter(Boolean))].sort(compareAscii);
 }
 
 function normalizeRef(value: JsonValue): string {

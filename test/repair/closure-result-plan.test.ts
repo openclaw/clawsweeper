@@ -77,6 +77,61 @@ test("cycles and missing dependency targets fail closed", () => {
   }
 });
 
+test("canonical roots cannot satisfy closure dependencies", () => {
+  const result = planRepairClosureResult({
+    actions: [close("#101", "#100", ["#100"])],
+  });
+
+  assert.deepEqual(result, {
+    status: "needs_human",
+    diagnostics: [
+      {
+        code: "missing_referenced_node",
+        message:
+          "#101 depends_on #100, which is not another planned closure candidate in canonical group #100",
+        nodes: ["#100", "#101"],
+      },
+    ],
+    independentClosures: [],
+  });
+});
+
+test("independent and self-root closes cannot declare dependencies", () => {
+  const independent = planRepairClosureResult({
+    actions: [
+      {
+        action: "close_low_signal",
+        status: "planned",
+        target: "#200",
+        depends_on: [],
+      },
+    ],
+  });
+  assert.equal(independent.status, "needs_human");
+  if (independent.status === "needs_human") {
+    assert.equal(independent.diagnostics[0]?.code, "missing_referenced_node");
+    assert.match(independent.diagnostics[0]?.message ?? "", /not a planned closure candidate/);
+  }
+
+  const selfRoot = planRepairClosureResult({
+    actions: [
+      close("#101", "#100"),
+      {
+        action: "close_fixed_by_candidate",
+        status: "planned",
+        target: "#102",
+        canonical: "#102",
+        depends_on: ["#101"],
+      },
+    ],
+  });
+  assert.equal(selfRoot.status, "needs_human");
+  if (selfRoot.status === "needs_human") {
+    assert.equal(selfRoot.diagnostics[0]?.code, "missing_referenced_node");
+    assert.match(selfRoot.diagnostics[0]?.message ?? "", /not a planned closure candidate/);
+  }
+});
+
 test("review-results rejects a cyclic dependency artifact", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-closure-result-"));
   const updatedAt = "2026-07-14T12:00:00Z";
