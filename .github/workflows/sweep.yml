@@ -841,7 +841,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .artifacts
-          pnpm run --silent repair:exact-review-bundle -- create > .artifacts/exact-review-bundle-create.json
+          pnpm run --silent repair:exact-review-bundle create > .artifacts/exact-review-bundle-create.json
           artifact_name="exact-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           {
             echo "artifact_name=$artifact_name"
@@ -1241,7 +1241,7 @@ jobs:
           EXACT_REVIEW_SOURCE_SHA: ${{ steps.publication-context.outputs.source_sha }}
           EXACT_REVIEW_TARGET_BRANCH: ${{ steps.publication-context.outputs.target_branch }}
           EXACT_REVIEW_TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
-        run: pnpm run --silent repair:exact-review-bundle -- validate
+        run: pnpm run --silent repair:exact-review-bundle validate
 
       - name: Stage validated exact review artifact
         run: |

@@ -385,7 +385,7 @@ test("exact event review hands immutable artifacts to one state publisher", () =
   assert.match(create.run ?? "", /mkdir -p \.artifacts/);
   assert.ok(
     (create.run ?? "").indexOf("mkdir -p .artifacts") <
-      (create.run ?? "").indexOf("exact-review-bundle -- create"),
+      (create.run ?? "").indexOf("exact-review-bundle create"),
   );
   assert.equal(upload.uses, "actions/upload-artifact@v7");
   assert.equal(upload.with?.["retention-days"], 90);
@@ -423,7 +423,9 @@ test("exact event review hands immutable artifacts to one state publisher", () =
     download.with?.["run-id"],
     "${{ steps.publication-context.outputs.producer_run_id }}",
   );
-  assert.match(validate.run ?? "", /repair:exact-review-bundle -- validate/);
+  assert.match(validate.run ?? "", /repair:exact-review-bundle validate/);
+  assert.doesNotMatch(create.run ?? "", /repair:exact-review-bundle -- create/);
+  assert.doesNotMatch(validate.run ?? "", /repair:exact-review-bundle -- validate/);
   assert.ok(publisher.steps.indexOf(validate) < publisher.steps.indexOf(targetWriteStep));
   assert.ok(publisher.steps.indexOf(validate) < publisher.steps.indexOf(stateSetup));
 
