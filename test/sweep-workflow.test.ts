@@ -2109,6 +2109,9 @@ test("sweep event reviews and target fanout avoid storm amplification", () => {
   assert.match(eventBlock, /cancel-in-progress: false/);
   assert.match(legacyIntakeBlock, /legacy-event-queue-intake:/);
   assert.match(legacyIntakeBlock, /\/internal\/exact-review\/enqueue/);
+  assert.match(legacyIntakeBlock, /gh api "repos\/\$target_repo" --jq \.default_branch/);
+  assert.match(legacyIntakeBlock, /targetBranch: process\.env\.TARGET_BRANCH/);
+  assert.doesNotMatch(legacyIntakeBlock, /targetBranch: payload\.target_branch \|\| "main"/);
   assert.match(legacyIntakeBlock, /commandStatusMarker: payload\.command_status_marker/);
   assert.match(legacyIntakeBlock, /statusCommentId: payload\.status_comment_id/);
   assert.match(legacyIntakeBlock, /additionalPrompt: payload\.additional_prompt/);

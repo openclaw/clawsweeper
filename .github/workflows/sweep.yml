@@ -235,13 +235,32 @@ jobs:
       - name: Enqueue legacy event through the durable control plane
         env:
           CLIENT_PAYLOAD: ${{ toJson(github.event.client_payload) }}
+          GH_TOKEN: ${{ github.token }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
           set -euo pipefail
           test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
           queue_url="${QUEUE_URL%/}"
-          payload="$(node <<'NODE'
+          IFS=$'\t' read -r target_repo target_branch < <(node <<'NODE'
+          const payload = JSON.parse(process.env.CLIENT_PAYLOAD || "{}");
+          process.stdout.write(
+            `${String(payload.target_repo || "openclaw/openclaw").trim()}\t${String(payload.target_branch || "").trim()}\n`,
+          );
+          NODE
+          )
+          if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+            echo "Invalid legacy target repository: $target_repo" >&2
+            exit 1
+          fi
+          if [ -z "$target_branch" ]; then
+            target_branch="$(gh api "repos/$target_repo" --jq .default_branch)"
+          fi
+          if ! printf '%s' "$target_branch" | grep -Eq '^[A-Za-z0-9_.\/-]+$'; then
+            echo "Invalid legacy target branch for $target_repo: $target_branch" >&2
+            exit 1
+          fi
+          payload="$(TARGET_REPO="$target_repo" TARGET_BRANCH="$target_branch" node <<'NODE'
           const payload = JSON.parse(process.env.CLIENT_PAYLOAD || "{}");
           const itemKind = payload.item_kind === "pull_request" ? "pull_request" : "issue";
           const sourceEvent = payload.source_event === "pull_request" ? "pull_request" : "issues";
@@ -252,8 +271,8 @@ jobs:
                 ? `router:${dispatchKey}`
                 : `legacy:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
               decision: {
-                targetRepo: payload.target_repo || "openclaw/openclaw",
-                targetBranch: payload.target_branch || "main",
+                targetRepo: process.env.TARGET_REPO,
+                targetBranch: process.env.TARGET_BRANCH,
                 itemNumber: Number(payload.item_number),
                 itemKind,
                 sourceEvent,
