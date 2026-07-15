@@ -62,10 +62,11 @@ live repair mutations.
 
 ### PR 2: production-runner smoke workflow
 
-Status: ready to publish from `agent/containment-blacksmith-smoke`. Full local
-`pnpm run check` and autoreview pass with no actionable findings. The repository's
-existing Crabbox hydration workflow does not contain a Blacksmith Testbox action,
-so delegated Testbox validation stops before lease allocation; the pull request's
+Status: [PR openclaw/clawsweeper#602](https://github.com/openclaw/clawsweeper/pull/602)
+is open from `agent/containment-blacksmith-smoke`. Full local `pnpm run check`
+and autoreview pass with no actionable findings. The repository's existing
+Crabbox hydration workflow does not contain a Blacksmith Testbox action, so
+delegated Testbox validation stops before lease allocation; the pull request's
 own two-sample workflow is the authoritative remote Blacksmith proof for this PR.
 
 - run the compiled CLI on `blacksmith-16vcpu-ubuntu-2404` with two independent
