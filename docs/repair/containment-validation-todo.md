@@ -69,6 +69,14 @@ Crabbox hydration workflow does not contain a Blacksmith Testbox action, so
 delegated Testbox validation stops before lease allocation; the pull request's
 own two-sample workflow is the authoritative remote Blacksmith proof for this PR.
 
+Remote proof for code commit `53304c7ce452e6accc2e0edc866c8131d7900c19`:
+[Actions run 29432924949](https://github.com/openclaw/clawsweeper/actions/runs/29432924949)
+completed both matrix jobs on distinct Blacksmith Actions runners
+`blacksmith-scale2-01kxk9vc8hkwy8gwphs6gpwxwg-16vcpu` and
+`blacksmith-scale2-01kxk9yxny7j6vxrax1hyxmt2j-16vcpu`. Both reported
+`mount_readonly=native landlock=unavailable`. This proof used Blacksmith Actions,
+not Testbox-through-Crabbox, so it has no `tbx_...` Testbox ID.
+
 - run the compiled CLI on `blacksmith-16vcpu-ubuntu-2404` with two independent
   runner samples;
 - replace the existing repair worker's inline Node preflight with the same
