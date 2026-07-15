@@ -1152,7 +1152,7 @@ jobs:
                   item_number: decision.itemNumber,
                   item_kind: decision.itemKind,
                   has_command_context: Boolean(
-                    producerDecision.commandStatusMarker && producerDecision.statusCommentId,
+                    producerDecision.commandStatusMarker || producerDecision.statusCommentId,
                   ),
                   live_proceeded: publication.liveProceeded,
                   live_terminal_noop: publication.liveTerminalNoop,

@@ -2822,9 +2822,15 @@ function deferPausedExactReviewQueue(state: ExactReviewQueueState, now: number, 
   }
 }
 
-function exactReviewQueueActiveCount(state: ExactReviewQueueState) {
+function exactReviewQueueIsPublication(item: ExactReviewQueueItem) {
+  return item.decision.sourceAction === EXACT_REVIEW_ARTIFACT_PUBLISH_SOURCE_ACTION;
+}
+
+function exactReviewQueueActiveReviewCount(state: ExactReviewQueueState) {
   return Object.values(state.items).filter(
-    (item) => item.state === "dispatching" || item.state === "leased",
+    (item) =>
+      !exactReviewQueueIsPublication(item) &&
+      (item.state === "dispatching" || item.state === "leased"),
   ).length;
 }
 
@@ -2834,30 +2840,37 @@ function exactReviewQueueAdmittedItems(
   capacity: number,
   targetCapacity: number,
 ) {
-  const slots = Math.max(0, capacity - exactReviewQueueActiveCount(state));
+  const reviewSlots = Math.max(0, capacity - exactReviewQueueActiveReviewCount(state));
   const activeTargets = new Map<string, number>();
   let activePublishers = 0;
   for (const item of Object.values(state.items)) {
     if (item.state !== "dispatching" && item.state !== "leased") continue;
+    if (exactReviewQueueIsPublication(item)) {
+      activePublishers += 1;
+      continue;
+    }
     const target = item.decision.targetRepo;
     activeTargets.set(target, (activeTargets.get(target) || 0) + 1);
-    if (item.decision.sourceAction === EXACT_REVIEW_ARTIFACT_PUBLISH_SOURCE_ACTION) {
-      activePublishers += 1;
-    }
   }
   const admitted: ExactReviewQueueItem[] = [];
+  let admittedReviews = 0;
   const pending = Object.values(state.items)
     .filter((item) => item.state === "pending" && item.nextAttemptAt <= now)
     .sort((left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key));
   for (const item of pending) {
-    if (admitted.length >= slots) break;
-    const publication = item.decision.sourceAction === EXACT_REVIEW_ARTIFACT_PUBLISH_SOURCE_ACTION;
-    if (publication && activePublishers >= 1) continue;
+    const publication = exactReviewQueueIsPublication(item);
+    if (publication) {
+      if (activePublishers >= 1) continue;
+      activePublishers += 1;
+      admitted.push(item);
+      continue;
+    }
+    if (admittedReviews >= reviewSlots) continue;
     const target = item.decision.targetRepo;
     const active = activeTargets.get(target) || 0;
     if (active >= targetCapacity) continue;
     activeTargets.set(target, active + 1);
-    if (publication) activePublishers += 1;
+    admittedReviews += 1;
     admitted.push(item);
   }
   return admitted;
@@ -2964,23 +2977,21 @@ function exactReviewQueueNextWakeAt(
   const activeItems = items.filter(
     (item) => item.state === "dispatching" || item.state === "leased",
   );
-  const activeLeaseWakeAt = activeItems
-    .map((item) => item.leaseExpiresAt)
-    .filter((value): value is number => Boolean(value && value > now));
   if (activeItems.some((item) => !item.leaseExpiresAt || item.leaseExpiresAt <= now)) {
     return now + 1_000;
   }
-  if (activeItems.length >= capacity && activeLeaseWakeAt.length) {
-    return Math.max(now + 1_000, Math.min(...activeLeaseWakeAt));
-  }
+  const activeReviews = activeItems.filter((item) => !exactReviewQueueIsPublication(item));
+  const activePublishers = activeItems.filter(exactReviewQueueIsPublication);
+  const activeReviewWakeAt = activeReviews
+    .map((item) => item.leaseExpiresAt)
+    .filter((value): value is number => Boolean(value && value > now));
+  const activePublisherWakeAt = activePublishers
+    .map((item) => item.leaseExpiresAt)
+    .filter((value): value is number => Boolean(value && value > now));
   const activeTargetWakeAt = new Map<string, number>();
   const activeTargetCounts = new Map<string, number>();
-  for (const item of items) {
-    if (
-      (item.state === "dispatching" || item.state === "leased") &&
-      item.leaseExpiresAt &&
-      item.leaseExpiresAt > now
-    ) {
+  for (const item of activeReviews) {
+    if (item.leaseExpiresAt && item.leaseExpiresAt > now) {
       const target = item.decision.targetRepo;
       activeTargetCounts.set(target, (activeTargetCounts.get(target) || 0) + 1);
       const current = activeTargetWakeAt.get(item.decision.targetRepo);
@@ -2992,12 +3003,28 @@ function exactReviewQueueNextWakeAt(
   }
   const times = items.flatMap((item) => {
     if (item.state === "pending") {
+      if (exactReviewQueueIsPublication(item)) {
+        const blockedUntil = activePublisherWakeAt.length
+          ? Math.min(...activePublisherWakeAt)
+          : item.nextAttemptAt;
+        return [Math.max(item.nextAttemptAt, blockedUntil)];
+      }
       const target = item.decision.targetRepo;
-      const blockedUntil =
-        (activeTargetCounts.get(target) || 0) >= targetCapacity
-          ? activeTargetWakeAt.get(target)
-          : undefined;
-      return [blockedUntil ?? item.nextAttemptAt];
+      const blockedUntil = [
+        ...(activeReviews.length >= capacity && activeReviewWakeAt.length
+          ? [Math.min(...activeReviewWakeAt)]
+          : []),
+        ...((activeTargetCounts.get(target) || 0) >= targetCapacity &&
+        activeTargetWakeAt.has(target)
+          ? [activeTargetWakeAt.get(target) as number]
+          : []),
+      ];
+      return [
+        Math.max(
+          item.nextAttemptAt,
+          blockedUntil.length ? Math.min(...blockedUntil) : item.nextAttemptAt,
+        ),
+      ];
     }
     return item.leaseExpiresAt ? [item.leaseExpiresAt] : [];
   });

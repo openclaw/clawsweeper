@@ -404,6 +404,11 @@ test("exact event review hands immutable artifacts to one state publisher", () =
   assert.equal(publisher.concurrency?.queue, "max");
   assert.equal(publisher.permissions?.actions, "write");
   assert.equal(batchPublisher.concurrency?.group, "clawsweeper-state-publisher");
+  const publicationContext = step(publisher, "Claim durable exact review publication");
+  assert.match(
+    publicationContext.run ?? "",
+    /producerDecision\.commandStatusMarker \|\| producerDecision\.statusCommentId/,
+  );
 
   const download = step(publisher, "Download exact review artifact bundle");
   const validate = step(publisher, "Validate exact review artifact bundle");

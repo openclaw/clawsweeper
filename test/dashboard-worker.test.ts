@@ -2568,7 +2568,7 @@ test("exact-review queue can use the global capacity for one target", async () =
   }
 });
 
-test("exact-review queue keeps publication artifacts durable and admits one publisher", async () => {
+test("exact-review queue keeps publication artifacts durable outside review capacity", async () => {
   const originalFetch = globalThis.fetch;
   const storage = new MemoryDurableStorage();
   const dispatched: Record<string, unknown>[] = [];
@@ -2598,8 +2598,8 @@ test("exact-review queue keeps publication artifacts durable and admits one publ
       {
         CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
-        EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "5",
-        EXACT_REVIEW_TARGET_MAX_CONCURRENT: "5",
+        EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "4",
+        EXACT_REVIEW_TARGET_MAX_CONCURRENT: "4",
       },
     );
     await queue.fetch(
