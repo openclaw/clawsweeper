@@ -1196,10 +1196,6 @@ jobs:
     if: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.queue_lease_id != '' && github.event.client_payload.source_action == 'exact_review_artifact_publish' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    concurrency:
-      group: clawsweeper-exact-review-publisher
-      cancel-in-progress: false
-      queue: max
     permissions:
       actions: write
       contents: write
@@ -1554,29 +1550,6 @@ jobs:
           echo "terminal_noop=false" >> "$GITHUB_OUTPUT"
           pnpm run repair:publish-event-result
 
-      - name: Route synced ClawSweeper verdict
-        id: route-synced-verdict
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.terminal_missing != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && steps.publish-event-result.outputs.policy_noop != 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'false' }}
-        timeout-minutes: 4
-        env:
-          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
-          CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
-          TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
-          ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
-          CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
-          CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}
-          CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED || 'false' }}
-          CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
-          CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
-        run: |
-          pnpm run repair:comment-router -- \
-            --write-report \
-            --repo "$TARGET_REPO" \
-            --item-number "$ITEM_NUMBER" \
-            --lookback-minutes "$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
-            --max-comments "$CLAWSWEEPER_COMMENT_MAX_COMMENTS" \
-            --execute
-
       - name: Queue deferred exact verdict router
         id: queue-deferred-verdict-router
         if: ${{ steps.publication-context.outputs.claimed == 'true' && fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'true' }}
@@ -1682,7 +1655,6 @@ jobs:
           STATUS_COMMENT_ID: ${{ fromJSON(steps.publication-context.outputs.decision).statusCommentId || '' }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PUBLISH_OUTCOME: ${{ steps.publish-event-result.outcome }}
-          ROUTE_OUTCOME: ${{ steps.route-synced-verdict.outcome }}
           ROUTE_HANDOFF_OUTCOME: ${{ steps.queue-deferred-verdict-router.outcome }}
           TERMINAL_MISSING: ${{ steps.publish-event-result.outputs.terminal_missing }}
           TERMINAL_CLOSED: ${{ steps.publish-event-result.outputs.terminal_closed }}
@@ -1713,9 +1685,9 @@ jobs:
           elif [ "$PUBLISH_OUTCOME" = "success" ] && [ "$REMOTE_TUPLE_VERIFIED" = "true" ] && [ "$REVIEW_ONLY" = "true" ]; then
             state="Complete"
             detail="The failed-shard recovery published a durable review comment without close routing."
-          elif [ "$PUBLISH_OUTCOME" = "success" ] && { [ "$ROUTE_OUTCOME" = "success" ] || { [ "$ROUTING_DEFERRED" = "true" ] && [ "$ROUTE_HANDOFF_OUTCOME" = "success" ]; }; }; then
+          elif [ "$PUBLISH_OUTCOME" = "success" ] && [ "$ROUTING_DEFERRED" = "true" ] && [ "$ROUTE_HANDOFF_OUTCOME" = "success" ]; then
             state="Complete"
-            detail="The durable review comment was published and its synced verdict was routed."
+            detail="The durable review comment was published and its verdict was queued for target-serialized routing."
           fi
           pnpm run repair:update-command-status -- \
             --repo "$TARGET_REPO" \
@@ -1726,18 +1698,8 @@ jobs:
             --detail "$detail" \
             --run-url "$RUN_URL"
 
-      - name: Commit event comment router ledger
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publish-event-result.outcome == 'success' && steps.route-synced-verdict.outcome == 'success' }}
-        run: |
-          pnpm run repair:publish-main -- \
-            --message "chore: record ClawSweeper event comment routing" \
-            --path results/comment-router.json \
-            --path results/comment-router-latest.json \
-            --path jobs \
-            --rebase-strategy theirs
-
       - name: React to target item completion
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && (steps.publish-event-result.outputs.terminal_closed == 'true' || steps.publish-event-result.outputs.guarded_open == 'true' || steps.publish-event-result.outputs.policy_noop == 'true' || steps.queue-deferred-verdict-router.outcome == 'success' || steps.route-synced-verdict.outcome == 'success' || (fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && steps.publish-event-result.outputs.remote_tuple_verified == 'true')) }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && (steps.publish-event-result.outputs.terminal_closed == 'true' || steps.publish-event-result.outputs.guarded_open == 'true' || steps.publish-event-result.outputs.policy_noop == 'true' || steps.queue-deferred-verdict-router.outcome == 'success' || (fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && steps.publish-event-result.outputs.remote_tuple_verified == 'true')) }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -1838,7 +1800,6 @@ jobs:
           POLICY_NOOP: ${{ steps.publish-event-result.outputs.policy_noop }}
           REQUEUE_LATEST: ${{ steps.publish-event-result.outputs.requeue_latest }}
           SOURCE_DRIFT_OUTCOME: ${{ steps.queue-source-drift-review.outcome }}
-          DIRECT_ROUTE_OUTCOME: ${{ steps.route-synced-verdict.outcome }}
           DEFERRED_ROUTE_OUTCOME: ${{ steps.queue-deferred-verdict-router.outcome }}
           REVIEW_ONLY: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
         run: |
@@ -1850,7 +1811,7 @@ jobs:
               outcome=success
             elif [ "$PUBLISH_OUTCOME" = "success" ] && { [ "$TERMINAL_NOOP" = "true" ] || [ "$TERMINAL_MISSING" = "true" ] || [ "$TERMINAL_CLOSED" = "true" ] || [ "$GUARDED_OPEN" = "true" ] || [ "$POLICY_NOOP" = "true" ] || [ "$REVIEW_ONLY" = "true" ]; }; then
               outcome=success
-            elif [ "$PUBLISH_OUTCOME" = "success" ] && { [ "$DIRECT_ROUTE_OUTCOME" = "success" ] || [ "$DEFERRED_ROUTE_OUTCOME" = "success" ]; }; then
+            elif [ "$PUBLISH_OUTCOME" = "success" ] && [ "$DEFERRED_ROUTE_OUTCOME" = "success" ]; then
               outcome=success
             fi
           fi

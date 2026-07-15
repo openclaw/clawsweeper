@@ -153,8 +153,9 @@ const HEALTH_HISTORY_TTL_SECONDS = (HEALTH_HISTORY_RETENTION_DAYS + 1) * 24 * 60
 const HEALTH_HISTORY_KEY_PREFIX = "health-history:";
 const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 64;
 const DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT = 60;
+const DEFAULT_EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT = 24;
 const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 6 * 60 * 1000;
-// Exact publications have a dedicated serial lane. Bound the unclaimed handoff so a run that
+// Exact publications have a dedicated bounded lane. Bound the unclaimed handoff so a run that
 // never reaches its claim step is re-dispatched; stale runs lose the lease tuple safely.
 const DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS = 15 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS = 130 * 60 * 1000;
@@ -910,6 +911,7 @@ export class ExactReviewQueue {
           now,
           exactReviewQueueCapacity(this.env),
           exactReviewTargetCapacity(this.env),
+          exactReviewPublicationCapacity(this.env),
           exactReviewDispatchLeaseMs(this.env),
           exactReviewExecutionLeaseMs(this.env),
           exactReviewPublicationDispatchLeaseMs(this.env),
@@ -944,11 +946,13 @@ export class ExactReviewQueue {
     const snapshotChanged = reclaimedSnapshot || expiredSnapshot;
     const capacity = exactReviewQueueCapacity(this.env);
     const targetCapacity = exactReviewTargetCapacity(this.env);
+    const publicationCapacity = exactReviewPublicationCapacity(this.env);
     const snapshotAdmission = exactReviewQueueAdmittedItems(
       snapshot,
       startedAt,
       capacity,
       targetCapacity,
+      publicationCapacity,
     );
     if (!snapshotAdmission.length) {
       if (snapshotChanged) await this.writeState(snapshot);
@@ -972,7 +976,13 @@ export class ExactReviewQueue {
     const state = this.readStateSync();
     reclaimExpiredExactReviewLeases(state, now, exactReviewPublicationDispatchLeaseMs(this.env));
     expireExactReviewPublicationItems(state, now);
-    const admitted = exactReviewQueueAdmittedItems(state, now, capacity, targetCapacity);
+    const admitted = exactReviewQueueAdmittedItems(
+      state,
+      now,
+      capacity,
+      targetCapacity,
+      publicationCapacity,
+    );
     if (!preflight.ok) {
       const retryAt = now + exactReviewWorkflowPausedRetryMs(this.env);
       state.dispatcher = {
@@ -1581,6 +1591,7 @@ export class ExactReviewQueue {
       now,
       exactReviewQueueCapacity(this.env),
       exactReviewTargetCapacity(this.env),
+      exactReviewPublicationCapacity(this.env),
       exactReviewPublicationDispatchLeaseMs(this.env),
     );
     if (next === null) {
@@ -3022,11 +3033,12 @@ function exactReviewQueueActiveReviewCount(state: ExactReviewQueueState) {
   ).length;
 }
 
-function exactReviewQueueAdmittedItems(
+export function exactReviewQueueAdmittedItems(
   state: ExactReviewQueueState,
   now: number,
   capacity: number,
   targetCapacity: number,
+  publicationCapacity: number,
 ) {
   const dispatcherRetryAt = Number(state.dispatcher?.retryAt || 0);
   if (
@@ -3055,7 +3067,7 @@ function exactReviewQueueAdmittedItems(
   for (const item of pending) {
     const publication = exactReviewQueueIsPublication(item);
     if (publication) {
-      if (activePublishers >= 1) continue;
+      if (activePublishers >= publicationCapacity) continue;
       activePublishers += 1;
       admitted.push(item);
       continue;
@@ -3076,6 +3088,7 @@ function exactReviewQueueStats(
   now = Date.now(),
   capacity = Number.POSITIVE_INFINITY,
   targetCapacity = Number.POSITIVE_INFINITY,
+  publicationCapacity = Number.POSITIVE_INFINITY,
   dispatchLeaseMs = DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS,
   executionLeaseMs = DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS,
   publicationDispatchLeaseMs = DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS,
@@ -3141,6 +3154,7 @@ function exactReviewQueueStats(
     now,
     capacity,
     targetCapacity,
+    publicationCapacity,
     publicationDispatchLeaseMs,
   );
   return {
@@ -3168,11 +3182,12 @@ function exactReviewQueueStats(
   };
 }
 
-function exactReviewQueueNextWakeAt(
+export function exactReviewQueueNextWakeAt(
   state: ExactReviewQueueState,
   now: number,
   capacity = Number.POSITIVE_INFINITY,
   targetCapacity = Number.POSITIVE_INFINITY,
+  publicationCapacity = Number.POSITIVE_INFINITY,
   publicationDispatchLeaseMs = DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS,
 ) {
   const items = Object.values(state.items);
@@ -3218,9 +3233,10 @@ function exactReviewQueueNextWakeAt(
     if (item.state === "pending") {
       if (dispatcherPaused) return [dispatcherRetryAt];
       if (exactReviewQueueIsPublication(item)) {
-        const blockedUntil = activePublisherWakeAt.length
-          ? Math.min(...activePublisherWakeAt)
-          : item.nextAttemptAt;
+        const blockedUntil =
+          activePublishers.length >= publicationCapacity && activePublisherWakeAt.length
+            ? Math.min(...activePublisherWakeAt)
+            : item.nextAttemptAt;
         return [Math.max(item.nextAttemptAt, blockedUntil)];
       }
       const target = item.decision.targetRepo;
@@ -3253,6 +3269,19 @@ export function exactReviewQueueCapacity(env) {
     Math.min(
       numberFrom(env.WORKER_BUDGET, 128),
       numberFrom(env.EXACT_REVIEW_QUEUE_MAX_CONCURRENT, DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT),
+    ),
+  );
+}
+
+export function exactReviewPublicationCapacity(env) {
+  return Math.max(
+    1,
+    Math.min(
+      exactReviewQueueCapacity(env),
+      numberFrom(
+        env.EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT,
+        DEFAULT_EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT,
+      ),
     ),
   );
 }

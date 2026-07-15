@@ -64,6 +64,25 @@ export function exactEventPublishDisposition({
   };
 }
 
+export function exactEventRoutingDeferred({
+  candidateMatchesCurrentTuple,
+  candidateTupleState,
+  guardedOpenAction,
+  requeueLatestExpected,
+}: {
+  candidateMatchesCurrentTuple: boolean;
+  candidateTupleState: "closed" | "open" | "invalid";
+  guardedOpenAction: string | null;
+  requeueLatestExpected: boolean;
+}) {
+  return (
+    candidateMatchesCurrentTuple &&
+    candidateTupleState === "open" &&
+    guardedOpenAction === null &&
+    !requeueLatestExpected
+  );
+}
+
 export type ExactEventApplyDisposition =
   | "applied"
   | "terminal_policy_noop"

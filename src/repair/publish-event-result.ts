@@ -16,6 +16,7 @@ import {
   exactEventApplyProof,
   eventApplyRequeueLatestExpected,
   exactEventPublishDisposition,
+  exactEventRoutingDeferred,
   type EventApplyAction,
 } from "./event-apply-proof.js";
 import {
@@ -329,7 +330,12 @@ function publishSnapshot({
         requeueLatest:
           requeueLatestExpected && candidateMatchesCurrentTuple && candidateTupleState === "open",
         remoteTupleVerified: candidateMatchesCurrentTuple,
-        routingDeferred: disposition.routableSyncVerified,
+        routingDeferred: exactEventRoutingDeferred({
+          candidateMatchesCurrentTuple,
+          candidateTupleState,
+          guardedOpenAction,
+          requeueLatestExpected,
+        }),
       };
       if (routableSyncExpected && !published.routableSyncVerified) {
         throw new RoutableSyncPublishRaceError(

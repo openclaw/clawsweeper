@@ -323,7 +323,7 @@ test("scheduled review shards receive the compiler-backed runtime artifact", () 
   assert.doesNotMatch(reviewJob, /npm pack "@typescript/);
 });
 
-test("exact event review hands immutable artifacts to one dedicated publisher", () => {
+test("exact event review hands immutable artifacts to the queue-bounded publisher lane", () => {
   type Step = {
     "continue-on-error"?: boolean;
     name?: string;
@@ -424,15 +424,12 @@ test("exact event review hands immutable artifacts to one dedicated publisher", 
     step(publisher, "Claim durable exact review publication").run ?? "",
     /internal\/exact-review\/claim/,
   );
-  assert.equal(publisher.concurrency?.group, "clawsweeper-exact-review-publisher");
-  assert.equal(publisher.concurrency?.["cancel-in-progress"], false);
-  assert.equal(publisher.concurrency?.queue, "max");
+  assert.equal(publisher.concurrency, undefined);
   assert.equal(publisher.permissions?.actions, "write");
   assert.equal(
     batchPublisher.concurrency?.group,
     "clawsweeper-target-review-publish-${{ needs.plan.outputs.target_repo }}",
   );
-  assert.notEqual(publisher.concurrency?.group, batchPublisher.concurrency?.group);
   const publicationContext = step(publisher, "Claim durable exact review publication");
   assert.match(
     publicationContext.run ?? "",
@@ -466,9 +463,14 @@ test("exact event review hands immutable artifacts to one dedicated publisher", 
   assert.match(publish.run ?? "", /test -f "artifacts\/event\/\$ITEM_NUMBER\.md"/);
   assert.match(publish.run ?? "", /repair:publish-event-result/);
   assert.equal(publish.env?.EXACT_EVENT_PUBLICATION, "true");
-  const route = step(publisher, "Route synced ClawSweeper verdict");
-  assert.match(route.if ?? "", /publish-event-result\.outcome == 'success'/);
-  assert.match(route.if ?? "", /remote_tuple_verified == 'true'/);
+  assert.equal(
+    publisher.steps.some((candidate) => candidate.name === "Route synced ClawSweeper verdict"),
+    false,
+  );
+  const deferredRoute = step(publisher, "Queue deferred exact verdict router");
+  assert.match(deferredRoute.if ?? "", /publish-event-result\.outcome == 'success'/);
+  assert.match(deferredRoute.if ?? "", /routing_deferred == 'true'/);
+  assert.match(deferredRoute.run ?? "", /repair-comment-router\.yml/);
   const drift = step(publisher, "Queue fresh review after source drift");
   assert.match(drift.if ?? "", /requeue_latest == 'true'/);
   assert.match(drift.run ?? "", /x-clawsweeper-exact-review-signature/);

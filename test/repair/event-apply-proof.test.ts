@@ -7,6 +7,7 @@ import {
   eventRecordActionTaken,
   exactEventApplyProof,
   exactEventPublishDisposition,
+  exactEventRoutingDeferred,
 } from "../../src/repair/event-apply-proof.ts";
 
 test("exact event publish dispositions require the current tuple and preserve terminal precedence", () => {
@@ -133,6 +134,46 @@ test("exact event publish dispositions reject stale routable sync tuples", () =>
       }).routableSyncVerified,
       false,
     );
+  }
+});
+
+test("exact event routing defers only current nonterminal verdicts", () => {
+  assert.equal(
+    exactEventRoutingDeferred({
+      candidateMatchesCurrentTuple: true,
+      candidateTupleState: "open",
+      guardedOpenAction: null,
+      requeueLatestExpected: false,
+    }),
+    true,
+  );
+  for (const candidate of [
+    {
+      candidateMatchesCurrentTuple: false,
+      candidateTupleState: "open" as const,
+      guardedOpenAction: null,
+      requeueLatestExpected: false,
+    },
+    {
+      candidateMatchesCurrentTuple: true,
+      candidateTupleState: "closed" as const,
+      guardedOpenAction: null,
+      requeueLatestExpected: false,
+    },
+    {
+      candidateMatchesCurrentTuple: true,
+      candidateTupleState: "open" as const,
+      guardedOpenAction: "skipped_locked_conversation",
+      requeueLatestExpected: false,
+    },
+    {
+      candidateMatchesCurrentTuple: true,
+      candidateTupleState: "open" as const,
+      guardedOpenAction: null,
+      requeueLatestExpected: true,
+    },
+  ]) {
+    assert.equal(exactEventRoutingDeferred(candidate), false);
   }
 });
 

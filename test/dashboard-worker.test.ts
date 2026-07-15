@@ -8,7 +8,10 @@ import { createContext, Script } from "node:vm";
 import worker, {
   automaticIssueWork,
   ExactReviewQueue,
+  exactReviewPublicationCapacity,
+  exactReviewQueueAdmittedItems,
   exactReviewQueueCapacity,
+  exactReviewQueueNextWakeAt,
   exactReviewQueueStatusSnapshot,
   mergeBayJourneyState,
   mergeBayTerminalState,
@@ -32,6 +35,49 @@ test("exact-review queue defaults to 64 of the 128 global workers", () => {
     }),
     64,
   );
+});
+
+test("exact-review publication defaults to 24 bounded publishers", () => {
+  assert.equal(exactReviewPublicationCapacity({}), 24);
+  assert.equal(
+    exactReviewPublicationCapacity({ EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "12" }),
+    12,
+  );
+  assert.equal(
+    exactReviewPublicationCapacity({
+      EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "24",
+      EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "16",
+    }),
+    16,
+  );
+});
+
+test("exact-review queue admits and wakes up to 24 publishers", () => {
+  const now = 1_000_000;
+  const publication = (number: number) => ({
+    key: `openclaw/openclaw#${number}@publish:${number}:1`,
+    state: "pending",
+    nextAttemptAt: now,
+    leaseExpiresAt: undefined,
+    decision: { sourceAction: "exact_review_artifact_publish" },
+  });
+  const state = {
+    items: Object.fromEntries(
+      Array.from({ length: 25 }, (_, index) => {
+        const item = publication(index + 1);
+        return [item.key, item];
+      }),
+    ),
+  } as never;
+  assert.equal(exactReviewQueueAdmittedItems(state, now, 64, 60, 24).length, 24);
+
+  const active = publication(1);
+  active.state = "leased";
+  active.leaseExpiresAt = now + 60_000;
+  const pending = publication(2);
+  const wakeState = { items: { [active.key]: active, [pending.key]: pending } } as never;
+  assert.equal(exactReviewQueueNextWakeAt(wakeState, now, 64, 60, 24), now + 1_000);
+  assert.equal(exactReviewQueueNextWakeAt(wakeState, now, 64, 60, 1), now + 60_000);
 });
 
 test("dashboard status reads the exact-review handoff model from the durable queue", async () => {

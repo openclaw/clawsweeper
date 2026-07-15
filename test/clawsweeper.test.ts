@@ -2400,7 +2400,8 @@ test("repair workflows preserve existing dispatch while scheduled cluster intake
   ].join("\n");
 
   assert.doesNotMatch(existingRepairWorkflows, /CLAWSWEEPER_FEATURE_REPAIR_ENABLED/);
-  assert.match(sweep, /pnpm run repair:comment-router -- \\\n[\s\S]*--execute/);
+  assert.match(sweep, /gh workflow run repair-comment-router\.yml/);
+  assert.doesNotMatch(sweep, /pnpm run repair:comment-router -- \\\n[\s\S]*--execute/);
   assert.match(router, /\{ \[ "\$\{\{ github\.event_name \}\}" = "repository_dispatch" \]; \}/);
   assert.match(issueImplementation, /ENABLED: \$\{\{ github\.event\.inputs\.enabled/);
   assert.match(commitFinding, /ENABLED: \$\{\{ github\.event\.inputs\.enabled/);
@@ -2594,10 +2595,6 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
   assert.match(
     eventReviewJob,
     /sourceAction == 'failed_review_shard_recovery' && 'true' \|\| 'false'/,
-  );
-  assert.match(
-    eventReviewJob,
-    /Route synced ClawSweeper verdict[\s\S]*sourceAction != 'failed_review_shard_recovery'/,
   );
   assert.match(
     eventReviewJob,
