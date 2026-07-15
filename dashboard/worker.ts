@@ -154,9 +154,9 @@ const HEALTH_HISTORY_KEY_PREFIX = "health-history:";
 const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 64;
 const DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT = 60;
 const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 6 * 60 * 1000;
-// Covers the global publisher lane's 100 queued 60-minute jobs plus scheduling margin.
-// Terminal-run reconciliation still releases failed or cancelled dispatches early.
-const DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS = 7 * 24 * 60 * 60 * 1000;
+// Exact publications have a dedicated serial lane. Bound the unclaimed handoff so a run that
+// never reaches its claim step is re-dispatched; stale runs lose the lease tuple safely.
+const DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS = 15 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS = 130 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_RETRY_MS = 30_000;
 const DEFAULT_EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = 60_000;
@@ -580,7 +580,11 @@ export class ExactReviewQueue {
         const state = this.readStateSync();
         // A delayed or lost alarm must not let an expired one-shot recovery
         // suppress the next failed shard's recovery delivery.
-        reclaimExpiredExactReviewLeases(state, now);
+        reclaimExpiredExactReviewLeases(
+          state,
+          now,
+          exactReviewPublicationDispatchLeaseMs(this.env),
+        );
         const key = exactReviewItemKey(decision);
         const current = state.items[key];
         const nextAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
@@ -646,10 +650,24 @@ export class ExactReviewQueue {
       const state = this.readStateSync();
       const item = tupleClaim ? state.items[itemKey] : exactReviewItemForLease(state, leaseId);
       if (
+        item &&
+        reclaimExpiredExactReviewLease(
+          state,
+          item.key,
+          item,
+          now,
+          exactReviewPublicationDispatchLeaseMs(this.env),
+        )
+      ) {
+        this.writeStateSync(state);
+        await this.scheduleNext(state, now);
+        return json({ error: "lease_not_active" }, 409);
+      }
+      if (
         !item ||
         item.leaseId !== leaseId ||
         (tupleClaim && item.leaseRevision !== leaseRevision) ||
-        !isLiveExactReviewLease(item, now)
+        !isLiveExactReviewLease(item, now, exactReviewPublicationDispatchLeaseMs(this.env))
       ) {
         return json({ error: "lease_not_active" }, 409);
       }
@@ -876,7 +894,11 @@ export class ExactReviewQueue {
         const current = this.readStateSync();
         // Dashboard reads are also the operational heartbeat. Reclaim leases and
         // restore the alarm here so a deploy or lost alarm cannot strand backlog.
-        const changed = reclaimExpiredExactReviewLeases(current, now);
+        const changed = reclaimExpiredExactReviewLeases(
+          current,
+          now,
+          exactReviewPublicationDispatchLeaseMs(this.env),
+        );
         if (changed) this.writeStateSync(current);
         else this.syncLegacyCompatibilitySync(current);
         return current;
@@ -890,6 +912,7 @@ export class ExactReviewQueue {
           exactReviewTargetCapacity(this.env),
           exactReviewDispatchLeaseMs(this.env),
           exactReviewExecutionLeaseMs(this.env),
+          exactReviewPublicationDispatchLeaseMs(this.env),
         ),
         delivery_receipts: this.deliveryReceiptCountSync(),
         storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
@@ -912,7 +935,11 @@ export class ExactReviewQueue {
       this.syncLegacyCompatibilitySync(this.readStateSync());
     });
     const snapshot = this.readStateSync();
-    const reclaimedSnapshot = reclaimExpiredExactReviewLeases(snapshot, startedAt);
+    const reclaimedSnapshot = reclaimExpiredExactReviewLeases(
+      snapshot,
+      startedAt,
+      exactReviewPublicationDispatchLeaseMs(this.env),
+    );
     const expiredSnapshot = expireExactReviewPublicationItems(snapshot, startedAt);
     const snapshotChanged = reclaimedSnapshot || expiredSnapshot;
     const capacity = exactReviewQueueCapacity(this.env);
@@ -943,7 +970,7 @@ export class ExactReviewQueue {
     // write so concurrent enqueue, claim, or complete requests cannot be lost.
     const now = Date.now();
     const state = this.readStateSync();
-    reclaimExpiredExactReviewLeases(state, now);
+    reclaimExpiredExactReviewLeases(state, now, exactReviewPublicationDispatchLeaseMs(this.env));
     expireExactReviewPublicationItems(state, now);
     const admitted = exactReviewQueueAdmittedItems(state, now, capacity, targetCapacity);
     if (!preflight.ok) {
@@ -985,10 +1012,7 @@ export class ExactReviewQueue {
       item.leaseExpiresAt =
         now +
         (item.decision.sourceAction === EXACT_REVIEW_ARTIFACT_PUBLISH_SOURCE_ACTION
-          ? Math.max(
-              exactReviewDispatchLeaseMs(this.env),
-              DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS,
-            )
+          ? exactReviewPublicationDispatchLeaseMs(this.env)
           : exactReviewDispatchLeaseMs(this.env));
       item.claimedRunId = undefined;
       item.claimedRunAttempt = undefined;
@@ -1557,6 +1581,7 @@ export class ExactReviewQueue {
       now,
       exactReviewQueueCapacity(this.env),
       exactReviewTargetCapacity(this.env),
+      exactReviewPublicationDispatchLeaseMs(this.env),
     );
     if (next === null) {
       await this.storage.deleteAlarm();
@@ -1617,9 +1642,12 @@ export default {
     return json({ error: "not_found" }, 404);
   },
   async scheduled(_controller, env: DashboardEnv = {}, ctx?: DashboardContext) {
-    const recording = recordScheduledHealthSample(env);
-    if (ctx?.waitUntil) ctx.waitUntil(recording);
-    else await recording;
+    const maintenance = Promise.all([
+      recordScheduledHealthSample(env),
+      exactReviewQueueStatusSnapshot(env).catch(() => null),
+    ]);
+    if (ctx?.waitUntil) ctx.waitUntil(maintenance);
+    else await maintenance;
   },
 };
 
@@ -2859,35 +2887,74 @@ function clearExactReviewLease(item: ExactReviewQueueItem) {
   item.claimedAt = undefined;
 }
 
-function isLiveExactReviewLease(item: ExactReviewQueueItem, now: number) {
-  return Boolean(item.leaseId && item.leaseExpiresAt && item.leaseExpiresAt > now);
+function exactReviewEffectiveLeaseExpiresAt(
+  item: ExactReviewQueueItem,
+  publicationDispatchLeaseMs: number,
+) {
+  const leaseExpiresAt = Number(item.leaseExpiresAt || 0);
+  if (
+    !leaseExpiresAt ||
+    item.state !== "dispatching" ||
+    !exactReviewQueueIsPublication(item) ||
+    item.claimedRunId ||
+    !item.dispatchedAt
+  ) {
+    return leaseExpiresAt;
+  }
+  return Math.min(leaseExpiresAt, item.dispatchedAt + publicationDispatchLeaseMs);
 }
 
-function reclaimExpiredExactReviewLeases(state: ExactReviewQueueState, now: number) {
+function isLiveExactReviewLease(
+  item: ExactReviewQueueItem,
+  now: number,
+  publicationDispatchLeaseMs = DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS,
+) {
+  return Boolean(
+    item.leaseId && exactReviewEffectiveLeaseExpiresAt(item, publicationDispatchLeaseMs) > now,
+  );
+}
+
+function reclaimExpiredExactReviewLeases(
+  state: ExactReviewQueueState,
+  now: number,
+  publicationDispatchLeaseMs = DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS,
+) {
   let changed = false;
   for (const [key, item] of Object.entries(state.items)) {
-    if (
-      (item.state === "dispatching" || item.state === "leased") &&
-      !isLiveExactReviewLease(item, now)
-    ) {
-      const oneShotRecovery =
-        (item.leaseDecision || item.decision).sourceAction ===
-        FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION;
-      const hasNewerRevision = item.revision > Number(item.leaseRevision || 0);
-      if (oneShotRecovery && !hasNewerRevision) {
-        delete state.items[key];
-        changed = true;
-        continue;
-      }
-      clearExactReviewLease(item);
-      item.state = "pending";
-      item.nextAttemptAt = now;
-      if (hasNewerRevision) item.attempts = 0;
-      item.updatedAt = now;
+    if (reclaimExpiredExactReviewLease(state, key, item, now, publicationDispatchLeaseMs)) {
       changed = true;
     }
   }
   return changed;
+}
+
+function reclaimExpiredExactReviewLease(
+  state: ExactReviewQueueState,
+  key: string,
+  item: ExactReviewQueueItem,
+  now: number,
+  publicationDispatchLeaseMs: number,
+) {
+  if (
+    (item.state !== "dispatching" && item.state !== "leased") ||
+    isLiveExactReviewLease(item, now, publicationDispatchLeaseMs)
+  ) {
+    return false;
+  }
+  const oneShotRecovery =
+    (item.leaseDecision || item.decision).sourceAction ===
+    FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION;
+  const hasNewerRevision = item.revision > Number(item.leaseRevision || 0);
+  if (oneShotRecovery && !hasNewerRevision) {
+    delete state.items[key];
+    return true;
+  }
+  clearExactReviewLease(item);
+  item.state = "pending";
+  item.nextAttemptAt = now;
+  if (hasNewerRevision) item.attempts = 0;
+  item.updatedAt = now;
+  return true;
 }
 
 function expireExactReviewPublicationItems(state: ExactReviewQueueState, now: number) {
@@ -3011,6 +3078,7 @@ function exactReviewQueueStats(
   targetCapacity = Number.POSITIVE_INFINITY,
   dispatchLeaseMs = DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS,
   executionLeaseMs = DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS,
+  publicationDispatchLeaseMs = DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS,
 ) {
   const items = Object.values(state.items);
   const handoffHealth = summarizeExactReviewHandoff({
@@ -3068,7 +3136,13 @@ function exactReviewQueueStats(
         right.dispatching + right.leased - (left.dispatching + left.leased) ||
         left.target_repo.localeCompare(right.target_repo),
     );
-  const nextWakeAt = exactReviewQueueNextWakeAt(state, now, capacity, targetCapacity);
+  const nextWakeAt = exactReviewQueueNextWakeAt(
+    state,
+    now,
+    capacity,
+    targetCapacity,
+    publicationDispatchLeaseMs,
+  );
   return {
     pending: handoffHealth.phases.pending.count,
     dispatching: handoffHealth.phases.dispatching.count,
@@ -3099,6 +3173,7 @@ function exactReviewQueueNextWakeAt(
   now: number,
   capacity = Number.POSITIVE_INFINITY,
   targetCapacity = Number.POSITIVE_INFINITY,
+  publicationDispatchLeaseMs = DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS,
 ) {
   const items = Object.values(state.items);
   if (!items.length) return null;
@@ -3109,7 +3184,13 @@ function exactReviewQueueNextWakeAt(
   const activeItems = items.filter(
     (item) => item.state === "dispatching" || item.state === "leased",
   );
-  if (activeItems.some((item) => !item.leaseExpiresAt || item.leaseExpiresAt <= now)) {
+  if (
+    activeItems.some(
+      (item) =>
+        !item.leaseExpiresAt ||
+        exactReviewEffectiveLeaseExpiresAt(item, publicationDispatchLeaseMs) <= now,
+    )
+  ) {
     return now + 1_000;
   }
   const activeReviews = activeItems.filter((item) => !exactReviewQueueIsPublication(item));
@@ -3118,7 +3199,7 @@ function exactReviewQueueNextWakeAt(
     .map((item) => item.leaseExpiresAt)
     .filter((value): value is number => Boolean(value && value > now));
   const activePublisherWakeAt = activePublishers
-    .map((item) => item.leaseExpiresAt)
+    .map((item) => exactReviewEffectiveLeaseExpiresAt(item, publicationDispatchLeaseMs))
     .filter((value): value is number => Boolean(value && value > now));
   const activeTargetWakeAt = new Map<string, number>();
   const activeTargetCounts = new Map<string, number>();
@@ -3159,7 +3240,8 @@ function exactReviewQueueNextWakeAt(
         ),
       ];
     }
-    return item.leaseExpiresAt ? [item.leaseExpiresAt] : [];
+    const leaseExpiresAt = exactReviewEffectiveLeaseExpiresAt(item, publicationDispatchLeaseMs);
+    return leaseExpiresAt ? [leaseExpiresAt] : [];
   });
   if (!times.length) return now + DEFAULT_EXACT_REVIEW_RETRY_MS;
   return Math.max(now + 1_000, Math.min(...times));
@@ -3192,6 +3274,13 @@ function exactReviewDispatchLeaseMs(env) {
   return Math.max(
     60_000,
     numberFrom(env.EXACT_REVIEW_DISPATCH_LEASE_MS, DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS),
+  );
+}
+
+function exactReviewPublicationDispatchLeaseMs(env) {
+  return Math.max(
+    exactReviewDispatchLeaseMs(env),
+    DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS,
   );
 }
 

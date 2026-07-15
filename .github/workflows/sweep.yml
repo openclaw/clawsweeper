@@ -1131,7 +1131,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: clawsweeper-state-publisher
+      group: clawsweeper-exact-review-publisher
       cancel-in-progress: false
       queue: max
     permissions:

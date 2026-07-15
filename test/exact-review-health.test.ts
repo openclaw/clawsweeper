@@ -125,6 +125,25 @@ test("exact-review handoff health derives legacy dispatch age from its active le
   assert.equal(health.phases.dispatching.oldest_age_seconds, 20);
 });
 
+test("exact-review handoff health uses dispatch time when a longer lease has a future derived start", () => {
+  const health = summarize({
+    items: [
+      {
+        state: "dispatching",
+        createdAt: NOW - 10 * 60_000,
+        updatedAt: NOW - 6 * 60_000,
+        dispatchedAt: NOW - 6 * 60_000,
+        leaseExpiresAt: NOW + 15 * 60_000,
+      },
+    ],
+  });
+
+  assert.equal(health.status, "stalled");
+  assert.equal(health.reason, "claim_stalled");
+  assert.equal(health.phases.dispatching.oldest_at, "2026-07-13T01:54:00.000Z");
+  assert.equal(health.phases.dispatching.oldest_age_seconds, 360);
+});
+
 test("exact-review handoff health ignores stale rollback telemetry and unknown legacy ages", () => {
   const rolledBack = summarize({
     items: [

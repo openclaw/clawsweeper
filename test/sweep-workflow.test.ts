@@ -323,7 +323,7 @@ test("scheduled review shards receive the compiler-backed runtime artifact", () 
   assert.doesNotMatch(reviewJob, /npm pack "@typescript/);
 });
 
-test("exact event review hands immutable artifacts to one state publisher", () => {
+test("exact event review hands immutable artifacts to one dedicated publisher", () => {
   type Step = {
     "continue-on-error"?: boolean;
     name?: string;
@@ -401,11 +401,12 @@ test("exact event review hands immutable artifacts to one state publisher", () =
     step(publisher, "Claim durable exact review publication").run ?? "",
     /internal\/exact-review\/claim/,
   );
-  assert.equal(publisher.concurrency?.group, "clawsweeper-state-publisher");
+  assert.equal(publisher.concurrency?.group, "clawsweeper-exact-review-publisher");
   assert.equal(publisher.concurrency?.["cancel-in-progress"], false);
   assert.equal(publisher.concurrency?.queue, "max");
   assert.equal(publisher.permissions?.actions, "write");
   assert.equal(batchPublisher.concurrency?.group, "clawsweeper-state-publisher");
+  assert.notEqual(publisher.concurrency?.group, batchPublisher.concurrency?.group);
   const publicationContext = step(publisher, "Claim durable exact review publication");
   assert.match(
     publicationContext.run ?? "",

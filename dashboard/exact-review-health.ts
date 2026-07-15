@@ -163,7 +163,7 @@ function exactReviewPhaseStartedAt(
     const dispatchedAt = validTimestamp(item.dispatchedAt);
     const leaseExpiresAt = validTimestamp(item.leaseExpiresAt);
     const leaseStartedAt =
-      leaseExpiresAt === null ? null : validTimestamp(leaseExpiresAt - dispatchLeaseMs);
+      leaseExpiresAt === null ? null : timestampAtOrBefore(leaseExpiresAt - dispatchLeaseMs, now);
     // Rolling deploys can expose rows created before dispatchedAt existed, while a rollback can
     // leave an old dispatchedAt behind. The current lease start is the reliable compatibility
     // marker; prefer the newest plausible transition and keep an unknown age non-alarming.
@@ -192,6 +192,11 @@ function validTimestamp(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) && number > 0 && number <= 8_640_000_000_000_000 ? number : null;
+}
+
+function timestampAtOrBefore(value: unknown, maximum: number): number | null {
+  const timestamp = validTimestamp(value);
+  return timestamp !== null && timestamp <= maximum ? timestamp : null;
 }
 
 function finiteTimestamp(value: unknown, fallback: number) {

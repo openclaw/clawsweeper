@@ -2751,6 +2751,7 @@ test("exact-review queue keeps publication artifacts durable outside review capa
         {
           createdAt: number;
           decision: Record<string, unknown>;
+          dispatchedAt?: number;
           leaseDecision?: Record<string, unknown>;
           leaseExpiresAt?: number;
           leaseId?: string;
@@ -2821,7 +2822,8 @@ test("exact-review queue keeps publication artifacts durable outside review capa
     assert.equal(afterExpiry.items["openclaw/gogcli#803@publish:102:1"], undefined);
     const reservedPublisher = afterExpiry.items["openclaw/gogcli#801@publish:100:1"];
     assert.equal(reservedPublisher.state, "dispatching");
-    assert.ok((reservedPublisher.leaseExpiresAt ?? 0) - Date.now() > 6 * 24 * 60 * 60_000);
+    assert.ok((reservedPublisher.leaseExpiresAt ?? 0) - Date.now() > 14 * 60_000);
+    assert.ok((reservedPublisher.leaseExpiresAt ?? 0) - Date.now() <= 15 * 60_000);
     const publicationPayload = dispatched.find(
       (payload) =>
         (payload.client_payload as Record<string, unknown>).source_action ===
@@ -2839,6 +2841,97 @@ test("exact-review queue keeps publication artifacts durable outside review capa
         >
       ).producerDecision,
     );
+
+    const firstPublicationLease = {
+      leaseId: reservedPublisher.leaseId,
+      leaseRevision: reservedPublisher.leaseRevision,
+    };
+    reservedPublisher.dispatchedAt = Date.now() - 16 * 60_000;
+    reservedPublisher.leaseExpiresAt = Date.now() + 7 * 24 * 60 * 60_000;
+    await storage.put("exact-review-queue", afterExpiry);
+
+    let queueMaintenance: Promise<unknown> | undefined;
+    await worker.scheduled(
+      {},
+      { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) },
+      { waitUntil: (promise) => (queueMaintenance = promise) },
+    );
+    await queueMaintenance;
+    const afterScheduledMaintenance = (await storage.get("exact-review-queue")) as typeof state;
+    const scheduledPublisher = afterScheduledMaintenance.items["openclaw/gogcli#801@publish:100:1"];
+    assert.equal(scheduledPublisher.state, "pending");
+    assert.equal(scheduledPublisher.leaseId, undefined);
+    assert.ok(((await storage.getAlarm()) ?? Number.POSITIVE_INFINITY) <= Date.now() + 1_000);
+
+    await queue.alarm();
+    const afterScheduledRedispatch = (await storage.get("exact-review-queue")) as typeof state;
+    const scheduledRedispatch = afterScheduledRedispatch.items["openclaw/gogcli#801@publish:100:1"];
+    assert.equal(scheduledRedispatch.state, "dispatching");
+    assert.notEqual(scheduledRedispatch.leaseId, firstPublicationLease.leaseId);
+    assert.equal(
+      dispatched.filter(
+        (payload) =>
+          (payload.client_payload as Record<string, unknown>).source_action ===
+          "exact_review_artifact_publish",
+      ).length,
+      2,
+    );
+
+    const scheduledPublicationLease = {
+      leaseId: scheduledRedispatch.leaseId,
+      leaseRevision: scheduledRedispatch.leaseRevision,
+    };
+    scheduledRedispatch.dispatchedAt = Date.now() - 16 * 60_000;
+    scheduledRedispatch.leaseExpiresAt = Date.now() + 7 * 24 * 60 * 60_000;
+    await storage.put("exact-review-queue", afterScheduledRedispatch);
+
+    const expiredLegacyClaim = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/claim", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: scheduledPublicationLease.leaseId,
+          item_key: "openclaw/gogcli#801@publish:100:1",
+          lease_revision: scheduledPublicationLease.leaseRevision,
+          run_id: "999998",
+          run_attempt: 1,
+        }),
+      }),
+    );
+    assert.equal(expiredLegacyClaim.status, 409);
+    assert.deepEqual(await expiredLegacyClaim.json(), { error: "lease_not_active" });
+    const afterExpiredClaim = (await storage.get("exact-review-queue")) as typeof state;
+    const reclaimedPublisher = afterExpiredClaim.items["openclaw/gogcli#801@publish:100:1"];
+    assert.equal(reclaimedPublisher.state, "pending");
+    assert.equal(reclaimedPublisher.leaseId, undefined);
+    assert.ok(((await storage.getAlarm()) ?? Number.POSITIVE_INFINITY) <= Date.now() + 1_000);
+
+    await queue.alarm();
+
+    const publicationDispatches = dispatched.filter(
+      (payload) =>
+        (payload.client_payload as Record<string, unknown>).source_action ===
+        "exact_review_artifact_publish",
+    );
+    assert.equal(publicationDispatches.length, 3);
+    const afterRedispatch = (await storage.get("exact-review-queue")) as typeof state;
+    const redispatchedPublisher = afterRedispatch.items["openclaw/gogcli#801@publish:100:1"];
+    assert.equal(redispatchedPublisher.state, "dispatching");
+    assert.notEqual(redispatchedPublisher.leaseId, scheduledPublicationLease.leaseId);
+    assert.ok((redispatchedPublisher.leaseExpiresAt ?? 0) - Date.now() > 14 * 60_000);
+    const staleClaim = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/claim", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: firstPublicationLease.leaseId,
+          item_key: "openclaw/gogcli#801@publish:100:1",
+          lease_revision: firstPublicationLease.leaseRevision,
+          run_id: "999999",
+          run_attempt: 1,
+        }),
+      }),
+    );
+    assert.equal(staleClaim.status, 409);
+    assert.deepEqual(await staleClaim.json(), { error: "lease_not_active" });
   } finally {
     globalThis.fetch = originalFetch;
   }
