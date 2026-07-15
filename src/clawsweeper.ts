@@ -475,6 +475,39 @@ type ReviewStartStatusCommentResult =
   | { status: "posted"; lease: AcquiredReviewStartLease; didMutate: true }
   | { status: "held"; lease: null; retryAt: string; didMutate: boolean };
 
+function suppliedReviewStartLeaseFromArgs(
+  args: Args,
+): Pick<AcquiredReviewStartLease, "owner" | "commentId"> | null {
+  const owner = stringArg(args.review_lease_owner, "").trim();
+  const commentId = numberArg(args.review_lease_comment_id, 0);
+  if (!owner && commentId === 0) return null;
+  if (!owner || !Number.isInteger(commentId) || commentId <= 0) {
+    throw new UserFacingCommandError(
+      "--review-lease-owner and --review-lease-comment-id must be supplied together.",
+    );
+  }
+  if (!/^[a-zA-Z0-9._-]{1,200}$/.test(owner)) {
+    throw new UserFacingCommandError("--review-lease-owner contains unsupported characters.");
+  }
+  return { owner, commentId };
+}
+
+function reviewLeaseStillMatchesContext(
+  itemKind: "issue" | "pull_request",
+  contextPullHeadSha: string | null,
+  leaseHeadSha: string,
+): boolean {
+  return itemKind !== "pull_request" || contextPullHeadSha?.trim().toLowerCase() === leaseHeadSha;
+}
+
+export function reviewLeaseStillMatchesContextForTest(
+  itemKind: "issue" | "pull_request",
+  contextPullHeadSha: string | null,
+  leaseHeadSha: string,
+): boolean {
+  return reviewLeaseStillMatchesContext(itemKind, contextPullHeadSha, leaseHeadSha);
+}
+
 function heldReviewStartStatusCommentResult(
   retryAt: string,
   didMutate: boolean,
@@ -3036,6 +3069,20 @@ function isClawSweeperAdvisorySourceRevisionLabel(label: string): boolean {
 
 export function itemSourceRevisionSha256ForTest(issue: unknown, comments: unknown[] = []): string {
   return itemSourceRevisionSha256(issue, comments);
+}
+
+export function isExactEventSourceRevisionChange(itemKind: Item["kind"], reason: string): boolean {
+  if (itemKind === "pull_request") {
+    return (
+      reason.startsWith("PR head changed since context capture") ||
+      reason === "PR head changed while holding the apply mutation lease"
+    );
+  }
+  return (
+    reason.startsWith("issue source revision changed since context capture") ||
+    reason.startsWith("live issue source revision ") ||
+    reason === "issue source revision changed while holding the apply mutation lease"
+  );
 }
 
 function reviewCommentDigestParts(entries: unknown): unknown {
@@ -6923,6 +6970,52 @@ function replaceFrontMatterValue(markdown: string, key: string, value: string): 
   const pattern = new RegExp(`^${key}:\\s*.*$`, "m");
   if (pattern.test(markdown)) return markdown.replace(pattern, line);
   return markdown.replace(/^---\n/, `---\n${line}\n`);
+}
+
+type ExactEventReviewLeaseDisposition =
+  | { status: "current" }
+  | { status: "legacy_tupleless"; reason: string }
+  | { status: "source_drift"; reportRevision: string; liveRevision: string }
+  | { status: "invalid"; reason: string };
+
+function exactEventReviewLeaseDisposition(
+  markdown: string,
+  liveRevision: string,
+): ExactEventReviewLeaseDisposition {
+  const reportRevision = reviewLeaseRevisionFromReport(markdown);
+  if (!reportRevision) {
+    return {
+      status: "invalid",
+      reason: "exact event review artifact lacks a durable reviewed revision",
+    };
+  }
+  if (!liveRevision || reportRevision !== liveRevision) {
+    return { status: "source_drift", reportRevision, liveRevision };
+  }
+  const leaseOwner = frontMatterValue(markdown, "review_lease_owner");
+  const leaseCommentId = Number(frontMatterValue(markdown, "review_lease_comment_id"));
+  const missingOwner = !leaseOwner || leaseOwner === "unknown";
+  const missingCommentId = !Number.isInteger(leaseCommentId) || leaseCommentId <= 0;
+  if (missingOwner && missingCommentId) {
+    return {
+      status: "legacy_tupleless",
+      reason: "local report has no durable lease identity",
+    };
+  }
+  if (missingOwner || missingCommentId) {
+    return {
+      status: "invalid",
+      reason: "exact event review artifact has an incomplete durable review lease tuple",
+    };
+  }
+  return { status: "current" };
+}
+
+export function exactEventReviewLeaseDispositionForTest(
+  markdown: string,
+  liveRevision: string,
+): ExactEventReviewLeaseDisposition {
+  return exactEventReviewLeaseDisposition(markdown, liveRevision);
 }
 
 function sectionValue(markdown: string, heading: string): string {
@@ -21351,6 +21444,54 @@ function finishReviewActionLedger(options: {
   options.ledger.terminal = true;
 }
 
+function reserveReviewLeaseCommand(args: Args): void {
+  repoFromArgs(args);
+  const itemNumber = numberArg(args.item_number, 0);
+  const reviewTimeoutMs = numberArg(args.review_timeout_ms, 0);
+  if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
+    throw new UserFacingCommandError("--item-number must be a positive integer.");
+  }
+  if (!Number.isInteger(reviewTimeoutMs) || reviewTimeoutMs <= 0) {
+    throw new UserFacingCommandError("--review-timeout-ms must be a positive integer.");
+  }
+  const { item, state } = fetchItem(itemNumber);
+  if (state !== "open") {
+    throw new UserFacingCommandError(
+      `Cannot reserve a review lease for #${itemNumber}: state is ${state}.`,
+    );
+  }
+  const currentRevision =
+    item.kind === "pull_request"
+      ? pullRequestHeadSha(itemNumber)
+      : collectItemContext(item, { fullTimelineForRelations: true }).sourceRevision;
+  if (!currentRevision || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(currentRevision)) {
+    throw new UserFacingCommandError(
+      `Could not resolve the current review revision for #${itemNumber}.`,
+    );
+  }
+  const result = postReviewStartStatusComment({
+    item,
+    headSha: currentRevision,
+    reviewTimeoutMs,
+    position: 1,
+    total: 1,
+    shardIndex: 0,
+    shardCount: 1,
+  });
+  if (result.status === "held") {
+    console.log(JSON.stringify({ status: "held", retryAt: result.retryAt }));
+    return;
+  }
+  console.log(
+    JSON.stringify({
+      status: "posted",
+      owner: result.lease.owner,
+      commentId: result.lease.commentId,
+      headSha: result.lease.headSha,
+    }),
+  );
+}
+
 function reviewCommand(args: Args): void {
   const profile = repoFromArgs(args);
   // `--local-range` is inherently a local, offline operation, so it implies `--local-only`
@@ -21466,6 +21607,17 @@ function reviewCommand(args: Args): void {
   const hotIntake = boolArg(args.hot_intake);
   const readonlyOpenclaw = boolArg(args.readonly_openclaw);
   const skipStartComment = boolArg(args.skip_start_comment) || localOnly || localRange;
+  const suppliedReviewLease = suppliedReviewStartLeaseFromArgs(args);
+  if (suppliedReviewLease && !skipStartComment) {
+    throw new UserFacingCommandError(
+      "A supplied review lease requires --skip-start-comment to prevent a second lease from being created.",
+    );
+  }
+  if (suppliedReviewLease && localOnly) {
+    throw new UserFacingCommandError(
+      "A supplied review lease cannot be used with local-only review.",
+    );
+  }
   const forcedLoginMethod = reviewCodexForcedLoginMethod(args);
   const loadReviewGitInfo = (): GitInfo =>
     checkout.gitTargetBranch
@@ -21507,6 +21659,11 @@ function reviewCommand(args: Args): void {
     const { candidates, scannedPages } = localRangeData
       ? { candidates: [localRangeData.item], scannedPages: 0 }
       : selectCandidates(selectionOptions);
+    if (suppliedReviewLease && candidates.length !== 1) {
+      throw new UserFacingCommandError(
+        "A supplied review lease requires exactly one selected item.",
+      );
+    }
     if (expectedSourceRevision && candidates.length !== 1) {
       throw new UserFacingCommandError(
         `--expected-source-revision requires exactly one selected issue; selected ${candidates.length}.`,
@@ -21877,6 +22034,63 @@ function reviewCommand(args: Args): void {
       const contextElapsedMs = Date.now() - contextStartedAt;
       const contextItemUpdatedAt = stringOrUndefined(asRecord(context.issue).updatedAt);
       if (contextItemUpdatedAt) item.updatedAt = contextItemUpdatedAt;
+      if (suppliedReviewLease) {
+        const currentRevision =
+          item.kind === "pull_request"
+            ? pullHeadShaFromContext(context)
+            : context.sourceRevision ?? null;
+        if (!currentRevision) {
+          coordinationHeldRetryAt = new Date(Date.now() + 60_000).toISOString();
+          leaseAcquisitionFailures += 1;
+          leaseAcquisitionFailureDetails.push(
+            `#${item.number}: current revision could not be resolved for the reserved review lease`,
+          );
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=stale-reservation #${item.number}`,
+          );
+          continue;
+        }
+        const freshLeases = freshDedicatedReviewStartLeases({
+          comments: issueReviewCommentState(item.number).leaseComments,
+          itemNumber: item.number,
+          headSha: currentRevision,
+          nowMs: Date.now(),
+        });
+        const winner = freshLeases[0];
+        const supplied = freshLeases.find(
+          (lease) =>
+            commentId(lease.comment) === suppliedReviewLease.commentId &&
+            lease.owner === suppliedReviewLease.owner,
+        );
+        if (!supplied || !winner) {
+          coordinationHeldRetryAt = new Date(Date.now() + 60_000).toISOString();
+          leaseAcquisitionFailures += 1;
+          leaseAcquisitionFailureDetails.push(
+            `#${item.number}: reserved review lease is no longer fresh for the current revision`,
+          );
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=stale-reservation #${item.number}`,
+          );
+          continue;
+        }
+        if (
+          commentId(winner.comment) !== suppliedReviewLease.commentId ||
+          winner.owner !== suppliedReviewLease.owner
+        ) {
+          coordinationHeldRetryAt = winner.expiresAt;
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=held #${item.number}`,
+          );
+          continue;
+        }
+        const claimedLease: AcquiredReviewStartLease = {
+          owner: suppliedReviewLease.owner,
+          commentId: suppliedReviewLease.commentId,
+          headSha: currentRevision,
+        };
+        acquiredReviewLease = claimedLease;
+        acquiredReviewLeases.push({ itemNumber: item.number, lease: claimedLease });
+      }
       if (!localRangeData && contextItemUpdatedAt && preHydrationStructuralRecord) {
         structuralCacheRevalidations += 1;
         const structuralRevalidationStartedAt = Date.now();
@@ -21960,7 +22174,11 @@ function reviewCommand(args: Args): void {
       };
       if (
         acquiredReviewLease &&
-        pullHeadShaFromContext(context)?.trim().toLowerCase() !== acquiredReviewLease.headSha
+        !reviewLeaseStillMatchesContext(
+          item.kind,
+          pullHeadShaFromContext(context),
+          acquiredReviewLease.headSha,
+        )
       ) {
         leaseAcquisitionFailures += 1;
         leaseAcquisitionFailureDetails.push(
@@ -24958,6 +25176,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
   const syncCommentsOnly = boolArg(args.sync_comments_only);
   const suppressAutomationMarkers = boolArg(args.suppress_automation_markers);
   const emitEventApplyProof = boolArg(args.event_apply_proof);
+  const exactEventPublication = boolArg(args.exact_event_publication);
   const commentSyncMinAgeDays = numberArg(args.comment_sync_min_age_days, 0);
   const maxRuntimeMs = numberArg(args.max_runtime_ms, 0);
   const reportPath = resolve(stringArg(args.report_path, join(ROOT, "apply-report.json")));
@@ -25502,6 +25721,35 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       item.kind === "pull_request"
         ? (pullHeadShaFromContext(currentItemContext()) ?? "")
         : liveIssueSourceRevision(number);
+    if (state === "open" && exactEventPublication) {
+      const exactLeaseDisposition = exactEventReviewLeaseDisposition(
+        markdownBeforeApplyDecisionMutations,
+        initialReviewHeadSha,
+      );
+      if (exactLeaseDisposition.status === "source_drift") {
+        const reason =
+          item.kind === "pull_request"
+            ? `live PR head ${exactLeaseDisposition.liveRevision || "unknown"} differs from reviewed head ${exactLeaseDisposition.reportRevision}`
+            : `live issue source revision ${exactLeaseDisposition.liveRevision || "unknown"} differs from reviewed revision ${exactLeaseDisposition.reportRevision}`;
+        if (markApplySkipped("skipped_changed_since_review", reason)) break;
+        continue;
+      }
+      if (exactLeaseDisposition.status === "legacy_tupleless") {
+        if (
+          markApplySkipped(
+            "skipped_stale_review_comment_sync",
+            exactLeaseDisposition.reason,
+          )
+        ) {
+          break;
+        }
+        continue;
+      }
+      if (exactLeaseDisposition.status === "invalid") {
+        if (markApplySkipped("kept_open", exactLeaseDisposition.reason)) break;
+        continue;
+      }
+    }
     const reviewStartLeaseStateForComments = (
       leaseComments: Record<string, unknown>[],
       reviewComment: Record<string, unknown> | undefined,
@@ -25533,6 +25781,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           leaseCommentId: lease.commentId,
         }),
       );
+      // A matching report tuple deliberately returns `preserve: false`: the exact publisher
+      // adopts that completed review lease as its mutation lock. Any different or incomplete
+      // live lease remains preserved and blocks the older artifact.
       return {
         comment: reviewComment,
         leaseComments,
@@ -25702,8 +25953,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     const reviewActivitySourceChanged = (reason: string): boolean =>
       reason === "pull request review activity changed since review" ||
       reason === "pull request review activity exceeds the bounded reviewed cursor";
+    const exactEventSourceRevisionChanged = (reason: string): boolean =>
+      exactEventPublication && isExactEventSourceRevisionChange(item.kind, reason);
     const recordReviewLeaseSkip = (reason: string, restoreOriginal = true): boolean =>
-      reviewActivitySourceChanged(reason)
+      reviewActivitySourceChanged(reason) || exactEventSourceRevisionChanged(reason)
         ? markApplySkipped("skipped_changed_since_review", reason)
         : staleCanonicalCommentSyncPending
         ? markApplySkipped(
@@ -30529,6 +30782,7 @@ export async function main(
   let commandError: unknown;
   try {
     if (command === "plan") planCommand(args);
+    else if (command === "reserve-review-lease") reserveReviewLeaseCommand(args);
     else if (command === "review") reviewCommand(args);
     else if (command === "retry-failed-reviews") retryFailedReviewsCommand(args);
     else if (command === "apply-artifacts") applyArtifactsCommand(args);

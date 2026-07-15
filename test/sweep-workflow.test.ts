@@ -337,6 +337,7 @@ test("exact event review hands immutable artifacts to one dedicated publisher", 
   type Job = {
     needs?: string | string[];
     if?: string;
+    "timeout-minutes"?: number;
     permissions?: Record<string, string>;
     concurrency?: { group?: string; "cancel-in-progress"?: boolean; queue?: string };
     steps: Step[];
@@ -353,6 +354,7 @@ test("exact event review hands immutable artifacts to one dedicated publisher", 
   };
 
   assert.equal(reviewer.permissions?.contents, "read");
+  assert.equal(reviewer["timeout-minutes"], 120);
   assert.equal(reviewer.permissions?.issues, "read");
   assert.equal(
     reviewer.steps.some((candidate) => candidate.uses?.endsWith("/setup-state")),
@@ -369,6 +371,26 @@ test("exact event review hands immutable artifacts to one dedicated publisher", 
     "${{ steps.target-read-token.outputs.token }}",
   );
   assert.match(step(reviewer, "Review exact event item").run ?? "", /--skip-start-comment/);
+  const reserveLease = step(reviewer, "Reserve exact review lease");
+  assert.equal(reserveLease.env?.GH_TOKEN, "${{ steps.target-write-token.outputs.token }}");
+  assert.match(reserveLease.run ?? "", /pnpm run --silent reserve-review-lease/);
+  assert.match(reserveLease.run ?? "", /review-timeout-ms/);
+  const resolvePayload = step(reviewer, "Resolve event payload");
+  assert.match(resolvePayload.run ?? "", /maxExactReviewCodexTimeoutMs = 2_700_000/);
+  assert.match(
+    resolvePayload.run ?? "",
+    /Math\.min\(maxExactReviewCodexTimeoutMs, configuredValue\)/,
+  );
+  assert.match(
+    resolvePayload.run ?? "",
+    /codex_timeout_ms: Math\.min\(\s*maxExactReviewCodexTimeoutMs/,
+  );
+  assert.match(
+    step(reviewer, "Review exact event item").if ?? "",
+    /reserve-exact-review-lease\.outputs\.status == 'posted'/,
+  );
+  assert.match(step(reviewer, "Review exact event item").run ?? "", /--review-lease-owner/);
+  assert.match(step(reviewer, "Review exact event item").run ?? "", /--review-lease-comment-id/);
 
   const create = step(reviewer, "Create exact review artifact bundle");
   const upload = step(reviewer, "Upload exact review artifact bundle");
@@ -392,6 +414,7 @@ test("exact event review hands immutable artifacts to one dedicated publisher", 
   assert.match(queuePublication.run ?? "", /for attempt in 1 2 3/);
   assert.match(queuePublication.run ?? "", /\.queued == true or \.deduped == true/);
   assert.match(complete.env?.PRIMARY_OUTCOME ?? "", /exact-review-generation-result/);
+  assert.match(releaseGeneration.if ?? "", /reserve-exact-review-lease\.outputs\.status != 'held'/);
   assert.match(releaseGeneration.run ?? "", /content == "eyes"/);
   assert.ok(reviewer.steps.indexOf(upload) < reviewer.steps.indexOf(complete));
 
@@ -442,6 +465,7 @@ test("exact event review hands immutable artifacts to one dedicated publisher", 
   assert.match(publish.run ?? "", /open\)[\s\S]*?requeue_latest=true/);
   assert.match(publish.run ?? "", /test -f "artifacts\/event\/\$ITEM_NUMBER\.md"/);
   assert.match(publish.run ?? "", /repair:publish-event-result/);
+  assert.equal(publish.env?.EXACT_EVENT_PUBLICATION, "true");
   const route = step(publisher, "Route synced ClawSweeper verdict");
   assert.match(route.if ?? "", /publish-event-result\.outcome == 'success'/);
   assert.match(route.if ?? "", /remote_tuple_verified == 'true'/);
@@ -480,6 +504,16 @@ test("exact event review hands immutable artifacts to one dedicated publisher", 
   assert.ok(publisher.steps.indexOf(publishResult) < publisher.steps.indexOf(publishComplete));
 
   const publisherSource = readText("src/repair/publish-event-result.ts");
+  assert.match(
+    publisherSource,
+    /exactEventPublication: process\.env\.EXACT_EVENT_PUBLICATION === "true"/,
+  );
+  assert.match(publisherSource, /"--exact-event-publication"/);
+  assert.match(publisherSource, /legacyTuplelessReviewLease/);
+  const reviewSource = readText("src/clawsweeper.ts");
+  assert.match(reviewSource, /reserveReviewLeaseCommand/);
+  assert.match(reviewSource, /suppliedReviewStartLeaseFromArgs/);
+  assert.match(reviewSource, /exactEventReviewLeaseDisposition/);
   const completeStart = publisherSource.indexOf("const complete =");
   assert.ok(publisherSource.indexOf("hardResetToRemoteMain();", completeStart) > completeStart);
   assert.ok(
@@ -2208,9 +2242,14 @@ test("sweep exact event reviews consume only the immutable claimed decision", ()
     /CONFIGURED_CODEX_TIMEOUT_MS: \$\{\{ vars\.CLAWSWEEPER_CODEX_TIMEOUT_MS \|\| '1200000' \}\}/,
   );
   assert.match(resolveBlock, /const decision = JSON\.parse\(process\.env\.CLAIM_DECISION/);
+  assert.match(resolveBlock, /const maxExactReviewCodexTimeoutMs = 2_700_000/);
+  assert.match(resolveBlock, /Math\.min\(maxExactReviewCodexTimeoutMs, configuredValue\)/);
   assert.match(resolveBlock, /Math\.min\(1_800_000, Math\.max\(600_000, adaptiveValue\)\)/);
   assert.match(resolveBlock, /Math\.min\(480_000, mediaValue\)/);
-  assert.match(resolveBlock, /codex_timeout_ms: Math\.max\(configuredTimeout, adaptiveTimeout\)/);
+  assert.match(
+    resolveBlock,
+    /codex_timeout_ms: Math\.min\(\s*maxExactReviewCodexTimeoutMs,\s*Math\.max\(configuredTimeout, adaptiveTimeout\)/,
+  );
   assert.match(resolveBlock, /media_proof_timeout_ms: mediaTimeout/);
   assert.doesNotMatch(resolveBlock, /github\.event\.client_payload/);
   assert.match(
@@ -2265,7 +2304,7 @@ test("every action-ledger publication authenticates the expected producer job", 
   assert.match(workflow, /--expected-producer-job apply-proof/);
 });
 
-test("sweep exact event reviews preserve the configured fallback without an adaptive payload", () => {
+test("sweep exact event reviews cap the configured fallback within the lease and job budgets", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const resolveBlock = workflow.slice(
     workflow.indexOf("- name: Resolve event payload"),
@@ -2276,8 +2315,15 @@ test("sweep exact event reviews preserve the configured fallback without an adap
     resolveBlock,
     /CONFIGURED_CODEX_TIMEOUT_MS: \$\{\{ vars\.CLAWSWEEPER_CODEX_TIMEOUT_MS \|\| '1200000' \}\}/,
   );
-  assert.match(resolveBlock, /configuredValue > 0 \? configuredValue : 1_200_000/);
-  assert.match(resolveBlock, /codex_timeout_ms: Math\.max\(configuredTimeout, adaptiveTimeout\)/);
+  assert.match(resolveBlock, /const maxExactReviewCodexTimeoutMs = 2_700_000/);
+  assert.match(
+    resolveBlock,
+    /Number\.isInteger\(configuredValue\) && configuredValue > 0\s*\? Math\.min\(maxExactReviewCodexTimeoutMs, configuredValue\)\s*: 1_200_000/,
+  );
+  assert.match(
+    resolveBlock,
+    /codex_timeout_ms: Math\.min\(\s*maxExactReviewCodexTimeoutMs,\s*Math\.max\(configuredTimeout, adaptiveTimeout\)/,
+  );
 });
 
 test("github activity workflow scopes cancellation to matching item activity", () => {

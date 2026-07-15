@@ -3,6 +3,7 @@ import type { LooseRecord } from "./json-types.js";
 export type EventApplyAction = {
   number: number | null;
   action: string;
+  reason: string;
   durableReviewSynced: boolean;
   terminalMissingVerified: boolean;
   terminalStateVerified: boolean;
@@ -27,6 +28,8 @@ const GUARDED_OPEN_ACTIONS = new Set([
   "skipped_low_signal_live_guard",
   "skipped_same_author_pair",
 ]);
+
+const LEGACY_TUPLELESS_REVIEW_LEASE_REASON = "local report has no durable lease identity";
 
 export function exactEventPublishDisposition({
   candidateMatchesCurrentTuple,
@@ -67,6 +70,18 @@ export type ExactEventApplyDisposition =
   | "source_drift"
   | "unproven";
 
+export function eventApplyRequeueLatestExpected({
+  disposition,
+  exactEventPublication,
+  legacyTuplelessReviewLease,
+}: {
+  disposition: ExactEventApplyDisposition;
+  exactEventPublication: boolean;
+  legacyTuplelessReviewLease: boolean;
+}): boolean {
+  return disposition === "source_drift" || (exactEventPublication && legacyTuplelessReviewLease);
+}
+
 export function exactEventApplyProof(
   actions: readonly EventApplyAction[],
   itemNumber: number,
@@ -78,6 +93,7 @@ export function exactEventApplyProof(
   terminalCount: number;
   guardedOpenAction: string | null;
   latestRevisionRequeueRequired: boolean;
+  legacyTuplelessReviewLease: boolean;
   disposition: ExactEventApplyDisposition;
 } {
   const exactActions = actions.filter((entry) => entry.number === itemNumber);
@@ -118,6 +134,9 @@ export function exactEventApplyProof(
     latestRevisionRequeueRequired:
       snapshotActionTaken === "skipped_changed_since_review" &&
       soleExactAction === "skipped_changed_since_review",
+    legacyTuplelessReviewLease:
+      soleExactAction === "skipped_stale_review_comment_sync" &&
+      soleExactResult?.reason.includes(LEGACY_TUPLELESS_REVIEW_LEASE_REASON) === true,
     disposition: hasSourceDrift
       ? sourceDrift
         ? "source_drift"
@@ -147,6 +166,7 @@ export function eventApplyAction(value: LooseRecord): EventApplyAction {
   return {
     number: typeof value.number === "number" ? value.number : null,
     action: typeof value.action === "string" ? value.action : "",
+    reason: typeof value.reason === "string" ? value.reason : "",
     durableReviewSynced: value.durableReviewSynced === true,
     terminalMissingVerified: value.terminalMissingVerified === true,
     terminalStateVerified: value.terminalStateVerified === true,

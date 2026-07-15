@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   eventApplyAction,
+  eventApplyRequeueLatestExpected,
   eventRecordActionTaken,
   exactEventApplyProof,
   exactEventPublishDisposition,
@@ -291,6 +292,49 @@ test("exact event proof keeps changed-since-review on the latest-revision requeu
 
   assert.equal(proof.guardedOpenAction, null);
   assert.equal(proof.latestRevisionRequeueRequired, true);
+});
+
+test("exact event proof requeues only the guarded legacy tuple-less artifact path", () => {
+  const legacy = exactEventApplyProof(
+    [
+      eventApplyAction({
+        number: 42,
+        action: "skipped_stale_review_comment_sync",
+        reason:
+          "live durable review tuple has lease comment 4979165844, but the local report has no durable lease identity",
+      }),
+    ],
+    42,
+  );
+  const newerVerdict = exactEventApplyProof(
+    [
+      eventApplyAction({
+        number: 42,
+        action: "skipped_stale_review_comment_sync",
+        reason: "live durable review comment is newer than the local report",
+      }),
+    ],
+    42,
+  );
+
+  assert.equal(legacy.legacyTuplelessReviewLease, true);
+  assert.equal(newerVerdict.legacyTuplelessReviewLease, false);
+  assert.equal(
+    eventApplyRequeueLatestExpected({
+      disposition: legacy.disposition,
+      exactEventPublication: true,
+      legacyTuplelessReviewLease: legacy.legacyTuplelessReviewLease,
+    }),
+    true,
+  );
+  assert.equal(
+    eventApplyRequeueLatestExpected({
+      disposition: newerVerdict.disposition,
+      exactEventPublication: true,
+      legacyTuplelessReviewLease: newerVerdict.legacyTuplelessReviewLease,
+    }),
+    false,
+  );
 });
 
 test("guarded-open proof rejects mismatches, extra results, and transient skips", () => {

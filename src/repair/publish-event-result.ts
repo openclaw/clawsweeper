@@ -14,6 +14,7 @@ import {
   eventRecordActionTaken,
   eventApplyAction,
   exactEventApplyProof,
+  eventApplyRequeueLatestExpected,
   exactEventPublishDisposition,
   type EventApplyAction,
 } from "./event-apply-proof.js";
@@ -40,6 +41,7 @@ type EventOptions = {
   closeReasons: string;
   minAgeMinutes: string;
   reviewOnly: boolean;
+  exactEventPublication: boolean;
   reportPath: string;
   snapshotDir: string;
 };
@@ -156,9 +158,19 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     terminalMissingCount: missingCount,
     terminalCount: closedCount,
     guardedOpenAction,
+    legacyTuplelessReviewLease,
     disposition: applyDisposition,
   } = exactEventApplyProof(actions, Number(options.itemNumber), snapshotActionTaken);
-  const requeueLatestExpected = applyDisposition === "source_drift";
+  const requeueLatestExpected = eventApplyRequeueLatestExpected({
+    disposition: applyDisposition,
+    exactEventPublication: options.exactEventPublication,
+    legacyTuplelessReviewLease,
+  });
+  if (options.exactEventPublication && legacyTuplelessReviewLease) {
+    console.log(
+      `Requeueing ${options.targetRepo}#${options.itemNumber}: legacy exact artifact lacks its durable review lease tuple`,
+    );
+  }
   if (
     syncedCount + closedCount + missingCount === 0 &&
     guardedOpenAction === null &&
@@ -258,6 +270,7 @@ function runApplyDecisions(options: EventOptions): void {
     "--progress-every",
     "1",
     "--event-apply-proof",
+    "--exact-event-publication",
     "--skip-dashboard",
     "--report-path",
     options.reportPath,
@@ -420,6 +433,7 @@ function eventOptionsFromEnv(): EventOptions {
       "implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr",
     minAgeMinutes: process.env.MIN_AGE_MINUTES || "0",
     reviewOnly: process.env.REVIEW_ONLY === "true",
+    exactEventPublication: process.env.EXACT_EVENT_PUBLICATION === "true",
     reportPath: ".artifacts/event-apply-report.json",
     snapshotDir: ".artifacts/event-record-snapshot",
   };

@@ -16,7 +16,9 @@ import { fileURLToPath } from "node:url";
 
 import {
   defaultReviewArtifactDirForTest,
+  exactEventReviewLeaseDispositionForTest,
   prepareManagedLocalReviewCheckoutForTest,
+  reviewLeaseStillMatchesContextForTest,
 } from "../dist/clawsweeper.js";
 import { runText, UserFacingCommandError } from "../dist/command.js";
 import { mockGhBinEnv } from "./helpers.ts";
@@ -92,6 +94,124 @@ test("local exact reviews default to item-specific artifacts", () => {
   assert.equal(defaultReviewArtifactDirForTest(true, 357, undefined), "artifacts/local-review-357");
   assert.equal(defaultReviewArtifactDirForTest(true, 357, [357]), "artifacts/reviews");
   assert.equal(defaultReviewArtifactDirForTest(false, 357, undefined), "artifacts/reviews");
+});
+
+test("exact event publication requeues legacy tuples and source drift before mutation", () => {
+  const revision = "0123456789abcdef0123456789abcdef01234567";
+  const base = `---\nitem_source_revision: ${revision}\n---\n`;
+  assert.deepEqual(exactEventReviewLeaseDispositionForTest(base, revision), {
+    status: "legacy_tupleless",
+    reason: "local report has no durable lease identity",
+  });
+  assert.deepEqual(exactEventReviewLeaseDispositionForTest(base, "f".repeat(40)), {
+    status: "source_drift",
+    reportRevision: revision,
+    liveRevision: "f".repeat(40),
+  });
+  assert.deepEqual(
+    exactEventReviewLeaseDispositionForTest(
+      `---\nitem_source_revision: ${revision}\nreview_lease_owner: run-123\nreview_lease_comment_id: 99\n---\n`,
+      revision,
+    ),
+    { status: "current" },
+  );
+});
+
+test("reserved exact-review leases compare a head only for pull requests", () => {
+  const revision = "0123456789abcdef0123456789abcdef01234567";
+  assert.equal(reviewLeaseStillMatchesContextForTest("issue", null, revision), true);
+  assert.equal(reviewLeaseStillMatchesContextForTest("pull_request", revision, revision), true);
+  assert.equal(
+    reviewLeaseStillMatchesContextForTest("pull_request", "f".repeat(40), revision),
+    false,
+  );
+});
+
+test("reserve-review-lease creates and confirms a durable pre-review tuple", () => {
+  const root = mkdtempSync(join(tmpdir(), "cmd-reserve-lease-"));
+  const binDir = join(root, "bin");
+  const ghPath = join(binDir, "gh.js");
+  const leasePath = join(root, "lease.json");
+  const headSha = "0123456789abcdef0123456789abcdef01234567";
+  try {
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(
+      ghPath,
+      `
+const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+const leasePath = ${JSON.stringify(leasePath)};
+const headSha = ${JSON.stringify(headSha)};
+const args = process.argv.slice(2);
+const path = args[1] || "";
+const comments = () => existsSync(leasePath) ? [JSON.parse(readFileSync(leasePath, "utf8"))] : [];
+if (args[0] === "api" && path === "repos/openclaw/openclaw/issues/357") {
+  console.log(JSON.stringify({
+    number: 357,
+    title: "Reserve durable exact review lease",
+    html_url: "https://github.com/openclaw/openclaw/pull/357",
+    created_at: "2026-07-15T00:00:00Z",
+    updated_at: "2026-07-15T00:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "reporter" },
+    labels: [],
+    pull_request: {}
+  }));
+} else if (args[0] === "api" && path === "repos/openclaw/openclaw/pulls/357") {
+  console.log(JSON.stringify({ head: { sha: headSha } }));
+} else if (args[0] === "api" && path.startsWith("repos/openclaw/openclaw/issues/357/comments") && !args.includes("--method")) {
+  const value = comments();
+  console.log(JSON.stringify(args.includes("--slurp") ? [value] : value));
+} else if (args[0] === "api" && path === "repos/openclaw/openclaw/issues/357/comments" && args.includes("--method")) {
+  const body = JSON.parse(readFileSync(args[args.indexOf("--input") + 1], "utf8")).body;
+  const lease = {
+    id: 9991,
+    html_url: "https://github.com/openclaw/openclaw/pull/357#issuecomment-9991",
+    created_at: "2026-07-15T00:00:00Z",
+    updated_at: "2026-07-15T00:00:00Z",
+    user: { login: "clawsweeper[bot]" },
+    body
+  };
+  writeFileSync(leasePath, JSON.stringify(lease));
+  console.log(JSON.stringify(lease));
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`,
+      "utf8",
+    );
+    const result = spawnSync(
+      process.execPath,
+      [
+        CLI,
+        "reserve-review-lease",
+        "--target-repo",
+        "openclaw/openclaw",
+        "--item-number",
+        "357",
+        "--review-timeout-ms",
+        "600000",
+      ],
+      { encoding: "utf8", env: { ...process.env, ...mockGhBinEnv(ghPath) } },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const reservation = JSON.parse(result.stdout);
+    assert.equal(reservation.status, "posted");
+    assert.match(reservation.owner, /^[a-zA-Z0-9._-]{1,200}$/);
+    assert.equal(reservation.commentId, 9991);
+    assert.equal(reservation.headSha, headSha);
+    const lease = JSON.parse(readFileSync(leasePath, "utf8"));
+    assert.match(lease.body, /clawsweeper-review-status:started/);
+    assert.match(lease.body, /clawsweeper-review-lease item=357/);
+    assert.match(lease.body, new RegExp(`sha=${headSha}`));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("managed local review checkout fetches the pull request ref", () => {

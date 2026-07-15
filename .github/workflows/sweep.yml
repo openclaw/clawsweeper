@@ -523,9 +523,15 @@ jobs:
           if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo)) process.exit(1);
           if (!Number.isInteger(itemNumber) || itemNumber < 1) process.exit(1);
 
+          // The review-start lease permits at most two hours, including its ten-minute
+          // cushion. The 120-minute job leaves 64 minutes for target checkout/setup and
+          // artifact/publication finalizers after this cap and the 11-minute review reserve.
+          const maxExactReviewCodexTimeoutMs = 2_700_000;
           const configuredValue = Number(process.env.CONFIGURED_CODEX_TIMEOUT_MS);
           const configuredTimeout =
-            Number.isInteger(configuredValue) && configuredValue > 0 ? configuredValue : 1_200_000;
+            Number.isInteger(configuredValue) && configuredValue > 0
+              ? Math.min(maxExactReviewCodexTimeoutMs, configuredValue)
+              : 1_200_000;
           const adaptiveValue = Number(decision.codexTimeoutMs);
           const adaptiveTimeout =
             Number.isInteger(adaptiveValue) && adaptiveValue > 0
@@ -545,7 +551,10 @@ jobs:
             target_repo_name: name,
             target_checkout_dir: checkoutDir,
             item_number: itemNumber,
-            codex_timeout_ms: Math.max(configuredTimeout, adaptiveTimeout),
+            codex_timeout_ms: Math.min(
+              maxExactReviewCodexTimeoutMs,
+              Math.max(configuredTimeout, adaptiveTimeout),
+            ),
             media_proof_timeout_ms: mediaTimeout,
             has_command_context: hasCommandContext,
             target_enabled: targetEnabled,
@@ -767,15 +776,70 @@ jobs:
         with:
           login-status: "true"
 
+      - name: Reserve exact review lease
+        id: reserve-exact-review-lease
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          CODEX_TIMEOUT_MS: ${{ steps.target.outputs.codex_timeout_ms }}
+          MEDIA_PROOF_TIMEOUT_MS: ${{ steps.target.outputs.media_proof_timeout_ms }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          if ! [[ "$CODEX_TIMEOUT_MS" =~ ^[0-9]+$ ]] || [ "$CODEX_TIMEOUT_MS" -lt 1 ]; then
+            echo "Invalid Codex timeout: $CODEX_TIMEOUT_MS" >&2
+            exit 1
+          fi
+          if ! [[ "$MEDIA_PROOF_TIMEOUT_MS" =~ ^[0-9]+$ ]] || [ "$MEDIA_PROOF_TIMEOUT_MS" -lt 0 ]; then
+            echo "Invalid media proof timeout: $MEDIA_PROOF_TIMEOUT_MS" >&2
+            exit 1
+          fi
+          codex_timeout_seconds=$(((CODEX_TIMEOUT_MS + 999) / 1000))
+          media_preprocessing_reserve_seconds=480
+          review_timeout_ms=$(((codex_timeout_seconds + media_preprocessing_reserve_seconds + 180) * 1000))
+          reservation="$(pnpm run --silent reserve-review-lease -- \
+            --target-repo "$TARGET_REPO" \
+            --item-number "$ITEM_NUMBER" \
+            --review-timeout-ms "$review_timeout_ms")"
+          echo "$reservation"
+          RESERVATION="$reservation" node <<'NODE'
+          const fs = require("node:fs");
+          const reservation = JSON.parse(process.env.RESERVATION || "{}");
+          const append = (key, value) => fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
+          if (reservation.status === "posted") {
+            const owner = String(reservation.owner || "");
+            const commentId = Number(reservation.commentId);
+            if (!/^[a-zA-Z0-9._-]{1,200}$/.test(owner) || !Number.isInteger(commentId) || commentId <= 0) {
+              process.exit(1);
+            }
+            append("status", "posted");
+            append("owner", owner);
+            append("comment_id", String(commentId));
+            process.exit(0);
+          }
+          if (reservation.status === "held") {
+            const retryAt = String(reservation.retryAt || "");
+            if (!Number.isFinite(Date.parse(retryAt))) process.exit(1);
+            append("status", "held");
+            append("retry_at", new Date(retryAt).toISOString());
+            process.exit(0);
+          }
+          process.exit(1);
+          NODE
+
       - name: Review exact event item
         id: review-exact-event-item
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
           CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ steps.target-read-token.outputs.token || github.token }}
           ADDITIONAL_PROMPT: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).additionalPrompt || '' }}
           CLAWSWEEPER_RELATED_GITHUB_SEARCH: ${{ vars.CLAWSWEEPER_RELATED_GITHUB_SEARCH || '1' }}
+          REVIEW_LEASE_OWNER: ${{ steps.reserve-exact-review-lease.outputs.owner }}
+          REVIEW_LEASE_COMMENT_ID: ${{ steps.reserve-exact-review-lease.outputs.comment_id }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
@@ -808,6 +872,8 @@ jobs:
             --item-numbers "${{ steps.target.outputs.item_number }}" \
             --readonly-openclaw \
             --skip-start-comment \
+            --review-lease-owner "$REVIEW_LEASE_OWNER" \
+            --review-lease-comment-id "$REVIEW_LEASE_COMMENT_ID" \
             --shard-index 0 \
             --shard-count 1 \
             "${additional_prompt_arg[@]}"
@@ -978,7 +1044,7 @@ jobs:
           exit 1
 
       - name: Release unsuccessful workflow-owned review lease
-        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.queue-exact-review-publication.outcome != 'success' }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status != 'held' && steps.queue-exact-review-publication.outcome != 'success' }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -1017,7 +1083,7 @@ jobs:
           STATUS_COMMENT_ID: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).statusCommentId || '' }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
-          RETRY_AT: ${{ steps.review-exact-event-item.outputs.retry_at }}
+          RETRY_AT: ${{ steps.reserve-exact-review-lease.outputs.retry_at || steps.review-exact-event-item.outputs.retry_at }}
           CLAWSWEEPER_ACTION_LEDGER_DISABLED: "1"
         run: |
           state="Failed"
@@ -1066,7 +1132,7 @@ jobs:
           QUEUE_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
           QUEUE_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          RETRY_AT: ${{ steps.review-exact-event-item.outputs.retry_at }}
+          RETRY_AT: ${{ steps.reserve-exact-review-lease.outputs.retry_at || steps.review-exact-event-item.outputs.retry_at }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
@@ -1383,6 +1449,7 @@ jobs:
           CLOSE_REASONS: implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr
           MIN_AGE_MINUTES: "0"
           REVIEW_ONLY: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
+          EXACT_EVENT_PUBLICATION: "true"
           LIVE_PROCEEDED: ${{ steps.publication-context.outputs.live_proceeded }}
           LIVE_TERMINAL_NOOP: ${{ steps.publication-context.outputs.live_terminal_noop }}
           LIVE_TERMINAL_MISSING: ${{ steps.publication-context.outputs.live_terminal_missing }}
