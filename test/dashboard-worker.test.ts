@@ -4774,7 +4774,27 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(elementFor("metrics").innerHTML, /4 over 30m/);
   assert.match(elementFor("metrics").innerHTML, /1 over 150m/);
   assert.match(elementFor("health-trend-summary").textContent, /Stalled/);
+  assert.match(elementFor("health-trend-signals").innerHTML, /Execution health/);
+  assert.match(elementFor("health-trend-signals").innerHTML, /Queue load/);
+  assert.match(elementFor("health-trend-signals").innerHTML, /Stalled/);
+  assert.match(elementFor("health-trend-signals").innerHTML, /Delayed/);
   assert.match(elementFor("health-trend-grid").innerHTML, /<circle class="trend-danger-point"/);
+  assert.match(elementFor("health-trend-grid").innerHTML, /class="trend-axis-label"/);
+  assert.match(elementFor("health-trend-grid").innerHTML, />100m<\/text>/);
+  assert.match(elementFor("health-trend-grid").innerHTML, />2\.5h SLO<\/text>/);
+  assert.match(elementFor("health-trend-grid").innerHTML, /diagnostic outlier/);
+
+  const scale = context.niceTrendScale(95, 4);
+  assert.equal(scale.maximum, 100);
+  assert.deepEqual([...scale.ticks], [0, 25, 50, 75, 100]);
+  const recovering = context.queueLoadSignal(
+    [
+      { at: "2026-07-05T11:00:00Z", collection_ok: true, queued_over_30m: 20 },
+      { at: "2026-07-05T11:30:00Z", collection_ok: true, queued_over_30m: 12 },
+    ],
+    { ...status.operational_health, queued_over_threshold: 12 },
+  );
+  assert.equal(recovering.value, "Recovering");
 
   let resolve24HourHistory: ((response: unknown) => void) | undefined;
   context.fetch = async (input: string) => {

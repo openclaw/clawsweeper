@@ -8865,21 +8865,41 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 }
 .trend-range.active { color: var(--text); border-color: var(--claw); }
 .health-trend-summary { margin-top: 8px; color: var(--muted); font-size: 12px; }
+.health-signal-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+.health-signal { min-width: 0; padding: 13px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.health-signal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.health-signal-label { color: var(--muted); font-size: 10px; font-weight: 650; letter-spacing: 0.1em; text-transform: uppercase; }
+.health-signal-value { font-size: 13px; font-weight: 650; }
+.health-signal-value.ok { color: var(--green); }
+.health-signal-value.attention { color: var(--amber); }
+.health-signal-value.stalled { color: var(--red); }
+.health-signal-value.unknown { color: var(--muted); }
+.health-signal-detail { margin-top: 6px; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .health-trend-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 14px; }
 .health-trend-panel { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
 .health-trend-title { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 .health-trend-title strong { font-size: 12px; }
 .health-trend-title span { color: var(--muted); font-size: 11px; }
-.health-trend-svg { display: block; width: 100%; height: 150px; overflow: visible; }
+.trend-legend { display: flex; flex-wrap: wrap; gap: 10px; min-height: 16px; margin-bottom: 4px; }
+.trend-legend-item { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 10px; }
+.trend-swatch { width: 12px; height: 2px; border-radius: 999px; }
+.trend-swatch.trend-total { background: var(--muted); }
+.trend-swatch.trend-warning { background: var(--amber); }
+.trend-swatch.trend-danger { background: var(--red); }
+.health-trend-svg { display: block; width: 100%; height: 170px; overflow: visible; }
 .trend-grid-line { stroke: var(--line-soft); stroke-width: 1; }
+.trend-axis-label { fill: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 10px; }
 .trend-threshold { stroke: var(--red); stroke-width: 1; stroke-dasharray: 4 4; opacity: 0.55; }
 .trend-threshold.warning { stroke: var(--amber); }
+.trend-threshold-label { fill: var(--red); font-size: 9px; font-weight: 650; }
+.trend-threshold-label.warning { fill: var(--amber); }
 .trend-total { fill: none; stroke: var(--muted); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .trend-warning { fill: none; stroke: var(--amber); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
 .trend-danger { fill: none; stroke: var(--red); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
 .trend-total-point { fill: var(--muted); }
 .trend-warning-point { fill: var(--amber); }
 .trend-danger-point { fill: var(--red); }
+.trend-panel-note { min-height: 30px; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .trend-empty { display: grid; place-items: center; height: 150px; color: var(--muted); font-size: 12px; }
 .overview-shell { margin: 0; padding: 0; border: 0; background: transparent; }
 .overview-head,
@@ -9554,6 +9574,7 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   .work-row { grid-template-columns: 1fr; align-items: start; }
   .work-state, .stage-block, .timebox { justify-content: start; justify-items: start; }
   .worker-toolbar { align-items: stretch; flex-direction: column; }
+  .health-signal-grid { grid-template-columns: 1fr; }
   .health-trend-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 560px) {
@@ -9561,6 +9582,8 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   .hero { margin-top: 30px; }
   .hero-headline { font-size: 23px; gap: 10px; }
   .hero-dot { width: 10px; height: 10px; }
+  .health-trends-head, .health-signal-head { align-items: flex-start; flex-direction: column; }
+  .health-trend-title { flex-wrap: wrap; }
   .grid, .drawer-grid { grid-template-columns: 1fr; }
   .metric, .metric:nth-child(3n + 1) { border-left: 0; border-top: 1px solid var(--line-soft); padding-left: 0; }
   .metric:first-child { border-top: 0; }
@@ -9603,6 +9626,7 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
       </div>
     </div>
     <div class="health-trend-summary" id="health-trend-summary">History starts collecting after deployment.</div>
+    <div class="health-signal-grid" id="health-trend-signals"></div>
     <div class="health-trend-grid" id="health-trend-grid"></div>
   </section>
   <section class="overview-shell" aria-labelledby="system-overview-title">
@@ -9755,7 +9779,7 @@ function currentHealthSample(health) {
   };
 }
 
-function trendGeometry(samples, field, width, height, maximum) {
+function trendGeometry(samples, field, plot, maximum) {
   if (!samples.length || maximum <= 0) return [];
   const firstAt = Date.parse(samples[0].at);
   const lastAt = Date.parse(samples.at(-1).at);
@@ -9767,8 +9791,10 @@ function trendGeometry(samples, field, width, height, maximum) {
       previousAt = null;
       return [];
     }
-    const x = samples.length === 1 ? width / 2 : ((at - firstAt) / span) * width;
-    const y = height - (Math.max(0, Number(sample[field]) || 0) / maximum) * height;
+    const x = samples.length === 1
+      ? plot.left + plot.width / 2
+      : plot.left + ((at - firstAt) / span) * plot.width;
+    const y = plot.top + plot.height - (Math.max(0, Number(sample[field]) || 0) / maximum) * plot.height;
     const connected = previousAt !== null && at - previousAt <= 12 * 60 * 1000;
     previousAt = at;
     return [{ at, x, y, connected }];
@@ -9783,22 +9809,127 @@ function trendPoints(geometry, className) {
   return geometry.map(point => '<circle class="' + esc(className) + '-point" cx="' + point.x.toFixed(1) + '" cy="' + point.y.toFixed(1) + '" r="3"></circle>').join("");
 }
 
-function trendPanel(samples, title, detail, series, threshold, thresholdClass) {
+function niceTrendScale(maximum, tickCount) {
+  const safeMaximum = Math.max(1, Number(maximum) || 0);
+  const roughStep = safeMaximum / tickCount;
+  const magnitude = 10 ** Math.floor(Math.log10(roughStep));
+  const normalized = roughStep / magnitude;
+  const factor = [1, 2, 2.5, 5, 10].find(candidate => normalized <= candidate) || 10;
+  const step = factor * magnitude;
+  return {
+    maximum: step * tickCount,
+    ticks: Array.from({ length: tickCount + 1 }, (_, index) => index * step),
+  };
+}
+
+function formatTrendValue(value, unit) {
+  if (unit !== "minutes") return fmt.format(Math.round(value));
+  if (value >= 1440) return (value / 1440).toFixed(value >= 14400 ? 0 : 1) + "d";
+  if (value >= 120) return (value / 60).toFixed(value >= 600 ? 0 : 1) + "h";
+  return fmt.format(Math.round(value)) + "m";
+}
+
+function signalCard(label, value, detail, className) {
+  return '<div class="health-signal"><div class="health-signal-head"><span class="health-signal-label">' + esc(label) + '</span><strong class="health-signal-value ' + esc(className) + '">' + esc(value) + '</strong></div><div class="health-signal-detail">' + esc(detail) + '</div></div>';
+}
+
+function executionHealthSignal(current) {
+  if (!current || current.telemetry_complete !== true) {
+    return { value: "Unknown", className: "unknown", detail: "Active-run telemetry is incomplete." };
+  }
+  const stalled = Number(current.running_over_threshold) || 0;
+  const oldest = Number(current.oldest_running_minutes) || 0;
+  if (stalled > 0) {
+    return {
+      value: "Stalled",
+      className: "stalled",
+      detail: fmt.format(stalled) + " over 150m · oldest " + formatTrendValue(oldest, "minutes"),
+    };
+  }
+  return {
+    value: "Healthy",
+    className: "ok",
+    detail: fmt.format(Number(current.running_runs) || 0) + " running · none over 150m",
+  };
+}
+
+function queueLoadSignal(samples, current) {
+  if (!current || current.telemetry_complete !== true) {
+    return { value: "Unknown", className: "unknown", detail: "Queue telemetry is incomplete." };
+  }
+  const valid = samples
+    .filter(sample => sample.collection_ok && Number.isFinite(Date.parse(sample.at)))
+    .slice(-7);
+  const queued = Number(current.queued_runs) || 0;
+  const overSlo = Number(current.queued_over_threshold) || 0;
+  if (overSlo === 0) {
+    return queued > 0
+      ? { value: "Busy, within SLO", className: "ok", detail: fmt.format(queued) + " queued · none over 30m" }
+      : { value: "Idle", className: "ok", detail: "No queued workflows." };
+  }
+  if (valid.length < 2) {
+    return { value: "Delayed", className: "attention", detail: fmt.format(overSlo) + " over 30m · collecting trend" };
+  }
+  // Queue size moves with review demand, so direction comes from the over-SLO
+  // backlog while execution health remains an independent signal.
+  const first = Number(valid[0].queued_over_30m) || 0;
+  const latest = Number(valid.at(-1).queued_over_30m) || 0;
+  const delta = latest - first;
+  const meaningful = Math.max(2, Math.ceil(first * 0.05));
+  const windowMinutes = Math.max(
+    5,
+    Math.round((Date.parse(valid.at(-1).at) - Date.parse(valid[0].at)) / 60000),
+  );
+  if (delta <= -meaningful) {
+    return {
+      value: "Recovering",
+      className: "ok",
+      detail: fmt.format(overSlo) + " over 30m · down " + fmt.format(Math.abs(delta)) + " in " + fmt.format(windowMinutes) + "m",
+    };
+  }
+  if (delta >= meaningful) {
+    return {
+      value: "Backlog growing",
+      className: "attention",
+      detail: fmt.format(overSlo) + " over 30m · up " + fmt.format(delta) + " in " + fmt.format(windowMinutes) + "m",
+    };
+  }
+  return {
+    value: "Delayed, stable",
+    className: "attention",
+    detail: fmt.format(overSlo) + " over 30m · broadly flat for " + fmt.format(windowMinutes) + "m",
+  };
+}
+
+function trendPanel(samples, title, detail, series, options) {
   if (!samples.length) {
     return '<div class="health-trend-panel"><div class="health-trend-title"><strong>' + esc(title) + '</strong><span>' + esc(detail) + '</span></div><div class="trend-empty">Waiting for the first health sample.</div></div>';
   }
+  const config = options || {};
   const width = 600;
-  const height = 140;
+  const height = 170;
+  const plot = { left: 48, top: 10, width: 540, height: 130 };
   const values = series.flatMap(item => samples.map(sample => Number(sample[item.field]) || 0));
-  const maximum = Math.max(1, Number(threshold) || 0, ...values);
-  const grid = [0.25, 0.5, 0.75].map(ratio => '<line class="trend-grid-line" x1="0" x2="' + width + '" y1="' + (height * ratio) + '" y2="' + (height * ratio) + '"></line>').join("");
-  const thresholdLine = threshold
-    ? '<line class="trend-threshold ' + esc(thresholdClass || "") + '" x1="0" x2="' + width + '" y1="' + (height - threshold / maximum * height) + '" y2="' + (height - threshold / maximum * height) + '"></line>'
+  const scale = niceTrendScale(Math.max(1, Number(config.threshold) || 0, ...values), 4);
+  const grid = scale.ticks.map(value => {
+    const y = plot.top + plot.height - value / scale.maximum * plot.height;
+    return '<line class="trend-grid-line" x1="' + plot.left + '" x2="' + (plot.left + plot.width) + '" y1="' + y.toFixed(1) + '" y2="' + y.toFixed(1) + '"></line><text class="trend-axis-label" x="' + (plot.left - 8) + '" y="' + (y + 3).toFixed(1) + '" text-anchor="end">' + esc(formatTrendValue(value, config.unit)) + '</text>';
+  }).join("");
+  const thresholdY = config.threshold
+    ? plot.top + plot.height - config.threshold / scale.maximum * plot.height
+    : null;
+  const thresholdLine = thresholdY !== null
+    ? '<line class="trend-threshold ' + esc(config.thresholdClass || "") + '" x1="' + plot.left + '" x2="' + (plot.left + plot.width) + '" y1="' + thresholdY.toFixed(1) + '" y2="' + thresholdY.toFixed(1) + '"></line><text class="trend-threshold-label ' + esc(config.thresholdClass || "") + '" x="' + (plot.left + 4) + '" y="' + Math.max(plot.top + 9, thresholdY - 4).toFixed(1) + '">' + esc(formatTrendValue(config.threshold, config.unit)) + ' SLO</text>'
     : "";
-  const geometry = series.map(item => ({ item, points: trendGeometry(samples, item.field, width, height, maximum) }));
+  const geometry = series.map(item => ({
+    item,
+    points: trendGeometry(samples, item.field, plot, scale.maximum),
+  }));
   const paths = geometry.map(seriesGeometry => '<path class="' + esc(seriesGeometry.item.className) + '" d="' + trendPath(seriesGeometry.points) + '"></path>').join("");
   const points = geometry.map(seriesGeometry => trendPoints(seriesGeometry.points, seriesGeometry.item.className)).join("");
-  return '<div class="health-trend-panel"><div class="health-trend-title"><strong>' + esc(title) + '</strong><span>' + esc(detail) + '</span></div><svg class="health-trend-svg" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="' + esc(title) + '">' + grid + thresholdLine + paths + points + '</svg></div>';
+  const legend = '<div class="trend-legend">' + series.map(item => '<span class="trend-legend-item"><i class="trend-swatch ' + esc(item.className) + '"></i>' + esc(item.label) + '</span>').join("") + '</div>';
+  const note = '<div class="trend-panel-note">' + esc(config.note || "") + '</div>';
+  return '<div class="health-trend-panel"><div class="health-trend-title"><strong>' + esc(title) + '</strong><span>' + esc(detail) + '</span></div>' + legend + '<svg class="health-trend-svg" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="' + esc(title) + '">' + grid + thresholdLine + paths + points + '</svg>' + note + '</div>';
 }
 
 function renderHealthHistory(current) {
@@ -9812,17 +9943,34 @@ function renderHealthHistory(current) {
     const status = current.status === "stalled" ? "Stalled" : current.status === "degraded" ? "Degraded" : current.status === "healthy" ? "Healthy" : "Telemetry incomplete";
     summary.textContent = status + " · " + fmt.format(current.queued_over_threshold || 0) + " queued over 30m · " + fmt.format(current.running_over_threshold || 0) + " running over 150m · " + fmt.format(samples.length) + " samples";
   }
+  const execution = executionHealthSignal(current);
+  const queue = queueLoadSignal(samples, current);
+  document.getElementById("health-trend-signals").innerHTML =
+    signalCard("Execution health", execution.value, execution.detail, execution.className) +
+    signalCard("Queue load", queue.value, queue.detail, queue.className);
   document.getElementById("health-trend-grid").innerHTML =
-    trendPanel(samples, "Queue pressure", "total / over 30m", [
-      { field: "queued", className: "trend-total" },
-      { field: "queued_over_30m", className: "trend-warning" },
-    ]) +
-    trendPanel(samples, "Oldest queued", "minutes · threshold 30", [
-      { field: "oldest_queued_minutes", className: "trend-warning" },
-    ], 30, "warning") +
-    trendPanel(samples, "Oldest running", "minutes · threshold 150", [
-      { field: "oldest_running_minutes", className: "trend-danger" },
-    ], 150);
+    trendPanel(samples, "Queue pressure", "workflows", [
+      { field: "queued", className: "trend-total", label: "Total queued" },
+      { field: "queued_over_30m", className: "trend-warning", label: "Over 30m" },
+    ], {
+      unit: "count",
+      note: "Demand affects total depth; use the over-30m direction for queue health.",
+    }) +
+    trendPanel(samples, "Oldest queued", "diagnostic outlier", [
+      { field: "oldest_queued_minutes", className: "trend-warning", label: "Oldest age" },
+    ], {
+      threshold: 30,
+      thresholdClass: "warning",
+      unit: "minutes",
+      note: "A single stale GitHub queued record can dominate this chart.",
+    }) +
+    trendPanel(samples, "Oldest running", "execution SLO", [
+      { field: "oldest_running_minutes", className: "trend-danger", label: "Oldest age" },
+    ], {
+      threshold: 150,
+      unit: "minutes",
+      note: "Crossing 150m marks execution health as stalled.",
+    });
 }
 
 async function loadHealthHistory(range, current, force) {

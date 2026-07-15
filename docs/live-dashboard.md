@@ -195,6 +195,18 @@ The operational headline uses the same snapshot as the chart:
 - `stalled`: at least one in-progress run is 150 minutes old;
 - `unknown`: one or more actionable-status reads failed.
 
+The trend section separates interpretation into two operator signals. Execution
+health is based only on in-progress runs crossing the 150-minute SLO. Queue load
+uses the direction of the over-30-minute backlog, because total queue depth also
+moves with incoming review demand. It reports busy-within-SLO, delayed and
+stable, growing backlog, or recovering without claiming that raw queue depth is
+a component failure.
+
+Every chart renders a labeled, adaptive y-axis. Duration axes switch between
+minutes, hours, and days as the range grows. `Oldest queued` remains a diagnostic
+outlier view rather than the primary queue-health signal: one stale GitHub
+queued record can dominate its scale even while the rest of the backlog drains.
+
 This history is intentionally aggregate and low-cost: at five-minute cadence it
 stores at most 2,016 samples over seven days. Use an external metrics backend
 only if longer retention, ad hoc aggregation, or Grafana-compatible querying is
