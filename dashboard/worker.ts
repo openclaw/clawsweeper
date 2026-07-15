@@ -923,7 +923,6 @@ export class ExactReviewQueue {
         checkedAt: now,
         retryAt,
       };
-      deferPausedExactReviewQueue(state, now, retryAt);
       await this.writeState(state);
       await this.scheduleNext(state, now);
       return;
@@ -937,7 +936,6 @@ export class ExactReviewQueue {
         checkedAt: now,
         retryAt,
       };
-      deferPausedExactReviewQueue(state, now, retryAt);
       await this.writeState(state);
       await this.scheduleNext(state, now);
       return;
@@ -2814,14 +2812,6 @@ function exactReviewQueueEnqueueAttemptAt(state: ExactReviewQueueState, now: num
     : now;
 }
 
-function deferPausedExactReviewQueue(state: ExactReviewQueueState, now: number, retryAt: number) {
-  for (const item of Object.values(state.items)) {
-    if (item.state !== "pending" || item.nextAttemptAt >= retryAt) continue;
-    item.nextAttemptAt = retryAt;
-    item.updatedAt = now;
-  }
-}
-
 function exactReviewQueueIsPublication(item: ExactReviewQueueItem) {
   return item.decision.sourceAction === EXACT_REVIEW_ARTIFACT_PUBLISH_SOURCE_ACTION;
 }
@@ -2840,6 +2830,13 @@ function exactReviewQueueAdmittedItems(
   capacity: number,
   targetCapacity: number,
 ) {
+  const dispatcherRetryAt = Number(state.dispatcher?.retryAt || 0);
+  if (
+    (state.dispatcher?.state === "paused" || state.dispatcher?.state === "blocked") &&
+    dispatcherRetryAt > now
+  ) {
+    return [];
+  }
   const reviewSlots = Math.max(0, capacity - exactReviewQueueActiveReviewCount(state));
   const activeTargets = new Map<string, number>();
   let activePublishers = 0;
@@ -2974,6 +2971,10 @@ function exactReviewQueueNextWakeAt(
 ) {
   const items = Object.values(state.items);
   if (!items.length) return null;
+  const dispatcherRetryAt = Number(state.dispatcher?.retryAt || 0);
+  const dispatcherPaused =
+    (state.dispatcher?.state === "paused" || state.dispatcher?.state === "blocked") &&
+    dispatcherRetryAt > now;
   const activeItems = items.filter(
     (item) => item.state === "dispatching" || item.state === "leased",
   );
@@ -3003,6 +3004,7 @@ function exactReviewQueueNextWakeAt(
   }
   const times = items.flatMap((item) => {
     if (item.state === "pending") {
+      if (dispatcherPaused) return [dispatcherRetryAt];
       if (exactReviewQueueIsPublication(item)) {
         const blockedUntil = activePublisherWakeAt.length
           ? Math.min(...activePublisherWakeAt)

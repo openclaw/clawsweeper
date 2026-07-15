@@ -1481,10 +1481,20 @@ test("exact-review queue coalesces deliveries, dispatches a bound rollout snapsh
       dispatcher: { retryAt: number };
       items: Record<string, { nextAttemptAt: number }>;
     };
-    workflowState = "active";
+    assert.ok(
+      Object.values(pausedState.items).some(
+        (item) => item.nextAttemptAt < pausedState.dispatcher.retryAt,
+      ),
+    );
+    // Simulate the pre-repair persisted state, which moved the whole backlog
+    // to the dispatcher retry. At the scheduled wake, recovery must not need
+    // an operator rewrite.
     pausedState.dispatcher.retryAt = Date.now() - 1;
-    for (const item of Object.values(pausedState.items)) item.nextAttemptAt = Date.now() - 1;
+    for (const item of Object.values(pausedState.items)) {
+      item.nextAttemptAt = pausedState.dispatcher.retryAt;
+    }
     await storage.put("exact-review-queue", pausedState);
+    workflowState = "active";
     await queue.alarm();
     assert.equal(dispatched.length, 1);
     stats = await (
@@ -2787,6 +2797,81 @@ test("exact-review queue wakes while target capacity remains", async () => {
 
     await queue.alarm();
     assert.equal(dispatched.length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("exact-review queue defers retained backlog until a paused dispatcher retry", async () => {
+  const originalFetch = globalThis.fetch;
+  const storage = new MemoryDurableStorage();
+  const dispatched: Record<string, unknown>[] = [];
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml")
+      return jsonResponse({ state: "active" });
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation")
+      return jsonResponse({ id: 999 });
+    if (url.pathname === "/app/installations/999/access_tokens")
+      return jsonResponse({ token: "dispatch-token" });
+    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
+      dispatched.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "4",
+        EXACT_REVIEW_TARGET_MAX_CONCURRENT: "2",
+      },
+    );
+    await queue.fetch(buildExactReviewQueueRequest("delivery-paused-a", 801, "opened"));
+    await queue.alarm();
+    await queue.fetch(buildExactReviewQueueRequest("delivery-paused-b", 802, "opened"));
+    await queue.fetch(buildExactReviewQueueRequest("delivery-paused-c", 803, "opened"));
+
+    const state = (await storage.get("exact-review-queue")) as {
+      dispatcher?: Record<string, unknown>;
+      items: Record<string, { leaseExpiresAt?: number; nextAttemptAt: number }>;
+    };
+    const leaseExpiresAt = Date.now() + 60_000;
+    const retryAt = Date.now() + 15 * 60_000;
+    const retainedAttemptAt = Date.now() - 1;
+    state.dispatcher = {
+      state: "paused",
+      reason: "workflow_not_active",
+      checkedAt: Date.now(),
+      retryAt,
+    };
+    state.items["openclaw/gogcli#801"].leaseExpiresAt = leaseExpiresAt;
+    state.items["openclaw/gogcli#802"].nextAttemptAt = retryAt;
+    state.items["openclaw/gogcli#803"].nextAttemptAt = retainedAttemptAt;
+    await storage.put("exact-review-queue", state);
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
+
+    const nextAlarm = await storage.getAlarm();
+    assert.ok(nextAlarm && nextAlarm <= leaseExpiresAt);
+
+    // Emulate a pre-pause alarm that remains scheduled for an active lease,
+    // then fires before the paused dispatcher's retry deadline.
+    state.items["openclaw/gogcli#801"].leaseExpiresAt = Date.now() - 1;
+    await storage.put("exact-review-queue", state);
+    await queue.alarm();
+    assert.equal(dispatched.length, 1);
+    const after = (await storage.get("exact-review-queue")) as typeof state;
+    assert.equal(after.items["openclaw/gogcli#802"].nextAttemptAt, retryAt);
+    assert.equal(after.items["openclaw/gogcli#803"].nextAttemptAt, retainedAttemptAt);
   } finally {
     globalThis.fetch = originalFetch;
   }
