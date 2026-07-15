@@ -405,7 +405,10 @@ test("exact event review hands immutable artifacts to one dedicated publisher", 
   assert.equal(publisher.concurrency?.["cancel-in-progress"], false);
   assert.equal(publisher.concurrency?.queue, "max");
   assert.equal(publisher.permissions?.actions, "write");
-  assert.equal(batchPublisher.concurrency?.group, "clawsweeper-state-publisher");
+  assert.equal(
+    batchPublisher.concurrency?.group,
+    "clawsweeper-target-review-publish-${{ needs.plan.outputs.target_repo }}",
+  );
   assert.notEqual(publisher.concurrency?.group, batchPublisher.concurrency?.group);
   const publicationContext = step(publisher, "Claim durable exact review publication");
   assert.match(
@@ -710,7 +713,10 @@ test("publish workflow dispatches immediate apply through the isolated lane", ()
   assert.match(dispatchStep, /gh workflow run sweep\.yml/);
   assert.match(dispatchStep, /-f apply_existing=true/);
   assert.match(dispatchStep, /-f apply_item_numbers="\$item_numbers"/);
-  assert.match(publishJob, /group: clawsweeper-state-publisher/);
+  assert.match(
+    publishJob,
+    /group: clawsweeper-target-review-publish-\$\{\{ needs\.plan\.outputs\.target_repo \}\}/,
+  );
   assert.match(publishJob, /cancel-in-progress: false/);
   assert.match(publishJob, /queue: max/);
 });
