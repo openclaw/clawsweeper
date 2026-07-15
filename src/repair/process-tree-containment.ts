@@ -103,12 +103,20 @@ def checked_syscall(number, *arguments):
 
 
 def landlock_abi():
-    return checked_syscall(
-        SYS_LANDLOCK_CREATE_RULESET,
-        ctypes.c_void_p(),
-        ctypes.c_size_t(0),
-        ctypes.c_uint32(LANDLOCK_CREATE_RULESET_VERSION),
-    )
+    try:
+        return checked_syscall(
+            SYS_LANDLOCK_CREATE_RULESET,
+            ctypes.c_void_p(),
+            ctypes.c_size_t(0),
+            ctypes.c_uint32(LANDLOCK_CREATE_RULESET_VERSION),
+        )
+    except OSError as error:
+        if error.errno not in {errno.ENOSYS, errno.EOPNOTSUPP}:
+            raise
+        # Blacksmith hosts vary in whether Landlock is exposed through their
+        # syscall policy. The mount namespace has already established the same
+        # write allowlist; only the capability probe may select that fallback.
+        return None
 
 
 def checked_mount(source, target, flags, filesystem_type=None, data=None):
@@ -507,6 +515,8 @@ def canonical_writable_roots(writable_roots):
 
 def restrict_filesystem_writes(canonical_roots):
     abi = landlock_abi()
+    if abi is None:
+        return
     if abi < 3:
         raise RuntimeError("Landlock ABI 3 or newer is required")
     ruleset = LandlockRulesetAttr(handled_access_fs=LANDLOCK_WRITE_ACCESS)

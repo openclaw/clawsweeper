@@ -38,6 +38,9 @@ test("Linux validation containment uses an externally owned PID namespace and su
   assert.match(containment, /validation writable root is unsafe/);
   assert.doesNotMatch(containment, /checked_mount\("\/", "\/", MS_BIND/);
   assert.match(containment, /bring_up_loopback\(\)/);
+  assert.match(containment, /error\.errno not in \{errno\.ENOSYS, errno\.EOPNOTSUPP\}/);
+  assert.match(containment, /if abi is None:\s+return/);
+  assert.match(containment, /ruleset_fd = checked_syscall/);
   assert.match(containment, /PR_CAPBSET_DROP/);
   assert.match(containment, /PR_CAP_AMBIENT_CLEAR_ALL/);
   assert.match(containment, /libc\.capset/);
