@@ -6,6 +6,13 @@ import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-l
 import { stableJson } from "../src/stable-json.ts";
 import { bayHtml } from "./bay-page.ts";
 import { summarizeExactReviewHandoff } from "./exact-review-health.ts";
+import {
+  HEALTH_HISTORY_RETENTION_DAYS,
+  healthHistorySample,
+  mergeHealthHistorySample,
+  normalizeHealthHistorySample,
+  summarizeOperationalHealth,
+} from "./operational-health.ts";
 import { TRIAGE_ROUTING_GROUPS, triageRoutingGroupsForLabels } from "./triage-routing-groups.ts";
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
@@ -142,6 +149,8 @@ const CLOSED_STATS_PAGE_LIMIT = 10;
 const DEFAULT_CLAWSWEEPER_BOT_LOGINS = ["clawsweeper[bot]", "openclaw-clawsweeper[bot]"];
 const GITHUB_TIMEOUT_MS = 4500;
 const DEFAULT_STALE_QUEUED_WORKFLOW_MS = 6 * 60 * 60 * 1000;
+const HEALTH_HISTORY_TTL_SECONDS = (HEALTH_HISTORY_RETENTION_DAYS + 1) * 24 * 60 * 60;
+const HEALTH_HISTORY_KEY_PREFIX = "health-history:";
 const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 64;
 const DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT = 60;
 const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 6 * 60 * 1000;
@@ -461,6 +470,28 @@ export class StatusStore {
       });
       await this.scheduleCleanup(expiresAt);
       return json({ ok: true });
+    }
+
+    if (request.method === "POST" && key === "health-history") {
+      const body = await request.json();
+      const sample = normalizeHealthHistorySample(body?.sample);
+      if (!sample) return new Response("invalid health sample", { status: 400 });
+      const bucketKey = `${HEALTH_HISTORY_KEY_PREFIX}${sample.at.slice(0, 10)}`;
+      const current = (await this.storage.get(bucketKey)) as StoredValue | undefined;
+      let currentSamples = [];
+      try {
+        currentSamples = current?.value ? JSON.parse(current.value) : [];
+      } catch {
+        currentSamples = [];
+      }
+      const samples = mergeHealthHistorySample(currentSamples, sample);
+      const expiresAt = Date.now() + HEALTH_HISTORY_TTL_SECONDS * 1000;
+      await this.storage.put(bucketKey, {
+        value: JSON.stringify(samples),
+        expires_at: expiresAt,
+      });
+      await this.scheduleCleanup(expiresAt);
+      return json({ ok: true, samples: samples.length });
     }
 
     return new Response("method not allowed", { status: 405 });
@@ -1574,6 +1605,8 @@ export default {
       return authenticatedExactReviewReconcile(request, env);
     if (url.pathname === "/api/exact-review-queue" && request.method === "GET")
       return exactReviewQueueRequest(env, "/stats");
+    if (url.pathname === "/api/health-history" && request.method === "GET")
+      return healthHistoryJson(request, env);
     if (url.pathname === "/api/status") return statusJson(request, env, ctx);
     if (url.pathname === "/api/triage") return triageJson(request, env, ctx);
     if (url.pathname === "/api/pr-proof-triage") return prProofTriageJson(request, env, ctx);
@@ -1584,6 +1617,11 @@ export default {
     if (url.pathname === "/pr-proof-triage" || url.pathname === "/pr-proof-triage.html")
       return html(triageHtml(prProofTriagePageConfig()));
     return json({ error: "not_found" }, 404);
+  },
+  async scheduled(_controller, env: DashboardEnv = {}, ctx?: DashboardContext) {
+    const recording = recordScheduledHealthSample(env);
+    if (ctx?.waitUntil) ctx.waitUntil(recording);
+    else await recording;
   },
 };
 
@@ -1601,6 +1639,99 @@ async function statusJson(request, env, ctx) {
   const refreshed = await refreshStatus(request, env);
   if (refreshed.looksEmpty && stale) return cachedStatusResponse(stale, "stale", env);
   return statusSnapshotResponse(refreshed.snapshot, "miss", env);
+}
+
+async function healthHistoryJson(request: Request, env: DashboardEnv) {
+  const range = new URL(request.url).searchParams.get("range") === "7d" ? "7d" : "24h";
+  const rangeMs = range === "7d" ? 7 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const groups = await Promise.all(
+    healthHistoryDates(now - rangeMs, now).map(async (day) => {
+      if (!env.STATUS_STORE) return [];
+      const text = await readStatusStoreText(
+        env.STATUS_STORE,
+        `${HEALTH_HISTORY_KEY_PREFIX}${day}`,
+      );
+      if (!text) return [];
+      try {
+        const parsed = JSON.parse(text);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }),
+  );
+  const samples = groups
+    .flat()
+    .map((sample) => normalizeHealthHistorySample(sample))
+    .filter((sample) => sample && Date.parse(sample.at) >= now - rangeMs)
+    .sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
+  return cors(
+    json({
+      schema_version: 1,
+      range,
+      retention_days: HEALTH_HISTORY_RETENTION_DAYS,
+      samples,
+    }),
+  );
+}
+
+function healthHistoryDates(fromMs: number, toMs: number) {
+  const dates = [];
+  const cursor = new Date(fromMs);
+  cursor.setUTCHours(0, 0, 0, 0);
+  while (cursor.getTime() <= toMs) {
+    dates.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return dates;
+}
+
+async function recordScheduledHealthSample(env) {
+  if (!env.STATUS_STORE) return;
+  const health = await collectOperationalHealth(env);
+  await appendHealthHistorySample(env, healthHistorySample(health));
+}
+
+async function collectOperationalHealth(env) {
+  const repo = env.CLAWSWEEPER_REPO || "openclaw/clawsweeper";
+  const errors = [];
+  const runs = await activeWorkflowRunCandidates(env, repo, errors, createGithubJsonCache(env));
+  const checkedAt = new Date().toISOString();
+  return summarizeOperationalHealth(
+    runs.filter((run) => !isSupportWorkflowRun(run)),
+    checkedAt,
+    errors.length === 0,
+  );
+}
+
+async function appendHealthHistorySample(env, sample) {
+  const store = env.STATUS_STORE;
+  if (!store) return;
+  if (isDurableStatusStore(store)) {
+    const response = await durableStatusStoreStub(store).fetch(
+      new Request(statusStoreRequest("health-history", "POST"), {
+        method: "POST",
+        body: JSON.stringify({ sample }),
+      }),
+    );
+    if (!response.ok) throw new Error(`health history write failed: ${response.status}`);
+    return;
+  }
+  const key = `${HEALTH_HISTORY_KEY_PREFIX}${sample.at.slice(0, 10)}`;
+  const text = await readStatusStoreText(store, key);
+  let current = [];
+  try {
+    current = text ? JSON.parse(text) : [];
+  } catch {
+    current = [];
+  }
+  await writeStatusStoreText(
+    store,
+    key,
+    JSON.stringify(mergeHealthHistorySample(current, sample)),
+    HEALTH_HISTORY_TTL_SECONDS,
+  );
 }
 
 async function cachedStatusResponse(cached, cacheState, env) {
@@ -3619,7 +3750,8 @@ async function statusSnapshot(env) {
     .map((value) => value.trim())
     .filter(Boolean);
   const budget = numberFrom(env.WORKER_BUDGET, 128);
-  const [runs, completedRuns, filteredActiveRuns] = await Promise.all([
+  const activeRunErrors = [];
+  const [runs, completedRuns, activeRunCandidates] = await Promise.all([
     github(`/repos/${repo}/actions/runs?per_page=100`).catch((error) => {
       errors.push(`workflow runs: ${error.message}`);
       return null;
@@ -3628,19 +3760,25 @@ async function statusSnapshot(env) {
       errors.push(`workflow runs completed: ${error.message}`);
       return null;
     }),
-    activeWorkflowRuns(env, repo, errors, github),
+    activeWorkflowRunCandidates(env, repo, activeRunErrors, github),
   ]);
+  errors.push(...activeRunErrors);
   const workflowRuns = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
   const completedWorkflowRuns = uniqueWorkflowRuns([
     ...(Array.isArray(completedRuns?.workflow_runs) ? completedRuns.workflow_runs : []),
     ...workflowRuns.filter((run) => run.status === "completed"),
   ]).sort(newestWorkflowRunFirst);
   const activeRuns = uniqueWorkflowRuns([
-    ...filteredActiveRuns,
+    ...activeRunCandidates.filter((run) => isActiveWorkflowRun(run)),
     ...workflowRuns.filter((run) => isActiveWorkflowRun(run)),
   ]).sort(newestWorkflowRunFirst);
   const workerRuns = activeRuns.filter((run) => !isSupportWorkflowRun(run));
   const supportRuns = activeRuns.filter((run) => isSupportWorkflowRun(run));
+  const operationalHealth = summarizeOperationalHealth(
+    activeRunCandidates.filter((run) => !isSupportWorkflowRun(run)),
+    generatedAt,
+    activeRunErrors.length === 0,
+  );
   const failedRuns = completedWorkflowRuns.filter(
     (run) =>
       run.status === "completed" &&
@@ -3747,6 +3885,7 @@ async function statusSnapshot(env) {
       worker_detail_fallbacks: activeJobs.fallbacks,
     },
     health: publicWorkerHealth,
+    operational_health: operationalHealth,
     averages: {
       automerge_command_to_merge_ms: automerge.average_ms,
       automerge_samples: automerge.samples,
@@ -5785,7 +5924,7 @@ function workerStatusRank(status) {
   return 2;
 }
 
-async function activeWorkflowRuns(
+async function activeWorkflowRunCandidates(
   env,
   repo,
   errors,
@@ -5799,10 +5938,15 @@ async function activeWorkflowRuns(
           return null;
         },
       );
-      return Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
+      const workflowRuns = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
+      // Sampling stays at five cheap status queries. A full page may omit the
+      // oldest (and therefore least healthy) runs, so fail closed instead of
+      // spending an unbounded number of follow-up requests.
+      if (workflowRuns.length >= 100) errors.push(`workflow runs ${status}: page may be truncated`);
+      return workflowRuns;
     }),
   );
-  return uniqueWorkflowRuns(pages.flat()).filter((run) => isActiveWorkflowRun(run));
+  return uniqueWorkflowRuns(pages.flat());
 }
 
 function isActiveWorkflowRun(run) {
@@ -8703,6 +8847,38 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .metric > div.muted { margin-top: 4px; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .band { width: 54px; height: 2px; margin-top: 12px; background: var(--track); border-radius: 999px; overflow: hidden; }
 .band > i { display: block; height: 100%; border-radius: 999px; background: var(--claw); width: 0; transition: width 0.6s ease; }
+.health-trends { margin-top: 30px; }
+.health-trends-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.health-trends-head h2 { margin: 0; }
+.trend-ranges { display: flex; gap: 6px; }
+.trend-range {
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.trend-range.active { color: var(--text); border-color: var(--claw); }
+.health-trend-summary { margin-top: 8px; color: var(--muted); font-size: 12px; }
+.health-trend-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 14px; }
+.health-trend-panel { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.health-trend-title { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.health-trend-title strong { font-size: 12px; }
+.health-trend-title span { color: var(--muted); font-size: 11px; }
+.health-trend-svg { display: block; width: 100%; height: 150px; overflow: visible; }
+.trend-grid-line { stroke: var(--line-soft); stroke-width: 1; }
+.trend-threshold { stroke: var(--red); stroke-width: 1; stroke-dasharray: 4 4; opacity: 0.55; }
+.trend-threshold.warning { stroke: var(--amber); }
+.trend-total { fill: none; stroke: var(--muted); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.trend-warning { fill: none; stroke: var(--amber); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.trend-danger { fill: none; stroke: var(--red); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.trend-total-point { fill: var(--muted); }
+.trend-warning-point { fill: var(--amber); }
+.trend-danger-point { fill: var(--red); }
+.trend-empty { display: grid; place-items: center; height: 150px; color: var(--muted); font-size: 12px; }
 .overview-shell { margin: 0; padding: 0; border: 0; background: transparent; }
 .overview-head,
 .automatic-head,
@@ -9376,6 +9552,7 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   .work-row { grid-template-columns: 1fr; align-items: start; }
   .work-state, .stage-block, .timebox { justify-content: start; justify-items: start; }
   .worker-toolbar { align-items: stretch; flex-direction: column; }
+  .health-trend-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 560px) {
   main { width: min(100vw - 24px, 1280px); padding-top: 18px; }
@@ -9415,6 +9592,17 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
     <div class="muted" id="subtitle"></div>
   </section>
   <section class="grid" id="metrics"></section>
+  <section class="health-trends" aria-labelledby="health-trends-title">
+    <div class="health-trends-head">
+      <h2 id="health-trends-title">Health Trends</h2>
+      <div class="trend-ranges" id="trend-ranges" aria-label="Health history range">
+        <button class="trend-range active" type="button" data-trend-range="24h">24 hours</button>
+        <button class="trend-range" type="button" data-trend-range="7d">7 days</button>
+      </div>
+    </div>
+    <div class="health-trend-summary" id="health-trend-summary">History starts collecting after deployment.</div>
+    <div class="health-trend-grid" id="health-trend-grid"></div>
+  </section>
   <section class="overview-shell" aria-labelledby="system-overview-title">
     <div class="overview-head">
       <h2 id="system-overview-title">System Overview</h2>
@@ -9546,6 +9734,115 @@ let loading = false;
 let activeWorkerFilter = "all";
 let workerIndex = new Map();
 let automaticIndex = new Map();
+let activeHealthRange = "24h";
+let healthHistoryLoadedAt = 0;
+let healthHistorySamples = [];
+
+function currentHealthSample(health) {
+  if (!health?.checked_at) return null;
+  return {
+    at: health.checked_at,
+    status: health.status,
+    queued: health.queued_runs || 0,
+    queued_over_30m: health.queued_over_threshold || 0,
+    oldest_queued_minutes: health.oldest_queued_minutes || 0,
+    running: health.running_runs || 0,
+    running_over_150m: health.running_over_threshold || 0,
+    oldest_running_minutes: health.oldest_running_minutes || 0,
+    collection_ok: health.telemetry_complete === true,
+  };
+}
+
+function trendGeometry(samples, field, width, height, maximum) {
+  if (!samples.length || maximum <= 0) return [];
+  const firstAt = Date.parse(samples[0].at);
+  const lastAt = Date.parse(samples.at(-1).at);
+  const span = Math.max(1, lastAt - firstAt);
+  let previousAt = null;
+  return samples.flatMap(sample => {
+    const at = Date.parse(sample.at);
+    if (!sample.collection_ok || !Number.isFinite(at)) {
+      previousAt = null;
+      return [];
+    }
+    const x = samples.length === 1 ? width / 2 : ((at - firstAt) / span) * width;
+    const y = height - (Math.max(0, Number(sample[field]) || 0) / maximum) * height;
+    const connected = previousAt !== null && at - previousAt <= 12 * 60 * 1000;
+    previousAt = at;
+    return [{ at, x, y, connected }];
+  });
+}
+
+function trendPath(geometry) {
+  return geometry.map(point => (point.connected ? "L" : "M") + point.x.toFixed(1) + " " + point.y.toFixed(1)).join(" ");
+}
+
+function trendPoints(geometry, className) {
+  return geometry.map(point => '<circle class="' + esc(className) + '-point" cx="' + point.x.toFixed(1) + '" cy="' + point.y.toFixed(1) + '" r="3"></circle>').join("");
+}
+
+function trendPanel(samples, title, detail, series, threshold, thresholdClass) {
+  if (!samples.length) {
+    return '<div class="health-trend-panel"><div class="health-trend-title"><strong>' + esc(title) + '</strong><span>' + esc(detail) + '</span></div><div class="trend-empty">Waiting for the first health sample.</div></div>';
+  }
+  const width = 600;
+  const height = 140;
+  const values = series.flatMap(item => samples.map(sample => Number(sample[item.field]) || 0));
+  const maximum = Math.max(1, Number(threshold) || 0, ...values);
+  const grid = [0.25, 0.5, 0.75].map(ratio => '<line class="trend-grid-line" x1="0" x2="' + width + '" y1="' + (height * ratio) + '" y2="' + (height * ratio) + '"></line>').join("");
+  const thresholdLine = threshold
+    ? '<line class="trend-threshold ' + esc(thresholdClass || "") + '" x1="0" x2="' + width + '" y1="' + (height - threshold / maximum * height) + '" y2="' + (height - threshold / maximum * height) + '"></line>'
+    : "";
+  const geometry = series.map(item => ({ item, points: trendGeometry(samples, item.field, width, height, maximum) }));
+  const paths = geometry.map(seriesGeometry => '<path class="' + esc(seriesGeometry.item.className) + '" d="' + trendPath(seriesGeometry.points) + '"></path>').join("");
+  const points = geometry.map(seriesGeometry => trendPoints(seriesGeometry.points, seriesGeometry.item.className)).join("");
+  return '<div class="health-trend-panel"><div class="health-trend-title"><strong>' + esc(title) + '</strong><span>' + esc(detail) + '</span></div><svg class="health-trend-svg" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="' + esc(title) + '">' + grid + thresholdLine + paths + points + '</svg></div>';
+}
+
+function renderHealthHistory(current) {
+  const latest = currentHealthSample(current);
+  const samples = healthHistorySamples
+    .filter(sample => !latest || Math.floor(Date.parse(sample.at) / 300000) !== Math.floor(Date.parse(latest.at) / 300000))
+    .concat(latest ? [latest] : [])
+    .sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
+  const summary = document.getElementById("health-trend-summary");
+  if (current) {
+    const status = current.status === "stalled" ? "Stalled" : current.status === "degraded" ? "Degraded" : current.status === "healthy" ? "Healthy" : "Telemetry incomplete";
+    summary.textContent = status + " · " + fmt.format(current.queued_over_threshold || 0) + " queued over 30m · " + fmt.format(current.running_over_threshold || 0) + " running over 150m · " + fmt.format(samples.length) + " samples";
+  }
+  document.getElementById("health-trend-grid").innerHTML =
+    trendPanel(samples, "Queue pressure", "total / over 30m", [
+      { field: "queued", className: "trend-total" },
+      { field: "queued_over_30m", className: "trend-warning" },
+    ]) +
+    trendPanel(samples, "Oldest queued", "minutes · threshold 30", [
+      { field: "oldest_queued_minutes", className: "trend-warning" },
+    ], 30, "warning") +
+    trendPanel(samples, "Oldest running", "minutes · threshold 150", [
+      { field: "oldest_running_minutes", className: "trend-danger" },
+    ], 150);
+}
+
+async function loadHealthHistory(range, current, force) {
+  if (!force && range === activeHealthRange && Date.now() - healthHistoryLoadedAt < 60000) {
+    renderHealthHistory(current);
+    return;
+  }
+  activeHealthRange = range;
+  const requestedRange = range;
+  try {
+    const response = await fetch("/api/health-history?range=" + encodeURIComponent(range), { cache: "no-store" });
+    if (!response.ok) throw new Error("history returned " + response.status);
+    const payload = await response.json();
+    if (requestedRange !== activeHealthRange) return;
+    healthHistorySamples = Array.isArray(payload.samples) ? payload.samples : [];
+    healthHistoryLoadedAt = Date.now();
+  } catch {
+    if (requestedRange !== activeHealthRange) return;
+    healthHistorySamples = [];
+  }
+  renderHealthHistory(current);
+}
 
 function workerGroup(worker) {
   const text = (worker.mode + " " + worker.name + " " + worker.workflow_title).toLowerCase();
@@ -9816,6 +10113,7 @@ async function load() {
         ? "Updated with partial GitHub telemetry."
         : "",
   );
+  loadHealthHistory(activeHealthRange, data.operational_health, false).catch(() => undefined);
   } catch (error) {
     if (lastData) {
       renderDashboard(lastData, "Live refresh failed; showing last good status.");
@@ -9836,10 +10134,12 @@ function renderDashboard(data, note) {
   const handoffTelemetryFailed = Boolean(data.diagnostics?.exact_review_queue_error);
   const handoffAttention =
     handoffTelemetryFailed || handoffStatus === "degraded" || handoffStatus === "stalled";
-  const needsAttention = unresolved || applyAttention || handoffAttention;
+  const operationalStatus = data.operational_health?.status;
+  const operationalAttention = ["degraded", "stalled", "unknown"].includes(operationalStatus);
+  const needsAttention = unresolved || applyAttention || handoffAttention || operationalAttention;
   const workerCount = (data.workers || []).length;
   const repoCount = (data.source.target_repositories || []).length;
-  document.getElementById("hero-dot").className = "hero-dot " + (handoffStatus === "stalled" ? "red" : needsAttention ? "amber" : "ok");
+  document.getElementById("hero-dot").className = "hero-dot " + (handoffStatus === "stalled" || operationalStatus === "stalled" ? "red" : needsAttention ? "amber" : "ok");
   document.getElementById("hero-headline").textContent =
     (needsAttention ? "Needs attention" : "All clear") + " — " +
     fmt.format(workerCount) + " claw worker" + (workerCount === 1 ? "" : "s") + " sweeping " +
@@ -9847,14 +10147,16 @@ function renderDashboard(data, note) {
   document.getElementById("subtitle").textContent = data.source.target_repositories.join(", ");
   document.getElementById("updated").textContent = "Updated " + since(data.generated_at) + (note ? " \u00b7 " + note : "");
   const fleet = data.fleet;
+  const operational = data.operational_health || {};
   document.getElementById("metrics").innerHTML = [
     metric("Claw Workers", fmt.format(fleet.active_codex_jobs), "budget " + fleet.worker_budget, fleet.budget_used_percent, "var(--green)"),
-    metric("Active Sweeps", fmt.format(fleet.active_workflow_runs), "support " + fmt.format(fleet.support_workflow_runs || 0), Math.min(100, fleet.active_workflow_runs * 3), "var(--claw)"),
-    metric("Queue Depth", fmt.format(fleet.queued_workflow_runs), "support queue " + fmt.format(fleet.support_queued_workflow_runs || 0), Math.min(100, fleet.queued_workflow_runs * 10), "var(--amber)"),
+    metric("Active Sweeps", fmt.format(fleet.active_workflow_runs), fmt.format(operational.running_over_threshold || 0) + " over 150m", Math.min(100, fleet.active_workflow_runs * 3), operational.running_over_threshold ? "var(--red)" : "var(--claw)"),
+    metric("Queue Depth", fmt.format(fleet.queued_workflow_runs), fmt.format(operational.queued_over_threshold || 0) + " over 30m", Math.min(100, fleet.queued_workflow_runs * 10), operational.queued_over_threshold ? "var(--amber)" : "var(--green)"),
     metric("Error Rate", (data.health?.error_rate_percent || 0) + "%", fmt.format(data.health?.failed_attempts || 0) + " failed / " + fmt.format(data.health?.attempts || 0) + " attempts", Math.min(100, data.health?.error_rate_percent || 0), data.health?.failed_attempts ? "var(--red)" : "var(--green)"),
     metric("Recovery Rate", data.health?.recovery_rate_percent == null ? "n/a" : data.health.recovery_rate_percent + "%", fmt.format(data.health?.unresolved_failures || 0) + " unresolved", data.health?.recovery_rate_percent == null ? 100 : data.health.recovery_rate_percent, data.health?.unresolved_failures ? "var(--amber)" : "var(--green)"),
     metric("Capacity", fleet.budget_used_percent + "%", "fleet utilization", fleet.budget_used_percent, "var(--green)")
   ].join("");
+  renderHealthHistory(data.operational_health);
   renderSystemMap(data);
   renderExactReviewHandoff(data.exact_review_queue);
   renderApplyHealth(data);
@@ -10274,6 +10576,12 @@ document.getElementById("worker-filters").addEventListener("click", event => {
   if (!button) return;
   activeWorkerFilter = button.dataset.workerFilter || "all";
   renderWorkers(lastData?.workers || []);
+});
+document.getElementById("trend-ranges").addEventListener("click", event => {
+  const button = event.target.closest("button[data-trend-range]");
+  if (!button) return;
+  document.querySelectorAll("button[data-trend-range]").forEach(item => item.classList.toggle("active", item === button));
+  loadHealthHistory(button.dataset.trendRange || "24h", lastData?.operational_health, true).catch(() => undefined);
 });
 document.getElementById("workers").addEventListener("click", event => {
   const button = event.target.closest("button[data-worker-id]");

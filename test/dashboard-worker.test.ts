@@ -1321,6 +1321,96 @@ test("dashboard reuses a current Bay snapshot from the shared status store", asy
   }
 });
 
+test("dashboard health history persists five-minute samples and serves a bounded range", async () => {
+  const storage = new MemoryDurableStorage();
+  const store = new StatusStore({ storage });
+  const namespace = new MemoryDurableNamespace(store);
+  const sample = {
+    at: new Date().toISOString(),
+    status: "degraded",
+    queued: 12,
+    queued_over_30m: 4,
+    oldest_queued_minutes: 75,
+    running: 3,
+    running_over_150m: 0,
+    oldest_running_minutes: 40,
+    collection_ok: true,
+  };
+
+  for (const queued of [12, 14]) {
+    const response = await store.fetch(
+      new Request("https://clawsweeper-status-store/health-history", {
+        method: "POST",
+        body: JSON.stringify({ sample: { ...sample, queued } }),
+      }),
+    );
+    assert.equal(response.status, 200);
+  }
+
+  const response = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/health-history?range=24h"),
+    { STATUS_STORE: namespace },
+  );
+  const history = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(history.range, "24h");
+  assert.equal(history.retention_days, 7);
+  assert.equal(history.samples.length, 1);
+  assert.equal(history.samples[0].queued, 14);
+});
+
+test("dashboard cron records health with status-only GitHub queries", async () => {
+  const originalFetch = globalThis.fetch;
+  const storage = new MemoryDurableStorage();
+  const store = new StatusStore({ storage });
+  const namespace = new MemoryDurableNamespace(store);
+  const requests: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    requests.push(url.toString());
+    assert.equal(url.pathname, "/repos/openclaw/clawsweeper/actions/runs");
+    const status = url.searchParams.get("status");
+    return jsonResponse({
+      workflow_runs:
+        status === "queued"
+          ? Array.from({ length: 100 }, (_, index) => ({
+              id: 9001 + index,
+              name: "repair cluster worker",
+              display_title: "repair cluster worker",
+              status: "queued",
+              created_at: isoAgo((index === 0 ? 40 : 10) * 60_000),
+            }))
+          : [],
+    });
+  };
+  let recording: Promise<unknown> | undefined;
+  try {
+    await worker.scheduled(
+      {},
+      {
+        CLAWSWEEPER_REPO: "openclaw/clawsweeper",
+        STATUS_STORE: namespace,
+      },
+      { waitUntil: (promise) => (recording = promise) },
+    );
+    await recording;
+    assert.equal(requests.length, 5);
+    assert.ok(requests.every((url) => !url.includes("/jobs")));
+
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/health-history?range=24h"),
+      { STATUS_STORE: namespace },
+    );
+    const history = await response.json();
+    assert.equal(history.samples.length, 1);
+    assert.equal(history.samples[0].status, "unknown");
+    assert.equal(history.samples[0].queued, 100);
+    assert.equal(history.samples[0].queued_over_30m, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("optional exact-review telemetry failures do not freeze an idle status snapshot", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
@@ -4356,6 +4446,11 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /Claw Workers/);
   assert.match(html, /Active Sweeps/);
   assert.match(html, /Queue Depth/);
+  assert.match(html, /Health Trends/);
+  assert.match(html, /id="health-trend-grid"/);
+  assert.match(html, /\/api\/health-history\?range=/);
+  assert.match(html, /queued over 30m/);
+  assert.match(html, /running over 150m/);
   assert.match(html, /Error Rate/);
   assert.match(html, /Recovery Rate/);
   assert.match(html, /Capacity/);
@@ -4574,6 +4669,46 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.equal(elementFor("hero-dot").className, "hero-dot amber");
   assert.match(elementFor("hero-headline").textContent, /^Needs attention/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /telemetry unavailable/);
+
+  status.diagnostics.exact_review_queue_error = null;
+  status.exact_review_queue = { handoff_health: { status: "healthy", phases: {} } };
+  status.operational_health = {
+    status: "stalled",
+    checked_at: "2026-07-05T11:22:43.934Z",
+    telemetry_complete: true,
+    queued_runs: 10,
+    queued_over_threshold: 4,
+    oldest_queued_minutes: 90,
+    running_runs: 2,
+    running_over_threshold: 1,
+    oldest_running_minutes: 180,
+  };
+  context.renderDashboard(status, "");
+
+  assert.equal(elementFor("hero-dot").className, "hero-dot red");
+  assert.match(elementFor("metrics").innerHTML, /4 over 30m/);
+  assert.match(elementFor("metrics").innerHTML, /1 over 150m/);
+  assert.match(elementFor("health-trend-summary").textContent, /Stalled/);
+  assert.match(elementFor("health-trend-grid").innerHTML, /<circle class="trend-danger-point"/);
+
+  let resolve24HourHistory: ((response: unknown) => void) | undefined;
+  context.fetch = async (input: string) => {
+    if (input.includes("range=24h")) {
+      return new Promise((resolve) => {
+        resolve24HourHistory = resolve;
+      });
+    }
+    return {
+      ok: true,
+      json: async () => ({ samples: [{ collection_ok: true }, { collection_ok: true }] }),
+    };
+  };
+  const stale24HourRequest = context.loadHealthHistory("24h", status.operational_health, true);
+  const active7DayRequest = context.loadHealthHistory("7d", status.operational_health, true);
+  await active7DayRequest;
+  resolve24HourHistory?.({ ok: true, json: async () => ({ samples: [] }) });
+  await stale24HourRequest;
+  assert.match(elementFor("health-trend-summary").textContent, /3 samples/);
 });
 
 test("dashboard HTML emits early persistent theme controls", async () => {
@@ -6448,7 +6583,7 @@ test("dashboard counts active runs that are older than the latest unfiltered pag
   }
 });
 
-test("dashboard ignores stale queued workflow ghosts", async () => {
+test("dashboard hides stale queue ghosts without suppressing queue health", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
   Object.defineProperty(globalThis, "caches", {
@@ -6512,10 +6647,65 @@ test("dashboard ignores stale queued workflow ghosts", async () => {
     const status = await response.json();
     assert.equal(status.fleet.active_workflow_runs, 1);
     assert.equal(status.fleet.queued_workflow_runs, 1);
+    assert.equal(status.operational_health.queued_runs, 2);
+    assert.equal(status.operational_health.queued_over_threshold, 1);
+    assert.equal(status.operational_health.status, "degraded");
     assert.deepEqual(
       status.pipeline.map((row: { id: number }) => row.id),
       [2],
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("dashboard health retains in-progress runs beyond the queued ghost window", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: { match: async () => undefined, put: async () => undefined } },
+  });
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
+      const status = url.searchParams.get("status");
+      if (status === "in_progress") {
+        return jsonResponse({
+          workflow_runs: [
+            {
+              id: 8,
+              name: "repair cluster worker",
+              display_title: "repair cluster worker",
+              status: "in_progress",
+              created_at: isoAgo(8 * 60 * 60_000),
+              run_started_at: isoAgo(7 * 60 * 60_000),
+              updated_at: isoAgo(60_000),
+            },
+          ],
+        });
+      }
+      return jsonResponse({ workflow_runs: [] });
+    }
+    if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      {
+        CLAWSWEEPER_REPO: "openclaw/clawsweeper",
+        TARGET_REPOS: "openclaw/openclaw",
+        CACHE_TTL_SECONDS: "0",
+      },
+      { waitUntil: () => undefined },
+    );
+    const status = await response.json();
+    assert.equal(status.operational_health.status, "stalled");
+    assert.equal(status.operational_health.running_over_threshold, 1);
+    assert.equal(status.operational_health.oldest_running_minutes, 420);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });

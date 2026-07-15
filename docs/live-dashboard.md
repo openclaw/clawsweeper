@@ -119,6 +119,11 @@ is absent or a cache event lands in another Cloudflare colo.
 - a budget-sized capacity rail plus lane filters for issue-to-PR, PR repair,
   review, repair, commit, assist, and other workers
 - queued/waiting run count
+- operational health derived from queue age and running age: queued runs become
+  degraded after 30 minutes, and in-progress runs become stalled after 150
+  minutes
+- 24-hour and seven-day health trends for total queue depth, over-age queue
+  depth, and the oldest queued/running ages
 - job-level worker attempt error rate, recovery rate, and unresolved failures,
   including failures hidden by workflow `continue-on-error`
 - active pipeline rows grouped as automerge, repair, exact review, hot review,
@@ -163,6 +168,37 @@ isolate. Recent automerge timing is cached for five minutes and recent
 ClawSweeper-owned closes for five minutes because those historical sections do
 not need worker-step freshness. The deployment smoke output includes cache
 state, fetch time, and current diagnostics.
+
+## Operational health history
+
+A Cloudflare Cron Trigger records one aggregate operational-health sample every
+five minutes. The sampler requests only the five actionable GitHub Actions run
+statuses and never fetches job details, so history collection does not repeat
+the dashboard's bounded worker-detail fanout. Missing status responses make the
+sample `unknown` rather than silently healthy.
+
+Samples are stored in the existing `StatusStore` Durable Object under daily UTC
+keys named `health-history:YYYY-MM-DD`. Writes replace the current five-minute
+slot, making retries and overlapping triggers idempotent. Buckets expire after
+the seven-day retention window plus one day of boundary margin. No health
+history is written to `openclaw/clawsweeper-state`.
+
+`GET /api/health-history?range=24h` returns the default chart range;
+`range=7d` returns the full retention window. The endpoint and the dashboard are
+read-only. A fresh deployment starts with an empty chart and accumulates its
+first point at the next five-minute trigger.
+
+The operational headline uses the same snapshot as the chart:
+
+- `healthy`: complete telemetry and no over-age runs;
+- `degraded`: at least one queued run is 30 minutes old;
+- `stalled`: at least one in-progress run is 150 minutes old;
+- `unknown`: one or more actionable-status reads failed.
+
+This history is intentionally aggregate and low-cost: at five-minute cadence it
+stores at most 2,016 samples over seven days. Use an external metrics backend
+only if longer retention, ad hoc aggregation, or Grafana-compatible querying is
+required.
 
 ## Boundaries
 
