@@ -87,8 +87,8 @@ test(
   "Linux containment exposes only configured writable roots and minimal runtime files",
   { skip: process.platform !== "linux" },
   (context) => {
-    if (!linuxValidationContainmentAvailable()) {
-      context.skip("runner does not provide delegated user namespaces and Landlock ABI 3+");
+    if (!linuxValidationNamespacesAvailable()) {
+      context.skip("runner does not provide delegated validation namespaces");
       return;
     }
     const root = mkdtempSync(join(tmpdir(), "clawsweeper-filesystem-isolation-"));
@@ -189,8 +189,8 @@ test(
   "Linux containment protects namespace init from target termination",
   { skip: process.platform !== "linux" },
   (context) => {
-    if (!linuxValidationContainmentAvailable()) {
-      context.skip("runner does not provide delegated user namespaces and Landlock ABI 3+");
+    if (!linuxValidationNamespacesAvailable()) {
+      context.skip("runner does not provide delegated validation namespaces");
       return;
     }
     const root = mkdtempSync(join(tmpdir(), "clawsweeper-supervisor-kill-"));
@@ -234,7 +234,7 @@ test(
   "Linux network containment preserves isolated loopback communication",
   { skip: process.platform !== "linux" },
   (context) => {
-    if (!linuxValidationContainmentAvailable()) {
+    if (!linuxValidationNamespacesAvailable()) {
       context.skip("runner does not provide delegated validation namespaces");
       return;
     }
@@ -282,7 +282,7 @@ test(
   "Linux containment cannot reach host-local listeners",
   { skip: process.platform !== "linux" },
   (context) => {
-    if (!linuxValidationContainmentAvailable()) {
+    if (!linuxValidationNamespacesAvailable()) {
       context.skip("runner does not provide delegated validation namespaces");
       return;
     }
@@ -420,7 +420,7 @@ test("shared spawn resolver escapes Windows batch launcher arguments", () => {
   }
 });
 
-function linuxValidationContainmentAvailable() {
+function linuxValidationNamespacesAvailable() {
   const probe = spawnSync(
     "/usr/bin/unshare",
     [
@@ -434,14 +434,7 @@ function linuxValidationContainmentAvailable() {
       "--kill-child=SIGKILL",
       "/usr/bin/python3",
       "-c",
-      [
-        "import ctypes, os",
-        "libc = ctypes.CDLL(None, use_errno=True)",
-        "libc.syscall.restype = ctypes.c_long",
-        "abi = libc.syscall(ctypes.c_long(444), ctypes.c_void_p(), ctypes.c_size_t(0), ctypes.c_uint32(1))",
-        "assert os.getpid() == 1",
-        "assert abi >= 3",
-      ].join("; "),
+      ["import os", "assert os.getpid() == 1"].join("; "),
     ],
     { stdio: "ignore" },
   );

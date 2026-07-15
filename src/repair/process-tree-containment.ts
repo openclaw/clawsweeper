@@ -66,6 +66,7 @@ SYS_LANDLOCK_CREATE_RULESET = 444
 SYS_LANDLOCK_ADD_RULE = 445
 SYS_LANDLOCK_RESTRICT_SELF = 446
 SYS_MOUNT_SETATTR = 442
+SYS_MOUNT = 165
 LINUX_CAPABILITY_VERSION_3 = 0x20080522
 SIOCGIFFLAGS = 0x8913
 SIOCSIFFLAGS = 0x8914
@@ -86,6 +87,14 @@ class CapabilityData(ctypes.Structure):
         ("permitted", ctypes.c_uint32),
         ("inheritable", ctypes.c_uint32),
     ]
+
+
+class ContainmentStageError(RuntimeError):
+    def __init__(self, stage, error, syscall_number=None):
+        super().__init__(stage)
+        self.stage = stage
+        self.syscall_number = syscall_number
+        self.error_number = getattr(error, "errno", None)
 
 
 libc = ctypes.CDLL(None, use_errno=True)
@@ -112,7 +121,11 @@ def landlock_abi():
         )
     except OSError as error:
         if error.errno not in {errno.ENOSYS, errno.EOPNOTSUPP}:
-            raise
+            raise ContainmentStageError(
+                "landlock_capability_probe",
+                error,
+                SYS_LANDLOCK_CREATE_RULESET,
+            ) from error
         # Blacksmith hosts vary in whether Landlock is exposed through their
         # syscall policy. The mount namespace has already established the same
         # write allowlist; only the capability probe may select that fallback.
@@ -157,11 +170,25 @@ def set_mount_readonly(path, readonly, recursive=True):
         )
     except OSError as error:
         if error.errno != errno.ENOSYS:
-            raise
+            raise ContainmentStageError(
+                "mount_setattr",
+                error,
+                SYS_MOUNT_SETATTR,
+            ) from error
         # Some ephemeral VM kernels expose delegated mount namespaces but not
         # mount_setattr. Preserve the same fail-closed policy by remounting every
         # concrete mount below the bind target; do not weaken other syscall errors.
-        legacy_set_mount_readonly(path, readonly, recursive)
+        try:
+            legacy_set_mount_readonly(path, readonly, recursive)
+        except BaseException as legacy_error:
+            syscall_number = SYS_MOUNT if isinstance(legacy_error, OSError) else None
+            raise ContainmentStageError(
+                "legacy_remount",
+                legacy_error,
+                syscall_number,
+            ) from legacy_error
+        return "legacy"
+    return "native"
 
 
 def decoded_mountinfo_path(value):
@@ -459,16 +486,17 @@ def isolate_filesystem(canonical_roots, sandbox_root, original_cwd, command):
         )
         if os.path.exists(device)
     ]
-    set_mount_readonly(sandbox_root, True)
+    readonly_modes = {set_mount_readonly(sandbox_root, True)}
     for target, recursive in writable_targets:
-        set_mount_readonly(target, False, recursive)
+        readonly_modes.add(set_mount_readonly(target, False, recursive))
     for target, recursive in runtime_targets:
-        set_mount_readonly(target, True, recursive)
-    set_mount_readonly(proc_target[0], True, proc_target[1])
+        readonly_modes.add(set_mount_readonly(target, True, recursive))
+    readonly_modes.add(set_mount_readonly(proc_target[0], True, proc_target[1]))
     for target, recursive in device_targets:
-        set_mount_readonly(target, False, recursive)
+        readonly_modes.add(set_mount_readonly(target, False, recursive))
     os.chroot(sandbox_root)
     os.chdir(original_cwd)
+    return "legacy" if "legacy" in readonly_modes else "native"
 
 
 def bring_up_loopback():
@@ -489,13 +517,20 @@ def add_writable_path(ruleset_fd, path, allowed_access):
         rule = (ctypes.c_ubyte * 12).from_buffer_copy(
             struct.pack("=Qi", allowed_access, path_fd)
         )
-        checked_syscall(
-            SYS_LANDLOCK_ADD_RULE,
-            ctypes.c_int(ruleset_fd),
-            ctypes.c_int(LANDLOCK_RULE_PATH_BENEATH),
-            ctypes.byref(rule),
-            ctypes.c_uint32(0),
-        )
+        try:
+            checked_syscall(
+                SYS_LANDLOCK_ADD_RULE,
+                ctypes.c_int(ruleset_fd),
+                ctypes.c_int(LANDLOCK_RULE_PATH_BENEATH),
+                ctypes.byref(rule),
+                ctypes.c_uint32(0),
+            )
+        except OSError as error:
+            raise ContainmentStageError(
+                "landlock_add_rule",
+                error,
+                SYS_LANDLOCK_ADD_RULE,
+            ) from error
     finally:
         os.close(path_fd)
 
@@ -516,16 +551,28 @@ def canonical_writable_roots(writable_roots):
 def restrict_filesystem_writes(canonical_roots):
     abi = landlock_abi()
     if abi is None:
-        return
+        return "unavailable"
     if abi < 3:
-        raise RuntimeError("Landlock ABI 3 or newer is required")
+        error = RuntimeError("Landlock ABI 3 or newer is required")
+        raise ContainmentStageError(
+            "landlock_capability_probe",
+            error,
+            SYS_LANDLOCK_CREATE_RULESET,
+        ) from error
     ruleset = LandlockRulesetAttr(handled_access_fs=LANDLOCK_WRITE_ACCESS)
-    ruleset_fd = checked_syscall(
-        SYS_LANDLOCK_CREATE_RULESET,
-        ctypes.byref(ruleset),
-        ctypes.sizeof(ruleset),
-        ctypes.c_uint32(0),
-    )
+    try:
+        ruleset_fd = checked_syscall(
+            SYS_LANDLOCK_CREATE_RULESET,
+            ctypes.byref(ruleset),
+            ctypes.sizeof(ruleset),
+            ctypes.c_uint32(0),
+        )
+    except OSError as error:
+        raise ContainmentStageError(
+            "landlock_ruleset_creation",
+            error,
+            SYS_LANDLOCK_CREATE_RULESET,
+        ) from error
     try:
         for root in canonical_roots:
             add_writable_path(ruleset_fd, root, LANDLOCK_WRITE_ACCESS)
@@ -538,14 +585,23 @@ def restrict_filesystem_writes(canonical_roots):
                 )
         if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
             error_number = ctypes.get_errno()
-            raise OSError(error_number, os.strerror(error_number))
-        checked_syscall(
-            SYS_LANDLOCK_RESTRICT_SELF,
-            ctypes.c_int(ruleset_fd),
-            ctypes.c_uint32(0),
-        )
+            error = OSError(error_number, os.strerror(error_number))
+            raise ContainmentStageError("landlock_restrict_self", error) from error
+        try:
+            checked_syscall(
+                SYS_LANDLOCK_RESTRICT_SELF,
+                ctypes.c_int(ruleset_fd),
+                ctypes.c_uint32(0),
+            )
+        except OSError as error:
+            raise ContainmentStageError(
+                "landlock_restrict_self",
+                error,
+                SYS_LANDLOCK_RESTRICT_SELF,
+            ) from error
     finally:
         os.close(ruleset_fd)
+    return "abi-" + str(abi)
 
 
 def drop_capabilities():
@@ -581,6 +637,25 @@ def write_protocol(payload):
     while encoded:
         written = os.write(PROTOCOL_FD, encoded)
         encoded = encoded[written:]
+
+
+def containment_error_payload(error):
+    if isinstance(error, ContainmentStageError):
+        return {
+            "stage": error.stage,
+            "syscall": error.syscall_number,
+            "errno": error.error_number,
+        }
+    return {"stage": "unknown", "syscall": None, "errno": getattr(error, "errno", None)}
+
+
+def run_stage(stage, operation):
+    try:
+        return operation()
+    except ContainmentStageError:
+        raise
+    except BaseException as error:
+        raise ContainmentStageError(stage, error) from error
 
 
 def process_rows():
@@ -670,11 +745,14 @@ def terminate_and_reap_descendants(primary_pid, background_pids):
 
 
 def main():
-    if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
-        error_number = ctypes.get_errno()
-        raise OSError(error_number, os.strerror(error_number))
-    signal.signal(signal.SIGTERM, request_termination)
-    signal.signal(signal.SIGUSR1, request_termination)
+    def configure_namespace_init():
+        if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+            error_number = ctypes.get_errno()
+            raise OSError(error_number, os.strerror(error_number))
+        signal.signal(signal.SIGTERM, request_termination)
+        signal.signal(signal.SIGUSR1, request_termination)
+
+    run_stage("namespace_setup", configure_namespace_init)
     writable_roots = json.loads(sys.argv[1])
     if not isinstance(writable_roots, list) or not all(
         isinstance(root, str) and root for root in writable_roots
@@ -692,15 +770,18 @@ def main():
     canonical_roots = canonical_writable_roots(writable_roots)
     original_cwd = os.path.realpath(os.getcwd())
     if isolate_network:
-        bring_up_loopback()
-    isolate_filesystem(
-        canonical_roots,
-        sandbox_root,
-        original_cwd,
-        command,
+        run_stage("namespace_setup", bring_up_loopback)
+    mount_readonly = run_stage(
+        "filesystem_isolation",
+        lambda: isolate_filesystem(
+            canonical_roots,
+            sandbox_root,
+            original_cwd,
+            command,
+        ),
     )
-    restrict_filesystem_writes(canonical_roots)
-    drop_capabilities()
+    landlock = restrict_filesystem_writes(canonical_roots)
+    run_stage("capability_drop", drop_capabilities)
     child = subprocess.Popen(command, close_fds=True)
     background_pids = set()
     while True:
@@ -715,17 +796,26 @@ def main():
     write_protocol(
         {
             "backgroundProcesses": background_processes,
+            "capabilitySummary": {
+                "mount_readonly": mount_readonly,
+                "landlock": landlock,
+            },
             "signal": signal.Signals(-return_code).name if return_code < 0 else None,
             "status": return_code if return_code >= 0 else None,
         }
     )
 
 
-try:
-    main()
-except BaseException as error:
+def run_entrypoint():
     try:
-        write_protocol({"containmentError": str(error)})
-    finally:
-        sys.exit(125)
+        main()
+    except BaseException as error:
+        try:
+            write_protocol({"containmentError": containment_error_payload(error)})
+        finally:
+            sys.exit(125)
+
+
+if __name__ == "__main__":
+    run_entrypoint()
 `;

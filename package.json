@@ -26,6 +26,7 @@
     "commit-reports": "node dist/commit-sweeper.js reports",
     "local-review": "node dist/commit-sweeper.js local-review",
     "repair:validate": "node dist/repair/validate-all.js",
+    "repair:containment-smoke": "node dist/repair/containment-preflight.js",
     "repair:validate-job": "node dist/repair/validate-job.js",
     "repair:render": "node dist/repair/render-prompt.js",
     "repair:create-job": "node dist/repair/create-job.js",
