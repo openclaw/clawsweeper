@@ -29,7 +29,7 @@ on:
         default: blacksmith-4vcpu-ubuntu-2404
         type: string
       execution_runner:
-        description: "Linux runner label for fix/apply execution work with delegated user/mount/network namespaces, recursive mount hardening, and Landlock ABI 3+"
+        description: "Linux runner label for fix/apply execution work with delegated namespaces, recursive mount hardening, and optional Landlock defense in depth"
         required: true
         default: blacksmith-16vcpu-ubuntu-2404
         type: string
@@ -569,106 +569,7 @@ jobs:
 
       - name: Verify Linux validation containment
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${RUNNER_OS:-}" != "Linux" ]; then
-            echo "Repair target execution requires Linux validation containment." >&2
-            exit 1
-          fi
-          for tool in /usr/bin/unshare /usr/bin/python3; do
-            if [ ! -x "$tool" ]; then
-              echo "Repair target execution requires $tool." >&2
-              exit 1
-            fi
-          done
-
-          # The compiled worker owns the enforced /usr/bin/unshare sequence:
-          # --map-root-user, --kill-child=SIGKILL, recursive mount hardening,
-          # loopback setup, ctypes.c_long(444), the "Landlock ABI 3 or newer is required"
-          # fail-closed check, and capability drop.
-          probe_root="$(mktemp -d "$RUNNER_TEMP/clawsweeper-containment-preflight.XXXXXX")"
-          host_secret="${probe_root}.host-secret"
-          trap 'rm -rf "$probe_root" "$host_secret"' EXIT
-          mkdir -p "$probe_root/work" "$probe_root/profile"
-          printf 'host-only\n' > "$host_secret"
-          CONTAINMENT_PROBE_ROOT="$probe_root" \
-          CONTAINMENT_HOST_SECRET="$host_secret" \
-            node --input-type=module <<'NODE'
-          import { spawnSync } from "node:child_process";
-          import path from "node:path";
-
-          const root = process.env.CONTAINMENT_PROBE_ROOT;
-          const hostSecret = process.env.CONTAINMENT_HOST_SECRET;
-          if (!root || !hostSecret) throw new Error("containment preflight paths are missing");
-          const work = path.join(root, "work");
-          const profile = path.join(root, "profile");
-          // The child runs from the isolated work directory, so resolve the trusted worker first.
-          const workerPath = path.resolve("dist/repair/contained-command-worker.js");
-          const probe = [
-            "import os, socket, sys",
-            "host_secret, work, profile = sys.argv[1:]",
-            "assert not os.path.exists(host_secret), 'host filesystem remained visible'",
-            "assert os.listdir('/run') == [], 'host /run entries remained visible'",
-            "open(os.path.join(work, 'work-write'), 'w').write('ok')",
-            "open(os.path.join(profile, 'profile-write'), 'w').write('ok')",
-            "try:",
-            "    open('/tmp/escape', 'w').write('unsafe')",
-            "    raise AssertionError('non-writable path accepted a write')",
-            "except OSError:",
-            "    pass",
-            "status = open('/proc/self/status', encoding='ascii').read().splitlines()",
-            "caps = {line.split(':', 1)[0]: int(line.split(':', 1)[1].strip(), 16) for line in status if line.split(':', 1)[0] in {'CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'}}",
-            "assert set(caps) == {'CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'}",
-            "assert not any(caps.values()), 'validation capabilities were not fully dropped'",
-            "with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:",
-            "    listener.bind(('127.0.0.1', 0))",
-            "print('contained')",
-          ].join("\n");
-          const worker = spawnSync(
-            process.execPath,
-            [workerPath],
-            {
-              cwd: work,
-              env: {
-                CI: "true",
-                HOME: profile,
-                LANG: "C.UTF-8",
-                PATH: process.env.PATH ?? "/usr/bin:/bin",
-                TEMP: profile,
-                TMP: profile,
-                TMPDIR: profile,
-              },
-              input: JSON.stringify({
-                args: ["-c", probe, hostSecret, work, profile],
-                command: "/usr/bin/python3",
-                cwd: work,
-                isolateNetwork: true,
-                maxBuffer: 1024 * 1024,
-                timeoutMs: 30_000,
-                writableRoots: [work, profile],
-                windowsVerbatimArguments: false,
-              }),
-              encoding: "utf8",
-              maxBuffer: 2 * 1024 * 1024,
-              timeout: 35_000,
-            },
-          );
-          if (worker.error) throw worker.error;
-          if (worker.status !== 0) {
-            throw new Error(worker.stderr.trim() || `containment worker exited ${worker.status}`);
-          }
-          const result = JSON.parse(worker.stdout);
-          if (
-            result.status !== 0 ||
-            result.signal !== null ||
-            result.error !== undefined ||
-            result.backgroundProcesses !== 0 ||
-            result.stdout !== "contained\n"
-          ) {
-            throw new Error(`containment preflight failed closed: ${JSON.stringify(result)}`);
-          }
-          NODE
+        run: pnpm run repair:containment-smoke
 
       - name: Setup pinned Bun for target validation
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}

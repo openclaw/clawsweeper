@@ -20,21 +20,9 @@ test("repair target containment preflight runs the enforced worker only for fix 
   const executionCondition =
     "steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1'";
   assert.match(preflight, new RegExp(escapeRegExp(`if: \${{ ${executionCondition} }}`)));
-  assert.match(
-    preflight,
-    /const workerPath = path\.resolve\("dist\/repair\/contained-command-worker\.js"\);/,
-  );
-  assert.match(preflight, /\[workerPath\],\s*\{\s*cwd: work,/s);
-  assert.doesNotMatch(preflight, /\["dist\/repair\/contained-command-worker\.js"\]/);
-  assert.match(preflight, /host filesystem remained visible/);
-  assert.match(preflight, /host \/run entries remained visible/);
-  assert.match(preflight, /non-writable path accepted a write/);
-  assert.match(preflight, /validation capabilities were not fully dropped/);
-  assert.match(preflight, /listener\.bind\(\('127\.0\.0\.1', 0\)\)/);
-  assert.match(preflight, /result\.status !== 0/);
-  assert.match(preflight, /result\.backgroundProcesses !== 0/);
+  assert.match(preflight, /run: pnpm run repair:containment-smoke/);
+  assert.doesNotMatch(preflight, /node --input-type=module|spawnSync|CONTAINMENT_PROBE_ROOT/);
   assert.doesNotMatch(preflight, /continue-on-error/);
-  assert.doesNotMatch(preflight, /mount_probe|mount_errno|assert not \(mount_probe/);
 });
 
 test("closure-only apply does not depend on target containment or target tool setup", () => {
@@ -60,7 +48,7 @@ test("privileged execution requires the captured execution gate", () => {
   assert.match(executeJob, /if:.*needs\.cluster\.outputs\.allow_execute == '1'/);
   assert.match(
     workflow,
-    /description: "Linux runner label for fix\/apply execution work with delegated user\/mount\/network namespaces, recursive mount hardening, and Landlock ABI 3\+"/,
+    /description: "Linux runner label for fix\/apply execution work with delegated namespaces, recursive mount hardening, and optional Landlock defense in depth"/,
   );
 });
 

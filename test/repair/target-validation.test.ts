@@ -2161,12 +2161,16 @@ test("repair execution provisions pinned Bun before target validation can invoke
   assert.ok(setupBunIndex < executeFixIndex, "expected Bun setup before repair:execute-fix");
 
   const containmentStep = workflow.slice(containmentIndex, setupBunIndex);
-  assert.match(containmentStep, /\$\{RUNNER_OS:-\}" != "Linux"/);
-  assert.match(containmentStep, /\/usr\/bin\/unshare/);
-  assert.match(containmentStep, /--map-root-user/);
-  assert.match(containmentStep, /--kill-child=SIGKILL/);
-  assert.match(containmentStep, /ctypes\.c_long\(444\)/);
-  assert.match(containmentStep, /Landlock ABI 3 or newer is required/);
+  assert.match(containmentStep, /pnpm run repair:containment-smoke/);
+  const preflight = fs.readFileSync("src/repair/containment-preflight.ts", "utf8");
+  const worker = fs.readFileSync("src/repair/contained-command-worker.ts", "utf8");
+  const runtime = fs.readFileSync("src/repair/process-tree-containment.ts", "utf8");
+  assert.match(preflight, /process\.platform !== "linux"/);
+  assert.match(worker, /command: "\/usr\/bin\/unshare"/);
+  assert.match(worker, /"--map-root-user"/);
+  assert.match(worker, /"--kill-child=SIGKILL"/);
+  assert.match(runtime, /SYS_LANDLOCK_CREATE_RULESET = 444/);
+  assert.match(runtime, /if error\.errno not in \{errno\.ENOSYS, errno\.EOPNOTSUPP\}/);
   const setupBunStep = workflow.slice(setupBunIndex, executeFixIndex);
   assert.match(setupBunStep, /uses: oven-sh\/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6/);
   assert.match(setupBunStep, /bun-version: 1\.3\.14/);

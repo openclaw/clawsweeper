@@ -43,8 +43,8 @@ evidence current as each PR progresses.
 ### PR 1: deterministic policy and one compiled preflight
 
 Status: [PR openclaw/clawsweeper#599](https://github.com/openclaw/clawsweeper/pull/599)
-is open from `agent/containment-preflight`. Implementation and Node 24
-validation are complete, and autoreview completed with no actionable findings.
+merged as `98c8c4bdc613bd452e8c55ccb8bf1ec29907b8fd`. Node 24 validation and
+autoreview completed with no actionable findings before merge.
 
 Combine the code-owned work behind one authoritative containment implementation:
 
@@ -62,7 +62,11 @@ live repair mutations.
 
 ### PR 2: production-runner smoke workflow
 
-Status: pending PR 1.
+Status: ready to publish from `agent/containment-blacksmith-smoke`. Full local
+`pnpm run check` and autoreview pass with no actionable findings. The repository's
+existing Crabbox hydration workflow does not contain a Blacksmith Testbox action,
+so delegated Testbox validation stops before lease allocation; the pull request's
+own two-sample workflow is the authoritative remote Blacksmith proof for this PR.
 
 - run the compiled CLI on `blacksmith-16vcpu-ubuntu-2404` with two independent
   runner samples;
@@ -73,22 +77,25 @@ Status: pending PR 1.
 - fail when containment is skipped or unavailable;
 - do not dispatch repair, push branches, apply results, or close items.
 
+The initial workflow admits pushes to `main`, manual dispatches, and
+same-repository pull requests. Fork pull requests are skipped until the fresh
+ephemeral VM and no-secrets contract has independent evidence.
+
 Before enabling pull-request execution from forks, prove that Blacksmith uses a
 fresh ephemeral VM and exposes no repository or organization secrets. Otherwise
 restrict the workflow to trusted branches or the existing trusted remote
 validation path.
 
-## Evidence-backed test gap
+## Evidence-backed test gaps closed by PR 1
 
-`test/repair/command-runner.test.ts` uses
+`test/repair/command-runner.test.ts` previously used
 `linuxValidationContainmentAvailable()` to gate the real Linux containment
-tests. That helper calls syscall 444 and requires an ABI result of at least 3.
-Consequently, the precise production condition that should exercise the new
-fallback instead skips the entire integration test.
+tests. PR 1 replaced that with a namespace-only availability probe, so the
+unsupported-Landlock mount fallback now executes instead of skipping.
 
-`test/repair/process-tree-containment.test.ts` currently protects the fallback
-boundary with source-text assertions. These are useful drift guards, but they
-do not execute the embedded Python decision path.
+`test/repair/process-tree-containment.test.ts` previously protected the fallback
+boundary only with source-text assertions. PR 1 now imports the authoritative
+embedded runtime and executes its syscall decision path deterministically.
 
 The runtime is also difficult to test and diagnose because the path spans:
 
@@ -97,20 +104,21 @@ The runtime is also difficult to test and diagnose because the path spans:
 3. the embedded Python in `src/repair/process-tree-containment.ts`
 4. host kernel syscalls and provider seccomp policy
 
-The containment protocol reports only an exception string, so both syscall 442
-and syscall 444 surfaced as the same generic `[Errno 38] Function not
-implemented` message.
+The containment protocol previously reported only an exception string, so both
+syscall 442 and syscall 444 surfaced as the same generic `[Errno 38] Function
+not implemented` message. PR 1 replaced that with validated stage, syscall, and
+errno fields.
 
 ## Required work
 
 ### P0: deterministic fallback tests
 
-- [ ] Make the actual embedded Python definitions importable without executing
+- [x] Make the actual embedded Python definitions importable without executing
       `main()`, while preserving the production `python3 -c` entrypoint.
-- [ ] Exercise the real `landlock_abi()` decision logic with an injected or
+- [x] Exercise the real `landlock_abi()` decision logic with an injected or
       monkey-patched syscall adapter; do not duplicate the decision in a
       TypeScript-only model.
-- [ ] Cover this decision table:
+- [x] Cover this decision table:
 
 | Probe/result                                       | Required behavior                     |
 | -------------------------------------------------- | ------------------------------------- |
@@ -121,26 +129,26 @@ implemented` message.
 | probe returns ABI 3 or newer                       | create and apply the Landlock ruleset |
 | ruleset creation, add-rule, or restrict-self fails | fail closed                           |
 
-- [ ] Split namespace availability from Landlock availability in
+- [x] Split namespace availability from Landlock availability in
       `linuxValidationContainmentAvailable()`. When delegated namespaces are
       usable but Landlock is unavailable, run the mount-only containment tests
       instead of skipping them.
-- [ ] Keep assertions that the sandbox exposes only configured writable roots,
+- [x] Keep assertions that the sandbox exposes only configured writable roots,
       hides host paths and `/run`, drops all capabilities, isolates networking,
       and reaps descendant processes.
 
 ### P1: production-equivalent non-mutating smoke check
 
-- [ ] Add a narrowly scoped `containment-smoke` CI job or workflow using the
+- [x] Add a narrowly scoped `containment-smoke` CI job or workflow using the
       same `blacksmith-16vcpu-ubuntu-2404` runner class as repair execution.
-- [ ] Run the compiled containment preflight only. Do not dispatch a repair,
+- [x] Run the compiled containment preflight only. Do not dispatch a repair,
       push target branches, apply results, close items, or use target write
       credentials.
-- [ ] Trigger it only when the containment worker, its tests, or the relevant
+- [x] Trigger it only when the containment worker, its tests, or the relevant
       workflow surface changes.
-- [ ] Consider two independent runner samples because the observed Blacksmith
+- [x] Run two independent runner samples because the observed Blacksmith
       fleet exposed different capabilities for the same ClawSweeper SHA.
-- [ ] In this production-compatible job, treat a skipped containment test as a
+- [x] In this production-compatible job, treat a skipped containment test as a
       failure rather than a green result.
 
 Before enabling this job for fork pull requests, verify that it runs on a fresh
@@ -150,23 +158,23 @@ remote-validation path.
 
 ### P1: actionable containment diagnostics
 
-- [ ] Report the failing containment stage, syscall number, and errno without
+- [x] Report the failing containment stage, syscall number, and errno without
       including local paths, command contents, or secrets.
-- [ ] Distinguish at least `mount_setattr`, legacy remount,
+- [x] Distinguish at least `mount_setattr`, legacy remount,
       `landlock_capability_probe`, ruleset creation, add-rule, restrict-self,
       namespace setup, and capability drop.
-- [ ] Emit a safe capability summary such as `mount_readonly=native|legacy` and
+- [x] Emit a safe capability summary such as `mount_readonly=native|legacy` and
       `landlock=abi-N|unavailable` from the smoke preflight.
-- [ ] Preserve fail-closed behavior for every mandatory containment stage.
+- [x] Preserve fail-closed behavior for every mandatory containment stage.
 
 ### P2: reduce workflow/runtime duplication
 
-- [ ] Move the inline Node preflight in
+- [x] Move the inline Node preflight in
       `.github/workflows/repair-cluster-worker.yml` behind one compiled,
       locally callable CLI so workflow and local tests execute the same probe.
-- [ ] Keep workflow YAML responsible for orchestration and gates, not the
+- [x] Keep workflow YAML responsible for orchestration and gates, not the
       containment implementation.
-- [ ] Preserve one authoritative copy of the Python runtime. Do not create a
+- [x] Preserve one authoritative copy of the Python runtime. Do not create a
       separate test-only implementation that can drift from production.
 
 ## Capability policy to preserve

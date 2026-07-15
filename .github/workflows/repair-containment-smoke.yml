@@ -1,0 +1,78 @@
+name: repair containment smoke
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/actions/setup-pnpm/**"
+      - ".github/workflows/repair-cluster-worker.yml"
+      - ".github/workflows/repair-containment-smoke.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "src/command.ts"
+      - "src/repair/command-runner.ts"
+      - "src/repair/contained-command-sandbox.ts"
+      - "src/repair/contained-command-worker.ts"
+      - "src/repair/containment-preflight.ts"
+      - "src/repair/process-tree-containment.ts"
+      - "test/repair/command-runner.test.ts"
+      - "test/repair/containment-preflight.test.ts"
+      - "test/repair/process-tree-containment.test.ts"
+      - "test/repair/repair-cluster-worker-containment.test.ts"
+      - "test/repair/repair-containment-smoke-workflow.test.ts"
+      - "test/repair/target-validation.test.ts"
+      - "tsconfig.repair.json"
+  pull_request:
+    paths:
+      - ".github/actions/setup-pnpm/**"
+      - ".github/workflows/repair-cluster-worker.yml"
+      - ".github/workflows/repair-containment-smoke.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "src/command.ts"
+      - "src/repair/command-runner.ts"
+      - "src/repair/contained-command-sandbox.ts"
+      - "src/repair/contained-command-worker.ts"
+      - "src/repair/containment-preflight.ts"
+      - "src/repair/process-tree-containment.ts"
+      - "test/repair/command-runner.test.ts"
+      - "test/repair/containment-preflight.test.ts"
+      - "test/repair/process-tree-containment.test.ts"
+      - "test/repair/repair-cluster-worker-containment.test.ts"
+      - "test/repair/repair-containment-smoke-workflow.test.ts"
+      - "test/repair/target-validation.test.ts"
+      - "tsconfig.repair.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repair-containment-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  containment-smoke:
+    name: containment smoke (sample ${{ matrix.sample }})
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        sample: [1, 2]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:repair
+
+      - name: Run compiled containment preflight
+        run: pnpm run repair:containment-smoke
