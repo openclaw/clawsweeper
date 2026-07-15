@@ -76,32 +76,39 @@ test("direct repair requeues forward a stable dispatch receipt and publish it", 
   assert.match(workflow, /--max-requeue-depth 1/);
 });
 
-test("exact review publishes status receipts created after its first ledger publication", () => {
+test("exact review publisher includes command status receipts after the status mutation", () => {
   const setupAction = readText(".github/actions/setup-action-ledger/action.yml");
   const source = readText("src/repair/update-command-status.ts");
   const workflow = readText(".github/workflows/sweep.yml");
-  const sourceDriftStatus = workflow.indexOf("- name: Mark source-drift re-review queued");
-  const lateFinalize = workflow.indexOf("- name: Finalize late command status action ledger");
-  const latePublish = workflow.indexOf("- name: Publish late command status action ledger");
-  const targetFanout = workflow.indexOf("\n  target-fanout:", latePublish);
-  const finalizeStep = workflow.slice(lateFinalize, latePublish);
-  const publishStep = workflow.slice(latePublish, targetFanout);
+  const publisherJob = workflow.indexOf("\n  event-review-publish:");
+  const statusMutation = workflow.indexOf("- name: Mark re-review complete", publisherJob);
+  const ledgerPublish = workflow.indexOf(
+    "- name: Publish exact review action ledger",
+    publisherJob,
+  );
+  const nextStep = workflow.indexOf(
+    "- name: Release unsuccessful publisher-owned review lease",
+    ledgerPublish,
+  );
+  const publishStep = workflow.slice(ledgerPublish, nextStep);
 
-  assert.ok(sourceDriftStatus >= 0);
-  assert.ok(lateFinalize > sourceDriftStatus);
-  assert.ok(latePublish > lateFinalize);
-  assert.ok(targetFanout > latePublish);
+  assert.ok(publisherJob >= 0);
+  assert.ok(statusMutation > publisherJob);
+  assert.ok(ledgerPublish > statusMutation);
+  assert.ok(nextStep > ledgerPublish);
   assert.match(setupAction, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT=\$output_root/);
   assert.match(source, /await flushCommandActionEvents\(\)/);
   assert.match(
     publishStep,
-    /if: \$\{\{ always\(\) && steps\.setup-state\.outcome == 'success' && steps\.setup-pnpm\.outcome == 'success' && steps\.publish-event-result\.outputs\.requeue_latest == 'true' && steps\.complete-exact-review-queue\.outcome == 'success' \}\}/,
+    /if: \$\{\{ always\(\) && steps\.setup-state\.outcome == 'success' \}\}/,
   );
-  assertCommandFinalizerUsesCanonicalRoot(finalizeStep);
-  assertCommandPublisherUsesCanonicalRoot(publishStep);
-  assert.match(finalizeStep, /--lane late-command-status/);
-  assert.match(publishStep, /--lane late-command-status/);
-  assert.match(publishStep, /--message "chore: append command status action ledger"/);
+  assert.match(publishStep, /continue-on-error: true/);
+  assert.match(publishStep, /source_root="\.artifacts\/exact-review-bundle\/action-ledger"/);
+  assert.match(publishStep, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:-/);
+  assert.match(publishStep, /publisher_ledger_root\/ledger/);
+  assert.match(publishStep, /--expected-producer-job "\$GITHUB_JOB"/);
+  assert.match(publishStep, /sort -u -o "\$event_paths_file" "\$event_paths_file"/);
+  assert.match(publishStep, /--message "chore: append exact review action ledger"/);
 });
 
 function assertCommandFinalizerUsesCanonicalRoot(step: string): void {

@@ -87,6 +87,32 @@ test("explicit action ledger finalization keeps flush failure strict", async () 
   );
 });
 
+test("action event import rejects an invalid expected producer run ID", async () => {
+  await assert.rejects(
+    main([
+      "publish-action-events",
+      "--expected-producer-job",
+      "event-review-apply",
+      "--expected-producer-run-id",
+      "not-a-run",
+    ]),
+    /expected-producer-run-id must be a numeric workflow run ID/,
+  );
+});
+
+test("action event import rejects an invalid expected producer SHA", async () => {
+  await assert.rejects(
+    main([
+      "publish-action-events",
+      "--expected-producer-job",
+      "event-review-apply",
+      "--expected-producer-sha",
+      "not-a-sha",
+    ]),
+    /expected-producer-sha must be a lowercase commit SHA/,
+  );
+});
+
 test("review and apply outcome classifiers cover terminal and resumable states", () => {
   assert.deepEqual(actionLedgerFailureDisposition(new Error("worker timed out after 30s")), {
     status: "failed",
@@ -759,8 +785,7 @@ test("sweep publishes complete immutable shards for every review and apply produ
     "Publish selected review comment action ledger",
     "Publish failed-review retry action ledger",
     "Finalize exact event action ledger",
-    "Publish exact event action ledger",
-    "Publish late command status action ledger",
+    "Publish exact review action ledger",
     "Finalize apply proof action ledger",
     "Publish apply proof action events",
     "Publish apply action events",

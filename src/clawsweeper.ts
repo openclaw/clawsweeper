@@ -30406,15 +30406,32 @@ function publishActionEventsCommand(args: Args): void {
   if (!expectedProducerJob) {
     throw new UserFacingCommandError("--expected-producer-job is required");
   }
+  const expectedProducerRunAttempt = optionalNumberArg(args.expected_producer_run_attempt);
+  if (
+    expectedProducerRunAttempt !== undefined &&
+    (!Number.isInteger(expectedProducerRunAttempt) || expectedProducerRunAttempt < 1)
+  ) {
+    throw new UserFacingCommandError("--expected-producer-run-attempt must be a positive integer");
+  }
+  const expectedProducerRunId = stringArg(args.expected_producer_run_id, "");
+  if (expectedProducerRunId && !/^\d{1,30}$/.test(expectedProducerRunId)) {
+    throw new UserFacingCommandError(
+      "--expected-producer-run-id must be a numeric workflow run ID",
+    );
+  }
+  const expectedProducerSha = stringArg(args.expected_producer_sha, "");
+  if (expectedProducerSha && !/^[0-9a-f]{40}$/.test(expectedProducerSha)) {
+    throw new UserFacingCommandError("--expected-producer-sha must be a lowercase commit SHA");
+  }
   const currentProducer = workflowActionProducer("action_event_publisher");
   const result = importActionEventShards(sourceRoot, stateRoot, {
     expectedProducer: {
       repository: currentProducer.repository,
-      sha: currentProducer.sha,
+      sha: expectedProducerSha || currentProducer.sha,
       workflow: currentProducer.workflow,
       job: expectedProducerJob,
-      runId: currentProducer.runId,
-      runAttempt: currentProducer.runAttempt,
+      runId: expectedProducerRunId || currentProducer.runId,
+      runAttempt: expectedProducerRunAttempt ?? currentProducer.runAttempt,
     },
   });
   console.log(JSON.stringify(result, null, 2));

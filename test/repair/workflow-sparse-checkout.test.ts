@@ -82,7 +82,7 @@ test("repair comment router sparse checkout includes action ledger runtime", () 
   }
 });
 
-test("sweep workflow preserves manual target branches and hydrates exact branches live", () => {
+test("sweep workflow preserves one claimed target branch through exact review", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const dispatchTargetBranchResolver =
     /target_branch="\$\{\{ github\.event_name == 'workflow_dispatch' && github\.event\.inputs\.target_branch \|\| github\.event\.client_payload\.target_branch \|\| 'main' \}\}"/g;
@@ -97,8 +97,9 @@ test("sweep workflow preserves manual target branches and hydrates exact branche
   assert.equal([...workflow.matchAll(recoveryTargetBranch)].length, 1);
   assert.match(
     workflow,
-    /target_branch="\$\{RECOVERY_TARGET_BRANCH:-\$\(gh api "repos\/\$TARGET_REPO" --jq \.default_branch\)\}"/,
+    /CLAIM_TARGET_BRANCH: \$\{\{ fromJSON\(steps\.claim-exact-review-queue\.outputs\.decision\)\.targetBranch \}\}/,
   );
+  assert.match(workflow, /target_branch="\$CLAIM_TARGET_BRANCH"/);
   assert.match(workflow, /target_branch="\$\{\{ steps\.live-item\.outputs\.target_branch \}\}"/);
 });
 

@@ -2282,9 +2282,17 @@ test("exact-review claims advance generations only for newer run attempts", asyn
   assert.equal(firstPayload.claim_generation, 1);
   assert.equal(firstPayload.lease_revision, 1);
 
+  const beforeReplay = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { leaseExpiresAt: number }>;
+  };
+  beforeReplay.items["openclaw/openclaw#621"].leaseExpiresAt = Date.now() + 1_000;
+  await storage.put("exact-review-queue", beforeReplay);
+
   const replay = await claim(1);
   assert.equal(replay.status, 200);
   assert.deepEqual(await replay.json(), firstPayload);
+  const afterReplay = (await storage.get("exact-review-queue")) as typeof beforeReplay;
+  assert.ok(afterReplay.items["openclaw/openclaw#621"].leaseExpiresAt - Date.now() > 120 * 60_000);
 
   const nextAttempt = await claim(2);
   assert.equal(nextAttempt.status, 200);
@@ -2554,6 +2562,182 @@ test("exact-review queue can use the global capacity for one target", async () =
         ),
       ).size,
       1,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("exact-review queue keeps publication artifacts durable and admits one publisher", async () => {
+  const originalFetch = globalThis.fetch;
+  const storage = new MemoryDurableStorage();
+  const dispatched: Record<string, unknown>[] = [];
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml")
+      return jsonResponse({ state: "active" });
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation")
+      return jsonResponse({ id: 999 });
+    if (url.pathname === "/app/installations/999/access_tokens")
+      return jsonResponse(Object.fromEntries([["token", "t"]]));
+    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
+      dispatched.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "5",
+        EXACT_REVIEW_TARGET_MAX_CONCURRENT: "5",
+      },
+    );
+    await queue.fetch(
+      buildExactReviewQueueRequest(
+        "publisher:100:1",
+        801,
+        "exact_review_artifact_publish",
+        "issue",
+        "openclaw/gogcli",
+        exactReviewPublicationOverrides(801, "100"),
+      ),
+    );
+    await queue.fetch(
+      buildExactReviewQueueRequest(
+        "publisher:101:1",
+        802,
+        "exact_review_artifact_publish",
+        "issue",
+        "openclaw/gogcli",
+        exactReviewPublicationOverrides(802, "101"),
+      ),
+    );
+    await queue.fetch(
+      buildExactReviewQueueRequest(
+        "publisher:102:1",
+        803,
+        "exact_review_artifact_publish",
+        "issue",
+        "openclaw/gogcli",
+        exactReviewPublicationOverrides(803, "102"),
+      ),
+    );
+    await queue.fetch(
+      buildExactReviewQueueRequest(
+        "publisher:103:1",
+        804,
+        "exact_review_artifact_publish",
+        "issue",
+        "openclaw/gogcli",
+        exactReviewPublicationOverrides(804, "103", "failed_review_shard_recovery"),
+      ),
+    );
+    await queue.fetch(buildExactReviewQueueRequest("ordinary-801", 801, "edited"));
+    await queue.fetch(buildExactReviewQueueRequest("ordinary-803", 803, "edited"));
+
+    const state = (await storage.get("exact-review-queue")) as {
+      items: Record<
+        string,
+        {
+          createdAt: number;
+          decision: Record<string, unknown>;
+          leaseDecision?: Record<string, unknown>;
+          leaseExpiresAt?: number;
+          leaseId?: string;
+          leaseRevision?: number;
+          nextAttemptAt: number;
+          revision: number;
+          state: string;
+        }
+      >;
+    };
+    assert.deepEqual(Object.keys(state.items).sort(), [
+      "openclaw/gogcli#801",
+      "openclaw/gogcli#801@publish:100:1",
+      "openclaw/gogcli#802@publish:101:1",
+      "openclaw/gogcli#803",
+      "openclaw/gogcli#803@publish:102:1",
+      "openclaw/gogcli#804@publish:103:1",
+    ]);
+    state.items["openclaw/gogcli#802@publish:101:1"].createdAt =
+      Date.now() - 81 * 24 * 60 * 60 * 1000;
+    state.items["openclaw/gogcli#802@publish:101:1"].nextAttemptAt = Date.now() - 1;
+    state.items["openclaw/gogcli#803@publish:102:1"].createdAt =
+      Date.now() - 81 * 24 * 60 * 60 * 1000;
+    state.items["openclaw/gogcli#803@publish:102:1"].nextAttemptAt = Date.now() - 1;
+    state.items["openclaw/gogcli#804@publish:103:1"].createdAt =
+      Date.now() - 81 * 24 * 60 * 60 * 1000;
+    state.items["openclaw/gogcli#804@publish:103:1"].nextAttemptAt = Date.now() - 1;
+    const activeFreshReview = state.items["openclaw/gogcli#803"];
+    activeFreshReview.state = "leased";
+    activeFreshReview.decision = {
+      ...activeFreshReview.decision,
+      additionalPrompt: "newer maintainer context",
+    };
+    activeFreshReview.revision = 4;
+    activeFreshReview.leaseId = "lease-fresh-803";
+    activeFreshReview.leaseRevision = 4;
+    activeFreshReview.leaseDecision = { ...activeFreshReview.decision };
+    activeFreshReview.leaseExpiresAt = Date.now() + 60_000;
+    const activeFreshReviewBeforeExpiry = structuredClone(activeFreshReview);
+    await storage.put("exact-review-queue", state);
+
+    await queue.alarm();
+    const sourceActions = dispatched.map((payload) =>
+      String((payload.client_payload as Record<string, unknown>).source_action),
+    );
+    assert.equal(
+      sourceActions.filter((action) => action === "exact_review_artifact_publish").length,
+      1,
+    );
+    assert.equal(sourceActions.filter((action) => action === "edited").length, 1);
+    assert.equal(
+      sourceActions.filter((action) => action === "artifact_retention_recovery").length,
+      1,
+    );
+    assert.equal(
+      sourceActions.filter((action) => action === "failed_review_shard_recovery").length,
+      1,
+    );
+    assert.equal(
+      dispatched.some(
+        (payload) =>
+          Number((payload.client_payload as Record<string, unknown>).item_number) === 803,
+      ),
+      false,
+    );
+    const afterExpiry = (await storage.get("exact-review-queue")) as typeof state;
+    assert.deepEqual(afterExpiry.items["openclaw/gogcli#803"], activeFreshReviewBeforeExpiry);
+    assert.equal(afterExpiry.items["openclaw/gogcli#803@publish:102:1"], undefined);
+    const reservedPublisher = afterExpiry.items["openclaw/gogcli#801@publish:100:1"];
+    assert.equal(reservedPublisher.state, "dispatching");
+    assert.ok((reservedPublisher.leaseExpiresAt ?? 0) - Date.now() > 6 * 24 * 60 * 60_000);
+    const publicationPayload = dispatched.find(
+      (payload) =>
+        (payload.client_payload as Record<string, unknown>).source_action ===
+        "exact_review_artifact_publish",
+    )?.client_payload as Record<string, unknown>;
+    assert.match(
+      String((publicationPayload.queue_claim as Record<string, unknown>).item_key),
+      /@publish:/,
+    );
+    assert.ok(
+      (
+        (publicationPayload.review_options as Record<string, unknown>).publication as Record<
+          string,
+          unknown
+        >
+      ).producerDecision,
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -7982,6 +8166,39 @@ function buildExactReviewQueueRequest(
       },
     }),
   });
+}
+
+function exactReviewPublicationOverrides(
+  itemNumber: number,
+  producerRunId: string,
+  producerSourceAction = "opened",
+) {
+  const producerDecision = {
+    targetRepo: "openclaw/gogcli",
+    targetBranch: "main",
+    itemNumber,
+    itemKind: "issue",
+    sourceEvent: "issues",
+    sourceAction: producerSourceAction,
+    supersedesInProgress: false,
+  };
+  return {
+    publication: {
+      artifactName: `exact-review-${producerRunId}-1`,
+      producerRunId,
+      producerRunAttempt: 1,
+      sourceSha: "a".repeat(40),
+      itemKey: `openclaw/gogcli#${itemNumber}`,
+      protocolVersion: 2,
+      leaseRevision: 1,
+      claimGeneration: 1,
+      liveProceeded: true,
+      liveTerminalNoop: false,
+      liveTerminalMissing: false,
+      liveGuardedOpen: false,
+      producerDecision,
+    },
+  };
 }
 
 function leasedExactReviewQueueItem(itemNumber: number, runId: string, runAttempt = 1) {

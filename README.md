@@ -425,19 +425,31 @@ retries, and inconsistent records. Its cycle estimate covers work actionable in
 the current scheduler window rather than presenting every probe as immediately
 closable.
 
-Exact event runs skip the bulk planner, shard matrix, artifact upload, and
-separate publish job. They still use the same review and apply code paths, but
-only for the selected item number and only with immediate-safe reasons enabled
-by default: `implemented_on_main`, `duplicate_or_superseded`, and
-`low_signal_unmergeable_pr`.
-Deterministic terminal and remain-open outcomes complete in that exact run.
-Ordinary synced verdicts publish their exact durable comment immediately, then
-queue an executing target-wide comment-router scan. Target-wide serialization
-coalesces concurrent handoffs without losing older durable verdicts, while the
-review and publication work remains parallel. Direct exact-event viable-issue
+Exact event runs skip the bulk planner and shard matrix. The read-only reviewer
+handles only the selected item, uploads a hash-bound GitHub Actions artifact,
+enqueues a separate durable publication lease, and then releases its review
+lease without checking out or pushing the state repository. The queue retries
+publication independently, so a cancelled publisher does not rerun Codex. A
+globally serialized publisher validates that artifact's workflow run, queue
+tuple, target, decision digest, file inventory, sizes, and SHA-256 hashes before
+it receives write tokens. Publication leases reserve the global publisher
+lane's maximum queue wait; terminal-run reconciliation releases dead dispatches
+early. The publisher then uses the same review and apply paths with only the
+immediate-safe reasons enabled by default:
+`implemented_on_main`, `duplicate_or_superseded`, and
+`low_signal_unmergeable_pr`. Artifacts remain available for 90 days. A
+publication that still cannot finish after 80 days expires its artifact handoff
+and queues one fresh exact review, avoiding an unrecoverable missing-artifact
+loop while leaving a ten-day retention margin.
+
+Deterministic terminal and remain-open outcomes flow through the same publisher.
+Ordinary synced verdicts publish their exact durable comment, then queue an
+executing target-wide comment-router scan. Exact and batch review publishers
+share one state-publisher concurrency lane, so review generation stays parallel
+while Git-backed publication is serialized. Direct exact-event viable-issue
 implementation dispatch stays disabled; the bounded broad publish/backfill lane
-owns that separately revalidated intake. The exact run does not claim an atomic
-state-publish-and-route boundary.
+owns that separately revalidated intake. Publication still does not claim an
+atomic state-publish-and-route boundary.
 `stale_insufficient_info` issue reports and `mostly_implemented_on_main` PR
 reports are never applied to young items; apply requires those reports to be at
 least 60 days old unless a manual run explicitly changes the threshold. A stale
