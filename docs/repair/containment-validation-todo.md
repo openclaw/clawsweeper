@@ -42,9 +42,9 @@ evidence current as each PR progresses.
 
 ### PR 1: deterministic policy and one compiled preflight
 
-Status: implementation and Node 24 validation complete on
-`agent/containment-preflight`. Autoreview completed with no actionable findings;
-publication is pending.
+Status: [PR openclaw/clawsweeper#599](https://github.com/openclaw/clawsweeper/pull/599)
+is open from `agent/containment-preflight`. Implementation and Node 24
+validation are complete, and autoreview completed with no actionable findings.
 
 Combine the code-owned work behind one authoritative containment implementation:
 
