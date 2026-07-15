@@ -603,6 +603,8 @@ jobs:
           if (!root || !hostSecret) throw new Error("containment preflight paths are missing");
           const work = path.join(root, "work");
           const profile = path.join(root, "profile");
+          // The child runs from the isolated work directory, so resolve the trusted worker first.
+          const workerPath = path.resolve("dist/repair/contained-command-worker.js");
           const probe = [
             "import os, socket, sys",
             "host_secret, work, profile = sys.argv[1:]",
@@ -625,7 +627,7 @@ jobs:
           ].join("\n");
           const worker = spawnSync(
             process.execPath,
-            ["dist/repair/contained-command-worker.js"],
+            [workerPath],
             {
               cwd: work,
               env: {

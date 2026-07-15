@@ -20,7 +20,12 @@ test("repair target containment preflight runs the enforced worker only for fix 
   const executionCondition =
     "steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1'";
   assert.match(preflight, new RegExp(escapeRegExp(`if: \${{ ${executionCondition} }}`)));
-  assert.match(preflight, /dist\/repair\/contained-command-worker\.js/);
+  assert.match(
+    preflight,
+    /const workerPath = path\.resolve\("dist\/repair\/contained-command-worker\.js"\);/,
+  );
+  assert.match(preflight, /\[workerPath\],\s*\{\s*cwd: work,/s);
+  assert.doesNotMatch(preflight, /\["dist\/repair\/contained-command-worker\.js"\]/);
   assert.match(preflight, /host filesystem remained visible/);
   assert.match(preflight, /host \/run entries remained visible/);
   assert.match(preflight, /non-writable path accepted a write/);
