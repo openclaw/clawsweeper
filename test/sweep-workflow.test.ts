@@ -555,6 +555,44 @@ test("exact event workflow binds all work to the canonical queue claim", () => {
   assert.match(claimedWork, /claim_generation: claimGeneration/);
 });
 
+test("exact-review lease competition skips only known conflicts and gates both owners", () => {
+  type Step = { name?: string; uses?: string; if?: string; run?: string };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: Step[] }>;
+  };
+
+  for (const [jobName, claimId] of [
+    ["event-review-apply", "claim-exact-review-queue"],
+    ["event-review-publish", "publication-context"],
+  ]) {
+    const steps = workflow.jobs[jobName]!.steps;
+    const claim = steps[0]!;
+    const claimRun = claim.run ?? "";
+    const gate = `steps.${claimId}.outputs.claimed == 'true'`;
+
+    assert.match(claimRun, /printf 'claimed=false\\ndecision=\{\}\\n'/, jobName);
+    assert.match(claimRun, /--write-out '%\{http_code\}'/, jobName);
+    assert.match(claimRun, /if \[ "\$status" = "409" \]/, jobName);
+    for (const reason of [
+      "lease_not_active",
+      "lease_already_claimed",
+      "lease_decision_unavailable",
+      "stale_run_attempt",
+    ]) {
+      assert.match(claimRun, new RegExp(`"${reason}"`), `${jobName}: ${reason}`);
+    }
+    assert.match(claimRun, /if \(!safeConflicts\.has\(response\.error\)\) process\.exit\(1\)/);
+    assert.match(claimRun, /if \[ "\$status" != "200" \]/, jobName);
+    assert.match(claimRun, /if \[\[ "\$status" != 5\* \]\]/, jobName);
+    assert.match(claimRun, /returned an invalid success payload/, jobName);
+    assert.doesNotMatch(claimRun, /curl --fail/, jobName);
+
+    for (const step of steps.slice(1)) {
+      assert.match(step.if ?? "", new RegExp(gate.replaceAll(".", "\\.")), step.name ?? step.uses);
+    }
+  }
+});
+
 test("exact event workflow keeps both queue protocol versions live during rolling deploys", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const eventStart = workflow.indexOf("\n  event-review-apply:");

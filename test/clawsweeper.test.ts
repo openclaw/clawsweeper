@@ -2242,7 +2242,8 @@ test("sweep workflow executes only durable queue leases without runner-side admi
     /PRIMARY_OUTCOME: \$\{\{ steps\.exact-review-generation-result\.outputs\.outcome \|\| 'failure' \}\}/,
   );
   assert.doesNotMatch(completeLeaseStep, /JOB_STATUS:/);
-  assert.match(completeLeaseStep, /if: \$\{\{ always\(\) \}\}/);
+  assert.match(completeLeaseStep, /if: \$\{\{[^\n]*always\(\)[^\n]*\}\}/);
+  assert.match(completeLeaseStep, /steps\.claim-exact-review-queue\.outputs\.claimed == 'true'/);
   assert.match(completeLeaseStep, /continue-on-error: true/);
   assert.match(completeLeaseStep, /RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
   assert.match(

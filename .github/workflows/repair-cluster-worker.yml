@@ -29,7 +29,7 @@ on:
         default: blacksmith-4vcpu-ubuntu-2404
         type: string
       execution_runner:
-        description: "Linux runner label for fix/apply execution work with delegated user/mount/network namespaces, mount_setattr, and Landlock ABI 3+"
+        description: "Linux runner label for fix/apply execution work with delegated user/mount/network namespaces, recursive mount hardening, and Landlock ABI 3+"
         required: true
         default: blacksmith-16vcpu-ubuntu-2404
         type: string
@@ -584,7 +584,7 @@ jobs:
           done
 
           # The compiled worker owns the enforced /usr/bin/unshare sequence:
-          # --map-root-user, --kill-child=SIGKILL, recursive mount_setattr,
+          # --map-root-user, --kill-child=SIGKILL, recursive mount hardening,
           # loopback setup, ctypes.c_long(444), the "Landlock ABI 3 or newer is required"
           # fail-closed check, and capability drop.
           probe_root="$(mktemp -d "$RUNNER_TEMP/clawsweeper-containment-preflight.XXXXXX")"

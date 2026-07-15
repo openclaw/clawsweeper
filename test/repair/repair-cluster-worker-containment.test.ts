@@ -60,7 +60,7 @@ test("privileged execution requires the captured execution gate", () => {
   assert.match(executeJob, /if:.*needs\.cluster\.outputs\.allow_execute == '1'/);
   assert.match(
     workflow,
-    /description: "Linux runner label for fix\/apply execution work with delegated user\/mount\/network namespaces, mount_setattr, and Landlock ABI 3\+"/,
+    /description: "Linux runner label for fix\/apply execution work with delegated user\/mount\/network namespaces, recursive mount hardening, and Landlock ABI 3\+"/,
   );
 });
 

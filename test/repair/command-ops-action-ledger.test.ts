@@ -98,10 +98,9 @@ test("exact review publisher includes command status receipts after the status m
   assert.ok(nextStep > ledgerPublish);
   assert.match(setupAction, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT=\$output_root/);
   assert.match(source, /await flushCommandActionEvents\(\)/);
-  assert.match(
-    publishStep,
-    /if: \$\{\{ always\(\) && steps\.setup-state\.outcome == 'success' \}\}/,
-  );
+  assert.match(publishStep, /if: \$\{\{ always\(\)[^\n]*\}\}/);
+  assert.match(publishStep, /steps\.publication-context\.outputs\.claimed == 'true'/);
+  assert.match(publishStep, /steps\.setup-state\.outcome == 'success'/);
   assert.match(publishStep, /continue-on-error: true/);
   assert.match(publishStep, /source_root="\.artifacts\/exact-review-bundle\/action-ledger"/);
   assert.match(publishStep, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:-/);

@@ -334,6 +334,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$QUEUE_LEASE_ID"
+          printf 'claimed=false\ndecision={}\n' >> "$GITHUB_OUTPUT"
           queue_url="${QUEUE_URL%/}"
           payload="$(node -e '
             const runAttempt = Number(process.env.RUN_ATTEMPT);
@@ -352,13 +353,45 @@ jobs:
               run_attempt: runAttempt,
             }));
           ')"
+          response_file="$(mktemp)"
+          error_file="$(mktemp)"
+          trap 'rm -f "$response_file" "$error_file"' EXIT
           for attempt in 1 2 3; do
-            if response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+            : > "$response_file"
+            : > "$error_file"
+            if status="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
               --request POST \
               --header "content-type: application/json" \
               --data "$payload" \
-              "$queue_url/internal/exact-review/claim")" &&
-              RESPONSE="$response" node <<'NODE'
+              "$queue_url/internal/exact-review/claim" 2>"$error_file")"; then
+              response="$(<"$response_file")"
+              if [ "$status" = "409" ]; then
+                conflict_reason="$(RESPONSE="$response" node <<'NODE'
+                  const response = JSON.parse(process.env.RESPONSE || "{}");
+                  const safeConflicts = new Set([
+                    "lease_not_active",
+                    "lease_already_claimed",
+                    "lease_decision_unavailable",
+                    "stale_run_attempt",
+                  ]);
+                  if (!safeConflicts.has(response.error)) process.exit(1);
+                  process.stdout.write(response.error);
+          NODE
+                )" || {
+                  echo "Unexpected exact-review lease conflict: $response" >&2
+                  exit 1
+                }
+                echo "::notice::Skipping exact review because lease claim lost safely: $conflict_reason"
+                exit 0
+              fi
+              if [ "$status" != "200" ]; then
+                if [[ "$status" != 5* ]]; then
+                  echo "Exact-review lease claim returned HTTP $status: $response" >&2
+                  exit 1
+                fi
+              elif RESPONSE="$response" node <<'NODE'
                 const fs = require("node:fs");
                 const response = JSON.parse(process.env.RESPONSE || "{}");
                 const dispatch = JSON.parse(process.env.DISPATCH_PAYLOAD || "{}");
@@ -437,6 +470,7 @@ jobs:
                   process.exit(1);
                 }
                 const output = [
+                  "claimed=true",
                   `lease_id=${process.env.QUEUE_LEASE_ID}`,
                   `item_key=${itemKey}`,
                   `lease_revision=${Number.isInteger(leaseRevision) ? leaseRevision : ""}`,
@@ -446,8 +480,14 @@ jobs:
                 ];
                 fs.appendFileSync(process.env.GITHUB_OUTPUT, `${output.join("\n")}\n`);
           NODE
-            then
-              exit 0
+              then
+                exit 0
+              else
+                echo "Exact-review lease claim returned an invalid success payload." >&2
+                exit 1
+              fi
+            else
+              cat "$error_file" >&2
             fi
             if [ "$attempt" -lt 3 ]; then
               sleep "$((attempt * 5))"
@@ -456,15 +496,18 @@ jobs:
           exit 1
 
       - uses: actions/checkout@v7
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' }}
         with:
           filter: blob:none
           fetch-depth: 0
           persist-credentials: false
 
       - uses: ./.github/actions/setup-action-ledger
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' }}
         continue-on-error: true
 
       - name: Resolve event payload
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' }}
         id: target
         env:
           CLAIM_DECISION: ${{ steps.claim-exact-review-queue.outputs.decision }}
@@ -516,11 +559,11 @@ jobs:
           NODE
 
       - name: Skip disabled claimed target
-        if: ${{ steps.target.outputs.target_enabled == 'false' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.target_enabled == 'false' }}
         run: echo "Completing the claimed exact-review lease without target access because this target is disabled."
 
       - name: Create target read token
-        if: ${{ steps.target.outputs.target_enabled == 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.target_enabled == 'true' }}
         id: target-read-token
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -536,7 +579,7 @@ jobs:
           permission-statuses: read
 
       - name: Check live target item state
-        if: ${{ steps.target.outputs.target_enabled == 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.target_enabled == 'true' }}
         id: live-item
         env:
           GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
@@ -603,7 +646,7 @@ jobs:
           esac
 
       - name: Create target write token
-        if: ${{ steps.live-item.outcome == 'success' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' }}
         id: target-write-token
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -620,12 +663,12 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         id: setup-pnpm
-        if: ${{ steps.live-item.outcome == 'success' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' }}
         with:
           build-script: ${{ steps.live-item.outputs.proceed == 'true' && 'build:all' || 'build:repair' }}
 
       - name: React to target item review start
-        if: ${{ steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -654,7 +697,7 @@ jobs:
           react "eyes"
 
       - uses: actions/cache@v6
-        if: ${{ steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
         with:
           path: ${{ steps.target.outputs.target_checkout_dir }}-cache.git
           key: ${{ steps.target.outputs.target_repo_name }}-event-git-${{ runner.os }}-${{ github.run_id }}
@@ -663,7 +706,7 @@ jobs:
             ${{ steps.target.outputs.target_repo_name }}-git-${{ runner.os }}-
 
       - name: Check out target repository
-        if: ${{ steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
         run: |
           set -euo pipefail
           url="https://github.com/${{ steps.target.outputs.target_repo }}.git"
@@ -696,7 +739,7 @@ jobs:
           git -C "$checkout_dir" rev-parse --short HEAD
 
       - name: Mark re-review command in progress
-        if: ${{ steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -717,7 +760,7 @@ jobs:
             --wait-ms 120000
 
       - uses: ./.github/actions/setup-codex
-        if: ${{ steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
@@ -726,7 +769,7 @@ jobs:
 
       - name: Review exact event item
         id: review-exact-event-item
-        if: ${{ steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
@@ -800,7 +843,7 @@ jobs:
           fi
 
       - name: Finalize exact event action ledger
-        if: ${{ always() && steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
         continue-on-error: true
         env:
           REVIEW_EXIT_CODE: ${{ steps.review-exact-event-item.outputs.exit_code || '' }}
@@ -818,7 +861,7 @@ jobs:
 
       - name: Create exact review artifact bundle
         id: create-exact-review-bundle
-        if: ${{ always() && !cancelled() && steps.target.outputs.target_enabled == 'true' && steps.live-item.outcome == 'success' && steps.setup-pnpm.outcome == 'success' && (steps.live-item.outputs.proceed != 'true' || (steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.retry_at == '')) }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.target.outputs.target_enabled == 'true' && steps.live-item.outcome == 'success' && steps.setup-pnpm.outcome == 'success' && (steps.live-item.outputs.proceed != 'true' || (steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.retry_at == '')) }}
         env:
           EXACT_REVIEW_ACTION_LEDGER_ROOT: ${{ env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT }}
           EXACT_REVIEW_BUNDLE_DIR: .artifacts/exact-review-bundle
@@ -850,7 +893,7 @@ jobs:
 
       - name: Upload exact review artifact bundle
         id: upload-exact-review-bundle
-        if: ${{ always() && !cancelled() && steps.create-exact-review-bundle.outcome == 'success' }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.create-exact-review-bundle.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.create-exact-review-bundle.outputs.artifact_name }}
@@ -861,7 +904,7 @@ jobs:
 
       - name: Queue durable exact review publication
         id: queue-exact-review-publication
-        if: ${{ always() && !cancelled() && steps.upload-exact-review-bundle.outcome == 'success' }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.upload-exact-review-bundle.outcome == 'success' }}
         env:
           ARTIFACT_NAME: ${{ steps.create-exact-review-bundle.outputs.artifact_name }}
           CLAIM_DECISION: ${{ steps.claim-exact-review-queue.outputs.decision }}
@@ -935,7 +978,7 @@ jobs:
           exit 1
 
       - name: Release unsuccessful workflow-owned review lease
-        if: ${{ always() && steps.live-item.outputs.proceed == 'true' && steps.queue-exact-review-publication.outcome != 'success' }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.queue-exact-review-publication.outcome != 'success' }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -964,7 +1007,7 @@ jobs:
           done <<< "$reaction_ids"
 
       - name: Mark unsuccessful re-review
-        if: ${{ always() && steps.target.outputs.has_command_context == 'true' && steps.setup-pnpm.outcome == 'success' && steps.queue-exact-review-publication.outcome != 'success' && steps.target-write-token.outputs.token != '' }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.has_command_context == 'true' && steps.setup-pnpm.outcome == 'success' && steps.queue-exact-review-publication.outcome != 'success' && steps.target-write-token.outputs.token != '' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -994,7 +1037,7 @@ jobs:
 
       - name: Export exact review generation result
         id: exact-review-generation-result
-        if: ${{ always() }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && always() }}
         env:
           TARGET_ENABLED: ${{ steps.target.outputs.target_enabled }}
           LIVE_OUTCOME: ${{ steps.live-item.outcome }}
@@ -1013,7 +1056,7 @@ jobs:
 
       - name: Complete exact-review queue lease
         id: complete-exact-review-queue
-        if: ${{ always() }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && always() }}
         continue-on-error: true
         env:
           PRIMARY_OUTCOME: ${{ steps.exact-review-generation-result.outputs.outcome || 'failure' }}
@@ -1079,7 +1122,7 @@ jobs:
           exit 1
 
       - name: Fail unsuccessful exact review generation
-        if: ${{ always() && (steps.exact-review-generation-result.outputs.outcome != 'success' || steps.complete-exact-review-queue.outcome != 'success') }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && (steps.exact-review-generation-result.outputs.outcome != 'success' || steps.complete-exact-review-queue.outcome != 'success') }}
         run: exit 1
 
   event-review-publish:
@@ -1108,6 +1151,7 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          printf 'claimed=false\ndecision={}\n' >> "$GITHUB_OUTPUT"
           queue_url="${QUEUE_URL%/}"
           payload="$(node -e '
             const leaseRevision = Number(process.env.QUEUE_LEASE_REVISION);
@@ -1123,13 +1167,45 @@ jobs:
               run_attempt: runAttempt,
             }));
           ')"
+          response_file="$(mktemp)"
+          error_file="$(mktemp)"
+          trap 'rm -f "$response_file" "$error_file"' EXIT
           for attempt in 1 2 3; do
-            if response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+            : > "$response_file"
+            : > "$error_file"
+            if status="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
               --request POST \
               --header "content-type: application/json" \
               --data "$payload" \
-              "$queue_url/internal/exact-review/claim")" &&
-              RESPONSE="$response" node <<'NODE'
+              "$queue_url/internal/exact-review/claim" 2>"$error_file")"; then
+              response="$(<"$response_file")"
+              if [ "$status" = "409" ]; then
+                conflict_reason="$(RESPONSE="$response" node <<'NODE'
+                  const response = JSON.parse(process.env.RESPONSE || "{}");
+                  const safeConflicts = new Set([
+                    "lease_not_active",
+                    "lease_already_claimed",
+                    "lease_decision_unavailable",
+                    "stale_run_attempt",
+                  ]);
+                  if (!safeConflicts.has(response.error)) process.exit(1);
+                  process.stdout.write(response.error);
+          NODE
+                )" || {
+                  echo "Unexpected exact-review publication conflict: $response" >&2
+                  exit 1
+                }
+                echo "::notice::Skipping exact review publication because lease claim lost safely: $conflict_reason"
+                exit 0
+              fi
+              if [ "$status" != "200" ]; then
+                if [[ "$status" != 5* ]]; then
+                  echo "Exact-review publication claim returned HTTP $status: $response" >&2
+                  exit 1
+                fi
+              elif RESPONSE="$response" node <<'NODE'
                 const fs = require("node:fs");
                 const response = JSON.parse(process.env.RESPONSE || "{}");
                 const decision = response.decision;
@@ -1183,12 +1259,19 @@ jobs:
                   publisher_lease_revision: leaseRevision,
                   publisher_claim_generation: claimGeneration,
                 };
+                fs.appendFileSync(process.env.GITHUB_OUTPUT, "claimed=true\n");
                 for (const [key, value] of Object.entries(values)) {
                   fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
                 }
           NODE
-            then
-              exit 0
+              then
+                exit 0
+              else
+                echo "Exact-review publication claim returned an invalid success payload." >&2
+                exit 1
+              fi
+            else
+              cat "$error_file" >&2
             fi
             if [ "$attempt" -lt 3 ]; then
               sleep "$((attempt * 5))"
@@ -1197,6 +1280,7 @@ jobs:
           exit 1
 
       - uses: actions/checkout@v7
+        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
         with:
           ref: ${{ steps.publication-context.outputs.source_sha }}
           filter: blob:none
@@ -1204,14 +1288,17 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-action-ledger
+        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
         continue-on-error: true
 
       - uses: ./.github/actions/setup-pnpm
+        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
         id: setup-publish-pnpm
         with:
           build-script: build:all
 
       - name: Download exact review artifact bundle
+        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
         id: download-exact-review-bundle
         uses: actions/download-artifact@v8
         with:
@@ -1222,6 +1309,7 @@ jobs:
           path: .artifacts/exact-review-bundle
 
       - name: Validate exact review artifact bundle
+        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
         env:
           EXACT_REVIEW_BUNDLE_DIR: .artifacts/exact-review-bundle
           EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.publication-context.outputs.claim_generation }}
@@ -1244,6 +1332,7 @@ jobs:
         run: pnpm run --silent repair:exact-review-bundle validate
 
       - name: Stage validated exact review artifact
+        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
         run: |
           set -euo pipefail
           mkdir -p artifacts/event
@@ -1253,6 +1342,7 @@ jobs:
           fi
 
       - name: Create target write token
+        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
         id: target-write-token
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -1268,6 +1358,7 @@ jobs:
           permission-statuses: read
 
       - name: Create state token
+        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
         id: state-token
         uses: ./.github/actions/create-state-token
         with:
@@ -1275,12 +1366,14 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
       - uses: ./.github/actions/setup-state
+        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
         id: setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
 
       - name: Publish event result and apply safe close
+        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
         id: publish-event-result
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -1396,7 +1489,7 @@ jobs:
 
       - name: Route synced ClawSweeper verdict
         id: route-synced-verdict
-        if: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.terminal_missing != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && steps.publish-event-result.outputs.policy_noop != 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'false' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.terminal_noop != 'true' && steps.publish-event-result.outputs.terminal_missing != 'true' && steps.publish-event-result.outputs.terminal_closed != 'true' && steps.publish-event-result.outputs.guarded_open != 'true' && steps.publish-event-result.outputs.policy_noop != 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'false' }}
         timeout-minutes: 4
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -1419,7 +1512,7 @@ jobs:
 
       - name: Queue deferred exact verdict router
         id: queue-deferred-verdict-router
-        if: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
@@ -1438,7 +1531,7 @@ jobs:
 
       - name: Queue fresh review after source drift
         id: queue-source-drift-review
-        if: ${{ steps.publish-event-result.outputs.requeue_latest == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publish-event-result.outputs.requeue_latest == 'true' }}
         env:
           CLAIM_DECISION: ${{ steps.publication-context.outputs.decision }}
           PRODUCER_RUN_ATTEMPT: ${{ steps.publication-context.outputs.generation_attempt }}
@@ -1474,7 +1567,7 @@ jobs:
 
       - name: Release terminal review leases
         id: release-terminal-review-leases
-        if: ${{ always() && (steps.publish-event-result.outputs.terminal_noop == 'true' || steps.publish-event-result.outputs.terminal_closed == 'true') }}
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && (steps.publish-event-result.outputs.terminal_noop == 'true' || steps.publish-event-result.outputs.terminal_closed == 'true') }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
@@ -1502,7 +1595,7 @@ jobs:
 
       - name: Confirm terminal item remains closed
         id: confirm-terminal-item
-        if: ${{ always() && steps.release-terminal-review-leases.outcome == 'success' }}
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.release-terminal-review-leases.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
@@ -1512,7 +1605,7 @@ jobs:
           echo "confirmed=true" >> "$GITHUB_OUTPUT"
 
       - name: Mark re-review complete
-        if: ${{ always() && steps.publication-context.outputs.has_command_context == 'true' }}
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.has_command_context == 'true' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -1567,7 +1660,7 @@ jobs:
             --run-url "$RUN_URL"
 
       - name: Commit event comment router ledger
-        if: ${{ steps.publish-event-result.outcome == 'success' && steps.route-synced-verdict.outcome == 'success' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publish-event-result.outcome == 'success' && steps.route-synced-verdict.outcome == 'success' }}
         run: |
           pnpm run repair:publish-main -- \
             --message "chore: record ClawSweeper event comment routing" \
@@ -1577,7 +1670,7 @@ jobs:
             --rebase-strategy theirs
 
       - name: React to target item completion
-        if: ${{ steps.publish-event-result.outputs.requeue_latest != 'true' && (steps.publish-event-result.outputs.terminal_closed == 'true' || steps.publish-event-result.outputs.guarded_open == 'true' || steps.publish-event-result.outputs.policy_noop == 'true' || steps.queue-deferred-verdict-router.outcome == 'success' || steps.route-synced-verdict.outcome == 'success' || (fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && steps.publish-event-result.outputs.remote_tuple_verified == 'true')) }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && (steps.publish-event-result.outputs.terminal_closed == 'true' || steps.publish-event-result.outputs.guarded_open == 'true' || steps.publish-event-result.outputs.policy_noop == 'true' || steps.queue-deferred-verdict-router.outcome == 'success' || steps.route-synced-verdict.outcome == 'success' || (fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && steps.publish-event-result.outputs.remote_tuple_verified == 'true')) }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -1601,7 +1694,7 @@ jobs:
           done <<< "$reaction_ids"
 
       - name: Publish exact review action ledger
-        if: ${{ always() && steps.setup-state.outcome == 'success' }}
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.setup-state.outcome == 'success' }}
         continue-on-error: true
         env:
           GENERATION_ATTEMPT: ${{ steps.publication-context.outputs.generation_attempt }}
@@ -1643,7 +1736,7 @@ jobs:
             --message "chore: append exact review action ledger"
 
       - name: Release unsuccessful publisher-owned review lease
-        if: ${{ always() && steps.publication-context.outputs.live_proceeded == 'true' && (steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.requeue_latest == 'true' && steps.queue-source-drift-review.outcome != 'success')) }}
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.live_proceeded == 'true' && (steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.requeue_latest == 'true' && steps.queue-source-drift-review.outcome != 'success')) }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
@@ -1667,7 +1760,7 @@ jobs:
 
       - name: Export exact review publication result
         id: exact-review-publication-result
-        if: ${{ always() }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && always() }}
         env:
           PRIOR_JOB_STATUS: ${{ job.status }}
           PUBLISH_OUTCOME: ${{ steps.publish-event-result.outcome }}
@@ -1698,7 +1791,7 @@ jobs:
 
       - name: Complete durable exact review publication
         id: complete-exact-review-publication
-        if: ${{ always() }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && always() }}
         continue-on-error: true
         env:
           CLAIM_GENERATION: ${{ steps.publication-context.outputs.publisher_claim_generation }}
@@ -1747,7 +1840,7 @@ jobs:
           exit 1
 
       - name: Fail unsuccessful exact review publication
-        if: ${{ always() && (steps.exact-review-publication-result.outputs.outcome != 'success' || steps.complete-exact-review-publication.outcome != 'success') }}
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && (steps.exact-review-publication-result.outputs.outcome != 'success' || steps.complete-exact-review-publication.outcome != 'success') }}
         run: exit 1
   target-fanout:
     name: Fan out target repository sweeps

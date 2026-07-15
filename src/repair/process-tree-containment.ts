@@ -1,5 +1,6 @@
 export const LINUX_SUBREAPER_SCRIPT = String.raw`
 import ctypes
+import errno
 import fcntl
 import json
 import os
@@ -21,11 +22,18 @@ PROTOCOL_FD = 3
 AT_FDCWD = -100
 AT_RECURSIVE = 0x8000
 MOUNT_ATTR_RDONLY = 1 << 0
+MS_RDONLY = 1 << 0
 MS_NOSUID = 1 << 1
 MS_NODEV = 1 << 2
+MS_NOEXEC = 1 << 3
+MS_NOATIME = 1 << 10
+MS_NODIRATIME = 1 << 11
 MS_BIND = 1 << 12
+MS_REMOUNT = 1 << 5
 MS_REC = 1 << 14
 MS_PRIVATE = 1 << 18
+MS_RELATIME = 1 << 21
+MS_NOSYMFOLLOW = 1 << 8
 LANDLOCK_CREATE_RULESET_VERSION = 1
 LANDLOCK_RULE_PATH_BENEATH = 1
 LANDLOCK_ACCESS_FS_WRITE_FILE = 1 << 1
@@ -130,14 +138,72 @@ def set_mount_readonly(path, readonly, recursive=True):
             0,
         )
     )
-    checked_syscall(
-        SYS_MOUNT_SETATTR,
-        ctypes.c_int(AT_FDCWD),
-        ctypes.c_char_p(os.fsencode(path)),
-        ctypes.c_uint32(AT_RECURSIVE if recursive else 0),
-        ctypes.byref(attributes),
-        ctypes.c_size_t(len(attributes)),
+    try:
+        checked_syscall(
+            SYS_MOUNT_SETATTR,
+            ctypes.c_int(AT_FDCWD),
+            ctypes.c_char_p(os.fsencode(path)),
+            ctypes.c_uint32(AT_RECURSIVE if recursive else 0),
+            ctypes.byref(attributes),
+            ctypes.c_size_t(len(attributes)),
+        )
+    except OSError as error:
+        if error.errno != errno.ENOSYS:
+            raise
+        # Some ephemeral VM kernels expose delegated mount namespaces but not
+        # mount_setattr. Preserve the same fail-closed policy by remounting every
+        # concrete mount below the bind target; do not weaken other syscall errors.
+        legacy_set_mount_readonly(path, readonly, recursive)
+
+
+def decoded_mountinfo_path(value):
+    return (
+        value.replace("\\040", " ")
+        .replace("\\011", "\t")
+        .replace("\\012", "\n")
+        .replace("\\134", "\\")
     )
+
+
+def mount_points_below(path, recursive):
+    canonical = os.path.normpath(path)
+    if not recursive:
+        recursive = False
+    targets = []
+    with open("/proc/self/mountinfo", "r", encoding="utf-8") as handle:
+        for line in handle:
+            fields = line.split()
+            if len(fields) < 5:
+                continue
+            mount_point = os.path.normpath(decoded_mountinfo_path(fields[4]))
+            if mount_point != canonical and (not recursive or not path_within(mount_point, canonical)):
+                continue
+            mount_options = set(fields[5].split(","))
+            preserved_flags = 0
+            for option, flag in (
+                ("nosuid", MS_NOSUID),
+                ("nodev", MS_NODEV),
+                ("noexec", MS_NOEXEC),
+                ("noatime", MS_NOATIME),
+                ("nodiratime", MS_NODIRATIME),
+                ("relatime", MS_RELATIME),
+                ("nosymfollow", MS_NOSYMFOLLOW),
+            ):
+                if option in mount_options:
+                    preserved_flags |= flag
+            targets.append((mount_point, preserved_flags))
+    if not any(target == canonical for target, _flags in targets):
+        raise RuntimeError("validation mount target is absent: " + canonical)
+    return sorted(set(targets), key=lambda entry: entry[0].count(os.sep), reverse=True)
+
+
+def legacy_set_mount_readonly(path, readonly, recursive):
+    for target, preserved_flags in mount_points_below(path, recursive):
+        checked_mount(
+            None,
+            target,
+            MS_BIND | MS_REMOUNT | preserved_flags | (MS_RDONLY if readonly else 0),
+        )
 
 
 def path_within(path, root):

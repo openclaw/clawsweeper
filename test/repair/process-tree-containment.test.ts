@@ -23,6 +23,16 @@ test("Linux validation containment uses an externally owned PID namespace and su
   assert.match(containment, /checked_mount\(\s+"tmpfs",\s+root_path\(sandbox_root, "\/run"\)/);
   assert.match(containment, /set_mount_readonly\(sandbox_root, True\)/);
   assert.match(containment, /set_mount_readonly\(target, False, recursive\)/);
+  assert.match(containment, /if error\.errno != errno\.ENOSYS:/);
+  assert.match(containment, /legacy_set_mount_readonly\(path, readonly, recursive\)/);
+  assert.match(
+    containment,
+    /MS_BIND \| MS_REMOUNT \| preserved_flags \| \(MS_RDONLY if readonly else 0\)/,
+  );
+  assert.match(containment, /\("nosuid", MS_NOSUID\)/);
+  assert.match(containment, /\("nodev", MS_NODEV\)/);
+  assert.match(containment, /\("noexec", MS_NOEXEC\)/);
+  assert.match(containment, /open\("\/proc\/self\/mountinfo"/);
   assert.match(containment, /os\.chroot\(sandbox_root\)/);
   assert.match(containment, /validation working directory is outside writable roots/);
   assert.match(containment, /validation writable root is unsafe/);
