@@ -2205,6 +2205,7 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   assert.match(legacyIntakeBlock, /statusCommentId: payload\.status_comment_id/);
   assert.match(legacyIntakeBlock, /additionalPrompt: payload\.additional_prompt/);
   assert.match(eventReviewBlock, /cancel-in-progress: false/);
+  assert.match(exactReviewStep, /--skip-start-comment/);
   assert.ok(claimIndex >= 0);
   assert.ok(setupPnpmIndex > claimIndex);
   assert.ok(inProgressStatusIndex > setupPnpmIndex);

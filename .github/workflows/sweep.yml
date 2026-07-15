@@ -764,6 +764,7 @@ jobs:
             --codex-timeout-ms "$codex_timeout_ms" \
             --item-numbers "${{ steps.target.outputs.item_number }}" \
             --readonly-openclaw \
+            --skip-start-comment \
             --shard-index 0 \
             --shard-count 1 \
             "${additional_prompt_arg[@]}"

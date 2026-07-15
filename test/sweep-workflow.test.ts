@@ -256,6 +256,7 @@ test("review workflow gives Codex a read-only inspection token", () => {
   assert.match(reviewJob, /uses: \.\/clawsweeper\/\.github\/actions\/setup-codex/);
   assert.doesNotMatch(reviewJob, /uses: \.\/\.github\/actions\/setup-codex/);
   assert.match(exactReviewStep, /--codex-sandbox read-only/);
+  assert.match(exactReviewStep, /--skip-start-comment/);
   assert.match(reviewJob, /--codex-sandbox read-only/);
   assert.doesNotMatch(workflow, /--codex-sandbox danger-full-access/);
 });
@@ -270,7 +271,7 @@ test("review execution tokens can read check runs and commit statuses", () => {
   const scheduledReviewJob = workflow.slice(reviewStart, publishStart);
 
   for (const [job, tokenId] of [
-    [eventReviewJob, "target-write-token"],
+    [eventReviewJob, "target-read-token"],
     [scheduledReviewJob, "target-read-token"],
   ] as const) {
     const permissions = job.slice(job.indexOf("\n    permissions:"), job.indexOf("\n    steps:"));
@@ -285,7 +286,7 @@ test("review execution tokens can read check runs and commit statuses", () => {
   }
   assert.match(
     eventReviewJob,
-    /Review exact event item[\s\S]*GH_TOKEN: \$\{\{ steps\.target-write-token\.outputs\.token \}\}/,
+    /Review exact event item[\s\S]*GH_TOKEN: \$\{\{ steps\.target-read-token\.outputs\.token \}\}/,
   );
 });
 
@@ -367,6 +368,7 @@ test("exact event review hands immutable artifacts to one state publisher", () =
     step(reviewer, "Review exact event item").env?.GH_TOKEN,
     "${{ steps.target-read-token.outputs.token }}",
   );
+  assert.match(step(reviewer, "Review exact event item").run ?? "", /--skip-start-comment/);
 
   const create = step(reviewer, "Create exact review artifact bundle");
   const upload = step(reviewer, "Upload exact review artifact bundle");
