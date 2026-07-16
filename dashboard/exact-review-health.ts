@@ -35,6 +35,8 @@ export type ExactReviewHandoffHealth = {
   capacity: number;
   active: number;
   available_slots: number;
+  pending_depth: number;
+  shed_since_reset: number;
   phases: Record<ExactReviewPhase, ExactReviewPhaseSummary>;
 };
 
@@ -47,6 +49,7 @@ export function summarizeExactReviewHandoff({
   capacity,
   dispatchLeaseMs,
   executionLeaseMs,
+  shedSinceReset = 0,
 }: {
   items: ExactReviewHealthItem[];
   dispatcher?: ExactReviewHealthDispatcher;
@@ -54,9 +57,11 @@ export function summarizeExactReviewHandoff({
   capacity: number;
   dispatchLeaseMs: number;
   executionLeaseMs: number;
+  shedSinceReset?: number;
 }): ExactReviewHandoffHealth {
   const safeNow = finiteTimestamp(now, Date.now());
   const safeCapacity = Math.max(0, Math.floor(finiteNumber(capacity, 0)));
+  const safeShedSinceReset = Math.max(0, Math.floor(finiteNumber(shedSinceReset, 0)));
   const safeLeaseMs = Math.max(1_000, finiteNumber(dispatchLeaseMs, 10 * 60_000));
   const safeExecutionLeaseMs = Math.max(1_000, finiteNumber(executionLeaseMs, 130 * 60_000));
   const warningMs = Math.min(2 * 60_000, Math.max(30_000, Math.floor(safeLeaseMs / 3)));
@@ -101,6 +106,8 @@ export function summarizeExactReviewHandoff({
     capacity: safeCapacity,
     active,
     available_slots: Math.max(0, safeCapacity - active),
+    pending_depth: phases.pending.count,
+    shed_since_reset: safeShedSinceReset,
     phases,
   };
   if (items.length === 0) {

@@ -37,6 +37,12 @@ type WorkflowRunSummary = {
 const FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION = "failed_review_shard_recovery";
 const EXACT_REVIEW_ARTIFACT_PUBLISH_SOURCE_ACTION = "exact_review_artifact_publish";
 const EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION = "artifact_retention_recovery";
+const EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION = "source_drift_requeue";
+const EXACT_REVIEW_LOW_PRIORITY_SOURCE_ACTIONS = new Set([
+  FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION,
+  EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
+  EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION,
+]);
 
 type ExactReviewBaseDecision = {
   targetRepo: string;
@@ -99,6 +105,7 @@ type ExactReviewClaimedRun = {
 };
 type ExactReviewQueueState = {
   items: Record<string, ExactReviewQueueItem>;
+  shedSinceReset?: number;
   dispatcher?: {
     state: "active" | "paused" | "blocked" | "unknown";
     reason?: "workflow_not_active" | "workflow_status_unavailable";
@@ -119,6 +126,7 @@ type ExactReviewQueueStorageMeta = {
   migrated_at: number;
   storage_generation: number;
   dispatcher_json: string | null;
+  shed_since_reset?: number;
 };
 type DurableObjectStub = { fetch: (request: Request) => Promise<Response> };
 type DurableObjectNamespace = {
@@ -164,6 +172,9 @@ const DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS = 130 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS = 20 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_RETRY_MS = 30_000;
 const DEFAULT_EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = 60_000;
+const DEFAULT_EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = 45_000;
+const DEFAULT_EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = 3 * 60_000;
+const DEFAULT_EXACT_REVIEW_PENDING_SOFT_LIMIT = 300;
 const EXACT_REVIEW_COMPLETION_RETRY_MAX_MS = 2 * 60 * 60 * 1000;
 const EXACT_REVIEW_ARTIFACT_RETRY_MAX_MS = 80 * 24 * 60 * 60 * 1000;
 const EXACT_REVIEW_RECONCILE_RUN_LIMIT = 128;
@@ -592,7 +603,6 @@ export class ExactReviewQueue {
         );
         const key = exactReviewItemKey(decision);
         const current = state.items[key];
-        const nextAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
         if (current) {
           const ignoredRecovery =
             decision.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION;
@@ -608,10 +618,32 @@ export class ExactReviewQueue {
                 : decision;
             current.revision += 1;
             current.updatedAt = now;
-            current.nextAttemptAt = nextAttemptAt;
-            if (current.state === "pending") current.attempts = 0;
+            // Immediacy must come from the merged decision: a pending explicit command
+            // keeps its command marker through the merge, and a later plain webhook
+            // event must not re-debounce it.
+            current.nextAttemptAt =
+              current.state === "pending"
+                ? exactReviewQueueDebouncedAttemptAt(
+                    state,
+                    current.decision,
+                    now,
+                    current.createdAt,
+                    this.env,
+                  )
+                : exactReviewQueueEnqueueAttemptAt(state, now);
+            if (current.state === "pending") {
+              current.attempts = 0;
+            }
           }
         } else {
+          if (
+            isLowPriorityExactReviewDecision(decision) &&
+            exactReviewQueuePendingCount(state) >= exactReviewPendingSoftLimit(this.env)
+          ) {
+            state.shedSinceReset = exactReviewShedSinceReset(state) + 1;
+            this.writeStateSync(state);
+            return { shed: true as const };
+          }
           state.items[key] = {
             key,
             decision,
@@ -619,7 +651,7 @@ export class ExactReviewQueue {
             revision: 1,
             createdAt: now,
             updatedAt: now,
-            nextAttemptAt,
+            nextAttemptAt: exactReviewQueueDebouncedAttemptAt(state, decision, now, now, this.env),
             attempts: 0,
           };
         }
@@ -628,6 +660,9 @@ export class ExactReviewQueue {
       });
       if (accepted.deduped) {
         return json({ ok: true, deduped: true, item_key: exactReviewItemKey(decision) }, 202);
+      }
+      if (accepted.shed) {
+        return json({ ok: true, shed: true, reason: "backpressure" }, 202);
       }
       await this.scheduleNext(accepted.state, now);
       return json({ ok: true, queued: true, item_key: accepted.key }, 202);
@@ -1011,7 +1046,7 @@ export class ExactReviewQueue {
       exactReviewPublicationDispatchLeaseMs(this.env),
       exactReviewHeartbeatGraceMs(this.env),
     );
-    const expiredSnapshot = expireExactReviewPublicationItems(snapshot, startedAt);
+    const expiredSnapshot = expireExactReviewPublicationItems(snapshot, startedAt, this.env);
     const snapshotChanged = reclaimedSnapshot || expiredSnapshot;
     const capacity = exactReviewQueueCapacity(this.env);
     const targetCapacity = exactReviewTargetCapacity(this.env);
@@ -1049,7 +1084,7 @@ export class ExactReviewQueue {
       exactReviewPublicationDispatchLeaseMs(this.env),
       exactReviewHeartbeatGraceMs(this.env),
     );
-    expireExactReviewPublicationItems(state, now);
+    expireExactReviewPublicationItems(state, now, this.env);
     const admitted = exactReviewQueueAdmittedItems(
       state,
       now,
@@ -1198,11 +1233,13 @@ export class ExactReviewQueue {
             : null;
         this.storage.sql.exec(
           `INSERT INTO ${EXACT_REVIEW_QUEUE_META_TABLE}
-             (singleton_id, schema_version, migrated_at, storage_generation, dispatcher_json)
-           VALUES (1, ?, ?, 1, ?)`,
+             (singleton_id, schema_version, migrated_at, storage_generation, dispatcher_json,
+              shed_since_reset)
+           VALUES (1, ?, ?, 1, ?, ?)`,
           EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
           migratedAt,
           dispatcherJson,
+          exactReviewShedSinceReset(legacy || { items: {} }),
         );
         migratedLegacy = true;
         this.syncLegacyCompatibilitySync(this.readStateSync());
@@ -1236,9 +1273,22 @@ export class ExactReviewQueue {
          schema_version INTEGER NOT NULL,
          migrated_at INTEGER NOT NULL,
          storage_generation INTEGER NOT NULL,
-         dispatcher_json TEXT
+         dispatcher_json TEXT,
+         shed_since_reset INTEGER NOT NULL DEFAULT 0
        ) STRICT`,
     );
+    const hasShedCounter = Array.from(
+      this.storage.sql.exec(
+        `SELECT name FROM pragma_table_info('${EXACT_REVIEW_QUEUE_META_TABLE}')
+          WHERE name = 'shed_since_reset'`,
+      ),
+    ).length;
+    if (!hasShedCounter) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_QUEUE_META_TABLE}
+           ADD COLUMN shed_since_reset INTEGER NOT NULL DEFAULT 0`,
+      );
+    }
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_ITEM_TABLE} (
          item_key TEXT PRIMARY KEY,
@@ -1260,7 +1310,8 @@ export class ExactReviewQueue {
   private readStorageMetaSync() {
     return Array.from(
       this.storage.sql.exec(
-        `SELECT schema_version, migrated_at, storage_generation, dispatcher_json
+        `SELECT schema_version, migrated_at, storage_generation, dispatcher_json,
+                shed_since_reset
            FROM ${EXACT_REVIEW_QUEUE_META_TABLE}
           WHERE singleton_id = 1`,
       ),
@@ -1375,13 +1426,15 @@ export class ExactReviewQueue {
     if (!replaceState && receiptChanges.length === 0) return;
     this.storage.sql.exec(
       `UPDATE ${EXACT_REVIEW_QUEUE_META_TABLE}
-          SET dispatcher_json = ?, storage_generation = storage_generation + 1
+          SET dispatcher_json = ?, shed_since_reset = ?,
+              storage_generation = storage_generation + 1
         WHERE singleton_id = 1 AND storage_generation = ?`,
       replaceState && legacyState.dispatcher
         ? JSON.stringify(legacyState.dispatcher)
         : replaceState
           ? null
           : meta.dispatcher_json,
+      replaceState ? exactReviewShedSinceReset(legacyState) : Number(meta.shed_since_reset || 0),
       sqlGeneration,
     );
     const reconciledGeneration = this.readStorageMetaSync()?.storage_generation;
@@ -1398,6 +1451,7 @@ export class ExactReviewQueue {
     ) as Record<string, ExactReviewQueueItem>;
     return {
       items,
+      shedSinceReset: exactReviewShedSinceReset(legacy),
       ...(legacy.dispatcher && typeof legacy.dispatcher === "object"
         ? { dispatcher: legacy.dispatcher }
         : {}),
@@ -1473,7 +1527,11 @@ export class ExactReviewQueue {
         throw new Error("invalid exact-review queue dispatcher JSON");
       }
     }
-    const state = { items, dispatcher };
+    const state = {
+      items,
+      dispatcher,
+      shedSinceReset: Math.max(0, Number(meta.shed_since_reset || 0)),
+    };
     this.baselines.set(state, {
       items: baselineItems,
       dispatcherJson: meta.dispatcher_json,
@@ -1512,12 +1570,17 @@ export class ExactReviewQueue {
     const dispatcherJson = state.dispatcher ? JSON.stringify(state.dispatcher) : null;
     this.storage.sql.exec(
       `UPDATE ${EXACT_REVIEW_QUEUE_META_TABLE}
-          SET dispatcher_json = ?, storage_generation = storage_generation + 1
+          SET dispatcher_json = ?, shed_since_reset = ?,
+              storage_generation = storage_generation + 1
         WHERE singleton_id = 1`,
       dispatcherJson,
+      exactReviewShedSinceReset(state),
     );
     this.syncLegacyCompatibilitySync(state);
-    this.baselines.set(state, { items: nextItems, dispatcherJson });
+    this.baselines.set(state, {
+      items: nextItems,
+      dispatcherJson,
+    });
   }
 
   private readStateBaselineSync(): ExactReviewQueueBaseline {
@@ -1616,6 +1679,7 @@ export class ExactReviewQueue {
       },
       items: state.items,
       dispatcher: state.dispatcher,
+      shedSinceReset: exactReviewShedSinceReset(state),
     };
     const shadowBytes = new TextEncoder().encode(JSON.stringify(shadow)).byteLength;
     if (shadowBytes > EXACT_REVIEW_QUEUE_LEGACY_SHADOW_MAX_BYTES) {
@@ -3114,7 +3178,7 @@ function reclaimExpiredExactReviewLease(
   return true;
 }
 
-function expireExactReviewPublicationItems(state: ExactReviewQueueState, now: number) {
+function expireExactReviewPublicationItems(state: ExactReviewQueueState, now: number, env) {
   let changed = false;
   for (const [key, item] of Object.entries(state.items)) {
     const publication = item.decision.publication;
@@ -3140,9 +3204,24 @@ function expireExactReviewPublicationItems(state: ExactReviewQueueState, now: nu
       current.decision = mergePendingExactReviewDecision(current.decision, decision);
       current.revision += 1;
       current.updatedAt = now;
-      current.nextAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
+      // Merged decision, not the raw recovery: a pending explicit command must
+      // keep its immediate attempt time (same rule as the enqueue merge path).
+      current.nextAttemptAt = exactReviewQueueDebouncedAttemptAt(
+        state,
+        current.decision,
+        now,
+        current.createdAt,
+        env,
+      );
       current.attempts = 0;
     } else if (!current) {
+      // The expired publication was already deleted above; shedding here only
+      // suppresses creation of its replacement recovery item.
+      if (exactReviewQueuePendingCount(state) >= exactReviewPendingSoftLimit(env)) {
+        state.shedSinceReset = exactReviewShedSinceReset(state) + 1;
+        changed = true;
+        continue;
+      }
       state.items[recoveryKey] = {
         key: recoveryKey,
         decision,
@@ -3150,7 +3229,7 @@ function expireExactReviewPublicationItems(state: ExactReviewQueueState, now: nu
         revision: 1,
         createdAt: now,
         updatedAt: now,
-        nextAttemptAt: exactReviewQueueEnqueueAttemptAt(state, now),
+        nextAttemptAt: exactReviewQueueDebouncedAttemptAt(state, decision, now, now, env),
         attempts: 0,
       };
     }
@@ -3165,6 +3244,39 @@ function exactReviewQueueEnqueueAttemptAt(state: ExactReviewQueueState, now: num
     retryAt > now
     ? retryAt
     : now;
+}
+
+function exactReviewQueueDebouncedAttemptAt(
+  state: ExactReviewQueueState,
+  decision: ExactReviewDecision,
+  now: number,
+  firstEnqueuedAt: number,
+  env,
+) {
+  const baseAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
+  if (isImmediateExactReviewDecision(decision)) return baseAttemptAt;
+  const debounceAt = Math.min(
+    now + exactReviewDispatchDebounceMs(env),
+    firstEnqueuedAt + exactReviewDispatchDebounceMaxMs(env),
+  );
+  return Math.max(baseAttemptAt, debounceAt);
+}
+
+function isImmediateExactReviewDecision(decision: ExactReviewDecision) {
+  return Boolean(decision.commandStatusMarker || decision.publication);
+}
+
+function isLowPriorityExactReviewDecision(decision: ExactReviewDecision) {
+  return EXACT_REVIEW_LOW_PRIORITY_SOURCE_ACTIONS.has(decision.sourceAction);
+}
+
+function exactReviewQueuePendingCount(state: ExactReviewQueueState) {
+  return Object.values(state.items).filter((item) => item.state === "pending").length;
+}
+
+function exactReviewShedSinceReset(state: Pick<ExactReviewQueueState, "shedSinceReset">) {
+  const value = Number(state.shedSinceReset || 0);
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
 function exactReviewQueueIsPublication(item: ExactReviewQueueItem) {
@@ -3244,6 +3356,7 @@ function exactReviewQueueStats(
   const handoffHealth = summarizeExactReviewHandoff({
     items,
     dispatcher: state.dispatcher,
+    shedSinceReset: exactReviewShedSinceReset(state),
     now,
     capacity,
     dispatchLeaseMs,
@@ -3310,6 +3423,7 @@ function exactReviewQueueStats(
       items.filter((item) => !exactReviewQueueIsPublication(item)),
       now,
       capacity,
+      exactReviewShedSinceReset(state),
     ),
     publication: exactReviewQueueLaneStats(
       items.filter(exactReviewQueueIsPublication),
@@ -3319,6 +3433,7 @@ function exactReviewQueueStats(
   };
   return {
     pending: handoffHealth.phases.pending.count,
+    shed_since_reset: exactReviewShedSinceReset(state),
     dispatching: handoffHealth.phases.dispatching.count,
     leased: handoffHealth.phases.leased.count,
     oldest_pending_at: handoffHealth.phases.pending.oldest_at,
@@ -3343,7 +3458,12 @@ function exactReviewQueueStats(
   };
 }
 
-function exactReviewQueueLaneStats(items: ExactReviewQueueItem[], now: number, capacity: number) {
+function exactReviewQueueLaneStats(
+  items: ExactReviewQueueItem[],
+  now: number,
+  capacity: number,
+  shedSinceReset = 0,
+) {
   const pendingItems = items.filter((item) => item.state === "pending");
   const dispatchingItems = items.filter((item) => item.state === "dispatching");
   const leasedItems = items.filter((item) => item.state === "leased");
@@ -3358,6 +3478,8 @@ function exactReviewQueueLaneStats(items: ExactReviewQueueItem[], now: number, c
   );
   return {
     pending: pendingItems.length,
+    pending_depth: pendingItems.length,
+    shed_since_reset: shedSinceReset,
     ready: pendingItems.filter((item) => item.nextAttemptAt <= now).length,
     backoff: pendingItems.filter((item) => item.nextAttemptAt > now).length,
     dispatching: dispatchingItems.length,
@@ -3547,6 +3669,39 @@ function exactReviewWorkflowPausedRetryMs(env) {
         env.EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS,
         DEFAULT_EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS,
       ),
+    ),
+  );
+}
+
+function exactReviewDispatchDebounceMs(env) {
+  return Math.max(
+    0,
+    Math.min(
+      15 * 60_000,
+      numberFrom(env.EXACT_REVIEW_DISPATCH_DEBOUNCE_MS, DEFAULT_EXACT_REVIEW_DISPATCH_DEBOUNCE_MS),
+    ),
+  );
+}
+
+function exactReviewDispatchDebounceMaxMs(env) {
+  return Math.max(
+    0,
+    Math.min(
+      60 * 60_000,
+      numberFrom(
+        env.EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS,
+        DEFAULT_EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS,
+      ),
+    ),
+  );
+}
+
+function exactReviewPendingSoftLimit(env) {
+  return Math.max(
+    1,
+    Math.min(
+      100_000,
+      numberFrom(env.EXACT_REVIEW_PENDING_SOFT_LIMIT, DEFAULT_EXACT_REVIEW_PENDING_SOFT_LIMIT),
     ),
   );
 }

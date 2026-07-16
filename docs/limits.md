@@ -126,6 +126,14 @@ backlog drain. Exact capacity is consumed only while queue work is pending. As
 those priority workers start, normal, hot-intake, and commit-review planners
 count them and reduce their next background wave.
 
+Fresh webhook work waits for `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS` (45 seconds by
+default) so rapid edits and pushes coalesce before dispatch. Repeated pending
+revisions extend that delay up to `EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS` (three
+minutes by default) from the item's first enqueue. Explicit command work and
+publication work bypass the delay. When pending depth reaches
+`EXACT_REVIEW_PENDING_SOFT_LIMIT` (300 by default), new recovery-only work is
+shed; existing items, webhook events, commands, and publications remain admitted.
+
 Exact-review result publication has a separate 24-workflow Actions lane. Its
 checkout, artifact handling, comment sync, and result routing are deterministic
 control-plane work: they consume GitHub runners, but not Codex slots. The
@@ -189,6 +197,12 @@ hot intake `14`, and commit review `2`. Existing repair lanes keep their
 
 ## Runtime Overrides
 
+- `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS` overrides the 45,000 ms coalescing delay
+  for fresh non-command exact-review events.
+- `EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS` overrides the 180,000 ms maximum
+  coalescing window measured from the item's first enqueue.
+- `EXACT_REVIEW_PENDING_SOFT_LIMIT` overrides the pending-depth threshold for
+  shedding new recovery-only exact-review work; the default is 300.
 - `EXACT_REVIEW_HEARTBEAT_GRACE_MS` overrides the 1,200,000 ms exact-review worker heartbeat
   grace. It is clamped to at least 420,000 ms so a configured grace can never dip
   below the five-minute worker heartbeat interval plus request time and jitter.

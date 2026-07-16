@@ -53,6 +53,145 @@ test("exact-review publication defaults to 24 bounded publishers", () => {
   );
 });
 
+test("exact-review queue debounces fresh work and caps pending revision extensions", async () => {
+  const originalNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    const storage = new MemoryDurableStorage();
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "1000",
+        EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS: "1500",
+      },
+    );
+    await queue.fetch(buildExactReviewQueueRequest("debounce-1", 750, "edited"));
+    let state = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { createdAt: number; nextAttemptAt: number; revision: number }>;
+    };
+    assert.equal(state.items["openclaw/gogcli#750"].nextAttemptAt, 1_001_000);
+
+    now += 500;
+    await queue.fetch(buildExactReviewQueueRequest("debounce-2", 750, "synchronize"));
+    state = (await storage.get("exact-review-queue")) as typeof state;
+    assert.equal(state.items["openclaw/gogcli#750"].nextAttemptAt, 1_001_500);
+    assert.equal(state.items["openclaw/gogcli#750"].revision, 2);
+
+    now += 900;
+    await queue.fetch(buildExactReviewQueueRequest("debounce-3", 750, "edited"));
+    state = (await storage.get("exact-review-queue")) as typeof state;
+    assert.equal(state.items["openclaw/gogcli#750"].nextAttemptAt, 1_001_500);
+    assert.equal(state.items["openclaw/gogcli#750"].revision, 3);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("exact-review queue bypasses debounce for commands and publications", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 2_000_000;
+  try {
+    const storage = new MemoryDurableStorage();
+    const queue = new ExactReviewQueue({ storage }, {});
+    const commandStatusMarker =
+      "<!-- clawsweeper-command-status:751:re_review:0123456789abcdef0123456789abcdef01234567 -->";
+    await queue.fetch(
+      buildExactReviewQueueRequest(
+        "command-immediate",
+        751,
+        "legacy_dispatch",
+        "issue",
+        undefined,
+        {
+          commandStatusMarker,
+        },
+      ),
+    );
+    await queue.fetch(
+      buildExactReviewQueueRequest(
+        "publication-immediate",
+        752,
+        "exact_review_artifact_publish",
+        "issue",
+        undefined,
+        exactReviewPublicationOverrides(752, "7520"),
+      ),
+    );
+    const state = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { nextAttemptAt: number }>;
+    };
+    assert.equal(state.items["openclaw/gogcli#751"].nextAttemptAt, 2_000_000);
+    assert.equal(state.items["openclaw/gogcli#752@publish:7520:1"].nextAttemptAt, 2_000_000);
+
+    // A later plain webhook event merging into the pending command must not
+    // re-debounce it: immediacy comes from the merged decision's command marker.
+    await queue.fetch(buildExactReviewQueueRequest("command-followup", 751, "edited"));
+    const merged = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { nextAttemptAt: number; revision: number }>;
+    };
+    assert.equal(merged.items["openclaw/gogcli#751"].revision, 2);
+    assert.equal(merged.items["openclaw/gogcli#751"].nextAttemptAt, 2_000_000);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("exact-review queue sheds only new recovery work above the pending soft limit", async () => {
+  const storage = new MemoryDurableStorage();
+  const env = {
+    EXACT_REVIEW_PENDING_SOFT_LIMIT: "1",
+    EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
+  };
+  const queue = new ExactReviewQueue({ storage }, env);
+  await queue.fetch(buildExactReviewQueueRequest("ordinary-existing", 760, "edited"));
+
+  const existing = await queue.fetch(
+    buildExactReviewQueueRequest("existing-recovery", 760, "source_drift_requeue"),
+  );
+  assert.equal(existing.status, 202);
+  assert.equal((await existing.json()).queued, true);
+
+  for (const [index, sourceAction] of [
+    "failed_review_shard_recovery",
+    "artifact_retention_recovery",
+    "source_drift_requeue",
+  ].entries()) {
+    const shed = await queue.fetch(
+      buildExactReviewQueueRequest(`shed-${index}`, 761 + index, sourceAction),
+    );
+    assert.equal(shed.status, 202);
+    assert.deepEqual(await shed.json(), { ok: true, shed: true, reason: "backpressure" });
+  }
+
+  const webhook = await queue.fetch(
+    buildExactReviewQueueRequest("webhook-over-limit", 770, "opened"),
+  );
+  assert.equal((await webhook.json()).queued, true);
+  const publication = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "publication-over-limit",
+      771,
+      "exact_review_artifact_publish",
+      "issue",
+      undefined,
+      exactReviewPublicationOverrides(771, "7710"),
+    ),
+  );
+  assert.equal((await publication.json()).queued, true);
+
+  const restarted = new ExactReviewQueue({ storage }, env);
+  const stats = await (
+    await restarted.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.pending, 3);
+  assert.equal(stats.shed_since_reset, 3);
+  assert.equal(stats.handoff_health.pending_depth, 3);
+  assert.equal(stats.handoff_health.shed_since_reset, 3);
+  assert.equal(stats.lanes.review.pending_depth, 2);
+  assert.equal(stats.lanes.review.shed_since_reset, 3);
+});
+
 test("heartbeated exact-review leases use the heartbeat grace while legacy leases keep execution expiry", () => {
   const now = 1_000_000;
   const item = {
@@ -285,7 +424,7 @@ test("dashboard status reads the exact-review handoff model from the durable que
       available_slots: status.lanes.review.available_slots,
       capacity: status.lanes.review.capacity,
     },
-    { pending: 2, ready: 1, backoff: 1, active: 1, available_slots: 63, capacity: 64 },
+    { pending: 2, ready: 0, backoff: 2, active: 1, available_slots: 63, capacity: 64 },
   );
   assert.deepEqual(
     {
@@ -1849,6 +1988,7 @@ test("exact-review queue coalesces deliveries, dispatches a bound rollout snapsh
       {
         CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
         EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "1",
       },
     );
@@ -2895,6 +3035,7 @@ test("exact-review queue admits at most one active item per target repository", 
       {
         CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
         EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "2",
         EXACT_REVIEW_TARGET_MAX_CONCURRENT: "1",
       },
@@ -2964,6 +3105,7 @@ test("exact-review queue can use the global capacity for one target", async () =
       {
         CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
         EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "4",
         EXACT_REVIEW_TARGET_MAX_CONCURRENT: "4",
       },
@@ -3020,6 +3162,7 @@ test("exact-review queue keeps publication artifacts durable outside review capa
       {
         CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
         EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "4",
         EXACT_REVIEW_TARGET_MAX_CONCURRENT: "4",
       },
@@ -3289,6 +3432,7 @@ test("exact-review queue wakes while target capacity remains", async () => {
       {
         CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
         EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "4",
         EXACT_REVIEW_TARGET_MAX_CONCURRENT: "2",
       },
@@ -3337,6 +3481,7 @@ test("exact-review queue defers retained backlog until a paused dispatcher retry
       {
         CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
         EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "4",
         EXACT_REVIEW_TARGET_MAX_CONCURRENT: "2",
       },
@@ -3527,6 +3672,7 @@ test("exact-review queue retries dispatch failures and reclaims an unclaimed lea
       {
         CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
       },
     );
     assert.equal(
@@ -3652,6 +3798,7 @@ test("exact-review queue preserves a claimed lease after an ambiguous dispatch f
       {
         CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
       },
     );
     assert.equal(

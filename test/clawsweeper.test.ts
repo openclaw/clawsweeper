@@ -2575,9 +2575,10 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
   assert.match(recoveryJob, /\/internal\/exact-review\/enqueue/);
   assert.match(
     recoveryJob,
-    /\.ok == true and \(\.queued == true or \.deduped == true or \.accepted == false\)/,
+    /\.ok == true and \(\.queued == true or \.deduped == true or \.shed == true or \.accepted == false\)/,
   );
   assert.match(recoveryJob, /Recovery skipped because the target is disabled/);
+  assert.match(recoveryJob, /Recovery shed by exact-review queue backpressure/);
   assert.match(recoveryJob, /for attempt in 1 2 3/);
   assert.match(recoveryJob, /failed_recovery_dispatches/);
   assert.match(

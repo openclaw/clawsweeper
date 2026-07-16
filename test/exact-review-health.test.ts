@@ -35,6 +35,7 @@ test("exact-review handoff health reports an empty queue as idle", () => {
 test("exact-review handoff health exposes phase counts, ages, and available capacity", () => {
   const health = summarize({
     capacity: 4,
+    shedSinceReset: 7,
     dispatcher: { state: "active" },
     items: [
       { state: "pending", createdAt: NOW - 90_000, updatedAt: NOW - 90_000 },
@@ -57,6 +58,8 @@ test("exact-review handoff health exposes phase counts, ages, and available capa
   assert.equal(health.reason, "handoff_current");
   assert.equal(health.active, 2);
   assert.equal(health.available_slots, 2);
+  assert.equal(health.pending_depth, 1);
+  assert.equal(health.shed_since_reset, 7);
   assert.deepEqual(health.phases.pending, {
     count: 1,
     oldest_at: "2026-07-13T01:58:30.000Z",

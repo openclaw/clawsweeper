@@ -1672,12 +1672,16 @@ jobs:
           NODE
           )"
           signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
-          curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+          response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
             --request POST \
             --header "content-type: application/json" \
             --header "x-clawsweeper-exact-review-signature: $signature" \
             --data "$payload" \
-            "$queue_url/internal/exact-review/enqueue" | jq -e '.ok == true and (.queued == true or .deduped == true)'
+            "$queue_url/internal/exact-review/enqueue")"
+          jq -e '.ok == true and (.queued == true or .deduped == true or .shed == true)' <<< "$response" >/dev/null
+          if jq -e '.shed == true' <<< "$response" >/dev/null; then
+            echo "Source-drift recovery shed by exact-review queue backpressure."
+          fi
 
       - name: Release terminal review leases
         id: release-terminal-review-leases
@@ -3437,9 +3441,11 @@ jobs:
                 --header "x-clawsweeper-exact-review-signature: $signature" \
                 --data "$payload" \
                 "$queue_url/internal/exact-review/enqueue")" || response=""
-              if jq -e '.ok == true and (.queued == true or .deduped == true or .accepted == false)' <<<"$response" >/dev/null; then
+              if jq -e '.ok == true and (.queued == true or .deduped == true or .shed == true or .accepted == false)' <<<"$response" >/dev/null; then
                 if jq -e '.accepted == false' <<<"$response" >/dev/null; then
                   echo "Recovery skipped because the target is disabled."
+                elif jq -e '.shed == true' <<<"$response" >/dev/null; then
+                  echo "Recovery shed by exact-review queue backpressure."
                 fi
                 queued=true
                 break

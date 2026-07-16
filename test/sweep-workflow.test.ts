@@ -490,7 +490,8 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(drift.run ?? "", /x-clawsweeper-exact-review-signature/);
   assert.match(drift.run ?? "", /internal\/exact-review\/enqueue/);
   assert.match(drift.run ?? "", /decision\.sourceAction === "failed_review_shard_recovery"/);
-  assert.match(drift.run ?? "", /\.queued == true or \.deduped == true/);
+  assert.match(drift.run ?? "", /\.queued == true or \.deduped == true or \.shed == true/);
+  assert.match(drift.run ?? "", /Source-drift recovery shed by exact-review queue backpressure/);
   const status = step(publisher, "Mark re-review complete");
   assert.equal(status.env?.LIVE_TERMINAL_MISSING, undefined);
   assert.equal(status.env?.LIVE_GUARDED_OPEN, undefined);
@@ -2052,8 +2053,9 @@ test("failed review recovery waits for durable exact-review queue acknowledgemen
   );
   assert.match(
     recoveryBlock,
-    /\.ok == true and \(\.queued == true or \.deduped == true or \.accepted == false\)/,
+    /\.ok == true and \(\.queued == true or \.deduped == true or \.shed == true or \.accepted == false\)/,
   );
+  assert.match(recoveryBlock, /Recovery shed by exact-review queue backpressure/);
   assert.doesNotMatch(recoveryBlock, /workflow run sweep\.yml/);
   assert.doesNotMatch(recoveryBlock, /repos\/\$GITHUB_REPOSITORY\/dispatches/);
   assert.match(recoveryBlock, /for attempt in 1 2 3/);
