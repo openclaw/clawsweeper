@@ -71,6 +71,19 @@ jobs:
       - name: Run check
         run: pnpm run check
 
+  sparse-repair-builds:
+    name: sparse repair build smoke
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-pnpm
+
+      - name: Build each sparse repair checkout
+        run: pnpm run test:workflow-sparse-checkout
+
   crawl-remote-toolchain:
     name: crawl-remote toolchain integration
     runs-on: ubuntu-latest

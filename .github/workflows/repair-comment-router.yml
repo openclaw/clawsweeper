@@ -101,22 +101,7 @@ jobs:
             results
             schema/clawsweeper-pr-close-coverage-proof.schema.json
             scripts/hydrate-state.ts
-            src/clawsweeper-text.ts
-            src/command.ts
-            src/codex-env.ts
-            src/codex-output-capture.ts
-            src/codex-spawn.ts
-            src/codex-process-worker.ts
-            src/codex-process.ts
-            src/codex-transient.ts
-            src/github-json.ts
-            src/github-retry.ts
-            src/pr-close-coverage-proof.ts
-            src/action-ledger-files.ts
-            src/action-ledger-runtime.ts
-            src/action-ledger.ts
-            src/repair
-            src/repository-profiles.ts
+            src
             package.json
             pnpm-lock.yaml
             pnpm-workspace.yaml

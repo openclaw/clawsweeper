@@ -81,6 +81,7 @@
     "test": "pnpm run build:all && node --test test/*.test.ts test/repair/*.test.ts dist/repair/*.test.js",
     "test:unit": "node --test test/*.test.ts",
     "test:repair": "pnpm run build:repair && node --test test/repair/*.test.ts dist/repair/*.test.js",
+    "test:workflow-sparse-checkout": "node --test test/repair/workflow-sparse-checkout.smoke.ts",
     "test:coverage": "pnpm run build:all && node --test --experimental-test-coverage --test-coverage-include='dist/**/*.js' --test-coverage-exclude='dist/repair/*.test.js' --test-coverage-lines=49 --test-coverage-branches=66 --test-coverage-functions=57 test/*.test.ts test/repair/*.test.ts dist/repair/*.test.js",
     "test:coverage:changed": "pnpm run build:all && node --test --experimental-test-coverage --test-coverage-include='dist/repair/fix-prompt-builder.js' --test-coverage-lines=85 --test-coverage-branches=85 --test-coverage-functions=85 test/repair/*.test.ts dist/repair/*.test.js",
     "check:active-surface": "node scripts/check-active-surface.ts",

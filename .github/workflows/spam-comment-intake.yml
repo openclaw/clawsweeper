@@ -55,19 +55,7 @@ jobs:
             config/automation-limits.json
             prompts/pr-close-coverage-proof.md
             schema/clawsweeper-pr-close-coverage-proof.schema.json
-            src/clawsweeper-text.ts
-            src/command.ts
-            src/codex-env.ts
-            src/codex-output-capture.ts
-            src/codex-process-worker.ts
-            src/codex-process.ts
-            src/codex-spawn.ts
-            src/codex-transient.ts
-            src/github-json.ts
-            src/github-retry.ts
-            src/pr-close-coverage-proof.ts
-            src/repair
-            src/repository-profiles.ts
+            src
             package.json
             pnpm-lock.yaml
             pnpm-workspace.yaml
