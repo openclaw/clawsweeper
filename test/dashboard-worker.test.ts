@@ -38,11 +38,30 @@ test("exact-review queue defaults to 64 of the 128 global workers", () => {
   );
 });
 
-test("exact-review publication defaults to 24 bounded publishers", () => {
+test("exact-review publication scales bounded capacity with ready backlog", () => {
   assert.equal(exactReviewPublicationCapacity({}), 24);
+  assert.equal(exactReviewPublicationCapacity({}, 249), 24);
+  assert.equal(exactReviewPublicationCapacity({}, 250), 32);
+  assert.equal(exactReviewPublicationCapacity({}, 500), 40);
+  assert.equal(exactReviewPublicationCapacity({}, 750), 48);
+  assert.equal(exactReviewPublicationCapacity({}, 2_000), 48);
+  assert.equal(exactReviewPublicationCapacity({}, 0, 40), 40);
+  assert.equal(exactReviewPublicationCapacity({}, 750, 0, 32), 32);
+  assert.equal(exactReviewPublicationCapacity({}, 750, 0, 8), 8);
+  assert.equal(exactReviewPublicationCapacity({}, 750, 40, 24), 40);
   assert.equal(
     exactReviewPublicationCapacity({ EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "12" }),
     12,
+  );
+  assert.equal(
+    exactReviewPublicationCapacity(
+      {
+        EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT: "16",
+        EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "32",
+      },
+      500,
+    ),
+    32,
   );
   assert.equal(
     exactReviewPublicationCapacity({
@@ -4140,6 +4159,145 @@ test("exact-review queue requeues a cancelled claimed lease", async () => {
   assert.equal(state.items["openclaw/openclaw#710"].claimGeneration, undefined);
 });
 
+test("exact-review publication capacity backs off on GitHub pressure and recovers gradually", async () => {
+  const originalNow = Date.now;
+  let now = Date.parse("2026-07-16T08:00:00.000Z");
+  Date.now = () => now;
+  try {
+    const storage = new MemoryDurableStorage();
+    const rateLimited = leasedExactReviewPublicationItem(720, "7200");
+    await storage.put("exact-review-queue", {
+      deliveries: {},
+      items: { [rateLimited.key]: rateLimited },
+    });
+    const queue = new ExactReviewQueue({ storage }, {});
+    const complete = (
+      item: ReturnType<typeof leasedExactReviewPublicationItem>,
+      outcome: "success" | "failure",
+      failureKind?: "github_rate_limit" | "github_transient",
+    ) =>
+      queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/complete", {
+          method: "POST",
+          body: JSON.stringify({
+            lease_id: item.leaseId,
+            item_key: item.key,
+            lease_revision: item.leaseRevision,
+            claim_generation: item.claimGeneration,
+            run_id: item.claimedRunId,
+            run_attempt: item.claimedRunAttempt,
+            outcome,
+            ...(failureKind ? { failure_kind: failureKind } : {}),
+          }),
+        }),
+      );
+
+    storage.failNextPut("exact-review-publication-control:v1");
+    await assert.rejects(
+      complete(rateLimited, "failure", "github_rate_limit"),
+      /injected storage put failure/,
+    );
+    let preserved = (await storage.get("exact-review-queue")) as {
+      items: Record<string, unknown>;
+    };
+    assert.ok(preserved.items[rateLimited.key]);
+    assert.equal((await complete(rateLimited, "failure", "github_rate_limit")).status, 200);
+    let stats = await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.deepEqual(stats.lanes.publication.capacity_control, {
+      mode: "throttled",
+      minimum: 4,
+      base: 24,
+      maximum: 48,
+      ceiling: 12,
+      cooldown_until: "2026-07-16T08:15:00.000Z",
+      recovery_successes: 0,
+      last_failure_at: "2026-07-16T08:00:00.000Z",
+      last_failure_kind: "github_rate_limit",
+    });
+
+    const state = (await storage.get("exact-review-queue")) as {
+      deliveries: Record<string, number>;
+      items: Record<string, ReturnType<typeof leasedExactReviewPublicationItem>>;
+    };
+    const recovered = Array.from({ length: 50 }, (_, index) =>
+      leasedExactReviewPublicationItem(721 + index, String(7210 + index)),
+    );
+    for (const item of recovered) state.items[item.key] = item;
+    await storage.put("exact-review-queue", state);
+    now += 15 * 60_000;
+    for (const item of recovered) {
+      assert.equal((await complete(item, "success")).status, 200);
+    }
+
+    stats = await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(stats.lanes.publication.capacity_control.ceiling, 20);
+    assert.equal(stats.lanes.publication.capacity_control.recovery_successes, 0);
+
+    const transient = leasedExactReviewPublicationItem(780, "7800");
+    const latest = (await storage.get("exact-review-queue")) as typeof state;
+    latest.items[transient.key] = transient;
+    await storage.put("exact-review-queue", latest);
+    assert.equal((await complete(transient, "failure", "github_transient")).status, 200);
+    stats = await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(stats.lanes.publication.capacity_control.ceiling, 12);
+    assert.equal(
+      stats.lanes.publication.capacity_control.cooldown_until,
+      "2026-07-16T08:20:00.000Z",
+    );
+    assert.equal(stats.lanes.publication.capacity_control.last_failure_kind, "github_transient");
+    preserved = (await storage.get("exact-review-queue")) as typeof preserved;
+    assert.ok(preserved.items[rateLimited.key]);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("exact-review publication recovery ignores successful source-drift requeues", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(790, "7900");
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [item.key]: item },
+  });
+  await storage.put("exact-review-publication-control:v1", {
+    capacityCeiling: 12,
+    cooldownUntil: Date.now() - 1,
+    recoverySuccesses: 49,
+    lastFailureAt: Date.now() - 60_000,
+    lastFailureKind: "github_rate_limit",
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "success",
+        requeue_latest: true,
+      }),
+    }),
+  );
+
+  assert.deepEqual(await response.json(), { ok: true, requeued: true });
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.publication.capacity_control.ceiling, 12);
+  assert.equal(stats.lanes.publication.capacity_control.recovery_successes, 49);
+});
+
 test("exact-review queue completes a failed shard recovery without a second retry", async () => {
   const storage = new MemoryDurableStorage();
   const item = leasedExactReviewQueueItem(710, "7101");
@@ -5461,6 +5619,13 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
           capacity: 24,
           available_slots: 3,
           oldest_pending_age_seconds: 30,
+          capacity_control: {
+            mode: "throttled",
+            base: 24,
+            maximum: 48,
+            ceiling: 24,
+            last_failure_kind: "github_rate_limit",
+          },
         },
       },
       handoff_health: {
@@ -5577,6 +5742,10 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(elementFor("exact-review-lanes").innerHTML, /52 review admission slots open/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /Result publication/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /3 result publication slots open/);
+  assert.match(
+    elementFor("exact-review-lanes").innerHTML,
+    /adaptive ceiling 24 after GitHub rate limit/,
+  );
   assert.match(elementFor("exact-review-lanes").innerHTML, /No backlog history in this range/);
   status.workers = Array.from({ length: 130 }, (_, id) => ({ id, status: "in_progress" }));
   context.renderSystemMap(status);
@@ -9621,6 +9790,17 @@ function leasedExactReviewQueueItem(itemNumber: number, runId: string, runAttemp
     claimedRunAttempt: runAttempt,
     claimGeneration: 1,
     claimProtocolVersion: 2,
+  };
+}
+
+function leasedExactReviewPublicationItem(itemNumber: number, runId: string) {
+  const item = leasedExactReviewQueueItem(itemNumber, runId);
+  const sourceAction = "exact_review_artifact_publish";
+  return {
+    ...item,
+    key: `${item.key}@publish:${runId}:1`,
+    decision: { ...item.decision, sourceAction },
+    leaseDecision: { ...item.leaseDecision, sourceAction },
   };
 }
 

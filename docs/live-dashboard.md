@@ -301,7 +301,9 @@ pending, ready, backoff, dispatching, leased, capacity, active, available-slot,
 oldest-pending, and next-attempt values. The existing top-level aggregate fields
 remain available for older consumers. Both lanes additionally report
 `enqueued_total` and `completed_total`; the review lane's existing
-`shed_since_reset` supplies overload demand. `/api/status` retains its
+`shed_since_reset` supplies overload demand. Publication also exposes
+`capacity_control` with the adaptive base, maximum, current ceiling, cooldown,
+recovery progress, and last classified GitHub pressure failure. `/api/status` retains its
 `control_plane` compatibility field, but the dashboard no longer renders that
 low-actionability section.
 

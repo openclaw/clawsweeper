@@ -1526,6 +1526,16 @@ jobs:
           LIVE_GUARDED_OPEN: ${{ steps.publication-context.outputs.live_guarded_open }}
         run: |
           set -euo pipefail
+          record_publication_failure_kind() {
+            local error_file="$1"
+            # Only explicit GitHub pressure signals may change global admission;
+            # artifact, tuple, and policy failures must remain ordinary retries.
+            if grep -Eqi 'HTTP 429|secondary rate limit|API rate limit|rate limit (exceeded|reached)' "$error_file"; then
+              echo "failure_kind=github_rate_limit" >> "$GITHUB_OUTPUT"
+            elif grep -Eqi 'HTTP 5[0-9]{2}|status( code)? 5[0-9]{2}|Bad Gateway|Service Unavailable|Gateway Timeout' "$error_file"; then
+              echo "failure_kind=github_transient" >> "$GITHUB_OUTPUT"
+            fi
+          }
           if [ "$LIVE_PROCEEDED" != "true" ]; then
             terminal_noop="$LIVE_TERMINAL_NOOP"
             terminal_missing="$LIVE_TERMINAL_MISSING"
@@ -1538,6 +1548,7 @@ jobs:
                 if grep -Eqi 'HTTP 404|Not Found' "$live_item_error" && gh api "repos/$TARGET_REPO" >/dev/null; then
                   live_state=missing
                 else
+                  record_publication_failure_kind "$live_item_error"
                   cat "$live_item_error" >&2
                   rm -f "$live_item_error"
                   exit 1
@@ -1602,6 +1613,7 @@ jobs:
               } >> "$GITHUB_OUTPUT"
               exit 0
             fi
+            record_publication_failure_kind "$live_item_error"
             cat "$live_item_error" >&2
             rm -f "$live_item_error"
             exit 1
@@ -1622,7 +1634,17 @@ jobs:
           fi
           test -f "artifacts/event/$ITEM_NUMBER.md"
           echo "terminal_noop=false" >> "$GITHUB_OUTPUT"
-          pnpm run repair:publish-event-result
+          publication_error="$(mktemp)"
+          set +e
+          pnpm run repair:publish-event-result 2>&1 | tee "$publication_error"
+          publication_status="${PIPESTATUS[0]}"
+          set -e
+          if [ "$publication_status" -ne 0 ]; then
+            record_publication_failure_kind "$publication_error"
+            rm -f "$publication_error"
+            exit "$publication_status"
+          fi
+          rm -f "$publication_error"
 
       - name: Queue deferred exact verdict router
         id: queue-deferred-verdict-router
@@ -1827,6 +1849,28 @@ jobs:
             gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/reactions/$reaction_id" --method DELETE
           done <<< "$reaction_ids"
 
+      - name: Probe GitHub pressure after publication failure
+        id: publication-pressure
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && failure() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          pressure_error="$(mktemp)"
+          if rate_limit="$(gh api rate_limit 2>"$pressure_error")"; then
+            if jq -e '(.resources.core.limit // 0) > 0 and ((.resources.core.remaining // 0) <= 100 or (.resources.core.remaining * 20) <= .resources.core.limit)' <<< "$rate_limit" >/dev/null; then
+              echo "failure_kind=github_rate_limit" >> "$GITHUB_OUTPUT"
+            fi
+          elif grep -Eqi 'HTTP 429|secondary rate limit|API rate limit|rate limit (exceeded|reached)' "$pressure_error"; then
+            echo "failure_kind=github_rate_limit" >> "$GITHUB_OUTPUT"
+          elif grep -Eqi 'HTTP 5[0-9]{2}|status( code)? 5[0-9]{2}|Bad Gateway|Service Unavailable|Gateway Timeout' "$pressure_error"; then
+            echo "failure_kind=github_transient" >> "$GITHUB_OUTPUT"
+          fi
+          cat "$pressure_error" >&2
+          rm -f "$pressure_error"
+
       - name: Export exact review publication result
         id: exact-review-publication-result
         if: ${{ steps.publication-context.outputs.claimed == 'true' && always() }}
@@ -1842,6 +1886,7 @@ jobs:
           LEGACY_TUPLELESS: ${{ steps.legacy-exact-artifact.outputs.legacy_tupleless }}
           SOURCE_DRIFT_OUTCOME: ${{ steps.queue-source-drift-review.outcome }}
           DEFERRED_ROUTE_OUTCOME: ${{ steps.queue-deferred-verdict-router.outcome }}
+          FAILURE_KIND: ${{ steps.publish-event-result.outputs.failure_kind || steps.publication-pressure.outputs.failure_kind }}
           REVIEW_ONLY: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
         run: |
           outcome=failure
@@ -1859,6 +1904,9 @@ jobs:
             fi
           fi
           echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
+          if [ "$outcome" = "failure" ] && { [ "$FAILURE_KIND" = "github_rate_limit" ] || [ "$FAILURE_KIND" = "github_transient" ]; }; then
+            echo "failure_kind=$FAILURE_KIND" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Complete durable exact review publication
         id: complete-exact-review-publication
@@ -1869,6 +1917,7 @@ jobs:
           ITEM_KEY: ${{ steps.publication-context.outputs.publisher_item_key }}
           LEASE_REVISION: ${{ steps.publication-context.outputs.publisher_lease_revision }}
           OUTCOME: ${{ steps.exact-review-publication-result.outputs.outcome || 'failure' }}
+          FAILURE_KIND: ${{ steps.exact-review-publication-result.outputs.failure_kind }}
           QUEUE_LEASE_ID: ${{ steps.publication-context.outputs.publisher_lease_id }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -1886,6 +1935,9 @@ jobs:
             const outcome = ["success", "failure", "cancelled"].includes(process.env.OUTCOME)
               ? process.env.OUTCOME
               : "failure";
+            const failureKind = ["github_rate_limit", "github_transient"].includes(process.env.FAILURE_KIND)
+              ? process.env.FAILURE_KIND
+              : undefined;
             process.stdout.write(JSON.stringify({
               lease_id: process.env.QUEUE_LEASE_ID,
               item_key: process.env.ITEM_KEY,
@@ -1894,6 +1946,7 @@ jobs:
               run_id: process.env.GITHUB_RUN_ID,
               run_attempt: runAttempt,
               outcome,
+              ...(outcome === "failure" && failureKind ? { failure_kind: failureKind } : {}),
             }));
           ')"
           for attempt in 1 2 3; do

@@ -97,6 +97,20 @@ type ExactReviewQueueItem = {
   claimedAt?: number;
 };
 type ExactReviewCompletionOutcome = "success" | "failure" | "cancelled";
+type ExactReviewPublicationFailureKind = "github_rate_limit" | "github_transient";
+type ExactReviewPublicationFeedback = {
+  at: number;
+  capacity: number;
+  outcome: "success" | "failure";
+  failureKind?: ExactReviewPublicationFailureKind;
+};
+type ExactReviewPublicationControl = {
+  capacityCeiling: number;
+  cooldownUntil: number;
+  recoverySuccesses: number;
+  lastFailureAt?: number;
+  lastFailureKind?: ExactReviewPublicationFailureKind;
+};
 type ExactReviewClaimedRun = {
   runId: string;
   runAttempt?: number;
@@ -172,7 +186,14 @@ const HEALTH_HISTORY_TTL_SECONDS = (HEALTH_HISTORY_RETENTION_DAYS + 1) * 24 * 60
 const HEALTH_HISTORY_KEY_PREFIX = "health-history:";
 const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 64;
 const DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT = 60;
-const DEFAULT_EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT = 24;
+const DEFAULT_EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT = 4;
+const DEFAULT_EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT = 24;
+const DEFAULT_EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT = 48;
+const EXACT_REVIEW_PUBLICATION_READY_PER_SCALE_STEP = 250;
+const EXACT_REVIEW_PUBLICATION_CONCURRENT_SCALE_STEP = 8;
+const EXACT_REVIEW_PUBLICATION_RATE_LIMIT_COOLDOWN_MS = 15 * 60 * 1000;
+const EXACT_REVIEW_PUBLICATION_TRANSIENT_COOLDOWN_MS = 5 * 60 * 1000;
+const EXACT_REVIEW_PUBLICATION_RECOVERY_SUCCESSES = 50;
 const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 6 * 60 * 1000;
 // Exact publications have a dedicated bounded lane. Bound the unclaimed handoff so a run that
 // never reaches its claim step is re-dispatched; stale runs lose the lease tuple safely.
@@ -208,6 +229,7 @@ const EXACT_REVIEW_QUEUE_META_TABLE = "exact_review_queue_meta";
 const EXACT_REVIEW_QUEUE_ITEM_TABLE = "exact_review_queue_items";
 const EXACT_REVIEW_QUEUE_DELIVERY_TABLE = "exact_review_queue_deliveries";
 const EXACT_REVIEW_QUEUE_METRICS_TABLE = "exact_review_queue_metrics";
+const EXACT_REVIEW_PUBLICATION_CONTROL_KEY = "exact-review-publication-control:v1";
 const EXACT_REVIEW_QUEUE_NAME = "global";
 const EXACT_REVIEW_COMMAND_STATUS_MARKER_PATTERN =
   /^<!-- clawsweeper-command-status:[^<>\r\n]{1,200} -->$/;
@@ -875,6 +897,16 @@ export class ExactReviewQueue {
       }
       const outcome = exactReviewCompletionOutcome(body.outcome, "success");
       if (!outcome) return json({ error: "invalid_outcome" }, 400);
+      const failureKind =
+        body.failure_kind === undefined
+          ? undefined
+          : exactReviewPublicationFailureKind(body.failure_kind);
+      if (body.failure_kind !== undefined && !failureKind) {
+        return json({ error: "invalid_failure_kind" }, 400);
+      }
+      if (failureKind && outcome !== "failure") {
+        return json({ error: "failure_kind_without_failure" }, 400);
+      }
       const requeueLatest = body.requeue_latest === true;
       if (body.requeue_latest !== undefined && typeof body.requeue_latest !== "boolean") {
         return json({ error: "invalid_requeue_latest" }, 400);
@@ -902,6 +934,19 @@ export class ExactReviewQueue {
       if ((item.claimProtocolVersion ?? 1) !== completionProtocolVersion) {
         return json({ error: "lease_protocol_not_claimed" }, 409);
       }
+      const publicationItem = exactReviewQueueIsPublication(item);
+      if (failureKind && !publicationItem) {
+        return json({ error: "failure_kind_outside_publication" }, 400);
+      }
+      const publicationDesiredCapacity = publicationItem
+        ? exactReviewPublicationCapacityForState(
+            this.env,
+            state,
+            now,
+            this.publicationControlSync().capacityCeiling,
+            false,
+          )
+        : 0;
       if (
         item.claimedRunAttempt !== undefined &&
         (runAttempt === null || runAttempt !== item.claimedRunAttempt)
@@ -924,10 +969,21 @@ export class ExactReviewQueue {
       // drift. That work did not leave its lane, so it must not improve the
       // operator-facing net speed until a later revision actually completes.
       const completedLane = outcome === "success" && !requeued ? exactReviewQueueLane(item) : null;
-      await this.writeState(state, {
-        ...(completedLane === "review" ? { reviewCompleted: 1 } : {}),
-        ...(completedLane === "publication" ? { publicationCompleted: 1 } : {}),
-      });
+      await this.writeState(
+        state,
+        {
+          ...(completedLane === "review" ? { reviewCompleted: 1 } : {}),
+          ...(completedLane === "publication" ? { publicationCompleted: 1 } : {}),
+        },
+        publicationItem && ((outcome === "success" && !requeued) || failureKind)
+          ? {
+              at: now,
+              capacity: publicationDesiredCapacity,
+              outcome: outcome === "success" ? "success" : "failure",
+              ...(failureKind ? { failureKind } : {}),
+            }
+          : undefined,
+      );
       await this.scheduleNext(state, now);
       return json({ ok: true, requeued });
     }
@@ -1036,12 +1092,18 @@ export class ExactReviewQueue {
       });
       const { state, metrics } = snapshot;
       await this.scheduleNext(state, now);
+      const publicationControl = this.publicationControlSync();
       const stats = exactReviewQueueStats(
         state,
         now,
         exactReviewQueueCapacity(this.env),
         exactReviewTargetCapacity(this.env),
-        exactReviewPublicationCapacity(this.env),
+        exactReviewPublicationCapacityForState(
+          this.env,
+          state,
+          now,
+          publicationControl.capacityCeiling,
+        ),
         exactReviewDispatchLeaseMs(this.env),
         exactReviewExecutionLeaseMs(this.env),
         exactReviewPublicationDispatchLeaseMs(this.env),
@@ -1059,6 +1121,7 @@ export class ExactReviewQueue {
             ...stats.lanes.publication,
             enqueued_total: metrics.publication.enqueued,
             completed_total: metrics.publication.completed,
+            capacity_control: exactReviewPublicationControlStatus(this.env, publicationControl),
           },
         },
         delivery_receipts: this.deliveryReceiptCountSync(),
@@ -1092,13 +1155,18 @@ export class ExactReviewQueue {
     const snapshotChanged = reclaimedSnapshot || expiredSnapshot;
     const capacity = exactReviewQueueCapacity(this.env);
     const targetCapacity = exactReviewTargetCapacity(this.env);
-    const publicationCapacity = exactReviewPublicationCapacity(this.env);
+    const snapshotPublicationCapacity = exactReviewPublicationCapacityForState(
+      this.env,
+      snapshot,
+      startedAt,
+      this.publicationControlSync().capacityCeiling,
+    );
     const snapshotAdmission = exactReviewQueueAdmittedItems(
       snapshot,
       startedAt,
       capacity,
       targetCapacity,
-      publicationCapacity,
+      snapshotPublicationCapacity,
     );
     if (!snapshotAdmission.length) {
       if (snapshotChanged) await this.writeState(snapshot);
@@ -1127,6 +1195,14 @@ export class ExactReviewQueue {
       exactReviewHeartbeatGraceMs(this.env),
     );
     expireExactReviewPublicationItems(state, now, this.env);
+    // The preflight fetch releases the input gate, so publication demand may
+    // have crossed a scale boundary while the workflow state was checked.
+    const publicationCapacity = exactReviewPublicationCapacityForState(
+      this.env,
+      state,
+      now,
+      this.publicationControlSync().capacityCeiling,
+    );
     const admitted = exactReviewQueueAdmittedItems(
       state,
       now,
@@ -1617,11 +1693,29 @@ export class ExactReviewQueue {
     return state;
   }
 
-  private writeState(state: ExactReviewQueueState, metricDelta: ExactReviewQueueMetricDelta = {}) {
+  private writeState(
+    state: ExactReviewQueueState,
+    metricDelta: ExactReviewQueueMetricDelta = {},
+    publicationFeedback?: ExactReviewPublicationFeedback,
+  ) {
     this.storage.transactionSync(() => {
       this.writeStateSync(state);
       this.incrementQueueMetricsSync(metricDelta);
+      if (publicationFeedback) this.applyPublicationFeedbackSync(publicationFeedback);
     });
+  }
+
+  private publicationControlSync() {
+    return exactReviewPublicationControl(
+      this.env,
+      this.storage.kv.get(EXACT_REVIEW_PUBLICATION_CONTROL_KEY),
+    );
+  }
+
+  private applyPublicationFeedbackSync(feedback: ExactReviewPublicationFeedback) {
+    const current = this.publicationControlSync();
+    const next = exactReviewPublicationControlAfterFeedback(this.env, current, feedback);
+    this.storage.kv.put(EXACT_REVIEW_PUBLICATION_CONTROL_KEY, next);
   }
 
   private queueMetricTotalsSync(): ExactReviewQueueMetricTotals {
@@ -1870,7 +1964,12 @@ export class ExactReviewQueue {
       now,
       exactReviewQueueCapacity(this.env),
       exactReviewTargetCapacity(this.env),
-      exactReviewPublicationCapacity(this.env),
+      exactReviewPublicationCapacityForState(
+        this.env,
+        state,
+        now,
+        this.publicationControlSync().capacityCeiling,
+      ),
       exactReviewPublicationDispatchLeaseMs(this.env),
       exactReviewHeartbeatGraceMs(this.env),
     );
@@ -3062,6 +3161,13 @@ function exactReviewCompletionOutcome(
     : null;
 }
 
+function exactReviewPublicationFailureKind(value): ExactReviewPublicationFailureKind | null {
+  const normalized = String(value || "");
+  return normalized === "github_rate_limit" || normalized === "github_transient"
+    ? normalized
+    : null;
+}
+
 function exactReviewRunAttempt(value): number | null {
   const runAttempt = Number(value);
   return Number.isInteger(runAttempt) && runAttempt > 0 ? runAttempt : null;
@@ -3744,7 +3850,33 @@ export function exactReviewQueueCapacity(env) {
   );
 }
 
-export function exactReviewPublicationCapacity(env) {
+export function exactReviewPublicationCapacity(
+  env,
+  readyBacklog = 0,
+  activePublishers = 0,
+  capacityCeiling = Number.POSITIVE_INFINITY,
+) {
+  const maximum = exactReviewPublicationMaximum(env);
+  const minimum = exactReviewPublicationMinimum(env, maximum);
+  const base = exactReviewPublicationBase(env, maximum);
+  const adaptiveMaximum = Math.max(
+    minimum,
+    Math.min(maximum, Number.isFinite(Number(capacityCeiling)) ? Number(capacityCeiling) : maximum),
+  );
+  const scaleSteps = Math.floor(
+    Math.max(0, Number(readyBacklog) || 0) / EXACT_REVIEW_PUBLICATION_READY_PER_SCALE_STEP,
+  );
+  const desired = Math.min(
+    adaptiveMaximum,
+    base + scaleSteps * EXACT_REVIEW_PUBLICATION_CONCURRENT_SCALE_STEP,
+  );
+  // Scaling down is admission-only. Keep the reported capacity at the active
+  // publisher count so a drained backlog does not look over capacity while
+  // already-running publication jobs finish naturally.
+  return Math.min(maximum, Math.max(desired, Math.max(0, Number(activePublishers) || 0)));
+}
+
+function exactReviewPublicationMaximum(env) {
   return Math.max(
     1,
     Math.min(
@@ -3754,6 +3886,143 @@ export function exactReviewPublicationCapacity(env) {
         DEFAULT_EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT,
       ),
     ),
+  );
+}
+
+function exactReviewPublicationBase(env, maximum = exactReviewPublicationMaximum(env)) {
+  return Math.max(
+    exactReviewPublicationMinimum(env, maximum),
+    Math.min(
+      maximum,
+      numberFrom(
+        env.EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT,
+        DEFAULT_EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT,
+      ),
+    ),
+  );
+}
+
+function exactReviewPublicationMinimum(env, maximum = exactReviewPublicationMaximum(env)) {
+  return Math.min(
+    maximum,
+    Math.max(
+      1,
+      numberFrom(
+        env.EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT,
+        DEFAULT_EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT,
+      ),
+    ),
+  );
+}
+
+function exactReviewPublicationControl(env, value: unknown): ExactReviewPublicationControl {
+  const control = objectValue(value);
+  const maximum = exactReviewPublicationMaximum(env);
+  const minimum = exactReviewPublicationMinimum(env, maximum);
+  const rawCeiling = Number(control.capacityCeiling);
+  const rawCooldown = Number(control.cooldownUntil);
+  const rawRecoverySuccesses = Number(control.recoverySuccesses);
+  const rawLastFailureAt = Number(control.lastFailureAt);
+  const lastFailureKind = exactReviewPublicationFailureKind(control.lastFailureKind);
+  return {
+    capacityCeiling: Number.isSafeInteger(rawCeiling)
+      ? Math.max(minimum, Math.min(maximum, rawCeiling))
+      : maximum,
+    cooldownUntil: Number.isSafeInteger(rawCooldown) && rawCooldown > 0 ? rawCooldown : 0,
+    recoverySuccesses:
+      Number.isSafeInteger(rawRecoverySuccesses) && rawRecoverySuccesses > 0
+        ? rawRecoverySuccesses
+        : 0,
+    ...(Number.isSafeInteger(rawLastFailureAt) && rawLastFailureAt > 0
+      ? { lastFailureAt: rawLastFailureAt }
+      : {}),
+    ...(lastFailureKind ? { lastFailureKind } : {}),
+  };
+}
+
+function exactReviewPublicationControlAfterFeedback(
+  env,
+  control: ExactReviewPublicationControl,
+  feedback: ExactReviewPublicationFeedback,
+) {
+  const maximum = exactReviewPublicationMaximum(env);
+  const minimum = exactReviewPublicationMinimum(env, maximum);
+  if (feedback.outcome === "failure") {
+    const failureKind = feedback.failureKind || "github_transient";
+    const rateLimited = failureKind === "github_rate_limit";
+    const currentCapacity = Math.max(minimum, Math.min(control.capacityCeiling, feedback.capacity));
+    const ceiling = rateLimited
+      ? Math.max(minimum, Math.floor(currentCapacity / 2))
+      : Math.max(minimum, currentCapacity - EXACT_REVIEW_PUBLICATION_CONCURRENT_SCALE_STEP);
+    return {
+      capacityCeiling: ceiling,
+      cooldownUntil: Math.max(
+        control.cooldownUntil,
+        feedback.at +
+          (rateLimited
+            ? EXACT_REVIEW_PUBLICATION_RATE_LIMIT_COOLDOWN_MS
+            : EXACT_REVIEW_PUBLICATION_TRANSIENT_COOLDOWN_MS),
+      ),
+      recoverySuccesses: 0,
+      lastFailureAt: feedback.at,
+      lastFailureKind: failureKind,
+    };
+  }
+  if (feedback.at < control.cooldownUntil || control.capacityCeiling >= maximum) {
+    return { ...control, recoverySuccesses: 0 };
+  }
+  const recoverySuccesses = control.recoverySuccesses + 1;
+  if (recoverySuccesses < EXACT_REVIEW_PUBLICATION_RECOVERY_SUCCESSES) {
+    return { ...control, recoverySuccesses };
+  }
+  return {
+    ...control,
+    capacityCeiling: Math.min(
+      maximum,
+      control.capacityCeiling + EXACT_REVIEW_PUBLICATION_CONCURRENT_SCALE_STEP,
+    ),
+    recoverySuccesses: 0,
+  };
+}
+
+function exactReviewPublicationControlStatus(env, control: ExactReviewPublicationControl) {
+  const maximum = exactReviewPublicationMaximum(env);
+  return {
+    mode: control.capacityCeiling < maximum ? "throttled" : "adaptive",
+    minimum: exactReviewPublicationMinimum(env, maximum),
+    base: exactReviewPublicationBase(env, maximum),
+    maximum,
+    ceiling: control.capacityCeiling,
+    cooldown_until:
+      control.cooldownUntil > 0 ? new Date(control.cooldownUntil).toISOString() : null,
+    recovery_successes: control.recoverySuccesses,
+    last_failure_at:
+      control.lastFailureAt && control.lastFailureAt > 0
+        ? new Date(control.lastFailureAt).toISOString()
+        : null,
+    last_failure_kind: control.lastFailureKind || null,
+  };
+}
+
+function exactReviewPublicationCapacityForState(
+  env,
+  state: ExactReviewQueueState,
+  now: number,
+  capacityCeiling = Number.POSITIVE_INFINITY,
+  preserveActive = true,
+) {
+  let readyBacklog = 0;
+  let activePublishers = 0;
+  for (const item of Object.values(state.items)) {
+    if (!exactReviewQueueIsPublication(item)) continue;
+    if (item.state === "pending" && item.nextAttemptAt <= now) readyBacklog += 1;
+    else if (item.state === "dispatching" || item.state === "leased") activePublishers += 1;
+  }
+  return exactReviewPublicationCapacity(
+    env,
+    readyBacklog,
+    preserveActive ? activePublishers : 0,
+    capacityCeiling,
   );
 }
 
@@ -10834,6 +11103,13 @@ function renderExactReviewLanes(queue) {
     const oldest = Number.isFinite(lane.oldest_pending_age_seconds)
       ? " · oldest " + elapsed(lane.oldest_pending_age_seconds * 1000)
       : "";
+    const publicationControl = laneKey === "publication" ? lane.capacity_control : null;
+    const capacityNote = publicationControl?.mode === "throttled"
+      ? " · adaptive ceiling " + fmt.format(publicationControl.ceiling || capacity) + " after " +
+        (publicationControl.last_failure_kind === "github_rate_limit" ? "GitHub rate limit" : "GitHub 5xx")
+      : laneKey === "publication"
+        ? " · adaptive " + fmt.format(publicationControl?.base || 24) + "–" + fmt.format(publicationControl?.maximum || capacity)
+        : "";
     return '<div class="exact-lane"><div class="exact-lane-head"><strong>' + esc(label) + '</strong><span>' + fmt.format(active) + ' of ' + fmt.format(capacity) + ' active</span></div>' +
       '<div class="lane-count"><span>Pending</span><strong>' + fmt.format(lane.pending || 0) + '</strong></div>' +
       exactReviewTrend(samples, label) +
@@ -10844,7 +11120,7 @@ function renderExactReviewLanes(queue) {
       '<div class="lane-count"><span>Dispatching</span><strong>' + fmt.format(lane.dispatching || 0) + '</strong></div>' +
       '<div class="lane-count"><span>Leased</span><strong>' + fmt.format(lane.leased || 0) + '</strong></div></div>' +
       '<div class="lane-bar"><i style="width:' + used + '%"></i></div>' +
-      '<div class="lane-foot">' + fmt.format(lane.available_slots || 0) + ' ' + esc(label.toLowerCase()) + ' slots open' + esc(oldest) + '</div></div>';
+      '<div class="lane-foot">' + fmt.format(lane.available_slots || 0) + ' ' + esc(label.toLowerCase()) + ' slots open' + esc(oldest + capacityNote) + '</div></div>';
   }).join("");
 }
 function renderExactReviewHandoff(queue) {

@@ -475,6 +475,11 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(publish.run ?? "", /open\)[\s\S]*?requeue_latest=true/);
   assert.match(publish.run ?? "", /test -f "artifacts\/event\/\$ITEM_NUMBER\.md"/);
   assert.match(publish.run ?? "", /repair:publish-event-result/);
+  assert.match(publish.run ?? "", /failure_kind=github_rate_limit/);
+  assert.match(publish.run ?? "", /failure_kind=github_transient/);
+  assert.match(publish.run ?? "", /HTTP 429/);
+  assert.doesNotMatch(publish.run ?? "", /HTTP \(403\|429\)/);
+  assert.match(publish.run ?? "", /PIPESTATUS\[0\]/);
   assert.equal(publish.env?.EXACT_EVENT_PUBLICATION, "true");
   assert.equal(
     publisher.steps.some((candidate) => candidate.name === "Route synced ClawSweeper verdict"),
@@ -505,6 +510,7 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   );
   const publishResult = step(publisher, "Export exact review publication result");
   const publishComplete = step(publisher, "Complete durable exact review publication");
+  const publicationPressure = step(publisher, "Probe GitHub pressure after publication failure");
   const releaseTerminal = step(publisher, "Release terminal review leases");
   const releaseUnsuccessful = step(publisher, "Release unsuccessful publisher-owned review lease");
   assert.doesNotMatch(releaseTerminal.if ?? "", /publication-context.*live_terminal_noop/);
@@ -513,10 +519,20 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(releaseUnsuccessful.run ?? "", /content == "eyes"/);
   assert.match(publishResult.env?.PRIOR_JOB_STATUS ?? "", /job\.status/);
   assert.match(publishResult.env?.LEGACY_TUPLELESS ?? "", /legacy-exact-artifact/);
+  assert.match(publishResult.env?.FAILURE_KIND ?? "", /publish-event-result/);
+  assert.match(publishResult.env?.FAILURE_KIND ?? "", /publication-pressure/);
+  assert.match(publicationPressure.if ?? "", /failure\(\)/);
+  assert.match(publicationPressure.run ?? "", /gh api rate_limit/);
+  assert.match(publicationPressure.run ?? "", /failure_kind=github_rate_limit/);
+  assert.match(publicationPressure.run ?? "", /failure_kind=github_transient/);
+  assert.match(publicationPressure.run ?? "", /HTTP 429/);
+  assert.doesNotMatch(publicationPressure.run ?? "", /HTTP \(403\|429\)/);
   assert.match(publishResult.run ?? "", /REQUEUE_LATEST.*SOURCE_DRIFT_OUTCOME/);
   assert.match(publishResult.run ?? "", /LEGACY_TUPLELESS.*SOURCE_DRIFT_OUTCOME/);
   assert.doesNotMatch(publishResult.run ?? "", /LIVE_TERMINAL_NOOP/);
   assert.match(publishComplete.run ?? "", /internal\/exact-review\/complete/);
+  assert.match(publishComplete.env?.FAILURE_KIND ?? "", /exact-review-publication-result/);
+  assert.match(publishComplete.run ?? "", /failure_kind: failureKind/);
   assert.ok(publisher.steps.indexOf(publishResult) < publisher.steps.indexOf(publishComplete));
 
   const publisherSource = readText("src/repair/publish-event-result.ts");
