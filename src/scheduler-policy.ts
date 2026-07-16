@@ -6,6 +6,7 @@ export interface SchedulerItem {
   kind: SchedulerItemKind;
   createdAt: string;
   updatedAt: string;
+  labels?: readonly string[] | undefined;
 }
 
 export interface SchedulerExistingReview {
@@ -47,6 +48,13 @@ const HOURLY_REVIEW_MS = 60 * 60 * 1000;
 const DAILY_REVIEW_DAYS = 1;
 const WEEKLY_REVIEW_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const BULK_FILED_LABEL = "clawsweeper:bulk-filed";
+
+function bulkFiledComparison(left: SchedulerDueCandidate, right: SchedulerDueCandidate): number {
+  const isBulkFiled = (item: SchedulerItem): boolean =>
+    item.labels?.some((label) => label.toLowerCase() === BULK_FILED_LABEL) ?? false;
+  return Number(isBulkFiled(left.item)) - Number(isBulkFiled(right.item));
+}
 
 function timestampMs(value: string | undefined): number | null {
   if (!value) return null;
@@ -220,6 +228,7 @@ export function compareDueCandidates<
 ): number {
   return (
     left.priority - right.priority ||
+    bulkFiledComparison(left, right) ||
     left.nextDueAt - right.nextDueAt ||
     left.reviewedAt - right.reviewedAt ||
     left.item.number - right.item.number
@@ -234,6 +243,7 @@ function compareBackfillCandidates<
   right: SchedulerDueCandidate<ItemT, ReviewT>,
 ): number {
   return (
+    bulkFiledComparison(left, right) ||
     left.nextDueAt - right.nextDueAt ||
     left.reviewedAt - right.reviewedAt ||
     left.priority - right.priority ||
@@ -293,7 +303,9 @@ export function selectDueCandidates<
     .filter((candidate) => weeklyReviewDeadlineMs(candidate) <= now)
     .sort(
       (left, right) =>
-        weeklyReviewDeadlineMs(left) - weeklyReviewDeadlineMs(right) || compare(left, right),
+        bulkFiledComparison(left, right) ||
+        weeklyReviewDeadlineMs(left) - weeklyReviewDeadlineMs(right) ||
+        compare(left, right),
     );
   for (const candidate of weeklyOverdue) take(candidate);
   for (const [bucket, candidates] of buckets) {
@@ -356,6 +368,7 @@ export function compareHotIntakeDueCandidates<
 ): number {
   return (
     left.priority - right.priority ||
+    bulkFiledComparison(left, right) ||
     hotIntakeRecencyMs(right.item) - hotIntakeRecencyMs(left.item) ||
     right.item.number - left.item.number
   );

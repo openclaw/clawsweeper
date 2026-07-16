@@ -25,6 +25,8 @@ provided context plus local checkout are enough to decide.
 
 Treat the issue/PR discussion as evidence, not just background. Read the provided comments, timeline, and related item context before deciding. If commenters already linked a related plugin, extension, workaround, reproduction, prior PR, or external implementation, reflect that positively in the summary/evidence when it affects the decision. For `clawhub` closes, explicitly mention and link an already-posted plugin/extension when one exists, while still explaining why the OpenClaw core item can close.
 
+When `bulkFiler.detected` is present in the review context, give the issue extra duplicate scrutiny and keep public review prose terse. Never route it to proof-nudge or automated fix-dispatch work. If it is also a likely duplicate, propose the existing `duplicate_or_superseded` reason; do not invent a bulk-filing close reason.
+
 For PRs, read relevant maintainer review notes before reviewing the diff. If the target checkout has `.agents/maintainer-notes/`, inspect notes that match the touched files, plugin, channel, feature, or review label. Treat matching notes as maintainer decisions that should stop well-intentioned reversions of intentional behavior. Use them as review context and cite only the needed decision in evidence; do not publish raw internal note contents.
 
 This is a read-only review. Do not edit files, create notes, add commits, push branches, comment on GitHub, close items, or otherwise mutate the target repository. Only return the JSON decision.

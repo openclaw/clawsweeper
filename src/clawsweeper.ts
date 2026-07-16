@@ -458,6 +458,39 @@ interface Item {
   activeLockReason?: string | null;
 }
 
+export interface BulkFilerReviewContext {
+  detected: true;
+  issueCount: number;
+  threshold: number;
+  windowDays: number;
+  windowStart: string;
+  label: typeof BULK_FILED_LABEL;
+}
+
+export interface BulkFilerDetectionResult {
+  context: BulkFilerReviewContext | null;
+  labelPending: boolean;
+  labelApplied: boolean;
+}
+
+type BulkFilerCountCache = Map<string, number | null>;
+
+interface BulkFilerDetectionOptions {
+  item: Pick<Item, "author" | "createdAt" | "kind" | "labels" | "number">;
+  cache: BulkFilerCountCache;
+  now: number;
+  env?: Record<string, string | undefined>;
+  searchCount: (options: { author: string; windowStart: string }) => number;
+  onSearchError?: (error: unknown) => void;
+}
+
+interface BulkFilerActivationOptions {
+  item: Pick<Item, "labels">;
+  detection: BulkFilerDetectionResult;
+  patchTransparency: () => void;
+  applyLabel: () => boolean;
+}
+
 export interface ReviewStartStatusCommentOptions {
   number: number;
   kind: string;
@@ -471,12 +504,14 @@ export interface ReviewStartStatusCommentOptions {
   shardIndex?: number;
   shardCount?: number;
   purpose?: "review" | "apply";
+  bulkFilerLabelApplied?: boolean;
 }
 
 type AcquiredReviewStartLease = {
   owner: string;
   commentId: number;
   headSha: string;
+  comment?: Record<string, unknown>;
 };
 
 type ReviewStartStatusCommentResult =
@@ -787,6 +822,7 @@ interface ItemContext {
   pullReviewCommentsRevision?: string;
   pullReviewActivityCursor?: string;
   pullChecks?: unknown;
+  bulkFiler?: BulkFilerReviewContext;
   counts?: {
     comments: number;
     commentsHydrated?: number;
@@ -1368,6 +1404,17 @@ const OBSOLETE_FIX_PR_MIN_INACTIVE_DAYS = 30;
 const OBSOLETE_FIX_PR_MAX_CHANGED_FILES = 5;
 const DEFAULT_AUTHOR_PR_BUDGET = 15;
 const DEFAULT_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN = 5;
+const DEFAULT_BULK_FILER_THRESHOLD = 10;
+const DEFAULT_BULK_FILER_WINDOW_DAYS = 7;
+const BULK_FILER_SEARCH_TIMEOUT_MS = 15_000;
+const BULK_FILED_LABEL = "clawsweeper:bulk-filed";
+const BULK_FILER_TRANSPARENCY_LINE =
+  "High filing volume detected, so these issues are batched behind other reviews. Consolidating related reports into fewer issues helps us review everything faster.";
+const BULK_FILED_LABEL_DEFINITION = {
+  name: BULK_FILED_LABEL,
+  color: "6E7781",
+  description: "ClawSweeper detected a high recent issue-filing volume from this author.",
+} as const;
 const STALLED_UNPROVEN_PR_MIN_AGE_DAYS = 14;
 const STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS = 14;
 const ABANDONED_PR_MIN_AGE_DAYS = 30;
@@ -6359,6 +6406,123 @@ export function authorPrBudgetMaxClosesPerRun(
     env.CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN,
     DEFAULT_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN,
   );
+}
+
+export function bulkFilerThreshold(env: Record<string, string | undefined> = process.env): number {
+  return positiveIntegerEnv(env.CLAWSWEEPER_BULK_FILER_THRESHOLD, DEFAULT_BULK_FILER_THRESHOLD);
+}
+
+export function bulkFilerWindowDays(env: Record<string, string | undefined> = process.env): number {
+  return positiveIntegerEnv(env.CLAWSWEEPER_BULK_FILER_WINDOW_DAYS, DEFAULT_BULK_FILER_WINDOW_DAYS);
+}
+
+function detectBulkFiler(options: BulkFilerDetectionOptions): BulkFilerDetectionResult {
+  if (options.item.kind !== "issue" || !options.item.author.trim()) {
+    return { context: null, labelPending: false, labelApplied: false };
+  }
+  const windowDays = bulkFilerWindowDays(options.env);
+  const windowStartMs = options.now - windowDays * DAY_MS;
+  const itemCreatedAtMs = Date.parse(options.item.createdAt);
+  if (!Number.isFinite(itemCreatedAtMs) || itemCreatedAtMs <= windowStartMs) {
+    return { context: null, labelPending: false, labelApplied: false };
+  }
+  const threshold = bulkFilerThreshold(options.env);
+  const windowStart = new Date(windowStartMs).toISOString();
+  const cacheKey = options.item.author.trim().toLowerCase();
+  let issueCount = options.cache.get(cacheKey);
+  if (!options.cache.has(cacheKey)) {
+    try {
+      const searchedCount = options.searchCount({
+        author: options.item.author,
+        windowStart,
+      });
+      if (!Number.isInteger(searchedCount) || searchedCount < 0) {
+        throw new Error("GitHub bulk-filer search omitted a valid total_count");
+      }
+      issueCount = searchedCount;
+    } catch (error) {
+      issueCount = null;
+      options.onSearchError?.(error);
+    }
+    options.cache.set(cacheKey, issueCount ?? null);
+  }
+  if (issueCount === undefined || issueCount === null || issueCount < threshold) {
+    return { context: null, labelPending: false, labelApplied: false };
+  }
+  const alreadyLabeled = options.item.labels.some(
+    (label) => label.toLowerCase() === BULK_FILED_LABEL,
+  );
+  return {
+    context: {
+      detected: true,
+      issueCount,
+      threshold,
+      windowDays,
+      windowStart,
+      label: BULK_FILED_LABEL,
+    },
+    labelPending: !alreadyLabeled,
+    labelApplied: false,
+  };
+}
+
+function activateBulkFilerAfterReviewLease(options: BulkFilerActivationOptions): boolean {
+  const alreadyLabeled = options.item.labels.some(
+    (label) => label.toLowerCase() === BULK_FILED_LABEL,
+  );
+  if (!options.detection.context || !options.detection.labelPending || alreadyLabeled) {
+    options.detection.labelPending = false;
+    return false;
+  }
+  const labelApplied = options.applyLabel();
+  if (!labelApplied) return false;
+  try {
+    options.patchTransparency();
+  } catch (error) {
+    // The label is the scheduling signal; a failed disclosure patch must not
+    // abort the review. Disclosure reconciliation is tracked as a follow-up.
+    console.warn(
+      `bulk-filer transparency patch failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  options.item.labels.push(BULK_FILED_LABEL);
+  options.detection.labelPending = false;
+  options.detection.labelApplied = true;
+  return true;
+}
+
+export function detectBulkFilerForTest(
+  options: BulkFilerDetectionOptions,
+): BulkFilerDetectionResult {
+  return detectBulkFiler(options);
+}
+
+export function activateBulkFilerAfterReviewLeaseForTest(
+  options: BulkFilerActivationOptions,
+): boolean {
+  return activateBulkFilerAfterReviewLease(options);
+}
+
+function authorIssueCountInBulkFilerWindow(author: string, windowStart: string): number {
+  const query = [
+    `repo:${targetRepo()}`,
+    "type:issue",
+    `author:${quoteGitHubSearchTerm(author)}`,
+    `created:>${windowStart}`,
+  ].join(" ");
+  const result = ghJsonOnce<{ total_count?: number; incomplete_results?: boolean }>(
+    ["api", "search/issues", "--method", "GET", "-f", `q=${query}`, "-f", "per_page=1"],
+    BULK_FILER_SEARCH_TIMEOUT_MS,
+  );
+  if (result.incomplete_results === true) {
+    throw new Error("GitHub bulk-filer search returned incomplete results");
+  }
+  if (!Number.isInteger(result.total_count) || Number(result.total_count) < 0) {
+    throw new Error("GitHub bulk-filer search omitted a valid total_count");
+  }
+  return Number(result.total_count);
 }
 
 function quoteGitHubSearchTerm(term: string): string {
@@ -14028,6 +14192,37 @@ function ensureImpactLabel(name: ImpactLabelName, onMutation?: () => void): void
   }
 }
 
+function ensureBulkFilerLabel(onMutation?: () => void): void {
+  try {
+    ghObservedMutationCommand({
+      identity: `label_create:${BULK_FILED_LABEL_DEFINITION.name}`,
+      args: [
+        "label",
+        "create",
+        BULK_FILED_LABEL_DEFINITION.name,
+        "--color",
+        BULK_FILED_LABEL_DEFINITION.color,
+        "--description",
+        BULK_FILED_LABEL_DEFINITION.description,
+      ],
+      attempts: 2,
+      onMutation,
+      knownNoMutation: labelAlreadyExistsError,
+    });
+  } catch (error) {
+    if (!labelAlreadyExistsError(error)) throw error;
+  }
+}
+
+function applyBulkFilerLabel(number: number, currentLabels: readonly string[]): boolean {
+  ensureBulkFilerLabel();
+  return tryAddOptionalLabel({
+    number,
+    label: BULK_FILED_LABEL,
+    currentLabels,
+  });
+}
+
 function ensureMergeRiskLabel(name: MergeRiskLabelName, onMutation?: () => void): void {
   const definition = MERGE_RISK_LABELS.find((label) => label.name === name);
   if (!definition) return;
@@ -14116,6 +14311,7 @@ function isGoodFirstIssue(
     state.hasWorkValidation &&
     !state.goodFirstIssueOptedOut &&
     !state.locked &&
+    !hasNormalizedLabel(currentLabels, BULK_FILED_LABEL) &&
     !currentLabels.some(isSecuritySensitiveLabel) &&
     protectedLabels(currentLabels).length === 0 &&
     !state.hasOpenLinkedPullRequest
@@ -14162,6 +14358,7 @@ function wantedIssueAdvisoryLabels(
 ): Set<string> {
   const labels = new Set<string>();
   if (state.type !== "issue") return labels;
+  const isBulkFiled = hasNormalizedLabel(currentLabels, BULK_FILED_LABEL);
   const issueRatingLabel = issueRatingLabelForState(state);
   if (issueRatingLabel) labels.add(issueRatingLabel);
   if (state.reproductionConfidence === "high") {
@@ -14182,6 +14379,7 @@ function wantedIssueAdvisoryLabels(
     labels.add("clawsweeper:linked-pr-open");
   }
   if (
+    !isBulkFiled &&
     state.workCandidate === "queue_fix_pr" &&
     state.workStatus === "candidate" &&
     state.workConfidence === "high"
@@ -14213,16 +14411,21 @@ function wantedIssueAdvisoryLabels(
     state.workStatus === "manual_review" ||
     state.requiresProductDecision ||
     state.itemCategory === "security" ||
-    state.securityReviewStatus === "needs_attention"
+    state.securityReviewStatus === "needs_attention" ||
+    isBulkFiled
   ) {
     labels.add("clawsweeper:no-new-fix-pr");
   }
   return labels;
 }
 
-function issueAdvisoryStateNeedsStaleProtection(state: IssueAdvisoryLabelState): boolean {
+function issueAdvisoryStateNeedsStaleProtection(
+  state: IssueAdvisoryLabelState,
+  currentLabels: readonly string[],
+): boolean {
   return (
     state.type === "issue" &&
+    !hasNormalizedLabel(currentLabels, BULK_FILED_LABEL) &&
     state.workCandidate === "queue_fix_pr" &&
     state.workStatus === "candidate" &&
     state.workConfidence === "high"
@@ -14238,7 +14441,7 @@ function nextIssueAdvisoryLabels(
   state: IssueAdvisoryLabelState,
 ): string[] {
   const wantedLabels = wantedIssueAdvisoryLabels(state, labels);
-  const needsStaleProtection = issueAdvisoryStateNeedsStaleProtection(state);
+  const needsStaleProtection = issueAdvisoryStateNeedsStaleProtection(state, labels);
   const hadQueueableProtection = issueAdvisoryLabelsHadQueueableProtection(labels);
   const nextLabels = labels.filter(
     (label) =>
@@ -15106,6 +15309,7 @@ function proofNudgeProtectedLabels(labels: readonly string[]): string[] {
       label === "beta-blocker" ||
       label === "release-blocker" ||
       label === "clawsweeper:needs-security-review" ||
+      label === BULK_FILED_LABEL ||
       label.startsWith("release") ||
       label.includes("security")
     );
@@ -19452,6 +19656,7 @@ export function renderReviewStartStatusComment(options: ReviewStartStatusComment
     purpose === "apply"
       ? "This transient lease prevents a newer review from overlapping label, comment, or close mutations."
       : "This placeholder means the worker is alive and reading the current context. I will edit this same comment with the actual review when the claws are done clicking.",
+    ...(options.bulkFilerLabelApplied ? ["", BULK_FILER_TRANSPARENCY_LINE] : []),
     "",
     "Crustacean status: shell secured, claws on keyboard, evidence pebbles being sorted.",
     "",
@@ -20224,6 +20429,7 @@ function postReviewStartStatusComment(options: {
   shardIndex: number;
   shardCount: number;
   purpose?: "review" | "apply";
+  bulkFilerLabelApplied?: boolean;
 }): ReviewStartStatusCommentResult {
   const startedAtMs = Date.now();
   const leaseOwner = newReviewStartLeaseOwner();
@@ -20240,6 +20446,7 @@ function postReviewStartStatusComment(options: {
     shardIndex: options.shardIndex,
     shardCount: options.shardCount,
     purpose: options.purpose ?? "review",
+    bulkFilerLabelApplied: options.bulkFilerLabelApplied ?? false,
   };
   const normalizedHead = String(options.headSha ?? "")
     .trim()
@@ -20301,19 +20508,77 @@ function postReviewStartStatusComment(options: {
     );
   }
   const winner = confirmed[0];
+  if (!winner) {
+    deleteOwnedDedicatedReviewStartLease(options.item.number, acquired);
+    throw new Error(
+      `could not identify the winning review lease for #${options.item.number}; retry required`,
+    );
+  }
   if (
-    commentId(winner?.comment) !== createdCommentId ||
-    reviewStartLeaseOwner(winner?.comment) !== leaseOwner
+    commentId(winner.comment) !== createdCommentId ||
+    reviewStartLeaseOwner(winner.comment) !== leaseOwner
   ) {
     deleteOwnedDedicatedReviewStartLease(options.item.number, acquired);
-    if (!winner) {
-      throw new Error(
-        `could not identify the winning review lease for #${options.item.number}; retry required`,
-      );
-    }
     return heldReviewStartStatusCommentResult(winner.expiresAt, true);
   }
-  return { status: "posted", lease: acquired, didMutate: true };
+  return {
+    status: "posted",
+    lease: { ...acquired, comment: winner.comment },
+    didMutate: true,
+  };
+}
+
+function patchOwnedBulkFilerReviewStartStatusComment(
+  itemNumber: number,
+  lease: AcquiredReviewStartLease,
+): void {
+  const currentBody = commentBody(lease.comment);
+  if (
+    !currentBody ||
+    commentId(lease.comment) !== lease.commentId ||
+    reviewStartLeaseOwner(lease.comment) !== lease.owner ||
+    !currentBody.includes(`sha=${lease.headSha}`)
+  ) {
+    throw new Error(
+      `cannot add bulk-filer transparency without the owned review lease comment for #${itemNumber}`,
+    );
+  }
+  if (currentBody.includes(BULK_FILER_TRANSPARENCY_LINE)) return;
+  const anchor = "\n\nCrustacean status:";
+  if (!currentBody.includes(anchor)) {
+    throw new Error(`cannot locate the review lease transparency anchor for #${itemNumber}`);
+  }
+  const nextBody = currentBody.replace(anchor, `\n\n${BULK_FILER_TRANSPARENCY_LINE}${anchor}`);
+  const payload = writeCommentPayload(itemNumber, nextBody);
+  const args = [
+    "api",
+    `repos/${targetRepo()}/issues/comments/${lease.commentId}`,
+    "--method",
+    "PATCH",
+    "--input",
+    payload,
+  ];
+  const written = reviewCommentFromMutationResponse(
+    ghObservedMutationCommand({
+      identity: `review_lease_bulk_filer_transparency:${itemNumber}:${lease.commentId}`,
+      args,
+    }),
+    args,
+  );
+  lease.comment = written ?? { ...lease.comment, body: nextBody };
+}
+
+function activateDetectedBulkFilerAfterReviewLease(
+  item: Item,
+  detection: BulkFilerDetectionResult,
+  lease: AcquiredReviewStartLease,
+): boolean {
+  return activateBulkFilerAfterReviewLease({
+    item,
+    detection,
+    patchTransparency: () => patchOwnedBulkFilerReviewStartStatusComment(item.number, lease),
+    applyLabel: () => applyBulkFilerLabel(item.number, item.labels),
+  });
 }
 
 function deleteOwnedDedicatedReviewStartLease(
@@ -22375,6 +22640,8 @@ function reviewCommand(args: Args): void {
     let semanticCacheRevalidationFailures = 0;
     let semanticCacheRevalidationMs = 0;
     let hydrationRuns = 0;
+    const bulkFilerCountCache: BulkFilerCountCache = new Map();
+    const bulkFilerWindowNow = Date.now();
     const structuralCacheReasons = new Map<string, number>();
     const structuralCacheRevalidationReasons = new Map<string, number>();
     const semanticCacheReasons = new Map<string, number>();
@@ -22390,6 +22657,23 @@ function reviewCommand(args: Args): void {
       try {
       startReviewActionLedgerItem(reviewLedger, item);
       activeReviewMutationRunner = reviewMutationRunner(reviewLedger, item);
+      const bulkFilerDetection =
+        !localOnly && item.kind === "issue"
+          ? detectBulkFiler({
+              item,
+              cache: bulkFilerCountCache,
+              now: bulkFilerWindowNow,
+              searchCount: ({ author, windowStart }) =>
+                authorIssueCountInBulkFilerWindow(author, windowStart),
+              onSearchError: (error) => {
+                console.error(
+                  `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} bulk-filer-search=failed #${item.number}: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                );
+              },
+            })
+          : { context: null, labelPending: false, labelApplied: false };
       if (humanLocalReview) {
         console.error("");
         console.error("Collecting GitHub context");
@@ -22484,6 +22768,7 @@ function reviewCommand(args: Args): void {
                 total: candidates.length,
                 shardIndex,
                 shardCount,
+                bulkFilerLabelApplied: bulkFilerDetection.labelApplied,
               });
               console.error(
                 `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache-start-comment=${startComment.status} #${item.number}`,
@@ -22499,6 +22784,11 @@ function reviewCommand(args: Args): void {
                 );
               }
               acquiredReviewLeases.push({ itemNumber: item.number, lease: acquiredReviewLease });
+              activateDetectedBulkFilerAfterReviewLease(
+                item,
+                bulkFilerDetection,
+                acquiredReviewLease,
+              );
             } catch (error) {
               leaseAcquisitionFailures += 1;
               leaseAcquisitionFailureDetails.push(
@@ -22659,6 +22949,7 @@ function reviewCommand(args: Args): void {
             total: candidates.length,
             shardIndex,
             shardCount,
+            bulkFilerLabelApplied: bulkFilerDetection.labelApplied,
           });
           console.error(
             `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=${startComment.status} #${item.number}`,
@@ -22696,6 +22987,7 @@ function reviewCommand(args: Args): void {
             reviewCacheDigest: true,
             reviewCacheGitDir: openclawDir,
           });
+      if (bulkFilerDetection.context) context.bulkFiler = bulkFilerDetection.context;
       const contextElapsedMs = Date.now() - contextStartedAt;
       const contextItemUpdatedAt = stringOrUndefined(asRecord(context.issue).updatedAt);
       if (contextItemUpdatedAt) item.updatedAt = contextItemUpdatedAt;
@@ -22752,9 +23044,11 @@ function reviewCommand(args: Args): void {
           owner: suppliedReviewLease.owner,
           commentId: suppliedReviewLease.commentId,
           headSha: currentRevision,
+          comment: supplied.comment,
         };
         acquiredReviewLease = claimedLease;
         acquiredReviewLeases.push({ itemNumber: item.number, lease: claimedLease });
+        activateDetectedBulkFilerAfterReviewLease(item, bulkFilerDetection, claimedLease);
       }
       if (!localRangeData && contextItemUpdatedAt && preHydrationStructuralRecord) {
         structuralCacheRevalidations += 1;
@@ -22880,6 +23174,7 @@ function reviewCommand(args: Args): void {
             total: candidates.length,
             shardIndex,
             shardCount,
+            bulkFilerLabelApplied: bulkFilerDetection.labelApplied,
           });
           console.error(
             `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=${startComment.status} #${item.number}`,
@@ -22895,6 +23190,11 @@ function reviewCommand(args: Args): void {
             );
           }
           acquiredReviewLeases.push({ itemNumber: item.number, lease: acquiredReviewLease });
+          activateDetectedBulkFilerAfterReviewLease(
+            item,
+            bulkFilerDetection,
+            acquiredReviewLease,
+          );
         } catch (error) {
           leaseAcquisitionFailures += 1;
           leaseAcquisitionFailureDetails.push(

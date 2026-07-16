@@ -46,6 +46,10 @@ test("review prompt documents gated backlog close policies", () => {
   assert.match(prompt, /fresh current-version reproduction/);
   assert.match(prompt, /`obsolete_fix_pr`/);
   assert.match(prompt, /every touched path was substantially rewritten or removed/);
+  assert.match(prompt, /`bulkFiler\.detected`/);
+  assert.match(prompt, /extra duplicate scrutiny/);
+  assert.match(prompt, /Never route it to proof-nudge or automated fix-dispatch work/);
+  assert.match(prompt, /do not invent a bulk-filing close reason/);
   assert.equal(
     [...sweepWorkflow.matchAll(/CLAWSWEEPER_IDEA_REVIVAL_REACTIONS:.*\|\| '5'/g)].length,
     2,

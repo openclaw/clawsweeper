@@ -613,7 +613,12 @@ test("apply mutation receipts bind every GitHub request attempt and preserve no-
   assert.match(source, /identity: `review_lease_post:/);
   assert.match(source, /identity: `review_lease_delete:/);
   assert.doesNotMatch(source, /identity: `apply_lease_acquire:/);
-  assert.match(source, /return \{ status: "posted", lease: acquired, didMutate: true \}/);
+  // The posted result must carry the acquired lease (now enriched with the
+  // winning comment for bulk-filer transparency patches) and didMutate: true.
+  assert.match(
+    source,
+    /return \{\s*status: "posted",\s*lease: \{ \.\.\.acquired, comment: winner\.comment \},\s*didMutate: true,?\s*\}/,
+  );
   assert.deepEqual(applyPhaseSequenceForTest(6), [2, 3, 4, 5, 6, 7]);
 });
 
