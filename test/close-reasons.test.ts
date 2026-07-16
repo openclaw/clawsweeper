@@ -4,6 +4,10 @@ import test from "node:test";
 
 import {
   abandonedPrAgeSkipReason,
+  authorPrBudget,
+  authorPrBudgetAgeSkipReason,
+  authorPrBudgetCloseEnabled,
+  authorPrBudgetMaxClosesPerRun,
   closeReasonApplyAgeSkipReason,
   closeReasonsArg,
   compactReferencingMergedPullRequestForTest,
@@ -319,6 +323,88 @@ test("unsponsored feature apply policy is default-off and age-gated", () => {
   assert.equal(
     unsponsoredFeatureAgeSkipReason({ createdAt: "2026-05-01T00:00:00Z" }, now),
     "unsponsored_feature_request requires issue older than 90 days",
+  );
+});
+
+test("author PR-budget policy is default-off with bounded tunable defaults", () => {
+  assert.equal(authorPrBudgetCloseEnabled({}), false);
+  assert.equal(
+    authorPrBudgetCloseEnabled({ CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED: "true" }),
+    true,
+  );
+  assert.equal(authorPrBudget({}), 15);
+  assert.equal(authorPrBudget({ CLAWSWEEPER_AUTHOR_PR_BUDGET: "20" }), 20);
+  assert.equal(authorPrBudget({ CLAWSWEEPER_AUTHOR_PR_BUDGET: "invalid" }), 15);
+  assert.equal(authorPrBudgetMaxClosesPerRun({}), 5);
+  assert.equal(
+    authorPrBudgetMaxClosesPerRun({ CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN: "2" }),
+    2,
+  );
+  const now = Date.parse("2026-07-15T00:00:00Z");
+  assert.equal(authorPrBudgetAgeSkipReason({ createdAt: "2026-07-01T00:00:00Z" }, now), null);
+  assert.equal(
+    authorPrBudgetAgeSkipReason({ createdAt: "2026-07-10T00:00:00Z" }, now),
+    "author_pr_budget_exceeded requires PR older than 7 days",
+  );
+});
+
+test("author_pr_budget_exceeded is PR-only and protects high-quality proven work", () => {
+  const lowSignal = closeDecision({
+    closeReason: "author_pr_budget_exceeded",
+    realBehaviorProof: {
+      status: "missing",
+      summary: "No real proof was supplied.",
+      evidenceKind: "none",
+      needsContributorAction: true,
+    },
+    prRating: {
+      proofTier: "F",
+      patchTier: "D",
+      overallTier: "D",
+      summary: "Low-signal and unproven.",
+      nextSteps: [],
+    },
+  });
+  assert.deepEqual(validateCloseDecision(item({ kind: "pull_request" }), lowSignal), {
+    ok: true,
+  });
+  assert.match(
+    validateCloseDecision(item({ kind: "issue" }), lowSignal).reason ?? "",
+    /not allowed for openclaw\/openclaw issue apply policy/,
+  );
+  assert.match(
+    validateCloseDecision(
+      item({ kind: "pull_request", authorAssociation: "COLLABORATOR" }),
+      lowSignal,
+    ).reason ?? "",
+    /maintainer-authored/,
+  );
+  assert.match(
+    validateCloseDecision(
+      item({ kind: "pull_request" }),
+      closeDecision({
+        ...lowSignal,
+        closeReason: "author_pr_budget_exceeded",
+        realBehaviorProof: {
+          status: "sufficient",
+          summary: "A live run proves the behavior.",
+          evidenceKind: "terminal",
+          needsContributorAction: false,
+        },
+        prRating: {
+          proofTier: "A",
+          patchTier: "A",
+          overallTier: "A",
+          summary: "High-quality proven work.",
+          nextSteps: [],
+        },
+      }),
+    ).reason ?? "",
+    /cannot close a high-quality proven pull request/,
+  );
+  assert.deepEqual(
+    closeReasonsArg("author_pr_budget_exceeded"),
+    new Set(["author_pr_budget_exceeded"]),
   );
 });
 

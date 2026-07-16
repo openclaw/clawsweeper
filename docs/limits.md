@@ -12,6 +12,19 @@ intentionally opens it wider. Safety thresholds such as
 close age floors, apply delays, retry counts, and comment caps stay near the
 code that owns those decisions.
 
+The default-off per-author PR-budget policy follows that safety-threshold rule.
+Its tunables live beside the apply policy rather than in the global worker
+budget:
+
+| Environment variable                              | Default | Meaning                                              |
+| ------------------------------------------------- | ------: | ---------------------------------------------------- |
+| `CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED`      | `false` | Enables live per-author budget closes.               |
+| `CLAWSWEEPER_AUTHOR_PR_BUDGET`                    |      15 | Allowed open PRs per external author and repository. |
+| `CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN` |       5 | Gradual trim cap per author in one apply run.         |
+
+See [`author-pr-budget-close-policy.md`](author-pr-budget-close-policy.md) for
+the rating, proof, inactivity, engagement, and fail-closed gates.
+
 GitHub repository variables still override selected live limits. When a variable
 is unset, workflows read the checked-in budget after checkout. The one exception
 is the `workflow_dispatch.inputs.shard_count.default` value in

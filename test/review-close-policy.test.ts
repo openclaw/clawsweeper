@@ -25,13 +25,16 @@ import {
 } from "../dist/commit-sweeper.js";
 import { closeDecision, git, item, reportFrontMatter } from "./helpers.ts";
 
-test("review prompt documents unsponsored features, wider stale issues, and conflicted PRs", () => {
+test("review prompt documents gated backlog close policies", () => {
   const prompt = readFileSync(new URL("../prompts/review-item.md", import.meta.url), "utf8");
   assert.match(prompt, /`unsponsored_feature_request`/);
   assert.match(prompt, /not planned unless a maintainer sponsors the direction/);
   assert.match(prompt, /no human comment in the last 60 days/);
   assert.match(prompt, /significantly outdated version or behavior/);
   assert.match(prompt, /not cleanly mergeable \(merge conflicts\) on its current head/);
+  assert.match(prompt, /`author_pr_budget_exceeded`/);
+  assert.match(prompt, /Never propose this reason when the author open-PR count is unknown/);
+  assert.match(prompt, /default path is apply-side deterministic promotion/);
 });
 
 test("unsponsored feature issue proposals emit source-bound trusted close markers", () => {

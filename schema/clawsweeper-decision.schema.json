@@ -75,6 +75,7 @@
         "abandoned_pr",
         "unconfirmed_product_direction",
         "unsponsored_feature_request",
+        "author_pr_budget_exceeded",
         "not_actionable_in_repo",
         "incoherent",
         "stale_insufficient_info",

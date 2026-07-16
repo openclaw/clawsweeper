@@ -3768,6 +3768,9 @@ jobs:
     env:
       CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
       CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED || 'false' }}
+      CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED || 'false' }}
+      CLAWSWEEPER_AUTHOR_PR_BUDGET: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET || '15' }}
+      CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN || '5' }}
     outputs:
       target_repo: ${{ steps.target.outputs.target_repo }}
       artifact_name: ${{ steps.proof-artifact.outputs.name }}
@@ -3851,11 +3854,18 @@ jobs:
           case "${CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED,,}" in
             true|1|yes|on) unsponsored_feature_enabled=true ;;
           esac
+          author_pr_budget_enabled=false
+          case "${CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED,,}" in
+            true|1|yes|on) author_pr_budget_enabled=true ;;
+          esac
           if [ "$sync_comments_only" != "true" ] && [ "$product_direction_enabled" != "true" ] && [ "$apply_close_reasons" != "all" ]; then
             apply_close_reasons="$(printf '%s\n' "$apply_close_reasons" | tr ',' '\n' | awk '$0 != "unconfirmed_product_direction" && NF' | paste -sd, -)"
           fi
           if [ "$sync_comments_only" != "true" ] && [ "$unsponsored_feature_enabled" != "true" ] && [ "$apply_close_reasons" != "all" ]; then
             apply_close_reasons="$(printf '%s\n' "$apply_close_reasons" | tr ',' '\n' | awk '$0 != "unsponsored_feature_request" && NF' | paste -sd, -)"
+          fi
+          if [ "$sync_comments_only" != "true" ] && [ "$author_pr_budget_enabled" != "true" ] && [ "$apply_close_reasons" != "all" ]; then
+            apply_close_reasons="$(printf '%s\n' "$apply_close_reasons" | tr ',' '\n' | awk '$0 != "author_pr_budget_exceeded" && NF' | paste -sd, -)"
           fi
           selected=""
           if [ "$sync_comments_only" != "true" ] && [ -n "$apply_close_reasons" ]; then
@@ -4052,6 +4062,9 @@ jobs:
     env:
       CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
       CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED || 'false' }}
+      CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED || 'false' }}
+      CLAWSWEEPER_AUTHOR_PR_BUDGET: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET || '15' }}
+      CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN || '5' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -4193,11 +4206,18 @@ jobs:
           case "${CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED,,}" in
             true|1|yes|on) unsponsored_feature_enabled=true ;;
           esac
+          author_pr_budget_enabled=false
+          case "${CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED,,}" in
+            true|1|yes|on) author_pr_budget_enabled=true ;;
+          esac
           if [ "$sync_comments_only" != "true" ] && [ "$product_direction_enabled" != "true" ] && [ "$apply_close_reasons" != "all" ]; then
             apply_close_reasons="$(printf '%s\n' "$apply_close_reasons" | tr ',' '\n' | awk '$0 != "unconfirmed_product_direction" && NF' | paste -sd, -)"
           fi
           if [ "$sync_comments_only" != "true" ] && [ "$unsponsored_feature_enabled" != "true" ] && [ "$apply_close_reasons" != "all" ]; then
             apply_close_reasons="$(printf '%s\n' "$apply_close_reasons" | tr ',' '\n' | awk '$0 != "unsponsored_feature_request" && NF' | paste -sd, -)"
+          fi
+          if [ "$sync_comments_only" != "true" ] && [ "$author_pr_budget_enabled" != "true" ] && [ "$apply_close_reasons" != "all" ]; then
+            apply_close_reasons="$(printf '%s\n' "$apply_close_reasons" | tr ',' '\n' | awk '$0 != "author_pr_budget_exceeded" && NF' | paste -sd, -)"
           fi
           if [ "$sync_comments_only" != "true" ] && [ -z "$apply_close_reasons" ]; then
             echo "No enabled close reasons remain after policy filtering; skipping apply."

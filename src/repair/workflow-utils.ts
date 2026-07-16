@@ -1314,6 +1314,7 @@ const APPLY_PROMOTION_PROBE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 const ALLOWED_CLOSE_REASONS = new Set([
   "abandoned_pr",
+  "author_pr_budget_exceeded",
   "cannot_reproduce",
   "clawhub",
   "duplicate_or_superseded",
@@ -1680,7 +1681,8 @@ function proposedItemQualityBucket(options: {
   if (options.prCloseCoverageProofCanRun) return "needs_pr_close_coverage";
   if (
     options.closeReason === "unconfirmed_product_direction" ||
-    options.closeReason === "unsponsored_feature_request"
+    options.closeReason === "unsponsored_feature_request" ||
+    options.closeReason === "author_pr_budget_exceeded"
   )
     return "policy_sensitive";
   if (
@@ -1766,6 +1768,8 @@ function hasPullRequestClosePromotionSignal(
   options: { staleMinAgeMs: number },
 ): boolean {
   return (
+    (hasAuthorPrBudgetPromotionSignal(markdown) &&
+      olderThan(frontMatterValue(markdown, "item_created_at"), 7 * 24 * 60 * 60 * 1000)) ||
     hasLinkedPullRequestSupersessionSignal(markdown, targetRepo) ||
     ((hasRecommendedPauseOrCloseOption(markdown) ||
       hasLowSignalPullRequestPromotionSignal(markdown)) &&
@@ -1777,10 +1781,18 @@ function pullRequestClosePromotionReasons(
   markdown: string,
   targetRepo: string,
   options: { staleMinAgeMs: number },
-): Array<"duplicate_or_superseded" | "low_signal_unmergeable_pr"> {
+): Array<"author_pr_budget_exceeded" | "duplicate_or_superseded" | "low_signal_unmergeable_pr"> {
   const linkedSupersession = hasLinkedPullRequestSupersessionSignal(markdown, targetRepo);
   const recommendedPauseOrClose = hasRecommendedPauseOrCloseOption(markdown);
-  const reasons: Array<"duplicate_or_superseded" | "low_signal_unmergeable_pr"> = [];
+  const reasons: Array<
+    "author_pr_budget_exceeded" | "duplicate_or_superseded" | "low_signal_unmergeable_pr"
+  > = [];
+  if (
+    hasAuthorPrBudgetPromotionSignal(markdown) &&
+    olderThan(frontMatterValue(markdown, "item_created_at"), 7 * 24 * 60 * 60 * 1000)
+  ) {
+    reasons.push("author_pr_budget_exceeded");
+  }
   if (linkedSupersession || recommendedPauseOrClose) reasons.push("duplicate_or_superseded");
   // Pause-or-close is a deterministic duplicate promotion. A linked PR is only
   // speculative until live hydration, so an F-rated report can still fall back
@@ -1860,6 +1872,24 @@ function hasLowSignalPullRequestPromotionSignal(markdown: string): boolean {
   return (
     overallTier === "F" &&
     (proofTier === "F" || ["missing", "mock_only", "insufficient"].includes(proofStatus))
+  );
+}
+
+function hasAuthorPrBudgetPromotionSignal(markdown: string): boolean {
+  const ratingSection = sectionValue(markdown, "PR Rating");
+  const proofSection = sectionValue(markdown, "Real Behavior Proof");
+  const overallTier =
+    sectionLineValue(ratingSection, "Overall tier") ||
+    frontMatterValue(markdown, "pr_rating_overall");
+  const proofStatus =
+    sectionLineValue(proofSection, "Status") ||
+    frontMatterValue(markdown, "real_behavior_proof_status");
+  if (["S", "A", "B"].includes(overallTier) && ["sufficient", "override"].includes(proofStatus)) {
+    return false;
+  }
+  return (
+    ["D", "F"].includes(overallTier) ||
+    ["missing", "mock_only", "insufficient"].includes(proofStatus)
   );
 }
 
@@ -2429,6 +2459,7 @@ function allowedForTarget(
       (type === "pull_request" && reason === "mostly_implemented_on_main")
     );
   if (type !== "pull_request" && reason === "unconfirmed_product_direction") return false;
+  if (type !== "pull_request" && reason === "author_pr_budget_exceeded") return false;
   if (type === "pull_request" && reason === "unsponsored_feature_request") return false;
   if (type === "pull_request" && reason === "stale_insufficient_info") return false;
   if (type !== "pull_request" && reason === "mostly_implemented_on_main") return false;

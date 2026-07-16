@@ -12,6 +12,12 @@ test("OpenClaw allows unsponsored feature closes for issues only", () => {
   );
 });
 
+test("OpenClaw allows author budget closes for pull requests only", () => {
+  const profile = repositoryProfileFor("openclaw/openclaw");
+  assert.equal(profile.applyCloseRules.issue?.includes("author_pr_budget_exceeded"), false);
+  assert.equal(profile.applyCloseRules.pull_request?.includes("author_pr_budget_exceeded"), true);
+});
+
 test("repositoryProfileFor matches mixed-case input against canonical profiles", () => {
   const profile = repositoryProfileFor("OpenClaw/ClawHub");
 

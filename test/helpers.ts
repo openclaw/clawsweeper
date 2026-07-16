@@ -472,6 +472,16 @@ export function promotionGhMock(options: {
   headActivityAt?: string | null;
   headRunPullRequests?: unknown[];
   authorLogin?: string;
+  authorAssociation?: string;
+  openPrCount?: number;
+  authorSearchIncomplete?: boolean;
+  authorSearchError?: string;
+  headCommittedAt?: string;
+  statusActivityAt?: string;
+  checkActivityAt?: string;
+  assignees?: unknown[];
+  requestedReviewers?: unknown[];
+  requestedTeams?: unknown[];
   linkedPulls?: Record<number, unknown>;
   linkedPullsAfterProof?: Record<number, unknown>;
   linkedPullsAfterCommentRead?: Record<number, unknown>;
@@ -570,6 +580,13 @@ export function promotionGhMock(options: {
       options.headActivityAt === undefined ? "2026-02-01T01:00:00Z" : options.headActivityAt,
     )};
 		const authorLogin = ${JSON.stringify(options.authorLogin ?? "reporter")};
+		const authorAssociation = ${JSON.stringify(options.authorAssociation ?? "CONTRIBUTOR")};
+		const openPrCount = ${JSON.stringify(options.openPrCount ?? 16)};
+		const authorSearchIncomplete = ${JSON.stringify(options.authorSearchIncomplete ?? false)};
+		const authorSearchError = ${JSON.stringify(options.authorSearchError ?? "")};
+		const headCommittedAt = ${JSON.stringify(options.headCommittedAt ?? "2026-02-01T00:00:00Z")};
+		const statusActivityAt = ${JSON.stringify(options.statusActivityAt ?? "")};
+		const checkActivityAt = ${JSON.stringify(options.checkActivityAt ?? "")};
 		const sourceFiles = ${JSON.stringify(
       (options.sourceFiles ?? ["src/runtime.ts", "test/runtime.test.ts"]).map((filename) => ({
         filename,
@@ -604,7 +621,13 @@ export function promotionGhMock(options: {
 		      ? itemUpdatedAtAfterLabelSync
 		      : itemUpdatedAt;
 	const issueCommentCount = ${issueCommentCount};
-	if (args[0] === "api" && args[1] === "graphql") {
+	if (args[0] === "api" && path === "search/issues") {
+	  if (authorSearchError) {
+	    console.error(authorSearchError);
+	    process.exit(1);
+	  }
+	  console.log(JSON.stringify({ total_count: openPrCount, incomplete_results: authorSearchIncomplete, items: [] }));
+	} else if (args[0] === "api" && args[1] === "graphql") {
 	  const currentReviewThreads =
 	    reviewThreadsAfterFirstRead && existsSync(reviewThreadReadStatePath)
 	      ? reviewThreadsAfterFirstRead
@@ -674,9 +697,10 @@ export function promotionGhMock(options: {
     state: "open",
     locked: false,
     active_lock_reason: null,
-    author_association: "CONTRIBUTOR",
+    author_association: authorAssociation,
     user: { login: authorLogin },
     labels,
+    assignees: ${JSON.stringify(options.assignees ?? [])},
     comments: issueCommentCount,
     pull_request: { url: "https://api.github.com/repos/openclaw/openclaw/pulls/" + number }
   }));
@@ -693,8 +717,8 @@ export function promotionGhMock(options: {
     commits: 1,
     review_comments: 0,
     body: "Stale PR body.",
-    requested_reviewers: [],
-    requested_teams: [],
+    requested_reviewers: ${JSON.stringify(options.requestedReviewers ?? [])},
+    requested_teams: ${JSON.stringify(options.requestedTeams ?? [])},
     head: { sha: ${JSON.stringify(options.headSha ?? "head-sha")}, ref: "branch", repo: { id: 123, full_name: "fork/openclaw" } },
     base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
     user: { login: authorLogin }
@@ -709,6 +733,18 @@ export function promotionGhMock(options: {
 	      pull_requests: ${JSON.stringify(options.headRunPullRequests ?? [{ number: options.number }])}
 	    }] : []
 	  }));
+	} else if (args[0] === "api" && /\\/commits\\/head-sha\\/status(?:\\?|$)/.test(path)) {
+	  console.log(JSON.stringify({
+	    state: "success",
+	    statuses: statusActivityAt ? [{ state: "success", updated_at: statusActivityAt }] : []
+	  }));
+	} else if (args[0] === "api" && /\\/commits\\/head-sha\\/check-runs(?:\\?|$)/.test(path)) {
+	  console.log(JSON.stringify({
+	    total_count: checkActivityAt ? 1 : 0,
+	    check_runs: checkActivityAt ? [{ conclusion: "success", completed_at: checkActivityAt }] : []
+	  }));
+	} else if (args[0] === "api" && /\\/commits\\/head-sha(?:\\?|$)/.test(path)) {
+	  console.log(JSON.stringify({ commit: { committer: { date: headCommittedAt } } }));
 	} else if (args[0] === "api" && /\\/pulls\\/(\\d+)$/.test(path)) {
 	  const linkedNumber = Number((path.match(/\\/pulls\\/(\\d+)$/) || [])[1]);
 	  if (proofHasRun() && linkedPullHangAfterProof) {

@@ -1531,7 +1531,10 @@ test("workflow utilities select eligible proposed close records", () => {
     }),
   );
 
-  assert.deepEqual(selected, [5, 12, 15, 17, 18, 21, 22, 24, 25, 26, 27, 30, 31, 32, 35, 36]);
+  assert.deepEqual(
+    selected,
+    [5, 12, 15, 17, 18, 21, 22, 24, 25, 26, 27, 30, 31, 32, 33, 34, 35, 36],
+  );
   assert.deepEqual(
     withCwd(root, () =>
       proposedItemNumbers({
@@ -1890,6 +1893,41 @@ test("workflow utilities select gated product-direction PR close proposals", () 
     ),
     [],
   );
+});
+
+test("workflow utilities select apply-side author-budget promotion probes", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-15.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: pull_request",
+      "decision: keep_open",
+      "review_status: complete",
+      "local_checkout_access: verified",
+      "action_taken: kept_open",
+      "close_reason: none",
+      "item_created_at: 2026-01-01T00:00:00Z",
+      "pr_rating_overall: D",
+      "real_behavior_proof_status: missing",
+      "---",
+      "",
+    ].join("\n"),
+  );
+
+  const selected = withCwd(root, () =>
+    proposedItemNumbers({
+      targetRepo: "openclaw/openclaw",
+      applyKind: "pull_request",
+      applyCloseReasons: "author_pr_budget_exceeded",
+      staleMinAgeDays: 60,
+      minAgeDays: 0,
+      minAgeMinutes: null,
+    }),
+  );
+
+  assert.deepEqual(selected, [15]);
 });
 
 test("workflow utilities rotate bounded apply candidate batches by apply cursor", () => {

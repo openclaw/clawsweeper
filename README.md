@@ -337,6 +337,12 @@ that still lack maintainer-confirmed direction. Live maintainer signals and
 automation opt-ins veto apply. See
 [`docs/product-direction-close-policy.md`](docs/product-direction-close-policy.md).
 
+The default-off per-author PR-budget policy gradually trims an external
+author's oldest lowest-signal PRs only after apply verifies the live repository
+count, seven-day inactivity, rating/proof eligibility, protected labels, and
+maintainer engagement. See
+[`docs/author-pr-budget-close-policy.md`](docs/author-pr-budget-close-policy.md).
+
 ## How It Works
 
 ClawSweeper is split into four operational lanes:

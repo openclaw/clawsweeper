@@ -386,6 +386,7 @@ type CloseReason =
   | "abandoned_pr"
   | "unconfirmed_product_direction"
   | "unsponsored_feature_request"
+  | "author_pr_budget_exceeded"
   | "not_actionable_in_repo"
   | "incoherent"
   | "stale_insufficient_info"
@@ -1351,6 +1352,10 @@ const UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS = 14;
 const UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS = 7;
 const UNSPONSORED_FEATURE_MIN_AGE_DAYS = 90;
 const UNSPONSORED_FEATURE_MIN_INACTIVE_DAYS = 60;
+const AUTHOR_PR_BUDGET_MIN_AGE_DAYS = 7;
+const AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS = 7;
+const DEFAULT_AUTHOR_PR_BUDGET = 15;
+const DEFAULT_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN = 5;
 const STALLED_UNPROVEN_PR_MIN_AGE_DAYS = 14;
 const STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS = 14;
 const ABANDONED_PR_MIN_AGE_DAYS = 30;
@@ -1811,6 +1816,7 @@ const ALLOWED_REASONS = new Set<CloseReason>([
   "abandoned_pr",
   "unconfirmed_product_direction",
   "unsponsored_feature_request",
+  "author_pr_budget_exceeded",
   "not_actionable_in_repo",
   "incoherent",
   "stale_insufficient_info",
@@ -4184,6 +4190,16 @@ export function unsponsoredFeatureAgeSkipReason(
   return null;
 }
 
+export function authorPrBudgetAgeSkipReason(
+  item: Pick<Item, "createdAt">,
+  now = Date.now(),
+): string | null {
+  if (!isOlderThanDays(item.createdAt, AUTHOR_PR_BUDGET_MIN_AGE_DAYS, now)) {
+    return `author_pr_budget_exceeded requires PR older than ${AUTHOR_PR_BUDGET_MIN_AGE_DAYS} days`;
+  }
+  return null;
+}
+
 function maintainerAssociatedEntries(entries: readonly unknown[]): unknown[] {
   return entries.filter((entry) =>
     isMaintainerAuthorAssociation(asRecord(entry).author_association),
@@ -4570,6 +4586,7 @@ interface PullRequestLiveActivity {
   draft: boolean;
   headSha: string;
   headActivityAtMs: number | null;
+  headStatusActivityAtMs: number | null;
   headChecksFailing: boolean;
   headConflicted: boolean;
 }
@@ -4646,18 +4663,38 @@ function pullRequestLiveActivity(number: number): PullRequestLiveActivity {
   }>(["api", `repos/${targetRepo()}/pulls/${number}`]);
   const { headSha, headActivityAtMs } = pullRequestHeadActivity(number, pull);
   let headChecksFailing = false;
+  let headStatusActivityAtMs: number | null = null;
+  const observeStatusActivity = (value: unknown): void => {
+    const record = asRecord(value);
+    for (const candidate of [
+      record.completed_at,
+      record.started_at,
+      record.updated_at,
+      record.created_at,
+    ]) {
+      const timestamp = Date.parse(typeof candidate === "string" ? candidate : "");
+      if (
+        Number.isFinite(timestamp) &&
+        (headStatusActivityAtMs === null || timestamp > headStatusActivityAtMs)
+      ) {
+        headStatusActivityAtMs = timestamp;
+      }
+    }
+  };
   if (headSha) {
-    const combined = ghJson<{ state?: string }>([
+    const combined = ghJson<{ state?: string; statuses?: unknown[] }>([
       "api",
       `repos/${targetRepo()}/commits/${headSha}/status`,
     ]);
     if (combined.state === "failure" || combined.state === "error") headChecksFailing = true;
+    for (const status of combined.statuses ?? []) observeStatusActivity(status);
     const checks = ghJson<{ check_runs?: unknown[] }>([
       "api",
       `repos/${targetRepo()}/commits/${headSha}/check-runs?per_page=100`,
     ]);
     for (const run of checks.check_runs ?? []) {
       const record = asRecord(run);
+      observeStatusActivity(record);
       if (
         typeof record.conclusion === "string" &&
         FAILING_CHECK_RUN_CONCLUSIONS.has(record.conclusion)
@@ -4671,6 +4708,7 @@ function pullRequestLiveActivity(number: number): PullRequestLiveActivity {
     draft: pull.draft === true,
     headSha,
     headActivityAtMs,
+    headStatusActivityAtMs,
     headChecksFailing,
     headConflicted,
   };
@@ -4695,6 +4733,9 @@ function prAutoCloseExemptDecisionReason(
   }
   if (closeReason === "abandoned_pr") {
     return `${exemptLabel} exempts this PR from abandoned-PR auto-close`;
+  }
+  if (closeReason === "author_pr_budget_exceeded") {
+    return `${exemptLabel} exempts this PR from author-budget auto-close`;
   }
   return null;
 }
@@ -4839,6 +4880,153 @@ function abandonedPrApplyBlockReasonSafe(
     return `abandoned-PR liveness check failed: ${
       error instanceof Error ? error.message : String(error)
     }`;
+  }
+}
+
+interface AuthorPrBudgetApplyState {
+  author: string;
+  openPrCount: number;
+  budget: number;
+}
+
+type AuthorPrBudgetApplyGate =
+  | { allowed: true; state: AuthorPrBudgetApplyState }
+  | { allowed: false; reason: string };
+
+function authorPrBudgetSignalBlockReason(markdown: string): string | null {
+  const proof = reportRealBehaviorProof(markdown);
+  const rating = reportPrRating(markdown);
+  if (
+    ["S", "A", "B"].includes(rating.overallTier) &&
+    ["sufficient", "override"].includes(proof.status)
+  ) {
+    return "author_pr_budget_exceeded cannot close a high-quality proven pull request";
+  }
+  if (
+    !["D", "F"].includes(rating.overallTier) &&
+    !STALLED_UNPROVEN_PROOF_STATUSES.has(proof.status)
+  ) {
+    return "author_pr_budget_exceeded requires a D/F rating or missing, mock-only, or insufficient real behavior proof";
+  }
+  return null;
+}
+
+function authorOpenPullRequestCount(author: string): number {
+  const query = [
+    `repo:${targetRepo()}`,
+    "is:pr",
+    "is:open",
+    `author:${quoteGitHubSearchTerm(author)}`,
+  ].join(" ");
+  const result = ghJson<{ total_count?: number; incomplete_results?: boolean }>([
+    "api",
+    "search/issues",
+    "--method",
+    "GET",
+    "-f",
+    `q=${query}`,
+    "-f",
+    "per_page=1",
+  ]);
+  if (result.incomplete_results === true) {
+    throw new Error("GitHub author open-PR search returned incomplete results");
+  }
+  if (!Number.isInteger(result.total_count) || Number(result.total_count) < 0) {
+    throw new Error("GitHub author open-PR search omitted a valid total_count");
+  }
+  return Number(result.total_count);
+}
+
+function authorPrBudgetApplyGate(
+  number: number,
+  item: Pick<Item, "author" | "authorAssociation" | "createdAt" | "kind" | "labels">,
+  markdown: string,
+): AuthorPrBudgetApplyGate {
+  if (!authorPrBudgetCloseEnabled()) {
+    return { allowed: false, reason: "author PR-budget apply policy is disabled" };
+  }
+  if (item.kind !== "pull_request") {
+    return {
+      allowed: false,
+      reason: "author_pr_budget_exceeded is allowed only for pull requests",
+    };
+  }
+  if (isMaintainerAuthored(item)) {
+    return {
+      allowed: false,
+      reason: "author_pr_budget_exceeded cannot close maintainer-authored pull requests",
+    };
+  }
+  const exemptLabel = prAutoCloseExemptLabel(item.labels);
+  if (exemptLabel) {
+    return {
+      allowed: false,
+      reason: `${exemptLabel} exempts this PR from author-budget auto-close`,
+    };
+  }
+  const ageBlock = authorPrBudgetAgeSkipReason(item);
+  if (ageBlock) return { allowed: false, reason: ageBlock };
+  const signalBlock = authorPrBudgetSignalBlockReason(markdown);
+  if (signalBlock) return { allowed: false, reason: signalBlock };
+  if (!item.author.trim()) {
+    return { allowed: false, reason: "author_pr_budget_exceeded requires a known PR author" };
+  }
+
+  const activity = pullRequestLiveActivity(number);
+  if (!activity.headSha) {
+    return { allowed: false, reason: "author_pr_budget_exceeded requires a live PR head SHA" };
+  }
+  const commit = ghJson<{ commit?: { committer?: { date?: string } } }>([
+    "api",
+    `repos/${targetRepo()}/commits/${activity.headSha}`,
+  ]);
+  const committedAtMs = Date.parse(commit.commit?.committer?.date ?? "");
+  if (!Number.isFinite(committedAtMs)) {
+    return {
+      allowed: false,
+      reason: "author_pr_budget_exceeded requires a dated current-head committer timestamp",
+    };
+  }
+  const latestActivityAtMs = Math.max(
+    committedAtMs,
+    activity.headActivityAtMs ?? Number.NEGATIVE_INFINITY,
+    activity.headStatusActivityAtMs ?? Number.NEGATIVE_INFINITY,
+  );
+  if (Date.now() - latestActivityAtMs <= AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS * DAY_MS) {
+    return {
+      allowed: false,
+      reason: `author_pr_budget_exceeded requires ${AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS} days without current-head commit, status, or check-run activity`,
+    };
+  }
+
+  const engagementBlock = pullRequestHumanEngagementBlockReason(number);
+  if (engagementBlock) return { allowed: false, reason: engagementBlock };
+
+  const budget = authorPrBudget();
+  const openPrCount = authorOpenPullRequestCount(item.author);
+  if (openPrCount <= budget) {
+    return {
+      allowed: false,
+      reason: `author has ${openPrCount} open PRs; author PR budget is ${budget}`,
+    };
+  }
+  return { allowed: true, state: { author: item.author, openPrCount, budget } };
+}
+
+function authorPrBudgetApplyGateSafe(
+  number: number,
+  item: Pick<Item, "author" | "authorAssociation" | "createdAt" | "kind" | "labels">,
+  markdown: string,
+): AuthorPrBudgetApplyGate {
+  try {
+    return authorPrBudgetApplyGate(number, item, markdown);
+  } catch (error) {
+    return {
+      allowed: false,
+      reason: `author PR-budget live check failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
   }
 }
 
@@ -5844,6 +6032,30 @@ export function unsponsoredFeatureCloseEnabled(
   env: Record<string, string | undefined> = process.env,
 ): boolean {
   return envFlagEnabled(env.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED);
+}
+
+export function authorPrBudgetCloseEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return envFlagEnabled(env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED);
+}
+
+function positiveIntegerEnv(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function authorPrBudget(env: Record<string, string | undefined> = process.env): number {
+  return positiveIntegerEnv(env.CLAWSWEEPER_AUTHOR_PR_BUDGET, DEFAULT_AUTHOR_PR_BUDGET);
+}
+
+export function authorPrBudgetMaxClosesPerRun(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  return positiveIntegerEnv(
+    env.CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN,
+    DEFAULT_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN,
+  );
 }
 
 function quoteGitHubSearchTerm(term: string): string {
@@ -10218,6 +10430,8 @@ function closeReasonText(reason: CloseReason): string {
       return "feature-like PR without confirmed product direction";
     case "unsponsored_feature_request":
       return "feature request without maintainer sponsorship";
+    case "author_pr_budget_exceeded":
+      return "lowest-signal PR over the author's open-PR budget";
     case "not_actionable_in_repo":
       return "not actionable in this repository";
     case "incoherent":
@@ -11436,6 +11650,8 @@ function closeIntro(reason: CloseReason): string {
       return "Thanks for the contribution. ClawSweeper proposes closing this for now: the implementation may be reasonable, but passing review and proof does not establish that OpenClaw should add this product surface.";
     case "unsponsored_feature_request":
       return "Thanks for sharing this idea. ClawSweeper proposes closing it as not planned unless a maintainer sponsors the direction, because no maintainer has confirmed this product direction.";
+    case "author_pr_budget_exceeded":
+      return "Thanks for the contribution. ClawSweeper is trimming this lowest-signal PR because the author is over the repository's open-PR budget.";
     case "not_actionable_in_repo":
       return "Thanks for writing this up. I checked the repo boundary, and this lives outside the OpenClaw source shell.";
     case "incoherent":
@@ -11469,6 +11685,8 @@ function closeOutro(reason: CloseReason, canonicalLinks: string[] = []): string 
       return "This is a proposal only until the separate default-off apply policy is enabled and all live maintainer-signal checks pass. A maintainer can sponsor the direction, request a narrower version, or apply `clawsweeper:human-review` to keep it open.";
     case "unsponsored_feature_request":
       return `So I’m closing this as not planned unless a maintainer sponsors the direction. A maintainer can sponsor it and reopen this issue, or anyone can ask to reopen if the situation changes. When the idea fits an extension, ${markdownLink("ClawHub.com", targetProfile().communityUrl ?? "https://clawhub.ai/")} remains the self-serve path.`;
+    case "author_pr_budget_exceeded":
+      return "Closing or finishing other open PRs frees review budget. This PR can be reopened once the author is under budget, or sooner when real behavior proof is added.";
     case "not_actionable_in_repo":
       return "So I’m closing this as outside the OpenClaw source repository rather than keeping it open as core work.";
     default:
@@ -15387,6 +15605,40 @@ function upgradePullRequestClosePromotionReport(
   return upgraded;
 }
 
+function authorPrBudgetPromotion(
+  markdown: string,
+  state: AuthorPrBudgetApplyState,
+): PullRequestClosePromotion {
+  const proof = reportRealBehaviorProof(markdown);
+  const rating = reportPrRating(markdown);
+  const author = `@${state.author.replace(/^@/, "")}`;
+  const summary = `${author} currently has ${state.openPrCount} open PRs in this repository, above the budget of ${state.budget}. ClawSweeper is closing this PR as one of the author's lowest-signal submissions under that budget: its overall rating is ${rating.overallTier} and its real behavior proof is ${proof.status}. Closing or finishing other PRs frees review budget, and this PR can be reopened once the author is under budget or when real proof is added.`;
+  return {
+    closeReason: "author_pr_budget_exceeded",
+    summary,
+    coverageProofFallbackRefs: false,
+    bestSolution:
+      "Close this lowest-signal PR for now. Finish or close other open PRs to free review budget, then reopen this PR once the author is under budget; adding real behavior proof also makes it eligible for reconsideration.",
+    evidence: [
+      `- **live author budget:** ${author} has ${state.openPrCount} open PRs in this repository; the configured budget is ${state.budget}.`,
+      `- **lowest-signal classification:** overall PR rating is \`${rating.overallTier}\` and real behavior proof is \`${proof.status}\`.`,
+      `- **inactivity floor:** the PR and its current-head commit, status, and check-run activity are all older than ${AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS} days.`,
+    ].join("\n"),
+    closeComment: `Thanks for the contribution. ${summary}`,
+  };
+}
+
+function applyAuthorPrBudgetStateToReport(
+  markdown: string,
+  state: AuthorPrBudgetApplyState,
+): string {
+  const promotion = authorPrBudgetPromotion(markdown, state);
+  let next = replaceSectionValue(markdown, REVIEW_SECTIONS.summary, promotion.summary);
+  next = replaceSectionValue(next, REVIEW_SECTIONS.bestSolution, promotion.bestSolution);
+  next = replaceSectionValue(next, REVIEW_SECTIONS.evidence, promotion.evidence);
+  return replaceSectionValue(next, REVIEW_SECTIONS.closeComment, promotion.closeComment);
+}
+
 function closePromotionHasNonAutomationActivityAfterReview(
   markdown: string,
   context: ItemContext,
@@ -17971,7 +18223,9 @@ export function renderReviewCommentFromReport(
   const body =
     decision === "close" &&
     reason !== "none" &&
-    (!requiresMaintainerDecision || reason === "unsponsored_feature_request")
+    (!requiresMaintainerDecision ||
+      reason === "unsponsored_feature_request" ||
+      reason === "author_pr_budget_exceeded")
       ? renderCloseCommentFromReport(markdown, reason)
       : renderKeepOpenCommentFromReport(markdown, options);
   const markers = options.suppressAutomationMarkers
@@ -18159,6 +18413,31 @@ function abandonedPrDecisionBlockReason(
   return null;
 }
 
+function authorPrBudgetDecisionBlockReason(
+  item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "authorAssociation">>,
+  decision: Decision,
+): string | null {
+  const externalBlock = externalPrCloseDecisionBlockReason(
+    item,
+    "author_pr_budget_exceeded",
+    "author-budget auto-close",
+  );
+  if (externalBlock) return externalBlock;
+  if (
+    ["S", "A", "B"].includes(decision.prRating.overallTier) &&
+    ["sufficient", "override"].includes(decision.realBehaviorProof.status)
+  ) {
+    return "author_pr_budget_exceeded cannot close a high-quality proven pull request";
+  }
+  if (
+    !["D", "F"].includes(decision.prRating.overallTier) &&
+    !STALLED_UNPROVEN_PROOF_STATUSES.has(decision.realBehaviorProof.status)
+  ) {
+    return "author_pr_budget_exceeded requires a D/F rating or missing, mock-only, or insufficient real behavior proof";
+  }
+  return null;
+}
+
 export function validateCloseDecision(
   item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "repo" | "authorAssociation">>,
   decision: Decision,
@@ -18253,6 +18532,16 @@ export function validateCloseDecision(
         ok: false,
         actionTaken: "skipped_invalid_decision",
         reason: abandonedBlock,
+      };
+    }
+  }
+  if (decision.closeReason === "author_pr_budget_exceeded") {
+    const authorBudgetBlock = authorPrBudgetDecisionBlockReason(item, decision);
+    if (authorBudgetBlock) {
+      return {
+        ok: false,
+        actionTaken: "skipped_invalid_decision",
+        reason: authorBudgetBlock,
       };
     }
   }
@@ -25289,6 +25578,21 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
   const allOpenFileEntries = applyReportEntriesForDir(itemsDir, "items", false);
   const openFileEntryByNumber = new Map(allOpenFileEntries.map((entry) => [entry.number, entry]));
   const closedThisRun = new Set<string>();
+  const authorPrBudgetClosesThisRun = new Map<string, number>();
+  // Counts every same-author PR closed this run regardless of reason: the budget
+  // projection must see closes GitHub Search has not indexed yet, whatever closed them.
+  const authorPrClosesThisRun = new Map<string, number>();
+  const recordAuthorPrClose = (author: string, closeReason: CloseReason | "none" | null): void => {
+    const authorKey = author.trim().toLowerCase();
+    if (!authorKey) return;
+    authorPrClosesThisRun.set(authorKey, (authorPrClosesThisRun.get(authorKey) ?? 0) + 1);
+    if (closeReason === "author_pr_budget_exceeded") {
+      authorPrBudgetClosesThisRun.set(
+        authorKey,
+        (authorPrBudgetClosesThisRun.get(authorKey) ?? 0) + 1,
+      );
+    }
+  };
   const applyLedger = startApplyActionLedger({
     applyKind,
     closeReasons: applyCloseReasons,
@@ -26085,6 +26389,34 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       if (!dryRun) allowedSelfMutationUpdatedAts.add(fetchItem(number).item.updatedAt);
     };
     let cachedPrCloseCoverageProofGateResult: PrCloseCoverageProofGateResult | undefined;
+    let cachedAuthorPrBudgetApplyGate: AuthorPrBudgetApplyGate | undefined;
+    const currentAuthorPrBudgetApplyGate = (): AuthorPrBudgetApplyGate => {
+      const authorKey = item.author.trim().toLowerCase();
+      const closedForAuthor = authorPrBudgetClosesThisRun.get(authorKey) ?? 0;
+      const maxCloses = authorPrBudgetMaxClosesPerRun();
+      if (closedForAuthor >= maxCloses) {
+        return {
+          allowed: false,
+          reason: `author PR-budget per-run close cap of ${maxCloses} reached for @${item.author.replace(/^@/, "")}`,
+        };
+      }
+      cachedAuthorPrBudgetApplyGate ??= authorPrBudgetApplyGateSafe(number, item, markdown);
+      if (!cachedAuthorPrBudgetApplyGate.allowed) return cachedAuthorPrBudgetApplyGate;
+      // GitHub Search may not reflect this run's own closes yet, so project them
+      // onto the live count: one run must never trim an author below the budget.
+      // Uses the all-reasons counter — a same-author PR closed as abandoned or
+      // duplicate earlier in this run stales the search count just the same.
+      const projectedOpenPrCount =
+        cachedAuthorPrBudgetApplyGate.state.openPrCount -
+        (authorPrClosesThisRun.get(authorKey) ?? 0);
+      if (projectedOpenPrCount <= cachedAuthorPrBudgetApplyGate.state.budget) {
+        return {
+          allowed: false,
+          reason: `author is projected at ${projectedOpenPrCount} open PRs after this run's closes; author PR budget is ${cachedAuthorPrBudgetApplyGate.state.budget}`,
+        };
+      }
+      return cachedAuthorPrBudgetApplyGate;
+    };
     let prCloseCoverageProofGateChecked = false;
     let prCloseCoverageProofStartedAtMs: number | null = null;
     const runtimeBudgetProofBlock = (phase = "before"): PrCloseCoverageProofGateResult => ({
@@ -26167,7 +26499,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     };
     const sameAuthorPairStartCloseable = new Map<string, boolean>();
     const currentCloseGatesPassed = (): boolean => {
-      if (requiredMaintainerDecision?.required && closeReason !== "unsponsored_feature_request")
+      if (
+        requiredMaintainerDecision?.required &&
+        closeReason !== "unsponsored_feature_request" &&
+        closeReason !== "author_pr_budget_exceeded"
+      )
         return false;
       if (!closeReason || !closeReasonEnabled(closeReason, applyCloseReasons)) return false;
       if (needsReviewCommentSync) return false;
@@ -26218,6 +26554,12 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       if (
         closeReason === "unsponsored_feature_request" &&
         unsponsoredFeatureApplyBlockReasonSafe(number, item)
+      ) {
+        return false;
+      }
+      if (
+        closeReason === "author_pr_budget_exceeded" &&
+        !currentAuthorPrBudgetApplyGate().allowed
       ) {
         return false;
       }
@@ -26508,13 +26850,21 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     ) {
       attemptedPullRequestClosePromotion = true;
       const promotionContext = currentItemContext();
-      const promotion = pullRequestClosePromotion(
-        markdown,
-        item,
-        promotionContext,
-        staleMinAgeDays,
-        { reportDirs: [itemsDir, closedDir] },
-      );
+      let promotion: PullRequestClosePromotion | null = null;
+      if (
+        authorPrBudgetCloseEnabled() &&
+        closeReasonEnabled("author_pr_budget_exceeded", applyCloseReasons) &&
+        !authorPrBudgetAgeSkipReason(item) &&
+        !authorPrBudgetSignalBlockReason(markdown)
+      ) {
+        const authorBudgetGate = currentAuthorPrBudgetApplyGate();
+        if (authorBudgetGate.allowed) {
+          promotion = authorPrBudgetPromotion(markdown, authorBudgetGate.state);
+        }
+      }
+      promotion ??= pullRequestClosePromotion(markdown, item, promotionContext, staleMinAgeDays, {
+        reportDirs: [itemsDir, closedDir],
+      });
       if (promotion && closeReasonEnabled(promotion.closeReason, applyCloseReasons)) {
         markdown = upgradePullRequestClosePromotionReport(
           markdown,
@@ -26528,6 +26878,21 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         isCloseProposal = true;
         cachedPrCloseCoverageProofGateResult = undefined;
       }
+    }
+    if (
+      state === "open" &&
+      isCloseProposal &&
+      closeReason === "author_pr_budget_exceeded" &&
+      !syncCommentsOnly &&
+      (applyKind === "all" || item.kind === applyKind) &&
+      closeReasonEnabled(closeReason, applyCloseReasons)
+    ) {
+      const authorBudgetGate = currentAuthorPrBudgetApplyGate();
+      if (!authorBudgetGate.allowed) {
+        if (markApplySkipped("kept_open", authorBudgetGate.reason)) break;
+        continue;
+      }
+      markdown = applyAuthorPrBudgetStateToReport(markdown, authorBudgetGate.state);
     }
     if (
       state === "open" &&
@@ -27691,7 +28056,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       if (!isCloseProposal && attemptedPullRequestClosePromotion) markApplyChecked();
       continue;
     }
-    if (requiredMaintainerDecision?.required && closeReason !== "unsponsored_feature_request") {
+    if (
+      requiredMaintainerDecision?.required &&
+      closeReason !== "unsponsored_feature_request" &&
+      closeReason !== "author_pr_budget_exceeded"
+    ) {
       if (
         markApplySkipped(
           "kept_open",
@@ -27810,9 +28179,14 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         ? stalledUnprovenPrApplyBlockReasonSafe(number, item)
         : closeReason === "abandoned_pr"
           ? abandonedPrApplyBlockReasonSafe(number, item)
-          : closeReason === "unsponsored_feature_request"
-            ? unsponsoredFeatureApplyBlockReasonSafe(number, item)
-            : closeReason === "stale_insufficient_info"
+        : closeReason === "unsponsored_feature_request"
+          ? unsponsoredFeatureApplyBlockReasonSafe(number, item)
+          : closeReason === "author_pr_budget_exceeded"
+            ? (() => {
+                const gate = currentAuthorPrBudgetApplyGate();
+                return gate.allowed ? null : gate.reason;
+              })()
+          : closeReason === "stale_insufficient_info"
               ? issueRecentHumanCommentBlockReasonSafe(
                   number,
                   STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS,
@@ -27853,6 +28227,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       });
       logProgress(`would close #${number}`);
       closedThisRun.add(pairCloseKey(repo, number));
+      if (item.kind === "pull_request") recordAuthorPrClose(item.author, closeReason);
       if (processedCount >= processedLimit) break;
       continue;
     }
@@ -27900,6 +28275,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     });
     logProgress(`closed #${number}`);
     closedThisRun.add(pairCloseKey(repo, number));
+    if (item.kind === "pull_request") recordAuthorPrClose(item.author, closeReason);
     if (postCloseRuntimeYieldReason) {
       runtimeBudget.onYield?.(postCloseRuntimeYieldReason, false);
       return;

@@ -2336,6 +2336,26 @@ test("trusted close gates block protected labels, source drift, and unsupported 
       process.env.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED = originalUnsponsoredPolicy;
     }
   }
+  const originalAuthorBudgetPolicy = process.env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED;
+  delete process.env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED;
+  try {
+    const authorBudgetBase = { ...base, closeReason: "author_pr_budget_exceeded" };
+    assert.match(
+      trustedCloseBlockReason(authorBudgetBase),
+      /author PR-budget apply policy is disabled/,
+    );
+    process.env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED = "true";
+    assert.match(
+      trustedCloseBlockReason(authorBudgetBase),
+      /require apply-decisions live author count, inactivity, and per-run-cap proof/,
+    );
+  } finally {
+    if (originalAuthorBudgetPolicy === undefined) {
+      delete process.env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED;
+    } else {
+      process.env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED = originalAuthorBudgetPolicy;
+    }
+  }
   assert.match(
     trustedCloseBlockReason({ ...base, closeReason: "low_signal_unmergeable_pr" }),
     /require apply-decisions live conflict and author-activity proof/,

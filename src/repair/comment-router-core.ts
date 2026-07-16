@@ -1142,6 +1142,13 @@ export function trustedCloseBlockReason({
   ) {
     return "unsponsored feature-request apply policy is disabled";
   }
+  if (
+    closeKind === "pull_request" &&
+    reason === "author_pr_budget_exceeded" &&
+    !authorPrBudgetTrustedCloseEnabled()
+  ) {
+    return "author PR-budget apply policy is disabled";
+  }
   const reasonSpecificBlock = trustedCloseReasonSpecificBlockReason({
     reason,
     closeKind,
@@ -1207,6 +1214,10 @@ function unsponsoredFeatureTrustedCloseEnabled(env: LooseRecord = process.env): 
   return envFlagEnabled(env.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED);
 }
 
+function authorPrBudgetTrustedCloseEnabled(env: LooseRecord = process.env): boolean {
+  return envFlagEnabled(env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED);
+}
+
 function trustedCloseReasonSpecificBlockReason({
   reason,
   closeKind,
@@ -1252,6 +1263,9 @@ function trustedCloseReasonSpecificBlockReason({
     return null;
   }
   if (closeKind !== "pull_request") return null;
+  if (reason === "author_pr_budget_exceeded") {
+    return "author_pr_budget_exceeded closes require apply-decisions live author count, inactivity, and per-run-cap proof";
+  }
   if (reason === "unconfirmed_product_direction") {
     const ageBlock = unconfirmedProductDirectionTrustedCloseAgeBlock({
       createdAt,
