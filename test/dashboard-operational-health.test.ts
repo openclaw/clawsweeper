@@ -107,20 +107,40 @@ test("health history preserves legacy samples and normalizes exact-review backlo
 
   const exactReview = exactReviewHistorySample({
     lanes: {
-      review: { pending: 317 },
-      publication: { pending: 1502, completed_total: 42 },
+      review: {
+        pending: 317,
+        enqueued_total: 90,
+        completed_total: 70,
+        shed_since_reset: 3,
+      },
+      publication: { pending: 1502, enqueued_total: 50, completed_total: 42 },
     },
   });
   const normalized = normalizeHealthHistorySample({ ...legacy, exact_review: exactReview });
   assert.deepEqual(normalized?.exact_review, {
     collection_ok: true,
-    review: { pending: 317 },
-    publication: { pending: 1502, completed_total: 42 },
+    review: { pending: 317, enqueued_total: 90, completed_total: 70, shed_total: 3 },
+    publication: { pending: 1502, enqueued_total: 50, completed_total: 42 },
   });
   assert.deepEqual(normalizeHealthHistorySample({ at: CHECKED_AT, exact_review: exactReview }), {
     at: CHECKED_AT,
     exact_review: exactReview,
   });
+  assert.deepEqual(
+    normalizeHealthHistorySample({
+      at: CHECKED_AT,
+      exact_review: {
+        collection_ok: true,
+        review: { pending: 8 },
+        publication: { pending: 13, completed_total: 21 },
+      },
+    })?.exact_review,
+    {
+      collection_ok: true,
+      review: { pending: 8 },
+      publication: { pending: 13, completed_total: 21 },
+    },
+  );
   assert.deepEqual(exactReviewHistorySample(null), { collection_ok: false });
   assert.equal(
     normalizeHealthHistorySample({
@@ -128,6 +148,21 @@ test("health history preserves legacy samples and normalizes exact-review backlo
       exact_review: { collection_ok: true, review: { pending: 1 } },
     })?.exact_review,
     undefined,
+  );
+  assert.deepEqual(
+    normalizeHealthHistorySample({
+      at: CHECKED_AT,
+      exact_review: {
+        collection_ok: true,
+        review: { pending: 1, enqueued_total: -1, completed_total: 0 },
+        publication: { pending: 1, enqueued_total: 0, completed_total: 0 },
+      },
+    })?.exact_review,
+    {
+      collection_ok: true,
+      review: { pending: 1, enqueued_total: 0, completed_total: 0 },
+      publication: { pending: 1, enqueued_total: 0, completed_total: 0 },
+    },
   );
 });
 

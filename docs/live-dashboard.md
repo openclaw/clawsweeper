@@ -174,8 +174,9 @@ state, fetch time, and current diagnostics.
 A Cloudflare Cron Trigger records one Exact Review queue sample every five
 minutes. It reuses the queue status read that also performs scheduled queue
 maintenance and makes no GitHub Actions request. The sample contains each
-lane's pending backlog and a cumulative count of successfully completed Result
-publication items.
+lane's pending backlog plus cumulative counts for newly enqueued and
+successfully completed work. Review samples also retain the cumulative shed
+count so overload demand remains visible even when no queue item was admitted.
 
 Samples are stored in the existing `StatusStore` Durable Object under daily UTC
 keys named `health-history:YYYY-MM-DD`. Writes replace the current five-minute
@@ -189,13 +190,24 @@ and returns legacy operational samples, but new samples omit those unused chart
 fields. Existing buckets expire naturally; no migration or manual cleanup is
 required.
 
-The Result publication speed chart derives a trailing hourly completion rate
-from the durable cumulative counter. Counting happens in the same queue storage
-transaction that terminalizes a successful publication, so retries, failures,
-review-lane work, and replayed completion requests do not inflate throughput.
-Counter history cannot be backfilled: the first rate appears after one hour of
-continuous samples, and comparison with the previous hour needs two hours.
-Telemetry gaps longer than 12 minutes break both backlog and speed lines.
+Each lane renders one signed speed value and curve: successfully completed work
+minus newly incoming work, expressed per hour. Positive speed means the lane is
+catching up, negative speed means it is falling behind, and zero is balanced.
+Incoming counts newly created queue work units; review demand also includes
+shed recovery work. Pending merges, delivery replays, retries, and source-drift
+requeues do not create new demand. Completed work is counted only when a
+successful item actually leaves its lane, in the same queue storage transaction
+as the deletion.
+
+After two continuous samples roughly five minutes apart, the dashboard scales
+the observed net change to an hourly rate and labels it provisional with the
+actual window length. Once an hour of continuous counters exists, it uses a
+trailing hourly rate. Zero incoming or zero completed work remains valid data. A
+gap over 12 minutes, a cumulative counter reset, or a legacy sample without flow
+counters starts a new speed segment; a latest speed point older than 12 minutes
+is stale.
+Pre-deployment counter history cannot be backfilled, so the first provisional
+speed appears about five minutes after deployment.
 
 Operational health remains a current-snapshot alert rather than a historical
 chart. `/api/status` classifies the already-fetched active workflow runs as:
@@ -287,9 +299,11 @@ For capacity displays, `/api/exact-review-queue` also exposes compatible
 `lanes.review` and `lanes.publication` objects. Each lane reports its own
 pending, ready, backoff, dispatching, leased, capacity, active, available-slot,
 oldest-pending, and next-attempt values. The existing top-level aggregate fields
-remain available for older consumers. The publication lane additionally reports
-`completed_total`. `/api/status` retains its `control_plane` compatibility field,
-but the dashboard no longer renders that low-actionability section.
+remain available for older consumers. Both lanes additionally report
+`enqueued_total` and `completed_total`; the review lane's existing
+`shed_since_reset` supplies overload demand. `/api/status` retains its
+`control_plane` compatibility field, but the dashboard no longer renders that
+low-actionability section.
 
 Executors report the GitHub job outcome from their finalizer. Failure or
 cancellation clears the lease and requeues the item. Finalizer success remains

@@ -83,6 +83,11 @@ test("exact-review queue debounces fresh work and caps pending revision extensio
     state = (await storage.get("exact-review-queue")) as typeof state;
     assert.equal(state.items["openclaw/gogcli#750"].nextAttemptAt, 1_001_500);
     assert.equal(state.items["openclaw/gogcli#750"].revision, 3);
+    const stats = await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(stats.lanes.review.enqueued_total, 1);
+    assert.equal(stats.lanes.publication.enqueued_total, 0);
   } finally {
     Date.now = originalNow;
   }
@@ -132,6 +137,11 @@ test("exact-review queue bypasses debounce for commands and publications", async
     };
     assert.equal(merged.items["openclaw/gogcli#751"].revision, 2);
     assert.equal(merged.items["openclaw/gogcli#751"].nextAttemptAt, 2_000_000);
+    const stats = await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(stats.lanes.review.enqueued_total, 1);
+    assert.equal(stats.lanes.publication.enqueued_total, 1);
   } finally {
     Date.now = originalNow;
   }
@@ -190,6 +200,28 @@ test("exact-review queue sheds only new recovery work above the pending soft lim
   assert.equal(stats.handoff_health.shed_since_reset, 3);
   assert.equal(stats.lanes.review.pending_depth, 2);
   assert.equal(stats.lanes.review.shed_since_reset, 3);
+  assert.equal(stats.lanes.review.enqueued_total, 2);
+  assert.equal(stats.lanes.publication.enqueued_total, 1);
+});
+
+test("exact-review queue does not count work for a disabled target", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const response = await queue.fetch(
+    buildExactReviewQueueRequest("disabled-clawhub", 780, "opened", "issue", "openclaw/clawhub"),
+  );
+
+  assert.equal(response.status, 202);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    accepted: false,
+    reason: "target not enabled",
+  });
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.review.enqueued_total, 0);
+  assert.equal(stats.lanes.publication.enqueued_total, 0);
 });
 
 test("heartbeated exact-review leases use the heartbeat grace while legacy leases keep execution expiry", () => {
@@ -342,7 +374,7 @@ test("signed claimed-run snapshot feeds tuple-safe terminal reconciliation", asy
   });
 });
 
-test("exact-review queue counts only terminal successful publications", async () => {
+test("exact-review queue counts only work that successfully leaves each lane", async () => {
   const storage = new MemoryDurableStorage();
   const directPublication = leasedExactReviewQueueItem(703, "7030");
   directPublication.decision.sourceAction = "exact_review_artifact_publish";
@@ -431,8 +463,54 @@ test("exact-review queue counts only terminal successful publications", async ()
   const stats = await (
     await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
   ).json();
+  assert.equal(stats.lanes.review.completed_total, 1);
   assert.equal(stats.lanes.publication.completed_total, 2);
   assert.equal(stats.lanes.publication.pending, 2);
+});
+
+test("exact-review completion and lane metrics roll back together", async () => {
+  const storage = new MemoryDurableStorage();
+  const review = leasedExactReviewQueueItem(708, "7080");
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [review.key]: review },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
+  const complete = () =>
+    queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: review.leaseId,
+          item_key: review.key,
+          lease_revision: review.leaseRevision,
+          claim_generation: review.claimGeneration,
+          run_id: review.claimedRunId,
+          run_attempt: review.claimedRunAttempt,
+          outcome: "success",
+        }),
+      }),
+    );
+
+  storage.failNextSql(/SET review_enqueued_total = review_enqueued_total \+ \?/);
+  await assert.rejects(complete(), /injected SQL failure/);
+  let state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, unknown>;
+  };
+  assert.ok(state.items[review.key]);
+  let stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.review.completed_total, 0);
+
+  assert.equal((await complete()).status, 200);
+  state = (await storage.get("exact-review-queue")) as typeof state;
+  assert.equal(state.items[review.key], undefined);
+  stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.review.completed_total, 1);
 });
 
 test("exact-review queue admits and wakes up to 24 publishers", () => {
@@ -508,6 +586,10 @@ test("dashboard status reads the exact-review handoff model from the durable que
   assert.equal(status.leased, 2);
   assert.equal(status.handoff_health.status, "healthy");
   assert.equal(status.handoff_health.phases.pending.count, 2);
+  assert.equal(status.lanes.review.enqueued_total, 3);
+  assert.equal(status.lanes.review.completed_total, 0);
+  assert.equal(status.lanes.publication.enqueued_total, 1);
+  assert.equal(status.lanes.publication.completed_total, 0);
   assert.deepEqual(
     {
       pending: status.lanes.review.pending,
@@ -1887,8 +1969,13 @@ test("dashboard cron records only exact-review history without GitHub queries", 
         return jsonResponse({
           handoff_health: { status: "healthy" },
           lanes: {
-            review: { pending: 17 },
-            publication: { pending: 29, completed_total: 123 },
+            review: {
+              pending: 17,
+              enqueued_total: 101,
+              completed_total: 83,
+              shed_since_reset: 5,
+            },
+            publication: { pending: 29, enqueued_total: 157, completed_total: 123 },
           },
         });
       },
@@ -1937,7 +2024,11 @@ test("dashboard cron records only exact-review history without GitHub queries", 
     assert.equal(history.samples[0].queued, undefined);
     assert.equal(history.samples[0].exact_review.collection_ok, true);
     assert.equal(history.samples[0].exact_review.review.pending, 17);
+    assert.equal(history.samples[0].exact_review.review.enqueued_total, 101);
+    assert.equal(history.samples[0].exact_review.review.completed_total, 83);
+    assert.equal(history.samples[0].exact_review.review.shed_total, 5);
     assert.equal(history.samples[0].exact_review.publication.pending, 29);
+    assert.equal(history.samples[0].exact_review.publication.enqueued_total, 157);
     assert.equal(history.samples[0].exact_review.publication.completed_total, 123);
 
     let failureRecording: Promise<unknown> | undefined;
@@ -2281,6 +2372,39 @@ test("exact-review queue coalesces deliveries, dispatches a bound rollout snapsh
   }
 });
 
+test("exact-review queue upgrades flow metrics without losing publication completions", async () => {
+  const storage = new MemoryDurableStorage();
+  storage.sql.exec(
+    `CREATE TABLE exact_review_queue_metrics (
+       singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+       publication_completed_total INTEGER NOT NULL CHECK (publication_completed_total >= 0)
+     ) STRICT`,
+  );
+  storage.sql.exec(
+    `INSERT INTO exact_review_queue_metrics (singleton_id, publication_completed_total)
+     VALUES (1, 42)`,
+  );
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.deepEqual(
+    {
+      review_enqueued: stats.lanes.review.enqueued_total,
+      review_completed: stats.lanes.review.completed_total,
+      publication_enqueued: stats.lanes.publication.enqueued_total,
+      publication_completed: stats.lanes.publication.completed_total,
+    },
+    {
+      review_enqueued: 0,
+      review_completed: 0,
+      publication_enqueued: 0,
+      publication_completed: 42,
+    },
+  );
+});
+
 test("exact-review queue migrates delivery receipts and retains them for seven days", async () => {
   const storage = new MemoryDurableStorage();
   const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
@@ -2354,6 +2478,10 @@ test("exact-review receipt acceptance and queue mutation commit atomically", asy
   };
   assert.deepEqual(state.deliveries, {});
   assert.deepEqual(state.items, {});
+  let stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.review.enqueued_total, 0);
 
   assert.equal(
     (await queue.fetch(buildExactReviewQueueRequest("delivery-atomic", 625, "opened"))).status,
@@ -2365,6 +2493,10 @@ test("exact-review receipt acceptance and queue mutation commit atomically", asy
   };
   assert.deepEqual(Object.keys(state.deliveries), ["delivery-atomic"]);
   assert.deepEqual(Object.keys(state.items), ["openclaw/gogcli#625"]);
+  stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.review.enqueued_total, 1);
 });
 
 test("exact-review re-upgrade imports rollback-era queue mutations and receipts", async () => {
@@ -3492,6 +3624,11 @@ test("exact-review queue keeps publication artifacts durable outside review capa
     );
     assert.equal(staleClaim.status, 409);
     assert.deepEqual(await staleClaim.json(), { error: "lease_not_active" });
+    const stats = await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(stats.lanes.review.enqueued_total, 4);
+    assert.equal(stats.lanes.publication.enqueued_total, 4);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -4076,6 +4213,10 @@ test("failed shard recovery does not replace an already-pending ordinary event",
   assert.equal(state.items["openclaw/gogcli#710"].revision, 1);
   assert.equal(state.items["openclaw/gogcli#710"].attempts, 1);
   assert.equal(state.items["openclaw/gogcli#710"].nextAttemptAt, ordinary.nextAttemptAt);
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.review.enqueued_total, 1);
 });
 
 test("failed shard recovery does not replace an ordinary active lease", async () => {
@@ -5523,10 +5664,16 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
     collection_ok: true,
     exact_review: {
       collection_ok: true,
-      review: { pending: 100 + index },
+      review: {
+        pending: 100 + index,
+        enqueued_total: index * 8,
+        completed_total: index * 5,
+        shed_total: 0,
+      },
       publication: {
         pending: 200 - index,
-        completed_total: index <= 12 ? index * 5 : 60 + (index - 12) * 10,
+        enqueued_total: index * 4,
+        completed_total: index * 10,
       },
     },
   }));
@@ -5549,10 +5696,19 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   const laneHtml = elementFor("exact-review-lanes").innerHTML;
   assert.match(laneHtml, /Growing · \+12 in the last hour/);
   assert.match(laneHtml, /Draining · −12 in the last hour/);
+  assert.match(laneHtml, /Review speed/);
   assert.match(laneHtml, /Publication speed/);
-  assert.match(laneHtml, /120 \/ hour/);
-  assert.match(laneHtml, /Speeding up · \+100% vs previous hour/);
-  assert.match(laneHtml, /role="img" aria-label="Successful result publications per hour over 7d"/);
+  assert.match(laneHtml, /Review speed<\/span><strong>−36 \/ hour/);
+  assert.match(laneHtml, /Publication speed<\/span><strong>\+72 \/ hour/);
+  assert.match(laneHtml, /Falling behind/);
+  assert.match(laneHtml, /Catching up/);
+  assert.equal(laneHtml.match(/class="lane-speed"/g)?.length, 2);
+  assert.doesNotMatch(laneHtml, /Processed \/ hour|Incoming \/ hour/);
+  assert.match(laneHtml, /role="img" aria-label="Review speed, completed minus incoming, over 7d"/);
+  assert.match(
+    laneHtml,
+    /role="img" aria-label="Publication speed, completed minus incoming, over 7d"/,
+  );
   assert.match(laneHtml, /role="img" aria-label="Review admission pending backlog over 7d"/);
   assert.match(laneHtml, /Live snapshot unavailable/);
   assert.match(laneHtml, /Last sampled/);
@@ -5567,14 +5723,95 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   );
   assert.match(smallAxis, />8<\/text>/);
   assert.match(largeAxis, />2,000<\/text>/);
-  const staleRate = context.publicationRateTrend(
-    Array.from({ length: 13 }, (_, index) => ({
-      at: new Date(now - (80 - index * 5) * 60_000).toISOString(),
-      completedTotal: index * 5,
-    })),
+  const flowSample = (
+    minutesAgo: number,
+    enqueuedTotal: number,
+    completedTotal: number,
+    shedTotal = 0,
+  ) => ({
+    at: new Date(now - minutesAgo * 60_000).toISOString(),
+    enqueuedTotal,
+    completedTotal,
+    shedTotal,
+  });
+  const provisionalSamples = [flowSample(5, 10, 20), flowSample(0, 12, 25)];
+  const provisionalRates = context.laneSpeedHistory(provisionalSamples);
+  assert.equal(provisionalRates.length, 1);
+  assert.equal(Math.round(provisionalRates[0].rate), 36);
+  assert.equal(provisionalRates[0].provisional, true);
+  assert.equal(Math.round(provisionalRates[0].windowMinutes), 5);
+  const provisionalSpeed = context.laneSpeedTrend(provisionalSamples, "Review speed");
+  assert.match(provisionalSpeed, /Review speed<\/span><strong>\+36 \/ hour/);
+  assert.match(provisionalSpeed, /Catching up · provisional 5m window/);
+
+  const balancedSamples = [flowSample(5, 10, 20), flowSample(0, 10, 20)];
+  const balancedSpeed = context.laneSpeedTrend(balancedSamples, "Review speed");
+  assert.match(balancedSpeed, /Review speed<\/span><strong>0 \/ hour/);
+  assert.match(balancedSpeed, /Balanced · provisional 5m window/);
+  assert.doesNotMatch(balancedSpeed, /Collecting/);
+
+  const shedRates = context.laneSpeedHistory([flowSample(5, 10, 20, 2), flowSample(0, 10, 20, 3)]);
+  assert.equal(Math.round(shedRates[0].rate), -12);
+
+  const matureRates = context.laneSpeedHistory(
+    Array.from({ length: 13 }, (_, index) => flowSample((12 - index) * 5, index * 3, index * 5)),
   );
-  assert.match(staleRate, /Publication speed<\/span><strong>Collecting/);
-  assert.doesNotMatch(staleRate, /60 \/ hour/);
+  assert.equal(Math.round(matureRates.at(-1).rate), 24);
+  assert.equal(matureRates.at(-1).provisional, false);
+  assert.equal(Math.round(matureRates.at(-1).windowMinutes), 60);
+
+  const gapRates = context.laneSpeedHistory([
+    flowSample(40, 0, 0),
+    flowSample(35, 1, 2),
+    flowSample(10, 2, 4),
+    flowSample(5, 3, 6),
+  ]);
+  assert.equal(gapRates.length, 2);
+  assert.notEqual(gapRates[0].segmentId, gapRates[1].segmentId);
+
+  const resetRates = context.laneSpeedHistory([
+    flowSample(20, 10, 10),
+    flowSample(15, 11, 12),
+    flowSample(10, 1, 1),
+    flowSample(5, 2, 3),
+  ]);
+  assert.equal(resetRates.length, 2);
+  assert.notEqual(resetRates[0].segmentId, resetRates[1].segmentId);
+  const resetCollecting = context.laneSpeedTrend(
+    [flowSample(10, 10, 10), flowSample(5, 11, 12), flowSample(0, 1, 1)],
+    "Review speed",
+  );
+  assert.match(resetCollecting, /Review speed<\/span><strong>Collecting/);
+  assert.match(resetCollecting, /Needs two continuous five-minute samples/);
+
+  const legacyBreakRates = context.laneSpeedHistory([
+    flowSample(25, 10, 10),
+    flowSample(20, 11, 12),
+    { at: new Date(now - 15 * 60_000).toISOString(), pending: 1 },
+    flowSample(10, 12, 14),
+    flowSample(5, 13, 16),
+  ]);
+  assert.equal(legacyBreakRates.length, 2);
+  assert.notEqual(legacyBreakRates[0].segmentId, legacyBreakRates[1].segmentId);
+  const speedGeometry = context.speedTrendGeometry(
+    legacyBreakRates,
+    { left: 0, top: 0, width: 100, height: 100 },
+    20,
+    now - 30 * 60_000,
+    now,
+  );
+  assert.equal(speedGeometry[1].connected, false);
+  assert.match(context.trendPath(speedGeometry), /^M.* M/);
+
+  const staleSpeed = context.laneSpeedTrend(
+    [flowSample(25, 0, 0), flowSample(20, 1, 2)],
+    "Publication speed",
+  );
+  assert.match(staleSpeed, /Publication speed<\/span><strong>Stale/);
+  assert.match(staleSpeed, /Stale · no speed sample in the last 12m/);
+  const collectingSpeed = context.laneSpeedTrend([flowSample(0, 0, 0)], "Review speed");
+  assert.match(collectingSpeed, /Review speed<\/span><strong>Collecting/);
+  assert.match(collectingSpeed, /Needs two continuous five-minute samples/);
 
   assert.equal(
     context.oneHourTrend(samples.slice(0, 1).map((sample) => ({ at: sample.at, pending: 4 })))
@@ -5584,30 +5821,6 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.equal(
     context.oneHourTrend(samples.map((sample) => ({ at: sample.at, pending: 9 }))).label,
     "Stable · no change in the last hour",
-  );
-  assert.equal(
-    context.publicationRateDirection([
-      { at: new Date(now - 60 * 60_000).toISOString(), rate: 100 },
-      { at: new Date(now).toISOString(), rate: 50 },
-    ]).label,
-    "Slowing down · −50% vs previous hour",
-  );
-  assert.equal(
-    context.publicationRateDirection([
-      { at: new Date(now - 60 * 60_000).toISOString(), rate: 50 },
-      { at: new Date(now).toISOString(), rate: 50 },
-    ]).label,
-    "Stable · no change from the previous hour",
-  );
-  assert.equal(
-    context.publicationRateHistory([
-      ...Array.from({ length: 13 }, (_, index) => ({
-        at: new Date(now - (130 - index * 5) * 60_000).toISOString(),
-        completedTotal: index * 5,
-      })),
-      { at: new Date(now).toISOString(), completedTotal: 120 },
-    ]).length,
-    1,
   );
   const broken = context.trendGeometry(
     [

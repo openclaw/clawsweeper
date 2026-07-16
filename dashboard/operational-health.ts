@@ -40,8 +40,15 @@ export type HealthHistorySample = {
 
 export type ExactReviewHistorySample = {
   collection_ok: boolean;
-  review?: { pending: number };
-  publication?: { pending: number; completed_total?: number };
+  review?: ExactReviewLaneHistorySample;
+  publication?: ExactReviewLaneHistorySample;
+};
+
+export type ExactReviewLaneHistorySample = {
+  pending: number;
+  enqueued_total?: number;
+  completed_total?: number;
+  shed_total?: number;
 };
 
 export function summarizeOperationalHealth(
@@ -139,19 +146,13 @@ export function normalizeHealthHistorySample(value: unknown): HealthHistorySampl
 
 export function exactReviewHistorySample(value: unknown): ExactReviewHistorySample {
   const lanes = objectValue(objectValue(value).lanes);
-  const reviewPending = nonNegativeInteger(objectValue(lanes.review).pending);
-  const publicationLane = objectValue(lanes.publication);
-  const publicationPending = nonNegativeInteger(publicationLane.pending);
-  if (reviewPending === null || publicationPending === null) return { collection_ok: false };
-  const completedTotal = optionalNonNegativeInteger(publicationLane.completed_total);
-  if (completedTotal === null) return { collection_ok: false };
+  const review = queueLaneHistorySample(lanes.review, true);
+  const publication = queueLaneHistorySample(lanes.publication, false);
+  if (!review || !publication) return { collection_ok: false };
   return {
     collection_ok: true,
-    review: { pending: reviewPending },
-    publication: {
-      pending: publicationPending,
-      ...(completedTotal === undefined ? {} : { completed_total: completedTotal }),
-    },
+    review,
+    publication,
   };
 }
 
@@ -161,19 +162,54 @@ function normalizeExactReviewHistorySample(value: unknown): ExactReviewHistorySa
   const sample = value as Record<string, unknown>;
   if (typeof sample.collection_ok !== "boolean") return null;
   if (!sample.collection_ok) return { collection_ok: false };
-  const reviewPending = nonNegativeInteger(objectValue(sample.review).pending);
-  const publication = objectValue(sample.publication);
-  const publicationPending = nonNegativeInteger(publication.pending);
-  if (reviewPending === null || publicationPending === null) return null;
-  const completedTotal = optionalNonNegativeInteger(publication.completed_total);
-  if (completedTotal === null) return null;
+  const review = storedLaneHistorySample(sample.review, true);
+  const publication = storedLaneHistorySample(sample.publication, false);
+  if (!review || !publication) return null;
   return {
     collection_ok: true,
-    review: { pending: reviewPending },
-    publication: {
-      pending: publicationPending,
-      ...(completedTotal === undefined ? {} : { completed_total: completedTotal }),
-    },
+    review,
+    publication,
+  };
+}
+
+function queueLaneHistorySample(value: unknown, includeShed: boolean) {
+  const lane = objectValue(value);
+  return laneHistorySample(
+    lane.pending,
+    lane.enqueued_total,
+    lane.completed_total,
+    includeShed ? lane.shed_since_reset : undefined,
+  );
+}
+
+function storedLaneHistorySample(value: unknown, includeShed: boolean) {
+  const lane = objectValue(value);
+  return laneHistorySample(
+    lane.pending,
+    lane.enqueued_total,
+    lane.completed_total,
+    includeShed ? lane.shed_total : undefined,
+  );
+}
+
+function laneHistorySample(
+  pendingValue: unknown,
+  enqueuedValue: unknown,
+  completedValue: unknown,
+  shedValue: unknown,
+): ExactReviewLaneHistorySample | null {
+  const pending = nonNegativeInteger(pendingValue);
+  const enqueuedTotal = optionalNonNegativeInteger(enqueuedValue);
+  const completedTotal = optionalNonNegativeInteger(completedValue);
+  const shedTotal = optionalNonNegativeInteger(shedValue);
+  if (pending === null || enqueuedTotal === null || completedTotal === null || shedTotal === null) {
+    return null;
+  }
+  return {
+    pending,
+    ...(enqueuedTotal === undefined ? {} : { enqueued_total: enqueuedTotal }),
+    ...(completedTotal === undefined ? {} : { completed_total: completedTotal }),
+    ...(shedTotal === undefined ? {} : { shed_total: shedTotal }),
   };
 }
 

@@ -127,6 +127,16 @@ type ExactReviewQueueStorageMeta = {
   dispatcher_json: string | null;
   shed_since_reset?: number;
 };
+type ExactReviewQueueMetricTotals = {
+  review: { enqueued: number; completed: number };
+  publication: { enqueued: number; completed: number };
+};
+type ExactReviewQueueMetricDelta = {
+  reviewEnqueued?: number;
+  reviewCompleted?: number;
+  publicationEnqueued?: number;
+  publicationCompleted?: number;
+};
 type DurableObjectStub = { fetch: (request: Request) => Promise<Response> };
 type DurableObjectNamespace = {
   idFromName: (name: string) => unknown;
@@ -911,11 +921,13 @@ export class ExactReviewQueue {
         requeueLatest,
       );
       // A successful workflow can still request requeue_latest after source
-      // drift, but that path publishes no result. Count only publication items
-      // that actually leave the queue on this completion.
-      const completedPublications =
-        outcome === "success" && !requeued && exactReviewQueueIsPublication(item) ? 1 : 0;
-      await this.writeState(state, completedPublications);
+      // drift. That work did not leave its lane, so it must not improve the
+      // operator-facing net speed until a later revision actually completes.
+      const completedLane = outcome === "success" && !requeued ? exactReviewQueueLane(item) : null;
+      await this.writeState(state, {
+        ...(completedLane === "review" ? { reviewCompleted: 1 } : {}),
+        ...(completedLane === "publication" ? { publicationCompleted: 1 } : {}),
+      });
       await this.scheduleNext(state, now);
       return json({ ok: true, requeued });
     }
@@ -972,6 +984,7 @@ export class ExactReviewQueue {
       let reconciled = 0;
       let requeued = 0;
       let completed = 0;
+      let completedReviews = 0;
       let completedPublications = 0;
       for (const run of runs) {
         const matches = Object.values(state.items).filter(
@@ -988,13 +1001,17 @@ export class ExactReviewQueue {
         if (didRequeue) requeued += 1;
         else {
           completed += 1;
-          if (run.outcome === "success" && exactReviewQueueIsPublication(item)) {
-            completedPublications += 1;
+          if (run.outcome === "success") {
+            if (exactReviewQueueIsPublication(item)) completedPublications += 1;
+            else completedReviews += 1;
           }
         }
       }
       if (reconciled) {
-        await this.writeState(state, completedPublications);
+        await this.writeState(state, {
+          reviewCompleted: completedReviews,
+          publicationCompleted: completedPublications,
+        });
         await this.scheduleNext(state, now);
       }
       return json({ ok: true, reconciled, requeued, completed });
@@ -1015,9 +1032,9 @@ export class ExactReviewQueue {
         );
         if (changed) this.writeStateSync(current);
         else this.syncLegacyCompatibilitySync(current);
-        return { state: current, completedTotal: this.publicationCompletedTotalSync() };
+        return { state: current, metrics: this.queueMetricTotalsSync() };
       });
-      const { state, completedTotal } = snapshot;
+      const { state, metrics } = snapshot;
       await this.scheduleNext(state, now);
       const stats = exactReviewQueueStats(
         state,
@@ -1033,8 +1050,16 @@ export class ExactReviewQueue {
       return json({
         ...stats,
         lanes: {
-          ...stats.lanes,
-          publication: { ...stats.lanes.publication, completed_total: completedTotal },
+          review: {
+            ...stats.lanes.review,
+            enqueued_total: metrics.review.enqueued,
+            completed_total: metrics.review.completed,
+          },
+          publication: {
+            ...stats.lanes.publication,
+            enqueued_total: metrics.publication.enqueued,
+            completed_total: metrics.publication.completed,
+          },
         },
         delivery_receipts: this.deliveryReceiptCountSync(),
         storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
@@ -1318,15 +1343,38 @@ export class ExactReviewQueue {
          received_at INTEGER NOT NULL
        ) STRICT`,
     );
-    // Completion telemetry is independent of queue rollback compatibility. A
-    // separate singleton keeps the cumulative counter monotonic without
+    // Flow telemetry is independent of queue rollback compatibility. A
+    // separate singleton keeps cumulative lane counters monotonic without
     // changing the normalized queue schema or its legacy shadow contract.
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_METRICS_TABLE} (
          singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+         review_enqueued_total INTEGER NOT NULL DEFAULT 0 CHECK (review_enqueued_total >= 0),
+         review_completed_total INTEGER NOT NULL DEFAULT 0 CHECK (review_completed_total >= 0),
+         publication_enqueued_total INTEGER NOT NULL DEFAULT 0
+           CHECK (publication_enqueued_total >= 0),
          publication_completed_total INTEGER NOT NULL CHECK (publication_completed_total >= 0)
        ) STRICT`,
     );
+    for (const column of [
+      "review_enqueued_total",
+      "review_completed_total",
+      "publication_enqueued_total",
+    ]) {
+      const present = Array.from(
+        this.storage.sql.exec(
+          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_QUEUE_METRICS_TABLE}')
+            WHERE name = ?`,
+          column,
+        ),
+      ).length;
+      if (!present) {
+        this.storage.sql.exec(
+          `ALTER TABLE ${EXACT_REVIEW_QUEUE_METRICS_TABLE}
+             ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0 CHECK (${column} >= 0)`,
+        );
+      }
+    }
     this.storage.sql.exec(
       `INSERT OR IGNORE INTO ${EXACT_REVIEW_QUEUE_METRICS_TABLE}
          (singleton_id, publication_completed_total) VALUES (1, 0)`,
@@ -1569,42 +1617,76 @@ export class ExactReviewQueue {
     return state;
   }
 
-  private writeState(state: ExactReviewQueueState, completedPublications = 0) {
+  private writeState(state: ExactReviewQueueState, metricDelta: ExactReviewQueueMetricDelta = {}) {
     this.storage.transactionSync(() => {
       this.writeStateSync(state);
-      if (completedPublications > 0)
-        this.incrementPublicationCompletedTotalSync(completedPublications);
+      this.incrementQueueMetricsSync(metricDelta);
     });
   }
 
-  private publicationCompletedTotalSync() {
+  private queueMetricTotalsSync(): ExactReviewQueueMetricTotals {
     const row = Array.from(
       this.storage.sql.exec(
-        `SELECT publication_completed_total
+        `SELECT review_enqueued_total, review_completed_total,
+                publication_enqueued_total, publication_completed_total
            FROM ${EXACT_REVIEW_QUEUE_METRICS_TABLE}
           WHERE singleton_id = 1`,
       ),
-    )[0] as { publication_completed_total?: number } | undefined;
-    const total = Number(row?.publication_completed_total);
-    return Number.isSafeInteger(total) && total >= 0 ? total : 0;
+    )[0] as
+      | {
+          review_enqueued_total?: number;
+          review_completed_total?: number;
+          publication_enqueued_total?: number;
+          publication_completed_total?: number;
+        }
+      | undefined;
+    return {
+      review: {
+        enqueued: exactReviewMetricTotal(row?.review_enqueued_total),
+        completed: exactReviewMetricTotal(row?.review_completed_total),
+      },
+      publication: {
+        enqueued: exactReviewMetricTotal(row?.publication_enqueued_total),
+        completed: exactReviewMetricTotal(row?.publication_completed_total),
+      },
+    };
   }
 
-  private incrementPublicationCompletedTotalSync(count: number) {
+  private incrementQueueMetricsSync(delta: ExactReviewQueueMetricDelta) {
+    const reviewEnqueued = exactReviewMetricDelta(delta.reviewEnqueued);
+    const reviewCompleted = exactReviewMetricDelta(delta.reviewCompleted);
+    const publicationEnqueued = exactReviewMetricDelta(delta.publicationEnqueued);
+    const publicationCompleted = exactReviewMetricDelta(delta.publicationCompleted);
+    if (!reviewEnqueued && !reviewCompleted && !publicationEnqueued && !publicationCompleted) {
+      return;
+    }
     this.storage.sql.exec(
       `UPDATE ${EXACT_REVIEW_QUEUE_METRICS_TABLE}
-          SET publication_completed_total = publication_completed_total + ?
+          SET review_enqueued_total = review_enqueued_total + ?,
+              review_completed_total = review_completed_total + ?,
+              publication_enqueued_total = publication_enqueued_total + ?,
+              publication_completed_total = publication_completed_total + ?
         WHERE singleton_id = 1`,
-      count,
+      reviewEnqueued,
+      reviewCompleted,
+      publicationEnqueued,
+      publicationCompleted,
     );
   }
 
   private writeStateSync(state: ExactReviewQueueState) {
     const baseline = this.baselines.get(state) || this.readStateBaselineSync();
     const nextItems = new Map<string, string>();
+    let reviewEnqueued = 0;
+    let publicationEnqueued = 0;
     for (const [itemKey, item] of Object.entries(state.items)) {
       const itemJson = JSON.stringify(item);
       nextItems.set(itemKey, itemJson);
       if (baseline.items.get(itemKey) === itemJson) continue;
+      if (!baseline.items.has(itemKey)) {
+        if (exactReviewQueueIsPublication(item)) publicationEnqueued += 1;
+        else reviewEnqueued += 1;
+      }
       this.storage.sql.exec(
         `INSERT INTO ${EXACT_REVIEW_QUEUE_ITEM_TABLE} (item_key, item_json)
          VALUES (?, ?)
@@ -1621,6 +1703,10 @@ export class ExactReviewQueue {
         );
       }
     }
+    // Count queue work, not webhook volume. A new key creates one unit of
+    // operator-visible demand; dedupes and merged revisions retain an existing
+    // key and therefore cannot inflate the speed calculation.
+    this.incrementQueueMetricsSync({ reviewEnqueued, publicationEnqueued });
 
     const dispatcherJson = state.dispatcher ? JSON.stringify(state.dispatcher) : null;
     this.storage.sql.exec(
@@ -3323,8 +3409,22 @@ function exactReviewShedSinceReset(state: Pick<ExactReviewQueueState, "shedSince
   return Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
+function exactReviewMetricTotal(value: unknown) {
+  const total = Number(value);
+  return Number.isSafeInteger(total) && total >= 0 ? total : 0;
+}
+
+function exactReviewMetricDelta(value: unknown) {
+  const delta = Number(value || 0);
+  return Number.isSafeInteger(delta) && delta > 0 ? delta : 0;
+}
+
 function exactReviewQueueIsPublication(item: ExactReviewQueueItem) {
   return item.decision.sourceAction === EXACT_REVIEW_ARTIFACT_PUBLISH_SOURCE_ACTION;
+}
+
+function exactReviewQueueLane(item: ExactReviewQueueItem) {
+  return exactReviewQueueIsPublication(item) ? "publication" : "review";
 }
 
 function exactReviewQueueActiveReviewCount(state: ExactReviewQueueState) {
@@ -9434,18 +9534,21 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .exact-trend-status { font-size: 12px; font-weight: 650; }
 .exact-trend-status.growing { color: var(--amber); }
 .exact-trend-status.draining { color: var(--green); }
-.exact-trend-status.speeding { color: var(--green); }
-.exact-trend-status.slowing { color: var(--amber); }
-.exact-trend-status.stable, .exact-trend-status.collecting { color: var(--muted); }
+.exact-trend-status.catching-up { color: var(--green); }
+.exact-trend-status.falling-behind { color: var(--amber); }
+.exact-trend-status.stable,
+.exact-trend-status.collecting,
+.exact-trend-status.stale { color: var(--muted); }
 .exact-trend-svg { display: block; width: 100%; height: 150px; margin-top: 6px; overflow: visible; }
 .trend-grid-line { stroke: var(--line-soft); stroke-width: 1; }
+.trend-grid-line.lane-speed-zero { stroke: var(--muted); }
 .trend-axis-label { fill: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 10px; }
 .exact-trend-line { fill: none; stroke: var(--claw); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
 .exact-trend-point { fill: var(--claw); }
-.publication-rate { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line-soft); }
-.publication-rate .exact-trend-status { margin-top: 4px; }
-.publication-rate-line { fill: none; stroke: var(--violet); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
-.publication-rate-point { fill: var(--violet); }
+.lane-speed { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line-soft); }
+.lane-speed .exact-trend-status { margin-top: 4px; }
+.lane-speed-line { fill: none; stroke: var(--violet); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.lane-speed-point { fill: var(--violet); }
 .trend-empty { display: grid; place-items: center; height: 130px; color: var(--muted); font-size: 12px; }
 .overview-shell { margin: 0; padding: 0; border: 0; background: transparent; }
 .overview-head,
@@ -10345,38 +10448,76 @@ function exactReviewHistory(lane) {
       ? sample.exact_review?.[lane]
       : null;
     const pending = Number(laneSample?.pending);
+    const enqueuedTotal = Number(laneSample?.enqueued_total);
     const completedTotal = Number(laneSample?.completed_total);
+    const shedTotal = lane === "review" ? Number(laneSample?.shed_total || 0) : 0;
+    const hasFlowCounters = Number.isFinite(enqueuedTotal) && Number.isFinite(completedTotal) && Number.isFinite(shedTotal);
     return Number.isFinite(Date.parse(sample.at)) && Number.isFinite(pending)
       ? [{
           at: sample.at,
           pending: Math.max(0, pending),
-          ...(Number.isFinite(completedTotal)
-            ? { completedTotal: Math.max(0, completedTotal) }
+          ...(hasFlowCounters
+            ? {
+                enqueuedTotal: Math.max(0, enqueuedTotal),
+                completedTotal: Math.max(0, completedTotal),
+                shedTotal: Math.max(0, shedTotal)
+              }
             : {})
         }]
       : [];
   });
 }
 
-function publicationRateHistory(samples) {
-  const cumulative = samples.filter(sample => Number.isFinite(sample.completedTotal));
+function laneSpeedHistory(samples) {
   let segment = [];
-  let previousAt = null;
-  return cumulative.flatMap(sample => {
+  let previous = null;
+  let segmentId = 0;
+  return samples.flatMap(sample => {
     const at = Date.parse(sample.at);
-    if (previousAt !== null && at - previousAt > 12 * 60 * 1000) segment = [];
-    previousAt = at;
-    segment.push(sample);
-    const cutoff = at - 60 * 60 * 1000;
-    const baseline = segment.filter(candidate => Date.parse(candidate.at) <= cutoff).at(-1);
-    if (!baseline || cutoff - Date.parse(baseline.at) > 12 * 60 * 1000) return [];
-    const elapsedHours = (at - Date.parse(baseline.at)) / (60 * 60 * 1000);
-    const completed = sample.completedTotal - baseline.completedTotal;
-    if (elapsedHours <= 0 || completed < 0) {
-      segment = [sample];
+    const hasFlowCounters =
+      Number.isFinite(at) &&
+      Number.isFinite(sample.enqueuedTotal) &&
+      Number.isFinite(sample.completedTotal) &&
+      Number.isFinite(sample.shedTotal);
+    if (!hasFlowCounters) {
+      // A legacy sample means the counter delta across this interval is
+      // unknowable. Treat it as a boundary so the chart never bridges that
+      // missing demand with a plausible-looking speed line.
+      if (segment.length) segmentId += 1;
+      segment = [];
+      previous = null;
       return [];
     }
-    return [{ at: sample.at, rate: completed / elapsedHours }];
+    const previousAt = previous ? Date.parse(previous.at) : null;
+    const reset = previous && (
+      at <= previousAt ||
+      at - previousAt > 12 * 60 * 1000 ||
+      sample.enqueuedTotal < previous.enqueuedTotal ||
+      sample.completedTotal < previous.completedTotal ||
+      sample.shedTotal < previous.shedTotal
+    );
+    if (reset) {
+      segment = [];
+      segmentId += 1;
+    }
+    previous = sample;
+    segment.push(sample);
+    const cutoff = at - 60 * 60 * 1000;
+    const hourlyBaseline = segment.filter(candidate => Date.parse(candidate.at) <= cutoff).at(-1);
+    const hasHourlyBaseline = hourlyBaseline && cutoff - Date.parse(hourlyBaseline.at) <= 12 * 60 * 1000;
+    const baseline = hasHourlyBaseline ? hourlyBaseline : segment[0];
+    const elapsedHours = (at - Date.parse(baseline.at)) / (60 * 60 * 1000);
+    if (elapsedHours < 4 / 60) return [];
+    const completed = sample.completedTotal - baseline.completedTotal;
+    const incoming =
+      sample.enqueuedTotal - baseline.enqueuedTotal + sample.shedTotal - baseline.shedTotal;
+    return [{
+      at: sample.at,
+      rate: (completed - incoming) / elapsedHours,
+      windowMinutes: elapsedHours * 60,
+      provisional: !hasHourlyBaseline,
+      segmentId
+    }];
   });
 }
 
@@ -10415,8 +10556,41 @@ function niceTrendScale(maximum, tickCount) {
   };
 }
 
+function niceSignedTrendScale(maximum) {
+  const positive = niceTrendScale(Math.max(1, maximum), 2);
+  const step = positive.maximum / 2;
+  return {
+    maximum: positive.maximum,
+    ticks: [-positive.maximum, -step, 0, step, positive.maximum]
+  };
+}
+
 function formatTrendValue(value) {
   return fmt.format(Math.round(value));
+}
+
+function formatSignedTrendValue(value) {
+  const rounded = Math.round(value);
+  if (rounded > 0) return "+" + fmt.format(rounded);
+  if (rounded < 0) return "−" + fmt.format(Math.abs(rounded));
+  return "0";
+}
+
+function speedTrendGeometry(samples, plot, maximum, fromAt, toAt) {
+  if (!samples.length || maximum <= 0) return [];
+  const span = Math.max(1, toAt - fromAt);
+  let previous = null;
+  return samples.map(sample => {
+    const at = Date.parse(sample.at);
+    const x = plot.left + ((at - fromAt) / span) * plot.width;
+    const y = plot.top + ((maximum - sample.rate) / (maximum * 2)) * plot.height;
+    const connected = previous !== null &&
+      sample.segmentId === previous.segmentId &&
+      at - previous.at <= 12 * 60 * 1000;
+    const point = { at, x, y, connected, segmentId: sample.segmentId };
+    previous = point;
+    return point;
+  });
 }
 
 function oneHourTrend(samples) {
@@ -10458,62 +10632,69 @@ function exactReviewTrend(samples, label) {
   return '<div class="exact-trend"><div class="exact-trend-status ' + direction.className + '">' + esc(direction.label) + '</div><svg class="exact-trend-svg" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="' + esc(label + " pending backlog over " + activeHealthRange) + '">' + grid + '<path class="exact-trend-line" d="' + trendPath(geometry) + '"></path>' + points + axis + '</svg></div>';
 }
 
-function publicationRateDirection(samples) {
-  if (!samples.length) return { className: "collecting", label: "Collecting rate trend" };
-  const latest = samples.at(-1);
-  const cutoff = Date.parse(latest.at) - 60 * 60 * 1000;
-  const previous = samples.filter(sample => Date.parse(sample.at) <= cutoff).at(-1);
-  if (!previous || cutoff - Date.parse(previous.at) > 12 * 60 * 1000) {
-    return { className: "collecting", label: "Collecting rate trend" };
-  }
-  const currentRate = Math.round(latest.rate);
-  const previousRate = Math.round(previous.rate);
-  if (currentRate === previousRate) {
-    return { className: "stable", label: "Stable · no change from the previous hour" };
-  }
-  if (previousRate === 0) {
-    return {
-      className: "speeding",
-      label: "Speeding up · from 0 to " + fmt.format(currentRate) + " / hour",
-    };
-  }
-  const percent = Math.round(((currentRate - previousRate) / previousRate) * 100);
-  return percent > 0
-    ? { className: "speeding", label: "Speeding up · +" + fmt.format(percent) + "% vs previous hour" }
-    : { className: "slowing", label: "Slowing down · −" + fmt.format(Math.abs(percent)) + "% vs previous hour" };
+function laneSpeedStatus(sample) {
+  const rate = Math.round(sample.rate);
+  const window = sample.provisional
+    ? " · provisional " + fmt.format(Math.round(sample.windowMinutes)) + "m window"
+    : "";
+  if (rate > 0) return { className: "catching-up", label: "Catching up" + window };
+  if (rate < 0) return { className: "falling-behind", label: "Falling behind" + window };
+  return { className: "stable", label: "Balanced" + window };
 }
 
-function publicationRateTrend(samples) {
-  const rates = publicationRateHistory(samples);
+function laneSpeedTrend(samples, speedLabel) {
+  const rates = laneSpeedHistory(samples);
   const rangeMs = activeHealthRange === "7d" ? 7 * 86400000 : activeHealthRange === "24h" ? 86400000 : 6 * 3600000;
   const latestAt = rates.length ? Date.parse(rates.at(-1).at) : 0;
-  const toAt = Math.max(Date.now(), latestAt);
+  const latestObservationAt = samples.length ? Date.parse(samples.at(-1).at) : 0;
+  const hasLatestObservation = Number.isFinite(latestObservationAt) && latestObservationAt > 0;
+  const latestSegmentNeedsBaseline = hasLatestObservation && latestObservationAt > latestAt;
+  const toAt = Math.max(Date.now(), latestAt, hasLatestObservation ? latestObservationAt : 0);
+  const latestObservationFresh =
+    hasLatestObservation && toAt - latestObservationAt <= 12 * 60 * 1000;
+  const collectingCurrentSegment = latestSegmentNeedsBaseline && latestObservationFresh;
   const fromAt = toAt - rangeMs;
   const visible = rates.filter(sample => Date.parse(sample.at) >= fromAt && Date.parse(sample.at) <= toAt);
   const latestVisible = visible.at(-1);
-  const current = latestVisible && toAt - Date.parse(latestVisible.at) <= 12 * 60 * 1000
-    ? latestVisible
-    : null;
-  const headline = current ? fmt.format(Math.round(current.rate)) + " / hour" : "Collecting";
+  const current =
+    !latestSegmentNeedsBaseline &&
+    latestVisible &&
+    toAt - Date.parse(latestVisible.at) <= 12 * 60 * 1000
+      ? latestVisible
+      : null;
+  const headline = current
+    ? formatSignedTrendValue(current.rate) + " / hour"
+    : collectingCurrentSegment
+      ? "Collecting"
+    : hasLatestObservation || visible.length
+      ? "Stale"
+      : "Collecting";
   if (!visible.length) {
-    return '<div class="publication-rate"><div class="lane-count"><span>Publication speed</span><strong>' + headline + '</strong></div><div class="exact-trend-status collecting">Collecting rate trend</div><div class="trend-empty">No publication speed history in this range.</div></div>';
+    const emptyClass = headline === "Stale" ? "stale" : "collecting";
+    const emptyLabel = headline === "Stale"
+      ? "Stale · no speed sample in the last 12m"
+      : "Needs two continuous five-minute samples";
+    return '<div class="lane-speed"><div class="lane-count"><span>' + esc(speedLabel) + '</span><strong>' + headline + '</strong></div><div class="exact-trend-status ' + emptyClass + '">' + emptyLabel + '</div><div class="trend-empty">No speed history in this range.</div></div>';
   }
   const width = 600;
   const height = 150;
   const plot = { left: 48, top: 8, width: 540, height: 110 };
-  const scale = niceTrendScale(Math.max(1, ...visible.map(sample => sample.rate)), 4);
+  const scale = niceSignedTrendScale(Math.max(1, ...visible.map(sample => Math.abs(sample.rate))));
   const grid = scale.ticks.map(value => {
-    const y = plot.top + plot.height - value / scale.maximum * plot.height;
-    return '<line class="trend-grid-line" x1="' + plot.left + '" x2="' + (plot.left + plot.width) + '" y1="' + y.toFixed(1) + '" y2="' + y.toFixed(1) + '"></line><text class="trend-axis-label" x="' + (plot.left - 8) + '" y="' + (y + 3).toFixed(1) + '" text-anchor="end">' + esc(formatTrendValue(value)) + '</text>';
+    const y = plot.top + ((scale.maximum - value) / (scale.maximum * 2)) * plot.height;
+    const className = value === 0 ? "trend-grid-line lane-speed-zero" : "trend-grid-line";
+    return '<line class="' + className + '" x1="' + plot.left + '" x2="' + (plot.left + plot.width) + '" y1="' + y.toFixed(1) + '" y2="' + y.toFixed(1) + '"></line><text class="trend-axis-label" x="' + (plot.left - 8) + '" y="' + (y + 3).toFixed(1) + '" text-anchor="end">' + esc(formatSignedTrendValue(value)) + '</text>';
   }).join("");
-  const geometry = trendGeometry(visible, "rate", plot, scale.maximum, fromAt, toAt);
-  const points = geometry.map(point => '<circle class="publication-rate-point" cx="' + point.x.toFixed(1) + '" cy="' + point.y.toFixed(1) + '" r="3"></circle>').join("");
+  const geometry = speedTrendGeometry(visible, plot, scale.maximum, fromAt, toAt);
+  const points = geometry.map(point => '<circle class="lane-speed-point" cx="' + point.x.toFixed(1) + '" cy="' + point.y.toFixed(1) + '" r="3"></circle>').join("");
   const direction = current
-    ? publicationRateDirection(visible)
-    : { className: "collecting", label: "Collecting rate trend" };
+    ? laneSpeedStatus(current)
+    : collectingCurrentSegment
+      ? { className: "collecting", label: "Needs two continuous five-minute samples" }
+    : { className: "stale", label: "Stale · no speed sample in the last 12m" };
   const rangeLabel = activeHealthRange === "7d" ? "7d ago" : activeHealthRange + " ago";
   const axis = '<text class="trend-axis-label" x="' + plot.left + '" y="' + (height - 7) + '">' + rangeLabel + '</text><text class="trend-axis-label" x="' + (plot.left + plot.width) + '" y="' + (height - 7) + '" text-anchor="end">now</text>';
-  return '<div class="publication-rate"><div class="lane-count"><span>Publication speed</span><strong>' + headline + '</strong></div><div class="exact-trend-status ' + direction.className + '">' + esc(direction.label) + '</div><svg class="exact-trend-svg" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="Successful result publications per hour over ' + esc(activeHealthRange) + '">' + grid + '<path class="publication-rate-line" d="' + trendPath(geometry) + '"></path>' + points + axis + '</svg></div>';
+  return '<div class="lane-speed"><div class="lane-count"><span>' + esc(speedLabel) + '</span><strong>' + headline + '</strong></div><div class="exact-trend-status ' + direction.className + '">' + esc(direction.label) + '</div><svg class="exact-trend-svg" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="' + esc(speedLabel + ", completed minus incoming, over " + activeHealthRange) + '">' + grid + '<path class="lane-speed-line" d="' + trendPath(geometry) + '"></path>' + points + axis + '</svg></div>';
 }
 
 function renderExecutionAlert(current) {
@@ -10638,13 +10819,13 @@ function renderExactReviewLanes(queue) {
   const target = document.getElementById("exact-review-lanes");
   if (!target) return;
   const lanes = queue?.lanes;
-  target.innerHTML = [["Review admission", "review", lanes?.review], ["Result publication", "publication", lanes?.publication]].map(([label, laneKey, lane]) => {
+  target.innerHTML = [["Review admission", "Review speed", "review", lanes?.review], ["Result publication", "Publication speed", "publication", lanes?.publication]].map(([label, speedLabel, laneKey, lane]) => {
     const samples = exactReviewHistory(laneKey);
     if (!lane) {
       const sampledAt = samples.at(-1)?.at;
       return '<div class="exact-lane"><div class="exact-lane-head"><strong>' + esc(label) + '</strong><span>Live snapshot unavailable</span></div>' +
         exactReviewTrend(samples, label) +
-        (laneKey === "publication" ? publicationRateTrend(samples) : "") +
+        laneSpeedTrend(samples, speedLabel) +
         '<div class="lane-foot">' + (sampledAt ? "Last sampled " + esc(since(sampledAt)) : "History starts with the next five-minute sample") + '</div></div>';
     }
     const capacity = Math.max(0, lane.capacity || 0);
@@ -10656,7 +10837,7 @@ function renderExactReviewLanes(queue) {
     return '<div class="exact-lane"><div class="exact-lane-head"><strong>' + esc(label) + '</strong><span>' + fmt.format(active) + ' of ' + fmt.format(capacity) + ' active</span></div>' +
       '<div class="lane-count"><span>Pending</span><strong>' + fmt.format(lane.pending || 0) + '</strong></div>' +
       exactReviewTrend(samples, label) +
-      (laneKey === "publication" ? publicationRateTrend(samples) : "") +
+      laneSpeedTrend(samples, speedLabel) +
       '<div class="lane-counts">' +
       '<div class="lane-count"><span>Ready</span><strong>' + fmt.format(lane.ready || 0) + '</strong></div>' +
       '<div class="lane-count"><span>Backoff</span><strong>' + fmt.format(lane.backoff || 0) + '</strong></div>' +
