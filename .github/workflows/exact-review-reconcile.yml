@@ -4,13 +4,16 @@ on:
   workflow_run:
     workflows: [ClawSweeper]
     types: [completed]
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
 
 permissions: {}
 
 concurrency:
   # Exact-review completions share one pending slot. Each surviving run scans all
   # live claims, so GitHub may safely coalesce a burst without losing a terminal run.
-  group: exact-review-reconcile-${{ github.event.workflow_run.event == 'repository_dispatch' && startsWith(github.event.workflow_run.display_title, 'Review event item ') && 'queue' || github.event.workflow_run.id }}
+  group: exact-review-reconcile-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'sweep' || github.event.workflow_run.event == 'repository_dispatch' && startsWith(github.event.workflow_run.display_title, 'Review event item ') && 'queue' || github.event.workflow_run.id }}
   cancel-in-progress: false
 
 jobs:
@@ -56,3 +59,96 @@ jobs:
             fi
           done
           exit 1
+
+  sweep:
+    name: Sweep terminal exact-review runs
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+    steps:
+      - name: Reconcile claimed terminal runs
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          GH_TOKEN: ${{ github.token }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { createHmac } from "node:crypto";
+
+          const secret = process.env.CLAWSWEEPER_WEBHOOK_SECRET || "";
+          const token = process.env.GH_TOKEN || "";
+          const repository = process.env.GITHUB_REPOSITORY || "";
+          const queueUrl = (process.env.QUEUE_URL || "").replace(/\/$/, "");
+          if (!secret || !token || !repository || !queueUrl) throw new Error("missing reconciler configuration");
+
+          async function signedPost(path, value) {
+            const body = JSON.stringify(value);
+            const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+            const response = await fetch(`${queueUrl}${path}`, {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-clawsweeper-exact-review-signature": signature,
+              },
+              body,
+            });
+            if (!response.ok) throw new Error(`${path} returned ${response.status}: ${await response.text()}`);
+            return response.json();
+          }
+
+          const claimed = await signedPost("/internal/exact-review/claimed-runs", {
+            runs: [],
+            include_all_claimed: true,
+          });
+          const runs = Array.isArray(claimed.runs) ? claimed.runs : [];
+          const terminalRuns = [];
+          const unavailable = [];
+          for (let offset = 0; offset < runs.length; offset += 8) {
+            await Promise.all(runs.slice(offset, offset + 8).map(async (claim) => {
+              const runId = String(claim.run_id || "");
+              const claimedAttempt = claim.run_attempt == null ? null : Number(claim.run_attempt);
+              const claimGeneration = Number(claim.claim_generation);
+              if (!/^\d+$/.test(runId) || (claimedAttempt !== null && (!Number.isInteger(claimedAttempt) || claimedAttempt < 1)) || !Number.isInteger(claimGeneration) || claimGeneration < 0) {
+                throw new Error("invalid claimed run tuple");
+              }
+              const suffix = claimedAttempt === null ? "" : `/attempts/${claimedAttempt}`;
+              const response = await fetch(`${process.env.GITHUB_API_URL || "https://api.github.com"}/repos/${repository}/actions/runs/${runId}${suffix}`, {
+                headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" },
+              });
+              if (!response.ok) {
+                unavailable.push(`${runId}:${response.status}`);
+                return;
+              }
+              const run = await response.json();
+              const runAttempt = Number(run.run_attempt);
+              if (String(run.id || "") !== runId || !Number.isInteger(runAttempt) || runAttempt < 1 || (claimedAttempt !== null && runAttempt !== claimedAttempt)) {
+                unavailable.push(`${runId}:mismatch`);
+                return;
+              }
+              if (run.status !== "completed") return;
+              if (!run.conclusion) {
+                unavailable.push(`${runId}:missing-conclusion`);
+                return;
+              }
+              terminalRuns.push({
+                run_id: runId,
+                run_attempt: runAttempt,
+                claimed_run_attempt: claimedAttempt,
+                claim_generation: claimGeneration,
+                outcome: run.conclusion === "success" ? "success" : run.conclusion === "cancelled" ? "cancelled" : "failure",
+              });
+            }));
+          }
+          let reconciled = 0;
+          if (terminalRuns.length) {
+            const result = await signedPost("/internal/exact-review/reconcile", { terminal_runs: terminalRuns });
+            reconciled = Number(result.reconciled) || 0;
+          }
+          console.log(`checked=${runs.length} terminal=${terminalRuns.length} reconciled=${reconciled} unavailable=${unavailable.length}`);
+          if (unavailable.length) console.log(`unavailable runs (next sweep retries): ${unavailable.join(",")}`);
+          // Partial lookup failures are routine (rate limits, expired run retention); the
+          // 15-minute cadence and lease expiry are the backstop. Fail only on total blindness.
+          if (runs.length && unavailable.length === runs.length) throw new Error("all claimed run lookups failed");
+          NODE

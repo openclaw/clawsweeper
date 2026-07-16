@@ -82,6 +82,7 @@ type ExactReviewQueueItem = {
   leaseId?: string;
   leaseRevision?: number;
   leaseExpiresAt?: number;
+  leaseHeartbeatAt?: number;
   claimedRunId?: string;
   claimedRunAttempt?: number;
   claimGeneration?: number;
@@ -159,6 +160,7 @@ const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 6 * 60 * 1000;
 // never reaches its claim step is re-dispatched; stale runs lose the lease tuple safely.
 const DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS = 15 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS = 130 * 60 * 1000;
+const DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS = 20 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_RETRY_MS = 30_000;
 const DEFAULT_EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = 60_000;
 const EXACT_REVIEW_COMPLETION_RETRY_MAX_MS = 2 * 60 * 60 * 1000;
@@ -585,6 +587,7 @@ export class ExactReviewQueue {
           state,
           now,
           exactReviewPublicationDispatchLeaseMs(this.env),
+          exactReviewHeartbeatGraceMs(this.env),
         );
         const key = exactReviewItemKey(decision);
         const current = state.items[key];
@@ -658,6 +661,7 @@ export class ExactReviewQueue {
           item,
           now,
           exactReviewPublicationDispatchLeaseMs(this.env),
+          exactReviewHeartbeatGraceMs(this.env),
         )
       ) {
         this.writeStateSync(state);
@@ -668,7 +672,12 @@ export class ExactReviewQueue {
         !item ||
         item.leaseId !== leaseId ||
         (tupleClaim && item.leaseRevision !== leaseRevision) ||
-        !isLiveExactReviewLease(item, now, exactReviewPublicationDispatchLeaseMs(this.env))
+        !isLiveExactReviewLease(
+          item,
+          now,
+          exactReviewPublicationDispatchLeaseMs(this.env),
+          exactReviewHeartbeatGraceMs(this.env),
+        )
       ) {
         return json({ error: "lease_not_active" }, 409);
       }
@@ -732,11 +741,64 @@ export class ExactReviewQueue {
       item.claimGeneration = exactReviewClaimGeneration(item.claimGeneration) + 1;
       item.claimProtocolVersion = claimProtocolVersion;
       item.leaseExpiresAt = now + exactReviewExecutionLeaseMs(this.env);
+      item.leaseHeartbeatAt = undefined;
       item.claimedAt = now;
       item.updatedAt = now;
       await this.writeState(state);
       await this.scheduleNext(state, now);
       return json(exactReviewClaimResponse(item, claimProtocolVersion, item.claimGeneration));
+    }
+
+    if (request.method === "POST" && url.pathname === "/heartbeat") {
+      const body = objectValue(await request.json().catch(() => null));
+      const itemKey = String(body.item_key || "").trim();
+      const leaseId = String(body.lease_id || "").trim();
+      const leaseRevision = Number(body.lease_revision);
+      const runId = String(body.run_id || "").trim();
+      if (!itemKey || !leaseId || !runId) return json({ error: "missing_lease_tuple" }, 400);
+      if (!Number.isInteger(leaseRevision) || leaseRevision < 1) {
+        return json({ error: "invalid_lease_revision" }, 400);
+      }
+      if (!/^\d+$/.test(runId)) return json({ error: "invalid_run_id" }, 400);
+
+      const now = Date.now();
+      const state = this.readStateSync();
+      const item = state.items[itemKey];
+      if (
+        item &&
+        reclaimExpiredExactReviewLease(
+          state,
+          itemKey,
+          item,
+          now,
+          exactReviewPublicationDispatchLeaseMs(this.env),
+          exactReviewHeartbeatGraceMs(this.env),
+        )
+      ) {
+        await this.writeState(state);
+        await this.scheduleNext(state, now);
+        return json({ error: "lease_not_active" }, 409);
+      }
+      if (
+        !item ||
+        item.state !== "leased" ||
+        item.leaseId !== leaseId ||
+        item.leaseRevision !== leaseRevision ||
+        item.claimedRunId !== runId ||
+        !isLiveExactReviewLease(
+          item,
+          now,
+          exactReviewPublicationDispatchLeaseMs(this.env),
+          exactReviewHeartbeatGraceMs(this.env),
+        )
+      ) {
+        return json({ error: "lease_not_active" }, 409);
+      }
+      item.leaseHeartbeatAt = now;
+      item.updatedAt = now;
+      await this.writeState(state);
+      await this.scheduleNext(state, now);
+      return json({ ok: true, lease_heartbeat_at: new Date(now).toISOString() });
     }
 
     if (request.method === "POST" && url.pathname === "/complete") {
@@ -819,9 +881,12 @@ export class ExactReviewQueue {
 
     if (request.method === "POST" && url.pathname === "/claimed-runs") {
       const body = objectValue(await request.json().catch(() => null));
-      const requestedRuns = exactReviewRequestedRuns(body.runs);
-      if (!requestedRuns) return json({ error: "invalid_requested_runs" }, 400);
       const includeAllClaimed = body.include_all_claimed === true;
+      const requestedRuns =
+        includeAllClaimed && Array.isArray(body.runs) && body.runs.length === 0
+          ? []
+          : exactReviewRequestedRuns(body.runs);
+      if (!requestedRuns) return json({ error: "invalid_requested_runs" }, 400);
       if (body.include_all_claimed !== undefined && typeof body.include_all_claimed !== "boolean") {
         return json({ error: "invalid_include_all_claimed" }, 400);
       }
@@ -899,6 +964,7 @@ export class ExactReviewQueue {
           current,
           now,
           exactReviewPublicationDispatchLeaseMs(this.env),
+          exactReviewHeartbeatGraceMs(this.env),
         );
         if (changed) this.writeStateSync(current);
         else this.syncLegacyCompatibilitySync(current);
@@ -915,6 +981,7 @@ export class ExactReviewQueue {
           exactReviewDispatchLeaseMs(this.env),
           exactReviewExecutionLeaseMs(this.env),
           exactReviewPublicationDispatchLeaseMs(this.env),
+          exactReviewHeartbeatGraceMs(this.env),
         ),
         delivery_receipts: this.deliveryReceiptCountSync(),
         storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
@@ -941,6 +1008,7 @@ export class ExactReviewQueue {
       snapshot,
       startedAt,
       exactReviewPublicationDispatchLeaseMs(this.env),
+      exactReviewHeartbeatGraceMs(this.env),
     );
     const expiredSnapshot = expireExactReviewPublicationItems(snapshot, startedAt);
     const snapshotChanged = reclaimedSnapshot || expiredSnapshot;
@@ -974,7 +1042,12 @@ export class ExactReviewQueue {
     // write so concurrent enqueue, claim, or complete requests cannot be lost.
     const now = Date.now();
     const state = this.readStateSync();
-    reclaimExpiredExactReviewLeases(state, now, exactReviewPublicationDispatchLeaseMs(this.env));
+    reclaimExpiredExactReviewLeases(
+      state,
+      now,
+      exactReviewPublicationDispatchLeaseMs(this.env),
+      exactReviewHeartbeatGraceMs(this.env),
+    );
     expireExactReviewPublicationItems(state, now);
     const admitted = exactReviewQueueAdmittedItems(
       state,
@@ -1593,6 +1666,7 @@ export class ExactReviewQueue {
       exactReviewTargetCapacity(this.env),
       exactReviewPublicationCapacity(this.env),
       exactReviewPublicationDispatchLeaseMs(this.env),
+      exactReviewHeartbeatGraceMs(this.env),
     );
     if (next === null) {
       await this.storage.deleteAlarm();
@@ -1633,8 +1707,15 @@ export default {
       return authenticatedExactReviewEnqueue(request, env);
     if (url.pathname === "/internal/exact-review/claim" && request.method === "POST")
       return exactReviewQueueRequest(env, "/claim", request);
+    // Heartbeat authenticates by full lease tuple, matching /claim and /complete: the
+    // tuple is a per-lease capability, so the shared webhook secret never has to enter
+    // the review job that runs Codex over untrusted content.
+    if (url.pathname === "/internal/exact-review/heartbeat" && request.method === "POST")
+      return exactReviewQueueRequest(env, "/heartbeat", request);
     if (url.pathname === "/internal/exact-review/complete" && request.method === "POST")
       return exactReviewQueueRequest(env, "/complete", request);
+    if (url.pathname === "/internal/exact-review/claimed-runs" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/claimed-runs");
     if (url.pathname === "/internal/exact-review/reconcile" && request.method === "POST")
       return authenticatedExactReviewReconcile(request, env);
     if (url.pathname === "/api/exact-review-queue" && request.method === "GET")
@@ -2391,6 +2472,25 @@ async function authenticatedExactReviewEnqueue(request, env) {
   );
 }
 
+async function authenticatedExactReviewQueueRequest(request, env, path: string) {
+  const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
+  if (!secret) return json({ error: "webhook_not_configured" }, 503);
+  const body = await request.text();
+  const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
+  if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText: body }))) {
+    return json({ error: "invalid_signature" }, 401);
+  }
+  return exactReviewQueueRequest(
+    env,
+    path,
+    new Request(`https://clawsweeper-exact-review-queue${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    }),
+  );
+}
+
 async function authenticatedExactReviewReconcile(request, env) {
   const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
   if (!secret) return json({ error: "webhook_not_configured" }, 503);
@@ -2401,6 +2501,20 @@ async function authenticatedExactReviewReconcile(request, env) {
   }
   const body = parseJsonObject(bodyText);
   if (!body) return json({ error: "invalid_json" }, 400);
+  if (Object.hasOwn(body, "terminal_runs")) {
+    if (!exactReviewTerminalRuns(body.terminal_runs)) {
+      return json({ error: "invalid_terminal_runs" }, 400);
+    }
+    return exactReviewQueueRequest(
+      env,
+      "/reconcile",
+      new Request("https://clawsweeper-exact-review-queue/reconcile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ runs: body.terminal_runs }),
+      }),
+    );
+  }
   const requestedRuns = exactReviewRequestedRuns(body.runs ?? body.run_ids);
   if (!requestedRuns) return json({ error: "invalid_runs" }, 400);
   const includeAllClaimed = body.include_all_claimed === true;
@@ -2890,6 +3004,7 @@ function clearExactReviewLease(item: ExactReviewQueueItem) {
   item.leaseRevision = undefined;
   item.leaseDecision = undefined;
   item.leaseExpiresAt = undefined;
+  item.leaseHeartbeatAt = undefined;
   item.claimedRunId = undefined;
   item.claimedRunAttempt = undefined;
   item.claimGeneration = undefined;
@@ -2898,11 +3013,16 @@ function clearExactReviewLease(item: ExactReviewQueueItem) {
   item.claimedAt = undefined;
 }
 
-function exactReviewEffectiveLeaseExpiresAt(
+export function exactReviewEffectiveLeaseExpiresAt(
   item: ExactReviewQueueItem,
   publicationDispatchLeaseMs: number,
+  heartbeatGraceMs = DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS,
 ) {
   const leaseExpiresAt = Number(item.leaseExpiresAt || 0);
+  const leaseHeartbeatAt = Number(item.leaseHeartbeatAt || 0);
+  if (leaseExpiresAt && item.state === "leased" && leaseHeartbeatAt) {
+    return Math.min(leaseExpiresAt, leaseHeartbeatAt + heartbeatGraceMs);
+  }
   if (
     !leaseExpiresAt ||
     item.state !== "dispatching" ||
@@ -2919,9 +3039,11 @@ function isLiveExactReviewLease(
   item: ExactReviewQueueItem,
   now: number,
   publicationDispatchLeaseMs = DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS,
+  heartbeatGraceMs = DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS,
 ) {
   return Boolean(
-    item.leaseId && exactReviewEffectiveLeaseExpiresAt(item, publicationDispatchLeaseMs) > now,
+    item.leaseId &&
+    exactReviewEffectiveLeaseExpiresAt(item, publicationDispatchLeaseMs, heartbeatGraceMs) > now,
   );
 }
 
@@ -2929,10 +3051,20 @@ function reclaimExpiredExactReviewLeases(
   state: ExactReviewQueueState,
   now: number,
   publicationDispatchLeaseMs = DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS,
+  heartbeatGraceMs = DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS,
 ) {
   let changed = false;
   for (const [key, item] of Object.entries(state.items)) {
-    if (reclaimExpiredExactReviewLease(state, key, item, now, publicationDispatchLeaseMs)) {
+    if (
+      reclaimExpiredExactReviewLease(
+        state,
+        key,
+        item,
+        now,
+        publicationDispatchLeaseMs,
+        heartbeatGraceMs,
+      )
+    ) {
       changed = true;
     }
   }
@@ -2945,10 +3077,11 @@ function reclaimExpiredExactReviewLease(
   item: ExactReviewQueueItem,
   now: number,
   publicationDispatchLeaseMs: number,
+  heartbeatGraceMs = DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS,
 ) {
   if (
     (item.state !== "dispatching" && item.state !== "leased") ||
-    isLiveExactReviewLease(item, now, publicationDispatchLeaseMs)
+    isLiveExactReviewLease(item, now, publicationDispatchLeaseMs, heartbeatGraceMs)
   ) {
     return false;
   }
@@ -3092,6 +3225,7 @@ function exactReviewQueueStats(
   dispatchLeaseMs = DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS,
   executionLeaseMs = DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS,
   publicationDispatchLeaseMs = DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS,
+  heartbeatGraceMs = DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS,
 ) {
   const items = Object.values(state.items);
   const handoffHealth = summarizeExactReviewHandoff({
@@ -3156,6 +3290,7 @@ function exactReviewQueueStats(
     targetCapacity,
     publicationCapacity,
     publicationDispatchLeaseMs,
+    heartbeatGraceMs,
   );
   const lanes = {
     review: exactReviewQueueLaneStats(
@@ -3231,6 +3366,7 @@ export function exactReviewQueueNextWakeAt(
   targetCapacity = Number.POSITIVE_INFINITY,
   publicationCapacity = Number.POSITIVE_INFINITY,
   publicationDispatchLeaseMs = DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS,
+  heartbeatGraceMs = DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS,
 ) {
   const items = Object.values(state.items);
   if (!items.length) return null;
@@ -3245,7 +3381,8 @@ export function exactReviewQueueNextWakeAt(
     activeItems.some(
       (item) =>
         !item.leaseExpiresAt ||
-        exactReviewEffectiveLeaseExpiresAt(item, publicationDispatchLeaseMs) <= now,
+        exactReviewEffectiveLeaseExpiresAt(item, publicationDispatchLeaseMs, heartbeatGraceMs) <=
+          now,
     )
   ) {
     return now + 1_000;
@@ -3253,21 +3390,30 @@ export function exactReviewQueueNextWakeAt(
   const activeReviews = activeItems.filter((item) => !exactReviewQueueIsPublication(item));
   const activePublishers = activeItems.filter(exactReviewQueueIsPublication);
   const activeReviewWakeAt = activeReviews
-    .map((item) => item.leaseExpiresAt)
+    .map((item) =>
+      exactReviewEffectiveLeaseExpiresAt(item, publicationDispatchLeaseMs, heartbeatGraceMs),
+    )
     .filter((value): value is number => Boolean(value && value > now));
   const activePublisherWakeAt = activePublishers
-    .map((item) => exactReviewEffectiveLeaseExpiresAt(item, publicationDispatchLeaseMs))
+    .map((item) =>
+      exactReviewEffectiveLeaseExpiresAt(item, publicationDispatchLeaseMs, heartbeatGraceMs),
+    )
     .filter((value): value is number => Boolean(value && value > now));
   const activeTargetWakeAt = new Map<string, number>();
   const activeTargetCounts = new Map<string, number>();
   for (const item of activeReviews) {
-    if (item.leaseExpiresAt && item.leaseExpiresAt > now) {
+    const leaseExpiresAt = exactReviewEffectiveLeaseExpiresAt(
+      item,
+      publicationDispatchLeaseMs,
+      heartbeatGraceMs,
+    );
+    if (leaseExpiresAt > now) {
       const target = item.decision.targetRepo;
       activeTargetCounts.set(target, (activeTargetCounts.get(target) || 0) + 1);
       const current = activeTargetWakeAt.get(item.decision.targetRepo);
       activeTargetWakeAt.set(
         target,
-        current === undefined ? item.leaseExpiresAt : Math.min(current, item.leaseExpiresAt),
+        current === undefined ? leaseExpiresAt : Math.min(current, leaseExpiresAt),
       );
     }
   }
@@ -3298,7 +3444,11 @@ export function exactReviewQueueNextWakeAt(
         ),
       ];
     }
-    const leaseExpiresAt = exactReviewEffectiveLeaseExpiresAt(item, publicationDispatchLeaseMs);
+    const leaseExpiresAt = exactReviewEffectiveLeaseExpiresAt(
+      item,
+      publicationDispatchLeaseMs,
+      heartbeatGraceMs,
+    );
     return leaseExpiresAt ? [leaseExpiresAt] : [];
   });
   if (!times.length) return now + DEFAULT_EXACT_REVIEW_RETRY_MS;
@@ -3359,6 +3509,15 @@ function exactReviewExecutionLeaseMs(env) {
   return Math.max(
     60_000,
     numberFrom(env.EXACT_REVIEW_EXECUTION_LEASE_MS, DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS),
+  );
+}
+
+function exactReviewHeartbeatGraceMs(env) {
+  // Floor must stay above the 5-minute worker heartbeat interval (plus request time and
+  // scheduling jitter) or a configured grace would reclaim healthy leases between beats.
+  return Math.max(
+    420_000,
+    numberFrom(env.EXACT_REVIEW_HEARTBEAT_GRACE_MS, DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS),
   );
 }
 

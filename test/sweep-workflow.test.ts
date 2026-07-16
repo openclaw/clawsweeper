@@ -608,6 +608,41 @@ test("exact event workflow binds all work to the canonical queue claim", () => {
   assert.match(claimedWork, /claim_generation: claimGeneration/);
 });
 
+test("exact event review heartbeats its queue lease while Codex runs", () => {
+  type Step = { name?: string; env?: Record<string, string>; run?: string };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: Step[] }>;
+  };
+  const review = workflow.jobs["event-review-apply"]!.steps.find(
+    (candidate) => candidate.name === "Review exact event item",
+  );
+  assert.ok(review);
+  assert.match(review.env?.EXACT_REVIEW_ITEM_KEY ?? "", /claim-exact-review-queue/);
+  assert.match(review.env?.EXACT_REVIEW_LEASE_ID ?? "", /claim-exact-review-queue/);
+  assert.match(review.env?.EXACT_REVIEW_LEASE_REVISION ?? "", /claim-exact-review-queue/);
+  // The Codex-adjacent review step must never receive the shared webhook secret;
+  // the heartbeat authenticates by lease tuple like /claim and /complete.
+  assert.equal(review.env?.CLAWSWEEPER_WEBHOOK_SECRET, undefined);
+  assert.match(review.run ?? "", /item_key: process\.env\.EXACT_REVIEW_ITEM_KEY/);
+  assert.match(review.run ?? "", /lease_id: process\.env\.EXACT_REVIEW_LEASE_ID/);
+  assert.match(review.run ?? "", /lease_revision: leaseRevision/);
+  assert.match(review.run ?? "", /run_id: process\.env\.GITHUB_RUN_ID/);
+  assert.doesNotMatch(review.run ?? "", /x-clawsweeper-exact-review-signature/);
+  assert.doesNotMatch(review.run ?? "", /CLAWSWEEPER_WEBHOOK_SECRET/);
+  assert.match(review.run ?? "", /internal\/exact-review\/heartbeat/);
+  assert.match(review.run ?? "", /sleep 300/);
+  assert.match(review.run ?? "", /heartbeat_payload=.*\|\| return 0/s);
+  assert.doesNotMatch(review.run ?? "", /test -n "\$CLAWSWEEPER_WEBHOOK_SECRET"/);
+  assert.match(review.run ?? "", /trap cleanup_heartbeat EXIT/);
+  assert.match(review.run ?? "", /kill "\$heartbeat_pid" 2>\/dev\/null \|\| true/);
+
+  const publisher = workflow.jobs["event-review-publish"]!;
+  assert.equal(
+    publisher.steps.some((step) => step.run?.includes("internal/exact-review/heartbeat")),
+    false,
+  );
+});
+
 test("exact-review lease competition skips only known conflicts and gates both owners", () => {
   type Step = { name?: string; uses?: string; if?: string; run?: string };
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
@@ -706,35 +741,53 @@ test("dashboard CI refreshes on cadence without completion-trigger storms", () =
 
 test("terminal exact-review runs reconcile through a signed isolated backstop", () => {
   const workflow = readText(".github/workflows/exact-review-reconcile.yml");
+  const eventJob = workflow.slice(
+    workflow.indexOf("\n  reconcile:"),
+    workflow.indexOf("\n  sweep:"),
+  );
 
   assert.match(workflow, /name: Reconcile exact-review leases/);
   assert.match(workflow, /workflow_run:\s+workflows: \[ClawSweeper\]\s+types: \[completed\]/);
+  assert.match(workflow, /schedule:\s+- cron: "\*\/15 \* \* \* \*"/);
+  assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /permissions: \{\}/);
   assert.match(
     workflow,
-    /group: exact-review-reconcile-\$\{\{ github\.event\.workflow_run\.event == 'repository_dispatch' && startsWith\([\s\S]*'queue' \|\| github\.event\.workflow_run\.id \}\}/,
+    /group: exact-review-reconcile-\$\{\{ \(github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch'\) && 'sweep'/,
   );
   assert.match(workflow, /cancel-in-progress: false/);
-  assert.match(workflow, /github\.event\.workflow_run\.event == 'repository_dispatch'/);
+  assert.match(eventJob, /github\.event\.workflow_run\.event == 'repository_dispatch'/);
   assert.match(
-    workflow,
+    eventJob,
     /startsWith\(github\.event\.workflow_run\.display_title, 'Review event item '\)/,
   );
   assert.match(
-    workflow,
+    eventJob,
     /SOURCE_RUN_ATTEMPT: \$\{\{ github\.event\.workflow_run\.run_attempt \}\}/,
   );
-  assert.match(workflow, /SOURCE_RUN_ID: \$\{\{ github\.event\.workflow_run\.id \}\}/);
-  assert.match(workflow, /run_id: process\.env\.SOURCE_RUN_ID/);
-  assert.match(workflow, /run_attempt: runAttempt/);
-  assert.match(workflow, /include_all_claimed: true/);
-  assert.match(workflow, /CLAWSWEEPER_WEBHOOK_SECRET/);
-  assert.match(workflow, /x-clawsweeper-exact-review-signature: \$signature/);
-  assert.match(workflow, /--max-time 120/);
-  assert.match(workflow, /--data-binary "\$payload"/);
-  assert.match(workflow, /\/internal\/exact-review\/reconcile/);
-  assert.doesNotMatch(workflow, /actions\/checkout/);
-  assert.doesNotMatch(workflow, /(?:GH_TOKEN|GITHUB_TOKEN|github\.token)/);
+  assert.match(eventJob, /SOURCE_RUN_ID: \$\{\{ github\.event\.workflow_run\.id \}\}/);
+  assert.match(eventJob, /run_id: process\.env\.SOURCE_RUN_ID/);
+  assert.match(eventJob, /run_attempt: runAttempt/);
+  assert.match(eventJob, /include_all_claimed: true/);
+  assert.match(eventJob, /CLAWSWEEPER_WEBHOOK_SECRET/);
+  assert.match(eventJob, /x-clawsweeper-exact-review-signature: \$signature/);
+  assert.match(eventJob, /--max-time 120/);
+  assert.match(eventJob, /--data-binary "\$payload"/);
+  assert.match(eventJob, /\/internal\/exact-review\/reconcile/);
+  assert.doesNotMatch(eventJob, /actions\/checkout/);
+  assert.doesNotMatch(eventJob, /(?:GH_TOKEN|GITHUB_TOKEN|github\.token)/);
+
+  const sweepJob = workflow.slice(workflow.indexOf("\n  sweep:"));
+  assert.match(sweepJob, /timeout-minutes: 10/);
+  assert.match(sweepJob, /permissions:\s+actions: read/);
+  assert.match(sweepJob, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(sweepJob, /\/internal\/exact-review\/claimed-runs/);
+  assert.match(sweepJob, /include_all_claimed: true/);
+  assert.match(sweepJob, /actions\/runs\/\$\{runId\}\$\{suffix\}/);
+  assert.match(sweepJob, /terminal_runs: terminalRuns/);
+  assert.match(sweepJob, /\/internal\/exact-review\/reconcile/);
+  assert.match(sweepJob, /x-clawsweeper-exact-review-signature/);
+  assert.doesNotMatch(sweepJob, /actions\/checkout/);
 });
 
 test("publish workflow dispatches immediate apply through the isolated lane", () => {

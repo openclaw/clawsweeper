@@ -8,6 +8,7 @@ import { createContext, Script } from "node:vm";
 import worker, {
   automaticIssueWork,
   ExactReviewQueue,
+  exactReviewEffectiveLeaseExpiresAt,
   exactReviewPublicationCapacity,
   exactReviewQueueAdmittedItems,
   exactReviewQueueCapacity,
@@ -50,6 +51,156 @@ test("exact-review publication defaults to 24 bounded publishers", () => {
     }),
     16,
   );
+});
+
+test("heartbeated exact-review leases use the heartbeat grace while legacy leases keep execution expiry", () => {
+  const now = 1_000_000;
+  const item = {
+    ...leasedExactReviewQueueItem(700, "7000"),
+    leaseHeartbeatAt: undefined as number | undefined,
+  };
+  item.leaseExpiresAt = now + 130 * 60_000;
+  assert.equal(exactReviewEffectiveLeaseExpiresAt(item, 15 * 60_000), item.leaseExpiresAt);
+
+  item.leaseHeartbeatAt = now;
+  assert.equal(exactReviewEffectiveLeaseExpiresAt(item, 15 * 60_000), now + 20 * 60_000);
+  assert.equal(exactReviewEffectiveLeaseExpiresAt(item, 15 * 60_000, 5 * 60_000), now + 5 * 60_000);
+});
+
+test("exact-review heartbeat refreshes only the matching live lease tuple", async () => {
+  const storage = new MemoryDurableStorage();
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: {
+      "openclaw/openclaw#700": leasedExactReviewQueueItem(700, "7000"),
+    },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  // Heartbeat is tuple-authenticated like /claim and /complete: no webhook signature.
+  const env = {
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const body = JSON.stringify({
+    item_key: "openclaw/openclaw#700",
+    lease_id: "lease-700",
+    lease_revision: 1,
+    run_id: "7000",
+  });
+  const response = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/heartbeat", {
+      method: "POST",
+      body,
+    }),
+    env,
+  );
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).ok, true);
+  const heartbeatAt = Number(
+    (
+      (await storage.get("exact-review-queue")) as {
+        items: Record<string, { leaseHeartbeatAt?: number }>;
+      }
+    ).items["openclaw/openclaw#700"].leaseHeartbeatAt,
+  );
+  assert.ok(heartbeatAt > 0);
+
+  const mismatchBody = JSON.stringify({
+    item_key: "openclaw/openclaw#700",
+    lease_id: "lease-700",
+    lease_revision: 2,
+    run_id: "7000",
+  });
+  const mismatch = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/heartbeat", {
+      method: "POST",
+      body: mismatchBody,
+    }),
+    env,
+  );
+  assert.equal(mismatch.status, 409);
+  assert.deepEqual(await mismatch.json(), { error: "lease_not_active" });
+});
+
+test("exact-review queue requeues a heartbeat-stale lease before execution expiry", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = {
+    ...leasedExactReviewQueueItem(701, "7010"),
+    leaseHeartbeatAt: undefined as number | undefined,
+  };
+  item.leaseExpiresAt = Date.now() + 100 * 60_000;
+  item.leaseHeartbeatAt = Date.now() - 21 * 60_000;
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { "openclaw/openclaw#701": item },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const response = await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).pending, 1);
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { state: string; leaseId?: string; leaseHeartbeatAt?: number }>;
+  };
+  assert.equal(state.items["openclaw/openclaw#701"].state, "pending");
+  assert.equal(state.items["openclaw/openclaw#701"].leaseId, undefined);
+  assert.equal(state.items["openclaw/openclaw#701"].leaseHeartbeatAt, undefined);
+});
+
+test("signed claimed-run snapshot feeds tuple-safe terminal reconciliation", async () => {
+  const storage = new MemoryDurableStorage();
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: {
+      "openclaw/openclaw#702": leasedExactReviewQueueItem(702, "7020"),
+    },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: "test-token-placeholder",
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const claimedBody = JSON.stringify({ runs: [], include_all_claimed: true });
+  const claimedSignature = `sha256=${createHmac("sha256", "test-token-placeholder").update(claimedBody).digest("hex")}`;
+  const claimed = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/claimed-runs", {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": claimedSignature },
+      body: claimedBody,
+    }),
+    env,
+  );
+  assert.equal(claimed.status, 200);
+  assert.deepEqual(await claimed.json(), {
+    runs: [{ run_id: "7020", run_attempt: 1, claim_generation: 1 }],
+  });
+
+  const terminalBody = JSON.stringify({
+    terminal_runs: [
+      {
+        run_id: "7020",
+        run_attempt: 1,
+        claimed_run_attempt: 1,
+        claim_generation: 1,
+        outcome: "success",
+      },
+    ],
+  });
+  const terminalSignature = `sha256=${createHmac("sha256", "test-token-placeholder").update(terminalBody).digest("hex")}`;
+  const reconciled = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/reconcile", {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": terminalSignature },
+      body: terminalBody,
+    }),
+    env,
+  );
+  assert.equal(reconciled.status, 200);
+  assert.deepEqual(await reconciled.json(), {
+    ok: true,
+    reconciled: 1,
+    requeued: 0,
+    completed: 1,
+  });
 });
 
 test("exact-review queue admits and wakes up to 24 publishers", () => {

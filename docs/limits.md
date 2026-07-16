@@ -155,8 +155,11 @@ workflows holding the expired lease cannot claim it.
 Run-attempt binding and a per-claim generation check keep delayed terminal
 decisions from releasing a later rerun; queued and in-progress runs are never
 released. If a workflow never claims or completes, the Durable Object reclaims
-the expired lease. This keeps capacity waiting and retry state out of GitHub
-Actions runners.
+the expired lease. Claimed review workers heartbeat every five minutes; after the first
+heartbeat, `EXACT_REVIEW_HEARTBEAT_GRACE_MS` bounds liveness to 20 minutes by default while
+never extending the original 130-minute execution lease. Leases created before heartbeat
+support was deployed retain their original execution expiry. This keeps capacity waiting and
+retry state out of GitHub Actions runners.
 
 Examples with the current config:
 
@@ -186,6 +189,9 @@ hot intake `14`, and commit review `2`. Existing repair lanes keep their
 
 ## Runtime Overrides
 
+- `EXACT_REVIEW_HEARTBEAT_GRACE_MS` overrides the 1,200,000 ms exact-review worker heartbeat
+  grace. It is clamped to at least 420,000 ms so a configured grace can never dip
+  below the five-minute worker heartbeat interval plus request time and jitter.
 - `CLAWSWEEPER_COMMIT_REVIEW_PAGE_SIZE` overrides
   `commit_review.page_size_default`.
 - `CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED=1` enables the scheduled

@@ -838,11 +838,56 @@ jobs:
           CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ steps.target-read-token.outputs.token || github.token }}
           ADDITIONAL_PROMPT: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).additionalPrompt || '' }}
           CLAWSWEEPER_RELATED_GITHUB_SEARCH: ${{ vars.CLAWSWEEPER_RELATED_GITHUB_SEARCH || '1' }}
+          EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
+          EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
+          EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           REVIEW_LEASE_OWNER: ${{ steps.reserve-exact-review-lease.outputs.owner }}
           REVIEW_LEASE_COMMENT_ID: ${{ steps.reserve-exact-review-lease.outputs.comment_id }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
+          heartbeat_pid=""
+          heartbeat_loop() {
+            while true; do
+              heartbeat_status="$(curl --silent --connect-timeout 5 --max-time 20 \
+                --output /dev/null \
+                --write-out '%{http_code}' \
+                --request POST \
+                --header "content-type: application/json" \
+                --data-binary "$heartbeat_payload" \
+                "${QUEUE_URL%/}/internal/exact-review/heartbeat" 2>/dev/null)" || heartbeat_status=""
+              if [ "$heartbeat_status" = "409" ]; then
+                echo "::notice::Exact-review heartbeat lost its lease tuple."
+                return
+              fi
+              sleep 300
+            done
+          }
+          start_heartbeat() {
+            # Heartbeat authenticates by the full lease tuple (same capability model as
+            # claim/complete), so this Codex-adjacent step never sees the webhook secret.
+            heartbeat_payload="$(node -e '
+              const leaseRevision = Number(process.env.EXACT_REVIEW_LEASE_REVISION);
+              if (!process.env.EXACT_REVIEW_ITEM_KEY || !process.env.EXACT_REVIEW_LEASE_ID) process.exit(1);
+              if (!Number.isInteger(leaseRevision) || leaseRevision < 1) process.exit(1);
+              process.stdout.write(JSON.stringify({
+                item_key: process.env.EXACT_REVIEW_ITEM_KEY,
+                lease_id: process.env.EXACT_REVIEW_LEASE_ID,
+                lease_revision: leaseRevision,
+                run_id: process.env.GITHUB_RUN_ID,
+              }));
+            ')" || return 0
+            heartbeat_loop &
+            heartbeat_pid=$!
+          }
+          cleanup_heartbeat() {
+            [ -n "$heartbeat_pid" ] || return 0
+            kill "$heartbeat_pid" 2>/dev/null || true
+            wait "$heartbeat_pid" 2>/dev/null || true
+          }
+          start_heartbeat
+          trap cleanup_heartbeat EXIT
           codex_timeout_ms="${{ steps.target.outputs.codex_timeout_ms }}"
           if ! [[ "$codex_timeout_ms" =~ ^[0-9]+$ ]] || [ "$codex_timeout_ms" -lt 1 ]; then
             echo "Invalid Codex timeout: $codex_timeout_ms" >&2
