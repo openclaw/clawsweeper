@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { parse } from "yaml";
-
-import { readText } from "../helpers.ts";
 
 export const SPARSE_REPAIR_BUILD_WORKFLOWS = [
   ".github/workflows/repair-comment-router.yml",
@@ -24,7 +23,9 @@ type Workflow = {
 };
 
 export function sourceSparseCheckoutEntries(workflowPath: string): string[] {
-  const workflow = parse(readText(workflowPath)) as Workflow;
+  // This helper is loaded before the smoke test builds anything, so it must not import the
+  // general test helper whose production-module imports require an existing dist tree.
+  const workflow = parse(readFileSync(workflowPath, "utf8")) as Workflow;
   const checkout = Object.values(workflow.jobs ?? {})
     .flatMap((job) => job.steps ?? [])
     .find((step) => String(step.uses ?? "").startsWith("actions/checkout@"));
