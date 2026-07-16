@@ -20,7 +20,7 @@ budget:
 | ------------------------------------------------- | ------: | ---------------------------------------------------- |
 | `CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED`      | `false` | Enables live per-author budget closes.               |
 | `CLAWSWEEPER_AUTHOR_PR_BUDGET`                    |      15 | Allowed open PRs per external author and repository. |
-| `CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN` |       5 | Gradual trim cap per author in one apply run.         |
+| `CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN` |       5 | Gradual trim cap per author in one apply run.        |
 
 See [`author-pr-budget-close-policy.md`](author-pr-budget-close-policy.md) for
 the rating, proof, inactivity, engagement, and fail-closed gates.
@@ -122,22 +122,22 @@ endpoint once and uses its top-level pending count and oldest-pending age. A
 failed, timed-out, or malformed response is treated as no pressure so a dashboard
 outage cannot stall reviews.
 
-| Tier   | Trigger, either condition                                          | Background budget                         |
-| ------ | ------------------------------------------------------------------ | ----------------------------------------- |
-| none   | Below both soft thresholds                                         | Normal dynamic budget                     |
-| soft   | At least 150 pending or oldest pending is at least 30 minutes      | `ceil(normal dynamic budget * 0.5)`       |
-| hard   | At least 400 pending or oldest pending is at least 2 hours         | `max(1, floor(normal dynamic budget * 0.1))` |
+| Tier | Trigger, either condition                                     | Background budget                            |
+| ---- | ------------------------------------------------------------- | -------------------------------------------- |
+| none | Below both soft thresholds                                    | Normal dynamic budget                        |
+| soft | At least 150 pending or oldest pending is at least 30 minutes | `ceil(normal dynamic budget * 0.5)`          |
+| hard | At least 400 pending or oldest pending is at least 2 hours    | `max(1, floor(normal dynamic budget * 0.1))` |
 
 The thresholds can be overridden with repository variables or process
 environment variables. Values are non-negative counts or millisecond durations;
 unset, empty, or invalid values use the defaults.
 
-| Environment variable                              | Default   |
-| ------------------------------------------------- | --------: |
-| `CLAWSWEEPER_QUEUE_PRESSURE_SOFT_PENDING`          |       150 |
-| `CLAWSWEEPER_QUEUE_PRESSURE_HARD_PENDING`          |       400 |
-| `CLAWSWEEPER_QUEUE_PRESSURE_SOFT_AGE_MS`           |   1800000 |
-| `CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS`           |   7200000 |
+| Environment variable                      | Default |
+| ----------------------------------------- | ------: |
+| `CLAWSWEEPER_QUEUE_PRESSURE_SOFT_PENDING` |     150 |
+| `CLAWSWEEPER_QUEUE_PRESSURE_HARD_PENDING` |     400 |
+| `CLAWSWEEPER_QUEUE_PRESSURE_SOFT_AGE_MS`  | 1800000 |
+| `CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS`  | 7200000 |
 
 Only normal review, hot intake, and commit review use this pressure multiplier.
 Repair, assist, issue implementation, cluster repair, and exact-item review keep
@@ -155,7 +155,10 @@ their derived lane ceiling and at the remaining global budget after other active
 priority work.
 
 Exact-item webhooks are admitted by the dashboard Worker's durable
-`ExactReviewQueue`, not by a live Actions semaphore. The queue coalesces
+`ExactReviewQueue`, not by a live Actions semaphore. Its production queue logic,
+including storage migrations, leasing, reclamation, debounce, and shedding, lives
+in `dashboard/exact-review-queue.ts`; `dashboard/worker.ts` is the fetch and
+dashboard router and only imports that service boundary. The queue coalesces
 deliveries by repository and item number, so a new webhook updates the latest
 desired review rather than consuming another runner. Only
 `EXACT_REVIEW_QUEUE_MAX_CONCURRENT` leased items may dispatch an exact-review
