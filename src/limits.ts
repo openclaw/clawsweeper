@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { QueuePressureLevel } from "./queue-pressure.js";
 
 export type WorkerConfig = {
   workers: {
@@ -102,11 +103,13 @@ export function workerLimit(
   {
     activeCritical = 0,
     activeBackground = 0,
+    pressureLevel = "none",
     config = WORKER_CONFIG,
     limits = AUTOMATION_LIMITS,
   }: {
     activeCritical?: number;
     activeBackground?: number;
+    pressureLevel?: QueuePressureLevel;
     config?: WorkerConfig;
     limits?: AutomationLimits;
   } = {},
@@ -148,7 +151,10 @@ export function workerLimit(
     if (rawAvailable <= 0) return 1;
     const withFloor =
       rawAvailable >= config.workers.minimum_background ? rawAvailable : Math.max(1, rawAvailable);
-    return Math.max(1, Math.min(laneMax, withFloor));
+    const normalBudget = Math.max(1, Math.min(laneMax, withFloor));
+    if (pressureLevel === "soft") return Math.ceil(normalBudget * 0.5);
+    if (pressureLevel === "hard") return Math.max(1, Math.floor(normalBudget * 0.1));
+    return normalBudget;
   }
 }
 

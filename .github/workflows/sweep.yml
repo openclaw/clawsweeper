@@ -2104,6 +2104,11 @@ jobs:
       - id: mode
         env:
           GH_TOKEN: ${{ github.token }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_QUEUE_PRESSURE_SOFT_PENDING: ${{ vars.CLAWSWEEPER_QUEUE_PRESSURE_SOFT_PENDING || '' }}
+          CLAWSWEEPER_QUEUE_PRESSURE_HARD_PENDING: ${{ vars.CLAWSWEEPER_QUEUE_PRESSURE_HARD_PENDING || '' }}
+          CLAWSWEEPER_QUEUE_PRESSURE_SOFT_AGE_MS: ${{ vars.CLAWSWEEPER_QUEUE_PRESSURE_SOFT_AGE_MS || '' }}
+          CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS: ${{ vars.CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS || '' }}
         run: |
           limit() {
             pnpm --dir clawsweeper run --silent workflow -- limit "$1"
@@ -2240,10 +2245,25 @@ jobs:
           commit_page_size="$(limit commit_review.page_size_default)"
           active_critical_workers="$(( $(active_run_count ".github/workflows/repair-cluster-worker.yml") + $(active_sweep_exact_workers) ))"
           active_background_workers="$(( $(active_run_count ".github/workflows/commit-review.yml") * commit_page_size + $(active_sweep_background_workers) ))"
-          hot_intake_shards="$(worker_limit hot_intake --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
-          normal_shards="$(worker_limit normal_review --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
-          hot_intake="${{ ((github.event_name == 'repository_dispatch' && github.event.client_payload.hot_intake == 'true') || (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'true' || 'false' }}"
           exact_item="${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}"
+          pressure_level="none"
+          hot_intake_unpressured="$(worker_limit hot_intake --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
+          normal_unpressured="$(worker_limit normal_review --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
+          if [ -z "$exact_item" ]; then
+            if ! pressure_json="$(pnpm --dir clawsweeper run --silent workflow -- queue-pressure --queue-url "$QUEUE_URL")"; then
+              pressure_json='{"ok":false,"reason":"probe_failed","level":"none"}'
+            fi
+            if ! pressure_level="$(printf '%s' "$pressure_json" | jq -er '.level | select(. == "none" or . == "soft" or . == "hard")' 2>/dev/null)"; then
+              pressure_level="none"
+            fi
+          fi
+          hot_intake_shards="$(worker_limit hot_intake --active-critical "$active_critical_workers" --active-background "$active_background_workers" --pressure-level "$pressure_level")"
+          normal_shards="$(worker_limit normal_review --active-critical "$active_critical_workers" --active-background "$active_background_workers" --pressure-level "$pressure_level")"
+          if [ -z "$exact_item" ]; then
+            pressure_numbers="$(printf '%s' "$pressure_json" | jq -r 'if .ok then "pending=\(.pendingCount), oldest=\((.oldestPendingAgeMs / 3600000 * 10 | round) / 10)h" else "unavailable=\(.reason)" end' 2>/dev/null || printf 'unavailable=probe_failed')"
+            echo "queue pressure: $pressure_level ($pressure_numbers) — hot_intake $hot_intake_unpressured->$hot_intake_shards, normal_review $normal_unpressured->$normal_shards"
+          fi
+          hot_intake="${{ ((github.event_name == 'repository_dispatch' && github.event.client_payload.hot_intake == 'true') || (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'true' || 'false' }}"
           target_repo="${{ steps.target.outputs.target_repo }}"
           if [ "$hot_intake" = "true" ] && [ -n "$exact_item" ]; then
             batch_size="1"

@@ -249,6 +249,27 @@ test("worker scheduler keeps 104 slots available for steady background work", ()
   assert.ok(quietBackgroundCapacity >= Math.floor(WORKER_CONFIG.workers.max * 0.8));
 });
 
+test("workflow worker scheduler applies queue pressure only to background lanes", () => {
+  for (const lane of ["normal_review", "hot_intake", "commit_review"] as const) {
+    const normalBudget = workerLimit(lane);
+    assert.equal(workerLimit(lane, { pressureLevel: "soft" }), Math.ceil(normalBudget * 0.5));
+    assert.equal(
+      workerLimit(lane, { pressureLevel: "hard" }),
+      Math.max(1, Math.floor(normalBudget * 0.1)),
+    );
+  }
+  for (const lane of [
+    "repair",
+    "automerge_repair",
+    "issue_implementation",
+    "cluster_repair",
+    "exact_item",
+    "assist",
+  ] as const) {
+    assert.equal(workerLimit(lane, { pressureLevel: "hard" }), workerLimit(lane));
+  }
+});
+
 test("worker config defaults imported cluster repair capacity for older configs", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-limits-"));
   const configPath = path.join(root, "automation-limits.json");

@@ -6,6 +6,11 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "./lib.js";
 import { isJsonObject } from "./json-types.js";
 import { AUTOMATION_LIMITS, WORKER_CONFIG, workerLimit, type WorkerLane } from "./limits.js";
+import {
+  fetchExactReviewQueuePressure,
+  queuePressureLevel,
+  type QueuePressureLevel,
+} from "../queue-pressure.js";
 
 type ApplyAction = {
   action: string;
@@ -153,7 +158,7 @@ type AdaptiveApplyBatchSize = {
 
 const args = parseArgs(process.argv.slice(2));
 
-function runCli(): void {
+async function runCli(): Promise<void> {
   const command = args._[0];
   if (!command) throw new Error("workflow utility command is required");
 
@@ -267,10 +272,20 @@ function runCli(): void {
           workerLimit(requiredWorkerLane(optionalString("lane") || positionalString(1)), {
             activeCritical: numberArg("active-critical", 0),
             activeBackground: numberArg("active-background", 0),
+            pressureLevel: requiredQueuePressureLevel(optionalString("pressure-level") || "none"),
           }),
         ),
       );
       break;
+    case "queue-pressure": {
+      const pressure = await fetchExactReviewQueuePressure({
+        queueUrl: requiredString("queue-url"),
+      });
+      process.stdout.write(
+        `${JSON.stringify({ ...pressure, level: queuePressureLevel(pressure) })}\n`,
+      );
+      break;
+    }
     case "worker-config":
       process.stdout.write(JSON.stringify(WORKER_CONFIG, null, 2));
       break;
@@ -331,6 +346,11 @@ function requiredWorkerLane(value: string): WorkerLane {
   ]);
   if (allowed.has(value as WorkerLane)) return value as WorkerLane;
   throw new Error(`unknown worker lane: ${value}`);
+}
+
+function requiredQueuePressureLevel(value: string): QueuePressureLevel {
+  if (value === "none" || value === "soft" || value === "hard") return value;
+  throw new Error(`unknown queue pressure level: ${value}`);
 }
 
 export function automationLimit(limitPath: string): number {
@@ -2429,4 +2449,4 @@ function isCliEntrypoint(): boolean {
   return Boolean(entrypoint && import.meta.url === pathToFileURL(entrypoint).href);
 }
 
-if (isCliEntrypoint()) runCli();
+if (isCliEntrypoint()) await runCli();

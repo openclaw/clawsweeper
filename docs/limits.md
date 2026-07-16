@@ -103,6 +103,33 @@ The scheduler does this for background lanes:
 6. cap the result at the lane's derived quiet-system ceiling
 7. return at least 1 so an enabled lane can still make slow progress
 
+The normal result is then reduced when the exact-review queue is under pressure.
+Each planner reads the public, unauthenticated `GET /api/exact-review-queue`
+endpoint once and uses its top-level pending count and oldest-pending age. A
+failed, timed-out, or malformed response is treated as no pressure so a dashboard
+outage cannot stall reviews.
+
+| Tier   | Trigger, either condition                                          | Background budget                         |
+| ------ | ------------------------------------------------------------------ | ----------------------------------------- |
+| none   | Below both soft thresholds                                         | Normal dynamic budget                     |
+| soft   | At least 150 pending or oldest pending is at least 30 minutes      | `ceil(normal dynamic budget * 0.5)`       |
+| hard   | At least 400 pending or oldest pending is at least 2 hours         | `max(1, floor(normal dynamic budget * 0.1))` |
+
+The thresholds can be overridden with repository variables or process
+environment variables. Values are non-negative counts or millisecond durations;
+unset, empty, or invalid values use the defaults.
+
+| Environment variable                              | Default   |
+| ------------------------------------------------- | --------: |
+| `CLAWSWEEPER_QUEUE_PRESSURE_SOFT_PENDING`          |       150 |
+| `CLAWSWEEPER_QUEUE_PRESSURE_HARD_PENDING`          |       400 |
+| `CLAWSWEEPER_QUEUE_PRESSURE_SOFT_AGE_MS`           |   1800000 |
+| `CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS`           |   7200000 |
+
+Only normal review, hot intake, and commit review use this pressure multiplier.
+Repair, assist, issue implementation, cluster repair, and exact-item review keep
+their existing priority budgets.
+
 Background planner jobs serialize per target repository. A sweep that is still
 planning, queued, or expanding its matrix reserves its quiet lane size. Once
 its shard jobs exist and all finish, its publish phase counts as zero workers,

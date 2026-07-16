@@ -164,6 +164,11 @@ jobs:
           SOURCE_REF: ${{ github.event.client_payload.ref || 'refs/heads/main' }}
           SETTLE_SECONDS: ${{ vars.CLAWSWEEPER_COMMIT_REVIEW_SETTLE_SECONDS || '60' }}
           PAGE_SIZE: ${{ vars.CLAWSWEEPER_COMMIT_REVIEW_PAGE_SIZE || '' }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_QUEUE_PRESSURE_SOFT_PENDING: ${{ vars.CLAWSWEEPER_QUEUE_PRESSURE_SOFT_PENDING || '' }}
+          CLAWSWEEPER_QUEUE_PRESSURE_HARD_PENDING: ${{ vars.CLAWSWEEPER_QUEUE_PRESSURE_HARD_PENDING || '' }}
+          CLAWSWEEPER_QUEUE_PRESSURE_SOFT_AGE_MS: ${{ vars.CLAWSWEEPER_QUEUE_PRESSURE_SOFT_AGE_MS || '' }}
+          CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS: ${{ vars.CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS || '' }}
         run: |
           set -euo pipefail
           active_runs_json() {
@@ -251,10 +256,22 @@ jobs:
               | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq '[.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select((.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) and (.displayTitle | startswith("Review event item ")))] | length' 2>/dev/null \
               || printf '0'
           }
+          # An explicit CLAWSWEEPER_COMMIT_REVIEW_PAGE_SIZE is an operator escape hatch:
+          # it bypasses the derived budget entirely, including active-load yielding and
+          # queue-pressure throttling, exactly like it bypassed load yielding before.
           if [ -z "$PAGE_SIZE" ]; then
             active_critical_workers="$(( $(active_run_count ".github/workflows/repair-cluster-worker.yml") + $(active_sweep_exact_count) ))"
             active_background_workers="$(active_sweep_background_workers)"
-            PAGE_SIZE="$(pnpm --dir clawsweeper run --silent workflow -- worker-limit commit_review --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
+            unpressured_page_size="$(pnpm --dir clawsweeper run --silent workflow -- worker-limit commit_review --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
+            if ! pressure_json="$(pnpm --dir clawsweeper run --silent workflow -- queue-pressure --queue-url "$QUEUE_URL")"; then
+              pressure_json='{"ok":false,"reason":"probe_failed","level":"none"}'
+            fi
+            if ! pressure_level="$(printf '%s' "$pressure_json" | jq -er '.level | select(. == "none" or . == "soft" or . == "hard")' 2>/dev/null)"; then
+              pressure_level="none"
+            fi
+            PAGE_SIZE="$(pnpm --dir clawsweeper run --silent workflow -- worker-limit commit_review --active-critical "$active_critical_workers" --active-background "$active_background_workers" --pressure-level "$pressure_level")"
+            pressure_numbers="$(printf '%s' "$pressure_json" | jq -r 'if .ok then "pending=\(.pendingCount), oldest=\((.oldestPendingAgeMs / 3600000 * 10 | round) / 10)h" else "unavailable=\(.reason)" end' 2>/dev/null || printf 'unavailable=probe_failed')"
+            echo "queue pressure: $pressure_level ($pressure_numbers) — commit_review $unpressured_page_size->$PAGE_SIZE"
           fi
           page_size_hard_cap="$(pnpm --dir clawsweeper run --silent workflow -- limit commit_review.page_size_hard_cap)"
           if [ "$ENABLED" = "false" ]; then

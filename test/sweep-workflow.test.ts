@@ -2155,6 +2155,37 @@ test("background review capacity reserves expanding matrices and caps broad manu
   assert.match(commitBlock, /reserved_shards="\$item_count"/);
 });
 
+test("background planners fetch exact-review queue pressure once and pass its level", () => {
+  const sweepWorkflow = readText(".github/workflows/sweep.yml");
+  const sweepBlock = sweepWorkflow.slice(
+    sweepWorkflow.indexOf("- id: mode"),
+    sweepWorkflow.indexOf("- id: select"),
+  );
+  const commitWorkflow = readText(".github/workflows/commit-review.yml");
+  const commitBlock = commitWorkflow.slice(
+    commitWorkflow.indexOf("- name: Select commits"),
+    commitWorkflow.indexOf('if [ "$ENABLED" = "false" ]'),
+  );
+
+  for (const block of [sweepBlock, commitBlock]) {
+    assert.match(
+      block,
+      /QUEUE_URL: \$\{\{ vars\.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL \|\| 'https:\/\/clawsweeper\.openclaw\.ai' \}\}/,
+    );
+    assert.equal(block.match(/queue-pressure --queue-url/g)?.length, 1);
+    assert.match(block, /--pressure-level "\$pressure_level"/);
+    assert.match(block, /queue pressure: \$pressure_level/);
+    assert.match(block, /if ! pressure_json=/);
+    assert.match(block, /unavailable=probe_failed/);
+    assert.match(block, /CLAWSWEEPER_QUEUE_PRESSURE_SOFT_PENDING/);
+    assert.match(block, /CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS/);
+  }
+  assert.match(sweepBlock, /if \[ -z "\$exact_item" \]; then/);
+  assert.match(sweepBlock, /hot_intake \$hot_intake_unpressured->\$hot_intake_shards/);
+  assert.match(sweepBlock, /normal_review \$normal_unpressured->\$normal_shards/);
+  assert.match(commitBlock, /commit_review \$unpressured_page_size->\$PAGE_SIZE/);
+});
+
 test("review backstops identify sweep runs by stable workflow path", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const block = workflow.slice(workflow.indexOf("- name: Queue review backstops"));
