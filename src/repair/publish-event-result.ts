@@ -35,6 +35,11 @@ import {
 } from "./git-publish.js";
 import { isJsonObject } from "./json-types.js";
 import { RecordTupleError } from "./record-tuple.js";
+import {
+  staleEventDisposition,
+  staleEventDispositionOutputLines,
+  type StaleEventDisposition,
+} from "./stale-event-disposition.js";
 
 type EventOptions = {
   targetRepo: string;
@@ -115,14 +120,9 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     preflightResult === "remote-newer" ||
     preflightResult === "missing"
   ) {
-    const detail =
-      preflightResult === "remote-closed"
-        ? "current state is already closed"
-        : preflightResult === "remote-newer"
-          ? "current state has a newer tuple"
-          : "the event produced no record tuple";
+    const disposition = staleEventDisposition(preflightResult);
     console.log(
-      `Skipping stale event apply for ${options.targetRepo}#${options.itemNumber}: ${detail}`,
+      `Skipping stale event apply for ${options.targetRepo}#${options.itemNumber}: ${disposition.detail}`,
     );
     refreshSourceAfterStatePublish(
       [
@@ -141,9 +141,13 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       missingCount: 0,
       closeReasons: options.closeReasons,
     });
-    throw new Error(
-      `Event state for ${options.targetRepo}#${options.itemNumber} was not applied because ${detail}; requeue against the latest item revision`,
-    );
+    // A stale artifact can never publish: the state already advanced (or the
+    // event carried no tuple). Failing here would requeue the same artifact
+    // forever, so exit successfully with the terminal disposition instead —
+    // `requeue_latest` hands remote-newer to the source-drift requeue step,
+    // which reviews the LATEST revision.
+    writeStaleEventDispositionOutputs(disposition);
+    return;
   }
 
   const actions = readApplyActions(options.reportPath);
@@ -481,6 +485,16 @@ function writeSummary({
       `- Close reasons enabled: ${closeReasons}`,
       "",
     ].join("\n"),
+    "utf8",
+  );
+}
+
+function writeStaleEventDispositionOutputs(disposition: StaleEventDisposition): void {
+  const outputPath = process.env.GITHUB_OUTPUT;
+  if (!outputPath) return;
+  fs.appendFileSync(
+    outputPath,
+    `${staleEventDispositionOutputLines(disposition).join("\n")}\n`,
     "utf8",
   );
 }
