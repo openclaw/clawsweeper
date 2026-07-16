@@ -197,24 +197,27 @@ and returns legacy operational samples, but new samples omit those unused chart
 fields. Existing buckets expire naturally; no migration or manual cleanup is
 required.
 
-Each lane renders one signed speed value and curve: successfully completed work
-minus newly incoming work, expressed per hour. Positive speed means the lane is
-catching up, negative speed means it is falling behind, and zero is balanced.
+Each lane renders one signed net-rate value and curve: successfully completed
+work minus newly incoming work, expressed per hour. A positive rate means the
+lane is catching up, a negative rate means it is falling behind, and zero is
+balanced.
 Incoming counts newly created queue work units; review demand also includes
 shed recovery work. Pending merges, delivery replays, retries, and source-drift
 requeues do not create new demand. Completed work is counted only when a
 successful item actually leaves its lane, in the same queue storage transaction
-as the deletion.
+as the deletion. A help icon beside each net-rate label exposes this definition
+on hover, keyboard focus, or activation; the review explanation explicitly notes
+that incoming demand includes shed work.
 
 After two continuous samples roughly five minutes apart, the dashboard scales
 the observed net change to an hourly rate and labels it provisional with the
 actual window length. Once an hour of continuous counters exists, it uses a
 trailing hourly rate. Zero incoming or zero completed work remains valid data. A
 gap over 12 minutes, a cumulative counter reset, or a legacy sample without flow
-counters starts a new speed segment; a latest speed point older than 12 minutes
+counters starts a new rate segment; a latest rate point older than 12 minutes
 is stale.
 Pre-deployment counter history cannot be backfilled, so the first provisional
-speed appears about five minutes after deployment.
+rate appears about five minutes after deployment.
 
 Operational health remains a current-snapshot alert rather than a historical
 chart. `/api/status` classifies the already-fetched active workflow runs as:

@@ -5949,18 +5949,30 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   const laneHtml = elementFor("exact-review-lanes").innerHTML;
   assert.match(laneHtml, /Growing · \+12 in the last hour/);
   assert.match(laneHtml, /Draining · −12 in the last hour/);
-  assert.match(laneHtml, /Review speed/);
-  assert.match(laneHtml, /Publication speed/);
-  assert.match(laneHtml, /Review speed<\/span><strong>−36 \/ hour/);
-  assert.match(laneHtml, /Publication speed<\/span><strong>\+72 \/ hour/);
+  assert.match(laneHtml, /Net review rate/);
+  assert.match(laneHtml, /Net publication rate/);
+  assert.match(laneHtml, /Net review rate.*<\/div><strong>−36 \/ hour/);
+  assert.match(laneHtml, /Net publication rate.*<\/div><strong>\+72 \/ hour/);
+  assert.equal(laneHtml.match(/class="lane-rate-help"/g)?.length, 2);
+  assert.equal(laneHtml.match(/role="tooltip"/g)?.length, 2);
+  assert.match(laneHtml, /aria-describedby="lane-rate-help-net-review-rate"/);
+  assert.match(laneHtml, /aria-describedby="lane-rate-help-net-publication-rate"/);
+  assert.match(
+    laneHtml,
+    /Successful completions minus incoming review demand per hour\. Incoming includes newly queued work and shed demand\./,
+  );
+  assert.match(laneHtml, /Successful completions minus newly queued publication work per hour\./);
   assert.match(laneHtml, /Falling behind/);
   assert.match(laneHtml, /Catching up/);
   assert.equal(laneHtml.match(/class="lane-speed"/g)?.length, 2);
   assert.doesNotMatch(laneHtml, /Processed \/ hour|Incoming \/ hour/);
-  assert.match(laneHtml, /role="img" aria-label="Review speed, completed minus incoming, over 7d"/);
   assert.match(
     laneHtml,
-    /role="img" aria-label="Publication speed, completed minus incoming, over 7d"/,
+    /role="img" aria-label="Net review rate, completed minus incoming, over 7d"/,
+  );
+  assert.match(
+    laneHtml,
+    /role="img" aria-label="Net publication rate, completed minus incoming, over 7d"/,
   );
   assert.match(laneHtml, /role="img" aria-label="Review admission pending backlog over 7d"/);
   assert.match(laneHtml, /Live snapshot unavailable/);
@@ -5993,13 +6005,13 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.equal(Math.round(provisionalRates[0].rate), 36);
   assert.equal(provisionalRates[0].provisional, true);
   assert.equal(Math.round(provisionalRates[0].windowMinutes), 5);
-  const provisionalSpeed = context.laneSpeedTrend(provisionalSamples, "Review speed");
-  assert.match(provisionalSpeed, /Review speed<\/span><strong>\+36 \/ hour/);
+  const provisionalSpeed = context.laneSpeedTrend(provisionalSamples, "Net review rate");
+  assert.match(provisionalSpeed, /Net review rate<\/span><\/div><strong>\+36 \/ hour/);
   assert.match(provisionalSpeed, /Catching up · provisional 5m window/);
 
   const balancedSamples = [flowSample(5, 10, 20), flowSample(0, 10, 20)];
-  const balancedSpeed = context.laneSpeedTrend(balancedSamples, "Review speed");
-  assert.match(balancedSpeed, /Review speed<\/span><strong>0 \/ hour/);
+  const balancedSpeed = context.laneSpeedTrend(balancedSamples, "Net review rate");
+  assert.match(balancedSpeed, /Net review rate<\/span><\/div><strong>0 \/ hour/);
   assert.match(balancedSpeed, /Balanced · provisional 5m window/);
   assert.doesNotMatch(balancedSpeed, /Collecting/);
 
@@ -6032,9 +6044,9 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.notEqual(resetRates[0].segmentId, resetRates[1].segmentId);
   const resetCollecting = context.laneSpeedTrend(
     [flowSample(10, 10, 10), flowSample(5, 11, 12), flowSample(0, 1, 1)],
-    "Review speed",
+    "Net review rate",
   );
-  assert.match(resetCollecting, /Review speed<\/span><strong>Collecting/);
+  assert.match(resetCollecting, /Net review rate<\/span><\/div><strong>Collecting/);
   assert.match(resetCollecting, /Needs two continuous five-minute samples/);
 
   const legacyBreakRates = context.laneSpeedHistory([
@@ -6058,12 +6070,12 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
 
   const staleSpeed = context.laneSpeedTrend(
     [flowSample(25, 0, 0), flowSample(20, 1, 2)],
-    "Publication speed",
+    "Net publication rate",
   );
-  assert.match(staleSpeed, /Publication speed<\/span><strong>Stale/);
-  assert.match(staleSpeed, /Stale · no speed sample in the last 12m/);
-  const collectingSpeed = context.laneSpeedTrend([flowSample(0, 0, 0)], "Review speed");
-  assert.match(collectingSpeed, /Review speed<\/span><strong>Collecting/);
+  assert.match(staleSpeed, /Net publication rate<\/span><\/div><strong>Stale/);
+  assert.match(staleSpeed, /Stale · no rate sample in the last 12m/);
+  const collectingSpeed = context.laneSpeedTrend([flowSample(0, 0, 0)], "Net review rate");
+  assert.match(collectingSpeed, /Net review rate<\/span><\/div><strong>Collecting/);
   assert.match(collectingSpeed, /Needs two continuous five-minute samples/);
 
   assert.equal(

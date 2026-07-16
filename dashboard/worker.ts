@@ -7060,6 +7060,44 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .exact-trend-point { fill: var(--claw); }
 .lane-speed { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line-soft); }
 .lane-speed .exact-trend-status { margin-top: 4px; }
+.lane-rate-label { display: flex; align-items: center; gap: 5px; }
+.lane-rate-help {
+  position: relative;
+}
+.lane-rate-help summary {
+  display: inline-grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  border: 1px solid var(--muted);
+  border-radius: 50%;
+  color: var(--muted);
+  cursor: help;
+  font-size: 9px;
+  line-height: 1;
+  list-style: none;
+}
+.lane-rate-help summary::-webkit-details-marker { display: none; }
+.lane-rate-tooltip {
+  display: none;
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + 7px);
+  left: -8px;
+  width: min(300px, calc(100vw - 64px));
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px color-mix(in srgb, #000 20%, transparent);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+.lane-rate-help[open] .lane-rate-tooltip,
+.lane-rate-help:hover .lane-rate-tooltip,
+.lane-rate-help:focus-within .lane-rate-tooltip { display: block; }
 .lane-speed-line { fill: none; stroke: var(--violet); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
 .lane-speed-point { fill: var(--violet); }
 .trend-empty { display: grid; place-items: center; height: 130px; color: var(--muted); font-size: 12px; }
@@ -8157,7 +8195,15 @@ function laneSpeedStatus(sample) {
   return { className: "stable", label: "Balanced" + window };
 }
 
-function laneSpeedTrend(samples, speedLabel) {
+function laneRateLabel(speedLabel, helpText) {
+  const helpId = "lane-rate-help-" + String(speedLabel).toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const help = helpText
+    ? '<details class="lane-rate-help"><summary aria-label="Explain ' + esc(speedLabel) + '" aria-describedby="' + esc(helpId) + '">?</summary><span class="lane-rate-tooltip" id="' + esc(helpId) + '" role="tooltip">' + esc(helpText) + '</span></details>'
+    : "";
+  return '<div class="lane-rate-label"><span>' + esc(speedLabel) + '</span>' + help + '</div>';
+}
+
+function laneSpeedTrend(samples, speedLabel, helpText = "") {
   const rates = laneSpeedHistory(samples);
   const rangeMs = activeHealthRange === "7d" ? 7 * 86400000 : activeHealthRange === "24h" ? 86400000 : 6 * 3600000;
   const latestAt = rates.length ? Date.parse(rates.at(-1).at) : 0;
@@ -8187,9 +8233,9 @@ function laneSpeedTrend(samples, speedLabel) {
   if (!visible.length) {
     const emptyClass = headline === "Stale" ? "stale" : "collecting";
     const emptyLabel = headline === "Stale"
-      ? "Stale · no speed sample in the last 12m"
+      ? "Stale · no rate sample in the last 12m"
       : "Needs two continuous five-minute samples";
-    return '<div class="lane-speed"><div class="lane-count"><span>' + esc(speedLabel) + '</span><strong>' + headline + '</strong></div><div class="exact-trend-status ' + emptyClass + '">' + emptyLabel + '</div><div class="trend-empty">No speed history in this range.</div></div>';
+    return '<div class="lane-speed"><div class="lane-count">' + laneRateLabel(speedLabel, helpText) + '<strong>' + headline + '</strong></div><div class="exact-trend-status ' + emptyClass + '">' + emptyLabel + '</div><div class="trend-empty">No rate history in this range.</div></div>';
   }
   const width = 600;
   const height = 150;
@@ -8206,10 +8252,10 @@ function laneSpeedTrend(samples, speedLabel) {
     ? laneSpeedStatus(current)
     : collectingCurrentSegment
       ? { className: "collecting", label: "Needs two continuous five-minute samples" }
-    : { className: "stale", label: "Stale · no speed sample in the last 12m" };
+    : { className: "stale", label: "Stale · no rate sample in the last 12m" };
   const rangeLabel = activeHealthRange === "7d" ? "7d ago" : activeHealthRange + " ago";
   const axis = '<text class="trend-axis-label" x="' + plot.left + '" y="' + (height - 7) + '">' + rangeLabel + '</text><text class="trend-axis-label" x="' + (plot.left + plot.width) + '" y="' + (height - 7) + '" text-anchor="end">now</text>';
-  return '<div class="lane-speed"><div class="lane-count"><span>' + esc(speedLabel) + '</span><strong>' + headline + '</strong></div><div class="exact-trend-status ' + direction.className + '">' + esc(direction.label) + '</div><svg class="exact-trend-svg" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="' + esc(speedLabel + ", completed minus incoming, over " + activeHealthRange) + '">' + grid + '<path class="lane-speed-line" d="' + trendPath(geometry) + '"></path>' + points + axis + '</svg></div>';
+  return '<div class="lane-speed"><div class="lane-count">' + laneRateLabel(speedLabel, helpText) + '<strong>' + headline + '</strong></div><div class="exact-trend-status ' + direction.className + '">' + esc(direction.label) + '</div><svg class="exact-trend-svg" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="' + esc(speedLabel + ", completed minus incoming, over " + activeHealthRange) + '">' + grid + '<path class="lane-speed-line" d="' + trendPath(geometry) + '"></path>' + points + axis + '</svg></div>';
 }
 
 function renderExecutionAlert(current) {
@@ -8334,13 +8380,17 @@ function renderExactReviewLanes(queue) {
   const target = document.getElementById("exact-review-lanes");
   if (!target) return;
   const lanes = queue?.lanes;
-  target.innerHTML = [["Review admission", "Review speed", "review", lanes?.review], ["Result publication", "Publication speed", "publication", lanes?.publication]].map(([label, speedLabel, laneKey, lane]) => {
+  const rateHelp = {
+    review: "Successful completions minus incoming review demand per hour. Incoming includes newly queued work and shed demand. Positive means catching up; negative means falling behind.",
+    publication: "Successful completions minus newly queued publication work per hour. Positive means catching up; negative means falling behind."
+  };
+  target.innerHTML = [["Review admission", "Net review rate", "review", lanes?.review], ["Result publication", "Net publication rate", "publication", lanes?.publication]].map(([label, speedLabel, laneKey, lane]) => {
     const samples = exactReviewHistory(laneKey);
     if (!lane) {
       const sampledAt = samples.at(-1)?.at;
       return '<div class="exact-lane"><div class="exact-lane-head"><strong>' + esc(label) + '</strong><span>Live snapshot unavailable</span></div>' +
         exactReviewTrend(samples, label) +
-        laneSpeedTrend(samples, speedLabel) +
+        laneSpeedTrend(samples, speedLabel, rateHelp[laneKey]) +
         '<div class="lane-foot">' + (sampledAt ? "Last sampled " + esc(since(sampledAt)) : "History starts with the next five-minute sample") + '</div></div>';
     }
     const capacity = Math.max(0, lane.capacity || 0);
@@ -8359,7 +8409,7 @@ function renderExactReviewLanes(queue) {
     return '<div class="exact-lane"><div class="exact-lane-head"><strong>' + esc(label) + '</strong><span>' + fmt.format(active) + ' of ' + fmt.format(capacity) + ' active</span></div>' +
       '<div class="lane-count"><span>Pending</span><strong>' + fmt.format(lane.pending || 0) + '</strong></div>' +
       exactReviewTrend(samples, label) +
-      laneSpeedTrend(samples, speedLabel) +
+      laneSpeedTrend(samples, speedLabel, rateHelp[laneKey]) +
       '<div class="lane-counts">' +
       '<div class="lane-count"><span>Ready</span><strong>' + fmt.format(lane.ready || 0) + '</strong></div>' +
       '<div class="lane-count"><span>Backoff</span><strong>' + fmt.format(lane.backoff || 0) + '</strong></div>' +
