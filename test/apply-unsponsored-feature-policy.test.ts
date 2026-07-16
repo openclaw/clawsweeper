@@ -93,7 +93,16 @@ Please open a new issue with current reproduction details if this still occurs.
 `;
 }
 
-function unsponsoredApplyGhMock(reviewComment: string, options: { recentHuman?: boolean } = {}) {
+function unsponsoredApplyGhMock(
+  reviewComment: string,
+  options: {
+    closeFails?: boolean;
+    labels?: string[];
+    logPath?: string;
+    reactions?: Record<string, number>;
+    recentHuman?: boolean;
+  } = {},
+) {
   const recentHuman = options.recentHuman
     ? `,{
       id: 9901,
@@ -106,10 +115,16 @@ function unsponsoredApplyGhMock(reviewComment: string, options: { recentHuman?: 
     }`
     : "";
   return `
+const { appendFileSync } = require("fs");
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+const logPath = ${JSON.stringify(options.logPath ?? "")};
+const closeFails = ${JSON.stringify(options.closeFails ?? false)};
+if (logPath) appendFileSync(logPath, JSON.stringify(args) + "\\n");
 const path = args[1] || "";
-if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
+if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
+} else if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   console.log("HTTP/2 200\\n\\n[]");
 } else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[{
@@ -123,6 +138,9 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   }${recentHuman}]]));
 } else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path) && args.includes("--method") && closeFails) {
+  console.error("indeterminate close outcome");
+  process.exit(1);
 } else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
   console.log(JSON.stringify({
     number: 321,
@@ -137,10 +155,12 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     active_lock_reason: null,
     author_association: "CONTRIBUTOR",
     user: { login: "reporter" },
-    labels: [],
+    labels: ${JSON.stringify(options.labels ?? [])},
     assignees: [],
     milestone: null,
-    reactions: { total_count: 0 },
+    reactions: ${JSON.stringify(
+      options.reactions ?? { total_count: 0, "+1": 0, heart: 0, hooray: 0 },
+    )},
     comments: ${options.recentHuman ? 2 : 1},
     pull_request: null
   }));
@@ -158,7 +178,11 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
 }
 
 function runUnsponsoredApply(options: {
+  closeFails?: boolean;
+  dryRun?: boolean;
   gateEnabled: boolean;
+  labels?: string[];
+  reactions?: Record<string, number>;
   recentHuman?: boolean;
   closeReason?: "unsponsored_feature_request" | "stale_insufficient_info";
 }) {
@@ -168,6 +192,7 @@ function runUnsponsoredApply(options: {
     const closedDir = join(root, "closed");
     const plansDir = join(root, "plans");
     const reportPath = join(root, "apply-report.json");
+    const logPath = join(root, "gh.log");
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
     const closeReason = options.closeReason ?? "unsponsored_feature_request";
@@ -191,26 +216,31 @@ function runUnsponsoredApply(options: {
     } else {
       delete process.env.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED;
     }
+    let applyFailed = false;
     try {
-      withMockGh(root, unsponsoredApplyGhMock(synced.comment, options), () => {
-        runApplyDecisionsForTest({
-          itemsDir,
-          closedDir,
-          plansDir,
-          reportPath,
-          extraArgs: [
-            "--target-repo",
-            "openclaw/openclaw",
-            "--apply-kind",
-            "issue",
-            "--item-number",
-            "321",
-            "--processed-limit",
-            "1",
-            "--skip-dashboard",
-            "--dry-run",
-          ],
-        });
+      withMockGh(root, unsponsoredApplyGhMock(synced.comment, { ...options, logPath }), () => {
+        try {
+          runApplyDecisionsForTest({
+            itemsDir,
+            closedDir,
+            plansDir,
+            reportPath,
+            extraArgs: [
+              "--target-repo",
+              "openclaw/openclaw",
+              "--apply-kind",
+              "issue",
+              "--item-number",
+              "321",
+              "--processed-limit",
+              "1",
+              "--skip-dashboard",
+              ...(options.dryRun === false ? [] : ["--dry-run"]),
+            ],
+          });
+        } catch {
+          applyFailed = true;
+        }
       });
     } finally {
       if (original === undefined) {
@@ -220,14 +250,26 @@ function runUnsponsoredApply(options: {
       }
     }
 
+    const closedPath = join(closedDir, "321.md");
     return {
-      entries: JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
-        number: number;
-        action: string;
-        reason: string;
-      }>,
-      markdown: readFileSync(itemPath, "utf8"),
-      closedExists: existsSync(join(closedDir, "321.md")),
+      entries: existsSync(reportPath)
+        ? (JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+            number: number;
+            action: string;
+            reason: string;
+          }>)
+        : [],
+      applyFailed,
+      markdown: readFileSync(existsSync(itemPath) ? itemPath : closedPath, "utf8"),
+      closedExists: existsSync(closedPath),
+      calls: existsSync(logPath)
+        ? readFileSync(logPath, "utf8")
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as string[])
+        : [],
+      reviewComment: synced.comment,
     };
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -266,6 +308,93 @@ test("unsponsored feature apply blocks a recent human comment", () => {
     },
   ]);
   assert.equal(result.closedExists, false);
+});
+
+test("unsponsored feature apply blocks any live security-ish label", () => {
+  const result = runUnsponsoredApply({
+    gateEnabled: true,
+    labels: ["topic:security-assessment"],
+  });
+  assert.deepEqual(result.entries, [
+    {
+      number: 321,
+      action: "kept_open",
+      reason: "security-labeled issue requires human triage",
+    },
+  ]);
+  assert.equal(result.closedExists, false);
+});
+
+test("unsponsored feature apply blocks issues already at the revival reaction threshold", () => {
+  const result = runUnsponsoredApply({
+    gateEnabled: true,
+    reactions: { total_count: 5, "+1": 3, heart: 1, hooray: 1 },
+  });
+  assert.deepEqual(result.entries, [
+    {
+      number: 321,
+      action: "kept_open",
+      reason: "issue already meets the idea-revival reaction threshold",
+    },
+  ]);
+  assert.equal(result.closedExists, false);
+});
+
+test("unsponsored feature close parks the issue with archive label and revival contract", () => {
+  const result = runUnsponsoredApply({ dryRun: false, gateEnabled: true });
+  assert.equal(result.entries[0]?.action, "closed");
+  assert.equal(result.closedExists, true);
+  assert.ok(
+    result.calls.some(
+      (args) =>
+        args[0] === "label" && args[1] === "create" && args[2] === "clawsweeper:idea-archive",
+    ),
+  );
+  assert.ok(
+    result.calls.some(
+      (args) =>
+        args[0] === "issue" &&
+        args[1] === "edit" &&
+        args.includes("--add-label") &&
+        args.includes("clawsweeper:idea-archive"),
+    ),
+  );
+  assert.match(result.reviewComment, /This idea is parked, not rejected\./);
+  assert.match(result.reviewComment, /comment `@clawsweeper revive`/);
+  assert.match(result.reviewComment, /at least 5 positive reactions/);
+});
+
+test("unsponsored feature close keeps the archive label after an uncertain close", () => {
+  const result = runUnsponsoredApply({ dryRun: false, gateEnabled: true, closeFails: true });
+  assert.equal(result.applyFailed, true);
+  assert.ok(
+    result.calls.some(
+      (args) =>
+        args[0] === "issue" &&
+        args[1] === "edit" &&
+        args.includes("--add-label") &&
+        args.includes("clawsweeper:idea-archive"),
+    ),
+  );
+  assert.ok(
+    result.calls.some(
+      (args) =>
+        args[0] === "api" &&
+        args[1] === "repos/openclaw/openclaw/issues/321" &&
+        args.includes("--method") &&
+        args.includes("PATCH"),
+    ),
+  );
+  assert.equal(
+    result.calls.some(
+      (args) =>
+        args[0] === "issue" &&
+        args[1] === "edit" &&
+        args.includes("--remove-label") &&
+        args.includes("clawsweeper:idea-archive"),
+    ),
+    false,
+  );
 });
 
 test("stale-insufficient-info apply blocks a recent non-bot comment", () => {

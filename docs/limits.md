@@ -239,6 +239,18 @@ hot intake `14`, and commit review `2`. Existing repair lanes keep their
 
 ## Runtime Overrides
 
+- `CLAWSWEEPER_MAINTAINER_LOGINS` (comma-separated) supplements the maintainer
+  author-association check in the idea-archive revival watcher — needed where
+  GitHub reports an org owner as `CONTRIBUTOR` on app-operated repositories. A
+  qualifying maintainer or allowlisted author sponsors revival by commenting
+  `@clawsweeper revive` (or `@clawsweeper sponsor`) on the closed issue.
+- `CLAWSWEEPER_IDEA_REVIVAL_REACTIONS` overrides the positive-reaction threshold
+  for reopening an issue parked with `clawsweeper:idea-archive`; the default is 5.
+- `CLAWSWEEPER_IDEA_ARCHIVE_SCAN_PAGES` overrides the bounded created-order scan
+  page count; the default is 5 and the maximum is 10. The watcher first checks
+  the two most recently updated pages for sponsorship commands, then alternates
+  newest/oldest created-order scans. Reaction-only revival can lag in very large
+  archives; raise this override to scan deeper per run.
 - `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS` overrides the 45,000 ms coalescing delay
   for fresh non-command exact-review events.
 - `EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS` overrides the 180,000 ms maximum

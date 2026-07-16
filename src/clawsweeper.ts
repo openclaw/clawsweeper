@@ -120,6 +120,11 @@ import {
 } from "./commit-sweeper.js";
 import { AUTOMATION_LIMITS } from "./limits.js";
 import {
+  IDEA_ARCHIVE_LABEL,
+  ideaRevivalReactionThreshold,
+  positiveReactionCount,
+} from "./idea-archive-revival.js";
+import {
   expiredReviewStartStatusLeases,
   freshExactHeadReviewStartLease,
 } from "./repair/comment-router-core.js";
@@ -1402,6 +1407,9 @@ const FEATURE_SHOWCASE_LABEL = "feature: ✨ showcase";
 const FEATURE_SHOWCASE_LABEL_COLOR = "A371F7";
 const FEATURE_SHOWCASE_LABEL_DESCRIPTION =
   "ClawSweeper spotlight: unusually compelling feature idea for maintainer attention.";
+const IDEA_ARCHIVE_LABEL_COLOR = "8250DF";
+const IDEA_ARCHIVE_LABEL_DESCRIPTION =
+  "Parked feature idea eligible for automatic community or maintainer revival.";
 const PROOF_MEDIA_LABELS = [
   {
     evidenceKind: "screenshot",
@@ -4508,13 +4516,24 @@ function unsponsoredFeatureApplyBlockReason(
     assignees?: unknown[];
     labels?: unknown[];
     milestone?: unknown;
-    reactions?: { total_count?: number };
+    reactions?: unknown;
     state?: string;
   }>(["api", `repos/${targetRepo()}/issues/${number}`]);
   if (issue.state !== "open") return "live issue is not open";
+  if (
+    labelNames(issue.labels)
+      .map(normalizeLabelName)
+      .some((label) => label.includes("security"))
+  ) {
+    return "security-labeled issue requires human triage";
+  }
   if ((issue.assignees ?? []).length > 0) return "assigned issue has maintainer engagement";
   if (issue.milestone) return "milestoned issue has maintainer engagement";
-  if ((issue.reactions?.total_count ?? 0) >= 20) {
+  if (positiveReactionCount(issue.reactions) >= ideaRevivalReactionThreshold()) {
+    return "issue already meets the idea-revival reaction threshold";
+  }
+  const totalReactions = asRecord(issue.reactions).total_count;
+  if (typeof totalReactions === "number" && totalReactions >= 20) {
     return "issue has strong community traction (20 or more reactions)";
   }
   if (labelNames(issue.labels).map(normalizeLabelName).includes("clawsweeper:linked-pr-open")) {
@@ -11649,7 +11668,7 @@ function closeIntro(reason: CloseReason): string {
     case "unconfirmed_product_direction":
       return "Thanks for the contribution. ClawSweeper proposes closing this for now: the implementation may be reasonable, but passing review and proof does not establish that OpenClaw should add this product surface.";
     case "unsponsored_feature_request":
-      return "Thanks for sharing this idea. ClawSweeper proposes closing it as not planned unless a maintainer sponsors the direction, because no maintainer has confirmed this product direction.";
+      return "Thanks for sharing this idea. ClawSweeper is parking it in the idea archive because no maintainer has confirmed this product direction yet.";
     case "author_pr_budget_exceeded":
       return "Thanks for the contribution. ClawSweeper is trimming this lowest-signal PR because the author is over the repository's open-PR budget.";
     case "not_actionable_in_repo":
@@ -11684,7 +11703,7 @@ function closeOutro(reason: CloseReason, canonicalLinks: string[] = []): string 
     case "unconfirmed_product_direction":
       return "This is a proposal only until the separate default-off apply policy is enabled and all live maintainer-signal checks pass. A maintainer can sponsor the direction, request a narrower version, or apply `clawsweeper:human-review` to keep it open.";
     case "unsponsored_feature_request":
-      return `So I’m closing this as not planned unless a maintainer sponsors the direction. A maintainer can sponsor it and reopen this issue, or anyone can ask to reopen if the situation changes. When the idea fits an extension, ${markdownLink("ClawHub.com", targetProfile().communityUrl ?? "https://clawhub.ai/")} remains the self-serve path.`;
+      return `This idea is parked, not rejected. A maintainer can comment \`@clawsweeper revive\` on this closed issue to bring it back automatically. It will also reopen when it reaches at least ${ideaRevivalReactionThreshold()} positive reactions (thumbs-up, heart, or hooray). When the idea fits an extension, ${markdownLink("ClawHub.com", targetProfile().communityUrl ?? "https://clawhub.ai/")} remains the self-serve path.`;
     case "author_pr_budget_exceeded":
       return "Closing or finishing other open PRs frees review budget. This PR can be reopened once the author is under budget, or sooner when real behavior proof is added.";
     case "not_actionable_in_repo":
@@ -14491,6 +14510,28 @@ function ensureTelegramVisibleProofLabel(onMutation?: () => void): void {
         TELEGRAM_VISIBLE_PROOF_LABEL_COLOR,
         "--description",
         TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION,
+      ],
+      attempts: 2,
+      onMutation,
+      knownNoMutation: labelAlreadyExistsError,
+    });
+  } catch (error) {
+    if (!labelAlreadyExistsError(error)) throw error;
+  }
+}
+
+function ensureIdeaArchiveLabel(onMutation?: () => void): void {
+  try {
+    ghObservedMutationCommand({
+      identity: `label_create:${IDEA_ARCHIVE_LABEL}`,
+      args: [
+        "label",
+        "create",
+        IDEA_ARCHIVE_LABEL,
+        "--color",
+        IDEA_ARCHIVE_LABEL_COLOR,
+        "--description",
+        IDEA_ARCHIVE_LABEL_DESCRIPTION,
       ],
       attempts: 2,
       onMutation,
@@ -28248,6 +28289,20 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     }
     ensureRuntimeDelayFits(closeDelayMs, "before close");
     const appliedCloseReason = closeReason;
+    const needsIdeaArchiveLabel =
+      appliedCloseReason === "unsponsored_feature_request" &&
+      !item.labels.map(normalizeLabelName).includes(IDEA_ARCHIVE_LABEL);
+    if (appliedCloseReason === "unsponsored_feature_request") {
+      ensureIdeaArchiveLabel(recordMutation);
+      if (needsIdeaArchiveLabel) {
+        addIssueLabel(number, IDEA_ARCHIVE_LABEL, recordMutation);
+        item.labels.push(IDEA_ARCHIVE_LABEL);
+        markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
+      }
+    }
+    // On a failed/uncertain close the archive label deliberately stays: the
+    // revival watcher removes it if the issue is still open, and if the close
+    // actually landed the issue stays discoverable in the archive.
     closeItem({ number, kind: item.kind, reason: appliedCloseReason });
     let postCloseRuntimeYieldReason: string | null = null;
     try {
