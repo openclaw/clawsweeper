@@ -169,13 +169,13 @@ ClawSweeper-owned closes for five minutes because those historical sections do
 not need worker-step freshness. The deployment smoke output includes cache
 state, fetch time, and current diagnostics.
 
-## Operational health history
+## Exact Review history
 
-A Cloudflare Cron Trigger records one aggregate operational-health sample every
-five minutes. The sampler requests only the five actionable GitHub Actions run
-statuses and never fetches job details, so history collection does not repeat
-the dashboard's bounded worker-detail fanout. Missing status responses make the
-sample `unknown` rather than silently healthy.
+A Cloudflare Cron Trigger records one Exact Review queue sample every five
+minutes. It reuses the queue status read that also performs scheduled queue
+maintenance and makes no GitHub Actions request. The sample contains each
+lane's pending backlog and a cumulative count of successfully completed Result
+publication items.
 
 Samples are stored in the existing `StatusStore` Durable Object under daily UTC
 keys named `health-history:YYYY-MM-DD`. Writes replace the current five-minute
@@ -183,34 +183,33 @@ slot, making retries and overlapping triggers idempotent. Buckets expire after
 the seven-day retention window plus one day of boundary margin. No health
 history is written to `openclaw/clawsweeper-state`.
 
-`GET /api/health-history?range=24h` returns the default chart range;
-`range=7d` returns the full retention window. The endpoint and the dashboard are
-read-only. A fresh deployment starts with an empty chart and accumulates its
-first point at the next five-minute trigger.
+`GET /api/health-history?range=6h` returns the dashboard's default chart range;
+`range=24h` and `range=7d` return the longer windows. The endpoint still accepts
+and returns legacy operational samples, but new samples omit those unused chart
+fields. Existing buckets expire naturally; no migration or manual cleanup is
+required.
 
-The operational headline uses the same snapshot as the chart:
+The Result publication speed chart derives a trailing hourly completion rate
+from the durable cumulative counter. Counting happens in the same queue storage
+transaction that terminalizes a successful publication, so retries, failures,
+review-lane work, and replayed completion requests do not inflate throughput.
+Counter history cannot be backfilled: the first rate appears after one hour of
+continuous samples, and comparison with the previous hour needs two hours.
+Telemetry gaps longer than 12 minutes break both backlog and speed lines.
+
+Operational health remains a current-snapshot alert rather than a historical
+chart. `/api/status` classifies the already-fetched active workflow runs as:
 
 - `healthy`: complete telemetry and no over-age runs;
 - `degraded`: at least one queued run is 30 minutes old;
 - `stalled`: at least one in-progress run is 150 minutes old;
 - `unknown`: one or more actionable-status reads failed.
 
-The trend section separates interpretation into two operator signals. Execution
-health is based only on in-progress runs crossing the 150-minute SLO. Queue load
-uses the direction of the over-30-minute backlog, because total queue depth also
-moves with incoming review demand. It reports busy-within-SLO, delayed and
-stable, growing backlog, or recovering without claiming that raw queue depth is
-a component failure.
-
-Every chart renders a labeled, adaptive y-axis. Duration axes switch between
-minutes, hours, and days as the range grows. `Oldest queued` remains a diagnostic
-outlier view rather than the primary queue-health signal: one stale GitHub
-queued record can dominate its scale even while the rest of the backlog drains.
-
-This history is intentionally aggregate and low-cost: at five-minute cadence it
-stores at most 2,016 samples over seven days. Use an external metrics backend
-only if longer retention, ad hoc aggregation, or Grafana-compatible querying is
-required.
+Healthy status stays hidden. A queued run over 30 minutes, an in-progress run
+over 150 minutes, or incomplete Actions telemetry opens the expandable “Work
+execution needs attention” alert. This live diagnostic reuses the status
+snapshot's Actions reads; the history cron no longer stores queue pressure or
+oldest-run values.
 
 ## Boundaries
 
@@ -288,10 +287,9 @@ For capacity displays, `/api/exact-review-queue` also exposes compatible
 `lanes.review` and `lanes.publication` objects. Each lane reports its own
 pending, ready, backoff, dispatching, leased, capacity, active, available-slot,
 oldest-pending, and next-attempt values. The existing top-level aggregate fields
-remain available for older consumers. `/api/status` separately reports active
-exact publishers, comment routers, and lease reconcilers under `control_plane`;
-those are GitHub Actions workflows, not Codex workers, and never reduce the
-128-slot Codex capacity rail.
+remain available for older consumers. The publication lane additionally reports
+`completed_total`. `/api/status` retains its `control_plane` compatibility field,
+but the dashboard no longer renders that low-actionability section.
 
 Executors report the GitHub job outcome from their finalizer. Failure or
 cancellation clears the lease and requeues the item. Finalizer success remains

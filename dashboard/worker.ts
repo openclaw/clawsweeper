@@ -9,7 +9,6 @@ import { summarizeExactReviewHandoff } from "./exact-review-health.ts";
 import {
   HEALTH_HISTORY_RETENTION_DAYS,
   exactReviewHistorySample,
-  healthHistorySample,
   mergeHealthHistorySample,
   normalizeHealthHistorySample,
   summarizeOperationalHealth,
@@ -187,6 +186,7 @@ const EXACT_REVIEW_QUEUE_STATE_KEY = "exact-review-queue";
 const EXACT_REVIEW_QUEUE_META_TABLE = "exact_review_queue_meta";
 const EXACT_REVIEW_QUEUE_ITEM_TABLE = "exact_review_queue_items";
 const EXACT_REVIEW_QUEUE_DELIVERY_TABLE = "exact_review_queue_deliveries";
+const EXACT_REVIEW_QUEUE_METRICS_TABLE = "exact_review_queue_metrics";
 const EXACT_REVIEW_QUEUE_NAME = "global";
 const EXACT_REVIEW_COMMAND_STATUS_MARKER_PATTERN =
   /^<!-- clawsweeper-command-status:[^<>\r\n]{1,200} -->$/;
@@ -875,7 +875,12 @@ export class ExactReviewQueue {
         requestedRetryAt ?? undefined,
         requeueLatest,
       );
-      await this.writeState(state);
+      // A successful workflow can still request requeue_latest after source
+      // drift, but that path publishes no result. Count only publication items
+      // that actually leave the queue on this completion.
+      const completedPublications =
+        outcome === "success" && !requeued && exactReviewQueueIsPublication(item) ? 1 : 0;
+      await this.writeState(state, completedPublications);
       await this.scheduleNext(state, now);
       return json({ ok: true, requeued });
     }
@@ -932,6 +937,7 @@ export class ExactReviewQueue {
       let reconciled = 0;
       let requeued = 0;
       let completed = 0;
+      let completedPublications = 0;
       for (const run of runs) {
         const matches = Object.values(state.items).filter(
           (item) =>
@@ -945,10 +951,15 @@ export class ExactReviewQueue {
         const didRequeue = finishExactReviewQueueItem(state, item, now, run.outcome);
         reconciled += 1;
         if (didRequeue) requeued += 1;
-        else completed += 1;
+        else {
+          completed += 1;
+          if (run.outcome === "success" && exactReviewQueueIsPublication(item)) {
+            completedPublications += 1;
+          }
+        }
       }
       if (reconciled) {
-        await this.writeState(state);
+        await this.writeState(state, completedPublications);
         await this.scheduleNext(state, now);
       }
       return json({ ok: true, reconciled, requeued, completed });
@@ -956,7 +967,7 @@ export class ExactReviewQueue {
 
     if (request.method === "GET" && url.pathname === "/stats") {
       const now = Date.now();
-      const state = this.storage.transactionSync(() => {
+      const snapshot = this.storage.transactionSync(() => {
         this.pruneDeliveryReceiptsSync(now);
         const current = this.readStateSync();
         // Dashboard reads are also the operational heartbeat. Reclaim leases and
@@ -969,21 +980,27 @@ export class ExactReviewQueue {
         );
         if (changed) this.writeStateSync(current);
         else this.syncLegacyCompatibilitySync(current);
-        return current;
+        return { state: current, completedTotal: this.publicationCompletedTotalSync() };
       });
+      const { state, completedTotal } = snapshot;
       await this.scheduleNext(state, now);
+      const stats = exactReviewQueueStats(
+        state,
+        now,
+        exactReviewQueueCapacity(this.env),
+        exactReviewTargetCapacity(this.env),
+        exactReviewPublicationCapacity(this.env),
+        exactReviewDispatchLeaseMs(this.env),
+        exactReviewExecutionLeaseMs(this.env),
+        exactReviewPublicationDispatchLeaseMs(this.env),
+        exactReviewHeartbeatGraceMs(this.env),
+      );
       return json({
-        ...exactReviewQueueStats(
-          state,
-          now,
-          exactReviewQueueCapacity(this.env),
-          exactReviewTargetCapacity(this.env),
-          exactReviewPublicationCapacity(this.env),
-          exactReviewDispatchLeaseMs(this.env),
-          exactReviewExecutionLeaseMs(this.env),
-          exactReviewPublicationDispatchLeaseMs(this.env),
-          exactReviewHeartbeatGraceMs(this.env),
-        ),
+        ...stats,
+        lanes: {
+          ...stats.lanes,
+          publication: { ...stats.lanes.publication, completed_total: completedTotal },
+        },
         delivery_receipts: this.deliveryReceiptCountSync(),
         storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
         legacy_rollback_available:
@@ -1251,6 +1268,19 @@ export class ExactReviewQueue {
          received_at INTEGER NOT NULL
        ) STRICT`,
     );
+    // Completion telemetry is independent of queue rollback compatibility. A
+    // separate singleton keeps the cumulative counter monotonic without
+    // changing the normalized queue schema or its legacy shadow contract.
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_METRICS_TABLE} (
+         singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+         publication_completed_total INTEGER NOT NULL CHECK (publication_completed_total >= 0)
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `INSERT OR IGNORE INTO ${EXACT_REVIEW_QUEUE_METRICS_TABLE}
+         (singleton_id, publication_completed_total) VALUES (1, 0)`,
+    );
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_queue_deliveries_received_at
          ON ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE} (received_at, delivery_id)`,
@@ -1481,8 +1511,33 @@ export class ExactReviewQueue {
     return state;
   }
 
-  private writeState(state: ExactReviewQueueState) {
-    this.storage.transactionSync(() => this.writeStateSync(state));
+  private writeState(state: ExactReviewQueueState, completedPublications = 0) {
+    this.storage.transactionSync(() => {
+      this.writeStateSync(state);
+      if (completedPublications > 0)
+        this.incrementPublicationCompletedTotalSync(completedPublications);
+    });
+  }
+
+  private publicationCompletedTotalSync() {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT publication_completed_total
+           FROM ${EXACT_REVIEW_QUEUE_METRICS_TABLE}
+          WHERE singleton_id = 1`,
+      ),
+    )[0] as { publication_completed_total?: number } | undefined;
+    const total = Number(row?.publication_completed_total);
+    return Number.isSafeInteger(total) && total >= 0 ? total : 0;
+  }
+
+  private incrementPublicationCompletedTotalSync(count: number) {
+    this.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_QUEUE_METRICS_TABLE}
+          SET publication_completed_total = publication_completed_total + ?
+        WHERE singleton_id = 1`,
+      count,
+    );
   }
 
   private writeStateSync(state: ExactReviewQueueState) {
@@ -1815,25 +1870,14 @@ async function recordScheduledHealthSample(env) {
     await queueSnapshot;
     return;
   }
-  // The queue snapshot was already part of scheduled maintenance. Folding it
-  // into the same sample preserves one queue read per tick and one time slot.
-  const [health, queue] = await Promise.all([collectOperationalHealth(env), queueSnapshot]);
+  // Current operational health still powers the anomaly alert in /api/status.
+  // Its old chart history had no remaining consumer, so cron persists only the
+  // exact-review queue snapshot and avoids a second GitHub Actions run scan.
+  const queue = await queueSnapshot;
   await appendHealthHistorySample(env, {
-    ...healthHistorySample(health),
+    at: new Date().toISOString(),
     exact_review: exactReviewHistorySample(queue),
   });
-}
-
-async function collectOperationalHealth(env) {
-  const repo = env.CLAWSWEEPER_REPO || "openclaw/clawsweeper";
-  const errors = [];
-  const runs = await activeWorkflowRunCandidates(env, repo, errors, createGithubJsonCache(env));
-  const checkedAt = new Date().toISOString();
-  return summarizeOperationalHealth(
-    runs.filter((run) => !isSupportWorkflowRun(run)),
-    checkedAt,
-    errors.length === 0,
-  );
 }
 
 async function appendHealthHistorySample(env, sample) {
@@ -9235,12 +9279,18 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .exact-trend-status { font-size: 12px; font-weight: 650; }
 .exact-trend-status.growing { color: var(--amber); }
 .exact-trend-status.draining { color: var(--green); }
+.exact-trend-status.speeding { color: var(--green); }
+.exact-trend-status.slowing { color: var(--amber); }
 .exact-trend-status.stable, .exact-trend-status.collecting { color: var(--muted); }
 .exact-trend-svg { display: block; width: 100%; height: 150px; margin-top: 6px; overflow: visible; }
 .trend-grid-line { stroke: var(--line-soft); stroke-width: 1; }
 .trend-axis-label { fill: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 10px; }
 .exact-trend-line { fill: none; stroke: var(--claw); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
 .exact-trend-point { fill: var(--claw); }
+.publication-rate { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line-soft); }
+.publication-rate .exact-trend-status { margin-top: 4px; }
+.publication-rate-line { fill: none; stroke: var(--violet); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.publication-rate-point { fill: var(--violet); }
 .trend-empty { display: grid; place-items: center; height: 130px; color: var(--muted); font-size: 12px; }
 .overview-shell { margin: 0; padding: 0; border: 0; background: transparent; }
 .overview-head,
@@ -9337,8 +9387,7 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
   gap: 12px;
   margin-top: 10px;
 }
-.exact-lane,
-.control-plane {
+.exact-lane {
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -9354,10 +9403,6 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .lane-bar { height: 6px; margin-top: 12px; overflow: hidden; border-radius: 999px; background: var(--track); }
 .lane-bar i { display: block; height: 100%; background: var(--claw); }
 .lane-foot { margin-top: 7px; color: var(--muted); font-size: 11px; }
-.control-plane { display: grid; gap: 8px; margin-top: 10px; }
-.control-plane-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; font-size: 12px; }
-.control-plane-row span:last-child { color: var(--muted); }
-.control-plane-note { margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .exact-handoff {
   margin-top: 18px;
   padding: 14px;
@@ -9995,7 +10040,7 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   <section class="overview-shell" aria-labelledby="system-overview-title">
     <div class="overview-head">
       <h2 id="system-overview-title">System Overview</h2>
-      <span class="muted" id="overview-note">Live control-plane telemetry</span>
+      <span class="muted" id="overview-note">Live GitHub workflow telemetry</span>
     </div>
     <div class="flow-map" id="flow-map"></div>
     <h3 class="overview-section-title">Codex Capacity</h3>
@@ -10010,8 +10055,6 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
       </div>
     </div>
     <div class="exact-lanes" id="exact-review-lanes" aria-live="polite"></div>
-    <h3 class="overview-section-title">Control Plane · GitHub Actions, not Codex</h3>
-    <div class="control-plane" id="control-plane" aria-live="polite"></div>
     <h3 class="overview-section-title">Handoff Health</h3>
     <div id="exact-review-handoff" aria-live="polite"></div>
     <div id="apply-health"></div>
@@ -10143,12 +10186,42 @@ let healthHistorySamples = [];
 
 function exactReviewHistory(lane) {
   return healthHistorySamples.flatMap(sample => {
-    const pending = sample.exact_review?.collection_ok === true
-      ? Number(sample.exact_review?.[lane]?.pending)
-      : NaN;
+    const laneSample = sample.exact_review?.collection_ok === true
+      ? sample.exact_review?.[lane]
+      : null;
+    const pending = Number(laneSample?.pending);
+    const completedTotal = Number(laneSample?.completed_total);
     return Number.isFinite(Date.parse(sample.at)) && Number.isFinite(pending)
-      ? [{ at: sample.at, pending: Math.max(0, pending) }]
+      ? [{
+          at: sample.at,
+          pending: Math.max(0, pending),
+          ...(Number.isFinite(completedTotal)
+            ? { completedTotal: Math.max(0, completedTotal) }
+            : {})
+        }]
       : [];
+  });
+}
+
+function publicationRateHistory(samples) {
+  const cumulative = samples.filter(sample => Number.isFinite(sample.completedTotal));
+  let segment = [];
+  let previousAt = null;
+  return cumulative.flatMap(sample => {
+    const at = Date.parse(sample.at);
+    if (previousAt !== null && at - previousAt > 12 * 60 * 1000) segment = [];
+    previousAt = at;
+    segment.push(sample);
+    const cutoff = at - 60 * 60 * 1000;
+    const baseline = segment.filter(candidate => Date.parse(candidate.at) <= cutoff).at(-1);
+    if (!baseline || cutoff - Date.parse(baseline.at) > 12 * 60 * 1000) return [];
+    const elapsedHours = (at - Date.parse(baseline.at)) / (60 * 60 * 1000);
+    const completed = sample.completedTotal - baseline.completedTotal;
+    if (elapsedHours <= 0 || completed < 0) {
+      segment = [sample];
+      return [];
+    }
+    return [{ at: sample.at, rate: completed / elapsedHours }];
   });
 }
 
@@ -10228,6 +10301,64 @@ function exactReviewTrend(samples, label) {
   const rangeLabel = activeHealthRange === "7d" ? "7d ago" : activeHealthRange + " ago";
   const axis = '<text class="trend-axis-label" x="' + plot.left + '" y="' + (height - 7) + '">' + rangeLabel + '</text><text class="trend-axis-label" x="' + (plot.left + plot.width) + '" y="' + (height - 7) + '" text-anchor="end">now</text>';
   return '<div class="exact-trend"><div class="exact-trend-status ' + direction.className + '">' + esc(direction.label) + '</div><svg class="exact-trend-svg" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="' + esc(label + " pending backlog over " + activeHealthRange) + '">' + grid + '<path class="exact-trend-line" d="' + trendPath(geometry) + '"></path>' + points + axis + '</svg></div>';
+}
+
+function publicationRateDirection(samples) {
+  if (!samples.length) return { className: "collecting", label: "Collecting rate trend" };
+  const latest = samples.at(-1);
+  const cutoff = Date.parse(latest.at) - 60 * 60 * 1000;
+  const previous = samples.filter(sample => Date.parse(sample.at) <= cutoff).at(-1);
+  if (!previous || cutoff - Date.parse(previous.at) > 12 * 60 * 1000) {
+    return { className: "collecting", label: "Collecting rate trend" };
+  }
+  const currentRate = Math.round(latest.rate);
+  const previousRate = Math.round(previous.rate);
+  if (currentRate === previousRate) {
+    return { className: "stable", label: "Stable · no change from the previous hour" };
+  }
+  if (previousRate === 0) {
+    return {
+      className: "speeding",
+      label: "Speeding up · from 0 to " + fmt.format(currentRate) + " / hour",
+    };
+  }
+  const percent = Math.round(((currentRate - previousRate) / previousRate) * 100);
+  return percent > 0
+    ? { className: "speeding", label: "Speeding up · +" + fmt.format(percent) + "% vs previous hour" }
+    : { className: "slowing", label: "Slowing down · −" + fmt.format(Math.abs(percent)) + "% vs previous hour" };
+}
+
+function publicationRateTrend(samples) {
+  const rates = publicationRateHistory(samples);
+  const rangeMs = activeHealthRange === "7d" ? 7 * 86400000 : activeHealthRange === "24h" ? 86400000 : 6 * 3600000;
+  const latestAt = rates.length ? Date.parse(rates.at(-1).at) : 0;
+  const toAt = Math.max(Date.now(), latestAt);
+  const fromAt = toAt - rangeMs;
+  const visible = rates.filter(sample => Date.parse(sample.at) >= fromAt && Date.parse(sample.at) <= toAt);
+  const latestVisible = visible.at(-1);
+  const current = latestVisible && toAt - Date.parse(latestVisible.at) <= 12 * 60 * 1000
+    ? latestVisible
+    : null;
+  const headline = current ? fmt.format(Math.round(current.rate)) + " / hour" : "Collecting";
+  if (!visible.length) {
+    return '<div class="publication-rate"><div class="lane-count"><span>Publication speed</span><strong>' + headline + '</strong></div><div class="exact-trend-status collecting">Collecting rate trend</div><div class="trend-empty">No publication speed history in this range.</div></div>';
+  }
+  const width = 600;
+  const height = 150;
+  const plot = { left: 48, top: 8, width: 540, height: 110 };
+  const scale = niceTrendScale(Math.max(1, ...visible.map(sample => sample.rate)), 4);
+  const grid = scale.ticks.map(value => {
+    const y = plot.top + plot.height - value / scale.maximum * plot.height;
+    return '<line class="trend-grid-line" x1="' + plot.left + '" x2="' + (plot.left + plot.width) + '" y1="' + y.toFixed(1) + '" y2="' + y.toFixed(1) + '"></line><text class="trend-axis-label" x="' + (plot.left - 8) + '" y="' + (y + 3).toFixed(1) + '" text-anchor="end">' + esc(formatTrendValue(value)) + '</text>';
+  }).join("");
+  const geometry = trendGeometry(visible, "rate", plot, scale.maximum, fromAt, toAt);
+  const points = geometry.map(point => '<circle class="publication-rate-point" cx="' + point.x.toFixed(1) + '" cy="' + point.y.toFixed(1) + '" r="3"></circle>').join("");
+  const direction = current
+    ? publicationRateDirection(visible)
+    : { className: "collecting", label: "Collecting rate trend" };
+  const rangeLabel = activeHealthRange === "7d" ? "7d ago" : activeHealthRange + " ago";
+  const axis = '<text class="trend-axis-label" x="' + plot.left + '" y="' + (height - 7) + '">' + rangeLabel + '</text><text class="trend-axis-label" x="' + (plot.left + plot.width) + '" y="' + (height - 7) + '" text-anchor="end">now</text>';
+  return '<div class="publication-rate"><div class="lane-count"><span>Publication speed</span><strong>' + headline + '</strong></div><div class="exact-trend-status ' + direction.className + '">' + esc(direction.label) + '</div><svg class="exact-trend-svg" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="Successful result publications per hour over ' + esc(activeHealthRange) + '">' + grid + '<path class="publication-rate-line" d="' + trendPath(geometry) + '"></path>' + points + axis + '</svg></div>';
 }
 
 function renderExecutionAlert(current) {
@@ -10358,6 +10489,7 @@ function renderExactReviewLanes(queue) {
       const sampledAt = samples.at(-1)?.at;
       return '<div class="exact-lane"><div class="exact-lane-head"><strong>' + esc(label) + '</strong><span>Live snapshot unavailable</span></div>' +
         exactReviewTrend(samples, label) +
+        (laneKey === "publication" ? publicationRateTrend(samples) : "") +
         '<div class="lane-foot">' + (sampledAt ? "Last sampled " + esc(since(sampledAt)) : "History starts with the next five-minute sample") + '</div></div>';
     }
     const capacity = Math.max(0, lane.capacity || 0);
@@ -10369,6 +10501,7 @@ function renderExactReviewLanes(queue) {
     return '<div class="exact-lane"><div class="exact-lane-head"><strong>' + esc(label) + '</strong><span>' + fmt.format(active) + ' of ' + fmt.format(capacity) + ' active</span></div>' +
       '<div class="lane-count"><span>Pending</span><strong>' + fmt.format(lane.pending || 0) + '</strong></div>' +
       exactReviewTrend(samples, label) +
+      (laneKey === "publication" ? publicationRateTrend(samples) : "") +
       '<div class="lane-counts">' +
       '<div class="lane-count"><span>Ready</span><strong>' + fmt.format(lane.ready || 0) + '</strong></div>' +
       '<div class="lane-count"><span>Backoff</span><strong>' + fmt.format(lane.backoff || 0) + '</strong></div>' +
@@ -10377,18 +10510,6 @@ function renderExactReviewLanes(queue) {
       '<div class="lane-bar"><i style="width:' + used + '%"></i></div>' +
       '<div class="lane-foot">' + fmt.format(lane.available_slots || 0) + ' ' + esc(label.toLowerCase()) + ' slots open' + esc(oldest) + '</div></div>';
   }).join("");
-}
-function renderControlPlane(controlPlane, workerBudget) {
-  const target = document.getElementById("control-plane");
-  if (!target) return;
-  const rows = [
-    ["Exact publishers", controlPlane?.publishers],
-    ["Comment routers", controlPlane?.comment_routers],
-    ["Lease reconcilers", controlPlane?.reconcilers]
-  ];
-  target.innerHTML = rows.map(([label, lane]) =>
-    '<div class="control-plane-row"><span>' + esc(label) + '</span><span>' + fmt.format(lane?.running || 0) + ' running · ' + fmt.format(lane?.waiting || 0) + ' waiting</span></div>'
-  ).join("") + '<div class="control-plane-note">These workflows consume GitHub runners but not the ' + fmt.format(workerBudget || 0) + '-slot Codex budget.</div>';
 }
 function renderExactReviewHandoff(queue) {
   const target = document.getElementById("exact-review-handoff");
@@ -10634,7 +10755,6 @@ function renderDashboard(data, note) {
   renderExecutionAlert(data.operational_health);
   renderSystemMap(data);
   renderExactReviewLanes(data.exact_review_queue);
-  renderControlPlane(data.control_plane, fleet.worker_budget);
   renderExactReviewHandoff(data.exact_review_queue);
   renderApplyHealth(data);
   renderAutomaticWork(data.automatic_work || []);

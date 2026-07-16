@@ -27,21 +27,21 @@ export type OperationalHealth = {
 
 export type HealthHistorySample = {
   at: string;
-  status: OperationalHealth["status"];
-  queued: number;
-  queued_over_30m: number;
-  oldest_queued_minutes: number;
-  running: number;
-  running_over_150m: number;
-  oldest_running_minutes: number;
-  collection_ok: boolean;
+  status?: OperationalHealth["status"];
+  queued?: number;
+  queued_over_30m?: number;
+  oldest_queued_minutes?: number;
+  running?: number;
+  running_over_150m?: number;
+  oldest_running_minutes?: number;
+  collection_ok?: boolean;
   exact_review?: ExactReviewHistorySample;
 };
 
 export type ExactReviewHistorySample = {
   collection_ok: boolean;
   review?: { pending: number };
-  publication?: { pending: number };
+  publication?: { pending: number; completed_total?: number };
 };
 
 export function summarizeOperationalHealth(
@@ -92,28 +92,11 @@ export function summarizeOperationalHealth(
   };
 }
 
-export function healthHistorySample(health: OperationalHealth): HealthHistorySample {
-  return {
-    at: health.checked_at,
-    status: health.status,
-    queued: health.queued_runs,
-    queued_over_30m: health.queued_over_threshold,
-    oldest_queued_minutes: health.oldest_queued_minutes,
-    running: health.running_runs,
-    running_over_150m: health.running_over_threshold,
-    oldest_running_minutes: health.oldest_running_minutes,
-    collection_ok: health.telemetry_complete,
-  };
-}
-
 export function normalizeHealthHistorySample(value: unknown): HealthHistorySample | null {
   if (!value || typeof value !== "object") return null;
   const sample = value as Record<string, unknown>;
   const at = String(sample.at || "");
   if (!Number.isFinite(Date.parse(at))) return null;
-  const rawStatus = String(sample.status || "");
-  if (!["healthy", "degraded", "stalled", "unknown"].includes(rawStatus)) return null;
-  if (typeof sample.collection_ok !== "boolean") return null;
   const countFields = [
     "queued",
     "queued_over_30m",
@@ -122,21 +105,34 @@ export function normalizeHealthHistorySample(value: unknown): HealthHistorySampl
     "running_over_150m",
     "oldest_running_minutes",
   ] as const;
-  const counts = Object.fromEntries(
-    countFields.map((field) => [field, nonNegativeInteger(sample[field])]),
-  ) as Record<(typeof countFields)[number], number | null>;
-  if (Object.values(counts).some((count) => count === null)) return null;
+  const hasOperationalFields = ["status", "collection_ok", ...countFields].some((field) =>
+    Object.hasOwn(sample, field),
+  );
+  let operational: Omit<HealthHistorySample, "at" | "exact_review"> = {};
+  if (hasOperationalFields) {
+    const rawStatus = String(sample.status || "");
+    if (!["healthy", "degraded", "stalled", "unknown"].includes(rawStatus)) return null;
+    if (typeof sample.collection_ok !== "boolean") return null;
+    const counts = Object.fromEntries(
+      countFields.map((field) => [field, nonNegativeInteger(sample[field])]),
+    ) as Record<(typeof countFields)[number], number | null>;
+    if (Object.values(counts).some((count) => count === null)) return null;
+    operational = {
+      status: rawStatus as OperationalHealth["status"],
+      queued: counts.queued!,
+      queued_over_30m: counts.queued_over_30m!,
+      oldest_queued_minutes: counts.oldest_queued_minutes!,
+      running: counts.running!,
+      running_over_150m: counts.running_over_150m!,
+      oldest_running_minutes: counts.oldest_running_minutes!,
+      collection_ok: sample.collection_ok,
+    };
+  }
   const exactReview = normalizeExactReviewHistorySample(sample.exact_review);
+  if (!hasOperationalFields && !exactReview) return null;
   return {
     at,
-    status: rawStatus as HealthHistorySample["status"],
-    queued: counts.queued!,
-    queued_over_30m: counts.queued_over_30m!,
-    oldest_queued_minutes: counts.oldest_queued_minutes!,
-    running: counts.running!,
-    running_over_150m: counts.running_over_150m!,
-    oldest_running_minutes: counts.oldest_running_minutes!,
-    collection_ok: sample.collection_ok,
+    ...operational,
     ...(exactReview ? { exact_review: exactReview } : {}),
   };
 }
@@ -144,12 +140,18 @@ export function normalizeHealthHistorySample(value: unknown): HealthHistorySampl
 export function exactReviewHistorySample(value: unknown): ExactReviewHistorySample {
   const lanes = objectValue(objectValue(value).lanes);
   const reviewPending = nonNegativeInteger(objectValue(lanes.review).pending);
-  const publicationPending = nonNegativeInteger(objectValue(lanes.publication).pending);
+  const publicationLane = objectValue(lanes.publication);
+  const publicationPending = nonNegativeInteger(publicationLane.pending);
   if (reviewPending === null || publicationPending === null) return { collection_ok: false };
+  const completedTotal = optionalNonNegativeInteger(publicationLane.completed_total);
+  if (completedTotal === null) return { collection_ok: false };
   return {
     collection_ok: true,
     review: { pending: reviewPending },
-    publication: { pending: publicationPending },
+    publication: {
+      pending: publicationPending,
+      ...(completedTotal === undefined ? {} : { completed_total: completedTotal }),
+    },
   };
 }
 
@@ -160,12 +162,18 @@ function normalizeExactReviewHistorySample(value: unknown): ExactReviewHistorySa
   if (typeof sample.collection_ok !== "boolean") return null;
   if (!sample.collection_ok) return { collection_ok: false };
   const reviewPending = nonNegativeInteger(objectValue(sample.review).pending);
-  const publicationPending = nonNegativeInteger(objectValue(sample.publication).pending);
+  const publication = objectValue(sample.publication);
+  const publicationPending = nonNegativeInteger(publication.pending);
   if (reviewPending === null || publicationPending === null) return null;
+  const completedTotal = optionalNonNegativeInteger(publication.completed_total);
+  if (completedTotal === null) return null;
   return {
     collection_ok: true,
     review: { pending: reviewPending },
-    publication: { pending: publicationPending },
+    publication: {
+      pending: publicationPending,
+      ...(completedTotal === undefined ? {} : { completed_total: completedTotal }),
+    },
   };
 }
 
@@ -202,6 +210,10 @@ function ageMs(value: string | undefined, now: number) {
 function nonNegativeInteger(value: unknown) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(0, Math.round(number)) : null;
+}
+
+function optionalNonNegativeInteger(value: unknown) {
+  return value === undefined ? undefined : nonNegativeInteger(value);
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

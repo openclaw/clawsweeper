@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
   exactReviewHistorySample,
-  healthHistorySample,
   mergeHealthHistorySample,
   normalizeHealthHistorySample,
   summarizeOperationalHealth,
@@ -13,6 +12,20 @@ const CHECKED_AT = "2026-07-15T14:00:00Z";
 
 function run(status: string, createdAt: string) {
   return { status, created_at: createdAt };
+}
+
+function legacyHistorySample() {
+  return {
+    at: CHECKED_AT,
+    status: "healthy" as const,
+    queued: 0,
+    queued_over_30m: 0,
+    oldest_queued_minutes: 0,
+    running: 0,
+    running_over_150m: 0,
+    oldest_running_minutes: 0,
+    collection_ok: true,
+  };
 }
 
 test("operational health classifies over-age queue pressure and stuck runs", () => {
@@ -75,7 +88,7 @@ test("health history replaces duplicate five-minute slots", () => {
     CHECKED_AT,
     true,
   );
-  const first = healthHistorySample(health);
+  const first = { ...legacyHistorySample(), status: health.status };
   const replacement = { ...first, at: "2026-07-15T14:04:59Z", queued: 2 };
   const next = mergeHealthHistorySample([first], replacement);
   assert.equal(next.length, 1);
@@ -89,17 +102,24 @@ test("health history replaces duplicate five-minute slots", () => {
 });
 
 test("health history preserves legacy samples and normalizes exact-review backlog", () => {
-  const legacy = healthHistorySample(summarizeOperationalHealth([], CHECKED_AT, true));
+  const legacy = legacyHistorySample();
   assert.deepEqual(normalizeHealthHistorySample(legacy), legacy);
 
   const exactReview = exactReviewHistorySample({
-    lanes: { review: { pending: 317 }, publication: { pending: 1502 } },
+    lanes: {
+      review: { pending: 317 },
+      publication: { pending: 1502, completed_total: 42 },
+    },
   });
   const normalized = normalizeHealthHistorySample({ ...legacy, exact_review: exactReview });
   assert.deepEqual(normalized?.exact_review, {
     collection_ok: true,
     review: { pending: 317 },
-    publication: { pending: 1502 },
+    publication: { pending: 1502, completed_total: 42 },
+  });
+  assert.deepEqual(normalizeHealthHistorySample({ at: CHECKED_AT, exact_review: exactReview }), {
+    at: CHECKED_AT,
+    exact_review: exactReview,
   });
   assert.deepEqual(exactReviewHistorySample(null), { collection_ok: false });
   assert.equal(
@@ -112,7 +132,7 @@ test("health history preserves legacy samples and normalizes exact-review backlo
 });
 
 test("health history rejects non-finite or incomplete samples", () => {
-  const sample = healthHistorySample(summarizeOperationalHealth([], CHECKED_AT, true));
+  const sample = legacyHistorySample();
   assert.equal(normalizeHealthHistorySample({ ...sample, queued: "Infinity" }), null);
   const { running, ...incomplete } = sample;
   assert.equal(running, 0);

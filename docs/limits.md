@@ -131,8 +131,7 @@ checkout, artifact handling, comment sync, and result routing are deterministic
 control-plane work: they consume GitHub runners, but not Codex slots. The
 comment router and the singleton lease reconciler follow the same accounting
 rule. Dashboard Codex capacity therefore counts only jobs whose steps execute
-Codex; it reports these control-plane workflows separately instead of deducting
-them from `workers.max`.
+Codex and does not deduct these control-plane workflows from `workers.max`.
 
 Each dispatched workflow claims its opaque lease before checkout. Protocol v2
 binds claim and completion to the item key, lease revision, run attempt, claim
