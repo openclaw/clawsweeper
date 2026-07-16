@@ -126,6 +126,10 @@ is absent or a cache event lands in another Cloudflare colo.
   depth, and the oldest queued/running ages
 - job-level worker attempt error rate, recovery rate, and unresolved failures,
   including failures hidden by workflow `continue-on-error`
+- automerge worker reliability from the dedicated repair workflow, including
+  sampled failure rate, average and longest runtime, active or stalled attempts,
+  and the latest failure per target marked as unresolved or recovered by a later
+  successful run
 - active pipeline rows grouped as automerge, repair, exact review, hot review,
   apply, commit review, or background review
 - CI state for active PR rows when available
@@ -164,9 +168,12 @@ set. Other recent activity remains bounded independently.
 Status responses use stale-while-revalidate delivery. After the 20-second fresh
 window expires, the Worker immediately returns the last good snapshot, marks it
 with `X-ClawSweeper-Cache: stale`, and coalesces one background refresh per
-isolate. Recent automerge timing is cached for five minutes and recent
-ClawSweeper-owned closes for five minutes because those historical sections do
-not need worker-step freshness. The deployment smoke output includes cache
+isolate. Recent automerge timing and the latest 100 runs from
+`repair-cluster-worker.yml` are cached for five minutes, as are recent
+ClawSweeper-owned closes, because those historical sections do not need
+worker-step freshness. Reliability sampling filters those workflow runs to
+`automerge repair` titles, so failures remain visible even when a worker exits
+before publishing a status event. The deployment smoke output includes cache
 state, fetch time, and current diagnostics.
 
 ## Exact Review history

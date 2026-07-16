@@ -17,6 +17,7 @@ import worker, {
   mergeBayJourneyState,
   mergeBayTerminalState,
   StatusStore,
+  summarizeAutomergeReliability,
   summarizeBayJourneyTimings,
   workerWorkKind,
 } from "../dashboard/worker.ts";
@@ -35,6 +36,58 @@ test("exact-review queue defaults to 64 of the 128 global workers", () => {
       WORKER_BUDGET: "64",
     }),
     64,
+  );
+});
+
+test("automerge reliability summarizes failures, recovery, duration, and stalled runs", () => {
+  const run = (
+    id: number,
+    number: number,
+    status: string,
+    conclusion: string | null,
+    createdAt: string,
+    updatedAt: string,
+  ) => ({
+    id,
+    display_title: `automerge repair jobs/openclaw/inbox/automerge-openclaw-openclaw-${number}.md`,
+    status,
+    conclusion,
+    html_url: `https://github.com/openclaw/clawsweeper/actions/runs/${id}`,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  });
+  const summary = summarizeAutomergeReliability(
+    [
+      run(1, 107691, "completed", "failure", "2026-07-16T09:00:00Z", "2026-07-16T09:20:00Z"),
+      run(2, 107691, "completed", "success", "2026-07-16T09:30:00Z", "2026-07-16T09:40:00Z"),
+      run(3, 107692, "completed", "failure", "2026-07-16T10:00:00Z", "2026-07-16T10:20:00Z"),
+      run(6, 107692, "completed", "failure", "2026-07-16T08:00:00Z", "2026-07-16T08:05:00Z"),
+      run(4, 107693, "in_progress", null, "2026-07-16T09:30:00Z", "2026-07-16T09:30:00Z"),
+      {
+        ...run(5, 107694, "completed", "failure", "2026-07-16T11:00:00Z", "2026-07-16T11:05:00Z"),
+        display_title: "repair cluster jobs/openclaw/inbox/gitcrawl-55.md",
+      },
+    ],
+    ["openclaw/openclaw"],
+    "2026-07-16T12:00:00Z",
+  );
+
+  assert.equal(summary.sampled_runs, 5);
+  assert.equal(summary.completed_attempts, 4);
+  assert.equal(summary.failed_attempts, 3);
+  assert.equal(summary.failure_rate_percent, 75);
+  assert.equal(summary.average_duration_ms, 825_000);
+  assert.equal(summary.longest_duration_ms, 1_200_000);
+  assert.equal(summary.active_attempts, 1);
+  assert.equal(summary.stalled_attempts, 1);
+  assert.equal(summary.recovered_failures, 1);
+  assert.equal(summary.unresolved_failures, 1);
+  assert.deepEqual(
+    summary.failures.map((failure) => [failure.number, failure.status]),
+    [
+      [107692, "unresolved"],
+      [107691, "recovered"],
+    ],
   );
 });
 
@@ -5532,6 +5585,8 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /Refreshing live status in the background/);
   assert.match(html, /Cluster Intake/);
   assert.match(html, /Active Pipeline/);
+  assert.match(html, /Automerge Reliability/);
+  assert.match(html, /id="automerge-reliability"/);
   assert.match(html, /Closed by ClawSweeper/);
   assert.match(html, /Worker Health/);
   assert.match(html, /Recent Activity/);
@@ -5694,6 +5749,32 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
         ],
       },
       automerge: [],
+      automerge_reliability: {
+        sampled_runs: 3,
+        completed_attempts: 3,
+        failed_attempts: 2,
+        failure_rate_percent: 66.7,
+        active_attempts: 0,
+        stalled_attempts: 0,
+        average_duration_ms: 600_000,
+        longest_duration_ms: 1_200_000,
+        unresolved_failures: 1,
+        recovered_failures: 1,
+        failures: [
+          {
+            repository: "openclaw/openclaw",
+            number: 107691,
+            item_url: "https://github.com/openclaw/openclaw/pull/107691",
+            run_url: "https://github.com/openclaw/clawsweeper/actions/runs/29431617465",
+            status: "unresolved",
+            conclusion: "failure",
+            started_at: "2026-07-05T10:50:00Z",
+            completed_at: "2026-07-05T11:10:00Z",
+            duration_ms: 1_200_000,
+            recovered: false,
+          },
+        ],
+      },
       closed_items: [],
       closed_stats: { issues: 0, prs: 0, total: 0, window_hours: 24 },
       cluster_repair: null,
@@ -5742,6 +5823,9 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(elementFor("exact-review-lanes").innerHTML, /52 review admission slots open/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /Result publication/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /3 result publication slots open/);
+  assert.match(elementFor("automerge-reliability").innerHTML, /66.7%/);
+  assert.match(elementFor("automerge-reliability").innerHTML, /openclaw\/openclaw#107691/);
+  assert.match(elementFor("automerge-reliability").innerHTML, /unresolved/);
   assert.match(
     elementFor("exact-review-lanes").innerHTML,
     /adaptive ceiling 24 after GitHub rate limit/,
@@ -6285,6 +6369,12 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
     ) {
       return jsonResponse({ workflow_runs: [] });
     }
+    if (
+      url.pathname ===
+      "/repos/openclaw/clawsweeper/actions/workflows/repair-cluster-worker.yml/runs"
+    ) {
+      return jsonResponse({ workflow_runs: [] });
+    }
     if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
     if (url.pathname === "/repos/openclaw/openclaw/issues") return jsonResponse([]);
     throw new Error(`unexpected fetch ${url}`);
@@ -6400,6 +6490,12 @@ test("dashboard keeps control-plane workflow fallbacks out of Codex capacity", a
     ) {
       return jsonResponse({ workflow_runs: [] });
     }
+    if (
+      url.pathname ===
+      "/repos/openclaw/clawsweeper/actions/workflows/repair-cluster-worker.yml/runs"
+    ) {
+      return jsonResponse({ workflow_runs: [] });
+    }
     if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
     if (url.pathname === "/repos/openclaw/openclaw/issues") return jsonResponse([]);
     throw new Error(`unexpected fetch ${url}`);
@@ -6508,6 +6604,12 @@ test("dashboard bounds worker job detail request concurrency", async () => {
     if (
       url.pathname ===
       "/repos/openclaw/clawsweeper/actions/workflows/repair-cluster-intake.yml/runs"
+    ) {
+      return jsonResponse({ workflow_runs: [] });
+    }
+    if (
+      url.pathname ===
+      "/repos/openclaw/clawsweeper/actions/workflows/repair-cluster-worker.yml/runs"
     ) {
       return jsonResponse({ workflow_runs: [] });
     }
@@ -7394,6 +7496,104 @@ test("dashboard parallelizes and caches historical GitHub telemetry", async () =
     assert.equal((await second.json()).averages.automerge_samples, 4);
     assert.equal(searchRequests, 1);
     assert.equal(closedRequests, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("dashboard reports automerge worker reliability independently of merged PR timing", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: {
+      default: {
+        match: async () => undefined,
+        put: async () => undefined,
+      },
+    },
+  });
+  let reliabilityRequests = 0;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (
+      url.pathname ===
+      "/repos/openclaw/clawsweeper/actions/workflows/repair-cluster-worker.yml/runs"
+    ) {
+      reliabilityRequests += 1;
+      const workflowRun = (
+        id: number,
+        number: number,
+        conclusion: "failure" | "success",
+        createdAt: string,
+        updatedAt: string,
+      ) => ({
+        id,
+        display_title: `automerge repair jobs/openclaw/inbox/automerge-openclaw-openclaw-${number}.md`,
+        status: "completed",
+        conclusion,
+        html_url: `https://github.com/openclaw/clawsweeper/actions/runs/${id}`,
+        created_at: createdAt,
+        updated_at: updatedAt,
+      });
+      return jsonResponse({
+        workflow_runs: [
+          workflowRun(
+            29431617465,
+            107691,
+            "failure",
+            "2026-07-15T16:15:04Z",
+            "2026-07-15T16:34:51Z",
+          ),
+          workflowRun(
+            29434021623,
+            107691,
+            "success",
+            "2026-07-15T16:49:45Z",
+            "2026-07-15T16:51:53Z",
+          ),
+          workflowRun(
+            29435000000,
+            107692,
+            "failure",
+            "2026-07-15T17:00:00Z",
+            "2026-07-15T17:10:00Z",
+          ),
+        ],
+      });
+    }
+    if (url.pathname.includes("/actions/")) return jsonResponse({ workflow_runs: [] });
+    if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+    if (url.pathname === "/repos/openclaw/openclaw/issues") return jsonResponse([]);
+    return new Response(JSON.stringify({ message: "not found" }), { status: 404 });
+  };
+
+  try {
+    const response = await worker.fetch(new Request("https://clawsweeper.openclaw.ai/api/status"), {
+      STATUS_STORE: new MemoryKv(),
+      CLAWSWEEPER_REPO: "openclaw/clawsweeper",
+      TARGET_REPOS: "openclaw/openclaw",
+      CACHE_TTL_SECONDS: "-1",
+    });
+    assert.equal(response.status, 200);
+    const status = await response.json();
+    const reliability = status.recent.automerge_reliability;
+    assert.equal(reliabilityRequests, 1);
+    assert.equal(reliability.sampled_runs, 3);
+    assert.equal(reliability.failure_rate_percent, 66.7);
+    assert.equal(reliability.recovered_failures, 1);
+    assert.equal(reliability.unresolved_failures, 1);
+    assert.deepEqual(
+      reliability.failures.map((failure: { number: number; status: string }) => [
+        failure.number,
+        failure.status,
+      ]),
+      [
+        [107692, "unresolved"],
+        [107691, "recovered"],
+      ],
+    );
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -9615,6 +9815,9 @@ test("dashboard html preserves client compactText regex escapes", async () => {
 
 async function activePrFetch(input: RequestInfo | URL) {
   const url = String(input);
+  if (url.includes("/actions/workflows/repair-cluster-worker.yml/runs")) {
+    return jsonResponse({ workflow_runs: [] });
+  }
   if (url.includes("/repos/openclaw/clawsweeper/actions/runs")) {
     return jsonResponse({
       workflow_runs: [

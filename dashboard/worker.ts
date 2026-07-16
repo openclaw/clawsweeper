@@ -122,6 +122,10 @@ const DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY = 10;
 const WORKER_TARGET_CACHE_TTL_SECONDS = 900;
 const WORKER_TARGET_BATCH_SIZE = 50;
 const AUTOMERGE_CACHE_TTL_SECONDS = 300;
+const AUTOMERGE_REPAIR_WORKFLOW = "repair-cluster-worker.yml";
+const AUTOMERGE_RELIABILITY_RUN_LIMIT = 100;
+const AUTOMERGE_STALLED_AFTER_MS = 90 * 60 * 1000;
+const AUTOMERGE_FAILURE_DISPLAY_LIMIT = 5;
 const RECENT_CLOSED_CACHE_TTL_SECONDS = 300;
 const DEFAULT_WORKER_DETAIL_RUN_LIMIT = 32;
 const SUPPORT_WORKFLOW_NAMES = new Set([
@@ -1745,61 +1749,77 @@ async function statusSnapshot(env) {
       TERMINAL_BAD_CONCLUSIONS.has(String(run.conclusion)),
   );
   const activeJobs = await activeWorkerSnapshot(env, repo, workerRuns, github);
-  const [workerHealth, pipeline, clusterRepair, applyHealth, automerge, closed, storedEvents] =
-    await Promise.all([
-      withTimeout(
-        recentWorkerHealth(env, repo, completedWorkflowRuns, github),
-        OPTIONAL_SECTION_TIMEOUT_MS * 2,
-        "worker health",
-      ).catch((error) => {
-        errors.push(error.message);
-        return emptyWorkerHealth(generatedAt);
-      }),
-      withTimeout(
-        pipelineItems(env, workerRuns.slice(0, 30), github),
-        OPTIONAL_SECTION_TIMEOUT_MS,
-        "pipeline",
-      ).catch((error) => {
-        errors.push(error.message);
-        return workerRuns.slice(0, 30).map((run) => classifyRun(run));
-      }),
-      withTimeout(
-        clusterRepairStatus(env, repo, targetRepos, activeRuns, github),
-        OPTIONAL_SECTION_TIMEOUT_MS,
-        "cluster repair intake",
-      ).catch((error) => {
-        errors.push(error.message);
-        return emptyClusterRepairStatus(targetRepos);
-      }),
-      withTimeout(
-        applyHealthStatus(env, targetRepos, github),
-        OPTIONAL_SECTION_TIMEOUT_MS,
-        "apply health",
-      ).catch((error) => {
-        errors.push(error.message);
-        return emptyApplyHealthStatus(targetRepos);
-      }),
-      withTimeout(
-        recentAutomerge(env, targetRepos[0] || "openclaw/openclaw", github),
-        OPTIONAL_SECTION_TIMEOUT_MS,
-        "automerge timing",
-      ).catch((error) => {
-        errors.push(error.message);
-        return { average_ms: null, samples: 0, items: [] };
-      }),
-      withTimeout(
-        recentClawsweeperClosed(env, targetRepos, github),
-        OPTIONAL_SECTION_TIMEOUT_MS,
-        "recent closed",
-      ).catch((error) => {
-        errors.push(error.message);
-        return { items: [], stats: emptyClosedStats(generatedAt) };
-      }),
-      readEvents(env).catch((error) => {
-        errors.push(`events: ${error.message}`);
-        return [];
-      }),
-    ]);
+  const [
+    workerHealth,
+    pipeline,
+    clusterRepair,
+    applyHealth,
+    automerge,
+    automergeReliability,
+    closed,
+    storedEvents,
+  ] = await Promise.all([
+    withTimeout(
+      recentWorkerHealth(env, repo, completedWorkflowRuns, github),
+      OPTIONAL_SECTION_TIMEOUT_MS * 2,
+      "worker health",
+    ).catch((error) => {
+      errors.push(error.message);
+      return emptyWorkerHealth(generatedAt);
+    }),
+    withTimeout(
+      pipelineItems(env, workerRuns.slice(0, 30), github),
+      OPTIONAL_SECTION_TIMEOUT_MS,
+      "pipeline",
+    ).catch((error) => {
+      errors.push(error.message);
+      return workerRuns.slice(0, 30).map((run) => classifyRun(run));
+    }),
+    withTimeout(
+      clusterRepairStatus(env, repo, targetRepos, activeRuns, github),
+      OPTIONAL_SECTION_TIMEOUT_MS,
+      "cluster repair intake",
+    ).catch((error) => {
+      errors.push(error.message);
+      return emptyClusterRepairStatus(targetRepos);
+    }),
+    withTimeout(
+      applyHealthStatus(env, targetRepos, github),
+      OPTIONAL_SECTION_TIMEOUT_MS,
+      "apply health",
+    ).catch((error) => {
+      errors.push(error.message);
+      return emptyApplyHealthStatus(targetRepos);
+    }),
+    withTimeout(
+      recentAutomerge(env, targetRepos[0] || "openclaw/openclaw", github),
+      OPTIONAL_SECTION_TIMEOUT_MS,
+      "automerge timing",
+    ).catch((error) => {
+      errors.push(error.message);
+      return { average_ms: null, samples: 0, items: [] };
+    }),
+    withTimeout(
+      recentAutomergeReliability(env, repo, targetRepos, github),
+      OPTIONAL_SECTION_TIMEOUT_MS,
+      "automerge reliability",
+    ).catch((error) => {
+      errors.push(error.message);
+      return emptyAutomergeReliability(generatedAt);
+    }),
+    withTimeout(
+      recentClawsweeperClosed(env, targetRepos, github),
+      OPTIONAL_SECTION_TIMEOUT_MS,
+      "recent closed",
+    ).catch((error) => {
+      errors.push(error.message);
+      return { items: [], stats: emptyClosedStats(generatedAt) };
+    }),
+    readEvents(env).catch((error) => {
+      errors.push(`events: ${error.message}`);
+      return [];
+    }),
+  ]);
   errors.push(...activeJobs.errors);
   errors.push(...workerHealth.errors);
   const terminalBay = await updateBayTerminalState(
@@ -1857,6 +1877,7 @@ async function statusSnapshot(env) {
       cluster_repair: clusterRepair,
       apply_health: applyHealth,
       automerge: automerge.items,
+      automerge_reliability: automergeReliability,
       closed_items: closed.items,
       closed_stats: closed.stats,
       operation_counts: operationEventCounts(storedEvents),
@@ -4072,6 +4093,174 @@ async function attachCiStatus(
     if (!item.ci)
       item.ci = { state: "unknown", source: "live", error: String(error?.message || error) };
   }
+}
+
+function emptyAutomergeReliability(updatedAt) {
+  return {
+    sampled_runs: 0,
+    completed_attempts: 0,
+    failed_attempts: 0,
+    failure_rate_percent: null,
+    active_attempts: 0,
+    stalled_attempts: 0,
+    average_duration_ms: null,
+    longest_duration_ms: null,
+    unresolved_failures: 0,
+    recovered_failures: 0,
+    failures: [],
+    updated_at: updatedAt,
+  };
+}
+
+function automergeRepairTarget(run, targetRepos) {
+  const title = String(run?.display_title || "").toLowerCase();
+  const candidates = targetRepos
+    .map((repository) => ({
+      repository: String(repository).trim(),
+      slug: String(repository).trim().toLowerCase().replaceAll("/", "-"),
+    }))
+    .filter((candidate) => candidate.repository && candidate.slug)
+    .sort((left, right) => right.slug.length - left.slug.length);
+  for (const candidate of candidates) {
+    const marker = `automerge-${candidate.slug}-`;
+    const markerIndex = title.indexOf(marker);
+    if (markerIndex < 0) continue;
+    const suffix = title.slice(markerIndex + marker.length);
+    const match = suffix.match(/^(\d+)\.md(?:\s|$)/);
+    if (!match) continue;
+    const number = Number(match[1]);
+    return {
+      repository: candidate.repository,
+      number,
+      item_url: `https://github.com/${candidate.repository}/pull/${number}`,
+    };
+  }
+  return null;
+}
+
+function automergeRunDurationMs(run, nowMs) {
+  const startedMs = Date.parse(String(run?.created_at || ""));
+  if (!Number.isFinite(startedMs)) return null;
+  const completedMs =
+    run?.status === "completed" ? Date.parse(String(run?.updated_at || "")) : nowMs;
+  if (!Number.isFinite(completedMs) || completedMs < startedMs) return null;
+  return completedMs - startedMs;
+}
+
+export function summarizeAutomergeReliability(runs, targetRepos, now = new Date().toISOString()) {
+  const nowMs = Date.parse(now);
+  const effectiveNowMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const attempts = runs
+    .filter((run) => /\bautomerge repair\b/i.test(String(run?.display_title || "")))
+    .map((run) => {
+      const target = automergeRepairTarget(run, targetRepos);
+      if (!target) return null;
+      return {
+        run,
+        target,
+        startedMs: Date.parse(String(run?.created_at || "")),
+        completedMs: Date.parse(String(run?.updated_at || "")),
+        duration_ms: automergeRunDurationMs(run, effectiveNowMs),
+      };
+    })
+    .filter(Boolean);
+  const completed = attempts.filter((attempt) => attempt.run.status === "completed");
+  const failed = completed.filter((attempt) =>
+    TERMINAL_BAD_CONCLUSIONS.has(String(attempt.run.conclusion)),
+  );
+  const successes = completed.filter((attempt) => attempt.run.conclusion === "success");
+  const active = attempts.filter((attempt) => ACTIVE_RUN_STATUSES.has(String(attempt.run.status)));
+  const durations = completed
+    .map((attempt) => attempt.duration_ms)
+    .filter((duration) => Number.isFinite(duration) && duration >= 0);
+  const failureAttempts = failed
+    .map((attempt) => {
+      const recovery = successes.find(
+        (candidate) =>
+          candidate.target.repository === attempt.target.repository &&
+          candidate.target.number === attempt.target.number &&
+          candidate.startedMs >= attempt.completedMs,
+      );
+      return {
+        repository: attempt.target.repository,
+        number: attempt.target.number,
+        item_url: attempt.target.item_url,
+        run_url: attempt.run.html_url,
+        status: recovery ? "recovered" : "unresolved",
+        conclusion: attempt.run.conclusion,
+        started_at: attempt.run.created_at,
+        completed_at: attempt.run.updated_at,
+        duration_ms: attempt.duration_ms,
+        recovered: Boolean(recovery),
+      };
+    })
+    .sort(
+      (left, right) =>
+        Date.parse(String(right.started_at || "")) - Date.parse(String(left.started_at || "")),
+    );
+  const failuresByTarget = new Map();
+  for (const failure of failureAttempts) {
+    const targetKey = `${failure.repository}#${failure.number}`;
+    if (!failuresByTarget.has(targetKey)) failuresByTarget.set(targetKey, failure);
+  }
+  const failures = [...failuresByTarget.values()]
+    // Unresolved targets stay visible even when recovered retries fill the sample.
+    .sort(
+      (left, right) =>
+        Number(left.recovered) - Number(right.recovered) ||
+        Date.parse(String(right.started_at || "")) - Date.parse(String(left.started_at || "")),
+    );
+  const unresolvedFailures = failures.filter((failure) => !failure.recovered).length;
+  const result = emptyAutomergeReliability(new Date(effectiveNowMs).toISOString());
+  return {
+    ...result,
+    sampled_runs: attempts.length,
+    completed_attempts: completed.length,
+    failed_attempts: failed.length,
+    failure_rate_percent: completed.length
+      ? Math.round((failed.length / completed.length) * 1000) / 10
+      : null,
+    active_attempts: active.length,
+    stalled_attempts: active.filter(
+      (attempt) =>
+        Number.isFinite(attempt.duration_ms) && attempt.duration_ms >= AUTOMERGE_STALLED_AFTER_MS,
+    ).length,
+    average_duration_ms: durations.length
+      ? Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length)
+      : null,
+    longest_duration_ms: durations.length ? Math.max(...durations) : null,
+    unresolved_failures: unresolvedFailures,
+    recovered_failures: failures.length - unresolvedFailures,
+    failures: failures.slice(0, AUTOMERGE_FAILURE_DISPLAY_LIMIT),
+  };
+}
+
+async function recentAutomergeReliability(
+  env,
+  repo,
+  targetRepos,
+  github: GithubJsonReader = (path) => githubJson(env, path),
+) {
+  const targetKey = targetRepos
+    .map((target) => target.toLowerCase())
+    .sort()
+    .join(",");
+  const cacheKey = `automerge-reliability:${String(repo).toLowerCase()}:${targetKey}`;
+  const cached = await readStoredJson(env, cacheKey);
+  if (cached && Array.isArray(cached.failures)) return cached;
+
+  const response = await github(
+    `/repos/${repo}/actions/workflows/${AUTOMERGE_REPAIR_WORKFLOW}/runs?per_page=${AUTOMERGE_RELIABILITY_RUN_LIMIT}`,
+  );
+  const runs = Array.isArray(response?.workflow_runs) ? response.workflow_runs : [];
+  const result = summarizeAutomergeReliability(runs, targetRepos);
+  await writeStoredJson(
+    env,
+    cacheKey,
+    result,
+    numberFrom(env.AUTOMERGE_CACHE_TTL_SECONDS, AUTOMERGE_CACHE_TTL_SECONDS),
+  ).catch(() => undefined);
+  return result;
 }
 
 async function recentAutomerge(
@@ -7667,6 +7856,8 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
       </div>
     </div>
     <aside class="side-col">
+      <h2>Automerge Reliability</h2>
+      <div id="automerge-reliability"></div>
       <h2>Automerge Speed</h2>
       <div id="automerge"></div>
       <h2>Closed by ClawSweeper</h2>
@@ -8402,7 +8593,12 @@ function renderDashboard(data, note) {
     handoffTelemetryFailed || handoffStatus === "degraded" || handoffStatus === "stalled";
   const operationalStatus = data.operational_health?.status;
   const operationalAttention = ["degraded", "stalled", "unknown"].includes(operationalStatus);
-  const needsAttention = unresolved || applyAttention || handoffAttention || operationalAttention;
+  const automergeReliability = data.recent?.automerge_reliability;
+  const automergeAttention =
+    (automergeReliability?.unresolved_failures || 0) > 0 ||
+    (automergeReliability?.stalled_attempts || 0) > 0;
+  const needsAttention =
+    unresolved || applyAttention || handoffAttention || operationalAttention || automergeAttention;
   const workerCount = (data.workers || []).length;
   const repoCount = (data.source.target_repositories || []).length;
   document.getElementById("hero-dot").className = "hero-dot " + (handoffStatus === "stalled" || operationalStatus === "stalled" ? "red" : needsAttention ? "amber" : "ok");
@@ -8429,6 +8625,7 @@ function renderDashboard(data, note) {
   openWorkerFromHash();
   renderClusterRepair(data.recent?.cluster_repair);
   renderPipeline(data.pipeline || []);
+  renderAutomergeReliability(data.recent?.automerge_reliability);
   renderAutomerge(data.recent.automerge || []);
   renderClosedStats(data.recent.closed_stats);
   renderClosedItems(data.recent.closed_items || []);
@@ -8798,6 +8995,25 @@ function renderAutomerge(rows) {
     return;
   }
   document.getElementById("automerge").innerHTML = '<div class="side-list">' + rows.map(row => '<article class="side-row"><div class="side-main">' + linkClass(row.url, "#" + row.number, "item-link") + '<div class="muted side-title">' + esc(row.title) + '</div></div><div class="side-meta"><span class="pill violet">' + (row.duration_ms ? elapsed(row.duration_ms) : "unknown") + '</span><span>' + (row.merged_at ? since(row.merged_at) : "") + '</span></div></article>').join("") + '</div>';
+}
+function renderAutomergeReliability(reliability) {
+  const safe = reliability || {
+    sampled_runs: 0,
+    completed_attempts: 0,
+    failed_attempts: 0,
+    failure_rate_percent: null,
+    active_attempts: 0,
+    stalled_attempts: 0,
+    average_duration_ms: null,
+    longest_duration_ms: null,
+    failures: []
+  };
+  const failureRate = safe.failure_rate_percent == null ? "n/a" : safe.failure_rate_percent + "%";
+  const active = fmt.format(safe.active_attempts || 0) + " / " + fmt.format(safe.stalled_attempts || 0);
+  const stats = '<div class="closed-stats"><div class="closed-stat"><span>Failure rate</span><strong>' + esc(failureRate) + '</strong></div><div class="closed-stat"><span>Avg runtime</span><strong>' + elapsed(safe.average_duration_ms) + '</strong></div><div class="closed-stat"><span>Active / stalled</span><strong>' + esc(active) + '</strong></div></div>';
+  const sample = '<div class="muted" style="margin:8px 0">' + fmt.format(safe.sampled_runs || 0) + " runs sampled · " + fmt.format(safe.completed_attempts || 0) + " completed · longest " + elapsed(safe.longest_duration_ms) + '</div>';
+  const rows = (safe.failures || []).map(failure => '<article class="side-row"><div class="side-main"><div class="row-top">' + linkClass(failure.item_url, failure.repository + "#" + failure.number, "item-link") + linkClass(failure.run_url, "run", "pill run-link") + '</div><div class="muted side-title">' + esc(failure.conclusion || "failure") + " · " + elapsed(failure.duration_ms) + " · " + esc(failure.completed_at ? since(failure.completed_at) : "") + '</div></div><div class="side-meta"><span class="pill ' + (failure.recovered ? "" : "red") + '">' + (failure.recovered ? "recovered" : "unresolved") + '</span></div></article>').join("");
+  document.getElementById("automerge-reliability").innerHTML = stats + sample + (rows ? '<div class="side-list">' + rows + '</div>' : '<div class="empty">No automerge worker failures in the recent sample.</div>');
 }
 function renderClosedItems(rows) {
   if (!rows.length) {
