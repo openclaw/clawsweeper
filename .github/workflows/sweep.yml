@@ -1344,7 +1344,9 @@ jobs:
       - uses: actions/checkout@v7
         if: ${{ steps.publication-context.outputs.claimed == 'true' }}
         with:
-          ref: ${{ steps.publication-context.outputs.source_sha }}
+          # The artifact validator binds the producer SHA. The publisher itself
+          # must run the current repaired implementation, not historical code.
+          ref: main
           filter: blob:none
           fetch-depth: 0
           persist-credentials: false
@@ -1393,6 +1395,33 @@ jobs:
           EXACT_REVIEW_TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
         run: pnpm run --silent repair:exact-review-bundle validate
 
+      - name: Identify legacy tuple-less exact artifact
+        id: legacy-exact-artifact
+        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
+        env:
+          REPORT_PATH: .artifacts/exact-review-bundle/review/${{ steps.publication-context.outputs.item_number }}.md
+        run: |
+          set -euo pipefail
+          REPORT_PATH="$REPORT_PATH" node <<'NODE'
+          const fs = require("node:fs");
+          const reportPath = process.env.REPORT_PATH;
+          let legacyTupleless = false;
+          if (fs.existsSync(reportPath)) {
+            const markdown = fs.readFileSync(reportPath, "utf8");
+            const owner = /^review_lease_owner:\s*(.+)\s*$/m.exec(markdown)?.[1]?.trim() || "";
+            const commentId = Number(
+              /^review_lease_comment_id:\s*(\d+)\s*$/m.exec(markdown)?.[1] || "0",
+            );
+            legacyTupleless =
+              (!owner || owner === "unknown") &&
+              (!Number.isInteger(commentId) || commentId <= 0);
+          }
+          fs.appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `legacy_tupleless=${legacyTupleless ? "true" : "false"}\n`,
+          );
+          NODE
+
       - name: Stage validated exact review artifact
         if: ${{ steps.publication-context.outputs.claimed == 'true' }}
         run: |
@@ -1420,7 +1449,7 @@ jobs:
           permission-statuses: read
 
       - name: Create state token
-        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
         id: state-token
         uses: ./.github/actions/create-state-token
         with:
@@ -1428,14 +1457,14 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
       - uses: ./.github/actions/setup-state
-        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
         id: setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
 
       - name: Publish event result and apply safe close
-        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
         id: publish-event-result
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -1571,7 +1600,7 @@ jobs:
 
       - name: Queue fresh review after source drift
         id: queue-source-drift-review
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publish-event-result.outputs.requeue_latest == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && (steps.publish-event-result.outputs.requeue_latest == 'true' || steps.legacy-exact-artifact.outputs.legacy_tupleless == 'true') }}
         env:
           CLAIM_DECISION: ${{ steps.publication-context.outputs.decision }}
           PRODUCER_RUN_ATTEMPT: ${{ steps.publication-context.outputs.generation_attempt }}
@@ -1663,6 +1692,7 @@ jobs:
           ROUTING_DEFERRED: ${{ steps.publish-event-result.outputs.routing_deferred }}
           POLICY_NOOP: ${{ steps.publish-event-result.outputs.policy_noop }}
           REQUEUE_LATEST: ${{ steps.publish-event-result.outputs.requeue_latest }}
+          LEGACY_TUPLELESS: ${{ steps.legacy-exact-artifact.outputs.legacy_tupleless }}
           REVIEW_ONLY: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
         run: |
           state="Failed"
@@ -1670,6 +1700,9 @@ jobs:
           if [ "$POLICY_NOOP" = "true" ]; then
             state="Complete"
             detail="The exact review reached a deterministic policy veto; no action was taken."
+          elif [ "$LEGACY_TUPLELESS" = "true" ] && [ "${{ steps.queue-source-drift-review.outcome }}" = "success" ]; then
+            state="Complete"
+            detail="The legacy artifact lacked its durable review lease tuple; one fresh exact review was queued."
           elif [ "$REQUEUE_LATEST" = "true" ] && [ "${{ steps.queue-source-drift-review.outcome }}" = "success" ]; then
             state="Complete"
             detail="The item changed after review; one fresh exact review was queued."
@@ -1722,48 +1755,6 @@ jobs:
             gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/reactions/$reaction_id" --method DELETE || true
           done <<< "$reaction_ids"
 
-      - name: Publish exact review action ledger
-        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.setup-state.outcome == 'success' }}
-        continue-on-error: true
-        env:
-          GENERATION_ATTEMPT: ${{ steps.publication-context.outputs.generation_attempt }}
-        run: |
-          set -euo pipefail
-          test -n "${CLAWSWEEPER_STATE_DIR:-}"
-          mkdir -p .artifacts
-          event_paths_file=".artifacts/exact-review-action-ledger-paths.txt"
-          : > "$event_paths_file"
-          source_root=".artifacts/exact-review-bundle/action-ledger"
-          if [ -d "$source_root/ledger" ]; then
-            pnpm run --silent publish-action-events -- \
-              --source-root "$source_root" \
-              --state-root "$CLAWSWEEPER_STATE_DIR" \
-              --expected-producer-job event-review-apply \
-              --expected-producer-run-id "${{ steps.publication-context.outputs.producer_run_id }}" \
-              --expected-producer-sha "${{ steps.publication-context.outputs.source_sha }}" \
-              --expected-producer-run-attempt "$GENERATION_ATTEMPT" | jq -r '.paths[]?' >> "$event_paths_file"
-          fi
-          publisher_ledger_root="${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:-}"
-          if [ -n "$publisher_ledger_root" ] && [ -d "$publisher_ledger_root/ledger" ]; then
-            pnpm run --silent publish-action-events -- \
-              --source-root "$publisher_ledger_root" \
-              --state-root "$CLAWSWEEPER_STATE_DIR" \
-              --expected-producer-job "$GITHUB_JOB" | jq -r '.paths[]?' >> "$event_paths_file"
-          fi
-          sort -u -o "$event_paths_file" "$event_paths_file"
-          if [ ! -s "$event_paths_file" ]; then
-            echo "No exact review action events to publish."
-            exit 0
-          fi
-          while IFS= read -r event_path; do
-            test -f "$CLAWSWEEPER_STATE_DIR/$event_path"
-            mkdir -p "$(dirname "$event_path")"
-            cp "$CLAWSWEEPER_STATE_DIR/$event_path" "$event_path"
-          done < "$event_paths_file"
-          node dist/clawsweeper.js publish-action-event-paths \
-            --paths-file "$event_paths_file" \
-            --message "chore: append exact review action ledger"
-
       - name: Release unsuccessful publisher-owned review lease
         if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.live_proceeded == 'true' && (steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.requeue_latest == 'true' && steps.queue-source-drift-review.outcome != 'success')) }}
         env:
@@ -1799,12 +1790,15 @@ jobs:
           GUARDED_OPEN: ${{ steps.publish-event-result.outputs.guarded_open }}
           POLICY_NOOP: ${{ steps.publish-event-result.outputs.policy_noop }}
           REQUEUE_LATEST: ${{ steps.publish-event-result.outputs.requeue_latest }}
+          LEGACY_TUPLELESS: ${{ steps.legacy-exact-artifact.outputs.legacy_tupleless }}
           SOURCE_DRIFT_OUTCOME: ${{ steps.queue-source-drift-review.outcome }}
           DEFERRED_ROUTE_OUTCOME: ${{ steps.queue-deferred-verdict-router.outcome }}
           REVIEW_ONLY: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
         run: |
           outcome=failure
-          if [ "$PRIOR_JOB_STATUS" = "cancelled" ]; then
+          if [ "$LEGACY_TUPLELESS" = "true" ] && [ "$SOURCE_DRIFT_OUTCOME" = "success" ]; then
+            outcome=success
+          elif [ "$PRIOR_JOB_STATUS" = "cancelled" ]; then
             outcome=cancelled
           elif [ "$PRIOR_JOB_STATUS" = "success" ]; then
             if [ "$PUBLISH_OUTCOME" = "success" ] && [ "$REQUEUE_LATEST" = "true" ] && [ "$SOURCE_DRIFT_OUTCOME" = "success" ]; then

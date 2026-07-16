@@ -76,9 +76,7 @@ test("direct repair requeues forward a stable dispatch receipt and publish it", 
   assert.match(workflow, /--max-requeue-depth 1/);
 });
 
-test("exact review publisher includes command status receipts after the status mutation", () => {
-  const setupAction = readText(".github/actions/setup-action-ledger/action.yml");
-  const source = readText("src/repair/update-command-status.ts");
+test("exact review publisher bypasses the legacy action ledger", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const publisherJob = workflow.indexOf("\n  event-review-publish:");
   const statusMutation = workflow.indexOf("- name: Mark re-review complete", publisherJob);
@@ -86,28 +84,10 @@ test("exact review publisher includes command status receipts after the status m
     "- name: Publish exact review action ledger",
     publisherJob,
   );
-  const nextStep = workflow.indexOf(
-    "- name: Release unsuccessful publisher-owned review lease",
-    ledgerPublish,
-  );
-  const publishStep = workflow.slice(ledgerPublish, nextStep);
 
   assert.ok(publisherJob >= 0);
   assert.ok(statusMutation > publisherJob);
-  assert.ok(ledgerPublish > statusMutation);
-  assert.ok(nextStep > ledgerPublish);
-  assert.match(setupAction, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT=\$output_root/);
-  assert.match(source, /await flushCommandActionEvents\(\)/);
-  assert.match(publishStep, /if: \$\{\{ always\(\)[^\n]*\}\}/);
-  assert.match(publishStep, /steps\.publication-context\.outputs\.claimed == 'true'/);
-  assert.match(publishStep, /steps\.setup-state\.outcome == 'success'/);
-  assert.match(publishStep, /continue-on-error: true/);
-  assert.match(publishStep, /source_root="\.artifacts\/exact-review-bundle\/action-ledger"/);
-  assert.match(publishStep, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:-/);
-  assert.match(publishStep, /publisher_ledger_root\/ledger/);
-  assert.match(publishStep, /--expected-producer-job "\$GITHUB_JOB"/);
-  assert.match(publishStep, /sort -u -o "\$event_paths_file" "\$event_paths_file"/);
-  assert.match(publishStep, /--message "chore: append exact review action ledger"/);
+  assert.equal(ledgerPublish, -1);
 });
 
 function assertCommandFinalizerUsesCanonicalRoot(step: string): void {

@@ -130,7 +130,6 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
     "event-review-apply",
     "Queue durable exact review publication",
   );
-  const exactLedger = step("event-review-publish", "Publish exact review action ledger");
   const exactSteps = job("event-review-apply").steps;
   assert.match(exactPrimary.run ?? "", /outcome=(?:failure|cancelled|success)/);
   assert.match(exactPrimary.run ?? "", /REVIEW_OUTCOME.*cancelled/);
@@ -141,7 +140,12 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
   assert.ok(exactSteps.indexOf(exactUpload) < exactSteps.indexOf(exactPublicationQueue));
   assert.ok(exactSteps.indexOf(exactPublicationQueue) < exactSteps.indexOf(exactQueue));
   assert.ok(exactSteps.indexOf(exactQueue) > exactSteps.indexOf(exactPrimary));
-  assert.match(exactLedger.run ?? "", /expected-producer-run-attempt/);
+  assert.equal(
+    job("event-review-publish").steps.some(
+      (candidate) => candidate.name === "Publish exact review action ledger",
+    ),
+    false,
+  );
 
   const ledgerDownload = job("publish").steps.find(
     (candidate) => candidate.id === "download-review-action-ledger",
@@ -438,9 +442,15 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
 
   const download = step(publisher, "Download exact review artifact bundle");
   const validate = step(publisher, "Validate exact review artifact bundle");
+  const legacyArtifact = step(publisher, "Identify legacy tuple-less exact artifact");
   const targetWriteStep = step(publisher, "Create target write token");
   const stateSetup = publisher.steps.find((candidate) => candidate.uses?.endsWith("/setup-state"));
   assert.ok(stateSetup);
+  const publisherCheckout = publisher.steps.find(
+    (candidate) => candidate.uses === "actions/checkout@v7",
+  );
+  assert.ok(publisherCheckout);
+  assert.equal(publisherCheckout.with?.ref, "main");
   assert.equal(download.uses, "actions/download-artifact@v8");
   assert.equal(download.with?.name, "${{ steps.publication-context.outputs.artifact_name }}");
   assert.equal(
@@ -448,10 +458,13 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
     "${{ steps.publication-context.outputs.producer_run_id }}",
   );
   assert.match(validate.run ?? "", /repair:exact-review-bundle validate/);
+  assert.match(legacyArtifact.run ?? "", /review_lease_owner/);
+  assert.match(legacyArtifact.run ?? "", /review_lease_comment_id/);
   assert.doesNotMatch(create.run ?? "", /repair:exact-review-bundle -- create/);
   assert.doesNotMatch(validate.run ?? "", /repair:exact-review-bundle -- validate/);
   assert.ok(publisher.steps.indexOf(validate) < publisher.steps.indexOf(targetWriteStep));
   assert.ok(publisher.steps.indexOf(validate) < publisher.steps.indexOf(stateSetup));
+  assert.match(stateSetup.if ?? "", /legacy-exact-artifact\.outputs\.legacy_tupleless != 'true'/);
 
   const publish = step(publisher, "Publish event result and apply safe close");
   assert.match(publish.run ?? "", /live_state=.*gh api/);
@@ -473,6 +486,7 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(deferredRoute.run ?? "", /repair-comment-router\.yml/);
   const drift = step(publisher, "Queue fresh review after source drift");
   assert.match(drift.if ?? "", /requeue_latest == 'true'/);
+  assert.match(drift.if ?? "", /legacy-exact-artifact\.outputs\.legacy_tupleless == 'true'/);
   assert.match(drift.run ?? "", /x-clawsweeper-exact-review-signature/);
   assert.match(drift.run ?? "", /internal\/exact-review\/enqueue/);
   assert.match(drift.run ?? "", /decision\.sourceAction === "failed_review_shard_recovery"/);
@@ -484,13 +498,10 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   const reaction = step(publisher, "React to target item completion");
   assert.match(reaction.if ?? "", /requeue_latest != 'true'/);
   assert.doesNotMatch(reaction.if ?? "", /publication-context.*live_guarded_open/);
-  const ledger = step(publisher, "Publish exact review action ledger");
-  assert.equal(ledger["continue-on-error"], true);
-  assert.match(ledger.run ?? "", /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:-/);
-  assert.match(ledger.run ?? "", /--expected-producer-job event-review-apply/);
-  assert.match(ledger.run ?? "", /--expected-producer-run-id/);
-  assert.match(ledger.run ?? "", /--expected-producer-sha/);
-  assert.match(ledger.run ?? "", /--expected-producer-run-attempt "\$GENERATION_ATTEMPT"/);
+  assert.equal(
+    publisher.steps.some((candidate) => candidate.name === "Publish exact review action ledger"),
+    false,
+  );
   const publishResult = step(publisher, "Export exact review publication result");
   const publishComplete = step(publisher, "Complete durable exact review publication");
   const releaseTerminal = step(publisher, "Release terminal review leases");
@@ -500,7 +511,9 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(releaseUnsuccessful.run ?? "", /\.user\.login == \\"clawsweeper\[bot\]\\"/);
   assert.match(releaseUnsuccessful.run ?? "", /content == "eyes"/);
   assert.match(publishResult.env?.PRIOR_JOB_STATUS ?? "", /job\.status/);
+  assert.match(publishResult.env?.LEGACY_TUPLELESS ?? "", /legacy-exact-artifact/);
   assert.match(publishResult.run ?? "", /REQUEUE_LATEST.*SOURCE_DRIFT_OUTCOME/);
+  assert.match(publishResult.run ?? "", /LEGACY_TUPLELESS.*SOURCE_DRIFT_OUTCOME/);
   assert.doesNotMatch(publishResult.run ?? "", /LIVE_TERMINAL_NOOP/);
   assert.match(publishComplete.run ?? "", /internal\/exact-review\/complete/);
   assert.ok(publisher.steps.indexOf(publishResult) < publisher.steps.indexOf(publishComplete));
@@ -1748,8 +1761,8 @@ test("trusted comment router owns command ledger capacity retries", () => {
   const eventEnd = sweepWorkflow.indexOf("\n  target-fanout:", eventStart);
   const eventJob = sweepWorkflow.slice(eventStart, eventEnd);
 
-  assert.match(eventJob, /publish-action-events/);
-  assert.match(eventJob, /publish-action-event-paths/);
+  assert.doesNotMatch(eventJob, /publish-action-events/);
+  assert.doesNotMatch(eventJob, /publish-action-event-paths/);
   assert.doesNotMatch(eventJob, /count-command-actions/);
   assert.doesNotMatch(eventJob, /--wait-for-capacity/);
   assert.match(routerWorkflow, /Commit comment router ledger/);
@@ -2300,7 +2313,7 @@ test("every action-ledger publication authenticates the expected producer job", 
     /pnpm run --silent publish-action-events -- \\\n(?:\s+.*\\\n)*\s+--expected-producer-job [^\n]+/g,
   );
   assert.ok(commands);
-  assert.equal(commands.length, 9);
+  assert.equal(commands.length, 7);
   assert.ok(commands.every((command) => command.includes("--expected-producer-job")));
   assert.match(workflow, /--expected-producer-job review/);
   assert.match(workflow, /--expected-producer-job apply-proof/);
