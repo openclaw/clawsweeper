@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  exactReviewHistorySample,
   healthHistorySample,
   mergeHealthHistorySample,
   normalizeHealthHistorySample,
@@ -85,6 +86,29 @@ test("health history replaces duplicate five-minute slots", () => {
   assert.equal(preserved.length, 1);
   assert.equal(preserved[0].at, replacement.at);
   assert.equal(preserved[0].queued, 2);
+});
+
+test("health history preserves legacy samples and normalizes exact-review backlog", () => {
+  const legacy = healthHistorySample(summarizeOperationalHealth([], CHECKED_AT, true));
+  assert.deepEqual(normalizeHealthHistorySample(legacy), legacy);
+
+  const exactReview = exactReviewHistorySample({
+    lanes: { review: { pending: 317 }, publication: { pending: 1502 } },
+  });
+  const normalized = normalizeHealthHistorySample({ ...legacy, exact_review: exactReview });
+  assert.deepEqual(normalized?.exact_review, {
+    collection_ok: true,
+    review: { pending: 317 },
+    publication: { pending: 1502 },
+  });
+  assert.deepEqual(exactReviewHistorySample(null), { collection_ok: false });
+  assert.equal(
+    normalizeHealthHistorySample({
+      ...legacy,
+      exact_review: { collection_ok: true, review: { pending: 1 } },
+    })?.exact_review,
+    undefined,
+  );
 });
 
 test("health history rejects non-finite or incomplete samples", () => {

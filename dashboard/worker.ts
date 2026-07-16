@@ -8,6 +8,7 @@ import { bayHtml } from "./bay-page.ts";
 import { summarizeExactReviewHandoff } from "./exact-review-health.ts";
 import {
   HEALTH_HISTORY_RETENTION_DAYS,
+  exactReviewHistorySample,
   healthHistorySample,
   mergeHealthHistorySample,
   normalizeHealthHistorySample,
@@ -1653,10 +1654,7 @@ export default {
     return json({ error: "not_found" }, 404);
   },
   async scheduled(_controller, env: DashboardEnv = {}, ctx?: DashboardContext) {
-    const maintenance = Promise.all([
-      recordScheduledHealthSample(env),
-      exactReviewQueueStatusSnapshot(env).catch(() => null),
-    ]);
+    const maintenance = recordScheduledHealthSample(env);
     if (ctx?.waitUntil) ctx.waitUntil(maintenance);
     else await maintenance;
   },
@@ -1679,8 +1677,14 @@ async function statusJson(request, env, ctx) {
 }
 
 async function healthHistoryJson(request: Request, env: DashboardEnv) {
-  const range = new URL(request.url).searchParams.get("range") === "7d" ? "7d" : "24h";
-  const rangeMs = range === "7d" ? 7 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+  const requestedRange = new URL(request.url).searchParams.get("range");
+  const range = requestedRange === "6h" || requestedRange === "7d" ? requestedRange : "24h";
+  const rangeMs =
+    range === "6h"
+      ? 6 * 60 * 60 * 1000
+      : range === "7d"
+        ? 7 * 24 * 60 * 60 * 1000
+        : 24 * 60 * 60 * 1000;
   const now = Date.now();
   const groups = await Promise.all(
     healthHistoryDates(now - rangeMs, now).map(async (day) => {
@@ -1725,9 +1729,18 @@ function healthHistoryDates(fromMs: number, toMs: number) {
 }
 
 async function recordScheduledHealthSample(env) {
-  if (!env.STATUS_STORE) return;
-  const health = await collectOperationalHealth(env);
-  await appendHealthHistorySample(env, healthHistorySample(health));
+  const queueSnapshot = exactReviewQueueStatusSnapshot(env).catch(() => null);
+  if (!env.STATUS_STORE) {
+    await queueSnapshot;
+    return;
+  }
+  // The queue snapshot was already part of scheduled maintenance. Folding it
+  // into the same sample preserves one queue read per tick and one time slot.
+  const [health, queue] = await Promise.all([collectOperationalHealth(env), queueSnapshot]);
+  await appendHealthHistorySample(env, {
+    ...healthHistorySample(health),
+    exact_review: exactReviewHistorySample(queue),
+  });
 }
 
 async function collectOperationalHealth(env) {
@@ -9026,7 +9039,7 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .muted { color: var(--muted); }
 .grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   margin-top: 30px;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
@@ -9038,9 +9051,8 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .metric > div.muted { margin-top: 4px; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .band { width: 54px; height: 2px; margin-top: 12px; background: var(--track); border-radius: 999px; overflow: hidden; }
 .band > i { display: block; height: 100%; border-radius: 999px; background: var(--claw); width: 0; transition: width 0.6s ease; }
-.health-trends { margin-top: 30px; }
-.health-trends-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.health-trends-head h2 { margin: 0; }
+.exact-review-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 22px; }
+.exact-review-head .overview-section-title { margin: 0; }
 .trend-ranges { display: flex; gap: 6px; }
 .trend-range {
   padding: 5px 9px;
@@ -9053,43 +9065,24 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
   cursor: pointer;
 }
 .trend-range.active { color: var(--text); border-color: var(--claw); }
-.health-trend-summary { margin-top: 8px; color: var(--muted); font-size: 12px; }
-.health-signal-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
-.health-signal { min-width: 0; padding: 13px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
-.health-signal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.health-signal-label { color: var(--muted); font-size: 10px; font-weight: 650; letter-spacing: 0.1em; text-transform: uppercase; }
-.health-signal-value { font-size: 13px; font-weight: 650; }
-.health-signal-value.ok { color: var(--green); }
-.health-signal-value.attention { color: var(--amber); }
-.health-signal-value.stalled { color: var(--red); }
-.health-signal-value.unknown { color: var(--muted); }
-.health-signal-detail { margin-top: 6px; color: var(--muted); font-size: 11px; line-height: 1.45; }
-.health-trend-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 14px; }
-.health-trend-panel { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
-.health-trend-title { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
-.health-trend-title strong { font-size: 12px; }
-.health-trend-title span { color: var(--muted); font-size: 11px; }
-.trend-legend { display: flex; flex-wrap: wrap; gap: 10px; min-height: 16px; margin-bottom: 4px; }
-.trend-legend-item { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 10px; }
-.trend-swatch { width: 12px; height: 2px; border-radius: 999px; }
-.trend-swatch.trend-total { background: var(--muted); }
-.trend-swatch.trend-warning { background: var(--amber); }
-.trend-swatch.trend-danger { background: var(--red); }
-.health-trend-svg { display: block; width: 100%; height: 170px; overflow: visible; }
+.execution-alert { margin-top: 24px; border: 1px solid color-mix(in srgb, var(--amber) 48%, var(--line)); border-radius: 10px; background: color-mix(in srgb, var(--amber) 7%, var(--panel)); }
+.execution-alert summary { display: flex; justify-content: space-between; gap: 16px; padding: 13px 15px; cursor: pointer; list-style: none; }
+.execution-alert summary::-webkit-details-marker { display: none; }
+.execution-alert-title { display: grid; gap: 4px; }
+.execution-alert-title strong { font-size: 13px; }
+.execution-alert-title span, .execution-alert-toggle, .execution-alert-body { color: var(--muted); font-size: 11px; }
+.execution-alert-body { padding: 0 15px 13px; }
+.exact-trend { margin: 14px 0 16px; }
+.exact-trend-status { font-size: 12px; font-weight: 650; }
+.exact-trend-status.growing { color: var(--amber); }
+.exact-trend-status.draining { color: var(--green); }
+.exact-trend-status.stable, .exact-trend-status.collecting { color: var(--muted); }
+.exact-trend-svg { display: block; width: 100%; height: 150px; margin-top: 6px; overflow: visible; }
 .trend-grid-line { stroke: var(--line-soft); stroke-width: 1; }
 .trend-axis-label { fill: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 10px; }
-.trend-threshold { stroke: var(--red); stroke-width: 1; stroke-dasharray: 4 4; opacity: 0.55; }
-.trend-threshold.warning { stroke: var(--amber); }
-.trend-threshold-label { fill: var(--red); font-size: 9px; font-weight: 650; }
-.trend-threshold-label.warning { fill: var(--amber); }
-.trend-total { fill: none; stroke: var(--muted); stroke-width: 2; vector-effect: non-scaling-stroke; }
-.trend-warning { fill: none; stroke: var(--amber); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
-.trend-danger { fill: none; stroke: var(--red); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
-.trend-total-point { fill: var(--muted); }
-.trend-warning-point { fill: var(--amber); }
-.trend-danger-point { fill: var(--red); }
-.trend-panel-note { min-height: 30px; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.45; }
-.trend-empty { display: grid; place-items: center; height: 150px; color: var(--muted); font-size: 12px; }
+.exact-trend-line { fill: none; stroke: var(--claw); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.exact-trend-point { fill: var(--claw); }
+.trend-empty { display: grid; place-items: center; height: 130px; color: var(--muted); font-size: 12px; }
 .overview-shell { margin: 0; padding: 0; border: 0; background: transparent; }
 .overview-head,
 .automatic-head,
@@ -9197,6 +9190,7 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .exact-lane-head span { color: var(--muted); font-size: 11px; }
 .lane-counts { display: grid; gap: 6px; margin-top: 12px; }
 .lane-count { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; }
+.exact-lane > .lane-count { margin-top: 14px; }
 .lane-count strong { color: var(--text); font-weight: 600; }
 .lane-bar { height: 6px; margin-top: 12px; overflow: hidden; border-radius: 999px; background: var(--track); }
 .lane-bar i { display: block; height: 100%; background: var(--claw); }
@@ -9798,16 +9792,13 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   .work-row { grid-template-columns: 1fr; align-items: start; }
   .work-state, .stage-block, .timebox { justify-content: start; justify-items: start; }
   .worker-toolbar { align-items: stretch; flex-direction: column; }
-  .health-signal-grid { grid-template-columns: 1fr; }
-  .health-trend-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 560px) {
   main { width: min(100vw - 24px, 1280px); padding-top: 18px; }
   .hero { margin-top: 30px; }
   .hero-headline { font-size: 23px; gap: 10px; }
   .hero-dot { width: 10px; height: 10px; }
-  .health-trends-head, .health-signal-head { align-items: flex-start; flex-direction: column; }
-  .health-trend-title { flex-wrap: wrap; }
+  .exact-review-head { align-items: flex-start; flex-direction: column; }
   .grid, .drawer-grid { grid-template-columns: 1fr; }
   .metric, .metric:nth-child(3n + 1) { border-left: 0; border-top: 1px solid var(--line-soft); padding-left: 0; }
   .metric:first-child { border-top: 0; }
@@ -9842,18 +9833,6 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
     <div class="muted" id="subtitle"></div>
   </section>
   <section class="grid" id="metrics"></section>
-  <section class="health-trends" aria-labelledby="health-trends-title">
-    <div class="health-trends-head">
-      <h2 id="health-trends-title">Health Trends</h2>
-      <div class="trend-ranges" id="trend-ranges" aria-label="Health history range">
-        <button class="trend-range active" type="button" data-trend-range="24h">24 hours</button>
-        <button class="trend-range" type="button" data-trend-range="7d">7 days</button>
-      </div>
-    </div>
-    <div class="health-trend-summary" id="health-trend-summary">History starts collecting after deployment.</div>
-    <div class="health-signal-grid" id="health-trend-signals"></div>
-    <div class="health-trend-grid" id="health-trend-grid"></div>
-  </section>
   <section class="overview-shell" aria-labelledby="system-overview-title">
     <div class="overview-head">
       <h2 id="system-overview-title">System Overview</h2>
@@ -9862,7 +9841,15 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
     <div class="flow-map" id="flow-map"></div>
     <h3 class="overview-section-title">Codex Capacity</h3>
     <div class="capacity-rail" id="capacity-rail"></div>
-    <h3 class="overview-section-title">Exact Review</h3>
+    <div id="execution-alert" aria-live="polite"></div>
+    <div class="exact-review-head">
+      <h3 class="overview-section-title">Exact Review</h3>
+      <div class="trend-ranges" id="trend-ranges" aria-label="Exact Review backlog history range">
+        <button class="trend-range active" type="button" data-trend-range="6h">6 hours</button>
+        <button class="trend-range" type="button" data-trend-range="24h">24 hours</button>
+        <button class="trend-range" type="button" data-trend-range="7d">7 days</button>
+      </div>
+    </div>
     <div class="exact-lanes" id="exact-review-lanes" aria-live="polite"></div>
     <h3 class="overview-section-title">Control Plane · GitHub Actions, not Codex</h3>
     <div class="control-plane" id="control-plane" aria-live="polite"></div>
@@ -9991,40 +9978,32 @@ let loading = false;
 let activeWorkerFilter = "all";
 let workerIndex = new Map();
 let automaticIndex = new Map();
-let activeHealthRange = "24h";
+let activeHealthRange = "6h";
 let healthHistoryLoadedAt = 0;
 let healthHistorySamples = [];
 
-function currentHealthSample(health) {
-  if (!health?.checked_at) return null;
-  return {
-    at: health.checked_at,
-    status: health.status,
-    queued: health.queued_runs || 0,
-    queued_over_30m: health.queued_over_threshold || 0,
-    oldest_queued_minutes: health.oldest_queued_minutes || 0,
-    running: health.running_runs || 0,
-    running_over_150m: health.running_over_threshold || 0,
-    oldest_running_minutes: health.oldest_running_minutes || 0,
-    collection_ok: health.telemetry_complete === true,
-  };
+function exactReviewHistory(lane) {
+  return healthHistorySamples.flatMap(sample => {
+    const pending = sample.exact_review?.collection_ok === true
+      ? Number(sample.exact_review?.[lane]?.pending)
+      : NaN;
+    return Number.isFinite(Date.parse(sample.at)) && Number.isFinite(pending)
+      ? [{ at: sample.at, pending: Math.max(0, pending) }]
+      : [];
+  });
 }
 
-function trendGeometry(samples, field, plot, maximum) {
+function trendGeometry(samples, field, plot, maximum, fromAt, toAt) {
   if (!samples.length || maximum <= 0) return [];
-  const firstAt = Date.parse(samples[0].at);
-  const lastAt = Date.parse(samples.at(-1).at);
-  const span = Math.max(1, lastAt - firstAt);
+  const span = Math.max(1, toAt - fromAt);
   let previousAt = null;
   return samples.flatMap(sample => {
     const at = Date.parse(sample.at);
-    if (!sample.collection_ok || !Number.isFinite(at)) {
+    if (!Number.isFinite(at)) {
       previousAt = null;
       return [];
     }
-    const x = samples.length === 1
-      ? plot.left + plot.width / 2
-      : plot.left + ((at - firstAt) / span) * plot.width;
+    const x = plot.left + ((at - fromAt) / span) * plot.width;
     const y = plot.top + plot.height - (Math.max(0, Number(sample[field]) || 0) / maximum) * plot.height;
     const connected = previousAt !== null && at - previousAt <= 12 * 60 * 1000;
     previousAt = at;
@@ -10034,10 +10013,6 @@ function trendGeometry(samples, field, plot, maximum) {
 
 function trendPath(geometry) {
   return geometry.map(point => (point.connected ? "L" : "M") + point.x.toFixed(1) + " " + point.y.toFixed(1)).join(" ");
-}
-
-function trendPoints(geometry, className) {
-  return geometry.map(point => '<circle class="' + esc(className) + '-point" cx="' + point.x.toFixed(1) + '" cy="' + point.y.toFixed(1) + '" r="3"></circle>').join("");
 }
 
 function niceTrendScale(maximum, tickCount) {
@@ -10053,160 +10028,79 @@ function niceTrendScale(maximum, tickCount) {
   };
 }
 
-function formatTrendValue(value, unit) {
-  if (unit !== "minutes") return fmt.format(Math.round(value));
-  if (value >= 1440) return (value / 1440).toFixed(value >= 14400 ? 0 : 1) + "d";
-  if (value >= 120) return (value / 60).toFixed(value >= 600 ? 0 : 1) + "h";
-  return fmt.format(Math.round(value)) + "m";
+function formatTrendValue(value) {
+  return fmt.format(Math.round(value));
 }
 
-function signalCard(label, value, detail, className) {
-  return '<div class="health-signal"><div class="health-signal-head"><span class="health-signal-label">' + esc(label) + '</span><strong class="health-signal-value ' + esc(className) + '">' + esc(value) + '</strong></div><div class="health-signal-detail">' + esc(detail) + '</div></div>';
+function oneHourTrend(samples) {
+  if (!samples.length) return { className: "collecting", label: "Collecting 1h trend" };
+  const latest = samples.at(-1);
+  const cutoff = Date.parse(latest.at) - 60 * 60 * 1000;
+  const baseline = samples.filter(sample => Date.parse(sample.at) <= cutoff).at(-1);
+  if (!baseline || cutoff - Date.parse(baseline.at) > 12 * 60 * 1000) {
+    return { className: "collecting", label: "Collecting 1h trend" };
+  }
+  const delta = latest.pending - baseline.pending;
+  if (delta > 0) return { className: "growing", label: "Growing · +" + fmt.format(delta) + " in the last hour" };
+  if (delta < 0) return { className: "draining", label: "Draining · −" + fmt.format(Math.abs(delta)) + " in the last hour" };
+  return { className: "stable", label: "Stable · no change in the last hour" };
 }
 
-function executionHealthSignal(current) {
-  if (!current || current.telemetry_complete !== true) {
-    return { value: "Unknown", className: "unknown", detail: "Active-run telemetry is incomplete." };
-  }
-  const stalled = Number(current.running_over_threshold) || 0;
-  const oldest = Number(current.oldest_running_minutes) || 0;
-  if (stalled > 0) {
-    return {
-      value: "Stalled",
-      className: "stalled",
-      detail: fmt.format(stalled) + " over 150m · oldest " + formatTrendValue(oldest, "minutes"),
-    };
-  }
-  return {
-    value: "Healthy",
-    className: "ok",
-    detail: fmt.format(Number(current.running_runs) || 0) + " running · none over 150m",
-  };
-}
-
-function queueLoadSignal(samples, current) {
-  if (!current || current.telemetry_complete !== true) {
-    return { value: "Unknown", className: "unknown", detail: "Queue telemetry is incomplete." };
-  }
-  const valid = samples
-    .filter(sample => sample.collection_ok && Number.isFinite(Date.parse(sample.at)))
-    .slice(-7);
-  const queued = Number(current.queued_runs) || 0;
-  const overSlo = Number(current.queued_over_threshold) || 0;
-  if (overSlo === 0) {
-    return queued > 0
-      ? { value: "Busy, within SLO", className: "ok", detail: fmt.format(queued) + " queued · none over 30m" }
-      : { value: "Idle", className: "ok", detail: "No queued workflows." };
-  }
-  if (valid.length < 2) {
-    return { value: "Delayed", className: "attention", detail: fmt.format(overSlo) + " over 30m · collecting trend" };
-  }
-  // Queue size moves with review demand, so direction comes from the over-SLO
-  // backlog while execution health remains an independent signal.
-  const first = Number(valid[0].queued_over_30m) || 0;
-  const latest = Number(valid.at(-1).queued_over_30m) || 0;
-  const delta = latest - first;
-  const meaningful = Math.max(2, Math.ceil(first * 0.05));
-  const windowMinutes = Math.max(
-    5,
-    Math.round((Date.parse(valid.at(-1).at) - Date.parse(valid[0].at)) / 60000),
-  );
-  if (delta <= -meaningful) {
-    return {
-      value: "Recovering",
-      className: "ok",
-      detail: fmt.format(overSlo) + " over 30m · down " + fmt.format(Math.abs(delta)) + " in " + fmt.format(windowMinutes) + "m",
-    };
-  }
-  if (delta >= meaningful) {
-    return {
-      value: "Backlog growing",
-      className: "attention",
-      detail: fmt.format(overSlo) + " over 30m · up " + fmt.format(delta) + " in " + fmt.format(windowMinutes) + "m",
-    };
-  }
-  return {
-    value: "Delayed, stable",
-    className: "attention",
-    detail: fmt.format(overSlo) + " over 30m · broadly flat for " + fmt.format(windowMinutes) + "m",
-  };
-}
-
-function trendPanel(samples, title, detail, series, options) {
+function exactReviewTrend(samples, label) {
   if (!samples.length) {
-    return '<div class="health-trend-panel"><div class="health-trend-title"><strong>' + esc(title) + '</strong><span>' + esc(detail) + '</span></div><div class="trend-empty">Waiting for the first health sample.</div></div>';
+    return '<div class="exact-trend"><div class="exact-trend-status collecting">Collecting 1h trend</div><div class="trend-empty">No backlog history in this range.</div></div>';
   }
-  const config = options || {};
   const width = 600;
-  const height = 170;
-  const plot = { left: 48, top: 10, width: 540, height: 130 };
-  const values = series.flatMap(item => samples.map(sample => Number(sample[item.field]) || 0));
-  const scale = niceTrendScale(Math.max(1, Number(config.threshold) || 0, ...values), 4);
+  const height = 150;
+  const plot = { left: 48, top: 8, width: 540, height: 110 };
+  const rangeMs = activeHealthRange === "7d" ? 7 * 86400000 : activeHealthRange === "24h" ? 86400000 : 6 * 3600000;
+  const latestAt = Date.parse(samples.at(-1).at);
+  const toAt = Math.max(Date.now(), latestAt);
+  const fromAt = toAt - rangeMs;
+  const visible = samples.filter(sample => Date.parse(sample.at) >= fromAt && Date.parse(sample.at) <= toAt);
+  const scale = niceTrendScale(Math.max(1, ...visible.map(sample => sample.pending)), 4);
   const grid = scale.ticks.map(value => {
     const y = plot.top + plot.height - value / scale.maximum * plot.height;
-    return '<line class="trend-grid-line" x1="' + plot.left + '" x2="' + (plot.left + plot.width) + '" y1="' + y.toFixed(1) + '" y2="' + y.toFixed(1) + '"></line><text class="trend-axis-label" x="' + (plot.left - 8) + '" y="' + (y + 3).toFixed(1) + '" text-anchor="end">' + esc(formatTrendValue(value, config.unit)) + '</text>';
+    return '<line class="trend-grid-line" x1="' + plot.left + '" x2="' + (plot.left + plot.width) + '" y1="' + y.toFixed(1) + '" y2="' + y.toFixed(1) + '"></line><text class="trend-axis-label" x="' + (plot.left - 8) + '" y="' + (y + 3).toFixed(1) + '" text-anchor="end">' + esc(formatTrendValue(value)) + '</text>';
   }).join("");
-  const thresholdY = config.threshold
-    ? plot.top + plot.height - config.threshold / scale.maximum * plot.height
-    : null;
-  const thresholdLine = thresholdY !== null
-    ? '<line class="trend-threshold ' + esc(config.thresholdClass || "") + '" x1="' + plot.left + '" x2="' + (plot.left + plot.width) + '" y1="' + thresholdY.toFixed(1) + '" y2="' + thresholdY.toFixed(1) + '"></line><text class="trend-threshold-label ' + esc(config.thresholdClass || "") + '" x="' + (plot.left + 4) + '" y="' + Math.max(plot.top + 9, thresholdY - 4).toFixed(1) + '">' + esc(formatTrendValue(config.threshold, config.unit)) + ' SLO</text>'
-    : "";
-  const geometry = series.map(item => ({
-    item,
-    points: trendGeometry(samples, item.field, plot, scale.maximum),
-  }));
-  const paths = geometry.map(seriesGeometry => '<path class="' + esc(seriesGeometry.item.className) + '" d="' + trendPath(seriesGeometry.points) + '"></path>').join("");
-  const points = geometry.map(seriesGeometry => trendPoints(seriesGeometry.points, seriesGeometry.item.className)).join("");
-  const legend = '<div class="trend-legend">' + series.map(item => '<span class="trend-legend-item"><i class="trend-swatch ' + esc(item.className) + '"></i>' + esc(item.label) + '</span>').join("") + '</div>';
-  const note = '<div class="trend-panel-note">' + esc(config.note || "") + '</div>';
-  return '<div class="health-trend-panel"><div class="health-trend-title"><strong>' + esc(title) + '</strong><span>' + esc(detail) + '</span></div>' + legend + '<svg class="health-trend-svg" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="' + esc(title) + '">' + grid + thresholdLine + paths + points + '</svg>' + note + '</div>';
+  const geometry = trendGeometry(visible, "pending", plot, scale.maximum, fromAt, toAt);
+  const points = geometry.map(point => '<circle class="exact-trend-point" cx="' + point.x.toFixed(1) + '" cy="' + point.y.toFixed(1) + '" r="3"></circle>').join("");
+  const direction = oneHourTrend(visible);
+  const rangeLabel = activeHealthRange === "7d" ? "7d ago" : activeHealthRange + " ago";
+  const axis = '<text class="trend-axis-label" x="' + plot.left + '" y="' + (height - 7) + '">' + rangeLabel + '</text><text class="trend-axis-label" x="' + (plot.left + plot.width) + '" y="' + (height - 7) + '" text-anchor="end">now</text>';
+  return '<div class="exact-trend"><div class="exact-trend-status ' + direction.className + '">' + esc(direction.label) + '</div><svg class="exact-trend-svg" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="' + esc(label + " pending backlog over " + activeHealthRange) + '">' + grid + '<path class="exact-trend-line" d="' + trendPath(geometry) + '"></path>' + points + axis + '</svg></div>';
 }
 
-function renderHealthHistory(current) {
-  const latest = currentHealthSample(current);
-  const samples = healthHistorySamples
-    .filter(sample => !latest || Math.floor(Date.parse(sample.at) / 300000) !== Math.floor(Date.parse(latest.at) / 300000))
-    .concat(latest ? [latest] : [])
-    .sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
-  const summary = document.getElementById("health-trend-summary");
-  if (current) {
-    const status = current.status === "stalled" ? "Stalled" : current.status === "degraded" ? "Degraded" : current.status === "healthy" ? "Healthy" : "Telemetry incomplete";
-    summary.textContent = status + " · " + fmt.format(current.queued_over_threshold || 0) + " queued over 30m · " + fmt.format(current.running_over_threshold || 0) + " running over 150m · " + fmt.format(samples.length) + " samples";
+function renderExecutionAlert(current) {
+  const target = document.getElementById("execution-alert");
+  if (!target) return;
+  const incomplete = !current || current.telemetry_complete !== true;
+  const queued = Number(current?.queued_over_threshold) || 0;
+  const running = Number(current?.running_over_threshold) || 0;
+  if (!incomplete && queued === 0 && running === 0) {
+    target.innerHTML = "";
+    return;
   }
-  const execution = executionHealthSignal(current);
-  const queue = queueLoadSignal(samples, current);
-  document.getElementById("health-trend-signals").innerHTML =
-    signalCard("Execution health", execution.value, execution.detail, execution.className) +
-    signalCard("Queue load", queue.value, queue.detail, queue.className);
-  document.getElementById("health-trend-grid").innerHTML =
-    trendPanel(samples, "Queue pressure", "workflows", [
-      { field: "queued", className: "trend-total", label: "Total queued" },
-      { field: "queued_over_30m", className: "trend-warning", label: "Over 30m" },
-    ], {
-      unit: "count",
-      note: "Demand affects total depth; use the over-30m direction for queue health.",
-    }) +
-    trendPanel(samples, "Oldest queued", "diagnostic outlier", [
-      { field: "oldest_queued_minutes", className: "trend-warning", label: "Oldest age" },
-    ], {
-      threshold: 30,
-      thresholdClass: "warning",
-      unit: "minutes",
-      note: "A single stale GitHub queued record can dominate this chart.",
-    }) +
-    trendPanel(samples, "Oldest running", "execution SLO", [
-      { field: "oldest_running_minutes", className: "trend-danger", label: "Oldest age" },
-    ], {
-      threshold: 150,
-      unit: "minutes",
-      note: "Crossing 150m marks execution health as stalled.",
-    });
+  const parts = [];
+  if (queued) parts.push(fmt.format(queued) + " workflow" + (queued === 1 ? "" : "s") + " waiting for a runner over 30m");
+  if (running) parts.push(fmt.format(running) + " execution" + (running === 1 ? "" : "s") + " over 150m");
+  if (incomplete) parts.push("work execution telemetry is incomplete");
+  const details = "Total GitHub queued " + fmt.format(Number(current?.queued_runs) || 0) + " · oldest queued " + formatAgeMinutes(current?.oldest_queued_minutes) + " · oldest running " + formatAgeMinutes(current?.oldest_running_minutes);
+  target.innerHTML = '<details class="execution-alert"><summary><span class="execution-alert-title"><strong>⚠ Work execution needs attention</strong><span>' + esc(parts.join(" · ")) + '</span></span><span class="execution-alert-toggle">Details ▾</span></summary><div class="execution-alert-body">' + esc(details) + '</div></details>';
 }
 
-async function loadHealthHistory(range, current, force) {
+function formatAgeMinutes(value) {
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes)) return "unknown";
+  if (minutes < 90) return fmt.format(Math.round(minutes)) + "m";
+  const hours = Math.floor(minutes / 60);
+  const remainder = Math.round(minutes % 60);
+  return fmt.format(hours) + "h" + (remainder ? " " + fmt.format(remainder) + "m" : "");
+}
+
+async function loadHealthHistory(range, force) {
   if (!force && range === activeHealthRange && Date.now() - healthHistoryLoadedAt < 60000) {
-    renderHealthHistory(current);
+    renderExactReviewLanes(lastData?.exact_review_queue);
     return;
   }
   activeHealthRange = range;
@@ -10222,7 +10116,7 @@ async function loadHealthHistory(range, current, force) {
     if (requestedRange !== activeHealthRange) return;
     healthHistorySamples = [];
   }
-  renderHealthHistory(current);
+  renderExactReviewLanes(lastData?.exact_review_queue);
 }
 
 function workerGroup(worker) {
@@ -10299,11 +10193,14 @@ function renderExactReviewLanes(queue) {
   const target = document.getElementById("exact-review-lanes");
   if (!target) return;
   const lanes = queue?.lanes;
-  if (!lanes?.review || !lanes?.publication) {
-    target.innerHTML = '<div class="empty">Exact-review lane telemetry unavailable.</div>';
-    return;
-  }
-  target.innerHTML = [["Review admission", lanes.review], ["Result publication", lanes.publication]].map(([label, lane]) => {
+  target.innerHTML = [["Review admission", "review", lanes?.review], ["Result publication", "publication", lanes?.publication]].map(([label, laneKey, lane]) => {
+    const samples = exactReviewHistory(laneKey);
+    if (!lane) {
+      const sampledAt = samples.at(-1)?.at;
+      return '<div class="exact-lane"><div class="exact-lane-head"><strong>' + esc(label) + '</strong><span>Live snapshot unavailable</span></div>' +
+        exactReviewTrend(samples, label) +
+        '<div class="lane-foot">' + (sampledAt ? "Last sampled " + esc(since(sampledAt)) : "History starts with the next five-minute sample") + '</div></div>';
+    }
     const capacity = Math.max(0, lane.capacity || 0);
     const active = Math.max(0, lane.active || 0);
     const used = capacity ? Math.min(100, (active / capacity) * 100) : 0;
@@ -10311,8 +10208,9 @@ function renderExactReviewLanes(queue) {
       ? " · oldest " + elapsed(lane.oldest_pending_age_seconds * 1000)
       : "";
     return '<div class="exact-lane"><div class="exact-lane-head"><strong>' + esc(label) + '</strong><span>' + fmt.format(active) + ' of ' + fmt.format(capacity) + ' active</span></div>' +
-      '<div class="lane-counts">' +
       '<div class="lane-count"><span>Pending</span><strong>' + fmt.format(lane.pending || 0) + '</strong></div>' +
+      exactReviewTrend(samples, label) +
+      '<div class="lane-counts">' +
       '<div class="lane-count"><span>Ready</span><strong>' + fmt.format(lane.ready || 0) + '</strong></div>' +
       '<div class="lane-count"><span>Backoff</span><strong>' + fmt.format(lane.backoff || 0) + '</strong></div>' +
       '<div class="lane-count"><span>Dispatching</span><strong>' + fmt.format(lane.dispatching || 0) + '</strong></div>' +
@@ -10534,7 +10432,7 @@ async function load() {
         ? "Updated with partial GitHub telemetry."
         : "",
   );
-  loadHealthHistory(activeHealthRange, data.operational_health, false).catch(() => undefined);
+  loadHealthHistory(activeHealthRange, false).catch(() => undefined);
   } catch (error) {
     if (lastData) {
       renderDashboard(lastData, "Live refresh failed; showing last good status.");
@@ -10568,16 +10466,13 @@ function renderDashboard(data, note) {
   document.getElementById("subtitle").textContent = data.source.target_repositories.join(", ");
   document.getElementById("updated").textContent = "Updated " + since(data.generated_at) + (note ? " \u00b7 " + note : "");
   const fleet = data.fleet;
-  const operational = data.operational_health || {};
   document.getElementById("metrics").innerHTML = [
     metric("Codex Workers", fmt.format(fleet.active_codex_jobs), "Codex budget " + fleet.worker_budget, fleet.budget_used_percent, "var(--green)"),
-    metric("Active Sweeps", fmt.format(fleet.active_workflow_runs), fmt.format(operational.running_over_threshold || 0) + " over 150m", Math.min(100, fleet.active_workflow_runs * 3), operational.running_over_threshold ? "var(--red)" : "var(--claw)"),
-    metric("Queue Depth", fmt.format(fleet.queued_workflow_runs), fmt.format(operational.queued_over_threshold || 0) + " over 30m", Math.min(100, fleet.queued_workflow_runs * 10), operational.queued_over_threshold ? "var(--amber)" : "var(--green)"),
     metric("Error Rate", (data.health?.error_rate_percent || 0) + "%", fmt.format(data.health?.failed_attempts || 0) + " failed / " + fmt.format(data.health?.attempts || 0) + " attempts", Math.min(100, data.health?.error_rate_percent || 0), data.health?.failed_attempts ? "var(--red)" : "var(--green)"),
     metric("Recovery Rate", data.health?.recovery_rate_percent == null ? "n/a" : data.health.recovery_rate_percent + "%", fmt.format(data.health?.unresolved_failures || 0) + " unresolved", data.health?.recovery_rate_percent == null ? 100 : data.health.recovery_rate_percent, data.health?.unresolved_failures ? "var(--amber)" : "var(--green)"),
     metric("Codex Capacity", fleet.budget_used_percent + "%", "Codex slot utilization", fleet.budget_used_percent, "var(--green)")
   ].join("");
-  renderHealthHistory(data.operational_health);
+  renderExecutionAlert(data.operational_health);
   renderSystemMap(data);
   renderExactReviewLanes(data.exact_review_queue);
   renderControlPlane(data.control_plane, fleet.worker_budget);
@@ -11004,7 +10899,7 @@ document.getElementById("trend-ranges").addEventListener("click", event => {
   const button = event.target.closest("button[data-trend-range]");
   if (!button) return;
   document.querySelectorAll("button[data-trend-range]").forEach(item => item.classList.toggle("active", item === button));
-  loadHealthHistory(button.dataset.trendRange || "24h", lastData?.operational_health, true).catch(() => undefined);
+  loadHealthHistory(button.dataset.trendRange || "6h", true).catch(() => undefined);
 });
 document.getElementById("workers").addEventListener("click", event => {
   const button = event.target.closest("button[data-worker-id]");

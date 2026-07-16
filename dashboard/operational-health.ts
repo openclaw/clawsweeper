@@ -35,6 +35,13 @@ export type HealthHistorySample = {
   running_over_150m: number;
   oldest_running_minutes: number;
   collection_ok: boolean;
+  exact_review?: ExactReviewHistorySample;
+};
+
+export type ExactReviewHistorySample = {
+  collection_ok: boolean;
+  review?: { pending: number };
+  publication?: { pending: number };
 };
 
 export function summarizeOperationalHealth(
@@ -119,6 +126,7 @@ export function normalizeHealthHistorySample(value: unknown): HealthHistorySampl
     countFields.map((field) => [field, nonNegativeInteger(sample[field])]),
   ) as Record<(typeof countFields)[number], number | null>;
   if (Object.values(counts).some((count) => count === null)) return null;
+  const exactReview = normalizeExactReviewHistorySample(sample.exact_review);
   return {
     at,
     status: rawStatus as HealthHistorySample["status"],
@@ -129,6 +137,35 @@ export function normalizeHealthHistorySample(value: unknown): HealthHistorySampl
     running_over_150m: counts.running_over_150m!,
     oldest_running_minutes: counts.oldest_running_minutes!,
     collection_ok: sample.collection_ok,
+    ...(exactReview ? { exact_review: exactReview } : {}),
+  };
+}
+
+export function exactReviewHistorySample(value: unknown): ExactReviewHistorySample {
+  const lanes = objectValue(objectValue(value).lanes);
+  const reviewPending = nonNegativeInteger(objectValue(lanes.review).pending);
+  const publicationPending = nonNegativeInteger(objectValue(lanes.publication).pending);
+  if (reviewPending === null || publicationPending === null) return { collection_ok: false };
+  return {
+    collection_ok: true,
+    review: { pending: reviewPending },
+    publication: { pending: publicationPending },
+  };
+}
+
+function normalizeExactReviewHistorySample(value: unknown): ExactReviewHistorySample | null {
+  if (value === undefined) return null;
+  if (!value || typeof value !== "object") return null;
+  const sample = value as Record<string, unknown>;
+  if (typeof sample.collection_ok !== "boolean") return null;
+  if (!sample.collection_ok) return { collection_ok: false };
+  const reviewPending = nonNegativeInteger(objectValue(sample.review).pending);
+  const publicationPending = nonNegativeInteger(objectValue(sample.publication).pending);
+  if (reviewPending === null || publicationPending === null) return null;
+  return {
+    collection_ok: true,
+    review: { pending: reviewPending },
+    publication: { pending: publicationPending },
   };
 }
 
@@ -165,6 +202,10 @@ function ageMs(value: string | undefined, now: number) {
 function nonNegativeInteger(value: unknown) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(0, Math.round(number)) : null;
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
 function oldestMinutes(ages: number[]) {

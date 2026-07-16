@@ -1436,6 +1436,11 @@ test("dashboard health history persists five-minute samples and serves a bounded
     running_over_150m: 0,
     oldest_running_minutes: 40,
     collection_ok: true,
+    exact_review: {
+      collection_ok: true,
+      review: { pending: 317 },
+      publication: { pending: 1502 },
+    },
   };
 
   for (const queued of [12, 14]) {
@@ -1448,16 +1453,40 @@ test("dashboard health history persists five-minute samples and serves a bounded
     assert.equal(response.status, 200);
   }
 
-  const response = await worker.fetch(
-    new Request("https://clawsweeper.openclaw.ai/api/health-history?range=24h"),
+  await store.fetch(
+    new Request("https://clawsweeper-status-store/health-history", {
+      method: "POST",
+      body: JSON.stringify({
+        sample: { ...sample, at: new Date(Date.now() - 8 * 60 * 60_000).toISOString(), queued: 3 },
+      }),
+    }),
+  );
+
+  const sixHourResponse = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/health-history?range=6h"),
     { STATUS_STORE: namespace },
   );
-  const history = await response.json();
-  assert.equal(response.status, 200);
-  assert.equal(history.range, "24h");
-  assert.equal(history.retention_days, 7);
-  assert.equal(history.samples.length, 1);
-  assert.equal(history.samples[0].queued, 14);
+  const sixHourHistory = await sixHourResponse.json();
+  assert.equal(sixHourResponse.status, 200);
+  assert.equal(sixHourHistory.range, "6h");
+  assert.equal(sixHourHistory.retention_days, 7);
+  assert.equal(sixHourHistory.samples.length, 1);
+  assert.equal(sixHourHistory.samples[0].queued, 14);
+  assert.equal(sixHourHistory.samples[0].exact_review.review.pending, 317);
+
+  for (const [query, expectedRange] of [
+    ["24h", "24h"],
+    ["7d", "7d"],
+    ["invalid", "24h"],
+  ]) {
+    const response = await worker.fetch(
+      new Request(`https://clawsweeper.openclaw.ai/api/health-history?range=${query}`),
+      { STATUS_STORE: namespace },
+    );
+    const history = await response.json();
+    assert.equal(history.range, expectedRange);
+    assert.equal(history.samples.length, 2);
+  }
 });
 
 test("dashboard cron records health with status-only GitHub queries", async () => {
@@ -1466,6 +1495,19 @@ test("dashboard cron records health with status-only GitHub queries", async () =
   const store = new StatusStore({ storage });
   const namespace = new MemoryDurableNamespace(store);
   const requests: string[] = [];
+  let queueReads = 0;
+  const exactReviewQueue = {
+    idFromName: () => "global",
+    get: () => ({
+      fetch: async () => {
+        queueReads += 1;
+        return jsonResponse({
+          handoff_health: { status: "healthy" },
+          lanes: { review: { pending: 17 }, publication: { pending: 29 } },
+        });
+      },
+    }),
+  };
   globalThis.fetch = async (input) => {
     const url = new URL(String(input));
     requests.push(url.toString());
@@ -1490,12 +1532,14 @@ test("dashboard cron records health with status-only GitHub queries", async () =
       {},
       {
         CLAWSWEEPER_REPO: "openclaw/clawsweeper",
+        EXACT_REVIEW_QUEUE: exactReviewQueue,
         STATUS_STORE: namespace,
       },
       { waitUntil: (promise) => (recording = promise) },
     );
     await recording;
     assert.equal(requests.length, 5);
+    assert.equal(queueReads, 1);
     assert.ok(requests.every((url) => !url.includes("/jobs")));
 
     const response = await worker.fetch(
@@ -1507,6 +1551,32 @@ test("dashboard cron records health with status-only GitHub queries", async () =
     assert.equal(history.samples[0].status, "unknown");
     assert.equal(history.samples[0].queued, 100);
     assert.equal(history.samples[0].queued_over_30m, 1);
+    assert.equal(history.samples[0].exact_review.collection_ok, true);
+    assert.equal(history.samples[0].exact_review.review.pending, 17);
+    assert.equal(history.samples[0].exact_review.publication.pending, 29);
+
+    let failureRecording: Promise<unknown> | undefined;
+    await worker.scheduled(
+      {},
+      {
+        CLAWSWEEPER_REPO: "openclaw/clawsweeper",
+        EXACT_REVIEW_QUEUE: {
+          idFromName: () => "global",
+          get: () => ({ fetch: async () => Promise.reject(new Error("queue unavailable")) }),
+        },
+        STATUS_STORE: namespace,
+      },
+      { waitUntil: (promise) => (failureRecording = promise) },
+    );
+    await failureRecording;
+    const afterFailure = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/health-history?range=6h"),
+      { STATUS_STORE: namespace },
+    );
+    const failedQueueHistory = await afterFailure.json();
+    assert.equal(failedQueueHistory.samples.length, 1);
+    assert.equal(failedQueueHistory.samples[0].queued, 100);
+    assert.deepEqual(failedQueueHistory.samples[0].exact_review, { collection_ok: false });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -4723,13 +4793,14 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /<title>🦞 ClawSweeper Live<\/title>/);
   assert.match(html, /content: "🦞"/);
   assert.match(html, /Codex Workers/);
-  assert.match(html, /Active Sweeps/);
-  assert.match(html, /Queue Depth/);
-  assert.match(html, /Health Trends/);
-  assert.match(html, /id="health-trend-grid"/);
+  assert.doesNotMatch(html, /Active Sweeps/);
+  assert.doesNotMatch(html, /Queue Depth/);
+  assert.doesNotMatch(html, /Health Trends/);
+  assert.doesNotMatch(html, /id="health-trend-grid"/);
   assert.match(html, /\/api\/health-history\?range=/);
-  assert.match(html, /queued over 30m/);
-  assert.match(html, /running over 150m/);
+  assert.match(html, /Work execution needs attention/);
+  assert.match(html, /data-trend-range="6h"/);
+  assert.match(html, /<details class="execution-alert">/);
   assert.match(html, /Error Rate/);
   assert.match(html, /Recovery Rate/);
   assert.match(html, /Capacity/);
@@ -4973,6 +5044,7 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(elementFor("exact-review-lanes").innerHTML, /52 review admission slots open/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /Result publication/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /3 result publication slots open/);
+  assert.match(elementFor("exact-review-lanes").innerHTML, /No backlog history in this range/);
   assert.match(elementFor("control-plane").innerHTML, /2 running · 1 waiting/);
   assert.match(elementFor("control-plane").innerHTML, /GitHub runners but not the 128-slot/);
 
@@ -5000,6 +5072,32 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(elementFor("hero-headline").textContent, /^Needs attention/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /telemetry unavailable/);
 
+  const healthyOperational = {
+    status: "healthy",
+    telemetry_complete: true,
+    queued_runs: 0,
+    queued_over_threshold: 0,
+    oldest_queued_minutes: 0,
+    running_runs: 0,
+    running_over_threshold: 0,
+    oldest_running_minutes: 0,
+  };
+  context.renderExecutionAlert(healthyOperational);
+  assert.equal(elementFor("execution-alert").innerHTML, "");
+  context.renderExecutionAlert({ ...healthyOperational, queued_runs: 2, queued_over_threshold: 2 });
+  assert.match(
+    elementFor("execution-alert").innerHTML,
+    /2 workflows waiting for a runner over 30m/,
+  );
+  context.renderExecutionAlert({
+    ...healthyOperational,
+    running_runs: 1,
+    running_over_threshold: 1,
+  });
+  assert.match(elementFor("execution-alert").innerHTML, /1 execution over 150m/);
+  context.renderExecutionAlert({ ...healthyOperational, telemetry_complete: false });
+  assert.match(elementFor("execution-alert").innerHTML, /telemetry is incomplete/);
+
   status.diagnostics.exact_review_queue_error = null;
   status.exact_review_queue = { handoff_health: { status: "healthy", phases: {} } };
   status.operational_health = {
@@ -5016,32 +5114,30 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   context.renderDashboard(status, "");
 
   assert.equal(elementFor("hero-dot").className, "hero-dot red");
-  assert.match(elementFor("metrics").innerHTML, /4 over 30m/);
-  assert.match(elementFor("metrics").innerHTML, /1 over 150m/);
-  assert.match(elementFor("health-trend-summary").textContent, /Stalled/);
-  assert.match(elementFor("health-trend-signals").innerHTML, /Execution health/);
-  assert.match(elementFor("health-trend-signals").innerHTML, /Queue load/);
-  assert.match(elementFor("health-trend-signals").innerHTML, /Stalled/);
-  assert.match(elementFor("health-trend-signals").innerHTML, /Delayed/);
-  assert.match(elementFor("health-trend-grid").innerHTML, /<circle class="trend-danger-point"/);
-  assert.match(elementFor("health-trend-grid").innerHTML, /class="trend-axis-label"/);
-  assert.match(elementFor("health-trend-grid").innerHTML, />100m<\/text>/);
-  assert.match(elementFor("health-trend-grid").innerHTML, />2\.5h SLO<\/text>/);
-  assert.match(elementFor("health-trend-grid").innerHTML, /diagnostic outlier/);
+  assert.doesNotMatch(elementFor("metrics").innerHTML, /over 30m|over 150m/);
+  assert.match(
+    elementFor("execution-alert").innerHTML,
+    /4 workflows waiting for a runner over 30m/,
+  );
+  assert.match(elementFor("execution-alert").innerHTML, /1 execution over 150m/);
+  assert.match(elementFor("execution-alert").innerHTML, /Total GitHub queued 10/);
+  assert.match(elementFor("execution-alert").innerHTML, /oldest running 3h/);
 
   const scale = context.niceTrendScale(95, 4);
   assert.equal(scale.maximum, 100);
   assert.deepEqual([...scale.ticks], [0, 25, 50, 75, 100]);
-  const recovering = context.queueLoadSignal(
-    [
-      { at: "2026-07-05T11:00:00Z", collection_ok: true, queued_over_30m: 20 },
-      { at: "2026-07-05T11:30:00Z", collection_ok: true, queued_over_30m: 12 },
-    ],
-    { ...status.operational_health, queued_over_threshold: 12 },
-  );
-  assert.equal(recovering.value, "Recovering");
 
   let resolve24HourHistory: ((response: unknown) => void) | undefined;
+  const now = Date.now();
+  const samples = Array.from({ length: 13 }, (_, index) => ({
+    at: new Date(now - (12 - index) * 5 * 60_000).toISOString(),
+    collection_ok: true,
+    exact_review: {
+      collection_ok: true,
+      review: { pending: 100 + index },
+      publication: { pending: 200 - index },
+    },
+  }));
   context.fetch = async (input: string) => {
     if (input.includes("range=24h")) {
       return new Promise((resolve) => {
@@ -5050,15 +5146,54 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
     }
     return {
       ok: true,
-      json: async () => ({ samples: [{ collection_ok: true }, { collection_ok: true }] }),
+      json: async () => ({ samples }),
     };
   };
-  const stale24HourRequest = context.loadHealthHistory("24h", status.operational_health, true);
-  const active7DayRequest = context.loadHealthHistory("7d", status.operational_health, true);
+  const stale24HourRequest = context.loadHealthHistory("24h", true);
+  const active7DayRequest = context.loadHealthHistory("7d", true);
   await active7DayRequest;
   resolve24HourHistory?.({ ok: true, json: async () => ({ samples: [] }) });
   await stale24HourRequest;
-  assert.match(elementFor("health-trend-summary").textContent, /3 samples/);
+  const laneHtml = elementFor("exact-review-lanes").innerHTML;
+  assert.match(laneHtml, /Growing · \+12 in the last hour/);
+  assert.match(laneHtml, /Draining · −12 in the last hour/);
+  assert.match(laneHtml, /role="img" aria-label="Review admission pending backlog over 7d"/);
+  assert.match(laneHtml, /Live snapshot unavailable/);
+  assert.match(laneHtml, /Last sampled/);
+
+  const smallAxis = context.exactReviewTrend(
+    [{ at: new Date(now).toISOString(), pending: 8 }],
+    "Small lane",
+  );
+  const largeAxis = context.exactReviewTrend(
+    [{ at: new Date(now).toISOString(), pending: 1500 }],
+    "Large lane",
+  );
+  assert.match(smallAxis, />8<\/text>/);
+  assert.match(largeAxis, />2,000<\/text>/);
+
+  assert.equal(
+    context.oneHourTrend(samples.slice(0, 1).map((sample) => ({ at: sample.at, pending: 4 })))
+      .label,
+    "Collecting 1h trend",
+  );
+  assert.equal(
+    context.oneHourTrend(samples.map((sample) => ({ at: sample.at, pending: 9 }))).label,
+    "Stable · no change in the last hour",
+  );
+  const broken = context.trendGeometry(
+    [
+      { at: new Date(now - 30 * 60_000).toISOString(), pending: 1 },
+      { at: new Date(now - 10 * 60_000).toISOString(), pending: 2 },
+    ],
+    "pending",
+    { left: 0, top: 0, width: 100, height: 100 },
+    2,
+    now - 60 * 60_000,
+    now,
+  );
+  assert.equal(broken[1].connected, false);
+  assert.match(context.trendPath(broken), /^M.* M/);
 });
 
 test("dashboard HTML emits early persistent theme controls", async () => {
