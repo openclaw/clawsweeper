@@ -1,6 +1,7 @@
 export type ExactReviewPhase = "pending" | "dispatching" | "leased";
 
 export type ExactReviewHealthItem = {
+  key?: string;
   state: ExactReviewPhase;
   createdAt: number;
   updatedAt: number;
@@ -17,6 +18,7 @@ export type ExactReviewPhaseSummary = {
   count: number;
   oldest_at: string | null;
   oldest_age_seconds: number | null;
+  oldest_key: string | null;
 };
 
 export type ExactReviewHandoffHealth = {
@@ -69,10 +71,13 @@ export function summarizeExactReviewHandoff({
     5 * 60_000,
     Math.max(warningMs + 1_000, Math.floor((safeLeaseMs * 2) / 3)),
   );
-  const phaseValues: Record<ExactReviewPhase, { count: number; oldestAt: number | null }> = {
-    pending: { count: 0, oldestAt: null },
-    dispatching: { count: 0, oldestAt: null },
-    leased: { count: 0, oldestAt: null },
+  const phaseValues: Record<
+    ExactReviewPhase,
+    { count: number; oldestAt: number | null; oldestKey: string | null }
+  > = {
+    pending: { count: 0, oldestAt: null, oldestKey: null },
+    dispatching: { count: 0, oldestAt: null, oldestKey: null },
+    leased: { count: 0, oldestAt: null, oldestKey: null },
   };
 
   for (const item of items) {
@@ -80,12 +85,22 @@ export function summarizeExactReviewHandoff({
     const phase = phaseValues[item.state];
     if (!phase) continue;
     phase.count += 1;
-    phase.oldestAt = phase.oldestAt === null ? startedAt : Math.min(phase.oldestAt, startedAt);
+    const key = item.key?.trim() || null;
+    if (
+      phase.oldestAt === null ||
+      startedAt < phase.oldestAt ||
+      (startedAt === phase.oldestAt &&
+        key !== null &&
+        (phase.oldestKey === null || key < phase.oldestKey))
+    ) {
+      phase.oldestAt = startedAt;
+      phase.oldestKey = key;
+    }
   }
 
   const phases = Object.fromEntries(
     PHASES.map((phase) => {
-      const { count, oldestAt } = phaseValues[phase];
+      const { count, oldestAt, oldestKey } = phaseValues[phase];
       return [
         phase,
         {
@@ -93,6 +108,7 @@ export function summarizeExactReviewHandoff({
           oldest_at: oldestAt === null ? null : new Date(oldestAt).toISOString(),
           oldest_age_seconds:
             oldestAt === null ? null : Math.max(0, Math.floor((safeNow - oldestAt) / 1_000)),
+          oldest_key: oldestKey,
         },
       ];
     }),

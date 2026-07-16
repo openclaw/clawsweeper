@@ -76,6 +76,8 @@
         "unconfirmed_product_direction",
         "unsponsored_feature_request",
         "author_pr_budget_exceeded",
+        "stale_version_bug",
+        "obsolete_fix_pr",
         "not_actionable_in_repo",
         "incoherent",
         "stale_insufficient_info",

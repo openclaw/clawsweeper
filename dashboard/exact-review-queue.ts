@@ -2326,6 +2326,7 @@ function exactReviewQueueStats(
     leased: handoffHealth.phases.leased.count,
     oldest_pending_at: handoffHealth.phases.pending.oldest_at,
     oldest_pending_age_seconds: handoffHealth.phases.pending.oldest_age_seconds,
+    oldest_pending_key: handoffHealth.phases.pending.oldest_key,
     oldest_dispatching_at: handoffHealth.phases.dispatching.oldest_at,
     oldest_dispatching_age_seconds: handoffHealth.phases.dispatching.oldest_age_seconds,
     oldest_leased_at: handoffHealth.phases.leased.oldest_at,
@@ -2360,6 +2361,11 @@ function exactReviewQueueLaneStats(
     (oldest, item) => (oldest === null ? item.createdAt : Math.min(oldest, item.createdAt)),
     null,
   );
+  const oldestPendingKey = pendingItems
+    .slice()
+    .sort(
+      (left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key),
+    )[0]?.key;
   const nextAttemptAt = pendingItems.reduce<number | null>(
     (next, item) => (next === null ? item.nextAttemptAt : Math.min(next, item.nextAttemptAt)),
     null,
@@ -2378,6 +2384,7 @@ function exactReviewQueueLaneStats(
     oldest_pending_at: oldestPendingAt === null ? null : new Date(oldestPendingAt).toISOString(),
     oldest_pending_age_seconds:
       oldestPendingAt === null ? null : Math.max(0, Math.floor((now - oldestPendingAt) / 1_000)),
+    oldest_pending_key: oldestPendingKey ?? null,
     next_attempt_at: nextAttemptAt === null ? null : new Date(nextAttemptAt).toISOString(),
   };
 }

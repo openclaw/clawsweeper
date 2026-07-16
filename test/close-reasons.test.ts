@@ -13,6 +13,8 @@ import {
   compactReferencingMergedPullRequestForTest,
   formatRecentClosedRows,
   issueRecentHumanCommentBlockReasonFromComments,
+  obsoleteFixPrAgeSkipReason,
+  obsoleteFixPrCloseEnabled,
   openClosingPullRequestApplyReason,
   referencingMergedPullRequestCandidatesForTest,
   referencingMergedPullRequestsForIssueForTest,
@@ -21,6 +23,9 @@ import {
   sanitizePublicSelfReferences,
   stalledUnprovenPrAgeSkipReason,
   stalledUnprovenProofRequestBlockReason,
+  staleVersionBugAgeSkipReason,
+  staleVersionBugCloseEnabled,
+  staleVersionBugDecisionBlockReason,
   unconfirmedProductDirectionAgeSkipReason,
   unconfirmedProductDirectionCloseEnabled,
   unsponsoredFeatureAgeSkipReason,
@@ -405,6 +410,78 @@ test("author_pr_budget_exceeded is PR-only and protects high-quality proven work
   assert.deepEqual(
     closeReasonsArg("author_pr_budget_exceeded"),
     new Set(["author_pr_budget_exceeded"]),
+  );
+});
+
+test("stale_version_bug is issue-only, bug-only, and security-safe", () => {
+  const decision = closeDecision({ closeReason: "stale_version_bug", itemCategory: "bug" });
+  assert.deepEqual(validateCloseDecision(item(), decision), { ok: true });
+  assert.match(
+    staleVersionBugDecisionBlockReason(item({ kind: "pull_request" }), decision) ?? "",
+    /allowed only for issues/,
+  );
+  assert.match(
+    staleVersionBugDecisionBlockReason(item(), { ...decision, itemCategory: "feature" }) ?? "",
+    /requires bug item category/,
+  );
+  assert.match(
+    staleVersionBugDecisionBlockReason(item({ labels: ["topic:security-review"] }), decision) ?? "",
+    /blocks stale-version bug auto-close/,
+  );
+  assert.deepEqual(closeReasonsArg("stale_version_bug"), new Set(["stale_version_bug"]));
+});
+
+test("obsolete_fix_pr is PR-only even for high-quality proven work", () => {
+  const decision = closeDecision({
+    closeReason: "obsolete_fix_pr",
+    realBehaviorProof: {
+      status: "sufficient",
+      summary: "The original fix was proven before main replaced the code.",
+      evidenceKind: "terminal",
+      needsContributorAction: false,
+    },
+    prRating: {
+      proofTier: "A",
+      patchTier: "A",
+      overallTier: "A",
+      summary: "High-quality work whose target code is gone.",
+      nextSteps: [],
+    },
+  });
+  assert.deepEqual(validateCloseDecision(item({ kind: "pull_request" }), decision), { ok: true });
+  assert.match(
+    validateCloseDecision(item({ kind: "issue" }), decision).reason ?? "",
+    /not allowed for openclaw\/openclaw issue apply policy/,
+  );
+  assert.match(
+    validateCloseDecision(item({ kind: "pull_request", authorAssociation: "MEMBER" }), decision)
+      .reason ?? "",
+    /maintainer-authored/,
+  );
+  assert.deepEqual(closeReasonsArg("obsolete_fix_pr"), new Set(["obsolete_fix_pr"]));
+});
+
+test("obsolescence apply policies are default-off and age-gated", () => {
+  assert.equal(staleVersionBugCloseEnabled({}), false);
+  assert.equal(
+    staleVersionBugCloseEnabled({ CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED: "true" }),
+    true,
+  );
+  assert.equal(obsoleteFixPrCloseEnabled({}), false);
+  assert.equal(
+    obsoleteFixPrCloseEnabled({ CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED: "true" }),
+    true,
+  );
+  const now = Date.parse("2026-07-16T00:00:00Z");
+  assert.equal(staleVersionBugAgeSkipReason({ createdAt: "2026-01-01T00:00:00Z" }, now), null);
+  assert.equal(
+    staleVersionBugAgeSkipReason({ createdAt: "2026-05-01T00:00:00Z" }, now),
+    "stale_version_bug requires issue older than 120 days",
+  );
+  assert.equal(obsoleteFixPrAgeSkipReason({ createdAt: "2026-01-01T00:00:00Z" }, now), null);
+  assert.equal(
+    obsoleteFixPrAgeSkipReason({ createdAt: "2026-06-01T00:00:00Z" }, now),
+    "obsolete_fix_pr requires PR older than 90 days",
   );
 });
 

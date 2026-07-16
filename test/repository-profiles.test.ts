@@ -18,6 +18,14 @@ test("OpenClaw allows author budget closes for pull requests only", () => {
   assert.equal(profile.applyCloseRules.pull_request?.includes("author_pr_budget_exceeded"), true);
 });
 
+test("OpenClaw routes obsolescence reasons to their item kinds", () => {
+  const profile = repositoryProfileFor("openclaw/openclaw");
+  assert.equal(profile.applyCloseRules.issue?.includes("stale_version_bug"), true);
+  assert.equal(profile.applyCloseRules.pull_request?.includes("stale_version_bug"), false);
+  assert.equal(profile.applyCloseRules.issue?.includes("obsolete_fix_pr"), false);
+  assert.equal(profile.applyCloseRules.pull_request?.includes("obsolete_fix_pr"), true);
+});
+
 test("repositoryProfileFor matches mixed-case input against canonical profiles", () => {
   const profile = repositoryProfileFor("OpenClaw/ClawHub");
 

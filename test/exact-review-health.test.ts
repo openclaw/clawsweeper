@@ -26,9 +26,9 @@ test("exact-review handoff health reports an empty queue as idle", () => {
   assert.equal(health.active, 0);
   assert.equal(health.available_slots, 28);
   assert.deepEqual(health.phases, {
-    pending: { count: 0, oldest_at: null, oldest_age_seconds: null },
-    dispatching: { count: 0, oldest_at: null, oldest_age_seconds: null },
-    leased: { count: 0, oldest_at: null, oldest_age_seconds: null },
+    pending: { count: 0, oldest_at: null, oldest_age_seconds: null, oldest_key: null },
+    dispatching: { count: 0, oldest_at: null, oldest_age_seconds: null, oldest_key: null },
+    leased: { count: 0, oldest_at: null, oldest_age_seconds: null, oldest_key: null },
   });
 });
 
@@ -38,7 +38,12 @@ test("exact-review handoff health exposes phase counts, ages, and available capa
     shedSinceReset: 7,
     dispatcher: { state: "active" },
     items: [
-      { state: "pending", createdAt: NOW - 90_000, updatedAt: NOW - 90_000 },
+      {
+        key: "openclaw/openclaw#123",
+        state: "pending",
+        createdAt: NOW - 90_000,
+        updatedAt: NOW - 90_000,
+      },
       {
         state: "dispatching",
         createdAt: NOW - 5 * 60_000,
@@ -64,6 +69,7 @@ test("exact-review handoff health exposes phase counts, ages, and available capa
     count: 1,
     oldest_at: "2026-07-13T01:58:30.000Z",
     oldest_age_seconds: 90,
+    oldest_key: "openclaw/openclaw#123",
   });
   assert.equal(health.phases.dispatching.oldest_age_seconds, 20);
   assert.equal(health.phases.leased.oldest_age_seconds, 40);

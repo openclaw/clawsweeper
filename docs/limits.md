@@ -12,18 +12,22 @@ intentionally opens it wider. Safety thresholds such as
 close age floors, apply delays, retry counts, and comment caps stay near the
 code that owns those decisions.
 
-The default-off per-author PR-budget policy follows that safety-threshold rule.
-Its tunables live beside the apply policy rather than in the global worker
-budget:
+The default-off per-author PR-budget and obsolescence policies follow that
+safety-threshold rule. Their tunables and safety floors live beside the apply
+policy rather than in the global worker budget:
 
 | Environment variable                              | Default | Meaning                                              |
 | ------------------------------------------------- | ------: | ---------------------------------------------------- |
 | `CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED`      | `false` | Enables live per-author budget closes.               |
 | `CLAWSWEEPER_AUTHOR_PR_BUDGET`                    |      15 | Allowed open PRs per external author and repository. |
 | `CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN` |       5 | Gradual trim cap per author in one apply run.        |
+| `CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED`     | `false` | Enables stale-version bug closes after 120 days.     |
+| `CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED`       | `false` | Enables obsolete small-fix PR closes after 90 days. |
 
 See [`author-pr-budget-close-policy.md`](author-pr-budget-close-policy.md) for
 the rating, proof, inactivity, engagement, and fail-closed gates.
+See [`obsolescence-close-policies.md`](obsolescence-close-policies.md) for the
+120/90-day issue and 90/30-day PR age/inactivity contracts.
 
 GitHub repository variables still override selected live limits. When a variable
 is unset, workflows read the checked-in budget after checkout. The one exception

@@ -392,6 +392,8 @@ type CloseReason =
   | "unconfirmed_product_direction"
   | "unsponsored_feature_request"
   | "author_pr_budget_exceeded"
+  | "stale_version_bug"
+  | "obsolete_fix_pr"
   | "not_actionable_in_repo"
   | "incoherent"
   | "stale_insufficient_info"
@@ -1359,6 +1361,11 @@ const UNSPONSORED_FEATURE_MIN_AGE_DAYS = 90;
 const UNSPONSORED_FEATURE_MIN_INACTIVE_DAYS = 60;
 const AUTHOR_PR_BUDGET_MIN_AGE_DAYS = 7;
 const AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS = 7;
+const STALE_VERSION_BUG_MIN_AGE_DAYS = 120;
+const STALE_VERSION_BUG_MIN_INACTIVE_DAYS = 90;
+const OBSOLETE_FIX_PR_MIN_AGE_DAYS = 90;
+const OBSOLETE_FIX_PR_MIN_INACTIVE_DAYS = 30;
+const OBSOLETE_FIX_PR_MAX_CHANGED_FILES = 5;
 const DEFAULT_AUTHOR_PR_BUDGET = 15;
 const DEFAULT_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN = 5;
 const STALLED_UNPROVEN_PR_MIN_AGE_DAYS = 14;
@@ -1825,6 +1832,8 @@ const ALLOWED_REASONS = new Set<CloseReason>([
   "unconfirmed_product_direction",
   "unsponsored_feature_request",
   "author_pr_budget_exceeded",
+  "stale_version_bug",
+  "obsolete_fix_pr",
   "not_actionable_in_repo",
   "incoherent",
   "stale_insufficient_info",
@@ -4208,6 +4217,26 @@ export function authorPrBudgetAgeSkipReason(
   return null;
 }
 
+export function staleVersionBugAgeSkipReason(
+  item: Pick<Item, "createdAt">,
+  now = Date.now(),
+): string | null {
+  if (!isOlderThanDays(item.createdAt, STALE_VERSION_BUG_MIN_AGE_DAYS, now)) {
+    return `stale_version_bug requires issue older than ${STALE_VERSION_BUG_MIN_AGE_DAYS} days`;
+  }
+  return null;
+}
+
+export function obsoleteFixPrAgeSkipReason(
+  item: Pick<Item, "createdAt">,
+  now = Date.now(),
+): string | null {
+  if (!isOlderThanDays(item.createdAt, OBSOLETE_FIX_PR_MIN_AGE_DAYS, now)) {
+    return `obsolete_fix_pr requires PR older than ${OBSOLETE_FIX_PR_MIN_AGE_DAYS} days`;
+  }
+  return null;
+}
+
 function maintainerAssociatedEntries(entries: readonly unknown[]): unknown[] {
   return entries.filter((entry) =>
     isMaintainerAuthorAssociation(asRecord(entry).author_association),
@@ -4563,21 +4592,101 @@ function unsponsoredFeatureApplyBlockReasonSafe(
   }
 }
 
-function pullRequestHumanEngagementBlockReason(number: number): string | null {
-  const issue = ghJson<{ assignees?: unknown[] }>([
-    "api",
-    `repos/${targetRepo()}/issues/${number}`,
-    "--jq",
-    "{assignees:[.assignees[]? | {login:.login}]}",
-  ]);
+function staleVersionBugApplyBlockReason(
+  number: number,
+  item: Pick<Item, "createdAt">,
+): string | null {
+  if (!staleVersionBugCloseEnabled()) return "stale-version bug apply policy is disabled";
+  const ageBlock = staleVersionBugAgeSkipReason(item);
+  if (ageBlock) return ageBlock;
+
+  const issue = ghJson<{
+    assignees?: unknown[];
+    created_at?: string;
+    labels?: unknown[];
+    milestone?: unknown;
+    reactions?: unknown;
+    state?: string;
+  }>(["api", `repos/${targetRepo()}/issues/${number}`]);
+  if (issue.state !== "open") return "live issue is not open";
+  // Stored records can carry stale timestamps; the age floor must hold live.
+  if (!Number.isFinite(Date.parse(issue.created_at ?? ""))) {
+    return "live issue creation date is unavailable";
+  }
+  const liveAgeBlock = staleVersionBugAgeSkipReason({ createdAt: issue.created_at ?? "" });
+  if (liveAgeBlock) return liveAgeBlock;
+  const labels = labelNames(issue.labels).map(normalizeLabelName);
+  const protectedLabel =
+    protectedLabels(labelNames(issue.labels))[0] ??
+    prAutoCloseExemptLabel(labelNames(issue.labels));
+  if (protectedLabel) return `protected label: ${protectedLabel}`;
+  if (labels.some((label) => label.includes("security"))) {
+    return "security-labeled issue requires human triage";
+  }
+  if ((issue.assignees ?? []).length > 0) return "assigned issue has maintainer engagement";
+  if (issue.milestone) return "milestoned issue has maintainer engagement";
+  const totalReactions = asRecord(issue.reactions).total_count;
+  if (!Number.isInteger(totalReactions) || Number(totalReactions) < 0) {
+    return "live issue reaction count is unavailable";
+  }
+  if (Number(totalReactions) >= 20)
+    return "issue has strong community traction (20 or more reactions)";
+  if (labels.includes("clawsweeper:linked-pr-open")) {
+    return "clawsweeper:linked-pr-open blocks stale-version bug auto-close";
+  }
+
+  const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`);
+  if (maintainerAssociatedEntries(comments).length > 0) {
+    return "maintainer issue comment confirms engagement";
+  }
+  return issueRecentHumanCommentBlockReasonFromComments(
+    comments,
+    STALE_VERSION_BUG_MIN_INACTIVE_DAYS,
+  );
+}
+
+function staleVersionBugApplyBlockReasonSafe(
+  number: number,
+  item: Pick<Item, "createdAt">,
+): string | null {
+  try {
+    return staleVersionBugApplyBlockReason(number, item);
+  } catch (error) {
+    return `stale-version bug liveness check failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+}
+
+function pullRequestHumanEngagementBlockReason(
+  number: number,
+  known?: {
+    assignees?: unknown[];
+    requestedReviewers?: unknown[];
+    requestedTeams?: unknown[];
+  },
+): string | null {
+  const issue = known
+    ? { assignees: known.assignees }
+    : ghJson<{ assignees?: unknown[] }>([
+        "api",
+        `repos/${targetRepo()}/issues/${number}`,
+        "--jq",
+        "{assignees:[.assignees[]? | {login:.login}]}",
+      ]);
   if ((issue.assignees ?? []).length > 0) return "assigned PR has active human signal";
 
-  const pull = ghJson<{ requested_reviewers?: unknown[]; requested_teams?: unknown[] }>([
-    "api",
-    `repos/${targetRepo()}/pulls/${number}`,
-    "--jq",
-    "{requested_reviewers:[.requested_reviewers[]? | {login:.login}],requested_teams:[.requested_teams[]? | {slug:.slug}]}",
-  ]);
+  const pull = known
+    ? {
+        requested_reviewers: known.requestedReviewers,
+        requested_teams: known.requestedTeams,
+      }
+    : ghJson<{ requested_reviewers?: unknown[]; requested_teams?: unknown[] }>([
+        "api",
+        `repos/${targetRepo()}/pulls/${number}`,
+        "--jq",
+        "{requested_reviewers:[.requested_reviewers[]? | {login:.login}],requested_teams:[.requested_teams[]? | {slug:.slug}]}",
+      ]);
   if ((pull.requested_reviewers ?? []).length > 0 || (pull.requested_teams ?? []).length > 0) {
     return "requested reviewers or teams indicate active review signal";
   }
@@ -4602,8 +4711,13 @@ function pullRequestHumanEngagementBlockReason(number: number): string | null {
 }
 
 interface PullRequestLiveActivity {
+  state: string;
+  createdAt: string;
   draft: boolean;
   headSha: string;
+  changedFiles: number | null;
+  requestedReviewers: unknown[];
+  requestedTeams: unknown[];
   headActivityAtMs: number | null;
   headStatusActivityAtMs: number | null;
   headChecksFailing: boolean;
@@ -4676,8 +4790,12 @@ function pullRequestLiveActivity(number: number): PullRequestLiveActivity {
   const pull = ghJson<{
     created_at?: string;
     draft?: boolean;
+    state?: string;
+    changed_files?: number;
     mergeable?: boolean | null;
     mergeable_state?: string | null;
+    requested_reviewers?: unknown[];
+    requested_teams?: unknown[];
     head?: { ref?: string; repo?: { full_name?: string; id?: unknown }; sha?: string };
   }>(["api", `repos/${targetRepo()}/pulls/${number}`]);
   const { headSha, headActivityAtMs } = pullRequestHeadActivity(number, pull);
@@ -4724,8 +4842,13 @@ function pullRequestLiveActivity(number: number): PullRequestLiveActivity {
   }
   const headConflicted = pull.mergeable === false || pull.mergeable_state === "dirty";
   return {
+    state: pull.state ?? "",
+    createdAt: pull.created_at ?? "",
     draft: pull.draft === true,
     headSha,
+    changedFiles: Number.isInteger(pull.changed_files) ? Number(pull.changed_files) : null,
+    requestedReviewers: pull.requested_reviewers ?? [],
+    requestedTeams: pull.requested_teams ?? [],
     headActivityAtMs,
     headStatusActivityAtMs,
     headChecksFailing,
@@ -4755,6 +4878,9 @@ function prAutoCloseExemptDecisionReason(
   }
   if (closeReason === "author_pr_budget_exceeded") {
     return `${exemptLabel} exempts this PR from author-budget auto-close`;
+  }
+  if (closeReason === "obsolete_fix_pr") {
+    return `${exemptLabel} exempts this PR from obsolete-fix auto-close`;
   }
   return null;
 }
@@ -4897,6 +5023,152 @@ function abandonedPrApplyBlockReasonSafe(
     return abandonedPrApplyBlockReason(number, item);
   } catch (error) {
     return `abandoned-PR liveness check failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+}
+
+function isWorkflowOrCiPath(path: string): boolean {
+  const normalized = path.toLowerCase();
+  return (
+    normalized.startsWith(".github/workflows/") ||
+    normalized.startsWith(".github/actions/") ||
+    normalized.startsWith(".circleci/") ||
+    normalized.startsWith(".buildkite/") ||
+    normalized.startsWith("ci/") ||
+    normalized === ".gitlab-ci.yml" ||
+    normalized === "azure-pipelines.yml" ||
+    normalized === "jenkinsfile"
+  );
+}
+
+function githubContentsPath(path: string): string {
+  return path
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+}
+
+function defaultBranchPathMissing(path: string, defaultBranch: string): boolean {
+  try {
+    ghJson<unknown>([
+      "api",
+      `repos/${targetRepo()}/contents/${githubContentsPath(path)}?ref=${encodeURIComponent(defaultBranch)}`,
+    ]);
+    return false;
+  } catch (error) {
+    if (isGitHubNotFoundError(error)) return true;
+    throw error;
+  }
+}
+
+function obsoleteFixPrApplyBlockReason(
+  number: number,
+  item: Pick<Item, "createdAt">,
+): string | null {
+  if (!obsoleteFixPrCloseEnabled()) return "obsolete-fix PR apply policy is disabled";
+  const storedAgeBlock = obsoleteFixPrAgeSkipReason(item);
+  if (storedAgeBlock) return storedAgeBlock;
+
+  const activity = pullRequestLiveActivity(number);
+  if (activity.state !== "open") return "live PR is not open";
+  const liveAgeBlock = obsoleteFixPrAgeSkipReason({ createdAt: activity.createdAt });
+  if (liveAgeBlock) return liveAgeBlock;
+  if (!activity.headSha) return "obsolete_fix_pr requires a live PR head SHA";
+  if (
+    activity.changedFiles === null ||
+    activity.changedFiles < 1 ||
+    activity.changedFiles > OBSOLETE_FIX_PR_MAX_CHANGED_FILES
+  ) {
+    return `obsolete_fix_pr requires between 1 and ${OBSOLETE_FIX_PR_MAX_CHANGED_FILES} live changed files`;
+  }
+
+  const commit = ghJson<{ commit?: { committer?: { date?: string } } }>([
+    "api",
+    `repos/${targetRepo()}/commits/${activity.headSha}`,
+  ]);
+  const committedAt = commit.commit?.committer?.date ?? "";
+  const committedAtMs = Date.parse(committedAt);
+  if (!Number.isFinite(committedAtMs)) {
+    return "obsolete_fix_pr requires a dated current-head committer timestamp";
+  }
+  const latestActivityAtMs = Math.max(
+    committedAtMs,
+    activity.headActivityAtMs ?? Number.NEGATIVE_INFINITY,
+    activity.headStatusActivityAtMs ?? Number.NEGATIVE_INFINITY,
+  );
+  if (Date.now() - latestActivityAtMs <= OBSOLETE_FIX_PR_MIN_INACTIVE_DAYS * DAY_MS) {
+    return `obsolete_fix_pr requires ${OBSOLETE_FIX_PR_MIN_INACTIVE_DAYS} days without current-head commit, status, or check-run activity`;
+  }
+
+  const issue = ghJson<{ assignees?: unknown[]; labels?: unknown[] }>([
+    "api",
+    `repos/${targetRepo()}/issues/${number}`,
+  ]);
+  const protectedLabel = protectedLabels(labelNames(issue.labels))[0];
+  if (protectedLabel) return `protected label: ${protectedLabel}`;
+  const engagementBlock = pullRequestHumanEngagementBlockReason(number, {
+    assignees: issue.assignees ?? [],
+    requestedReviewers: activity.requestedReviewers,
+    requestedTeams: activity.requestedTeams,
+  });
+  if (engagementBlock) return engagementBlock;
+
+  const repository = ghJson<{ default_branch?: string }>(["api", `repos/${targetRepo()}`]);
+  const defaultBranch = repository.default_branch?.trim() ?? "";
+  if (!defaultBranch) return "obsolete_fix_pr requires the repository default branch";
+  const files = ghJson<unknown[]>([
+    "api",
+    `repos/${targetRepo()}/pulls/${number}/files?per_page=${OBSOLETE_FIX_PR_MAX_CHANGED_FILES}`,
+  ]);
+  if (files.length !== activity.changedFiles) {
+    return "obsolete_fix_pr live changed-file list is incomplete";
+  }
+  const changedEntries = files.map((file) => ({
+    path: stringOrUndefined(asRecord(file).filename)?.trim() ?? "",
+    status: stringOrUndefined(asRecord(file).status)?.trim() ?? "",
+  }));
+  const paths = changedEntries.map((entry) => entry.path);
+  if (paths.some((path) => !path) || new Set(paths).size !== paths.length) {
+    return "obsolete_fix_pr live changed-file paths are incomplete";
+  }
+
+  const since = new Date(committedAtMs + 1).toISOString();
+  for (const { path, status } of changedEntries) {
+    const commits = ghJson<unknown[]>([
+      "api",
+      `repos/${targetRepo()}/commits?sha=${encodeURIComponent(defaultBranch)}&path=${encodeURIComponent(path)}&since=${encodeURIComponent(since)}&per_page=1`,
+    ]);
+    if (commits.length === 0) {
+      // A missing path only signals deletion when `filename` names a path that
+      // pre-existed on main. Added files never lived there, and renamed/copied
+      // entries carry the NEW path in `filename`, so absence proves nothing.
+      if (
+        (status === "modified" || status === "removed" || status === "changed") &&
+        isWorkflowOrCiPath(path) &&
+        defaultBranchPathMissing(path, defaultBranch)
+      ) {
+        continue;
+      }
+      return `touched path unchanged on main; fix may still be relevant: ${path}`;
+    }
+    const changedAt = asRecord(asRecord(commits[0]).commit).committer;
+    const changedDate = stringOrUndefined(asRecord(changedAt).date) ?? "";
+    if (!Number.isFinite(Date.parse(changedDate)) || Date.parse(changedDate) <= committedAtMs) {
+      return `post-PR main-side change date is unavailable for touched path: ${path}`;
+    }
+  }
+  return null;
+}
+
+function obsoleteFixPrApplyBlockReasonSafe(
+  number: number,
+  item: Pick<Item, "createdAt">,
+): string | null {
+  try {
+    return obsoleteFixPrApplyBlockReason(number, item);
+  } catch (error) {
+    return `obsolete-fix PR live check failed: ${
       error instanceof Error ? error.message : String(error)
     }`;
   }
@@ -6057,6 +6329,18 @@ export function authorPrBudgetCloseEnabled(
   env: Record<string, string | undefined> = process.env,
 ): boolean {
   return envFlagEnabled(env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED);
+}
+
+export function staleVersionBugCloseEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return envFlagEnabled(env.CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED);
+}
+
+export function obsoleteFixPrCloseEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return envFlagEnabled(env.CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED);
 }
 
 function positiveIntegerEnv(value: string | undefined, fallback: number): number {
@@ -10451,6 +10735,10 @@ function closeReasonText(reason: CloseReason): string {
       return "feature request without maintainer sponsorship";
     case "author_pr_budget_exceeded":
       return "lowest-signal PR over the author's open-PR budget";
+    case "stale_version_bug":
+      return "bug report against a stale version";
+    case "obsolete_fix_pr":
+      return "fix made obsolete by later main-branch changes";
     case "not_actionable_in_repo":
       return "not actionable in this repository";
     case "incoherent":
@@ -11671,6 +11959,10 @@ function closeIntro(reason: CloseReason): string {
       return "Thanks for sharing this idea. ClawSweeper is parking it in the idea archive because no maintainer has confirmed this product direction yet.";
     case "author_pr_budget_exceeded":
       return "Thanks for the contribution. ClawSweeper is trimming this lowest-signal PR because the author is over the repository's open-PR budget.";
+    case "stale_version_bug":
+      return "Thanks for the report. This was filed against an older version, and the relevant code has changed substantially since then.";
+    case "obsolete_fix_pr":
+      return "Thanks for the contribution. The target code has since been rewritten or removed on `main`, so this fix no longer applies in its original form.";
     case "not_actionable_in_repo":
       return "Thanks for writing this up. I checked the repo boundary, and this lives outside the OpenClaw source shell.";
     case "incoherent":
@@ -11706,6 +11998,10 @@ function closeOutro(reason: CloseReason, canonicalLinks: string[] = []): string 
       return `This idea is parked, not rejected. A maintainer can comment \`@clawsweeper revive\` on this closed issue to bring it back automatically. It will also reopen when it reaches at least ${ideaRevivalReactionThreshold()} positive reactions (thumbs-up, heart, or hooray). When the idea fits an extension, ${markdownLink("ClawHub.com", targetProfile().communityUrl ?? "https://clawhub.ai/")} remains the self-serve path.`;
     case "author_pr_budget_exceeded":
       return "Closing or finishing other open PRs frees review budget. This PR can be reopened once the author is under budget, or sooner when real behavior proof is added.";
+    case "stale_version_bug":
+      return "Please retest on the current release. If the problem still reproduces, add a fresh reproduction with the current version and this issue will be reopened.";
+    case "obsolete_fix_pr":
+      return "If the original problem still reproduces on current `main`, a fresh PR against the current code is very welcome.";
     case "not_actionable_in_repo":
       return "So I’m closing this as outside the OpenClaw source repository rather than keeping it open as core work.";
     default:
@@ -18479,6 +18775,25 @@ function authorPrBudgetDecisionBlockReason(
   return null;
 }
 
+export function staleVersionBugDecisionBlockReason(
+  item: Pick<Item, "kind" | "labels">,
+  decision: Pick<Decision, "itemCategory">,
+): string | null {
+  if (item.kind !== "issue") return "stale_version_bug is allowed only for issues";
+  if (decision.itemCategory !== "bug") return "stale_version_bug requires bug item category";
+  const securityLabel = item.labels
+    .map(normalizeLabelName)
+    .find((label) => label.includes("security"));
+  if (securityLabel) return `${securityLabel} blocks stale-version bug auto-close`;
+  return null;
+}
+
+function obsoleteFixPrDecisionBlockReason(
+  item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "authorAssociation">>,
+): string | null {
+  return externalPrCloseDecisionBlockReason(item, "obsolete_fix_pr", "obsolete-fix auto-close");
+}
+
 export function validateCloseDecision(
   item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "repo" | "authorAssociation">>,
   decision: Decision,
@@ -18583,6 +18898,26 @@ export function validateCloseDecision(
         ok: false,
         actionTaken: "skipped_invalid_decision",
         reason: authorBudgetBlock,
+      };
+    }
+  }
+  if (decision.closeReason === "stale_version_bug") {
+    const staleVersionBlock = staleVersionBugDecisionBlockReason(item, decision);
+    if (staleVersionBlock) {
+      return {
+        ok: false,
+        actionTaken: "skipped_invalid_decision",
+        reason: staleVersionBlock,
+      };
+    }
+  }
+  if (decision.closeReason === "obsolete_fix_pr") {
+    const obsoleteFixBlock = obsoleteFixPrDecisionBlockReason(item);
+    if (obsoleteFixBlock) {
+      return {
+        ok: false,
+        actionTaken: "skipped_invalid_decision",
+        reason: obsoleteFixBlock,
       };
     }
   }
@@ -26431,6 +26766,20 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     };
     let cachedPrCloseCoverageProofGateResult: PrCloseCoverageProofGateResult | undefined;
     let cachedAuthorPrBudgetApplyGate: AuthorPrBudgetApplyGate | undefined;
+    let cachedStaleVersionBugBlockReason: string | null | undefined;
+    let cachedObsoleteFixPrBlockReason: string | null | undefined;
+    const currentStaleVersionBugBlockReason = (): string | null => {
+      if (cachedStaleVersionBugBlockReason === undefined) {
+        cachedStaleVersionBugBlockReason = staleVersionBugApplyBlockReasonSafe(number, item);
+      }
+      return cachedStaleVersionBugBlockReason;
+    };
+    const currentObsoleteFixPrBlockReason = (): string | null => {
+      if (cachedObsoleteFixPrBlockReason === undefined) {
+        cachedObsoleteFixPrBlockReason = obsoleteFixPrApplyBlockReasonSafe(number, item);
+      }
+      return cachedObsoleteFixPrBlockReason;
+    };
     const currentAuthorPrBudgetApplyGate = (): AuthorPrBudgetApplyGate => {
       const authorKey = item.author.trim().toLowerCase();
       const closedForAuthor = authorPrBudgetClosesThisRun.get(authorKey) ?? 0;
@@ -26595,6 +26944,18 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       if (
         closeReason === "unsponsored_feature_request" &&
         unsponsoredFeatureApplyBlockReasonSafe(number, item)
+      ) {
+        return false;
+      }
+      if (
+        closeReason === "stale_version_bug" &&
+        currentStaleVersionBugBlockReason()
+      ) {
+        return false;
+      }
+      if (
+        closeReason === "obsolete_fix_pr" &&
+        currentObsoleteFixPrBlockReason()
       ) {
         return false;
       }
@@ -26954,6 +27315,34 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       const unsponsoredFeatureBlockReason = unsponsoredFeatureApplyBlockReasonSafe(number, item);
       if (unsponsoredFeatureBlockReason) {
         if (markApplySkipped("kept_open", unsponsoredFeatureBlockReason)) break;
+        continue;
+      }
+    }
+    if (
+      state === "open" &&
+      isCloseProposal &&
+      closeReason === "stale_version_bug" &&
+      !syncCommentsOnly &&
+      (applyKind === "all" || item.kind === applyKind) &&
+      closeReasonEnabled(closeReason, applyCloseReasons)
+    ) {
+      const staleVersionBlockReason = currentStaleVersionBugBlockReason();
+      if (staleVersionBlockReason) {
+        if (markApplySkipped("kept_open", staleVersionBlockReason)) break;
+        continue;
+      }
+    }
+    if (
+      state === "open" &&
+      isCloseProposal &&
+      closeReason === "obsolete_fix_pr" &&
+      !syncCommentsOnly &&
+      (applyKind === "all" || item.kind === applyKind) &&
+      closeReasonEnabled(closeReason, applyCloseReasons)
+    ) {
+      const obsoleteFixBlockReason = currentObsoleteFixPrBlockReason();
+      if (obsoleteFixBlockReason) {
+        if (markApplySkipped("kept_open", obsoleteFixBlockReason)) break;
         continue;
       }
     }
@@ -28227,6 +28616,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
                 const gate = currentAuthorPrBudgetApplyGate();
                 return gate.allowed ? null : gate.reason;
               })()
+          : closeReason === "stale_version_bug"
+            ? currentStaleVersionBugBlockReason()
+            : closeReason === "obsolete_fix_pr"
+              ? currentObsoleteFixPrBlockReason()
           : closeReason === "stale_insufficient_info"
               ? issueRecentHumanCommentBlockReasonSafe(
                   number,

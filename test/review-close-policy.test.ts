@@ -42,6 +42,10 @@ test("review prompt documents gated backlog close policies", () => {
   assert.match(prompt, /`author_pr_budget_exceeded`/);
   assert.match(prompt, /Never propose this reason when the author open-PR count is unknown/);
   assert.match(prompt, /default path is apply-side deterministic promotion/);
+  assert.match(prompt, /`stale_version_bug`/);
+  assert.match(prompt, /fresh current-version reproduction/);
+  assert.match(prompt, /`obsolete_fix_pr`/);
+  assert.match(prompt, /every touched path was substantially rewritten or removed/);
   assert.equal(
     [...sweepWorkflow.matchAll(/CLAWSWEEPER_IDEA_REVIVAL_REACTIONS:.*\|\| '5'/g)].length,
     2,

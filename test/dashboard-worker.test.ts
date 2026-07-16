@@ -685,6 +685,7 @@ test("dashboard status reads the exact-review handoff model from the durable que
     { pending: 0, ready: 0, backoff: 0, active: 1, available_slots: 23, capacity: 24 },
   );
   assert.equal(typeof status.lanes.review.oldest_pending_at, "string");
+  assert.equal(status.lanes.review.oldest_pending_key, "openclaw/gogcli#597");
   assert.equal(typeof status.lanes.review.next_attempt_at, "string");
   assert.equal(await exactReviewQueueStatusSnapshot({}), null);
 });
@@ -5407,6 +5408,8 @@ test("exact-review stats heals a missing or stale alarm and expired lease", asyn
   assert.equal(stats.target_stats[0].target_repo, "openclaw/openclaw");
   assert.equal(stats.target_stats[0].pending, 1);
   assert.ok(stats.oldest_pending_age_seconds >= 120);
+  assert.equal(stats.oldest_pending_key, "openclaw/openclaw#700");
+  assert.equal(stats.lanes.review.oldest_pending_key, "openclaw/openclaw#700");
   assert.ok(stats.next_wake_at);
   assert.ok((await storage.getAlarm()) !== null);
 
