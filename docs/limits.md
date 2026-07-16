@@ -22,6 +22,8 @@ docs stay in sync with the derived budget.
 The mental model:
 
 - `workers.max` is the global Codex capacity budget.
+- GitHub Actions workflows that only route comments, publish exact-review results,
+  or reconcile leases do not execute Codex and do not consume that budget.
 - Priority lanes are repair, issue implementation, and exact-item review.
 - Background lanes are normal review, hot intake, and commit review.
 - Assist has a small fixed cap because it is lightweight maintainer Q&A, not a
@@ -123,6 +125,14 @@ to 60 so other target repositories retain four global slots during an OpenClaw
 backlog drain. Exact capacity is consumed only while queue work is pending. As
 those priority workers start, normal, hot-intake, and commit-review planners
 count them and reduce their next background wave.
+
+Exact-review result publication has a separate 24-workflow Actions lane. Its
+checkout, artifact handling, comment sync, and result routing are deterministic
+control-plane work: they consume GitHub runners, but not Codex slots. The
+comment router and the singleton lease reconciler follow the same accounting
+rule. Dashboard Codex capacity therefore counts only jobs whose steps execute
+Codex; it reports these control-plane workflows separately instead of deducting
+them from `workers.max`.
 
 Each dispatched workflow claims its opaque lease before checkout. Protocol v2
 binds claim and completion to the item key, lease revision, run attempt, claim

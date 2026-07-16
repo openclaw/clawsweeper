@@ -284,6 +284,15 @@ so handoff recovery stays live. If the optional queue read fails, it reports
 `exact_review_queue: null` and `diagnostics.exact_review_queue_error` without
 making the otherwise-current fleet snapshot eligible for stale fallback.
 
+For capacity displays, `/api/exact-review-queue` also exposes compatible
+`lanes.review` and `lanes.publication` objects. Each lane reports its own
+pending, ready, backoff, dispatching, leased, capacity, active, available-slot,
+oldest-pending, and next-attempt values. The existing top-level aggregate fields
+remain available for older consumers. `/api/status` separately reports active
+exact publishers, comment routers, and lease reconcilers under `control_plane`;
+those are GitHub Actions workflows, not Codex workers, and never reduce the
+128-slot Codex capacity rail.
+
 Executors report the GitHub job outcome from their finalizer. Failure or
 cancellation clears the lease and requeues the item. Finalizer success remains
 provisional because GitHub can still cancel the run or fail a post-action; only

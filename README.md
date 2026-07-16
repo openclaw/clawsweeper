@@ -764,6 +764,9 @@ is active. Throughput defaults live in
 
 ClawSweeper has one main capacity knob:
 `config/automation-limits.json` -> `workers.max`. The current value is `128`.
+This is a Codex worker budget, not a GitHub Actions runner limit. Deterministic
+exact-review publishers, comment routers, and lease reconcilers are shown as
+control-plane workflows and do not consume these 128 slots.
 Lane limits are derived from that number: normal review defaults to 89 shards
 for manual/backstop and scheduled runs, hot intake up to 44 shards, commit
 review 6 commits per page, and existing repair/issue implementation lanes use

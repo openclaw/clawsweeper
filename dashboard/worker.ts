@@ -3157,6 +3157,18 @@ function exactReviewQueueStats(
     publicationCapacity,
     publicationDispatchLeaseMs,
   );
+  const lanes = {
+    review: exactReviewQueueLaneStats(
+      items.filter((item) => !exactReviewQueueIsPublication(item)),
+      now,
+      capacity,
+    ),
+    publication: exactReviewQueueLaneStats(
+      items.filter(exactReviewQueueIsPublication),
+      now,
+      publicationCapacity,
+    ),
+  };
   return {
     pending: handoffHealth.phases.pending.count,
     dispatching: handoffHealth.phases.dispatching.count,
@@ -3168,6 +3180,7 @@ function exactReviewQueueStats(
     oldest_leased_at: handoffHealth.phases.leased.oldest_at,
     oldest_leased_age_seconds: handoffHealth.phases.leased.oldest_age_seconds,
     handoff_health: handoffHealth,
+    lanes,
     next_wake_at: nextWakeAt === null ? null : new Date(nextWakeAt).toISOString(),
     dispatcher: {
       state: state.dispatcher?.state || "unknown",
@@ -3179,6 +3192,35 @@ function exactReviewQueueStats(
       retry_at: state.dispatcher?.retryAt ? new Date(state.dispatcher.retryAt).toISOString() : null,
     },
     target_stats: targetStats,
+  };
+}
+
+function exactReviewQueueLaneStats(items: ExactReviewQueueItem[], now: number, capacity: number) {
+  const pendingItems = items.filter((item) => item.state === "pending");
+  const dispatchingItems = items.filter((item) => item.state === "dispatching");
+  const leasedItems = items.filter((item) => item.state === "leased");
+  const active = dispatchingItems.length + leasedItems.length;
+  const oldestPendingAt = pendingItems.reduce<number | null>(
+    (oldest, item) => (oldest === null ? item.createdAt : Math.min(oldest, item.createdAt)),
+    null,
+  );
+  const nextAttemptAt = pendingItems.reduce<number | null>(
+    (next, item) => (next === null ? item.nextAttemptAt : Math.min(next, item.nextAttemptAt)),
+    null,
+  );
+  return {
+    pending: pendingItems.length,
+    ready: pendingItems.filter((item) => item.nextAttemptAt <= now).length,
+    backoff: pendingItems.filter((item) => item.nextAttemptAt > now).length,
+    dispatching: dispatchingItems.length,
+    leased: leasedItems.length,
+    capacity,
+    active,
+    available_slots: Math.max(0, capacity - active),
+    oldest_pending_at: oldestPendingAt === null ? null : new Date(oldestPendingAt).toISOString(),
+    oldest_pending_age_seconds:
+      oldestPendingAt === null ? null : Math.max(0, Math.floor((now - oldestPendingAt) / 1_000)),
+    next_attempt_at: nextAttemptAt === null ? null : new Date(nextAttemptAt).toISOString(),
   };
 }
 
@@ -3894,6 +3936,7 @@ async function statusSnapshot(env) {
   ]).sort(newestWorkflowRunFirst);
   const workerRuns = activeRuns.filter((run) => !isSupportWorkflowRun(run));
   const supportRuns = activeRuns.filter((run) => isSupportWorkflowRun(run));
+  const controlPlane = controlPlaneSnapshot(activeRuns);
   const operationalHealth = summarizeOperationalHealth(
     activeRunCandidates.filter((run) => !isSupportWorkflowRun(run)),
     generatedAt,
@@ -3903,7 +3946,7 @@ async function statusSnapshot(env) {
     (run) =>
       run.status === "completed" &&
       !isSupportWorkflowRun(run) &&
-      codexJobName(`${run.name || ""} ${run.display_title || ""}`) &&
+      isCodexWorkflowFallback(run) &&
       TERMINAL_BAD_CONCLUSIONS.has(String(run.conclusion)),
   );
   const activeJobs = await activeWorkerSnapshot(env, repo, workerRuns, github);
@@ -4004,6 +4047,7 @@ async function statusSnapshot(env) {
       worker_detail_runs: activeJobs.detailRuns,
       worker_detail_fallbacks: activeJobs.fallbacks,
     },
+    control_plane: controlPlane,
     health: publicWorkerHealth,
     operational_health: operationalHealth,
     averages: {
@@ -4960,7 +5004,7 @@ async function activeWorkerSnapshot(
   for (const result of results) {
     if (result.error) {
       errors.push(`workflow jobs ${result.run.id}: ${result.error}`);
-      if (codexJobName(`${result.run.name || ""} ${result.run.display_title || ""}`)) {
+      if (isCodexWorkflowFallback(result.run)) {
         workers.push(normalizeFallbackWorker(result.run));
         fallbacks += 1;
       }
@@ -4968,16 +5012,13 @@ async function activeWorkerSnapshot(
     }
     if (result.workers.length) {
       workers.push(...result.workers);
-    } else if (
-      !result.hasWorkerJobs &&
-      codexJobName(`${result.run.name || ""} ${result.run.display_title || ""}`)
-    ) {
+    } else if (!result.hasWorkerJobs && isCodexWorkflowFallback(result.run)) {
       workers.push(normalizeFallbackWorker(result.run));
       fallbacks += 1;
     }
   }
   for (const run of runs.slice(detailRunLimit)) {
-    if (!codexJobName(`${run.name || ""} ${run.display_title || ""}`)) continue;
+    if (!isCodexWorkflowFallback(run)) continue;
     workers.push(normalizeFallbackWorker(run));
     fallbacks += 1;
   }
@@ -5019,9 +5060,7 @@ async function recentWorkerHealth(
   const completedRuns = runs
     .filter(
       (run) =>
-        run.status === "completed" &&
-        !isSupportWorkflowRun(run) &&
-        codexJobName(`${run.name || ""} ${run.display_title || ""}`),
+        run.status === "completed" && !isSupportWorkflowRun(run) && isCodexWorkflowFallback(run),
     )
     .sort(newestWorkflowRunFirst)
     .slice(0, RECENT_WORKER_HEALTH_RUN_LIMIT);
@@ -7662,8 +7701,40 @@ function workflowRunSummary(run) {
   };
 }
 
-function codexJobName(name) {
-  return /review|codex|repair|worker|commit/i.test(name);
+function isCodexWorkflowFallback(run) {
+  const name = `${run?.name || ""} ${run?.display_title || ""}`;
+  if (
+    /repair comment router|clawsweeper_comment|@publish:|publish exact review artifact|exact.review publication|reconcile exact.review lease|sync codex review comments/i.test(
+      name,
+    )
+  ) {
+    return false;
+  }
+  return /review clawsweeper items|review hot (?:clawsweeper items|target repo)|review target repo|review event items?|retry failed codex reviews|commit review|repair cluster|automerge repair|issue implementation|assist\b/i.test(
+    name,
+  );
+}
+
+function controlPlaneSnapshot(runs) {
+  const snapshot = {
+    publishers: { running: 0, waiting: 0 },
+    comment_routers: { running: 0, waiting: 0 },
+    reconcilers: { running: 0, waiting: 0 },
+  };
+  for (const run of runs) {
+    const name = `${run?.name || ""} ${run?.display_title || ""}`;
+    const lane = /@publish:|publish exact review artifact|exact.review publication/i.test(name)
+      ? snapshot.publishers
+      : /repair comment router|clawsweeper_comment|sync codex review comments/i.test(name)
+        ? snapshot.comment_routers
+        : /reconcile exact.review lease/i.test(name)
+          ? snapshot.reconcilers
+          : null;
+    if (!lane) continue;
+    if (run.status === "in_progress") lane.running += 1;
+    else lane.waiting += 1;
+  }
+  return snapshot;
 }
 
 function laneRank(mode) {
@@ -9088,6 +9159,14 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
   line-height: 1.4;
 }
 .capacity-rail { margin-top: 30px; }
+.overview-section-title {
+  margin: 28px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
 .capacity-bar {
   display: flex;
   height: 10px;
@@ -9099,6 +9178,33 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .capacity-bar .active { background: var(--claw); }
 .capacity-bar .waiting { background: var(--amber); }
 .capacity-meta { margin-top: 8px; color: var(--muted); font-size: 12px; }
+.capacity-note { margin-top: 5px; color: var(--muted); font-size: 11px; }
+.exact-lanes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+.exact-lane,
+.control-plane {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.exact-lane-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.exact-lane-head strong { font-size: 13px; }
+.exact-lane-head span { color: var(--muted); font-size: 11px; }
+.lane-counts { display: grid; gap: 6px; margin-top: 12px; }
+.lane-count { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; }
+.lane-count strong { color: var(--text); font-weight: 600; }
+.lane-bar { height: 6px; margin-top: 12px; overflow: hidden; border-radius: 999px; background: var(--track); }
+.lane-bar i { display: block; height: 100%; background: var(--claw); }
+.lane-foot { margin-top: 7px; color: var(--muted); font-size: 11px; }
+.control-plane { display: grid; gap: 8px; margin-top: 10px; }
+.control-plane-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; font-size: 12px; }
+.control-plane-row span:last-child { color: var(--muted); }
+.control-plane-note { margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .exact-handoff {
   margin-top: 18px;
   padding: 14px;
@@ -9714,6 +9820,7 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   .worker-progress { display: none; }
   .exact-handoff-head, .handoff-foot { align-items: start; flex-direction: column; }
   .handoff-phases { grid-template-columns: 1fr; }
+  .exact-lanes { grid-template-columns: 1fr; }
   dialog { margin: 7px; max-height: calc(100vh - 14px); }
 }
 </style>
@@ -9753,7 +9860,13 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
       <span class="muted" id="overview-note">Live control-plane telemetry</span>
     </div>
     <div class="flow-map" id="flow-map"></div>
+    <h3 class="overview-section-title">Codex Capacity</h3>
     <div class="capacity-rail" id="capacity-rail"></div>
+    <h3 class="overview-section-title">Exact Review</h3>
+    <div class="exact-lanes" id="exact-review-lanes" aria-live="polite"></div>
+    <h3 class="overview-section-title">Control Plane · GitHub Actions, not Codex</h3>
+    <div class="control-plane" id="control-plane" aria-live="polite"></div>
+    <h3 class="overview-section-title">Handoff Health</h3>
     <div id="exact-review-handoff" aria-live="polite"></div>
     <div id="apply-health"></div>
     <div class="automatic-head">
@@ -10167,25 +10280,65 @@ function renderSystemMap(data) {
   document.getElementById("flow-map").innerHTML = nodes.map(node =>
     '<div class="flow-node"><span>' + esc(node[0]) + '</span><strong>' + fmt.format(node[1]) + '</strong><p>' + esc(node[2]) + '</p></div>'
   ).join("");
+  const budget = Math.max(0, fleet.worker_budget || 0);
   const running = workers.filter(worker => worker.status === "in_progress").length;
   const waiting = workers.length - running;
-  const budget = Math.max(0, fleet.worker_budget || 0);
   const free = Math.max(0, budget - running - waiting);
+  const overflow = Math.max(0, running + waiting - budget);
   const share = value => budget ? Math.min(100, (value / budget) * 100) : 0;
   document.getElementById("capacity-rail").innerHTML =
     '<div class="capacity-bar"><i class="active" style="width:' + share(running) + '%"></i><i class="waiting" style="width:' + share(waiting) + '%"></i></div>' +
-    '<div class="capacity-meta">' + fmt.format(running) + ' running · ' + fmt.format(waiting) + ' waiting · ' + fmt.format(free) + ' of ' + fmt.format(budget) + ' slots free</div>';
+    '<div class="capacity-meta">' + fmt.format(running) + ' running · ' + fmt.format(waiting) + ' waiting · ' + fmt.format(free) + ' of ' + fmt.format(budget) + ' Codex slots free' + (overflow ? ' · ' + fmt.format(overflow) + ' over budget' : '') + '</div>' +
+    '<div class="capacity-note">Only jobs that execute Codex count against this budget.</div>';
   const fallbacks = fleet.worker_detail_fallbacks || 0;
   document.getElementById("overview-note").textContent = fallbacks
     ? "Live jobs with " + fallbacks + " workflow fallback" + (fallbacks === 1 ? "" : "s")
     : "Live GitHub job and step telemetry";
+}
+function renderExactReviewLanes(queue) {
+  const target = document.getElementById("exact-review-lanes");
+  if (!target) return;
+  const lanes = queue?.lanes;
+  if (!lanes?.review || !lanes?.publication) {
+    target.innerHTML = '<div class="empty">Exact-review lane telemetry unavailable.</div>';
+    return;
+  }
+  target.innerHTML = [["Review admission", lanes.review], ["Result publication", lanes.publication]].map(([label, lane]) => {
+    const capacity = Math.max(0, lane.capacity || 0);
+    const active = Math.max(0, lane.active || 0);
+    const used = capacity ? Math.min(100, (active / capacity) * 100) : 0;
+    const oldest = Number.isFinite(lane.oldest_pending_age_seconds)
+      ? " · oldest " + elapsed(lane.oldest_pending_age_seconds * 1000)
+      : "";
+    return '<div class="exact-lane"><div class="exact-lane-head"><strong>' + esc(label) + '</strong><span>' + fmt.format(active) + ' of ' + fmt.format(capacity) + ' active</span></div>' +
+      '<div class="lane-counts">' +
+      '<div class="lane-count"><span>Pending</span><strong>' + fmt.format(lane.pending || 0) + '</strong></div>' +
+      '<div class="lane-count"><span>Ready</span><strong>' + fmt.format(lane.ready || 0) + '</strong></div>' +
+      '<div class="lane-count"><span>Backoff</span><strong>' + fmt.format(lane.backoff || 0) + '</strong></div>' +
+      '<div class="lane-count"><span>Dispatching</span><strong>' + fmt.format(lane.dispatching || 0) + '</strong></div>' +
+      '<div class="lane-count"><span>Leased</span><strong>' + fmt.format(lane.leased || 0) + '</strong></div></div>' +
+      '<div class="lane-bar"><i style="width:' + used + '%"></i></div>' +
+      '<div class="lane-foot">' + fmt.format(lane.available_slots || 0) + ' ' + esc(label.toLowerCase()) + ' slots open' + esc(oldest) + '</div></div>';
+  }).join("");
+}
+function renderControlPlane(controlPlane, workerBudget) {
+  const target = document.getElementById("control-plane");
+  if (!target) return;
+  const rows = [
+    ["Exact publishers", controlPlane?.publishers],
+    ["Comment routers", controlPlane?.comment_routers],
+    ["Lease reconcilers", controlPlane?.reconcilers]
+  ];
+  target.innerHTML = rows.map(([label, lane]) =>
+    '<div class="control-plane-row"><span>' + esc(label) + '</span><span>' + fmt.format(lane?.running || 0) + ' running · ' + fmt.format(lane?.waiting || 0) + ' waiting</span></div>'
+  ).join("") + '<div class="control-plane-note">These workflows consume GitHub runners but not the ' + fmt.format(workerBudget || 0) + '-slot Codex budget.</div>';
 }
 function renderExactReviewHandoff(queue) {
   const target = document.getElementById("exact-review-handoff");
   if (!target) return;
   const health = queue?.handoff_health;
   if (!health?.phases) {
-    target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Exact-review handoff</strong><span>Queue telemetry unavailable in this snapshot.</span></div><span class="health-badge">unknown</span></div></div>';
+    target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Queue handoff health</strong><span>Queue telemetry unavailable in this snapshot.</span></div><span class="health-badge">unknown</span></div></div>';
     return;
   }
   const status = ["idle", "healthy", "degraded", "stalled"].includes(health.status) ? health.status : "unknown";
@@ -10203,7 +10356,7 @@ function renderExactReviewHandoff(queue) {
   }).join("");
   const slots = fmt.format(health.available_slots || 0) + " of " + fmt.format(health.capacity || 0) + " exact-review slots open";
   const threshold = "stalled after " + elapsed((health.stalled_after_seconds || 0) * 1000);
-  target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Exact-review handoff</strong><span>' + esc(health.message || "Queue phase telemetry") + '</span></div><span class="health-badge ' + esc(status) + '">' + esc(status) + '</span></div><div class="handoff-phases">' + phases + '</div><div class="handoff-foot"><span>' + esc(slots) + '</span><span>' + esc(threshold) + '</span></div></div>';
+  target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Queue handoff health</strong><span>' + esc(health.message || "Queue phase telemetry") + '</span></div><span class="health-badge ' + esc(status) + '">' + esc(status) + '</span></div><div class="handoff-phases">' + phases + '</div><div class="handoff-foot"><span>' + esc(slots) + '</span><span>' + esc(threshold) + '</span></div></div>';
 }
 function renderWorkers(rows) {
   workerIndex = new Map(rows.map(worker => [String(worker.id), worker]));
@@ -10417,15 +10570,17 @@ function renderDashboard(data, note) {
   const fleet = data.fleet;
   const operational = data.operational_health || {};
   document.getElementById("metrics").innerHTML = [
-    metric("Claw Workers", fmt.format(fleet.active_codex_jobs), "budget " + fleet.worker_budget, fleet.budget_used_percent, "var(--green)"),
+    metric("Codex Workers", fmt.format(fleet.active_codex_jobs), "Codex budget " + fleet.worker_budget, fleet.budget_used_percent, "var(--green)"),
     metric("Active Sweeps", fmt.format(fleet.active_workflow_runs), fmt.format(operational.running_over_threshold || 0) + " over 150m", Math.min(100, fleet.active_workflow_runs * 3), operational.running_over_threshold ? "var(--red)" : "var(--claw)"),
     metric("Queue Depth", fmt.format(fleet.queued_workflow_runs), fmt.format(operational.queued_over_threshold || 0) + " over 30m", Math.min(100, fleet.queued_workflow_runs * 10), operational.queued_over_threshold ? "var(--amber)" : "var(--green)"),
     metric("Error Rate", (data.health?.error_rate_percent || 0) + "%", fmt.format(data.health?.failed_attempts || 0) + " failed / " + fmt.format(data.health?.attempts || 0) + " attempts", Math.min(100, data.health?.error_rate_percent || 0), data.health?.failed_attempts ? "var(--red)" : "var(--green)"),
     metric("Recovery Rate", data.health?.recovery_rate_percent == null ? "n/a" : data.health.recovery_rate_percent + "%", fmt.format(data.health?.unresolved_failures || 0) + " unresolved", data.health?.recovery_rate_percent == null ? 100 : data.health.recovery_rate_percent, data.health?.unresolved_failures ? "var(--amber)" : "var(--green)"),
-    metric("Capacity", fleet.budget_used_percent + "%", "fleet utilization", fleet.budget_used_percent, "var(--green)")
+    metric("Codex Capacity", fleet.budget_used_percent + "%", "Codex slot utilization", fleet.budget_used_percent, "var(--green)")
   ].join("");
   renderHealthHistory(data.operational_health);
   renderSystemMap(data);
+  renderExactReviewLanes(data.exact_review_queue);
+  renderControlPlane(data.control_plane, fleet.worker_budget);
   renderExactReviewHandoff(data.exact_review_queue);
   renderApplyHealth(data);
   renderAutomaticWork(data.automatic_work || []);

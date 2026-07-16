@@ -81,19 +81,74 @@ test("exact-review queue admits and wakes up to 24 publishers", () => {
 });
 
 test("dashboard status reads the exact-review handoff model from the durable queue", async () => {
-  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
   await queue.fetch(buildExactReviewQueueRequest("handoff-status", 597, "opened"));
+  await queue.fetch(buildExactReviewQueueRequest("backoff-status", 598, "opened"));
+  await queue.fetch(buildExactReviewQueueRequest("leased-review-status", 600, "opened"));
+  await queue.fetch(
+    buildExactReviewQueueRequest(
+      "publication-status",
+      599,
+      "exact_review_artifact_publish",
+      "issue",
+      undefined,
+      exactReviewPublicationOverrides(599, "5990"),
+    ),
+  );
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<
+      string,
+      {
+        state: "pending" | "dispatching" | "leased";
+        nextAttemptAt: number;
+        leaseId?: string;
+        leaseExpiresAt?: number;
+      }
+    >;
+  };
+  state.items["openclaw/gogcli#598"].nextAttemptAt = Date.now() + 60_000;
+  for (const key of ["openclaw/gogcli#600", "openclaw/gogcli#599@publish:5990:1"]) {
+    state.items[key].state = "leased";
+    state.items[key].leaseId = `lease-${key}`;
+    state.items[key].leaseExpiresAt = Date.now() + 60_000;
+  }
+  await storage.put("exact-review-queue", state);
 
   const status = await exactReviewQueueStatusSnapshot({
     EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
   });
 
   assert.ok(status);
-  assert.equal(status.pending, 1);
+  assert.equal(status.pending, 2);
   assert.equal(status.dispatching, 0);
-  assert.equal(status.leased, 0);
+  assert.equal(status.leased, 2);
   assert.equal(status.handoff_health.status, "healthy");
-  assert.equal(status.handoff_health.phases.pending.count, 1);
+  assert.equal(status.handoff_health.phases.pending.count, 2);
+  assert.deepEqual(
+    {
+      pending: status.lanes.review.pending,
+      ready: status.lanes.review.ready,
+      backoff: status.lanes.review.backoff,
+      active: status.lanes.review.active,
+      available_slots: status.lanes.review.available_slots,
+      capacity: status.lanes.review.capacity,
+    },
+    { pending: 2, ready: 1, backoff: 1, active: 1, available_slots: 63, capacity: 64 },
+  );
+  assert.deepEqual(
+    {
+      pending: status.lanes.publication.pending,
+      ready: status.lanes.publication.ready,
+      backoff: status.lanes.publication.backoff,
+      active: status.lanes.publication.active,
+      available_slots: status.lanes.publication.available_slots,
+      capacity: status.lanes.publication.capacity,
+    },
+    { pending: 0, ready: 0, backoff: 0, active: 1, available_slots: 23, capacity: 24 },
+  );
+  assert.equal(typeof status.lanes.review.oldest_pending_at, "string");
+  assert.equal(typeof status.lanes.review.next_attempt_at, "string");
   assert.equal(await exactReviewQueueStatusSnapshot({}), null);
 });
 
@@ -4667,7 +4722,7 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   const html = await response.text();
   assert.match(html, /<title>🦞 ClawSweeper Live<\/title>/);
   assert.match(html, /content: "🦞"/);
-  assert.match(html, /Claw Workers/);
+  assert.match(html, /Codex Workers/);
   assert.match(html, /Active Sweeps/);
   assert.match(html, /Queue Depth/);
   assert.match(html, /Health Trends/);
@@ -4678,6 +4733,16 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /Error Rate/);
   assert.match(html, /Recovery Rate/);
   assert.match(html, /Capacity/);
+  assert.match(html, /Only jobs that execute Codex count against this budget/);
+  assert.match(html, /id="exact-review-lanes"/);
+  assert.match(html, /Review admission/);
+  assert.match(html, /Result publication/);
+  assert.match(html, /Control Plane · GitHub Actions, not Codex/);
+  assert.match(html, /id="control-plane"/);
+  assert.match(html, /\.exact-lanes \{ grid-template-columns: 1fr; \}/);
+  assert.ok(html.indexOf("Codex Capacity") < html.indexOf('id="exact-review-lanes"'));
+  assert.ok(html.indexOf('id="exact-review-lanes"') < html.indexOf('id="control-plane"'));
+  assert.ok(html.indexOf('id="control-plane"') < html.indexOf("Handoff Health"));
   assert.match(html, /Live terminals/);
   assert.match(html, /href="https:\/\/fleet\.example\.test\/terminal\?view=live&amp;mode=all"/);
   assert.match(html, /Loading pipeline state/);
@@ -4764,7 +4829,36 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
     workers: [],
     automatic_work: [],
     pipeline: [],
+    control_plane: {
+      publishers: { running: 2, waiting: 1 },
+      comment_routers: { running: 3, waiting: 4 },
+      reconcilers: { running: 1, waiting: 0 },
+    },
     exact_review_queue: {
+      lanes: {
+        review: {
+          pending: 4,
+          ready: 3,
+          backoff: 1,
+          dispatching: 2,
+          leased: 10,
+          active: 12,
+          capacity: 64,
+          available_slots: 52,
+          oldest_pending_age_seconds: 60,
+        },
+        publication: {
+          pending: 2,
+          ready: 1,
+          backoff: 1,
+          dispatching: 1,
+          leased: 20,
+          active: 21,
+          capacity: 24,
+          available_slots: 3,
+          oldest_pending_age_seconds: 30,
+        },
+      },
       handoff_health: {
         status: "healthy",
         message: "Dispatch-to-claim handoffs are within the expected window.",
@@ -4875,6 +4969,18 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(elementFor("exact-review-handoff").innerHTML, /Dispatching/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /2 of 28 exact-review slots open/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /health-badge healthy/);
+  assert.match(elementFor("exact-review-lanes").innerHTML, /Review admission/);
+  assert.match(elementFor("exact-review-lanes").innerHTML, /52 review admission slots open/);
+  assert.match(elementFor("exact-review-lanes").innerHTML, /Result publication/);
+  assert.match(elementFor("exact-review-lanes").innerHTML, /3 result publication slots open/);
+  assert.match(elementFor("control-plane").innerHTML, /2 running · 1 waiting/);
+  assert.match(elementFor("control-plane").innerHTML, /GitHub runners but not the 128-slot/);
+
+  status.workers = Array.from({ length: 130 }, (_, id) => ({ id, status: "in_progress" }));
+  context.renderSystemMap(status);
+  assert.match(elementFor("capacity-rail").innerHTML, /130 running/);
+  assert.match(elementFor("capacity-rail").innerHTML, /2 over budget/);
+  status.workers = [];
 
   status.recent.apply_health.items = [];
   status.exact_review_queue.handoff_health.status = "stalled";
@@ -5301,6 +5407,82 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
     const cachedStatus = await cachedResponse.json();
     assert.equal(cachedStatus.workers[0].target_items[0].title, "Preserve terminal resize state");
     assert.equal(graphqlRequests, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("dashboard keeps control-plane workflow fallbacks out of Codex capacity", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: new MemoryCache() },
+  });
+  const runs = [
+    [1, "ClawSweeper", "Review event item openclaw/openclaw#1", "in_progress"],
+    [2, "repair cluster worker", "repair cluster jobs/openclaw/inbox/cluster-2.md", "queued"],
+    [3, "Assist", "Assist openclaw/openclaw#3", "in_progress"],
+    [4, "ClawSweeper", "Review event item openclaw/openclaw#4@publish:40:1", "in_progress"],
+    [5, "repair comment router", "clawsweeper_comment", "queued"],
+    [6, "Reconcile exact-review leases", "Reconcile exact-review leases", "in_progress"],
+    [7, "ClawSweeper", "Sync Codex review comments for openclaw/openclaw", "queued"],
+  ].map(([id, name, displayTitle, status]) => ({
+    id,
+    name,
+    display_title: displayTitle,
+    status,
+    conclusion: null,
+    html_url: `https://github.com/openclaw/clawsweeper/actions/runs/${id}`,
+    created_at: isoAgo(Number(id) * 1_000),
+    updated_at: isoAgo(500),
+  }));
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
+      const status = url.searchParams.get("status");
+      return jsonResponse({
+        workflow_runs: !status ? runs : runs.filter((run) => run.status === status),
+      });
+    }
+    if (/^\/repos\/openclaw\/clawsweeper\/actions\/runs\/\d+\/jobs$/.test(url.pathname)) {
+      return jsonResponse({ jobs: [] });
+    }
+    if (
+      url.pathname ===
+      "/repos/openclaw/clawsweeper/actions/workflows/repair-cluster-intake.yml/runs"
+    ) {
+      return jsonResponse({ workflow_runs: [] });
+    }
+    if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+    if (url.pathname === "/repos/openclaw/openclaw/issues") return jsonResponse([]);
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      {
+        CLAWSWEEPER_REPO: "openclaw/clawsweeper",
+        TARGET_REPOS: "openclaw/openclaw",
+        CACHE_TTL_SECONDS: "0",
+      },
+      { waitUntil: () => undefined },
+    );
+    const status = await response.json();
+    assert.equal(status.fleet.active_codex_jobs, 3);
+    assert.equal(status.fleet.worker_detail_fallbacks, 3);
+    assert.deepEqual(status.workers.map((entry: { id: string }) => entry.id).sort(), [
+      "run-1",
+      "run-2",
+      "run-3",
+    ]);
+    assert.deepEqual(status.control_plane, {
+      publishers: { running: 1, waiting: 0 },
+      comment_routers: { running: 0, waiting: 2 },
+      reconcilers: { running: 1, waiting: 0 },
+    });
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
