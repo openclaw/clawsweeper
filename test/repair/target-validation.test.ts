@@ -2299,10 +2299,84 @@ test("dependency setup permits external funding metadata in npm lockfiles", () =
   }
 });
 
-test("dependency setup keeps non-funding npm lockfile URLs fail-closed", () => {
-  for (const metadata of [
-    { resolved: "https://github.com/example/payload.tgz" },
-    { homepage: "https://github.com/example/payload" },
+test("dependency setup permits SRI slash pairs in npm lockfiles", () => {
+  const integrities = [
+    "sha512-/XaS//3lOPwYNFcWNBU0xy4WH6R3XUMmDoGxhdh5A8Bp1AklS4O1WYZdt2y5qxoPacZBqLNtjXdqtzisvPbcQQ==",
+    "sha512-FHpQMTN4e4scgfVeB7J3voHEMKhDfgVCevPBZCoCGS7SvZ+UV3VFfZ//rhK1oHyuHgFAaYhACLMxH53DQCoDew==",
+    "sha512-I5VRcZTnNXDepE747yhFbQ6247eEN/s1ulHquanowSx6PHjnFNyrmYxUjelyAIwT72hh//Eq4oGTmwuoLxAsWA==",
+  ];
+  for (const lockfile of ["package-lock.json", "npm-shrinkwrap.json"]) {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    fs.rmSync(path.join(cwd, "pnpm-lock.yaml"));
+    const packagePath = path.join(cwd, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    packageJson.packageManager = "npm@11.0.0";
+    fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    fs.writeFileSync(
+      path.join(cwd, lockfile),
+      `${JSON.stringify(
+        {
+          name: "fixture",
+          lockfileVersion: 3,
+          packages: Object.fromEntries(
+            integrities.map((integrity, index) => [
+              `node_modules/sri-${index}`,
+              {
+                version: "1.0.0",
+                resolved: `https://registry.npmjs.org/sri-${index}/-/sri-${index}-1.0.0.tgz`,
+                integrity,
+              },
+            ]),
+          ),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-npm-sri-bin-"));
+    const npmPath = path.join(binDir, "npm.js");
+    fs.writeFileSync(
+      npmPath,
+      'require("node:fs").mkdirSync("node_modules", { recursive: true });\n',
+    );
+
+    withMockCommand("npm", npmPath, () =>
+      prepareTargetToolchain(cwd, {
+        ...validationOptions("steipete/example", {
+          toolchain: {
+            packageManager: "npm",
+            baseValidationCommands: [],
+            changedGate: null,
+          },
+        }),
+        installTargetDeps: true,
+        installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      }),
+    );
+  }
+});
+
+test("dependency setup keeps npm lockfile URL tokens fail-closed", () => {
+  for (const { metadata, expected } of [
+    {
+      metadata: { resolved: "https://github.com/example/payload.tgz" },
+      expected: /destination is not approved: https:\/\/github\.com/,
+    },
+    {
+      metadata: { homepage: "https://github.com/example/payload" },
+      expected: /destination is not approved: https:\/\/github\.com/,
+    },
+    {
+      metadata: { resolved: "//evil.example/pkg.tgz" },
+      expected: /target dependency install/,
+    },
+    {
+      metadata: { integrity: "//evil.example/pkg.tgz" },
+      expected: /target dependency install/,
+    },
   ]) {
     const cwd = gitPackageFixture({ check: 'node -e ""' });
     fs.writeFileSync(
@@ -2329,7 +2403,7 @@ test("dependency setup keeps non-funding npm lockfile URLs fail-closed", () => {
           installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
           setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
         }),
-      /destination is not approved: https:\/\/github\.com/,
+      expected,
     );
   }
 });
