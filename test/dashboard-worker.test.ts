@@ -931,6 +931,46 @@ test("Bay queue projection applies its public sample cap across all stages", asy
     ),
     { arriving: 8, "setting-up": 8, repairing: 8 },
   );
+
+  const prioritized = await exactReviewQueueStatusSnapshot(
+    { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) },
+    { bayPriorityKeys: ["openclaw/gogcli#30008"] },
+  );
+  assert.ok(prioritized);
+  assert.equal(prioritized.bay_projection.items.length, 24);
+  assert.equal(prioritized.bay_projection.items[0].item_key, "openclaw/gogcli#30008");
+  assert.equal(
+    prioritized.bay_projection.items.filter((item) => item.item_key === "openclaw/gogcli#30008")
+      .length,
+    1,
+  );
+
+  const firstRowsInEachLane = [
+    ...Array.from({ length: 7 }, (_, index) => `openclaw/gogcli#${10_000 + index}`),
+    ...Array.from({ length: 7 }, (_, index) => `openclaw/gogcli#${20_000 + index}`),
+    ...Array.from({ length: 7 }, (_, index) => `openclaw/gogcli#${30_000 + index}`),
+  ];
+  const prioritizedLaneRows = await exactReviewQueueStatusSnapshot(
+    { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) },
+    { bayPriorityKeys: firstRowsInEachLane },
+  );
+  assert.ok(prioritizedLaneRows);
+  assert.equal(prioritizedLaneRows.bay_projection.items.length, 24);
+
+  const matchingPriorityAfterStaleCards = await exactReviewQueueStatusSnapshot(
+    { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) },
+    {
+      bayPriorityKeys: [
+        ...Array.from({ length: 20 }, (_, index) => `openclaw/stale#${index + 1}`),
+        "openclaw/gogcli#30008",
+      ],
+    },
+  );
+  assert.ok(matchingPriorityAfterStaleCards);
+  assert.equal(
+    matchingPriorityAfterStaleCards.bay_projection.items[0].item_key,
+    "openclaw/gogcli#30008",
+  );
 });
 
 test("triage routing groups classify impact labels without forcing one primary group", () => {

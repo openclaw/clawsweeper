@@ -1285,9 +1285,20 @@ async function exactReviewQueueRequest(env, path, request?: Request) {
   );
 }
 
-export async function exactReviewQueueStatusSnapshot(env) {
+export async function exactReviewQueueStatusSnapshot(
+  env,
+  options: { bayPriorityKeys?: string[] } = {},
+) {
   if (!exactReviewQueueStub(env)) return null;
-  const response = await exactReviewQueueRequest(env, "/stats");
+  const priorityKeys = [...new Set(options.bayPriorityKeys || [])]
+    .filter((itemKey) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+$/.test(itemKey))
+    .slice(0, 40);
+  const search = new URLSearchParams();
+  for (const itemKey of priorityKeys) search.append("bay_priority_key", itemKey);
+  const response = await exactReviewQueueRequest(
+    env,
+    `/stats${search.size ? `?${search.toString()}` : ""}`,
+  );
   const body = objectValue(await response.json().catch(() => null));
   const health = objectValue(body.handoff_health);
   if (
@@ -2001,11 +2012,18 @@ async function statusSnapshot(env) {
 
 async function attachExactReviewQueueStatus(snapshot, env) {
   const diagnostics = objectValue(snapshot.diagnostics);
+  const bay = objectValue(snapshot.bay);
+  const bayPriorityKeys = [
+    ...(Array.isArray(bay.terminal_buffer) ? bay.terminal_buffer : []),
+    ...(Array.isArray(bay.recently_washed) ? bay.recently_washed : []),
+  ]
+    .map((item) => String(objectValue(item).item_key || ""))
+    .filter(Boolean);
   let exactReviewQueue = null;
   let exactReviewQueueError = null;
   try {
     exactReviewQueue = await withTimeout(
-      exactReviewQueueStatusSnapshot(env),
+      exactReviewQueueStatusSnapshot(env, { bayPriorityKeys }),
       OPTIONAL_SECTION_TIMEOUT_MS,
       "exact-review queue",
     );

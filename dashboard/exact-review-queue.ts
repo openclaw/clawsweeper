@@ -949,6 +949,9 @@ export class ExactReviewQueue {
     }
 
     if (request.method === "GET" && url.pathname === "/stats") {
+      const bayPriorityKeys = exactReviewQueueBayPriorityKeys(
+        url.searchParams.getAll("bay_priority_key"),
+      );
       const now = Date.now();
       const snapshot = this.storage.transactionSync(() => {
         this.pruneDeliveryReceiptsSync(now);
@@ -995,6 +998,7 @@ export class ExactReviewQueue {
       );
       return json({
         ...stats,
+        bay_projection: exactReviewQueueBayProjection(Object.values(state.items), bayPriorityKeys),
         lanes: {
           review: {
             ...stats.lanes.review,
@@ -3602,6 +3606,10 @@ function exactReviewQueueLane(item: ExactReviewQueueItem) {
 // reviewing stage; these records only make the otherwise invisible admission,
 // setup, publication, and recovery phases visible.
 const EXACT_REVIEW_BAY_SAMPLE_LIMIT = 24;
+// The dashboard can retain both a terminal-buffer card and its washed card
+// while their live queue retry is pending. Accept all bounded Bay candidates
+// first, then apply the public sample limit only after resolving live rows.
+const EXACT_REVIEW_BAY_PRIORITY_INPUT_LIMIT = 40;
 const EXACT_REVIEW_BAY_STAGES = [
   "arriving",
   "setting-up",
@@ -3631,7 +3639,21 @@ function exactReviewQueueBayStagePriority(stage: ExactReviewBayStage) {
   return EXACT_REVIEW_BAY_STAGES.indexOf(stage);
 }
 
-function exactReviewQueueBayProjection(items: ExactReviewQueueItem[]) {
+function exactReviewQueueBayPriorityKeys(values: string[]) {
+  const unique = new Set<string>();
+  for (const value of values) {
+    const itemKey = String(value || "").trim();
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+$/.test(itemKey)) continue;
+    unique.add(itemKey);
+    if (unique.size === EXACT_REVIEW_BAY_PRIORITY_INPUT_LIMIT) break;
+  }
+  return [...unique];
+}
+
+function exactReviewQueueBayProjection(
+  items: ExactReviewQueueItem[],
+  priorityItemKeys: string[] = [],
+) {
   const projected = new Map<string, ExactReviewBayProjectionItem>();
   for (const item of items) {
     if (item.state === "parked") continue;
@@ -3680,17 +3702,26 @@ function exactReviewQueueBayProjection(items: ExactReviewQueueItem[]) {
         ),
     ]),
   ) as Record<ExactReviewBayStage, ExactReviewBayProjectionItem[]>;
-  const sample: ExactReviewBayProjectionItem[] = [];
-  for (let index = 0; sample.length < EXACT_REVIEW_BAY_SAMPLE_LIMIT; index += 1) {
-    let added = false;
+  const priorityRows = exactReviewQueueBayPriorityKeys(priorityItemKeys)
+    .map((itemKey) => projected.get(itemKey))
+    .filter((item): item is ExactReviewBayProjectionItem => Boolean(item))
+    .slice(0, EXACT_REVIEW_BAY_SAMPLE_LIMIT);
+  const priorityKeys = new Set(priorityRows.map((item) => item.item_key));
+  const sample = [...priorityRows];
+  const longestStage = Math.max(
+    ...EXACT_REVIEW_BAY_STAGES.map((stage) => rowsByStage[stage].length),
+  );
+  for (
+    let index = 0;
+    sample.length < EXACT_REVIEW_BAY_SAMPLE_LIMIT && index < longestStage;
+    index += 1
+  ) {
     for (const stage of EXACT_REVIEW_BAY_STAGES) {
       const item = rowsByStage[stage][index];
-      if (!item) continue;
+      if (!item || priorityKeys.has(item.item_key)) continue;
       sample.push(item);
-      added = true;
       if (sample.length === EXACT_REVIEW_BAY_SAMPLE_LIMIT) break;
     }
-    if (!added) break;
   }
   return {
     sample_limit: EXACT_REVIEW_BAY_SAMPLE_LIMIT,
