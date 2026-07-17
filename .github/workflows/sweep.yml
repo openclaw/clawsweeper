@@ -829,6 +829,14 @@ jobs:
           process.exit(1);
           NODE
 
+      # At-least-once queue delivery can overlap an exact-head review that is already
+      # running. The durable queue owns retry, so lease contention is deferred work.
+      - name: Defer exact review while same-head lease is held
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'held' }}
+        env:
+          RETRY_AT: ${{ steps.reserve-exact-review-lease.outputs.retry_at }}
+        run: echo "::notice::Another exact-head review is already active; retry deferred until $RETRY_AT."
+
       - name: Review exact event item
         id: review-exact-event-item
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' }}
@@ -1128,12 +1136,16 @@ jobs:
           STATUS_COMMENT_ID: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).statusCommentId || '' }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
+          RESERVATION_STATUS: ${{ steps.reserve-exact-review-lease.outputs.status }}
           RETRY_AT: ${{ steps.reserve-exact-review-lease.outputs.retry_at || steps.review-exact-event-item.outputs.retry_at }}
           CLAWSWEEPER_ACTION_LEDGER_DISABLED: "1"
         run: |
           state="Failed"
           detail="The exact review did not produce a publishable artifact. The durable queue will retry it."
-          if [ "$REVIEW_OUTCOME" = "cancelled" ] || [ -n "$RETRY_AT" ]; then
+          if [ "$RESERVATION_STATUS" = "held" ]; then
+            state="Waiting"
+            detail="Another exact-head review is already active. The durable queue will retry after its lease expires."
+          elif [ "$REVIEW_OUTCOME" = "cancelled" ] || [ -n "$RETRY_AT" ]; then
             state="Interrupted"
             detail="The exact review was interrupted. The durable queue will retry it."
           fi
@@ -1233,7 +1245,20 @@ jobs:
           exit 1
 
       - name: Fail unsuccessful exact review generation
-        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && (steps.exact-review-generation-result.outputs.outcome != 'success' || steps.complete-exact-review-queue.outcome != 'success') }}
+        # A held review lease is a successful deferral only after the durable queue
+        # accepts retry ownership; queue completion failures must remain visible.
+        if: >-
+          ${{
+            always() &&
+            steps.claim-exact-review-queue.outputs.claimed == 'true' &&
+            (
+              steps.complete-exact-review-queue.outcome != 'success' ||
+              (
+                steps.exact-review-generation-result.outputs.outcome != 'success' &&
+                steps.reserve-exact-review-lease.outputs.status != 'held'
+              )
+            )
+          }}
         run: exit 1
 
   event-review-publish:

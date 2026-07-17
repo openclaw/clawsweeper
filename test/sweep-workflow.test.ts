@@ -400,6 +400,8 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   const upload = step(reviewer, "Upload exact review artifact bundle");
   const queuePublication = step(reviewer, "Queue durable exact review publication");
   const complete = step(reviewer, "Complete exact-review queue lease");
+  const deferHeldReview = step(reviewer, "Defer exact review while same-head lease is held");
+  const failGeneration = step(reviewer, "Fail unsuccessful exact review generation");
   const releaseGeneration = step(reviewer, "Release unsuccessful workflow-owned review lease");
   assert.match(create.if ?? "", /review-exact-event-item\.outcome == 'success'/);
   assert.match(create.if ?? "", /review-exact-event-item\.outputs\.retry_at == ''/);
@@ -418,6 +420,10 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(queuePublication.run ?? "", /for attempt in 1 2 3/);
   assert.match(queuePublication.run ?? "", /\.queued == true or \.deduped == true/);
   assert.match(complete.env?.PRIMARY_OUTCOME ?? "", /exact-review-generation-result/);
+  assert.match(deferHeldReview.if ?? "", /reserve-exact-review-lease\.outputs\.status == 'held'/);
+  assert.match(deferHeldReview.run ?? "", /retry deferred/);
+  assert.match(failGeneration.if ?? "", /reserve-exact-review-lease\.outputs\.status != 'held'/);
+  assert.match(failGeneration.if ?? "", /complete-exact-review-queue\.outcome != 'success'/);
   assert.match(releaseGeneration.if ?? "", /reserve-exact-review-lease\.outputs\.status != 'held'/);
   assert.match(releaseGeneration.run ?? "", /content == "eyes"/);
   assert.ok(reviewer.steps.indexOf(upload) < reviewer.steps.indexOf(complete));
@@ -1829,7 +1835,7 @@ test("event review completion removes ClawSweeper eyes reaction", () => {
   assert.doesNotMatch(block, /issues\/comments\/\$ITEM_NUMBER\/reactions/);
 });
 
-test("event re-review status lets the durable queue reconcile interruptions", () => {
+test("event re-review status distinguishes lease deferral from interruptions", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const block = workflow.slice(
     workflow.indexOf("- name: Mark unsuccessful re-review"),
@@ -1837,6 +1843,9 @@ test("event re-review status lets the durable queue reconcile interruptions", ()
   );
 
   assert.match(block, /\[ "\$REVIEW_OUTCOME" = "cancelled" \]/);
+  assert.match(block, /\[ "\$RESERVATION_STATUS" = "held" \]/);
+  assert.match(block, /state="Waiting"/);
+  assert.match(block, /Another exact-head review is already active/);
   assert.match(block, /state="Interrupted"/);
   assert.match(block, /The durable queue will retry it/);
   assert.doesNotMatch(block, /CAPACITY_OUTCOME/);

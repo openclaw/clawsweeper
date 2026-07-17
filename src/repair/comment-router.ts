@@ -146,6 +146,10 @@ import {
   runCommandMutation,
   runCommandMutationWithRetry,
 } from "./command-action-ledger.js";
+import {
+  decideReviewDispatchCoordination,
+  type ReviewDispatchCoordinationDecision,
+} from "./review-dispatch-coordination.js";
 
 const automergeMetricWrites: Promise<boolean>[] = [];
 
@@ -2015,15 +2019,16 @@ function executeCommand(command: LooseRecord) {
     ) {
       const modeLabel = command.intent === "autofix" ? AUTOFIX_LABEL : AUTOMERGE_LABEL;
       const oppositeModeLabel = command.intent === "autofix" ? AUTOMERGE_LABEL : AUTOFIX_LABEL;
-      const preMutationBlock = repairLoopReviewDispatchBlockReason(command);
-      if (preMutationBlock) {
-        const status = preMutationBlock.retryable ? "waiting" : "skipped";
+      const preMutationDecision = repairLoopPreMutationReviewDispatchDecision(command);
+      if (preMutationDecision.action !== "dispatch") {
+        const status = reviewDispatchActionStatus(preMutationDecision);
         command.status = status;
-        command.reason = preMutationBlock.reason;
+        command.reason = preMutationDecision.reason;
         command.actions = command.actions.map((action: JsonValue) => ({
           ...action,
           status,
-          reason: preMutationBlock.reason,
+          reason: preMutationDecision.reason,
+          coordination_action: preMutationDecision.action,
         }));
         return;
       }
@@ -2078,38 +2083,46 @@ function executeCommand(command: LooseRecord) {
         ],
         githubAlreadyExistsNoMutation,
       );
-      const dispatchBlock = repairLoopReviewDispatchBlockReason(command);
-      if (dispatchBlock) {
-        const status = dispatchBlock.retryable ? "waiting" : "skipped";
-        command.status = status;
-        command.reason = dispatchBlock.reason;
-        command.actions = command.actions.map((action: JsonValue) => ({
-          ...action,
-          status,
-          reason: dispatchBlock.reason,
-        }));
-        return;
-      }
-      const clawsweeper = dispatchClawSweeperReview(command);
-      dispatched = { ...dispatched, clawsweeper };
-      command.actions = command.actions.map((action: JsonValue) => {
-        if (action.action === "label")
-          return { ...action, status: "executed", label: action.label ?? modeLabel };
-        if (action.action === "remove_label")
-          return { ...action, status: "executed", label: action.label };
-        if (action.action === "ensure_automerge_job")
-          return { ...action, status: "executed", ...job };
-        if (action.action === "dispatch_clawsweeper") {
-          return {
-            ...action,
-            ...dispatchedActionStatus(clawsweeper),
+      const dispatchDecision = reviewDispatchDecisionForCommand(command);
+      if (dispatchDecision.action !== "dispatch") {
+        const dispatchStatus = markCoordinatedReviewDispatchActions({
+          command,
+          job,
+          modeLabel,
+          decision: dispatchDecision,
+        });
+        if (dispatchDecision.action !== "stop") {
+          dispatched = {
+            ...dispatched,
+            clawsweeper: {
+              status: dispatchStatus,
+              coordination_action: dispatchDecision.action,
+              reason: dispatchDecision.reason,
+            },
           };
         }
-        return action;
-      });
-      if (clawsweeper.status === "claimed") {
-        keepCommandClaimed(command);
-        return;
+      } else {
+        const clawsweeper = dispatchClawSweeperReview(command);
+        dispatched = { ...dispatched, clawsweeper };
+        command.actions = command.actions.map((action: JsonValue) => {
+          if (action.action === "label")
+            return { ...action, status: "executed", label: action.label ?? modeLabel };
+          if (action.action === "remove_label")
+            return { ...action, status: "executed", label: action.label };
+          if (action.action === "ensure_automerge_job")
+            return { ...action, status: "executed", ...job };
+          if (action.action === "dispatch_clawsweeper") {
+            return {
+              ...action,
+              ...dispatchedActionStatus(clawsweeper),
+            };
+          }
+          return action;
+        });
+        if (clawsweeper.status === "claimed") {
+          keepCommandClaimed(command);
+          return;
+        }
       }
     }
     if (
@@ -2337,7 +2350,7 @@ function executeCommand(command: LooseRecord) {
     );
     command.status = commandHasClaimedDispatch(command)
       ? "claimed"
-      : commandHasWaitingRepairDispatch(command)
+      : commandHasWaitingDispatch(command)
         ? "waiting"
         : "executed";
   } finally {
@@ -2941,11 +2954,19 @@ function repairJobModeForCommand(command: LooseRecord) {
 
 type ReviewLeaseGuardBlock = { reason: string; retryable: boolean };
 
-function repairLoopReviewDispatchBlockReason(command: LooseRecord): ReviewLeaseGuardBlock | null {
-  if (command.automation_source !== "repair_loop_label_sweep") return null;
+function repairLoopPreMutationReviewDispatchDecision(
+  command: LooseRecord,
+): ReviewDispatchCoordinationDecision {
+  if (command.automation_source !== "repair_loop_label_sweep") return { action: "dispatch" };
+  return reviewDispatchDecisionForCommand(command);
+}
+
+function reviewDispatchDecisionForCommand(
+  command: LooseRecord,
+): ReviewDispatchCoordinationDecision {
   const number = Number(command.issue_number);
   if (!Number.isInteger(number) || number <= 0) {
-    return { reason: "label sweep target is invalid", retryable: false };
+    return { action: "stop", reason: "review dispatch target is invalid" };
   }
   try {
     const before = fetchPullRequestView(number);
@@ -2953,7 +2974,14 @@ function repairLoopReviewDispatchBlockReason(command: LooseRecord): ReviewLeaseG
       .trim()
       .toLowerCase();
     if (String(before.state ?? "").toUpperCase() !== "OPEN") {
-      return { reason: "label sweep target is no longer an open PR", retryable: false };
+      return decideReviewDispatchCoordination({
+        stateBefore: String(before.state ?? ""),
+        stateAfter: String(before.state ?? ""),
+        headBefore,
+        headAfter: headBefore,
+        activeLeaseExpiresAt: null,
+        completedReviewAt: null,
+      });
     }
     const comments = ghPaged<JsonValue>(
       `repos/${targetRepo}/issues/${number}/comments?per_page=100`,
@@ -2962,16 +2990,6 @@ function repairLoopReviewDispatchBlockReason(command: LooseRecord): ReviewLeaseG
     const headAfter = String(after.headRefOid ?? "")
       .trim()
       .toLowerCase();
-    if (String(after.state ?? "").toUpperCase() !== "OPEN") {
-      return { reason: "label sweep target is no longer an open PR", retryable: false };
-    }
-    if (!headBefore || headBefore !== headAfter) {
-      return {
-        reason:
-          "PR head changed during the dispatch-time review lease check; next sweep will retry",
-        retryable: true,
-      };
-    }
     const activeReviewLease = freshExactHeadReviewStartLease({
       comments: comments as LooseRecord[],
       itemNumber: number,
@@ -2979,33 +2997,72 @@ function repairLoopReviewDispatchBlockReason(command: LooseRecord): ReviewLeaseG
       trustedAuthors: trustedBots,
       nowMs: Date.now(),
     });
-    if (activeReviewLease) {
-      return {
-        reason: `same-head ClawSweeper review is active until ${activeReviewLease.expiresAt}`,
-        retryable: true,
-      };
-    }
-    const sweepStartedAtMs = Date.parse(String(command.comment_created_at ?? ""));
+    const commandStartedAtMs = Date.parse(
+      String(command.comment_updated_at ?? command.comment_created_at ?? ""),
+    );
     const completedReview = trustedExactHeadReviewCompletionSince({
       comments: comments as LooseRecord[],
       headSha: headAfter,
       trustedAuthors: trustedBots,
-      sinceMs: sweepStartedAtMs,
+      sinceMs: commandStartedAtMs,
     });
-    if (completedReview) {
-      const completedAt = completedReview.publishedAt ?? completedReview.reviewedAt ?? "recently";
-      return {
-        reason: `same-head ClawSweeper review completed at ${completedAt}; next router pass will route it`,
-        retryable: false,
-      };
-    }
-    return null;
+    return decideReviewDispatchCoordination({
+      stateBefore: String(before.state ?? ""),
+      stateAfter: String(after.state ?? ""),
+      headBefore,
+      headAfter,
+      activeLeaseExpiresAt: activeReviewLease?.expiresAt ?? null,
+      completedReviewAt:
+        completedReview?.publishedAt ??
+        completedReview?.reviewedAt ??
+        (completedReview ? "recently" : null),
+    });
   } catch (error) {
     return {
+      action: "retry",
       reason: `dispatch-time review lease check failed; next sweep will retry: ${compactGhError(error)}`,
-      retryable: true,
     };
   }
+}
+
+function reviewDispatchActionStatus(decision: ReviewDispatchCoordinationDecision) {
+  return ["wait_for_active_review", "retry"].includes(decision.action) ? "waiting" : "skipped";
+}
+
+function markCoordinatedReviewDispatchActions({
+  command,
+  job,
+  modeLabel,
+  decision,
+}: {
+  command: LooseRecord;
+  job: LooseRecord;
+  modeLabel: string;
+  decision: Exclude<ReviewDispatchCoordinationDecision, { action: "dispatch" }>;
+}) {
+  const dispatchStatus = reviewDispatchActionStatus(decision);
+  command.reason = decision.reason;
+  command.actions = command.actions.map((action: JsonValue) => {
+    if (action.action === "ensure_automerge_job") {
+      return { ...action, status: "executed", ...job };
+    }
+    if (action.action === "label") {
+      return { ...action, status: "executed", label: action.label ?? modeLabel };
+    }
+    if (action.action === "remove_label") {
+      return { ...action, status: "executed", label: action.label };
+    }
+    if (action.action === "dispatch_clawsweeper") {
+      return {
+        ...action,
+        status: dispatchStatus,
+        reason: decision.reason,
+        coordination_action: decision.action,
+      };
+    }
+    return action;
+  });
+  return dispatchStatus;
 }
 
 function trustedAutomationSourceRevisionBlockReason(
@@ -3474,10 +3531,10 @@ function commandHasClaimedDispatch(command: LooseRecord) {
   );
 }
 
-function commandHasWaitingRepairDispatch(command: LooseRecord) {
+function commandHasWaitingDispatch(command: LooseRecord) {
   return command.actions?.some(
     (action: JsonValue) =>
-      action?.action === "dispatch_repair" &&
+      ["dispatch_repair", "dispatch_clawsweeper"].includes(String(action?.action ?? "")) &&
       (action?.status === "waiting" || action?.status === "active"),
   );
 }
@@ -4830,16 +4887,31 @@ function automergeTimelineEvents(command: LooseRecord, body: string) {
   const head = command.target?.head_sha ?? command.expected_head_sha ?? "unknown";
   const commentTime = command.comment_updated_at ?? command.comment_created_at;
   if (["automerge", "autofix"].includes(String(command.intent ?? ""))) {
-    const action = executedAction(command, "dispatch_clawsweeper");
-    events.push({
-      id: `review-queued:${head}:${command.comment_id ?? commentTime ?? "unknown"}`,
-      label: "review queued",
-      at: action?.dispatched_at ?? commentTime ?? new Date().toISOString(),
-      headSha: head,
-      repo: command.repo,
-      status: "queued",
-      runUrl: action?.run_url,
-    });
+    const action = (command.actions ?? []).find(
+      (candidate: JsonValue) => candidate?.action === "dispatch_clawsweeper",
+    );
+    const coordinationAction = String(action?.coordination_action ?? "");
+    const event =
+      coordinationAction === "wait_for_active_review"
+        ? { id: "review-active-reused", label: "active review reused", status: "waiting" }
+        : coordinationAction === "reuse_completed_review"
+          ? { id: "review-result-reused", label: "review result reused", status: "complete" }
+          : coordinationAction === "retry"
+            ? { id: "review-deferred", label: "review dispatch deferred", status: "waiting" }
+            : coordinationAction === "stop"
+              ? null
+              : { id: "review-queued", label: "review queued", status: "queued" };
+    if (event) {
+      events.push({
+        id: `${event.id}:${head}:${command.comment_id ?? commentTime ?? "unknown"}`,
+        label: event.label,
+        at: action?.dispatched_at ?? commentTime ?? new Date().toISOString(),
+        headSha: head,
+        repo: command.repo,
+        status: event.status,
+        runUrl: action?.run_url,
+      });
+    }
   }
   if (
     ["clawsweeper_auto_repair", "clawsweeper_auto_merge"].includes(String(command.intent ?? ""))

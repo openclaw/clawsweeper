@@ -2411,6 +2411,15 @@ function repairDispatchLine(dispatched: LooseRecord, label: string): string {
 }
 
 function reviewDispatchLine(dispatched: LooseRecord, label: string, action: string): string {
+  if (dispatched.coordination_action === "wait_for_active_review") {
+    return `${label}: an exact-head review is already active; no duplicate review was queued.`;
+  }
+  if (dispatched.coordination_action === "reuse_completed_review") {
+    return `${label}: the existing exact-head review result is being reused.`;
+  }
+  if (dispatched.coordination_action === "retry") {
+    return `${label}: exact-head review dispatch deferred while the durable router retries.`;
+  }
   const runUrl = typeof dispatched.run_url === "string" ? dispatched.run_url : "";
   const workflow = String(dispatched.workflow ?? "").trim();
   const event = String(dispatched.event ?? "").trim();
