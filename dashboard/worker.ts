@@ -512,6 +512,11 @@ export default {
       return authenticatedExactReviewQueueRequest(request, env, "/dead-letters/list");
     if (url.pathname === "/internal/exact-review/dead-letters/replay" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/dead-letters/replay");
+    if (
+      url.pathname === "/internal/exact-review/dead-letters/recover-fresh" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/dead-letters/recover-fresh");
     if (url.pathname === "/internal/exact-review/dead-letters/resolve" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/dead-letters/resolve");
     if (url.pathname === "/internal/exact-review/publications/list" && request.method === "POST")

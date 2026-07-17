@@ -823,6 +823,10 @@ export class ExactReviewQueue {
       return this.replayDeadLetters(await request.json().catch(() => null));
     }
 
+    if (request.method === "POST" && url.pathname === "/dead-letters/recover-fresh") {
+      return this.recoverDeadLettersFresh(await request.json().catch(() => null));
+    }
+
     if (request.method === "POST" && url.pathname === "/dead-letters/resolve") {
       return this.resolveDeadLetters(await request.json().catch(() => null));
     }
@@ -1225,13 +1229,48 @@ export class ExactReviewQueue {
       ) as Iterable<Record<string, unknown>>,
     );
     const page = rows.slice(0, limit);
+    const state = this.readStateSync();
     return json({
       ok: true,
-      dead_letters: page.map((row) => ({
-        ...row,
-        item: JSON.parse(String(row.item_json || "{}")),
-        item_json: undefined,
-      })),
+      dead_letters: page.map((row) => {
+        const item = exactReviewDeadLetterItem(String(row.item_json || ""));
+        const recovery = item ? exactReviewFreshRecoveryFromPublicationItem(item) : null;
+        const activePublication = item ? state.items[item.key] : undefined;
+        const activeRecovery = recovery ? state.items[recovery.key] : undefined;
+        const recoveryReason = !item
+          ? "invalid_dead_letter_item"
+          : !recovery
+            ? "not_an_exact_publication"
+            : activePublication
+              ? "publication_item_active"
+              : activeRecovery
+                ? "fresh_review_already_active"
+                : !isExactReviewQueueTargetEnabled(recovery.decision, this.env)
+                  ? "target_not_enabled"
+                  : "eligible";
+        return {
+          ...row,
+          item,
+          item_json: undefined,
+          diagnostic: {
+            reason_code: String(row.reason_code || "unknown_failure"),
+            attempts: Number(row.attempts || 0),
+            first_failed_at: Number(row.first_failed_at || 0)
+              ? new Date(Number(row.first_failed_at)).toISOString()
+              : null,
+            last_failed_at: Number(row.last_failed_at || 0)
+              ? new Date(Number(row.last_failed_at)).toISOString()
+              : null,
+            error_fingerprint: String(row.error_fingerprint || "") || null,
+          },
+          fresh_recovery: {
+            mode: "fresh_review_only",
+            eligible: recoveryReason === "eligible",
+            reason: recoveryReason,
+            item_key: recovery?.key ?? null,
+          },
+        };
+      }),
       next_cursor: rows.length > limit ? String(page.at(-1)?.dead_letter_id || "") || null : null,
     });
   }
@@ -1311,6 +1350,114 @@ export class ExactReviewQueue {
       replayed: result.replayed,
       deduped: result.deduped,
       skipped: result.skipped,
+    });
+  }
+
+  private async recoverDeadLettersFresh(value: unknown) {
+    const body = objectValue(value);
+    const ids = exactReviewDeadLetterIds(body.ids);
+    const recoveryKey = String(body.idempotency_key || "").trim();
+    if (!ids || ids.length > 10) return json({ error: "invalid_dead_letter_ids" }, 400);
+    if (!/^[A-Za-z0-9:._-]{1,200}$/.test(recoveryKey)) {
+      return json({ error: "invalid_idempotency_key" }, 400);
+    }
+    const now = Date.now();
+    const result = this.storage.transactionSync(() => {
+      const state = this.readStateSync();
+      let recovered = 0;
+      let deduped = 0;
+      let skipped = 0;
+      for (const id of ids) {
+        const row = Array.from(
+          this.storage.sql.exec(
+            `SELECT status, replay_key, resolution_note, item_json
+               FROM ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+              WHERE dead_letter_id = ?`,
+            id,
+          ),
+        )[0] as
+          | {
+              status?: string;
+              replay_key?: string;
+              resolution_note?: string;
+              item_json?: string;
+            }
+          | undefined;
+        if (
+          row?.status === "resolved" &&
+          row.replay_key === recoveryKey &&
+          row.resolution_note === "recovered_fresh"
+        ) {
+          deduped += 1;
+          continue;
+        }
+        if (row?.status !== "open" || !row.item_json) {
+          skipped += 1;
+          continue;
+        }
+        const item = exactReviewDeadLetterItem(row.item_json);
+        const recovery = item ? exactReviewFreshRecoveryFromPublicationItem(item) : null;
+        if (
+          !item ||
+          !recovery ||
+          !isExactReviewQueueTargetEnabled(recovery.decision, this.env) ||
+          state.items[item.key] ||
+          state.items[recovery.key]
+        ) {
+          skipped += 1;
+          continue;
+        }
+        // Never replay the immutable publisher artifact. Create exactly one new ordinary
+        // review item so the current workflow can gather a new artifact and proof. Existing
+        // pending, dispatching, and leased items are all skipped above rather than replaced.
+        state.items[recovery.key] = {
+          key: recovery.key,
+          decision: recovery.decision,
+          state: "pending",
+          revision: 1,
+          createdAt: now,
+          updatedAt: now,
+          nextAttemptAt: exactReviewQueueDebouncedAttemptAt(
+            state,
+            recovery.decision,
+            now,
+            now,
+            this.env,
+          ),
+          attempts: 0,
+        };
+        this.storage.sql.exec(
+          `UPDATE ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+              SET status = 'resolved', replay_key = ?, resolution_note = 'recovered_fresh',
+                  resolved_at = ?
+            WHERE dead_letter_id = ? AND status = 'open'`,
+          recoveryKey,
+          now,
+          id,
+        );
+        recovered += 1;
+      }
+      const unparked = recovered ? this.drainParkedDeadLettersSync(state, now) : 0;
+      if (recovered || unparked) {
+        this.writeStateSync(state);
+        if (unparked) {
+          this.incrementQueueMetricsSync({
+            publicationCompleted: unparked,
+            publicationDeadLettered: unparked,
+          });
+        }
+      } else {
+        this.syncLegacyCompatibilitySync(state);
+      }
+      return { state, recovered, deduped, skipped, unparked };
+    });
+    if (result.recovered || result.unparked) await this.scheduleNext(result.state, now);
+    return json({
+      ok: true,
+      recovered: result.recovered,
+      deduped: result.deduped,
+      skipped: result.skipped,
+      unparked: result.unparked,
     });
   }
 
@@ -2798,6 +2945,36 @@ function exactReviewDeadLetterIds(value): string[] | null {
   return ids;
 }
 
+type ExactReviewDeadLetterItem = Pick<ExactReviewQueueItem, "key" | "decision">;
+
+function exactReviewDeadLetterItem(value: string): ExactReviewDeadLetterItem | null {
+  try {
+    const record = objectValue(JSON.parse(value));
+    const key = String(record.key || "").trim();
+    const decision = exactReviewDecisionFrom(record.decision);
+    if (!key || !decision || key !== exactReviewItemKey(decision)) return null;
+    return { key, decision };
+  } catch {
+    return null;
+  }
+}
+
+function exactReviewFreshRecoveryFromPublicationItem(
+  item: ExactReviewDeadLetterItem,
+): { decision: ExactReviewDecision; key: string } | null {
+  if (!exactReviewQueueIsPublication(item) || !item.decision.publication) return null;
+  const decision = exactReviewDecisionFrom({
+    ...item.decision.publication.producerDecision,
+    sourceAction:
+      item.decision.publication.producerDecision.sourceAction ===
+      FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION
+        ? FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION
+        : EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
+    supersedesInProgress: true,
+  });
+  return decision ? { decision, key: exactReviewItemKey(decision) } : null;
+}
+
 function exactReviewPublicationCandidates(
   value,
 ): Array<{ itemKey: string; revision: number }> | null {
@@ -3393,7 +3570,7 @@ function exactReviewMetricDelta(value: unknown) {
   return Number.isSafeInteger(delta) && delta > 0 ? delta : 0;
 }
 
-function exactReviewQueueIsPublication(item: ExactReviewQueueItem) {
+function exactReviewQueueIsPublication(item: Pick<ExactReviewQueueItem, "decision">) {
   return item.decision.sourceAction === EXACT_REVIEW_ARTIFACT_PUBLISH_SOURCE_ACTION;
 }
 
