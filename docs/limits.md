@@ -256,6 +256,11 @@ hot intake `14`, and commit review `2`. Existing repair lanes keep their
 
 ## Runtime Overrides
 
+- `EXACT_REVIEW_PUBLICATION_RECOVERY_SUCCESSES` overrides how many consecutive
+  clean publications raise the adaptive publication ceiling by one step; the
+  default is 10 (clamped 1-1000). The former hardcoded 50 pinned the lane at
+  its minimum under hourly rate-limit bursts because the counter resets on
+  every failure.
 - `CLAWSWEEPER_MAINTAINER_LOGINS` (comma-separated) supplements the maintainer
   author-association check in the idea-archive revival watcher — needed where
   GitHub reports an org owner as `CONTRIBUTOR` on app-operated repositories. A

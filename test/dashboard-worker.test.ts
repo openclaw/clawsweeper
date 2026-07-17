@@ -4275,7 +4275,9 @@ test("exact-review publication capacity backs off on GitHub pressure and recover
       deliveries: Record<string, number>;
       items: Record<string, ReturnType<typeof leasedExactReviewPublicationItem>>;
     };
-    const recovered = Array.from({ length: 50 }, (_, index) =>
+    // One ceiling step per DEFAULT_EXACT_REVIEW_PUBLICATION_RECOVERY_SUCCESSES
+    // (10) consecutive clean publications.
+    const recovered = Array.from({ length: 10 }, (_, index) =>
       leasedExactReviewPublicationItem(721 + index, String(7210 + index)),
     );
     for (const item of recovered) state.items[item.key] = item;

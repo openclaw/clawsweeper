@@ -138,7 +138,12 @@ const EXACT_REVIEW_PUBLICATION_READY_PER_SCALE_STEP = 250;
 const EXACT_REVIEW_PUBLICATION_CONCURRENT_SCALE_STEP = 8;
 const EXACT_REVIEW_PUBLICATION_RATE_LIMIT_COOLDOWN_MS = 15 * 60 * 1000;
 const EXACT_REVIEW_PUBLICATION_TRANSIENT_COOLDOWN_MS = 5 * 60 * 1000;
-const EXACT_REVIEW_PUBLICATION_RECOVERY_SUCCESSES = 50;
+// One ceiling step up requires this many consecutive clean publications. The
+// former value of 50 mathematically pinned the lane at minimum under hourly
+// rate-limit bursts (each burst resets the counter and halves the ceiling; 50
+// clean runs never fit between bursts at 4-way concurrency — observed
+// 2026-07-17: 408 pending, ceiling stuck at 4 for hours).
+const DEFAULT_EXACT_REVIEW_PUBLICATION_RECOVERY_SUCCESSES = 10;
 const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 6 * 60 * 1000;
 // Exact publications have a dedicated bounded lane. Bound the unclaimed handoff so a run that
 // never reaches its claim step is re-dispatched; stale runs lose the lease tuple safely.
@@ -2560,6 +2565,19 @@ function exactReviewPublicationMinimum(env, maximum = exactReviewPublicationMaxi
   );
 }
 
+function exactReviewPublicationRecoverySuccesses(env) {
+  return Math.max(
+    1,
+    Math.min(
+      1_000,
+      numberFrom(
+        env.EXACT_REVIEW_PUBLICATION_RECOVERY_SUCCESSES,
+        DEFAULT_EXACT_REVIEW_PUBLICATION_RECOVERY_SUCCESSES,
+      ),
+    ),
+  );
+}
+
 function exactReviewPublicationControl(env, value: unknown): ExactReviewPublicationControl {
   const control = objectValue(value);
   const maximum = exactReviewPublicationMaximum(env);
@@ -2617,7 +2635,7 @@ function exactReviewPublicationControlAfterFeedback(
     return { ...control, recoverySuccesses: 0 };
   }
   const recoverySuccesses = control.recoverySuccesses + 1;
-  if (recoverySuccesses < EXACT_REVIEW_PUBLICATION_RECOVERY_SUCCESSES) {
+  if (recoverySuccesses < exactReviewPublicationRecoverySuccesses(env)) {
     return { ...control, recoverySuccesses };
   }
   return {
