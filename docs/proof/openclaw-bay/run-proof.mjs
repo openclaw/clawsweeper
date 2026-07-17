@@ -376,7 +376,11 @@ function assertProof(name, condition, details = {}) {
 
 function sanitizeUrl(value) {
   const url = new URL(value);
-  return { host: url.host, path: url.pathname };
+  return {
+    host: url.host,
+    path: url.pathname,
+    search: url.pathname === "/api/health-history" ? url.search : "",
+  };
 }
 
 const browser = await chromium.launch({
@@ -442,6 +446,7 @@ page.on("request", (request) => {
     method: request.method(),
     host: safe.host,
     path: safe.path,
+    search: safe.search,
     resource_type: request.resourceType(),
   });
 });
@@ -451,6 +456,7 @@ page.on("response", (response) => {
     status: response.status(),
     host: safe.host,
     path: safe.path,
+    search: safe.search,
   });
 });
 page.on("console", (message) => {
@@ -487,7 +493,7 @@ await page.route("**/*", async (route) => {
       headers: { "cache-control": "no-store", "x-clawsweeper-cache": "synthetic-proof" },
       body: JSON.stringify({
         schema_version: 1,
-        range: "6h",
+        range: url.searchParams.get("range") || "6h",
         retention_days: 7,
         samples: healthHistory,
       }),
@@ -591,6 +597,12 @@ try {
     queue_header: await page.locator('[data-stage="arriving"] h2').innerText(),
     queue_omission: await page.locator('[data-stage="arriving"] .overflow-note').count(),
     queue_omission_label: await page.locator('[data-stage="arriving"] .overflow-note').innerText(),
+    queue_omission_role: await page
+      .locator('[data-stage="arriving"] .overflow-note')
+      .getAttribute("role"),
+    labelled_axes: await page.locator("#bay-control-board .bay-control-axis-label").count(),
+    range_controls: await page.locator("[data-bay-history-range]").count(),
+    lane_help: await page.locator('[data-stage="arriving"] .lane-help summary').count(),
   };
   assertProof(
     "Bay mirrors cached exact-review admission, publication, and handoff telemetry",
@@ -602,9 +614,13 @@ try {
       /\/ hour/.test(bayControl.rate_hover_label) &&
       bayControl.queue_items === 1 &&
       bayControl.arriving_queue_samples === 6 &&
-      bayControl.queue_header === "ARRIVING 9" &&
+      /^ARRIVING 9/.test(bayControl.queue_header) &&
       bayControl.queue_omission === 1 &&
-      bayControl.queue_omission_label === "+3 queued IDs not shown",
+      bayControl.queue_omission_label === "+3 queued IDs not shown" &&
+      bayControl.queue_omission_role === null &&
+      bayControl.labelled_axes >= 12 &&
+      bayControl.range_controls === 3 &&
+      bayControl.lane_help === 1,
     bayControl,
   );
   const terminalPoolCounts = {
@@ -638,6 +654,59 @@ try {
     "Mini queue control board",
     "Bay reuses the dashboard’s cached six-hour review-admission, publication, and handoff telemetry; each sparkline point has an exact hover label.",
   );
+
+  await page.locator('[data-stage="arriving"] .overflow-note').click();
+  await page.locator("#queue-sample-drawer[open]").waitFor({ state: "visible" });
+  const queueSample = await page.locator("#queue-sample-drawer").innerText();
+  assertProof(
+    "overflow button explains the bounded public queue sample without inventing hidden IDs",
+    /3 queued IDs are counted/i.test(queueSample) &&
+      /outside OpenClaw Bay's 24-reference public sample/i.test(queueSample) &&
+      /does not fetch or invent that missing list/i.test(queueSample),
+    { text: queueSample },
+  );
+  await capture(
+    "01aa-queue-sample",
+    "Readable queue sample detail",
+    "The readable overflow button opens the known queue sample and explains why aggregate-only IDs are not individually exposed.",
+  );
+  await page.locator("#queue-sample-close").click();
+
+  const rangeFetches = [];
+  for (const range of ["24h", "7d"]) {
+    const rangeResponse = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/health-history" &&
+        new URL(response.url()).searchParams.get("range") === range &&
+        response.status() === 200,
+    );
+    await page.locator(`[data-bay-history-range="${range}"]`).click();
+    await rangeResponse;
+    await page.waitForFunction(
+      (expectedRange) =>
+        Array.from(document.querySelectorAll("[data-bay-history-range]")).some(
+          (button) =>
+            button.getAttribute("data-bay-history-range") === expectedRange &&
+            button.getAttribute("aria-pressed") === "true",
+        ),
+      range,
+    );
+    rangeFetches.push(range);
+  }
+  const selectedRangeCopy = await page.locator("#bay-control-board").innerText();
+  assertProof(
+    "Bay switches cached telemetry ranges with matching labels and axes",
+    rangeFetches.join(",") === "24h,7d" &&
+      /7 days/i.test(selectedRangeCopy) &&
+      (await page.locator("#bay-control-board .bay-control-axis-label").count()) >= 12,
+    { ranges: rangeFetches, text: selectedRangeCopy },
+  );
+  await capture(
+    "01ab-range-selector",
+    "Telemetry range selector",
+    "The compact 6-hour, 24-hour, and 7-day controls use the existing cached health-history endpoint and retain visible y-axis values.",
+  );
+  await page.locator('[data-bay-history-range="6h"]').click();
 
   const originalHistory = healthHistory;
   const lastHistory = originalHistory.at(-1);
@@ -1211,10 +1280,21 @@ try {
     "completed pool keeps visible references readable at constrained width",
     narrowTerminalPool.references === 12 &&
       narrowTerminalPool.columns === "2" &&
-      narrowTerminalPool.overflow === "+8 more in the tide buffer" &&
+      narrowTerminalPool.overflow === "+8 more live items not shown" &&
       !narrowTerminalPool.overlaps,
     narrowTerminalPool,
   );
+  await page.locator('[data-stage="completed"] .overflow-note').click();
+  await page.locator("#queue-sample-drawer[open]").waitFor({ state: "visible" });
+  const narrowTerminalDrawer = await page
+    .locator("#queue-sample-drawer .queue-sample-list li")
+    .count();
+  assertProof(
+    "terminal overflow detail lists every known hidden outcome",
+    narrowTerminalDrawer === denseTerminalBuffer.length,
+    { known_terminal_outcomes: narrowTerminalDrawer },
+  );
+  await page.locator("#queue-sample-close").click();
   await page.setViewportSize({ width: 1900, height: 1000 });
   await page.waitForFunction(
     () => document.querySelector('[data-stage="completed"]')?.getAttribute("data-cols") === "4",
@@ -1312,7 +1392,7 @@ try {
     "live workers take precedence over their durable queue stage",
     queueReconciliation.in_setting_up === 0 &&
       queueReconciliation.in_reviewing === 1 &&
-      queueReconciliation.setting_up_header === "SETTING UP 9",
+      /^SETTING UP 9/.test(queueReconciliation.setting_up_header),
     queueReconciliation,
   );
 
@@ -1339,6 +1419,14 @@ try {
   const healthHistoryGets = requests.filter(
     (request) => request.path === "/api/health-history",
   ).length;
+  const healthHistoryRanges = requests
+    .filter((request) => request.path === "/api/health-history")
+    .map(
+      (request) =>
+        new URL(`https://proof.invalid${request.path}${request.search || ""}`).searchParams.get(
+          "range",
+        ) || "6h",
+    );
   const mutatingRequests = requests.filter((request) => !["GET", "HEAD"].includes(request.method));
   const directGitHubRequests = requests.filter((request) =>
     request.host.toLowerCase().startsWith("api.github.com"),
@@ -1362,9 +1450,11 @@ try {
     direct_github_requests: 0,
   });
   assertProof(
-    "mini control board reads cached dashboard history once per minute",
-    healthHistoryGets === 7,
-    { health_history_gets: healthHistoryGets },
+    "mini control board caches each selected dashboard history range",
+    healthHistoryGets === 9 &&
+      healthHistoryRanges.filter((range) => range === "24h").length === 1 &&
+      healthHistoryRanges.filter((range) => range === "7d").length === 1,
+    { health_history_gets: healthHistoryGets, ranges: healthHistoryRanges },
   );
   const unexpectedConsoleErrors = consoleErrors.filter(
     (error) =>

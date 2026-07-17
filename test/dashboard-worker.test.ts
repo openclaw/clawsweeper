@@ -996,8 +996,11 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   assert.match(body, /Queue handoff/);
   assert.match(body, /function loadBayHistory/);
   assert.match(body, /function bayRateSparkline/);
-  assert.match(body, /net throughput over six hours/);
-  assert.match(body, /api\/health-history\?range=6h/);
+  assert.match(body, /net throughput over .*bayRangeLabel/);
+  assert.match(body, /data-bay-history-range="24h"/);
+  assert.match(body, /data-bay-history-range="7d"/);
+  assert.match(body, /bay-control-axis-label/);
+  assert.match(body, /api\/health-history\?range="\+encodeURIComponent\(range\)/);
   assert.match(body, /function expandQueue/);
   assert.match(body, /Repair cove/);
   assert.match(body, /id="tunnel-layer"/);
@@ -1020,7 +1023,12 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   assert.match(body, /columns===4/);
   assert.match(body, /Avg trigger → final review/);
   assert.match(body, /Awaiting a completed journey/);
-  assert.match(body, /more in the tide buffer/);
+  assert.match(body, /id="queue-sample-drawer"/);
+  assert.match(body, /-reference public sample/);
+  assert.match(body, /does not fetch or invent that missing list/);
+  assert.match(body, /var known=rows;/);
+  assert.match(body, /data-overflow-stage/);
+  assert.match(body, /function laneHelp/);
   assert.match(body, /lane-nudge/);
   assert.match(body, /id="overall-average"/);
   assert.doesNotMatch(body, /function laneTimingHtml/);

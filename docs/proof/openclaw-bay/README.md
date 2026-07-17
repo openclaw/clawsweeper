@@ -1,9 +1,10 @@
 # OpenClaw Bay deterministic browser proof
 
 This proof package exercises the real `/bay-demo` page and its checked-in
-artwork in Chromium. Playwright replaces only `/api/status` with a fully
-synthetic, redacted sequence so stage changes can be reproduced without live
-dashboard data, credentials, or GitHub API traffic.
+artwork in Chromium. Playwright replaces the dashboard's `/api/status` and
+`/api/health-history` reads with fully synthetic, redacted fixtures so stage
+changes and telemetry controls can be reproduced without live dashboard data,
+credentials, or GitHub API traffic.
 
 The sequence proves:
 
@@ -16,22 +17,28 @@ The sequence proves:
 - GitHub-reference search and focus;
 - repository filtering;
 - the read-only drawer's safe GitHub item, job, and workflow-run links;
+- readable overflow controls that open the known queue sample and explicitly explain when aggregate queue IDs are outside the bounded public projection;
+- compact review-admission and result-publication charts with labelled y-axes, exact point hover labels, and cached 6-hour, 24-hour, and 7-day range controls;
+- lightweight hover/focus explanations on the beach lane signs;
 - the local-only tide preview advancing through incoming, crest, backwash, and restored states while preserving terminal keys and count;
 - the short static reduced-motion tide cue preserving the same preview state;
 - completed and failed/cancelled outcomes grouped into their respective terminal pools;
 - twenty completed outcomes fitting individually in the expanded terminal pool without a hidden overflow at the standard desktop width, plus a constrained-width layout that keeps twelve labels readable and makes the remaining eight explicit; and
 - a generated real tide visibly washing terminal crustaceans before clearing the shared buffer; and
-- zero browser-to-GitHub API requests, mutation requests, console errors, or
-  uncaught page errors.
+- zero browser-to-GitHub API requests, mutation requests, unexpected console
+  errors, or uncaught page errors. The deliberate synthetic health-history
+  outage records one expected 503 console error while the resilience state is
+  being exercised.
 
 ## Artifacts
 
 - [`playwright-proof-storyboard.jpg`](playwright-proof-storyboard.jpg) is a
-  labelled 18-state contact sheet that can be inspected without video codecs.
+  labelled 21-state contact sheet that can be inspected without video codecs.
 - [`trace.zip`](trace.zip) is the Playwright action, DOM snapshot, and network
   trace. Open it with
   `npx --yes playwright@1.60.0 show-trace docs/proof/openclaw-bay/trace.zip`.
-- [`proof-summary.json`](proof-summary.json) records all 27 passing assertions,
+- [`proof-summary.json`](proof-summary.json) records all 39 passing assertions
+  from its accompanying deterministic proof run,
   sanitized request/response metadata, safe drawer links, the unchanged
   terminal keys before and after both preview modes, and the proved real-tide
   clear.
@@ -41,8 +48,9 @@ The sequence proves:
   that script without changing repository dependencies.
 - [`fixtures/`](fixtures/) contains the exact three checked-in synthetic
   `/api/status` transition responses. The runner derives dense-terminal and
-  real-tide responses from the final fixture and records the real-tide SHA-256
-  in the summary. It
+  real-tide responses from the final fixture, provides a synthetic in-memory
+  `/api/health-history` response for telemetry, and records the real-tide
+  SHA-256 in the summary. It
   fails before launching Chromium if the checked-in sequence drifts.
 
 The compact trace intentionally omits Playwright's continuous screenshot film
@@ -66,17 +74,17 @@ crabbox run \
 
 ## Provenance and privacy
 
-- implementation source: `a59c19f698393955404e46fe7bd413a7828adb4a`
+- implementation source: `36525da82e489251ecf37454489a0e997a0c0604`
 - provider: Crabbox `local-container`
-- lease: `cbx_260d3395d7b0` (`tidal-lobster`)
+- lease: `cbx_7c27d4e0df99` (`jade-hermit`)
 - image: `mcr.microsoft.com/playwright:v1.60.0-noble`
 - fixture SHA-256:
-  `F766EE78A4E8E4F41EA9F2F64C9C85DFE3D04D7962B647007F073F40AF94ADA5`
+  `B0180F79C465964AD39E6E45F730211294742E1206EA4CE1A4C39DEB61AFCB71`
 - exact response SHA-256 values:
   - `01-initial.json`:
     `9D6CA7EDD926508DBB3DB7ED3B8328405F8404E16AEE303AE9057CA6B3BA0397`
   - `02-forward.json`:
-    `7D102233EE8A63E7987DAAB53A231C1DD35008C0734A771119488BC54F4499C9`
+    `A94441D54E4CBBAE21C788C65FF60B0DCDA166459CBDA77C0A70F827076E9126`
   - `03-retrigger.json`:
     `9BAF0B764E413369EC8D9554D731A4E6B008B2DCB266B5D2837E94E820CEEBFE`
 - derived real-tide response:
