@@ -28,6 +28,16 @@ import {
   type ExactReviewCompletionOutcome,
   type ExactReviewDecision,
 } from "./exact-review-queue.ts";
+import {
+  AUTOMERGE_METRICS_EVENT_TYPE,
+  AUTOMERGE_METRICS_EVENT_KEY_PREFIX,
+  AUTOMERGE_METRICS_EVENT_ID_KEY_PREFIX,
+  AUTOMERGE_METRICS_EVENT_LIMIT,
+  AUTOMERGE_METRICS_STORE_KEY,
+  AUTOMERGE_METRICS_TTL_SECONDS,
+  normalizeAutomergeMetricEvent,
+  summarizeAutomergeMetrics,
+} from "./automerge-metrics.ts";
 
 export {
   ExactReviewQueue,
@@ -274,6 +284,27 @@ export class StatusStore {
     const key = decodeURIComponent(url.pathname.slice(1));
     if (!key) return new Response("missing key", { status: 400 });
 
+    if (request.method === "GET" && key === AUTOMERGE_METRICS_STORE_KEY) {
+      const entries = (await this.storage.list({
+        prefix: AUTOMERGE_METRICS_EVENT_KEY_PREFIX,
+        limit: AUTOMERGE_METRICS_EVENT_LIMIT,
+        reverse: true,
+      })) as Map<string, StoredValue>;
+      const events = [];
+      for (const [entryKey, stored] of entries) {
+        if (!entryKey.startsWith(AUTOMERGE_METRICS_EVENT_KEY_PREFIX)) continue;
+        if (stored.expires_at && stored.expires_at <= Date.now()) continue;
+        try {
+          const event = normalizeAutomergeMetricEvent(JSON.parse(stored.value));
+          if (event) events.push(event);
+        } catch {
+          // A malformed isolated event must not hide the rest of the metric history.
+        }
+      }
+      events.sort((a, b) => Date.parse(a.occurred_at) - Date.parse(b.occurred_at));
+      return json({ version: 1, telemetry_since: events[0]?.occurred_at ?? null, events });
+    }
+
     if (request.method === "GET") {
       const stored = (await this.storage.get(key)) as StoredValue | undefined;
       if (!stored) return new Response(null, { status: 404 });
@@ -372,6 +403,28 @@ export class StatusStore {
       return json({ ok: true });
     }
 
+    if (request.method === "POST" && key === AUTOMERGE_METRICS_STORE_KEY) {
+      const body = await request.json();
+      const event = normalizeAutomergeMetricEvent(body?.event);
+      if (!event) return new Response("invalid automerge metric event", { status: 400 });
+      const expiresAt = Date.parse(event.occurred_at) + AUTOMERGE_METRICS_TTL_SECONDS * 1000;
+      if (expiresAt <= Date.now()) return json({ ok: true, expired: true });
+      const idKey = `${AUTOMERGE_METRICS_EVENT_ID_KEY_PREFIX}${encodeURIComponent(event.event_id)}`;
+      const existing = (await this.storage.get(idKey)) as StoredValue | undefined;
+      if (existing && (!existing.expires_at || existing.expires_at > Date.now())) {
+        return json({ ok: true, duplicate: true });
+      }
+      const eventKey = `${AUTOMERGE_METRICS_EVENT_KEY_PREFIX}${event.occurred_at}:${encodeURIComponent(event.event_id)}`;
+      // Durable Object multi-key put is atomic, so a retry cannot observe an ID
+      // receipt without its time-ordered event (or vice versa).
+      await this.storage.put({
+        [eventKey]: { value: JSON.stringify(event), expires_at: expiresAt },
+        [idKey]: { value: eventKey, expires_at: expiresAt },
+      });
+      await this.scheduleCleanup(expiresAt);
+      return json({ ok: true });
+    }
+
     if (request.method === "POST" && key === "health-history") {
       const body = await request.json();
       const sample = normalizeHealthHistorySample(body?.sample);
@@ -461,6 +514,8 @@ export default {
       return exactReviewQueueRequest(env, "/stats");
     if (url.pathname === "/api/health-history" && request.method === "GET")
       return healthHistoryJson(request, env);
+    if (url.pathname === "/api/automerge-metrics" && request.method === "GET")
+      return automergeMetricsJson(request, env);
     if (url.pathname === "/api/status") return statusJson(request, env, ctx);
     if (url.pathname === "/api/triage") return triageJson(request, env, ctx);
     if (url.pathname === "/api/pr-proof-triage") return prProofTriageJson(request, env, ctx);
@@ -790,15 +845,46 @@ async function ingestEvent(request, env) {
   if (!env.INGEST_TOKEN || token !== env.INGEST_TOKEN) return json({ error: "unauthorized" }, 401);
   const body = await request.json().catch(() => null);
   if (!body || typeof body !== "object") return json({ error: "invalid_json" }, 400);
+  let metricEvent = null;
+  if (body.event_type === AUTOMERGE_METRICS_EVENT_TYPE) {
+    metricEvent = normalizeAutomergeMetricEvent(body);
+    if (!metricEvent) return json({ error: "invalid_automerge_metric_event" }, 400);
+    if (!isDurableStatusStore(env.STATUS_STORE)) {
+      return json({ error: "automerge_metrics_store_unavailable" }, 503);
+    }
+  }
   const event = normalizeEvent(body);
   const writes = [
     prependStoredEvent(env, event),
     writeStoredJson(env, "latest-event", event, EVENT_STORE_TTL_SECONDS),
   ];
+  if (metricEvent) writes.push(storeAutomergeMetricEvent(env, metricEvent));
   const ci = normalizeCiStatus(body);
   if (ci) writes.push(writeCiStatus(env, ci));
   await Promise.all(writes);
   return json({ ok: true, event });
+}
+
+async function automergeMetricsJson(request, env) {
+  const url = new URL(request.url);
+  const ledger = await readStoredJson(env, AUTOMERGE_METRICS_STORE_KEY);
+  return json(
+    summarizeAutomergeMetrics(ledger, {
+      range: url.searchParams.get("range") ?? "7d",
+      repo: url.searchParams.get("repo"),
+      policyVersion: url.searchParams.get("policy_version"),
+    }),
+  );
+}
+
+async function storeAutomergeMetricEvent(env, event) {
+  const store = env.STATUS_STORE;
+  if (!isDurableStatusStore(store)) throw new Error("automerge metrics require durable storage");
+  const response = await durableStatusStoreStub(store).fetch(
+    statusStoreRequest(AUTOMERGE_METRICS_STORE_KEY, "POST"),
+    { method: "POST", body: JSON.stringify({ event }) },
+  );
+  if (!response.ok) throw new Error(`automerge metric write failed: ${response.status}`);
 }
 
 async function githubWebhook(request, env, ctx) {
@@ -7777,6 +7863,35 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   text-align: center;
 }
 .empty::before { content: "🦞 "; opacity: 0.5; }
+.automerge-health { margin: 28px 0; padding: 22px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.automerge-health-head, .automerge-controls, .automerge-meta, .automerge-tabs { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.automerge-health-head { justify-content: space-between; }
+.automerge-health h2 { margin: 0; }
+.automerge-controls select { max-width: 220px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: var(--panel); font: inherit; font-size: 11px; }
+.automerge-meta { margin-top: 8px; color: var(--muted); font-size: 11px; }
+.automerge-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 20px; border-block: 1px solid var(--line-soft); }
+.automerge-kpi { padding: 18px; border-left: 1px solid var(--line-soft); }
+.automerge-kpi:first-child { border-left: 0; }
+.automerge-kpi span { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.automerge-kpi strong { display: block; margin: 8px 0 5px; font-size: 25px; font-weight: 560; }
+.automerge-kpi small { color: var(--muted); }
+.automerge-chart-shell { margin-top: 20px; }
+.automerge-tabs button { border: 0; border-bottom: 2px solid transparent; padding: 7px 2px; background: transparent; color: var(--muted); cursor: pointer; font: inherit; }
+.automerge-tabs button.active { color: var(--text); border-color: var(--claw); }
+.automerge-chart { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(18px, 1fr); align-items: end; gap: 3px; height: 190px; margin-top: 12px; padding: 12px 4px 22px; border-bottom: 1px solid var(--line); background: repeating-linear-gradient(to bottom, var(--line-soft) 0 1px, transparent 1px 42px); overflow-x: auto; }
+.automerge-point { position: relative; height: 100%; min-width: 18px; }
+.automerge-dot { position: absolute; left: 50%; width: 9px; height: 9px; translate: -50% 50%; border-radius: 50%; background: var(--claw); box-shadow: 0 0 0 3px var(--panel); }
+.automerge-dot.low { background: var(--panel); border: 2px solid var(--claw); }
+.automerge-dot.p90 { width: 7px; height: 7px; background: var(--amber); }
+.automerge-n { position: absolute; left: 50%; bottom: -19px; translate: -50% 0; color: var(--muted); font-size: 9px; white-space: nowrap; }
+.automerge-chart-legend { margin-top: 7px; color: var(--muted); font-size: 10px; }
+.automerge-details { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 22px; }
+.automerge-details h3, .automerge-sessions h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+.automerge-detail-row { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--line-soft); font-size: 12px; }
+.automerge-sessions { margin-top: 22px; overflow-x: auto; }
+.automerge-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.automerge-table th, .automerge-table td { padding: 9px 8px; border-bottom: 1px solid var(--line-soft); text-align: left; white-space: nowrap; }
+.automerge-table th { color: var(--muted); font-weight: 500; }
 @media (max-width: 1280px) {
   .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .metric { padding: 16px 18px 14px; }
@@ -7797,6 +7912,10 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   .flow-node::after { top: 5px; }
 }
 @media (max-width: 760px) {
+  .automerge-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .automerge-kpi:nth-child(3) { border-left: 0; border-top: 1px solid var(--line-soft); }
+  .automerge-kpi:nth-child(4) { border-top: 1px solid var(--line-soft); }
+  .automerge-details { grid-template-columns: 1fr; }
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .metric:nth-child(3n + 1) { border-left: 1px solid var(--line-soft); padding-left: 18px; }
   .metric:nth-child(2n + 1) { border-left: 0; padding-left: 0; }
@@ -7882,6 +8001,22 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
     </div>
     <div id="workers"></div>
   </section>
+  <section class="automerge-health" aria-labelledby="automerge-product-title">
+    <div class="automerge-health-head">
+      <h2 id="automerge-product-title">Automerge Product Health</h2>
+      <div class="automerge-controls">
+        <div class="trend-ranges" id="automerge-ranges" aria-label="Automerge metric range">
+          <button class="trend-range" type="button" data-automerge-range="6h">6h</button>
+          <button class="trend-range" type="button" data-automerge-range="24h">24h</button>
+          <button class="trend-range active" type="button" data-automerge-range="7d">7d</button>
+        </div>
+        <label class="muted">Repo <select id="automerge-repo" aria-label="Filter automerge metrics by repository"><option value="">All</option></select></label>
+        <label class="muted">Policy <select id="automerge-policy" aria-label="Filter automerge metrics by policy"><option value="">All</option></select></label>
+      </div>
+    </div>
+    <div class="automerge-meta" id="automerge-meta">Loading product telemetry…</div>
+    <div id="automerge-product"><div class="empty">Loading automerge product metrics…</div></div>
+  </section>
   <section class="split">
     <div class="left-col">
       <div class="pipeline-col">
@@ -7894,15 +8029,14 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
       </div>
     </div>
     <aside class="side-col">
-      <h2>Automerge Reliability</h2>
-      <div id="automerge-reliability"></div>
-      <h2>Automerge Speed</h2>
-      <div id="automerge"></div>
       <h2>Closed by ClawSweeper</h2>
       <div id="closed-stats"></div>
       <div id="closed"></div>
       <h2>Worker Health</h2>
       <div id="worker-health"></div>
+      <h2>Automerge Reliability</h2>
+      <div id="automerge-reliability"></div>
+      <div id="automerge" hidden></div>
       <h2>Operations</h2>
       <div id="operations"></div>
       <h2>Recent Activity</h2>
@@ -7988,6 +8122,10 @@ function ciBadge(ci) {
 }
 let lastData = null;
 let loading = false;
+let activeAutomergeRange = "7d";
+let activeAutomergeChart = "success";
+let lastAutomergeMetrics = null;
+let automergeMetricsRequestGeneration = 0;
 let activeWorkerFilter = "all";
 let workerIndex = new Map();
 let automaticIndex = new Map();
@@ -8621,6 +8759,7 @@ async function load() {
         : "",
   );
   loadHealthHistory(activeHealthRange, false).catch(() => undefined);
+  loadAutomergeMetrics().catch(() => undefined);
   } catch (error) {
     if (lastData) {
       renderDashboard(lastData, "Live refresh failed; showing last good status.");
@@ -9046,6 +9185,57 @@ function renderAutomerge(rows) {
   }
   document.getElementById("automerge").innerHTML = '<div class="side-list">' + rows.map(row => '<article class="side-row"><div class="side-main">' + linkClass(row.url, "#" + row.number, "item-link") + '<div class="muted side-title">' + esc(row.title) + '</div></div><div class="side-meta"><span class="pill violet">' + (row.duration_ms ? elapsed(row.duration_ms) : "unknown") + '</span><span>' + (row.merged_at ? since(row.merged_at) : "") + '</span></div></article>').join("") + '</div>';
 }
+async function loadAutomergeMetrics() {
+  const generation = ++automergeMetricsRequestGeneration;
+  const params = new URLSearchParams({ range: activeAutomergeRange });
+  const repo = document.getElementById("automerge-repo").value;
+  const policy = document.getElementById("automerge-policy").value;
+  if (repo) params.set("repo", repo);
+  if (policy) params.set("policy_version", policy);
+  const response = await fetch("/api/automerge-metrics?" + params.toString(), { cache: "no-store" });
+  if (!response.ok) throw new Error("automerge metrics returned " + response.status);
+  const metrics = await response.json();
+  if (generation !== automergeMetricsRequestGeneration) return;
+  lastAutomergeMetrics = metrics;
+  renderAutomergeProduct(lastAutomergeMetrics);
+}
+function renderAutomergeProduct(data) {
+  const summary = data.summary || {};
+  const setOptions = (id, values, selected) => {
+    const select = document.getElementById(id);
+    select.innerHTML = '<option value="">All</option>' + (values || []).map(value => '<option value="' + esc(value) + '"' + (value === selected ? ' selected' : '') + '>' + esc(value) + '</option>').join("");
+  };
+  setOptions("automerge-repo", data.filters?.repositories, data.filters?.repo);
+  setOptions("automerge-policy", data.filters?.policy_versions, data.filters?.policy_version);
+  const sinceText = data.telemetry_since ? new Date(data.telemetry_since).toLocaleString() : "not started";
+  document.getElementById("automerge-meta").textContent = "Telemetry since " + sinceText + " · Coverage " + fmt.format(data.coverage_percent || 0) + "% · terminal sample n=" + fmt.format(summary.terminal_sessions || 0) + " · Updated " + since(data.generated_at);
+  const value = (number, suffix) => number == null ? "—" : fmt.format(number) + (suffix || "");
+  const duration = number => number == null ? "—" : elapsed(number);
+  const kpis = '<div class="automerge-kpis">' +
+    '<div class="automerge-kpi"><span>Merge success rate</span><strong>' + value(summary.merge_success_rate_percent, "%") + '</strong><small>merged ' + fmt.format(summary.merged_sessions || 0) + ' / terminal ' + fmt.format(summary.terminal_sessions || 0) + '</small></div>' +
+    '<div class="automerge-kpi"><span>Command → Merge p50</span><strong>' + duration(summary.command_to_merge_p50_ms) + '</strong><small>successful sessions only</small></div>' +
+    '<div class="automerge-kpi"><span>Command → Merge p90</span><strong>' + duration(summary.command_to_merge_p90_ms) + '</strong><small>nearest-rank percentile</small></div>' +
+    '<div class="automerge-kpi"><span>Base sync / session</span><strong>' + value(summary.base_sync_p50) + ' · ' + value(summary.base_sync_p90) + '</strong><small>p50 · p90 · multi-rebase ' + value(summary.multi_rebase_rate_percent, "%") + '</small></div></div>';
+  const maxLatency = Math.max(1, ...(data.buckets || []).flatMap(bucket => [bucket.command_to_merge_p50_ms || 0, bucket.command_to_merge_p90_ms || 0]));
+  const points = (data.buckets || []).map(bucket => {
+    if (activeAutomergeChart === "success") {
+      if (bucket.success_rate_percent == null) return '<div class="automerge-point" title="No terminal samples"></div>';
+      return '<div class="automerge-point" title="' + esc(bucket.start + ' · ' + bucket.success_rate_percent + '% · n=' + bucket.terminal_count) + '"><i class="automerge-dot' + (bucket.low_sample ? ' low' : '') + '" style="bottom:' + bucket.success_rate_percent + '%"></i><span class="automerge-n">n=' + fmt.format(bucket.terminal_count) + '</span></div>';
+    }
+    if (bucket.command_to_merge_p50_ms == null) return '<div class="automerge-point" title="No merged samples"></div>';
+    const p50 = Math.round(bucket.command_to_merge_p50_ms / maxLatency * 100);
+    const p90 = Math.round(bucket.command_to_merge_p90_ms / maxLatency * 100);
+    return '<div class="automerge-point" title="' + esc(bucket.start + ' · p50 ' + duration(bucket.command_to_merge_p50_ms) + ' · p90 ' + duration(bucket.command_to_merge_p90_ms)) + '"><i class="automerge-dot" style="bottom:' + p50 + '%"></i><i class="automerge-dot p90" style="bottom:' + p90 + '%"></i><span class="automerge-n">n=' + fmt.format(bucket.merged_count) + '</span></div>';
+  }).join("");
+  const chart = '<div class="automerge-chart-shell"><div class="automerge-tabs"><button type="button" data-automerge-chart="success" class="' + (activeAutomergeChart === "success" ? "active" : "") + '">Merge success</button><button type="button" data-automerge-chart="latency" class="' + (activeAutomergeChart === "latency" ? "active" : "") + '">Merge latency</button></div><div class="automerge-chart" role="img" aria-label="Automerge ' + esc(activeAutomergeChart) + ' trend over ' + esc(activeAutomergeRange) + '">' + points + '</div><div class="automerge-chart-legend">' + (activeAutomergeChart === "success" ? '● normal sample · ○ fewer than 5 terminal sessions · gaps mean no terminal sample' : '● p50 · amber p90 · gaps mean no merged sample') + '</div></div>';
+  const outcomeLabels = { merged: "Merged", maintainer_stopped: "Maintainer stopped", repair_cap_exhausted: "Repair cap exhausted", pr_closed: "PR closed", automerge_disabled: "Automerge disabled" };
+  const outcomes = Object.entries(outcomeLabels).map(entry => '<div class="automerge-detail-row"><span>' + esc(entry[1]) + '</span><strong>' + fmt.format(data.terminal_outcomes?.[entry[0]] || 0) + '</strong></div>').join("");
+  const efficiency = [['0 base sync sessions', data.repair_efficiency?.zero_base_sync], ['1 base sync session', data.repair_efficiency?.one_base_sync], ['2+ base sync sessions', data.repair_efficiency?.multiple_base_sync], ['Multi-rebase rate', value(summary.multi_rebase_rate_percent, "%")]].map(entry => '<div class="automerge-detail-row"><span>' + esc(entry[0]) + '</span><strong>' + esc(entry[1] ?? 0) + '</strong></div>').join("");
+  const details = '<div class="automerge-details"><div><h3>Terminal outcomes</h3>' + outcomes + '</div><div><h3>Repair efficiency</h3>' + efficiency + '</div></div>';
+  const rows = (data.sessions || []).map(session => '<tr><td>' + linkClass(session.pr_url, session.repository + '#' + session.item_number, "item-link") + '</td><td>' + esc(session.state || 'unknown') + '</td><td>' + esc(session.policy_version) + '</td><td>' + esc(session.activated_at ? since(session.activated_at) : 'missing') + '</td><td>' + esc(session.terminal_at ? since(session.terminal_at) : since(session.last_event_at)) + '</td><td>' + fmt.format(session.base_sync_count || 0) + '</td><td>' + fmt.format(session.repairs || 0) + '</td><td>' + esc(session.last_reason || '') + ' ' + linkClass(session.run_url, 'run', 'pill run-link') + '</td></tr>').join("");
+  const sessions = '<div class="automerge-sessions"><h3>Recent automerge sessions</h3><table class="automerge-table"><thead><tr><th>PR</th><th>State</th><th>Policy</th><th>Activated</th><th>Terminal / age</th><th>Syncs</th><th>Repairs</th><th>Last reason</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="muted">No session telemetry in this range.</td></tr>') + '</tbody></table></div>';
+  document.getElementById("automerge-product").innerHTML = kpis + chart + details + sessions;
+}
 function renderAutomergeReliability(reliability) {
   const safe = reliability || {
     sampled_runs: 0,
@@ -9113,6 +9303,21 @@ document.getElementById("trend-ranges").addEventListener("click", event => {
   document.querySelectorAll("button[data-trend-range]").forEach(item => item.classList.toggle("active", item === button));
   loadHealthHistory(button.dataset.trendRange || "6h", true).catch(() => undefined);
 });
+document.getElementById("automerge-ranges").addEventListener("click", event => {
+  const button = event.target.closest("button[data-automerge-range]");
+  if (!button) return;
+  activeAutomergeRange = button.dataset.automergeRange || "7d";
+  document.querySelectorAll("button[data-automerge-range]").forEach(item => item.classList.toggle("active", item === button));
+  loadAutomergeMetrics().catch(() => undefined);
+});
+document.getElementById("automerge-product").addEventListener("click", event => {
+  const button = event.target.closest("button[data-automerge-chart]");
+  if (!button || !lastAutomergeMetrics) return;
+  activeAutomergeChart = button.dataset.automergeChart || "success";
+  renderAutomergeProduct(lastAutomergeMetrics);
+});
+document.getElementById("automerge-repo").addEventListener("change", () => loadAutomergeMetrics().catch(() => undefined));
+document.getElementById("automerge-policy").addEventListener("change", () => loadAutomergeMetrics().catch(() => undefined));
 document.getElementById("workers").addEventListener("click", event => {
   const button = event.target.closest("button[data-worker-id]");
   if (!button) return;

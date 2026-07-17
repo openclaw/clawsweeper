@@ -88,6 +88,13 @@ import {
 } from "./comment-router-core.js";
 import { mergeAutomergeTimelineSection } from "./automerge-status-timeline.js";
 import {
+  automergeSessionId,
+  automergeMetricEvent,
+  latestAutomergeActivationForCommand,
+  postAutomergeMetricBestEffort,
+} from "./automerge-product-telemetry.js";
+
+import {
   SUPERSEDED_RE_REVIEW_REASON,
   appendLedger,
   commentBodySha256,
@@ -139,6 +146,8 @@ import {
   runCommandMutation,
   runCommandMutationWithRetry,
 } from "./command-action-ledger.js";
+
+const automergeMetricWrites: Promise<boolean>[] = [];
 
 const args = parseArgs(process.argv.slice(2));
 const config = readCommentRouterConfig(args);
@@ -389,7 +398,10 @@ if (execute && !exactCommentVersionFastPath.suppress) {
     for (const command of commands) convergePrecreatedCommandAckComments(command);
     for (const command of commands) acknowledgeSkippedMaintainerCommand(command);
     for (const command of commands) {
-      if (command.status !== "ready") recordCommandOutcome(command);
+      if (command.status !== "ready") {
+        recordCommandOutcome(command);
+        queueAutomergeProductMetrics(command);
+      }
     }
     for (const command of actionable) executeCommandWithReceipt(command);
   });
@@ -403,6 +415,7 @@ report.timings = {
 };
 if (writeReport) writeReportFile(repoRoot(), report);
 await flushCommandActionEvents();
+await Promise.allSettled(automergeMetricWrites);
 console.log(JSON.stringify(report, null, 2));
 
 function measure<T>(name: string, fn: () => T): T {
@@ -2336,10 +2349,118 @@ function executeCommandWithReceipt(command: LooseRecord) {
   try {
     executeCommand(command);
     recordCommandOutcome(command);
+    queueAutomergeProductMetrics(command);
   } catch (error) {
     recordCommandFailure(command, error);
     throw error;
   }
+}
+
+function queueAutomergeProductMetrics(command: LooseRecord) {
+  const activation = latestAutomergeActivation(command);
+  if (!activation) return;
+  const events = [];
+  if (command === activation && command.intent === "automerge" && !command.trusted_bot) {
+    events.push(
+      automergeMetricEvent({
+        activation,
+        command,
+        phase: "activated",
+        state: command.status === "waiting" ? "waiting" : "active",
+        reason: command.reason,
+      }),
+    );
+  }
+  const repair = command.actions?.find(
+    (action: JsonValue) =>
+      action.action === "dispatch_repair" && ["executed", "active"].includes(String(action.status)),
+  );
+  if (repair) {
+    events.push(
+      automergeMetricEvent({
+        activation,
+        command,
+        phase: "repair_dispatched",
+        state: "repairing",
+        reason: command.repair_reason ?? repair.reason,
+        runUrl: repair.run_url,
+      }),
+    );
+  }
+  const merge = command.actions?.find(
+    (action: JsonValue) => action.action === "merge" && action.status === "executed",
+  );
+  if (merge) {
+    events.push(
+      automergeMetricEvent({
+        activation,
+        command,
+        phase: "terminal",
+        outcome: "merged",
+        reason: merge.reason,
+        runUrl: merge.run_url,
+      }),
+    );
+  } else if (command.intent === "stop" && command.status === "executed") {
+    events.push(
+      automergeMetricEvent({
+        activation,
+        command,
+        phase: "terminal",
+        outcome: "maintainer_stopped",
+        reason: command.reason ?? "maintainer stopped automerge",
+      }),
+    );
+  } else if (/auto repair already dispatched .* total time/i.test(String(command.reason ?? ""))) {
+    events.push(
+      automergeMetricEvent({
+        activation,
+        command,
+        phase: "terminal",
+        outcome: "repair_cap_exhausted",
+        reason: command.reason,
+      }),
+    );
+  } else if (/\b(?:PR|target) is not open\b/i.test(String(command.reason ?? ""))) {
+    events.push(
+      automergeMetricEvent({
+        activation,
+        command,
+        phase: "terminal",
+        outcome: "pr_closed",
+        reason: command.reason,
+      }),
+    );
+  } else if (/not opted into ClawSweeper automerge/i.test(String(command.reason ?? ""))) {
+    events.push(
+      automergeMetricEvent({
+        activation,
+        command,
+        phase: "terminal",
+        outcome: "automerge_disabled",
+        reason: command.reason,
+      }),
+    );
+  } else if (command.status === "waiting") {
+    events.push(
+      automergeMetricEvent({
+        activation,
+        command,
+        phase: "state_changed",
+        state: "waiting",
+        reason: command.reason,
+      }),
+    );
+  }
+  for (const event of events) automergeMetricWrites.push(postAutomergeMetricBestEffort(event));
+}
+
+function latestAutomergeActivation(command: LooseRecord) {
+  return latestAutomergeActivationForCommand(command, [
+    command,
+    ...(commands ?? []),
+    ...(ledger.commands ?? []),
+  ]);
 }
 
 function runGitHubTextMutation(
@@ -3251,6 +3372,7 @@ function dispatchRepair(command: LooseRecord) {
     };
   }
   dispatchKey = dispatchReceiptKey(command);
+  const sessionId = automergeSessionId(latestAutomergeActivation(command) ?? {});
   const activeRun = activeRepairRunForCommand(command);
   if (activeRun) {
     return {
@@ -3295,6 +3417,7 @@ function dispatchRepair(command: LooseRecord) {
       `execution_runner=${executionRunner}`,
       "-f",
       `model=${model}`,
+      ...(sessionId ? ["-f", `automerge_session_id=${sessionId}`] : []),
     ],
     { env: dispatchTokenEnv() },
   );

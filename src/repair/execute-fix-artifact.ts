@@ -429,6 +429,7 @@ const report: LooseRecord = {
   dry_run: dryRun,
   result_path: path.relative(repoRoot(), resultPath),
   executed_at: new Date().toISOString(),
+  automerge_session_id: process.env.CLAWSWEEPER_AUTOMERGE_SESSION_ID || null,
   policy_override: promotedReplacement
     ? "promoted needs_human uneditable-source fix artifact to replace_uneditable_branch"
     : null,

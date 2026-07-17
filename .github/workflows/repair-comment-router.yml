@@ -175,6 +175,7 @@ jobs:
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
           CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}
+          CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
           CLAWSWEEPER_ACTION_LEDGER_INVOCATION: initial
         run: |
           set -euo pipefail
@@ -308,6 +309,7 @@ jobs:
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
           CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}
+          CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
           CLAWSWEEPER_ACTION_LEDGER_INVOCATION: retry
         run: |
           set -euo pipefail

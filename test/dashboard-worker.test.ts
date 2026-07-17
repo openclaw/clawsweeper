@@ -1626,7 +1626,14 @@ class MemoryDurableStorage {
     return this.values.get(key);
   }
 
-  async put(key: string, value: unknown) {
+  async put(key: string | Record<string, unknown>, value?: unknown) {
+    if (typeof key === "object") {
+      for (const [entryKey, entryValue] of Object.entries(key)) {
+        this.throwPutFailure(entryKey);
+        this.storeRaw(entryKey, entryValue);
+      }
+      return;
+    }
     this.throwPutFailure(key);
     if (key === "exact-review-queue" && this.sql.hasNormalizedQueue()) {
       const normalized = this.sql.readNormalizedQueue();
@@ -1774,6 +1781,115 @@ class MemoryCache {
     this.values.set(request.url, response.clone());
   }
 }
+
+test("automerge metric ingestion validates before writes and requires durable storage", async () => {
+  const statusStore = new MemoryKv();
+  const token = ["test", "token"].join("-");
+  const env = { INGEST_TOKEN: token, STATUS_STORE: statusStore };
+  const request = (body: Record<string, unknown>) =>
+    worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/events", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          event_type: "clawsweeper.automerge_metric",
+          repository: "openclaw/openclaw",
+          item_number: 42,
+          phase: "activated",
+          occurred_at: "2026-07-17T10:00:00Z",
+          ...body,
+        }),
+      }),
+      env,
+    );
+
+  assert.equal((await request({})).status, 400);
+  assert.equal(await statusStore.get("events"), null);
+  assert.equal(await statusStore.get("latest-event"), null);
+
+  assert.equal(
+    (
+      await request({
+        event_id: "activation-42",
+        session_id: "openclaw/openclaw#42:100:2026-07-17T10:00:00Z",
+      })
+    ).status,
+    503,
+  );
+  assert.equal(await statusStore.get("events"), null);
+  assert.equal(await statusStore.get("latest-event"), null);
+});
+
+test("automerge metric events use isolated durable keys and aggregate through the API", async () => {
+  const storage = new MemoryDurableStorage();
+  const store = new StatusStore({ storage });
+  const namespace = new MemoryDurableNamespace({
+    fetch: (request: Request, init?: RequestInit) =>
+      store.fetch(init ? new Request(request, init) : request),
+  });
+  const token = ["test", "token"].join("-");
+  const env = { INGEST_TOKEN: token, STATUS_STORE: namespace };
+  const occurredAt = new Date().toISOString();
+  for (const eventId of ["terminal-1", "terminal-2"]) {
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/events", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          event_type: "clawsweeper.automerge_metric",
+          event_id: eventId,
+          session_id: `openclaw/openclaw#42:${eventId}:${occurredAt}`,
+          repository: "openclaw/openclaw",
+          item_number: 42,
+          phase: "terminal",
+          outcome: "merged",
+          occurred_at: occurredAt,
+        }),
+      }),
+      env,
+    );
+    assert.equal(response.status, 200);
+  }
+  const duplicate = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/events", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        event_type: "clawsweeper.automerge_metric",
+        event_id: "terminal-1",
+        session_id: `openclaw/openclaw#42:terminal-1:${occurredAt}`,
+        repository: "openclaw/openclaw",
+        item_number: 42,
+        phase: "terminal",
+        outcome: "maintainer_stopped",
+        occurred_at: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    }),
+    env,
+  );
+  assert.equal(duplicate.status, 200);
+
+  assert.equal(storage.rawHas("automerge-product-metrics:v1"), false);
+  assert.equal(storage.rawHas("automerge-product-metrics:v1:id:terminal-1"), true);
+  assert.equal(storage.rawHas("automerge-product-metrics:v1:id:terminal-2"), true);
+  const metrics = await (
+    await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/automerge-metrics?range=6h"),
+      env,
+    )
+  ).json();
+  assert.equal(metrics.summary.terminal_sessions, 2);
+  assert.equal(metrics.summary.merged_sessions, 2);
+});
 
 test("dashboard durable status store persists, expires, and prepends events", async () => {
   const storage = new MemoryDurableStorage();

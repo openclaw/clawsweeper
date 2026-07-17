@@ -14,6 +14,11 @@ on:
         required: false
         default: ""
         type: string
+      automerge_session_id:
+        description: "Stable automerge product telemetry session"
+        required: false
+        default: ""
+        type: string
       mode:
         description: "Worker mode"
         required: true
@@ -597,6 +602,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
+          CLAWSWEEPER_AUTOMERGE_SESSION_ID: ${{ inputs.automerge_session_id }}
         run: pnpm run repair:execute-fix -- "${{ inputs.job }}" --latest --defer-publication
 
       - name: Renew target write token for post-flight
@@ -618,6 +624,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
+          CLAWSWEEPER_AUTOMERGE_SESSION_ID: ${{ inputs.automerge_session_id }}
         run: pnpm run repair:execute-fix -- "${{ inputs.job }}" --latest --publish-report-only
 
       - name: Record deterministic validation phase
