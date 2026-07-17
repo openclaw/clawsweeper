@@ -25,17 +25,7 @@ budget:
 | `CLAWSWEEPER_BULK_FILER_THRESHOLD`                |      10 | Recent authored-issue count that marks bulk filing.  |
 | `CLAWSWEEPER_BULK_FILER_WINDOW_DAYS`              |       7 | Lookback window for authored issue filing rate.      |
 | `CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED`     | `false` | Enables stale-version bug closes after 120 days.     |
-| `CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED`       | `false` | Enables obsolete small-fix PR closes after 90 days.  |
-
-Umbrella consolidation proposals have separate bounded report limits. These do
-not consume Codex worker capacity:
-
-| Environment variable                | Default | Meaning                                                        |
-| ----------------------------------- | ------: | -------------------------------------------------------------- |
-| `UMBRELLA_MIN_CLUSTER_SIZE`         |       5 | Eligible open decision-labeled issues required for a proposal. |
-| `UMBRELLA_MAX_PROPOSALS`            |      10 | Largest eligible clusters rendered in the weekly report.       |
-| `UMBRELLA_MAX_MEMBERS_PER_PROPOSAL` |      20 | Member links rendered for each cluster in the rolling report.  |
-| `UMBRELLA_PROPOSAL_BODY_MAX_CHARS`  |  60,000 | Rolling report body safety limit before cluster sections stop. |
+| `CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED`       | `false` | Enables obsolete small-fix PR closes after 90 days. |
 
 See [`author-pr-budget-close-policy.md`](author-pr-budget-close-policy.md) for
 the rating, proof, inactivity, engagement, and fail-closed gates.

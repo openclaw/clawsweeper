@@ -11,16 +11,6 @@ import {
   queuePressureLevel,
   type QueuePressureLevel,
 } from "../queue-pressure.js";
-import {
-  DEFAULT_UMBRELLA_MAX_MEMBERS_PER_PROPOSAL,
-  DEFAULT_UMBRELLA_MAX_PROPOSALS,
-  DEFAULT_UMBRELLA_PROPOSAL_BODY_MAX_CHARS,
-  DEFAULT_UMBRELLA_MIN_CLUSTER_SIZE,
-  readGitcrawlClusterMembers,
-  renderUmbrellaProposals,
-  selectAppAuthoredUmbrellaProposalIssue,
-  selectUmbrellaProposals,
-} from "./umbrella-consolidation.js";
 
 type ApplyAction = {
   action: string;
@@ -299,46 +289,6 @@ async function runCli(): Promise<void> {
     case "worker-config":
       process.stdout.write(JSON.stringify(WORKER_CONFIG, null, 2));
       break;
-    case "umbrella-proposals": {
-      const targetRepo = optionalString("repo") || "openclaw/openclaw";
-      const proposals = selectUmbrellaProposals(readGitcrawlClusterMembers(requiredString("db")), {
-        minClusterSize: umbrellaLimit(
-          "min-cluster-size",
-          "UMBRELLA_MIN_CLUSTER_SIZE",
-          DEFAULT_UMBRELLA_MIN_CLUSTER_SIZE,
-        ),
-        maxProposals: umbrellaLimit(
-          "max-proposals",
-          "UMBRELLA_MAX_PROPOSALS",
-          DEFAULT_UMBRELLA_MAX_PROPOSALS,
-        ),
-      });
-      const body = `${renderUmbrellaProposals(proposals, {
-        targetRepo,
-        maxMembersPerCluster: umbrellaLimit(
-          "max-members-per-cluster",
-          "UMBRELLA_MAX_MEMBERS_PER_PROPOSAL",
-          DEFAULT_UMBRELLA_MAX_MEMBERS_PER_PROPOSAL,
-        ),
-        maxBodyChars: umbrellaLimit(
-          "max-body-chars",
-          "UMBRELLA_PROPOSAL_BODY_MAX_CHARS",
-          DEFAULT_UMBRELLA_PROPOSAL_BODY_MAX_CHARS,
-        ),
-      })}\n`;
-      const output = optionalString("output");
-      if (output) fs.writeFileSync(output, body);
-      else process.stdout.write(body);
-      break;
-    }
-    case "umbrella-proposal-issue-number": {
-      const number = selectAppAuthoredUmbrellaProposalIssue(
-        readJsonArray(requiredString("issues")) as JsonValue[],
-        requiredString("author-login"),
-      );
-      process.stdout.write(number === null ? "" : String(number));
-      break;
-    }
     case "proposed-item-numbers":
       process.stdout.write(proposedItemNumbers(proposedItemOptions()).join(","));
       break;
@@ -2364,15 +2314,6 @@ function requiredString(name: string): string {
 function optionalString(name: string): string {
   const value = args[name];
   return typeof value === "string" ? value : "";
-}
-
-function umbrellaLimit(argName: string, envName: string, fallback: number): number {
-  const raw = args[argName] ?? process.env[envName] ?? fallback;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`--${argName} must be a positive integer`);
-  }
-  return value;
 }
 
 function positionalString(index: number): string {

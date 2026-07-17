@@ -10,7 +10,6 @@ checkpoint, and status-only commits are intentionally omitted.
 ### Added
 
 - Added review-time bulk-filer detection, transparent labeling, duplicate scrutiny, fix-lane suppression, and within-bucket scheduling de-prioritization for high-volume issue authors.
-- Added an app-authenticated weekly, read-only gitcrawl umbrella-consolidation proposal report with deterministic bounded titles, member lists, and issue-body size guards.
 - Added end-to-end exact-review handoff health with phase ages, delayed/stalled claim classification, and a phase-aware operator rail on the live dashboard.
 - Added a maintainer-only two-runner workflow that builds a hash-bound
   crawl-remote release artifact without production credentials, then requires
