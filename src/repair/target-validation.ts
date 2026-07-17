@@ -931,6 +931,7 @@ function assertStructuredInstallMetadataDestinations(
   localPolicy: TargetInstallLocalPolicy,
   registryOrigin: string,
   fieldName?: string,
+  context: "root" | "package-record" | "nested" = "root",
 ): void {
   if (typeof value === "string") {
     if (
@@ -951,6 +952,7 @@ function assertStructuredInstallMetadataDestinations(
         localPolicy,
         registryOrigin,
         fieldName,
+        "nested",
       );
     }
     return;
@@ -964,7 +966,31 @@ function assertStructuredInstallMetadataDestinations(
       assertLocalPackageDependency(value.resolved.trim(), ".", localPolicy);
     }
     for (const [name, entry] of Object.entries(value)) {
+      // Funding is package display metadata, but a dependency map may also contain a package
+      // named "funding". Exempt only package records so those dependency records stay inspectable.
+      if (context === "package-record" && name === "funding") continue;
       if (workspaceLink && (name === "link" || name === "resolved")) continue;
+      // Only the document root owns the lockfile packages map; a dependency may also be named
+      // "packages", so recursive name matching would incorrectly grant package-record semantics.
+      if (
+        context === "root" &&
+        name === "packages" &&
+        entry &&
+        typeof entry === "object" &&
+        !Array.isArray(entry)
+      ) {
+        for (const [packageName, packageValue] of Object.entries(entry)) {
+          assertStructuredInstallMetadataDestinations(
+            packageValue,
+            ownerDir,
+            localPolicy,
+            registryOrigin,
+            packageName,
+            "package-record",
+          );
+        }
+        continue;
+      }
       if (name === "importers" && entry && typeof entry === "object" && !Array.isArray(entry)) {
         for (const [importer, importerValue] of Object.entries(entry)) {
           const importerDir = resolveTrackedImporterDir(importer, localPolicy);
@@ -973,6 +999,8 @@ function assertStructuredInstallMetadataDestinations(
             importerDir,
             localPolicy,
             registryOrigin,
+            undefined,
+            "nested",
           );
         }
         continue;
@@ -983,6 +1011,7 @@ function assertStructuredInstallMetadataDestinations(
         localPolicy,
         registryOrigin,
         name,
+        "nested",
       );
     }
   }

@@ -2233,6 +2233,154 @@ test("dependency setup permits inert package-manager config files", () => {
   }
 });
 
+test("dependency setup permits external funding metadata in npm lockfiles", () => {
+  for (const lockfile of ["package-lock.json", "npm-shrinkwrap.json"]) {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    fs.rmSync(path.join(cwd, "pnpm-lock.yaml"));
+    const packagePath = path.join(cwd, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    packageJson.packageManager = "npm@11.0.0";
+    fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    fs.writeFileSync(
+      path.join(cwd, lockfile),
+      `${JSON.stringify(
+        {
+          name: "fixture",
+          lockfileVersion: 3,
+          packages: {
+            "": { name: "fixture", version: "1.0.0" },
+            "node_modules/funding-string": {
+              version: "1.0.0",
+              resolved: "https://registry.npmjs.org/funding-string/-/funding-string-1.0.0.tgz",
+              funding: "https://github.com/sponsors/example",
+            },
+            "node_modules/funding-object": {
+              version: "1.0.0",
+              resolved: "https://registry.npmjs.org/funding-object/-/funding-object-1.0.0.tgz",
+              funding: { type: "individual", url: "https://patreon.com/example" },
+            },
+            "node_modules/funding-array": {
+              version: "1.0.0",
+              resolved: "https://registry.npmjs.org/funding-array/-/funding-array-1.0.0.tgz",
+              funding: [
+                { type: "collective", url: "https://opencollective.com/example" },
+                "https://github.com/sponsors/example",
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-npm-funding-bin-"));
+    const npmPath = path.join(binDir, "npm.js");
+    fs.writeFileSync(
+      npmPath,
+      'require("node:fs").mkdirSync("node_modules", { recursive: true });\n',
+    );
+
+    withMockCommand("npm", npmPath, () =>
+      prepareTargetToolchain(cwd, {
+        ...validationOptions("steipete/example", {
+          toolchain: {
+            packageManager: "npm",
+            baseValidationCommands: [],
+            changedGate: null,
+          },
+        }),
+        installTargetDeps: true,
+        installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      }),
+    );
+  }
+});
+
+test("dependency setup keeps non-funding npm lockfile URLs fail-closed", () => {
+  for (const metadata of [
+    { resolved: "https://github.com/example/payload.tgz" },
+    { homepage: "https://github.com/example/payload" },
+  ]) {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    fs.writeFileSync(
+      path.join(cwd, "package-lock.json"),
+      `${JSON.stringify({
+        lockfileVersion: 3,
+        packages: { "node_modules/payload": { version: "1.0.0", ...metadata } },
+      })}\n`,
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+
+    assert.throws(
+      () =>
+        prepareTargetToolchain(cwd, {
+          ...validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "npm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+          installTargetDeps: true,
+          installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+          setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        }),
+      /destination is not approved: https:\/\/github\.com/,
+    );
+  }
+});
+
+test("dependency setup rejects install destinations for dependencies named funding", () => {
+  for (const dependencies of [
+    {
+      funding: {
+        version: "1.0.0",
+        resolved: "https://github.com/example/funding.tgz",
+      },
+    },
+    {
+      packages: {
+        version: "1.0.0",
+        dependencies: {
+          funding: {
+            version: "1.0.0",
+            resolved: "https://github.com/example/nested-funding.tgz",
+          },
+        },
+      },
+    },
+  ]) {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    fs.writeFileSync(
+      path.join(cwd, "package-lock.json"),
+      `${JSON.stringify({ lockfileVersion: 2, dependencies })}\n`,
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+
+    assert.throws(
+      () =>
+        prepareTargetToolchain(cwd, {
+          ...validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "npm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+          installTargetDeps: true,
+          installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+          setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        }),
+      /destination is not approved: https:\/\/github\.com/,
+    );
+  }
+});
+
 test("dependency setup rejects target-controlled network destinations", () => {
   const cases = [
     {
