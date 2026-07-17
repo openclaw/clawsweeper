@@ -706,10 +706,11 @@ test("exact-review queue admits and wakes up to 24 publishers", () => {
 
 test("dashboard status reads the exact-review handoff model from the durable queue", async () => {
   const storage = new MemoryDurableStorage();
-  const queue = new ExactReviewQueue({ storage }, {});
+  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" });
   await queue.fetch(buildExactReviewQueueRequest("handoff-status", 597, "opened"));
   await queue.fetch(buildExactReviewQueueRequest("backoff-status", 598, "opened"));
   await queue.fetch(buildExactReviewQueueRequest("leased-review-status", 600, "opened"));
+  await queue.fetch(buildExactReviewQueueRequest("recovery-status", 601, "source_drift_requeue"));
   await queue.fetch(
     buildExactReviewQueueRequest(
       "publication-status",
@@ -728,6 +729,7 @@ test("dashboard status reads the exact-review handoff model from the durable que
         nextAttemptAt: number;
         leaseId?: string;
         leaseExpiresAt?: number;
+        decision: { sourceAction: string };
       }
     >;
   };
@@ -745,14 +747,14 @@ test("dashboard status reads the exact-review handoff model from the durable que
 
   assert.ok(status);
   assert.match(status.generated_at, /^\d{4}-\d{2}-\d{2}T/);
-  assert.equal(status.pending, 2);
-  assert.equal(status.ready_pending, 1);
-  assert.equal(status.admissible_pending, 1);
+  assert.equal(status.pending, 3);
+  assert.equal(status.ready_pending, 2);
+  assert.equal(status.admissible_pending, 2);
   assert.equal(status.dispatching, 0);
   assert.equal(status.leased, 2);
   assert.equal(status.handoff_health.status, "healthy");
-  assert.equal(status.handoff_health.phases.pending.count, 2);
-  assert.equal(status.lanes.review.enqueued_total, 3);
+  assert.equal(status.handoff_health.phases.pending.count, 3);
+  assert.equal(status.lanes.review.enqueued_total, 4);
   assert.equal(status.lanes.review.completed_total, 0);
   assert.equal(status.lanes.publication.enqueued_total, 1);
   assert.equal(status.lanes.publication.completed_total, 0);
@@ -765,7 +767,7 @@ test("dashboard status reads the exact-review handoff model from the durable que
       available_slots: status.lanes.review.available_slots,
       capacity: status.lanes.review.capacity,
     },
-    { pending: 2, ready: 0, backoff: 2, active: 1, available_slots: 63, capacity: 64 },
+    { pending: 3, ready: 2, backoff: 1, active: 1, available_slots: 63, capacity: 64 },
   );
   assert.deepEqual(
     {
@@ -783,7 +785,99 @@ test("dashboard status reads the exact-review handoff model from the durable que
   assert.equal(typeof status.lanes.review.next_attempt_at, "string");
   assert.equal(status.pressure.status, "idle");
   assert.equal(status.pressure.reason, "capacity_available");
+  assert.equal(status.pressure.active, status.lanes.review.active);
+  assert.equal(status.pressure.pending, status.lanes.review.pending);
+  assert.equal(status.pressure.capacity, status.lanes.review.capacity);
+  assert.deepEqual(status.bay_projection.stages, {
+    arriving: 2,
+    "setting-up": 1,
+    reviewing: 0,
+    applying: 1,
+    repairing: 1,
+  });
+  assert.deepEqual(
+    status.bay_projection.items.map((item) => ({
+      item_key: item.item_key,
+      stage: item.stage,
+      queue_state: item.queue_state,
+    })),
+    [
+      { item_key: "openclaw/gogcli#597", stage: "arriving", queue_state: "pending" },
+      { item_key: "openclaw/gogcli#600", stage: "setting-up", queue_state: "leased" },
+      { item_key: "openclaw/gogcli#599", stage: "applying", queue_state: "leased" },
+      { item_key: "openclaw/gogcli#601", stage: "repairing", queue_state: "pending" },
+      { item_key: "openclaw/gogcli#598", stage: "arriving", queue_state: "pending" },
+    ],
+  );
+  assert.deepEqual(Object.keys(status.bay_projection.items[0]).sort(), [
+    "created_at",
+    "item_key",
+    "item_number",
+    "next_attempt_at",
+    "queue_state",
+    "repository",
+    "stage",
+    "updated_at",
+  ]);
   assert.equal(await exactReviewQueueStatusSnapshot({}), null);
+});
+
+test("Bay queue projection applies its public sample cap across all stages", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" });
+  for (let index = 0; index < 9; index += 1) {
+    await queue.fetch(
+      buildExactReviewQueueRequest(`bay-arriving-${index}`, 10_000 + index, "opened"),
+    );
+    await queue.fetch(
+      buildExactReviewQueueRequest(`bay-setting-${index}`, 20_000 + index, "opened"),
+    );
+    await queue.fetch(
+      buildExactReviewQueueRequest(
+        `bay-repairing-${index}`,
+        30_000 + index,
+        "source_drift_requeue",
+      ),
+    );
+  }
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<
+      string,
+      { state: "pending" | "dispatching" | "leased"; leaseId?: string; leaseExpiresAt?: number }
+    >;
+  };
+  for (let index = 0; index < 9; index += 1) {
+    const item = state.items[`openclaw/gogcli#${20_000 + index}`];
+    item.state = "leased";
+    item.leaseId = `bay-setting-lease-${index}`;
+    item.leaseExpiresAt = Date.now() + 60_000;
+  }
+  await storage.put("exact-review-queue", state);
+
+  const status = await exactReviewQueueStatusSnapshot({
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  });
+
+  assert.ok(status);
+  assert.equal(status.bay_projection.sample_limit, 24);
+  assert.deepEqual(status.bay_projection.stages, {
+    arriving: 9,
+    "setting-up": 9,
+    reviewing: 0,
+    applying: 0,
+    repairing: 9,
+  });
+  assert.equal(status.bay_projection.total, 27);
+  assert.equal(status.bay_projection.items.length, 24);
+  assert.deepEqual(
+    Object.fromEntries(
+      ["arriving", "setting-up", "repairing"].map((stage) => [
+        stage,
+        status.bay_projection.items.filter((item) => item.stage === stage).length,
+      ]),
+    ),
+    { arriving: 8, "setting-up": 8, repairing: 8 },
+  );
 });
 
 test("triage routing groups classify impact labels without forcing one primary group", () => {
@@ -855,6 +949,16 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   assert.match(body, /Where's my crustacean\?/);
   assert.match(body, /Terminal pools clear together at 20 outcomes/);
   assert.match(body, /Master Sweeper/);
+  assert.match(body, /id="bay-control-board"/);
+  assert.match(body, /Review admission/);
+  assert.match(body, /Result publication/);
+  assert.match(body, /Queue handoff/);
+  assert.match(body, /function loadBayHistory/);
+  assert.match(body, /function bayRateSparkline/);
+  assert.match(body, /net throughput over six hours/);
+  assert.match(body, /api\/health-history\?range=6h/);
+  assert.match(body, /function expandQueue/);
+  assert.match(body, /Repair cove/);
   assert.match(body, /id="tunnel-layer"/);
   assert.match(body, /function startTunnelJourney/);
   assert.doesNotMatch(body, /function drawTunnels/);
@@ -942,7 +1046,7 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   const classifyTransition = new Script(
     `${runChangedSource};(${transitionKindSource})`,
   ).runInNewContext({
-    STAGES: ["arriving", "setting-up", "reviewing", "repairing", "applying"],
+    MAIN_STAGES: ["arriving", "setting-up", "reviewing", "applying"],
   });
   for (const stage of ["setting-up", "reviewing", "applying"]) {
     assert.equal(
@@ -955,6 +1059,13 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
       { run_id: "same", stage: "reviewing" },
       { run_id: "same", stage: "repairing" },
     ),
+    null,
+  );
+  assert.equal(
+    classifyTransition(
+      { run_id: "same", stage: "reviewing" },
+      { run_id: "same", stage: "applying" },
+    ),
     "forward",
   );
   assert.match(body, /hasBaySchema\(live\.bay\)\?live\.bay:previewBay/);
@@ -962,6 +1073,7 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   assert.match(body, /record\.outcome==="failure"\?"failed"/);
   assert.match(body, /master\.classList\.add\("resting"\)/);
   assert.match(body, /fetch\("\/api\/status"/);
+  assert.match(body, /exact_review_queue=live\.exact_review_queue/);
   assert.match(body, /setInterval\(load,20000\)/);
   assert.doesNotMatch(body, /api\.github\.com|fetch\("\/repos\//);
   assert.match(body, /Disappearing workers remain CHECKING/);
@@ -6353,7 +6465,7 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(elementFor("exact-review-handoff").innerHTML, /2 of 28 exact-review slots open/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /health-badge healthy/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /pressure congested/);
-  assert.match(elementFor("exact-review-handoff").innerHTML, /4 total Â· 3 ready Â· 2 admissible/);
+  assert.match(elementFor("exact-review-handoff").innerHTML, /4 total · 3 ready · 2 admissible/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /Review admission/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /52 review admission slots open/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /Result publication/);

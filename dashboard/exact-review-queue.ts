@@ -3404,6 +3404,110 @@ function exactReviewQueueLane(item: ExactReviewQueueItem) {
   return exactReviewQueueIsPublication(item) ? "publication" : "review";
 }
 
+// The Bay is a deliberately lightweight visual projection of durable queue
+// state. Keep this representation bounded and scrubbed: it is public dashboard
+// data, not a queue-inspection API. Live workers remain the authority for the
+// reviewing stage; these records only make the otherwise invisible admission,
+// setup, publication, and recovery phases visible.
+const EXACT_REVIEW_BAY_SAMPLE_LIMIT = 24;
+const EXACT_REVIEW_BAY_STAGES = [
+  "arriving",
+  "setting-up",
+  "reviewing",
+  "applying",
+  "repairing",
+] as const;
+type ExactReviewBayStage = (typeof EXACT_REVIEW_BAY_STAGES)[number];
+type ExactReviewBayProjectionItem = {
+  item_key: string;
+  repository: string;
+  item_number: number;
+  stage: ExactReviewBayStage;
+  queue_state: ExactReviewQueueItem["state"];
+  created_at: string;
+  updated_at: string;
+  next_attempt_at: string;
+};
+
+function exactReviewQueueBayStage(item: ExactReviewQueueItem): ExactReviewBayStage {
+  if (exactReviewQueueIsPublication(item)) return "applying";
+  if (isLowPriorityExactReviewDecision(item.decision)) return "repairing";
+  return item.state === "pending" ? "arriving" : "setting-up";
+}
+
+function exactReviewQueueBayStagePriority(stage: ExactReviewBayStage) {
+  return EXACT_REVIEW_BAY_STAGES.indexOf(stage);
+}
+
+function exactReviewQueueBayProjection(items: ExactReviewQueueItem[]) {
+  const projected = new Map<string, ExactReviewBayProjectionItem>();
+  for (const item of items) {
+    if (item.state === "parked") continue;
+    const repository = String(item.decision.targetRepo || "").trim();
+    const itemNumber = Number(item.decision.itemNumber);
+    if (!repository || !Number.isSafeInteger(itemNumber) || itemNumber <= 0) continue;
+    const candidate: ExactReviewBayProjectionItem = {
+      item_key: `${repository}#${itemNumber}`,
+      repository,
+      item_number: itemNumber,
+      stage: exactReviewQueueBayStage(item),
+      queue_state: item.state,
+      created_at: new Date(item.createdAt).toISOString(),
+      updated_at: new Date(item.updatedAt).toISOString(),
+      next_attempt_at: new Date(item.nextAttemptAt).toISOString(),
+    };
+    const previous = projected.get(candidate.item_key);
+    const candidateUpdatedAt = Date.parse(candidate.updated_at);
+    const previousUpdatedAt = previous ? Date.parse(previous.updated_at) : Number.NEGATIVE_INFINITY;
+    if (
+      !previous ||
+      candidateUpdatedAt > previousUpdatedAt ||
+      (candidateUpdatedAt === previousUpdatedAt &&
+        exactReviewQueueBayStagePriority(candidate.stage) >
+          exactReviewQueueBayStagePriority(previous.stage))
+    ) {
+      projected.set(candidate.item_key, candidate);
+    }
+  }
+  const rows = [...projected.values()];
+  const stages = Object.fromEntries(
+    EXACT_REVIEW_BAY_STAGES.map((stage) => [
+      stage,
+      rows.filter((item) => item.stage === stage).length,
+    ]),
+  ) as Record<ExactReviewBayStage, number>;
+  const rowsByStage = Object.fromEntries(
+    EXACT_REVIEW_BAY_STAGES.map((stage) => [
+      stage,
+      rows
+        .filter((item) => item.stage === stage)
+        .sort(
+          (left, right) =>
+            Date.parse(left.created_at) - Date.parse(right.created_at) ||
+            left.item_key.localeCompare(right.item_key),
+        ),
+    ]),
+  ) as Record<ExactReviewBayStage, ExactReviewBayProjectionItem[]>;
+  const sample: ExactReviewBayProjectionItem[] = [];
+  for (let index = 0; sample.length < EXACT_REVIEW_BAY_SAMPLE_LIMIT; index += 1) {
+    let added = false;
+    for (const stage of EXACT_REVIEW_BAY_STAGES) {
+      const item = rowsByStage[stage][index];
+      if (!item) continue;
+      sample.push(item);
+      added = true;
+      if (sample.length === EXACT_REVIEW_BAY_SAMPLE_LIMIT) break;
+    }
+    if (!added) break;
+  }
+  return {
+    sample_limit: EXACT_REVIEW_BAY_SAMPLE_LIMIT,
+    total: rows.length,
+    stages,
+    items: sample,
+  };
+}
+
 function exactReviewQueueActiveReviewCount(state: ExactReviewQueueState) {
   return Object.values(state.items).filter(
     (item) =>
@@ -3565,20 +3669,24 @@ function exactReviewQueueStats(
   const readyPending = items.filter(
     (item) => item.state === "pending" && item.nextAttemptAt <= now,
   ).length;
-  const admissiblePending = exactReviewQueueAdmittedItems(
+  const admissibleItems = exactReviewQueueAdmittedItems(
     state,
     now,
     Number.MAX_SAFE_INTEGER,
     targetCapacity,
     publicationCapacity,
+  );
+  const admissiblePending = admissibleItems.length;
+  const reviewAdmissiblePending = admissibleItems.filter(
+    (item) => !exactReviewQueueIsPublication(item),
   ).length;
   const pressure = summarizeExactReviewPressure({
-    pending: handoffHealth.phases.pending.count,
-    readyPending,
-    admissiblePending,
-    dispatching: handoffHealth.phases.dispatching.count,
-    leased: handoffHealth.phases.leased.count,
-    capacity,
+    pending: lanes.review.pending,
+    readyPending: lanes.review.ready,
+    admissiblePending: reviewAdmissiblePending,
+    dispatching: lanes.review.dispatching,
+    leased: lanes.review.leased,
+    capacity: lanes.review.capacity,
     dispatcherState: state.dispatcher?.state,
     handoffStatus: handoffHealth.status,
   });
@@ -3600,6 +3708,7 @@ function exactReviewQueueStats(
     handoff_health: handoffHealth,
     lanes,
     pressure,
+    bay_projection: exactReviewQueueBayProjection(items),
     next_wake_at: nextWakeAt === null ? null : new Date(nextWakeAt).toISOString(),
     dispatcher: {
       state: state.dispatcher?.state || "unknown",

@@ -160,7 +160,10 @@ function snapshot(workers) {
 
 const expectedSnapshots = [
   snapshot(baseWorkers),
-  snapshot([{ ...baseWorkers[0], current_step: "Validate repair" }, ...baseWorkers.slice(1)]),
+  snapshot([
+    { ...baseWorkers[0], current_step: "Publish review artifacts" },
+    ...baseWorkers.slice(1),
+  ]),
   snapshot([
     {
       ...baseWorkers[0],
@@ -201,7 +204,6 @@ realTideSnapshot.bay = {
   last_tide_at: "2026-07-11T18:02:00.000Z",
   washed_at: "2026-07-11T18:02:00.000Z",
 };
-const proofSnapshots = [...snapshots, denseTerminalSnapshot, realTideSnapshot];
 const realTideSnapshotSha256 = createHash("sha256")
   .update(JSON.stringify(realTideSnapshot))
   .digest("hex")
@@ -214,6 +216,80 @@ const fixtureSha256 = createHash("sha256")
   .update(JSON.stringify(snapshots))
   .digest("hex")
   .toUpperCase();
+
+let healthHistory = Array.from({ length: 73 }, (_, index) => {
+  const at = new Date(Date.parse("2026-07-11T12:02:00.000Z") + index * 5 * 60_000).toISOString();
+  return {
+    at,
+    exact_review: {
+      collection_ok: true,
+      review: {
+        pending: 38 - Math.floor(index / 9),
+        enqueued_total: 800 + index * 3,
+        completed_total: 780 + index * 4,
+        shed_total: 2,
+      },
+      publication: {
+        pending: 6 - Math.floor(index / 22),
+        enqueued_total: 320 + index * 2,
+        completed_total: 318 + index * 3,
+      },
+    },
+  };
+});
+
+function queueProjection() {
+  const bayStages = [
+    { stage: "arriving", queue_state: "pending" },
+    { stage: "setting-up", queue_state: "leased" },
+    { stage: "applying", queue_state: "dispatching" },
+    { stage: "repairing", queue_state: "pending" },
+  ];
+  const items = Array.from({ length: 6 }, (_, batch) =>
+    bayStages.map(({ stage, queue_state }, stageIndex) => {
+      const item_number = 108001 + batch * bayStages.length + stageIndex;
+      const at = new Date(
+        Date.parse("2026-07-11T17:31:00.000Z") + item_number * 1_000,
+      ).toISOString();
+      return {
+        item_key: `openclaw/openclaw#${item_number}`,
+        repository: "openclaw/openclaw",
+        item_number,
+        stage,
+        queue_state,
+        created_at: at,
+        updated_at: at,
+        next_attempt_at: at,
+      };
+    }),
+  ).flat();
+  return {
+    generated_at: "2026-07-11T18:02:00.000Z",
+    lanes: {
+      review: { pending: 29, ready: 4, backoff: 25, dispatching: 2, leased: 19 },
+      publication: { pending: 2, ready: 0, backoff: 2, dispatching: 1, leased: 14 },
+    },
+    handoff_health: {
+      status: "healthy",
+      phases: {
+        pending: { count: 29 },
+        dispatching: { count: 3 },
+        leased: { count: 33 },
+      },
+    },
+    bay_projection: {
+      sample_limit: 24,
+      total: 36,
+      stages: { arriving: 9, "setting-up": 9, reviewing: 0, applying: 9, repairing: 9 },
+      items,
+    },
+  };
+}
+
+const proofSnapshots = [...snapshots, denseTerminalSnapshot, realTideSnapshot].map((snapshot) => ({
+  ...snapshot,
+  exact_review_queue: queueProjection(),
+}));
 
 let fixtureIndex = 0;
 const requests = [];
@@ -265,7 +341,11 @@ await context.addInitScript(() => {
     randomSeed = (Math.imul(randomSeed, 1664525) + 1013904223) >>> 0;
     return randomSeed / 4294967296;
   };
-  Date.now = () => Date.parse("2026-07-11T18:02:00.000Z");
+  let nowMs = Date.parse("2026-07-11T18:02:00.000Z");
+  Date.now = () => nowMs;
+  window.__bayProofSetNow = (value) => {
+    nowMs = Number(value);
+  };
   window.__bayProofReduceMotion = true;
   window.__bayProofPoll = null;
   window.setInterval = (callback, delay, ...args) => {
@@ -325,6 +405,20 @@ await page.route("**/*", async (route) => {
       contentType: "application/json; charset=utf-8",
       headers: { "cache-control": "no-store", "x-clawsweeper-cache": "synthetic-proof" },
       body: JSON.stringify(proofSnapshots[fixtureIndex]),
+    });
+    return;
+  }
+  if (url.pathname === "/api/health-history") {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json; charset=utf-8",
+      headers: { "cache-control": "no-store", "x-clawsweeper-cache": "synthetic-proof" },
+      body: JSON.stringify({
+        schema_version: 1,
+        range: "6h",
+        retention_days: 7,
+        samples: healthHistory,
+      }),
     });
     return;
   }
@@ -393,6 +487,7 @@ try {
   await page.goto(proofUrl, { waitUntil: "networkidle" });
   await page.locator("#loading").waitFor({ state: "hidden", timeout: 15_000 });
   await page.locator("#stage-grid .critter").first().waitFor({ state: "visible" });
+  await page.locator("#bay-control-board .bay-control-point").first().waitFor({ state: "visible" });
   await page.evaluate(() => document.fonts.ready);
 
   assertProof("real Bay route loaded", (await page.title()).includes("OpenClaw Bay"), {
@@ -406,6 +501,40 @@ try {
     text: await page.locator("#notice").innerText(),
     title: await page.locator("#notice").getAttribute("title"),
   });
+  const bayControl = {
+    cards: await page.locator("#bay-control-board .bay-control-card").count(),
+    review: await page.locator("#bay-control-board").innerText(),
+    waiting_hover_label: await page
+      .locator("#bay-control-board .bay-control-point title")
+      .first()
+      .evaluate((node) => node.textContent || ""),
+    rate_hover_label: await page
+      .locator("#bay-control-board .bay-control-point.rate title")
+      .first()
+      .evaluate((node) => node.textContent || ""),
+    queue_items: await page.locator('[data-key="openclaw/openclaw#108001"]').count(),
+    arriving_queue_samples: await page
+      .locator('[data-stage="arriving"] [data-item^="queue:"]')
+      .count(),
+    queue_header: await page.locator('[data-stage="arriving"] h2').innerText(),
+    queue_omission: await page.locator('[data-stage="arriving"] .overflow-note').count(),
+    queue_omission_label: await page.locator('[data-stage="arriving"] .overflow-note').innerText(),
+  };
+  assertProof(
+    "Bay mirrors cached exact-review admission, publication, and handoff telemetry",
+    bayControl.cards === 3 &&
+      /Review admission/i.test(bayControl.review) &&
+      /Result publication/i.test(bayControl.review) &&
+      /Queue handoff/i.test(bayControl.review) &&
+      /waiting/.test(bayControl.waiting_hover_label) &&
+      /\/ hour/.test(bayControl.rate_hover_label) &&
+      bayControl.queue_items === 1 &&
+      bayControl.arriving_queue_samples === 6 &&
+      bayControl.queue_header === "ARRIVING 9 QUEUED" &&
+      bayControl.queue_omission === 1 &&
+      bayControl.queue_omission_label === "+3 queued IDs not shown",
+    bayControl,
+  );
   const terminalPoolCounts = {
     completed: await page.locator('[data-stage="completed"] .critter').count(),
     attention: await page.locator(".pool.attention .critter").count(),
@@ -432,6 +561,61 @@ try {
     "Synthetic, redacted status fixture",
     "Real Bay route and assets; visible partial-telemetry diagnostic; three explicit terminal outcomes.",
   );
+  await capture(
+    "01a-mini-control-board",
+    "Mini queue control board",
+    "Bay reuses the dashboard’s cached six-hour review-admission, publication, and handoff telemetry; each sparkline point has an exact hover label.",
+  );
+
+  const originalHistory = healthHistory;
+  const lastHistory = originalHistory.at(-1);
+  const resetAt = new Date(Date.parse(lastHistory.at) + 15 * 60_000).toISOString();
+  healthHistory = [
+    ...originalHistory.slice(-3),
+    {
+      at: resetAt,
+      exact_review: {
+        collection_ok: true,
+        review: { pending: 8, enqueued_total: 4, completed_total: 3, shed_total: 0 },
+        publication: { pending: 1, enqueued_total: 2, completed_total: 1 },
+      },
+    },
+  ];
+  await page.evaluate(() => {
+    window.__bayProofSetNow(Date.parse("2026-07-11T18:15:01.000Z"));
+    window.__bayProofPoll();
+  });
+  await page.waitForFunction(() =>
+    document
+      .getElementById("bay-control-board")
+      ?.textContent?.includes("Awaiting enough flow history"),
+  );
+  assertProof(
+    "Bay does not reuse a stale rate after a history counter reset",
+    /Awaiting enough flow history/.test(await page.locator("#bay-control-board").innerText()),
+    { reset_at: resetAt },
+  );
+  healthHistory = originalHistory;
+  await page.evaluate(() => {
+    window.__bayProofSetNow(Date.parse("2026-07-11T18:30:01.000Z"));
+    window.__bayProofPoll();
+  });
+  await page.waitForFunction(() =>
+    document
+      .getElementById("bay-control-board")
+      ?.textContent?.includes("Stale · no rate sample in the last 12m"),
+  );
+  assertProof(
+    "Bay marks a stalled cached history rate as stale",
+    /History stale · awaiting current sample/.test(
+      await page.locator("#bay-control-board").innerText(),
+    ) &&
+      /Stale · no rate sample in the last 12m/.test(
+        await page.locator("#bay-control-board").innerText(),
+      ),
+    { last_history_at: originalHistory.at(-1)?.at, observed_at: "2026-07-11T18:30:01.000Z" },
+  );
+  healthHistory = originalHistory;
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() =>
@@ -531,15 +715,15 @@ try {
     "The master and item are animated together; neither disappears between lanes.",
   );
 
-  const repairedItem = page.locator(`${mainKey}.stage-repairing`);
-  await repairedItem.waitFor({ state: "visible", timeout: 10_000 });
-  assertProof("forward transition lands in reported lane", await repairedItem.isVisible(), {
-    destination: "repairing",
+  const appliedItem = page.locator(`${mainKey}.stage-applying`);
+  await appliedItem.waitFor({ state: "visible", timeout: 10_000 });
+  assertProof("forward transition lands in applying", await appliedItem.isVisible(), {
+    destination: "applying",
   });
   await capture(
     "04-forward-landed",
     "Forward transition complete",
-    "The same GitHub reference is now visibly placed in Repairing.",
+    "The same GitHub reference is now visibly placed in Applying, the final publication step before its terminal outcome.",
   );
 
   fixtureIndex = 2;
@@ -578,7 +762,7 @@ try {
   await capture(
     "05-retrigger-tunnel",
     "New run detected: retrigger tunnel",
-    "A changed run ID digs from Repairing back toward Setting up with both tunnel openings visible.",
+    "A changed run ID digs from Applying back toward Setting up with both tunnel openings visible.",
   );
 
   const resurfacedItem = page.locator(`${mainKey}.stage-setting-up.retriggered`);
@@ -918,6 +1102,9 @@ try {
   );
 
   const totalStatusGets = requests.filter((request) => request.path === "/api/status").length;
+  const healthHistoryGets = requests.filter(
+    (request) => request.path === "/api/health-history",
+  ).length;
   const mutatingRequests = requests.filter((request) => !["GET", "HEAD"].includes(request.method));
   const directGitHubRequests = requests.filter((request) =>
     request.host.toLowerCase().startsWith("api.github.com"),
@@ -940,12 +1127,18 @@ try {
   assertProof("browser sends no GitHub API request", directGitHubRequests.length === 0, {
     direct_github_requests: 0,
   });
+  assertProof(
+    "mini control board reads cached dashboard history once per minute",
+    healthHistoryGets === 3,
+    { health_history_gets: healthHistoryGets },
+  );
   assertProof("no browser console errors", consoleErrors.length === 0, { errors: consoleErrors });
   assertProof("no uncaught page errors", pageErrors.length === 0, { errors: pageErrors });
 
   const diagnostics = {
     fixture: "synthetic + redacted",
     status_gets: totalStatusGets,
+    health_history_gets: healthHistoryGets,
     direct_github_api_requests: directGitHubRequests.length,
     mutating_requests: mutatingRequests.length,
     preview_terminal_before: tideBefore.length,
@@ -1064,7 +1257,7 @@ for (const item of evidence) {
 }
 const reportHtml = `<!doctype html><html><head><meta charset="utf-8"><title>OpenClaw Bay Playwright proof</title><style>
 *{box-sizing:border-box}body{margin:0;padding:28px;background:#edf7f5;color:#263533;font:16px/1.45 system-ui,sans-serif}header{max-width:1640px;margin:0 auto 24px;padding:24px 28px;border-radius:18px;background:#174e52;color:white;box-shadow:0 14px 35px rgba(24,67,69,.18)}header h1{margin:0 0 8px;font-size:34px}header p{margin:4px 0;color:#d9f1ed}.pass{display:inline-block;margin-top:12px;padding:7px 11px;border-radius:999px;background:#dff5dc;color:#174e52;font-weight:850}.grid{max-width:1640px;margin:auto;display:grid;grid-template-columns:1fr 1fr;gap:22px}article{overflow:hidden;border:1px solid #b8d3cf;border-radius:16px;background:white;box-shadow:0 10px 25px rgba(25,70,70,.11)}.copy{min-height:112px;padding:16px 18px;border-bottom:1px solid #d6e5e2}.copy h2{margin:0 0 6px;color:#bc4b31;font-size:21px}.copy p{margin:0;color:#536864}img{display:block;width:100%;height:auto}@media(max-width:900px){.grid{grid-template-columns:1fr}}
-</style></head><body><header><h1>OpenClaw Bay · deterministic Playwright proof</h1><p>Real <code>/bay-demo</code> page and artwork; only <code>/api/status</code> is replaced with a fully synthetic, redacted fixture.</p><p>Source ${escapeHtml(sourceSha)} · fixture SHA-256 ${escapeHtml(fixtureSha256)}</p><span class="pass">${assertions.length} assertions passed · 0 GitHub API requests · 0 mutation requests</span></header><main class="grid">${cards.join("")}</main></body></html>`;
+</style></head><body><header><h1>OpenClaw Bay · deterministic Playwright proof</h1><p>Real <code>/bay-demo</code> page and artwork; only dashboard reads <code>/api/status</code> and <code>/api/health-history</code> are replaced with fully synthetic, redacted fixtures.</p><p>Source ${escapeHtml(sourceSha)} · fixture SHA-256 ${escapeHtml(fixtureSha256)}</p><span class="pass">${assertions.length} assertions passed · 0 GitHub API requests · 0 mutation requests</span></header><main class="grid">${cards.join("")}</main></body></html>`;
 const reportPath = path.join(outputDir, "playwright-proof-report.html");
 await writeFile(reportPath, reportHtml);
 
