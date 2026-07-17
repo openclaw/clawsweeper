@@ -500,11 +500,15 @@ test("review candidates start lazily and deferred items cannot remain active", (
     source.indexOf("restoreTreeModes(readonlyModeSnapshots)", reviewCatchStart),
   );
   const cleanup = reviewCatch.indexOf(
-    "deleteOwnedDedicatedReviewStartLease(acquired.itemNumber, acquired.lease)",
+    "releaseOwnedReviewLease(acquired.itemNumber, acquired.lease)",
   );
   const finalization = reviewCatch.indexOf("finishReviewActionLedger({");
   assert.ok(cleanup >= 0);
   assert.ok(finalization > cleanup);
+  assert.match(
+    source,
+    /const releaseOwnedReviewLease = \(itemNumber: number, lease: AcquiredReviewStartLease\): boolean =>[\s\S]*isSuppliedReviewStartLease\(suppliedReviewLease, lease\)[\s\S]*deleteOwnedDedicatedReviewStartLease\(itemNumber, lease\)/,
+  );
 });
 
 test("apply receipts start per item and persist mutation observation before finalization", () => {
