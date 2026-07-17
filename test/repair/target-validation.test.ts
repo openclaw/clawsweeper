@@ -2515,6 +2515,17 @@ test("dependency setup rejects target-controlled network destinations", () => {
       expected: /destination is not approved/,
       prepare() {
         const cwd = gitBunPackageFixture({ check: 'node -e ""' });
+        fs.writeFileSync(path.join(cwd, "bun.lock"), "@git://evil.example/payload.git\n");
+        return {
+          cwd,
+          options: validationOptions("openclaw/clawhub", clawhubToolchain()),
+        };
+      },
+    },
+    {
+      expected: /destination is not approved/,
+      prepare() {
+        const cwd = gitBunPackageFixture({ check: 'node -e ""' });
         const packagePath = path.join(cwd, "package.json");
         const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
         packageJson.dependencies = { payload: "github:example/payload" };
