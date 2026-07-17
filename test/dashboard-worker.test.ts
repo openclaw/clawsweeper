@@ -293,6 +293,18 @@ test("exact-review queue sheds only new recovery work above the pending soft lim
     assert.deepEqual(await shed.json(), { ok: true, shed: true, reason: "backpressure" });
   }
 
+  const placeholderRecovery = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "placeholder-recovery-over-limit",
+      769,
+      "review_placeholder_recovery",
+    ),
+  );
+  assert.equal(placeholderRecovery.status, 202);
+  const placeholderRecoveryBody = await placeholderRecovery.json();
+  assert.equal(placeholderRecoveryBody.queued, true);
+  assert.notEqual(placeholderRecoveryBody.shed, true);
+
   const webhook = await queue.fetch(
     buildExactReviewQueueRequest("webhook-over-limit", 770, "opened"),
   );
@@ -313,20 +325,20 @@ test("exact-review queue sheds only new recovery work above the pending soft lim
   const stats = await (
     await restarted.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
   ).json();
-  assert.equal(stats.pending, 3);
+  assert.equal(stats.pending, 4);
   assert.equal(stats.shed_since_reset, 3);
-  assert.equal(stats.handoff_health.pending_depth, 3);
+  assert.equal(stats.handoff_health.pending_depth, 4);
   assert.equal(stats.handoff_health.shed_since_reset, 3);
-  assert.equal(stats.lanes.review.pending_depth, 2);
+  assert.equal(stats.lanes.review.pending_depth, 3);
   assert.equal(stats.lanes.review.shed_since_reset, 3);
-  assert.equal(stats.lanes.review.enqueued_total, 2);
+  assert.equal(stats.lanes.review.enqueued_total, 3);
   assert.deepEqual(stats.lanes.review.flow.last_15_minutes, {
     window_minutes: 15,
-    arrival: 5,
+    arrival: 6,
     successful: 0,
     retried: 0,
     shed: 3,
-    arrival_rate_per_hour: 20,
+    arrival_rate_per_hour: 24,
     successful_rate_per_hour: 0,
     retried_rate_per_hour: 0,
     shed_rate_per_hour: 12,

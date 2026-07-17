@@ -840,7 +840,10 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
 
   const sweepJob = workflow.slice(workflow.indexOf("\n  sweep:"));
   assert.match(sweepJob, /timeout-minutes: 10/);
-  assert.match(sweepJob, /permissions:\s+actions: read/);
+  assert.match(
+    sweepJob,
+    /permissions:\s+actions: read\s+contents: read\s+issues: read\s+pull-requests: read/,
+  );
   assert.match(sweepJob, /GH_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(sweepJob, /\/internal\/exact-review\/claimed-runs/);
   assert.match(sweepJob, /include_all_claimed: true/);
@@ -848,7 +851,23 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
   assert.match(sweepJob, /terminal_runs: terminalRuns/);
   assert.match(sweepJob, /\/internal\/exact-review\/reconcile/);
   assert.match(sweepJob, /x-clawsweeper-exact-review-signature/);
-  assert.doesNotMatch(sweepJob, /actions\/checkout/);
+  assert.match(sweepJob, /actions\/checkout@v7/);
+  assert.match(sweepJob, /build-script: build/);
+  assert.match(sweepJob, /name: Recover orphaned review placeholders/);
+  assert.match(sweepJob, /run: node dist\/review-placeholder-recovery\.js/);
+  assert.match(
+    sweepJob,
+    /REVIEW_PLACEHOLDER_MAX_CHECKS: \$\{\{ vars\.REVIEW_PLACEHOLDER_MAX_CHECKS \|\| '20' \}\}/,
+  );
+  assert.match(
+    sweepJob,
+    /REVIEW_PLACEHOLDER_MAX_RECOVERIES: \$\{\{ vars\.REVIEW_PLACEHOLDER_MAX_RECOVERIES \|\| '5' \}\}/,
+  );
+  assert.match(
+    sweepJob,
+    /REVIEW_PLACEHOLDER_MIN_AGE_HOURS: \$\{\{ vars\.REVIEW_PLACEHOLDER_MIN_AGE_HOURS \|\| '2' \}\}/,
+  );
+  assert.match(sweepJob, /TARGET_REPO: openclaw\/openclaw/);
 });
 
 test("publish workflow dispatches immediate apply through the isolated lane", () => {

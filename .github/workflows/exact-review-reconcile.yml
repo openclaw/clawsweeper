@@ -67,6 +67,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       actions: read
+      contents: read
+      issues: read
+      pull-requests: read
     steps:
       - name: Reconcile claimed terminal runs
         env:
@@ -152,3 +155,21 @@ jobs:
           // 15-minute cadence and lease expiry are the backstop. Fail only on total blindness.
           if (runs.length && unavailable.length === runs.length) throw new Error("all claimed run lookups failed");
           NODE
+
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build
+
+      - name: Recover orphaned review placeholders
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          GH_TOKEN: ${{ github.token }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          REVIEW_PLACEHOLDER_MAX_CHECKS: ${{ vars.REVIEW_PLACEHOLDER_MAX_CHECKS || '20' }}
+          REVIEW_PLACEHOLDER_MAX_RECOVERIES: ${{ vars.REVIEW_PLACEHOLDER_MAX_RECOVERIES || '5' }}
+          REVIEW_PLACEHOLDER_MIN_AGE_HOURS: ${{ vars.REVIEW_PLACEHOLDER_MIN_AGE_HOURS || '2' }}
+          TARGET_BRANCH: main
+          TARGET_REPO: openclaw/openclaw
+        run: node dist/review-placeholder-recovery.js
