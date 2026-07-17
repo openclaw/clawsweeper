@@ -1424,7 +1424,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const RECENT_MISSING_OPEN_MS = DAY_MS;
 const DEFAULT_CODEX_MODEL = PUBLIC_CODEX_MODEL;
 const DEFAULT_REASONING_EFFORT = "high";
-const DEFAULT_SERVICE_TIER = "";
+// Priority service tier for Codex calls (maintainer decision 2026-07-17:
+// "gpt 5.6 sol high fast"). Latency-only; excluded from review-policy hashing.
+const DEFAULT_SERVICE_TIER = "fast";
 const DEFAULT_REVIEW_CODEX_TIMEOUT_MS = 1_200_000;
 const DEFAULT_CODEX_FALLBACK_MIN_BUDGET_MS = 120_000;
 const REVIEW_POLICY_VERSION = "2026-07-09-policy-v24";
@@ -3286,7 +3288,10 @@ function reviewPolicyHash(options: {
       model: options.model ?? DEFAULT_CODEX_MODEL,
       reasoningEffort: options.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
       sandboxMode: options.sandboxMode ?? "read-only",
-      serviceTier: options.serviceTier ?? DEFAULT_SERVICE_TIER,
+      // Service tier changes latency, never decisions. Pinned to the historical
+      // hash value so tier changes cannot mark every stored review policy-stale
+      // and trigger a fleet-wide re-review wave.
+      serviceTier: "",
       targetRepo: targetRepo(),
       repositoryProfile: targetProfile(),
       prompt: reviewPromptTemplate(),
