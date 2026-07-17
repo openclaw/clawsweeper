@@ -129,6 +129,8 @@ if (args[0] === "api" && /\\/issues\\/${number}$/.test(path)) {
   }
 } else if (args[0] === "issue" && args[1] === "view") {
   console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && /\\/collaborators\\/contributor\\/permission$/.test(path)) {
+  console.log(JSON.stringify({ permission: "read", role_name: "read" }));
 } else if (args[0] === "label" && args[1] === "create") {
   console.log(JSON.stringify({ name: args[2] }));
 } else if (args[0] === "issue" && args[1] === "edit") {
@@ -167,6 +169,126 @@ if (args[0] === "api" && /\\/issues\\/${number}$/.test(path)) {
           args.includes("--add-label") &&
           args.includes("clawsweeper:bulk-filed"),
       ),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions clears a stale bulk-filer label for a redacted maintain role", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const logPath = join(root, "gh.log");
+    const number = 74487;
+    const reviewedAt = new Date().toISOString();
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    writeFileSync(
+      join(itemsDir, `${number}.md`),
+      `${reportFrontMatter({
+        repository: "openclaw/clawsweeper",
+        type: "issue",
+        number: String(number),
+        title: "Clear stale bulk-filer label",
+        url: `https://github.com/openclaw/clawsweeper/issues/${number}`,
+        decision: "keep_open",
+        close_reason: "none",
+        confidence: "high",
+        action_taken: "kept_open",
+        review_status: "failed",
+        local_checkout_access: "verified",
+        author: "maintainer",
+        author_association: "CONTRIBUTOR",
+        labels: JSON.stringify(["clawsweeper:bulk-filed"]),
+        bulk_filer_detected: "true",
+        item_snapshot_hash: "snapshot-a",
+        item_updated_at: reviewedAt,
+        reviewed_at: reviewedAt,
+      })}
+
+## Summary
+
+This exact review inherited a stale bulk-filer label.
+`,
+      "utf8",
+    );
+    const ghMock = `
+const { appendFileSync } = require("fs");
+const logPath = ${JSON.stringify(logPath)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+const path = args[1] || "";
+if (args[0] === "api" && /\\/issues\\/${number}$/.test(path)) {
+  console.log(JSON.stringify({
+    number: ${number},
+    title: "Clear stale bulk-filer label",
+    html_url: "https://github.com/openclaw/clawsweeper/issues/${number}",
+    created_at: "2026-07-17T00:00:00Z",
+    updated_at: ${JSON.stringify(reviewedAt)},
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "maintainer" },
+    labels: ["clawsweeper:bulk-filed"],
+    comments: 0,
+    pull_request: null
+  }));
+} else if (args[0] === "api" && /\\/issues\\/${number}\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/${number}\\/comments(?:\\?|$)/.test(path)) {
+  if (args.includes("--method") && args.includes("POST")) {
+    console.log(JSON.stringify({
+      id: 987487,
+      html_url: "https://github.com/openclaw/clawsweeper/issues/${number}#issuecomment-987487"
+    }));
+  } else {
+    console.log(JSON.stringify([[]]));
+  }
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && /\\/collaborators\\/maintainer\\/permission$/.test(path)) {
+  console.log(JSON.stringify({ permission: "write", role_name: "maintain" }));
+} else if (args[0] === "issue" && args[1] === "edit") {
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--sync-comments-only", "--item-numbers", String(number)],
+      });
+    });
+
+    const calls = readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+    assert(
+      calls.some(
+        (args) =>
+          args[0] === "issue" &&
+          args[1] === "edit" &&
+          args.includes("--remove-label") &&
+          args.includes("clawsweeper:bulk-filed"),
+      ),
+    );
+    assert.equal(
+      calls.some((args) => args[0] === "label" && args[1] === "create"),
+      false,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
