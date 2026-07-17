@@ -139,7 +139,7 @@ test("review placeholder runner fails open and sends a signed exact-review decis
   const summary = await runReviewPlaceholderRecovery({
     env: {
       GH_TOKEN: "test-token-placeholder",
-      CLAWSWEEPER_WEBHOOK_SECRET: secret,
+      CLAWSWEEPER_WEBHOOK_SECRET: webhookSecret,
       GITHUB_API_URL: "https://api.github.test",
       QUEUE_URL: "https://queue.test/",
       TARGET_REPO: "openclaw/openclaw",
