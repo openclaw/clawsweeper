@@ -280,6 +280,15 @@ hot intake `14`, and commit review `2`. Existing repair lanes keep their
   the two most recently updated pages for sponsorship commands, then alternates
   newest/oldest created-order scans. Reaction-only revival can lag in very large
   archives; raise this override to scan deeper per run.
+- `REVIEW_PLACEHOLDER_MAX_CHECKS` overrides the number of open search candidates
+  examined by each 15-minute orphaned-placeholder recovery pass; the default is
+  20 and the maximum is 1000.
+- `REVIEW_PLACEHOLDER_MIN_AGE_HOURS` overrides how old the latest ClawSweeper bot
+  review-start placeholder must be before recovery; the default is 2 hours and
+  the maximum is 720 hours.
+- `REVIEW_PLACEHOLDER_MAX_RECOVERIES` overrides the number of orphaned review
+  placeholders enqueued per recovery pass; the default is 5 and the maximum is
+  100.
 - `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS` overrides the 45,000 ms coalescing delay
   for fresh non-command exact-review events.
 - `EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS` overrides the 180,000 ms maximum
