@@ -180,6 +180,8 @@ type ExactReviewQueueMetricTotals = {
 type ExactReviewQueueMetricDelta = {
   reviewEnqueued?: number;
   reviewCompleted?: number;
+  reviewRetried?: number;
+  reviewShed?: number;
   publicationEnqueued?: number;
   publicationCompleted?: number;
   publicationPublished?: number;
@@ -378,6 +380,7 @@ export class ExactReviewQueue {
           ) {
             state.shedSinceReset = exactReviewShedSinceReset(state) + 1;
             this.writeStateSync(state);
+            this.incrementQueueMetricsSync({ reviewShed: 1 });
             return { shed: true as const };
           }
           state.items[key] = {
@@ -735,6 +738,7 @@ export class ExactReviewQueue {
         state,
         {
           ...(completedLane === "review" && outcome === "success" ? { reviewCompleted: 1 } : {}),
+          ...(!publicationItem && outcome !== "success" && requeued ? { reviewRetried: 1 } : {}),
           ...(completedLane === "publication" ? { publicationCompleted: 1 } : {}),
           ...(structuredTerminal && publicationCompletion.kind === "published"
             ? { publicationPublished: 1 }
@@ -894,6 +898,7 @@ export class ExactReviewQueue {
       let requeued = 0;
       let completed = 0;
       let completedReviews = 0;
+      let retriedReviews = 0;
       let completedPublications = 0;
       for (const run of runs) {
         const matches = Object.values(state.items).filter(
@@ -907,8 +912,12 @@ export class ExactReviewQueue {
         const item = matches[0];
         const didRequeue = finishExactReviewQueueItem(state, item, now, run.outcome);
         reconciled += 1;
-        if (didRequeue) requeued += 1;
-        else {
+        if (didRequeue) {
+          requeued += 1;
+          if (!exactReviewQueueIsPublication(item) && run.outcome !== "success") {
+            retriedReviews += 1;
+          }
+        } else {
           completed += 1;
           if (run.outcome === "success") {
             if (exactReviewQueueIsPublication(item)) completedPublications += 1;
@@ -919,6 +928,7 @@ export class ExactReviewQueue {
       if (reconciled) {
         await this.writeState(state, {
           reviewCompleted: completedReviews,
+          reviewRetried: retriedReviews,
           publicationCompleted: completedPublications,
         });
         await this.scheduleNext(state, now);
@@ -930,7 +940,7 @@ export class ExactReviewQueue {
       const now = Date.now();
       const snapshot = this.storage.transactionSync(() => {
         this.pruneDeliveryReceiptsSync(now);
-        this.prunePublicationTelemetrySync(now);
+        this.pruneQueueTelemetrySync(now);
         const current = this.readStateSync();
         // Dashboard reads are also the operational heartbeat. Reclaim leases and
         // restore the alarm here so a deploy or lost alarm cannot strand backlog.
@@ -945,11 +955,12 @@ export class ExactReviewQueue {
         return {
           state: current,
           metrics: this.queueMetricTotalsSync(),
-          flow: this.publicationFlowSummarySync(now),
+          reviewFlow: this.reviewFlowSummarySync(now),
+          publicationFlow: this.publicationFlowSummarySync(now),
           deadLetters: this.deadLetterStatsSync(),
         };
       });
-      const { state, metrics, flow, deadLetters } = snapshot;
+      const { state, metrics, reviewFlow, publicationFlow, deadLetters } = snapshot;
       const publicationControl = this.refreshPublicationControlSync(state, now);
       await this.scheduleNext(state, now);
       const stats = exactReviewQueueStats(
@@ -977,6 +988,7 @@ export class ExactReviewQueue {
             ...stats.lanes.review,
             enqueued_total: metrics.review.enqueued,
             completed_total: metrics.review.completed,
+            flow: reviewFlow,
           },
           publication: {
             ...stats.lanes.publication,
@@ -987,9 +999,13 @@ export class ExactReviewQueue {
             retried_total: metrics.publication.retried,
             dead_lettered_total: metrics.publication.deadLettered,
             refreshed_total: metrics.publication.refreshed,
-            flow,
+            flow: publicationFlow,
             dead_letters: deadLetters,
-            health: exactReviewPublicationHealth(stats.lanes.publication, flow, deadLetters),
+            health: exactReviewPublicationHealth(
+              stats.lanes.publication,
+              publicationFlow,
+              deadLetters,
+            ),
             capacity_control: exactReviewPublicationControlStatus(this.env, publicationControl),
           },
         },
@@ -1193,7 +1209,7 @@ export class ExactReviewQueue {
     }
     const cursor = String(body.cursor || "");
     if (cursor && cursor.length > 500) return json({ error: "invalid_cursor" }, 400);
-    this.prunePublicationTelemetrySync(Date.now());
+    this.pruneQueueTelemetrySync(Date.now());
     const rows = Array.from(
       this.storage.sql.exec(
         `SELECT dead_letter_id, item_key, revision, target_repo, item_number,
@@ -1559,6 +1575,10 @@ export class ExactReviewQueue {
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE} (
          bucket_start INTEGER PRIMARY KEY,
+         review_enqueued INTEGER NOT NULL DEFAULT 0 CHECK (review_enqueued >= 0),
+         review_completed INTEGER NOT NULL DEFAULT 0 CHECK (review_completed >= 0),
+         review_retried INTEGER NOT NULL DEFAULT 0 CHECK (review_retried >= 0),
+         review_shed INTEGER NOT NULL DEFAULT 0 CHECK (review_shed >= 0),
          publication_enqueued INTEGER NOT NULL DEFAULT 0 CHECK (publication_enqueued >= 0),
          publication_resolved INTEGER NOT NULL DEFAULT 0 CHECK (publication_resolved >= 0),
          publication_published INTEGER NOT NULL DEFAULT 0 CHECK (publication_published >= 0),
@@ -1568,6 +1588,22 @@ export class ExactReviewQueue {
            CHECK (publication_dead_lettered >= 0)
        ) STRICT`,
     );
+    for (const column of ["review_enqueued", "review_completed", "review_retried", "review_shed"]) {
+      const present = Array.from(
+        this.storage.sql.exec(
+          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE}')
+            WHERE name = ?`,
+          column,
+        ),
+      ).length;
+      if (!present) {
+        const definition = `${column} INTEGER NOT NULL DEFAULT 0 CHECK (${column} >= 0)`;
+        this.storage.sql.exec(
+          `ALTER TABLE ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE}
+             ADD COLUMN ${definition}`,
+        );
+      }
+    }
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE} (
          dead_letter_id TEXT PRIMARY KEY,
@@ -1921,6 +1957,8 @@ export class ExactReviewQueue {
   private incrementQueueMetricsSync(delta: ExactReviewQueueMetricDelta) {
     const reviewEnqueued = exactReviewMetricDelta(delta.reviewEnqueued);
     const reviewCompleted = exactReviewMetricDelta(delta.reviewCompleted);
+    const reviewRetried = exactReviewMetricDelta(delta.reviewRetried);
+    const reviewShed = exactReviewMetricDelta(delta.reviewShed);
     const publicationEnqueued = exactReviewMetricDelta(delta.publicationEnqueued);
     const publicationCompleted = exactReviewMetricDelta(delta.publicationCompleted);
     const publicationPublished = exactReviewMetricDelta(delta.publicationPublished);
@@ -1931,6 +1969,8 @@ export class ExactReviewQueue {
     if (
       !reviewEnqueued &&
       !reviewCompleted &&
+      !reviewRetried &&
+      !reviewShed &&
       !publicationEnqueued &&
       !publicationCompleted &&
       !publicationPublished &&
@@ -1963,7 +2003,11 @@ export class ExactReviewQueue {
       publicationDeadLettered,
       publicationRefreshed,
     );
-    this.incrementPublicationMetricBucketSync({
+    this.incrementQueueMetricBucketSync({
+      reviewEnqueued,
+      reviewCompleted,
+      reviewRetried,
+      reviewShed,
       publicationEnqueued,
       publicationCompleted,
       publicationPublished,
@@ -1973,7 +2017,11 @@ export class ExactReviewQueue {
     });
   }
 
-  private incrementPublicationMetricBucketSync({
+  private incrementQueueMetricBucketSync({
+    reviewEnqueued,
+    reviewCompleted,
+    reviewRetried,
+    reviewShed,
     publicationEnqueued,
     publicationCompleted,
     publicationPublished,
@@ -1981,6 +2029,10 @@ export class ExactReviewQueue {
     publicationRetried,
     publicationDeadLettered,
   }: {
+    reviewEnqueued: number;
+    reviewCompleted: number;
+    reviewRetried: number;
+    reviewShed: number;
     publicationEnqueued: number;
     publicationCompleted: number;
     publicationPublished: number;
@@ -1989,6 +2041,10 @@ export class ExactReviewQueue {
     publicationDeadLettered: number;
   }) {
     if (
+      !reviewEnqueued &&
+      !reviewCompleted &&
+      !reviewRetried &&
+      !reviewShed &&
       !publicationEnqueued &&
       !publicationCompleted &&
       !publicationPublished &&
@@ -2003,10 +2059,15 @@ export class ExactReviewQueue {
       EXACT_REVIEW_QUEUE_METRIC_BUCKET_MS;
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE}
-         (bucket_start, publication_enqueued, publication_resolved, publication_published,
+         (bucket_start, review_enqueued, review_completed, review_retried, review_shed,
+          publication_enqueued, publication_resolved, publication_published,
           publication_superseded, publication_retried, publication_dead_lettered)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(bucket_start) DO UPDATE SET
+         review_enqueued = review_enqueued + excluded.review_enqueued,
+         review_completed = review_completed + excluded.review_completed,
+         review_retried = review_retried + excluded.review_retried,
+         review_shed = review_shed + excluded.review_shed,
          publication_enqueued = publication_enqueued + excluded.publication_enqueued,
          publication_resolved = publication_resolved + excluded.publication_resolved,
          publication_published = publication_published + excluded.publication_published,
@@ -2015,6 +2076,10 @@ export class ExactReviewQueue {
          publication_dead_lettered =
            publication_dead_lettered + excluded.publication_dead_lettered`,
       bucketStart,
+      reviewEnqueued,
+      reviewCompleted,
+      reviewRetried,
+      reviewShed,
       publicationEnqueued,
       publicationCompleted,
       publicationPublished,
@@ -2106,7 +2171,42 @@ export class ExactReviewQueue {
     return moved;
   }
 
-  private prunePublicationTelemetrySync(now: number) {
+  private reviewFlowSummarySync(now: number) {
+    const windowMs = 15 * 60_000;
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT COALESCE(SUM(review_enqueued), 0) AS enqueued,
+                COALESCE(SUM(review_completed), 0) AS completed,
+                COALESCE(SUM(review_retried), 0) AS retried,
+                COALESCE(SUM(review_shed), 0) AS shed
+           FROM ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE}
+          WHERE bucket_start >= ?`,
+        now - windowMs,
+      ),
+    )[0] as Record<string, number> | undefined;
+    const multiplier = (60 * 60 * 1000) / windowMs;
+    const enqueued = Number(row?.enqueued || 0);
+    const successful = Number(row?.completed || 0);
+    const retried = Number(row?.retried || 0);
+    const shed = Number(row?.shed || 0);
+    const arrival = enqueued + shed;
+    return {
+      last_15_minutes: {
+        window_minutes: windowMs / 60_000,
+        arrival,
+        successful,
+        retried,
+        shed,
+        arrival_rate_per_hour: Math.round(arrival * multiplier * 10) / 10,
+        successful_rate_per_hour: Math.round(successful * multiplier * 10) / 10,
+        retried_rate_per_hour: Math.round(retried * multiplier * 10) / 10,
+        shed_rate_per_hour: Math.round(shed * multiplier * 10) / 10,
+        retry_amplification: successful > 0 ? Math.round((retried / successful) * 100) / 100 : null,
+      },
+    };
+  }
+
+  private pruneQueueTelemetrySync(now: number) {
     this.storage.sql.exec(
       `DELETE FROM ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE} WHERE bucket_start < ?`,
       now - EXACT_REVIEW_QUEUE_METRIC_BUCKET_TTL_MS,

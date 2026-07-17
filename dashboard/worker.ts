@@ -7241,6 +7241,8 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .lane-flow-title { display: grid; gap: 3px; }
 .lane-flow-title small { max-width: 420px; color: var(--muted); font-size: 10px; line-height: 1.4; }
 .lane-flow .lane-counts { padding-left: 10px; border-left: 1px solid var(--line-soft); }
+.lane-flow-foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; color: var(--muted); font-size: 10px; }
+.lane-flow-foot strong { color: var(--text); font-weight: 600; }
 .lane-bar { height: 6px; margin-top: 12px; overflow: hidden; border-radius: 999px; background: var(--track); }
 .lane-bar i { display: block; height: 100%; background: var(--claw); }
 .lane-foot { margin-top: 7px; color: var(--muted); font-size: 11px; }
@@ -8375,6 +8377,35 @@ function workerTargetTitle(worker) {
   const title = compactText(targets[0].title);
   return targets.length > 1 ? title + " +" + (targets.length - 1) + " more" : title;
 }
+function laneFlowDetails(laneKey, flow) {
+  if (!flow) return "";
+  const rate = value => Number.isFinite(Number(value)) ? fmt.format(Number(value)) + "/h" : "n/a";
+  const amplification = flow.retry_amplification == null
+    ? "n/a"
+    : Number(flow.retry_amplification).toFixed(2);
+  const config = laneKey === "review"
+    ? {
+        title: "Review throughput",
+        rows: [
+          ["Arrival", flow.arrival_rate_per_hour],
+          ["Successful", flow.successful_rate_per_hour],
+          ["Retried", flow.retried_rate_per_hour],
+          ["Shed", flow.shed_rate_per_hour]
+        ]
+      }
+    : {
+        title: "Publication throughput",
+        rows: [
+          ["Arrival", flow.arrival_rate_per_hour],
+          ["Published", flow.published_rate_per_hour],
+          ["Superseded", flow.superseded_rate_per_hour],
+          ["Retried", flow.retried_rate_per_hour]
+        ]
+      };
+  return '<details class="lane-flow"><summary><span class="lane-flow-title">' + esc(config.title) + ' · last 15 minutes<small>15m hourly-equivalent rates respond faster to recent changes but are more burst-sensitive than the up-to-60m net rate above.</small></span></summary><div class="lane-counts">' +
+    config.rows.map(([label, value]) => '<div class="lane-count"><span>' + esc(label) + '</span><strong>' + rate(value) + '</strong></div>').join("") +
+    '</div><div class="lane-flow-foot"><span>Retry amplification</span><strong>' + esc(amplification) + '</strong></div></details>';
+}
 function renderSystemMap(data) {
   const workers = data.workers || [];
   const pipeline = data.pipeline || [];
@@ -8447,22 +8478,12 @@ function renderExactReviewLanes(queue) {
       : laneKey === "publication"
         ? " · target " + fmt.format(publicationControl?.demand_capacity || capacity) + " · adaptive " + fmt.format(publicationControl?.base || 24) + "–" + fmt.format(publicationControl?.maximum || capacity)
         : "";
-    const flow = laneKey === "publication" ? lane.flow?.last_15_minutes : null;
-    const rate = value => Number.isFinite(Number(value)) ? fmt.format(Number(value)) + "/h" : "n/a";
-    const flowSummary = flow
-      ? '<details class="lane-flow"><summary><span class="lane-flow-title">Publication throughput · last 15 minutes<small>15m hourly-equivalent rates respond faster to recent changes but are more burst-sensitive than the up-to-60m net rate above.</small></span></summary><div class="lane-counts">' +
-        '<div class="lane-count"><span>Arrival</span><strong>' + rate(flow.arrival_rate_per_hour) + '</strong></div>' +
-        '<div class="lane-count"><span>Terminal resolved</span><strong>' + rate(flow.resolved_rate_per_hour) + '</strong></div>' +
-        '<div class="lane-count"><span>Published</span><strong>' + rate(flow.published_rate_per_hour) + '</strong></div>' +
-        '<div class="lane-count"><span>Superseded</span><strong>' + rate(flow.superseded_rate_per_hour) + '</strong></div>' +
-        '<div class="lane-count"><span>Retried</span><strong>' + rate(flow.retried_rate_per_hour) + '</strong></div>' +
-        '<div class="lane-count"><span>Dead-lettered</span><strong>' + rate(flow.dead_lettered_rate_per_hour) + '</strong></div></div></details>'
-      : '';
+    const flow = lane.flow?.last_15_minutes;
+    const flowSummary = laneFlowDetails(laneKey, flow);
     const deadLetters = laneKey === "publication" ? lane.dead_letters : null;
     const deadLetterNote = deadLetters
       ? " · DLQ " + fmt.format(deadLetters.open || 0) +
-        (deadLetters.oldest_failed_at ? " · oldest DLQ " + since(deadLetters.oldest_failed_at) : "") +
-        " · retry amplification " + (flow?.retry_amplification == null ? "n/a" : Number(flow.retry_amplification).toFixed(2))
+        (deadLetters.oldest_failed_at ? " · oldest DLQ " + since(deadLetters.oldest_failed_at) : "")
       : "";
     return '<div class="exact-lane"><div class="exact-lane-head"><strong>' + esc(label) + '</strong><span>' + fmt.format(active) + ' of ' + fmt.format(capacity) + ' active</span></div>' +
       '<div class="lane-count"><span>Pending</span><strong>' + fmt.format(lane.pending || 0) + '</strong></div>' +

@@ -259,6 +259,7 @@ test("exact-review queue bypasses debounce for commands and publications", async
       await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
     ).json();
     assert.equal(stats.lanes.review.enqueued_total, 1);
+    assert.equal(stats.lanes.review.flow.last_15_minutes.arrival_rate_per_hour, 4);
     assert.equal(stats.lanes.publication.enqueued_total, 1);
   } finally {
     Date.now = originalNow;
@@ -319,6 +320,18 @@ test("exact-review queue sheds only new recovery work above the pending soft lim
   assert.equal(stats.lanes.review.pending_depth, 2);
   assert.equal(stats.lanes.review.shed_since_reset, 3);
   assert.equal(stats.lanes.review.enqueued_total, 2);
+  assert.deepEqual(stats.lanes.review.flow.last_15_minutes, {
+    window_minutes: 15,
+    arrival: 5,
+    successful: 0,
+    retried: 0,
+    shed: 3,
+    arrival_rate_per_hour: 20,
+    successful_rate_per_hour: 0,
+    retried_rate_per_hour: 0,
+    shed_rate_per_hour: 12,
+    retry_amplification: null,
+  });
   assert.equal(stats.lanes.publication.enqueued_total, 1);
 });
 
@@ -507,12 +520,18 @@ test("exact-review queue counts only work that successfully leaves each lane", a
   driftPublication.decision.sourceAction = "exact_review_artifact_publish";
   driftPublication.leaseDecision.sourceAction = "exact_review_artifact_publish";
   const review = leasedExactReviewQueueItem(706, "7060");
+  const reconciledReviewFailure = leasedExactReviewQueueItem(708, "7080");
   await storage.put("exact-review-queue", {
     deliveries: {},
     items: Object.fromEntries(
-      [directPublication, reconciledPublication, failedPublication, driftPublication, review].map(
-        (item) => [item.key, item],
-      ),
+      [
+        directPublication,
+        reconciledPublication,
+        failedPublication,
+        driftPublication,
+        review,
+        reconciledReviewFailure,
+      ].map((item) => [item.key, item]),
     ),
   });
   const queue = new ExactReviewQueue({ storage }, {});
@@ -552,6 +571,13 @@ test("exact-review queue counts only work that successfully leaves each lane", a
         claim_generation: reconciledPublication.claimGeneration,
         outcome: "success",
       },
+      {
+        run_id: reconciledReviewFailure.claimedRunId,
+        run_attempt: reconciledReviewFailure.claimedRunAttempt,
+        claimed_run_attempt: reconciledReviewFailure.claimedRunAttempt,
+        claim_generation: reconciledReviewFailure.claimGeneration,
+        outcome: "failure",
+      },
     ],
   };
   const reconciled = await queue.fetch(
@@ -562,8 +588,8 @@ test("exact-review queue counts only work that successfully leaves each lane", a
   );
   assert.deepEqual(await reconciled.json(), {
     ok: true,
-    reconciled: 1,
-    requeued: 0,
+    reconciled: 2,
+    requeued: 1,
     completed: 1,
   });
   assert.equal(
@@ -582,6 +608,9 @@ test("exact-review queue counts only work that successfully leaves each lane", a
     await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
   ).json();
   assert.equal(stats.lanes.review.completed_total, 1);
+  assert.equal(stats.lanes.review.flow.last_15_minutes.successful_rate_per_hour, 4);
+  assert.equal(stats.lanes.review.flow.last_15_minutes.retried_rate_per_hour, 4);
+  assert.equal(stats.lanes.review.flow.last_15_minutes.retry_amplification, 1);
   assert.equal(stats.lanes.publication.completed_total, 2);
   assert.equal(stats.lanes.publication.pending, 2);
 });
@@ -2519,6 +2548,24 @@ test("exact-review queue upgrades flow metrics without losing publication comple
     `INSERT INTO exact_review_queue_metrics (singleton_id, publication_completed_total)
      VALUES (1, 42)`,
   );
+  storage.sql.exec(
+    `CREATE TABLE exact_review_queue_metric_buckets (
+       bucket_start INTEGER PRIMARY KEY,
+       publication_enqueued INTEGER NOT NULL DEFAULT 0 CHECK (publication_enqueued >= 0),
+       publication_resolved INTEGER NOT NULL DEFAULT 0 CHECK (publication_resolved >= 0),
+       publication_published INTEGER NOT NULL DEFAULT 0 CHECK (publication_published >= 0),
+       publication_superseded INTEGER NOT NULL DEFAULT 0 CHECK (publication_superseded >= 0),
+       publication_retried INTEGER NOT NULL DEFAULT 0 CHECK (publication_retried >= 0),
+       publication_dead_lettered INTEGER NOT NULL DEFAULT 0
+         CHECK (publication_dead_lettered >= 0)
+     ) STRICT`,
+  );
+  storage.sql.exec(
+    `INSERT INTO exact_review_queue_metric_buckets
+       (bucket_start, publication_enqueued, publication_resolved, publication_published)
+     VALUES (?, 2, 1, 1)`,
+    Date.now(),
+  );
   const queue = new ExactReviewQueue({ storage }, {});
 
   const stats = await (
@@ -2538,6 +2585,19 @@ test("exact-review queue upgrades flow metrics without losing publication comple
       publication_completed: 42,
     },
   );
+  assert.equal(stats.lanes.publication.flow.last_15_minutes.published_rate_per_hour, 4);
+  assert.deepEqual(stats.lanes.review.flow.last_15_minutes, {
+    window_minutes: 15,
+    arrival: 0,
+    successful: 0,
+    retried: 0,
+    shed: 0,
+    arrival_rate_per_hour: 0,
+    successful_rate_per_hour: 0,
+    retried_rate_per_hour: 0,
+    shed_rate_per_hour: 0,
+    retry_amplification: null,
+  });
 });
 
 test("exact-review queue migrates delivery receipts and retains them for seven days", async () => {
@@ -4587,6 +4647,9 @@ test("ordinary exact-review retries do not increment publication retry telemetry
   ).json();
   assert.equal(stats.lanes.publication.retried_total, 0);
   assert.equal(stats.lanes.publication.flow.last_15_minutes.retried, 0);
+  assert.equal(stats.lanes.review.flow.last_15_minutes.retried, 1);
+  assert.equal(stats.lanes.review.flow.last_15_minutes.retried_rate_per_hour, 4);
+  assert.equal(stats.lanes.review.flow.last_15_minutes.retry_amplification, null);
 });
 
 test("exact-review completion rejects incompatible structured dispositions", async () => {
@@ -5859,7 +5922,7 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /Review admission/);
   assert.match(html, /Result publication/);
   assert.match(html, /Net publication rate/);
-  assert.match(html, /Terminal resolved/);
+  assert.match(html, /Review throughput/);
   assert.doesNotMatch(html, /Control Plane · GitHub Actions, not Codex/);
   assert.doesNotMatch(html, /id="control-plane"/);
   assert.match(html, /\.exact-lanes \{ grid-template-columns: 1fr; \}/);
@@ -5970,6 +6033,15 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
           capacity: 64,
           available_slots: 52,
           oldest_pending_age_seconds: 60,
+          flow: {
+            last_15_minutes: {
+              arrival_rate_per_hour: 24,
+              successful_rate_per_hour: 20,
+              retried_rate_per_hour: 4,
+              shed_rate_per_hour: 0,
+              retry_amplification: 0.2,
+            },
+          },
         },
         publication: {
           pending: 2,
@@ -6149,23 +6221,39 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(elementFor("exact-review-lanes").innerHTML, /52 review admission slots open/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /Result publication/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /3 result publication slots open/);
+  const initialLaneHtml = elementFor("exact-review-lanes").innerHTML;
   assert.match(
-    elementFor("exact-review-lanes").innerHTML,
+    initialLaneHtml,
+    /<details class="lane-flow"><summary><span class="lane-flow-title">Review throughput · last 15 minutes/,
+  );
+  assert.match(
+    initialLaneHtml,
     /<details class="lane-flow"><summary><span class="lane-flow-title">Publication throughput · last 15 minutes/,
   );
   assert.match(
-    elementFor("exact-review-lanes").innerHTML,
+    initialLaneHtml,
     /15m hourly-equivalent rates respond faster to recent changes but are more burst-sensitive than the up-to-60m net rate above\./,
   );
-  assert.doesNotMatch(
-    elementFor("exact-review-lanes").innerHTML,
-    /<details class="lane-flow" open>/,
+  assert.equal(initialLaneHtml.match(/class="lane-flow"/g)?.length, 2);
+  assert.equal(initialLaneHtml.match(/class="lane-flow-foot"/g)?.length, 2);
+  assert.doesNotMatch(initialLaneHtml, /<details class="lane-flow" open>/);
+  const flowBlocks = [
+    ...initialLaneHtml.matchAll(/<details class="lane-flow">([\s\S]*?)<\/details>/g),
+  ];
+  assert.equal(flowBlocks.length, 2);
+  assert.deepEqual(
+    flowBlocks.map((match) => match[1].match(/class="lane-count"/g)?.length),
+    [4, 4],
   );
-  assert.match(elementFor("exact-review-lanes").innerHTML, /Terminal resolved/);
-  assert.match(elementFor("exact-review-lanes").innerHTML, /Published<\/span><strong>4\/h/);
-  assert.match(elementFor("exact-review-lanes").innerHTML, /Superseded<\/span><strong>16\/h/);
-  assert.match(elementFor("exact-review-lanes").innerHTML, /DLQ 2/);
-  assert.match(elementFor("exact-review-lanes").innerHTML, /retry amplification 0\.40/);
+  assert.match(initialLaneHtml, /Successful<\/span><strong>20\/h/);
+  assert.match(initialLaneHtml, /Shed<\/span><strong>0\/h/);
+  assert.match(initialLaneHtml, /Published<\/span><strong>4\/h/);
+  assert.match(initialLaneHtml, /Superseded<\/span><strong>16\/h/);
+  assert.doesNotMatch(initialLaneHtml, /Terminal resolved/);
+  assert.doesNotMatch(initialLaneHtml, /Dead-lettered/);
+  assert.match(initialLaneHtml, /DLQ 2/);
+  assert.match(initialLaneHtml, /Retry amplification<\/span><strong>0\.20/);
+  assert.match(initialLaneHtml, /Retry amplification<\/span><strong>0\.40/);
   assert.match(elementFor("automerge-reliability").innerHTML, /66.7%/);
   assert.match(elementFor("automerge-reliability").innerHTML, /openclaw\/openclaw#107691/);
   assert.match(elementFor("automerge-reliability").innerHTML, /unresolved/);
