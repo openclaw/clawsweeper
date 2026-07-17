@@ -4807,6 +4807,42 @@ test("exact-review publication retry budgets ignore earlier dispatch failures", 
   assert.equal(stats.lanes.publication.dead_letters.open, 0);
 });
 
+test("exact-review publication retains one unknown completion for a current-workflow retry", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(7851, "78510");
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "failure",
+        completion_kind: "permanent_failure",
+        reason_code: "unknown_failure",
+      }),
+    }),
+  );
+
+  assert.deepEqual(await response.json(), { ok: true, requeued: true });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { state: string; attempts: number; publicationFailureAttempts?: number }>;
+  };
+  assert.equal(state.items[item.key].state, "pending");
+  assert.equal(state.items[item.key].attempts, 1);
+  assert.equal(state.items[item.key].publicationFailureAttempts, 1);
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.publication.dead_letters.open, 0);
+});
+
 test("ordinary exact-review retries do not increment publication retry telemetry", async () => {
   const storage = new MemoryDurableStorage();
   const item = leasedExactReviewQueueItem(786, "7860");

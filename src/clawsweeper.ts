@@ -27893,10 +27893,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           }),
       );
     };
-    const commandStatusOnlyUpdate = retryCloseCoverageCommandStatusOnlyUpdate(
-      item,
-      currentItemContext(),
-    );
+    const commandStatusOnlyUpdate =
+      action === "retry_pr_close_coverage_proof" &&
+      retryCloseCoverageCommandStatusOnlyUpdate(item, currentItemContext());
     const automationOnlyUpdate =
       reviewCommentOnlyUpdate ||
       labelSyncOnlyUpdate ||
@@ -28159,12 +28158,14 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         };
       }
       let refreshedContext: ItemContext | null = null;
-      const refreshedCommandStatusOnlyUpdate = retryCloseCoverageCommandStatusOnlyUpdate(
-        refreshed.item,
-        (refreshedContext ??= collectItemContext(refreshed.item, {
-          fullTimelineForRelations: true,
-        })),
-      );
+      const refreshedCommandStatusOnlyUpdate =
+        action === "retry_pr_close_coverage_proof" &&
+        retryCloseCoverageCommandStatusOnlyUpdate(
+          refreshed.item,
+          (refreshedContext ??= collectItemContext(refreshed.item, {
+            fullTimelineForRelations: true,
+          })),
+        );
       const refreshedSelfMutationOnlyUpdate =
         allowedSelfMutationUpdatedAts.has(refreshed.item.updatedAt) ||
         refreshedCommandStatusOnlyUpdate;
