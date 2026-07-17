@@ -3285,7 +3285,14 @@ function reviewPolicyHash(options: {
     stableJson({
       version: REVIEW_POLICY_VERSION,
       freshDays: FRESH_DAYS,
-      model: options.model ?? DEFAULT_CODEX_MODEL,
+      // Maintainer decision 2026-07-17: the model is deliberately NOT part of
+      // review-policy identity. Baking it in made every model change invalidate
+      // all stored reviews (a fleet-wide re-review wave), which makes model
+      // swaps untestable in production. Model changes now roll through the
+      // normal review cadence instead; bump REVIEW_POLICY_VERSION explicitly
+      // when a full re-review is actually wanted. The sentinel migrates all
+      // hashes once, riding the 2026-07 prompt-change wave already in flight.
+      model: "model-excluded-2026-07",
       reasoningEffort: options.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
       sandboxMode: options.sandboxMode ?? "read-only",
       // Service tier changes latency, never decisions. Pinned to the historical
