@@ -75,6 +75,8 @@ For the ClawSweeper feedback loop that updates existing generated PRs, see
 [`docs/repair/auto-update-prs.md`](auto-update-prs.md).
 For the exact automerge state machine, wait behavior, and operator replay, see
 [`docs/repair/automerge-flow.md`](automerge-flow.md).
+For the separate path that can turn an eligible issue into a generated PR, see
+[`docs/repair/automatic-issue-prs.md`](automatic-issue-prs.md).
 
 That loop is marker-driven. ClawSweeper comments use hidden
 `clawsweeper-verdict:*` markers, and only actionable PR feedback includes
