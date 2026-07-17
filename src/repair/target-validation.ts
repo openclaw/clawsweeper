@@ -915,8 +915,11 @@ function assertTrackedPatchDependency(
 }
 
 function assertApprovedInstallMetadataDestinations(text: string, registryOrigin: string) {
-  const networkTokens =
-    text.match(/(?:https?:\/\/|\/\/|git\+[^:\s]+:\/\/|ssh:\/\/)[^\s"'`<>{}\x5b\x5d,]+/gi) ?? [];
+  const networkTokens = [
+    ...text.matchAll(
+      /(?:^|[\s"'`<>{}\x5b\x5d(),:=])((?:https?:\/\/|\/\/|git\+[^:\s]+:\/\/|ssh:\/\/)[^\s"'`<>{}\x5b\x5d,]+)/gim,
+    ),
+  ].flatMap((match) => (match[1] ? [match[1]] : []));
   for (const token of networkTokens) {
     assertApprovedInstallUrl(token.replace(/[);]+$/, ""), registryOrigin);
   }

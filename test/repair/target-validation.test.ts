@@ -2233,6 +2233,37 @@ test("dependency setup permits inert package-manager config files", () => {
   }
 });
 
+test("dependency setup permits pnpm integrity strings containing double slashes", () => {
+  const cwd = gitBunPackageFixture({ check: "bun x tsc --noEmit" });
+  fs.writeFileSync(
+    path.join(cwd, "pnpm-lock.yaml"),
+    [
+      "lockfileVersion: '9.0'",
+      "",
+      "packages:",
+      "",
+      "  '@mistralai/mistralai@2.4.0':",
+      "    resolution: {integrity: sha512-t6hCx242MTGolB76CI+17jDtPIe/bzLsMdUTMMoMn9Qo1h02N2G5jQYHmKDGU3X//OgR2wvngTD7tO6tPp5poQ==}",
+      "",
+    ].join("\n"),
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const { binDir } = fakeBunFixture(cwd);
+  withPathPrefix(binDir, () => {
+    assert.doesNotThrow(() =>
+      prepareTargetToolchain(cwd, {
+        ...validationOptions("openclaw/clawhub", clawhubToolchain()),
+        installTargetDeps: true,
+        installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      }),
+    );
+  });
+});
+
 test("dependency setup permits external funding metadata in npm lockfiles", () => {
   for (const lockfile of ["package-lock.json", "npm-shrinkwrap.json"]) {
     const cwd = gitPackageFixture({ check: 'node -e ""' });
