@@ -7887,6 +7887,14 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   letter-spacing: -0.02em;
   line-height: 1;
 }
+.worker-health-section + .worker-health-section {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.worker-health-subhead { margin-bottom: 10px; }
+.worker-health-subhead strong { display: block; font-size: 13px; font-weight: 620; }
+.worker-health-subhead span { display: block; margin-top: 4px; font-size: 11px; line-height: 1.45; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; }
 .empty {
   padding: 26px;
@@ -8068,8 +8076,6 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
       <div id="closed"></div>
       <h2>Worker Health</h2>
       <div id="worker-health"></div>
-      <h2>Automerge Reliability</h2>
-      <div id="automerge-reliability"></div>
       <div id="automerge" hidden></div>
       <h2>Operations</h2>
       <div id="operations"></div>
@@ -8894,11 +8900,10 @@ function renderDashboard(data, note) {
   openWorkerFromHash();
   renderClusterRepair(data.recent?.cluster_repair);
   renderPipeline(data.pipeline || []);
-  renderAutomergeReliability(data.recent?.automerge_reliability);
   renderAutomerge(data.recent.automerge || []);
   renderClosedStats(data.recent.closed_stats);
   renderClosedItems(data.recent.closed_items || []);
-  renderWorkerHealth(data.health);
+  renderWorkerHealth(data.health, data.recent?.automerge_reliability);
   renderOperations(data.recent.operation_counts);
   renderEvents(data.recent.events || []);
 }
@@ -9316,7 +9321,7 @@ function renderAutomergeProduct(data) {
   const sessions = '<div class="automerge-sessions"><h3>Recent automerge sessions</h3><table class="automerge-table"><thead><tr><th>PR</th><th>State</th><th>Policy</th><th>Activated</th><th>Terminal / age</th><th>Syncs</th><th>Repairs</th><th>Last reason</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="muted">No session telemetry in this range.</td></tr>') + '</tbody></table></div>';
   document.getElementById("automerge-product").innerHTML = kpis + chart + details + sessions;
 }
-function renderAutomergeReliability(reliability) {
+function automergeWorkerHealthHtml(reliability) {
   const safe = reliability || {
     sampled_runs: 0,
     completed_attempts: 0,
@@ -9328,12 +9333,12 @@ function renderAutomergeReliability(reliability) {
     longest_duration_ms: null,
     failures: []
   };
-  const failureRate = safe.failure_rate_percent == null ? "n/a" : safe.failure_rate_percent + "%";
   const active = fmt.format(safe.active_attempts || 0) + " / " + fmt.format(safe.stalled_attempts || 0);
-  const stats = '<div class="closed-stats"><div class="closed-stat"><span>Failure rate</span><strong>' + esc(failureRate) + '</strong></div><div class="closed-stat"><span>Avg runtime</span><strong>' + elapsed(safe.average_duration_ms) + '</strong></div><div class="closed-stat"><span>Active / stalled</span><strong>' + esc(active) + '</strong></div></div>';
-  const sample = '<div class="muted" style="margin:8px 0">' + fmt.format(safe.sampled_runs || 0) + " runs sampled · " + fmt.format(safe.completed_attempts || 0) + " completed · longest " + elapsed(safe.longest_duration_ms) + '</div>';
+  const outcomes = fmt.format(safe.recovered_failures || 0) + " / " + fmt.format(safe.unresolved_failures || 0);
+  const stats = '<div class="closed-stats"><div class="closed-stat"><span>Active / stalled</span><strong>' + esc(active) + '</strong></div><div class="closed-stat"><span>Failed attempts</span><strong>' + fmt.format(safe.failed_attempts || 0) + '</strong></div><div class="closed-stat"><span>Recovered / unresolved</span><strong>' + esc(outcomes) + '</strong></div></div>';
+  const sample = '<div class="muted" style="margin:8px 0">' + fmt.format(safe.sampled_runs || 0) + " runs sampled · " + fmt.format(safe.completed_attempts || 0) + " completed · avg runtime " + elapsed(safe.average_duration_ms) + " · longest " + elapsed(safe.longest_duration_ms) + '</div>';
   const rows = (safe.failures || []).map(failure => '<article class="side-row"><div class="side-main"><div class="row-top">' + linkClass(failure.item_url, failure.repository + "#" + failure.number, "item-link") + linkClass(failure.run_url, "run", "pill run-link") + '</div><div class="muted side-title">' + esc(failure.conclusion || "failure") + " · " + elapsed(failure.duration_ms) + " · " + esc(failure.completed_at ? since(failure.completed_at) : "") + '</div></div><div class="side-meta"><span class="pill ' + (failure.recovered ? "" : "red") + '">' + (failure.recovered ? "recovered" : "unresolved") + '</span></div></article>').join("");
-  document.getElementById("automerge-reliability").innerHTML = stats + sample + (rows ? '<div class="side-list">' + rows + '</div>' : '<div class="empty">No automerge worker failures in the recent sample.</div>');
+  return '<section class="worker-health-section" aria-labelledby="automerge-worker-health-title"><div class="worker-health-subhead"><strong id="automerge-worker-health-title">Automerge worker operations</strong><span class="muted">Repair workflow reliability only · separate from Automerge Product Health success rate.</span></div>' + stats + sample + (rows ? '<div class="side-list">' + rows + '</div>' : '<div class="empty">No automerge worker failures in the recent sample.</div>') + '</section>';
 }
 function renderClosedItems(rows) {
   if (!rows.length) {
@@ -9346,11 +9351,12 @@ function renderClosedStats(stats) {
   const safe = stats || { total: 0, issues: 0, prs: 0, window_hours: 24 };
   document.getElementById("closed-stats").innerHTML = '<div class="closed-stats"><div class="closed-stat"><span>' + esc((safe.window_hours || 24) + "h total") + '</span><strong>' + fmt.format(safe.total || 0) + '</strong></div><div class="closed-stat"><span>Issues</span><strong>' + fmt.format(safe.issues || 0) + '</strong></div><div class="closed-stat"><span>PRs</span><strong>' + fmt.format(safe.prs || 0) + '</strong></div></div>';
 }
-function renderWorkerHealth(health) {
+function renderWorkerHealth(health, automergeReliability) {
   const safe = health || { attempts: 0, failed_attempts: 0, recovered_failures: 0, unresolved_failures: 0, failures: [] };
   const stats = '<div class="closed-stats"><div class="closed-stat"><span>Attempts sampled</span><strong>' + fmt.format(safe.attempts || 0) + '</strong></div><div class="closed-stat"><span>Failed attempts</span><strong>' + fmt.format(safe.failed_attempts || 0) + '</strong></div><div class="closed-stat"><span>Recovered</span><strong>' + fmt.format(safe.recovered_failures || 0) + '</strong></div></div>';
   const rows = (safe.failures || []).map(failure => '<article class="side-row"><div class="side-main">' + linkClass(failure.url, compactText(failure.workflow_title || failure.job_name), "item-link") + '<div class="muted side-title">' + esc(failure.failed_step || failure.conclusion || "worker failure") + '</div></div><div class="side-meta"><span class="pill ' + (failure.recovered ? "" : "red") + '">' + (failure.recovered ? "recovered" : "unresolved") + '</span><span>' + esc(failure.started_at ? since(failure.started_at) : "") + '</span></div></article>').join("");
-  document.getElementById("worker-health").innerHTML = stats + (rows ? '<div class="side-list">' + rows + '</div>' : '<div class="empty">No worker failures in the recent sample.</div>');
+  const workflowHealth = '<section class="worker-health-section">' + stats + (rows ? '<div class="side-list">' + rows + '</div>' : '<div class="empty">No worker failures in the recent sample.</div>') + '</section>';
+  document.getElementById("worker-health").innerHTML = workflowHealth + automergeWorkerHealthHtml(automergeReliability);
 }
 function renderOperations(counts) {
   const safe = counts || {};

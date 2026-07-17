@@ -6071,8 +6071,10 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /Refreshing live status in the background/);
   assert.match(html, /Cluster Intake/);
   assert.match(html, /Active Pipeline/);
-  assert.match(html, /Automerge Reliability/);
-  assert.match(html, /id="automerge-reliability"/);
+  assert.doesNotMatch(html, /Automerge Reliability/);
+  assert.doesNotMatch(html, /id="automerge-reliability"/);
+  assert.match(html, /Automerge worker operations/);
+  assert.match(html, /separate from Automerge Product Health success rate/);
   assert.match(html, /Closed by ClawSweeper/);
   assert.match(html, /Worker Health/);
   assert.match(html, /Recent Activity/);
@@ -6370,9 +6372,17 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(initialLaneHtml, /DLQ 2/);
   assert.match(initialLaneHtml, /Retry amplification<\/span><strong>0\.20/);
   assert.match(initialLaneHtml, /Retry amplification<\/span><strong>0\.40/);
-  assert.match(elementFor("automerge-reliability").innerHTML, /66.7%/);
-  assert.match(elementFor("automerge-reliability").innerHTML, /openclaw\/openclaw#107691/);
-  assert.match(elementFor("automerge-reliability").innerHTML, /unresolved/);
+  assert.match(elementFor("worker-health").innerHTML, /Automerge worker operations/);
+  assert.match(elementFor("worker-health").innerHTML, /Active \/ stalled<\/span><strong>0 \/ 0/);
+  assert.match(elementFor("worker-health").innerHTML, /Failed attempts<\/span><strong>2/);
+  assert.match(
+    elementFor("worker-health").innerHTML,
+    /Recovered \/ unresolved<\/span><strong>1 \/ 1/,
+  );
+  assert.match(elementFor("worker-health").innerHTML, /avg runtime 10m/);
+  assert.match(elementFor("worker-health").innerHTML, /openclaw\/openclaw#107691/);
+  assert.match(elementFor("worker-health").innerHTML, /actions\/runs\/29431617465/);
+  assert.match(elementFor("worker-health").innerHTML, /unresolved/);
   assert.match(
     elementFor("exact-review-lanes").innerHTML,
     /target 32 · pressure ceiling 24 after GitHub rate limit/,
