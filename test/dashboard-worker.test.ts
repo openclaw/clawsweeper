@@ -6149,6 +6149,14 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(elementFor("exact-review-lanes").innerHTML, /52 review admission slots open/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /Result publication/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /3 result publication slots open/);
+  assert.match(
+    elementFor("exact-review-lanes").innerHTML,
+    /<details class="lane-flow"><summary>Publication throughput · last 15 minutes<\/summary>/,
+  );
+  assert.doesNotMatch(
+    elementFor("exact-review-lanes").innerHTML,
+    /<details class="lane-flow" open>/,
+  );
   assert.match(elementFor("exact-review-lanes").innerHTML, /Terminal resolved/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /Published<\/span><strong>4\/h/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /Superseded<\/span><strong>16\/h/);

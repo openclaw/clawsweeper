@@ -7224,6 +7224,21 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .lane-count { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; }
 .exact-lane > .lane-count { margin-top: 14px; }
 .lane-count strong { color: var(--text); font-weight: 600; }
+.lane-flow { margin-top: 12px; }
+.lane-flow summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  list-style: none;
+}
+.lane-flow summary::-webkit-details-marker { display: none; }
+.lane-flow summary::after { content: "Details ▾"; }
+.lane-flow[open] summary::after { content: "Hide ▴"; }
+.lane-flow .lane-counts { padding-left: 10px; border-left: 1px solid var(--line-soft); }
 .lane-bar { height: 6px; margin-top: 12px; overflow: hidden; border-radius: 999px; background: var(--track); }
 .lane-bar i { display: block; height: 100%; background: var(--claw); }
 .lane-foot { margin-top: 7px; color: var(--muted); font-size: 11px; }
@@ -8433,13 +8448,13 @@ function renderExactReviewLanes(queue) {
     const flow = laneKey === "publication" ? lane.flow?.last_15_minutes : null;
     const rate = value => Number.isFinite(Number(value)) ? fmt.format(Number(value)) + "/h" : "n/a";
     const flowSummary = flow
-      ? '<div class="lane-counts">' +
+      ? '<details class="lane-flow"><summary>Publication throughput · last 15 minutes</summary><div class="lane-counts">' +
         '<div class="lane-count"><span>Arrival</span><strong>' + rate(flow.arrival_rate_per_hour) + '</strong></div>' +
         '<div class="lane-count"><span>Terminal resolved</span><strong>' + rate(flow.resolved_rate_per_hour) + '</strong></div>' +
         '<div class="lane-count"><span>Published</span><strong>' + rate(flow.published_rate_per_hour) + '</strong></div>' +
         '<div class="lane-count"><span>Superseded</span><strong>' + rate(flow.superseded_rate_per_hour) + '</strong></div>' +
         '<div class="lane-count"><span>Retried</span><strong>' + rate(flow.retried_rate_per_hour) + '</strong></div>' +
-        '<div class="lane-count"><span>Dead-lettered</span><strong>' + rate(flow.dead_lettered_rate_per_hour) + '</strong></div></div>'
+        '<div class="lane-count"><span>Dead-lettered</span><strong>' + rate(flow.dead_lettered_rate_per_hour) + '</strong></div></div></details>'
       : '';
     const deadLetters = laneKey === "publication" ? lane.dead_letters : null;
     const deadLetterNote = deadLetters
