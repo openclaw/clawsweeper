@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import {
   defaultReviewArtifactDirForTest,
   exactEventReviewLeaseDispositionForTest,
+  isSuppliedReviewStartLeaseForTest,
   prepareManagedLocalReviewCheckoutForTest,
   reviewLeaseStillMatchesContextForTest,
 } from "../dist/clawsweeper.js";
@@ -123,6 +124,19 @@ test("reserved exact-review leases compare a head only for pull requests", () =>
   assert.equal(reviewLeaseStillMatchesContextForTest("pull_request", revision, revision), true);
   assert.equal(
     reviewLeaseStillMatchesContextForTest("pull_request", "f".repeat(40), revision),
+    false,
+  );
+});
+
+test("only the exact supplied lease is externally owned", () => {
+  const supplied = { owner: "exact-issue-123", commentId: 456 };
+  assert.equal(isSuppliedReviewStartLeaseForTest(supplied, supplied), true);
+  assert.equal(
+    isSuppliedReviewStartLeaseForTest(supplied, { owner: supplied.owner, commentId: 457 }),
+    false,
+  );
+  assert.equal(
+    isSuppliedReviewStartLeaseForTest(supplied, { owner: "shard-123", commentId: 456 }),
     false,
   );
 });

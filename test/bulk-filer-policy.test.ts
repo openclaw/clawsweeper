@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  activateBulkFilerAfterReviewLeaseForTest,
   bulkFilerThreshold,
   bulkFilerWindowDays,
   detectBulkFilerForTest,
   renderReviewStartStatusComment,
+  syncBulkFilerLabelForTest,
+  updateBulkFilerDetectedFrontMatterForTest,
 } from "../dist/clawsweeper.js";
 import { item } from "./helpers.ts";
 
@@ -19,14 +20,11 @@ test("bulk-filer defaults and positive env overrides are bounded", () => {
   assert.equal(bulkFilerWindowDays({ CLAWSWEEPER_BULK_FILER_WINDOW_DAYS: "nope" }), 7);
 });
 
-test("bulk-filer detection includes the threshold boundary and excludes the exact cutoff", () => {
+test("bulk-filer detection includes the threshold boundary and leaves labeling to publication", () => {
   const now = Date.parse("2026-07-16T12:00:00.000Z");
   let searches = 0;
   const cutoffResult = detectBulkFilerForTest({
-    item: item({
-      number: 43,
-      createdAt: "2026-07-09T12:00:00.000Z",
-    }),
+    item: item({ number: 43, createdAt: "2026-07-09T12:00:00.000Z" }),
     cache: new Map(),
     now,
     searchCount: () => {
@@ -41,12 +39,8 @@ test("bulk-filer detection includes the threshold boundary and excludes the exac
   });
   assert.equal(searches, 0);
 
-  const candidate = item({
-    number: 44,
-    createdAt: "2026-07-09T12:00:00.001Z",
-  });
+  const candidate = item({ number: 44, createdAt: "2026-07-09T12:00:00.001Z" });
   let observedWindowStart = "";
-
   const result = detectBulkFilerForTest({
     item: candidate,
     cache: new Map(),
@@ -66,146 +60,46 @@ test("bulk-filer detection includes the threshold boundary and excludes the exac
   assert.equal(result.labelPending, true);
   assert.equal(result.labelApplied, false);
   assert.equal(candidate.labels.includes("clawsweeper:bulk-filed"), false);
-
-  const mutations: string[] = [];
-  assert.equal(
-    activateBulkFilerAfterReviewLeaseForTest({
-      item: candidate,
-      detection: result,
-      patchTransparency: () => mutations.push("transparency"),
-      applyLabel: () => {
-        mutations.push("label");
-        return true;
-      },
-    }),
-    true,
-  );
-  assert.deepEqual(mutations, ["label", "transparency"]);
-  assert.equal(candidate.labels.includes("clawsweeper:bulk-filed"), true);
-
-  const below = detectBulkFilerForTest({
-    item: item({ number: 45, createdAt: "2026-07-16T00:00:00.000Z" }),
-    cache: new Map(),
-    now,
-    searchCount: () => 9,
-  });
-  assert.deepEqual(below, { context: null, labelPending: false, labelApplied: false });
 });
 
-test("bulk-filer eligibility excludes old issues from prolific authors", () => {
+test("bulk-filer policy exempts only owners and members", () => {
   const now = Date.parse("2026-07-16T12:00:00.000Z");
-  let searches = 0;
-  const oldCandidate = item({
-    number: 46,
-    createdAt: "2026-07-09T11:59:59.999Z",
-  });
-  const oldResult = detectBulkFilerForTest({
-    item: oldCandidate,
+  for (const authorAssociation of ["OWNER", "MEMBER"]) {
+    let searches = 0;
+    const result = detectBulkFilerForTest({
+      item: item({ authorAssociation, createdAt: "2026-07-16T11:59:59.999Z" }),
+      cache: new Map(),
+      now,
+      searchCount: () => {
+        searches += 1;
+        return 16;
+      },
+    });
+    assert.deepEqual(result, { context: null, labelPending: false, labelApplied: false });
+    assert.equal(searches, 0, `${authorAssociation} must not consume a bulk-filer search`);
+  }
+
+  let collaboratorSearches = 0;
+  const collaborator = detectBulkFilerForTest({
+    item: item({ authorAssociation: "COLLABORATOR", createdAt: "2026-07-16T11:59:59.999Z" }),
     cache: new Map(),
     now,
     searchCount: () => {
-      searches += 1;
+      collaboratorSearches += 1;
       return 16;
     },
   });
-
-  assert.deepEqual(oldResult, { context: null, labelPending: false, labelApplied: false });
-  assert.equal(searches, 0);
-  assert.equal(
-    activateBulkFilerAfterReviewLeaseForTest({
-      item: oldCandidate,
-      detection: oldResult,
-      patchTransparency: () => {
-        throw new Error("old issues must not receive transparency");
-      },
-      applyLabel: () => {
-        throw new Error("old issues must not be labeled");
-      },
-    }),
-    false,
-  );
-  assert.equal(oldCandidate.labels.includes("clawsweeper:bulk-filed"), false);
-
-  const freshCandidate = item({
-    number: 47,
-    createdAt: "2026-07-16T11:59:59.999Z",
-  });
-  const freshResult = detectBulkFilerForTest({
-    item: freshCandidate,
-    cache: new Map(),
-    now,
-    searchCount: () => {
-      searches += 1;
-      return 16;
-    },
-  });
-  assert.equal(
-    activateBulkFilerAfterReviewLeaseForTest({
-      item: freshCandidate,
-      detection: freshResult,
-      patchTransparency: () => undefined,
-      applyLabel: () => true,
-    }),
-    true,
-  );
-
-  assert.equal(searches, 1);
-  assert.equal(freshResult.context?.detected, true);
-  assert.equal(freshCandidate.labels.includes("clawsweeper:bulk-filed"), true);
+  assert.equal(collaborator.context?.detected, true);
+  assert.equal(collaboratorSearches, 1);
 });
 
-test("bulk-filer activation omits transparency when label application fails", () => {
-  const candidate = item();
-  const detection = detectBulkFilerForTest({
-    item: candidate,
-    cache: new Map(),
-    now: 0,
-    searchCount: () => 16,
-  });
-  const mutations: string[] = [];
-
-  assert.equal(
-    activateBulkFilerAfterReviewLeaseForTest({
-      item: candidate,
-      detection,
-      applyLabel: () => {
-        mutations.push("label");
-        return false;
-      },
-      patchTransparency: () => mutations.push("transparency"),
-    }),
-    false,
-  );
-  assert.deepEqual(mutations, ["label"]);
-  assert.equal(detection.labelPending, true);
-  assert.equal(detection.labelApplied, false);
-  assert.equal(candidate.labels.includes("clawsweeper:bulk-filed"), false);
-
-  assert.equal(
-    activateBulkFilerAfterReviewLeaseForTest({
-      item: candidate,
-      detection,
-      applyLabel: () => {
-        mutations.push("label");
-        return true;
-      },
-      patchTransparency: () => mutations.push("transparency"),
-    }),
-    true,
-  );
-  assert.deepEqual(mutations, ["label", "label", "transparency"]);
-  assert.equal(detection.labelPending, false);
-  assert.equal(detection.labelApplied, true);
-});
-
-test("bulk-filer detection caches counts per author and fails open", () => {
+test("bulk-filer detection caches counts, fails open, and respects an existing label", () => {
   const cache = new Map();
   let searches = 0;
   const searchCount = () => {
     searches += 1;
     throw new Error("search unavailable");
   };
-
   const first = detectBulkFilerForTest({
     item: item({ author: "Reporter", number: 1 }),
     cache,
@@ -218,51 +112,75 @@ test("bulk-filer detection caches counts per author and fails open", () => {
     now: 0,
     searchCount,
   });
-
   assert.deepEqual(first, { context: null, labelPending: false, labelApplied: false });
   assert.deepEqual(second, { context: null, labelPending: false, labelApplied: false });
   assert.equal(searches, 1);
-});
 
-test("bulk-filer labeling is idempotent", () => {
-  const candidate = item({ labels: ["ClawSweeper:Bulk-Filed"] });
-  const result = detectBulkFilerForTest({
-    item: candidate,
+  const existing = detectBulkFilerForTest({
+    item: item({ labels: ["ClawSweeper:Bulk-Filed"] }),
     cache: new Map(),
     now: 0,
     searchCount: () => 16,
   });
-  let mutations = 0;
-  const applied = activateBulkFilerAfterReviewLeaseForTest({
-    item: candidate,
-    detection: result,
-    patchTransparency: () => {
-      mutations += 1;
-    },
-    applyLabel: () => {
-      mutations += 1;
-      return true;
-    },
-  });
-
-  assert.equal(result.context?.detected, true);
-  assert.equal(result.labelPending, false);
-  assert.equal(result.labelApplied, false);
-  assert.equal(applied, false);
-  assert.equal(mutations, 0);
-  assert.deepEqual(candidate.labels, ["ClawSweeper:Bulk-Filed"]);
+  assert.equal(existing.context?.detected, true);
+  assert.equal(existing.labelPending, false);
+  assert.equal(existing.labelApplied, false);
 });
 
-test("first bulk-filer label application adds polite scheduling transparency", () => {
+test("review-start comments stay neutral when a bulk filer is detected", () => {
   const comment = renderReviewStartStatusComment({
     number: 44,
     kind: "issue",
     title: "Templated report",
-    headSha: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    bulkFilerLabelApplied: true,
+    headSha: "0123456789abcdef0123456789abcdef0123456789abcdef",
   });
 
-  assert.match(comment, /High filing volume detected/);
-  assert.match(comment, /batched behind other reviews/);
-  assert.match(comment, /Consolidating related reports into fewer issues/);
+  assert.doesNotMatch(comment, /High filing volume detected/);
+  assert.match(comment, /ClawSweeper status: review started/);
+});
+
+test("the publisher applies a detected bulk-filer label only for non-exempt authors", () => {
+  assert.deepEqual(
+    syncBulkFilerLabelForTest({
+      number: 44,
+      labels: [],
+      bulkFilerDetected: true,
+      authorAssociation: "MEMBER",
+      dryRun: true,
+    }),
+    { labels: [], changed: false },
+  );
+  assert.deepEqual(
+    syncBulkFilerLabelForTest({
+      number: 44,
+      labels: [],
+      bulkFilerDetected: true,
+      authorAssociation: "COLLABORATOR",
+      dryRun: true,
+    }),
+    { labels: ["clawsweeper:bulk-filed"], changed: true },
+  );
+  assert.deepEqual(
+    syncBulkFilerLabelForTest({
+      number: 44,
+      labels: ["clawsweeper:bulk-filed", "maintainer"],
+      bulkFilerDetected: false,
+      authorAssociation: "OWNER",
+      dryRun: true,
+    }),
+    { labels: ["maintainer"], changed: true },
+  );
+});
+
+test("cached reports refresh the bulk-filer handoff, including legacy reports", () => {
+  const detected = detectBulkFilerForTest({
+    item: item({ createdAt: "2026-07-16T11:59:59.999Z" }),
+    cache: new Map(),
+    now: Date.parse("2026-07-16T12:00:00.000Z"),
+    searchCount: () => 16,
+  });
+  assert.match(
+    updateBulkFilerDetectedFrontMatterForTest("---\nreview_cache_hit: true\n---\n", detected),
+    /^bulk_filer_detected: true$/m,
+  );
 });

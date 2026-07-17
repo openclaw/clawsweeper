@@ -424,6 +424,10 @@ type ActionTaken =
   | "skipped_runtime_budget";
 
 const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+// The bulk-filer policy is intentionally narrower than the general maintainer
+// policy: repository owners and members can legitimately create high volumes
+// of coordinated issues, while outside collaborators remain in scope.
+const BULK_FILER_EXEMPT_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER"]);
 
 interface GitHubUser {
   login?: string;
@@ -476,19 +480,12 @@ export interface BulkFilerDetectionResult {
 type BulkFilerCountCache = Map<string, number | null>;
 
 interface BulkFilerDetectionOptions {
-  item: Pick<Item, "author" | "createdAt" | "kind" | "labels" | "number">;
+  item: Pick<Item, "author" | "authorAssociation" | "createdAt" | "kind" | "labels" | "number">;
   cache: BulkFilerCountCache;
   now: number;
   env?: Record<string, string | undefined>;
   searchCount: (options: { author: string; windowStart: string }) => number;
   onSearchError?: (error: unknown) => void;
-}
-
-interface BulkFilerActivationOptions {
-  item: Pick<Item, "labels">;
-  detection: BulkFilerDetectionResult;
-  patchTransparency: () => void;
-  applyLabel: () => boolean;
 }
 
 export interface ReviewStartStatusCommentOptions {
@@ -504,7 +501,6 @@ export interface ReviewStartStatusCommentOptions {
   shardIndex?: number;
   shardCount?: number;
   purpose?: "review" | "apply";
-  bulkFilerLabelApplied?: boolean;
 }
 
 type AcquiredReviewStartLease = {
@@ -533,6 +529,20 @@ function suppliedReviewStartLeaseFromArgs(
     throw new UserFacingCommandError("--review-lease-owner contains unsupported characters.");
   }
   return { owner, commentId };
+}
+
+function isSuppliedReviewStartLease(
+  supplied: Pick<AcquiredReviewStartLease, "owner" | "commentId"> | null,
+  lease: Pick<AcquiredReviewStartLease, "owner" | "commentId">,
+): boolean {
+  return supplied?.owner === lease.owner && supplied.commentId === lease.commentId;
+}
+
+export function isSuppliedReviewStartLeaseForTest(
+  supplied: Pick<AcquiredReviewStartLease, "owner" | "commentId"> | null,
+  lease: Pick<AcquiredReviewStartLease, "owner" | "commentId">,
+): boolean {
+  return isSuppliedReviewStartLease(supplied, lease);
 }
 
 function reviewLeaseStillMatchesContext(
@@ -1408,8 +1418,6 @@ const DEFAULT_BULK_FILER_THRESHOLD = 10;
 const DEFAULT_BULK_FILER_WINDOW_DAYS = 7;
 const BULK_FILER_SEARCH_TIMEOUT_MS = 15_000;
 const BULK_FILED_LABEL = "clawsweeper:bulk-filed";
-const BULK_FILER_TRANSPARENCY_LINE =
-  "High filing volume detected, so these issues are batched behind other reviews. Consolidating related reports into fewer issues helps us review everything faster.";
 const BULK_FILED_LABEL_DEFINITION = {
   name: BULK_FILED_LABEL,
   color: "6E7781",
@@ -4128,6 +4136,10 @@ function isMaintainerAuthorAssociation(value: unknown): boolean {
   return MAINTAINER_AUTHOR_ASSOCIATIONS.has(normalizeAuthorAssociation(value));
 }
 
+function isBulkFilerExemptAuthorAssociation(value: unknown): boolean {
+  return BULK_FILER_EXEMPT_AUTHOR_ASSOCIATIONS.has(normalizeAuthorAssociation(value));
+}
+
 function isMaintainerAuthored(item: Pick<Item, "authorAssociation">): boolean {
   return isMaintainerAuthorAssociation(item.authorAssociation);
 }
@@ -6432,6 +6444,9 @@ function detectBulkFiler(options: BulkFilerDetectionOptions): BulkFilerDetection
   if (options.item.kind !== "issue" || !options.item.author.trim()) {
     return { context: null, labelPending: false, labelApplied: false };
   }
+  if (isBulkFilerExemptAuthorAssociation(options.item.authorAssociation)) {
+    return { context: null, labelPending: false, labelApplied: false };
+  }
   const windowDays = bulkFilerWindowDays(options.env);
   const windowStartMs = options.now - windowDays * DAY_MS;
   const itemCreatedAtMs = Date.parse(options.item.createdAt);
@@ -6478,43 +6493,28 @@ function detectBulkFiler(options: BulkFilerDetectionOptions): BulkFilerDetection
   };
 }
 
-function activateBulkFilerAfterReviewLease(options: BulkFilerActivationOptions): boolean {
-  const alreadyLabeled = options.item.labels.some(
-    (label) => label.toLowerCase() === BULK_FILED_LABEL,
-  );
-  if (!options.detection.context || !options.detection.labelPending || alreadyLabeled) {
-    options.detection.labelPending = false;
-    return false;
-  }
-  const labelApplied = options.applyLabel();
-  if (!labelApplied) return false;
-  try {
-    options.patchTransparency();
-  } catch (error) {
-    // The label is the scheduling signal; a failed disclosure patch must not
-    // abort the review. Disclosure reconciliation is tracked as a follow-up.
-    console.warn(
-      `bulk-filer transparency patch failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-  options.item.labels.push(BULK_FILED_LABEL);
-  options.detection.labelPending = false;
-  options.detection.labelApplied = true;
-  return true;
-}
-
 export function detectBulkFilerForTest(
   options: BulkFilerDetectionOptions,
 ): BulkFilerDetectionResult {
   return detectBulkFiler(options);
 }
 
-export function activateBulkFilerAfterReviewLeaseForTest(
-  options: BulkFilerActivationOptions,
-): boolean {
-  return activateBulkFilerAfterReviewLease(options);
+function updateBulkFilerDetectedFrontMatter(
+  markdown: string,
+  detection: BulkFilerDetectionResult,
+): string {
+  return replaceFrontMatterValue(
+    markdown,
+    "bulk_filer_detected",
+    String(detection.context?.detected === true),
+  );
+}
+
+export function updateBulkFilerDetectedFrontMatterForTest(
+  markdown: string,
+  detection: BulkFilerDetectionResult,
+): string {
+  return updateBulkFilerDetectedFrontMatter(markdown, detection);
 }
 
 function authorIssueCountInBulkFilerWindow(author: string, windowStart: string): number {
@@ -14226,13 +14226,49 @@ function ensureBulkFilerLabel(onMutation?: () => void): void {
   }
 }
 
-function applyBulkFilerLabel(number: number, currentLabels: readonly string[]): boolean {
-  ensureBulkFilerLabel();
-  return tryAddOptionalLabel({
-    number,
+function syncBulkFilerLabel(options: {
+  number: number;
+  labels: readonly string[];
+  bulkFilerDetected: boolean;
+  authorAssociation: string;
+  dryRun: boolean;
+  onMutation?: () => void;
+}): { labels: string[]; changed: boolean } {
+  const hasBulkFilerLabel = hasNormalizedLabel(options.labels, BULK_FILED_LABEL);
+  if (isBulkFilerExemptAuthorAssociation(options.authorAssociation)) {
+    if (!hasBulkFilerLabel) return { labels: [...options.labels], changed: false };
+    // This is ClawSweeper policy state, not a human triage label. Remove a
+    // pre-exemption value so owners and members are not still deprioritized.
+    const nextLabels = options.labels.filter(
+      (label) => normalizeLabelName(label) !== normalizeLabelName(BULK_FILED_LABEL),
+    );
+    if (options.dryRun) return { labels: nextLabels, changed: true };
+    removeIssueLabel(options.number, BULK_FILED_LABEL, options.onMutation);
+    return { labels: nextLabels, changed: true };
+  }
+  if (!options.bulkFilerDetected || hasBulkFilerLabel) {
+    return { labels: [...options.labels], changed: false };
+  }
+  const nextLabels = [...options.labels, BULK_FILED_LABEL];
+  if (options.dryRun) return { labels: nextLabels, changed: true };
+  ensureBulkFilerLabel(options.onMutation);
+  const applied = tryAddOptionalLabel({
+    number: options.number,
     label: BULK_FILED_LABEL,
-    currentLabels,
+    currentLabels: options.labels,
+    onMutation: options.onMutation,
   });
+  return { labels: applied ? nextLabels : [...options.labels], changed: applied };
+}
+
+export function syncBulkFilerLabelForTest(options: {
+  number: number;
+  labels: readonly string[];
+  bulkFilerDetected: boolean;
+  authorAssociation: string;
+  dryRun: boolean;
+}): { labels: string[]; changed: boolean } {
+  return syncBulkFilerLabel(options);
 }
 
 function ensureMergeRiskLabel(name: MergeRiskLabelName, onMutation?: () => void): void {
@@ -19682,7 +19718,6 @@ export function renderReviewStartStatusComment(options: ReviewStartStatusComment
     purpose === "apply"
       ? "This transient lease prevents a newer review from overlapping label, comment, or close mutations."
       : "This placeholder means the worker is alive and reading the current context. I will edit this same comment with the actual review when the claws are done clicking.",
-    ...(options.bulkFilerLabelApplied ? ["", BULK_FILER_TRANSPARENCY_LINE] : []),
     "",
     "Crustacean status: shell secured, claws on keyboard, evidence pebbles being sorted.",
     "",
@@ -20455,7 +20490,6 @@ function postReviewStartStatusComment(options: {
   shardIndex: number;
   shardCount: number;
   purpose?: "review" | "apply";
-  bulkFilerLabelApplied?: boolean;
 }): ReviewStartStatusCommentResult {
   const startedAtMs = Date.now();
   const leaseOwner = newReviewStartLeaseOwner();
@@ -20472,7 +20506,6 @@ function postReviewStartStatusComment(options: {
     shardIndex: options.shardIndex,
     shardCount: options.shardCount,
     purpose: options.purpose ?? "review",
-    bulkFilerLabelApplied: options.bulkFilerLabelApplied ?? false,
   };
   const normalizedHead = String(options.headSha ?? "")
     .trim()
@@ -20552,59 +20585,6 @@ function postReviewStartStatusComment(options: {
     lease: { ...acquired, comment: winner.comment },
     didMutate: true,
   };
-}
-
-function patchOwnedBulkFilerReviewStartStatusComment(
-  itemNumber: number,
-  lease: AcquiredReviewStartLease,
-): void {
-  const currentBody = commentBody(lease.comment);
-  if (
-    !currentBody ||
-    commentId(lease.comment) !== lease.commentId ||
-    reviewStartLeaseOwner(lease.comment) !== lease.owner ||
-    !currentBody.includes(`sha=${lease.headSha}`)
-  ) {
-    throw new Error(
-      `cannot add bulk-filer transparency without the owned review lease comment for #${itemNumber}`,
-    );
-  }
-  if (currentBody.includes(BULK_FILER_TRANSPARENCY_LINE)) return;
-  const anchor = "\n\nCrustacean status:";
-  if (!currentBody.includes(anchor)) {
-    throw new Error(`cannot locate the review lease transparency anchor for #${itemNumber}`);
-  }
-  const nextBody = currentBody.replace(anchor, `\n\n${BULK_FILER_TRANSPARENCY_LINE}${anchor}`);
-  const payload = writeCommentPayload(itemNumber, nextBody);
-  const args = [
-    "api",
-    `repos/${targetRepo()}/issues/comments/${lease.commentId}`,
-    "--method",
-    "PATCH",
-    "--input",
-    payload,
-  ];
-  const written = reviewCommentFromMutationResponse(
-    ghObservedMutationCommand({
-      identity: `review_lease_bulk_filer_transparency:${itemNumber}:${lease.commentId}`,
-      args,
-    }),
-    args,
-  );
-  lease.comment = written ?? { ...lease.comment, body: nextBody };
-}
-
-function activateDetectedBulkFilerAfterReviewLease(
-  item: Item,
-  detection: BulkFilerDetectionResult,
-  lease: AcquiredReviewStartLease,
-): boolean {
-  return activateBulkFilerAfterReviewLease({
-    item,
-    detection,
-    patchTransparency: () => patchOwnedBulkFilerReviewStartStatusComment(item.number, lease),
-    applyLabel: () => applyBulkFilerLabel(item.number, item.labels),
-  });
 }
 
 function deleteOwnedDedicatedReviewStartLease(
@@ -21201,6 +21181,7 @@ item_updated_at: ${options.item.updatedAt}
 author: ${options.item.author}
 author_association: ${options.item.authorAssociation}
 labels: ${JSON.stringify(options.item.labels)}
+bulk_filer_detected: ${options.context.bulkFiler?.detected === true}
 reviewed_at: ${reviewedAt}
 review_lease_owner: ${options.reviewLeaseOwner ?? "unknown"}
 review_lease_comment_id: ${options.reviewLeaseCommentId ?? "unknown"}
@@ -22591,6 +22572,12 @@ function reviewCommand(args: Args): void {
   const maintainerRequest = additionalPrompt.trim().length > 0;
   const readonlyModeSnapshots = readonlyOpenclaw ? makeTreeReadOnly(openclawDir) : [];
   const acquiredReviewLeases: Array<{ itemNumber: number; lease: AcquiredReviewStartLease }> = [];
+  const releaseOwnedReviewLease = (itemNumber: number, lease: AcquiredReviewStartLease): boolean =>
+    // The exact-event workflow reserves a supplied lease in its write-token
+    // step and owns cleanup outside this read-token review. Every lease this
+    // command creates itself must still be deleted, even for a read-only checkout.
+    isSuppliedReviewStartLease(suppliedReviewLease, lease) ||
+    deleteOwnedDedicatedReviewStartLease(itemNumber, lease);
   let reviewLedger: ReviewActionLedger | null = null;
   let activeReviewItem: Item | null = null;
   let completed = 0;
@@ -22794,7 +22781,6 @@ function reviewCommand(args: Args): void {
                 total: candidates.length,
                 shardIndex,
                 shardCount,
-                bulkFilerLabelApplied: bulkFilerDetection.labelApplied,
               });
               console.error(
                 `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache-start-comment=${startComment.status} #${item.number}`,
@@ -22810,11 +22796,6 @@ function reviewCommand(args: Args): void {
                 );
               }
               acquiredReviewLeases.push({ itemNumber: item.number, lease: acquiredReviewLease });
-              activateDetectedBulkFilerAfterReviewLease(
-                item,
-                bulkFilerDetection,
-                acquiredReviewLease,
-              );
             } catch (error) {
               leaseAcquisitionFailures += 1;
               leaseAcquisitionFailureDetails.push(
@@ -22883,7 +22864,7 @@ function reviewCommand(args: Args): void {
             );
             if (!revalidationDecision.hit || !previousReviewIdentityMatches) {
               const leaseToRelease = acquiredReviewLease!;
-              if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
+              if (!releaseOwnedReviewLease(item.number, leaseToRelease)) {
                 leaseAcquisitionFailures += 1;
                 leaseAcquisitionFailureDetails.push(
                   `#${item.number}: could not release structural cache lease after ${revalidationReason}`,
@@ -22923,6 +22904,7 @@ function reviewCommand(args: Args): void {
                 String(acquiredReviewLease.commentId),
               );
               carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
+              carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
               carried = updateReviewStructuralFrontMatter(carried, structuralRecord, true);
               writeFileSync(reportPath, carried, "utf8");
               finishReviewActionLedgerItem({
@@ -22975,7 +22957,6 @@ function reviewCommand(args: Args): void {
             total: candidates.length,
             shardIndex,
             shardCount,
-            bulkFilerLabelApplied: bulkFilerDetection.labelApplied,
           });
           console.error(
             `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=${startComment.status} #${item.number}`,
@@ -23074,7 +23055,6 @@ function reviewCommand(args: Args): void {
         };
         acquiredReviewLease = claimedLease;
         acquiredReviewLeases.push({ itemNumber: item.number, lease: claimedLease });
-        activateDetectedBulkFilerAfterReviewLease(item, bulkFilerDetection, claimedLease);
       }
       if (!localRangeData && contextItemUpdatedAt && preHydrationStructuralRecord) {
         structuralCacheRevalidations += 1;
@@ -23200,7 +23180,6 @@ function reviewCommand(args: Args): void {
             total: candidates.length,
             shardIndex,
             shardCount,
-            bulkFilerLabelApplied: bulkFilerDetection.labelApplied,
           });
           console.error(
             `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=${startComment.status} #${item.number}`,
@@ -23216,11 +23195,6 @@ function reviewCommand(args: Args): void {
             );
           }
           acquiredReviewLeases.push({ itemNumber: item.number, lease: acquiredReviewLease });
-          activateDetectedBulkFilerAfterReviewLease(
-            item,
-            bulkFilerDetection,
-            acquiredReviewLease,
-          );
         } catch (error) {
           leaseAcquisitionFailures += 1;
           leaseAcquisitionFailureDetails.push(
@@ -23253,7 +23227,7 @@ function reviewCommand(args: Args): void {
               error instanceof Error ? error.message : String(error)
             }`,
           );
-          if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
+          if (!releaseOwnedReviewLease(item.number, leaseToRelease)) {
             leaseAcquisitionFailureDetails.push(
               `#${item.number}: could not release issue review lease after durable review refresh failed`,
             );
@@ -23358,7 +23332,7 @@ function reviewCommand(args: Args): void {
             (semanticCacheRevalidationReasons.get(revalidationReason) ?? 0) + 1,
           );
           const leaseToRelease = acquiredReviewLease!;
-          if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
+          if (!releaseOwnedReviewLease(item.number, leaseToRelease)) {
             leaseAcquisitionFailures += 1;
             leaseAcquisitionFailureDetails.push(
               `#${item.number}: could not release semantic cache lease after ${revalidationReason}`,
@@ -23428,7 +23402,7 @@ function reviewCommand(args: Args): void {
         );
         if (!revalidatedStructuralRecord || !semanticRevalidationDecision.hit) {
           const leaseToRelease = acquiredReviewLease!;
-          if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
+          if (!releaseOwnedReviewLease(item.number, leaseToRelease)) {
             leaseAcquisitionFailures += 1;
             leaseAcquisitionFailureDetails.push(
               `#${item.number}: could not release semantic cache lease after ${revalidationReason}`,
@@ -23483,6 +23457,7 @@ function reviewCommand(args: Args): void {
         );
         carried = replaceFrontMatterValue(carried, "main_sha", git.mainSha);
         carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
+        carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
         carried = updateReviewStructuralFrontMatter(carried, structuralRecord, false);
         carried = updateReviewSemanticFrontMatter(carried, semanticRecord, true);
         writeFileSync(reportPath, carried, "utf8");
@@ -23553,6 +23528,7 @@ function reviewCommand(args: Args): void {
           itemSnapshotHash(item, context),
         );
         carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
+        carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
         carried = structuralRecord
           ? updateReviewStructuralFrontMatter(carried, structuralRecord, false)
           : replaceFrontMatterValue(carried, "review_structural_cache_hit", "false");
@@ -23869,7 +23845,7 @@ function reviewCommand(args: Args): void {
         const previousReviewMutationRunner = activeReviewMutationRunner;
         activeReviewMutationRunner = reviewMutationRunner(reviewLedger, state.item);
         try {
-          deleteOwnedDedicatedReviewStartLease(acquired.itemNumber, acquired.lease);
+          releaseOwnedReviewLease(acquired.itemNumber, acquired.lease);
         } finally {
           activeReviewMutationRunner = previousReviewMutationRunner;
         }
@@ -28354,10 +28330,34 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         continue;
       }
     }
+    const isCurrentLabelSyncReport = !stalePrReviewHead && labelSyncFreshEnough();
     const isCurrentCompleteReport =
-      frontMatterValue(markdown, "review_status") === "complete" &&
-      !stalePrReviewHead &&
-      labelSyncFreshEnough();
+      frontMatterValue(markdown, "review_status") === "complete" && isCurrentLabelSyncReport;
+    if (state === "open" && isCurrentLabelSyncReport) {
+      const mutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
+      if (mutationLeaseBlockReason) {
+        if (recordReviewLeaseSkip(mutationLeaseBlockReason, false)) break;
+        continue;
+      }
+      try {
+        const bulkFilerSyncResult = syncBulkFilerLabel({
+          number,
+          labels: item.labels,
+          bulkFilerDetected: frontMatterBoolean(markdown, "bulk_filer_detected"),
+          authorAssociation: item.authorAssociation,
+          dryRun,
+          onMutation: recordMutation,
+        });
+        item.labels = bulkFilerSyncResult.labels;
+        clawSweeperLabelsChanged ||= bulkFilerSyncResult.changed;
+        markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
+        if (bulkFilerSyncResult.changed) rememberSelfMutationUpdatedAt();
+      } catch (error) {
+        if (!isGitHubRequiresAuthenticationError(error)) throw error;
+        if (markLabelSyncAuthSkipped("ClawSweeper bulk-filer")) break;
+        continue;
+      }
+    }
     if (state === "open" && isCurrentCompleteReport) {
       const mutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
       if (mutationLeaseBlockReason) {
