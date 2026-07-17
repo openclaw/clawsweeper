@@ -917,7 +917,7 @@ function assertTrackedPatchDependency(
 function assertApprovedInstallMetadataDestinations(text: string, registryOrigin: string) {
   const networkTokens = [
     ...text.matchAll(
-      /(?:^|[\s"'`<>{}\x5b\x5d(),:=])((?:https?:\/\/|\/\/|git\+[^:\s]+:\/\/|ssh:\/\/)[^\s"'`<>{}\x5b\x5d,]+)/gim,
+      /(?:^|[\s"'`<>{}\x5b\x5d(),;:=])((?:https?:\/\/|\/\/|git\+[^:\s]+:\/\/|ssh:\/\/)[^\s"'`<>{}\x5b\x5d,]+)/gim,
     ),
   ].flatMap((match) => (match[1] ? [match[1]] : []));
   for (const token of networkTokens) {
