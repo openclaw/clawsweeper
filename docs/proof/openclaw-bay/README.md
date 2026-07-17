@@ -33,15 +33,15 @@ The sequence proves:
 ## Artifacts
 
 - [`playwright-proof-storyboard.jpg`](playwright-proof-storyboard.jpg) is a
-  labelled 21-state contact sheet that can be inspected without video codecs.
+  labelled 23-state contact sheet that can be inspected without video codecs.
 - [`trace.zip`](trace.zip) is the Playwright action, DOM snapshot, and network
   trace. Open it with
   `npx --yes playwright@1.60.0 show-trace docs/proof/openclaw-bay/trace.zip`.
-- [`proof-summary.json`](proof-summary.json) records all 39 passing assertions
+- [`proof-summary.json`](proof-summary.json) records all 42 passing assertions
   from its accompanying deterministic proof run,
   sanitized request/response metadata, safe drawer links, the unchanged
-  terminal keys before and after both preview modes, and the proved real-tide
-  clear.
+  terminal keys before and after both preview modes, the proved real-tide
+  clear, and the held terminal failure tunnelling to its bounded live retry.
 - [`run-proof.mjs`](run-proof.mjs) contains the Playwright assertions and
   artifact renderer. [`run-proof.sh`](run-proof.sh) installs the pinned
   Playwright package in `/tmp`, starts the real local Wrangler Worker, and runs
@@ -74,9 +74,9 @@ crabbox run \
 
 ## Provenance and privacy
 
-- implementation source: `36525da82e489251ecf37454489a0e997a0c0604`
+- implementation source: `7e3c218400d7dd5e39034846d88a85b3a54a6e11`
 - provider: Crabbox `local-container`
-- lease: `cbx_7c27d4e0df99` (`jade-hermit`)
+- lease: `cbx_575b1958788e` (`violet-krill`)
 - image: `mcr.microsoft.com/playwright:v1.60.0-noble`
 - fixture SHA-256:
   `B0180F79C465964AD39E6E45F730211294742E1206EA4CE1A4C39DEB61AFCB71`

@@ -354,6 +354,59 @@ proofSnapshots.push({
   exact_review_queue: denseFilteredQueueProjection(),
 });
 
+const bayRetryItemKey = "openclaw/openclaw#110158";
+const bayRetryTerminal = terminal({
+  repository: "openclaw/openclaw",
+  number: 110158,
+  outcome: "failure",
+  runId: 29616475298,
+});
+const bayRetryTerminalSnapshot = {
+  ...realTideSnapshot,
+  bay: {
+    ...realTideSnapshot.bay,
+    terminal_buffer: [bayRetryTerminal],
+    recently_washed: [],
+    terminal_count: 1,
+    tide_generation: 0,
+    washed_at: null,
+  },
+  exact_review_queue: queueProjection(),
+};
+const bayRetryProjection = queueProjection();
+const bayRetryQueueItem = {
+  item_key: bayRetryItemKey,
+  repository: "openclaw/openclaw",
+  item_number: 110158,
+  stage: "arriving",
+  queue_state: "pending",
+  created_at: "2026-07-11T18:03:00.000Z",
+  updated_at: "2026-07-11T18:03:00.000Z",
+  next_attempt_at: "2026-07-11T18:03:00.000Z",
+};
+const bayRetryLiveSnapshot = {
+  ...bayRetryTerminalSnapshot,
+  exact_review_queue: {
+    ...bayRetryProjection,
+    bay_projection: {
+      ...bayRetryProjection.bay_projection,
+      total: bayRetryProjection.bay_projection.total + 1,
+      stages: {
+        ...bayRetryProjection.bay_projection.stages,
+        arriving: bayRetryProjection.bay_projection.stages.arriving + 1,
+      },
+      items: [
+        bayRetryQueueItem,
+        ...bayRetryProjection.bay_projection.items.slice(
+          0,
+          bayRetryProjection.bay_projection.sample_limit - 1,
+        ),
+      ],
+    },
+  },
+};
+proofSnapshots.push(bayRetryTerminalSnapshot, bayRetryLiveSnapshot);
+
 let fixtureIndex = 0;
 const requests = [];
 const responses = [];
@@ -1415,6 +1468,67 @@ try {
     { overflow: filteredQueueOverflow },
   );
 
+  fixtureIndex = 7;
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator("#loading").waitFor({ state: "hidden", timeout: 15_000 });
+  await page.locator("#stage-grid .critter").first().waitFor({ state: "visible" });
+  await page.evaluate(() => {
+    window.__bayProofReduceMotion = false;
+  });
+  const bayRetryKey = `[data-key="${bayRetryItemKey}"]`;
+  await page.locator(`.pool.attention ${bayRetryKey}.terminal-failed`).waitFor({
+    state: "visible",
+    timeout: 5_000,
+  });
+  assertProof(
+    "incident-shaped terminal failure is visible before the replacement queue row arrives",
+    (await page.locator(`.pool.attention ${bayRetryKey}.terminal-failed`).count()) === 1 &&
+      (await page.locator(`[data-stage="arriving"] ${bayRetryKey}`).count()) === 0,
+    { item_key: bayRetryItemKey, terminal_run_id: bayRetryTerminal.run_id },
+  );
+
+  fixtureIndex = 8;
+  await page.evaluate(async () => {
+    await window.__bayProofPoll();
+  });
+  await page.locator(`${bayRetryKey}.tunneling`).waitFor({ state: "visible", timeout: 5_000 });
+  await page.locator("#tunnel-layer .tunnel-journey").waitFor({
+    state: "visible",
+    timeout: 3_000,
+  });
+  const bayRetryTunnelLabel = await page.locator(".burrow-label").innerText();
+  assertProof(
+    "terminal failure tunnels to its matching bounded live retry",
+    bayRetryTunnelLabel === `${bayRetryItemKey} burrowing`,
+    {
+      item_key: bayRetryItemKey,
+      terminal_run_id: bayRetryTerminal.run_id,
+      tunnel_label: bayRetryTunnelLabel,
+    },
+  );
+  await capture(
+    "18-terminal-failure-to-live-retry-tunnel",
+    "Held terminal failure tunnels to its pending retry",
+    "The incident-shaped terminal card for openclaw/openclaw#110158 is replaced by its bounded live queue row rather than remaining in the failed pool.",
+  );
+  const bayRetryDestination = page.locator(`[data-stage="arriving"] ${bayRetryKey}`);
+  await bayRetryDestination.waitFor({ state: "visible", timeout: 8_000 });
+  assertProof(
+    "replacement retry resurfaces in Arriving and suppresses the stale terminal card",
+    (await page.locator(`.pool ${bayRetryKey}`).count()) === 0 &&
+      (await bayRetryDestination.getAttribute("data-item"))?.startsWith("queue:") === true,
+    {
+      item_key: bayRetryItemKey,
+      destination: "arriving",
+      queue_state: "pending",
+    },
+  );
+  await capture(
+    "19-live-retry-resurfaced",
+    "Pending retry resurfaces in Arriving",
+    "The stale failed card is absent and the same GitHub reference is visible as queued exact-review work in the earlier lane.",
+  );
+
   const totalStatusGets = requests.filter((request) => request.path === "/api/status").length;
   const healthHistoryGets = requests.filter(
     (request) => request.path === "/api/health-history",
@@ -1451,7 +1565,7 @@ try {
   });
   assertProof(
     "mini control board caches each selected dashboard history range",
-    healthHistoryGets === 9 &&
+    healthHistoryGets === 10 &&
       healthHistoryRanges.filter((range) => range === "24h").length === 1 &&
       healthHistoryRanges.filter((range) => range === "7d").length === 1,
     { health_history_gets: healthHistoryGets, ranges: healthHistoryRanges },

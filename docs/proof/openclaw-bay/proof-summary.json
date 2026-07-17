@@ -1,6 +1,6 @@
 {
   "proof": "OpenClaw Bay deterministic Playwright browser proof",
-  "source_sha": "36525da82e489251ecf37454489a0e997a0c0604",
+  "source_sha": "7e3c218400d7dd5e39034846d88a85b3a54a6e11",
   "route": "/bay-demo",
   "data_classification": "fully synthetic and redacted; no live/private dashboard payloads",
   "fixture_sha256": "B0180F79C465964AD39E6E45F730211294742E1206EA4CE1A4C39DEB61AFCB71",
@@ -19,7 +19,7 @@
     }
   ],
   "derived_real_tide_snapshot_sha256": "18FAF63BD6529D1F4EB03BF880343E20244413F82FE62029F055AABC13F44DA9",
-  "generated_at": "2026-07-17T21:05:29.061Z",
+  "generated_at": "2026-07-17T23:46:30.381Z",
   "assertions": [
     {
       "name": "real Bay route loaded",
@@ -156,7 +156,7 @@
       "name": "master sweeper animation advances",
       "status": "PASS",
       "phase": "sweeping",
-      "elapsed_animation_ms": 317
+      "elapsed_animation_ms": 300
     },
     {
       "name": "forward transition lands in applying",
@@ -168,7 +168,7 @@
       "status": "PASS",
       "source_hole": 1,
       "target_hole": 1,
-      "target_hole_opacity": 0.392153,
+      "target_hole_opacity": 0.392184,
       "label": "openclaw/openclaw#97722 burrowing"
     },
     {
@@ -217,7 +217,7 @@
     {
       "name": "layered preview tide visibly animates",
       "status": "PASS",
-      "elapsed_animation_ms": 33,
+      "elapsed_animation_ms": 67,
       "tide_layers": 3
     },
     {
@@ -235,7 +235,7 @@
       "status": "PASS",
       "duration": "520ms",
       "animation_name": "none",
-      "elapsed_ms": 652
+      "elapsed_ms": 587
     },
     {
       "name": "tide previews do not poll status",
@@ -284,6 +284,26 @@
       "overflow": "+7 queued IDs not shown"
     },
     {
+      "name": "incident-shaped terminal failure is visible before the replacement queue row arrives",
+      "status": "PASS",
+      "item_key": "openclaw/openclaw#110158",
+      "terminal_run_id": 29616475298
+    },
+    {
+      "name": "terminal failure tunnels to its matching bounded live retry",
+      "status": "PASS",
+      "item_key": "openclaw/openclaw#110158",
+      "terminal_run_id": 29616475298,
+      "tunnel_label": "openclaw/openclaw#110158 burrowing"
+    },
+    {
+      "name": "replacement retry resurfaces in Arriving and suppresses the stale terminal card",
+      "status": "PASS",
+      "item_key": "openclaw/openclaw#110158",
+      "destination": "arriving",
+      "queue_state": "pending"
+    },
+    {
       "name": "preview tide preserves live outcome data",
       "status": "PASS",
       "before_keys": [
@@ -316,11 +336,12 @@
     {
       "name": "mini control board caches each selected dashboard history range",
       "status": "PASS",
-      "health_history_gets": 9,
+      "health_history_gets": 10,
       "ranges": [
         "6h",
         "24h",
         "7d",
+        "6h",
         "6h",
         "6h",
         "6h",
@@ -462,10 +483,22 @@
       "storyboard_panel": 20
     },
     {
+      "id": "18-terminal-failure-to-live-retry-tunnel",
+      "title": "Held terminal failure tunnels to its pending retry",
+      "detail": "The incident-shaped terminal card for openclaw/openclaw#110158 is replaced by its bounded live queue row rather than remaining in the failed pool.",
+      "storyboard_panel": 21
+    },
+    {
+      "id": "19-live-retry-resurfaced",
+      "title": "Pending retry resurfaces in Arriving",
+      "detail": "The stale failed card is absent and the same GitHub reference is visible as queued exact-review work in the earlier lane.",
+      "storyboard_panel": 22
+    },
+    {
       "id": "17-visible-proof-diagnostics",
       "title": "Network and state boundary",
       "detail": "Visible diagnostics confirm no GitHub API or mutation request, unchanged preview data, and a proved real clear.",
-      "storyboard_panel": 21
+      "storyboard_panel": 23
     }
   ],
   "tide_isolation": {
@@ -709,6 +742,55 @@
         "path": "/api/status",
         "search": "",
         "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/bay-demo",
+        "search": "",
+        "resource_type": "document"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/bay-background.webp",
+        "search": "",
+        "resource_type": "image"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/master-sweeper.webp",
+        "search": "",
+        "resource_type": "image"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/crustaceans-atlas.webp",
+        "search": "",
+        "resource_type": "image"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
       }
     ],
     "responses": [
@@ -873,6 +955,48 @@
         "host": "bay-proof.test:8787",
         "path": "/api/status",
         "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/bay-demo",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/bay-background.webp",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/master-sweeper.webp",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/crustaceans-atlas.webp",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h"
       },
       {
         "status": 200,
