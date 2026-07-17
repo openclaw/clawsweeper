@@ -110,6 +110,18 @@ const baseWorkers = [
   }),
 ];
 
+// The durable queue keeps this lease under Setting up while the actual worker is
+// already Reviewing. Keep the checked-in progression fixtures stable and add the
+// overlap only to a dedicated served snapshot, where the assertion exercises it.
+const claimedReviewingWorker = worker({
+  id: "worker-claimed-reviewing",
+  repository: "openclaw/openclaw",
+  number: 108002,
+  step: "Review exact event item",
+  runId: 4102,
+  startedAt: "2026-07-11T17:57:00.000Z",
+});
+
 const terminalBuffer = [
   terminal({ repository: "openclaw/openclaw", number: 97001, outcome: "success", runId: 5001 }),
   terminal({ repository: "openclaw/clawhub", number: 97002, outcome: "failure", runId: 5002 }),
@@ -286,10 +298,60 @@ function queueProjection() {
   };
 }
 
+function denseFilteredQueueProjection() {
+  const base = queueProjection();
+  const items = Array.from({ length: 24 }, (_, index) => {
+    const item_number = 109001 + index;
+    const at = new Date(Date.parse("2026-07-11T17:31:00.000Z") + index * 1_000).toISOString();
+    return {
+      item_key: `openclaw/openclaw#${item_number}`,
+      repository: "openclaw/openclaw",
+      item_number,
+      stage: "arriving",
+      queue_state: "pending",
+      created_at: at,
+      updated_at: at,
+      next_attempt_at: at,
+    };
+  });
+  return {
+    ...base,
+    bay_projection: {
+      sample_limit: 24,
+      total: 24,
+      stages: { arriving: 24, "setting-up": 0, reviewing: 0, applying: 0, repairing: 0 },
+      items,
+    },
+  };
+}
+
 const proofSnapshots = [...snapshots, denseTerminalSnapshot, realTideSnapshot].map((snapshot) => ({
   ...snapshot,
   exact_review_queue: queueProjection(),
 }));
+proofSnapshots.push({
+  ...snapshots[0],
+  workers: [...snapshots[0].workers, claimedReviewingWorker],
+  exact_review_queue: queueProjection(),
+});
+proofSnapshots.push({
+  ...snapshots[0],
+  workers: [
+    ...snapshots[0].workers,
+    {
+      ...worker({
+        id: "worker-filtered-arriving",
+        repository: "openclaw/openclaw",
+        number: 199999,
+        step: "Awaiting review admission",
+        runId: 4199,
+        startedAt: "2026-07-11T17:57:00.000Z",
+      }),
+      status: "waiting",
+    },
+  ],
+  exact_review_queue: denseFilteredQueueProjection(),
+});
 
 let fixtureIndex = 0;
 const requests = [];
@@ -530,7 +592,7 @@ try {
       /\/ hour/.test(bayControl.rate_hover_label) &&
       bayControl.queue_items === 1 &&
       bayControl.arriving_queue_samples === 6 &&
-      bayControl.queue_header === "ARRIVING 9 QUEUED" &&
+      bayControl.queue_header === "ARRIVING 9" &&
       bayControl.queue_omission === 1 &&
       bayControl.queue_omission_label === "+3 queued IDs not shown",
     bayControl,
@@ -1099,6 +1161,54 @@ try {
       active_keys_unchanged:
         JSON.stringify(activeAfterRealTide) === JSON.stringify(activeBeforeRealTide),
     },
+  );
+
+  await page.evaluate(() => {
+    window.__bayProofReduceMotion = true;
+  });
+  fixtureIndex = 5;
+  await page.evaluate(async () => {
+    await window.__bayProofPoll();
+  });
+  await page.waitForFunction(
+    () => document.querySelectorAll('[data-key="openclaw/openclaw#108002"]').length === 1,
+    null,
+    { timeout: 3_000 },
+  );
+  const queueReconciliation = {
+    in_setting_up: await page
+      .locator('[data-stage="setting-up"] [data-key="openclaw/openclaw#108002"]')
+      .count(),
+    in_reviewing: await page
+      .locator('[data-stage="reviewing"] [data-key="openclaw/openclaw#108002"]')
+      .count(),
+    setting_up_header: await page.locator('[data-stage="setting-up"] h2').innerText(),
+  };
+  assertProof(
+    "live workers take precedence over their durable queue stage",
+    queueReconciliation.in_setting_up === 0 &&
+      queueReconciliation.in_reviewing === 1 &&
+      queueReconciliation.setting_up_header === "SETTING UP 9",
+    queueReconciliation,
+  );
+
+  fixtureIndex = 6;
+  await page.evaluate(async () => {
+    await window.__bayProofPoll();
+  });
+  await page.getByRole("button", { name: /openclaw\/openclaw/i }).click();
+  await page.waitForFunction(
+    () => document.querySelectorAll('[data-stage="arriving"] .critter').length === 24,
+    null,
+    { timeout: 3_000 },
+  );
+  const filteredQueueOverflow = await page
+    .locator('[data-stage="arriving"] .overflow-note')
+    .innerText();
+  assertProof(
+    "filtered lanes label omitted queue rows as queued",
+    /^\+\d+ queued IDs? not shown$/.test(filteredQueueOverflow),
+    { overflow: filteredQueueOverflow },
   );
 
   const totalStatusGets = requests.filter((request) => request.path === "/api/status").length;
