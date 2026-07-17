@@ -300,6 +300,23 @@ test("exact event proof accepts only explicit trusted no-action dispositions", (
   assert.equal(sourceDrift.disposition, "source_drift");
   assert.equal(unproven.disposition, "unproven");
 });
+
+test("exact event proof defers a close-coverage retry to the proof-capable apply lane", () => {
+  const proof = exactEventApplyProof(
+    [eventApplyAction({ number: 42, action: "retry_pr_close_coverage_proof" })],
+    42,
+  );
+
+  assert.equal(proof.disposition, "close_coverage_deferred");
+  assert.equal(
+    eventApplyRequeueLatestExpected({
+      disposition: proof.disposition,
+      exactEventPublication: true,
+      legacyTuplelessReviewLease: proof.legacyTuplelessReviewLease,
+    }),
+    false,
+  );
+});
 test("exact event proof completes live-shaped deterministic guarded-open results", () => {
   for (const action of [
     "skipped_same_author_pair",

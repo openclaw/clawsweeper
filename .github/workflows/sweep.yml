@@ -1523,6 +1523,7 @@ jobs:
           MIN_AGE_MINUTES: "0"
           REVIEW_ONLY: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
           EXACT_EVENT_PUBLICATION: "true"
+          EXACT_REVIEW_CLOSE_COVERAGE_DEFERRED: "true"
           LIVE_PROCEEDED: ${{ steps.publication-context.outputs.live_proceeded }}
           LIVE_TERMINAL_NOOP: ${{ steps.publication-context.outputs.live_terminal_noop }}
           LIVE_TERMINAL_MISSING: ${{ steps.publication-context.outputs.live_terminal_missing }}
@@ -1776,6 +1777,9 @@ jobs:
           if [ "$POLICY_NOOP" = "true" ]; then
             state="Complete"
             detail="The exact review reached a deterministic policy veto; no action was taken."
+          elif [ "$PUBLISH_COMPLETION_KIND" = "deferred" ] && [ "$PUBLISH_REASON_CODE" = "close_coverage_deferred" ]; then
+            state="Complete"
+            detail="The exact review is complete. Its close recommendation is queued for an independent bounded read-only proof check; no comment, label, or close action will occur unless that proof lane authorizes it."
           elif [ "$LEGACY_TUPLELESS" = "true" ] && [ "${{ steps.queue-source-drift-review.outcome }}" = "success" ]; then
             state="Complete"
             detail="The legacy artifact lacked its durable review lease tuple; one fresh exact review was queued."
@@ -1914,6 +1918,17 @@ jobs:
             outcome=success
             completion_kind=superseded
             reason_code="$PUBLISH_REASON_CODE"
+          elif [ "$PUBLISH_COMPLETION_KIND" = "deferred" ] && [ "$PUBLISH_REASON_CODE" = "close_coverage_deferred" ]; then
+            outcome=success
+            completion_kind=deferred
+            reason_code=close_coverage_deferred
+          elif [ "$PUBLISH_COMPLETION_KIND" = "refresh_required" ] && [ "$PUBLISH_REASON_CODE" = "close_coverage_retry" ]; then
+            # A pre-deployment publisher checked out the new helper but still runs the old
+            # workflow without the deferred-lane opt-in. Preserve its established refresh
+            # completion so the queue can create a fresh proof-capable review.
+            outcome=success
+            completion_kind=refresh_required
+            reason_code=close_coverage_retry
           elif [ "$LEGACY_TUPLELESS" = "true" ] && [ "$SOURCE_DRIFT_OUTCOME" = "success" ]; then
             outcome=success
             completion_kind=superseded
@@ -1931,7 +1946,7 @@ jobs:
               outcome=success
             fi
           fi
-          if [ "$outcome" = "success" ] && [ "$completion_kind" != "superseded" ]; then
+          if [ "$outcome" = "success" ] && [ "$completion_kind" != "superseded" ] && [ "$completion_kind" != "deferred" ] && [ "$completion_kind" != "refresh_required" ]; then
             if [ "$PUBLISH_COMPLETION_KIND" = "published" ] && [ "$PUBLISH_REASON_CODE" = "publication_applied" ]; then
               completion_kind=published
               reason_code=publication_applied
@@ -1995,10 +2010,10 @@ jobs:
             const failureKind = ["github_rate_limit", "github_transient"].includes(process.env.FAILURE_KIND)
               ? process.env.FAILURE_KIND
               : undefined;
-            const completionKind = ["published", "superseded", "retryable_failure", "refresh_required", "permanent_failure"].includes(process.env.COMPLETION_KIND)
+            const completionKind = ["published", "superseded", "deferred", "retryable_failure", "refresh_required", "permanent_failure"].includes(process.env.COMPLETION_KIND)
               ? process.env.COMPLETION_KIND
               : undefined;
-            const reasonCode = ["publication_applied", "remote_newer_tuple", "remote_closed", "live_terminal", "github_rate_limit", "github_transient", "workflow_cancelled", "artifact_unavailable", "artifact_expired", "invalid_artifact", "missing_record_tuple", "tuple_protocol_invalid", "policy_invariant", "unknown_failure", "retry_exhausted"].includes(process.env.REASON_CODE)
+            const reasonCode = ["publication_applied", "remote_newer_tuple", "remote_closed", "live_terminal", "github_rate_limit", "github_transient", "workflow_cancelled", "artifact_unavailable", "artifact_expired", "close_coverage_retry", "close_coverage_deferred", "invalid_artifact", "missing_record_tuple", "tuple_protocol_invalid", "policy_invariant", "unknown_failure", "retry_exhausted"].includes(process.env.REASON_CODE)
               ? process.env.REASON_CODE
               : undefined;
             const errorFingerprint = /^[A-Za-z0-9:._-]{1,200}$/.test(process.env.ERROR_FINGERPRINT || "")

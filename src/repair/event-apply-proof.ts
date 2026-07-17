@@ -87,6 +87,7 @@ export type ExactEventApplyDisposition =
   | "applied"
   | "terminal_policy_noop"
   | "source_drift"
+  | "close_coverage_deferred"
   | "unproven";
 
 export function eventApplyRequeueLatestExpected({
@@ -139,6 +140,15 @@ export function exactEventApplyProof(
         entry.durableReviewSynced ||
         entry.terminalStateVerified,
     );
+  // A close-coverage proof is deliberately retryable, but the immutable
+  // publisher has no Codex/proof credentials. It must leave this lane for the
+  // bounded read-only apply-proof lane, not replay its old review artifact.
+  const closeCoverageDeferred =
+    exactActions.length === 1 &&
+    exactActions[0]?.action === "retry_pr_close_coverage_proof" &&
+    syncedCount === 0 &&
+    terminalCount === 0 &&
+    exactActions[0]?.terminalMissingVerified !== true;
   return {
     exactActions,
     syncedCount,
@@ -160,11 +170,13 @@ export function exactEventApplyProof(
       ? sourceDrift
         ? "source_drift"
         : "unproven"
-      : terminalPolicyNoop
-        ? "terminal_policy_noop"
-        : syncedCount + terminalCount > 0
-          ? "applied"
-          : "unproven",
+      : closeCoverageDeferred
+        ? "close_coverage_deferred"
+        : terminalPolicyNoop
+          ? "terminal_policy_noop"
+          : syncedCount + terminalCount > 0
+            ? "applied"
+            : "unproven",
   };
 }
 

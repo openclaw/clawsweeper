@@ -4700,6 +4700,77 @@ test("exact-review publication refreshes an artifact after its third unavailable
   assert.equal(stats.lanes.publication.refreshed_total, 1);
 });
 
+test("exact-review publication completes a close-coverage deferral without refreshing", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(7831, "78310");
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" });
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "success",
+        completion_kind: "deferred",
+        reason_code: "close_coverage_deferred",
+      }),
+    }),
+  );
+
+  assert.deepEqual(await response.json(), { ok: true, requeued: false });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { decision: { sourceAction: string; publication?: unknown } }>;
+  };
+  assert.equal(state.items[item.key], undefined);
+  assert.equal(state.items["openclaw/openclaw#7831"], undefined);
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.publication.refreshed_total, 0);
+  assert.equal(stats.lanes.publication.dead_letters.open, 0);
+});
+
+test("exact-review publication accepts the legacy close-coverage refresh during rollout", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(7832, "78320");
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" });
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "success",
+        completion_kind: "refresh_required",
+        reason_code: "close_coverage_retry",
+      }),
+    }),
+  );
+
+  assert.deepEqual(await response.json(), { ok: true, requeued: false });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { decision: { sourceAction: string; publication?: unknown } }>;
+  };
+  assert.equal(state.items[item.key], undefined);
+  assert.equal(
+    state.items["openclaw/openclaw#7832"].decision.sourceAction,
+    "artifact_retention_recovery",
+  );
+  assert.equal(state.items["openclaw/openclaw#7832"].decision.publication, undefined);
+});
+
 test("exact-review publication retry budgets ignore earlier dispatch failures", async () => {
   const storage = new MemoryDurableStorage();
   const item = leasedExactReviewPublicationItem(785, "7850");

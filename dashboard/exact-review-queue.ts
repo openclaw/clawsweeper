@@ -77,6 +77,7 @@ type ExactReviewPublicationFailureKind = "github_rate_limit" | "github_transient
 export type ExactReviewPublicationCompletionKind =
   | "published"
   | "superseded"
+  | "deferred"
   | "retryable_failure"
   | "refresh_required"
   | "permanent_failure";
@@ -90,6 +91,8 @@ type ExactReviewPublicationReasonCode =
   | "workflow_cancelled"
   | "artifact_unavailable"
   | "artifact_expired"
+  | "close_coverage_retry"
+  | "close_coverage_deferred"
   | "invalid_artifact"
   | "missing_record_tuple"
   | "tuple_protocol_invalid"
@@ -631,7 +634,9 @@ export class ExactReviewQueue {
       if (
         publicationCompletion &&
         (publicationCompletion.kind === "published" ||
-          publicationCompletion.kind === "superseded") !==
+          publicationCompletion.kind === "superseded" ||
+          publicationCompletion.kind === "refresh_required" ||
+          publicationCompletion.kind === "deferred") !==
           (outcome === "success")
       ) {
         return json({ error: "completion_outcome_mismatch" }, 400);
@@ -2719,6 +2724,7 @@ function exactReviewPublicationCompletionKind(value): ExactReviewPublicationComp
   const normalized = String(value || "");
   return normalized === "published" ||
     normalized === "superseded" ||
+    normalized === "deferred" ||
     normalized === "retryable_failure" ||
     normalized === "refresh_required" ||
     normalized === "permanent_failure"
@@ -2738,6 +2744,8 @@ function exactReviewPublicationReasonCode(value): ExactReviewPublicationReasonCo
     "workflow_cancelled",
     "artifact_unavailable",
     "artifact_expired",
+    "close_coverage_retry",
+    "close_coverage_deferred",
     "invalid_artifact",
     "missing_record_tuple",
     "tuple_protocol_invalid",
@@ -2770,7 +2778,10 @@ function exactReviewPublicationCompletion(
       "artifact_unavailable",
       "unknown_failure",
     ]),
-    refresh_required: new Set(["artifact_unavailable", "artifact_expired"]),
+    // Accept the pre-deployment tuple while an old publisher can still finish.
+    // New publishers use deferred/close_coverage_deferred instead.
+    refresh_required: new Set(["artifact_unavailable", "artifact_expired", "close_coverage_retry"]),
+    deferred: new Set(["close_coverage_deferred"]),
     permanent_failure: new Set([
       "invalid_artifact",
       "missing_record_tuple",
@@ -2961,7 +2972,11 @@ function finishExactReviewPublicationQueueItem({
     };
   }
 
-  if (completion.kind === "published" || completion.kind === "superseded") {
+  if (
+    completion.kind === "published" ||
+    completion.kind === "superseded" ||
+    completion.kind === "deferred"
+  ) {
     return {
       requeued: finishExactReviewQueueItem(state, item, now, "success"),
       retried: false,

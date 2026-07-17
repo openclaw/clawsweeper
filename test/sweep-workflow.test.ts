@@ -504,6 +504,11 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.equal(status.env?.LIVE_GUARDED_OPEN, undefined);
   assert.match(status.env?.PUBLISH_COMPLETION_KIND ?? "", /publish-event-result/);
   assert.match(status.run ?? "", /PUBLISH_COMPLETION_KIND.*superseded/);
+  const commandComplete = step(publisher, "Mark re-review complete");
+  assert.doesNotMatch(commandComplete.if ?? "", /completion_kind != 'deferred'/);
+  assert.match(commandComplete.run ?? "", /state="Complete"/);
+  assert.match(commandComplete.run ?? "", /independent bounded read-only proof check/);
+  assert.doesNotMatch(commandComplete.run ?? "", /Close coverage proof pending/);
   assert.match(status.run ?? "", /stale result was superseded/);
   assert.doesNotMatch(status.run ?? "", /LIVE_TERMINAL_MISSING|LIVE_GUARDED_OPEN/);
   const reaction = step(publisher, "React to target item completion");
@@ -526,6 +531,7 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(releaseUnsuccessful.run ?? "", /\.user\.login == \\"clawsweeper\[bot\]\\"/);
   assert.match(releaseUnsuccessful.run ?? "", /content == "eyes"/);
   assert.match(releaseUnsuccessful.if ?? "", /completion_kind == 'superseded'/);
+  assert.doesNotMatch(releaseUnsuccessful.if ?? "", /completion_kind == 'deferred'/);
   assert.match(publishResult.env?.PRIOR_JOB_STATUS ?? "", /job\.status/);
   assert.match(publishResult.env?.LEGACY_TUPLELESS ?? "", /legacy-exact-artifact/);
   assert.match(publishResult.env?.FAILURE_KIND ?? "", /publish-event-result/);
@@ -542,6 +548,14 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(publishResult.run ?? "", /REQUEUE_LATEST.*SOURCE_DRIFT_OUTCOME/);
   assert.match(publishResult.run ?? "", /LEGACY_TUPLELESS.*SOURCE_DRIFT_OUTCOME/);
   assert.match(publishResult.run ?? "", /completion_kind=superseded/);
+  assert.match(publishResult.run ?? "", /completion_kind=deferred/);
+  assert.match(publishResult.run ?? "", /completion_kind=refresh_required/);
+  assert.match(publishResult.run ?? "", /reason_code=close_coverage_retry/);
+  assert.match(publishResult.run ?? "", /reason_code=close_coverage_deferred/);
+  assert.match(
+    publishResult.run ?? "",
+    /completion_kind" != "superseded".*completion_kind" != "deferred".*completion_kind" != "refresh_required"/,
+  );
   assert.match(publishResult.run ?? "", /reason_code=artifact_unavailable/);
   assert.match(publishResult.run ?? "", /reason_code=invalid_artifact/);
   assert.doesNotMatch(publishResult.run ?? "", /LIVE_TERMINAL_NOOP/);
@@ -559,12 +573,23 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   );
   assert.match(publisherSource, /"--exact-event-publication"/);
   assert.match(publisherSource, /legacyTuplelessReviewLease/);
+  assert.match(publisherSource, /applyDisposition === "close_coverage_deferred"/);
+  assert.match(publisherSource, /EXACT_REVIEW_CLOSE_COVERAGE_DEFERRED/);
+  assert.match(publisherSource, /writeLegacyRefreshRequiredOutputs/);
+  assert.match(publisherSource, /read-only apply-proof lane/);
+  assert.match(publisherSource, /deferredCloseCoverageExpected/);
+  assert.match(publisherSource, /deferredCloseCoverageExpected && !candidateMatchesCurrentTuple/);
+  assert.match(publisherSource, /syncPublishPaths\(commitPaths\)/);
+  assert.match(publisherSource, /\}\) && !deferredCloseCoverage/);
   assert.match(publisherSource, /writePublicationCompletionOutputs\(\s*"superseded"/);
-  assert.match(publisherSource, /completionKind: supersededReason/);
+  assert.match(publisherSource, /completionKind: completionSupersededReason/);
   const reviewSource = readText("src/clawsweeper.ts");
   assert.match(reviewSource, /reserveReviewLeaseCommand/);
   assert.match(reviewSource, /suppliedReviewStartLeaseFromArgs/);
   assert.match(reviewSource, /exactEventReviewLeaseDisposition/);
+  assert.match(reviewSource, /retryCloseCoverageCommandStatusOnlyUpdate/);
+  assert.match(reviewSource, /clawsweeper-command-status:/);
+  assert.match(reviewSource, /CLAWSWEEPER_BOT_AUTHORS\.has/);
   const completeStart = publisherSource.indexOf("const complete =");
   assert.ok(publisherSource.indexOf("hardResetToRemoteMain();", completeStart) > completeStart);
   assert.ok(

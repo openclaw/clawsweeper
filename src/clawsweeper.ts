@@ -16200,6 +16200,10 @@ function contextHasNonAutomationActivityAfter(
   options: {
     truncationCountsAsActivity?: boolean;
     ignoreTimelineCommentsThroughMs?: number;
+    ignoreTrustedTimelineComment?: {
+      authors: ReadonlySet<string>;
+      createdAt: string;
+    };
   } = {},
 ): boolean {
   const truncationCountsAsActivity = options.truncationCountsAsActivity ?? true;
@@ -16220,6 +16224,16 @@ function contextHasNonAutomationActivityAfter(
   };
   const hasNonAutomationEvent = (event: unknown): boolean => {
     const record = asRecord(event);
+    const eventActor = (stringOrUndefined(record.actor) ?? "").trim().toLowerCase();
+    const trustedTimelineComment = options.ignoreTrustedTimelineComment;
+    if (
+      stringOrUndefined(record.event) === "commented" &&
+      trustedTimelineComment &&
+      eventTimestampMs(event) === timestampMs(trustedTimelineComment.createdAt) &&
+      trustedTimelineComment.authors.has(eventActor)
+    ) {
+      return false;
+    }
     // Issue comments are checked above with their bodies. Ignore timeline
     // duplicates only through the completed review; later commands are fresh
     // activity and must keep stale labels from being restored.
@@ -27826,8 +27840,68 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         truncationCountsAsActivity: true,
       }),
     );
+    // A deferred duplicate/superseded close is not eligible to mutate until
+    // apply-proof has produced a new read-only coverage proof. Its publisher
+    // updates the command acknowledgement to make that handoff visible, which
+    // advances issue.updated_at without changing the reviewed source. Admit
+    // only that exact configured ClawSweeper status-comment churn; any human activity still
+    // forces a fresh review before proof or close work proceeds.
+    let retryCloseCoverageCommandStatusComments: Record<string, unknown>[] | undefined;
+    const reviewedSourceRevision = frontMatterValue(
+      markdownBeforeApplyDecisionMutations,
+      "item_source_revision",
+    );
+    const retryCloseCoverageCommandStatusOnlyUpdate = (
+      candidate: typeof item,
+      candidateContext: ItemContext,
+    ): boolean => {
+      if (
+        action !== "retry_pr_close_coverage_proof" ||
+        candidate.updatedAt === storedUpdatedAt ||
+        storedUpdatedAtMs === null ||
+        !reviewedSourceRevision ||
+        reviewedSourceRevision === "unknown" ||
+        candidateContext.sourceRevision !== reviewedSourceRevision
+      ) {
+        return false;
+      }
+      // Command-status comments are deliberately excluded from review context as bot noise.
+      // Read raw comments only for this narrow, trusted handoff and reuse them through the
+      // post-proof freshness check. The source-revision match prevents a human title/body
+      // edit made before this bot comment from being masked; ordinary drift remains fail-closed.
+      const rawComments =
+        retryCloseCoverageCommandStatusComments ??= fetchIssueReviewComments(number);
+      const statusComment = rawComments.find(
+        (comment) =>
+          commentUpdatedAt(comment) === candidate.updatedAt &&
+          CLAWSWEEPER_BOT_AUTHORS.has(
+            (login(asRecord(comment).user) ?? "").trim().toLowerCase(),
+          ) &&
+          (commentBody(comment) ?? "").includes("<!-- clawsweeper-command-status:"),
+      );
+      const statusCreatedAt = statusComment
+        ? stringOrUndefined(statusComment.created_at)
+        : undefined;
+      return Boolean(
+        statusCreatedAt &&
+          !contextHasNonAutomationActivityAfter(candidateContext, storedUpdatedAtMs, {
+            truncationCountsAsActivity: true,
+            ignoreTrustedTimelineComment: {
+              authors: CLAWSWEEPER_BOT_AUTHORS,
+              createdAt: statusCreatedAt,
+            },
+          }),
+      );
+    };
+    const commandStatusOnlyUpdate = retryCloseCoverageCommandStatusOnlyUpdate(
+      item,
+      currentItemContext(),
+    );
     const automationOnlyUpdate =
-      reviewCommentOnlyUpdate || labelSyncOnlyUpdate || ownedIssueReviewLeaseOnlyUpdate;
+      reviewCommentOnlyUpdate ||
+      labelSyncOnlyUpdate ||
+      ownedIssueReviewLeaseOnlyUpdate ||
+      commandStatusOnlyUpdate;
     const labelSyncFreshEnough = (): boolean => {
       if (!storedUpdatedAt) return false;
       if (!updatedSinceReview || automationOnlyUpdate) return true;
@@ -28084,10 +28158,16 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           currentUpdatedAt: refreshed.item.updatedAt,
         };
       }
-      const refreshedSelfMutationOnlyUpdate = allowedSelfMutationUpdatedAts.has(
-        refreshed.item.updatedAt,
-      );
       let refreshedContext: ItemContext | null = null;
+      const refreshedCommandStatusOnlyUpdate = retryCloseCoverageCommandStatusOnlyUpdate(
+        refreshed.item,
+        (refreshedContext ??= collectItemContext(refreshed.item, {
+          fullTimelineForRelations: true,
+        })),
+      );
+      const refreshedSelfMutationOnlyUpdate =
+        allowedSelfMutationUpdatedAts.has(refreshed.item.updatedAt) ||
+        refreshedCommandStatusOnlyUpdate;
       const selfMutationMaskedNonAutomationActivity = (): boolean => {
         if (prCloseCoverageProofStartedAtMs === null) return true;
         refreshedContext ??= collectItemContext(refreshed.item, {

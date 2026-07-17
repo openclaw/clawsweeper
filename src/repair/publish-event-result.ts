@@ -54,8 +54,12 @@ type EventOptions = {
 };
 
 type PublishedEventSnapshot = {
-  completionKind: "published" | "superseded";
-  reasonCode: "publication_applied" | "remote_newer_tuple" | "remote_closed";
+  completionKind: "published" | "superseded" | "deferred";
+  reasonCode:
+    | "publication_applied"
+    | "remote_newer_tuple"
+    | "remote_closed"
+    | "close_coverage_deferred";
   guardedOpenAction: string | null;
   policyNoop: boolean;
   requeueLatest: boolean;
@@ -208,10 +212,22 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       `Requeueing ${options.targetRepo}#${options.itemNumber}: legacy exact artifact lacks its durable review lease tuple`,
     );
   }
+  const deferredCloseCoverageExpected = applyDisposition === "close_coverage_deferred";
+  const deferredCloseCoverageEnabled = process.env.EXACT_REVIEW_CLOSE_COVERAGE_DEFERRED === "true";
+  if (deferredCloseCoverageExpected) {
+    console.log(
+      `Deferring ${options.targetRepo}#${options.itemNumber}: PR close coverage proof must run in the read-only apply-proof lane`,
+    );
+    if (!deferredCloseCoverageEnabled) {
+      writeLegacyRefreshRequiredOutputs();
+      return;
+    }
+  }
   if (
     syncedCount + closedCount + missingCount === 0 &&
     guardedOpenAction === null &&
-    !requeueLatestExpected
+    !requeueLatestExpected &&
+    !deferredCloseCoverageExpected
   ) {
     const observed =
       exactActions
@@ -246,6 +262,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       guardedOpenAction,
       requeueLatestExpected,
       routableSyncExpected,
+      deferredCloseCoverageExpected,
       terminalClosedExpected: closedCount > 0,
       terminalMissingExpected: missingCount > 0,
     });
@@ -267,6 +284,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     guardedOpenAction,
     requeueLatestExpected,
     routableSyncExpected,
+    deferredCloseCoverageExpected,
     terminalClosedExpected: closedCount > 0,
     terminalMissingExpected: missingCount > 0,
   });
@@ -323,6 +341,7 @@ function publishSnapshot({
   guardedOpenAction,
   requeueLatestExpected,
   routableSyncExpected,
+  deferredCloseCoverageExpected,
   terminalClosedExpected,
   terminalMissingExpected,
 }: {
@@ -333,6 +352,7 @@ function publishSnapshot({
   guardedOpenAction: string | null;
   requeueLatestExpected: boolean;
   routableSyncExpected: boolean;
+  deferredCloseCoverageExpected: boolean;
   terminalClosedExpected: boolean;
   terminalMissingExpected: boolean;
 }): PublishedEventSnapshot | null {
@@ -363,22 +383,37 @@ function publishSnapshot({
         guardedOpenAction,
         routableSyncExpected,
       });
+      const completionSupersededReason =
+        supersededReason ||
+        (deferredCloseCoverageExpected && !candidateMatchesCurrentTuple
+          ? ("remote_newer_tuple" as const)
+          : undefined);
+      const deferredCloseCoverage = !completionSupersededReason && deferredCloseCoverageExpected;
       const published = {
         ...disposition,
-        completionKind: supersededReason ? ("superseded" as const) : ("published" as const),
-        reasonCode: supersededReason || ("publication_applied" as const),
+        completionKind: completionSupersededReason
+          ? ("superseded" as const)
+          : deferredCloseCoverage
+            ? ("deferred" as const)
+            : ("published" as const),
+        reasonCode:
+          completionSupersededReason ||
+          (deferredCloseCoverage
+            ? ("close_coverage_deferred" as const)
+            : ("publication_applied" as const)),
         policyNoop: disposition.guardedOpenAction === "skipped_same_author_pair",
         requeueLatest:
           requeueLatestExpected && candidateMatchesCurrentTuple && candidateTupleState === "open",
         remoteTupleVerified: candidateMatchesCurrentTuple,
-        routingDeferred: exactEventRoutingDeferred({
-          candidateMatchesCurrentTuple,
-          candidateTupleState,
-          guardedOpenAction,
-          requeueLatestExpected,
-        }),
+        routingDeferred:
+          exactEventRoutingDeferred({
+            candidateMatchesCurrentTuple,
+            candidateTupleState,
+            guardedOpenAction,
+            requeueLatestExpected,
+          }) && !deferredCloseCoverage,
       };
-      if (supersededReason) {
+      if (completionSupersededReason) {
         summary();
         return published;
       }
@@ -564,11 +599,33 @@ function writeEventDispositionOutputs(published: PublishedEventSnapshot): void {
   );
 }
 
+function writeLegacyRefreshRequiredOutputs(): void {
+  const outputPath = process.env.GITHUB_OUTPUT;
+  if (!outputPath) return;
+  fs.appendFileSync(
+    outputPath,
+    [
+      "completion_kind=refresh_required",
+      "reason_code=close_coverage_retry",
+      "remote_tuple_verified=false",
+      "terminal_missing=false",
+      "terminal_closed=false",
+      "guarded_open=false",
+      "policy_noop=false",
+      "requeue_latest=false",
+      "routing_deferred=false",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+}
+
 function writePublicationCompletionOutputs(
-  completionKind: "superseded" | "permanent_failure",
+  completionKind: "superseded" | "deferred" | "permanent_failure",
   reasonCode:
     | "remote_newer_tuple"
     | "remote_closed"
+    | "close_coverage_deferred"
     | "missing_record_tuple"
     | "tuple_protocol_invalid"
     | "policy_invariant"
