@@ -39,12 +39,25 @@ export async function fetchExactReviewQueuePressure({
 
     const body: unknown = await response.json();
     if (!isRecord(body)) return malformedPressure();
-    const pendingCount = body.pending;
-    const oldestPendingAgeSeconds = body.oldest_pending_age_seconds;
+    // Pressure exists to protect Codex review capacity. Publication items
+    // consume no Codex, so prefer the review lane's numbers when the stats
+    // expose them; totals (which include publications) remain the fallback
+    // for older queue deployments.
+    const reviewLane =
+      isRecord(body.lanes) && isRecord(body.lanes.review) ? body.lanes.review : null;
+    const pendingCount =
+      reviewLane && isNonNegativeInteger(reviewLane.pending) ? reviewLane.pending : body.pending;
+    const oldestPendingAgeSeconds =
+      reviewLane && isNonNegativeInteger(reviewLane.pending)
+        ? reviewLane.oldest_pending_age_seconds
+        : body.oldest_pending_age_seconds;
     if (!isNonNegativeInteger(pendingCount)) return malformedPressure();
-    if (pendingCount === 0 && oldestPendingAgeSeconds === null) {
+    if (pendingCount === 0) {
       return { ok: true, pendingCount, oldestPendingAgeMs: 0 };
     }
+    // A null age with a positive backlog is inconsistent data — fail open
+    // rather than fabricating a zero-age backlog.
+    if (oldestPendingAgeSeconds === null) return malformedPressure();
     if (!isNonNegativeNumber(oldestPendingAgeSeconds)) return malformedPressure();
     const oldestPendingAgeMs = oldestPendingAgeSeconds * 1_000;
     if (!Number.isFinite(oldestPendingAgeMs)) return malformedPressure();

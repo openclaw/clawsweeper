@@ -69,6 +69,35 @@ test("queue pressure fetch reads public aggregate stats", async () => {
   assert.deepEqual(empty, { ok: true, pendingCount: 0, oldestPendingAgeMs: 0 });
 });
 
+test("queue pressure prefers the review lane over totals that include publications", async () => {
+  // 812 total pending, but only 36 are Codex-consuming review items — pressure
+  // must not throttle review shards because of a publication backlog.
+  const result = await fetchExactReviewQueuePressure({
+    queueUrl: "https://clawsweeper.example",
+    fetchImpl: async () =>
+      Response.json({
+        pending: 812,
+        oldest_pending_age_seconds: 80_000,
+        lanes: {
+          review: { pending: 36, oldest_pending_age_seconds: 120 },
+          publication: { pending: 776, oldest_pending_age_seconds: 80_000 },
+        },
+      }),
+  });
+  assert.deepEqual(result, { ok: true, pendingCount: 36, oldestPendingAgeMs: 120_000 });
+
+  const emptyReviewLane = await fetchExactReviewQueuePressure({
+    queueUrl: "https://clawsweeper.example",
+    fetchImpl: async () =>
+      Response.json({
+        pending: 400,
+        oldest_pending_age_seconds: 70_000,
+        lanes: { review: { pending: 0, oldest_pending_age_seconds: null } },
+      }),
+  });
+  assert.deepEqual(emptyReviewLane, { ok: true, pendingCount: 0, oldestPendingAgeMs: 0 });
+});
+
 test("queue pressure fetch fails open on errors, timeouts, and malformed bodies", async () => {
   const failed = await fetchExactReviewQueuePressure({
     queueUrl: "https://clawsweeper.example",
