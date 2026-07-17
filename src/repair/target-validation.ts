@@ -2468,6 +2468,7 @@ function validationRuntimeInputsSha256(cwd: string, deadlineAt: number) {
   const root = fs.realpathSync(cwd);
   const runtimePaths = validationRuntimeInputPaths(cwd, deadlineAt);
   updateIdentityHash(hash, "runtime-input-paths", runtimePaths.join("\0"));
+  const coveredEntries = new Map<string, string>();
   for (const relativePath of runtimePaths) {
     assertValidationIdentityDeadline(deadlineAt, relativePath);
     const entryPath = path.join(root, relativePath);
@@ -2479,7 +2480,7 @@ function validationRuntimeInputsSha256(cwd: string, deadlineAt: number) {
       updateIdentityHash(hash, "runtime-state", "absent");
       continue;
     }
-    updateRuntimeInputDigest(hash, root, entryPath, relativePath, deadlineAt, new Map());
+    updateRuntimeInputDigest(hash, root, entryPath, relativePath, deadlineAt, coveredEntries);
   }
   assertValidationIdentityDeadline(deadlineAt, "runtime input digest");
   return hash.digest("hex");

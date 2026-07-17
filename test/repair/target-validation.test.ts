@@ -3713,6 +3713,44 @@ test(
 );
 
 test(
+  "runtime identity deduplicates shared symlink targets across ignored roots",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), "runtime-input/\n");
+    const runtimeInput = path.join(cwd, "runtime-input", "state.js");
+    fs.mkdirSync(path.dirname(runtimeInput), { recursive: true });
+    fs.writeFileSync(runtimeInput, "safe\n");
+    for (const dependency of ["first", "second"]) {
+      const dependencyDir = path.join(cwd, "node_modules", dependency);
+      fs.mkdirSync(dependencyDir, { recursive: true });
+      fs.symlinkSync(
+        path.relative(dependencyDir, runtimeInput),
+        path.join(dependencyDir, "state.js"),
+      );
+    }
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+
+    const originalOpenSync = fs.openSync;
+    let runtimeInputOpenCount = 0;
+    fs.openSync = ((filePath, flags, mode) => {
+      if (path.resolve(String(filePath)) === runtimeInput && flags === "r") {
+        runtimeInputOpenCount += 1;
+      }
+      return originalOpenSync(filePath, flags, mode);
+    }) as typeof fs.openSync;
+    try {
+      captureTargetCheckoutBinding(cwd);
+    } finally {
+      fs.openSync = originalOpenSync;
+    }
+
+    assert.equal(runtimeInputOpenCount, 1);
+  },
+);
+
+test(
   "pnpm setup rejects prepared executables that escape through symlinks",
   { skip: process.platform === "win32" },
   () => {
