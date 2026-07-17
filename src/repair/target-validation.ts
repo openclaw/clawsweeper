@@ -590,10 +590,12 @@ function assertTargetInstallNetworkPolicy(
   };
   for (const [relativeDir, manifest] of manifests) {
     const directory = relativeDir === "." ? cwd : path.join(cwd, relativeDir);
-    for (const configName of [".npmrc", "bunfig.toml"]) {
-      if (fs.existsSync(path.join(directory, configName))) {
-        throw new Error(`target dependency install network config is not allowed: ${configName}`);
-      }
+    for (const configName of [".npmrc", "bunfig.toml"] as const) {
+      assertTargetInstallNetworkConfigIsInert(
+        path.join(directory, configName),
+        configName,
+        deadlineAt,
+      );
     }
     assertManifestDependencyDestinations(manifest, relativeDir, localPolicy, registryOrigin);
   }
@@ -632,6 +634,26 @@ function assertTargetInstallNetworkPolicy(
     throw new Error("target dependency install network policy cannot inspect bun.lockb");
   }
   return installRegistry;
+}
+
+function assertTargetInstallNetworkConfigIsInert(
+  filePath: string,
+  configName: ".npmrc" | "bunfig.toml",
+  deadlineAt: number,
+) {
+  if (!fs.existsSync(filePath)) return;
+  const commentPrefixes = configName === ".npmrc" ? ["#", ";"] : ["#"];
+  const metadata = readTargetInstallMetadataText(filePath, deadlineAt);
+  // Repositories sometimes retain comment-only config files for stable Docker COPY paths.
+  // Permit only text that cannot affect installs; all actual directives stay fail-closed.
+  const hasActiveConfiguration = metadata
+    .split(/[\r\n]+/)
+    .some(
+      (line) => line.trim() && !commentPrefixes.some((prefix) => line.trim().startsWith(prefix)),
+    );
+  if (hasActiveConfiguration) {
+    throw new Error(`target dependency install network config is not allowed: ${configName}`);
+  }
 }
 
 function approvedTargetInstallRegistry(validationEnv: NodeJS.ProcessEnv) {

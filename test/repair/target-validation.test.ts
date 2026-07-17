@@ -2207,6 +2207,32 @@ test("bun-based target toolchain installs deps and runs configured validation", 
   ]);
 });
 
+test("dependency setup permits inert package-manager config files", () => {
+  for (const [configName, contents] of [
+    [".npmrc", ""],
+    [".npmrc", "# Registry and auth settings belong in the runner environment.\n; npm comment\n"],
+    ["bunfig.toml", "# Install settings belong in the runner environment.\n"],
+  ] as const) {
+    const cwd = gitBunPackageFixture({ check: "bun x tsc --noEmit" });
+    fs.writeFileSync(path.join(cwd, configName), contents);
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const { binDir } = fakeBunFixture(cwd);
+    withPathPrefix(binDir, () => {
+      assert.doesNotThrow(() =>
+        prepareTargetToolchain(cwd, {
+          ...validationOptions("openclaw/clawhub", clawhubToolchain()),
+          installTargetDeps: true,
+          installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+          setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        }),
+      );
+    });
+  }
+});
+
 test("dependency setup rejects target-controlled network destinations", () => {
   const cases = [
     {
@@ -2223,6 +2249,44 @@ test("dependency setup rejects target-controlled network destinations", () => {
               changedGate: null,
             },
           }),
+        };
+      },
+    },
+    ...[
+      "//registry.npmjs.org/:_authToken=secret\n",
+      "proxy=http://127.0.0.1:8080/\n",
+      "cafile=./target-controlled-ca.pem\n",
+      "fetch-retries=9\n",
+      "future-network-setting=value\n",
+      "# comment\rregistry=http://attacker.example/\n",
+    ].map((contents) => ({
+      expected: /network config is not allowed: \.npmrc/,
+      prepare() {
+        const cwd = gitPackageFixture({ check: 'node -e ""' });
+        fs.writeFileSync(path.join(cwd, ".npmrc"), contents);
+        return {
+          cwd,
+          options: validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "pnpm" as const,
+              baseValidationCommands: ["pnpm check"],
+              changedGate: null,
+            },
+          }),
+        };
+      },
+    })),
+    {
+      expected: /network config is not allowed: bunfig\.toml/,
+      prepare() {
+        const cwd = gitBunPackageFixture({ check: 'node -e ""' });
+        fs.writeFileSync(
+          path.join(cwd, "bunfig.toml"),
+          '[install]\nregistry = "http://127.0.0.1:4873/"\n',
+        );
+        return {
+          cwd,
+          options: validationOptions("openclaw/clawhub", clawhubToolchain()),
         };
       },
     },
