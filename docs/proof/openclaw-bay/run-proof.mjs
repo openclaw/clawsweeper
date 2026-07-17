@@ -249,6 +249,7 @@ let healthHistory = Array.from({ length: 73 }, (_, index) => {
     },
   };
 });
+let healthHistoryFailure = false;
 
 function queueProjection() {
   const bayStages = [
@@ -471,6 +472,15 @@ await page.route("**/*", async (route) => {
     return;
   }
   if (url.pathname === "/api/health-history") {
+    if (healthHistoryFailure) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json; charset=utf-8",
+        headers: { "cache-control": "no-store", "x-clawsweeper-cache": "synthetic-proof" },
+        body: JSON.stringify({ error: "synthetic history outage" }),
+      });
+      return;
+    }
     await route.fulfill({
       status: 200,
       contentType: "application/json; charset=utf-8",
@@ -678,6 +688,51 @@ try {
     { last_history_at: originalHistory.at(-1)?.at, observed_at: "2026-07-11T18:30:01.000Z" },
   );
   healthHistory = originalHistory;
+
+  const historyRequestsBeforeFailure = requests.filter(
+    (request) => request.path === "/api/health-history",
+  ).length;
+  healthHistoryFailure = true;
+  const failedHistory = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/health-history" && response.status() === 503,
+  );
+  await page.evaluate(() => {
+    window.__bayProofSetNow(Date.parse("2026-07-11T18:45:01.000Z"));
+    window.__bayProofPoll();
+  });
+  await failedHistory;
+  await page.evaluate(() => {
+    window.__bayProofSetNow(Date.parse("2026-07-11T18:45:21.000Z"));
+    window.__bayProofPoll();
+  });
+  await page.waitForTimeout(80);
+  const historyRequestsDuringFailure = requests.filter(
+    (request) => request.path === "/api/health-history",
+  ).length;
+  healthHistoryFailure = false;
+  const recoveredHistory = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/health-history" && response.status() === 200,
+  );
+  await page.evaluate(() => {
+    window.__bayProofSetNow(Date.parse("2026-07-11T18:46:02.000Z"));
+    window.__bayProofPoll();
+  });
+  await recoveredHistory;
+  const historyRequestsAfterRecovery = requests.filter(
+    (request) => request.path === "/api/health-history",
+  ).length;
+  assertProof(
+    "mini control board throttles failed history fetches before retrying",
+    historyRequestsDuringFailure === historyRequestsBeforeFailure + 1 &&
+      historyRequestsAfterRecovery === historyRequestsDuringFailure + 1,
+    {
+      before_failure: historyRequestsBeforeFailure,
+      during_failure: historyRequestsDuringFailure,
+      after_recovery: historyRequestsAfterRecovery,
+    },
+  );
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() =>
@@ -1239,10 +1294,17 @@ try {
   });
   assertProof(
     "mini control board reads cached dashboard history once per minute",
-    healthHistoryGets === 3,
+    healthHistoryGets === 5,
     { health_history_gets: healthHistoryGets },
   );
-  assertProof("no browser console errors", consoleErrors.length === 0, { errors: consoleErrors });
+  const unexpectedConsoleErrors = consoleErrors.filter(
+    (error) =>
+      error !==
+      "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+  );
+  assertProof("no unexpected browser console errors", unexpectedConsoleErrors.length === 0, {
+    errors: unexpectedConsoleErrors,
+  });
   assertProof("no uncaught page errors", pageErrors.length === 0, { errors: pageErrors });
 
   const diagnostics = {
