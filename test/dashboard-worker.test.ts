@@ -6075,6 +6075,9 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.doesNotMatch(html, /id="automerge-reliability"/);
   assert.match(html, /Automerge worker operations/);
   assert.match(html, /separate from Automerge Product Health success rate/);
+  assert.match(html, /Time-window coverage/);
+  assert.match(html, /Active sessions/);
+  assert.match(html, /No terminal samples yet/);
   assert.match(html, /Closed by ClawSweeper/);
   assert.match(html, /Worker Health/);
   assert.match(html, /Recent Activity/);

@@ -22,6 +22,8 @@ jobs:
       CLAWSWEEPER_STATUS_INGEST_URL: https://clawsweeper.openclaw.ai/api/events
       CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
       CLAWSWEEPER_STATUS_CI_LIMIT: "30"
+      CLAWSWEEPER_AUTOMERGE_RECONCILE_LIMIT: "8"
+      CLAWSWEEPER_AUTOMERGE_RECONCILE_TIMEOUT_MS: "15000"
       GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
@@ -32,3 +34,7 @@ jobs:
 
       - name: Refresh PR CI telemetry
         run: node scripts/dashboard-refresh-ci.mjs
+
+      - name: Reconcile automerge terminal telemetry
+        continue-on-error: true
+        run: node scripts/dashboard-reconcile-automerge.ts

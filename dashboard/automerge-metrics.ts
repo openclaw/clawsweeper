@@ -115,6 +115,8 @@ export function summarizeAutomergeMetrics(
     repo?: string | null;
     policyVersion?: string | null;
     now?: string;
+    activeOnly?: boolean;
+    sessionLimit?: number;
   } = {},
 ) {
   const range = isRange(options.range) ? options.range : "7d";
@@ -174,13 +176,22 @@ export function summarizeAutomergeMetrics(
     const lastEventAt = Date.parse(session.last_event_at);
     return !session.terminal_at && lastEventAt >= rangeStart && lastEventAt <= nowMs;
   });
-  const recentSessions = sessions
-    .filter((session) => Date.parse(session.terminal_at ?? session.last_event_at) >= rangeStart)
-    .sort(
-      (a, b) =>
-        Date.parse(b.terminal_at ?? b.last_event_at) - Date.parse(a.terminal_at ?? a.last_event_at),
-    )
-    .slice(0, 30);
+  const sessionLimit = boundedSessionLimit(options.sessionLimit);
+  const recentSessions = (
+    options.activeOnly
+      ? active
+      : sessions.filter(
+          (session) => Date.parse(session.terminal_at ?? session.last_event_at) >= rangeStart,
+        )
+  )
+    .sort((a, b) => {
+      const left = Date.parse(a.terminal_at ?? a.last_event_at);
+      const right = Date.parse(b.terminal_at ?? b.last_event_at);
+      // Reconciliation requests oldest active sessions first so a noisy repository
+      // cannot indefinitely starve an earlier lost terminal delivery.
+      return options.activeOnly ? left - right : right - left;
+    })
+    .slice(0, sessionLimit);
   const filtersActive = Boolean(options.repo || options.policyVersion);
   const telemetrySince = filtersActive
     ? (filtered[0]?.occurred_at ?? null)
@@ -293,4 +304,9 @@ function nullableText(value: unknown) {
 
 function isRange(value: unknown): value is AutomergeMetricRange {
   return value === "6h" || value === "24h" || value === "7d";
+}
+
+function boundedSessionLimit(value: unknown) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 30) : 30;
 }

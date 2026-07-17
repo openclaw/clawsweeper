@@ -11,6 +11,7 @@ import {
   latestAutomergeActivationForCommand,
   postAutomergeMetricBestEffort,
 } from "../src/repair/automerge-product-telemetry.ts";
+import { reconcileAutomergeProductMetrics } from "../scripts/dashboard-reconcile-automerge.ts";
 
 const now = "2026-07-17T12:00:00.000Z";
 
@@ -267,4 +268,112 @@ test("best-effort ingest has a bounded deadline even when fetch never settles", 
   );
   assert.equal(delivered, false);
   assert.ok(Date.now() - startedAt < 500);
+});
+
+test("reconciliation retries a lost terminal delivery with a stable merged event", async () => {
+  const posted = [];
+  let ingestAttempts = 0;
+  const fetcher = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/api/automerge-metrics")) {
+      return Response.json({
+        sessions: [
+          {
+            session_id: "openclaw/clawsweeper#648:5003787598:2026-07-17T13:30:27Z",
+            repository: "openclaw/clawsweeper",
+            item_number: 648,
+            policy_version: "immediate-v1",
+            last_event_at: "2026-07-17T13:30:27Z",
+            terminal_at: null,
+          },
+        ],
+      });
+    }
+    if (url.includes("api.github.com/repos/openclaw/clawsweeper/pulls/648")) {
+      return Response.json({
+        state: "closed",
+        closed_at: "2026-07-17T13:39:18Z",
+        merged_at: "2026-07-17T13:39:18Z",
+      });
+    }
+    if (url.endsWith("/api/events")) {
+      posted.push(JSON.parse(String(init?.body)));
+      ingestAttempts += 1;
+      return new Response("", { status: ingestAttempts === 1 ? 503 : 200 });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+  const options = {
+    env: {
+      CLAWSWEEPER_STATUS_URL: "https://status.example.test",
+      CLAWSWEEPER_STATUS_INGEST_TOKEN: "token",
+    },
+    fetcher,
+    now: "2026-07-17T14:00:00Z",
+  };
+
+  const first = await reconcileAutomergeProductMetrics(options);
+  const second = await reconcileAutomergeProductMetrics(options);
+
+  assert.equal(first.delivered, 0);
+  assert.equal(first.failed, 1);
+  assert.equal(second.delivered, 1);
+  assert.equal(posted.length, 2);
+  assert.equal(posted[0].event_id, posted[1].event_id);
+  assert.equal(posted[0].outcome, "merged");
+  assert.equal(posted[0].occurred_at, "2026-07-17T13:39:18.000Z");
+});
+
+test("reconciliation caps active-session and GitHub reads", async () => {
+  const githubReads = [];
+  let metricsUrl = "";
+  const sessions = Array.from({ length: 12 }, (_, index) => ({
+    session_id: `openclaw/openclaw#${index + 1}:100:2026-07-17T13:00:00Z`,
+    repository: "openclaw/openclaw",
+    item_number: index + 1,
+    last_event_at: "2026-07-17T13:00:00Z",
+    terminal_at: null,
+  }));
+  const result = await reconcileAutomergeProductMetrics({
+    env: {
+      CLAWSWEEPER_STATUS_URL: "https://status.example.test",
+      CLAWSWEEPER_STATUS_INGEST_TOKEN: "token",
+      CLAWSWEEPER_AUTOMERGE_RECONCILE_LIMIT: "3",
+      CLAWSWEEPER_AUTOMERGE_RECONCILE_TIMEOUT_MS: "1000",
+    },
+    now: "2026-07-17T14:00:00Z",
+    fetcher: async (input) => {
+      const url = String(input);
+      if (url.includes("/api/automerge-metrics")) {
+        metricsUrl = url;
+        return Response.json({ sessions });
+      }
+      githubReads.push(url);
+      return Response.json({ state: "open", merged_at: null, closed_at: null });
+    },
+  });
+
+  assert.equal(result.candidates, 3);
+  assert.equal(result.github_reads, 3);
+  assert.equal(githubReads.length, 3);
+  assert.match(metricsUrl, /range=24h/);
+  assert.match(metricsUrl, /active_only=true/);
+  assert.match(metricsUrl, /session_limit=3/);
+});
+
+test("active-only metric sessions are bounded and oldest first", () => {
+  const data = summarizeAutomergeMetrics(
+    ledger([
+      event("active-1", "activated", "2026-07-17T08:00:00Z"),
+      event("active-2", "activated", "2026-07-17T09:00:00Z"),
+      event("active-3", "activated", "2026-07-17T10:00:00Z"),
+      event("terminal", "terminal", "2026-07-17T11:00:00Z", { outcome: "merged" }),
+    ]),
+    { range: "24h", now, activeOnly: true, sessionLimit: 2 },
+  );
+
+  assert.deepEqual(
+    data.sessions.map((session) => session.session_id),
+    ["active-1", "active-2"],
+  );
 });

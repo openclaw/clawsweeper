@@ -888,6 +888,8 @@ async function automergeMetricsJson(request, env) {
       range: url.searchParams.get("range") ?? "7d",
       repo: url.searchParams.get("repo"),
       policyVersion: url.searchParams.get("policy_version"),
+      activeOnly: url.searchParams.get("active_only") === "true",
+      sessionLimit: Number(url.searchParams.get("session_limit")),
     }),
   );
 }
@@ -9293,10 +9295,13 @@ function renderAutomergeProduct(data) {
   setOptions("automerge-repo", data.filters?.repositories, data.filters?.repo);
   setOptions("automerge-policy", data.filters?.policy_versions, data.filters?.policy_version);
   const sinceText = data.telemetry_since ? new Date(data.telemetry_since).toLocaleString() : "not started";
-  document.getElementById("automerge-meta").textContent = "Telemetry since " + sinceText + " · Coverage " + fmt.format(data.coverage_percent || 0) + "% · terminal sample n=" + fmt.format(summary.terminal_sessions || 0) + " · Updated " + since(data.generated_at);
+  const terminalSamples = Number(summary.terminal_sessions) || 0;
+  document.getElementById("automerge-meta").textContent = "Telemetry since " + sinceText + " · Time-window coverage " + fmt.format(data.coverage_percent || 0) + "% · Active sessions " + fmt.format(summary.active_sessions || 0) + " · terminal sample n=" + fmt.format(terminalSamples) + " · Updated " + since(data.generated_at);
   const value = (number, suffix) => number == null ? "—" : fmt.format(number) + (suffix || "");
   const duration = number => number == null ? "—" : elapsed(number);
-  const kpis = '<div class="automerge-kpis">' +
+  const kpis = terminalSamples < 1
+    ? '<div class="empty">No terminal samples yet. Active sessions remain outside the success-rate denominator.</div>'
+    : '<div class="automerge-kpis">' +
     '<div class="automerge-kpi"><span>Merge success rate</span><strong>' + value(summary.merge_success_rate_percent, "%") + '</strong><small>merged ' + fmt.format(summary.merged_sessions || 0) + ' / terminal ' + fmt.format(summary.terminal_sessions || 0) + '</small></div>' +
     '<div class="automerge-kpi"><span>Command → Merge p50</span><strong>' + duration(summary.command_to_merge_p50_ms) + '</strong><small>successful sessions only</small></div>' +
     '<div class="automerge-kpi"><span>Command → Merge p90</span><strong>' + duration(summary.command_to_merge_p90_ms) + '</strong><small>nearest-rank percentile</small></div>' +
