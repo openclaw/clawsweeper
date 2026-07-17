@@ -6151,7 +6151,11 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(elementFor("exact-review-lanes").innerHTML, /3 result publication slots open/);
   assert.match(
     elementFor("exact-review-lanes").innerHTML,
-    /<details class="lane-flow"><summary>Publication throughput · last 15 minutes<\/summary>/,
+    /<details class="lane-flow"><summary><span class="lane-flow-title">Publication throughput · last 15 minutes/,
+  );
+  assert.match(
+    elementFor("exact-review-lanes").innerHTML,
+    /15m hourly-equivalent rates respond faster to recent changes but are more burst-sensitive than the up-to-60m net rate above\./,
   );
   assert.doesNotMatch(
     elementFor("exact-review-lanes").innerHTML,
