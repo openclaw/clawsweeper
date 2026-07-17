@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   applyEventSnapshot,
   applyEventSnapshotIfCurrent,
@@ -53,6 +54,8 @@ type EventOptions = {
 };
 
 type PublishedEventSnapshot = {
+  completionKind: "published" | "superseded";
+  reasonCode: "publication_applied" | "remote_newer_tuple" | "remote_closed";
   guardedOpenAction: string | null;
   policyNoop: boolean;
   requeueLatest: boolean;
@@ -68,9 +71,32 @@ class RoutableSyncPublishRaceError extends Error {}
 class SourceDriftPublishRaceError extends Error {}
 class TerminalClosedPublishRaceError extends Error {}
 class TerminalMissingPublishRaceError extends Error {}
+class PublicationResultError extends Error {
+  constructor(
+    readonly reasonCode:
+      | "missing_record_tuple"
+      | "tuple_protocol_invalid"
+      | "policy_invariant"
+      | "unknown_failure",
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 const options = eventOptionsFromEnv();
-await publishEventResult(options);
+try {
+  await publishEventResult(options);
+} catch (error) {
+  const reasonCode =
+    error instanceof PublicationResultError
+      ? error.reasonCode
+      : error instanceof RecordTupleError
+        ? "tuple_protocol_invalid"
+        : "unknown_failure";
+  writePublicationCompletionOutputs("permanent_failure", reasonCode, errorFingerprint(error));
+  throw error;
+}
 
 async function publishEventResult(options: EventOptions): Promise<void> {
   validateTargetRepo(options.targetRepo);
@@ -147,6 +173,12 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     // `requeue_latest` hands remote-newer to the source-drift requeue step,
     // which reviews the LATEST revision.
     writeStaleEventDispositionOutputs(disposition);
+    if (preflightResult !== "missing") {
+      writePublicationCompletionOutputs(
+        "superseded",
+        preflightResult === "remote-closed" ? "remote_closed" : "remote_newer_tuple",
+      );
+    }
     return;
   }
 
@@ -311,7 +343,10 @@ function publishSnapshot({
     paths.decisionPacket,
   ];
   try {
-    const complete = (candidateApplied: boolean): PublishedEventSnapshot => {
+    const complete = (
+      candidateApplied: boolean,
+      supersededReason?: "remote_newer_tuple" | "remote_closed",
+    ): PublishedEventSnapshot => {
       // The reconciliation push can succeed just before another publisher
       // advances the same tuple. Refresh from the authoritative remote before
       // emitting any completion output; the workflow never routes an ordinary
@@ -330,6 +365,8 @@ function publishSnapshot({
       });
       const published = {
         ...disposition,
+        completionKind: supersededReason ? ("superseded" as const) : ("published" as const),
+        reasonCode: supersededReason || ("publication_applied" as const),
         policyNoop: disposition.guardedOpenAction === "skipped_same_author_pair",
         requeueLatest:
           requeueLatestExpected && candidateMatchesCurrentTuple && candidateTupleState === "open",
@@ -341,6 +378,10 @@ function publishSnapshot({
           requeueLatestExpected,
         }),
       };
+      if (supersededReason) {
+        summary();
+        return published;
+      }
       if (routableSyncExpected && !published.routableSyncVerified) {
         throw new RoutableSyncPublishRaceError(
           `Durable review sync for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
@@ -381,17 +422,19 @@ function publishSnapshot({
       console.log(
         `Remote already has closed record for ${paths.targetSlug}#${options.itemNumber}; skipping open-record publish`,
       );
-      return complete(false);
+      return complete(false, "remote_closed");
     }
     if (snapshotResult === "remote-newer") {
       console.log(
         `Remote has newer record tuple for ${paths.targetSlug}#${options.itemNumber}; skipping stale event publish`,
       );
-      return complete(false);
+      return complete(false, "remote_newer_tuple");
     }
     if (snapshotResult === "missing") {
-      console.log(`No event record snapshot for ${paths.targetSlug}#${options.itemNumber}`);
-      return complete(false);
+      throw new PublicationResultError(
+        "missing_record_tuple",
+        `No event record snapshot for ${paths.targetSlug}#${options.itemNumber}`,
+      );
     }
 
     syncPublishPaths(commitPaths);
@@ -505,6 +548,8 @@ function writeEventDispositionOutputs(published: PublishedEventSnapshot): void {
   fs.appendFileSync(
     outputPath,
     [
+      `completion_kind=${published.completionKind}`,
+      `reason_code=${published.reasonCode}`,
       `remote_tuple_verified=${published.remoteTupleVerified ? "true" : "false"}`,
       `terminal_missing=${published.terminalMissing ? "true" : "false"}`,
       `terminal_closed=${published.terminalClosed ? "true" : "false"}`,
@@ -517,6 +562,36 @@ function writeEventDispositionOutputs(published: PublishedEventSnapshot): void {
     ].join("\n"),
     "utf8",
   );
+}
+
+function writePublicationCompletionOutputs(
+  completionKind: "superseded" | "permanent_failure",
+  reasonCode:
+    | "remote_newer_tuple"
+    | "remote_closed"
+    | "missing_record_tuple"
+    | "tuple_protocol_invalid"
+    | "policy_invariant"
+    | "unknown_failure",
+  fingerprint?: string,
+): void {
+  const outputPath = process.env.GITHUB_OUTPUT;
+  if (!outputPath) return;
+  fs.appendFileSync(
+    outputPath,
+    [
+      `completion_kind=${completionKind}`,
+      `reason_code=${reasonCode}`,
+      ...(fingerprint ? [`error_fingerprint=${fingerprint}`] : []),
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+}
+
+function errorFingerprint(error: unknown): string {
+  const message = error instanceof Error ? `${error.name}:${error.message}` : String(error);
+  return `sha256:${createHash("sha256").update(message).digest("hex")}`;
 }
 
 function validateTargetRepo(targetRepo: string): void {

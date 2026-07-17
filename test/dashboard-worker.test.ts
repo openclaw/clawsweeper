@@ -93,15 +93,18 @@ test("automerge reliability summarizes failures, recovery, duration, and stalled
 
 test("exact-review publication scales bounded capacity with ready backlog", () => {
   assert.equal(exactReviewPublicationCapacity({}), 24);
-  assert.equal(exactReviewPublicationCapacity({}, 249), 24);
-  assert.equal(exactReviewPublicationCapacity({}, 250), 32);
-  assert.equal(exactReviewPublicationCapacity({}, 500), 40);
-  assert.equal(exactReviewPublicationCapacity({}, 750), 48);
+  assert.equal(exactReviewPublicationCapacity({}, 99), 24);
+  assert.equal(exactReviewPublicationCapacity({}, 100), 32);
+  assert.equal(exactReviewPublicationCapacity({}, 249), 32);
+  assert.equal(exactReviewPublicationCapacity({}, 250), 40);
+  assert.equal(exactReviewPublicationCapacity({}, 400), 48);
   assert.equal(exactReviewPublicationCapacity({}, 2_000), 48);
   assert.equal(exactReviewPublicationCapacity({}, 0, 40), 40);
-  assert.equal(exactReviewPublicationCapacity({}, 750, 0, 32), 32);
-  assert.equal(exactReviewPublicationCapacity({}, 750, 0, 8), 8);
-  assert.equal(exactReviewPublicationCapacity({}, 750, 40, 24), 40);
+  assert.equal(exactReviewPublicationCapacity({}, 400, 0, 32), 32);
+  assert.equal(exactReviewPublicationCapacity({}, 400, 0, 8), 8);
+  assert.equal(exactReviewPublicationCapacity({}, 400, 40, 24), 40);
+  assert.equal(exactReviewPublicationCapacity({}, 0, 0, 48, 60 * 60_000), 32);
+  assert.equal(exactReviewPublicationCapacity({}, 50, 0, 48, 0, 0), 32);
   assert.equal(
     exactReviewPublicationCapacity({ EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "12" }),
     12,
@@ -112,7 +115,7 @@ test("exact-review publication scales bounded capacity with ready backlog", () =
         EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT: "16",
         EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "32",
       },
-      500,
+      250,
     ),
     32,
   );
@@ -123,6 +126,49 @@ test("exact-review publication scales bounded capacity with ready backlog", () =
     }),
     16,
   );
+});
+
+test("exact-review publication admission applies the hysteresis controller demand target", async () => {
+  const originalNow = Date.now;
+  const now = Date.parse("2026-07-16T12:00:00.000Z");
+  Date.now = () => now;
+  try {
+    const storage = new MemoryDurableStorage();
+    const queue = new ExactReviewQueue({ storage }, {});
+    for (let index = 0; index < 50; index += 1) {
+      const number = 10_000 + index;
+      const response = await queue.fetch(
+        buildExactReviewQueueRequest(
+          `publication-demand-${number}`,
+          number,
+          "exact_review_artifact_publish",
+          "issue",
+          undefined,
+          exactReviewPublicationOverrides(number, String(number * 10)),
+        ),
+      );
+      assert.equal(response.status, 202);
+    }
+    await storage.put("exact-review-publication-control:v1", {
+      capacityCeiling: 48,
+      demandCapacity: 32,
+      cooldownUntil: 0,
+      recoverySuccesses: 0,
+      demandSamples: 0,
+      demandTier: 1,
+      lastDemandSampleAt: now,
+      lastScaleAt: now,
+    });
+
+    const stats = await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(stats.lanes.publication.pending, 50);
+    assert.equal(stats.lanes.publication.capacity_control.demand_capacity, 32);
+    assert.equal(stats.lanes.publication.capacity, 32);
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("exact-review queue debounces fresh work and caps pending revision extensions", async () => {
@@ -611,6 +657,22 @@ test("exact-review queue admits and wakes up to 24 publishers", () => {
   const wakeState = { items: { [active.key]: active, [pending.key]: pending } } as never;
   assert.equal(exactReviewQueueNextWakeAt(wakeState, now, 64, 60, 24), now + 1_000);
   assert.equal(exactReviewQueueNextWakeAt(wakeState, now, 64, 60, 1), now + 60_000);
+
+  const activeReview = {
+    key: "openclaw/openclaw#3",
+    state: "leased",
+    nextAttemptAt: now,
+    leaseExpiresAt: now + 45_000,
+    decision: { sourceAction: "opened", targetRepo: "openclaw/openclaw" },
+  };
+  const budgetBlockedState = {
+    items: { [activeReview.key]: activeReview, [pending.key]: pending },
+  } as never;
+  assert.equal(exactReviewQueueNextWakeAt(budgetBlockedState, now, 64, 60, 0), now + 45_000);
+  assert.equal(
+    exactReviewQueueNextWakeAt({ items: { [pending.key]: pending } } as never, now, 64, 60, 0),
+    now + 30_000,
+  );
 });
 
 test("dashboard status reads the exact-review handoff model from the durable queue", async () => {
@@ -4265,6 +4327,10 @@ test("exact-review publication capacity backs off on GitHub pressure and recover
       base: 24,
       maximum: 48,
       ceiling: 12,
+      demand_capacity: 24,
+      demand_samples: 1,
+      demand_tier: 0,
+      last_scale_at: null,
       cooldown_until: "2026-07-16T08:15:00.000Z",
       recovery_successes: 0,
       last_failure_at: "2026-07-16T08:00:00.000Z",
@@ -4312,6 +4378,240 @@ test("exact-review publication capacity backs off on GitHub pressure and recover
   } finally {
     Date.now = originalNow;
   }
+});
+
+test("exact-review publication supersedes stale tuples without counting a publish", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(781, "7810");
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "success",
+        completion_kind: "superseded",
+        reason_code: "remote_newer_tuple",
+      }),
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, requeued: false });
+  const state = (await storage.get("exact-review-queue")) as { items: Record<string, unknown> };
+  assert.equal(state.items[item.key], undefined);
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.publication.completed_total, 1);
+  assert.equal(stats.lanes.publication.published_total, 0);
+  assert.equal(stats.lanes.publication.superseded_total, 1);
+  assert.equal(stats.lanes.publication.flow.last_15_minutes.published_rate_per_hour, 0);
+  assert.equal(stats.lanes.publication.flow.last_15_minutes.superseded_rate_per_hour, 4);
+  assert.equal(stats.lanes.publication.dead_letters.open, 0);
+});
+
+test("exact-review publication dead-letters exhausted permanent failures and replays idempotently", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(782, "7820");
+  item.attempts = 2;
+  Object.assign(item, { publicationFailureAttempts: 2 });
+  item.firstFailureAt = Date.now() - 6 * 60_000;
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const complete = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "failure",
+        completion_kind: "permanent_failure",
+        reason_code: "invalid_artifact",
+        error_fingerprint: "sha256:deadbeef",
+      }),
+    }),
+  );
+  assert.deepEqual(await complete.json(), { ok: true, requeued: false });
+
+  const listed = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/dead-letters/list", {
+        method: "POST",
+        body: JSON.stringify({ limit: 10 }),
+      }),
+    )
+  ).json();
+  assert.equal(listed.dead_letters.length, 1);
+  assert.equal(listed.dead_letters[0].reason_code, "invalid_artifact");
+  assert.equal(listed.dead_letters[0].attempts, 3);
+  const id = listed.dead_letters[0].dead_letter_id;
+
+  const replay = () =>
+    queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/dead-letters/replay", {
+        method: "POST",
+        body: JSON.stringify({ ids: [id], idempotency_key: "operator:782:v1" }),
+      }),
+    );
+  assert.deepEqual(await (await replay()).json(), {
+    ok: true,
+    replayed: 1,
+    deduped: 0,
+    skipped: 0,
+  });
+  assert.deepEqual(await (await replay()).json(), {
+    ok: true,
+    replayed: 0,
+    deduped: 1,
+    skipped: 0,
+  });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { state: string; attempts: number }>;
+  };
+  assert.equal(state.items[item.key].state, "pending");
+  assert.equal(state.items[item.key].attempts, 0);
+});
+
+test("exact-review publication refreshes an artifact after its third unavailable attempt", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(783, "7830");
+  item.attempts = 2;
+  Object.assign(item, { publicationFailureAttempts: 2 });
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" });
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "failure",
+        completion_kind: "retryable_failure",
+        reason_code: "artifact_unavailable",
+      }),
+    }),
+  );
+  assert.deepEqual(await response.json(), { ok: true, requeued: false });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { decision: { sourceAction: string } }>;
+  };
+  assert.equal(state.items[item.key], undefined);
+  assert.equal(
+    state.items["openclaw/openclaw#783"].decision.sourceAction,
+    "artifact_retention_recovery",
+  );
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.publication.refreshed_total, 1);
+});
+
+test("exact-review publication retry budgets ignore earlier dispatch failures", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(785, "7850");
+  item.attempts = 2;
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "failure",
+        completion_kind: "permanent_failure",
+        reason_code: "invalid_artifact",
+      }),
+    }),
+  );
+
+  assert.deepEqual(await response.json(), { ok: true, requeued: true });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { attempts: number; publicationFailureAttempts?: number }>;
+  };
+  assert.equal(state.items[item.key].attempts, 1);
+  assert.equal(state.items[item.key].publicationFailureAttempts, 1);
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.publication.dead_letters.open, 0);
+});
+
+test("ordinary exact-review retries do not increment publication retry telemetry", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewQueueItem(786, "7860");
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "failure",
+      }),
+    }),
+  );
+
+  assert.deepEqual(await response.json(), { ok: true, requeued: true });
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.publication.retried_total, 0);
+  assert.equal(stats.lanes.publication.flow.last_15_minutes.retried, 0);
+});
+
+test("exact-review completion rejects incompatible structured dispositions", async () => {
+  const item = leasedExactReviewPublicationItem(784, "7840");
+  const storage = new MemoryDurableStorage();
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "failure",
+        completion_kind: "superseded",
+        reason_code: "remote_closed",
+      }),
+    }),
+  );
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "completion_outcome_mismatch" });
 });
 
 test("exact-review publication recovery ignores successful source-drift requeues", async () => {
@@ -5558,6 +5858,8 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /id="exact-review-lanes"/);
   assert.match(html, /Review admission/);
   assert.match(html, /Result publication/);
+  assert.match(html, /Net publication rate/);
+  assert.match(html, /Terminal resolved/);
   assert.doesNotMatch(html, /Control Plane · GitHub Actions, not Codex/);
   assert.doesNotMatch(html, /id="control-plane"/);
   assert.match(html, /\.exact-lanes \{ grid-template-columns: 1fr; \}/);
@@ -5679,11 +5981,30 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
           capacity: 24,
           available_slots: 3,
           oldest_pending_age_seconds: 30,
+          oldest_ready_age_seconds: 30,
+          oldest_backoff_age_seconds: 20,
+          flow: {
+            last_15_minutes: {
+              arrival_rate_per_hour: 12,
+              resolved_rate_per_hour: 20,
+              published_rate_per_hour: 4,
+              superseded_rate_per_hour: 16,
+              retried_rate_per_hour: 8,
+              dead_lettered_rate_per_hour: 0,
+              retry_amplification: 0.4,
+            },
+          },
+          dead_letters: {
+            open: 2,
+            oldest_failed_at: "2026-07-05T10:22:43.934Z",
+          },
           capacity_control: {
             mode: "throttled",
             base: 24,
             maximum: 48,
             ceiling: 24,
+            demand_capacity: 32,
+            cooldown_until: "2026-07-05T12:00:00.000Z",
             last_failure_kind: "github_rate_limit",
           },
         },
@@ -5828,12 +6149,17 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(elementFor("exact-review-lanes").innerHTML, /52 review admission slots open/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /Result publication/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /3 result publication slots open/);
+  assert.match(elementFor("exact-review-lanes").innerHTML, /Terminal resolved/);
+  assert.match(elementFor("exact-review-lanes").innerHTML, /Published<\/span><strong>4\/h/);
+  assert.match(elementFor("exact-review-lanes").innerHTML, /Superseded<\/span><strong>16\/h/);
+  assert.match(elementFor("exact-review-lanes").innerHTML, /DLQ 2/);
+  assert.match(elementFor("exact-review-lanes").innerHTML, /retry amplification 0\.40/);
   assert.match(elementFor("automerge-reliability").innerHTML, /66.7%/);
   assert.match(elementFor("automerge-reliability").innerHTML, /openclaw\/openclaw#107691/);
   assert.match(elementFor("automerge-reliability").innerHTML, /unresolved/);
   assert.match(
     elementFor("exact-review-lanes").innerHTML,
-    /adaptive ceiling 24 after GitHub rate limit/,
+    /target 32 · pressure ceiling 24 after GitHub rate limit/,
   );
   assert.match(elementFor("exact-review-lanes").innerHTML, /No backlog history in this range/);
   status.workers = Array.from({ length: 130 }, (_, id) => ({ id, status: "in_progress" }));
@@ -10016,11 +10342,26 @@ function leasedExactReviewQueueItem(itemNumber: number, runId: string, runAttemp
 function leasedExactReviewPublicationItem(itemNumber: number, runId: string) {
   const item = leasedExactReviewQueueItem(itemNumber, runId);
   const sourceAction = "exact_review_artifact_publish";
+  const publication = {
+    artifactName: `exact-review-${runId}-1`,
+    producerRunId: runId,
+    producerRunAttempt: 1,
+    sourceSha: "a".repeat(40),
+    itemKey: item.key,
+    protocolVersion: 2 as const,
+    leaseRevision: 1,
+    claimGeneration: 1,
+    liveProceeded: true,
+    liveTerminalNoop: false,
+    liveTerminalMissing: false,
+    liveGuardedOpen: false,
+    producerDecision: item.decision,
+  };
   return {
     ...item,
     key: `${item.key}@publish:${runId}:1`,
-    decision: { ...item.decision, sourceAction },
-    leaseDecision: { ...item.leaseDecision, sourceAction },
+    decision: { ...item.decision, sourceAction, publication },
+    leaseDecision: { ...item.leaseDecision, sourceAction, publication },
   };
 }
 

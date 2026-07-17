@@ -184,8 +184,15 @@ publication work bypass the delay. When pending depth reaches
 `EXACT_REVIEW_PENDING_SOFT_LIMIT` (300 by default), new recovery-only work is
 shed; existing items, webhook events, commands, and publications remain admitted.
 
-Exact-review result publication has a separate 24-workflow Actions lane. Its
-checkout, artifact handling, comment sync, and result routing are deterministic
+Exact-review result publication has a separate adaptive Actions lane. It starts
+at 24 and rises in steps of 8 up to 48 when ready-plus-backoff demand, oldest
+age, or the 15-minute net drain rate shows sustained pressure. Scale-up requires
+two five-minute samples and is limited to one step per ten minutes; healthy
+scale-down requires 30 minutes below 80 pending. GitHub rate limits halve the
+pressure ceiling for at least 15 minutes, while transient GitHub failures reduce
+it by 8 for at least five minutes. Admission also leaves 16 slots inside
+`WORKER_BUDGET` after active exact reviews. Its checkout, artifact handling,
+comment sync, and result routing are deterministic
 control-plane work: they consume GitHub runners, but not Codex slots. The
 comment router and the singleton lease reconciler follow the same accounting
 rule. Dashboard Codex capacity therefore counts only jobs whose steps execute
@@ -217,6 +224,16 @@ heartbeat, `EXACT_REVIEW_HEARTBEAT_GRACE_MS` bounds liveness to 20 minutes by de
 never extending the original 130-minute execution lease. Leases created before heartbeat
 support was deployed retain their original execution expiry. This keeps capacity waiting and
 retry state out of GitHub Actions runners.
+
+Publication completion distinguishes durable publishes from results superseded
+by a newer or closed remote tuple. Superseded publications terminate without a
+GitHub mutation and do not count as successful publishes. GitHub/transient
+failures retry for at most 12 attempts or 24 hours; deterministic permanent
+failures receive two confirmation retries before entering the bounded
+dead-letter store. An artifact unavailable for three attempts atomically queues
+one fresh review. Public queue status reports publish, supersede, retry, refresh,
+and dead-letter totals separately; signed internal endpoints list, replay,
+resolve, and exact-revision supersede records without exposing decisions publicly.
 
 Examples with the current config:
 

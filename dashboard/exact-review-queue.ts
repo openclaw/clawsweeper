@@ -51,7 +51,7 @@ export type ExactReviewQueueItem = {
   key: string;
   decision: ExactReviewDecision;
   leaseDecision?: ExactReviewDecision;
-  state: "pending" | "dispatching" | "leased";
+  state: "pending" | "dispatching" | "leased" | "parked";
   revision: number;
   createdAt: number;
   updatedAt: number;
@@ -67,9 +67,40 @@ export type ExactReviewQueueItem = {
   claimProtocolVersion?: 1 | 2;
   dispatchedAt?: number;
   claimedAt?: number;
+  parkedReason?: "dead_letter_capacity";
+  lastFailureReason?: ExactReviewPublicationReasonCode;
+  firstFailureAt?: number;
+  publicationFailureAttempts?: number;
 };
 export type ExactReviewCompletionOutcome = "success" | "failure" | "cancelled";
 type ExactReviewPublicationFailureKind = "github_rate_limit" | "github_transient";
+export type ExactReviewPublicationCompletionKind =
+  | "published"
+  | "superseded"
+  | "retryable_failure"
+  | "refresh_required"
+  | "permanent_failure";
+type ExactReviewPublicationReasonCode =
+  | "publication_applied"
+  | "remote_newer_tuple"
+  | "remote_closed"
+  | "live_terminal"
+  | "github_rate_limit"
+  | "github_transient"
+  | "workflow_cancelled"
+  | "artifact_unavailable"
+  | "artifact_expired"
+  | "invalid_artifact"
+  | "missing_record_tuple"
+  | "tuple_protocol_invalid"
+  | "policy_invariant"
+  | "unknown_failure"
+  | "retry_exhausted";
+type ExactReviewPublicationCompletion = {
+  kind: ExactReviewPublicationCompletionKind;
+  reasonCode: ExactReviewPublicationReasonCode;
+  errorFingerprint?: string;
+};
 type ExactReviewPublicationFeedback = {
   at: number;
   capacity: number;
@@ -78,8 +109,13 @@ type ExactReviewPublicationFeedback = {
 };
 type ExactReviewPublicationControl = {
   capacityCeiling: number;
+  demandCapacity: number;
   cooldownUntil: number;
   recoverySuccesses: number;
+  demandSamples: number;
+  demandTier: number;
+  lastDemandSampleAt: number;
+  lastScaleAt: number;
   lastFailureAt?: number;
   lastFailureKind?: ExactReviewPublicationFailureKind;
 };
@@ -106,6 +142,22 @@ type ExactReviewQueueBaseline = {
   items: Map<string, string>;
   dispatcherJson: string | null;
 };
+type ExactReviewDeadLetterInsert = {
+  id: string;
+  itemKey: string;
+  revision: number;
+  targetRepo: string;
+  itemNumber: number;
+  producerRunId: string;
+  producerRunAttempt: number;
+  artifactName: string;
+  reasonCode: ExactReviewPublicationReasonCode;
+  attempts: number;
+  firstFailedAt: number;
+  lastFailedAt: number;
+  itemJson: string;
+  errorFingerprint?: string;
+};
 type ExactReviewQueueStorageMeta = {
   schema_version: number;
   migrated_at: number;
@@ -115,13 +167,26 @@ type ExactReviewQueueStorageMeta = {
 };
 type ExactReviewQueueMetricTotals = {
   review: { enqueued: number; completed: number };
-  publication: { enqueued: number; completed: number };
+  publication: {
+    enqueued: number;
+    completed: number;
+    published: number;
+    superseded: number;
+    retried: number;
+    deadLettered: number;
+    refreshed: number;
+  };
 };
 type ExactReviewQueueMetricDelta = {
   reviewEnqueued?: number;
   reviewCompleted?: number;
   publicationEnqueued?: number;
   publicationCompleted?: number;
+  publicationPublished?: number;
+  publicationSuperseded?: number;
+  publicationRetried?: number;
+  publicationDeadLettered?: number;
+  publicationRefreshed?: number;
 };
 export type DurableObjectStub = { fetch: (request: Request) => Promise<Response> };
 export type DurableObjectNamespace = {
@@ -134,7 +199,6 @@ const DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT = 60;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT = 4;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT = 24;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT = 48;
-const EXACT_REVIEW_PUBLICATION_READY_PER_SCALE_STEP = 250;
 const EXACT_REVIEW_PUBLICATION_CONCURRENT_SCALE_STEP = 8;
 const EXACT_REVIEW_PUBLICATION_RATE_LIMIT_COOLDOWN_MS = 15 * 60 * 1000;
 const EXACT_REVIEW_PUBLICATION_TRANSIENT_COOLDOWN_MS = 5 * 60 * 1000;
@@ -144,6 +208,10 @@ const EXACT_REVIEW_PUBLICATION_TRANSIENT_COOLDOWN_MS = 5 * 60 * 1000;
 // clean runs never fit between bursts at 4-way concurrency — observed
 // 2026-07-17: 408 pending, ceiling stuck at 4 for hours).
 const DEFAULT_EXACT_REVIEW_PUBLICATION_RECOVERY_SUCCESSES = 10;
+const EXACT_REVIEW_PUBLICATION_DEMAND_SAMPLE_MS = 5 * 60 * 1000;
+const EXACT_REVIEW_PUBLICATION_SCALE_UP_MS = 10 * 60 * 1000;
+const EXACT_REVIEW_PUBLICATION_SCALE_DOWN_MS = 15 * 60 * 1000;
+const EXACT_REVIEW_PUBLICATION_ACTIONS_RESERVE = 16;
 const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 6 * 60 * 1000;
 // Exact publications have a dedicated bounded lane. Bound the unclaimed handoff so a run that
 // never reaches its claim step is re-dispatched; stale runs lose the lease tuple safely.
@@ -157,6 +225,12 @@ const DEFAULT_EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = 3 * 60_000;
 const DEFAULT_EXACT_REVIEW_PENDING_SOFT_LIMIT = 300;
 const EXACT_REVIEW_COMPLETION_RETRY_MAX_MS = 2 * 60 * 60 * 1000;
 const EXACT_REVIEW_ARTIFACT_RETRY_MAX_MS = 80 * 24 * 60 * 60 * 1000;
+const EXACT_REVIEW_PUBLICATION_TRANSIENT_RETRY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const EXACT_REVIEW_PUBLICATION_UNKNOWN_RETRY_MAX_AGE_MS = 60 * 60 * 1000;
+const EXACT_REVIEW_PUBLICATION_TRANSIENT_RETRY_LIMIT = 12;
+const EXACT_REVIEW_PUBLICATION_PERMANENT_RETRY_LIMIT = 3;
+const EXACT_REVIEW_PUBLICATION_UNKNOWN_RETRY_LIMIT = 5;
+const EXACT_REVIEW_PUBLICATION_ARTIFACT_RETRY_LIMIT = 3;
 const EXACT_REVIEW_RECONCILE_RUN_LIMIT = 128;
 const EXACT_REVIEW_RECONCILE_CLAIM_MATCH_LIMIT = EXACT_REVIEW_RECONCILE_RUN_LIMIT * 2;
 export const EXACT_REVIEW_RECONCILE_CONCURRENCY = 8;
@@ -179,6 +253,12 @@ const EXACT_REVIEW_QUEUE_META_TABLE = "exact_review_queue_meta";
 const EXACT_REVIEW_QUEUE_ITEM_TABLE = "exact_review_queue_items";
 const EXACT_REVIEW_QUEUE_DELIVERY_TABLE = "exact_review_queue_deliveries";
 const EXACT_REVIEW_QUEUE_METRICS_TABLE = "exact_review_queue_metrics";
+const EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE = "exact_review_queue_metric_buckets";
+const EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE = "exact_review_queue_dead_letters";
+const EXACT_REVIEW_QUEUE_DEAD_LETTER_LIMIT = 5_000;
+const EXACT_REVIEW_QUEUE_DEAD_LETTER_RESOLVED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const EXACT_REVIEW_QUEUE_METRIC_BUCKET_MS = 5 * 60 * 1000;
+const EXACT_REVIEW_QUEUE_METRIC_BUCKET_TTL_MS = 48 * 60 * 60 * 1000;
 const EXACT_REVIEW_PUBLICATION_CONTROL_KEY = "exact-review-publication-control:v1";
 export const EXACT_REVIEW_QUEUE_NAME = "global";
 const EXACT_REVIEW_COMMAND_STATUS_MARKER_PATTERN =
@@ -264,27 +344,31 @@ export class ExactReviewQueue {
           // Ordinary source events retain normal replacement behavior, including the
           // command-context merge for pending items.
           if (!ignoredRecovery) {
-            current.decision =
-              current.state === "pending"
-                ? mergePendingExactReviewDecision(current.decision, decision)
-                : decision;
+            const mergeable = current.state === "pending" || current.state === "parked";
+            current.decision = mergeable
+              ? mergePendingExactReviewDecision(current.decision, decision)
+              : decision;
             current.revision += 1;
             current.updatedAt = now;
             // Immediacy must come from the merged decision: a pending explicit command
             // keeps its command marker through the merge, and a later plain webhook
             // event must not re-debounce it.
-            current.nextAttemptAt =
-              current.state === "pending"
-                ? exactReviewQueueDebouncedAttemptAt(
-                    state,
-                    current.decision,
-                    now,
-                    current.createdAt,
-                    this.env,
-                  )
-                : exactReviewQueueEnqueueAttemptAt(state, now);
-            if (current.state === "pending") {
+            current.nextAttemptAt = mergeable
+              ? exactReviewQueueDebouncedAttemptAt(
+                  state,
+                  current.decision,
+                  now,
+                  current.createdAt,
+                  this.env,
+                )
+              : exactReviewQueueEnqueueAttemptAt(state, now);
+            if (mergeable) {
+              current.state = "pending";
+              current.parkedReason = undefined;
               current.attempts = 0;
+              current.publicationFailureAttempts = 0;
+              current.firstFailureAt = undefined;
+              current.lastFailureReason = undefined;
             }
           }
         } else {
@@ -527,6 +611,36 @@ export class ExactReviewQueue {
       if (failureKind && outcome !== "failure") {
         return json({ error: "failure_kind_without_failure" }, 400);
       }
+      const hasStructuredCompletion =
+        body.completion_kind !== undefined ||
+        body.reason_code !== undefined ||
+        body.error_fingerprint !== undefined;
+      const publicationCompletion = hasStructuredCompletion
+        ? exactReviewPublicationCompletion(
+            body.completion_kind,
+            body.reason_code,
+            body.error_fingerprint,
+          )
+        : undefined;
+      if (hasStructuredCompletion && !publicationCompletion) {
+        return json({ error: "invalid_publication_completion" }, 400);
+      }
+      if (
+        publicationCompletion &&
+        (publicationCompletion.kind === "published" ||
+          publicationCompletion.kind === "superseded") !==
+          (outcome === "success")
+      ) {
+        return json({ error: "completion_outcome_mismatch" }, 400);
+      }
+      if (
+        failureKind &&
+        publicationCompletion &&
+        (publicationCompletion.kind !== "retryable_failure" ||
+          publicationCompletion.reasonCode !== failureKind)
+      ) {
+        return json({ error: "failure_kind_mismatch" }, 400);
+      }
       const requeueLatest = body.requeue_latest === true;
       if (body.requeue_latest !== undefined && typeof body.requeue_latest !== "boolean") {
         return json({ error: "invalid_requeue_latest" }, 400);
@@ -558,13 +672,18 @@ export class ExactReviewQueue {
       if (failureKind && !publicationItem) {
         return json({ error: "failure_kind_outside_publication" }, 400);
       }
+      if (publicationCompletion && !publicationItem) {
+        return json({ error: "completion_kind_outside_publication" }, 400);
+      }
+      const publicationControl = this.publicationControlSync();
       const publicationDesiredCapacity = publicationItem
         ? exactReviewPublicationCapacityForState(
             this.env,
             state,
             now,
-            this.publicationControlSync().capacityCeiling,
+            publicationControl.capacityCeiling,
             false,
+            publicationControl.demandCapacity,
           )
         : 0;
       if (
@@ -577,32 +696,74 @@ export class ExactReviewQueue {
       // The workflow reports success only after every primary review mutation has settled.
       // Complete that revision now so a later auxiliary-step failure cannot make the
       // workflow_run reconciler requeue review work that already succeeded.
-      const requeued = finishExactReviewQueueItem(
-        state,
-        item,
-        now,
-        outcome,
-        requestedRetryAt ?? undefined,
-        requeueLatest,
-      );
+      const completionResult =
+        publicationItem && publicationCompletion
+          ? finishExactReviewPublicationQueueItem({
+              state,
+              item,
+              now,
+              completion: publicationCompletion,
+              requestedRetryAt: requestedRetryAt ?? undefined,
+              requeueLatest,
+              deadLetterCapacityAvailable: this.deadLetterCapacityAvailableSync(
+                exactReviewDeadLetterId(item),
+              ),
+              env: this.env,
+            })
+          : {
+              requeued: finishExactReviewQueueItem(
+                state,
+                item,
+                now,
+                outcome,
+                requestedRetryAt ?? undefined,
+                requeueLatest,
+              ),
+              retried: outcome !== "success",
+              refreshed: false,
+              parked: false,
+              deadLetter: undefined,
+            };
+      const { requeued } = completionResult;
       // A successful workflow can still request requeue_latest after source
       // drift. That work did not leave its lane, so it must not improve the
       // operator-facing net speed until a later revision actually completes.
-      const completedLane = outcome === "success" && !requeued ? exactReviewQueueLane(item) : null;
+      const completedLane =
+        !requeued && !completionResult.parked ? exactReviewQueueLane(item) : null;
+      const structuredTerminal = publicationCompletion && !requeued && !completionResult.parked;
       await this.writeState(
         state,
         {
-          ...(completedLane === "review" ? { reviewCompleted: 1 } : {}),
+          ...(completedLane === "review" && outcome === "success" ? { reviewCompleted: 1 } : {}),
           ...(completedLane === "publication" ? { publicationCompleted: 1 } : {}),
+          ...(structuredTerminal && publicationCompletion.kind === "published"
+            ? { publicationPublished: 1 }
+            : {}),
+          ...(structuredTerminal && publicationCompletion.kind === "superseded"
+            ? { publicationSuperseded: 1 }
+            : {}),
+          ...(publicationItem && completionResult.retried ? { publicationRetried: 1 } : {}),
+          ...(completionResult.deadLetter ? { publicationDeadLettered: 1 } : {}),
+          ...(completionResult.refreshed ? { publicationRefreshed: 1 } : {}),
         },
-        publicationItem && ((outcome === "success" && !requeued) || failureKind)
+        publicationItem &&
+          ((publicationCompletion
+            ? publicationCompletion.kind === "published" && !requeued
+            : outcome === "success" && !requeued) ||
+            failureKind)
           ? {
               at: now,
               capacity: publicationDesiredCapacity,
-              outcome: outcome === "success" ? "success" : "failure",
+              outcome:
+                (publicationCompletion
+                  ? publicationCompletion.kind === "published"
+                  : outcome === "success") && !requeued
+                  ? "success"
+                  : "failure",
               ...(failureKind ? { failureKind } : {}),
             }
           : undefined,
+        completionResult.deadLetter,
       );
       await this.scheduleNext(state, now);
       return json({ ok: true, requeued });
@@ -648,6 +809,78 @@ export class ExactReviewQueue {
         )
         .slice(0, EXACT_REVIEW_RECONCILE_RUN_LIMIT);
       return json({ runs });
+    }
+
+    if (request.method === "POST" && url.pathname === "/dead-letters/list") {
+      return this.listDeadLetters(await request.json().catch(() => null));
+    }
+
+    if (request.method === "POST" && url.pathname === "/dead-letters/replay") {
+      return this.replayDeadLetters(await request.json().catch(() => null));
+    }
+
+    if (request.method === "POST" && url.pathname === "/dead-letters/resolve") {
+      return this.resolveDeadLetters(await request.json().catch(() => null));
+    }
+
+    if (request.method === "POST" && url.pathname === "/publications/list") {
+      return this.listPublicationCandidates(await request.json().catch(() => null));
+    }
+
+    if (request.method === "POST" && url.pathname === "/publications/supersede") {
+      return this.supersedePublicationCandidates(await request.json().catch(() => null));
+    }
+
+    if (request.method === "GET" && url.pathname === "/item-status") {
+      const targetRepo = String(url.searchParams.get("target_repo") || "").trim();
+      const itemNumber = Number(url.searchParams.get("item_number"));
+      if (
+        !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo) ||
+        !Number.isInteger(itemNumber) ||
+        itemNumber < 1
+      ) {
+        return json({ error: "invalid_item_identity" }, 400);
+      }
+      const state = this.readStateSync();
+      const matches = Object.values(state.items).filter(
+        (item) =>
+          item.decision.targetRepo === targetRepo && item.decision.itemNumber === itemNumber,
+      );
+      const items = matches.map((item) => ({
+        lane: exactReviewQueueLane(item),
+        state: item.state,
+        revision: item.revision,
+        attempts: item.attempts,
+        created_at: new Date(item.createdAt).toISOString(),
+        next_attempt_at:
+          item.state === "pending" ? new Date(item.nextAttemptAt).toISOString() : null,
+        older_ready_count: Object.values(state.items).filter(
+          (candidate) =>
+            exactReviewQueueLane(candidate) === exactReviewQueueLane(item) &&
+            candidate.state === "pending" &&
+            candidate.nextAttemptAt <= Date.now() &&
+            (candidate.createdAt < item.createdAt ||
+              (candidate.createdAt === item.createdAt && candidate.key < item.key)),
+        ).length,
+      }));
+      const deadLetters = Array.from(
+        this.storage.sql.exec(
+          `SELECT reason_code, first_failed_at, last_failed_at
+             FROM ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+            WHERE target_repo = ? AND item_number = ? AND status = 'open'
+            ORDER BY last_failed_at DESC`,
+          targetRepo,
+          itemNumber,
+        ),
+      );
+      return json({
+        ok: true,
+        target_repo: targetRepo,
+        item_number: itemNumber,
+        items,
+        dead_letters: deadLetters,
+        position_is_approximate: true,
+      });
     }
 
     if (request.method === "POST" && url.pathname === "/reconcile") {
@@ -697,6 +930,7 @@ export class ExactReviewQueue {
       const now = Date.now();
       const snapshot = this.storage.transactionSync(() => {
         this.pruneDeliveryReceiptsSync(now);
+        this.prunePublicationTelemetrySync(now);
         const current = this.readStateSync();
         // Dashboard reads are also the operational heartbeat. Reclaim leases and
         // restore the alarm here so a deploy or lost alarm cannot strand backlog.
@@ -708,11 +942,16 @@ export class ExactReviewQueue {
         );
         if (changed) this.writeStateSync(current);
         else this.syncLegacyCompatibilitySync(current);
-        return { state: current, metrics: this.queueMetricTotalsSync() };
+        return {
+          state: current,
+          metrics: this.queueMetricTotalsSync(),
+          flow: this.publicationFlowSummarySync(now),
+          deadLetters: this.deadLetterStatsSync(),
+        };
       });
-      const { state, metrics } = snapshot;
+      const { state, metrics, flow, deadLetters } = snapshot;
+      const publicationControl = this.refreshPublicationControlSync(state, now);
       await this.scheduleNext(state, now);
-      const publicationControl = this.publicationControlSync();
       const stats = exactReviewQueueStats(
         state,
         now,
@@ -723,6 +962,8 @@ export class ExactReviewQueue {
           state,
           now,
           publicationControl.capacityCeiling,
+          true,
+          publicationControl.demandCapacity,
         ),
         exactReviewDispatchLeaseMs(this.env),
         exactReviewExecutionLeaseMs(this.env),
@@ -741,6 +982,14 @@ export class ExactReviewQueue {
             ...stats.lanes.publication,
             enqueued_total: metrics.publication.enqueued,
             completed_total: metrics.publication.completed,
+            published_total: metrics.publication.published,
+            superseded_total: metrics.publication.superseded,
+            retried_total: metrics.publication.retried,
+            dead_lettered_total: metrics.publication.deadLettered,
+            refreshed_total: metrics.publication.refreshed,
+            flow,
+            dead_letters: deadLetters,
+            health: exactReviewPublicationHealth(stats.lanes.publication, flow, deadLetters),
             capacity_control: exactReviewPublicationControlStatus(this.env, publicationControl),
           },
         },
@@ -775,11 +1024,14 @@ export class ExactReviewQueue {
     const snapshotChanged = reclaimedSnapshot || expiredSnapshot;
     const capacity = exactReviewQueueCapacity(this.env);
     const targetCapacity = exactReviewTargetCapacity(this.env);
+    const snapshotPublicationControl = this.refreshPublicationControlSync(snapshot, startedAt);
     const snapshotPublicationCapacity = exactReviewPublicationCapacityForState(
       this.env,
       snapshot,
       startedAt,
-      this.publicationControlSync().capacityCeiling,
+      snapshotPublicationControl.capacityCeiling,
+      true,
+      snapshotPublicationControl.demandCapacity,
     );
     const snapshotAdmission = exactReviewQueueAdmittedItems(
       snapshot,
@@ -817,11 +1069,14 @@ export class ExactReviewQueue {
     expireExactReviewPublicationItems(state, now, this.env);
     // The preflight fetch releases the input gate, so publication demand may
     // have crossed a scale boundary while the workflow state was checked.
+    const publicationControl = this.refreshPublicationControlSync(state, now);
     const publicationCapacity = exactReviewPublicationCapacityForState(
       this.env,
       state,
       now,
-      this.publicationControlSync().capacityCeiling,
+      publicationControl.capacityCeiling,
+      true,
+      publicationControl.demandCapacity,
     );
     const admitted = exactReviewQueueAdmittedItems(
       state,
@@ -924,6 +1179,222 @@ export class ExactReviewQueue {
     }
     if (currentChanged) await this.writeState(current);
     await this.scheduleNext(current, completedAt);
+  }
+
+  private listDeadLetters(value: unknown) {
+    const body = objectValue(value);
+    const status = String(body.status || "open");
+    if (!["open", "replayed", "resolved", "all"].includes(status)) {
+      return json({ error: "invalid_dead_letter_status" }, 400);
+    }
+    const limit = body.limit === undefined ? 20 : Number(body.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
+      return json({ error: "invalid_limit" }, 400);
+    }
+    const cursor = String(body.cursor || "");
+    if (cursor && cursor.length > 500) return json({ error: "invalid_cursor" }, 400);
+    this.prunePublicationTelemetrySync(Date.now());
+    const rows = Array.from(
+      this.storage.sql.exec(
+        `SELECT dead_letter_id, item_key, revision, target_repo, item_number,
+                producer_run_id, producer_run_attempt, artifact_name, reason_code,
+                attempts, first_failed_at, last_failed_at, item_json, error_fingerprint,
+                status, replay_key, resolution_note, resolved_at
+           FROM ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+          WHERE dead_letter_id > ? ${status === "all" ? "" : "AND status = ?"}
+          ORDER BY dead_letter_id
+          LIMIT ?`,
+        cursor,
+        ...(status === "all" ? [limit + 1] : [status, limit + 1]),
+      ) as Iterable<Record<string, unknown>>,
+    );
+    const page = rows.slice(0, limit);
+    return json({
+      ok: true,
+      dead_letters: page.map((row) => ({
+        ...row,
+        item: JSON.parse(String(row.item_json || "{}")),
+        item_json: undefined,
+      })),
+      next_cursor: rows.length > limit ? String(page.at(-1)?.dead_letter_id || "") || null : null,
+    });
+  }
+
+  private async replayDeadLetters(value: unknown) {
+    const body = objectValue(value);
+    const ids = exactReviewDeadLetterIds(body.ids);
+    const replayKey = String(body.idempotency_key || "").trim();
+    if (!ids) return json({ error: "invalid_dead_letter_ids" }, 400);
+    if (!/^[A-Za-z0-9:._-]{1,200}$/.test(replayKey)) {
+      return json({ error: "invalid_idempotency_key" }, 400);
+    }
+    const now = Date.now();
+    const result = this.storage.transactionSync(() => {
+      const state = this.readStateSync();
+      let replayed = 0;
+      let deduped = 0;
+      let skipped = 0;
+      for (const id of ids) {
+        const row = Array.from(
+          this.storage.sql.exec(
+            `SELECT status, replay_key, item_json
+               FROM ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+              WHERE dead_letter_id = ?`,
+            id,
+          ),
+        )[0] as { status?: string; replay_key?: string; item_json?: string } | undefined;
+        if (row?.status === "replayed" && row.replay_key === replayKey) {
+          deduped += 1;
+          continue;
+        }
+        if (row?.status !== "open" || !row.item_json) {
+          skipped += 1;
+          continue;
+        }
+        const item = JSON.parse(row.item_json) as ExactReviewQueueItem;
+        if (!item?.key || state.items[item.key]) {
+          skipped += 1;
+          continue;
+        }
+        clearExactReviewLease(item);
+        item.state = "pending";
+        item.parkedReason = undefined;
+        item.attempts = 0;
+        item.publicationFailureAttempts = 0;
+        item.firstFailureAt = undefined;
+        item.lastFailureReason = undefined;
+        item.createdAt = now;
+        item.updatedAt = now;
+        item.nextAttemptAt = now;
+        state.items[item.key] = item;
+        this.storage.sql.exec(
+          `UPDATE ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+              SET status = 'replayed', replay_key = ?, resolution_note = 'replayed', resolved_at = ?
+            WHERE dead_letter_id = ? AND status = 'open'`,
+          replayKey,
+          now,
+          id,
+        );
+        replayed += 1;
+      }
+      const unparked = this.drainParkedDeadLettersSync(state, now);
+      if (replayed) this.writeStateSync(state);
+      else if (unparked) this.writeStateSync(state);
+      else this.syncLegacyCompatibilitySync(state);
+      if (unparked) {
+        this.incrementQueueMetricsSync({
+          publicationCompleted: unparked,
+          publicationDeadLettered: unparked,
+        });
+      }
+      return { state, replayed, deduped, skipped, unparked };
+    });
+    if (result.replayed) await this.scheduleNext(result.state, now);
+    return json({
+      ok: true,
+      replayed: result.replayed,
+      deduped: result.deduped,
+      skipped: result.skipped,
+    });
+  }
+
+  private resolveDeadLetters(value: unknown) {
+    const body = objectValue(value);
+    const ids = exactReviewDeadLetterIds(body.ids);
+    const note = String(body.note || "").trim();
+    if (!ids) return json({ error: "invalid_dead_letter_ids" }, 400);
+    if (!note || note.length > 500) return json({ error: "invalid_resolution_note" }, 400);
+    const now = Date.now();
+    let resolved = 0;
+    let unparked = 0;
+    this.storage.transactionSync(() => {
+      for (const id of ids) {
+        const changed = Array.from(
+          this.storage.sql.exec(
+            `UPDATE ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+                SET status = 'resolved', resolution_note = ?, resolved_at = ?
+              WHERE dead_letter_id = ? AND status = 'open'
+            RETURNING dead_letter_id`,
+            note,
+            now,
+            id,
+          ),
+        );
+        if (changed.length) resolved += 1;
+      }
+      if (resolved) {
+        const state = this.readStateSync();
+        unparked = this.drainParkedDeadLettersSync(state, now);
+        if (unparked) {
+          this.writeStateSync(state);
+          this.incrementQueueMetricsSync({
+            publicationCompleted: unparked,
+            publicationDeadLettered: unparked,
+          });
+        }
+      }
+    });
+    return json({ ok: true, resolved, skipped: ids.length - resolved, unparked });
+  }
+
+  private listPublicationCandidates(value: unknown) {
+    const body = objectValue(value);
+    const cursor = String(body.cursor || "");
+    const limit = body.limit === undefined ? 100 : Number(body.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      return json({ error: "invalid_limit" }, 400);
+    }
+    const state = this.readStateSync();
+    const candidates = Object.values(state.items)
+      .filter(
+        (item) =>
+          item.key > cursor &&
+          exactReviewQueueIsPublication(item) &&
+          (item.state === "pending" || item.state === "parked"),
+      )
+      .sort((left, right) => left.key.localeCompare(right.key));
+    const page = candidates.slice(0, limit);
+    return json({
+      ok: true,
+      publications: page.map((item) => ({
+        item_key: item.key,
+        revision: item.revision,
+        state: item.state,
+        created_at: new Date(item.createdAt).toISOString(),
+        attempts: item.attempts,
+        decision: item.decision,
+      })),
+      next_cursor: candidates.length > limit ? page.at(-1)?.key || null : null,
+    });
+  }
+
+  private async supersedePublicationCandidates(value: unknown) {
+    const body = objectValue(value);
+    const candidates = exactReviewPublicationCandidates(body.items);
+    if (!candidates) return json({ error: "invalid_publication_candidates" }, 400);
+    const state = this.readStateSync();
+    let superseded = 0;
+    for (const candidate of candidates) {
+      const item = state.items[candidate.itemKey];
+      if (
+        !item ||
+        item.revision !== candidate.revision ||
+        !exactReviewQueueIsPublication(item) ||
+        (item.state !== "pending" && item.state !== "parked")
+      ) {
+        continue;
+      }
+      delete state.items[item.key];
+      superseded += 1;
+    }
+    if (superseded) {
+      await this.writeState(state, {
+        publicationCompleted: superseded,
+        publicationSuperseded: superseded,
+      });
+      await this.scheduleNext(state, Date.now());
+    }
+    return json({ ok: true, superseded, skipped: candidates.length - superseded });
   }
 
   private async initializeStorage() {
@@ -1056,6 +1527,11 @@ export class ExactReviewQueue {
       "review_enqueued_total",
       "review_completed_total",
       "publication_enqueued_total",
+      "publication_published_total",
+      "publication_superseded_total",
+      "publication_retried_total",
+      "publication_dead_lettered_total",
+      "publication_refreshed_total",
     ]) {
       const present = Array.from(
         this.storage.sql.exec(
@@ -1065,9 +1541,10 @@ export class ExactReviewQueue {
         ),
       ).length;
       if (!present) {
+        const definition = `${column} INTEGER NOT NULL DEFAULT 0 CHECK (${column} >= 0)`;
         this.storage.sql.exec(
           `ALTER TABLE ${EXACT_REVIEW_QUEUE_METRICS_TABLE}
-             ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0 CHECK (${column} >= 0)`,
+             ADD COLUMN ${definition}`,
         );
       }
     }
@@ -1078,6 +1555,45 @@ export class ExactReviewQueue {
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_queue_deliveries_received_at
          ON ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE} (received_at, delivery_id)`,
+    );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE} (
+         bucket_start INTEGER PRIMARY KEY,
+         publication_enqueued INTEGER NOT NULL DEFAULT 0 CHECK (publication_enqueued >= 0),
+         publication_resolved INTEGER NOT NULL DEFAULT 0 CHECK (publication_resolved >= 0),
+         publication_published INTEGER NOT NULL DEFAULT 0 CHECK (publication_published >= 0),
+         publication_superseded INTEGER NOT NULL DEFAULT 0 CHECK (publication_superseded >= 0),
+         publication_retried INTEGER NOT NULL DEFAULT 0 CHECK (publication_retried >= 0),
+         publication_dead_lettered INTEGER NOT NULL DEFAULT 0
+           CHECK (publication_dead_lettered >= 0)
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE} (
+         dead_letter_id TEXT PRIMARY KEY,
+         item_key TEXT NOT NULL,
+         revision INTEGER NOT NULL CHECK (revision >= 1),
+         target_repo TEXT NOT NULL,
+         item_number INTEGER NOT NULL CHECK (item_number >= 1),
+         producer_run_id TEXT NOT NULL,
+         producer_run_attempt INTEGER NOT NULL CHECK (producer_run_attempt >= 1),
+         artifact_name TEXT NOT NULL,
+         reason_code TEXT NOT NULL,
+         attempts INTEGER NOT NULL CHECK (attempts >= 1),
+         first_failed_at INTEGER NOT NULL,
+         last_failed_at INTEGER NOT NULL,
+         item_json TEXT NOT NULL,
+         error_fingerprint TEXT,
+         status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'replayed', 'resolved')),
+         replay_key TEXT,
+         resolution_note TEXT,
+         resolved_at INTEGER
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_queue_dead_letters_status
+         ON ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+         (status, last_failed_at, dead_letter_id)`,
     );
   }
 
@@ -1317,11 +1833,13 @@ export class ExactReviewQueue {
     state: ExactReviewQueueState,
     metricDelta: ExactReviewQueueMetricDelta = {},
     publicationFeedback?: ExactReviewPublicationFeedback,
+    deadLetter?: ExactReviewDeadLetterInsert,
   ) {
     this.storage.transactionSync(() => {
       this.writeStateSync(state);
       this.incrementQueueMetricsSync(metricDelta);
       if (publicationFeedback) this.applyPublicationFeedbackSync(publicationFeedback);
+      if (deadLetter) this.insertDeadLetterSync(deadLetter);
     });
   }
 
@@ -1330,6 +1848,27 @@ export class ExactReviewQueue {
       this.env,
       this.storage.kv.get(EXACT_REVIEW_PUBLICATION_CONTROL_KEY),
     );
+  }
+
+  private refreshPublicationControlSync(state: ExactReviewQueueState, now: number) {
+    const current = this.publicationControlSync();
+    const publications = Object.values(state.items).filter(exactReviewQueueIsPublication);
+    const pending = publications.filter((item) => item.state === "pending");
+    const oldestPendingAt = pending.reduce<number | null>(
+      (oldest, item) => (oldest === null ? item.createdAt : Math.min(oldest, item.createdAt)),
+      null,
+    );
+    const flow = this.publicationFlowSummarySync(now).last_15_minutes;
+    const next = exactReviewPublicationControlAfterDemand(this.env, current, {
+      at: now,
+      backlog: pending.length,
+      oldestPendingAgeMs: oldestPendingAt === null ? 0 : Math.max(0, now - oldestPendingAt),
+      netDrainRatePerHour: flow.net_drain_rate_per_hour,
+    });
+    if (stableJson(next) !== stableJson(current)) {
+      this.storage.kv.put(EXACT_REVIEW_PUBLICATION_CONTROL_KEY, next);
+    }
+    return next;
   }
 
   private applyPublicationFeedbackSync(feedback: ExactReviewPublicationFeedback) {
@@ -1342,7 +1881,10 @@ export class ExactReviewQueue {
     const row = Array.from(
       this.storage.sql.exec(
         `SELECT review_enqueued_total, review_completed_total,
-                publication_enqueued_total, publication_completed_total
+                publication_enqueued_total, publication_completed_total,
+                publication_published_total, publication_superseded_total,
+                publication_retried_total, publication_dead_lettered_total,
+                publication_refreshed_total
            FROM ${EXACT_REVIEW_QUEUE_METRICS_TABLE}
           WHERE singleton_id = 1`,
       ),
@@ -1352,6 +1894,11 @@ export class ExactReviewQueue {
           review_completed_total?: number;
           publication_enqueued_total?: number;
           publication_completed_total?: number;
+          publication_published_total?: number;
+          publication_superseded_total?: number;
+          publication_retried_total?: number;
+          publication_dead_lettered_total?: number;
+          publication_refreshed_total?: number;
         }
       | undefined;
     return {
@@ -1362,6 +1909,11 @@ export class ExactReviewQueue {
       publication: {
         enqueued: exactReviewMetricTotal(row?.publication_enqueued_total),
         completed: exactReviewMetricTotal(row?.publication_completed_total),
+        published: exactReviewMetricTotal(row?.publication_published_total),
+        superseded: exactReviewMetricTotal(row?.publication_superseded_total),
+        retried: exactReviewMetricTotal(row?.publication_retried_total),
+        deadLettered: exactReviewMetricTotal(row?.publication_dead_lettered_total),
+        refreshed: exactReviewMetricTotal(row?.publication_refreshed_total),
       },
     };
   }
@@ -1371,7 +1923,22 @@ export class ExactReviewQueue {
     const reviewCompleted = exactReviewMetricDelta(delta.reviewCompleted);
     const publicationEnqueued = exactReviewMetricDelta(delta.publicationEnqueued);
     const publicationCompleted = exactReviewMetricDelta(delta.publicationCompleted);
-    if (!reviewEnqueued && !reviewCompleted && !publicationEnqueued && !publicationCompleted) {
+    const publicationPublished = exactReviewMetricDelta(delta.publicationPublished);
+    const publicationSuperseded = exactReviewMetricDelta(delta.publicationSuperseded);
+    const publicationRetried = exactReviewMetricDelta(delta.publicationRetried);
+    const publicationDeadLettered = exactReviewMetricDelta(delta.publicationDeadLettered);
+    const publicationRefreshed = exactReviewMetricDelta(delta.publicationRefreshed);
+    if (
+      !reviewEnqueued &&
+      !reviewCompleted &&
+      !publicationEnqueued &&
+      !publicationCompleted &&
+      !publicationPublished &&
+      !publicationSuperseded &&
+      !publicationRetried &&
+      !publicationDeadLettered &&
+      !publicationRefreshed
+    ) {
       return;
     }
     this.storage.sql.exec(
@@ -1379,13 +1946,247 @@ export class ExactReviewQueue {
           SET review_enqueued_total = review_enqueued_total + ?,
               review_completed_total = review_completed_total + ?,
               publication_enqueued_total = publication_enqueued_total + ?,
-              publication_completed_total = publication_completed_total + ?
+              publication_completed_total = publication_completed_total + ?,
+              publication_published_total = publication_published_total + ?,
+              publication_superseded_total = publication_superseded_total + ?,
+              publication_retried_total = publication_retried_total + ?,
+              publication_dead_lettered_total = publication_dead_lettered_total + ?,
+              publication_refreshed_total = publication_refreshed_total + ?
         WHERE singleton_id = 1`,
       reviewEnqueued,
       reviewCompleted,
       publicationEnqueued,
       publicationCompleted,
+      publicationPublished,
+      publicationSuperseded,
+      publicationRetried,
+      publicationDeadLettered,
+      publicationRefreshed,
     );
+    this.incrementPublicationMetricBucketSync({
+      publicationEnqueued,
+      publicationCompleted,
+      publicationPublished,
+      publicationSuperseded,
+      publicationRetried,
+      publicationDeadLettered,
+    });
+  }
+
+  private incrementPublicationMetricBucketSync({
+    publicationEnqueued,
+    publicationCompleted,
+    publicationPublished,
+    publicationSuperseded,
+    publicationRetried,
+    publicationDeadLettered,
+  }: {
+    publicationEnqueued: number;
+    publicationCompleted: number;
+    publicationPublished: number;
+    publicationSuperseded: number;
+    publicationRetried: number;
+    publicationDeadLettered: number;
+  }) {
+    if (
+      !publicationEnqueued &&
+      !publicationCompleted &&
+      !publicationPublished &&
+      !publicationSuperseded &&
+      !publicationRetried &&
+      !publicationDeadLettered
+    ) {
+      return;
+    }
+    const bucketStart =
+      Math.floor(Date.now() / EXACT_REVIEW_QUEUE_METRIC_BUCKET_MS) *
+      EXACT_REVIEW_QUEUE_METRIC_BUCKET_MS;
+    this.storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE}
+         (bucket_start, publication_enqueued, publication_resolved, publication_published,
+          publication_superseded, publication_retried, publication_dead_lettered)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(bucket_start) DO UPDATE SET
+         publication_enqueued = publication_enqueued + excluded.publication_enqueued,
+         publication_resolved = publication_resolved + excluded.publication_resolved,
+         publication_published = publication_published + excluded.publication_published,
+         publication_superseded = publication_superseded + excluded.publication_superseded,
+         publication_retried = publication_retried + excluded.publication_retried,
+         publication_dead_lettered =
+           publication_dead_lettered + excluded.publication_dead_lettered`,
+      bucketStart,
+      publicationEnqueued,
+      publicationCompleted,
+      publicationPublished,
+      publicationSuperseded,
+      publicationRetried,
+      publicationDeadLettered,
+    );
+  }
+
+  private deadLetterCapacityAvailableSync(deadLetterId: string) {
+    const existing = Array.from(
+      this.storage.sql.exec(
+        `SELECT 1 AS present
+           FROM ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+          WHERE dead_letter_id = ?`,
+        deadLetterId,
+      ),
+    ).length;
+    if (existing) return true;
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT COUNT(*) AS open_count
+           FROM ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+          WHERE status = 'open'`,
+      ),
+    )[0] as { open_count?: number } | undefined;
+    return Number(row?.open_count || 0) < EXACT_REVIEW_QUEUE_DEAD_LETTER_LIMIT;
+  }
+
+  private insertDeadLetterSync(deadLetter: ExactReviewDeadLetterInsert) {
+    this.storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+         (dead_letter_id, item_key, revision, target_repo, item_number, producer_run_id,
+          producer_run_attempt, artifact_name, reason_code, attempts, first_failed_at,
+          last_failed_at, item_json, error_fingerprint, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
+       ON CONFLICT(dead_letter_id) DO UPDATE SET
+         reason_code = excluded.reason_code,
+         attempts = excluded.attempts,
+         last_failed_at = excluded.last_failed_at,
+         error_fingerprint = excluded.error_fingerprint,
+         status = 'open', replay_key = NULL, resolution_note = NULL, resolved_at = NULL`,
+      deadLetter.id,
+      deadLetter.itemKey,
+      deadLetter.revision,
+      deadLetter.targetRepo,
+      deadLetter.itemNumber,
+      deadLetter.producerRunId,
+      deadLetter.producerRunAttempt,
+      deadLetter.artifactName,
+      deadLetter.reasonCode,
+      deadLetter.attempts,
+      deadLetter.firstFailedAt,
+      deadLetter.lastFailedAt,
+      deadLetter.itemJson,
+      deadLetter.errorFingerprint || null,
+    );
+  }
+
+  private drainParkedDeadLettersSync(state: ExactReviewQueueState, now: number) {
+    const openRow = Array.from(
+      this.storage.sql.exec(
+        `SELECT COUNT(*) AS open_count
+           FROM ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+          WHERE status = 'open'`,
+      ),
+    )[0] as { open_count?: number } | undefined;
+    let available = Math.max(
+      0,
+      EXACT_REVIEW_QUEUE_DEAD_LETTER_LIMIT - Number(openRow?.open_count || 0),
+    );
+    let moved = 0;
+    for (const item of Object.values(state.items).sort(
+      (left, right) => left.updatedAt - right.updatedAt || left.key.localeCompare(right.key),
+    )) {
+      if (!available || item.state !== "parked" || !exactReviewQueueIsPublication(item)) continue;
+      const deadLetter = exactReviewDeadLetterInsert(
+        item,
+        item.lastFailureReason || "retry_exhausted",
+        Math.max(1, item.attempts),
+        item.firstFailureAt || item.updatedAt,
+        now,
+      );
+      this.insertDeadLetterSync(deadLetter);
+      delete state.items[item.key];
+      available -= 1;
+      moved += 1;
+    }
+    return moved;
+  }
+
+  private prunePublicationTelemetrySync(now: number) {
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE} WHERE bucket_start < ?`,
+      now - EXACT_REVIEW_QUEUE_METRIC_BUCKET_TTL_MS,
+    );
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+        WHERE status != 'open' AND resolved_at < ?`,
+      now - EXACT_REVIEW_QUEUE_DEAD_LETTER_RESOLVED_TTL_MS,
+    );
+  }
+
+  private publicationFlowSummarySync(now: number) {
+    const summarize = (windowMs: number) => {
+      const row = Array.from(
+        this.storage.sql.exec(
+          `SELECT COALESCE(SUM(publication_enqueued), 0) AS enqueued,
+                  COALESCE(SUM(publication_resolved), 0) AS resolved,
+                  COALESCE(SUM(publication_published), 0) AS published,
+                  COALESCE(SUM(publication_superseded), 0) AS superseded,
+                  COALESCE(SUM(publication_retried), 0) AS retried,
+                  COALESCE(SUM(publication_dead_lettered), 0) AS dead_lettered
+             FROM ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE}
+            WHERE bucket_start >= ?`,
+          now - windowMs,
+        ),
+      )[0] as Record<string, number> | undefined;
+      const multiplier = (60 * 60 * 1000) / windowMs;
+      const enqueued = Number(row?.enqueued || 0);
+      const resolved = Number(row?.resolved || 0);
+      const retried = Number(row?.retried || 0);
+      const published = Number(row?.published || 0);
+      const superseded = Number(row?.superseded || 0);
+      const deadLettered = Number(row?.dead_lettered || 0);
+      return {
+        window_minutes: windowMs / 60_000,
+        enqueued,
+        resolved,
+        published,
+        superseded,
+        retried,
+        dead_lettered: deadLettered,
+        arrival_rate_per_hour: Math.round(enqueued * multiplier * 10) / 10,
+        resolved_rate_per_hour: Math.round(resolved * multiplier * 10) / 10,
+        published_rate_per_hour: Math.round(published * multiplier * 10) / 10,
+        superseded_rate_per_hour: Math.round(superseded * multiplier * 10) / 10,
+        retried_rate_per_hour: Math.round(retried * multiplier * 10) / 10,
+        dead_lettered_rate_per_hour: Math.round(deadLettered * multiplier * 10) / 10,
+        net_drain_rate_per_hour: Math.round((resolved - enqueued) * multiplier * 10) / 10,
+        retry_amplification: resolved > 0 ? Math.round((retried / resolved) * 100) / 100 : null,
+      };
+    };
+    return { last_15_minutes: summarize(15 * 60_000), last_60_minutes: summarize(60 * 60_000) };
+  }
+
+  private deadLetterStatsSync() {
+    const totals = Array.from(
+      this.storage.sql.exec(
+        `SELECT COUNT(*) AS open_count, MIN(first_failed_at) AS oldest_failed_at
+           FROM ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+          WHERE status = 'open'`,
+      ),
+    )[0] as { open_count?: number; oldest_failed_at?: number } | undefined;
+    const reasons = Object.fromEntries(
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT reason_code, COUNT(*) AS reason_count
+             FROM ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+            WHERE status = 'open'
+            GROUP BY reason_code
+            ORDER BY reason_code`,
+        ) as Iterable<{ reason_code: string; reason_count: number }>,
+      ).map((row) => [row.reason_code, Number(row.reason_count)]),
+    );
+    const oldest = Number(totals?.oldest_failed_at || 0);
+    return {
+      open: Number(totals?.open_count || 0),
+      limit: EXACT_REVIEW_QUEUE_DEAD_LETTER_LIMIT,
+      oldest_failed_at: oldest ? new Date(oldest).toISOString() : null,
+      reasons,
+    };
   }
 
   private writeStateSync(state: ExactReviewQueueState) {
@@ -1579,6 +2380,7 @@ export class ExactReviewQueue {
   }
 
   private async scheduleNext(state: ExactReviewQueueState, now: number) {
+    const publicationControl = this.refreshPublicationControlSync(state, now);
     const next = exactReviewQueueNextWakeAt(
       state,
       now,
@@ -1588,7 +2390,9 @@ export class ExactReviewQueue {
         this.env,
         state,
         now,
-        this.publicationControlSync().capacityCeiling,
+        publicationControl.capacityCeiling,
+        true,
+        publicationControl.demandCapacity,
       ),
       exactReviewPublicationDispatchLeaseMs(this.env),
       exactReviewHeartbeatGraceMs(this.env),
@@ -1811,9 +2615,108 @@ function exactReviewPublicationFailureKind(value): ExactReviewPublicationFailure
     : null;
 }
 
+function exactReviewPublicationCompletionKind(value): ExactReviewPublicationCompletionKind | null {
+  const normalized = String(value || "");
+  return normalized === "published" ||
+    normalized === "superseded" ||
+    normalized === "retryable_failure" ||
+    normalized === "refresh_required" ||
+    normalized === "permanent_failure"
+    ? normalized
+    : null;
+}
+
+function exactReviewPublicationReasonCode(value): ExactReviewPublicationReasonCode | null {
+  const normalized = String(value || "");
+  return [
+    "publication_applied",
+    "remote_newer_tuple",
+    "remote_closed",
+    "live_terminal",
+    "github_rate_limit",
+    "github_transient",
+    "workflow_cancelled",
+    "artifact_unavailable",
+    "artifact_expired",
+    "invalid_artifact",
+    "missing_record_tuple",
+    "tuple_protocol_invalid",
+    "policy_invariant",
+    "unknown_failure",
+    "retry_exhausted",
+  ].includes(normalized)
+    ? (normalized as ExactReviewPublicationReasonCode)
+    : null;
+}
+
+function exactReviewPublicationCompletion(
+  kindValue,
+  reasonValue,
+  errorFingerprintValue,
+): ExactReviewPublicationCompletion | null {
+  const kind = exactReviewPublicationCompletionKind(kindValue);
+  const reasonCode = exactReviewPublicationReasonCode(reasonValue);
+  if (!kind || !reasonCode) return null;
+  const allowedReasons: Record<
+    ExactReviewPublicationCompletionKind,
+    ReadonlySet<ExactReviewPublicationReasonCode>
+  > = {
+    published: new Set(["publication_applied"]),
+    superseded: new Set(["remote_newer_tuple", "remote_closed", "live_terminal"]),
+    retryable_failure: new Set([
+      "github_rate_limit",
+      "github_transient",
+      "workflow_cancelled",
+      "artifact_unavailable",
+      "unknown_failure",
+    ]),
+    refresh_required: new Set(["artifact_unavailable", "artifact_expired"]),
+    permanent_failure: new Set([
+      "invalid_artifact",
+      "missing_record_tuple",
+      "tuple_protocol_invalid",
+      "policy_invariant",
+      "unknown_failure",
+      "retry_exhausted",
+    ]),
+  };
+  if (!allowedReasons[kind].has(reasonCode)) return null;
+  const errorFingerprint = String(errorFingerprintValue || "").trim();
+  if (errorFingerprint && !/^[A-Za-z0-9:._-]{1,200}$/.test(errorFingerprint)) return null;
+  return { kind, reasonCode, ...(errorFingerprint ? { errorFingerprint } : {}) };
+}
+
 function exactReviewRunAttempt(value): number | null {
   const runAttempt = Number(value);
   return Number.isInteger(runAttempt) && runAttempt > 0 ? runAttempt : null;
+}
+
+function exactReviewDeadLetterIds(value): string[] | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 20) return null;
+  const ids = value.map((entry) => String(entry || "").trim());
+  if (ids.some((id) => !id || id.length > 500) || new Set(ids).size !== ids.length) return null;
+  return ids;
+}
+
+function exactReviewPublicationCandidates(
+  value,
+): Array<{ itemKey: string; revision: number }> | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 25) return null;
+  const candidates: Array<{ itemKey: string; revision: number }> = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const candidate = objectValue(entry);
+    const itemKey = String(candidate.item_key || "").trim();
+    const revision = Number(candidate.revision);
+    if (!itemKey || itemKey.length > 500 || !Number.isInteger(revision) || revision < 1) {
+      return null;
+    }
+    const identity = `${itemKey}:${revision}`;
+    if (seen.has(identity)) return null;
+    seen.add(identity);
+    candidates.push({ itemKey, revision });
+  }
+  return candidates;
 }
 
 function exactReviewClaimGeneration(value) {
@@ -1908,6 +2811,210 @@ export function exactReviewClaimedRuns(value): ExactReviewClaimedRun[] | null {
     runs.push({ runId, runAttempt, claimGeneration });
   }
   return runs;
+}
+
+function finishExactReviewPublicationQueueItem({
+  state,
+  item,
+  now,
+  completion,
+  requestedRetryAt = 0,
+  requeueLatest = false,
+  deadLetterCapacityAvailable,
+  env,
+}: {
+  state: ExactReviewQueueState;
+  item: ExactReviewQueueItem;
+  now: number;
+  completion: ExactReviewPublicationCompletion;
+  requestedRetryAt?: number;
+  requeueLatest?: boolean;
+  deadLetterCapacityAvailable: boolean;
+  env: unknown;
+}): {
+  requeued: boolean;
+  retried: boolean;
+  refreshed: boolean;
+  parked: boolean;
+  deadLetter?: ExactReviewDeadLetterInsert;
+} {
+  const hasNewerRevision = item.revision > Number(item.leaseRevision || 0);
+  if (hasNewerRevision || requeueLatest) {
+    const requeued = finishExactReviewQueueItem(
+      state,
+      item,
+      now,
+      "success",
+      requestedRetryAt,
+      requeueLatest,
+    );
+    if (requeued) {
+      item.publicationFailureAttempts = 0;
+      item.firstFailureAt = undefined;
+      item.lastFailureReason = undefined;
+    }
+    return {
+      requeued,
+      retried: false,
+      refreshed: false,
+      parked: false,
+    };
+  }
+
+  if (completion.kind === "published" || completion.kind === "superseded") {
+    return {
+      requeued: finishExactReviewQueueItem(state, item, now, "success"),
+      retried: false,
+      refreshed: false,
+      parked: false,
+    };
+  }
+
+  // Dispatch failures and publisher results have independent budgets. A runner
+  // handoff failure must not make the first deterministic artifact failure look
+  // like its third confirmation attempt.
+  const attempt = Number(item.publicationFailureAttempts || 0) + 1;
+  const firstFailureAt = item.firstFailureAt || now;
+  const artifactRefresh =
+    completion.kind === "refresh_required" ||
+    (completion.reasonCode === "artifact_unavailable" &&
+      attempt >= EXACT_REVIEW_PUBLICATION_ARTIFACT_RETRY_LIMIT);
+  if (artifactRefresh) {
+    refreshExactReviewPublicationItem(state, item, now, env);
+    return { requeued: false, retried: false, refreshed: true, parked: false };
+  }
+
+  const retryExhausted = exactReviewPublicationRetryExhausted(
+    completion,
+    attempt,
+    firstFailureAt,
+    now,
+  );
+  if (retryExhausted) {
+    const deadLetter = exactReviewDeadLetterInsert(
+      item,
+      completion.reasonCode === "unknown_failure" ? "retry_exhausted" : completion.reasonCode,
+      attempt,
+      firstFailureAt,
+      now,
+      completion.errorFingerprint,
+    );
+    if (deadLetterCapacityAvailable) {
+      delete state.items[item.key];
+      return { requeued: false, retried: false, refreshed: false, parked: false, deadLetter };
+    }
+    // A full dead-letter store is an operator-visible circuit breaker. Park the
+    // poison item instead of silently dropping replay context or dispatching it forever.
+    clearExactReviewLease(item);
+    item.state = "parked";
+    item.parkedReason = "dead_letter_capacity";
+    item.attempts = attempt;
+    item.publicationFailureAttempts = attempt;
+    item.firstFailureAt = firstFailureAt;
+    item.lastFailureReason = completion.reasonCode;
+    item.updatedAt = now;
+    return { requeued: false, retried: false, refreshed: false, parked: true };
+  }
+
+  clearExactReviewLease(item);
+  item.state = "pending";
+  item.parkedReason = undefined;
+  item.attempts = attempt;
+  item.publicationFailureAttempts = attempt;
+  item.firstFailureAt = firstFailureAt;
+  item.lastFailureReason = completion.reasonCode;
+  item.nextAttemptAt = Math.max(
+    exactReviewQueueEnqueueAttemptAt(state, now),
+    now + exactReviewPublicationRetryDelayMs(item.key, completion, attempt),
+    requestedRetryAt,
+  );
+  item.updatedAt = now;
+  return { requeued: true, retried: true, refreshed: false, parked: false };
+}
+
+function exactReviewPublicationRetryExhausted(
+  completion: ExactReviewPublicationCompletion,
+  attempt: number,
+  firstFailureAt: number,
+  now: number,
+) {
+  if (completion.kind === "retryable_failure") {
+    if (completion.reasonCode === "artifact_unavailable") return false;
+    if (completion.reasonCode === "unknown_failure") {
+      return (
+        attempt >= EXACT_REVIEW_PUBLICATION_UNKNOWN_RETRY_LIMIT ||
+        now >= firstFailureAt + EXACT_REVIEW_PUBLICATION_UNKNOWN_RETRY_MAX_AGE_MS
+      );
+    }
+    return (
+      attempt >= EXACT_REVIEW_PUBLICATION_TRANSIENT_RETRY_LIMIT ||
+      now >= firstFailureAt + EXACT_REVIEW_PUBLICATION_TRANSIENT_RETRY_MAX_AGE_MS
+    );
+  }
+  if (completion.kind === "permanent_failure") {
+    const limit =
+      completion.reasonCode === "unknown_failure"
+        ? EXACT_REVIEW_PUBLICATION_UNKNOWN_RETRY_LIMIT
+        : EXACT_REVIEW_PUBLICATION_PERMANENT_RETRY_LIMIT;
+    return (
+      attempt >= limit ||
+      (completion.reasonCode === "unknown_failure" &&
+        now >= firstFailureAt + EXACT_REVIEW_PUBLICATION_UNKNOWN_RETRY_MAX_AGE_MS)
+    );
+  }
+  return false;
+}
+
+function exactReviewPublicationRetryDelayMs(
+  itemKey: string,
+  completion: ExactReviewPublicationCompletion,
+  attempt: number,
+) {
+  let delay: number;
+  if (completion.kind === "permanent_failure" || completion.reasonCode === "unknown_failure") {
+    const steps = [60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000];
+    delay = steps[Math.min(attempt - 1, steps.length - 1)];
+  } else {
+    const maximum = completion.reasonCode === "github_rate_limit" ? 60 * 60_000 : 30 * 60_000;
+    delay = Math.min(maximum, 60_000 * 2 ** Math.min(attempt - 1, 6));
+  }
+  const hash = [...`${itemKey}:${attempt}`].reduce(
+    (current, character) => (current * 33 + character.charCodeAt(0)) >>> 0,
+    5381,
+  );
+  return delay + Math.floor(delay * ((hash % 21) / 100));
+}
+
+function exactReviewDeadLetterId(item: ExactReviewQueueItem) {
+  return `${item.key}@revision:${item.leaseRevision || item.revision}`;
+}
+
+function exactReviewDeadLetterInsert(
+  item: ExactReviewQueueItem,
+  reasonCode: ExactReviewPublicationReasonCode,
+  attempts: number,
+  firstFailedAt: number,
+  lastFailedAt: number,
+  errorFingerprint?: string,
+): ExactReviewDeadLetterInsert {
+  const publication = item.decision.publication;
+  if (!publication) throw new Error(`publication metadata missing for ${item.key}`);
+  return {
+    id: exactReviewDeadLetterId(item),
+    itemKey: item.key,
+    revision: Number(item.leaseRevision || item.revision),
+    targetRepo: item.decision.targetRepo,
+    itemNumber: item.decision.itemNumber,
+    producerRunId: publication.producerRunId,
+    producerRunAttempt: publication.producerRunAttempt,
+    artifactName: publication.artifactName,
+    reasonCode,
+    attempts,
+    firstFailedAt,
+    lastFailedAt,
+    itemJson: JSON.stringify(item),
+    ...(errorFingerprint ? { errorFingerprint } : {}),
+  };
 }
 
 function finishExactReviewQueueItem(
@@ -2052,14 +3159,19 @@ function reclaimExpiredExactReviewLease(
   clearExactReviewLease(item);
   item.state = "pending";
   item.nextAttemptAt = now;
-  if (hasNewerRevision) item.attempts = 0;
+  if (hasNewerRevision) {
+    item.attempts = 0;
+    item.publicationFailureAttempts = 0;
+    item.firstFailureAt = undefined;
+    item.lastFailureReason = undefined;
+  }
   item.updatedAt = now;
   return true;
 }
 
 function expireExactReviewPublicationItems(state: ExactReviewQueueState, now: number, env) {
   let changed = false;
-  for (const [key, item] of Object.entries(state.items)) {
+  for (const item of Object.values(state.items)) {
     const publication = item.decision.publication;
     if (
       item.state !== "pending" ||
@@ -2068,53 +3180,66 @@ function expireExactReviewPublicationItems(state: ExactReviewQueueState, now: nu
     ) {
       continue;
     }
-    delete state.items[key];
-    const decision: ExactReviewDecision = {
-      ...publication.producerDecision,
-      sourceAction:
-        publication.producerDecision.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION
-          ? FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION
-          : EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
-      supersedesInProgress: true,
-    };
-    const recoveryKey = exactReviewItemKey(decision);
-    const current = state.items[recoveryKey];
-    if (current?.state === "pending") {
-      current.decision = mergePendingExactReviewDecision(current.decision, decision);
-      current.revision += 1;
-      current.updatedAt = now;
-      // Merged decision, not the raw recovery: a pending explicit command must
-      // keep its immediate attempt time (same rule as the enqueue merge path).
-      current.nextAttemptAt = exactReviewQueueDebouncedAttemptAt(
-        state,
-        current.decision,
-        now,
-        current.createdAt,
-        env,
-      );
-      current.attempts = 0;
-    } else if (!current) {
-      // The expired publication was already deleted above; shedding here only
-      // suppresses creation of its replacement recovery item.
-      if (exactReviewQueuePendingCount(state) >= exactReviewPendingSoftLimit(env)) {
-        state.shedSinceReset = exactReviewShedSinceReset(state) + 1;
-        changed = true;
-        continue;
-      }
-      state.items[recoveryKey] = {
-        key: recoveryKey,
-        decision,
-        state: "pending",
-        revision: 1,
-        createdAt: now,
-        updatedAt: now,
-        nextAttemptAt: exactReviewQueueDebouncedAttemptAt(state, decision, now, now, env),
-        attempts: 0,
-      };
-    }
+    refreshExactReviewPublicationItem(state, item, now, env);
     changed = true;
   }
   return changed;
+}
+
+function refreshExactReviewPublicationItem(
+  state: ExactReviewQueueState,
+  item: ExactReviewQueueItem,
+  now: number,
+  env,
+) {
+  const publication = item.decision.publication;
+  if (!publication) throw new Error(`publication metadata missing for ${item.key}`);
+  delete state.items[item.key];
+  const decision: ExactReviewDecision = {
+    ...publication.producerDecision,
+    sourceAction:
+      publication.producerDecision.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION
+        ? FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION
+        : EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
+    supersedesInProgress: true,
+  };
+  const recoveryKey = exactReviewItemKey(decision);
+  const current = state.items[recoveryKey];
+  if (current) {
+    if (current.state === "pending" || current.state === "parked") {
+      current.decision = mergePendingExactReviewDecision(current.decision, decision);
+      current.state = "pending";
+      current.parkedReason = undefined;
+    } else {
+      return;
+    }
+    current.revision += 1;
+    current.updatedAt = now;
+    current.nextAttemptAt = exactReviewQueueDebouncedAttemptAt(
+      state,
+      current.decision,
+      now,
+      current.createdAt,
+      env,
+    );
+    current.attempts = 0;
+    current.publicationFailureAttempts = 0;
+    current.firstFailureAt = undefined;
+    current.lastFailureReason = undefined;
+    return;
+  }
+  // Refresh is the terminal recovery for an unusable artifact. It must not be
+  // shed after deleting the only durable publication reference.
+  state.items[recoveryKey] = {
+    key: recoveryKey,
+    decision,
+    state: "pending",
+    revision: 1,
+    createdAt: now,
+    updatedAt: now,
+    nextAttemptAt: exactReviewQueueDebouncedAttemptAt(state, decision, now, now, env),
+    attempts: 0,
+  };
 }
 
 function exactReviewQueueEnqueueAttemptAt(state: ExactReviewQueueState, now: number) {
@@ -2246,8 +3371,14 @@ function exactReviewQueueStats(
   heartbeatGraceMs = DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS,
 ) {
   const items = Object.values(state.items);
+  const handoffItems = items.filter(
+    (item): item is ExactReviewQueueItem & { state: "pending" | "dispatching" | "leased" } =>
+      item.state !== "parked",
+  );
   const handoffHealth = summarizeExactReviewHandoff({
-    items,
+    // Parked poison items are reported by publication health and cannot take a
+    // handoff lease, so they must not be mislabeled as an unknown handoff phase.
+    items: handoffItems,
     dispatcher: state.dispatcher,
     shedSinceReset: exactReviewShedSinceReset(state),
     now,
@@ -2262,6 +3393,7 @@ function exactReviewQueueStats(
       pending: number;
       dispatching: number;
       leased: number;
+      parked: number;
       oldest_pending_at: number | null;
     }
   >();
@@ -2272,6 +3404,7 @@ function exactReviewQueueStats(
       pending: 0,
       dispatching: 0,
       leased: 0,
+      parked: 0,
       oldest_pending_at: null,
     };
     if (item.state === "pending") {
@@ -2282,8 +3415,10 @@ function exactReviewQueueStats(
           : Math.min(current.oldest_pending_at, item.createdAt);
     } else if (item.state === "dispatching") {
       current.dispatching += 1;
-    } else {
+    } else if (item.state === "leased") {
       current.leased += 1;
+    } else {
+      current.parked += 1;
     }
     targets.set(targetRepo, current);
   }
@@ -2359,8 +3494,11 @@ function exactReviewQueueLaneStats(
   shedSinceReset = 0,
 ) {
   const pendingItems = items.filter((item) => item.state === "pending");
+  const readyItems = pendingItems.filter((item) => item.nextAttemptAt <= now);
+  const backoffItems = pendingItems.filter((item) => item.nextAttemptAt > now);
   const dispatchingItems = items.filter((item) => item.state === "dispatching");
   const leasedItems = items.filter((item) => item.state === "leased");
+  const parkedItems = items.filter((item) => item.state === "parked");
   const active = dispatchingItems.length + leasedItems.length;
   const oldestPendingAt = pendingItems.reduce<number | null>(
     (oldest, item) => (oldest === null ? item.createdAt : Math.min(oldest, item.createdAt)),
@@ -2371,6 +3509,14 @@ function exactReviewQueueLaneStats(
     .sort(
       (left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key),
     )[0]?.key;
+  const oldestReadyAt = readyItems.reduce<number | null>(
+    (oldest, item) => (oldest === null ? item.createdAt : Math.min(oldest, item.createdAt)),
+    null,
+  );
+  const oldestBackoffAt = backoffItems.reduce<number | null>(
+    (oldest, item) => (oldest === null ? item.createdAt : Math.min(oldest, item.createdAt)),
+    null,
+  );
   const nextAttemptAt = pendingItems.reduce<number | null>(
     (next, item) => (next === null ? item.nextAttemptAt : Math.min(next, item.nextAttemptAt)),
     null,
@@ -2379,10 +3525,11 @@ function exactReviewQueueLaneStats(
     pending: pendingItems.length,
     pending_depth: pendingItems.length,
     shed_since_reset: shedSinceReset,
-    ready: pendingItems.filter((item) => item.nextAttemptAt <= now).length,
-    backoff: pendingItems.filter((item) => item.nextAttemptAt > now).length,
+    ready: readyItems.length,
+    backoff: backoffItems.length,
     dispatching: dispatchingItems.length,
     leased: leasedItems.length,
+    parked: parkedItems.length,
     capacity,
     active,
     available_slots: Math.max(0, capacity - active),
@@ -2390,8 +3537,44 @@ function exactReviewQueueLaneStats(
     oldest_pending_age_seconds:
       oldestPendingAt === null ? null : Math.max(0, Math.floor((now - oldestPendingAt) / 1_000)),
     oldest_pending_key: oldestPendingKey ?? null,
+    oldest_ready_at: oldestReadyAt === null ? null : new Date(oldestReadyAt).toISOString(),
+    oldest_ready_age_seconds:
+      oldestReadyAt === null ? null : Math.max(0, Math.floor((now - oldestReadyAt) / 1_000)),
+    oldest_backoff_at: oldestBackoffAt === null ? null : new Date(oldestBackoffAt).toISOString(),
+    oldest_backoff_age_seconds:
+      oldestBackoffAt === null ? null : Math.max(0, Math.floor((now - oldestBackoffAt) / 1_000)),
     next_attempt_at: nextAttemptAt === null ? null : new Date(nextAttemptAt).toISOString(),
   };
+}
+
+function exactReviewPublicationHealth(
+  lane: ReturnType<typeof exactReviewQueueLaneStats>,
+  flow: { last_15_minutes: { net_drain_rate_per_hour: number } },
+  deadLetters: { open: number },
+) {
+  const oldestAge = Number(lane.oldest_pending_age_seconds || 0);
+  if (lane.parked > 0 || oldestAge >= 6 * 60 * 60) {
+    return {
+      status: "critical",
+      reason: lane.parked > 0 ? "dead_letter_capacity" : "oldest_pending_over_6h",
+    };
+  }
+  if (
+    deadLetters.open > 0 ||
+    oldestAge >= 60 * 60 ||
+    (lane.pending >= 100 && flow.last_15_minutes.net_drain_rate_per_hour <= 0)
+  ) {
+    return {
+      status: "degraded",
+      reason:
+        deadLetters.open > 0
+          ? "open_dead_letters"
+          : oldestAge >= 60 * 60
+            ? "oldest_pending_over_1h"
+            : "not_draining",
+    };
+  }
+  return { status: lane.pending || lane.active ? "healthy" : "idle", reason: null };
 }
 
 export function exactReviewQueueNextWakeAt(
@@ -2456,10 +3639,19 @@ export function exactReviewQueueNextWakeAt(
     if (item.state === "pending") {
       if (dispatcherPaused) return [dispatcherRetryAt];
       if (exactReviewQueueIsPublication(item)) {
-        const blockedUntil =
-          activePublishers.length >= publicationCapacity && activePublisherWakeAt.length
-            ? Math.min(...activePublisherWakeAt)
-            : item.nextAttemptAt;
+        let blockedUntil = item.nextAttemptAt;
+        if (activePublishers.length >= publicationCapacity) {
+          const capacityWakeAt = [...activePublisherWakeAt];
+          if (publicationCapacity <= 0) {
+            // A zero publication budget is normally caused by active reviews
+            // consuming the shared worker budget. Their leases, rather than a
+            // one-second alarm loop, determine when a slot can become available.
+            capacityWakeAt.push(...activeReviewWakeAt);
+          }
+          blockedUntil = capacityWakeAt.length
+            ? Math.min(...capacityWakeAt)
+            : now + DEFAULT_EXACT_REVIEW_RETRY_MS;
+        }
         return [Math.max(item.nextAttemptAt, blockedUntil)];
       }
       const target = item.decision.targetRepo;
@@ -2486,7 +3678,7 @@ export function exactReviewQueueNextWakeAt(
     );
     return leaseExpiresAt ? [leaseExpiresAt] : [];
   });
-  if (!times.length) return now + DEFAULT_EXACT_REVIEW_RETRY_MS;
+  if (!times.length) return null;
   return Math.max(now + 1_000, Math.min(...times));
 }
 
@@ -2502,9 +3694,11 @@ export function exactReviewQueueCapacity(env) {
 
 export function exactReviewPublicationCapacity(
   env,
-  readyBacklog = 0,
+  outstandingBacklog = 0,
   activePublishers = 0,
   capacityCeiling = Number.POSITIVE_INFINITY,
+  oldestPendingAgeMs = 0,
+  netDrainRatePerHour = Number.POSITIVE_INFINITY,
 ) {
   const maximum = exactReviewPublicationMaximum(env);
   const minimum = exactReviewPublicationMinimum(env, maximum);
@@ -2513,9 +3707,18 @@ export function exactReviewPublicationCapacity(
     minimum,
     Math.min(maximum, Number.isFinite(Number(capacityCeiling)) ? Number(capacityCeiling) : maximum),
   );
-  const scaleSteps = Math.floor(
-    Math.max(0, Number(readyBacklog) || 0) / EXACT_REVIEW_PUBLICATION_READY_PER_SCALE_STEP,
-  );
+  const backlog = Math.max(0, Number(outstandingBacklog) || 0);
+  const oldestAge = Math.max(0, Number(oldestPendingAgeMs) || 0);
+  let scaleSteps = 0;
+  if (
+    backlog >= 100 ||
+    oldestAge >= 60 * 60 * 1000 ||
+    (backlog >= 50 && Number(netDrainRatePerHour) <= 0)
+  ) {
+    scaleSteps += 1;
+  }
+  if (backlog >= 250 || oldestAge >= 4 * 60 * 60 * 1000) scaleSteps += 1;
+  if (backlog >= 400 || oldestAge >= 8 * 60 * 60 * 1000) scaleSteps += 1;
   const desired = Math.min(
     adaptiveMaximum,
     base + scaleSteps * EXACT_REVIEW_PUBLICATION_CONCURRENT_SCALE_STEP,
@@ -2583,6 +3786,7 @@ function exactReviewPublicationControl(env, value: unknown): ExactReviewPublicat
   const maximum = exactReviewPublicationMaximum(env);
   const minimum = exactReviewPublicationMinimum(env, maximum);
   const rawCeiling = Number(control.capacityCeiling);
+  const rawDemandCapacity = Number(control.demandCapacity);
   const rawCooldown = Number(control.cooldownUntil);
   const rawRecoverySuccesses = Number(control.recoverySuccesses);
   const rawLastFailureAt = Number(control.lastFailureAt);
@@ -2591,11 +3795,18 @@ function exactReviewPublicationControl(env, value: unknown): ExactReviewPublicat
     capacityCeiling: Number.isSafeInteger(rawCeiling)
       ? Math.max(minimum, Math.min(maximum, rawCeiling))
       : maximum,
+    demandCapacity: Number.isSafeInteger(rawDemandCapacity)
+      ? Math.max(minimum, Math.min(maximum, rawDemandCapacity))
+      : exactReviewPublicationBase(env, maximum),
     cooldownUntil: Number.isSafeInteger(rawCooldown) && rawCooldown > 0 ? rawCooldown : 0,
     recoverySuccesses:
       Number.isSafeInteger(rawRecoverySuccesses) && rawRecoverySuccesses > 0
         ? rawRecoverySuccesses
         : 0,
+    demandSamples: Math.max(0, Number(control.demandSamples) || 0),
+    demandTier: Math.max(0, Number(control.demandTier) || 0),
+    lastDemandSampleAt: Math.max(0, Number(control.lastDemandSampleAt) || 0),
+    lastScaleAt: Math.max(0, Number(control.lastScaleAt) || 0),
     ...(Number.isSafeInteger(rawLastFailureAt) && rawLastFailureAt > 0
       ? { lastFailureAt: rawLastFailureAt }
       : {}),
@@ -2618,6 +3829,7 @@ function exactReviewPublicationControlAfterFeedback(
       ? Math.max(minimum, Math.floor(currentCapacity / 2))
       : Math.max(minimum, currentCapacity - EXACT_REVIEW_PUBLICATION_CONCURRENT_SCALE_STEP);
     return {
+      ...control,
       capacityCeiling: ceiling,
       cooldownUntil: Math.max(
         control.cooldownUntil,
@@ -2648,6 +3860,79 @@ function exactReviewPublicationControlAfterFeedback(
   };
 }
 
+function exactReviewPublicationControlAfterDemand(
+  env,
+  control: ExactReviewPublicationControl,
+  sample: {
+    at: number;
+    backlog: number;
+    oldestPendingAgeMs: number;
+    netDrainRatePerHour: number;
+  },
+) {
+  if (sample.at < control.lastDemandSampleAt + EXACT_REVIEW_PUBLICATION_DEMAND_SAMPLE_MS) {
+    return control;
+  }
+  const maximum = exactReviewPublicationMaximum(env);
+  const base = exactReviewPublicationBase(env, maximum);
+  const desired = exactReviewPublicationCapacity(
+    env,
+    sample.backlog,
+    0,
+    maximum,
+    sample.oldestPendingAgeMs,
+    sample.netDrainRatePerHour,
+  );
+  const desiredTier = Math.max(
+    0,
+    Math.ceil((desired - base) / EXACT_REVIEW_PUBLICATION_CONCURRENT_SCALE_STEP),
+  );
+  const sameDirection = control.demandTier === desiredTier;
+  const demandSamples = sameDirection ? control.demandSamples + 1 : 1;
+  const next = {
+    ...control,
+    demandSamples,
+    demandTier: desiredTier,
+    lastDemandSampleAt: sample.at,
+  };
+  if (
+    desired > control.demandCapacity &&
+    demandSamples >= 2 &&
+    sample.at >= control.lastScaleAt + EXACT_REVIEW_PUBLICATION_SCALE_UP_MS
+  ) {
+    return {
+      ...next,
+      demandCapacity: Math.min(
+        desired,
+        control.demandCapacity + EXACT_REVIEW_PUBLICATION_CONCURRENT_SCALE_STEP,
+      ),
+      demandSamples: 0,
+      lastScaleAt: sample.at,
+    };
+  }
+  const healthyDrain =
+    sample.backlog < 80 &&
+    sample.oldestPendingAgeMs < 30 * 60 * 1000 &&
+    sample.netDrainRatePerHour > 0;
+  if (
+    desired < control.demandCapacity &&
+    healthyDrain &&
+    demandSamples >= 6 &&
+    sample.at >= control.lastScaleAt + EXACT_REVIEW_PUBLICATION_SCALE_DOWN_MS
+  ) {
+    return {
+      ...next,
+      demandCapacity: Math.max(
+        base,
+        control.demandCapacity - EXACT_REVIEW_PUBLICATION_CONCURRENT_SCALE_STEP,
+      ),
+      demandSamples: 0,
+      lastScaleAt: sample.at,
+    };
+  }
+  return next;
+}
+
 function exactReviewPublicationControlStatus(env, control: ExactReviewPublicationControl) {
   const maximum = exactReviewPublicationMaximum(env);
   return {
@@ -2656,6 +3941,10 @@ function exactReviewPublicationControlStatus(env, control: ExactReviewPublicatio
     base: exactReviewPublicationBase(env, maximum),
     maximum,
     ceiling: control.capacityCeiling,
+    demand_capacity: control.demandCapacity,
+    demand_samples: control.demandSamples,
+    demand_tier: control.demandTier,
+    last_scale_at: control.lastScaleAt ? new Date(control.lastScaleAt).toISOString() : null,
     cooldown_until:
       control.cooldownUntil > 0 ? new Date(control.cooldownUntil).toISOString() : null,
     recovery_successes: control.recoverySuccesses,
@@ -2673,20 +3962,41 @@ function exactReviewPublicationCapacityForState(
   now: number,
   capacityCeiling = Number.POSITIVE_INFINITY,
   preserveActive = true,
+  demandCapacity?: number,
 ) {
-  let readyBacklog = 0;
+  let outstandingBacklog = 0;
   let activePublishers = 0;
+  let activeReviews = 0;
+  let oldestPendingAt = Number.POSITIVE_INFINITY;
   for (const item of Object.values(state.items)) {
-    if (!exactReviewQueueIsPublication(item)) continue;
-    if (item.state === "pending" && item.nextAttemptAt <= now) readyBacklog += 1;
-    else if (item.state === "dispatching" || item.state === "leased") activePublishers += 1;
+    if (!exactReviewQueueIsPublication(item)) {
+      if (item.state === "dispatching" || item.state === "leased") activeReviews += 1;
+      continue;
+    }
+    if (item.state === "pending") {
+      outstandingBacklog += 1;
+      oldestPendingAt = Math.min(oldestPendingAt, item.createdAt);
+    } else if (item.state === "dispatching" || item.state === "leased") activePublishers += 1;
   }
-  return exactReviewPublicationCapacity(
-    env,
-    readyBacklog,
-    preserveActive ? activePublishers : 0,
-    capacityCeiling,
+  // Once the hysteresis controller has sampled demand, its target is the
+  // admission decision. Recomputing from backlog alone here would discard the
+  // controller's net-drain signal for the 50-99 item pressure tier.
+  const requested =
+    demandCapacity === undefined
+      ? exactReviewPublicationCapacity(
+          env,
+          outstandingBacklog,
+          preserveActive ? activePublishers : 0,
+          capacityCeiling,
+          Number.isFinite(oldestPendingAt) ? now - oldestPendingAt : 0,
+        )
+      : Math.min(capacityCeiling, demandCapacity);
+  const workerBudget = Math.max(1, numberFrom(env.WORKER_BUDGET, 128));
+  const budgeted = Math.max(
+    0,
+    workerBudget - activeReviews - EXACT_REVIEW_PUBLICATION_ACTIONS_RESERVE,
   );
+  return Math.max(preserveActive ? activePublishers : 0, Math.min(requested, budgeted));
 }
 
 function exactReviewTargetCapacity(env) {

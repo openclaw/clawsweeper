@@ -436,7 +436,7 @@ handles only the selected item, uploads a hash-bound GitHub Actions artifact,
 enqueues a separate durable publication lease, and then releases its review
 lease without checking out or pushing the state repository. The queue retries
 publication independently, so a cancelled publisher does not rerun Codex. A
-Durable Object-bounded publisher lane (24 concurrent publishers by default)
+Durable Object-bounded publisher lane (24 base, adaptively capped at 48)
 validates each artifact's workflow run, queue tuple, target, decision digest,
 file inventory, sizes, and SHA-256 hashes before it receives write tokens.
 Publication leases reserve the bounded publisher lane's maximum queue wait;
@@ -444,10 +444,11 @@ terminal-run reconciliation releases dead dispatches early. The publisher then
 uses the same review and apply paths with only the
 immediate-safe reasons enabled by default:
 `implemented_on_main`, `duplicate_or_superseded`, and
-`low_signal_unmergeable_pr`. Artifacts remain available for 90 days. A
-publication that still cannot finish after 80 days expires its artifact handoff
-and queues one fresh exact review, avoiding an unrecoverable missing-artifact
-loop while leaving a ten-day retention margin.
+`low_signal_unmergeable_pr`. A stale tuple now terminates as `superseded`
+instead of retrying, while permanent failures enter a bounded dead-letter store
+after their confirmation retries. Artifacts remain available for 90 days; three
+confirmed unavailable-artifact attempts queue one fresh exact review instead of
+waiting for the retention deadline.
 
 Deterministic terminal and remain-open outcomes flow through the same publisher.
 Ordinary synced verdicts publish their exact durable comment, then queue an

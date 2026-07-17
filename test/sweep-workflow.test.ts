@@ -452,12 +452,14 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.ok(publisherCheckout);
   assert.equal(publisherCheckout.with?.ref, "main");
   assert.equal(download.uses, "actions/download-artifact@v8");
+  assert.equal(download["continue-on-error"], true);
   assert.equal(download.with?.name, "${{ steps.publication-context.outputs.artifact_name }}");
   assert.equal(
     download.with?.["run-id"],
     "${{ steps.publication-context.outputs.producer_run_id }}",
   );
   assert.match(validate.run ?? "", /repair:exact-review-bundle validate/);
+  assert.equal(validate["continue-on-error"], true);
   assert.match(legacyArtifact.run ?? "", /review_lease_owner/);
   assert.match(legacyArtifact.run ?? "", /review_lease_comment_id/);
   assert.doesNotMatch(create.run ?? "", /repair:exact-review-bundle -- create/);
@@ -500,6 +502,9 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   const status = step(publisher, "Mark re-review complete");
   assert.equal(status.env?.LIVE_TERMINAL_MISSING, undefined);
   assert.equal(status.env?.LIVE_GUARDED_OPEN, undefined);
+  assert.match(status.env?.PUBLISH_COMPLETION_KIND ?? "", /publish-event-result/);
+  assert.match(status.run ?? "", /PUBLISH_COMPLETION_KIND.*superseded/);
+  assert.match(status.run ?? "", /stale result was superseded/);
   assert.doesNotMatch(status.run ?? "", /LIVE_TERMINAL_MISSING|LIVE_GUARDED_OPEN/);
   const reaction = step(publisher, "React to target item completion");
   assert.match(reaction.if ?? "", /requeue_latest != 'true'/);
@@ -512,15 +517,22 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   const publishComplete = step(publisher, "Complete durable exact review publication");
   const publicationPressure = step(publisher, "Probe GitHub pressure after publication failure");
   const releaseTerminal = step(publisher, "Release terminal review leases");
-  const releaseUnsuccessful = step(publisher, "Release unsuccessful publisher-owned review lease");
+  const releaseUnsuccessful = step(
+    publisher,
+    "Release superseded or unsuccessful publisher-owned review lease",
+  );
   assert.doesNotMatch(releaseTerminal.if ?? "", /publication-context.*live_terminal_noop/);
   assert.match(releaseTerminal.if ?? "", /publish-event-result.*terminal_noop/);
   assert.match(releaseUnsuccessful.run ?? "", /\.user\.login == \\"clawsweeper\[bot\]\\"/);
   assert.match(releaseUnsuccessful.run ?? "", /content == "eyes"/);
+  assert.match(releaseUnsuccessful.if ?? "", /completion_kind == 'superseded'/);
   assert.match(publishResult.env?.PRIOR_JOB_STATUS ?? "", /job\.status/);
   assert.match(publishResult.env?.LEGACY_TUPLELESS ?? "", /legacy-exact-artifact/);
   assert.match(publishResult.env?.FAILURE_KIND ?? "", /publish-event-result/);
   assert.match(publishResult.env?.FAILURE_KIND ?? "", /publication-pressure/);
+  assert.match(publishResult.env?.DOWNLOAD_OUTCOME ?? "", /download-exact-review-bundle/);
+  assert.match(publishResult.env?.VALIDATE_OUTCOME ?? "", /validate-exact-review-bundle/);
+  assert.match(publishResult.env?.PUBLISH_COMPLETION_KIND ?? "", /publish-event-result/);
   assert.match(publicationPressure.if ?? "", /failure\(\)/);
   assert.match(publicationPressure.run ?? "", /gh api rate_limit/);
   assert.match(publicationPressure.run ?? "", /failure_kind=github_rate_limit/);
@@ -529,10 +541,15 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.doesNotMatch(publicationPressure.run ?? "", /HTTP \(403\|429\)/);
   assert.match(publishResult.run ?? "", /REQUEUE_LATEST.*SOURCE_DRIFT_OUTCOME/);
   assert.match(publishResult.run ?? "", /LEGACY_TUPLELESS.*SOURCE_DRIFT_OUTCOME/);
+  assert.match(publishResult.run ?? "", /completion_kind=superseded/);
+  assert.match(publishResult.run ?? "", /reason_code=artifact_unavailable/);
+  assert.match(publishResult.run ?? "", /reason_code=invalid_artifact/);
   assert.doesNotMatch(publishResult.run ?? "", /LIVE_TERMINAL_NOOP/);
   assert.match(publishComplete.run ?? "", /internal\/exact-review\/complete/);
   assert.match(publishComplete.env?.FAILURE_KIND ?? "", /exact-review-publication-result/);
   assert.match(publishComplete.run ?? "", /failure_kind: failureKind/);
+  assert.match(publishComplete.run ?? "", /completion_kind: completionKind/);
+  assert.match(publishComplete.run ?? "", /reason_code: reasonCode/);
   assert.ok(publisher.steps.indexOf(publishResult) < publisher.steps.indexOf(publishComplete));
 
   const publisherSource = readText("src/repair/publish-event-result.ts");
@@ -542,6 +559,8 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   );
   assert.match(publisherSource, /"--exact-event-publication"/);
   assert.match(publisherSource, /legacyTuplelessReviewLease/);
+  assert.match(publisherSource, /writePublicationCompletionOutputs\(\s*"superseded"/);
+  assert.match(publisherSource, /completionKind: supersededReason/);
   const reviewSource = readText("src/clawsweeper.ts");
   assert.match(reviewSource, /reserveReviewLeaseCommand/);
   assert.match(reviewSource, /suppliedReviewStartLeaseFromArgs/);

@@ -455,10 +455,25 @@ export default {
       return exactReviewQueueRequest(env, "/complete", request);
     if (url.pathname === "/internal/exact-review/claimed-runs" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/claimed-runs");
+    if (url.pathname === "/internal/exact-review/dead-letters/list" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/dead-letters/list");
+    if (url.pathname === "/internal/exact-review/dead-letters/replay" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/dead-letters/replay");
+    if (url.pathname === "/internal/exact-review/dead-letters/resolve" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/dead-letters/resolve");
+    if (url.pathname === "/internal/exact-review/publications/list" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/publications/list");
+    if (
+      url.pathname === "/internal/exact-review/publications/supersede" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/publications/supersede");
     if (url.pathname === "/internal/exact-review/reconcile" && request.method === "POST")
       return authenticatedExactReviewReconcile(request, env);
     if (url.pathname === "/api/exact-review-queue" && request.method === "GET")
       return exactReviewQueueRequest(env, "/stats");
+    if (url.pathname === "/api/exact-review-queue/item" && request.method === "GET")
+      return exactReviewQueueRequest(env, `/item-status?${url.searchParams.toString()}`);
     if (url.pathname === "/api/health-history" && request.method === "GET")
       return healthHistoryJson(request, env);
     if (url.pathname === "/api/status") return statusJson(request, env, ctx);
@@ -8399,24 +8414,51 @@ function renderExactReviewLanes(queue) {
     const oldest = Number.isFinite(lane.oldest_pending_age_seconds)
       ? " · oldest " + elapsed(lane.oldest_pending_age_seconds * 1000)
       : "";
+    const oldestReady = Number.isFinite(lane.oldest_ready_age_seconds)
+      ? " · oldest ready " + elapsed(lane.oldest_ready_age_seconds * 1000)
+      : "";
+    const oldestBackoff = Number.isFinite(lane.oldest_backoff_age_seconds)
+      ? " · oldest backoff " + elapsed(lane.oldest_backoff_age_seconds * 1000)
+      : "";
     const publicationControl = laneKey === "publication" ? lane.capacity_control : null;
+    const cooldown = publicationControl?.cooldown_until
+      ? " · cooldown until " + new Date(publicationControl.cooldown_until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : "";
     const capacityNote = publicationControl?.mode === "throttled"
-      ? " · adaptive ceiling " + fmt.format(publicationControl.ceiling || capacity) + " after " +
+      ? " · target " + fmt.format(publicationControl.demand_capacity || capacity) + " · pressure ceiling " + fmt.format(publicationControl.ceiling || capacity) + " after " +
         (publicationControl.last_failure_kind === "github_rate_limit" ? "GitHub rate limit" : "GitHub 5xx")
       : laneKey === "publication"
-        ? " · adaptive " + fmt.format(publicationControl?.base || 24) + "–" + fmt.format(publicationControl?.maximum || capacity)
+        ? " · target " + fmt.format(publicationControl?.demand_capacity || capacity) + " · adaptive " + fmt.format(publicationControl?.base || 24) + "–" + fmt.format(publicationControl?.maximum || capacity)
         : "";
+    const flow = laneKey === "publication" ? lane.flow?.last_15_minutes : null;
+    const rate = value => Number.isFinite(Number(value)) ? fmt.format(Number(value)) + "/h" : "n/a";
+    const flowSummary = flow
+      ? '<div class="lane-counts">' +
+        '<div class="lane-count"><span>Arrival</span><strong>' + rate(flow.arrival_rate_per_hour) + '</strong></div>' +
+        '<div class="lane-count"><span>Terminal resolved</span><strong>' + rate(flow.resolved_rate_per_hour) + '</strong></div>' +
+        '<div class="lane-count"><span>Published</span><strong>' + rate(flow.published_rate_per_hour) + '</strong></div>' +
+        '<div class="lane-count"><span>Superseded</span><strong>' + rate(flow.superseded_rate_per_hour) + '</strong></div>' +
+        '<div class="lane-count"><span>Retried</span><strong>' + rate(flow.retried_rate_per_hour) + '</strong></div>' +
+        '<div class="lane-count"><span>Dead-lettered</span><strong>' + rate(flow.dead_lettered_rate_per_hour) + '</strong></div></div>'
+      : '';
+    const deadLetters = laneKey === "publication" ? lane.dead_letters : null;
+    const deadLetterNote = deadLetters
+      ? " · DLQ " + fmt.format(deadLetters.open || 0) +
+        (deadLetters.oldest_failed_at ? " · oldest DLQ " + since(deadLetters.oldest_failed_at) : "") +
+        " · retry amplification " + (flow?.retry_amplification == null ? "n/a" : Number(flow.retry_amplification).toFixed(2))
+      : "";
     return '<div class="exact-lane"><div class="exact-lane-head"><strong>' + esc(label) + '</strong><span>' + fmt.format(active) + ' of ' + fmt.format(capacity) + ' active</span></div>' +
       '<div class="lane-count"><span>Pending</span><strong>' + fmt.format(lane.pending || 0) + '</strong></div>' +
       exactReviewTrend(samples, label) +
       laneSpeedTrend(samples, speedLabel, rateHelp[laneKey]) +
+      flowSummary +
       '<div class="lane-counts">' +
       '<div class="lane-count"><span>Ready</span><strong>' + fmt.format(lane.ready || 0) + '</strong></div>' +
       '<div class="lane-count"><span>Backoff</span><strong>' + fmt.format(lane.backoff || 0) + '</strong></div>' +
       '<div class="lane-count"><span>Dispatching</span><strong>' + fmt.format(lane.dispatching || 0) + '</strong></div>' +
       '<div class="lane-count"><span>Leased</span><strong>' + fmt.format(lane.leased || 0) + '</strong></div></div>' +
       '<div class="lane-bar"><i style="width:' + used + '%"></i></div>' +
-      '<div class="lane-foot">' + fmt.format(lane.available_slots || 0) + ' ' + esc(label.toLowerCase()) + ' slots open' + esc(oldest + capacityNote) + '</div></div>';
+      '<div class="lane-foot">' + fmt.format(lane.available_slots || 0) + ' ' + esc(label.toLowerCase()) + ' slots open' + esc(oldest + oldestReady + oldestBackoff + capacityNote + cooldown + deadLetterNote) + '</div></div>';
   }).join("");
 }
 function renderExactReviewHandoff(queue) {

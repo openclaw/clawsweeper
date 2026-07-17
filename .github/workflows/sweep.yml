@@ -1409,6 +1409,7 @@ jobs:
       - name: Download exact review artifact bundle
         if: ${{ steps.publication-context.outputs.claimed == 'true' }}
         id: download-exact-review-bundle
+        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: ${{ steps.publication-context.outputs.artifact_name }}
@@ -1418,7 +1419,9 @@ jobs:
           path: .artifacts/exact-review-bundle
 
       - name: Validate exact review artifact bundle
-        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.download-exact-review-bundle.outcome == 'success' }}
+        id: validate-exact-review-bundle
+        continue-on-error: true
         env:
           EXACT_REVIEW_BUNDLE_DIR: .artifacts/exact-review-bundle
           EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.publication-context.outputs.claim_generation }}
@@ -1442,7 +1445,7 @@ jobs:
 
       - name: Identify legacy tuple-less exact artifact
         id: legacy-exact-artifact
-        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
         env:
           REPORT_PATH: .artifacts/exact-review-bundle/review/${{ steps.publication-context.outputs.item_number }}.md
         run: |
@@ -1468,7 +1471,7 @@ jobs:
           NODE
 
       - name: Stage validated exact review artifact
-        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
         run: |
           set -euo pipefail
           mkdir -p artifacts/event
@@ -1478,7 +1481,7 @@ jobs:
           fi
 
       - name: Create target write token
-        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
         id: target-write-token
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -1494,7 +1497,7 @@ jobs:
           permission-statuses: read
 
       - name: Create state token
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
         id: state-token
         uses: ./.github/actions/create-state-token
         with:
@@ -1502,14 +1505,14 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
       - uses: ./.github/actions/setup-state
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
         id: setup-state
         with:
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
 
       - name: Publish event result and apply safe close
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
         id: publish-event-result
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -1755,6 +1758,8 @@ jobs:
           STATUS_COMMENT_ID: ${{ fromJSON(steps.publication-context.outputs.decision).statusCommentId || '' }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PUBLISH_OUTCOME: ${{ steps.publish-event-result.outcome }}
+          PUBLISH_COMPLETION_KIND: ${{ steps.publish-event-result.outputs.completion_kind }}
+          PUBLISH_REASON_CODE: ${{ steps.publish-event-result.outputs.reason_code }}
           ROUTE_HANDOFF_OUTCOME: ${{ steps.queue-deferred-verdict-router.outcome }}
           TERMINAL_MISSING: ${{ steps.publish-event-result.outputs.terminal_missing }}
           TERMINAL_CLOSED: ${{ steps.publish-event-result.outputs.terminal_closed }}
@@ -1777,6 +1782,13 @@ jobs:
           elif [ "$REQUEUE_LATEST" = "true" ] && [ "${{ steps.queue-source-drift-review.outcome }}" = "success" ]; then
             state="Complete"
             detail="The item changed after review; one fresh exact review was queued."
+          elif [ "$PUBLISH_COMPLETION_KIND" = "superseded" ]; then
+            state="Complete"
+            if [ "$PUBLISH_REASON_CODE" = "remote_closed" ]; then
+              detail="A newer publication already closed the item; this stale result was superseded."
+            else
+              detail="A newer review tuple already exists; this stale result was superseded."
+            fi
           elif [ "${{ steps.confirm-terminal-item.outputs.confirmed }}" = "true" ]; then
             state="Complete"
             detail="The item is closed; no stale verdict was published."
@@ -1826,8 +1838,8 @@ jobs:
             gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/reactions/$reaction_id" --method DELETE || true
           done <<< "$reaction_ids"
 
-      - name: Release unsuccessful publisher-owned review lease
-        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.live_proceeded == 'true' && (steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.requeue_latest == 'true' && steps.queue-source-drift-review.outcome != 'success')) }}
+      - name: Release superseded or unsuccessful publisher-owned review lease
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.live_proceeded == 'true' && (steps.publish-event-result.outputs.completion_kind == 'superseded' || steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.requeue_latest == 'true' && steps.queue-source-drift-review.outcome != 'success')) }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
@@ -1887,13 +1899,29 @@ jobs:
           SOURCE_DRIFT_OUTCOME: ${{ steps.queue-source-drift-review.outcome }}
           DEFERRED_ROUTE_OUTCOME: ${{ steps.queue-deferred-verdict-router.outcome }}
           FAILURE_KIND: ${{ steps.publish-event-result.outputs.failure_kind || steps.publication-pressure.outputs.failure_kind }}
+          DOWNLOAD_OUTCOME: ${{ steps.download-exact-review-bundle.outcome }}
+          VALIDATE_OUTCOME: ${{ steps.validate-exact-review-bundle.outcome }}
+          PUBLISH_COMPLETION_KIND: ${{ steps.publish-event-result.outputs.completion_kind }}
+          PUBLISH_REASON_CODE: ${{ steps.publish-event-result.outputs.reason_code }}
+          ERROR_FINGERPRINT: ${{ steps.publish-event-result.outputs.error_fingerprint }}
           REVIEW_ONLY: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
         run: |
+          set -euo pipefail
           outcome=failure
-          if [ "$LEGACY_TUPLELESS" = "true" ] && [ "$SOURCE_DRIFT_OUTCOME" = "success" ]; then
+          completion_kind=permanent_failure
+          reason_code=unknown_failure
+          if [ "$PUBLISH_COMPLETION_KIND" = "superseded" ] && { [ "$PUBLISH_REASON_CODE" = "remote_newer_tuple" ] || [ "$PUBLISH_REASON_CODE" = "remote_closed" ]; }; then
             outcome=success
+            completion_kind=superseded
+            reason_code="$PUBLISH_REASON_CODE"
+          elif [ "$LEGACY_TUPLELESS" = "true" ] && [ "$SOURCE_DRIFT_OUTCOME" = "success" ]; then
+            outcome=success
+            completion_kind=superseded
+            reason_code=live_terminal
           elif [ "$PRIOR_JOB_STATUS" = "cancelled" ]; then
             outcome=cancelled
+            completion_kind=retryable_failure
+            reason_code=workflow_cancelled
           elif [ "$PRIOR_JOB_STATUS" = "success" ]; then
             if [ "$PUBLISH_OUTCOME" = "success" ] && [ "$REQUEUE_LATEST" = "true" ] && [ "$SOURCE_DRIFT_OUTCOME" = "success" ]; then
               outcome=success
@@ -1903,7 +1931,33 @@ jobs:
               outcome=success
             fi
           fi
+          if [ "$outcome" = "success" ] && [ "$completion_kind" != "superseded" ]; then
+            if [ "$PUBLISH_COMPLETION_KIND" = "published" ] && [ "$PUBLISH_REASON_CODE" = "publication_applied" ]; then
+              completion_kind=published
+              reason_code=publication_applied
+            else
+              completion_kind=superseded
+              reason_code=live_terminal
+            fi
+          elif [ "$outcome" != "success" ] && { [ "$FAILURE_KIND" = "github_rate_limit" ] || [ "$FAILURE_KIND" = "github_transient" ]; }; then
+            completion_kind=retryable_failure
+            reason_code="$FAILURE_KIND"
+          elif [ "$outcome" != "success" ] && [ "$DOWNLOAD_OUTCOME" = "failure" ]; then
+            completion_kind=retryable_failure
+            reason_code=artifact_unavailable
+          elif [ "$outcome" != "success" ] && [ "$VALIDATE_OUTCOME" = "failure" ]; then
+            completion_kind=permanent_failure
+            reason_code=invalid_artifact
+          elif [ "$outcome" != "success" ] && [ "$PUBLISH_COMPLETION_KIND" = "permanent_failure" ]; then
+            completion_kind=permanent_failure
+            reason_code="${PUBLISH_REASON_CODE:-unknown_failure}"
+          fi
           echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
+          echo "completion_kind=$completion_kind" >> "$GITHUB_OUTPUT"
+          echo "reason_code=$reason_code" >> "$GITHUB_OUTPUT"
+          if [ -n "$ERROR_FINGERPRINT" ]; then
+            echo "error_fingerprint=$ERROR_FINGERPRINT" >> "$GITHUB_OUTPUT"
+          fi
           if [ "$outcome" = "failure" ] && { [ "$FAILURE_KIND" = "github_rate_limit" ] || [ "$FAILURE_KIND" = "github_transient" ]; }; then
             echo "failure_kind=$FAILURE_KIND" >> "$GITHUB_OUTPUT"
           fi
@@ -1918,6 +1972,9 @@ jobs:
           LEASE_REVISION: ${{ steps.publication-context.outputs.publisher_lease_revision }}
           OUTCOME: ${{ steps.exact-review-publication-result.outputs.outcome || 'failure' }}
           FAILURE_KIND: ${{ steps.exact-review-publication-result.outputs.failure_kind }}
+          COMPLETION_KIND: ${{ steps.exact-review-publication-result.outputs.completion_kind }}
+          REASON_CODE: ${{ steps.exact-review-publication-result.outputs.reason_code }}
+          ERROR_FINGERPRINT: ${{ steps.exact-review-publication-result.outputs.error_fingerprint }}
           QUEUE_LEASE_ID: ${{ steps.publication-context.outputs.publisher_lease_id }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -1938,6 +1995,16 @@ jobs:
             const failureKind = ["github_rate_limit", "github_transient"].includes(process.env.FAILURE_KIND)
               ? process.env.FAILURE_KIND
               : undefined;
+            const completionKind = ["published", "superseded", "retryable_failure", "refresh_required", "permanent_failure"].includes(process.env.COMPLETION_KIND)
+              ? process.env.COMPLETION_KIND
+              : undefined;
+            const reasonCode = ["publication_applied", "remote_newer_tuple", "remote_closed", "live_terminal", "github_rate_limit", "github_transient", "workflow_cancelled", "artifact_unavailable", "artifact_expired", "invalid_artifact", "missing_record_tuple", "tuple_protocol_invalid", "policy_invariant", "unknown_failure", "retry_exhausted"].includes(process.env.REASON_CODE)
+              ? process.env.REASON_CODE
+              : undefined;
+            const errorFingerprint = /^[A-Za-z0-9:._-]{1,200}$/.test(process.env.ERROR_FINGERPRINT || "")
+              ? process.env.ERROR_FINGERPRINT
+              : undefined;
+            if (!completionKind || !reasonCode) process.exit(1);
             process.stdout.write(JSON.stringify({
               lease_id: process.env.QUEUE_LEASE_ID,
               item_key: process.env.ITEM_KEY,
@@ -1946,6 +2013,9 @@ jobs:
               run_id: process.env.GITHUB_RUN_ID,
               run_attempt: runAttempt,
               outcome,
+              completion_kind: completionKind,
+              reason_code: reasonCode,
+              ...(errorFingerprint ? { error_fingerprint: errorFingerprint } : {}),
               ...(outcome === "failure" && failureKind ? { failure_kind: failureKind } : {}),
             }));
           ')"
