@@ -734,6 +734,75 @@ try {
     },
   );
 
+  const failedCollectionAt = originalHistory.at(-2)?.at;
+  healthHistory = [
+    originalHistory.at(-3),
+    { at: failedCollectionAt, exact_review: { collection_ok: false } },
+    originalHistory.at(-1),
+  ];
+  const failedCollectionHistory = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/health-history" && response.status() === 200,
+  );
+  await page.evaluate(() => {
+    window.__bayProofSetNow(Date.parse("2026-07-11T18:48:03.000Z"));
+    window.__bayProofPoll();
+  });
+  await failedCollectionHistory;
+  await page.waitForFunction(() => {
+    const path = document
+      .querySelector("#bay-control-board .bay-control-card .bay-control-chart svg path")
+      ?.getAttribute("d");
+    return (path?.match(/M/g) || []).length === 2;
+  });
+  const failedCollectionPath = await page
+    .locator("#bay-control-board .bay-control-card .bay-control-chart svg path")
+    .first()
+    .getAttribute("d");
+  assertProof(
+    "Bay renders failed history collections as a gap instead of a zero backlog",
+    (failedCollectionPath?.match(/M/g) || []).length === 2,
+    { review_pending_path: failedCollectionPath },
+  );
+
+  healthHistory = [
+    originalHistory.at(-3),
+    {
+      at: originalHistory.at(-2)?.at,
+      exact_review: {
+        collection_ok: true,
+        review: { pending: 31 },
+        publication: { pending: 2 },
+      },
+    },
+    originalHistory.at(-1),
+  ];
+  const pendingOnlyHistory = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/health-history" && response.status() === 200,
+  );
+  await page.evaluate(() => {
+    window.__bayProofSetNow(Date.parse("2026-07-11T18:49:04.000Z"));
+    window.__bayProofPoll();
+  });
+  await pendingOnlyHistory;
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector("#bay-control-board .bay-control-card .bay-control-chart svg")
+        ?.querySelectorAll("circle.bay-control-point").length === 3,
+  );
+  const pendingOnlyPath = await page
+    .locator("#bay-control-board .bay-control-card .bay-control-chart svg path")
+    .first()
+    .getAttribute("d");
+  assertProof(
+    "Bay retains legacy pending-only history samples",
+    (pendingOnlyPath?.match(/M/g) || []).length === 1,
+    { review_pending_path: pendingOnlyPath },
+  );
+  healthHistory = originalHistory;
+
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() =>
     document.getElementById("stage-grid")?.classList.contains("portrait-stack"),
@@ -1294,7 +1363,7 @@ try {
   });
   assertProof(
     "mini control board reads cached dashboard history once per minute",
-    healthHistoryGets === 5,
+    healthHistoryGets === 7,
     { health_history_gets: healthHistoryGets },
   );
   const unexpectedConsoleErrors = consoleErrors.filter(
