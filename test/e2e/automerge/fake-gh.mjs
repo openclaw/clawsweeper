@@ -166,6 +166,10 @@ function handleApi() {
     assertReadToken();
     respondJson({ default_branch: state.pr.baseRef });
   }
+  if (endpoint === `repos/${state.repo}/collaborators/fixture-maintainer/permission`) {
+    assertReadToken();
+    respondJson({ permission: "maintain", user: { id: 2, login: "fixture-maintainer" } });
+  }
   if (/^repos\/openclaw\/clawsweeper\/actions\/workflows\/[^/]+\/runs\?/.test(endpoint)) {
     assertReadToken();
     respondJson([]);

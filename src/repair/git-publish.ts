@@ -28,6 +28,7 @@ import {
   type RecordTupleWinner,
 } from "./record-tuple.js";
 import { mergeSweepStatusJson } from "./sweep-status-merge.js";
+import { mergeCommentRouterLedgers } from "./comment-router-ledger-merge.js";
 
 export type GitRunResult = {
   status: number;
@@ -979,16 +980,24 @@ export function pushCommit(options: {
     }
     const remoteCommit = runGit(["rev-parse", `${remote}/${branch}`], { quiet: true }).trim();
     const statusMerges = planSweepStatusMerges({ localCommit, remoteCommit });
+    const ledgerMerge = planCommentRouterLedgerMerge({ localCommit, remoteCommit });
     const rebaseArgs =
       rebaseStrategy === "theirs" || rebaseStrategy === "apply-records"
         ? ["rebase", "-X", "theirs", `${remote}/${branch}`]
         : ["rebase", `${remote}/${branch}`];
     if (spawnGit(rebaseArgs).status === 0) {
       applySweepStatusMerges({ statusMerges, remoteCommit, localCommitMessage });
+      applyCommentRouterLedgerMerge({ ledgerMerge, remoteCommit, localCommitMessage });
+      continue;
+    }
+    if (resolveCommentRouterLedgerConflict(ledgerMerge)) {
+      applySweepStatusMerges({ statusMerges, remoteCommit, localCommitMessage });
+      applyCommentRouterLedgerMerge({ ledgerMerge, remoteCommit, localCommitMessage });
       continue;
     }
     if (rebaseStrategy === "apply-records" && resolveApplyRecordConflicts(statusMerges)) {
       applySweepStatusMerges({ statusMerges, remoteCommit, localCommitMessage });
+      applyCommentRouterLedgerMerge({ ledgerMerge, remoteCommit, localCommitMessage });
       continue;
     } else {
       runGit(["rebase", "--abort"], { allowFailure: true });
@@ -1430,6 +1439,13 @@ function rebuildPublishCommit(options: {
     includeIndependent: true,
     pathspecs: options.paths,
   });
+  const ledgerMerge = planCommentRouterLedgerMerge({
+    baseCommit: runGit(["rev-parse", `${options.sourceCommit}^`], { quiet: true }).trim(),
+    localCommit: options.sourceCommit,
+    remoteCommit,
+    includeIndependent: true,
+    pathspecs: options.paths,
+  });
   runGit(["reset", "--hard", remoteCommit]);
 
   for (const path of uniqueNonEmpty(options.paths)) {
@@ -1446,6 +1462,7 @@ function rebuildPublishCommit(options: {
   }
 
   applySweepStatusMergeFiles(statusMerges);
+  applyCommentRouterLedgerMergeFiles(ledgerMerge ? [ledgerMerge] : []);
   stagePaths(options.paths);
   if (!hasStagedChanges()) {
     console.log("No publish changes after syncing remote");
@@ -1562,6 +1579,90 @@ function readGitPath(commit: string, path: string): string | null {
     quiet: true,
   });
   return result.status === 0 ? result.stdout : null;
+}
+
+type CommentRouterLedgerMerge = { path: string; content: string };
+
+function planCommentRouterLedgerMerge(options: {
+  baseCommit?: string;
+  localCommit: string;
+  remoteCommit: string;
+  includeIndependent?: boolean;
+  pathspecs?: readonly string[];
+}): CommentRouterLedgerMerge | null {
+  const path = "results/comment-router.json";
+  if (options.pathspecs && !gitPathspecsInclude(options.pathspecs, path)) {
+    return null;
+  }
+  const baseCommit =
+    options.baseCommit ??
+    runGit(["merge-base", options.localCommit, options.remoteCommit], { quiet: true }).trim();
+  if (!baseCommit)
+    throw new Error("Refusing comment router ledger merge without a common Git base");
+  const base = readGitPath(baseCommit, path);
+  const local = readGitPath(options.localCommit, path);
+  const remote = readGitPath(options.remoteCommit, path);
+  if (!local || !remote) return null;
+  const localChanged = local !== base;
+  const remoteChanged = remote !== base;
+  if (!localChanged || (!options.includeIndependent && !remoteChanged)) return null;
+  return { path, content: mergeCommentRouterLedgers(local, remote) };
+}
+
+function gitPathspecsInclude(pathspecs: readonly string[], path: string): boolean {
+  // Publish accepts Git pathspec syntax, including root and magic forms. Ask
+  // Git to evaluate that contract so semantic merges cannot be bypassed by a
+  // broader spelling than the literal generated path.
+  return runGit(["ls-files", "-z", "--", ...uniqueNonEmpty(pathspecs)], { quiet: true })
+    .split("\0")
+    .includes(path);
+}
+
+function applyCommentRouterLedgerMergeFiles(merges: readonly CommentRouterLedgerMerge[]): void {
+  const root = publishRoot() ?? resolve(".");
+  for (const merge of merges) {
+    const destination = resolve(root, merge.path);
+    if (!isPathInsideOrEqual(root, destination)) {
+      throw new Error(
+        `Refusing to merge comment router ledger outside publish root: ${merge.path}`,
+      );
+    }
+    mkdirSync(dirname(destination), { recursive: true });
+    writeFileSync(destination, merge.content, "utf8");
+    runGit(["add", "--", merge.path]);
+  }
+}
+
+function resolveCommentRouterLedgerConflict(ledgerMerge: CommentRouterLedgerMerge | null): boolean {
+  if (!ledgerMerge) return false;
+  const conflicts = runGit(["diff", "--name-only", "--diff-filter=U"], { allowFailure: true })
+    .split(/\r?\n/)
+    .map((path) => path.trim())
+    .filter(Boolean);
+  if (!conflicts.includes(ledgerMerge.path)) return false;
+  applyCommentRouterLedgerMergeFiles([ledgerMerge]);
+  if (conflicts.length > 1) return false;
+  return spawnGit(["-c", "core.editor=true", "rebase", "--continue"]).status === 0;
+}
+
+function applyCommentRouterLedgerMerge(options: {
+  ledgerMerge: CommentRouterLedgerMerge | null;
+  remoteCommit: string;
+  localCommitMessage: string;
+}): void {
+  if (!options.ledgerMerge) return;
+  applyCommentRouterLedgerMergeFiles([options.ledgerMerge]);
+  if (!hasStagedChanges()) return;
+  if (spawnGit(["diff", "--cached", "--quiet", options.remoteCommit]).status === 0) {
+    runGit(["reset", "--hard", options.remoteCommit]);
+    return;
+  }
+  const commitsAhead = Number(
+    runGit(["rev-list", "--count", `${options.remoteCommit}..HEAD`], { quiet: true }).trim(),
+  );
+  if (Number.isInteger(commitsAhead) && commitsAhead > 0)
+    runGit(["commit", "--amend", "--no-edit"]);
+  else runGit(["commit", "-m", options.localCommitMessage]);
 }
 
 function applySweepStatusMergeFiles(statusMerges: readonly SweepStatusMerge[]): void {

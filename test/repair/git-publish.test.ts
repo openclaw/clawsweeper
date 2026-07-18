@@ -1507,6 +1507,63 @@ test("publishMainCommit publishes generated paths to state branch when state roo
   assert.throws(() => run("git", ["--git-dir", origin, "show", "main:results/ledger.txt"], root));
 });
 
+test("publishMainCommit preserves concurrent comment router ledger commands", () => {
+  for (const rebaseStrategy of ["normal", "theirs"]) {
+    assertConcurrentCommentRouterLedgerPublish(rebaseStrategy);
+  }
+});
+
+function assertConcurrentCommentRouterLedgerPublish(rebaseStrategy) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const ledgerFile = "results/comment-router.json";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  writeJson(path.join(work, ledgerFile), commentRouterLedger([commentRouterCommand("base", 1)]));
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  writeJson(
+    path.join(other, ledgerFile),
+    commentRouterLedger([
+      commentRouterCommand("base", 1),
+      commentRouterCommand("remote-resume", 2),
+    ]),
+  );
+  run("git", ["commit", "-am", "remote router command"], other);
+
+  writeJson(
+    path.join(work, ledgerFile),
+    commentRouterLedger([commentRouterCommand("base", 1), commentRouterCommand("local-resume", 3)]),
+  );
+  installFirstPushRaceHook(work, other);
+
+  const result = withCwd(work, () =>
+    publishMainCommit({
+      message: "chore: publish router command",
+      paths: ["."],
+      maxAttempts: 1,
+      pushAttempts: 2,
+      rebaseStrategy,
+    }),
+  );
+
+  assert.equal(result, "committed");
+  const published = readOriginJson(origin, `main:${ledgerFile}`, root);
+  assert.deepEqual(
+    published.commands.map((entry) => entry.comment_version_key),
+    ["base", "remote-resume", "local-resume"],
+  );
+}
+
 test("publishMainCommit refreshes merged health before the next state-root status publish", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");
@@ -2337,6 +2394,21 @@ if test "$count" -eq 2; then git -C "${other}" push origin HEAD:main; fi
 `,
   );
   fs.chmodSync(hook, 0o755);
+}
+
+function commentRouterLedger(commands) {
+  return { updated_at: "2026-07-18T22:10:32Z", commands };
+}
+
+function commentRouterCommand(key, second) {
+  const timestamp = `2026-07-18T22:10:${String(second).padStart(2, "0")}Z`;
+  return {
+    comment_version_key: key,
+    comment_id: key,
+    comment_updated_at: timestamp,
+    status: "executed",
+    processed_at: timestamp,
+  };
 }
 
 function installFirstPushRaceHook(work, other, branch = "main") {

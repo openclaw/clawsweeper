@@ -16,6 +16,7 @@ export const AUTOMERGE_E2E_SCENARIOS = [
   "happy-path",
   "pending-checks",
   "planning-head-drift",
+  "resume-intent-persistence",
   "verdict-head-drift",
   "ci-regression-29623139111",
 ];
@@ -232,7 +233,41 @@ export function runAutomergeE2E({
 
     const repairedHead = currentRef(targetFixture.remote, targetFixture.headRef);
     assertFixturePostRepair(targetFixture, repairedHead);
-    addExactHeadVerdict(statePath, repairedHead);
+    if (scenario === "resume-intent-persistence") {
+      const activeJob = path.join(
+        runtimeRoot,
+        "jobs/openclaw/inbox/automerge-openclaw-openclaw-42.md",
+      );
+      fs.mkdirSync(path.dirname(activeJob), { recursive: true });
+      fs.copyFileSync(jobPath, activeJob);
+      addMaintainerAutomergeCommand(statePath);
+      runCommentRouter(runtimeRoot, baseEnv, artifacts, "08-comment-router-resume-command");
+      const resumeReport = readRouterReport(runtimeRoot);
+      const resume = resumeReport.commands.find(
+        (command) => command.intent === "automerge" && command.trusted_bot === false,
+      );
+      assert.equal(
+        resume?.status,
+        "executed",
+        "maintainer replay must record active resume intent",
+      );
+      const persistedLedger = JSON.parse(
+        fs.readFileSync(path.join(runtimeRoot, "results", "comment-router.json"), "utf8"),
+      );
+      assert.equal(
+        persistedLedger.commands.some(
+          (command) =>
+            command.intent === "automerge" &&
+            command.status === "executed" &&
+            command.author === "fixture-maintainer",
+        ),
+        true,
+        "a later router invocation must be able to hydrate the resume command",
+      );
+      addCanonicalNeedsHumanVerdict(statePath, repairedHead);
+    } else {
+      addExactHeadVerdict(statePath, repairedHead);
+    }
     if (scenario === "verdict-head-drift") {
       const driftedHead = advanceRemoteContributorHead(root, targetFixture, "verdict head drift");
       runCommentRouter(runtimeRoot, baseEnv, artifacts, "08-comment-router-stale-verdict");
@@ -313,8 +348,11 @@ export function runAutomergeE2E({
     assert.equal(fixReport.actions.at(-1)?.status, "pushed");
     assert.equal(repairPostFlight.actions.at(-1)?.status, "blocked");
     assert.equal(repairPostFlight.actions.at(-1)?.reason, "job does not allow merge");
+    const mergedCommand = routerReport.commands.find((command) =>
+      command.actions.some((action) => action.action === "merge"),
+    );
     assert.equal(
-      routerReport.commands.at(-1)?.actions.find((action) => action.action === "merge")?.status,
+      mergedCommand?.actions.find((action) => action.action === "merge")?.status,
       "executed",
     );
     assert.equal(idempotentRouterReport.actionable, 0);
@@ -401,6 +439,57 @@ function addExactHeadVerdict(statePath, headSha) {
     author_association: "MEMBER",
     created_at: now,
     updated_at: now,
+  });
+  writeJson(statePath, state);
+}
+
+function addMaintainerAutomergeCommand(statePath) {
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  addFixtureComment(statePath, {
+    author: "clawsweeper[bot]",
+    authorId: 1,
+    body: `Automerge is already active.\n<!-- clawsweeper-command-status:${state.pr.number}:automerge:active -->`,
+  });
+  addFixtureComment(statePath, {
+    author: "fixture-maintainer",
+    authorId: 2,
+    body: "@clawsweeper automerge\n\nResume the exact current head after the repair fix landed.",
+  });
+}
+
+function addCanonicalNeedsHumanVerdict(statePath, headSha) {
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  const now = new Date(Date.now() + 1000).toISOString();
+  addFixtureComment(statePath, {
+    author: "clawsweeper[bot]",
+    authorId: 1,
+    body: [
+      "ClawSweeper needs maintainer judgment.",
+      "",
+      "**Next step before merge**",
+      "The PR is an active automerge candidate with no code finding, but missing real behavior proof needs maintainer handling.",
+      "",
+      `<!-- clawsweeper-verdict:needs-human item=${state.pr.number} sha=${headSha} reviewed_at=${now} -->`,
+    ].join("\n"),
+    timestamp: now,
+  });
+}
+
+function addFixtureComment(
+  statePath,
+  { author, authorId, body, timestamp = new Date().toISOString() },
+) {
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  const id = state.nextCommentId++;
+  state.comments.push({
+    id,
+    body,
+    issue_url: `https://api.github.com/repos/${state.repo}/issues/${state.pr.number}`,
+    html_url: `https://github.com/${state.repo}/pull/${state.pr.number}#issuecomment-${id}`,
+    user: { id: authorId, login: author },
+    author_association: "MEMBER",
+    created_at: timestamp,
+    updated_at: timestamp,
   });
   writeJson(statePath, state);
 }
