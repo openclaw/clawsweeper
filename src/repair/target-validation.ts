@@ -3762,6 +3762,10 @@ function freezePreparedTargetPnpmRuntime(
       if (!copiedDist) {
         const destination = path.join(runtimeContainer, "dist");
         fs.mkdirSync(runtimeContainer, { recursive: true, mode: 0o700 });
+        // Corepack's integrity-pinned package-manager path resolves its own
+        // package.json at runtime. Keep that reviewed package boundary beside
+        // dist instead of letting the frozen shim reach back into the host.
+        fs.copyFileSync(shim.packageJson, path.join(runtimeContainer, "package.json"));
         fs.cpSync(shim.distRoot, destination, {
           recursive: true,
           verbatimSymlinks: true,
@@ -3832,6 +3836,12 @@ function preparedPnpmRuntimeSha256(
               deadlineAt,
               new Set(),
             );
+            updateIdentityHash(
+              hash,
+              "external-corepack-package-json-mode",
+              String(fs.statSync(shim.packageJson).mode & 0o777),
+            );
+            updateFileDigest(hash, shim.packageJson, "external-corepack-package.json", deadlineAt);
           }
         }
         updateIdentityHash(hash, "runtime-type", "symlink");
@@ -3865,10 +3875,15 @@ function externalCorepackShim(runtimeRoot: string, symlinkPath: string) {
     return null;
   }
   const distRoot = path.dirname(resolvedTarget);
+  const packageJson = path.join(path.dirname(distRoot), "package.json");
   const targetName = path.basename(resolvedTarget);
   let corepackRuntimeIsFile = false;
+  let corepackPackageIsValid = false;
   try {
     corepackRuntimeIsFile = fs.statSync(path.join(distRoot, "lib", "corepack.cjs")).isFile();
+    const packageMetadata = JSON.parse(fs.readFileSync(packageJson, "utf8"));
+    corepackPackageIsValid =
+      fs.statSync(packageJson).isFile() && packageMetadata?.name === "corepack";
   } catch {
     // Rejected below as an unrecognized external executable.
   }
@@ -3876,12 +3891,14 @@ function externalCorepackShim(runtimeRoot: string, symlinkPath: string) {
     path.basename(distRoot) !== "dist" ||
     (targetName !== "pnpm.js" && targetName !== "pnpx.js") ||
     !fs.statSync(resolvedTarget).isFile() ||
-    !corepackRuntimeIsFile
+    !corepackRuntimeIsFile ||
+    !corepackPackageIsValid
   ) {
     throw new Error(`prepared target pnpm symlink escapes runtime: ${path.basename(symlinkPath)}`);
   }
   return {
     distRoot,
+    packageJson,
     targetRelative: path.relative(distRoot, resolvedTarget),
   };
 }

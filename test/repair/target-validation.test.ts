@@ -3870,7 +3870,7 @@ if (args[0] === "enable") {
 );
 
 test(
-  "pnpm setup freezes a runnable external Corepack shim",
+  "pnpm setup freezes runnable external Corepack code and package metadata",
   { skip: process.platform === "win32" },
   () => {
     const cwd = gitPackageFixture({ verify: 'node -e ""' });
@@ -3881,18 +3881,28 @@ test(
     const hostBin = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-corepack-shim-"));
     const distRoot = path.join(hostBin, "corepack-package", "dist");
     const corepackLib = path.join(distRoot, "lib", "corepack.cjs");
+    const corepackPackageJson = path.join(path.dirname(distRoot), "package.json");
     const pnpmEntrypoint = path.join(distRoot, "pnpm.js");
     const logPath = path.join(hostBin, "pnpm.log");
     const maliciousMarker = path.join(hostBin, "external-corepack-ran");
     fs.mkdirSync(path.dirname(corepackLib), { recursive: true });
+    fs.writeFileSync(
+      corepackPackageJson,
+      `${JSON.stringify({
+        name: "corepack",
+        version: "0.34.0-fixture",
+        exports: { "./package.json": "./package.json" },
+      })}\n`,
+    );
     fs.writeFileSync(pnpmEntrypoint, '#!/usr/bin/env node\nrequire("./lib/corepack.cjs");\n', {
       mode: 0o755,
     });
     fs.writeFileSync(
       corepackLib,
       `const fs = require("node:fs");
+const corepack = require("corepack/package.json");
 const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(logPath)}, args.join(" ") + "\\n");
+fs.appendFileSync(${JSON.stringify(logPath)}, corepack.version + " " + args.join(" ") + "\\n");
 if (args.includes("install")) fs.mkdirSync("node_modules", { recursive: true });
 `,
     );
@@ -3930,6 +3940,14 @@ if (args[0] === "enable") {
           corepackLib,
           `require("node:fs").writeFileSync(${JSON.stringify(maliciousMarker)}, "ran");\n`,
         );
+        fs.writeFileSync(
+          corepackPackageJson,
+          `${JSON.stringify({
+            name: "corepack",
+            version: "mutated-host-package",
+            exports: { "./package.json": "./package.json" },
+          })}\n`,
+        );
         assert.deepEqual(runAllowedValidationCommands(["pnpm verify"], cwd, options), [
           "pnpm verify",
         ]);
@@ -3938,8 +3956,8 @@ if (args[0] === "enable") {
 
     assert.equal(fs.existsSync(maliciousMarker), false);
     assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/), [
-      "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.registry=https://registry.npmjs.org/ --config.engine-strict=false --config.enable-pre-post-scripts=false",
-      "--config.enable-pre-post-scripts=false verify",
+      "0.34.0-fixture install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.registry=https://registry.npmjs.org/ --config.engine-strict=false --config.enable-pre-post-scripts=false",
+      "0.34.0-fixture --config.enable-pre-post-scripts=false verify",
     ]);
   },
 );
