@@ -5,6 +5,7 @@ import {
   bulkFilerThreshold,
   bulkFilerWindowDays,
   detectBulkFilerForTest,
+  bulkFilerPolicyInvalidatesCachedReviewForTest,
   renderReviewStartStatusComment,
   syncBulkFilerLabelForTest,
   updateBulkFilerDetectedFrontMatterForTest,
@@ -170,6 +171,39 @@ test("the publisher applies a detected bulk-filer label only for non-exempt auth
     }),
     { labels: ["maintainer"], changed: true },
   );
+  assert.deepEqual(
+    syncBulkFilerLabelForTest({
+      number: 44,
+      labels: ["clawsweeper:bulk-filed", "maintainer"],
+      bulkFilerDetected: true,
+      authorAssociation: "CONTRIBUTOR",
+      repositoryPermission: "maintain",
+      dryRun: true,
+    }),
+    { labels: ["maintainer"], changed: true },
+  );
+  assert.deepEqual(
+    syncBulkFilerLabelForTest({
+      number: 44,
+      labels: ["clawsweeper:bulk-filed", "maintainer"],
+      bulkFilerDetected: true,
+      authorAssociation: "CONTRIBUTOR",
+      repositoryPermission: "admin",
+      dryRun: true,
+    }),
+    { labels: ["maintainer"], changed: true },
+  );
+  assert.deepEqual(
+    syncBulkFilerLabelForTest({
+      number: 44,
+      labels: [],
+      bulkFilerDetected: true,
+      authorAssociation: "CONTRIBUTOR",
+      repositoryPermission: "write",
+      dryRun: true,
+    }),
+    { labels: ["clawsweeper:bulk-filed"], changed: true },
+  );
 });
 
 test("cached reports refresh the bulk-filer handoff, including legacy reports", () => {
@@ -182,5 +216,33 @@ test("cached reports refresh the bulk-filer handoff, including legacy reports", 
   assert.match(
     updateBulkFilerDetectedFrontMatterForTest("---\nreview_cache_hit: true\n---\n", detected),
     /^bulk_filer_detected: true$/m,
+  );
+});
+
+test("a newly exempt maintainer bypasses a cached bulk-filer review", () => {
+  assert.equal(
+    bulkFilerPolicyInvalidatesCachedReviewForTest(
+      "---\nbulk_filer_detected: false\nlast_full_review_bulk_filer_detected: true\nreview_cache_hit: false\n---\n",
+      true,
+    ),
+    true,
+  );
+  assert.equal(
+    bulkFilerPolicyInvalidatesCachedReviewForTest(
+      "---\nbulk_filer_detected: true\nlast_full_review_bulk_filer_detected: false\nreview_cache_hit: false\n---\n",
+      true,
+    ),
+    false,
+  );
+  assert.equal(
+    bulkFilerPolicyInvalidatesCachedReviewForTest("---\nreview_cache_hit: false\n---\n", true),
+    true,
+  );
+  assert.equal(
+    bulkFilerPolicyInvalidatesCachedReviewForTest(
+      "---\nlast_full_review_bulk_filer_detected: true\nreview_cache_hit: false\n---\n",
+      false,
+    ),
+    false,
   );
 });

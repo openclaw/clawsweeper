@@ -428,6 +428,11 @@ const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR
 // policy: repository owners and members can legitimately create high volumes
 // of coordinated issues, while outside collaborators remain in scope.
 const BULK_FILER_EXEMPT_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER"]);
+// GitHub can redact an organization member's issue author_association to
+// CONTRIBUTOR for an App installation token. Elevated repository roles are a
+// narrow, independently readable fallback for that case; ordinary write
+// collaborators remain subject to the bulk-filer policy.
+const BULK_FILER_EXEMPT_REPOSITORY_PERMISSIONS = new Set(["admin", "maintain"]);
 
 interface GitHubUser {
   login?: string;
@@ -478,6 +483,7 @@ export interface BulkFilerDetectionResult {
 }
 
 type BulkFilerCountCache = Map<string, number | null>;
+type BulkFilerRepositoryPermissionCache = Map<string, string | null>;
 
 interface BulkFilerDetectionOptions {
   item: Pick<Item, "author" | "authorAssociation" | "createdAt" | "kind" | "labels" | "number">;
@@ -4140,6 +4146,13 @@ function isBulkFilerExemptAuthorAssociation(value: unknown): boolean {
   return BULK_FILER_EXEMPT_AUTHOR_ASSOCIATIONS.has(normalizeAuthorAssociation(value));
 }
 
+function isBulkFilerExemptRepositoryPermission(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    BULK_FILER_EXEMPT_REPOSITORY_PERMISSIONS.has(value.trim().toLowerCase())
+  );
+}
+
 function isMaintainerAuthored(item: Pick<Item, "authorAssociation">): boolean {
   return isMaintainerAuthorAssociation(item.authorAssociation);
 }
@@ -6517,6 +6530,23 @@ export function updateBulkFilerDetectedFrontMatterForTest(
   return updateBulkFilerDetectedFrontMatter(markdown, detection);
 }
 
+function bulkFilerPolicyInvalidatesCachedReview(
+  markdown: string | null,
+  exemptionApplied: boolean,
+): boolean {
+  if (!exemptionApplied || markdown === null) return false;
+  // Legacy reports predate this field. Refresh them once rather than preserving
+  // a possibly bulk-filer-suppressed cached verdict under the new exemption.
+  return !/^false$/i.test(frontMatterValue(markdown, "last_full_review_bulk_filer_detected") ?? "");
+}
+
+export function bulkFilerPolicyInvalidatesCachedReviewForTest(
+  markdown: string | null,
+  exemptionApplied: boolean,
+): boolean {
+  return bulkFilerPolicyInvalidatesCachedReview(markdown, exemptionApplied);
+}
+
 function authorIssueCountInBulkFilerWindow(author: string, windowStart: string): number {
   const query = [
     `repo:${targetRepo()}`,
@@ -6535,6 +6565,38 @@ function authorIssueCountInBulkFilerWindow(author: string, windowStart: string):
     throw new Error("GitHub bulk-filer search omitted a valid total_count");
   }
   return Number(result.total_count);
+}
+
+function bulkFilerRepositoryPermission(
+  author: string,
+  cache: BulkFilerRepositoryPermissionCache,
+): string | null {
+  const normalizedAuthor = author.trim().toLowerCase();
+  if (!normalizedAuthor) return null;
+  if (cache.has(normalizedAuthor)) return cache.get(normalizedAuthor) ?? null;
+  let permission: string | null = null;
+  try {
+    const result = ghJson<{
+      permission?: unknown;
+      role_name?: unknown;
+      user?: { role_name?: unknown };
+    }>([
+      "api",
+      `repos/${targetRepo()}/collaborators/${encodeURIComponent(normalizedAuthor)}/permission`,
+    ]);
+    const roleName = result.role_name ?? result.user?.role_name;
+    permission =
+      typeof roleName === "string"
+        ? roleName.toLowerCase()
+        : typeof result.permission === "string"
+          ? result.permission.toLowerCase()
+          : null;
+  } catch {
+    // A read-token lookup failure must not broaden the exemption.
+    permission = null;
+  }
+  cache.set(normalizedAuthor, permission);
+  return permission;
 }
 
 function quoteGitHubSearchTerm(term: string): string {
@@ -14231,11 +14293,15 @@ function syncBulkFilerLabel(options: {
   labels: readonly string[];
   bulkFilerDetected: boolean;
   authorAssociation: string;
+  repositoryPermission?: string | null;
   dryRun: boolean;
   onMutation?: () => void;
 }): { labels: string[]; changed: boolean } {
   const hasBulkFilerLabel = hasNormalizedLabel(options.labels, BULK_FILED_LABEL);
-  if (isBulkFilerExemptAuthorAssociation(options.authorAssociation)) {
+  if (
+    isBulkFilerExemptAuthorAssociation(options.authorAssociation) ||
+    isBulkFilerExemptRepositoryPermission(options.repositoryPermission)
+  ) {
     if (!hasBulkFilerLabel) return { labels: [...options.labels], changed: false };
     // This is ClawSweeper policy state, not a human triage label. Remove a
     // pre-exemption value so owners and members are not still deprioritized.
@@ -14266,6 +14332,7 @@ export function syncBulkFilerLabelForTest(options: {
   labels: readonly string[];
   bulkFilerDetected: boolean;
   authorAssociation: string;
+  repositoryPermission?: string | null;
   dryRun: boolean;
 }): { labels: string[]; changed: boolean } {
   return syncBulkFilerLabel(options);
@@ -21219,6 +21286,7 @@ item_snapshot_hash: ${options.snapshotHash}
 review_content_digest: ${options.contentDigest}
 last_full_review_at: ${reviewedAt}
 last_full_review_decision: ${options.decision.decision}
+last_full_review_bulk_filer_detected: ${options.context.bulkFiler?.detected === true}
 review_cache_hit: false
 review_structural_cache_version: ${options.structuralRecord?.version ?? "unknown"}
 review_structural_fingerprint: ${options.structuralRecord?.fingerprint ?? "unknown"}
@@ -22654,6 +22722,7 @@ function reviewCommand(args: Args): void {
     let semanticCacheRevalidationMs = 0;
     let hydrationRuns = 0;
     const bulkFilerCountCache: BulkFilerCountCache = new Map();
+    const bulkFilerRepositoryPermissionCache: BulkFilerRepositoryPermissionCache = new Map();
     const bulkFilerWindowNow = Date.now();
     const structuralCacheReasons = new Map<string, number>();
     const structuralCacheRevalidationReasons = new Map<string, number>();
@@ -22696,7 +22765,30 @@ function reviewCommand(args: Args): void {
         );
       }
       const existingPriorReview = localRangeData ? null : existingReview(item, itemsDir);
-      const priorReview =
+      const lastFullReviewBulkFilerState = frontMatterValue(
+        existingPriorReview?.markdown ?? "",
+        "last_full_review_bulk_filer_detected",
+      );
+      const lastFullReviewBulkFilerStateMayNeedRecheck =
+        existingPriorReview !== null && !/^false$/i.test(lastFullReviewBulkFilerState ?? "");
+      const needsBulkFilerPermissionLookup =
+        !localOnly &&
+        item.kind === "issue" &&
+        !isBulkFilerExemptAuthorAssociation(item.authorAssociation) &&
+        (bulkFilerDetection.context?.detected || lastFullReviewBulkFilerStateMayNeedRecheck);
+      const bulkFilerExemptionApplied =
+        item.kind === "issue" &&
+        (isBulkFilerExemptAuthorAssociation(item.authorAssociation) ||
+          (needsBulkFilerPermissionLookup &&
+            isBulkFilerExemptRepositoryPermission(
+              bulkFilerRepositoryPermission(item.author, bulkFilerRepositoryPermissionCache),
+            )));
+      if (bulkFilerDetection.context?.detected && bulkFilerExemptionApplied) {
+        bulkFilerDetection.context = null;
+        bulkFilerDetection.labelPending = false;
+        bulkFilerDetection.labelApplied = false;
+      }
+      let priorReview =
         item.kind === "pull_request" &&
         existingPriorReview &&
         !isReviewedPrActivityCursor(
@@ -22704,6 +22796,11 @@ function reviewCommand(args: Args): void {
         )
           ? null
           : existingPriorReview;
+      if (bulkFilerPolicyInvalidatesCachedReview(priorReview?.markdown ?? null, bulkFilerExemptionApplied)) {
+        // A prior full review was made under a now-inapplicable bulk-filer policy.
+        // Re-run it instead of refreshing its cached suppression fields.
+        priorReview = null;
+      }
       const expectedPreviousReviewDigest = priorReview
         ? previousClawSweeperReviewDigestFromReport(priorReview.markdown)
         : null;
@@ -26165,6 +26262,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       : {}),
   };
   const startedAtMs = Date.now();
+  const bulkFilerRepositoryPermissionCache: BulkFilerRepositoryPermissionCache = new Map();
   const requestedItemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
   const requestedItemNumberSet = new Set(requestedItemNumbers);
   const requestedItemOrder = orderedApplyItemNumbers(args.item_numbers, args.item_number);
@@ -28340,11 +28438,19 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         continue;
       }
       try {
+        const bulkFilerDetected = frontMatterBoolean(markdown, "bulk_filer_detected");
+        const needsBulkFilerPermissionLookup =
+          item.kind === "issue" &&
+          !isBulkFilerExemptAuthorAssociation(item.authorAssociation) &&
+          (bulkFilerDetected || hasNormalizedLabel(item.labels, BULK_FILED_LABEL));
         const bulkFilerSyncResult = syncBulkFilerLabel({
           number,
           labels: item.labels,
-          bulkFilerDetected: frontMatterBoolean(markdown, "bulk_filer_detected"),
+          bulkFilerDetected,
           authorAssociation: item.authorAssociation,
+          repositoryPermission: needsBulkFilerPermissionLookup
+            ? bulkFilerRepositoryPermission(item.author, bulkFilerRepositoryPermissionCache)
+            : null,
           dryRun,
           onMutation: recordMutation,
         });
