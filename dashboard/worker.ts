@@ -7959,6 +7959,9 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
 .automerge-details h3, .automerge-sessions h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
 .automerge-detail-row { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--line-soft); font-size: 12px; }
 .automerge-sessions { margin-top: 22px; overflow-x: auto; }
+.automerge-sessions-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.automerge-sessions-head h3 { margin: 0; }
+.automerge-sessions-head span { color: var(--muted); font-size: 10px; }
 .automerge-table { width: 100%; border-collapse: collapse; font-size: 11px; }
 .automerge-table th, .automerge-table td { padding: 9px 8px; border-bottom: 1px solid var(--line-soft); text-align: left; white-space: nowrap; }
 .automerge-table th { color: var(--muted); font-weight: 500; }
@@ -9354,7 +9357,7 @@ function renderAutomergeProduct(data) {
   const efficiency = [['0 base sync sessions', data.repair_efficiency?.zero_base_sync], ['1 base sync session', data.repair_efficiency?.one_base_sync], ['2+ base sync sessions', data.repair_efficiency?.multiple_base_sync], ['Multi-rebase rate', value(summary.multi_rebase_rate_percent, "%")]].map(entry => '<div class="automerge-detail-row"><span>' + esc(entry[0]) + '</span><strong>' + esc(entry[1] ?? 0) + '</strong></div>').join("");
   const details = '<div class="automerge-details"><div><h3>Terminal outcomes</h3>' + outcomes + '</div><div><h3>Repair efficiency</h3>' + efficiency + '</div></div>';
   const rows = (data.sessions || []).map(session => '<tr><td>' + linkClass(session.pr_url, session.repository + '#' + session.item_number, "item-link") + '</td><td>' + esc(session.state || 'unknown') + '</td><td>' + esc(session.policy_version) + '</td><td>' + esc(session.activated_at ? since(session.activated_at) : 'missing') + '</td><td>' + esc(session.terminal_at ? since(session.terminal_at) : since(session.last_event_at)) + '</td><td>' + fmt.format(session.base_sync_count || 0) + '</td><td>' + fmt.format(session.repairs || 0) + '</td><td>' + esc(session.last_reason || '') + ' ' + linkClass(session.run_url, 'run', 'pill run-link') + '</td></tr>').join("");
-  const sessions = '<div class="automerge-sessions"><h3>Recent automerge sessions</h3><table class="automerge-table"><thead><tr><th>PR</th><th>State</th><th>Policy</th><th>Activated</th><th>Terminal / age</th><th>Syncs</th><th>Repairs</th><th>Last reason</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="muted">No session telemetry in this range.</td></tr>') + '</tbody></table></div>';
+  const sessions = '<div class="automerge-sessions"><div class="automerge-sessions-head"><h3>Recent automerge sessions</h3><span>Showing up to 30 latest sessions in the selected window</span></div><table class="automerge-table"><thead><tr><th>PR</th><th>State</th><th>Policy</th><th>Activated</th><th>Terminal / age</th><th>Syncs</th><th>Repairs</th><th>Last reason</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="muted">No session telemetry in this range.</td></tr>') + '</tbody></table></div>';
   document.getElementById("automerge-product").innerHTML = kpis + chart + details + sessions;
 }
 function automergeWorkerHealthHtml(reliability) {

@@ -6660,6 +6660,7 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /Time-window coverage/);
   assert.match(html, /Active sessions/);
   assert.match(html, /No terminal samples yet/);
+  assert.match(html, /Showing up to 30 latest sessions in the selected window/);
   assert.match(html, /Closed by ClawSweeper/);
   assert.match(html, /Worker Health/);
   assert.match(html, /Recent Activity/);
