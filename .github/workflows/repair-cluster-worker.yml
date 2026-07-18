@@ -892,3 +892,17 @@ jobs:
         if: ${{ always() && failure() && steps.crabfleet_session.outcome == 'success' && (steps.repair_requeue.outputs.count == '' || steps.repair_requeue.outputs.count == '0' || steps.requeue_dispatch.outcome != 'success') }}
         continue-on-error: true
         run: pnpm run repair:action-session -- update --state blocked --phase action_failed --summary "Repair Action failed before all completion gates passed" --completion-reason action_failed
+
+      - name: Reconcile failed automerge telemetry
+        if: ${{ always() && failure() && inputs.automerge_session_id != '' && (steps.repair_requeue.outputs.count == '' || steps.repair_requeue.outputs.count == '0' || steps.requeue_dispatch.outcome != 'success') }}
+        continue-on-error: true
+        env:
+          AUTOMERGE_SESSION_ID: ${{ inputs.automerge_session_id }}
+          AUTOMERGE_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/dashboard-reconcile-automerge.ts \
+            --session-id "$AUTOMERGE_SESSION_ID" \
+            --run-url "$AUTOMERGE_RUN_URL" \
+            --run-conclusion failure

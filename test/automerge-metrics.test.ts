@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
   mergeAutomergeMetricLedger,
@@ -11,9 +12,39 @@ import {
   latestAutomergeActivationForCommand,
   postAutomergeMetricBestEffort,
 } from "../src/repair/automerge-product-telemetry.ts";
-import { reconcileAutomergeProductMetrics } from "../scripts/dashboard-reconcile-automerge.ts";
+import {
+  automergeReconcileExitCode,
+  reconcileAutomergeProductMetrics,
+} from "../scripts/dashboard-reconcile-automerge.ts";
 
 const now = "2026-07-17T12:00:00.000Z";
+
+test("reconcile CLI documents JSON output and explicit exit codes", () => {
+  const help = spawnSync(process.execPath, ["scripts/dashboard-reconcile-automerge.ts", "--help"], {
+    encoding: "utf8",
+  });
+  assert.equal(help.status, 0);
+  assert.match(help.stdout, /--session-id <id>/);
+  assert.match(help.stdout, /Exit codes: 0 completed\/skipped safely, 1 operational/);
+
+  const invalid = spawnSync(
+    process.execPath,
+    [
+      "scripts/dashboard-reconcile-automerge.ts",
+      "--run-url",
+      "https://github.com/openclaw/clawsweeper/actions/runs/1",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(invalid.status, 2);
+  assert.deepEqual(JSON.parse(invalid.stderr), {
+    ok: false,
+    error: "--run-url requires --session-id",
+  });
+  assert.equal(automergeReconcileExitCode({ ok: true, failed: 0 }), 0);
+  assert.equal(automergeReconcileExitCode({ ok: true, failed: 1 }), 1);
+  assert.equal(automergeReconcileExitCode({ ok: false, failed: 0 }), 1);
+});
 
 function event(
   session: string,
@@ -356,7 +387,7 @@ test("reconciliation caps active-session and GitHub reads", async () => {
   assert.equal(result.candidates, 3);
   assert.equal(result.github_reads, 3);
   assert.equal(githubReads.length, 3);
-  assert.match(metricsUrl, /range=24h/);
+  assert.match(metricsUrl, /range=7d/);
   assert.match(metricsUrl, /active_only=true/);
   assert.match(metricsUrl, /session_limit=3/);
 });
@@ -377,3 +408,342 @@ test("active-only metric sessions are bounded and oldest first", () => {
     ["active-1", "active-2"],
   );
 });
+
+for (const conclusion of ["failure", "timed_out", "action_required"]) {
+  test(`open PR with ${conclusion} repair run becomes repair_failed`, async () => {
+    const posted = [];
+    const sessionId = "openclaw/openclaw#42:100:2026-07-17T10:00:00Z";
+    const result = await reconcileAutomergeProductMetrics({
+      env: reconcileEnv(),
+      now,
+      sessionId,
+      fetcher: reconcileFetcher({
+        session: activeSession(sessionId),
+        pr: { state: "open", merged_at: null, closed_at: null },
+        run: repairRun(conclusion),
+        posted,
+      }),
+    });
+
+    assert.equal(result.terminal, 1);
+    assert.equal(result.delivered, 1);
+    assert.equal(result.github_reads, 3);
+    assert.equal(posted[0]?.outcome, "repair_failed");
+    assert.equal(posted[0]?.event_id, `${sessionId}:terminal:reconcile:repair_failed`);
+    assert.equal(posted[0]?.occurred_at, "2026-07-17T11:30:00.000Z");
+  });
+}
+
+test("failed workflow reports immediately while its GitHub run is still finalizing", async () => {
+  const posted = [];
+  const result = await reconcileAutomergeProductMetrics({
+    env: reconcileEnv(),
+    now,
+    sessionId: "openclaw/openclaw#42:100:2026-07-17T10:00:00Z",
+    runUrl: "https://github.com/openclaw/clawsweeper/actions/runs/9001",
+    runConclusion: "failure",
+    fetcher: reconcileFetcher({
+      session: activeSession(),
+      pr: { state: "open", merged_at: null, closed_at: null },
+      run: repairRun(null, "in_progress"),
+      posted,
+    }),
+  });
+
+  assert.equal(result.delivered, 1);
+  assert.equal(posted[0]?.outcome, "repair_failed");
+  assert.equal(posted[0]?.occurred_at, now);
+});
+
+test("completed GitHub run conclusion overrides an early workflow failure report", async () => {
+  const posted = [];
+  const result = await reconcileAutomergeProductMetrics({
+    env: reconcileEnv(),
+    now,
+    sessionId: "openclaw/openclaw#42:100:2026-07-17T10:00:00Z",
+    runUrl: "https://github.com/openclaw/clawsweeper/actions/runs/9001",
+    runConclusion: "failure",
+    fetcher: reconcileFetcher({
+      session: activeSession(),
+      pr: { state: "open", merged_at: null, closed_at: null },
+      run: repairRun("success", "completed"),
+      posted,
+    }),
+  });
+
+  assert.equal(result.terminal, 0);
+  assert.equal(posted.length, 0);
+});
+
+test("scheduled reconciliation preserves sessions whose failed run requeued successfully", async () => {
+  const posted = [];
+  const result = await reconcileAutomergeProductMetrics({
+    env: reconcileEnv(),
+    now,
+    fetcher: reconcileFetcher({
+      session: activeSession(),
+      pr: { state: "open", merged_at: null, closed_at: null },
+      run: repairRun("failure"),
+      jobs: repairJobs("success"),
+      posted,
+    }),
+  });
+
+  assert.equal(result.terminal, 0);
+  assert.equal(result.github_reads, 3);
+  assert.equal(result.results[0]?.skipped, "repair_run_successfully_requeued");
+  assert.equal(posted.length, 0);
+});
+
+test("competing terminal outcomes keep distinct event identities", async () => {
+  const posted = [];
+  const session = activeSession();
+  for (const pr of [
+    { state: "open", merged_at: null, closed_at: null },
+    { state: "closed", merged_at: "2026-07-17T11:45:00Z", closed_at: "2026-07-17T11:45:00Z" },
+  ]) {
+    await reconcileAutomergeProductMetrics({
+      env: reconcileEnv(),
+      now,
+      fetcher: reconcileFetcher({
+        session,
+        pr,
+        run: repairRun("failure"),
+        posted,
+      }),
+    });
+  }
+
+  assert.deepEqual(
+    posted.map((row) => row.event_id),
+    [
+      `${session.session_id}:terminal:reconcile:repair_failed`,
+      `${session.session_id}:terminal:reconcile:merged`,
+    ],
+  );
+});
+
+for (const [status, conclusion] of [
+  ["in_progress", null],
+  ["completed", "success"],
+  ["completed", "cancelled"],
+  ["completed", "neutral"],
+  ["completed", "skipped"],
+]) {
+  test(`repair run ${status}/${conclusion ?? "none"} stays active`, async () => {
+    const posted = [];
+    const result = await reconcileAutomergeProductMetrics({
+      env: reconcileEnv(),
+      now,
+      fetcher: reconcileFetcher({
+        session: activeSession(),
+        pr: { state: "open", merged_at: null, closed_at: null },
+        run: repairRun(conclusion, status),
+        posted,
+      }),
+    });
+
+    assert.equal(result.terminal, 0);
+    assert.equal(result.delivered, 0);
+    assert.equal(posted.length, 0);
+  });
+}
+
+test("merged and closed PR state takes priority without reading a failed run", async () => {
+  for (const [pr, outcome] of [
+    [
+      {
+        state: "closed",
+        merged_at: "2026-07-17T11:20:00Z",
+        closed_at: "2026-07-17T11:21:00Z",
+      },
+      "merged",
+    ],
+    [{ state: "closed", merged_at: null, closed_at: "2026-07-17T11:21:00Z" }, "pr_closed"],
+  ]) {
+    const posted = [];
+    let runReads = 0;
+    const result = await reconcileAutomergeProductMetrics({
+      env: reconcileEnv(),
+      now,
+      fetcher: reconcileFetcher({
+        session: activeSession(),
+        pr,
+        run: repairRun("failure"),
+        posted,
+        onRunRead: () => (runReads += 1),
+      }),
+    });
+
+    assert.equal(result.github_reads, 1);
+    assert.equal(runReads, 0);
+    assert.equal(posted[0]?.outcome, outcome);
+  }
+});
+
+test("invalid and external repair run URLs are conservative skips", async () => {
+  for (const runUrl of ["not-a-url", "https://github.com/example/foreign/actions/runs/9001"]) {
+    const posted = [];
+    const result = await reconcileAutomergeProductMetrics({
+      env: reconcileEnv(),
+      now,
+      fetcher: reconcileFetcher({
+        session: activeSession(undefined, runUrl),
+        pr: { state: "open", merged_at: null, closed_at: null },
+        run: repairRun("failure"),
+        posted,
+      }),
+    });
+
+    assert.equal(result.terminal, 0);
+    assert.equal(result.github_reads, 1);
+    assert.equal(posted.length, 0);
+  }
+});
+
+test("repair workflow repository and identity must match", async () => {
+  for (const run of [
+    repairRun("failure", "completed", "example/foreign"),
+    { ...repairRun("failure"), path: ".github/workflows/other.yml@refs/heads/main" },
+  ]) {
+    const posted = [];
+    const result = await reconcileAutomergeProductMetrics({
+      env: reconcileEnv(),
+      now,
+      fetcher: reconcileFetcher({
+        session: activeSession(),
+        pr: { state: "open", merged_at: null, closed_at: null },
+        run,
+        posted,
+      }),
+    });
+    assert.equal(result.terminal, 0);
+    assert.equal(posted.length, 0);
+  }
+});
+
+test("seven-day lookback includes legacy failed sessions and exact-session filtering", async () => {
+  const sessionId = "openclaw/openclaw#42:100:2026-07-11T10:00:00Z";
+  let metricsUrl = "";
+  const posted = [];
+  const result = await reconcileAutomergeProductMetrics({
+    env: reconcileEnv(),
+    now,
+    sessionId,
+    fetcher: reconcileFetcher({
+      session: activeSession(sessionId, undefined, "2026-07-11T12:00:00Z"),
+      pr: { state: "open", merged_at: null, closed_at: null },
+      run: repairRun("failure"),
+      posted,
+      onMetricsRead: (url) => (metricsUrl = url),
+    }),
+  });
+
+  assert.equal(result.delivered, 1);
+  assert.match(metricsUrl, /range=7d/);
+  assert.match(metricsUrl, /session_id=openclaw%2Fopenclaw%2342/);
+  assert.match(metricsUrl, /session_limit=1/);
+});
+
+test("merged plus repair_failed produces a 50 percent terminal success rate", () => {
+  const data = summarizeAutomergeMetrics(
+    ledger([
+      event("merged-session", "activated", "2026-07-17T08:00:00Z"),
+      event("merged-session", "terminal", "2026-07-17T09:00:00Z", {
+        outcome: "merged",
+      }),
+      event("failed-session", "activated", "2026-07-17T09:00:00Z"),
+      event("failed-session", "terminal", "2026-07-17T10:00:00Z", {
+        outcome: "repair_failed",
+      }),
+    ]),
+    { range: "6h", now },
+  );
+
+  assert.equal(data.summary.terminal_sessions, 2);
+  assert.equal(data.summary.merge_success_rate_percent, 50);
+  assert.equal(data.terminal_outcomes.repair_failed, 1);
+  assert.equal(
+    data.sessions.find((row) => row.session_id === "failed-session")?.state,
+    "repair_failed",
+  );
+});
+
+function reconcileEnv() {
+  return {
+    CLAWSWEEPER_STATUS_URL: "https://status.example.test",
+    CLAWSWEEPER_STATUS_INGEST_TOKEN: "token",
+  };
+}
+
+function activeSession(
+  sessionId = "openclaw/openclaw#42:100:2026-07-17T10:00:00Z",
+  runUrl = "https://github.com/openclaw/clawsweeper/actions/runs/9001",
+  lastEventAt = "2026-07-17T10:00:00Z",
+) {
+  return {
+    session_id: sessionId,
+    repository: "openclaw/openclaw",
+    item_number: 42,
+    policy_version: "immediate-v1",
+    last_event_at: lastEventAt,
+    terminal_at: null,
+    run_url: runUrl,
+  };
+}
+
+function repairRun(conclusion, status = "completed", repository = "openclaw/clawsweeper") {
+  return {
+    id: 9001,
+    status,
+    conclusion,
+    updated_at: "2026-07-17T11:30:00Z",
+    path: ".github/workflows/repair-cluster-worker.yml@refs/heads/main",
+    repository: { full_name: repository },
+  };
+}
+
+function repairJobs(requeueConclusion = "skipped") {
+  return {
+    total_count: 1,
+    jobs: [
+      {
+        steps: [
+          {
+            name: "Requeue source-head repair races",
+            conclusion: requeueConclusion,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function reconcileFetcher({
+  session,
+  pr,
+  run,
+  jobs = repairJobs(),
+  posted,
+  onRunRead,
+  onMetricsRead,
+}) {
+  return async (input, init) => {
+    const url = String(input);
+    if (url.includes("/api/automerge-metrics")) {
+      onMetricsRead?.(url);
+      return Response.json({ sessions: [session] });
+    }
+    if (url.includes("/pulls/42")) return Response.json(pr);
+    if (url.includes("/actions/runs/9001")) {
+      onRunRead?.();
+      if (url.includes("/jobs?")) return Response.json(jobs);
+      return Response.json(run);
+    }
+    if (url.endsWith("/api/events")) {
+      posted.push(JSON.parse(String(init?.body)));
+      return new Response("", { status: 200 });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+}

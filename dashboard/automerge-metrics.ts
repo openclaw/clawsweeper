@@ -114,6 +114,7 @@ export function summarizeAutomergeMetrics(
     range?: string;
     repo?: string | null;
     policyVersion?: string | null;
+    sessionId?: string | null;
     now?: string;
     activeOnly?: boolean;
     sessionLimit?: number;
@@ -131,7 +132,8 @@ export function summarizeAutomergeMetrics(
   const filtered = allEvents.filter(
     (event) =>
       (!options.repo || event.repository === options.repo) &&
-      (!options.policyVersion || event.policy_version === options.policyVersion),
+      (!options.policyVersion || event.policy_version === options.policyVersion) &&
+      (!options.sessionId || event.session_id === options.sessionId),
   );
   const sessions = projectSessions(filtered);
   const terminal = sessions.filter(
@@ -192,7 +194,7 @@ export function summarizeAutomergeMetrics(
       return options.activeOnly ? left - right : right - left;
     })
     .slice(0, sessionLimit);
-  const filtersActive = Boolean(options.repo || options.policyVersion);
+  const filtersActive = Boolean(options.repo || options.policyVersion || options.sessionId);
   const telemetrySince = filtersActive
     ? (filtered[0]?.occurred_at ?? null)
     : ((ledger as AutomergeMetricLedger | null)?.telemetry_since ??
