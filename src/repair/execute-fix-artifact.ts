@@ -880,6 +880,27 @@ function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
   logProgress("repairing contributor branch", { source_pr: sourcePr.url, base_branch: baseBranch });
   const pull = fetchPullRequest(result.repo, sourcePr.number);
   if (pull.state !== "open") throw new Error(`source PR #${sourcePr.number} is ${pull.state}`);
+  // The earlier writability preflight cannot bind this later network read. Recheck
+  // the same PR object passed to checkout so a contributor update cannot cross the
+  // planning/execution trust boundary between those two reads.
+  if (isAutomergeRepairJob()) {
+    const planningHeadBlock = automergePlanningHeadBlock({
+      expectedHeadSha: automergeOutcomeReviewedSha(),
+      currentHeadSha: pull.head?.sha,
+    });
+    if (planningHeadBlock) {
+      return {
+        action: "repair_contributor_branch",
+        status: "blocked",
+        target: sourcePr.url,
+        repair_strategy: fixArtifact.repair_strategy,
+        reason: planningHeadBlock.reason,
+        expected_head_sha: planningHeadBlock.expectedHeadSha,
+        current_head_sha: planningHeadBlock.currentHeadSha,
+        requeue_required: true,
+      };
+    }
+  }
   const initialPauseBlock = liveRepairPauseBlock({
     pull,
     number: sourcePr.number,
