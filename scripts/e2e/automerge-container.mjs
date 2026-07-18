@@ -5,8 +5,9 @@
  * Parameters: --scenario, --expect, --candidate-root, --output, --image,
  * --base-image, and --no-build are optional.
  * Outputs: the harness summary on stdout and retained step logs under --output.
- * Decision: local validation uses a fresh image so host Corepack, pnpm caches,
- * and ignored repair state cannot make the workflow pass accidentally.
+ * Decision: local validation builds its base from repository source and uses a
+ * fresh application image so host state and external publishers cannot affect
+ * the result. Docker still caches unchanged OS and dependency layers.
  */
 
 import { spawnSync } from "node:child_process";
@@ -29,7 +30,7 @@ Options:
   --candidate-root <dir>  Built candidate checkout mounted read-only
   --output <dir>          Host artifact directory (default: test-results/automerge-container)
   --image <tag>           Local image tag (default: clawsweeper-automerge-e2e:local)
-  --base-image <tag>      Override the versioned repository base image
+  --base-image <tag>      Explicitly trust and reuse a prebuilt base image
   --no-build              Reuse an existing local image
   -h, --help              Show this help
 
@@ -49,6 +50,7 @@ Examples:
 const repoRoot = process.cwd();
 const output = path.resolve(String(args.output ?? "test-results/automerge-container"));
 const image = String(args.image ?? "clawsweeper-automerge-e2e:local");
+const baseImage = String(args.baseImage ?? "clawsweeper-automerge-e2e-base:local");
 const scenario = String(args.scenario ?? "all");
 const expectedOutcome = String(args.expect ?? "success");
 const candidateRoot = args.candidateRoot ? path.resolve(String(args.candidateRoot)) : null;
@@ -59,15 +61,24 @@ fs.mkdirSync(output, { recursive: true });
 
 run("docker", ["--version"]);
 if (!args.noBuild) {
+  if (!args.baseImage) {
+    run("docker", [
+      "build",
+      "--file",
+      "test/e2e/automerge/Dockerfile.base",
+      "--tag",
+      baseImage,
+      ".",
+    ]);
+  }
   run("docker", [
     "build",
     "--file",
     "test/e2e/automerge/Dockerfile",
     "--tag",
     image,
-    ...(args.baseImage
-      ? ["--build-arg", `AUTOMERGE_E2E_BASE_IMAGE=${String(args.baseImage)}`]
-      : []),
+    "--build-arg",
+    `AUTOMERGE_E2E_BASE_IMAGE=${baseImage}`,
     ".",
   ]);
 }

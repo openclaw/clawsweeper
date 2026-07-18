@@ -17,3 +17,13 @@ test("automerge E2E container is readable by the runtime and restores output own
   assert.match(dockerfile, /RUN chmod -R a\+rX \/workspace/);
   assert.match(wrapper, /"chown",\s*"-R",\s*hostOwner/);
 });
+
+test("automerge E2E builds the default base from repository-controlled source", () => {
+  assert.match(dockerfile, /ARG AUTOMERGE_E2E_BASE_IMAGE=clawsweeper-automerge-e2e-base:local/);
+  assert.match(
+    wrapper,
+    /if \(!args\.baseImage\) \{[\s\S]*"test\/e2e\/automerge\/Dockerfile\.base"[\s\S]*baseImage/,
+  );
+  assert.match(wrapper, /`AUTOMERGE_E2E_BASE_IMAGE=\$\{baseImage\}`/);
+  assert.doesNotMatch(`${wrapper}\n${dockerfile}`, /masonxhuang\//);
+});

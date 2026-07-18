@@ -53,25 +53,24 @@ container cannot remount Docker's filesystem from a nested user namespace. The
 production validator still drops every capability before starting target code,
 and the wrapper restores artifact ownership to the invoking host UID afterward.
 
-The application image starts from the versioned
-`masonxhuang/clawsweeper-automerge-e2e-base:node24.13.0-bookworm-20260718` base,
-pinned by registry digest in the Dockerfile. That base preinstalls Node 24,
-Git, Python, CA certificates, and Corepack, so clean hosts do not repeat OS
-package installation. The project dependency layer is cached independently by
-`package.json` and `pnpm-lock.yaml`.
+By default, the wrapper builds `Dockerfile.base` from the checked-out repository
+as `clawsweeper-automerge-e2e-base:local`, then passes that exact local tag to
+the application build. The base preinstalls Node 24, Git, Python, CA
+certificates, and Corepack. Docker reuses the unchanged OS package layer, while
+the project dependency layer is cached independently by `package.json` and
+`pnpm-lock.yaml`; repeated runs do not reinstall either layer.
 
-To rebuild the base locally, or to publish a replacement after intentionally
-changing its toolchain, run:
+To rebuild the repository-controlled base explicitly, run:
 
 ```bash
 docker build \
   --file test/e2e/automerge/Dockerfile.base \
-  --tag masonxhuang/clawsweeper-automerge-e2e-base:node24.13.0-bookworm-20260718 \
+  --tag clawsweeper-automerge-e2e-base:local \
   .
-docker push masonxhuang/clawsweeper-automerge-e2e-base:node24.13.0-bookworm-20260718
 ```
 
-Test an unpublished base without editing the application Dockerfile:
+An explicitly trusted prebuilt base can be selected without editing the
+application Dockerfile:
 
 ```bash
 pnpm e2e:automerge:container -- \
@@ -85,10 +84,9 @@ harness, package-manager, and workflow changes. CI calls the repository-owned
 container wrapper on the same production-class Blacksmith runner used by repair
 execution. Pull requests from forks are excluded because untrusted code must not
 receive that runner. CI builds the base from the checked-in `Dockerfile.base`
-instead of executing the personal-namespace image used by local development.
-The resulting image is saved in a GitHub Actions cache keyed by the complete
-base Dockerfile, so OS packages are installed only on a cache miss. Pull-request
-caches cannot replace the default branch's cache.
+just like the local default. The resulting image is saved in a GitHub Actions
+cache keyed by the complete base Dockerfile, so OS packages are installed only
+on a cache miss. Pull-request caches cannot replace the default branch's cache.
 
 The same entrypoint runs on a clean Crabbox checkout without installing project
 dependencies on the host:
