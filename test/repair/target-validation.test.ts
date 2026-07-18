@@ -5244,6 +5244,127 @@ test(
 );
 
 test(
+  "dependency setup accepts tracked links between workspaces with ignored runtime changes",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    const dependencyDir = path.join(cwd, "packages", "dependency");
+    const dependencySource = path.join(dependencyDir, "source.js");
+    fs.mkdirSync(dependencyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dependencyDir, "package.json"),
+      `${JSON.stringify({ name: "@fixture/dependency" }, null, 2)}\n`,
+    );
+    fs.writeFileSync(dependencySource, "export const value = 1;\n");
+    const dependencyLink = path.join(
+      cwd,
+      "packages",
+      "consumer",
+      "node_modules",
+      "@fixture",
+      "dependency",
+    );
+    fs.mkdirSync(path.dirname(dependencyLink), { recursive: true });
+    fs.symlinkSync(path.relative(path.dirname(dependencyLink), dependencyDir), dependencyLink);
+    git(cwd, "add", "--force", ".");
+    git(cwd, "commit", "-m", "initial");
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workspace-install-"));
+    const corepackPath = path.join(binDir, "corepack.js");
+    const pnpmPath = path.join(binDir, "pnpm.js");
+    const runtimeInput = path.join(dependencyDir, "node_modules", "generated", "state.js");
+    fs.writeFileSync(corepackPath, "");
+    fs.writeFileSync(
+      pnpmPath,
+      `const fs = require("node:fs");
+fs.mkdirSync(${JSON.stringify(path.dirname(runtimeInput))}, { recursive: true });
+fs.writeFileSync(${JSON.stringify(runtimeInput)}, "installed\\n");
+`,
+    );
+
+    withMockCommand("corepack", corepackPath, () =>
+      withMockCommand("pnpm", pnpmPath, () =>
+        prepareTargetToolchain(cwd, {
+          ...validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: ["pnpm check"],
+              changedGate: null,
+            },
+          }),
+          installTargetDeps: true,
+          installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+          setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        }),
+      ),
+    );
+
+    const accepted = captureTargetCheckoutBinding(cwd);
+    fs.writeFileSync(dependencySource, "export const value = 2;\n");
+    assert.throws(
+      () => assertTargetCheckoutBinding(cwd, accepted),
+      /target checkout changed after validation/,
+    );
+    fs.writeFileSync(dependencySource, "export const value = 1;\n");
+    fs.writeFileSync(runtimeInput, "mutated\n");
+    assert.throws(
+      () => assertTargetCheckoutBinding(cwd, accepted),
+      /target checkout changed after validation/,
+    );
+  },
+);
+
+test(
+  "dependency setup accepts Git-equivalent tracked executable mode normalization",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    const executablePath = path.join(cwd, "cli.js");
+    fs.writeFileSync(executablePath, "#!/usr/bin/env node\n");
+    fs.chmodSync(executablePath, 0o775);
+    const executableLink = path.join(cwd, "node_modules", ".bin", "cli");
+    fs.mkdirSync(path.dirname(executableLink), { recursive: true });
+    fs.symlinkSync(path.relative(path.dirname(executableLink), executablePath), executableLink);
+    git(cwd, "add", ".");
+    git(cwd, "add", "--force", executableLink);
+    git(cwd, "commit", "-m", "initial");
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-mode-install-"));
+    const corepackPath = path.join(binDir, "corepack.js");
+    const pnpmPath = path.join(binDir, "pnpm.js");
+    fs.writeFileSync(corepackPath, "");
+    fs.writeFileSync(
+      pnpmPath,
+      `require("node:fs").chmodSync(${JSON.stringify(executablePath)}, 0o755);\n`,
+    );
+
+    withMockCommand("corepack", corepackPath, () =>
+      withMockCommand("pnpm", pnpmPath, () =>
+        prepareTargetToolchain(cwd, {
+          ...validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: ["pnpm check"],
+              changedGate: null,
+            },
+          }),
+          installTargetDeps: true,
+          installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+          setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        }),
+      ),
+    );
+
+    const accepted = captureTargetCheckoutBinding(cwd);
+    fs.chmodSync(executablePath, 0o644);
+    assert.throws(
+      () => assertTargetCheckoutBinding(cwd, accepted),
+      /target checkout changed after validation/,
+    );
+  },
+);
+
+test(
   "validation rejects untracked node_modules workspace self-links",
   { skip: process.platform === "win32" },
   () => {

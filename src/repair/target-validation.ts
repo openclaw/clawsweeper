@@ -2439,7 +2439,9 @@ function worktreeContentSha256(cwd: string, deadlineAt: number) {
       throw error;
     }
     updateIdentityHash(hash, "worktree-path", relativePath);
-    updateIdentityHash(hash, "worktree-mode", String(stat.mode));
+    const worktreeMode =
+      trackedPaths.has(relativePath) && stat.isFile() ? trackedFileMode(stat.mode) : stat.mode;
+    updateIdentityHash(hash, "worktree-mode", String(worktreeMode));
     if (stat.isSymbolicLink()) {
       updateIdentityHash(hash, "worktree-symlink", fs.readlinkSync(absolutePath));
       updateSymlinkTargetDigest(
@@ -2464,6 +2466,10 @@ function worktreeContentSha256(cwd: string, deadlineAt: number) {
   }
   assertValidationIdentityDeadline(deadlineAt, "worktree digest");
   return hash.digest("hex");
+}
+
+function trackedFileMode(mode: number) {
+  return mode & 0o100 ? 0o100755 : 0o100644;
 }
 
 function validationRuntimeInputsSha256(cwd: string, deadlineAt: number) {
@@ -3244,23 +3250,33 @@ function updateSymlinkTargetDigest(
   }
   assertPathWithin(root, targetPath, logicalPath);
   updateIdentityHash(hash, "symlink-target-path", path.relative(root, targetPath));
-  const workspaceReference = trackedWorkspaceSelfLink(root, symlinkPath, targetPath, trackedPaths);
-  if (workspaceReference) {
-    updateIdentityHash(hash, "symlink-workspace-reference", workspaceReference);
+  const trackedReference = trackedSymlinkTargetReference(
+    root,
+    symlinkPath,
+    targetPath,
+    trackedPaths,
+  );
+  if (trackedReference) {
+    updateIdentityHash(hash, "symlink-tracked-reference", trackedReference);
     return;
   }
   updateResolvedPathDigest(hash, root, targetPath, logicalPath, deadlineAt, new Set());
 }
 
-function trackedWorkspaceSelfLink(
+function trackedSymlinkTargetReference(
   root: string,
   symlinkPath: string,
   targetPath: string,
   trackedPaths: ReadonlySet<string>,
 ) {
-  if (!fs.statSync(targetPath).isDirectory()) return null;
   const relativeLink = path.relative(root, symlinkPath).split(path.sep).join("/");
   if (!trackedPaths.has(relativeLink)) return null;
+  const targetRelative = path.relative(root, targetPath).split(path.sep).join("/");
+  const targetStat = fs.statSync(targetPath);
+  if (targetStat.isFile()) {
+    return trackedPaths.has(targetRelative) ? `file\0${targetRelative}` : null;
+  }
+  if (!targetStat.isDirectory()) return null;
   const linkParts = relativeLink.split("/");
   const nodeModulesIndex = linkParts.lastIndexOf("node_modules");
   const packageParts = linkParts.slice(nodeModulesIndex + 1);
@@ -3272,16 +3288,6 @@ function trackedWorkspaceSelfLink(
         : null;
   if (!packageName) return null;
 
-  const linkFromTarget = path.relative(targetPath, symlinkPath);
-  if (
-    !linkFromTarget ||
-    linkFromTarget.startsWith(`..${path.sep}`) ||
-    path.isAbsolute(linkFromTarget)
-  ) {
-    return null;
-  }
-
-  const targetRelative = path.relative(root, targetPath).split(path.sep).join("/");
   const manifestRelative = targetRelative ? `${targetRelative}/package.json` : "package.json";
   if (!trackedPaths.has(manifestRelative)) return null;
   try {
@@ -3291,9 +3297,9 @@ function trackedWorkspaceSelfLink(
     return null;
   }
   // Source identity already binds tracked/untracked worktree content, ignored runtime inputs,
-  // and Git administrative state. Recording this authenticated back-reference avoids an
-  // infinite walk without allowing mutable target content to disappear from the identity.
-  return `${packageName}\0${targetRelative}`;
+  // and Git administrative state. Recording this authenticated workspace reference avoids
+  // duplicate traversal without allowing mutable target content to disappear from the identity.
+  return `workspace\0${packageName}\0${targetRelative}`;
 }
 
 function updateResolvedPathDigest(
