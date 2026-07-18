@@ -16991,20 +16991,6 @@ function prCloseCoverageRuntimeBudgetBlock(
   };
 }
 
-function prCloseCoverageRuntimeBudgetErrorBlock(error: unknown): PrCloseCoverageProofGateResult {
-  if (!(error instanceof GitHubRuntimeBudgetError)) return null;
-  // GitHub operations reserve time to publish a resumable report, so they can
-  // exhaust the active budget before the outer wall-clock deadline. Preserve
-  // that yield instead of misclassifying it as a retryable proof read failure.
-  return {
-    status: "blocked",
-    block: {
-      actionTaken: "skipped_runtime_budget",
-      reason: error.reason,
-    },
-  };
-}
-
 function prCloseCoverageRuntime(
   runtime: PrCloseCoverageProofRuntime,
   runtimeBudget: PrCloseCoverageRuntimeBudget | undefined,
@@ -17145,8 +17131,7 @@ function prCloseCoverageProofGateResult(options: {
     try {
       covering = coveringView(linkedNumber);
     } catch (error) {
-      const runtimeBudgetErrorBlock = prCloseCoverageRuntimeBudgetErrorBlock(error);
-      if (runtimeBudgetErrorBlock) return runtimeBudgetErrorBlock;
+      if (error instanceof GitHubRuntimeBudgetError) throw error;
       const hydrationBudgetBlock = prCloseCoverageRuntimeBudgetBlock(
         options.runtimeBudget,
         "while hydrating",
@@ -17247,8 +17232,7 @@ function prCloseCoverageProofGateResult(options: {
         reason: `PR close coverage proof kept this PR open against ${covering.url}: ${closeDecision.reason}`,
       };
     } catch (error) {
-      const runtimeBudgetErrorBlock = prCloseCoverageRuntimeBudgetErrorBlock(error);
-      if (runtimeBudgetErrorBlock) return runtimeBudgetErrorBlock;
+      if (error instanceof GitHubRuntimeBudgetError) throw error;
       const proofBudgetBlock = prCloseCoverageRuntimeBudgetBlock(
         options.runtimeBudget,
         "while running",
