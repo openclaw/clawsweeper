@@ -5355,6 +5355,78 @@ fs.writeFileSync(${JSON.stringify(runtimeInput)}, "installed\\n");
 );
 
 test(
+  "prepared pnpm validation accepts install-managed links to tracked workspaces",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    const packagePath = path.join(cwd, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    packageJson.name = "openclaw";
+    fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    const consumerDir = path.join(cwd, "packages", "consumer");
+    fs.mkdirSync(consumerDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(consumerDir, "package.json"),
+      `${JSON.stringify({ name: "@fixture/consumer", dependencies: { openclaw: "workspace:*" } }, null, 2)}\n`,
+    );
+    const sourcePath = path.join(cwd, "source.ts");
+    fs.writeFileSync(sourcePath, "export const value = 1;\n");
+    fs.writeFileSync(path.join(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workspace-runtime-"));
+    const corepackPath = path.join(binDir, "corepack.js");
+    const pnpmPath = path.join(binDir, "pnpm.js");
+    const workspaceLink = path.join(consumerDir, "node_modules", "openclaw");
+    fs.writeFileSync(corepackPath, "");
+    fs.writeFileSync(
+      pnpmPath,
+      `const fs = require("node:fs");
+const path = require("node:path");
+if (process.argv.includes("install")) {
+  fs.mkdirSync(path.dirname(${JSON.stringify(workspaceLink)}), { recursive: true });
+  if (!fs.existsSync(${JSON.stringify(workspaceLink)})) {
+    fs.symlinkSync("../../..", ${JSON.stringify(workspaceLink)});
+  }
+}
+`,
+    );
+    const options = {
+      ...validationOptions("steipete/example", {
+        toolchain: {
+          packageManager: "pnpm",
+          baseValidationCommands: ["pnpm check"],
+          changedGate: null,
+        },
+      }),
+      installTargetDeps: true,
+      installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+    };
+
+    withMockCommand("corepack", corepackPath, () =>
+      withMockCommand("pnpm", pnpmPath, () => {
+        prepareTargetToolchain(cwd, options);
+        assert.deepEqual(runAllowedValidationCommands(["pnpm check"], cwd, options), [
+          "pnpm check:changed",
+        ]);
+        fs.writeFileSync(sourcePath, "export const value = 2;\n");
+        assert.throws(
+          () => runAllowedValidationCommands(["pnpm check"], cwd, options),
+          /prepared target pnpm toolchain is stale;.*(?:contentTreeSha|worktreeSha256)/,
+        );
+        prepareTargetToolchain(cwd, options);
+        assert.deepEqual(runAllowedValidationCommands(["pnpm check"], cwd, options), [
+          "pnpm check:changed",
+        ]);
+      }),
+    );
+  },
+);
+
+test(
   "dependency setup accepts Git-equivalent tracked executable mode normalization",
   { skip: process.platform === "win32" },
   () => {

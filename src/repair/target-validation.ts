@@ -2489,6 +2489,11 @@ function gitFileMode(mode: number) {
 function validationRuntimeInputsSha256(cwd: string, deadlineAt: number) {
   const hash = createHash("sha256");
   const root = fs.realpathSync(cwd);
+  const trackedPaths = new Set(
+    runIdentityGit(cwd, ["ls-files", "-z"], deadlineAt, "tracked runtime input listing")
+      .split("\0")
+      .filter(Boolean),
+  );
   const runtimePaths = validationRuntimeInputPaths(cwd, deadlineAt);
   updateIdentityHash(hash, "runtime-input-paths", runtimePaths.join("\0"));
   const coveredEntries = new Map<string, string>();
@@ -2503,7 +2508,15 @@ function validationRuntimeInputsSha256(cwd: string, deadlineAt: number) {
       updateIdentityHash(hash, "runtime-state", "absent");
       continue;
     }
-    updateRuntimeInputDigest(hash, root, entryPath, relativePath, deadlineAt, coveredEntries);
+    updateRuntimeInputDigest(
+      hash,
+      root,
+      entryPath,
+      relativePath,
+      deadlineAt,
+      coveredEntries,
+      trackedPaths,
+    );
   }
   assertValidationIdentityDeadline(deadlineAt, "runtime input digest");
   return hash.digest("hex");
@@ -2572,6 +2585,7 @@ function updateRuntimeInputDigest(
   logicalPath: string,
   deadlineAt: number,
   coveredEntries: Map<string, string>,
+  trackedPaths: ReadonlySet<string>,
 ) {
   assertValidationIdentityDeadline(deadlineAt, logicalPath);
   const stat = fs.lstatSync(entryPath);
@@ -2582,6 +2596,20 @@ function updateRuntimeInputDigest(
     const targetPath = fs.realpathSync(entryPath);
     assertPathWithin(root, targetPath, logicalPath);
     updateIdentityHash(hash, "runtime-symlink-target", path.relative(root, targetPath));
+    const workspaceReference = trackedSymlinkTargetReference(
+      root,
+      entryPath,
+      targetPath,
+      trackedPaths,
+      { allowInstallManagedWorkspaceLink: true },
+    );
+    if (workspaceReference) {
+      // pnpm creates ignored node_modules links back to tracked workspaces. The
+      // checkout identity already binds their source, while traversing them here
+      // would also absorb mutable .git state and make a read-only fetch stale the runtime.
+      updateIdentityHash(hash, "runtime-workspace-reference", workspaceReference);
+      return;
+    }
     updateRuntimeInputDigest(
       hash,
       root,
@@ -2589,6 +2617,7 @@ function updateRuntimeInputDigest(
       `${logicalPath}\0target`,
       deadlineAt,
       coveredEntries,
+      trackedPaths,
     );
     return;
   }
@@ -2616,6 +2645,7 @@ function updateRuntimeInputDigest(
       `${logicalPath}/${child}`,
       deadlineAt,
       coveredEntries,
+      trackedPaths,
     );
   }
 }
@@ -3282,13 +3312,15 @@ function trackedSymlinkTargetReference(
   symlinkPath: string,
   targetPath: string,
   trackedPaths: ReadonlySet<string>,
+  { allowInstallManagedWorkspaceLink = false }: { allowInstallManagedWorkspaceLink?: boolean } = {},
 ) {
   const relativeLink = path.relative(root, symlinkPath).split(path.sep).join("/");
-  if (!trackedPaths.has(relativeLink)) return null;
+  const linkIsTracked = trackedPaths.has(relativeLink);
+  if (!linkIsTracked && !allowInstallManagedWorkspaceLink) return null;
   const targetRelative = path.relative(root, targetPath).split(path.sep).join("/");
   const targetStat = fs.statSync(targetPath);
   if (targetStat.isFile()) {
-    return trackedPaths.has(targetRelative) ? `file\0${targetRelative}` : null;
+    return linkIsTracked && trackedPaths.has(targetRelative) ? `file\0${targetRelative}` : null;
   }
   if (!targetStat.isDirectory()) return null;
   const linkParts = relativeLink.split("/");
