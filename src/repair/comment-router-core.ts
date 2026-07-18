@@ -701,6 +701,19 @@ export function isAutomergeMergeStateReady(value: JsonValue): boolean {
   );
 }
 
+export function existingRepairLoopModeOutcome({ intent, trustedBot }: LooseRecord) {
+  const mode = intent === "autofix" ? "autofix" : "automerge";
+  // Only an authorized human command renews landing intent. A label sweep must
+  // not manufacture the maintainer signal consumed by needs-human approval.
+  if (trustedBot) {
+    return { status: "skipped", reason: `${mode} already enabled for this PR` };
+  }
+  return {
+    status: "executed",
+    reason: `${mode} already enabled for this PR; maintainer resume intent recorded`,
+  };
+}
+
 export function isCanonicalLandingNeedsHumanText(value: JsonValue) {
   const text = String(value ?? "");
   if (!text) return false;

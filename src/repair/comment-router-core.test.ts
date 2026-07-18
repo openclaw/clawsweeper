@@ -4,7 +4,10 @@ import test from "node:test";
 import {
   automergeMergeFailureRepairReason,
   automergeRebaseRepairReason,
+  existingRepairLoopModeOutcome,
   isAutomergeMergeStateReady,
+  latestRepairLoopResumeTime,
+  maintainerAutomergeOptInApprovesNeedsHuman,
 } from "./comment-router-core.js";
 
 test("automerge rebase repair reason detects dirty merge state", () => {
@@ -36,6 +39,39 @@ test("automerge merge readiness allows an exact reviewed head to remain behind",
   assert.equal(isAutomergeMergeStateReady("CLEAN"), true);
   assert.equal(isAutomergeMergeStateReady("HAS_HOOKS"), true);
   assert.equal(isAutomergeMergeStateReady("DIRTY"), false);
+});
+
+test("explicit maintainer replay records resume intent for an enabled automerge", () => {
+  assert.deepEqual(existingRepairLoopModeOutcome({ intent: "automerge", trustedBot: false }), {
+    status: "executed",
+    reason: "automerge already enabled for this PR; maintainer resume intent recorded",
+  });
+  assert.deepEqual(existingRepairLoopModeOutcome({ intent: "automerge", trustedBot: true }), {
+    status: "skipped",
+    reason: "automerge already enabled for this PR",
+  });
+
+  const resumeTime = latestRepairLoopResumeTime(
+    [
+      {
+        repo: "openclaw/openclaw",
+        issue_number: 108974,
+        intent: "automerge",
+        ...existingRepairLoopModeOutcome({ intent: "automerge", trustedBot: false }),
+        comment_updated_at: "2026-07-18T21:22:08Z",
+      },
+    ],
+    { repo: "openclaw/openclaw", issue_number: 108974 },
+  );
+  assert.equal(
+    maintainerAutomergeOptInApprovesNeedsHuman({
+      reason:
+        "No repair lane is needed; the member-sponsored automerge path should make the final exact-head decision.",
+      commentCreatedAt: "2026-07-18T21:31:21Z",
+      optInTime: resumeTime,
+    }),
+    true,
+  );
 });
 
 test("automerge merge failure repair reason detects GitHub merge conflict errors", () => {

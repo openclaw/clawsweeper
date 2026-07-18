@@ -51,6 +51,7 @@ import {
   commandStatusMarkerPrefix,
   existingCommandStatusBlocksReplay,
   existingModeStatusBlocksReplay,
+  existingRepairLoopModeOutcome,
   freshExactHeadReviewStartLease,
   isAuthorReadOnlyCommandAllowed,
   isMaintainerCommandAllowed,
@@ -401,7 +402,7 @@ if (execute && !exactCommentVersionFastPath.suppress) {
       for (const command of claimedCommands) recordCommandClaimed(command);
     }
     for (const command of commands) convergePrecreatedCommandAckComments(command);
-    for (const command of commands) acknowledgeSkippedMaintainerCommand(command);
+    for (const command of commands) acknowledgeTerminalNoopMaintainerCommand(command);
     for (const command of commands) {
       if (command.status !== "ready") {
         recordCommandOutcome(command);
@@ -1070,7 +1071,13 @@ function classifyCommand(command: LooseRecord): JsonValue {
         forceReprocess,
       })
     ) {
-      return { ...next, status: "skipped", reason: `${mode} already enabled for this PR` };
+      return {
+        ...next,
+        ...existingRepairLoopModeOutcome({
+          intent: command.intent,
+          trustedBot: command.trusted_bot,
+        }),
+      };
     }
     const approvedProofOverride =
       command.intent === "automerge" && !activationRepairReason
@@ -2754,8 +2761,10 @@ function applyRepairLoopOptIn(command: LooseRecord) {
   command.target = { ...command.target, labels: [...labels] };
 }
 
-function acknowledgeSkippedMaintainerCommand(command: LooseRecord) {
-  if (command.trusted_bot || command.status !== "skipped") return;
+function acknowledgeTerminalNoopMaintainerCommand(command: LooseRecord) {
+  if (command.trusted_bot || !["executed", "skipped"].includes(String(command.status ?? ""))) {
+    return;
+  }
   const reason = String(command.reason ?? "");
   if (reason === SUPERSEDED_RE_REVIEW_REASON) {
     clearTerminalMaintainerCommandReaction(command);
