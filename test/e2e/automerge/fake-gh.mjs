@@ -8,6 +8,10 @@ import path from "node:path";
 const statePath = process.env.CLAWSWEEPER_E2E_GITHUB_STATE;
 if (!statePath) fail("CLAWSWEEPER_E2E_GITHUB_STATE is required");
 const args = process.argv.slice(2);
+// One fake `gh` command can read and mutate state several times. Hold the lock
+// for the whole process so a later command never writes back a stale snapshot.
+const releaseStateLock = acquireStateLock();
+process.on("exit", releaseStateLock);
 const state = loadState();
 const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN ?? "";
 
@@ -472,7 +476,35 @@ function loadState() {
 }
 
 function saveState() {
-  fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+  const temporaryPath = `${statePath}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temporaryPath, `${JSON.stringify(state, null, 2)}\n`);
+    fs.renameSync(temporaryPath, statePath);
+  } finally {
+    fs.rmSync(temporaryPath, { force: true });
+  }
+}
+
+function acquireStateLock() {
+  const lockPath = `${statePath}.lock`;
+  const deadline = Date.now() + 30_000;
+  while (true) {
+    try {
+      fs.mkdirSync(lockPath);
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      if (Date.now() >= deadline) fail(`timed out waiting for fake GitHub state lock: ${lockPath}`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  }
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    fs.rmdirSync(lockPath);
+  };
 }
 
 function respondJson(value, { paged = false } = {}) {
