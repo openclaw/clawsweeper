@@ -4,11 +4,17 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-const [targetDir, markerPath] = process.argv.slice(2);
-if (!targetDir || !markerPath) fail("usage: index-stat-mutator.mjs <target-dir> <marker-path>");
+const [targetDir, trackedRelativePath, markerPath] = process.argv.slice(2);
+if (!targetDir || !trackedRelativePath || !markerPath) {
+  fail("usage: index-stat-mutator.mjs <target-dir> <tracked-relative-path> <marker-path>");
+}
 
 const deadline = Date.now() + 60_000;
-const trackedFile = path.join(targetDir, "src", "repair-target.txt");
+const trackedFile = path.resolve(targetDir, trackedRelativePath);
+const relativeTrackedFile = path.relative(path.resolve(targetDir), trackedFile);
+if (relativeTrackedFile.startsWith(`..${path.sep}`) || path.isAbsolute(relativeTrackedFile)) {
+  fail("tracked relative path escapes target directory");
+}
 const installMarker = path.join(targetDir, "node_modules");
 while (!fs.existsSync(trackedFile) || !fs.existsSync(installMarker)) {
   if (Date.now() >= deadline) fail("timed out waiting for target dependency setup");

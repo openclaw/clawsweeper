@@ -4,6 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  AUTOMERGE_E2E_FIXTURES,
+  createCiRegressionFixture,
+  createTargetFixture,
+} from "./target-fixtures.mjs";
 
 const helperRoot = path.dirname(fileURLToPath(import.meta.url));
 export const AUTOMERGE_E2E_SCENARIOS = [
@@ -19,11 +24,15 @@ export function runAutomergeE2E({
   candidateRoot = process.cwd(),
   outputRoot = path.join(process.cwd(), "test-results", "automerge"),
   scenario = "happy-path",
+  fixture = "tiny",
   expectedOutcome = "success",
   keep = false,
 } = {}) {
   if (!AUTOMERGE_E2E_SCENARIOS.includes(scenario)) {
     throw new Error(`unsupported scenario: ${scenario}`);
+  }
+  if (!AUTOMERGE_E2E_FIXTURES.includes(fixture)) {
+    throw new Error(`unsupported fixture: ${fixture}`);
   }
   if (!["success", "setup-identity-failure"].includes(expectedOutcome)) {
     throw new Error(`unsupported expected outcome: ${expectedOutcome}`);
@@ -32,23 +41,24 @@ export function runAutomergeE2E({
     throw new Error(`${expectedOutcome} is only valid for ci-regression-29623139111`);
   }
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-automerge-e2e-"));
-  const artifacts = path.resolve(outputRoot, scenario);
+  const artifacts = path.resolve(outputRoot, fixture, scenario);
   fs.rmSync(artifacts, { recursive: true, force: true });
   fs.mkdirSync(artifacts, { recursive: true });
 
   try {
     const runtimeRoot = createCandidateRuntime(root, candidateRoot);
-    const fixture =
+    const targetFixture =
       scenario === "ci-regression-29623139111"
-        ? createCiRegressionFixture(root)
+        ? createCiRegressionFixture(root, { fixture })
         : createTargetFixture(root, {
-            nonCanonicalLockfile: scenario === "dependency-setup-mutation",
+            fixture,
+            dependencySetupMutation: scenario === "dependency-setup-mutation",
           });
     const statePath = path.join(root, "github-state.json");
     const binDir = createCommandBin(root);
     const realCorepack = execFileSync("which", ["corepack"], { encoding: "utf8" }).trim();
-    const jobPath = createJob(root, fixture.headSha);
-    writeJson(statePath, initialGitHubState(fixture));
+    const jobPath = createJob(root, targetFixture.headSha);
+    writeJson(statePath, initialGitHubState(targetFixture));
 
     const baseEnv = {
       ...process.env,
@@ -119,7 +129,7 @@ export function runAutomergeE2E({
       return runCiRegressionFailureScenario({
         artifacts,
         baseEnv,
-        fixture,
+        fixture: targetFixture,
         jobPath,
         resultPath,
         runtimeRoot,
@@ -131,7 +141,7 @@ export function runAutomergeE2E({
       return runPlanningHeadDriftScenario({
         artifacts,
         baseEnv,
-        fixture,
+        fixture: targetFixture,
         jobPath,
         resultPath,
         runtimeRoot,
@@ -144,7 +154,7 @@ export function runAutomergeE2E({
       return runDependencySetupMutationScenario({
         artifacts,
         baseEnv,
-        fixture,
+        fixture: targetFixture,
         jobPath,
         resultPath,
         runtimeRoot,
@@ -155,7 +165,7 @@ export function runAutomergeE2E({
 
     const indexStatMutation =
       scenario === "ci-regression-29623139111"
-        ? startIndexStatMutation(targetDir, artifacts)
+        ? startIndexStatMutation(targetDir, targetFixture.repairTarget, artifacts)
         : null;
     runCli(
       runtimeRoot,
@@ -201,15 +211,16 @@ export function runAutomergeE2E({
       fs.readFileSync(path.join(transferDir, "post-flight-report.json"), "utf8"),
     );
 
-    const repairedHead = currentRef(fixture.remote, fixture.headRef);
+    const repairedHead = currentRef(targetFixture.remote, targetFixture.headRef);
+    assertFixturePostRepair(targetFixture, repairedHead);
     addExactHeadVerdict(statePath, repairedHead);
     if (scenario === "verdict-head-drift") {
-      const driftedHead = advanceRemoteContributorHead(root, fixture, "verdict head drift");
+      const driftedHead = advanceRemoteContributorHead(root, targetFixture, "verdict head drift");
       runCommentRouter(runtimeRoot, baseEnv, artifacts, "08-comment-router-stale-verdict");
       const routerReport = readRouterReport(runtimeRoot);
       const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
       assert.equal(state.pr.mergedAt, null, "a stale exact-head verdict must not merge");
-      assert.equal(currentRef(fixture.remote, fixture.headRef), driftedHead);
+      assert.equal(currentRef(targetFixture.remote, targetFixture.headRef), driftedHead);
       assert.equal(
         state.calls.filter((call) => call.args[0] === "pr" && call.args[1] === "merge").length,
         0,
@@ -221,12 +232,13 @@ export function runAutomergeE2E({
       fs.copyFileSync(statePath, path.join(artifacts, "github-state.json"));
       writeJson(path.join(artifacts, "summary.json"), {
         status: "passed",
+        fixture,
         scenario,
         reviewed_head: repairedHead,
         current_head: driftedHead,
         merge: "blocked before mutation",
       });
-      return { status: "passed", scenario, artifacts };
+      return { status: "passed", fixture, scenario, artifacts };
     }
     if (scenario === "pending-checks") {
       updateGitHubState(statePath, (state) => {
@@ -300,6 +312,7 @@ export function runAutomergeE2E({
     fs.cpSync(transferDir, path.join(artifacts, "run"), { recursive: true });
     writeJson(path.join(artifacts, "summary.json"), {
       status: "passed",
+      fixture,
       scenario,
       target_repo: state.repo,
       target_pr: state.pr.number,
@@ -308,7 +321,7 @@ export function runAutomergeE2E({
       artifact_transfer: "planning run copied into a fresh execution workspace",
       tokens: ["read", "write", "post"],
     });
-    return { status: "passed", scenario, artifacts };
+    return { status: "passed", fixture, scenario, artifacts };
   } catch (error) {
     const deferredRun = path.join(root, "artifact-transfer");
     if (fs.existsSync(deferredRun)) {
@@ -324,6 +337,7 @@ export function runAutomergeE2E({
     }
     writeJson(path.join(artifacts, "failure.json"), {
       status: "failed",
+      fixture,
       scenario,
       error: error instanceof Error ? (error.stack ?? error.message) : String(error),
       retained_root: root,
@@ -423,6 +437,7 @@ function runPlanningHeadDriftScenario({
   fs.copyFileSync(reportPath, path.join(artifacts, "fix-execution-report.json"));
   writeJson(path.join(artifacts, "summary.json"), {
     status: "passed",
+    fixture: fixture.fixture,
     scenario: "planning-head-drift",
     target_repo: state.repo,
     target_pr: state.pr.number,
@@ -430,13 +445,13 @@ function runPlanningHeadDriftScenario({
     current_head: driftedHead,
     mutation: "blocked before target checkout, Codex, or push",
   });
-  return { status: "passed", scenario: "planning-head-drift", artifacts };
+  return { status: "passed", fixture: fixture.fixture, scenario: "planning-head-drift", artifacts };
 }
 
 function advanceContributorHead(fixture, message) {
-  const target = path.join(fixture.seed, "src", "repair-target.txt");
+  const target = path.join(fixture.seed, fixture.repairTarget);
   fs.appendFileSync(target, `${message}\n`);
-  git(["add", "src/repair-target.txt"], fixture.seed);
+  git(["add", fixture.repairTarget], fixture.seed);
   git(["commit", "-m", `test: ${message}`], fixture.seed);
   git(["push", "origin", fixture.headRef], fixture.seed);
   const head = currentRef(fixture.remote, fixture.headRef);
@@ -450,9 +465,9 @@ function advanceRemoteContributorHead(root, fixture, message) {
   git(["config", "user.name", "E2E Contributor"], checkout);
   git(["config", "user.email", "contributor@example.invalid"], checkout);
   git(["checkout", fixture.headRef], checkout);
-  const target = path.join(checkout, "src", "repair-target.txt");
+  const target = path.join(checkout, fixture.repairTarget);
   fs.appendFileSync(target, `${message}\n`);
-  git(["add", "src/repair-target.txt"], checkout);
+  git(["add", fixture.repairTarget], checkout);
   git(["commit", "-m", `test: ${message}`], checkout);
   git(["push", "origin", fixture.headRef], checkout);
   const head = currentRef(fixture.remote, fixture.headRef);
@@ -496,18 +511,24 @@ function runDependencySetupMutationScenario({
     "dependency setup failure must stop before branch push",
   );
   assert.equal(
-    fs.readFileSync(path.join(targetDir, "src", "repair-target.txt"), "utf8"),
+    fs.readFileSync(path.join(targetDir, fixture.repairTarget), "utf8"),
     "broken\n",
     "dependency setup failure must stop before Codex edits",
   );
   fs.copyFileSync(statePath, path.join(artifacts, "github-state.json"));
   writeJson(path.join(artifacts, "summary.json"), {
     status: "passed",
+    fixture: fixture.fixture,
     scenario: "dependency-setup-mutation",
     rejected_error: "target dependency setup mutated checkout identity",
     mutation: "blocked before Codex or push",
   });
-  return { status: "passed", scenario: "dependency-setup-mutation", artifacts };
+  return {
+    status: "passed",
+    fixture: fixture.fixture,
+    scenario: "dependency-setup-mutation",
+    artifacts,
+  };
 }
 
 function runCiRegressionFailureScenario({
@@ -552,13 +573,19 @@ function runCiRegressionFailureScenario({
   assert.equal(currentRef(fixture.remote, fixture.headRef), fixture.headSha);
   writeJson(path.join(artifacts, "summary.json"), {
     status: "passed",
+    fixture: fixture.fixture,
     scenario: "ci-regression-29623139111",
     expected_outcome: "setup-identity-failure",
     clawsweeper_revision: "7be2e4915b4b1d9aa953ccfe359cea670a4616ec",
     target_revision: fixture.headSha,
     reproduced_error: "target dependency setup mutated checkout identity",
   });
-  return { status: "passed", scenario: "ci-regression-29623139111", artifacts };
+  return {
+    status: "passed",
+    fixture: fixture.fixture,
+    scenario: "ci-regression-29623139111",
+    artifacts,
+  };
 }
 
 function runCommentRouter(runtimeRoot, baseEnv, artifacts, label) {
@@ -593,77 +620,6 @@ function updateGitHubState(statePath, update) {
   writeJson(statePath, state);
 }
 
-function createTargetFixture(
-  root,
-  { nonCanonicalLockfile = false, packageManager = "pnpm@11.10.0" } = {},
-) {
-  const remote = path.join(root, "target.git");
-  const seed = path.join(root, "target-seed");
-  git(["init", "--bare", remote]);
-  git(["init", "-b", "main", seed]);
-  git(["config", "user.name", "E2E Contributor"], seed);
-  git(["config", "user.email", "contributor@example.invalid"], seed);
-  fs.mkdirSync(path.join(seed, "scripts"), { recursive: true });
-  fs.mkdirSync(path.join(seed, "src"), { recursive: true });
-  fs.writeFileSync(
-    path.join(seed, "package.json"),
-    `${JSON.stringify(
-      {
-        name: "automerge-e2e-target",
-        private: true,
-        packageManager,
-        scripts: { "check:changed": "node scripts/check.mjs" },
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  // Keep the fixture byte-for-byte canonical for the pinned pnpm. The happy
-  // path should detect production mutations, not manufacture one through a
-  // hand-written lockfile serialization that pnpm immediately normalizes.
-  fs.writeFileSync(
-    path.join(seed, "pnpm-lock.yaml"),
-    nonCanonicalLockfile
-      ? "lockfileVersion: '9.0'\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\nimporters:\n  .: {}\n"
-      : "lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .: {}\n",
-  );
-  fs.writeFileSync(path.join(seed, ".gitignore"), "node_modules/\n");
-  fs.writeFileSync(
-    path.join(seed, "scripts", "check.mjs"),
-    "import fs from 'node:fs';\nif (fs.readFileSync('src/repair-target.txt', 'utf8') !== 'fixed\\n') throw new Error('fixture is not repaired');\n",
-  );
-  fs.writeFileSync(path.join(seed, "src", "repair-target.txt"), "base\n");
-  git(["add", "."], seed);
-  git(["commit", "-m", "chore: seed target"], seed);
-  git(["remote", "add", "origin", remote], seed);
-  git(["push", "-u", "origin", "main"], seed);
-  git(["symbolic-ref", "HEAD", "refs/heads/main"], remote);
-  git(["checkout", "-b", "contributor/change"], seed);
-  fs.writeFileSync(path.join(seed, "src", "repair-target.txt"), "broken\n");
-  git(["add", "."], seed);
-  git(["commit", "-m", "feat: contributor change"], seed);
-  git(["push", "-u", "origin", "contributor/change"], seed);
-  git(["update-ref", "refs/pull/42/head", currentRef(remote, "contributor/change")], remote);
-  return {
-    remote,
-    seed,
-    headRef: "contributor/change",
-    headSha: currentRef(remote, "contributor/change"),
-  };
-}
-
-function createCiRegressionFixture(root) {
-  // The failure depends on ClawSweeper's runtime freezer, Git's index metadata,
-  // and the pinned package manager—not on OpenClaw's source or dependency graph.
-  // A minimal target keeps the production path real while avoiding a multi-GB
-  // checkout/install that can exhaust a developer machine before the assertion.
-  return {
-    ...createTargetFixture(root, { packageManager: "pnpm@11.2.2" }),
-    historicalBaseSha: "977e0b64a12152a2e112634c1c32e8505db08234",
-    historicalHeadSha: "34a3001388bb99fb4a041a73aad98631c4557634",
-  };
-}
-
 function initialGitHubState(fixture) {
   const now = new Date().toISOString();
   return {
@@ -693,6 +649,33 @@ function initialGitHubState(fixture) {
   };
 }
 
+function assertFixturePostRepair(fixture, repairedHead) {
+  if (!fixture.behindMain) return;
+  execFileSync(
+    "/usr/bin/git",
+    ["--git-dir", fixture.remote, "merge-base", "--is-ancestor", fixture.baseSha, repairedHead],
+    { stdio: "ignore" },
+  );
+  assert.equal(
+    execFileSync(
+      "/usr/bin/git",
+      ["--git-dir", fixture.remote, "show", `${repairedHead}:CHANGELOG.md`],
+      { encoding: "utf8" },
+    ),
+    fixture.changelog,
+    "ordinary OpenClaw automerge repair must preserve the release-owned changelog",
+  );
+  assert.match(
+    execFileSync(
+      "/usr/bin/git",
+      ["--git-dir", fixture.remote, "ls-tree", repairedHead, "CLAUDE.md"],
+      { encoding: "utf8" },
+    ),
+    /^120000 blob /,
+    "OpenClaw's tracked CLAUDE.md symlink must survive repair and base sync",
+  );
+}
+
 function createCommandBin(root) {
   const bin = path.join(root, "bin");
   fs.mkdirSync(bin);
@@ -707,11 +690,11 @@ function createCommandBin(root) {
   return bin;
 }
 
-function startIndexStatMutation(targetDir, artifacts) {
+function startIndexStatMutation(targetDir, trackedRelativePath, artifacts) {
   const marker = path.join(artifacts, "index-stat-mutation.txt");
   const child = spawn(
     process.execPath,
-    [path.join(helperRoot, "index-stat-mutator.mjs"), targetDir, marker],
+    [path.join(helperRoot, "index-stat-mutator.mjs"), targetDir, trackedRelativePath, marker],
     { stdio: "ignore" },
   );
   return { child, marker };

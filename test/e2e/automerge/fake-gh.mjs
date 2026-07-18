@@ -22,7 +22,12 @@ if (args[0] === "repo" && args[1] === "clone") {
   assertReadToken();
   const destination = args[3];
   if (args[2] !== state.repo || !destination) fail(`unsupported repo clone: ${args.join(" ")}`);
-  git(["clone", "--depth=1", state.remote, destination]);
+  // Production `gh repo clone` transfers a complete repository. Avoid both a
+  // shallow boundary and Git's local hardlink shortcut: either can make this
+  // fixture exercise object-availability behavior that GitHub never creates.
+  git(["clone", "--no-local", state.remote, destination]);
+  const shallow = gitText(["-C", destination, "rev-parse", "--is-shallow-repository"]);
+  if (shallow !== "false") fail(`target clone unexpectedly shallow: ${destination}`);
   process.exit(0);
 }
 

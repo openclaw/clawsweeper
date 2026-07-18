@@ -54,6 +54,14 @@ function optionValue(name) {
 }
 
 function fixtureEditPath() {
+  const openClawShapedFixture = path.join(
+    process.cwd(),
+    "packages",
+    "fixture-core",
+    "src",
+    "repair-target.txt",
+  );
+  if (fs.existsSync(openClawShapedFixture)) return openClawShapedFixture;
   const minimalFixture = path.join(process.cwd(), "src", "repair-target.txt");
   if (fs.existsSync(minimalFixture)) return minimalFixture;
   const ciRegressionFixture = path.join(process.cwd(), "src", "hooks", "gmail-watcher.ts");

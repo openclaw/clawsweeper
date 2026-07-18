@@ -22,6 +22,26 @@ clone/fetch/commit/push, a bare target remote, Corepack, the target's pinned
 pnpm, dependency installation, changed-surface validation, artifact handoff,
 and the final squash merge.
 
+The simulated `gh repo clone` always creates a complete, non-local clone and
+asserts that Git does not mark it shallow. A shallow boundary or local-hardlink
+shortcut is not representative of GitHub transport and can turn missing-object
+recovery into repeated Git work. Repository realism belongs in the small
+fixture's tracked files and history shape, not in a full OpenClaw checkout or
+an artificial shallow clone.
+
+Two target fixtures keep different failure signals independent:
+
+- `tiny` proves the generic automerge state machine and precise failure
+  injection with the smallest real Git repository possible.
+- `openclaw-shaped` preserves the production repository contracts that affect
+  repair: OpenClaw's pinned pnpm and Node range, workspace layout and links,
+  changed-surface gate, tracked policy symlink, release-owned changelog, and a
+  contributor branch that is behind current `main`.
+
+Neither fixture clones the full OpenClaw repository. That keeps the required PR
+lane deterministic and bounded while still exercising the `openclaw/openclaw`
+repository profile and strict target validation.
+
 Unrecognized GitHub calls fail closed. This is deliberate: a new production API
 dependency must be represented explicitly instead of silently reducing test
 coverage.
@@ -37,10 +57,15 @@ pnpm e2e:automerge:container
 Run one scenario while iterating:
 
 ```bash
-pnpm e2e:automerge:container -- --scenario planning-head-drift
+pnpm e2e:automerge:container -- \
+  --scenario planning-head-drift \
+  --fixture openclaw-shaped
 ```
 
-Artifacts are retained under `test-results/automerge-container/`. The container
+The container wrapper runs both fixtures by default. Pass `--fixture tiny` for
+the fastest edit loop or `--fixture openclaw-shaped` for the OpenClaw contract.
+Artifacts are retained under
+`test-results/automerge-container/<fixture>/<scenario>/`. The container
 does not reuse the host `node_modules`, Corepack home, pnpm store, repair runs,
 or Git state. The wrapper enables nested user/mount namespaces so the real
 target-validation containment can run; it does not grant the container
@@ -55,7 +80,8 @@ and the wrapper restores artifact ownership to the invoking host UID afterward.
 
 By default, the wrapper builds `Dockerfile.base` from the checked-out repository
 as `clawsweeper-automerge-e2e-base:local`, then passes that exact local tag to
-the application build. The base preinstalls Node 24, Git, Python, CA
+the application build. The base pins Node 24.15.0, which satisfies OpenClaw's
+current Node 24 floor, and preinstalls Git, Python, CA
 certificates, and Corepack. Docker reuses the unchanged OS package layer, while
 the project dependency layer is cached independently by `package.json` and
 `pnpm-lock.yaml`; repeated runs do not reinstall either layer.
@@ -79,7 +105,7 @@ pnpm e2e:automerge:container -- \
 
 ## CI and Crabbox
 
-`.github/workflows/automerge-e2e.yml` runs the lightweight suite for repair,
+`.github/workflows/automerge-e2e.yml` runs every scenario against both fixtures for repair,
 harness, package-manager, and workflow changes. CI calls the repository-owned
 container wrapper on the same production-class Blacksmith runner used by repair
 execution. Pull requests from forks are excluded because untrusted code must not
@@ -97,13 +123,16 @@ pnpm crabbox:run -- \
   --timing-json \
   --capture-on-fail \
   --shell -- \
-  "node scripts/e2e/automerge-container.mjs --scenario all"
+  "node scripts/e2e/automerge-container.mjs --scenario all --fixture all"
 ```
 
-The lightweight scenarios cover the complete success path, a real tracked-file
+Across both target shapes, the scenarios cover the complete success path, a real tracked-file
 dependency-install mutation, planning-to-execution head drift, pending checks
 that later turn green, stale exact-head verdicts, replay idempotency, and the
-reconstructed 2026-07-18 runtime-identity regression.
+reconstructed 2026-07-18 runtime-identity regression. The OpenClaw-shaped runs
+also prove a real workspace install/link graph, `check:changed` package routing,
+base ancestry synchronization, the `CLAUDE.md -> AGENTS.md` symlink, and
+`CHANGELOG.md` preservation.
 
 ## Exact 2026-07-18 CI regression
 
@@ -114,10 +143,11 @@ The regression scenario records the exact revisions from the failed run:
 - OpenClaw base: `977e0b64a12152a2e112634c1c32e8505db08234`
 
 The failure is in ClawSweeper's target-runtime freezer and does not depend on
-OpenClaw's source tree. The harness therefore reconstructs it with a tiny real
-Git repository pinned to the run's pnpm 11.2.2, while the container pins Node
-24.13.0. This avoids downloading and installing the multi-GB OpenClaw graph on
-developer machines. The historical revision also contains an earlier Yarn-shim
+OpenClaw's full source graph. The `tiny` fixture reconstructs it with a real Git
+repository pinned to the run's pnpm 11.2.2; the `openclaw-shaped` fixture reruns
+the same failure injection with OpenClaw's workspace and package-manager
+contract. This avoids downloading and installing the multi-GB OpenClaw graph
+on developer machines. The historical revision also contains an earlier Yarn-shim
 freezer defect. For this scenario only, a Corepack proxy adds the missing
 `pnpm` selector to the old `corepack enable` call so execution reaches the
 linked Git-index identity failure; Corepack and pnpm otherwise execute for
@@ -127,6 +157,7 @@ and run:
 ```bash
 pnpm e2e:automerge:container -- \
   --scenario ci-regression-29623139111 \
+  --fixture tiny \
   --candidate-root /path/to/clawsweeper-at-7be2e491 \
   --expect setup-identity-failure
 ```
@@ -145,7 +176,13 @@ List all scenario names with:
 pnpm e2e:automerge -- --list-scenarios
 ```
 
-Each scenario writes `summary.json` and per-step stdout/stderr logs. Exit zero
+List target fixture names with:
+
+```bash
+pnpm e2e:automerge -- --list-fixtures
+```
+
+Each fixture/scenario pair writes `summary.json` and per-step stdout/stderr logs. Exit zero
 means the selected terminal-state assertions passed; it does not mean that an
 expected safety rejection was bypassed. Failure workspaces are deleted by
 default, while the artifact logs retain the command boundary and error. Use

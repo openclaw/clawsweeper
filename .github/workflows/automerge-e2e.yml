@@ -72,6 +72,7 @@ jobs:
         run: >-
           node scripts/e2e/automerge-container.mjs
           --scenario all
+          --fixture all
           --output test-results/automerge
           --base-image "$AUTOMERGE_E2E_BASE_IMAGE"
 

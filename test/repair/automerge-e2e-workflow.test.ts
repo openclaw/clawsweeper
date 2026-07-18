@@ -8,6 +8,7 @@ test("automerge E2E uses the production containment runner and container entrypo
   assert.match(workflow, /runs-on: blacksmith-16vcpu-ubuntu-2404/);
   assert.match(workflow, /node scripts\/e2e\/automerge-container\.mjs/);
   assert.match(workflow, /--scenario all/);
+  assert.match(workflow, /--fixture all/);
   assert.match(workflow, /--output test-results\/automerge/);
   assert.doesNotMatch(workflow, /\.\/\.github\/actions\/setup-pnpm/);
 });

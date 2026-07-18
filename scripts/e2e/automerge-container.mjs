@@ -2,7 +2,7 @@
 
 /**
  * Definition: build and run the repository-owned automerge E2E image locally.
- * Parameters: --scenario, --expect, --candidate-root, --output, --image,
+ * Parameters: --scenario, --fixture, --expect, --candidate-root, --output, --image,
  * --base-image, and --no-build are optional.
  * Outputs: the harness summary on stdout and retained step logs under --output.
  * Decision: local validation builds its base from repository source and uses a
@@ -26,6 +26,7 @@ Description:
 
 Options:
   --scenario <name>       Scenario name or all (default: all)
+  --fixture <name>        tiny, openclaw-shaped, or all (default: all)
   --expect <outcome>      success or setup-identity-failure (default: success)
   --candidate-root <dir>  Built candidate checkout mounted read-only
   --output <dir>          Host artifact directory (default: test-results/automerge-container)
@@ -40,7 +41,7 @@ Outputs:
 
 Examples:
   pnpm e2e:automerge:container
-  pnpm e2e:automerge:container -- --scenario planning-head-drift
+  pnpm e2e:automerge:container -- --scenario planning-head-drift --fixture openclaw-shaped
   pnpm e2e:automerge:container -- --scenario ci-regression-29623139111 \\
     --candidate-root ../clawsweeper-ci-regression --expect setup-identity-failure
 `);
@@ -52,6 +53,7 @@ const output = path.resolve(String(args.output ?? "test-results/automerge-contai
 const image = String(args.image ?? "clawsweeper-automerge-e2e:local");
 const baseImage = String(args.baseImage ?? "clawsweeper-automerge-e2e-base:local");
 const scenario = String(args.scenario ?? "all");
+const fixture = String(args.fixture ?? "all");
 const expectedOutcome = String(args.expect ?? "success");
 const candidateRoot = args.candidateRoot ? path.resolve(String(args.candidateRoot)) : null;
 if (candidateRoot && !fs.statSync(candidateRoot, { throwIfNoEntry: false })?.isDirectory()) {
@@ -120,6 +122,8 @@ const e2eRun = runResult("docker", [
   "scripts/e2e/automerge.mjs",
   "--scenario",
   scenario,
+  "--fixture",
+  fixture,
   "--output",
   "/e2e-output",
   "--expect",
@@ -170,6 +174,7 @@ function parseArgs(argv) {
     if (arg === "-h" || arg === "--help") parsed.help = true;
     else if (arg === "--no-build") parsed.noBuild = true;
     else if (arg === "--scenario") parsed.scenario = requiredValue(argv, ++index, arg);
+    else if (arg === "--fixture") parsed.fixture = requiredValue(argv, ++index, arg);
     else if (arg === "--expect") parsed.expect = requiredValue(argv, ++index, arg);
     else if (arg === "--candidate-root") parsed.candidateRoot = requiredValue(argv, ++index, arg);
     else if (arg === "--output") parsed.output = requiredValue(argv, ++index, arg);
