@@ -2439,8 +2439,7 @@ function worktreeContentSha256(cwd: string, deadlineAt: number) {
       throw error;
     }
     updateIdentityHash(hash, "worktree-path", relativePath);
-    const worktreeMode =
-      trackedPaths.has(relativePath) && stat.isFile() ? trackedFileMode(stat.mode) : stat.mode;
+    const worktreeMode = stat.isFile() ? gitFileMode(stat.mode) : stat.mode;
     updateIdentityHash(hash, "worktree-mode", String(worktreeMode));
     if (stat.isSymbolicLink()) {
       updateIdentityHash(hash, "worktree-symlink", fs.readlinkSync(absolutePath));
@@ -2468,7 +2467,7 @@ function worktreeContentSha256(cwd: string, deadlineAt: number) {
   return hash.digest("hex");
 }
 
-function trackedFileMode(mode: number) {
+function gitFileMode(mode: number) {
   return mode & 0o100 ? 0o100755 : 0o100644;
 }
 

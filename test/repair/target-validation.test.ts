@@ -4218,6 +4218,9 @@ test("final checkout binding preserves validated content across host commit", ()
   git(cwd, "commit", "-m", "initial");
   fs.writeFileSync(path.join(cwd, "source.txt"), "validated\n");
   fs.writeFileSync(path.join(cwd, "new.txt"), "validated\n");
+  // A host commit starts tracking new repair files without changing their
+  // working-tree permissions, so both identity captures must use Git modes.
+  fs.chmodSync(path.join(cwd, "new.txt"), 0o664);
   fs.rmSync(path.join(cwd, "deleted.txt"));
   const accepted = captureTargetCheckoutBinding(cwd);
 
