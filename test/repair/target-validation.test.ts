@@ -802,7 +802,7 @@ test("bun test is treated as the built-in runner instead of a package script", (
   );
 });
 
-test("package validation execution suppresses lifecycle hooks", () => {
+test("package validation execution suppresses lifecycle hooks and implicit installs", () => {
   assert.deepEqual(validationCommandForExecution(["npm", "run", "check"]), [
     "npm",
     "--ignore-scripts",
@@ -811,6 +811,7 @@ test("package validation execution suppresses lifecycle hooks", () => {
   ]);
   assert.deepEqual(validationCommandForExecution(["pnpm", "--filter", "app", "check"]), [
     "pnpm",
+    "--config.verify-deps-before-run=false",
     "--config.enable-pre-post-scripts=false",
     "--fail-if-no-match",
     "--filter",
@@ -819,6 +820,7 @@ test("package validation execution suppresses lifecycle hooks", () => {
   ]);
   assert.deepEqual(validationCommandForExecution(["pnpm", "run", "--filter", "app", "check"]), [
     "pnpm",
+    "--config.verify-deps-before-run=false",
     "--config.enable-pre-post-scripts=false",
     "--fail-if-no-match",
     "run",
@@ -1101,7 +1103,7 @@ if (args.includes("--fail-if-no-match")) {
   );
   assert.equal(
     fs.readFileSync(logPath, "utf8"),
-    "--config.enable-pre-post-scripts=false --fail-if-no-match --filter __clawsweeper_no_such_workspace__ check",
+    "--config.verify-deps-before-run=false --config.enable-pre-post-scripts=false --fail-if-no-match --filter __clawsweeper_no_such_workspace__ check",
   );
 });
 
@@ -3280,8 +3282,8 @@ if (args[0] === "enable") {
   assert.deepEqual(
     targetInvocations.filter((line) => line.endsWith("verify")),
     [
-      "--config.enable-pre-post-scripts=false verify",
-      "--config.enable-pre-post-scripts=false verify",
+      "--config.verify-deps-before-run=false --config.enable-pre-post-scripts=false verify",
+      "--config.verify-deps-before-run=false --config.enable-pre-post-scripts=false verify",
     ],
   );
 });
@@ -3353,8 +3355,8 @@ if (args[0] === "enable") {
     assert.equal(fs.existsSync(maliciousMarker), false);
     assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/), [
       "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.registry=https://registry.npmjs.org/ --config.engine-strict=false --config.enable-pre-post-scripts=false",
-      "--config.enable-pre-post-scripts=false first",
-      "--config.enable-pre-post-scripts=false second",
+      "--config.verify-deps-before-run=false --config.enable-pre-post-scripts=false first",
+      "--config.verify-deps-before-run=false --config.enable-pre-post-scripts=false second",
     ]);
   },
 );
@@ -3957,7 +3959,7 @@ if (args[0] === "enable") {
     assert.equal(fs.existsSync(maliciousMarker), false);
     assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/), [
       "0.34.0-fixture install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.registry=https://registry.npmjs.org/ --config.engine-strict=false --config.enable-pre-post-scripts=false",
-      "0.34.0-fixture --config.enable-pre-post-scripts=false verify",
+      "0.34.0-fixture --config.verify-deps-before-run=false --config.enable-pre-post-scripts=false verify",
     ]);
   },
 );
