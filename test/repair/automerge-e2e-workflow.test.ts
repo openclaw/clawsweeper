@@ -12,6 +12,22 @@ test("automerge E2E uses the production containment runner and container entrypo
   assert.doesNotMatch(workflow, /\.\/\.github\/actions\/setup-pnpm/);
 });
 
+test("automerge E2E builds its cached base from repository-controlled source", () => {
+  assert.match(workflow, /uses: actions\/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6/);
+  assert.match(
+    workflow,
+    /automerge-e2e-base-\$\{\{ hashFiles\('test\/e2e\/automerge\/Dockerfile\.base'\) \}\}/,
+  );
+  assert.match(workflow, /docker load --input "\$AUTOMERGE_E2E_BASE_ARCHIVE"/);
+  assert.match(
+    workflow,
+    /docker build \\\n\s+--file test\/e2e\/automerge\/Dockerfile\.base \\\n\s+--tag "\$AUTOMERGE_E2E_BASE_IMAGE"/,
+  );
+  assert.match(workflow, /docker save \\\n\s+--output "\$AUTOMERGE_E2E_BASE_ARCHIVE"/);
+  assert.match(workflow, /--base-image "\$AUTOMERGE_E2E_BASE_IMAGE"/);
+  assert.doesNotMatch(workflow, /masonxhuang\/clawsweeper-automerge-e2e-base/);
+});
+
 test("automerge E2E is read-only and excludes untrusted fork pull requests", () => {
   assert.match(workflow, /permissions:\n  contents: read/);
   assert.match(

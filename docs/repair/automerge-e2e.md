@@ -84,8 +84,14 @@ pnpm e2e:automerge:container -- \
 harness, package-manager, and workflow changes. CI calls the repository-owned
 container wrapper on the same production-class Blacksmith runner used by repair
 execution. Pull requests from forks are excluded because untrusted code must not
-receive that runner. The same entrypoint runs on a clean Crabbox checkout without
-installing project dependencies on the host:
+receive that runner. CI builds the base from the checked-in `Dockerfile.base`
+instead of executing the personal-namespace image used by local development.
+The resulting image is saved in a GitHub Actions cache keyed by the complete
+base Dockerfile, so OS packages are installed only on a cache miss. Pull-request
+caches cannot replace the default branch's cache.
+
+The same entrypoint runs on a clean Crabbox checkout without installing project
+dependencies on the host:
 
 ```bash
 pnpm crabbox:run -- \
