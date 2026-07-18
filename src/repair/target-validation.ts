@@ -367,7 +367,10 @@ function preparePnpmToolchain({
 }) {
   const packageManager = targetPnpmPackageManager(packageJson);
   const corepackBin = path.join(String(validationEnv.COREPACK_HOME), "bin");
-  run("corepack", ["enable", "--install-directory", corepackBin], {
+  // Restrict Corepack to pnpm. Enabling every supported manager also creates
+  // Yarn shims that are outside this pnpm-only runtime's trust boundary and
+  // makes a clean target setup fail while freezing the prepared runtime.
+  run("corepack", ["enable", "--install-directory", corepackBin, "pnpm"], {
     cwd,
     env: validationEnv,
     timeoutMs: targetToolchainCommandTimeout(deadlineAt, setupTimeoutMs, "corepack enable"),
@@ -1143,15 +1146,13 @@ export function runAllowedValidationCommandsWithBinding(
       baseRef,
       Date.now() + validationTimeoutMs,
     );
+    const currentSourceIdentity = sourceIdentityFromCheckout(checkoutIdentity);
     if (
       preparedPnpmRuntime &&
-      !sameValidationSourceIdentity(
-        sourceIdentityFromCheckout(checkoutIdentity),
-        preparedPnpmRuntime.sourceIdentity,
-      )
+      !sameValidationSourceIdentity(currentSourceIdentity, preparedPnpmRuntime.sourceIdentity)
     ) {
       throw new Error(
-        "prepared target pnpm toolchain is stale; refresh dependencies before validation",
+        `prepared target pnpm toolchain is stale; refresh dependencies before validation: ${validationSourceIdentityMismatchFields(currentSourceIdentity, preparedPnpmRuntime.sourceIdentity).join(", ")}`,
       );
     }
     const executed: string[] = [];
@@ -2331,7 +2332,9 @@ function assertValidationSourceIdentity(
 ) {
   const actual = validationSourceIdentity(cwd, deadlineAt);
   if (!sameValidationSourceIdentityExceptRuntime(actual, expected)) {
-    throw new Error("target dependency setup mutated checkout identity");
+    throw new Error(
+      `target dependency setup mutated checkout identity: ${validationSourceIdentityMismatchFields(actual, expected, { ignoreRuntimeInputs: true }).join(", ")}`,
+    );
   }
 }
 
@@ -2384,6 +2387,18 @@ function sameValidationSourceIdentityExceptRuntime(
     actual.treeSha === expected.treeSha &&
     actual.status === expected.status &&
     actual.worktreeSha256 === expected.worktreeSha256
+  );
+}
+
+function validationSourceIdentityMismatchFields(
+  actual: ValidationSourceIdentity,
+  expected: ValidationSourceIdentity,
+  { ignoreRuntimeInputs = false }: { ignoreRuntimeInputs?: boolean } = {},
+) {
+  return (Object.keys(expected) as Array<keyof ValidationSourceIdentity>).filter(
+    (field) =>
+      !(ignoreRuntimeInputs && field === "runtimeInputsSha256") &&
+      actual[field] !== expected[field],
   );
 }
 
@@ -3389,7 +3404,9 @@ function gitAdministrativeSha256(cwd: string, deadlineAt: number) {
       root: gitDir,
       paths: [
         "HEAD",
-        "index",
+        // Index trees and hidden flags are verified semantically elsewhere.
+        // Raw index bytes contain Git's mutable stat cache, so hashing them
+        // makes read-only discovery look like an administrative mutation.
         "ORIG_HEAD",
         "MERGE_HEAD",
         "CHERRY_PICK_HEAD",

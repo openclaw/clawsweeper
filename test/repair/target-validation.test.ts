@@ -3271,9 +3271,9 @@ if (args[0] === "enable") {
   assert.equal(fs.existsSync(hostLog), false, "host pnpm must never run");
   const corepackInvocations = fs.readFileSync(corepackLog, "utf8").trim().split(/\r?\n/);
   assert.equal(corepackInvocations.length, 4);
-  assert.match(corepackInvocations[0], /enable --install-directory .*[/\\]corepack[/\\]bin/);
+  assert.match(corepackInvocations[0], /enable --install-directory .*[/\\]corepack[/\\]bin pnpm$/);
   assert.equal(corepackInvocations[1], "prepare pnpm@9.15.0 --activate");
-  assert.match(corepackInvocations[2], /enable --install-directory .*[/\\]corepack[/\\]bin/);
+  assert.match(corepackInvocations[2], /enable --install-directory .*[/\\]corepack[/\\]bin pnpm$/);
   assert.equal(corepackInvocations[3], "prepare pnpm@9.15.0 --activate");
   const targetInvocations = fs.readFileSync(targetLog, "utf8").trim().split(/\r?\n/);
   assert.equal(targetInvocations.filter((line) => line.startsWith("install ")).length, 2);
@@ -4208,6 +4208,23 @@ test("checkout identity capture quarantines transient Git objects", () => {
 
   assert.match(binding.contentTreeSha, /^[0-9a-f]{40,64}$/);
   assert.equal(git(cwd, "count-objects", "-v"), before);
+});
+
+test("checkout identity is stable after ignored runtime discovery refreshes index stats", () => {
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+
+  const packagePath = path.join(cwd, "package.json");
+  const packageContents = fs.readFileSync(packagePath);
+  fs.writeFileSync(packagePath, packageContents);
+  fs.mkdirSync(path.join(cwd, "node_modules"));
+  fs.writeFileSync(path.join(cwd, "node_modules", ".runtime-state"), "prepared\n");
+
+  const first = captureTargetCheckoutBinding(cwd);
+  const second = captureTargetCheckoutBinding(cwd);
+
+  assert.deepEqual(second, first);
 });
 
 test("final checkout binding preserves validated content across host commit", () => {
