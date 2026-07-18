@@ -629,15 +629,18 @@ export function automergeRebaseRepairReason(target: LooseRecord = {}): string | 
     .trim()
     .toUpperCase();
   if (mergeStateStatus === "DIRTY")
-    return "PR is behind or has merge conflicts and needs a cloud rebase repair before automerge";
-  if (mergeStateStatus === "BEHIND")
-    return "PR is behind the base branch and needs a cloud rebase repair before automerge";
+    return "PR has merge conflicts and needs a cloud rebase repair before automerge";
 
   const mergeable = String(target.mergeable ?? "")
     .trim()
     .toUpperCase();
   if (mergeable === "CONFLICTING")
     return "PR has merge conflicts and needs a cloud rebase repair before automerge";
+
+  // GitHub can safely merge an otherwise-ready BEHIND head with a three-way
+  // merge. Let the exact-head merge call enforce repository policy instead of
+  // rewriting a contributor branch solely because main advanced.
+  if (mergeStateStatus === "BEHIND") return null;
   return null;
 }
 
@@ -685,12 +688,17 @@ export function automergeReadinessRepairReason(reason: JsonValue): string | null
     return "PR has merge conflicts and needs a cloud rebase repair before automerge";
   }
   if (text === "merge state status is dirty") {
-    return "PR is behind or has merge conflicts and needs a cloud rebase repair before automerge";
-  }
-  if (text === "merge state status is behind") {
-    return "PR is behind the base branch and needs a cloud rebase repair before automerge";
+    return "PR has merge conflicts and needs a cloud rebase repair before automerge";
   }
   return null;
+}
+
+export function isAutomergeMergeStateReady(value: JsonValue): boolean {
+  return ["BEHIND", "CLEAN", "HAS_HOOKS"].includes(
+    String(value ?? "")
+      .trim()
+      .toUpperCase(),
+  );
 }
 
 export function isCanonicalLandingNeedsHumanText(value: JsonValue) {

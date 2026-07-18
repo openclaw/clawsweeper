@@ -1102,6 +1102,17 @@ test("automerge activation does not send missing changelog to repair", () => {
     }),
     null,
   );
+
+  assert.equal(
+    automergeActivationRepairReason({
+      intent: "automerge",
+      repo: "openclaw/openclaw",
+      title: "fix(memory): preserve session corpus labels",
+      files: [{ path: "extensions/memory-core/src/tools.ts" }],
+      target: { checks: { blockers: [] }, merge_state_status: "BEHIND", mergeable: "MERGEABLE" },
+    }),
+    null,
+  );
 });
 
 test("renderAutomergeJob documents autofix as repair-only", () => {
@@ -3686,12 +3697,9 @@ test("automerge live readiness blocks become repair reasons", () => {
   );
   assert.equal(
     automergeReadinessRepairReason("merge state status is DIRTY"),
-    "PR is behind or has merge conflicts and needs a cloud rebase repair before automerge",
+    "PR has merge conflicts and needs a cloud rebase repair before automerge",
   );
-  assert.equal(
-    automergeReadinessRepairReason("merge state status is BEHIND"),
-    "PR is behind the base branch and needs a cloud rebase repair before automerge",
-  );
+  assert.equal(automergeReadinessRepairReason("merge state status is BEHIND"), null);
   assert.equal(automergeReadinessRepairReason("pull request is draft"), null);
 });
 

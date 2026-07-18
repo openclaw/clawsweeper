@@ -55,6 +55,7 @@ import {
   isAuthorReadOnlyCommandAllowed,
   isMaintainerCommandAllowed,
   isIssueImplementationCommandAllowed,
+  isAutomergeMergeStateReady,
   issueImplementationClusterId,
   issueImplementationJobPath,
   isReadyHumanReviewPause,
@@ -4077,7 +4078,7 @@ function validateAutomergeReadiness({ command, view, target }: LooseRecord) {
   if (checks.total === 0) return "no PR checks found";
   const mergeStateStatus = String(view.mergeStateStatus ?? "");
   if (
-    !["CLEAN", "HAS_HOOKS"].includes(mergeStateStatus) &&
+    !isAutomergeMergeStateReady(mergeStateStatus) &&
     !(mergeStateStatus === "UNSTABLE" && checks.blockers.length === 0)
   ) {
     return `merge state status is ${view.mergeStateStatus || "unknown"}`;
