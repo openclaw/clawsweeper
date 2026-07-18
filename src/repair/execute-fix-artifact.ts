@@ -48,7 +48,10 @@ import {
   automergeShepherdWaitConfig,
   canUseAutomergeFastRebase,
 } from "./automerge-shepherd.js";
-import { automergeOutcomeReviewedShaFromResult } from "./automerge-outcome.js";
+import {
+  automergeOutcomeReviewedShaFromResult,
+  automergePlanningHeadBlock,
+} from "./automerge-outcome.js";
 import { isCanonicalLandingNeedsHumanText } from "./comment-router-core.js";
 import { parsePullRequestUrl, pullRequestNumberFromUrl } from "./github-ref.js";
 import {
@@ -529,7 +532,23 @@ if (scopeBlock) {
 }
 
 const sourceBranchPreflight = preflightRepairSourceBranchWrite(fixArtifact);
-if (sourceBranchPreflight.status === "replace_uneditable_branch") {
+if (sourceBranchPreflight.status === "stale_planning_head") {
+  report.status = "blocked";
+  report.reason = sourceBranchPreflight.reason;
+  report.source_branch_preflight = sourceBranchPreflight;
+  report.actions.push({
+    action: "repair_contributor_branch",
+    status: "blocked",
+    target: sourceBranchPreflight.source_pr,
+    repair_strategy: fixArtifact.repair_strategy,
+    reason: sourceBranchPreflight.reason,
+    expected_head_sha: sourceBranchPreflight.expected_head_sha,
+    current_head_sha: sourceBranchPreflight.current_head_sha,
+    requeue_required: true,
+  });
+  writeReport(report, resultPath);
+  process.exit(1);
+} else if (sourceBranchPreflight.status === "replace_uneditable_branch") {
   report.source_branch_preflight = sourceBranchPreflight;
   report.actions.push({
     action: "repair_contributor_branch",
@@ -806,6 +825,21 @@ function preflightRepairSourceBranchWrite(fixArtifact: LooseRecord) {
       source_pr: sourcePr.url,
       reason: `source PR #${sourcePr.number} is ${pull.state}`,
     };
+  }
+  if (isAutomergeRepairJob()) {
+    const planningHeadBlock = automergePlanningHeadBlock({
+      expectedHeadSha: automergeOutcomeReviewedSha(),
+      currentHeadSha: pull.head?.sha,
+    });
+    if (planningHeadBlock) {
+      return {
+        status: "stale_planning_head",
+        source_pr: sourcePr.url,
+        expected_head_sha: planningHeadBlock.expectedHeadSha,
+        current_head_sha: planningHeadBlock.currentHeadSha,
+        reason: planningHeadBlock.reason,
+      };
+    }
   }
   const pauseBlock = liveRepairPauseBlock({
     pull,

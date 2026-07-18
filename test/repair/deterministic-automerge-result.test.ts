@@ -38,6 +38,7 @@ function clusterPlan(overrides = {}) {
           },
         ],
         pull_request: {
+          head_sha: "92dca8fde03aee8da56a84a011fa387b9c1640fe",
           branch_writable: true,
           files_truncated: 0,
           checks: [
@@ -78,6 +79,7 @@ test("deterministic automerge result emits generic direct-Codex repair artifact"
   });
 
   assert.equal(result?.status, "planned");
+  assert.equal(result?.reviewed_sha, "92dca8fde03aee8da56a84a011fa387b9c1640fe");
   assert.equal(result?.actions[0].action, "build_fix_artifact");
   assert.equal(result?.actions[0].target, "#71898");
   assert.match(result?.actions[0].reason, /direct Codex edit loop/);
