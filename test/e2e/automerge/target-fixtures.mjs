@@ -8,7 +8,7 @@ export const OPENCLAW_SHAPED_CONTRACT = Object.freeze({
   node: ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0",
   packageManager:
     "pnpm@11.2.2+sha512.36e6621fad506178936455e70247b8808ef4ec25797a9f437a93281a020484e2607f6a469a22e982987c3dbb8866e3071514ab10a4a1749e06edcd1ec118436f",
-  repairTarget: "packages/fixture-core/src/repair-target.txt",
+  repairTarget: "src/repair-target.txt",
 });
 
 export function createTargetFixture(
@@ -66,7 +66,14 @@ function createOpenClawShapedFixture(root, { dependencySetupMutation }) {
     fixture: "openclaw-shaped",
     repairTarget,
     forcedTrackedFiles: dependencySetupMutation ? ["node_modules/.modules.yaml"] : [],
-    trackedSymlinks: { "CLAUDE.md": "AGENTS.md" },
+    trackedExecutableFiles: ["openclaw.mjs"],
+    trackedSymlinks: {
+      "CLAUDE.md": "AGENTS.md",
+      "extensions/fixture-extension/node_modules/@openclaw/fixture-core":
+        "../../../../packages/fixture-core",
+      "packages/fixture-cli-consumer/node_modules/.bin/openclaw": "../openclaw/openclaw.mjs",
+      "packages/fixture-cli-consumer/node_modules/openclaw": "../../..",
+    },
     files: {
       ".gitignore": [
         "node_modules/",
@@ -83,6 +90,7 @@ function createOpenClawShapedFixture(root, { dependencySetupMutation }) {
         "# OpenClaw-shaped fixture\n\nUse workspace-aware validation. CHANGELOG.md is release-owned and must not be edited by repair automation.\n",
       "CHANGELOG.md":
         "# Changelog\n\n## Unreleased\n\nRelease maintainers own this file; automerge repair must preserve it.\n",
+      "openclaw.mjs": "#!/usr/bin/env node\nconsole.log('openclaw-shaped fixture');\n",
       "package.json": openClawRootPackage(),
       "pnpm-workspace.yaml": openClawWorkspace(),
       "pnpm-lock.yaml": openClawLockfile(),
@@ -93,8 +101,18 @@ function createOpenClawShapedFixture(root, { dependencySetupMutation }) {
         "@openclaw/fixture-core": "workspace:*",
       }),
       "ui/src/index.js": "export const uiFixture = true;\n",
-      "packages/fixture-core/package.json": workspacePackage("@openclaw/fixture-core"),
+      "packages/fixture-cli-consumer/package.json": workspacePackage(
+        "@openclaw/fixture-cli-consumer",
+        {
+          openclaw: "workspace:*",
+        },
+      ),
+      "packages/fixture-core/package.json": workspacePackage("@openclaw/fixture-core", {
+        "@openclaw/fixture-leaf": "workspace:*",
+      }),
       "packages/fixture-core/src/index.js": "export const coreFixture = true;\n",
+      "packages/fixture-leaf/package.json": workspacePackage("@openclaw/fixture-leaf"),
+      "packages/fixture-leaf/src/index.js": "export const leafFixture = true;\n",
       [repairTarget]: "base\n",
       "extensions/fixture-extension/package.json": workspacePackage("@openclaw/fixture-extension", {
         "@openclaw/fixture-core": "workspace:*",
@@ -123,7 +141,14 @@ function createOpenClawShapedFixture(root, { dependencySetupMutation }) {
 
 function initializeRepository(
   root,
-  { fixture, files, repairTarget, forcedTrackedFiles = [], trackedSymlinks = {} },
+  {
+    fixture,
+    files,
+    repairTarget,
+    forcedTrackedFiles = [],
+    trackedExecutableFiles = [],
+    trackedSymlinks = {},
+  },
 ) {
   const remote = path.join(root, "target.git");
   const seed = path.join(root, "target-seed");
@@ -132,10 +157,13 @@ function initializeRepository(
   git(["config", "user.name", "E2E Contributor"], seed);
   git(["config", "user.email", "contributor@example.invalid"], seed);
   for (const [relative, contents] of Object.entries(files)) writeFile(seed, relative, contents);
+  for (const relative of trackedExecutableFiles) fs.chmodSync(path.join(seed, relative), 0o775);
   for (const [relative, target] of Object.entries(trackedSymlinks)) {
+    fs.mkdirSync(path.dirname(path.join(seed, relative)), { recursive: true });
     fs.symlinkSync(target, path.join(seed, relative));
   }
   git(["add", "."], seed);
+  for (const relative of Object.keys(trackedSymlinks)) git(["add", "--force", relative], seed);
   // The mutation scenario deliberately tracks package-manager metadata even
   // though production repositories ignore node_modules. pnpm must rewrite it,
   // giving the containment assertion a deterministic real filesystem mutation.
@@ -165,12 +193,13 @@ function initializeRepository(
 function openClawRootPackage() {
   return `${JSON.stringify(
     {
-      name: "openclaw-shaped-automerge-e2e",
+      name: "openclaw",
       version: "0.0.0",
       private: true,
       type: "module",
       engines: { node: OPENCLAW_SHAPED_CONTRACT.node },
       packageManager: OPENCLAW_SHAPED_CONTRACT.packageManager,
+      bin: { openclaw: "openclaw.mjs" },
       scripts: {
         "check:changed": "node scripts/check-changed.mjs",
         "check:test-types": "node scripts/fixture-gate.mjs test-types",
@@ -258,7 +287,19 @@ importers:
         specifier: workspace:*
         version: link:../../packages/fixture-core
 
-  packages/fixture-core: {}
+  packages/fixture-cli-consumer:
+    dependencies:
+      openclaw:
+        specifier: workspace:*
+        version: link:../..
+
+  packages/fixture-core:
+    dependencies:
+      '@openclaw/fixture-leaf':
+        specifier: workspace:*
+        version: link:../fixture-leaf
+
+  packages/fixture-leaf: {}
 
   ui:
     dependencies:
@@ -285,8 +326,8 @@ const changed = execFileSync("/usr/bin/git", ["diff", "--name-only", "origin/mai
   .trim()
   .split("\\n")
   .filter(Boolean);
-const repairTarget = "packages/fixture-core/src/repair-target.txt";
-assert.ok(changed.includes(repairTarget), "check:changed did not select the repaired package");
+const repairTarget = "src/repair-target.txt";
+assert.ok(changed.includes(repairTarget), "check:changed did not select the repaired root source");
 assert.ok(!changed.includes("CHANGELOG.md"), "ordinary automerge repair changed CHANGELOG.md");
 assert.equal(fs.readFileSync(repairTarget, "utf8"), "fixed\\n");
 assert.equal(

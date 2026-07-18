@@ -54,6 +54,8 @@ function optionValue(name) {
 }
 
 function fixtureEditPath() {
+  const openClawRootFixture = path.join(process.cwd(), "src", "repair-target.txt");
+  if (fs.existsSync(openClawRootFixture)) return openClawRootFixture;
   const openClawShapedFixture = path.join(
     process.cwd(),
     "packages",
@@ -62,11 +64,9 @@ function fixtureEditPath() {
     "repair-target.txt",
   );
   if (fs.existsSync(openClawShapedFixture)) return openClawShapedFixture;
-  const minimalFixture = path.join(process.cwd(), "src", "repair-target.txt");
-  if (fs.existsSync(minimalFixture)) return minimalFixture;
   const ciRegressionFixture = path.join(process.cwd(), "src", "hooks", "gmail-watcher.ts");
   if (fs.existsSync(ciRegressionFixture)) return ciRegressionFixture;
-  return minimalFixture;
+  return openClawRootFixture;
 }
 
 function fail(message) {

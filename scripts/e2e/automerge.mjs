@@ -27,7 +27,9 @@ Options:
   --scenario <name>       Scenario to run; use all for the full suite
                           (default: happy-path)
   --fixture <name>        tiny, openclaw-shaped, or all (default: tiny)
-  --expect <outcome>      success or setup-identity-failure (default: success)
+  --expect <outcome>      success or setup-identity-failure (default: success);
+                          failure proof supports the historical regression and
+                          openclaw-shaped happy-path
   --list-scenarios        Print supported scenario names
   --list-fixtures         Print supported target fixture names
   --candidate-root <dir>  Built ClawSweeper checkout to validate (default: cwd)
@@ -43,6 +45,7 @@ Examples:
   pnpm e2e:automerge
   pnpm e2e:automerge -- --scenario all --fixture all --output test-results/automerge
   pnpm e2e:automerge -- --scenario ci-regression-29623139111 --candidate-root ../clawsweeper-ci-regression --expect setup-identity-failure
+  pnpm e2e:automerge -- --scenario happy-path --fixture openclaw-shaped --candidate-root ../clawsweeper-before-fix --expect setup-identity-failure
 `);
   process.exit(0);
 }

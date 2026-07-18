@@ -21,6 +21,7 @@ test("openclaw-shaped automerge fixture preserves production repository contract
 
     assert.equal(packageJson.engines.node, OPENCLAW_SHAPED_CONTRACT.node);
     assert.equal(packageJson.packageManager, OPENCLAW_SHAPED_CONTRACT.packageManager);
+    assert.deepEqual(packageJson.bin, { openclaw: "openclaw.mjs" });
     assert.deepEqual(Object.keys(packageJson.scripts).sort(), [
       "check:changed",
       "check:test-types",
@@ -36,9 +37,49 @@ test("openclaw-shaped automerge fixture preserves production repository contract
     assert.match(workspace, /allowBuilds:/);
     assert.match(lockfile, /version: link:packages\/fixture-core/);
     assert.match(lockfile, /version: link:\.\.\/\.\.\/packages\/fixture-core/);
+    assert.match(lockfile, /version: link:\.\.\/fixture-leaf/);
     assert.equal(fixture.repairTarget, OPENCLAW_SHAPED_CONTRACT.repairTarget);
     assert.deepEqual(fixture.files, [OPENCLAW_SHAPED_CONTRACT.repairTarget]);
     assert.equal(fs.readlinkSync(path.join(fixture.seed, "CLAUDE.md")), "AGENTS.md");
+    assert.equal(
+      fs.readlinkSync(
+        path.join(fixture.seed, "extensions/fixture-extension/node_modules/@openclaw/fixture-core"),
+      ),
+      "../../../../packages/fixture-core",
+    );
+    assert.equal(
+      fs.readlinkSync(
+        path.join(fixture.seed, "packages/fixture-cli-consumer/node_modules/openclaw"),
+      ),
+      "../../..",
+    );
+    assert.equal(
+      fs.readlinkSync(
+        path.join(fixture.seed, "packages/fixture-cli-consumer/node_modules/.bin/openclaw"),
+      ),
+      "../openclaw/openclaw.mjs",
+    );
+    assert.equal(fs.statSync(path.join(fixture.seed, "openclaw.mjs")).mode & 0o777, 0o775);
+    assert.match(
+      spawnSync("/usr/bin/git", ["-C", fixture.seed, "ls-files", "-s", "openclaw.mjs"], {
+        encoding: "utf8",
+      }).stdout,
+      /^100755 /,
+    );
+    assert.match(
+      spawnSync(
+        "/usr/bin/git",
+        [
+          "-C",
+          fixture.seed,
+          "ls-files",
+          "-s",
+          "extensions/fixture-extension/node_modules/@openclaw/fixture-core",
+        ],
+        { encoding: "utf8" },
+      ).stdout,
+      /^120000 /,
+    );
     assert.equal(fixture.behindMain, true);
     assert.notEqual(
       spawnSync(

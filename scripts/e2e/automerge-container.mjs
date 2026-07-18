@@ -27,7 +27,9 @@ Description:
 Options:
   --scenario <name>       Scenario name or all (default: all)
   --fixture <name>        tiny, openclaw-shaped, or all (default: all)
-  --expect <outcome>      success or setup-identity-failure (default: success)
+  --expect <outcome>      success or setup-identity-failure (default: success);
+                          failure proof supports the historical regression and
+                          openclaw-shaped happy-path
   --candidate-root <dir>  Built candidate checkout mounted read-only
   --output <dir>          Host artifact directory (default: test-results/automerge-container)
   --image <tag>           Local image tag (default: clawsweeper-automerge-e2e:local)
@@ -44,6 +46,8 @@ Examples:
   pnpm e2e:automerge:container -- --scenario planning-head-drift --fixture openclaw-shaped
   pnpm e2e:automerge:container -- --scenario ci-regression-29623139111 \\
     --candidate-root ../clawsweeper-ci-regression --expect setup-identity-failure
+  pnpm e2e:automerge:container -- --scenario happy-path --fixture openclaw-shaped \\
+    --candidate-root ../clawsweeper-before-fix --expect setup-identity-failure
 `);
   process.exit(0);
 }

@@ -37,8 +37,16 @@ export function runAutomergeE2E({
   if (!["success", "setup-identity-failure"].includes(expectedOutcome)) {
     throw new Error(`unsupported expected outcome: ${expectedOutcome}`);
   }
-  if (expectedOutcome !== "success" && scenario !== "ci-regression-29623139111") {
-    throw new Error(`${expectedOutcome} is only valid for ci-regression-29623139111`);
+  if (
+    expectedOutcome !== "success" &&
+    !(
+      scenario === "ci-regression-29623139111" ||
+      (scenario === "happy-path" && fixture === "openclaw-shaped")
+    )
+  ) {
+    throw new Error(
+      `${expectedOutcome} is only valid for ci-regression-29623139111 or the openclaw-shaped happy-path`,
+    );
   }
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-automerge-e2e-"));
   const artifacts = path.resolve(outputRoot, fixture, scenario);
@@ -127,6 +135,17 @@ export function runAutomergeE2E({
 
     if (scenario === "ci-regression-29623139111" && expectedOutcome === "setup-identity-failure") {
       return runCiRegressionFailureScenario({
+        artifacts,
+        baseEnv,
+        fixture: targetFixture,
+        jobPath,
+        resultPath,
+        runtimeRoot,
+        targetDir,
+      });
+    }
+    if (scenario === "happy-path" && expectedOutcome === "setup-identity-failure") {
+      return runSetupIdentityFailureScenario({
         artifacts,
         baseEnv,
         fixture: targetFixture,
@@ -584,6 +603,57 @@ function runCiRegressionFailureScenario({
     status: "passed",
     fixture: fixture.fixture,
     scenario: "ci-regression-29623139111",
+    artifacts,
+  };
+}
+
+function runSetupIdentityFailureScenario({
+  artifacts,
+  baseEnv,
+  fixture,
+  jobPath,
+  resultPath,
+  runtimeRoot,
+  targetDir,
+}) {
+  const originalHead = currentRef(fixture.remote, fixture.headRef);
+  const child = runCliExpectFailure(
+    runtimeRoot,
+    [
+      "dist/repair/execute-fix-artifact.js",
+      jobPath,
+      resultPath,
+      "--target-dir",
+      targetDir,
+      "--defer-publication",
+    ],
+    baseEnv,
+    "write-token",
+    artifacts,
+    "04-execute-setup-identity-regression",
+  );
+  assert.match(
+    `${child.stderr ?? ""}\n${child.stdout ?? ""}`,
+    /target dependency setup mutated checkout identity: worktreeSha256/,
+  );
+  assert.equal(currentRef(fixture.remote, fixture.headRef), originalHead);
+  assert.equal(
+    fs.readFileSync(path.join(targetDir, fixture.repairTarget), "utf8"),
+    "broken\n",
+    "setup identity failure must stop before Codex edits or branch push",
+  );
+  writeJson(path.join(artifacts, "summary.json"), {
+    status: "passed",
+    fixture: fixture.fixture,
+    scenario: "happy-path",
+    expected_outcome: "setup-identity-failure",
+    reproduced_error: "target dependency setup mutated checkout identity: worktreeSha256",
+    mutation: "blocked before Codex or push",
+  });
+  return {
+    status: "passed",
+    fixture: fixture.fixture,
+    scenario: "happy-path",
     artifacts,
   };
 }

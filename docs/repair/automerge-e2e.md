@@ -35,8 +35,10 @@ Two target fixtures keep different failure signals independent:
   injection with the smallest real Git repository possible.
 - `openclaw-shaped` preserves the production repository contracts that affect
   repair: OpenClaw's pinned pnpm and Node range, workspace layout and links,
-  changed-surface gate, tracked policy symlink, release-owned changelog, and a
-  contributor branch that is behind current `main`.
+  tracked cross-workspace and package-bin links under `node_modules`, Git-mode
+  executable normalization, changed-surface gate, tracked policy symlink,
+  release-owned changelog, and a contributor branch that is behind current
+  `main`.
 
 Neither fixture clones the full OpenClaw repository. That keeps the required PR
 lane deterministic and bounded while still exercising the `openclaw/openclaw`
@@ -130,9 +132,10 @@ Across both target shapes, the scenarios cover the complete success path, a real
 dependency-install mutation, planning-to-execution head drift, pending checks
 that later turn green, stale exact-head verdicts, replay idempotency, and the
 reconstructed 2026-07-18 runtime-identity regression. The OpenClaw-shaped runs
-also prove a real workspace install/link graph, `check:changed` package routing,
-base ancestry synchronization, the `CLAUDE.md -> AGENTS.md` symlink, and
-`CHANGELOG.md` preservation.
+also prove a real workspace install/link graph, `check:changed` root-source routing,
+base ancestry synchronization, tracked workspace/bin links maintained by pnpm,
+Git-equivalent `0775 -> 0755` executable normalization, the
+`CLAUDE.md -> AGENTS.md` symlink, and `CHANGELOG.md` preservation.
 
 ## Exact 2026-07-18 CI regression
 
@@ -167,6 +170,19 @@ read-only into the clean image. To validate the image's current candidate fix
 against the same reconstructed setup, omit `--candidate-root` and `--expect`.
 A successful candidate must continue beyond dependency setup and reach the
 normal exact-head merge terminal state.
+
+The OpenClaw-shaped fixture also provides a direct before/after proof for the
+tracked workspace-link and executable-mode install contract. Point the same
+harness at a built pre-fix candidate to assert the exact failure without
+changing the fixture or treating a non-zero harness exit as success:
+
+```bash
+pnpm e2e:automerge:container -- \
+  --scenario happy-path \
+  --fixture openclaw-shaped \
+  --candidate-root /path/to/clawsweeper-before-fix \
+  --expect setup-identity-failure
+```
 
 ## Scenario contract
 

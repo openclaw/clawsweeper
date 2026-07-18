@@ -25,7 +25,15 @@ if (args[0] === "repo" && args[1] === "clone") {
   // Production `gh repo clone` transfers a complete repository. Avoid both a
   // shallow boundary and Git's local hardlink shortcut: either can make this
   // fixture exercise object-availability behavior that GitHub never creates.
-  git(["clone", "--no-local", state.remote, destination]);
+  // GitHub-hosted workspaces are group-writable. Recreate that checkout mode so
+  // a real pnpm install must normalize tracked executable files to Git's 0755
+  // semantics while maintaining tracked OpenClaw workspace/bin links.
+  const previousUmask = process.umask(0o002);
+  try {
+    git(["clone", "--no-local", state.remote, destination]);
+  } finally {
+    process.umask(previousUmask);
+  }
   const shallow = gitText(["-C", destination, "rev-parse", "--is-shallow-repository"]);
   if (shallow !== "false") fail(`target clone unexpectedly shallow: ${destination}`);
   process.exit(0);
