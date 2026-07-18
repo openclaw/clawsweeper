@@ -1,6 +1,6 @@
 ---
 name: crabbox
-description: Use the Crabbox wrapper for OpenClaw remote validation across Linux, macOS, Windows, and WSL2, including delegated Blacksmith Testbox proof. Report the actual provider and id.
+description: Use the Crabbox wrapper for validation across Linux, macOS, Windows, and WSL2, including delegated Blacksmith Testbox proof. Report the actual provider and id.
 ---
 
 # Crabbox
@@ -43,8 +43,12 @@ pnpm crabbox:run -- --help | sed -n '1,120p'
 
 - OpenClaw scripts prefer `../crabbox/bin/crabbox` when present. The user PATH
   shim can be stale.
-- Check `.crabbox.yaml` for direct-provider defaults. Omitting `--provider`
-  means brokered AWS today.
+- Read `.crabbox.yaml`, then run `crabbox config show` from the repository root
+  before selecting a provider. The resolved provider can come from the user's
+  Crabbox config or environment as well as the repository file.
+- Omitting `--provider` means "use the resolved configuration". Pass it only
+  when the task specifically requires a different backend, and report the
+  provider from Crabbox output rather than inferring it from bootstrap wording.
 - The brokered AWS default is a Linux developer image in `eu-west-1`; the repo
   config pins hot `eu-west-1a/b/c` placement so Fast Snapshot Restore can apply.
   If warmup drifts well past the minute-scale path, verify image promotion,
@@ -144,7 +148,7 @@ prepared Blacksmith Testbox CI environment.
 Changed gate:
 
 ```sh
-pnpm crabbox:run -- \
+pnpm crabbox:run -- --provider aws \
   --idle-timeout 90m \
   --ttl 240m \
   --timing-json \
@@ -155,7 +159,7 @@ pnpm crabbox:run -- \
 Full suite:
 
 ```sh
-pnpm crabbox:run -- \
+pnpm crabbox:run -- --provider aws \
   --idle-timeout 90m \
   --ttl 240m \
   --timing-json \
@@ -166,7 +170,7 @@ pnpm crabbox:run -- \
 Focused rerun:
 
 ```sh
-pnpm crabbox:run -- \
+pnpm crabbox:run -- --provider aws \
   --idle-timeout 90m \
   --ttl 240m \
   --timing-json \
@@ -536,21 +540,22 @@ Common Crabbox-only failures:
   Blacksmith runs, use `blacksmith testbox list` and stop only boxes you
   created.
 - Testbox queued/capacity pressure: do not retry Blacksmith repeatedly. Rerun
-  once without `--provider` so `.crabbox.yaml` routes to brokered AWS, or report
-  the Blacksmith blocker if Testbox itself is the requested proof.
+  once without `--provider` to use the resolved configuration, or report the
+  Blacksmith blocker if Testbox itself is the requested proof. Do not assume
+  the resolved fallback is AWS.
 
 If brokered AWS cannot dispatch, sync, attach, or stop, retry once with
 `--debug` and `--timing-json`:
 
 ```sh
-pnpm crabbox:run -- --debug --timing-json -- \
+pnpm crabbox:run -- --provider aws --debug --timing-json -- \
   CI=1 NODE_OPTIONS=--max-old-space-size=4096 OPENCLAW_TEST_PROJECTS_PARALLEL=6 OPENCLAW_VITEST_MAX_WORKERS=1 OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS=900000 pnpm test:changed
 ```
 
 Full suite:
 
 ```sh
-pnpm crabbox:run -- --debug --timing-json -- \
+pnpm crabbox:run -- --provider aws --debug --timing-json -- \
   CI=1 NODE_OPTIONS=--max-old-space-size=4096 OPENCLAW_TEST_PROJECTS_PARALLEL=6 OPENCLAW_VITEST_MAX_WORKERS=1 OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS=900000 pnpm test
 ```
 
@@ -610,15 +615,15 @@ blacksmith auth login --non-interactive --organization openclaw
 
 ## Brokered AWS
 
-Use AWS for normal OpenClaw remote proof. The repo `.crabbox.yaml` already
-selects brokered AWS, so omit `--provider` unless you are testing a different
-provider deliberately.
+Use AWS when the task specifically requires remote direct-provider proof. If
+`crabbox config show` resolves another provider, select AWS explicitly for this
+lane instead of claiming that an omitted provider implies AWS.
 
 ```sh
-pnpm crabbox:warmup -- --class beast --market on-demand --idle-timeout 90m
-pnpm crabbox:hydrate -- --id <cbx_id-or-slug>
-pnpm crabbox:run -- --id <cbx_id-or-slug> --timing-json --shell -- "env NODE_OPTIONS=--max-old-space-size=4096 OPENCLAW_TEST_PROJECTS_PARALLEL=6 OPENCLAW_VITEST_MAX_WORKERS=1 OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS=900000 pnpm test:changed"
-pnpm crabbox:stop -- <cbx_id-or-slug>
+pnpm crabbox:warmup -- --provider aws --class beast --market on-demand --idle-timeout 90m
+pnpm crabbox:hydrate -- --provider aws --id <cbx_id-or-slug>
+pnpm crabbox:run -- --provider aws --id <cbx_id-or-slug> --timing-json --shell -- "env NODE_OPTIONS=--max-old-space-size=4096 OPENCLAW_TEST_PROJECTS_PARALLEL=6 OPENCLAW_VITEST_MAX_WORKERS=1 OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS=900000 pnpm test:changed"
+pnpm crabbox:stop -- --provider aws <cbx_id-or-slug>
 ```
 
 Install/auth for owned Crabbox if needed:
@@ -652,8 +657,9 @@ macOS config lives at:
 ~/Library/Application Support/crabbox/config.yaml
 ```
 
-It should include `broker.url`, `broker.token`, and usually `provider: aws`
-for OpenClaw lanes. Let that config drive normal validation.
+It should include `broker.url` and `broker.token` for AWS lanes. Let the resolved
+config drive normal validation and override it only for a provider-specific
+proof lane.
 
 ### Interactive Desktop / WebVNC
 
