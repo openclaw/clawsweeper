@@ -519,6 +519,9 @@ Repair internals are documented in
 [`docs/repair/README.md`](docs/repair/README.md), and the automerge state
 machine is documented in
 [`docs/repair/automerge-flow.md`](docs/repair/automerge-flow.md).
+The production automerge command chain can be validated before merge with the
+local-container, CI, and Crabbox harness in
+[`docs/repair/automerge-e2e.md`](docs/repair/automerge-e2e.md).
 
 ### Commit Review Lane
 

@@ -13,6 +13,8 @@
     "reserve-review-lease": "node dist/clawsweeper.js reserve-review-lease",
     "review": "node dist/clawsweeper.js review",
     "codex:local:check": "node scripts/check-local-codex.mjs",
+    "e2e:automerge": "pnpm run build:repair && node scripts/e2e/automerge.mjs",
+    "e2e:automerge:container": "node scripts/e2e/automerge-container.mjs",
     "retry-failed-reviews": "node dist/clawsweeper.js retry-failed-reviews",
     "apply-artifacts": "node dist/clawsweeper.js apply-artifacts",
     "apply-decisions": "node dist/clawsweeper.js apply-decisions",

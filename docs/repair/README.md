@@ -75,6 +75,8 @@ For the ClawSweeper feedback loop that updates existing generated PRs, see
 [`docs/repair/auto-update-prs.md`](auto-update-prs.md).
 For the exact automerge state machine, wait behavior, and operator replay, see
 [`docs/repair/automerge-flow.md`](automerge-flow.md).
+For the repository-owned local-container, CI, and Crabbox end-to-end validation,
+see [`docs/repair/automerge-e2e.md`](automerge-e2e.md).
 For the separate path that can turn an eligible issue into a generated PR, see
 [`docs/repair/automatic-issue-prs.md`](automatic-issue-prs.md).
 

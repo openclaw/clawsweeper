@@ -1,0 +1,55 @@
+name: automerge e2e
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/automerge-e2e.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "scripts/e2e/**"
+      - "src/repair/**"
+      - "test/e2e/automerge/**"
+  pull_request:
+    paths:
+      - ".github/workflows/automerge-e2e.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "scripts/e2e/**"
+      - "src/repair/**"
+      - "test/e2e/automerge/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: automerge-e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  automerge-e2e:
+    name: production automerge flow
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Run hermetic automerge scenarios
+        run: >-
+          node scripts/e2e/automerge-container.mjs
+          --scenario all
+          --output test-results/automerge
+
+      - name: Upload automerge proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: automerge-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/automerge
+          if-no-files-found: error
+          retention-days: 14

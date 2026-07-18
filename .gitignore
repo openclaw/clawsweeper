@@ -14,4 +14,5 @@ repair-apply-report.json
 jobs/
 records/
 results/
+test-results/
 triage-dashboard-dev*.log
