@@ -99,6 +99,17 @@ test("embedded containment runtime imports without executing its production entr
   assert.deepEqual(result, { status: "imported" });
 });
 
+test("procfs enumeration tolerates only tasks that disappear during stat reads", () => {
+  assert.deepEqual(runLandlockScenario("process_rows_esrch"), {
+    rows: [[102, 1]],
+    status: "ok",
+  });
+  assert.deepEqual(runLandlockScenario("process_rows_eacces"), {
+    errno: 13,
+    status: "error",
+  });
+});
+
 test("Landlock capability probe selects fallback only for unsupported syscalls", () => {
   for (const scenario of ["probe_enosys", "probe_eopnotsupp"]) {
     const result = runLandlockScenario(scenario);
@@ -219,6 +230,7 @@ function runLandlockScenario(scenario: string): Record<string, unknown> {
     const harness = String.raw`
 import errno
 import importlib.util
+import io
 import json
 import sys
 
@@ -228,6 +240,23 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 if scenario == "import":
     print(json.dumps({"status": "imported"}, separators=(",", ":")))
+    raise SystemExit(0)
+
+if scenario in {"process_rows_esrch", "process_rows_eacces"}:
+    module.os.listdir = lambda _path: ["101", "102", "self"]
+    def fake_open(path, _mode, encoding=None):
+        if path == "/proc/101/stat":
+            error_number = errno.ESRCH if scenario == "process_rows_esrch" else errno.EACCES
+            raise OSError(error_number, "simulated procfs race")
+        if path == "/proc/102/stat":
+            return io.StringIO("102 (worker) S 1 0 0 0")
+        raise AssertionError("unexpected procfs path: " + path)
+    module.open = fake_open
+    try:
+        payload = {"rows": module.process_rows(), "status": "ok"}
+    except OSError as error:
+        payload = {"errno": error.errno, "status": "error"}
+    print(json.dumps(payload, separators=(",", ":")))
     raise SystemExit(0)
 
 def error_payload(error):

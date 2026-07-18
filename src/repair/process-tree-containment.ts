@@ -666,7 +666,10 @@ def process_rows():
         try:
             with open("/proc/" + entry + "/stat", "r", encoding="utf-8") as handle:
                 stat = handle.read()
-        except FileNotFoundError:
+        # procfs may report either ENOENT or ESRCH when a task exits between
+        # directory enumeration and opening its stat file. Both mean the
+        # observed task is already gone; every other read failure stays fatal.
+        except (FileNotFoundError, ProcessLookupError):
             continue
         fields = stat[stat.rfind(")") + 2:].split()
         if len(fields) >= 2:
