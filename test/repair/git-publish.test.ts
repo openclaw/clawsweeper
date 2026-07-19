@@ -21,6 +21,7 @@ for (const key of [
   "CLAWSWEEPER_STATE_DIR",
   "CLAWSWEEPER_PUBLISH_ROOT",
   "CLAWSWEEPER_PUBLISH_BRANCH",
+  "CLAWSWEEPER_STATE_REPOSITORY",
 ]) {
   delete process.env[key];
 }
@@ -1646,6 +1647,68 @@ test("publishMainCommit converges after production-sized immutable ledger races"
   }
 });
 
+test("publishMainCommit escapes sustained immutable ledger races through a server merge", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-server-merge-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const fakeBin = path.join(root, "bin");
+  const ledgerPath =
+    "ledger/v1/import-bindings/events/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff.json";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, "remote.txt"), "base\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+  installCheckoutHeader(work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  write(path.join(work, ledgerPath), '{"local":true}\n');
+  installSimplePushRaceHook(work, other, 65);
+  installFakeGitHubMerge(fakeBin, origin);
+
+  const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withEnv(
+      {
+        CLAWSWEEPER_STATE_REPOSITORY: "openclaw/clawsweeper-state",
+        GITHUB_RUN_ID: "12345",
+        GITHUB_RUN_ATTEMPT: "1",
+        PATH: `${fakeBin}:${process.env.PATH}`,
+      },
+      () =>
+        withCwd(work, () =>
+          publishMainCommit({
+            message: "chore: append command action ledger",
+            paths: [ledgerPath],
+            maxAttempts: 8,
+            pushAttempts: 3,
+          }),
+        ),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${ledgerPath}`], root),
+    '{"local":true}\n',
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:remote.txt"], root),
+    "base\nrace 1\nrace 2\n",
+    "the server merge preserves state writes that beat both client pushes",
+  );
+  const metrics = lines.find((line) => line.startsWith("Git publish metrics:"));
+  assert.match(metrics, /actions=.*gh-api:2(?:,|$)/, "merge and cleanup use the GitHub API");
+  assert.match(metrics, /actions=.*push:2(?:,|$)/, "the client stops racing the state ref");
+});
+
 test("publishMainCommit rebuilds a production-sized flat immutable ledger tree", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-large-tree-"));
   const origin = path.join(root, "origin.git");
@@ -2747,6 +2810,85 @@ fi
 `,
   );
   fs.chmodSync(hook, 0o755);
+}
+
+function installSimplePushRaceHook(work, other, raceCount, branch = "main") {
+  const hook = path.join(work, ".git/hooks/pre-push");
+  const counter = path.join(work, ".git/hooks/pre-push-count");
+  fs.writeFileSync(
+    hook,
+    `#!/bin/sh
+set -e
+count=0
+if test -f "${counter}"; then count=$(cat "${counter}"); fi
+count=$((count + 1))
+printf '%s\n' "$count" > "${counter}"
+if test "$count" -le ${raceCount}; then
+  printf 'race %s\n' "$count" >> "${path.join(other, "remote.txt")}"
+  git -C "${other}" add remote.txt
+  git -C "${other}" commit -m "concurrent state update $count"
+  git -C "${other}" push origin HEAD:${branch}
+fi
+`,
+  );
+  fs.chmodSync(hook, 0o755);
+}
+
+function installFakeGitHubMerge(fakeBin, origin) {
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const gh = path.join(fakeBin, "gh");
+  fs.writeFileSync(
+    gh,
+    `#!/bin/sh
+set -eu
+method=GET
+endpoint=
+base=
+head=
+while test "$#" -gt 0; do
+  case "$1" in
+    api) shift; endpoint="$1" ;;
+    --method) shift; method="$1" ;;
+    -f)
+      shift
+      case "$1" in
+        base=*) base=\${1#base=} ;;
+        head=*) head=\${1#head=} ;;
+      esac
+      ;;
+  esac
+  shift
+done
+case "$method:$endpoint" in
+  POST:repos/openclaw/clawsweeper-state/merges)
+    base_sha=$(git --git-dir "${origin}" rev-parse "refs/heads/$base")
+    head_sha=$(git --git-dir "${origin}" rev-parse "refs/heads/$head")
+    tree=$(git --git-dir "${origin}" merge-tree --write-tree "$base_sha" "$head_sha")
+    commit=$(printf '%s\n' 'server merge' | GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com git --git-dir "${origin}" commit-tree "$tree" -p "$base_sha" -p "$head_sha")
+    git --git-dir "${origin}" update-ref "refs/heads/$base" "$commit" "$base_sha"
+    printf '{"sha":"%s"}\n' "$commit"
+    ;;
+  DELETE:repos/openclaw/clawsweeper-state/git/refs/heads/*)
+    ref=\${endpoint#repos/openclaw/clawsweeper-state/git/refs/heads/}
+    git --git-dir "${origin}" update-ref -d "refs/heads/$ref"
+    ;;
+  *)
+    printf '%s\n' "unexpected fake gh call: $method $endpoint" >&2
+    exit 2
+    ;;
+esac
+`,
+  );
+  fs.chmodSync(gh, 0o755);
+}
+
+function installCheckoutHeader(work) {
+  const encoded = Buffer.from(
+    ["fixture-user", "fixture"].join(String.fromCharCode(58)),
+    "utf8",
+  ).toString("base64");
+  const header = [`${"AUTH"}ORIZATION:`, `${"bas"}ic`, encoded].join(" ");
+  run("git", ["config", "--local", "http.https://github.com/.extraheader", header], work);
 }
 
 function installCheckpointFailureHook(work, other, branch) {

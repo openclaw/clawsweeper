@@ -48,7 +48,9 @@ runs:
 
     - name: Export state root
       shell: bash
-      run: echo "CLAWSWEEPER_STATE_DIR=$GITHUB_WORKSPACE/${{ inputs.state-path }}" >> "$GITHUB_ENV"
+      run: |
+        echo "CLAWSWEEPER_STATE_DIR=$GITHUB_WORKSPACE/${{ inputs.state-path }}" >> "$GITHUB_ENV"
+        echo "CLAWSWEEPER_STATE_REPOSITORY=openclaw/clawsweeper-state" >> "$GITHUB_ENV"
 
     - uses: actions/setup-node@v6
       with:

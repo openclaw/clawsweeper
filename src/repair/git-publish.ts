@@ -432,6 +432,26 @@ function pushImmutableActionLedgerCommit(options: {
       });
       return "committed";
     }
+    const stateRepository = immutableLedgerStateRepository();
+    if (attempt === 1 && stateRepository) {
+      const publishedCommit = mergeImmutableActionLedgerOnGitHub({
+        remote: options.remote,
+        branch: options.branch,
+        message: options.message,
+        paths: options.paths,
+        sourceCommit: options.sourceCommit,
+        repository: stateRepository,
+        token: stateRepositoryToken(),
+        pushAttempts: options.pushAttempts,
+      });
+      finalizeImmutableActionLedgerCheckout({
+        previousCommit,
+        publishedCommit,
+        paths: options.paths,
+        protectedWorktreePaths,
+      });
+      return "committed";
+    }
     if (attempt === pushBudget) break;
 
     // Build only the affected ancestor trees. The state checkout has hundreds
@@ -456,6 +476,160 @@ function pushImmutableActionLedgerCommit(options: {
     }
   }
   throw new Error(`Failed to publish commit after ${pushBudget} push attempts`);
+}
+
+function immutableLedgerStateRepository(): string | null {
+  const repository = process.env.CLAWSWEEPER_STATE_REPOSITORY?.trim();
+  if (!repository) return null;
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+    throw new Error("CLAWSWEEPER_STATE_REPOSITORY must be an owner/repository slug");
+  }
+  return repository;
+}
+
+function stateRepositoryToken(): string {
+  const config = runGit(["config", "--local", "--get-regexp", "^http\\..*\\.extraheader$"], {
+    quiet: true,
+  });
+  for (const line of config.split("\n")) {
+    const header = line.slice(line.indexOf(" ") + 1);
+    const match = /^AUTHORIZATION:\s*basic\s+(\S+)$/i.exec(header);
+    if (!match) continue;
+    const credential = Buffer.from(match[1]!, "base64").toString("utf8");
+    const separator = credential.indexOf(":");
+    if (separator >= 0 && credential.slice(separator + 1)) {
+      return credential.slice(separator + 1);
+    }
+  }
+  throw new Error("State checkout credentials are required for immutable server merges");
+}
+
+function mergeImmutableActionLedgerOnGitHub(options: {
+  remote: string;
+  branch: string;
+  message: string;
+  paths: readonly string[];
+  sourceCommit: string;
+  repository: string;
+  token: string;
+  pushAttempts: number;
+}): string {
+  const runId = (process.env.GITHUB_RUN_ID ?? "local").replace(/[^A-Za-z0-9_.-]/g, "-");
+  const runAttempt = (process.env.GITHUB_RUN_ATTEMPT ?? "1").replace(/[^A-Za-z0-9_.-]/g, "-");
+  const temporaryBranch = `clawsweeper/immutable-ledger/${runId}-${runAttempt}-${process.pid}-${options.sourceCommit.slice(0, 12)}`;
+  const temporaryRef = `refs/heads/${temporaryBranch}`;
+  let pushed = false;
+  try {
+    for (let attempt = 1; attempt <= options.pushAttempts; attempt += 1) {
+      if (
+        spawnGit(["push", options.remote, `${options.sourceCommit}:${temporaryRef}`], {
+          displayArgs: ["push", options.remote, `<commit>:${temporaryRef}`],
+        }).status === 0
+      ) {
+        pushed = true;
+        break;
+      }
+    }
+    if (!pushed) throw new Error("Failed to publish immutable ledger temporary ref");
+
+    // GitHub resolves the merge against the live base ref in one server-side
+    // transaction, so a fast state writer cannot invalidate a locally rebuilt
+    // commit between fetch and push.
+    for (let attempt = 1; attempt <= 8; attempt += 1) {
+      spawnGitHubApi(
+        [
+          "api",
+          `repos/${options.repository}/merges`,
+          "--method",
+          "POST",
+          "-f",
+          `base=${options.branch}`,
+          "-f",
+          `head=${temporaryBranch}`,
+          "-f",
+          `commit_message=${options.message}`,
+        ],
+        options.repository,
+        options.token,
+      );
+      runGit(["fetch", options.remote, options.branch]);
+      const remoteCommit = runGit(["rev-parse", `${options.remote}/${options.branch}`], {
+        quiet: true,
+      }).trim();
+      if (
+        immutableActionLedgerPathsPresent({
+          commit: remoteCommit,
+          sourceCommit: options.sourceCommit,
+          paths: options.paths,
+        })
+      ) {
+        return remoteCommit;
+      }
+      console.log(`Server merge attempt ${attempt} did not publish the immutable ledger batch`);
+    }
+    throw new Error("Failed to publish immutable ledger through GitHub server merge");
+  } finally {
+    if (pushed) {
+      spawnGitHubApi(
+        [
+          "api",
+          `repos/${options.repository}/git/refs/heads/${temporaryBranch}`,
+          "--method",
+          "DELETE",
+        ],
+        options.repository,
+        options.token,
+      );
+    }
+  }
+}
+
+function spawnGitHubApi(args: readonly string[], repository: string, token: string): GitRunResult {
+  recordGitProcess("gh-api");
+  console.log(`$ gh api <immutable-ledger ${repository}>`);
+  const child = spawnSync("gh", [...args], {
+    cwd: publishRoot(),
+    env: { ...process.env, GH_TOKEN: token },
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (child.status !== 0 && child.stderr) process.stderr.write(child.stderr);
+  return {
+    status: child.status ?? 1,
+    stdout: child.stdout ?? "",
+    stderr: child.stderr ?? "",
+  };
+}
+
+function immutableActionLedgerPathsPresent(options: {
+  commit: string;
+  sourceCommit: string;
+  paths: readonly string[];
+}): boolean {
+  const sourceEntries = chunked(options.paths, GIT_PATHSPEC_BATCH_SIZE).flatMap((paths) =>
+    readGitTreeEntries(["ls-tree", "-z", "--full-tree", options.sourceCommit, "--", ...paths]),
+  );
+  const remoteEntries = chunked(options.paths, GIT_PATHSPEC_BATCH_SIZE).flatMap((paths) =>
+    readGitTreeEntries(["ls-tree", "-z", "--full-tree", options.commit, "--", ...paths]),
+  );
+  const sourceByPath = new Map(sourceEntries.map((entry) => [entry.name, entry]));
+  const remoteByPath = new Map(remoteEntries.map((entry) => [entry.name, entry]));
+  let allPresent = true;
+  for (const path of options.paths) {
+    const source = sourceByPath.get(path);
+    if (!source || source.type !== "blob") {
+      throw new Error(`Immutable action-ledger source path is not a blob: ${path}`);
+    }
+    const remote = remoteByPath.get(path);
+    if (!remote) {
+      allPresent = false;
+      continue;
+    }
+    if (remote.type !== source.type || remote.mode !== source.mode || remote.oid !== source.oid) {
+      throw new Error(`Immutable action-ledger path already has different content: ${path}`);
+    }
+  }
+  return allPresent;
 }
 
 function pushReconciliationCommit(options: {
@@ -1642,7 +1816,16 @@ function writePatchedGitTree(baseTree: string | null, patch: GitTreePatch): stri
     const oid = writePatchedGitTree(existing?.oid ?? null, childPatch);
     entries.set(name, { mode: "040000", type: "tree", oid, name });
   }
-  for (const [name, entry] of patch.files) entries.set(name, entry);
+  for (const [name, entry] of patch.files) {
+    const existing = entries.get(name);
+    if (
+      existing &&
+      (existing.type !== entry.type || existing.mode !== entry.mode || existing.oid !== entry.oid)
+    ) {
+      throw new Error(`Immutable action-ledger path already has different content: ${name}`);
+    }
+    entries.set(name, entry);
+  }
   const input = [...entries.values()]
     .sort((left, right) => left.name.localeCompare(right.name))
     .map((entry) => `${entry.mode} ${entry.type} ${entry.oid}\t${entry.name}\0`)
