@@ -271,8 +271,19 @@ jobs:
           payload="$(TARGET_REPO="$target_repo" TARGET_BRANCH="$target_branch" node <<'NODE'
           const payload = JSON.parse(process.env.CLIENT_PAYLOAD || "{}");
           const itemKind = payload.item_kind === "pull_request" ? "pull_request" : "issue";
-          const sourceEvent = payload.source_event === "pull_request" ? "pull_request" : "issues";
+          const sourceEvent =
+            payload.source_event === "pull_request" || payload.source_event === "pull_request_target"
+              ? "pull_request"
+              : "issues";
           const dispatchKey = String(payload.dispatch_key || "").trim();
+          const ingressFingerprint = String(payload.ingress_fingerprint || "").trim().toLowerCase();
+          const ingress =
+            payload.ingress_route === "target_dispatcher" &&
+            itemKind === "pull_request" &&
+            sourceEvent === "pull_request" &&
+            /^[0-9a-f]{64}$/.test(ingressFingerprint)
+              ? { route: "target_dispatcher", fingerprint: ingressFingerprint }
+              : undefined;
           process.stdout.write(
             JSON.stringify({
               delivery_id: dispatchKey
@@ -305,6 +316,7 @@ jobs:
                   ? { additionalPrompt: payload.additional_prompt }
                   : {}),
               },
+              ...(ingress ? { ingress } : {}),
             }),
           );
           NODE

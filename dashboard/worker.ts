@@ -29,6 +29,7 @@ import {
   type ExactReviewClaimedRun,
   type ExactReviewCompletionOutcome,
   type ExactReviewDecision,
+  type ExactReviewIngress,
 } from "./exact-review-queue.ts";
 import {
   AUTOMERGE_METRICS_EVENT_TYPE,
@@ -1071,11 +1072,17 @@ async function githubWebhook(request, env, ctx) {
   if ("type" in decision && decision.type === "item") {
     const deliveryId = request.headers.get("x-github-delivery") || "";
     const itemDecision = decision as ExactReviewDecision & { installationId?: number };
+    const ingress = await exactReviewPullRequestIngress({
+      event,
+      payload,
+      decision: itemDecision,
+    });
     const sourceAuthority =
       itemDecision.itemKind === "pull_request"
         ? await reserveExactReviewSourceAuthority(env, {
             deliveryId,
             decision: itemDecision,
+            ingress,
           })
         : null;
     if (itemDecision.itemKind === "pull_request" && sourceAuthority === null) {
@@ -1123,6 +1130,7 @@ async function githubWebhook(request, env, ctx) {
       env,
       deliveryId,
       decision: exactReviewDecision,
+      ingress,
     });
     if (!queued) return json({ error: "exact_review_queue_not_configured" }, 503);
     if (sourceAuthoritySeq !== null) {
@@ -1461,6 +1469,31 @@ async function bindLivePullRequestHeadAuthority({
     : null;
 }
 
+async function exactReviewPullRequestIngress({ event, payload, decision }) {
+  if (event !== "pull_request" || decision.itemKind !== "pull_request") return undefined;
+  const pullRequest = objectValue(payload.pull_request);
+  const headSha = String(objectValue(pullRequest.head).sha || "")
+    .trim()
+    .toLowerCase();
+  const updatedAt = String(pullRequest.updated_at || "").trim();
+  if (!/^[0-9a-f]{40}$/.test(headSha) || !updatedAt) return undefined;
+  return {
+    route: "direct_webhook" as const,
+    fingerprint: await sha256Text(
+      JSON.stringify({
+        version: 1,
+        target_repo: decision.targetRepo.toLowerCase(),
+        item_number: decision.itemNumber,
+        action: decision.sourceAction,
+        head_sha: headSha,
+        updated_at: updatedAt,
+        body: typeof pullRequest.body === "string" ? pullRequest.body : "",
+        label: String(objectValue(payload.label).name || ""),
+      }),
+    ),
+  } satisfies ExactReviewIngress;
+}
+
 function isCloseGuardLabel(value) {
   const label = String(objectValue(value).name || "")
     .trim()
@@ -1517,9 +1550,11 @@ async function reserveExactReviewSourceAuthority(
   {
     deliveryId,
     decision,
+    ingress,
   }: {
     deliveryId: string;
     decision: ExactReviewDecision & { installationId?: number };
+    ingress?: ExactReviewIngress;
   },
 ): Promise<{ deduped: true } | { sourceAuthoritySeq: number } | null> {
   const queue = exactReviewQueueStub(env);
@@ -1531,6 +1566,7 @@ async function reserveExactReviewSourceAuthority(
       body: JSON.stringify({
         delivery_id: deliveryId,
         decision,
+        ...(ingress ? { ingress } : {}),
         installation_id: decision.installationId,
       }),
     }),
@@ -1880,10 +1916,12 @@ async function authenticatedExactReviewReconcile(request, env) {
 async function enqueueExactReview({
   deliveryId,
   decision,
+  ingress,
   env,
 }: {
   deliveryId: string;
   decision: ExactReviewDecision;
+  ingress?: ExactReviewIngress;
   env: DashboardEnv;
 }) {
   const queue = exactReviewQueueStub(env);
@@ -1892,7 +1930,7 @@ async function enqueueExactReview({
     new Request("https://clawsweeper-exact-review-queue/enqueue", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ delivery_id: deliveryId, decision }),
+      body: JSON.stringify({ delivery_id: deliveryId, decision, ...(ingress ? { ingress } : {}) }),
     }),
   );
   const body = objectValue(await response.json().catch(() => null));

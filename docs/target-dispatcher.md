@@ -130,14 +130,51 @@ jobs:
             echo "::notice::Skipping ClawSweeper dispatch because no dispatch credential is configured."
             exit 0
           fi
+          ingress_fingerprint="$(node <<'NODE'
+          const crypto = require("node:crypto");
+          const fs = require("node:fs");
+          const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
+          const pullRequest = event.pull_request && typeof event.pull_request === "object"
+            ? event.pull_request
+            : {};
+          const headSha = String(pullRequest.head?.sha || "").trim().toLowerCase();
+          const updatedAt = String(pullRequest.updated_at || "").trim();
+          if (
+            process.env.ITEM_KIND !== "pull_request" ||
+            !/^[0-9a-f]{40}$/.test(headSha) ||
+            !updatedAt
+          ) {
+            process.stdout.write("");
+          } else {
+            process.stdout.write(
+              crypto
+                .createHash("sha256")
+                .update(
+                  JSON.stringify({
+                    version: 1,
+                    target_repo: String(process.env.TARGET_REPO || "").toLowerCase(),
+                    item_number: Number(process.env.ITEM_NUMBER),
+                    action: String(process.env.SOURCE_ACTION || ""),
+                    head_sha: headSha,
+                    updated_at: updatedAt,
+                    body: typeof pullRequest.body === "string" ? pullRequest.body : "",
+                    label: String(event.label?.name || ""),
+                  }),
+                )
+                .digest("hex"),
+            );
+          }
+          NODE
+          )"
           payload="$(jq -nc \
             --arg target_repo "$TARGET_REPO" \
             --argjson item_number "$ITEM_NUMBER" \
             --arg item_kind "$ITEM_KIND" \
             --arg source_event "$SOURCE_EVENT" \
             --arg source_action "$SOURCE_ACTION" \
+            --arg ingress_fingerprint "$ingress_fingerprint" \
             --argjson supersedes_in_progress "$SUPERSEDES_IN_PROGRESS" \
-            '{event_type:"clawsweeper_item",client_payload:{target_repo:$target_repo,item_number:$item_number,item_kind:$item_kind,source_event:$source_event,source_action:$source_action,supersedes_in_progress:$supersedes_in_progress}}')"
+            '{event_type:"clawsweeper_item",client_payload:({target_repo:$target_repo,item_number:$item_number,item_kind:$item_kind,source_event:$source_event,source_action:$source_action,supersedes_in_progress:$supersedes_in_progress} + (if $ingress_fingerprint != "" then {ingress_route:"target_dispatcher",ingress_fingerprint:$ingress_fingerprint} else {} end))}')"
           gh api repos/openclaw/clawsweeper/dispatches \
             --method POST \
             --input - <<< "$payload"
@@ -250,6 +287,31 @@ selected item with only immediate-safe close reasons enabled:
 still handles the broader backlog, with `stale_insufficient_info` and
 `mostly_implemented_on_main` blocked until the item is at least 60 days old;
 stale-insufficient-info issues also require 60 days without a non-bot comment.
+
+## Cross-route exact-review identity
+
+The direct GitHub App webhook and this compatibility dispatcher are independent
+reliability routes. Do not disable either one. For pull requests, the template
+above emits an opaque SHA-256 fingerprint of the immutable event snapshot
+(repository, number, action, head SHA, update timestamp, body, and label). The
+ClawSweeper durable queue coalesces only the matching fingerprint and resolved
+target branch when it has seen it from the other route. A target default-branch
+change therefore does not cross-route-coalesce. It also cannot let an unverified
+fallback replace an already verified direct source decision; that fallback is
+recorded as stale source. If the fallback arrives first, the later verified
+direct decision promotes that same queue item instead of creating another one.
+A route with no valid fingerprint remains admissible when no verified direct
+decision exists, so a legacy-only delivery stays a safe fallback. The durable
+receipt remains after a completed review, so a delayed matching counterpart is
+also suppressed rather than recreating the completed review. A fallback that
+the queue rejects as stale is not an admission receipt, so it cannot suppress
+the later verified direct event.
+
+Before enabling this protocol for a target repository, roll out the dispatcher
+and verify direct-only, legacy-only, cross-route duplicate, later body/revision,
+and maintainer-command cases. The hash is an opaque queue receipt, not a
+head-SHA dedupe key; body and metadata updates therefore produce a new event
+identity.
 
 `openclaw/clawhub` dispatches are intentionally skipped while the receiver
 variable `CLAWSWEEPER_ENABLE_CLAWHUB` is not `1`. Enable it only after the

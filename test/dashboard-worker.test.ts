@@ -15094,7 +15094,7 @@ test("hosted synchronize webhook binds and enqueues only the live pull request h
   }
 });
 
-test("hosted pull request verification survives a transient failure and queue restart", async () => {
+test("hosted pull request verification preserves ingress through a transient failure and queue restart", async () => {
   const originalFetch = globalThis.fetch;
   const originalNow = Date.now;
   let now = 3_500_000;
@@ -15167,6 +15167,32 @@ test("hosted pull request verification survives a transient failure and queue re
       storage.rawHas("exact-review-source-authority-reservation:v1:test-delivery"),
       true,
     );
+    const fallbackFingerprint = createHash("sha256")
+      .update(
+        JSON.stringify({
+          version: 1,
+          target_repo: "openclaw/gogcli",
+          item_number: 595,
+          action: "synchronize",
+          head_sha: sourceHeadSha,
+          updated_at: "2026-07-23T13:00:02Z",
+          body: "",
+          label: "",
+        }),
+      )
+      .digest("hex");
+    const fallback = await queue.fetch(
+      buildExactReviewQueueRequest(
+        "legacy-after-deferred-direct",
+        595,
+        "synchronize",
+        "pull_request",
+        "openclaw/gogcli",
+        { targetBranch: "trunk" },
+        { ingress: { route: "target_dispatcher", fingerprint: fallbackFingerprint } },
+      ),
+    );
+    assert.equal((await fallback.json()).queued, true);
 
     const restarted = new ExactReviewQueue({ storage }, queueEnv);
     await restarted.alarm();
@@ -15185,10 +15211,22 @@ test("hosted pull request verification survives a transient failure and queue re
     now = deferred.nextAttemptAt;
     await restarted.alarm();
     const stored = (await storage.get("exact-review-queue")) as {
-      items: Record<string, { decision: { sourceHeadSha?: string; sourceHeadVerified?: boolean } }>;
+      items: Record<
+        string,
+        {
+          revision: number;
+          decision: {
+            sourceHeadSha?: string;
+            sourceHeadVerified?: boolean;
+            sourceAuthoritySeq?: number;
+          };
+        }
+      >;
     };
+    assert.equal(stored.items["openclaw/gogcli#595"].revision, 2);
     assert.equal(stored.items["openclaw/gogcli#595"].decision.sourceHeadSha, sourceHeadSha);
     assert.equal(stored.items["openclaw/gogcli#595"].decision.sourceHeadVerified, true);
+    assert.equal(stored.items["openclaw/gogcli#595"].decision.sourceAuthoritySeq, 1);
     assert.equal(
       storage.rawHas("exact-review-source-authority-reservation:v1:test-delivery"),
       false,
@@ -15256,6 +15294,737 @@ test("hosted reopened webhook advances to its verified current head", async () =
     };
     assert.equal(stored.items["openclaw/gogcli#594"].decision.sourceAction, "reopened");
     assert.equal(stored.items["openclaw/gogcli#594"].decision.sourceHeadSha, sourceHeadSha);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("exact-review queue drops a delayed matching ingress after the first review completes", async () => {
+  const sourceHeadSha = "f".repeat(40);
+  const fingerprint = "e".repeat(64);
+  const harness = createExactReviewAdmissionHarness(() =>
+    jsonResponse({ state: "open", head: { sha: sourceHeadSha } }),
+  );
+
+  try {
+    const direct = await harness.queue.fetch(
+      buildExactReviewQueueRequest(
+        "completed-direct-ingress",
+        601,
+        "synchronize",
+        "pull_request",
+        "openclaw/gogcli",
+        {
+          targetBranch: "trunk",
+          sourceHeadSha,
+          sourceHeadVerified: true,
+          sourceAuthoritySeq: 1,
+          sourceUpdatedAt: "2026-07-23T13:00:02Z",
+        },
+        { ingress: { route: "direct_webhook", fingerprint } },
+      ),
+    );
+    assert.equal((await direct.json()).queued, true);
+
+    await harness.queue.alarm();
+    const dispatched = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, { leaseId: string; leaseRevision: number }>;
+    };
+    const item = dispatched.items["openclaw/gogcli#601"];
+    assert.ok(item);
+    const claim = await harness.queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/claim", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: item.leaseId,
+          item_key: "openclaw/gogcli#601",
+          lease_revision: item.leaseRevision,
+          run_id: "6010",
+          run_attempt: 1,
+        }),
+      }),
+    );
+    assert.equal(claim.status, 200);
+    const claimed = (await claim.json()) as { claim_generation: number };
+    const completed = await harness.queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: item.leaseId,
+          item_key: "openclaw/gogcli#601",
+          lease_revision: item.leaseRevision,
+          claim_generation: claimed.claim_generation,
+          run_id: "6010",
+          run_attempt: 1,
+          outcome: "success",
+        }),
+      }),
+    );
+    assert.deepEqual(await completed.json(), { ok: true, requeued: false });
+
+    const fallback = await harness.queue.fetch(
+      buildExactReviewQueueRequest(
+        "delayed-fallback-ingress",
+        601,
+        "synchronize",
+        "pull_request",
+        "openclaw/gogcli",
+        { targetBranch: "trunk" },
+        { ingress: { route: "target_dispatcher", fingerprint } },
+      ),
+    );
+    assert.deepEqual(await fallback.json(), {
+      ok: true,
+      deduped: true,
+      item_key: "openclaw/gogcli#601",
+      dedupe_scope: "cross_route",
+    });
+    const afterFallback = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, unknown>;
+    };
+    assert.equal(afterFallback.items["openclaw/gogcli#601"], undefined);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("exact-review queue upgrades ingress receipts with admission tracking", async () => {
+  const storage = new MemoryDurableStorage();
+  const receivedAt = Date.now();
+  storage.sql.exec(`CREATE TABLE exact_review_queue_ingress (
+    fingerprint TEXT NOT NULL,
+    route TEXT NOT NULL,
+    target_branch TEXT NOT NULL,
+    received_at INTEGER NOT NULL,
+    PRIMARY KEY (fingerprint, route)
+  ) STRICT`);
+  storage.sql.exec(
+    `INSERT INTO exact_review_queue_ingress (fingerprint, route, target_branch, received_at)
+     VALUES (?, ?, ?, ?)`,
+    "f".repeat(64),
+    "direct_webhook",
+    "trunk",
+    receivedAt,
+  );
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
+  const columns = Array.from(
+    storage.sql.exec(`SELECT name FROM pragma_table_info('exact_review_queue_ingress')`),
+  ) as Array<{ name: string }>;
+  assert.ok(columns.some((column) => column.name === "admitted_at"));
+  const migrated = Array.from(
+    storage.sql.exec(
+      `SELECT admitted_at FROM exact_review_queue_ingress
+        WHERE fingerprint = ? AND route = 'direct_webhook'`,
+      "f".repeat(64),
+    ),
+  )[0] as { admitted_at: number };
+  assert.equal(migrated.admitted_at, receivedAt);
+  const delayedFallback = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "legacy-after-upgrade",
+      601,
+      "synchronize",
+      "pull_request",
+      "openclaw/gogcli",
+      { targetBranch: "trunk" },
+      { ingress: { route: "target_dispatcher", fingerprint: "f".repeat(64) } },
+    ),
+  );
+  assert.deepEqual(await delayedFallback.json(), {
+    ok: true,
+    deduped: true,
+    item_key: "openclaw/gogcli#601",
+    dedupe_scope: "cross_route",
+  });
+});
+
+test("exact-review queue re-upgrade admits a direct receipt written by a rollback", async () => {
+  const storage = new MemoryDurableStorage();
+  const firstUpgrade = new ExactReviewQueue({ storage }, {});
+  await firstUpgrade.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
+  const receivedAt = Date.now();
+  storage.sql.exec(
+    `INSERT INTO exact_review_queue_ingress
+     (fingerprint, route, target_branch, received_at, admitted_at)
+     VALUES (?, ?, ?, ?, NULL)`,
+    "9".repeat(64),
+    "direct_webhook",
+    "trunk",
+    receivedAt,
+  );
+
+  const reupgraded = new ExactReviewQueue({ storage }, {});
+  const migrated = Array.from(
+    storage.sql.exec(
+      `SELECT admitted_at FROM exact_review_queue_ingress
+        WHERE fingerprint = ? AND route = 'direct_webhook'`,
+      "9".repeat(64),
+    ),
+  )[0] as { admitted_at: number };
+  assert.equal(migrated.admitted_at, receivedAt);
+  const delayedFallback = await reupgraded.fetch(
+    buildExactReviewQueueRequest(
+      "fallback-after-reupgrade",
+      605,
+      "synchronize",
+      "pull_request",
+      "openclaw/gogcli",
+      { targetBranch: "trunk" },
+      { ingress: { route: "target_dispatcher", fingerprint: "9".repeat(64) } },
+    ),
+  );
+  assert.deepEqual(await delayedFallback.json(), {
+    ok: true,
+    deduped: true,
+    item_key: "openclaw/gogcli#605",
+    dedupe_scope: "cross_route",
+  });
+});
+
+test("unadmitted fallback receipts do not suppress a later verified direct event", async () => {
+  const firstHeadSha = "a".repeat(40);
+  const secondHeadSha = "b".repeat(40);
+  const firstFingerprint = "a".repeat(64);
+  const secondFingerprint = "b".repeat(64);
+  const harness = createExactReviewAdmissionHarness(() =>
+    jsonResponse({ state: "open", head: { sha: firstHeadSha } }),
+  );
+
+  try {
+    await harness.queue.fetch(
+      buildExactReviewQueueRequest(
+        "verified-first",
+        602,
+        "synchronize",
+        "pull_request",
+        "openclaw/gogcli",
+        {
+          targetBranch: "trunk",
+          sourceHeadSha: firstHeadSha,
+          sourceHeadVerified: true,
+          sourceAuthoritySeq: 1,
+          sourceUpdatedAt: "2026-07-23T13:00:02Z",
+        },
+        { ingress: { route: "direct_webhook", fingerprint: firstFingerprint } },
+      ),
+    );
+    const staleFallback = await harness.queue.fetch(
+      buildExactReviewQueueRequest(
+        "stale-fallback-second",
+        602,
+        "edited",
+        "pull_request",
+        "openclaw/gogcli",
+        { targetBranch: "trunk" },
+        { ingress: { route: "target_dispatcher", fingerprint: secondFingerprint } },
+      ),
+    );
+    assert.deepEqual(await staleFallback.json(), {
+      ok: true,
+      deduped: true,
+      item_key: "openclaw/gogcli#602",
+      stale_source: true,
+    });
+
+    await harness.queue.alarm();
+    const dispatched = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, { leaseId: string; leaseRevision: number }>;
+    };
+    const item = dispatched.items["openclaw/gogcli#602"];
+    const claim = await harness.queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/claim", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: item.leaseId,
+          item_key: "openclaw/gogcli#602",
+          lease_revision: item.leaseRevision,
+          run_id: "6020",
+          run_attempt: 1,
+        }),
+      }),
+    );
+    const claimed = (await claim.json()) as { claim_generation: number };
+    const completed = await harness.queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: item.leaseId,
+          item_key: "openclaw/gogcli#602",
+          lease_revision: item.leaseRevision,
+          claim_generation: claimed.claim_generation,
+          run_id: "6020",
+          run_attempt: 1,
+          outcome: "success",
+        }),
+      }),
+    );
+    assert.deepEqual(await completed.json(), { ok: true, requeued: false });
+
+    const verifiedSecond = await harness.queue.fetch(
+      buildExactReviewQueueRequest(
+        "verified-second",
+        602,
+        "edited",
+        "pull_request",
+        "openclaw/gogcli",
+        {
+          targetBranch: "trunk",
+          sourceHeadSha: secondHeadSha,
+          sourceHeadVerified: true,
+          sourceAuthoritySeq: 2,
+          sourceUpdatedAt: "2026-07-23T13:01:02Z",
+        },
+        { ingress: { route: "direct_webhook", fingerprint: secondFingerprint } },
+      ),
+    );
+    assert.equal((await verifiedSecond.json()).queued, true);
+    const afterDirect = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, { decision: { sourceAction: string; sourceHeadSha?: string } }>;
+    };
+    assert.equal(afterDirect.items["openclaw/gogcli#602"].decision.sourceAction, "edited");
+    assert.equal(afterDirect.items["openclaw/gogcli#602"].decision.sourceHeadSha, secondHeadSha);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("a delayed counterpart cannot replace a newer admitted fallback", async () => {
+  const firstFingerprint = "c".repeat(64);
+  const secondFingerprint = "d".repeat(64);
+  const firstHeadSha = "c".repeat(40);
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }));
+
+  try {
+    await harness.queue.fetch(
+      buildExactReviewQueueRequest(
+        "fallback-first-complete",
+        603,
+        "synchronize",
+        "pull_request",
+        "openclaw/gogcli",
+        { targetBranch: "trunk" },
+        { ingress: { route: "target_dispatcher", fingerprint: firstFingerprint } },
+      ),
+    );
+    await harness.queue.alarm();
+    const dispatched = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, { leaseId: string; leaseRevision: number }>;
+    };
+    const item = dispatched.items["openclaw/gogcli#603"];
+    const claim = await harness.queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/claim", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: item.leaseId,
+          item_key: "openclaw/gogcli#603",
+          lease_revision: item.leaseRevision,
+          run_id: "6030",
+          run_attempt: 1,
+        }),
+      }),
+    );
+    const claimed = (await claim.json()) as { claim_generation: number };
+    await harness.queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: item.leaseId,
+          item_key: "openclaw/gogcli#603",
+          lease_revision: item.leaseRevision,
+          claim_generation: claimed.claim_generation,
+          run_id: "6030",
+          run_attempt: 1,
+          outcome: "success",
+        }),
+      }),
+    );
+    const newerFallback = await harness.queue.fetch(
+      buildExactReviewQueueRequest(
+        "fallback-second-pending",
+        603,
+        "edited",
+        "pull_request",
+        "openclaw/gogcli",
+        { targetBranch: "trunk" },
+        { ingress: { route: "target_dispatcher", fingerprint: secondFingerprint } },
+      ),
+    );
+    assert.equal((await newerFallback.json()).queued, true);
+
+    const delayedDirect = await harness.queue.fetch(
+      buildExactReviewQueueRequest(
+        "delayed-direct-first",
+        603,
+        "synchronize",
+        "pull_request",
+        "openclaw/gogcli",
+        {
+          targetBranch: "trunk",
+          sourceHeadSha: firstHeadSha,
+          sourceHeadVerified: true,
+          sourceAuthoritySeq: 1,
+          sourceUpdatedAt: "2026-07-23T13:00:02Z",
+        },
+        { ingress: { route: "direct_webhook", fingerprint: firstFingerprint } },
+      ),
+    );
+    assert.deepEqual(await delayedDirect.json(), {
+      ok: true,
+      deduped: true,
+      item_key: "openclaw/gogcli#603",
+      dedupe_scope: "cross_route",
+    });
+    const afterDelayed = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, { decision: { sourceAction: string } }>;
+    };
+    assert.equal(afterDelayed.items["openclaw/gogcli#603"].decision.sourceAction, "edited");
+  } finally {
+    harness.restore();
+  }
+});
+
+test("a delayed direct ingress cannot promote across a newer legacy-only update", async () => {
+  const firstFingerprint = "e".repeat(64);
+  const firstHeadSha = "e".repeat(40);
+  const secondHeadSha = "f".repeat(40);
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }));
+
+  try {
+    const fallback = await harness.queue.fetch(
+      buildExactReviewQueueRequest(
+        "fallback-before-legacy-update",
+        604,
+        "synchronize",
+        "pull_request",
+        "openclaw/gogcli",
+        { targetBranch: "trunk" },
+        { ingress: { route: "target_dispatcher", fingerprint: firstFingerprint } },
+      ),
+    );
+    assert.equal((await fallback.json()).queued, true);
+
+    const legacyUpdate = await harness.queue.fetch(
+      buildExactReviewQueueRequest(
+        "legacy-only-newer-update",
+        604,
+        "edited",
+        "pull_request",
+        "openclaw/gogcli",
+        {
+          targetBranch: "trunk",
+          sourceHeadSha: secondHeadSha,
+          sourceHeadVerified: true,
+          sourceAuthoritySeq: 2,
+        },
+      ),
+    );
+    assert.equal((await legacyUpdate.json()).queued, true);
+
+    const delayedDirect = await harness.queue.fetch(
+      buildExactReviewQueueRequest(
+        "delayed-direct-before-legacy-update",
+        604,
+        "synchronize",
+        "pull_request",
+        "openclaw/gogcli",
+        {
+          targetBranch: "trunk",
+          sourceHeadSha: firstHeadSha,
+          sourceHeadVerified: true,
+          sourceAuthoritySeq: 3,
+        },
+        { ingress: { route: "direct_webhook", fingerprint: firstFingerprint } },
+      ),
+    );
+    assert.deepEqual(await delayedDirect.json(), {
+      ok: true,
+      deduped: true,
+      item_key: "openclaw/gogcli#604",
+      dedupe_scope: "cross_route",
+    });
+    const afterDelayed = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, { decision: { sourceAction: string }; ingressFingerprint?: string }>;
+    };
+    assert.equal(afterDelayed.items["openclaw/gogcli#604"].decision.sourceAction, "edited");
+    assert.equal(afterDelayed.items["openclaw/gogcli#604"].ingressFingerprint, undefined);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("exact-review queue coalesces matching ingress and promotes verified direct authority", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+    GITHUB_TOKEN: "test-token",
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const repository = {
+    full_name: "openclaw/gogcli",
+    default_branch: "trunk",
+    private: false,
+    archived: false,
+    fork: false,
+    has_issues: true,
+  };
+  const pullRequest = {
+    number: 597,
+    head: { sha: "a".repeat(40) },
+    updated_at: "2026-07-19T10:19:00Z",
+    body: "Add durable proof.",
+  };
+  const originalFetch = globalThis.fetch;
+  const liveHeads = new Map([
+    [597, "a".repeat(40)],
+    [599, "c".repeat(40)],
+    [600, "d".repeat(40)],
+  ]);
+  globalThis.fetch = async (input) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const match = url.pathname.match(/^\/repos\/openclaw\/gogcli\/pulls\/(\d+)$/);
+    assert.ok(match);
+    const head = liveHeads.get(Number(match[1]));
+    assert.ok(head);
+    return jsonResponse({ head: { sha: head } });
+  };
+
+  try {
+    const direct = await worker.fetch(
+      signedGithubWebhookRequest({
+        event: "pull_request",
+        secret: "test-secret",
+        deliveryId: "direct-pr-delivery",
+        payload: {
+          action: "synchronize",
+          repository,
+          pull_request: pullRequest,
+          installation: { id: 123 },
+        },
+      }),
+      env,
+    );
+    assert.deepEqual(await direct.json(), {
+      ok: true,
+      queued: true,
+      item_key: "openclaw/gogcli#597",
+      superseded_publications: 0,
+    });
+    const fingerprint = createHash("sha256")
+      .update(
+        JSON.stringify({
+          version: 1,
+          target_repo: "openclaw/gogcli",
+          item_number: 597,
+          action: "synchronize",
+          head_sha: "a".repeat(40),
+          updated_at: "2026-07-19T10:19:00Z",
+          body: "Add durable proof.",
+          label: "",
+        }),
+      )
+      .digest("hex");
+    const fallback = await queue.fetch(
+      buildExactReviewQueueRequest(
+        "legacy-pr-delivery",
+        597,
+        "synchronize",
+        "pull_request",
+        "openclaw/gogcli",
+        { targetBranch: "trunk" },
+        { ingress: { route: "target_dispatcher", fingerprint } },
+      ),
+    );
+    assert.deepEqual(await fallback.json(), {
+      ok: true,
+      deduped: true,
+      item_key: "openclaw/gogcli#597",
+      dedupe_scope: "cross_route",
+    });
+
+    const fallbackFirstFingerprint = createHash("sha256")
+      .update(
+        JSON.stringify({
+          version: 1,
+          target_repo: "openclaw/gogcli",
+          item_number: 599,
+          action: "synchronize",
+          head_sha: "c".repeat(40),
+          updated_at: "2026-07-19T10:21:00Z",
+          body: "Fallback arrived first.",
+          label: "",
+        }),
+      )
+      .digest("hex");
+    const fallbackFirst = await queue.fetch(
+      buildExactReviewQueueRequest(
+        "legacy-first-delivery",
+        599,
+        "synchronize",
+        "pull_request",
+        "openclaw/gogcli",
+        { targetBranch: "trunk" },
+        { ingress: { route: "target_dispatcher", fingerprint: fallbackFirstFingerprint } },
+      ),
+    );
+    assert.deepEqual(await fallbackFirst.json(), {
+      ok: true,
+      queued: true,
+      item_key: "openclaw/gogcli#599",
+      superseded_publications: 0,
+    });
+    const directSecond = await worker.fetch(
+      signedGithubWebhookRequest({
+        event: "pull_request",
+        secret: "test-secret",
+        deliveryId: "direct-after-legacy-delivery",
+        payload: {
+          action: "synchronize",
+          repository,
+          pull_request: {
+            number: 599,
+            head: { sha: "c".repeat(40) },
+            updated_at: "2026-07-19T10:21:00Z",
+            body: "Fallback arrived first.",
+          },
+          installation: { id: 123 },
+        },
+      }),
+      env,
+    );
+    assert.deepEqual(await directSecond.json(), {
+      ok: true,
+      queued: true,
+      item_key: "openclaw/gogcli#599",
+      superseded_publications: 0,
+    });
+
+    const branchChangeFingerprint = createHash("sha256")
+      .update(
+        JSON.stringify({
+          version: 1,
+          target_repo: "openclaw/gogcli",
+          item_number: 600,
+          action: "synchronize",
+          head_sha: "d".repeat(40),
+          updated_at: "2026-07-19T10:22:00Z",
+          body: "The default branch changed.",
+          label: "",
+        }),
+      )
+      .digest("hex");
+    const directBeforeBranchChange = await worker.fetch(
+      signedGithubWebhookRequest({
+        event: "pull_request",
+        secret: "test-secret",
+        deliveryId: "direct-old-default-branch-delivery",
+        payload: {
+          action: "synchronize",
+          repository: { ...repository, default_branch: "old-default" },
+          pull_request: {
+            number: 600,
+            head: { sha: "d".repeat(40) },
+            updated_at: "2026-07-19T10:22:00Z",
+            body: "The default branch changed.",
+          },
+          installation: { id: 123 },
+        },
+      }),
+      env,
+    );
+    assert.deepEqual(await directBeforeBranchChange.json(), {
+      ok: true,
+      queued: true,
+      item_key: "openclaw/gogcli#600",
+      superseded_publications: 0,
+    });
+    const fallbackAfterBranchChange = await queue.fetch(
+      buildExactReviewQueueRequest(
+        "legacy-new-default-branch-delivery",
+        600,
+        "synchronize",
+        "pull_request",
+        "openclaw/gogcli",
+        { targetBranch: "new-default" },
+        { ingress: { route: "target_dispatcher", fingerprint: branchChangeFingerprint } },
+      ),
+    );
+    assert.deepEqual(await fallbackAfterBranchChange.json(), {
+      ok: true,
+      deduped: true,
+      item_key: "openclaw/gogcli#600",
+      stale_source: true,
+    });
+
+    const legacyOnly = await queue.fetch(
+      buildExactReviewQueueRequest(
+        "legacy-only-delivery",
+        598,
+        "synchronize",
+        "pull_request",
+        "openclaw/gogcli",
+        { targetBranch: "trunk" },
+        { ingress: { route: "target_dispatcher", fingerprint: "b".repeat(64) } },
+      ),
+    );
+    assert.deepEqual(await legacyOnly.json(), {
+      ok: true,
+      queued: true,
+      item_key: "openclaw/gogcli#598",
+      superseded_publications: 0,
+    });
+
+    const bodyUpdate = await worker.fetch(
+      signedGithubWebhookRequest({
+        event: "pull_request",
+        secret: "test-secret",
+        deliveryId: "direct-pr-body-update",
+        payload: {
+          action: "edited",
+          repository,
+          pull_request: {
+            ...pullRequest,
+            updated_at: "2026-07-19T10:20:00Z",
+            body: "Add revised durable proof.",
+          },
+          installation: { id: 123 },
+        },
+      }),
+      env,
+    );
+    assert.deepEqual(await bodyUpdate.json(), {
+      ok: true,
+      queued: true,
+      item_key: "openclaw/gogcli#597",
+      superseded_publications: 0,
+    });
+    const state = (await storage.get("exact-review-queue")) as {
+      items: Record<
+        string,
+        {
+          revision: number;
+          decision: {
+            sourceAction: string;
+            targetBranch: string;
+            sourceHeadSha?: string;
+            sourceHeadVerified?: boolean;
+            sourceAuthoritySeq?: number;
+          };
+        }
+      >;
+    };
+    assert.equal(state.items["openclaw/gogcli#597"].revision, 2);
+    assert.equal(state.items["openclaw/gogcli#597"].decision.sourceAction, "edited");
+    assert.equal(state.items["openclaw/gogcli#599"].revision, 2);
+    assert.equal(state.items["openclaw/gogcli#599"].decision.sourceHeadSha, "c".repeat(40));
+    assert.equal(state.items["openclaw/gogcli#599"].decision.sourceHeadVerified, true);
+    assert.ok(state.items["openclaw/gogcli#599"].decision.sourceAuthoritySeq);
+    // A compatibility fallback may be legacy-only, but it cannot replace a
+    // source-head-verified direct decision merely because its branch resolves differently.
+    assert.equal(state.items["openclaw/gogcli#600"].revision, 1);
+    assert.equal(state.items["openclaw/gogcli#600"].decision.targetBranch, "old-default");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -16184,6 +16953,7 @@ function buildExactReviewQueueRequest(
   itemKind: "issue" | "pull_request" = "issue",
   targetRepo = "openclaw/gogcli",
   decisionOverrides: Record<string, unknown> = {},
+  envelopeOverrides: Record<string, unknown> = {},
 ) {
   const sourceEvent = itemKind === "issue" ? "issues" : "pull_request";
   return new Request("https://clawsweeper-exact-review-queue/enqueue", {
@@ -16200,6 +16970,7 @@ function buildExactReviewQueueRequest(
         supersedesInProgress: sourceAction === "edited" || sourceAction === "synchronize",
         ...decisionOverrides,
       },
+      ...envelopeOverrides,
     }),
   });
 }

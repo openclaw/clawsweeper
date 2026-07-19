@@ -93,9 +93,14 @@ export type ExactReviewPublication = {
 export type ExactReviewDecision = ExactReviewBaseDecision & {
   publication?: ExactReviewPublication;
 };
+export type ExactReviewIngress = {
+  route: "direct_webhook" | "target_dispatcher";
+  fingerprint: string;
+};
 export type ExactReviewQueueItem = {
   key: string;
   decision: ExactReviewDecision;
+  ingressFingerprint?: string;
   leaseDecision?: ExactReviewDecision;
   state: "pending" | "dispatching" | "leased" | "parked";
   revision: number;
@@ -275,6 +280,7 @@ type ExactReviewQueueMetricTotals = {
 type ExactReviewSourceAuthorityReservation = {
   deliveryId: string;
   decision: ExactReviewDecision;
+  ingress?: ExactReviewIngress;
   installationId: number;
   sourceAuthoritySeq: number;
   attempts: number;
@@ -400,6 +406,7 @@ const EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_MAX_MS = 15 * 60_000;
 const EXACT_REVIEW_QUEUE_META_TABLE = "exact_review_queue_meta";
 const EXACT_REVIEW_QUEUE_ITEM_TABLE = "exact_review_queue_items";
 const EXACT_REVIEW_QUEUE_DELIVERY_TABLE = "exact_review_queue_deliveries";
+const EXACT_REVIEW_QUEUE_INGRESS_TABLE = "exact_review_queue_ingress";
 const EXACT_REVIEW_QUEUE_METRICS_TABLE = "exact_review_queue_metrics";
 const EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE = "exact_review_queue_metric_buckets";
 const EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE = "exact_review_queue_supersessions";
@@ -455,6 +462,7 @@ const DEFAULT_STATE_WRITER_COORDINATOR_QUEUED_STALE_MS = 2 * 60_000;
 // hung runner into a permanent queue owner. The Git fence blocks any in-flight
 // push that outlives this absolute coordinator horizon.
 const DEFAULT_STATE_WRITER_COORDINATOR_MAX_LEASE_AGE_MS = 30 * 60_000;
+const EXACT_REVIEW_INGRESS_FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/;
 
 export class ExactReviewQueue {
   private storage;
@@ -489,6 +497,7 @@ export class ExactReviewQueue {
       const body = objectValue(await request.json().catch(() => null));
       const deliveryId = String(body.delivery_id || "").trim();
       const decision = exactReviewDecisionFrom(body.decision);
+      const ingress = body.ingress === undefined ? undefined : exactReviewIngressFrom(body.ingress);
       const installationId = Number(body.installation_id);
       if (
         !deliveryId ||
@@ -496,6 +505,7 @@ export class ExactReviewQueue {
         !decision ||
         decision.itemKind !== "pull_request" ||
         decision.publication ||
+        (body.ingress !== undefined && (!ingress || ingress.route !== "direct_webhook")) ||
         !Number.isInteger(installationId) ||
         installationId <= 0
       ) {
@@ -521,7 +531,8 @@ export class ExactReviewQueue {
               existing.deliveryId !== deliveryId ||
               existing.installationId !== installationId ||
               stableJson(exactReviewDecisionWithoutSourceAuthority(existing.decision)) !==
-                stableJson(decision)
+                stableJson(decision) ||
+              stableJson(existing.ingress || null) !== stableJson(ingress || null)
             ) {
               throw new Error("conflicting exact-review source authority reservation");
             }
@@ -537,6 +548,7 @@ export class ExactReviewQueue {
           const created: ExactReviewSourceAuthorityReservation = {
             deliveryId,
             decision: { ...decision, sourceAuthoritySeq: next },
+            ...(ingress ? { ingress } : {}),
             installationId,
             sourceAuthoritySeq: next,
             attempts: 0,
@@ -894,11 +906,21 @@ export class ExactReviewQueue {
       const body = objectValue(await request.json().catch(() => null));
       const deliveryId = String(body.delivery_id || "").trim();
       const decision = exactReviewDecisionFrom(body.decision);
+      const ingress = body.ingress === undefined ? undefined : exactReviewIngressFrom(body.ingress);
       if (!deliveryId) return json({ error: "missing_delivery_id" }, 400);
       if (deliveryId.startsWith(EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX)) {
         return json({ error: "reserved_delivery_id" }, 400);
       }
       if (!decision) return json({ error: "invalid_exact_review_item" }, 400);
+      if (body.ingress !== undefined && !ingress) {
+        return json({ error: "invalid_exact_review_ingress" }, 400);
+      }
+      if (
+        ingress &&
+        (decision.itemKind !== "pull_request" || decision.sourceEvent !== "pull_request")
+      ) {
+        return json({ error: "invalid_exact_review_ingress" }, 400);
+      }
       if (!isExactReviewQueueTargetEnabled(decision, this.env)) {
         return json({ ok: true, accepted: false, reason: "target not enabled" }, 202);
       }
@@ -910,6 +932,7 @@ export class ExactReviewQueue {
         : new Set<string>();
       const accepted = this.storage.transactionSync(() => {
         this.pruneDeliveryReceiptsSync(now);
+        this.pruneIngressReceiptsSync(now);
         this.storage.sql.exec(
           `DELETE FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
             WHERE delivery_id = ? AND received_at <= ?`,
@@ -929,6 +952,9 @@ export class ExactReviewQueue {
           this.syncLegacyCompatibilitySync(this.readStateSync());
           return { deduped: true as const };
         }
+        const counterpartIngress = ingress
+          ? this.recordIngressSync(ingress, decision.targetBranch, now)
+          : null;
 
         const state = this.readStateSync();
         // A delayed or lost alarm must not let an expired one-shot recovery
@@ -939,6 +965,22 @@ export class ExactReviewQueue {
           exactReviewPublicationDispatchLeaseMs(this.env),
           exactReviewHeartbeatGraceMs(this.env),
         );
+        const key = exactReviewItemKey(decision);
+        const currentIngressItem = state.items[key];
+        // A counterpart receipt is conclusive only after its own route reached
+        // queue state. Preserve the one live fallback-first item for a verified
+        // direct promotion; otherwise, suppress the old event instead of
+        // replacing a newer queue revision.
+        if (
+          counterpartIngress?.admitted &&
+          !(
+            currentIngressItem?.ingressFingerprint === ingress?.fingerprint &&
+            exactReviewIngressCanPromoteFallback(ingress, decision)
+          )
+        ) {
+          this.writeStateSync(state);
+          return { deduped: true as const, crossRoute: true as const, key, state };
+        }
         let supersededPublications = 0;
         if (incomingPublicationRevision) {
           const incomingLineage = exactReviewPublicationLineage(decision);
@@ -974,6 +1016,7 @@ export class ExactReviewQueue {
             return {
               deduped: true as const,
               superseded: true as const,
+              ...(counterpartIngress ? { crossRoute: true as const } : {}),
               publicationRevision: incomingPublicationRevision.sourceRevision,
               supersededByRevision: newestSourceRevision,
               state,
@@ -1081,6 +1124,7 @@ export class ExactReviewQueue {
                 return {
                   deduped: true as const,
                   semantic: true as const,
+                  ...(counterpartIngress ? { crossRoute: true as const } : {}),
                   key: retained.item.key,
                   semanticDuplicatesRemoved,
                   state,
@@ -1108,10 +1152,10 @@ export class ExactReviewQueue {
             supersededPublications += 1;
           }
         }
-        const key = exactReviewItemKey(decision);
         const current = state.items[key];
         let supersededRunId: string | null = null;
         let supersessionAudit: ExactReviewSupersessionAudit | null = null;
+        let ingressAdmitted = false;
         if (current) {
           const ignoredRecovery = isLowPriorityExactReviewDecision(decision);
           // A recovery is only a one-shot repair of a failed shard. It may create a queue item,
@@ -1148,6 +1192,7 @@ export class ExactReviewQueue {
               return {
                 deduped: true as const,
                 staleSource: true as const,
+                ...(counterpartIngress ? { crossRoute: true as const } : {}),
                 key,
                 state,
               };
@@ -1205,6 +1250,7 @@ export class ExactReviewQueue {
               current.firstFailureAt = undefined;
               current.lastFailureReason = undefined;
             }
+            ingressAdmitted = true;
           }
         } else {
           if (
@@ -1220,6 +1266,7 @@ export class ExactReviewQueue {
           state.items[key] = {
             key,
             decision,
+            ...(ingress ? { ingressFingerprint: ingress.fingerprint } : {}),
             state: "pending",
             revision: this.nextExactReviewItemRevisionSync(key),
             createdAt: now,
@@ -1227,6 +1274,22 @@ export class ExactReviewQueue {
             nextAttemptAt: exactReviewQueueDebouncedAttemptAt(state, decision, now, now, this.env),
             attempts: 0,
           };
+          ingressAdmitted = true;
+        }
+        if (
+          ingressAdmitted &&
+          decision.itemKind === "pull_request" &&
+          decision.sourceEvent === "pull_request"
+        ) {
+          if (ingress) {
+            state.items[key].ingressFingerprint = ingress.fingerprint;
+            this.markIngressAdmittedSync(ingress, now);
+          } else {
+            // A later legacy-only update must not retain the older event's
+            // cross-route identity: a delayed verified direct delivery for
+            // that older event is not a safe promotion of this revision.
+            delete state.items[key].ingressFingerprint;
+          }
         }
         this.writeStateSync(state);
         if (supersededPublications) {
@@ -1270,6 +1333,9 @@ export class ExactReviewQueue {
                   publication_revision: accepted.publicationRevision,
                   superseded_by_revision: accepted.supersededByRevision,
                 }
+              : {}),
+            ...("crossRoute" in accepted && accepted.crossRoute
+              ? { dedupe_scope: "cross_route" }
               : {}),
           },
           202,
@@ -5035,6 +5101,38 @@ export class ExactReviewQueue {
       `CREATE INDEX IF NOT EXISTS state_append_dead_letters_status
          ON ${STATE_APPEND_DEAD_LETTER_TABLE} (status, last_failed_at, dead_letter_id)`,
     );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_INGRESS_TABLE} (
+         fingerprint TEXT NOT NULL,
+         route TEXT NOT NULL CHECK (route IN ('direct_webhook', 'target_dispatcher')),
+         target_branch TEXT NOT NULL,
+         received_at INTEGER NOT NULL,
+         admitted_at INTEGER,
+         PRIMARY KEY (fingerprint, route)
+        ) STRICT`,
+    );
+    const hasIngressAdmission = Array.from(
+      this.storage.sql.exec(
+        `SELECT name FROM pragma_table_info('${EXACT_REVIEW_QUEUE_INGRESS_TABLE}')
+          WHERE name = 'admitted_at'`,
+      ),
+    ).length;
+    if (!hasIngressAdmission) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_QUEUE_INGRESS_TABLE} ADD COLUMN admitted_at INTEGER`,
+      );
+    }
+    // Before admission state was explicit, direct-route receipts were the
+    // canonical durable ingress record. Preserve that completed-delivery
+    // meaning on the rolling schema upgrade and on a later re-upgrade after a
+    // rollback. Current code records an unadmitted direct receipt as zero, so
+    // NULL remains exclusive to the pre-admission-schema worker; legacy
+    // fallback receipts stay NULL until this queue admits them.
+    this.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_QUEUE_INGRESS_TABLE}
+          SET admitted_at = received_at
+        WHERE route = 'direct_webhook' AND admitted_at IS NULL`,
+    );
     // Flow telemetry is independent of queue rollback compatibility. A
     // separate singleton keeps cumulative lane counters monotonic without
     // changing the normalized queue schema or its legacy shadow contract.
@@ -5148,6 +5246,10 @@ export class ExactReviewQueue {
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_queue_supersessions_at
          ON ${EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE} (superseded_at, item_key)`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_queue_ingress_received_at
+         ON ${EXACT_REVIEW_QUEUE_INGRESS_TABLE} (received_at, fingerprint)`,
     );
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE} (
@@ -6604,6 +6706,66 @@ export class ExactReviewQueue {
     }
   }
 
+  private pruneIngressReceiptsSync(now: number) {
+    const cutoff = now - EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS;
+    for (let batch = 0; batch < EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_MAX_BATCHES; batch += 1) {
+      const deleted = Array.from(
+        this.storage.sql.exec(
+          `DELETE FROM ${EXACT_REVIEW_QUEUE_INGRESS_TABLE}
+          WHERE (fingerprint, route) IN (
+            SELECT fingerprint, route
+              FROM ${EXACT_REVIEW_QUEUE_INGRESS_TABLE}
+             WHERE received_at <= ?
+             ORDER BY received_at, fingerprint, route
+             LIMIT ${EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_BATCH}
+          )
+        RETURNING fingerprint`,
+          cutoff,
+        ),
+      );
+      if (deleted.length < EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_BATCH) break;
+    }
+  }
+
+  private recordIngressSync(ingress: ExactReviewIngress, targetBranch: string, now: number) {
+    const counterpart = ingress.route === "direct_webhook" ? "target_dispatcher" : "direct_webhook";
+    const matched = Array.from(
+      this.storage.sql.exec(
+        `SELECT admitted_at FROM ${EXACT_REVIEW_QUEUE_INGRESS_TABLE}
+          WHERE fingerprint = ? AND route = ? AND target_branch = ?
+          LIMIT 1`,
+        ingress.fingerprint,
+        counterpart,
+        targetBranch,
+      ),
+    )[0] as { admitted_at?: number | null } | undefined;
+    this.storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_QUEUE_INGRESS_TABLE}
+       (fingerprint, route, target_branch, received_at, admitted_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(fingerprint, route) DO UPDATE SET
+         target_branch = excluded.target_branch,
+         received_at = excluded.received_at`,
+      ingress.fingerprint,
+      ingress.route,
+      targetBranch,
+      now,
+      ingress.route === "direct_webhook" ? 0 : null,
+    );
+    return matched ? { admitted: Number(matched.admitted_at) > 0 } : null;
+  }
+
+  private markIngressAdmittedSync(ingress: ExactReviewIngress, now: number) {
+    this.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_QUEUE_INGRESS_TABLE}
+           SET admitted_at = CASE WHEN admitted_at IS NULL OR admitted_at = 0 THEN ? ELSE admitted_at END
+        WHERE fingerprint = ? AND route = ?`,
+      now,
+      ingress.fingerprint,
+      ingress.route,
+    );
+  }
+
   private deliveryReceiptCountSync() {
     const row = Array.from(
       this.storage.sql.exec(
@@ -6733,6 +6895,7 @@ export class ExactReviewQueue {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               delivery_id: reservation.deliveryId,
+              ...(reservation.ingress ? { ingress: reservation.ingress } : {}),
               decision: {
                 ...reservation.decision,
                 sourceHeadVerified: true,
@@ -6932,6 +7095,8 @@ function exactReviewSourceAuthorityReservationFrom(
   const reservation = objectValue(value);
   const deliveryId = String(reservation.deliveryId || "").trim();
   const decision = exactReviewDecisionFrom(reservation.decision);
+  const ingress =
+    reservation.ingress === undefined ? undefined : exactReviewIngressFrom(reservation.ingress);
   const installationId = Number(reservation.installationId);
   const sourceAuthoritySeq = Number(reservation.sourceAuthoritySeq);
   const attempts = Number(reservation.attempts);
@@ -6942,6 +7107,7 @@ function exactReviewSourceAuthorityReservationFrom(
     !decision ||
     decision.itemKind !== "pull_request" ||
     decision.publication ||
+    (reservation.ingress !== undefined && (!ingress || ingress.route !== "direct_webhook")) ||
     !Number.isInteger(installationId) ||
     installationId <= 0 ||
     !Number.isSafeInteger(sourceAuthoritySeq) ||
@@ -6958,11 +7124,37 @@ function exactReviewSourceAuthorityReservationFrom(
   return {
     deliveryId,
     decision,
+    ...(ingress ? { ingress } : {}),
     installationId,
     sourceAuthoritySeq,
     attempts,
     nextAttemptAt,
   };
+}
+
+function exactReviewIngressFrom(value): ExactReviewIngress | null {
+  const ingress = objectValue(value);
+  const route = String(ingress.route || "");
+  const fingerprint = String(ingress.fingerprint || "")
+    .trim()
+    .toLowerCase();
+  if (route !== "direct_webhook" && route !== "target_dispatcher") return null;
+  if (!EXACT_REVIEW_INGRESS_FINGERPRINT_PATTERN.test(fingerprint)) return null;
+  return { route, fingerprint };
+}
+
+function exactReviewIngressCanPromoteFallback(
+  ingress: ExactReviewIngress | undefined,
+  decision: ExactReviewDecision,
+) {
+  const sourceAuthoritySeq = Number(decision.sourceAuthoritySeq || 0);
+  return (
+    ingress?.route === "direct_webhook" &&
+    decision.sourceHeadVerified === true &&
+    /^[0-9a-f]{40}$/.test(String(decision.sourceHeadSha || "").toLowerCase()) &&
+    Number.isSafeInteger(sourceAuthoritySeq) &&
+    sourceAuthoritySeq > 0
+  );
 }
 
 function exactReviewBaseDecisionFrom(value): ExactReviewBaseDecision | null {

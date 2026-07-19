@@ -2203,6 +2203,9 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   assert.match(legacyIntakeBlock, /gh api "repos\/\$target_repo" --jq \.default_branch/);
   assert.match(legacyIntakeBlock, /targetBranch: process\.env\.TARGET_BRANCH/);
   assert.doesNotMatch(legacyIntakeBlock, /targetBranch: payload\.target_branch \|\| "main"/);
+  assert.match(legacyIntakeBlock, /payload\.source_event === "pull_request_target"/);
+  assert.match(legacyIntakeBlock, /payload\.ingress_route === "target_dispatcher"/);
+  assert.match(legacyIntakeBlock, /fingerprint: ingressFingerprint/);
   assert.match(legacyIntakeBlock, /commandStatusMarker: payload\.command_status_marker/);
   assert.match(legacyIntakeBlock, /statusCommentId: payload\.status_comment_id/);
   assert.match(legacyIntakeBlock, /additionalPrompt: payload\.additional_prompt/);
@@ -2277,6 +2280,21 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   assert.match(exactReviewStep, /detected media allowance \$\{media_proof_timeout_seconds\}s/);
   assert.match(exactReviewStep, /--codex-timeout-ms "\$codex_timeout_ms"/);
   assert.doesNotMatch(exactReviewStep, /--codex-timeout-ms 600000/);
+});
+
+test("target dispatcher documents opt-in cross-route identity", () => {
+  const dispatcher = readText("docs/target-dispatcher.md");
+
+  assert.match(dispatcher, /## Cross-route exact-review identity/);
+  assert.doesNotMatch(dispatcher, /maintainer decision required/i);
+  assert.match(dispatcher, /ingress_route:"target_dispatcher"/);
+  assert.match(dispatcher, /ingress_fingerprint/);
+  assert.match(dispatcher, /recorded as stale source/);
+  assert.match(dispatcher, /later verified\s+direct decision promotes that same queue item/);
+  assert.match(dispatcher, /legacy-only delivery stays a safe\s+fallback/);
+  assert.match(dispatcher, /delayed matching counterpart is\s+also suppressed/);
+  assert.match(dispatcher, /rejects as stale is not an admission receipt/);
+  assert.match(dispatcher, /not a\s+head-SHA dedupe key/);
 });
 
 test("sweep workflow gives high-context Codex reviews twenty minutes by default", () => {
