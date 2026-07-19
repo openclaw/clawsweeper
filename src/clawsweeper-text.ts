@@ -11,6 +11,7 @@ export function truncateText(value: unknown, maxLength: number): string {
 export function trimMiddle(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   const edge = Math.floor((maxLength - 120) / 2);
+  if (edge <= 0) return text.slice(0, Math.max(0, maxLength));
   return `${text.slice(0, edge)}\n\n... truncated ${text.length - edge * 2} chars ...\n\n${text.slice(-edge)}`;
 }
 
