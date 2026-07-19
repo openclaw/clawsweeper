@@ -48,9 +48,9 @@ runs:
 
     - name: Export state root
       shell: bash
-      run: |
-        echo "CLAWSWEEPER_STATE_DIR=$GITHUB_WORKSPACE/${{ inputs.state-path }}" >> "$GITHUB_ENV"
-        echo "CLAWSWEEPER_STATE_REPOSITORY=openclaw/clawsweeper-state" >> "$GITHUB_ENV"
+      # Keep immutable ledger server merges dormant until state publishers can
+      # fetch a merge-heavy shallow branch without hydrating its ancestry.
+      run: echo "CLAWSWEEPER_STATE_DIR=$GITHUB_WORKSPACE/${{ inputs.state-path }}" >> "$GITHUB_ENV"
 
     - uses: actions/setup-node@v6
       with:
