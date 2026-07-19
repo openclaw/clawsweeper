@@ -27,6 +27,7 @@ export function slug(value: unknown, fallback = "unknown", maxLength = 120) {
       .toLowerCase()
       .replace(/[^a-z0-9_.-]+/g, "-")
       .replace(/^-+|-+$/g, "")
-      .slice(0, maxLength) || fallback
+      .slice(0, maxLength)
+      .replace(/-+$/g, "") || fallback
   );
 }
