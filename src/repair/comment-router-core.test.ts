@@ -83,6 +83,15 @@ test("automerge merge failure repair reason detects GitHub merge conflict errors
   );
 });
 
+test("automerge merge failure repair reason detects protected behind heads", () => {
+  assert.match(
+    automergeMergeFailureRepairReason(
+      "merge command failed: pull request is not mergeable: the head branch is not up to date with the base branch",
+    ) ?? "",
+    /cloud rebase repair/,
+  );
+});
+
 test("automerge merge failure repair reason ignores unrelated merge failures", () => {
   assert.equal(
     automergeMergeFailureRepairReason("merge command failed: GraphQL: Head sha mismatch"),

@@ -667,6 +667,13 @@ export function automergeMergeFailureRepairReason(reason: JsonValue): string | n
     .trim()
     .toLowerCase();
   if (!text) return null;
+  // A BEHIND head is mergeable in repositories that allow GitHub to create a
+  // merge commit, but protected linear-history targets reject it at the final
+  // merge command. Hand that concrete policy failure to the existing rebase
+  // repair lane instead of leaving an armed PR permanently blocked.
+  if (text.includes("head branch is not up to date with the base branch")) {
+    return "PR head is behind base and needs a cloud rebase repair before automerge";
+  }
   if (text.includes("mergepullrequest") && text.includes("merge conflict")) {
     return "PR has merge conflicts and needs a cloud rebase repair before automerge";
   }
