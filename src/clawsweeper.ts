@@ -20596,21 +20596,40 @@ function postReviewStartStatusComment(options: {
   if (initialLease) {
     return heldReviewStartStatusCommentResult(initialLease.expiresAt, false);
   }
-  reapExpiredDedicatedReviewStartLeases(
+  const reapedLeaseCommentIds = reapExpiredDedicatedReviewStartLeases(
     options.item.number,
     initialState.dedicatedLeaseComments,
     startedAtMs,
   );
   const body = renderReviewStartStatusComment(leaseOptions);
   const payload = writeCommentPayload(options.item.number, body);
-  const createArgs = [
-    "api",
-    `repos/${targetRepo()}/issues/${options.item.number}/comments`,
-    "--method",
-    "POST",
-    "--input",
-    payload,
-  ];
+  // A leftover bot placeholder from a superseded attempt (typically an
+  // unexpired lease for an older head revision) is refreshed in place instead
+  // of stacking one new "review started" comment per retry. Lowest server id
+  // wins lease election, so reusing the oldest surviving comment also keeps
+  // the refreshed lease electable.
+  const reusableLeaseCommentId = initialState.dedicatedLeaseComments
+    .map((comment) => commentId(comment))
+    .filter((id): id is number => id !== null && !reapedLeaseCommentIds.has(id))
+    .sort((left, right) => left - right)[0];
+  const createArgs =
+    reusableLeaseCommentId === undefined
+      ? [
+          "api",
+          `repos/${targetRepo()}/issues/${options.item.number}/comments`,
+          "--method",
+          "POST",
+          "--input",
+          payload,
+        ]
+      : [
+          "api",
+          `repos/${targetRepo()}/issues/comments/${reusableLeaseCommentId}`,
+          "--method",
+          "PATCH",
+          "--input",
+          payload,
+        ];
   const created = reviewCommentFromMutationResponse(
     ghObservedMutationCommand({
       identity: `review_lease_post:${options.item.number}:${leaseOwner}`,
@@ -20696,7 +20715,8 @@ function reapExpiredDedicatedReviewStartLeases(
   itemNumber: number,
   dedicatedLeaseComments: Record<string, unknown>[],
   nowMs: number,
-): void {
+): Set<number> {
+  const reapedCommentIds = new Set<number>();
   const expired = expiredReviewStartStatusLeases({
     comments: dedicatedLeaseComments,
     itemNumber,
@@ -20719,10 +20739,85 @@ function reapExpiredDedicatedReviewStartLeases(
       console.error(
         `[review] reaped expired review lease comment ${lease.commentId} for #${itemNumber} (lease expired ${lease.expiresAt})`,
       );
+      reapedCommentIds.add(lease.commentId);
     } catch (error) {
       // A failed reap must never block acquiring the new lease.
       console.error(
         `[review] could not reap expired review lease comment ${lease.commentId} for #${itemNumber}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  return reapedCommentIds;
+}
+
+const REVIEW_PLACEHOLDER_BODY_PATTERN = /^ClawSweeper status: review started\./i;
+
+export function supersededReviewPlaceholderCommentIds(options: {
+  number: number;
+  comments: readonly Record<string, unknown>[];
+  keepCommentIds: ReadonlySet<number>;
+  nowMs?: number;
+}): number[] {
+  const nowMs = options.nowMs ?? Date.now();
+  const ids: number[] = [];
+  for (const comment of options.comments) {
+    const id = commentId(comment);
+    if (id === null || options.keepCommentIds.has(id)) continue;
+    if (!canPatchReviewComment(comment)) continue;
+    const body = (commentBody(comment) ?? "").trimStart();
+    // Placeholder bodies start with the status line; the durable review
+    // comment never does, and its marker is an extra guard against deletion.
+    if (!REVIEW_PLACEHOLDER_BODY_PATTERN.test(body)) continue;
+    if (body.includes(reviewCommentMarker(options.number))) continue;
+    // An unexpired lease may belong to a racing worker on a newer revision;
+    // only provably superseded placeholders (expired lease or marker-less
+    // legacy body) are swept after the durable review comment is published.
+    const marker = body.match(/<!--\s*clawsweeper-review-status:started\b([^>]*)-->/i);
+    if (marker) {
+      const expiresAtMs = Date.parse(marker[1]?.match(/\blease_expires_at=([^\s>]+)/i)?.[1] ?? "");
+      if (Number.isFinite(expiresAtMs) && expiresAtMs >= nowMs) continue;
+    }
+    ids.push(id);
+  }
+  return ids;
+}
+
+function cleanupSupersededReviewPlaceholderComments(options: {
+  number: number;
+  keepCommentIds: ReadonlySet<number>;
+}): void {
+  let ids: number[];
+  try {
+    ids = supersededReviewPlaceholderCommentIds({
+      number: options.number,
+      comments: fetchIssueReviewComments(options.number),
+      keepCommentIds: options.keepCommentIds,
+    });
+  } catch (error) {
+    if (error instanceof GitHubRuntimeBudgetError) throw error;
+    console.error(
+      `[apply] could not enumerate superseded review placeholder comments for #${options.number}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return;
+  }
+  for (const id of ids) {
+    try {
+      ghObservedMutationCommand({
+        identity: `review_placeholder_sweep:${options.number}:${id}`,
+        args: ["api", `repos/${targetRepo()}/issues/comments/${id}`, "--method", "DELETE"],
+      });
+      console.error(
+        `[apply] deleted superseded review placeholder comment ${id} for #${options.number}`,
+      );
+    } catch (error) {
+      if (error instanceof GitHubRuntimeBudgetError) throw error;
+      // A failed sweep must never fail the publish; the next apply retries it.
+      console.error(
+        `[apply] could not delete superseded review placeholder comment ${id} for #${options.number}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -28902,6 +28997,24 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
               allowedSelfMutationUpdatedAts.add(syncedCommentUpdatedAt);
             }
             syncReasons.push("updated durable Codex review comment");
+            // The durable review comment is now published, so stale "review
+            // started" placeholders from failed earlier attempts are clutter.
+            const placeholderKeepCommentIds = new Set<number>();
+            const syncedCommentId = commentId(syncedComment);
+            if (syncedCommentId !== null) placeholderKeepCommentIds.add(syncedCommentId);
+            // Closures assign the active lease, so read it through a cast to
+            // defeat TypeScript's stale null narrowing at this use site.
+            const heldMutationLease = activeApplyMutationLease as {
+              itemNumber: number;
+              lease: AcquiredReviewStartLease;
+            } | null;
+            if (heldMutationLease?.itemNumber === number) {
+              placeholderKeepCommentIds.add(heldMutationLease.lease.commentId);
+            }
+            cleanupSupersededReviewPlaceholderComments({
+              number,
+              keepCommentIds: placeholderKeepCommentIds,
+            });
           } catch (error) {
             const commentAuthError = isGitHubRequiresAuthenticationError(error);
             if (!commentAuthError && !isLockedConversationCommentError(error)) throw error;

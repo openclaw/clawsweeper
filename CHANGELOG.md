@@ -110,6 +110,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Stopped stale "review started" placeholder comments from accumulating on reviewed items: retries refresh a surviving placeholder in place, and publishing the durable review comment sweeps superseded placeholders.
 - Stopped narrow OpenClaw automerge repairs from chasing unrelated full-repository lint and typecheck failures.
 - Removed the synthetic Codex write preflight that could block repair before Codex saw the real task.
 - Kept exact-review handoff health live when the dashboard serves a stale fleet snapshot, so recovered claims no longer leave the operator rail stuck in a delayed or stalled state.
