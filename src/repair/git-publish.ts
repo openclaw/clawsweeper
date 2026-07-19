@@ -174,8 +174,10 @@ function safeGitDisplayAction(action: string | undefined): string {
     case "checkout":
     case "cat-file":
     case "clean":
+    case "log":
     case "ls-files":
     case "ls-tree":
+    case "merge-base":
     case "mktree":
     case "push":
     case "read-tree":
@@ -1256,8 +1258,20 @@ export function pushCommit(options: {
       continue;
     }
     const remoteCommit = runGit(["rev-parse", `${remote}/${branch}`], { quiet: true }).trim();
-    const statusMerges = planSweepStatusMerges({ localCommit, remoteCommit });
-    const ledgerMerge = planCommentRouterLedgerMerge({ localCommit, remoteCommit });
+    const mergeBase = spawnGit(["merge-base", localCommit, remoteCommit], { quiet: true });
+    if (mergeBase.status !== 0) {
+      // A shallow state checkout fetches racing pushes with --depth=1, so the
+      // new remote head can share no local ancestry. Rebasing is impossible;
+      // hand the race back to the caller, whose rebuild path re-applies this
+      // publish directly on the fetched remote head.
+      console.log(
+        `No common Git base with ${remote}/${branch} after a lost push race; deferring to a remote-head rebuild`,
+      );
+      return false;
+    }
+    const baseCommit = mergeBase.stdout.trim();
+    const statusMerges = planSweepStatusMerges({ baseCommit, localCommit, remoteCommit });
+    const ledgerMerge = planCommentRouterLedgerMerge({ baseCommit, localCommit, remoteCommit });
     const rebaseArgs =
       rebaseStrategy === "theirs" || rebaseStrategy === "apply-records"
         ? ["rebase", "-X", "theirs", `${remote}/${branch}`]

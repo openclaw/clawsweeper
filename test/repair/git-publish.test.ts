@@ -436,6 +436,57 @@ test("publishMainCommit preserves latest health when a second race forces commit
   assert.deepEqual(merged.last_close_apply_health, secondCloseHealth);
 });
 
+test("publishMainCommit survives a shallow-checkout push race without a common Git base", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  write(path.join(seed, "results/spam-scanner.json"), '{"scans":0}\n');
+  write(path.join(seed, "results/other.txt"), "remote\n");
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial"], seed);
+  run("git", ["push", "origin", "HEAD:main"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+
+  // Production state checkouts are shallow, so the racing writer's commits
+  // arrive through a --depth=1 fetch that shares no ancestry with local HEAD.
+  run("git", ["clone", "--depth", "1", `file://${origin}`, work], root);
+  configureUser(work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  write(path.join(other, "results/other.txt"), "remote update one\n");
+  run("git", ["commit", "-am", "remote update one"], other);
+  write(path.join(other, "results/other.txt"), "remote update two\n");
+  run("git", ["commit", "-am", "remote update two"], other);
+  run("git", ["push", "origin", "HEAD:main"], other);
+
+  write(path.join(work, "results/spam-scanner.json"), '{"scans":1}\n');
+  const result = withCwd(work, () =>
+    publishMainCommit({
+      message: "chore: record ClawSweeper spam scan",
+      paths: ["results/spam-scanner.json"],
+      maxAttempts: 1,
+      pushAttempts: 1,
+      rebaseStrategy: "theirs",
+    }),
+  );
+
+  assert.equal(result, "committed");
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:results/spam-scanner.json"], root),
+    '{"scans":1}\n',
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:results/other.txt"], root),
+    "remote update two\n",
+  );
+});
+
 test("publishMainCommit fails closed when a racing sweep status is malformed", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");
@@ -1231,7 +1282,7 @@ test("reconcile-records fails closed when state and remote have no common base",
           ),
         lines,
       ),
-    /git command <redacted-args> exited 1/,
+    /git merge-base <redacted-args> exited 1/,
   );
   assert.equal(
     lines.some((line) => line.includes("Git publish failure: phase=prepare")),
