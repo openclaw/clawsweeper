@@ -11205,3 +11205,141 @@ function unclaimedExactReviewQueueItem(itemNumber: number) {
     claimProtocolVersion: undefined,
   };
 }
+
+test("exact-review queue durably stores and queries per-item review telemetry", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const now = Date.now();
+  const refreshing = {
+    repo: "openclaw/openclaw",
+    item_number: 674,
+    run_id: "12345",
+    run_attempt: 2,
+    status: "refreshing",
+    outcome: null,
+    started_at: new Date(now - 60_000).toISOString(),
+    updated_at: new Date(now).toISOString(),
+    lease_expires_at: new Date(now + 60 * 60_000).toISOString(),
+    phase_durations_ms: { queue: 10_000, claim: 2_000 },
+  };
+  const recorded = await queue.fetch(
+    new Request("https://queue/review-telemetry", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(refreshing),
+    }),
+  );
+  assert.equal(recorded.status, 200);
+
+  const completed = {
+    ...refreshing,
+    status: "completed",
+    outcome: "succeeded",
+    updated_at: new Date(now - 10_000).toISOString(),
+    lease_expires_at: null,
+    phase_durations_ms: { ...refreshing.phase_durations_ms, review: 180_000, total: 250_000 },
+    generation: 7,
+    operation_id: "review:674:7",
+  };
+  await queue.fetch(
+    new Request("https://queue/review-telemetry", {
+      method: "POST",
+      body: JSON.stringify(completed),
+    }),
+  );
+  // Neither a delayed heartbeat nor a conflicting terminal retry can rewrite
+  // the first terminal truth.
+  await queue.fetch(
+    new Request("https://queue/review-telemetry", {
+      method: "POST",
+      body: JSON.stringify({ ...refreshing, updated_at: new Date(now).toISOString() }),
+    }),
+  );
+  await queue.fetch(
+    new Request("https://queue/review-telemetry", {
+      method: "POST",
+      body: JSON.stringify({
+        ...completed,
+        outcome: "failed",
+        updated_at: new Date(now + 1_000).toISOString(),
+      }),
+    }),
+  );
+
+  const response = await queue.fetch(
+    new Request("https://queue/review-telemetry?repo=openclaw%2Fopenclaw&item_number=674"),
+  );
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { reviews: unknown[] };
+  assert.deepEqual(body.reviews, [completed]);
+
+  const restarted = new ExactReviewQueue({ storage }, {});
+  const afterRestart = await restarted.fetch(
+    new Request("https://queue/review-telemetry?repo=openclaw%2Fopenclaw&item_number=674"),
+  );
+  assert.deepEqual((await afterRestart.json()) as { reviews: unknown[] }, {
+    ok: true,
+    repo: "openclaw/openclaw",
+    item_number: 674,
+    reviews: [completed],
+  });
+});
+
+test("exact-review health includes the oldest refreshing row beyond operator page bounds", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(new Request("https://queue/stats"));
+  const now = Date.now();
+  for (let index = 0; index <= 10_000; index += 1) {
+    const old = index === 0;
+    const updatedAt = old ? now - 151 * 60_000 : now - 60_000;
+    const record = {
+      repo: "openclaw/openclaw",
+      item_number: index + 1,
+      run_id: String(index + 1),
+      run_attempt: 1,
+      status: "refreshing",
+      outcome: null,
+      started_at: new Date(updatedAt - 60_000).toISOString(),
+      updated_at: new Date(updatedAt).toISOString(),
+      lease_expires_at: null,
+      phase_durations_ms: {},
+    };
+    storage.sql.exec(
+      `INSERT INTO exact_review_review_telemetry
+       (repo, item_number, run_id, run_attempt, status, updated_at, record_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      record.repo,
+      record.item_number,
+      record.run_id,
+      record.run_attempt,
+      record.status,
+      updatedAt,
+      JSON.stringify(record),
+    );
+  }
+
+  const response = await queue.fetch(new Request("https://queue/stats"));
+  const stats = (await response.json()) as {
+    review_telemetry_health: { status: string; refreshing: number; orphan_refreshing: number };
+  };
+  assert.deepEqual(stats.review_telemetry_health, {
+    status: "critical",
+    refreshing: 10_001,
+    slow_refreshing: 1,
+    orphan_refreshing: 1,
+    degraded_after_seconds: 1800,
+    orphan_after_seconds: 9000,
+    orphans: [
+      {
+        repo: "openclaw/openclaw",
+        item_number: 1,
+        run_id: "1",
+        run_attempt: 1,
+        updated_at: new Date(now - 151 * 60_000).toISOString(),
+        age_seconds: 9060,
+        lease_expires_at: null,
+      },
+    ],
+  });
+});

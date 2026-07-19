@@ -4,6 +4,7 @@ import {
 } from "../src/repair/comment-command-text.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
 import { bayHtml } from "./bay-page.ts";
+import { summarizeDashboardHealth } from "./dashboard-health.ts";
 import {
   HEALTH_HISTORY_RETENTION_DAYS,
   exactReviewHistorySample,
@@ -526,12 +527,16 @@ export default {
       request.method === "POST"
     )
       return authenticatedExactReviewQueueRequest(request, env, "/publications/supersede");
+    if (url.pathname === "/internal/exact-review/review-telemetry" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/review-telemetry");
     if (url.pathname === "/internal/exact-review/reconcile" && request.method === "POST")
       return authenticatedExactReviewReconcile(request, env);
     if (url.pathname === "/api/exact-review-queue" && request.method === "GET")
       return exactReviewQueueRequest(env, "/stats");
     if (url.pathname === "/api/exact-review-queue/item" && request.method === "GET")
       return exactReviewQueueRequest(env, `/item-status?${url.searchParams.toString()}`);
+    if (url.pathname === "/api/exact-review-queue/reviews" && request.method === "GET")
+      return exactReviewQueueRequest(env, `/review-telemetry?${url.searchParams.toString()}`);
     if (url.pathname === "/api/health-history" && request.method === "GET")
       return healthHistoryJson(request, env);
     if (url.pathname === "/api/automerge-metrics" && request.method === "GET")
@@ -2033,7 +2038,7 @@ async function attachExactReviewQueueStatus(snapshot, env) {
   } catch (error) {
     exactReviewQueueError = error instanceof Error ? error.message : String(error);
   }
-  return {
+  const attached = {
     ...snapshot,
     exact_review_queue: exactReviewQueue,
     diagnostics: {
@@ -2041,6 +2046,7 @@ async function attachExactReviewQueueStatus(snapshot, env) {
       exact_review_queue_error: exactReviewQueueError,
     },
   };
+  return { ...attached, dashboard_health: summarizeDashboardHealth(attached) };
 }
 
 async function triageSnapshot(env) {
@@ -8895,25 +8901,27 @@ async function load() {
 }
 
 function renderDashboard(data, note) {
-  const unresolved = data.health?.unresolved_failures || 0;
-  const applyAttention = (data.recent?.apply_health?.items || []).filter(item =>
-    applyHealthNeedsAttention(item.status)
-  ).length;
   const handoffStatus = data.exact_review_queue?.handoff_health?.status;
-  const handoffTelemetryFailed = Boolean(data.diagnostics?.exact_review_queue_error);
-  const handoffAttention =
-    handoffTelemetryFailed || handoffStatus === "degraded" || handoffStatus === "stalled";
   const operationalStatus = data.operational_health?.status;
-  const operationalAttention = ["degraded", "stalled", "unknown"].includes(operationalStatus);
-  const automergeReliability = data.recent?.automerge_reliability;
-  const automergeAttention =
-    (automergeReliability?.unresolved_failures || 0) > 0 ||
-    (automergeReliability?.stalled_attempts || 0) > 0;
-  const needsAttention =
-    unresolved || applyAttention || handoffAttention || operationalAttention || automergeAttention;
+  const serverHealth = data.dashboard_health;
+  // Cached snapshots from before the observation contract remain readable
+  // during rollout; new snapshots use the server-owned aggregate exclusively.
+  const needsAttention = serverHealth
+    ? serverHealth.conclusion === "needs_attention"
+    : Boolean(
+        (data.health?.unresolved_failures || 0) ||
+        (data.recent?.apply_health?.items || []).some(item => applyHealthNeedsAttention(item.status)) ||
+        Boolean(data.diagnostics?.exact_review_queue_error) ||
+        ["degraded", "stalled"].includes(handoffStatus) ||
+        ["degraded", "stalled", "unknown"].includes(operationalStatus) ||
+        (data.recent?.automerge_reliability?.unresolved_failures || 0) > 0 ||
+        (data.recent?.automerge_reliability?.stalled_attempts || 0) > 0
+      );
+  const severity = serverHealth?.severity ||
+    (handoffStatus === "stalled" || operationalStatus === "stalled" ? "red" : needsAttention ? "amber" : "green");
   const workerCount = (data.workers || []).length;
   const repoCount = (data.source.target_repositories || []).length;
-  document.getElementById("hero-dot").className = "hero-dot " + (handoffStatus === "stalled" || operationalStatus === "stalled" ? "red" : needsAttention ? "amber" : "ok");
+  document.getElementById("hero-dot").className = "hero-dot " + (severity === "green" ? "ok" : severity);
   document.getElementById("hero-headline").textContent =
     (needsAttention ? "Needs attention" : "All clear") + " — " +
     fmt.format(workerCount) + " claw worker" + (workerCount === 1 ? "" : "s") + " sweeping " +

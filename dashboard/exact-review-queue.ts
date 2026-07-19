@@ -3,6 +3,14 @@ import {
   summarizeExactReviewHandoff,
   summarizeExactReviewPressure,
 } from "./exact-review-health.ts";
+import {
+  REVIEW_TELEMETRY_DEGRADED_MS,
+  REVIEW_TELEMETRY_ORPHAN_MS,
+  REVIEW_TELEMETRY_RETENTION_MS,
+  type DurableReviewTelemetry,
+  type ReviewTelemetryHealth,
+  normalizeReviewTelemetry,
+} from "./review-telemetry.ts";
 
 type GithubAppJsonOptions = { method?: string; body?: BodyInit; errorLabel?: string };
 const GITHUB_TIMEOUT_MS = 4500;
@@ -263,6 +271,7 @@ const EXACT_REVIEW_QUEUE_DELIVERY_TABLE = "exact_review_queue_deliveries";
 const EXACT_REVIEW_QUEUE_METRICS_TABLE = "exact_review_queue_metrics";
 const EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE = "exact_review_queue_metric_buckets";
 const EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE = "exact_review_queue_dead_letters";
+const EXACT_REVIEW_REVIEW_TELEMETRY_TABLE = "exact_review_review_telemetry";
 const EXACT_REVIEW_QUEUE_DEAD_LETTER_LIMIT = 5_000;
 const EXACT_REVIEW_QUEUE_DEAD_LETTER_RESOLVED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const EXACT_REVIEW_QUEUE_METRIC_BUCKET_MS = 5 * 60 * 1000;
@@ -847,6 +856,14 @@ export class ExactReviewQueue {
       return this.supersedePublicationCandidates(await request.json().catch(() => null));
     }
 
+    if (request.method === "POST" && url.pathname === "/review-telemetry") {
+      return this.recordReviewTelemetry(await request.json().catch(() => null));
+    }
+
+    if (request.method === "GET" && url.pathname === "/review-telemetry") {
+      return this.listReviewTelemetry(url.searchParams);
+    }
+
     if (request.method === "GET" && url.pathname === "/item-status") {
       const targetRepo = String(url.searchParams.get("target_repo") || "").trim();
       const itemNumber = Number(url.searchParams.get("item_number"));
@@ -956,6 +973,7 @@ export class ExactReviewQueue {
       const snapshot = this.storage.transactionSync(() => {
         this.pruneDeliveryReceiptsSync(now);
         this.pruneQueueTelemetrySync(now);
+        this.pruneReviewTelemetrySync(now);
         const current = this.readStateSync();
         // Dashboard reads are also the operational heartbeat. Reclaim leases and
         // restore the alarm here so a deploy or lost alarm cannot strand backlog.
@@ -973,9 +991,11 @@ export class ExactReviewQueue {
           reviewFlow: this.reviewFlowSummarySync(now),
           publicationFlow: this.publicationFlowSummarySync(now),
           deadLetters: this.deadLetterStatsSync(),
+          reviewTelemetryHealth: this.reviewTelemetryHealthSync(now),
         };
       });
-      const { state, metrics, reviewFlow, publicationFlow, deadLetters } = snapshot;
+      const { state, metrics, reviewFlow, publicationFlow, deadLetters, reviewTelemetryHealth } =
+        snapshot;
       const publicationControl = this.refreshPublicationControlSync(state, now);
       await this.scheduleNext(state, now);
       const stats = exactReviewQueueStats(
@@ -1026,6 +1046,7 @@ export class ExactReviewQueue {
           },
         },
         delivery_receipts: this.deliveryReceiptCountSync(),
+        review_telemetry_health: reviewTelemetryHealth,
         storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
         legacy_rollback_available:
           !this.legacyMirrorDisabled &&
@@ -1543,6 +1564,159 @@ export class ExactReviewQueue {
     });
   }
 
+  private recordReviewTelemetry(value: unknown) {
+    const record = normalizeReviewTelemetry(value);
+    if (!record) return json({ error: "invalid_review_telemetry" }, 400);
+    const updatedAt = Date.parse(record.updated_at);
+    this.storage.transactionSync(() => {
+      this.pruneReviewTelemetrySync(Date.now());
+      // Terminal truth is first-writer immutable. Retries may replay the same
+      // payload, but neither a heartbeat nor a conflicting terminal delivery
+      // may make durable observations depend on arrival order.
+      this.storage.sql.exec(
+        `INSERT INTO ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}
+           (repo, item_number, run_id, run_attempt, status, updated_at, lease_expires_at,
+            record_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(repo, item_number, run_id, run_attempt) DO UPDATE SET
+           status = excluded.status,
+           updated_at = excluded.updated_at,
+           lease_expires_at = excluded.lease_expires_at,
+           record_json = excluded.record_json
+         WHERE ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}.status != 'completed'
+           AND (excluded.status = 'completed'
+                OR excluded.updated_at >= ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}.updated_at)`,
+        record.repo,
+        record.item_number,
+        record.run_id,
+        record.run_attempt,
+        record.status,
+        updatedAt,
+        record.lease_expires_at === null ? null : Date.parse(record.lease_expires_at),
+        JSON.stringify(record),
+      );
+    });
+    return json({ ok: true });
+  }
+
+  private listReviewTelemetry(search: URLSearchParams) {
+    const repo = String(search.get("repo") || "").trim();
+    const itemNumber = Number(search.get("item_number"));
+    const limit = search.has("limit") ? Number(search.get("limit")) : 20;
+    if (
+      !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) ||
+      !Number.isInteger(itemNumber) ||
+      itemNumber < 1 ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 100
+    ) {
+      return json({ error: "invalid_review_telemetry_query" }, 400);
+    }
+    this.pruneReviewTelemetrySync(Date.now());
+    return json({
+      ok: true,
+      repo,
+      item_number: itemNumber,
+      reviews: this.reviewTelemetryRowsSync({ repo, itemNumber, limit }),
+    });
+  }
+
+  private reviewTelemetryRowsSync(options: {
+    repo?: string;
+    itemNumber?: number;
+    status?: DurableReviewTelemetry["status"];
+    limit?: number;
+  }) {
+    const predicates: string[] = [];
+    const bindings: unknown[] = [];
+    if (options.repo !== undefined) {
+      predicates.push("repo = ?");
+      bindings.push(options.repo);
+    }
+    if (options.itemNumber !== undefined) {
+      predicates.push("item_number = ?");
+      bindings.push(options.itemNumber);
+    }
+    if (options.status !== undefined) {
+      predicates.push("status = ?");
+      bindings.push(options.status);
+    }
+    const rows = this.storage.sql.exec(
+      `SELECT record_json
+         FROM ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}
+        ${predicates.length ? `WHERE ${predicates.join(" AND ")}` : ""}
+        ORDER BY updated_at DESC, repo, item_number, run_id, run_attempt
+        LIMIT ?`,
+      ...bindings,
+      options.limit ?? 100,
+    ) as Iterable<{ record_json?: unknown }>;
+    return Array.from(rows)
+      .map((row) => normalizeReviewTelemetry(JSON.parse(String(row.record_json || "null"))))
+      .filter((record): record is DurableReviewTelemetry => record !== null);
+  }
+
+  private reviewTelemetryHealthSync(now: number): ReviewTelemetryHealth {
+    const counts = Array.from(
+      this.storage.sql.exec(
+        `SELECT COUNT(*) AS refreshing,
+                COALESCE(SUM(CASE WHEN updated_at <= ? THEN 1 ELSE 0 END), 0)
+                  AS slow_refreshing,
+                COALESCE(SUM(CASE
+                  WHEN updated_at <= ?
+                   AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+                  THEN 1 ELSE 0 END), 0) AS orphan_refreshing
+           FROM ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}
+          WHERE status = 'refreshing'`,
+        now - REVIEW_TELEMETRY_DEGRADED_MS,
+        now - REVIEW_TELEMETRY_ORPHAN_MS,
+        now,
+      ),
+    )[0] as Record<string, unknown> | undefined;
+    const orphanCount = Number(counts?.orphan_refreshing || 0);
+    const orphanRows = this.storage.sql.exec(
+      `SELECT record_json
+         FROM ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}
+        WHERE status = 'refreshing'
+          AND updated_at <= ?
+          AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+        ORDER BY updated_at, repo, item_number, run_id, run_attempt
+        LIMIT 20`,
+      now - REVIEW_TELEMETRY_ORPHAN_MS,
+      now,
+    ) as Iterable<{ record_json?: unknown }>;
+    const orphans = Array.from(orphanRows)
+      .map((row) => normalizeReviewTelemetry(JSON.parse(String(row.record_json || "null")), now))
+      .filter((record): record is DurableReviewTelemetry => record !== null)
+      .map((record) => ({
+        repo: record.repo,
+        item_number: record.item_number,
+        run_id: record.run_id,
+        run_attempt: record.run_attempt,
+        updated_at: record.updated_at,
+        age_seconds: Math.floor(Math.max(0, now - Date.parse(record.updated_at)) / 1000),
+        lease_expires_at: record.lease_expires_at,
+      }));
+    const slowCount = Number(counts?.slow_refreshing || 0);
+    return {
+      status: orphanCount ? "critical" : slowCount ? "degraded" : "healthy",
+      refreshing: Number(counts?.refreshing || 0),
+      slow_refreshing: slowCount,
+      orphan_refreshing: orphanCount,
+      degraded_after_seconds: REVIEW_TELEMETRY_DEGRADED_MS / 1000,
+      orphan_after_seconds: REVIEW_TELEMETRY_ORPHAN_MS / 1000,
+      orphans,
+    };
+  }
+
+  private pruneReviewTelemetrySync(now: number) {
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}
+        WHERE status = 'completed' AND updated_at <= ?`,
+      now - REVIEW_TELEMETRY_RETENTION_MS,
+    );
+  }
+
   private async supersedePublicationCandidates(value: unknown) {
     const body = objectValue(value);
     const candidates = exactReviewPublicationCandidates(body.items);
@@ -1789,6 +1963,38 @@ export class ExactReviewQueue {
       `CREATE INDEX IF NOT EXISTS exact_review_queue_dead_letters_status
          ON ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
          (status, last_failed_at, dead_letter_id)`,
+    );
+    // Review telemetry is intentionally additive to the v1 queue protocol.
+    // PR 674 can populate generation and operation_id inside record_json
+    // without coupling this observation schema to its queue tuple rollout.
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE} (
+         repo TEXT NOT NULL,
+         item_number INTEGER NOT NULL CHECK (item_number >= 1),
+         run_id TEXT NOT NULL,
+         run_attempt INTEGER NOT NULL CHECK (run_attempt >= 1),
+         status TEXT NOT NULL CHECK (status IN ('refreshing', 'completed')),
+         updated_at INTEGER NOT NULL,
+         lease_expires_at INTEGER,
+         record_json TEXT NOT NULL,
+         PRIMARY KEY (repo, item_number, run_id, run_attempt)
+       ) STRICT`,
+    );
+    const hasLeaseExpiry = Array.from(
+      this.storage.sql.exec(
+        `SELECT name FROM pragma_table_info('${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}')
+          WHERE name = 'lease_expires_at'`,
+      ),
+    ).length;
+    if (!hasLeaseExpiry) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}
+           ADD COLUMN lease_expires_at INTEGER`,
+      );
+    }
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_review_telemetry_status
+         ON ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE} (status, updated_at)`,
     );
   }
 
