@@ -253,6 +253,7 @@ export async function runReviewPlaceholderRecovery(
       const itemKind = candidate.pull_request ? "pull_request" : "issue";
       await enqueue(number, itemKind);
       enqueued += 1;
+      console.log(`review-placeholder recovery: enqueued #${number} (${itemKind})`);
     } catch (error) {
       errors += 1;
       console.warn(

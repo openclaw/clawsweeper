@@ -74,9 +74,13 @@ test("review placeholder detection considers only the latest ClawSweeper bot com
   assert.equal(isOrphanedReviewPlaceholder(latest, now, 2), false);
 });
 
-test("review placeholder runner fails open and sends a signed exact-review decision", async () => {
+test("review placeholder runner fails open and sends a signed exact-review decision", async (t) => {
   const enqueueBodies: string[] = [];
   const commentChecks: number[] = [];
+  const logged: string[] = [];
+  t.mock.method(console, "log", (...parts: unknown[]) => {
+    logged.push(parts.join(" "));
+  });
   const { WEBHOOK: webhookSecret = "test-token-placeholder" } = {} as Record<string, string>;
   const mockFetch = async (
     input: string | URL | Request,
@@ -155,6 +159,7 @@ test("review placeholder runner fails open and sends a signed exact-review decis
   });
 
   assert.deepEqual(summary, { checked: 3, orphaned: 1, enqueued: 1, errors: 1 });
+  assert.ok(logged.includes("review-placeholder recovery: enqueued #103 (pull_request)"));
   assert.deepEqual(commentChecks, [101, 102, 103]);
   assert.equal(enqueueBodies.length, 1);
   assert.deepEqual(JSON.parse(enqueueBodies[0] ?? ""), {
