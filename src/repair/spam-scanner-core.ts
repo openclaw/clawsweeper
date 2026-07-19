@@ -240,6 +240,26 @@ export function legitimateTechnicalContextSignals(comment: SpamScanComment) {
   return signals;
 }
 
+export function graphqlNodesToleratingNotFound(response: JsonValue): LooseRecord[] {
+  const root = (response ?? {}) as LooseRecord;
+  const errors = Array.isArray(root.errors) ? (root.errors as LooseRecord[]) : [];
+  const fatal = errors.filter(
+    (error) => String((error as LooseRecord | null)?.type ?? "").toUpperCase() !== "NOT_FOUND",
+  );
+  if (fatal.length > 0) {
+    const summary = fatal
+      .map((error) => compactText((error as LooseRecord | null)?.message ?? "unknown error", 200))
+      .join("; ");
+    throw new Error(`GraphQL nodes query failed: ${summary}`);
+  }
+  const nodes = (root.data as LooseRecord | undefined)?.nodes;
+  if (!Array.isArray(nodes)) {
+    throw new Error("GraphQL nodes query returned no data payload");
+  }
+  // Deleted comments come back as null nodes alongside NOT_FOUND errors; skip them.
+  return nodes.filter((node): node is LooseRecord => Boolean(node));
+}
+
 export function normalizeModelResults(value: JsonValue): SpamModelResult[] {
   const root = value as LooseRecord;
   const rows = Array.isArray(root?.results) ? root.results : [];

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   buildSpamModelInput,
   commentVersionKey,
+  graphqlNodesToleratingNotFound,
   deterministicSpamSignals,
   isProtectedSpamAuthor,
   legitimateTechnicalContextSignals,
@@ -216,4 +217,49 @@ test("model results are normalized and clamped", () => {
       should_investigate: true,
     },
   ]);
+});
+
+test("graphql nodes tolerate comments deleted mid-scan (NOT_FOUND -> null nodes)", () => {
+  const nodes = graphqlNodesToleratingNotFound({
+    data: {
+      nodes: [{ id: "IC_alive", isMinimized: true, minimizedReason: "spam" }, null],
+    },
+    errors: [
+      {
+        type: "NOT_FOUND",
+        message: "Could not resolve to a node with the global id of 'IC_gone'",
+      },
+    ],
+  });
+  assert.deepEqual(nodes, [{ id: "IC_alive", isMinimized: true, minimizedReason: "spam" }]);
+});
+
+test("graphql nodes without errors pass through unchanged", () => {
+  const nodes = graphqlNodesToleratingNotFound({
+    data: { nodes: [{ id: "IC_1", isMinimized: false, minimizedReason: null }] },
+  });
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0]?.id, "IC_1");
+});
+
+test("graphql nodes fail on non-NOT_FOUND error types", () => {
+  assert.throws(
+    () =>
+      graphqlNodesToleratingNotFound({
+        data: { nodes: [null] },
+        errors: [
+          { type: "NOT_FOUND", message: "Could not resolve to a node" },
+          { type: "FORBIDDEN", message: "Resource not accessible by integration" },
+        ],
+      }),
+    /GraphQL nodes query failed: Resource not accessible by integration/,
+  );
+});
+
+test("graphql nodes fail when the payload carries no data", () => {
+  assert.throws(
+    () => graphqlNodesToleratingNotFound({ errors: [{ type: "NOT_FOUND", message: "gone" }] }),
+    /no data payload/,
+  );
+  assert.throws(() => graphqlNodesToleratingNotFound(null), /no data payload/);
 });
