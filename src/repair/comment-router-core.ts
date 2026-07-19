@@ -1995,7 +1995,12 @@ export function trustedExactHeadReviewCompletionSince({
   headSha: string;
   trustedAuthors?: ReadonlySet<string>;
   sinceMs: number;
-}): { commentId: number; reviewedAt: string | null; publishedAt: string | null } | null {
+}): {
+  commentId: number;
+  reviewedAt: string | null;
+  publishedAt: string | null;
+  sourceRevision: string | null;
+} | null {
   const normalizedHead = String(headSha ?? "")
     .trim()
     .toLowerCase();
@@ -2006,6 +2011,7 @@ export function trustedExactHeadReviewCompletionSince({
     observedAtMs: number;
     reviewedAt: string | null;
     publishedAt: string | null;
+    sourceRevision: string | null;
   } | null = null;
   for (const comment of comments) {
     const completed = parseTrustedAutomation(comment, { trustedAuthors });
@@ -2030,6 +2036,7 @@ export function trustedExactHeadReviewCompletionSince({
           .toLowerCase() === normalizedHead,
     );
     const reviewedAt = String(reviewMarker?.attrs?.reviewed_at ?? "").trim() || null;
+    const sourceRevision = String(reviewMarker?.attrs?.source_revision ?? "").trim() || null;
     const publishedAt = String(comment?.updated_at ?? comment?.created_at ?? "").trim() || null;
     const observedAtMs = Math.max(
       Number.isFinite(Date.parse(reviewedAt ?? "")) ? Date.parse(reviewedAt ?? "") : 0,
@@ -2037,7 +2044,7 @@ export function trustedExactHeadReviewCompletionSince({
     );
     if (observedAtMs < sinceMs || observedAtMs <= 0) continue;
     if (!newest || observedAtMs > newest.observedAtMs) {
-      newest = { commentId, observedAtMs, reviewedAt, publishedAt };
+      newest = { commentId, observedAtMs, reviewedAt, publishedAt, sourceRevision };
     }
   }
   return (
@@ -2045,6 +2052,7 @@ export function trustedExactHeadReviewCompletionSince({
       commentId: newest.commentId,
       reviewedAt: newest.reviewedAt,
       publishedAt: newest.publishedAt,
+      sourceRevision: newest.sourceRevision,
     }
   );
 }

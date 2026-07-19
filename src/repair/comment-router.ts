@@ -3000,17 +3000,23 @@ function reviewDispatchDecisionForCommand(
         activeLeaseExpiresAt: null,
         completedReviewAt: null,
         completedReviewCommentId: null,
+        completedReviewSourceRevision: null,
+        sourceRevisionBefore: issueSourceRevisionSha256(before, []),
+        sourceRevisionAfter: issueSourceRevisionSha256(before, []),
       });
     }
-    const comments = ghPaged<JsonValue>(
+    const commentsBefore = ghPaged<JsonValue>(
       `repos/${targetRepo}/issues/${number}/comments?per_page=100`,
     );
     const after = fetchPullRequestView(number);
+    const commentsAfter = ghPaged<JsonValue>(
+      `repos/${targetRepo}/issues/${number}/comments?per_page=100`,
+    );
     const headAfter = String(after.headRefOid ?? "")
       .trim()
       .toLowerCase();
     const activeReviewLease = freshExactHeadReviewStartLease({
-      comments: comments as LooseRecord[],
+      comments: commentsAfter as LooseRecord[],
       itemNumber: number,
       headSha: headAfter,
       trustedAuthors: trustedBots,
@@ -3022,7 +3028,7 @@ function reviewDispatchDecisionForCommand(
       ? 0
       : Date.parse(String(command.comment_updated_at ?? command.comment_created_at ?? ""));
     const completedReview = trustedExactHeadReviewCompletionSince({
-      comments: comments as LooseRecord[],
+      comments: commentsAfter as LooseRecord[],
       headSha: headAfter,
       trustedAuthors: trustedBots,
       sinceMs: commandStartedAtMs,
@@ -3038,6 +3044,9 @@ function reviewDispatchDecisionForCommand(
         completedReview?.reviewedAt ??
         (completedReview ? "recently" : null),
       completedReviewCommentId: completedReview?.commentId ?? null,
+      completedReviewSourceRevision: completedReview?.sourceRevision ?? null,
+      sourceRevisionBefore: issueSourceRevisionSha256(before, commentsBefore),
+      sourceRevisionAfter: issueSourceRevisionSha256(after, commentsAfter),
     });
   } catch (error) {
     return {

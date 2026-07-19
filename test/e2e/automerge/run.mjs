@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +16,7 @@ const helperRoot = path.dirname(fileURLToPath(import.meta.url));
 export const AUTOMERGE_E2E_SCENARIOS = [
   "approve-intent-persistence",
   "completed-verdict-resume",
+  "completed-verdict-source-drift",
   "dependency-setup-mutation",
   "happy-path",
   "pending-checks",
@@ -257,6 +259,7 @@ export function runAutomergeE2E({
     if (
       scenario === "approve-intent-persistence" ||
       scenario === "completed-verdict-resume" ||
+      scenario === "completed-verdict-source-drift" ||
       scenario === "resume-intent-persistence"
     ) {
       const activeJob = path.join(
@@ -311,6 +314,41 @@ export function runAutomergeE2E({
         commentId: verdictId,
         forceReprocess: true,
         attemptId: String(verdictHandoff.client_payload.attempt_id),
+      });
+      completedVerdictAlreadyRouted = true;
+    } else if (scenario === "completed-verdict-source-drift") {
+      const beforeCommand = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      const staleVerdictId = addExactHeadVerdict(
+        statePath,
+        repairedHead,
+        fixtureSourceRevision(beforeCommand),
+      );
+      const commandId = addMaintainerAutomergeCommand(statePath);
+      runCommentRouterExact(runtimeRoot, baseEnv, artifacts, "08-comment-router-source-drift", {
+        commentId: commandId,
+      });
+      const refreshedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      assert.equal(
+        refreshedState.dispatches.some(
+          (dispatch) =>
+            dispatch.event_type === "clawsweeper_comment" &&
+            dispatch.client_payload?.comment_id === String(staleVerdictId),
+        ),
+        false,
+        "a source-stale exact-head verdict must not be replayed",
+      );
+      assert.equal(
+        refreshedState.dispatches.some((dispatch) => dispatch.event_type === "clawsweeper_item"),
+        true,
+        "source drift must queue a fresh exact-head review",
+      );
+      const freshVerdictId = addExactHeadVerdict(
+        statePath,
+        repairedHead,
+        fixtureSourceRevision(refreshedState),
+      );
+      runCommentRouterExact(runtimeRoot, baseEnv, artifacts, "10-comment-router-fresh-verdict", {
+        commentId: freshVerdictId,
       });
       completedVerdictAlreadyRouted = true;
     } else if (scenario === "resume-intent-persistence") {
@@ -579,12 +617,12 @@ function createCandidateRuntime(root, candidateRoot) {
   return runtime;
 }
 
-function addExactHeadVerdict(statePath, headSha) {
+function addExactHeadVerdict(statePath, headSha, sourceRevision = null) {
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
   const now = new Date().toISOString();
   state.comments.push({
     id: state.nextCommentId++,
-    body: `ClawSweeper review passed.\n<!-- clawsweeper-verdict:pass item=${state.pr.number} sha=${headSha} reviewed_at=${now} -->`,
+    body: `ClawSweeper review passed.\n<!-- clawsweeper-verdict:pass item=${state.pr.number} sha=${headSha}${sourceRevision ? ` source_revision=${sourceRevision}` : ""} reviewed_at=${now} -->`,
     issue_url: `https://api.github.com/repos/${state.repo}/issues/${state.pr.number}`,
     html_url: `https://github.com/${state.repo}/pull/${state.pr.number}#issuecomment-${state.nextCommentId - 1}`,
     user: { id: 1, login: "clawsweeper[bot]" },
@@ -594,6 +632,41 @@ function addExactHeadVerdict(statePath, headSha) {
   });
   writeJson(statePath, state);
   return state.nextCommentId - 1;
+}
+
+function fixtureSourceRevision(state) {
+  const snapshot = {
+    title: state.pr.title,
+    body: state.pr.body,
+    labels: state.pr.labels
+      .map((label) => String(label).trim().toLowerCase())
+      .filter((label) => !label.startsWith("clawsweeper:"))
+      .sort(),
+    comments: state.comments
+      .filter(
+        (comment) =>
+          ![
+            "clawsweeper",
+            "clawsweeper[bot]",
+            "openclaw-clawsweeper",
+            "openclaw-clawsweeper[bot]",
+          ].includes(
+            String(comment.user?.login ?? "")
+              .trim()
+              .toLowerCase(),
+          ),
+      )
+      .map((comment) => ({
+        id: String(comment.id ?? ""),
+        author: String(comment.user?.login ?? ""),
+        body: String(comment.body ?? ""),
+        updated_at: String(comment.updated_at ?? comment.created_at ?? ""),
+      }))
+      .sort((left, right) =>
+        `${left.id}:${left.updated_at}`.localeCompare(`${right.id}:${right.updated_at}`),
+      ),
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
 }
 
 function addMaintainerAutomergeCommand(statePath) {

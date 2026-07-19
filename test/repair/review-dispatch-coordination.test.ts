@@ -14,6 +14,9 @@ function decision(overrides: Partial<Parameters<typeof decideReviewDispatchCoord
     activeLeaseExpiresAt: null,
     completedReviewAt: null,
     completedReviewCommentId: null,
+    completedReviewSourceRevision: null,
+    sourceRevisionBefore: "1".repeat(64),
+    sourceRevisionAfter: "1".repeat(64),
     ...overrides,
   });
 }
@@ -43,10 +46,37 @@ test("reuses a same-head review completed since the command", () => {
   const result = decision({
     completedReviewAt: "2026-07-17T14:10:00.000Z",
     completedReviewCommentId: 1234,
+    completedReviewSourceRevision: "1".repeat(64),
   });
   assert.equal(result.action, "reuse_completed_review");
   assert.equal(result.commentId, 1234);
   assert.match(result.reason, /result will be reused/);
+});
+
+test("dispatches a fresh review when a same-head verdict has stale source", () => {
+  assert.deepEqual(
+    decision({
+      completedReviewAt: "2026-07-17T14:10:00.000Z",
+      completedReviewCommentId: 1234,
+      completedReviewSourceRevision: "2".repeat(64),
+    }),
+    { action: "dispatch" },
+  );
+});
+
+test("dispatches a fresh review when a verdict source is unknown", () => {
+  assert.deepEqual(
+    decision({
+      completedReviewAt: "2026-07-17T14:10:00.000Z",
+      completedReviewCommentId: 1234,
+      completedReviewSourceRevision: "unknown",
+    }),
+    { action: "dispatch" },
+  );
+});
+
+test("retries when source changes during review coordination", () => {
+  assert.equal(decision({ sourceRevisionAfter: "2".repeat(64) }).action, "retry");
 });
 
 test("an active lease wins over a completed marker", () => {

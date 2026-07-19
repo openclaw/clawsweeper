@@ -13,6 +13,9 @@ export type ReviewDispatchCoordinationInput = {
   activeLeaseExpiresAt: string | null;
   completedReviewAt: string | null;
   completedReviewCommentId: number | null;
+  completedReviewSourceRevision: string | null;
+  sourceRevisionBefore: string;
+  sourceRevisionAfter: string;
 };
 
 export function decideReviewDispatchCoordination({
@@ -23,6 +26,9 @@ export function decideReviewDispatchCoordination({
   activeLeaseExpiresAt,
   completedReviewAt,
   completedReviewCommentId,
+  completedReviewSourceRevision,
+  sourceRevisionBefore,
+  sourceRevisionAfter,
 }: ReviewDispatchCoordinationInput): ReviewDispatchCoordinationDecision {
   if (!isOpen(stateBefore) || !isOpen(stateAfter)) {
     return { action: "stop", reason: "target is no longer an open PR" };
@@ -31,6 +37,17 @@ export function decideReviewDispatchCoordination({
     return {
       action: "retry",
       reason: "PR head changed during the dispatch-time review check; next router pass will retry",
+    };
+  }
+  if (
+    !sourceRevisionBefore ||
+    !sourceRevisionAfter ||
+    sourceRevisionBefore !== sourceRevisionAfter
+  ) {
+    return {
+      action: "retry",
+      reason:
+        "PR source changed during the dispatch-time review check; next router pass will retry",
     };
   }
   // At-least-once command delivery makes an active exact-head lease a normal
@@ -42,6 +59,17 @@ export function decideReviewDispatchCoordination({
     };
   }
   if (completedReviewAt && completedReviewCommentId) {
+    const reviewedRevision = String(completedReviewSourceRevision ?? "")
+      .trim()
+      .toLowerCase();
+    // Only a truly missing revision belongs to the legacy compatibility path.
+    // Any present but unverifiable marker needs a new review.
+    if (
+      reviewedRevision &&
+      (!/^[0-9a-f]{64}$/.test(reviewedRevision) || reviewedRevision !== sourceRevisionAfter)
+    ) {
+      return { action: "dispatch" };
+    }
     return {
       action: "reuse_completed_review",
       commentId: completedReviewCommentId,

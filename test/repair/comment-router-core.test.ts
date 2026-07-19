@@ -1779,12 +1779,13 @@ test("review start leases reject malformed, future, and overlong markers", () =>
 
 test("same-head completion freshness uses durable publication time", () => {
   const headSha = "0123456789abcdef0123456789abcdef01234567";
+  const sourceRevision = "1".repeat(64);
   const comment = {
     id: 1234,
     user: { login: "clawsweeper[bot]" },
     created_at: "2026-07-09T21:00:00.000Z",
     updated_at: "2026-07-09T21:05:30.000Z",
-    body: `<!-- clawsweeper-verdict:pass item=103109 sha=${headSha} reviewed_at=2026-07-09T21:04:30.000Z -->`,
+    body: `<!-- clawsweeper-verdict:pass item=103109 sha=${headSha} source_revision=${sourceRevision} reviewed_at=2026-07-09T21:04:30.000Z -->`,
   };
 
   assert.deepEqual(
@@ -1798,6 +1799,7 @@ test("same-head completion freshness uses durable publication time", () => {
       commentId: 1234,
       reviewedAt: "2026-07-09T21:04:30.000Z",
       publishedAt: "2026-07-09T21:05:30.000Z",
+      sourceRevision,
     },
   );
   assert.equal(
@@ -1913,7 +1915,15 @@ test("review dispatch coordination guards label sweeps and maintainer mode comma
     /automation_source !== "repair_loop_label_sweep"[\s\S]*?return \{ action: "dispatch" \}/,
   );
   assert.equal(dispatchGuard.match(/fetchPullRequestView\(number\)/g)?.length, 2);
-  assert.match(dispatchGuard, /issues\/\$\{number\}\/comments\?per_page=100/);
+  assert.equal(dispatchGuard.match(/issues\/\$\{number\}\/comments\?per_page=100/g)?.length, 2);
+  assert.match(
+    dispatchGuard,
+    /sourceRevisionBefore: issueSourceRevisionSha256\(before, commentsBefore\)/,
+  );
+  assert.match(
+    dispatchGuard,
+    /sourceRevisionAfter: issueSourceRevisionSha256\(after, commentsAfter\)/,
+  );
   assert.match(dispatchGuard, /nowMs:\s*Date\.now\(\)/);
   assert.match(dispatchGuard, /trustedExactHeadReviewCompletionSince\(\{/);
   assert.match(dispatchGuard, /sinceMs:\s*commandStartedAtMs/);
