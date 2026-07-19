@@ -497,6 +497,11 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(deferredRoute.if ?? "", /publish-event-result\.outcome == 'success'/);
   assert.match(deferredRoute.if ?? "", /routing_deferred == 'true'/);
   assert.match(deferredRoute.run ?? "", /repair-comment-router\.yml/);
+  assert.equal(
+    deferredRoute.env?.ITEM_NUMBER,
+    "${{ steps.publication-context.outputs.item_number }}",
+  );
+  assert.match(deferredRoute.run ?? "", /-f item_numbers="\$ITEM_NUMBER"/);
   const drift = step(publisher, "Queue fresh review after source drift");
   assert.match(drift.if ?? "", /requeue_latest == 'true'/);
   assert.match(drift.if ?? "", /legacy-exact-artifact\.outputs\.legacy_tupleless == 'true'/);
@@ -1911,6 +1916,21 @@ test("trusted comment router owns command ledger capacity retries", () => {
   assert.match(routerWorkflow, /Detect waiting repair dispatches/);
   assert.match(routerWorkflow, /--status waiting,active/);
   assert.match(routerWorkflow, /--wait-for-capacity/);
+});
+
+test("deferred exact verdict routers cannot replace each other's pending runs", () => {
+  const workflow = readText(".github/workflows/repair-comment-router.yml");
+  const concurrency = workflow.slice(workflow.indexOf("concurrency:"), workflow.indexOf("\njobs:"));
+
+  // GitHub keeps only one pending run per group even when cancel-in-progress is false.
+  // Binding exact workflow dispatches to their item preserves both handoffs under load.
+  assert.match(concurrency, /github\.event_name == 'workflow_dispatch'/);
+  assert.match(concurrency, /github\.event\.inputs\.item_numbers != ''/);
+  assert.match(
+    concurrency,
+    /format\('repair-comment-router-\{0\}-items-\{1\}'[\s\S]*github\.event\.inputs\.item_numbers/,
+  );
+  assert.match(concurrency, /cancel-in-progress: false/);
 });
 
 test("comment commands keep the router-to-sweep dispatch contract", () => {

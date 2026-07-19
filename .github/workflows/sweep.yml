@@ -1682,6 +1682,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           TARGET_BRANCH: ${{ steps.publication-context.outputs.target_branch }}
+          ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
           CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
           CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
         run: |
@@ -1691,6 +1692,7 @@ jobs:
             -f execute=true \
             -f target_repo="$TARGET_REPO" \
             -f target_branch="$TARGET_BRANCH" \
+            -f item_numbers="$ITEM_NUMBER" \
             -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
             -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS"
 

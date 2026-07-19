@@ -81,7 +81,9 @@ env:
   CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED || 'false' }}
 
 concurrency:
-  group: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.comment_id && format('repair-comment-router-{0}-comment-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.comment_id) || format('repair-comment-router-{0}', github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw') }}
+  # GitHub retains only one pending run per concurrency group. Exact-item verdict
+  # handoffs need their own group so unrelated router traffic cannot replace them.
+  group: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.comment_id && format('repair-comment-router-{0}-comment-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.comment_id) || github.event_name == 'workflow_dispatch' && github.event.inputs.item_numbers != '' && format('repair-comment-router-{0}-items-{1}', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_numbers) || format('repair-comment-router-{0}', github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw') }}
   cancel-in-progress: false
 
 jobs:

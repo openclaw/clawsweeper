@@ -56,6 +56,9 @@ export function runAutomergeE2E({
 
   try {
     const runtimeRoot = createCandidateRuntime(root, candidateRoot);
+    if (scenario === "resume-intent-persistence") {
+      assertDeferredVerdictHandoffIsolation(candidateRoot);
+    }
     const targetFixture =
       scenario === "ci-regression-29623139111"
         ? createCiRegressionFixture(root, { fixture })
@@ -403,6 +406,24 @@ export function runAutomergeE2E({
   } finally {
     if (!keep) fs.rmSync(root, { recursive: true, force: true });
   }
+}
+
+function assertDeferredVerdictHandoffIsolation(candidateRoot) {
+  const sweep = fs.readFileSync(path.join(candidateRoot, ".github/workflows/sweep.yml"), "utf8");
+  const router = fs.readFileSync(
+    path.join(candidateRoot, ".github/workflows/repair-comment-router.yml"),
+    "utf8",
+  );
+  assert.match(
+    sweep,
+    /Queue deferred exact verdict router[\s\S]*-f item_numbers="\$ITEM_NUMBER"/,
+    "the exact review publisher must identify the PR in its deferred router handoff",
+  );
+  assert.match(
+    router,
+    /github\.event_name == 'workflow_dispatch' && github\.event\.inputs\.item_numbers != '' && format\('repair-comment-router-\{0\}-items-\{1\}'/,
+    "deferred verdict handoffs must not share the replaceable repository-wide pending group",
+  );
 }
 
 function createCandidateRuntime(root, candidateRoot) {
