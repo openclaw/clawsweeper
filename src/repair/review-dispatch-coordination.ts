@@ -1,7 +1,7 @@
 export type ReviewDispatchCoordinationDecision =
   | { action: "dispatch" }
   | { action: "wait_for_active_review"; reason: string }
-  | { action: "reuse_completed_review"; reason: string }
+  | { action: "reuse_completed_review"; commentId: number; reason: string }
   | { action: "retry"; reason: string }
   | { action: "stop"; reason: string };
 
@@ -12,6 +12,7 @@ export type ReviewDispatchCoordinationInput = {
   headAfter: string;
   activeLeaseExpiresAt: string | null;
   completedReviewAt: string | null;
+  completedReviewCommentId: number | null;
 };
 
 export function decideReviewDispatchCoordination({
@@ -21,6 +22,7 @@ export function decideReviewDispatchCoordination({
   headAfter,
   activeLeaseExpiresAt,
   completedReviewAt,
+  completedReviewCommentId,
 }: ReviewDispatchCoordinationInput): ReviewDispatchCoordinationDecision {
   if (!isOpen(stateBefore) || !isOpen(stateAfter)) {
     return { action: "stop", reason: "target is no longer an open PR" };
@@ -39,9 +41,10 @@ export function decideReviewDispatchCoordination({
       reason: `same-head ClawSweeper review is active until ${activeLeaseExpiresAt}`,
     };
   }
-  if (completedReviewAt) {
+  if (completedReviewAt && completedReviewCommentId) {
     return {
       action: "reuse_completed_review",
+      commentId: completedReviewCommentId,
       reason: `same-head ClawSweeper review completed at ${completedReviewAt}; its result will be reused`,
     };
   }

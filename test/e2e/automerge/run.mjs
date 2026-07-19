@@ -13,6 +13,8 @@ import { repairCommentRouterGroup, WorkflowScheduler } from "./workflow-schedule
 
 const helperRoot = path.dirname(fileURLToPath(import.meta.url));
 export const AUTOMERGE_E2E_SCENARIOS = [
+  "approve-intent-persistence",
+  "completed-verdict-resume",
   "dependency-setup-mutation",
   "happy-path",
   "pending-checks",
@@ -252,13 +254,66 @@ export function runAutomergeE2E({
 
     const repairedHead = currentRef(targetFixture.remote, targetFixture.headRef);
     assertFixturePostRepair(targetFixture, repairedHead);
-    if (scenario === "resume-intent-persistence") {
+    if (
+      scenario === "approve-intent-persistence" ||
+      scenario === "completed-verdict-resume" ||
+      scenario === "resume-intent-persistence"
+    ) {
       const activeJob = path.join(
         runtimeRoot,
         "jobs/openclaw/inbox/automerge-openclaw-openclaw-42.md",
       );
       fs.mkdirSync(path.dirname(activeJob), { recursive: true });
       fs.copyFileSync(jobPath, activeJob);
+    }
+    let completedVerdictAlreadyRouted = false;
+    if (scenario === "approve-intent-persistence") {
+      updateGitHubState(statePath, (state) => {
+        state.pr.mergeStateStatus = "BEHIND";
+        state.pr.labels.push("clawsweeper:human-review");
+      });
+      const approvalId = addMaintainerApproveCommand(statePath);
+      runCommentRouterExact(runtimeRoot, baseEnv, artifacts, "08-comment-router-approve", {
+        commentId: approvalId,
+      });
+      assert.equal(
+        JSON.parse(fs.readFileSync(statePath, "utf8")).pr.mergedAt,
+        null,
+        "a behind branch must remain open after the first exact-head approval",
+      );
+      updateGitHubState(statePath, (state) => {
+        state.pr.mergeStateStatus = "CLEAN";
+      });
+      addCanonicalNeedsHumanVerdict(statePath, repairedHead);
+    } else if (scenario === "completed-verdict-resume") {
+      const commandId = addMaintainerAutomergeCommand(statePath);
+      runCommentRouterExact(runtimeRoot, baseEnv, artifacts, "08-comment-router-command", {
+        commentId: commandId,
+      });
+      const verdictId = addExactHeadVerdict(statePath, repairedHead);
+      runCommentRouterExact(runtimeRoot, baseEnv, artifacts, "09-comment-router-command-replay", {
+        commentId: commandId,
+        forceReprocess: true,
+        attemptId: "completed-verdict-resume",
+      });
+      const replayState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      const verdictHandoff = replayState.dispatches.findLast(
+        (dispatch) =>
+          dispatch.event_type === "clawsweeper_comment" &&
+          dispatch.client_payload?.comment_id === String(verdictId),
+      );
+      assert.ok(
+        verdictHandoff,
+        "reusing a completed review must requeue its exact verdict after an earlier handoff was lost",
+      );
+      assert.equal(verdictHandoff.client_payload.force_reprocess, "true");
+      runCommentRouterExact(runtimeRoot, baseEnv, artifacts, "10-comment-router-verdict-handoff", {
+        commentId: verdictId,
+        forceReprocess: true,
+        attemptId: String(verdictHandoff.client_payload.attempt_id),
+      });
+      completedVerdictAlreadyRouted = true;
+    } else if (scenario === "resume-intent-persistence") {
       addMaintainerAutomergeCommand(statePath);
       runCommentRouter(runtimeRoot, baseEnv, artifacts, "08-comment-router-resume-command");
       const resumeReport = readRouterReport(runtimeRoot);
@@ -284,7 +339,7 @@ export function runAutomergeE2E({
         "a later router invocation must be able to hydrate the resume command",
       );
       addCanonicalNeedsHumanVerdict(statePath, repairedHead);
-    } else {
+    } else if (!completedVerdictAlreadyRouted) {
       addExactHeadVerdict(statePath, repairedHead);
     }
     if (scenario === "verdict-head-drift") {
@@ -336,7 +391,7 @@ export function runAutomergeE2E({
       );
       assert.equal(JSON.parse(fs.readFileSync(statePath, "utf8")).pr.mergedAt, null);
       runCommentRouter(runtimeRoot, baseEnv, artifacts, "09-comment-router-checks-green");
-    } else {
+    } else if (!completedVerdictAlreadyRouted) {
       runCommentRouter(runtimeRoot, baseEnv, artifacts, "08-comment-router");
     }
     const routerReport = readRouterReport(runtimeRoot);
@@ -377,7 +432,7 @@ export function runAutomergeE2E({
     assert.equal(idempotentRouterReport.actionable, 0);
     assert.equal(
       state.calls.filter((call) => call.args[0] === "pr" && call.args[1] === "merge").length,
-      1,
+      scenario === "approve-intent-persistence" ? 2 : 1,
       "an idempotent router replay must not attempt a second merge",
     );
     assert.ok(state.calls.some((call) => call.token === "read"));
@@ -538,6 +593,7 @@ function addExactHeadVerdict(statePath, headSha) {
     updated_at: now,
   });
   writeJson(statePath, state);
+  return state.nextCommentId - 1;
 }
 
 function addMaintainerAutomergeCommand(statePath) {
@@ -547,10 +603,18 @@ function addMaintainerAutomergeCommand(statePath) {
     authorId: 1,
     body: `Automerge is already active.\n<!-- clawsweeper-command-status:${state.pr.number}:automerge:active -->`,
   });
-  addFixtureComment(statePath, {
+  return addFixtureComment(statePath, {
     author: "fixture-maintainer",
     authorId: 2,
     body: "@clawsweeper automerge\n\nResume the exact current head after the repair fix landed.",
+  });
+}
+
+function addMaintainerApproveCommand(statePath) {
+  return addFixtureComment(statePath, {
+    author: "fixture-maintainer",
+    authorId: 2,
+    body: "@clawsweeper approve",
   });
 }
 
@@ -589,6 +653,7 @@ function addFixtureComment(
     updated_at: timestamp,
   });
   writeJson(statePath, state);
+  return id;
 }
 
 function runPlanningHeadDriftScenario({
@@ -867,6 +932,39 @@ function runCommentRouter(runtimeRoot, baseEnv, artifacts, label) {
   );
 }
 
+function runCommentRouterExact(
+  runtimeRoot,
+  baseEnv,
+  artifacts,
+  label,
+  { commentId, forceReprocess = false, attemptId = "" },
+) {
+  const statePath = baseEnv.CLAWSWEEPER_E2E_GITHUB_STATE;
+  assert.equal(typeof statePath, "string", "router requires the fake GitHub state path");
+  const itemNumber = JSON.parse(fs.readFileSync(statePath, "utf8")).pr.number;
+  const replayArgs = forceReprocess ? ["--force-reprocess", "--attempt-id", attemptId] : [];
+  runCli(
+    runtimeRoot,
+    [
+      "dist/repair/comment-router.js",
+      "--repo",
+      "openclaw/openclaw",
+      "--item-number",
+      String(itemNumber),
+      "--comment-id",
+      String(commentId),
+      "--max-comments",
+      "1",
+      ...replayArgs,
+      "--execute",
+    ],
+    baseEnv,
+    "post-token",
+    artifacts,
+    label,
+  );
+}
+
 function readRouterReport(runtimeRoot) {
   return JSON.parse(
     fs.readFileSync(path.join(runtimeRoot, "results", "comment-router-latest.json"), "utf8"),
@@ -903,6 +1001,7 @@ function initialGitHubState(fixture, targetPrNumber = 42) {
       updatedAt: now,
       mergedAt: null,
       mergeCommitSha: null,
+      mergeStateStatus: "CLEAN",
       files: fixture.files ?? ["src/repair-target.txt"],
     },
   };

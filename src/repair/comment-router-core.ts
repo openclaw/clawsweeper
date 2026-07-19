@@ -749,8 +749,20 @@ export function latestRepairLoopResumeTime(entries: JsonValue, command: LooseRec
     if (!entry || typeof entry !== "object") continue;
     if (entry.repo !== command.repo) continue;
     if (Number(entry.issue_number) !== Number(command.issue_number)) continue;
-    if (!["autofix", "automerge"].includes(String(entry.intent ?? ""))) continue;
+    const intent = String(entry.intent ?? "");
+    if (!["autofix", "automerge", "maintainer_approve_automerge"].includes(intent)) continue;
     if (!["executed", "waiting"].includes(String(entry.status ?? ""))) continue;
+    if (intent === "maintainer_approve_automerge") {
+      const approvedHead = String(entry.expected_head_sha ?? entry.target?.head_sha ?? "")
+        .trim()
+        .toLowerCase();
+      const reviewedHead = String(command.expected_head_sha ?? command.target?.head_sha ?? "")
+        .trim()
+        .toLowerCase();
+      // An approval is stronger than a mode opt-in, so preserve it only for the
+      // exact reviewed head it authorized. A later contributor push must reopen the gate.
+      if (!approvedHead || approvedHead !== reviewedHead) continue;
+    }
     latest = Math.max(latest, Date.parse(String(entry.comment_updated_at ?? "")) || 0);
   }
   return latest;
@@ -1979,13 +1991,14 @@ export function trustedExactHeadReviewCompletionSince({
   headSha: string;
   trustedAuthors?: ReadonlySet<string>;
   sinceMs: number;
-}): { reviewedAt: string | null; publishedAt: string | null } | null {
+}): { commentId: number; reviewedAt: string | null; publishedAt: string | null } | null {
   const normalizedHead = String(headSha ?? "")
     .trim()
     .toLowerCase();
   if (!normalizedHead || !Number.isFinite(sinceMs)) return null;
 
   let newest: {
+    commentId: number;
     observedAtMs: number;
     reviewedAt: string | null;
     publishedAt: string | null;
@@ -1993,6 +2006,8 @@ export function trustedExactHeadReviewCompletionSince({
   for (const comment of comments) {
     const completed = parseTrustedAutomation(comment, { trustedAuthors });
     if (!completed) continue;
+    const commentId = Number(comment?.id);
+    if (!Number.isInteger(commentId) || commentId <= 0) continue;
     if (
       String(completed.expected_head_sha ?? "")
         .trim()
@@ -2018,10 +2033,16 @@ export function trustedExactHeadReviewCompletionSince({
     );
     if (observedAtMs < sinceMs || observedAtMs <= 0) continue;
     if (!newest || observedAtMs > newest.observedAtMs) {
-      newest = { observedAtMs, reviewedAt, publishedAt };
+      newest = { commentId, observedAtMs, reviewedAt, publishedAt };
     }
   }
-  return newest && { reviewedAt: newest.reviewedAt, publishedAt: newest.publishedAt };
+  return (
+    newest && {
+      commentId: newest.commentId,
+      reviewedAt: newest.reviewedAt,
+      publishedAt: newest.publishedAt,
+    }
+  );
 }
 
 export function parseRoutedCommentCommand(

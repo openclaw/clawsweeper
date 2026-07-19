@@ -1780,6 +1780,7 @@ test("review start leases reject malformed, future, and overlong markers", () =>
 test("same-head completion freshness uses durable publication time", () => {
   const headSha = "0123456789abcdef0123456789abcdef01234567";
   const comment = {
+    id: 1234,
     user: { login: "clawsweeper[bot]" },
     created_at: "2026-07-09T21:00:00.000Z",
     updated_at: "2026-07-09T21:05:30.000Z",
@@ -1794,6 +1795,7 @@ test("same-head completion freshness uses durable publication time", () => {
       sinceMs: Date.parse("2026-07-09T21:05:00.000Z"),
     }),
     {
+      commentId: 1234,
       reviewedAt: "2026-07-09T21:04:30.000Z",
       publishedAt: "2026-07-09T21:05:30.000Z",
     },
@@ -2640,6 +2642,43 @@ test("canonical landing needs-human accepts waiting automerge opt-in as active r
       optInTime,
     }),
     true,
+  );
+});
+
+test("canonical landing needs-human keeps an exact-head maintainer approval active", () => {
+  const headSha = "0123456789abcdef0123456789abcdef01234567";
+  const command = {
+    repo: "openclaw/openclaw",
+    issue_number: 104054,
+    expected_head_sha: headSha,
+  };
+  const approvedAt = latestRepairLoopResumeTime(
+    [
+      {
+        ...command,
+        intent: "maintainer_approve_automerge",
+        status: "executed",
+        comment_updated_at: "2026-07-19T04:07:56Z",
+      },
+    ],
+    command,
+  );
+
+  assert.equal(approvedAt, Date.parse("2026-07-19T04:07:56Z"));
+  assert.equal(
+    latestRepairLoopResumeTime(
+      [
+        {
+          ...command,
+          intent: "maintainer_approve_automerge",
+          status: "executed",
+          comment_updated_at: "2026-07-19T04:07:56Z",
+        },
+      ],
+      { ...command, expected_head_sha: "f".repeat(40) },
+    ),
+    0,
+    "a maintainer approval must not survive a contributor head change",
   );
 });
 

@@ -2093,6 +2093,10 @@ function executeCommand(command: LooseRecord) {
       );
       const dispatchDecision = reviewDispatchDecisionForCommand(command);
       if (dispatchDecision.action !== "dispatch") {
+        const verdictRouter =
+          dispatchDecision.action === "reuse_completed_review"
+            ? dispatchCompletedReviewVerdict(command, dispatchDecision)
+            : null;
         const dispatchStatus = markCoordinatedReviewDispatchActions({
           command,
           job,
@@ -2106,6 +2110,7 @@ function executeCommand(command: LooseRecord) {
               status: dispatchStatus,
               coordination_action: dispatchDecision.action,
               reason: dispatchDecision.reason,
+              ...(verdictRouter ? { verdict_router: verdictRouter } : {}),
             },
           };
         }
@@ -2991,6 +2996,7 @@ function reviewDispatchDecisionForCommand(
         headAfter: headBefore,
         activeLeaseExpiresAt: null,
         completedReviewAt: null,
+        completedReviewCommentId: null,
       });
     }
     const comments = ghPaged<JsonValue>(
@@ -3026,6 +3032,7 @@ function reviewDispatchDecisionForCommand(
         completedReview?.publishedAt ??
         completedReview?.reviewedAt ??
         (completedReview ? "recently" : null),
+      completedReviewCommentId: completedReview?.commentId ?? null,
     });
   } catch (error) {
     return {
@@ -3036,6 +3043,7 @@ function reviewDispatchDecisionForCommand(
 }
 
 function reviewDispatchActionStatus(decision: ReviewDispatchCoordinationDecision) {
+  if (decision.action === "reuse_completed_review") return "executed";
   return ["wait_for_active_review", "retry"].includes(decision.action) ? "waiting" : "skipped";
 }
 
@@ -3330,6 +3338,53 @@ function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
     repo: reviewRepo,
     item_number: command.issue_number,
     dispatch_key: dispatchKey,
+  };
+}
+
+function dispatchCompletedReviewVerdict(
+  command: LooseRecord,
+  decision: Extract<ReviewDispatchCoordinationDecision, { action: "reuse_completed_review" }>,
+) {
+  const attemptId = `completed-review-${command.comment_id ?? "sweep"}-${decision.commentId}`;
+  const payload = JSON.stringify({
+    event_type: "clawsweeper_comment",
+    client_payload: {
+      target_repo: command.repo,
+      ...(command.target_branch ? { target_branch: String(command.target_branch) } : {}),
+      item_number: String(command.issue_number),
+      comment_id: String(decision.commentId),
+      max_comments: "1",
+      force_reprocess: "true",
+      attempt_id: attemptId,
+      source_event: "comment_router",
+      source_action: "reuse_completed_review",
+    },
+  });
+  const result = runGitHubSpawnMutation(
+    command,
+    "review_verdict_dispatch",
+    {
+      repository: reviewRepo,
+      workflow: "repair-comment-router.yml",
+      event: "repository_dispatch",
+      commentId: decision.commentId,
+      attemptId,
+    },
+    ["api", `repos/${reviewRepo}/dispatches`, "--method", "POST", "--input", "-"],
+    { env: dispatchTokenEnv(), input: payload },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      `failed to requeue completed ClawSweeper verdict for #${command.issue_number}: ${stripAnsi(result.stderr || result.stdout).trim()}`,
+    );
+  }
+  return {
+    workflow: "repair-comment-router.yml",
+    event: "repository_dispatch",
+    repo: reviewRepo,
+    item_number: command.issue_number,
+    comment_id: decision.commentId,
+    attempt_id: attemptId,
   };
 }
 

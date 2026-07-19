@@ -76,7 +76,7 @@ if (args[0] === "pr" && args[1] === "view") {
     labels: state.pr.labels.map((name) => ({ name })),
     mergeable: "MERGEABLE",
     mergeCommit: state.pr.mergeCommitSha ? { oid: state.pr.mergeCommitSha } : null,
-    mergeStateStatus: "CLEAN",
+    mergeStateStatus: state.pr.mergeStateStatus,
     mergedAt: state.pr.mergedAt,
     reviewDecision: "APPROVED",
     state: state.pr.mergedAt ? "MERGED" : state.pr.state.toUpperCase(),
@@ -351,6 +351,9 @@ function mergePullRequest(expectedHead) {
   const head = currentHead();
   if (expectedHead && expectedHead !== head)
     fail(`head branch was modified: expected ${expectedHead}, found ${head}`);
+  if (state.pr.mergeStateStatus === "BEHIND") {
+    fail("pull request is not mergeable: the head branch is not up to date with the base branch");
+  }
   if (state.pr.mergedAt) return;
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-e2e-merge-"));
   try {
@@ -388,6 +391,7 @@ function addComment(body) {
 
 function readInput() {
   const inputPath = optionValue("--input");
+  if (inputPath === "-") return JSON.parse(fs.readFileSync(0, "utf8"));
   return inputPath ? JSON.parse(fs.readFileSync(inputPath, "utf8")) : {};
 }
 

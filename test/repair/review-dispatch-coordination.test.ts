@@ -13,6 +13,7 @@ function decision(overrides: Partial<Parameters<typeof decideReviewDispatchCoord
     headAfter: head,
     activeLeaseExpiresAt: null,
     completedReviewAt: null,
+    completedReviewCommentId: null,
     ...overrides,
   });
 }
@@ -39,8 +40,12 @@ test("waits for an active exact-head review", () => {
 });
 
 test("reuses a same-head review completed since the command", () => {
-  const result = decision({ completedReviewAt: "2026-07-17T14:10:00.000Z" });
+  const result = decision({
+    completedReviewAt: "2026-07-17T14:10:00.000Z",
+    completedReviewCommentId: 1234,
+  });
   assert.equal(result.action, "reuse_completed_review");
+  assert.equal(result.commentId, 1234);
   assert.match(result.reason, /result will be reused/);
 });
 
@@ -49,6 +54,7 @@ test("an active lease wins over a completed marker", () => {
     decision({
       activeLeaseExpiresAt: "2026-07-17T14:13:17.000Z",
       completedReviewAt: "2026-07-17T14:10:00.000Z",
+      completedReviewCommentId: 1234,
     }).action,
     "wait_for_active_review",
   );
