@@ -9,6 +9,7 @@ import {
   createCiRegressionFixture,
   createTargetFixture,
 } from "./target-fixtures.mjs";
+import { repairCommentRouterGroup, WorkflowScheduler } from "./workflow-scheduler.mjs";
 
 const helperRoot = path.dirname(fileURLToPath(import.meta.url));
 export const AUTOMERGE_E2E_SCENARIOS = [
@@ -17,6 +18,7 @@ export const AUTOMERGE_E2E_SCENARIOS = [
   "pending-checks",
   "planning-head-drift",
   "resume-intent-persistence",
+  "workflow-scheduler-convergence",
   "verdict-head-drift",
   "ci-regression-29623139111",
 ];
@@ -27,6 +29,7 @@ export function runAutomergeE2E({
   scenario = "happy-path",
   fixture = "tiny",
   expectedOutcome = "success",
+  targetPrNumber = 42,
   keep = false,
 } = {}) {
   if (!AUTOMERGE_E2E_SCENARIOS.includes(scenario)) {
@@ -37,6 +40,10 @@ export function runAutomergeE2E({
   }
   if (!["success", "setup-identity-failure"].includes(expectedOutcome)) {
     throw new Error(`unsupported expected outcome: ${expectedOutcome}`);
+  }
+  if (scenario === "workflow-scheduler-convergence") {
+    assert.equal(expectedOutcome, "success", "scheduler convergence supports only success");
+    return runWorkflowSchedulerConvergence({ candidateRoot, outputRoot, fixture, keep });
   }
   if (
     expectedOutcome !== "success" &&
@@ -66,11 +73,20 @@ export function runAutomergeE2E({
             fixture,
             dependencySetupMutation: scenario === "dependency-setup-mutation",
           });
+    if (targetPrNumber !== 42) {
+      execFileSync("/usr/bin/git", [
+        "--git-dir",
+        targetFixture.remote,
+        "update-ref",
+        `refs/pull/${targetPrNumber}/head`,
+        targetFixture.headSha,
+      ]);
+    }
     const statePath = path.join(root, "github-state.json");
     const binDir = createCommandBin(root);
     const realCorepack = execFileSync("which", ["corepack"], { encoding: "utf8" }).trim();
-    const jobPath = createJob(root, targetFixture.headSha);
-    writeJson(statePath, initialGitHubState(targetFixture));
+    const jobPath = createJob(root, targetFixture.headSha, targetPrNumber);
+    writeJson(statePath, initialGitHubState(targetFixture, targetPrNumber));
 
     const baseEnv = {
       ...process.env,
@@ -406,6 +422,66 @@ export function runAutomergeE2E({
   } finally {
     if (!keep) fs.rmSync(root, { recursive: true, force: true });
   }
+}
+
+function runWorkflowSchedulerConvergence({ candidateRoot, outputRoot, fixture, keep }) {
+  assertDeferredVerdictHandoffIsolation(candidateRoot);
+  const artifacts = path.resolve(outputRoot, fixture, "workflow-scheduler-convergence");
+  fs.rmSync(artifacts, { recursive: true, force: true });
+  fs.mkdirSync(artifacts, { recursive: true });
+  const scheduler = new WorkflowScheduler();
+  const repository = "openclaw/openclaw";
+  const dispatches = [
+    { id: "background-running", eventName: "schedule", itemNumbers: "" },
+    { id: "background-replaced", eventName: "workflow_dispatch", itemNumbers: "" },
+    { id: "background-survivor", eventName: "repository_dispatch", itemNumbers: "" },
+    { id: "verdict-104054", eventName: "workflow_dispatch", itemNumbers: "104054" },
+    { id: "verdict-108974", eventName: "workflow_dispatch", itemNumbers: "108974" },
+  ];
+  for (const dispatch of dispatches) {
+    scheduler.dispatch({
+      ...dispatch,
+      group: repairCommentRouterGroup({ repository, ...dispatch }),
+    });
+  }
+
+  const results = new Map();
+  while (true) {
+    const running = scheduler.active().flatMap((group) => (group.running ? [group.running] : []));
+    if (running.length === 0) break;
+    for (const runId of running) {
+      if (runId.startsWith("verdict-")) {
+        results.set(
+          runId,
+          runAutomergeE2E({
+            candidateRoot,
+            outputRoot: path.join(artifacts, runId),
+            scenario: "happy-path",
+            fixture,
+            keep,
+            targetPrNumber: Number(runId.slice("verdict-".length)),
+          }),
+        );
+      }
+      scheduler.complete(runId);
+    }
+  }
+
+  const records = scheduler.records();
+  assert.equal(records.find((run) => run.id === "background-replaced")?.status, "replaced");
+  for (const runId of ["verdict-104054", "verdict-108974"]) {
+    assert.equal(records.find((run) => run.id === runId)?.status, "executed");
+    assert.equal(results.get(runId)?.status, "passed");
+  }
+  writeJson(path.join(artifacts, "scheduler-trace.json"), { dispatches, records });
+  writeJson(path.join(artifacts, "summary.json"), {
+    status: "passed",
+    fixture,
+    scenario: "workflow-scheduler-convergence",
+    exact_verdicts: ["verdict-104054", "verdict-108974"],
+    background_interference: "one pending broad router replaced",
+  });
+  return { status: "passed", fixture, scenario: "workflow-scheduler-convergence", artifacts };
 }
 
 function assertDeferredVerdictHandoffIsolation(candidateRoot) {
@@ -769,6 +845,9 @@ function runSetupIdentityFailureScenario({
 }
 
 function runCommentRouter(runtimeRoot, baseEnv, artifacts, label) {
+  const statePath = baseEnv.CLAWSWEEPER_E2E_GITHUB_STATE;
+  assert.equal(typeof statePath, "string", "router requires the fake GitHub state path");
+  const itemNumber = JSON.parse(fs.readFileSync(statePath, "utf8")).pr.number;
   runCli(
     runtimeRoot,
     [
@@ -776,7 +855,7 @@ function runCommentRouter(runtimeRoot, baseEnv, artifacts, label) {
       "--repo",
       "openclaw/openclaw",
       "--item-number",
-      "42",
+      String(itemNumber),
       "--max-comments",
       "20",
       "--execute",
@@ -800,7 +879,7 @@ function updateGitHubState(statePath, update) {
   writeJson(statePath, state);
 }
 
-function initialGitHubState(fixture) {
+function initialGitHubState(fixture, targetPrNumber = 42) {
   const now = new Date().toISOString();
   return {
     repo: "openclaw/openclaw",
@@ -812,7 +891,7 @@ function initialGitHubState(fixture) {
     dispatches: [],
     calls: [],
     pr: {
-      number: 42,
+      number: targetPrNumber,
       state: "open",
       title: "fix: repair the deterministic fixture",
       body: "Exercise the ClawSweeper automerge repair flow.",
@@ -891,11 +970,11 @@ function assertIndexStatMutation({ child, marker }) {
   }
 }
 
-function createJob(root, headSha) {
+function createJob(root, headSha, targetPrNumber = 42) {
   const jobPath = path.join(root, "automerge-job.md");
   fs.writeFileSync(
     jobPath,
-    `---\nrepo: openclaw/openclaw\ncluster_id: automerge-openclaw-openclaw-42\nmode: autonomous\njob_intent: pr_repair\nallowed_actions: [comment, label, fix, raise_pr]\nblocked_actions: [merge, close]\nrequire_human_for: [merge]\ncanonical: [#42]\ncandidates: [#42]\ncluster_refs: [#42]\nallow_fix_pr: true\nallow_merge: false\nallow_post_merge_close: false\nrequire_fix_before_close: true\nsecurity_policy: central_security_only\nsecurity_sensitive: false\ntarget_branch: clawsweeper/automerge-openclaw-openclaw-42\nsource: pr_automerge\nrepair_mode: automerge\nexpected_head_sha: ${headSha}\n---\n\nRepair the opted-in pull request and preserve contributor credit.\n`,
+    `---\nrepo: openclaw/openclaw\ncluster_id: automerge-openclaw-openclaw-${targetPrNumber}\nmode: autonomous\njob_intent: pr_repair\nallowed_actions: [comment, label, fix, raise_pr]\nblocked_actions: [merge, close]\nrequire_human_for: [merge]\ncanonical: [#${targetPrNumber}]\ncandidates: [#${targetPrNumber}]\ncluster_refs: [#${targetPrNumber}]\nallow_fix_pr: true\nallow_merge: false\nallow_post_merge_close: false\nrequire_fix_before_close: true\nsecurity_policy: central_security_only\nsecurity_sensitive: false\ntarget_branch: clawsweeper/automerge-openclaw-openclaw-${targetPrNumber}\nsource: pr_automerge\nrepair_mode: automerge\nexpected_head_sha: ${headSha}\n---\n\nRepair the opted-in pull request and preserve contributor credit.\n`,
   );
   return jobPath;
 }

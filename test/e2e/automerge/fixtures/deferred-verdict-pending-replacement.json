@@ -1,0 +1,29 @@
+{
+  "name": "production deferred verdict pending replacement",
+  "events": [
+    {
+      "action": "dispatch",
+      "run": { "id": "background-router", "kind": "background", "repository": "openclaw/openclaw" }
+    },
+    {
+      "action": "dispatch",
+      "run": {
+        "id": "verdict-104054",
+        "kind": "exact-verdict",
+        "repository": "openclaw/openclaw",
+        "item": 104054
+      }
+    },
+    {
+      "action": "dispatch",
+      "run": {
+        "id": "verdict-108974",
+        "kind": "exact-verdict",
+        "repository": "openclaw/openclaw",
+        "item": 108974
+      }
+    },
+    { "action": "complete", "runId": "background-router" },
+    { "action": "complete", "runId": "verdict-108974" }
+  ]
+}
