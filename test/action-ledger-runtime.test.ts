@@ -3258,15 +3258,18 @@ test("cleanup-stuck projection rejection is scoped to the affected spool root", 
     CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "30000",
   });
   const cleanupResolvers: Array<() => void> = [];
+  let releaseCleanups = false;
   const blockedFetch = (async () =>
     ({
       ok: true,
       status: 204,
       body: {
         cancel: () =>
-          new Promise<void>((resolve) => {
-            cleanupResolvers.push(resolve);
-          }),
+          releaseCleanups
+            ? Promise.resolve()
+            : new Promise<void>((resolve) => {
+                cleanupResolvers.push(resolve);
+              }),
       },
     }) as unknown as Response) as typeof fetch;
   for (let index = 0; index < CRABFLEET_PROJECTION_LIMITS.maxConcurrent + 1; index += 1) {
@@ -3301,7 +3304,9 @@ test("cleanup-stuck projection rejection is scoped to the affected spool root", 
     }
   } finally {
     // Release held slots even on failure so later tests do not inherit a starved pool.
-    for (const resolve of cleanupResolvers) resolve();
+    // The flag makes any cleanup registered after this point resolve immediately.
+    releaseCleanups = true;
+    while (cleanupResolvers.length > 0) cleanupResolvers.shift()!();
     await flushPendingCrabFleetPosts();
   }
   assert.equal(independentStarted, 1);
