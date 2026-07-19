@@ -3254,7 +3254,8 @@ test("cleanup-stuck projection rejection is scoped to the affected spool root", 
   const independentEnv = workflowEnv({
     CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "agent-token",
     CLAWSWEEPER_CRABFLEET_SESSION_ID: "session-1",
-    CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "1000",
+    // Also bounds queue wait; must outlast the polling below on a loaded host.
+    CLAWSWEEPER_CRABFLEET_TIMEOUT_MS: "30000",
   });
   const cleanupResolvers: Array<() => void> = [];
   const blockedFetch = (async () =>
@@ -3279,26 +3280,30 @@ test("cleanup-stuck projection rejection is scoped to the affected spool root", 
     }) as typeof fetch),
   );
 
-  const blockedDeadline = Date.now() + 500;
-  while (cleanupResolvers.length < CRABFLEET_PROJECTION_LIMITS.maxConcurrent) {
-    if (Date.now() >= blockedDeadline) {
-      throw new Error("blocked root did not enter response cleanup");
+  try {
+    const blockedDeadline = Date.now() + 5000;
+    while (cleanupResolvers.length < CRABFLEET_PROJECTION_LIMITS.maxConcurrent) {
+      if (Date.now() >= blockedDeadline) {
+        throw new Error("blocked root did not enter response cleanup");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
     }
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(independentStarted, 0);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(independentStarted, 0);
 
-  cleanupResolvers.shift()!();
-  const independentDeadline = Date.now() + 500;
-  while (independentStarted === 0) {
-    if (Date.now() >= independentDeadline) {
-      throw new Error("independent root did not start after a projection slot recovered");
+    cleanupResolvers.shift()!();
+    const independentDeadline = Date.now() + 5000;
+    while (independentStarted === 0) {
+      if (Date.now() >= independentDeadline) {
+        throw new Error("independent root did not start after a projection slot recovered");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
     }
-    await new Promise((resolve) => setTimeout(resolve, 5));
+  } finally {
+    // Release held slots even on failure so later tests do not inherit a starved pool.
+    for (const resolve of cleanupResolvers) resolve();
+    await flushPendingCrabFleetPosts();
   }
-  for (const resolve of cleanupResolvers) resolve();
-  await flushPendingCrabFleetPosts();
   assert.equal(independentStarted, 1);
 });
 
