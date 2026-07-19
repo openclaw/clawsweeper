@@ -126,6 +126,23 @@ if (args[0] === "label" && args[1] === "create") {
   respondText("");
 }
 
+if (args[0] === "workflow" && args[1] === "run") {
+  assertMutationToken();
+  const workflow = args[2];
+  const repo = optionValue("--repo");
+  const inputs = Object.fromEntries(optionValues("-f").map((entry) => entry.split(/=(.*)/s, 2)));
+  if (workflow !== "repair-cluster-worker.yml" || repo !== "openclaw/clawsweeper") {
+    fail(`unsupported workflow dispatch: ${args.join(" ")}`);
+  }
+  const expectedJob = `jobs/openclaw/inbox/automerge-openclaw-openclaw-${state.pr.number}.md`;
+  if (inputs.job !== expectedJob || inputs.mode !== "autonomous") {
+    fail(`invalid repair workflow dispatch: ${args.join(" ")}`);
+  }
+  state.workflowDispatches.push({ workflow, repo, inputs });
+  saveState();
+  respondText("");
+}
+
 if (args[0] === "api") handleApi();
 
 fail(`unexpected gh args: ${args.join(" ")}`);
@@ -420,6 +437,14 @@ function optionValue(name) {
   if (direct >= 0) return args[direct + 1] ?? "";
   const assignment = args.find((arg) => arg.startsWith(`${name}=`));
   return assignment ? assignment.slice(name.length + 1) : "";
+}
+
+function optionValues(name) {
+  const values = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === name) values.push(args[index + 1] ?? "");
+  }
+  return values;
 }
 
 function apiEndpoint() {

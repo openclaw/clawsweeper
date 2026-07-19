@@ -279,8 +279,30 @@ export function runAutomergeE2E({
       runCommentRouterExact(runtimeRoot, baseEnv, artifacts, "08-comment-router-approve", {
         commentId: approvalId,
       });
+      const behindReport = readRouterReport(runtimeRoot);
+      const behindCommand = behindReport.commands.find(
+        (command) => command.intent === "maintainer_approve_automerge",
+      );
+      const behindMerge = behindCommand?.actions.find((action) => action.action === "merge");
+      assert.equal(behindMerge?.status, "repair_needed");
+      assert.match(String(behindMerge?.repair_reason ?? ""), /cloud rebase repair/);
       assert.equal(
-        JSON.parse(fs.readFileSync(statePath, "utf8")).pr.mergedAt,
+        behindCommand?.actions.find((action) => action.action === "dispatch_repair")?.status,
+        "executed",
+      );
+      const behindState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      const repairDispatch = behindState.workflowDispatches.at(-1);
+      assert.equal(
+        repairDispatch?.inputs.job,
+        "jobs/openclaw/inbox/automerge-openclaw-openclaw-42.md",
+        "a protected behind rejection must dispatch the existing cloud rebase repair lane",
+      );
+      assert.equal(repairDispatch?.inputs.mode, "autonomous");
+      assert.equal(repairDispatch?.inputs.runner, "blacksmith-4vcpu-ubuntu-2404");
+      assert.equal(repairDispatch?.inputs.execution_runner, "blacksmith-16vcpu-ubuntu-2404");
+      assert.equal(repairDispatch?.inputs.model, "e2e-codex");
+      assert.equal(
+        behindState.pr.mergedAt,
         null,
         "a behind branch must remain open after the first exact-head approval",
       );
@@ -1060,6 +1082,7 @@ function initialGitHubState(fixture, targetPrNumber = 42) {
     nextCommentId: 100,
     comments: [],
     dispatches: [],
+    workflowDispatches: [],
     calls: [],
     pr: {
       number: targetPrNumber,
