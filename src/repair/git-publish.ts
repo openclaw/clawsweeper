@@ -35,6 +35,7 @@ export type GitRunResult = {
   status: number;
   stdout: string;
   stderr: string;
+  timedOut: boolean;
 };
 
 export type GitPublishOptions = {
@@ -56,6 +57,7 @@ export type GitRunOptions = {
   input?: string;
   maxBuffer?: number;
   quiet?: boolean;
+  timeout?: number;
 };
 
 export type PublishResult = "committed" | "unchanged";
@@ -73,6 +75,7 @@ const GIT_OBJECT_BATCH_SIZE = 512;
 const GIT_OBJECT_BATCH_MAX_BUFFER = 64 * 1024 * 1024;
 const GIT_TREE_LIST_MAX_BUFFER = 64 * 1024 * 1024;
 const RECONCILIATION_TUPLE_CHUNK_SIZE = 128;
+const PUBLISH_FETCH_TIMEOUT_MS = 60_000;
 const SKIP_CI_DIRECTIVE_PATTERN =
   /\[(?:skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks:\s*true$/im;
 
@@ -109,6 +112,9 @@ export function setTokenOrigin(token: string, repository: string): void {
 
 export function runGit(args: readonly string[], options: GitRunOptions = {}): string {
   const result = spawnGit(args, options);
+  if (result.timedOut) {
+    throw new GitCommandTimeoutError(args, options.timeout ?? 0);
+  }
   if (result.status !== 0 && !options.allowFailure) {
     const detail =
       result.stderr ||
@@ -128,6 +134,7 @@ export function spawnGit(args: readonly string[], options: GitRunOptions = {}): 
     encoding: "utf8",
     input: options.input,
     maxBuffer: options.maxBuffer ?? 16 * 1024 * 1024,
+    timeout: options.timeout,
   });
   if (!options.quiet && child.stdout) process.stdout.write(child.stdout);
   if (!options.quiet && child.stderr) process.stderr.write(child.stderr);
@@ -135,7 +142,15 @@ export function spawnGit(args: readonly string[], options: GitRunOptions = {}): 
     status: child.status ?? 1,
     stdout: child.stdout ?? "",
     stderr: child.stderr ?? "",
+    timedOut: (child.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT",
   };
+}
+
+export class GitCommandTimeoutError extends Error {
+  constructor(args: readonly string[], timeoutMs: number) {
+    super(`git ${safeGitDisplayAction(args[0])} timed out after ${timeoutMs}ms`);
+    this.name = "GitCommandTimeoutError";
+  }
 }
 
 function recordGitProcess(action: string | undefined): void {
@@ -556,7 +571,7 @@ function mergeImmutableActionLedgerOnGitHub(options: {
         options.repository,
         options.token,
       );
-      runGit(["fetch", options.remote, options.branch]);
+      fetchPublishRemote(options.remote, options.branch);
       const remoteCommit = runGit(["rev-parse", `${options.remote}/${options.branch}`], {
         quiet: true,
       }).trim();
@@ -602,6 +617,7 @@ function spawnGitHubApi(args: readonly string[], repository: string, token: stri
     status: child.status ?? 1,
     stdout: child.stdout ?? "",
     stderr: child.stderr ?? "",
+    timedOut: false,
   };
 }
 
@@ -716,7 +732,7 @@ function prepareReconciliationStateRoot(
     return;
   }
   gitPublishPhase("prepare");
-  runGit(["fetch", remote, branch]);
+  fetchPublishRemote(remote, branch);
   const remoteRef = `${remote}/${branch}`;
   if (spawnGit(["merge-base", "--is-ancestor", "HEAD", remoteRef], { quiet: true }).status === 0) {
     return;
@@ -752,7 +768,7 @@ function publishReconciliationChunks(options: {
   let committed = false;
   for (const [index, tupleKeys] of chunks.entries()) {
     gitPublishPhase("checkpoint", `chunk=${index + 1}/${chunks.length} tuples=${tupleKeys.length}`);
-    runGit(["fetch", options.remote, options.branch]);
+    fetchPublishRemote(options.remote, options.branch);
     const remoteRef = `${options.remote}/${options.branch}`;
     const remoteCommit = runGit(["rev-parse", remoteRef], { quiet: true }).trim();
     const allowedTupleKeys = new Set(tupleKeys);
@@ -1213,7 +1229,7 @@ export function pushCommit(options: {
     console.log(`Push attempt ${pushAttempt} lost the ${branch} race; rebasing`);
     const localCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
     const localCommitMessage = runGit(["log", "-1", "--format=%B"], { quiet: true });
-    runGit(["fetch", remote, branch], { allowFailure: true });
+    fetchPublishRemote(remote, branch, { allowFailure: true });
     if (rebaseStrategy === "reconcile-records") {
       const remoteRef = `${remote}/${branch}`;
       const overlaps = reconciliationChangesOverlap(
@@ -1689,7 +1705,7 @@ function rebuildPublishCommit(options: {
   sourceCommit: string;
 }): PublishResult {
   console.log(`Rebuilding publish commit on ${options.remote}/${options.branch}`);
-  runGit(["fetch", options.remote, options.branch]);
+  fetchPublishRemote(options.remote, options.branch);
   const remoteCommit = runGit(["rev-parse", `${options.remote}/${options.branch}`], {
     quiet: true,
   }).trim();
@@ -1742,7 +1758,7 @@ function rebuildImmutableActionLedgerCommit(options: {
   paths: readonly string[];
   sourceCommit: string;
 }): { result: PublishResult; commit: string } {
-  runGit(["fetch", options.remote, options.branch]);
+  fetchPublishRemote(options.remote, options.branch);
   const remoteCommit = runGit(["rev-parse", `${options.remote}/${options.branch}`], {
     quiet: true,
   }).trim();
@@ -1912,8 +1928,12 @@ function commitHasPath(commit: string, path: string): boolean {
 }
 
 export function hardResetToRemoteMain(remote = "origin", branch = publishDefaultBranch()): void {
-  runGit(["fetch", remote, branch]);
+  fetchPublishRemote(remote, branch);
   runGit(["reset", "--hard", `${remote}/${branch}`]);
+}
+
+function fetchPublishRemote(remote: string, branch: string, options: GitRunOptions = {}): string {
+  return runGit(["fetch", remote, branch], { ...options, timeout: PUBLISH_FETCH_TIMEOUT_MS });
 }
 
 export function uniqueNonEmpty(values: readonly string[]): string[] {

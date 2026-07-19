@@ -24,6 +24,7 @@ import {
   captureStatePublishBaseline,
   commitMessageForPublishedPaths,
   configureGitUser,
+  GitCommandTimeoutError,
   hardResetToRemoteMain,
   hasStagedChanges,
   publishRoot,
@@ -92,13 +93,20 @@ const options = eventOptionsFromEnv();
 try {
   await publishEventResult(options);
 } catch (error) {
-  const reasonCode =
-    error instanceof PublicationResultError
+  const retryableTimeout = error instanceof GitCommandTimeoutError;
+  const reasonCode = retryableTimeout
+    ? "github_transient"
+    : error instanceof PublicationResultError
       ? error.reasonCode
       : error instanceof RecordTupleError
         ? "tuple_protocol_invalid"
         : "unknown_failure";
-  writePublicationCompletionOutputs("permanent_failure", reasonCode, errorFingerprint(error));
+  writePublicationCompletionOutputs(
+    retryableTimeout ? "retryable_failure" : "permanent_failure",
+    reasonCode,
+    errorFingerprint(error),
+    retryableTimeout ? "github_transient" : undefined,
+  );
   throw error;
 }
 
@@ -491,6 +499,7 @@ function publishSnapshot({
     return complete(true);
   } catch (error) {
     if (
+      error instanceof GitCommandTimeoutError ||
       error instanceof RecordTupleError ||
       error instanceof GuardedOpenPublishRaceError ||
       error instanceof RoutableSyncPublishRaceError ||
@@ -621,16 +630,18 @@ function writeLegacyRefreshRequiredOutputs(): void {
 }
 
 function writePublicationCompletionOutputs(
-  completionKind: "superseded" | "deferred" | "permanent_failure",
+  completionKind: "superseded" | "deferred" | "retryable_failure" | "permanent_failure",
   reasonCode:
     | "remote_newer_tuple"
     | "remote_closed"
     | "close_coverage_deferred"
+    | "github_transient"
     | "missing_record_tuple"
     | "tuple_protocol_invalid"
     | "policy_invariant"
     | "unknown_failure",
   fingerprint?: string,
+  failureKind?: "github_transient",
 ): void {
   const outputPath = process.env.GITHUB_OUTPUT;
   if (!outputPath) return;
@@ -639,6 +650,7 @@ function writePublicationCompletionOutputs(
     [
       `completion_kind=${completionKind}`,
       `reason_code=${reasonCode}`,
+      ...(failureKind ? [`failure_kind=${failureKind}`] : []),
       ...(fingerprint ? [`error_fingerprint=${fingerprint}`] : []),
       "",
     ].join("\n"),

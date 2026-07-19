@@ -603,6 +603,9 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(reviewSource, /CLAWSWEEPER_BOT_AUTHORS\.has/);
   const completeStart = publisherSource.indexOf("const complete =");
   assert.ok(publisherSource.indexOf("hardResetToRemoteMain();", completeStart) > completeStart);
+  assert.match(publisherSource, /GitCommandTimeoutError/);
+  assert.match(publisherSource, /retryable_failure/);
+  assert.match(publisherSource, /error instanceof GitCommandTimeoutError/);
   assert.ok(
     publisherSource.indexOf("eventSnapshotMatchesCurrent(paths)", completeStart) > completeStart,
   );

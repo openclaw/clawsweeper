@@ -9,10 +9,12 @@ import test from "node:test";
 import {
   captureStatePublishBaseline,
   commitMessageForPublishedPaths,
+  GitCommandTimeoutError,
   hardResetToRemoteMain,
   publishMainCommit,
   refreshSourceAfterStatePublish,
   setTokenOrigin,
+  spawnGit,
   stagePaths,
   uniqueNonEmpty,
 } from "../../dist/repair/git-publish.js";
@@ -31,6 +33,36 @@ test("uniqueNonEmpty trims, drops blanks, and deduplicates paths", () => {
     "jobs",
     "results",
   ]);
+});
+
+test("spawnGit reports an elapsed command timeout", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-git-timeout-"));
+  run("git", ["init"], root);
+  const result = withEnv(
+    {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "alias.wait",
+      GIT_CONFIG_VALUE_0: '!node -e "setTimeout(() => {}, 5000)"',
+    },
+    () => withCwd(root, () => spawnGit(["wait"], { quiet: true, timeout: 25 })),
+  );
+
+  assert.equal(result.timedOut, true);
+  assert.equal(
+    new GitCommandTimeoutError(["fetch"], 60_000).message,
+    "git fetch timed out after 60000ms",
+  );
+});
+
+test("publisher fetches share the bounded fetch helper", () => {
+  const source = fs.readFileSync(path.resolve("src/repair/git-publish.ts"), "utf8");
+
+  assert.match(source, /const PUBLISH_FETCH_TIMEOUT_MS = 60_000/);
+  assert.match(
+    source,
+    /function fetchPublishRemote\([\s\S]*runGit\(\["fetch", remote, branch\], \{ \.\.\.options, timeout: PUBLISH_FETCH_TIMEOUT_MS \}\)/,
+  );
+  assert.equal(source.match(/runGit\(\["fetch"/g)?.length, 1);
 });
 
 test("commitMessageForPublishedPaths skips CI for generated-only publishes", () => {

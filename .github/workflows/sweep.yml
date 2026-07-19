@@ -1993,6 +1993,9 @@ jobs:
           elif [ "$outcome" != "success" ] && [ "$PUBLISH_COMPLETION_KIND" = "permanent_failure" ]; then
             completion_kind=permanent_failure
             reason_code="${PUBLISH_REASON_CODE:-unknown_failure}"
+          elif [ "$outcome" != "success" ] && [ "$PUBLISH_COMPLETION_KIND" = "retryable_failure" ]; then
+            completion_kind=retryable_failure
+            reason_code="${PUBLISH_REASON_CODE:-unknown_failure}"
           fi
           echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
           echo "completion_kind=$completion_kind" >> "$GITHUB_OUTPUT"
