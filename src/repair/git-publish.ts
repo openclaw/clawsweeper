@@ -29,6 +29,7 @@ import {
 } from "./record-tuple.js";
 import { mergeSweepStatusJson } from "./sweep-status-merge.js";
 import { mergeCommentRouterLedgers } from "./comment-router-ledger-merge.js";
+import { isActionEventPublishPath } from "../action-ledger-paths.js";
 
 export type GitRunResult = {
   status: number;
@@ -1448,16 +1449,24 @@ function rebuildPublishCommit(options: {
   });
   runGit(["reset", "--hard", remoteCommit]);
 
-  for (const path of uniqueNonEmpty(options.paths)) {
-    const preserved = preserveStateOnlyCommitFiles({ path, sourceCommit: options.sourceCommit });
-    try {
-      runGit(["rm", "-r", "--ignore-unmatch", "--", path], { allowFailure: true });
-      if (commitHasPath(options.sourceCommit, path)) {
-        runGit(["checkout", options.sourceCommit, "--", path]);
+  const publishPaths = uniqueNonEmpty(options.paths);
+  if (publishPaths.every(isActionEventPublishPath)) {
+    // Action-ledger imports are create-only and already validate every exact path.
+    // Restore them as one batch so state-branch contention cannot multiply Git
+    // startup and pack-index costs by the number of imported binding files.
+    applyPathsFromCommit(publishPaths, options.sourceCommit);
+  } else {
+    for (const path of publishPaths) {
+      const preserved = preserveStateOnlyCommitFiles({ path, sourceCommit: options.sourceCommit });
+      try {
+        runGit(["rm", "-r", "--ignore-unmatch", "--", path], { allowFailure: true });
+        if (commitHasPath(options.sourceCommit, path)) {
+          runGit(["checkout", options.sourceCommit, "--", path]);
+        }
+        restorePreservedFiles(preserved, resolve(path));
+      } finally {
+        rmSync(preserved.root, { force: true, recursive: true });
       }
-      restorePreservedFiles(preserved, resolve(path));
-    } finally {
-      rmSync(preserved.root, { force: true, recursive: true });
     }
   }
 
@@ -1471,6 +1480,20 @@ function rebuildPublishCommit(options: {
 
   runGit(["commit", "-m", options.message]);
   return "committed";
+}
+
+function applyPathsFromCommit(paths: readonly string[], commit: string): void {
+  for (const batch of chunked(paths, GIT_PATHSPEC_BATCH_SIZE)) {
+    runGit(["rm", "-r", "--ignore-unmatch", "--", ...batch], {
+      allowFailure: true,
+      quiet: true,
+    });
+  }
+  const existing = gitObjectExistence(paths.map((path) => ({ commit, path })));
+  const checkoutPaths = paths.filter((path) => existing.has(gitObjectSpec(commit, path)));
+  for (const batch of chunked(checkoutPaths, GIT_PATHSPEC_BATCH_SIZE)) {
+    runGit(["checkout", commit, "--", ...batch]);
+  }
 }
 
 function commitHasPath(commit: string, path: string): boolean {

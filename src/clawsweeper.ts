@@ -215,6 +215,7 @@ import {
   recordWorkflowPhaseEvent,
   workflowActionProducer,
 } from "./action-ledger-runtime.js";
+import { isActionEventPublishPath } from "./action-ledger-paths.js";
 import { publishMainCommit } from "./repair/git-publish.js";
 
 export {
@@ -32016,8 +32017,6 @@ function publishActionEventsCommand(args: Args): void {
   console.log(JSON.stringify(result, null, 2));
 }
 
-const ACTION_EVENT_PUBLISH_PATH_PATTERN =
-  /^ledger\/v1\/(?:events\/\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl|import-bindings\/(?:producer-runs|events|shard-sets|completed-shard-sets)\/[a-f0-9]{64}\.json)$/;
 const ACTION_EVENT_PUBLISH_PATH_FILE_MAX_BYTES = ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS * 512;
 
 export function actionEventPublishPathsForTest(content: string): string[] {
@@ -32035,7 +32034,7 @@ export function actionEventPublishPathsForTest(content: string): string[] {
   }
   let previous = "";
   for (const path of paths) {
-    if (!ACTION_EVENT_PUBLISH_PATH_PATTERN.test(path)) {
+    if (!isActionEventPublishPath(path)) {
       throw new Error(`invalid action event publish path: ${path}`);
     }
     if (previous && path <= previous) {
