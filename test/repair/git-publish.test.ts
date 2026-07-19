@@ -13,6 +13,7 @@ import {
   hardResetToRemoteMain,
   publishMainCommit,
   refreshSourceAfterStatePublish,
+  runGit,
   setTokenOrigin,
   spawnGit,
   stagePaths,
@@ -35,23 +36,62 @@ test("uniqueNonEmpty trims, drops blanks, and deduplicates paths", () => {
   ]);
 });
 
-test("spawnGit reports an elapsed command timeout", () => {
+test("runGit reports a stalled fetch transport timeout", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-git-timeout-"));
   run("git", ["init"], root);
-  const result = withEnv(
-    {
-      GIT_CONFIG_COUNT: "1",
-      GIT_CONFIG_KEY_0: "alias.wait",
-      GIT_CONFIG_VALUE_0: '!node -e "setTimeout(() => {}, 5000)"',
-    },
-    () => withCwd(root, () => spawnGit(["wait"], { quiet: true, timeout: 25 })),
+  // The ext transport stalls during fetch protocol negotiation without depending on
+  // GitHub or wall-clock races, matching the production failure before any tuple work.
+  const stalledFetch = ["fetch", "ext::node -e setTimeout(()=>{},5000)", "main"];
+  const result = withEnv({ GIT_ALLOW_PROTOCOL: "ext" }, () =>
+    withCwd(root, () => spawnGit(stalledFetch, { quiet: true, timeout: 100 })),
   );
 
   assert.equal(result.timedOut, true);
+  assert.throws(
+    () =>
+      withEnv({ GIT_ALLOW_PROTOCOL: "ext" }, () =>
+        withCwd(root, () =>
+          runGit(stalledFetch, { allowFailure: true, quiet: true, timeout: 100 }),
+        ),
+      ),
+    GitCommandTimeoutError,
+  );
   assert.equal(
     new GitCommandTimeoutError(["fetch"], 60_000).message,
     "git fetch timed out after 60000ms",
   );
+});
+
+test("publisher reset applies the production fetch timeout before touching state", () => {
+  const script = String.raw`
+    import childProcess from "node:child_process";
+    import { syncBuiltinESMExports } from "node:module";
+
+    const calls = [];
+    childProcess.spawnSync = (command, args, options) => {
+      calls.push({ command, args, timeout: options.timeout ?? null });
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    syncBuiltinESMExports();
+    console.log = () => {};
+
+    const { hardResetToRemoteMain } = await import("./dist/repair/git-publish.js");
+    hardResetToRemoteMain("origin", "state");
+    process.stdout.write(JSON.stringify(calls));
+  `;
+
+  assert.deepEqual(JSON.parse(run("node", ["--input-type=module", "-e", script], process.cwd())), [
+    {
+      command: "git",
+      args: ["fetch", "origin", "state"],
+      timeout: 60_000,
+    },
+    {
+      command: "git",
+      args: ["reset", "--hard", "origin/state"],
+      timeout: null,
+    },
+  ]);
 });
 
 test("publisher fetches share the bounded fetch helper", () => {
