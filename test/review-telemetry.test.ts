@@ -39,6 +39,29 @@ test("review telemetry contract accepts optional generation and operation identi
   );
 });
 
+test("review telemetry v2 accepts trigger attribution and terminal reasons without requiring them from v1", () => {
+  const completed = telemetry({
+    status: "completed",
+    outcome: "superseded",
+    lease_expires_at: null,
+    trigger_lane: "exact_event",
+    trigger_origin: "command",
+    source_event: "issue_comment",
+    source_action: "rereview",
+    terminal_reason: "generation_superseded",
+    terminal_at: "2026-07-19T11:59:00.000Z",
+  });
+  assert.deepEqual(normalizeReviewTelemetry(completed, NOW), completed);
+  assert.equal(
+    normalizeReviewTelemetry({ ...completed, trigger_lane: "router_workflow" }, NOW),
+    null,
+  );
+  assert.equal(
+    normalizeReviewTelemetry({ ...completed, status: "refreshing", outcome: null }, NOW),
+    null,
+  );
+});
+
 test("review telemetry rejects identifiers outside SQLite's reliable integer range", () => {
   assert.equal(normalizeReviewTelemetry(telemetry({ item_number: 1e20 }), NOW), null);
   assert.equal(normalizeReviewTelemetry(telemetry({ run_attempt: 1e20 }), NOW), null);

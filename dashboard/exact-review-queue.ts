@@ -11,6 +11,14 @@ import {
   type ReviewTelemetryHealth,
   normalizeReviewTelemetry,
 } from "./review-telemetry.ts";
+import {
+  REVIEW_OBSERVABILITY_RANGES,
+  summarizeReviewObservability,
+} from "./review-observability.ts";
+import {
+  type DurableReviewRunTelemetry,
+  normalizeReviewRunTelemetry,
+} from "./review-run-telemetry.ts";
 
 type GithubAppJsonOptions = { method?: string; body?: BodyInit; errorLabel?: string };
 const GITHUB_TIMEOUT_MS = 4500;
@@ -272,6 +280,8 @@ const EXACT_REVIEW_QUEUE_METRICS_TABLE = "exact_review_queue_metrics";
 const EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE = "exact_review_queue_metric_buckets";
 const EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE = "exact_review_queue_dead_letters";
 const EXACT_REVIEW_REVIEW_TELEMETRY_TABLE = "exact_review_review_telemetry";
+const EXACT_REVIEW_RUN_TELEMETRY_TABLE = "exact_review_run_telemetry";
+const REVIEW_OBSERVABILITY_SCAN_LIMIT = 10_000;
 const EXACT_REVIEW_QUEUE_DEAD_LETTER_LIMIT = 5_000;
 const EXACT_REVIEW_QUEUE_DEAD_LETTER_RESOLVED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const EXACT_REVIEW_QUEUE_METRIC_BUCKET_MS = 5 * 60 * 1000;
@@ -860,8 +870,16 @@ export class ExactReviewQueue {
       return this.recordReviewTelemetry(await request.json().catch(() => null));
     }
 
+    if (request.method === "POST" && url.pathname === "/review-run-telemetry") {
+      return this.recordReviewRunTelemetry(await request.json().catch(() => null));
+    }
+
     if (request.method === "GET" && url.pathname === "/review-telemetry") {
       return this.listReviewTelemetry(url.searchParams);
+    }
+
+    if (request.method === "GET" && url.pathname === "/review-observability") {
+      return this.reviewObservability(url.searchParams);
     }
 
     if (request.method === "GET" && url.pathname === "/item-status") {
@@ -974,6 +992,7 @@ export class ExactReviewQueue {
         this.pruneDeliveryReceiptsSync(now);
         this.pruneQueueTelemetrySync(now);
         this.pruneReviewTelemetrySync(now);
+        this.reconcileStoredReviewRunsSync(now);
         const current = this.readStateSync();
         // Dashboard reads are also the operational heartbeat. Reclaim leases and
         // restore the alarm here so a deploy or lost alarm cannot strand backlog.
@@ -992,10 +1011,22 @@ export class ExactReviewQueue {
           publicationFlow: this.publicationFlowSummarySync(now),
           deadLetters: this.deadLetterStatsSync(),
           reviewTelemetryHealth: this.reviewTelemetryHealthSync(now),
+          reviewExecutionHealth: this.reviewObservabilitySync({
+            range: "24h",
+            repo: null,
+            now,
+          }),
         };
       });
-      const { state, metrics, reviewFlow, publicationFlow, deadLetters, reviewTelemetryHealth } =
-        snapshot;
+      const {
+        state,
+        metrics,
+        reviewFlow,
+        publicationFlow,
+        deadLetters,
+        reviewTelemetryHealth,
+        reviewExecutionHealth,
+      } = snapshot;
       const publicationControl = this.refreshPublicationControlSync(state, now);
       await this.scheduleNext(state, now);
       const stats = exactReviewQueueStats(
@@ -1047,6 +1078,7 @@ export class ExactReviewQueue {
         },
         delivery_receipts: this.deliveryReceiptCountSync(),
         review_telemetry_health: reviewTelemetryHealth,
+        review_execution_health: reviewExecutionHealth,
         storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
         legacy_rollback_available:
           !this.legacyMirrorDisabled &&
@@ -1064,6 +1096,7 @@ export class ExactReviewQueue {
     await this.storage.deleteAlarm();
     this.storage.transactionSync(() => {
       this.pruneDeliveryReceiptsSync(startedAt);
+      this.reconcileStoredReviewRunsSync(startedAt);
       this.syncLegacyCompatibilitySync(this.readStateSync());
     });
     const snapshot = this.readStateSync();
@@ -1564,24 +1597,37 @@ export class ExactReviewQueue {
     });
   }
 
-  private recordReviewTelemetry(value: unknown) {
+  private async recordReviewTelemetry(value: unknown) {
     const record = normalizeReviewTelemetry(value);
     if (!record) return json({ error: "invalid_review_telemetry" }, 400);
+    const now = Date.now();
     const updatedAt = Date.parse(record.updated_at);
     this.storage.transactionSync(() => {
-      this.pruneReviewTelemetrySync(Date.now());
+      this.pruneReviewTelemetrySync(now);
       // Terminal truth is first-writer immutable. Retries may replay the same
       // payload, but neither a heartbeat nor a conflicting terminal delivery
       // may make durable observations depend on arrival order.
       this.storage.sql.exec(
         `INSERT INTO ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}
-           (repo, item_number, run_id, run_attempt, status, updated_at, lease_expires_at,
-            record_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           (repo, item_number, run_id, run_attempt, status, outcome, trigger_lane,
+            trigger_origin, terminal_at, updated_at, lease_expires_at, generation,
+            operation_id, queue_ms, claim_ms, review_ms, publication_ms, total_ms, record_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(repo, item_number, run_id, run_attempt) DO UPDATE SET
            status = excluded.status,
+           outcome = excluded.outcome,
+           trigger_lane = excluded.trigger_lane,
+           trigger_origin = excluded.trigger_origin,
+           terminal_at = excluded.terminal_at,
            updated_at = excluded.updated_at,
            lease_expires_at = excluded.lease_expires_at,
+           generation = excluded.generation,
+           operation_id = excluded.operation_id,
+           queue_ms = excluded.queue_ms,
+           claim_ms = excluded.claim_ms,
+           review_ms = excluded.review_ms,
+           publication_ms = excluded.publication_ms,
+           total_ms = excluded.total_ms,
            record_json = excluded.record_json
          WHERE ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}.status != 'completed'
            AND (excluded.status = 'completed'
@@ -1591,12 +1637,166 @@ export class ExactReviewQueue {
         record.run_id,
         record.run_attempt,
         record.status,
+        record.outcome,
+        record.trigger_lane ?? null,
+        record.trigger_origin ?? null,
+        record.terminal_at ? Date.parse(record.terminal_at) : null,
         updatedAt,
         record.lease_expires_at === null ? null : Date.parse(record.lease_expires_at),
+        record.generation ?? null,
+        record.operation_id ?? null,
+        record.phase_durations_ms.queue ?? null,
+        record.phase_durations_ms.claim ?? null,
+        record.phase_durations_ms.review ?? null,
+        record.phase_durations_ms.publication ?? null,
+        record.phase_durations_ms.total ?? null,
         JSON.stringify(record),
       );
+      // workflow_run can arrive before a delayed producer write. Re-check the
+      // durable terminal evidence here so delivery order cannot strand a row.
+      this.reconcileStoredReviewRunsSync(now);
     });
+    await this.scheduleNext(this.readStateSync(), now);
     return json({ ok: true });
+  }
+
+  private async recordReviewRunTelemetry(value: unknown) {
+    const record = normalizeReviewRunTelemetry(value);
+    if (!record) return json({ error: "invalid_review_run_telemetry" }, 400);
+    const completedAt = Date.parse(record.completed_at);
+    this.storage.transactionSync(() => {
+      this.pruneReviewTelemetrySync(Date.now());
+      // workflow_run deliveries can be replayed, but GitHub's first terminal tuple is immutable.
+      this.storage.sql.exec(
+        `INSERT OR IGNORE INTO ${EXACT_REVIEW_RUN_TELEMETRY_TABLE}
+           (run_id, run_attempt, workflow_outcome, trigger_lane, trigger_origin, target_repo,
+            completed_at, record_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        record.run_id,
+        record.run_attempt,
+        record.workflow_outcome,
+        record.trigger_lane,
+        record.trigger_origin,
+        record.target_repo,
+        completedAt,
+        JSON.stringify(record),
+      );
+      const storedRow = Array.from(
+        this.storage.sql.exec(
+          `SELECT record_json FROM ${EXACT_REVIEW_RUN_TELEMETRY_TABLE}
+            WHERE run_id = ? AND run_attempt = ?`,
+          record.run_id,
+          record.run_attempt,
+        ),
+      )[0] as { record_json?: unknown } | undefined;
+      const storedRecord = normalizeReviewRunTelemetry(
+        JSON.parse(String(storedRow?.record_json || "null")),
+      );
+      if (storedRecord) this.reconcileReviewTelemetryFromRunSync(storedRecord, Date.now());
+    });
+    await this.scheduleNext(this.readStateSync(), Date.now());
+    return json({ ok: true });
+  }
+
+  private reconcileReviewTelemetryFromRunSync(run: DurableReviewRunTelemetry, now: number) {
+    const rows = this.reviewTelemetryRowsSync({
+      runId: run.run_id,
+      runAttempt: run.run_attempt,
+      status: "refreshing",
+    });
+    for (const record of rows) {
+      if (record.lease_expires_at !== null && Date.parse(record.lease_expires_at) > now) {
+        continue;
+      }
+      const repoAttributed = run.target_repo === record.repo;
+      const itemJob = repoAttributed
+        ? run.review_jobs?.find((job) => job.item_number === record.item_number)
+        : undefined;
+      const onlyJob = run.review_jobs?.length === 1 ? run.review_jobs[0] : undefined;
+      // A generic matrix job is item evidence only when the entire wave has one
+      // item. Applying one arbitrary shard conclusion to siblings is less safe
+      // than falling back to the immutable workflow conclusion.
+      const attributableJob =
+        itemJob ??
+        (repoAttributed && run.item_count === 1 && onlyJob?.item_number === null
+          ? onlyJob
+          : undefined);
+      const outcome = attributableJob
+        ? attributableJob.conclusion === "success"
+          ? "succeeded"
+          : attributableJob.conclusion === "cancelled"
+            ? "cancelled"
+            : "interrupted"
+        : null;
+      // A workflow terminal proves wave health, not which unattributed matrix
+      // item succeeded or failed. Keep that row visible to the watchdog.
+      if (outcome === null) continue;
+      const terminal: DurableReviewTelemetry = {
+        ...record,
+        status: "completed",
+        outcome,
+        updated_at: run.completed_at,
+        lease_expires_at: null,
+        terminal_at: run.completed_at,
+        terminal_reason:
+          outcome === "succeeded"
+            ? "workflow_job_succeeded"
+            : outcome === "cancelled"
+              ? "workflow_cancelled"
+              : "workflow_terminal",
+      };
+      this.recordReviewTelemetrySync(terminal);
+    }
+  }
+
+  private reconcileStoredReviewRunsSync(now: number) {
+    const rows = this.storage.sql.exec(
+      `SELECT DISTINCT runs.record_json
+         FROM ${EXACT_REVIEW_RUN_TELEMETRY_TABLE} AS runs
+         JOIN ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE} AS reviews
+           ON reviews.run_id = runs.run_id AND reviews.run_attempt = runs.run_attempt
+        WHERE reviews.status = 'refreshing'
+          AND (reviews.lease_expires_at IS NULL OR reviews.lease_expires_at <= ?)`,
+      now,
+    ) as Iterable<{ record_json?: unknown }>;
+    for (const row of rows) {
+      const run = normalizeReviewRunTelemetry(JSON.parse(String(row.record_json || "null")));
+      if (run) this.reconcileReviewTelemetryFromRunSync(run, now);
+    }
+  }
+
+  private nextReviewReconcileAtSync(now: number) {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT MIN(reviews.lease_expires_at) AS next_at
+           FROM ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE} AS reviews
+           JOIN ${EXACT_REVIEW_RUN_TELEMETRY_TABLE} AS runs
+             ON runs.run_id = reviews.run_id AND runs.run_attempt = reviews.run_attempt
+          WHERE reviews.status = 'refreshing'
+            AND reviews.lease_expires_at > ?`,
+        now,
+      ),
+    )[0] as { next_at?: number } | undefined;
+    const next = Number(row?.next_at || 0);
+    return next > 0 ? next : null;
+  }
+
+  private recordReviewTelemetrySync(record: DurableReviewTelemetry) {
+    this.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}
+          SET status = 'completed', outcome = ?, terminal_at = ?, updated_at = ?,
+              lease_expires_at = NULL, record_json = ?
+        WHERE repo = ? AND item_number = ? AND run_id = ? AND run_attempt = ?
+          AND status != 'completed'`,
+      record.outcome,
+      Date.parse(record.terminal_at ?? record.updated_at),
+      Date.parse(record.updated_at),
+      JSON.stringify(record),
+      record.repo,
+      record.item_number,
+      record.run_id,
+      record.run_attempt,
+    );
   }
 
   private listReviewTelemetry(search: URLSearchParams) {
@@ -1625,6 +1825,8 @@ export class ExactReviewQueue {
   private reviewTelemetryRowsSync(options: {
     repo?: string;
     itemNumber?: number;
+    runId?: string;
+    runAttempt?: number;
     status?: DurableReviewTelemetry["status"];
     limit?: number;
   }) {
@@ -1637,6 +1839,14 @@ export class ExactReviewQueue {
     if (options.itemNumber !== undefined) {
       predicates.push("item_number = ?");
       bindings.push(options.itemNumber);
+    }
+    if (options.runId !== undefined) {
+      predicates.push("run_id = ?");
+      bindings.push(options.runId);
+    }
+    if (options.runAttempt !== undefined) {
+      predicates.push("run_attempt = ?");
+      bindings.push(options.runAttempt);
     }
     if (options.status !== undefined) {
       predicates.push("status = ?");
@@ -1654,6 +1864,98 @@ export class ExactReviewQueue {
     return Array.from(rows)
       .map((row) => normalizeReviewTelemetry(JSON.parse(String(row.record_json || "null"))))
       .filter((record): record is DurableReviewTelemetry => record !== null);
+  }
+
+  private reviewRunTelemetryRowsSync(options: { repo?: string; from: number; limit?: number }) {
+    const predicates = ["completed_at >= ?"];
+    const bindings: unknown[] = [options.from];
+    if (options.repo !== undefined) {
+      predicates.push("(target_repo = ? OR target_repo IS NULL)");
+      bindings.push(options.repo);
+    }
+    const rows = this.storage.sql.exec(
+      `SELECT record_json FROM ${EXACT_REVIEW_RUN_TELEMETRY_TABLE}
+        WHERE ${predicates.join(" AND ")}
+        ORDER BY CASE WHEN workflow_outcome IN ('failure', 'cancelled') THEN 0 ELSE 1 END,
+                 completed_at DESC, run_id, run_attempt LIMIT ?`,
+      ...bindings,
+      options.limit ?? 10_000,
+    ) as Iterable<{ record_json?: unknown }>;
+    return Array.from(rows)
+      .map((row) => normalizeReviewRunTelemetry(JSON.parse(String(row.record_json || "null"))))
+      .filter((record): record is DurableReviewRunTelemetry => record !== null);
+  }
+
+  private reviewObservabilityTelemetryRowsSync(options: { repo?: string; from: number }) {
+    const predicates = ["(status = 'refreshing' OR COALESCE(terminal_at, updated_at) >= ?)"];
+    const bindings: unknown[] = [options.from];
+    if (options.repo !== undefined) {
+      predicates.push("repo = ?");
+      bindings.push(options.repo);
+    }
+    const rows = this.storage.sql.exec(
+      `SELECT record_json FROM ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}
+        WHERE ${predicates.join(" AND ")}
+        ORDER BY CASE WHEN status = 'refreshing' THEN 0 ELSE 1 END,
+                 CASE WHEN status = 'refreshing' THEN updated_at END ASC,
+                 CASE WHEN status = 'completed' THEN COALESCE(terminal_at, updated_at) END DESC
+        LIMIT ?`,
+      ...bindings,
+      REVIEW_OBSERVABILITY_SCAN_LIMIT + 1,
+    ) as Iterable<{ record_json?: unknown }>;
+    return Array.from(rows)
+      .map((row) => normalizeReviewTelemetry(JSON.parse(String(row.record_json || "null"))))
+      .filter((record): record is DurableReviewTelemetry => record !== null);
+  }
+
+  private reviewObservability(search: URLSearchParams) {
+    const range = String(search.get("range") || "24h") as keyof typeof REVIEW_OBSERVABILITY_RANGES;
+    const repoValue = String(search.get("repo") || "all").trim();
+    if (
+      !Object.hasOwn(REVIEW_OBSERVABILITY_RANGES, range) ||
+      (repoValue !== "all" && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repoValue))
+    ) {
+      return json({ error: "invalid_review_observability_query" }, 400);
+    }
+    return json(
+      this.reviewObservabilitySync({
+        range,
+        repo: repoValue === "all" ? null : repoValue,
+        now: Date.now(),
+      }),
+    );
+  }
+
+  private reviewObservabilitySync(options: {
+    range: keyof typeof REVIEW_OBSERVABILITY_RANGES;
+    repo: string | null;
+    now: number;
+  }) {
+    const from = options.now - REVIEW_OBSERVABILITY_RANGES[options.range];
+    const records = this.reviewObservabilityTelemetryRowsSync({
+      ...(options.repo ? { repo: options.repo } : {}),
+      from,
+    });
+    const runs = this.reviewRunTelemetryRowsSync({
+      ...(options.repo ? { repo: options.repo } : {}),
+      from,
+      limit: REVIEW_OBSERVABILITY_SCAN_LIMIT + 1,
+    });
+    const telemetryComplete =
+      records.length <= REVIEW_OBSERVABILITY_SCAN_LIMIT &&
+      runs.length <= REVIEW_OBSERVABILITY_SCAN_LIMIT;
+    const requiredSinceRaw = Date.parse(String(this.env.REVIEW_OBSERVABILITY_REQUIRED_SINCE || ""));
+    return summarizeReviewObservability({
+      records: records.slice(0, REVIEW_OBSERVABILITY_SCAN_LIMIT),
+      runs: runs.slice(0, REVIEW_OBSERVABILITY_SCAN_LIMIT),
+      range: options.range,
+      repo: options.repo,
+      required: String(this.env.REVIEW_OBSERVABILITY_REQUIRED || "") === "1",
+      ...(Number.isFinite(requiredSinceRaw) ? { requiredSince: requiredSinceRaw } : {}),
+      recoveryEnabled: String(this.env.REVIEW_RECOVERY_ENABLED || "") === "1",
+      telemetryComplete,
+      now: options.now,
+    });
   }
 
   private reviewTelemetryHealthSync(now: number): ReviewTelemetryHealth {
@@ -1713,6 +2015,10 @@ export class ExactReviewQueue {
     this.storage.sql.exec(
       `DELETE FROM ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}
         WHERE status = 'completed' AND updated_at <= ?`,
+      now - REVIEW_TELEMETRY_RETENTION_MS,
+    );
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_RUN_TELEMETRY_TABLE} WHERE completed_at <= ?`,
       now - REVIEW_TELEMETRY_RETENTION_MS,
     );
   }
@@ -1974,27 +2280,79 @@ export class ExactReviewQueue {
          run_id TEXT NOT NULL,
          run_attempt INTEGER NOT NULL CHECK (run_attempt >= 1),
          status TEXT NOT NULL CHECK (status IN ('refreshing', 'completed')),
+         outcome TEXT,
+         trigger_lane TEXT,
+         trigger_origin TEXT,
+         terminal_at INTEGER,
          updated_at INTEGER NOT NULL,
          lease_expires_at INTEGER,
+         generation INTEGER,
+         operation_id TEXT,
+         queue_ms INTEGER,
+         claim_ms INTEGER,
+         review_ms INTEGER,
+         publication_ms INTEGER,
+         total_ms INTEGER,
          record_json TEXT NOT NULL,
          PRIMARY KEY (repo, item_number, run_id, run_attempt)
        ) STRICT`,
     );
-    const hasLeaseExpiry = Array.from(
-      this.storage.sql.exec(
-        `SELECT name FROM pragma_table_info('${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}')
-          WHERE name = 'lease_expires_at'`,
-      ),
-    ).length;
-    if (!hasLeaseExpiry) {
-      this.storage.sql.exec(
-        `ALTER TABLE ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}
-           ADD COLUMN lease_expires_at INTEGER`,
-      );
+    for (const [column, definition] of [
+      ["lease_expires_at", "INTEGER"],
+      ["outcome", "TEXT"],
+      ["trigger_lane", "TEXT"],
+      ["trigger_origin", "TEXT"],
+      ["terminal_at", "INTEGER"],
+      ["generation", "INTEGER"],
+      ["operation_id", "TEXT"],
+      ["queue_ms", "INTEGER"],
+      ["claim_ms", "INTEGER"],
+      ["review_ms", "INTEGER"],
+      ["publication_ms", "INTEGER"],
+      ["total_ms", "INTEGER"],
+    ]) {
+      const present = Array.from(
+        this.storage.sql.exec(
+          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}') WHERE name = ?`,
+          column,
+        ),
+      ).length;
+      if (!present) {
+        this.storage.sql.exec(
+          `ALTER TABLE ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE} ADD COLUMN ${column} ${definition}`,
+        );
+      }
     }
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_review_telemetry_status
          ON ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE} (status, updated_at)`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_review_telemetry_aggregate
+         ON ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE}
+         (trigger_lane, repo, terminal_at, outcome)`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_review_telemetry_operation
+         ON ${EXACT_REVIEW_REVIEW_TELEMETRY_TABLE} (operation_id, terminal_at)`,
+    );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_RUN_TELEMETRY_TABLE} (
+         run_id TEXT NOT NULL,
+         run_attempt INTEGER NOT NULL CHECK (run_attempt >= 1),
+         workflow_outcome TEXT NOT NULL,
+         trigger_lane TEXT NOT NULL,
+         trigger_origin TEXT NOT NULL,
+         target_repo TEXT,
+         completed_at INTEGER NOT NULL,
+         record_json TEXT NOT NULL,
+         PRIMARY KEY (run_id, run_attempt)
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_run_telemetry_aggregate
+         ON ${EXACT_REVIEW_RUN_TELEMETRY_TABLE}
+         (trigger_lane, target_repo, completed_at, workflow_outcome)`,
     );
   }
 
@@ -2846,7 +3204,7 @@ export class ExactReviewQueue {
 
   private async scheduleNext(state: ExactReviewQueueState, now: number) {
     const publicationControl = this.refreshPublicationControlSync(state, now);
-    const next = exactReviewQueueNextWakeAt(
+    const queueNext = exactReviewQueueNextWakeAt(
       state,
       now,
       exactReviewQueueCapacity(this.env),
@@ -2862,6 +3220,13 @@ export class ExactReviewQueue {
       exactReviewPublicationDispatchLeaseMs(this.env),
       exactReviewHeartbeatGraceMs(this.env),
     );
+    const reviewNext = this.nextReviewReconcileAtSync(now);
+    const next =
+      queueNext === null
+        ? reviewNext
+        : reviewNext === null
+          ? queueNext
+          : Math.min(queueNext, reviewNext);
     if (next === null) {
       await this.storage.deleteAlarm();
       return;

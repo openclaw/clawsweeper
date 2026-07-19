@@ -529,6 +529,8 @@ export default {
       return authenticatedExactReviewQueueRequest(request, env, "/publications/supersede");
     if (url.pathname === "/internal/exact-review/review-telemetry" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/review-telemetry");
+    if (url.pathname === "/internal/exact-review/review-run-telemetry" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/review-run-telemetry");
     if (url.pathname === "/internal/exact-review/reconcile" && request.method === "POST")
       return authenticatedExactReviewReconcile(request, env);
     if (url.pathname === "/api/exact-review-queue" && request.method === "GET")
@@ -537,6 +539,8 @@ export default {
       return exactReviewQueueRequest(env, `/item-status?${url.searchParams.toString()}`);
     if (url.pathname === "/api/exact-review-queue/reviews" && request.method === "GET")
       return exactReviewQueueRequest(env, `/review-telemetry?${url.searchParams.toString()}`);
+    if (url.pathname === "/api/review-observability" && request.method === "GET")
+      return exactReviewQueueRequest(env, `/review-observability?${url.searchParams.toString()}`);
     if (url.pathname === "/api/health-history" && request.method === "GET")
       return healthHistoryJson(request, env);
     if (url.pathname === "/api/automerge-metrics" && request.method === "GET")
@@ -7176,6 +7180,28 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .execution-alert-title strong { font-size: 13px; }
 .execution-alert-title span, .execution-alert-toggle, .execution-alert-body { color: var(--muted); font-size: 11px; }
 .execution-alert-body { padding: 0 15px 13px; }
+.review-reliability { margin-top: 22px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--panel) 94%, var(--claw)); }
+.review-reliability-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.review-reliability-title { display: grid; gap: 5px; }
+.review-reliability-title h3 { margin: 0; font-size: 14px; }
+.review-reliability-title span { color: var(--muted); font-size: 11px; }
+.review-reliability-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.review-reliability-controls select { max-width: 220px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; font-size: 11px; }
+.review-reliability-kpis, .review-reliability-sources { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin-top: 14px; background: var(--line-soft); border: 1px solid var(--line-soft); }
+.review-reliability-kpi, .review-reliability-source { padding: 11px 12px; background: var(--panel); min-width: 0; }
+.review-reliability-kpi span, .review-reliability-source span { display: block; color: var(--muted); font-size: 10px; }
+.review-reliability-kpi strong, .review-reliability-source strong { display: block; margin-top: 5px; font-size: 18px; }
+.review-reliability-source strong { font-size: 12px; }
+.review-reliability-source small { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
+.review-status { display: inline-flex; align-items: center; gap: 6px; font-weight: 650; }
+.review-status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.review-status.healthy::before { background: var(--green); }
+.review-status.degraded::before { background: var(--amber); }
+.review-status.critical::before { background: var(--red); }
+.review-anomalies { margin-top: 12px; font-size: 11px; }
+.review-anomalies summary { cursor: pointer; color: var(--muted); }
+.review-anomaly-list { display: grid; gap: 7px; margin-top: 9px; }
+.review-anomaly { display: flex; justify-content: space-between; gap: 12px; padding-top: 7px; border-top: 1px solid var(--line-soft); }
 .exact-trend { margin: 14px 0 16px; }
 .exact-trend-status { font-size: 12px; font-weight: 650; }
 .exact-trend-status.growing { color: var(--amber); }
@@ -7993,6 +8019,7 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
 }
 @media (max-width: 760px) {
   .automerge-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .review-reliability-kpis, .review-reliability-sources { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .automerge-kpi:nth-child(3) { border-left: 0; border-top: 1px solid var(--line-soft); }
   .automerge-kpi:nth-child(4) { border-top: 1px solid var(--line-soft); }
   .automerge-details { grid-template-columns: 1fr; }
@@ -8011,6 +8038,9 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   .hero-headline { font-size: 23px; gap: 10px; }
   .hero-dot { width: 10px; height: 10px; }
   .exact-review-head { align-items: flex-start; flex-direction: column; }
+  .review-reliability-head { flex-direction: column; }
+  .review-reliability-controls { justify-content: flex-start; }
+  .review-reliability-kpis, .review-reliability-sources { grid-template-columns: 1fr; }
   .grid, .drawer-grid { grid-template-columns: 1fr; }
   .metric, .metric:nth-child(3n + 1) { border-left: 0; border-top: 1px solid var(--line-soft); padding-left: 0; }
   .metric:first-child { border-top: 0; }
@@ -8054,6 +8084,23 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
     <h3 class="overview-section-title">Codex Capacity</h3>
     <div class="capacity-rail" id="capacity-rail"></div>
     <div id="execution-alert" aria-live="polite"></div>
+    <section class="review-reliability" aria-labelledby="review-reliability-title">
+      <div class="review-reliability-head">
+        <div class="review-reliability-title">
+          <h3 id="review-reliability-title">Review reliability</h3>
+          <span id="review-reliability-summary">Loading durable review telemetry…</span>
+        </div>
+        <div class="review-reliability-controls">
+          <select id="review-reliability-repo" aria-label="Review reliability repository"><option value="all">All repositories</option></select>
+          <div class="trend-ranges" id="review-reliability-ranges" aria-label="Review reliability range">
+            <button class="trend-range" type="button" data-review-range="6h">6h</button>
+            <button class="trend-range active" type="button" data-review-range="24h">24h</button>
+            <button class="trend-range" type="button" data-review-range="7d">7d</button>
+          </div>
+        </div>
+      </div>
+      <div id="review-reliability-body" aria-live="polite"><div class="empty">Loading review reliability…</div></div>
+    </section>
     <div class="exact-review-head">
       <h3 class="overview-section-title">Exact Review</h3>
       <div class="trend-ranges" id="trend-ranges" aria-label="Exact Review backlog history range">
@@ -8210,6 +8257,8 @@ let automaticIndex = new Map();
 let activeHealthRange = "6h";
 let healthHistoryLoadedAt = 0;
 let healthHistorySamples = [];
+let activeReviewRange = "24h";
+let reviewObservabilityRequestGeneration = 0;
 
 function exactReviewHistory(lane) {
   return healthHistorySamples.flatMap(sample => {
@@ -8490,6 +8539,56 @@ function renderExecutionAlert(current) {
   if (incomplete) parts.push("work execution telemetry is incomplete");
   const details = "Total GitHub queued " + fmt.format(Number(current?.queued_runs) || 0) + " · oldest queued " + formatAgeMinutes(current?.oldest_queued_minutes) + " · oldest running " + formatAgeMinutes(current?.oldest_running_minutes);
   target.innerHTML = '<details class="execution-alert"><summary><span class="execution-alert-title"><strong>⚠ Work execution needs attention</strong><span>' + esc(parts.join(" · ")) + '</span></span><span class="execution-alert-toggle">Details ▾</span></summary><div class="execution-alert-body">' + esc(details) + '</div></details>';
+}
+
+function reviewMetric(label, value, detail) {
+  return '<div class="review-reliability-kpi"><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong>' + (detail ? '<small class="muted">' + esc(detail) + '</small>' : '') + '</div>';
+}
+
+function renderReviewReliability(payload) {
+  const summary = document.getElementById("review-reliability-summary");
+  const target = document.getElementById("review-reliability-body");
+  if (!summary || !target) return;
+  const passive = payload.mode === "passive";
+  const status = passive ? "Awaiting v2 producers" : payload.mode === "warmup" ? "Producer warm-up" : payload.health === "healthy" ? "Healthy" : payload.health === "critical" ? "Critical" : "Needs attention";
+  summary.innerHTML = '<span class="review-status ' + esc(payload.health) + '">' + esc(status) + '</span>' + (passive ? ' · PR 674 will enable enforcement' : ' · ' + esc(payload.range) + ' window');
+  const coverage = payload.terminal_coverage == null ? "n/a" : payload.terminal_coverage + "%";
+  const p95 = payload.phases?.total?.p95_ms;
+  const outcomes = payload.outcomes || {};
+  const kpis = [
+    reviewMetric("Terminal coverage", coverage, fmt.format(payload.terminal_attempts || 0) + " / " + fmt.format(payload.expected_attempts || 0)),
+    reviewMetric("Succeeded / failed / interrupted", fmt.format(outcomes.succeeded || 0) + " / " + fmt.format(outcomes.failed || 0) + " / " + fmt.format(outcomes.interrupted || 0), fmt.format(payload.unresolved_failures || 0) + " unresolved · success " + (payload.success_rate_percent == null ? "n/a" : payload.success_rate_percent + "%")),
+    reviewMetric("Superseded / cancelled", fmt.format(payload.expected_superseded || 0) + " / " + fmt.format(payload.unexpected_cancelled || 0), "expected / unexpected"),
+    reviewMetric("p95 total", p95 == null ? "n/a" : elapsed(p95), "refreshing " + fmt.format(payload.refreshing || 0) + " · slow " + fmt.format(payload.slow || 0) + " · orphan " + fmt.format(payload.orphan || 0))
+  ].join("");
+  const sources = (payload.sources || []).map(source => '<div class="review-reliability-source"><span>' + esc(source.label) + '</span><strong class="review-status ' + esc(source.status) + '">' + esc(source.status) + '</strong><small>last run ' + esc(source.last_run_at ? since(source.last_run_at) : "none") + ' · success ' + esc(source.last_success_at ? since(source.last_success_at) : "none") + ' · ' + fmt.format(source.item_count || 0) + ' items</small></div>').join("");
+  const anomalies = (payload.anomalies || []).map(row => '<div class="review-anomaly"><span><strong>' + esc(row.kind) + '</strong> ' + (row.item_url ? link(row.item_url, row.repo + "#" + row.item_number) : esc(row.repo || "workflow")) + (row.reason ? ' · ' + esc(row.reason) : '') + '</span>' + link(row.run_url, "Actions run") + '</div>').join("");
+  target.innerHTML = '<div class="review-reliability-kpis">' + kpis + '</div><div class="review-reliability-sources">' + sources + '</div>' + (anomalies ? '<details class="review-anomalies"><summary>' + fmt.format(payload.anomalies.length) + ' anomalies</summary><div class="review-anomaly-list">' + anomalies + '</div></details>' : '<div class="empty">No review anomalies in this window.</div>');
+}
+
+function populateReviewRepoFilter(repositories) {
+  const select = document.getElementById("review-reliability-repo");
+  if (!select) return;
+  const selected = select.value || "all";
+  const values = [...new Set((repositories || []).filter(Boolean))].sort();
+  select.innerHTML = '<option value="all">All repositories</option>' + values.map(repo => '<option value="' + esc(repo) + '">' + esc(repo) + '</option>').join("");
+  select.value = values.includes(selected) ? selected : "all";
+}
+
+async function loadReviewReliability() {
+  const generation = ++reviewObservabilityRequestGeneration;
+  const repo = document.getElementById("review-reliability-repo")?.value || "all";
+  try {
+    const response = await fetch("/api/review-observability?range=" + encodeURIComponent(activeReviewRange) + "&repo=" + encodeURIComponent(repo), { cache: "no-store" });
+    if (!response.ok) throw new Error("review observability returned " + response.status);
+    const payload = await response.json();
+    if (generation !== reviewObservabilityRequestGeneration) return;
+    renderReviewReliability(payload);
+  } catch {
+    if (generation !== reviewObservabilityRequestGeneration) return;
+    document.getElementById("review-reliability-summary").innerHTML = '<span class="review-status degraded">Telemetry unavailable</span>';
+    document.getElementById("review-reliability-body").innerHTML = '<div class="empty">Durable review telemetry could not be loaded.</div>';
+  }
 }
 
 function formatAgeMinutes(value) {
@@ -8888,6 +8987,7 @@ async function load() {
         : "",
   );
   loadHealthHistory(activeHealthRange, false).catch(() => undefined);
+  loadReviewReliability().catch(() => undefined);
   loadAutomergeMetrics().catch(() => undefined);
   } catch (error) {
     if (lastData) {
@@ -8936,6 +9036,7 @@ function renderDashboard(data, note) {
     metric("Codex Capacity", fleet.budget_used_percent + "%", "Codex slot utilization", fleet.budget_used_percent, "var(--green)")
   ].join("");
   renderExecutionAlert(data.operational_health);
+  populateReviewRepoFilter(data.source?.target_repositories || []);
   renderSystemMap(data);
   renderExactReviewLanes(data.exact_review_queue);
   renderExactReviewHandoff(data.exact_review_queue);
@@ -9437,6 +9538,14 @@ document.getElementById("trend-ranges").addEventListener("click", event => {
   document.querySelectorAll("button[data-trend-range]").forEach(item => item.classList.toggle("active", item === button));
   loadHealthHistory(button.dataset.trendRange || "6h", true).catch(() => undefined);
 });
+document.getElementById("review-reliability-ranges").addEventListener("click", event => {
+  const button = event.target.closest("button[data-review-range]");
+  if (!button) return;
+  activeReviewRange = button.dataset.reviewRange || "24h";
+  document.querySelectorAll("button[data-review-range]").forEach(item => item.classList.toggle("active", item === button));
+  loadReviewReliability().catch(() => undefined);
+});
+document.getElementById("review-reliability-repo").addEventListener("change", () => loadReviewReliability().catch(() => undefined));
 document.getElementById("automerge-ranges").addEventListener("click", event => {
   const button = event.target.closest("button[data-automerge-range]");
   if (!button) return;

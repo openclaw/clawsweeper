@@ -45,6 +45,19 @@ export function summarizeDashboardHealth(snapshot: Record<string, unknown>): Das
     else if (reviewTelemetryStatus !== "healthy") {
       raise("amber", "review_telemetry_unavailable");
     }
+
+    if (queue.review_execution_health != null) {
+      const reviewExecution = objectValue(queue.review_execution_health);
+      const reviewExecutionStatus = String(reviewExecution.health || "");
+      // Passive mode is a deliberate pre-producer rollout state and must not page operators
+      // before PR 674 turns enforcement on.
+      if (reviewExecutionStatus === "critical") raise("red", "review_execution_critical");
+      else if (reviewExecutionStatus === "degraded") {
+        raise("amber", "review_execution_degraded");
+      } else if (!["healthy", "passive"].includes(reviewExecutionStatus)) {
+        raise("amber", "review_execution_degraded");
+      }
+    }
   }
 
   const operationalStatus = String(objectValue(snapshot.operational_health).status || "");

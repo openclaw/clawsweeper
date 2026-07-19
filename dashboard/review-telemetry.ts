@@ -6,6 +6,11 @@ export const REVIEW_TELEMETRY_MAX_LEASE_HORIZON_MS = 24 * 60 * 60 * 1000;
 
 const OUTCOMES = new Set(["succeeded", "failed", "cancelled", "interrupted", "superseded"]);
 const PHASES = ["queue", "claim", "review", "publication", "total"] as const;
+const TRIGGER_LANES = new Set(["exact_event", "hot_intake", "normal_backfill", "recovery"]);
+const TRIGGER_ORIGINS = new Set(["webhook", "command", "schedule", "manual", "system"]);
+
+export type ReviewTriggerLane = "exact_event" | "hot_intake" | "normal_backfill" | "recovery";
+export type ReviewTriggerOrigin = "webhook" | "command" | "schedule" | "manual" | "system";
 
 export type DurableReviewTelemetry = {
   repo: string;
@@ -20,6 +25,12 @@ export type DurableReviewTelemetry = {
   phase_durations_ms: Partial<Record<(typeof PHASES)[number], number>>;
   generation?: number;
   operation_id?: string;
+  trigger_lane?: ReviewTriggerLane;
+  trigger_origin?: ReviewTriggerOrigin;
+  source_event?: string;
+  source_action?: string;
+  terminal_reason?: string;
+  terminal_at?: string;
 };
 
 export type ReviewTelemetryHealth = {
@@ -78,7 +89,26 @@ export function normalizeReviewTelemetry(
   }
   const generation = optionalPositiveInteger(record.generation);
   const operationId = optionalBoundedString(record.operation_id, 200);
-  if (generation === null || operationId === null) return null;
+  const triggerLane = optionalEnum(record.trigger_lane, TRIGGER_LANES);
+  const triggerOrigin = optionalEnum(record.trigger_origin, TRIGGER_ORIGINS);
+  const sourceEvent = optionalBoundedString(record.source_event, 100);
+  const sourceAction = optionalBoundedString(record.source_action, 200);
+  const terminalReason = optionalBoundedString(record.terminal_reason, 200);
+  const terminalAt = record.terminal_at == null ? undefined : timestamp(record.terminal_at);
+  if (
+    generation === null ||
+    operationId === null ||
+    triggerLane === null ||
+    triggerOrigin === null ||
+    sourceEvent === null ||
+    sourceAction === null ||
+    terminalReason === null ||
+    terminalAt === null ||
+    (status === "refreshing" && (terminalReason !== undefined || terminalAt !== undefined)) ||
+    (terminalAt !== undefined && Date.parse(terminalAt) > now + REVIEW_TELEMETRY_CLOCK_SKEW_MS)
+  ) {
+    return null;
+  }
   const phaseDurations = normalizePhaseDurations(record.phase_durations_ms);
   if (!phaseDurations) return null;
   return {
@@ -94,6 +124,14 @@ export function normalizeReviewTelemetry(
     phase_durations_ms: phaseDurations,
     ...(generation === undefined ? {} : { generation }),
     ...(operationId === undefined ? {} : { operation_id: operationId }),
+    ...(triggerLane === undefined ? {} : { trigger_lane: triggerLane as ReviewTriggerLane }),
+    ...(triggerOrigin === undefined
+      ? {}
+      : { trigger_origin: triggerOrigin as ReviewTriggerOrigin }),
+    ...(sourceEvent === undefined ? {} : { source_event: sourceEvent }),
+    ...(sourceAction === undefined ? {} : { source_action: sourceAction }),
+    ...(terminalReason === undefined ? {} : { terminal_reason: terminalReason }),
+    ...(terminalAt === undefined ? {} : { terminal_at: terminalAt }),
   };
 }
 
@@ -161,6 +199,12 @@ function optionalBoundedString(value: unknown, maxLength: number) {
   if (value === undefined || value === null) return undefined;
   const string = String(value).trim();
   return string && string.length <= maxLength ? string : null;
+}
+
+function optionalEnum(value: unknown, allowed: ReadonlySet<string>) {
+  if (value === undefined || value === null) return undefined;
+  const string = String(value);
+  return allowed.has(string) ? string : null;
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

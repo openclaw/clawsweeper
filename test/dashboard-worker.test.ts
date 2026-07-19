@@ -6610,6 +6610,9 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.doesNotMatch(html, /id="health-trend-grid"/);
   assert.match(html, /\/api\/health-history\?range=/);
   assert.match(html, /Work execution needs attention/);
+  assert.match(html, /Review reliability/);
+  assert.match(html, /Awaiting v2 producers/);
+  assert.match(html, /\/api\/review-observability\?range=/);
   assert.match(html, /data-trend-range="6h"/);
   assert.match(html, /<details class="execution-alert">/);
   assert.match(html, /Error Rate/);
@@ -6625,6 +6628,7 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.doesNotMatch(html, /id="control-plane"/);
   assert.match(html, /\.exact-lanes \{ grid-template-columns: 1fr; \}/);
   assert.ok(html.indexOf("Codex Capacity") < html.indexOf('id="exact-review-lanes"'));
+  assert.ok(html.indexOf("Review reliability") < html.indexOf('id="exact-review-lanes"'));
   assert.ok(html.indexOf('id="exact-review-lanes"') < html.indexOf("Handoff Health"));
   assert.match(html, /Live terminals/);
   assert.match(html, /href="https:\/\/fleet\.example\.test\/terminal\?view=live&amp;mode=all"/);
@@ -7041,6 +7045,58 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(elementFor("execution-alert").innerHTML, /1 execution over 150m/);
   context.renderExecutionAlert({ ...healthyOperational, telemetry_complete: false });
   assert.match(elementFor("execution-alert").innerHTML, /telemetry is incomplete/);
+
+  const reviewReliability = {
+    mode: "passive",
+    health: "passive",
+    range: "24h",
+    terminal_coverage: null,
+    terminal_attempts: 0,
+    expected_attempts: 0,
+    success_rate_percent: null,
+    outcomes: {},
+    unresolved_failures: 0,
+    expected_superseded: 0,
+    unexpected_cancelled: 0,
+    refreshing: 0,
+    slow: 0,
+    orphan: 0,
+    phases: { total: { p95_ms: null } },
+    sources: [],
+    anomalies: [],
+  };
+  context.renderReviewReliability(reviewReliability);
+  assert.match(elementFor("review-reliability-summary").innerHTML, /Awaiting v2 producers/);
+  context.renderReviewReliability({
+    ...reviewReliability,
+    mode: "required",
+    health: "healthy",
+    terminal_coverage: 100,
+  });
+  assert.match(elementFor("review-reliability-summary").innerHTML, /review-status healthy/);
+  context.renderReviewReliability({
+    ...reviewReliability,
+    mode: "required",
+    health: "degraded",
+    anomalies: [
+      {
+        kind: "cancelled",
+        repo: "openclaw/openclaw",
+        item_number: 674,
+        item_url: "https://github.com/openclaw/openclaw/pull/674",
+        run_url: "https://github.com/openclaw/clawsweeper/actions/runs/123",
+        reason: "workflow_cancelled",
+      },
+    ],
+  });
+  assert.match(elementFor("review-reliability-summary").innerHTML, /review-status degraded/);
+  assert.match(elementFor("review-reliability-body").innerHTML, /actions\/runs\/123/);
+  context.renderReviewReliability({
+    ...reviewReliability,
+    mode: "required",
+    health: "critical",
+  });
+  assert.match(elementFor("review-reliability-summary").innerHTML, /review-status critical/);
 
   status.diagnostics.exact_review_queue_error = null;
   status.exact_review_queue = { handoff_health: { status: "healthy", phases: {} } };
@@ -11285,9 +11341,462 @@ test("exact-review queue durably stores and queries per-item review telemetry", 
   });
 });
 
-test("exact-review health includes the oldest refreshing row beyond operator page bounds", async () => {
+test("exact-review queue incrementally indexes the v1 review telemetry table", async () => {
+  const storage = new MemoryDurableStorage();
+  storage.sql.exec(
+    `CREATE TABLE exact_review_review_telemetry (
+       repo TEXT NOT NULL,
+       item_number INTEGER NOT NULL,
+       run_id TEXT NOT NULL,
+       run_attempt INTEGER NOT NULL,
+       status TEXT NOT NULL,
+       updated_at INTEGER NOT NULL,
+       lease_expires_at INTEGER,
+       record_json TEXT NOT NULL,
+       PRIMARY KEY (repo, item_number, run_id, run_attempt)
+     ) STRICT`,
+  );
+  const queue = new ExactReviewQueue({ storage }, {});
+  const now = new Date().toISOString();
+  const response = await queue.fetch(
+    new Request("https://queue/review-telemetry", {
+      method: "POST",
+      body: JSON.stringify({
+        repo: "openclaw/openclaw",
+        item_number: 674,
+        run_id: "44000",
+        run_attempt: 1,
+        status: "completed",
+        outcome: "superseded",
+        started_at: now,
+        updated_at: now,
+        lease_expires_at: null,
+        phase_durations_ms: { total: 12_000 },
+        generation: 2,
+        operation_id: "review:674:2",
+        trigger_lane: "exact_event",
+        trigger_origin: "webhook",
+        terminal_at: now,
+        terminal_reason: "generation_superseded",
+      }),
+    }),
+  );
+  assert.equal(response.status, 200);
+  const columns = Array.from(
+    storage.sql.exec(
+      "SELECT name FROM pragma_table_info('exact_review_review_telemetry') ORDER BY name",
+    ),
+    (row) => row.name,
+  );
+  for (const column of [
+    "generation",
+    "operation_id",
+    "outcome",
+    "terminal_at",
+    "total_ms",
+    "trigger_lane",
+    "trigger_origin",
+  ]) {
+    assert.ok(columns.includes(column));
+  }
+});
+
+test("terminal workflow observer conservatively completes only unleased refreshing telemetry", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, { REVIEW_OBSERVABILITY_REQUIRED: "1" });
+  const now = Date.now();
+  const refreshing = (itemNumber: number, leaseExpiresAt: string | null) => ({
+    repo: "openclaw/openclaw",
+    item_number: itemNumber,
+    run_id: "55555",
+    run_attempt: 1,
+    status: "refreshing",
+    outcome: null,
+    started_at: new Date(now - 10 * 60_000).toISOString(),
+    updated_at: new Date(now - 5 * 60_000).toISOString(),
+    lease_expires_at: leaseExpiresAt,
+    phase_durations_ms: { queue: 1_000 },
+    trigger_lane: "exact_event",
+    trigger_origin: "webhook",
+  });
+  for (const record of [
+    refreshing(674, null),
+    refreshing(675, new Date(now + 60 * 60_000).toISOString()),
+    { ...refreshing(676, null), run_attempt: 2 },
+  ]) {
+    assert.equal(
+      (
+        await queue.fetch(
+          new Request("https://queue/review-telemetry", {
+            method: "POST",
+            body: JSON.stringify(record),
+          }),
+        )
+      ).status,
+      200,
+    );
+  }
+  const run = {
+    run_id: "55555",
+    run_attempt: 1,
+    workflow_outcome: "cancelled",
+    trigger_lane: "exact_event",
+    trigger_origin: "webhook",
+    target_repo: "openclaw/openclaw",
+    started_at: new Date(now - 10 * 60_000).toISOString(),
+    completed_at: new Date(now).toISOString(),
+    run_url: "https://github.com/openclaw/clawsweeper/actions/runs/55555",
+    plan_count: 1,
+    item_count: 2,
+    publication_count: 0,
+    source_event: "repository_dispatch",
+    review_jobs: [
+      { name: "Review item 674", conclusion: "cancelled", item_number: 674 },
+      { name: "Review item 675", conclusion: "cancelled", item_number: 675 },
+    ],
+  };
+  assert.equal(
+    (
+      await queue.fetch(
+        new Request("https://queue/review-run-telemetry", {
+          method: "POST",
+          body: JSON.stringify(run),
+        }),
+      )
+    ).status,
+    200,
+  );
+  const first = (await (
+    await queue.fetch(
+      new Request("https://queue/review-telemetry?repo=openclaw%2Fopenclaw&item_number=674"),
+    )
+  ).json()) as { reviews: Array<Record<string, unknown>> };
+  assert.equal(first.reviews[0].outcome, "cancelled");
+  assert.equal(first.reviews[0].terminal_reason, "workflow_cancelled");
+  const leased = (await (
+    await queue.fetch(
+      new Request("https://queue/review-telemetry?repo=openclaw%2Fopenclaw&item_number=675"),
+    )
+  ).json()) as { reviews: Array<Record<string, unknown>> };
+  assert.equal(leased.reviews[0].status, "refreshing");
+  const scheduledReconcile = await storage.getAlarm();
+  assert.ok(scheduledReconcile !== null && scheduledReconcile <= now + 60 * 60_000);
+  const otherAttempt = (await (
+    await queue.fetch(
+      new Request("https://queue/review-telemetry?repo=openclaw%2Fopenclaw&item_number=676"),
+    )
+  ).json()) as { reviews: Array<Record<string, unknown>> };
+  assert.equal(otherAttempt.reviews[0].status, "refreshing");
+
+  const aggregate = (await (
+    await queue.fetch(
+      new Request("https://queue/review-observability?range=24h&repo=openclaw%2Fopenclaw"),
+    )
+  ).json()) as Record<string, any>;
+  assert.equal(aggregate.outcomes.cancelled, 1);
+  assert.equal(aggregate.unexpected_cancelled, 1);
+  assert.match(aggregate.anomalies[0].run_url, /\/actions\/runs\/55555$/);
+  assert.equal(
+    (
+      await queue.fetch(
+        new Request("https://queue/review-observability?range=30d&repo=openclaw%2Fopenclaw"),
+      )
+    ).status,
+    400,
+  );
+
+  const originalNow = Date.now;
+  Date.now = () => now + 61 * 60_000;
+  try {
+    await queue.alarm();
+  } finally {
+    Date.now = originalNow;
+  }
+  const reconciled = (await (
+    await queue.fetch(
+      new Request("https://queue/review-telemetry?repo=openclaw%2Fopenclaw&item_number=675"),
+    )
+  ).json()) as { reviews: Array<Record<string, unknown>> };
+  assert.equal(reconciled.reviews[0].outcome, "cancelled");
+  assert.equal(reconciled.reviews[0].terminal_reason, "workflow_cancelled");
+});
+
+test("terminal workflow evidence reconciles telemetry that arrives later", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, { REVIEW_OBSERVABILITY_REQUIRED: "1" });
+  const now = Date.now();
+  const run = {
+    run_id: "56565",
+    run_attempt: 1,
+    workflow_outcome: "failure",
+    trigger_lane: "normal_backfill",
+    trigger_origin: "schedule",
+    target_repo: "openclaw/openclaw",
+    started_at: new Date(now - 10 * 60_000).toISOString(),
+    completed_at: new Date(now - 60_000).toISOString(),
+    run_url: "https://github.com/openclaw/clawsweeper/actions/runs/56565",
+    plan_count: 1,
+    item_count: 2,
+    publication_count: 0,
+    review_jobs: [
+      { name: "Review item 701", conclusion: "failure", item_number: 701 },
+      { name: "Review shard 2", conclusion: "success", item_number: null },
+    ],
+  };
+  assert.equal(
+    (
+      await queue.fetch(
+        new Request("https://queue/review-run-telemetry", {
+          method: "POST",
+          body: JSON.stringify(run),
+        }),
+      )
+    ).status,
+    200,
+  );
+  for (const itemNumber of [701, 702]) {
+    assert.equal(
+      (
+        await queue.fetch(
+          new Request("https://queue/review-telemetry", {
+            method: "POST",
+            body: JSON.stringify({
+              repo: "openclaw/openclaw",
+              item_number: itemNumber,
+              run_id: run.run_id,
+              run_attempt: 1,
+              status: "refreshing",
+              outcome: null,
+              started_at: new Date(now - 9 * 60_000).toISOString(),
+              updated_at: new Date(now - 2 * 60_000).toISOString(),
+              lease_expires_at: null,
+              phase_durations_ms: {},
+              trigger_lane: "normal_backfill",
+              trigger_origin: "schedule",
+            }),
+          }),
+        )
+      ).status,
+      200,
+    );
+    const telemetry = (await (
+      await queue.fetch(
+        new Request(
+          `https://queue/review-telemetry?repo=openclaw%2Fopenclaw&item_number=${itemNumber}`,
+        ),
+      )
+    ).json()) as { reviews: Array<Record<string, unknown>> };
+    if (itemNumber === 701) {
+      assert.equal(telemetry.reviews[0].outcome, "interrupted");
+      assert.equal(telemetry.reviews[0].terminal_reason, "workflow_terminal");
+    } else {
+      assert.equal(telemetry.reviews[0].status, "refreshing");
+    }
+  }
+  assert.equal(await storage.getAlarm(), null);
+});
+
+test("terminal workflow evidence records only attributable success", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, { REVIEW_OBSERVABILITY_REQUIRED: "1" });
+  const now = Date.now();
+  const refreshing = (itemNumber: number, repo = "openclaw/openclaw") => ({
+    repo,
+    item_number: itemNumber,
+    run_id: "57575",
+    run_attempt: 1,
+    status: "refreshing",
+    outcome: null,
+    started_at: new Date(now - 5 * 60_000).toISOString(),
+    updated_at: new Date(now - 2 * 60_000).toISOString(),
+    lease_expires_at: null,
+    phase_durations_ms: {},
+    trigger_lane: "normal_backfill",
+    trigger_origin: "schedule",
+  });
+  for (const itemNumber of [801, 802]) {
+    await queue.fetch(
+      new Request("https://queue/review-telemetry", {
+        method: "POST",
+        body: JSON.stringify(refreshing(itemNumber)),
+      }),
+    );
+  }
+  const run = {
+    run_id: "57575",
+    run_attempt: 1,
+    workflow_outcome: "success",
+    trigger_lane: "normal_backfill",
+    trigger_origin: "schedule",
+    target_repo: "openclaw/openclaw",
+    started_at: new Date(now - 6 * 60_000).toISOString(),
+    completed_at: new Date(now - 60_000).toISOString(),
+    run_url: "https://github.com/openclaw/clawsweeper/actions/runs/57575",
+    plan_count: 1,
+    item_count: 2,
+    publication_count: 1,
+    review_jobs: [
+      { name: "Review item 801", conclusion: "success", item_number: 801 },
+      { name: "Review shard 2", conclusion: "success", item_number: null },
+    ],
+  };
+  assert.equal(
+    (
+      await queue.fetch(
+        new Request("https://queue/review-run-telemetry", {
+          method: "POST",
+          body: JSON.stringify(run),
+        }),
+      )
+    ).status,
+    200,
+  );
+  for (const [itemNumber, expectedStatus] of [
+    [801, "completed"],
+    [802, "refreshing"],
+  ] as const) {
+    const telemetry = (await (
+      await queue.fetch(
+        new Request(
+          `https://queue/review-telemetry?repo=openclaw%2Fopenclaw&item_number=${itemNumber}`,
+        ),
+      )
+    ).json()) as { reviews: Array<Record<string, unknown>> };
+    assert.equal(telemetry.reviews[0].status, expectedStatus);
+    if (itemNumber === 801) {
+      assert.equal(telemetry.reviews[0].outcome, "succeeded");
+      assert.equal(telemetry.reviews[0].terminal_reason, "workflow_job_succeeded");
+    }
+  }
+  await queue.fetch(
+    new Request("https://queue/review-telemetry", {
+      method: "POST",
+      body: JSON.stringify(refreshing(801, "openclaw/clawhub")),
+    }),
+  );
+  const otherRepo = (await (
+    await queue.fetch(
+      new Request("https://queue/review-telemetry?repo=openclaw%2Fclawhub&item_number=801"),
+    )
+  ).json()) as { reviews: Array<Record<string, unknown>> };
+  assert.equal(otherRepo.reviews[0].status, "refreshing");
+  assert.equal(await storage.getAlarm(), null);
+});
+
+test("workflow observer replay reconciles only from immutable first-writer evidence", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, { REVIEW_OBSERVABILITY_REQUIRED: "1" });
+  const now = Date.now();
+  const baseRun = {
+    run_id: "58585",
+    run_attempt: 1,
+    workflow_outcome: "success",
+    trigger_lane: "exact_event",
+    trigger_origin: "webhook",
+    target_repo: "openclaw/clawhub",
+    started_at: new Date(now - 5 * 60_000).toISOString(),
+    completed_at: new Date(now - 60_000).toISOString(),
+    run_url: "https://github.com/openclaw/clawsweeper/actions/runs/58585",
+    plan_count: 1,
+    item_count: 1,
+    publication_count: 0,
+    review_jobs: [{ name: "Review item 901", conclusion: "success", item_number: 901 }],
+  };
+  await queue.fetch(
+    new Request("https://queue/review-run-telemetry", {
+      method: "POST",
+      body: JSON.stringify(baseRun),
+    }),
+  );
+  await queue.fetch(
+    new Request("https://queue/review-telemetry", {
+      method: "POST",
+      body: JSON.stringify({
+        repo: "openclaw/openclaw",
+        item_number: 901,
+        run_id: "58585",
+        run_attempt: 1,
+        status: "refreshing",
+        outcome: null,
+        started_at: new Date(now - 4 * 60_000).toISOString(),
+        updated_at: new Date(now - 2 * 60_000).toISOString(),
+        lease_expires_at: null,
+        phase_durations_ms: {},
+        trigger_lane: "exact_event",
+        trigger_origin: "webhook",
+      }),
+    }),
+  );
+  await queue.fetch(
+    new Request("https://queue/review-run-telemetry", {
+      method: "POST",
+      body: JSON.stringify({
+        ...baseRun,
+        workflow_outcome: "cancelled",
+        target_repo: "openclaw/openclaw",
+        review_jobs: [{ name: "Review item 901", conclusion: "cancelled", item_number: 901 }],
+      }),
+    }),
+  );
+  const telemetry = (await (
+    await queue.fetch(
+      new Request("https://queue/review-telemetry?repo=openclaw%2Fopenclaw&item_number=901"),
+    )
+  ).json()) as { reviews: Array<Record<string, unknown>> };
+  assert.equal(telemetry.reviews[0].status, "refreshing");
+});
+
+test("review observer write is signed while aggregate telemetry remains read-only", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
+  const record = JSON.stringify({
+    run_id: "60000",
+    run_attempt: 1,
+    workflow_outcome: "success",
+    trigger_lane: "normal_backfill",
+    trigger_origin: "schedule",
+    target_repo: "openclaw/openclaw",
+    started_at: new Date(Date.now() - 60_000).toISOString(),
+    completed_at: new Date().toISOString(),
+    run_url: "https://github.com/openclaw/clawsweeper/actions/runs/60000",
+    plan_count: 1,
+    item_count: 4,
+    publication_count: 1,
+  });
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: "test-token-placeholder",
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const denied = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/review-run-telemetry", {
+      method: "POST",
+      body: record,
+    }),
+    env,
+  );
+  assert.equal(denied.status, 401);
+
+  const signature = `sha256=${createHmac("sha256", "test-token-placeholder").update(record).digest("hex")}`;
+  const accepted = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/review-run-telemetry", {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": signature },
+      body: record,
+    }),
+    env,
+  );
+  assert.equal(accepted.status, 200);
+  const aggregate = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/review-observability?range=24h&repo=all"),
+    env,
+  );
+  assert.equal(aggregate.status, 200);
+  assert.equal(((await aggregate.json()) as { mode: string }).mode, "passive");
+});
+
+test("exact-review health includes the oldest refreshing row beyond operator page bounds", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, { REVIEW_OBSERVABILITY_REQUIRED: "1" });
   await queue.fetch(new Request("https://queue/stats"));
   const now = Date.now();
   for (let index = 0; index <= 10_000; index += 1) {
@@ -11342,4 +11851,47 @@ test("exact-review health includes the oldest refreshing row beyond operator pag
       },
     ],
   });
+  const aggregate = (await (
+    await queue.fetch(new Request("https://queue/review-observability?range=24h&repo=all"))
+  ).json()) as { health: string; orphan: number; telemetry_complete: boolean };
+  assert.equal(aggregate.telemetry_complete, false);
+  assert.equal(aggregate.orphan, 1);
+  assert.equal(aggregate.health, "critical");
+});
+
+test("review observability retains refreshing attempts older than the selected range", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    { REVIEW_OBSERVABILITY_REQUIRED: "1", REVIEW_RECOVERY_ENABLED: "0" },
+  );
+  const now = Date.now();
+  const response = await queue.fetch(
+    new Request("https://queue/review-telemetry", {
+      method: "POST",
+      body: JSON.stringify({
+        repo: "openclaw/openclaw",
+        item_number: 674,
+        run_id: "70000",
+        run_attempt: 1,
+        status: "refreshing",
+        outcome: null,
+        started_at: new Date(now - 26 * 60 * 60_000).toISOString(),
+        updated_at: new Date(now - 25 * 60 * 60_000).toISOString(),
+        lease_expires_at: null,
+        phase_durations_ms: {},
+        trigger_lane: "exact_event",
+        trigger_origin: "webhook",
+      }),
+    }),
+  );
+  assert.equal(response.status, 200);
+  const aggregate = (await (
+    await queue.fetch(
+      new Request("https://queue/review-observability?range=24h&repo=openclaw%2Fopenclaw"),
+    )
+  ).json()) as { refreshing: number; orphan: number; health: string };
+  assert.equal(aggregate.refreshing, 1);
+  assert.equal(aggregate.orphan, 1);
+  assert.equal(aggregate.health, "critical");
 });
