@@ -1646,6 +1646,85 @@ test("publishMainCommit converges after production-sized immutable ledger races"
   }
 });
 
+test("publishMainCommit rebuilds a production-sized flat immutable ledger tree", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-large-tree-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const localPath =
+    "ledger/v1/import-bindings/events/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff.json";
+  run("git", ["init", "--bare", origin], root);
+  configureUser(origin);
+
+  const blob = runWithInput(
+    "git",
+    ["--git-dir", origin, "hash-object", "-w", "--stdin"],
+    root,
+    "{}\n",
+  ).trim();
+  const flatTree = runWithInput(
+    "git",
+    ["--git-dir", origin, "mktree", "-z"],
+    root,
+    Array.from(
+      { length: 150_000 },
+      (_, index) => `100644 blob ${blob}\t${index.toString(16).padStart(64, "0")}.json\0`,
+    ).join(""),
+  ).trim();
+  const importBindingsTree = singleEntryTree(origin, "events", flatTree, root);
+  const v1Tree = singleEntryTree(origin, "import-bindings", importBindingsTree, root);
+  const ledgerTree = singleEntryTree(origin, "v1", v1Tree, root);
+  const remoteBlob = runWithInput(
+    "git",
+    ["--git-dir", origin, "hash-object", "-w", "--stdin"],
+    root,
+    "base\n",
+  ).trim();
+  const rootTree = runWithInput(
+    "git",
+    ["--git-dir", origin, "mktree", "-z"],
+    root,
+    `040000 tree ${ledgerTree}\tledger\0` + `100644 blob ${remoteBlob}\tremote.txt\0`,
+  ).trim();
+  const initialCommit = runWithInput(
+    "git",
+    ["--git-dir", origin, "commit-tree", rootTree, "-m", "initial large ledger"],
+    root,
+    "",
+  ).trim();
+  run("git", ["--git-dir", origin, "update-ref", "refs/heads/main", initialCommit], root);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+
+  for (const checkout of [work, other]) {
+    run("git", ["clone", "--no-checkout", origin, checkout], root);
+    configureUser(checkout);
+    run("git", ["sparse-checkout", "init", "--no-cone"], checkout);
+    run("git", ["sparse-checkout", "set", "--no-cone", "remote.txt", localPath], checkout);
+    run("git", ["checkout", "-B", "main", "origin/main"], checkout);
+  }
+  write(path.join(other, "remote.txt"), "concurrent\n");
+  run("git", ["add", "remote.txt"], other);
+  run("git", ["commit", "-m", "concurrent state update"], other);
+  installFirstPushRaceHook(work, other);
+  write(path.join(work, localPath), '{"local":true}\n');
+
+  const result = withCwd(work, () =>
+    publishMainCommit({
+      message: "chore: append command action ledger",
+      paths: [localPath],
+      maxAttempts: 1,
+      pushAttempts: 1,
+    }),
+  );
+
+  assert.equal(result, "committed");
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${localPath}`], root),
+    '{"local":true}\n',
+  );
+  assert.equal(run("git", ["--git-dir", origin, "show", "main:remote.txt"], root), "concurrent\n");
+});
+
 test("publishMainCommit publishes generated paths to state branch when state root is configured", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");
@@ -2432,6 +2511,25 @@ function run(command, args, cwd) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
+}
+
+function runWithInput(command, args, cwd, input) {
+  return execFileSync(command, args, {
+    cwd,
+    encoding: "utf8",
+    input,
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+}
+
+function singleEntryTree(gitDir, name, oid, cwd) {
+  return runWithInput(
+    "git",
+    ["--git-dir", gitDir, "mktree", "-z"],
+    cwd,
+    `040000 tree ${oid}\t${name}\0`,
+  ).trim();
 }
 
 function configureUser(cwd) {

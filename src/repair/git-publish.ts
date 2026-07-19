@@ -54,6 +54,7 @@ export type GitRunOptions = {
   allowFailure?: boolean;
   displayArgs?: readonly string[];
   input?: string;
+  maxBuffer?: number;
   quiet?: boolean;
 };
 
@@ -70,6 +71,7 @@ const GENERATED_PUBLISH_PATHS = [
 const GIT_PATHSPEC_BATCH_SIZE = 256;
 const GIT_OBJECT_BATCH_SIZE = 512;
 const GIT_OBJECT_BATCH_MAX_BUFFER = 64 * 1024 * 1024;
+const GIT_TREE_LIST_MAX_BUFFER = 64 * 1024 * 1024;
 const RECONCILIATION_TUPLE_CHUNK_SIZE = 128;
 const SKIP_CI_DIRECTIVE_PATTERN =
   /\[(?:skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks:\s*true$/im;
@@ -125,7 +127,7 @@ export function spawnGit(args: readonly string[], options: GitRunOptions = {}): 
     env: process.env,
     encoding: "utf8",
     input: options.input,
-    maxBuffer: 16 * 1024 * 1024,
+    maxBuffer: options.maxBuffer ?? 16 * 1024 * 1024,
   });
   if (!options.quiet && child.stdout) process.stdout.write(child.stdout);
   if (!options.quiet && child.stderr) process.stderr.write(child.stderr);
@@ -1647,7 +1649,10 @@ function writePatchedGitTree(baseTree: string | null, patch: GitTreePatch): stri
 }
 
 function readGitTreeEntries(args: readonly string[]): GitTreeEntry[] {
-  return runGit(args, { quiet: true })
+  // Immutable ledger directories are intentionally flat and can exceed the
+  // general Git command cap. A lost push must still be able to rebuild their
+  // containing tree without mistaking a truncated listing for a Git failure.
+  return runGit(args, { maxBuffer: GIT_TREE_LIST_MAX_BUFFER, quiet: true })
     .split("\0")
     .filter(Boolean)
     .map((record) => {
