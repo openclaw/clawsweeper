@@ -1310,18 +1310,17 @@ test("superseded review placeholder sweep never selects the durable review comme
   );
 });
 
-test("review lease retries refresh a surviving placeholder instead of posting a new one", () => {
+test("publishing the durable review comment sweeps superseded placeholders", () => {
   const source = readFileSync("src/clawsweeper.ts", "utf8");
   const functionStart = source.indexOf("function postReviewStartStatusComment");
   const postStart = source.slice(
     functionStart,
     source.indexOf("function deleteOwnedDedicatedReviewStartLease", functionStart),
   );
-  assert.match(postStart, /const reapedLeaseCommentIds = reapExpiredDedicatedReviewStartLeases\(/);
-  assert.match(postStart, /reusableLeaseCommentId/);
-  assert.match(postStart, /issues\/comments\/\$\{reusableLeaseCommentId\}/);
-  assert.match(postStart, /"PATCH"/);
+  // Lease acquisition must keep POSTing a fresh comment per contender: the
+  // lowest-server-id election needs distinct ids, so no in-place PATCH reuse.
   assert.match(postStart, /issues\/\$\{options\.item\.number\}\/comments/);
+  assert.doesNotMatch(postStart, /"PATCH"/);
 
   const applyStart = source.indexOf('syncReasons.push("updated durable Codex review comment")');
   assert.ok(applyStart >= 0);

@@ -20596,40 +20596,26 @@ function postReviewStartStatusComment(options: {
   if (initialLease) {
     return heldReviewStartStatusCommentResult(initialLease.expiresAt, false);
   }
-  const reapedLeaseCommentIds = reapExpiredDedicatedReviewStartLeases(
+  reapExpiredDedicatedReviewStartLeases(
     options.item.number,
     initialState.dedicatedLeaseComments,
     startedAtMs,
   );
   const body = renderReviewStartStatusComment(leaseOptions);
   const payload = writeCommentPayload(options.item.number, body);
-  // A leftover bot placeholder from a superseded attempt (typically an
-  // unexpired lease for an older head revision) is refreshed in place instead
-  // of stacking one new "review started" comment per retry. Lowest server id
-  // wins lease election, so reusing the oldest surviving comment also keeps
-  // the refreshed lease electable.
-  const reusableLeaseCommentId = initialState.dedicatedLeaseComments
-    .map((comment) => commentId(comment))
-    .filter((id): id is number => id !== null && !reapedLeaseCommentIds.has(id))
-    .sort((left, right) => left - right)[0];
-  const createArgs =
-    reusableLeaseCommentId === undefined
-      ? [
-          "api",
-          `repos/${targetRepo()}/issues/${options.item.number}/comments`,
-          "--method",
-          "POST",
-          "--input",
-          payload,
-        ]
-      : [
-          "api",
-          `repos/${targetRepo()}/issues/comments/${reusableLeaseCommentId}`,
-          "--method",
-          "PATCH",
-          "--input",
-          payload,
-        ];
+  // Every acquisition POSTs a fresh comment: the lowest-server-id election
+  // needs distinct ids per contender, so refreshing a leftover placeholder in
+  // place would let two racing workers both validate ownership of the same
+  // comment. Superseded placeholders are swept when the durable review
+  // comment is published instead.
+  const createArgs = [
+    "api",
+    `repos/${targetRepo()}/issues/${options.item.number}/comments`,
+    "--method",
+    "POST",
+    "--input",
+    payload,
+  ];
   const created = reviewCommentFromMutationResponse(
     ghObservedMutationCommand({
       identity: `review_lease_post:${options.item.number}:${leaseOwner}`,
@@ -20715,8 +20701,7 @@ function reapExpiredDedicatedReviewStartLeases(
   itemNumber: number,
   dedicatedLeaseComments: Record<string, unknown>[],
   nowMs: number,
-): Set<number> {
-  const reapedCommentIds = new Set<number>();
+): void {
   const expired = expiredReviewStartStatusLeases({
     comments: dedicatedLeaseComments,
     itemNumber,
@@ -20739,7 +20724,6 @@ function reapExpiredDedicatedReviewStartLeases(
       console.error(
         `[review] reaped expired review lease comment ${lease.commentId} for #${itemNumber} (lease expired ${lease.expiresAt})`,
       );
-      reapedCommentIds.add(lease.commentId);
     } catch (error) {
       // A failed reap must never block acquiring the new lease.
       console.error(
@@ -20749,7 +20733,6 @@ function reapExpiredDedicatedReviewStartLeases(
       );
     }
   }
-  return reapedCommentIds;
 }
 
 const REVIEW_PLACEHOLDER_BODY_PATTERN = /^ClawSweeper status: review started\./i;
