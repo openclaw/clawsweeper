@@ -70,7 +70,8 @@ test("publisher reset applies the production fetch timeout before touching state
     const calls = [];
     childProcess.spawnSync = (command, args, options) => {
       calls.push({ command, args, timeout: options.timeout ?? null });
-      return { status: 0, stdout: "", stderr: "" };
+      const stdout = args[0] === "rev-parse" ? "true\n" : "";
+      return { status: 0, stdout, stderr: "" };
     };
     syncBuiltinESMExports();
     console.log = () => {};
@@ -83,7 +84,12 @@ test("publisher reset applies the production fetch timeout before touching state
   assert.deepEqual(JSON.parse(run("node", ["--input-type=module", "-e", script], process.cwd())), [
     {
       command: "git",
-      args: ["fetch", "origin", "state"],
+      args: ["rev-parse", "--is-shallow-repository"],
+      timeout: null,
+    },
+    {
+      command: "git",
+      args: ["fetch", "--depth=1", "origin", "state"],
       timeout: 60_000,
     },
     {
@@ -100,7 +106,7 @@ test("publisher fetches share the bounded fetch helper", () => {
   assert.match(source, /const PUBLISH_FETCH_TIMEOUT_MS = 60_000/);
   assert.match(
     source,
-    /function fetchPublishRemote\([\s\S]*runGit\(\["fetch", remote, branch\], \{ \.\.\.options, timeout: PUBLISH_FETCH_TIMEOUT_MS \}\)/,
+    /function fetchPublishRemote\([\s\S]*runGit\(\["rev-parse", "--is-shallow-repository"\][\s\S]*runGit\(\["fetch", \.\.\.depthArgs, remote, branch\], \{/,
   );
   assert.equal(source.match(/runGit\(\["fetch"/g)?.length, 1);
 });

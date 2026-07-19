@@ -1933,7 +1933,16 @@ export function hardResetToRemoteMain(remote = "origin", branch = publishDefault
 }
 
 function fetchPublishRemote(remote: string, branch: string, options: GitRunOptions = {}): string {
-  return runGit(["fetch", remote, branch], { ...options, timeout: PUBLISH_FETCH_TIMEOUT_MS });
+  // Server-side immutable-ledger merges left merge-heavy ancestry on the state
+  // branch. Preserve an existing shallow boundary without truncating complete
+  // repositories whose reconciliation logic still needs full ancestry.
+  const shallow =
+    runGit(["rev-parse", "--is-shallow-repository"], { quiet: true }).trim() === "true";
+  const depthArgs = shallow ? ["--depth=1"] : [];
+  return runGit(["fetch", ...depthArgs, remote, branch], {
+    ...options,
+    timeout: PUBLISH_FETCH_TIMEOUT_MS,
+  });
 }
 
 export function uniqueNonEmpty(values: readonly string[]): string[] {
