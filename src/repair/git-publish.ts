@@ -411,8 +411,10 @@ function pushImmutableActionLedgerCommit(options: {
   pushAttempts: number;
 }): PublishResult {
   // Keep both retry knobs additive. Their former nesting multiplied every
-  // state race into another complete rebase loop.
-  const pushBudget = Math.max(options.maxAttempts + options.pushAttempts + 1, 16);
+  // state race into another complete rebase loop. The floor must also outlast
+  // sustained state writers: production exhausted 16 races while the same
+  // immutable rebuild remained safe to retry.
+  const pushBudget = Math.max(options.maxAttempts + options.pushAttempts + 1, 64);
   const previousCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
   const protectedWorktreePaths = captureDirtyWorktreePaths();
   let candidateCommit = options.sourceCommit;

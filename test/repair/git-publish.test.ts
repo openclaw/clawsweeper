@@ -1564,7 +1564,7 @@ test("publishMainCommit converges after production-sized immutable ledger races"
   write(path.join(work, "unrelated/0000.txt"), "local scratch remains\n");
   write(path.join(work, "scratch/dirty.txt"), "nested local scratch remains\n");
   write(path.join(work, "ignored/secret.txt"), "ignored local scratch remains\n");
-  installPushRaceHook(work, other, 12);
+  installPushRaceHook(work, other, 20);
 
   const lines = [];
   let result;
@@ -1584,10 +1584,10 @@ test("publishMainCommit converges after production-sized immutable ledger races"
   assert.ok(metrics, "sustained ledger race publish emits metrics");
   const processCount = Number(/processes=(\d+)/.exec(metrics)?.[1]);
   assert.ok(
-    Number.isInteger(processCount) && processCount <= 180,
-    `sustained ledger races used ${processCount} git subprocesses; expected at most 180`,
+    Number.isInteger(processCount) && processCount <= 280,
+    `sustained ledger races used ${processCount} git subprocesses; expected at most 280`,
   );
-  assert.match(metrics, /actions=.*push:13(?:,|$)/, "the publish survives twelve lost pushes");
+  assert.match(metrics, /actions=.*push:21(?:,|$)/, "the publish survives twenty lost pushes");
   assert.doesNotMatch(metrics, /actions=.*rebase:/, "immutable ledger retries never nest rebases");
   assert.doesNotMatch(
     metrics,
@@ -1616,26 +1616,26 @@ test("publishMainCommit converges after production-sized immutable ledger races"
   );
   assert.equal(
     fs.readFileSync(path.join(work, "remote.txt"), "utf8"),
-    Array.from({ length: 12 }, (_, index) => `race ${index + 1}\n`).join(""),
+    Array.from({ length: 20 }, (_, index) => `race ${index + 1}\n`).join(""),
     "clean worktree paths follow every fetched remote parent",
   );
   assert.equal(
     run("git", ["--git-dir", origin, "show", "main:remote.txt"], root),
-    Array.from({ length: 12 }, (_, index) => `race ${index + 1}\n`).join(""),
+    Array.from({ length: 20 }, (_, index) => `race ${index + 1}\n`).join(""),
   );
   assert.equal(
     run("git", ["--git-dir", origin, "show", "main:unrelated/0000.txt"], root),
-    "remote scratch 12\n",
+    "remote scratch 20\n",
     "the rebuilt commit keeps the remote version of a locally dirty path",
   );
   assert.equal(
     run("git", ["--git-dir", origin, "show", "main:scratch"], root),
-    "remote parent 12\n",
+    "remote parent 20\n",
     "the rebuilt commit keeps a remote file that replaced a dirty local directory",
   );
   assert.equal(
     run("git", ["--git-dir", origin, "show", "main:ignored"], root),
-    "remote ignored parent 12\n",
+    "remote ignored parent 20\n",
     "the rebuilt commit keeps a remote file that replaced an ignored local directory",
   );
   for (const ledgerPath of ledgerPaths) {
