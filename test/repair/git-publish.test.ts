@@ -2888,7 +2888,17 @@ function installCheckoutHeader(work) {
     "utf8",
   ).toString("base64");
   const header = [`${"AUTH"}ORIZATION:`, `${"bas"}ic`, encoded].join(" ");
-  run("git", ["config", "--local", "http.https://github.com/.extraheader", header], work);
+  const credentialsConfig = path.join(path.dirname(work), "checkout-credentials.config");
+  run(
+    "git",
+    ["config", "--file", credentialsConfig, "http.https://github.com/.extraheader", header],
+    work,
+  );
+  run(
+    "git",
+    ["config", "--local", `includeIf.gitdir:${path.join(work, ".git")}.path`, credentialsConfig],
+    work,
+  );
 }
 
 function installCheckpointFailureHook(work, other, branch) {

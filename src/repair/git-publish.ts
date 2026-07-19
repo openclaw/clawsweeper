@@ -488,9 +488,13 @@ function immutableLedgerStateRepository(): string | null {
 }
 
 function stateRepositoryToken(): string {
-  const config = runGit(["config", "--local", "--get-regexp", "^http\\..*\\.extraheader$"], {
-    quiet: true,
-  });
+  // actions/checkout v7 keeps credentials in a separate config selected by a
+  // repository-local includeIf. Follow those includes explicitly while
+  // retaining local scope so unrelated user or system credentials stay out.
+  const config = runGit(
+    ["config", "--includes", "--local", "--get-regexp", "^http\\..*\\.extraheader$"],
+    { quiet: true },
+  );
   for (const line of config.split("\n")) {
     const header = line.slice(line.indexOf(" ") + 1);
     const match = /^AUTHORIZATION:\s*basic\s+(\S+)$/i.exec(header);
