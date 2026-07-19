@@ -1545,6 +1545,11 @@ test("publishMainCommit bounds immutable ledger work across sustained state race
   run("git", ["clone", origin, work], root);
   configureUser(work);
   write(path.join(work, "keep.txt"), "base\n");
+  for (let index = 0; index < 1024; index += 1) {
+    write(path.join(work, `unrelated/${index.toString().padStart(4, "0")}.txt`), "base\n");
+  }
+  write(path.join(work, "scratch/dirty.txt"), "base\n");
+  write(path.join(work, ".gitignore"), "ignored/\n");
   run("git", ["add", "."], work);
   run("git", ["commit", "-m", "initial"], work);
   run("git", ["push", "origin", "HEAD:main"], work);
@@ -1556,6 +1561,9 @@ test("publishMainCommit bounds immutable ledger work across sustained state race
   for (const ledgerPath of ledgerPaths) {
     write(path.join(work, ledgerPath), `{"path":"${ledgerPath}"}\n`);
   }
+  write(path.join(work, "unrelated/0000.txt"), "local scratch remains\n");
+  write(path.join(work, "scratch/dirty.txt"), "nested local scratch remains\n");
+  write(path.join(work, "ignored/secret.txt"), "ignored local scratch remains\n");
   installPushRaceHook(work, other, 7);
 
   const lines = [];
@@ -1581,9 +1589,54 @@ test("publishMainCommit bounds immutable ledger work across sustained state race
   );
   assert.match(metrics, /actions=.*push:8(?:,|$)/, "one push is attempted per bounded retry");
   assert.doesNotMatch(metrics, /actions=.*rebase:/, "immutable ledger retries never nest rebases");
+  assert.doesNotMatch(
+    metrics,
+    /actions=.*reset:/,
+    "immutable ledger retries never reset the worktree",
+  );
+  assert.match(metrics, /actions=.*read-tree:7(?:,|$)/, "each rebuild replaces only the index");
+  assert.match(
+    metrics,
+    /actions=.*restore:7(?:,|$)/,
+    "each rebuild refreshes remote worktree paths",
+  );
+  assert.equal(
+    fs.readFileSync(path.join(work, "unrelated/0000.txt"), "utf8"),
+    "local scratch remains\n",
+  );
+  assert.equal(
+    fs.readFileSync(path.join(work, "scratch/dirty.txt"), "utf8"),
+    "nested local scratch remains\n",
+    "a remote directory-to-file transition preserves a dirty descendant",
+  );
+  assert.equal(
+    fs.readFileSync(path.join(work, "ignored/secret.txt"), "utf8"),
+    "ignored local scratch remains\n",
+    "a remote directory-to-file transition preserves an ignored descendant",
+  );
+  assert.equal(
+    fs.readFileSync(path.join(work, "remote.txt"), "utf8"),
+    Array.from({ length: 7 }, (_, index) => `race ${index + 1}\n`).join(""),
+    "clean worktree paths follow every fetched remote parent",
+  );
   assert.equal(
     run("git", ["--git-dir", origin, "show", "main:remote.txt"], root),
     Array.from({ length: 7 }, (_, index) => `race ${index + 1}\n`).join(""),
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:unrelated/0000.txt"], root),
+    "remote scratch 7\n",
+    "the rebuilt commit keeps the remote version of a locally dirty path",
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:scratch"], root),
+    "remote parent 7\n",
+    "the rebuilt commit keeps a remote file that replaced a dirty local directory",
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:ignored"], root),
+    "remote ignored parent 7\n",
+    "the rebuilt commit keeps a remote file that replaced an ignored local directory",
   );
   for (const ledgerPath of ledgerPaths) {
     assert.equal(
@@ -2585,7 +2638,11 @@ count=$((count + 1))
 printf '%s\\n' "$count" > "${counter}"
 if test "$count" -le ${raceCount}; then
   printf 'race %s\\n' "$count" >> "${path.join(other, "remote.txt")}"
-  git -C "${other}" add remote.txt
+  printf 'remote scratch %s\\n' "$count" > "${path.join(other, "unrelated/0000.txt")}"
+  if test "$count" -eq 1; then git -C "${other}" rm scratch/dirty.txt; fi
+  printf 'remote parent %s\\n' "$count" > "${path.join(other, "scratch")}"
+  printf 'remote ignored parent %s\\n' "$count" > "${path.join(other, "ignored")}"
+  git -C "${other}" add remote.txt unrelated/0000.txt scratch ignored
   git -C "${other}" commit -m "concurrent state update $count"
   git -C "${other}" push origin HEAD:${branch}
 fi
