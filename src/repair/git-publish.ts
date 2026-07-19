@@ -53,6 +53,7 @@ export type RebaseStrategy = "normal" | "theirs" | "apply-records" | "reconcile-
 export type GitRunOptions = {
   allowFailure?: boolean;
   displayArgs?: readonly string[];
+  input?: string;
   quiet?: boolean;
 };
 
@@ -123,6 +124,7 @@ export function spawnGit(args: readonly string[], options: GitRunOptions = {}): 
     cwd: publishRoot(),
     env: process.env,
     encoding: "utf8",
+    input: options.input,
     maxBuffer: 16 * 1024 * 1024,
   });
   if (!options.quiet && child.stdout) process.stdout.write(child.stdout);
@@ -156,6 +158,8 @@ function safeGitDisplayAction(action: string | undefined): string {
     case "cat-file":
     case "clean":
     case "ls-files":
+    case "ls-tree":
+    case "mktree":
     case "push":
     case "read-tree":
     case "rebase":
@@ -406,25 +410,46 @@ function pushImmutableActionLedgerCommit(options: {
 }): PublishResult {
   // Keep both retry knobs additive. Their former nesting multiplied every
   // state race into another complete rebase loop.
-  const pushBudget = options.maxAttempts + options.pushAttempts + 1;
+  const pushBudget = Math.max(options.maxAttempts + options.pushAttempts + 1, 16);
+  const previousCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
   const protectedWorktreePaths = captureDirtyWorktreePaths();
+  let candidateCommit = options.sourceCommit;
   for (let attempt = 1; attempt <= pushBudget; attempt += 1) {
-    if (spawnGit(["push", options.remote, `HEAD:${options.branch}`]).status === 0) {
+    if (
+      spawnGit(["push", options.remote, `${candidateCommit}:${options.branch}`], {
+        displayArgs: ["push", options.remote, `<commit>:${options.branch}`],
+      }).status === 0
+    ) {
+      finalizeImmutableActionLedgerCheckout({
+        previousCommit,
+        publishedCommit: candidateCommit,
+        paths: options.paths,
+        protectedWorktreePaths,
+      });
       return "committed";
     }
     if (attempt === pushBudget) break;
 
-    // These paths are immutable and create-only, so rebuilding their exact batch
-    // is cheaper and safer than multiplying rebase probes inside nested retries.
-    const rebuildResult = rebuildPublishCommit({
+    // Build only the affected ancestor trees. The state checkout has hundreds
+    // of thousands of entries, so rebuilding its full index is slower than the
+    // production write rate and guarantees that every retry starts stale.
+    const rebuilt = rebuildImmutableActionLedgerCommit({
       remote: options.remote,
       branch: options.branch,
       message: options.message,
       paths: options.paths,
       sourceCommit: options.sourceCommit,
-      protectedWorktreePaths,
     });
-    if (rebuildResult === "unchanged") return "unchanged";
+    candidateCommit = rebuilt.commit;
+    if (rebuilt.result === "unchanged") {
+      finalizeImmutableActionLedgerCheckout({
+        previousCommit,
+        publishedCommit: candidateCommit,
+        paths: options.paths,
+        protectedWorktreePaths,
+      });
+      return "unchanged";
+    }
   }
   throw new Error(`Failed to publish commit after ${pushBudget} push attempts`);
 }
@@ -1480,7 +1505,6 @@ function rebuildPublishCommit(options: {
   message: string;
   paths: readonly string[];
   sourceCommit: string;
-  protectedWorktreePaths?: ReadonlySet<string>;
 }): PublishResult {
   console.log(`Rebuilding publish commit on ${options.remote}/${options.branch}`);
   runGit(["fetch", options.remote, options.branch]);
@@ -1488,15 +1512,6 @@ function rebuildPublishCommit(options: {
     quiet: true,
   }).trim();
   const publishPaths = uniqueNonEmpty(options.paths);
-  if (publishPaths.length > 0 && publishPaths.every(isActionEventPublishPath)) {
-    return rebuildImmutableActionLedgerCommit({
-      remoteCommit,
-      message: options.message,
-      paths: publishPaths,
-      sourceCommit: options.sourceCommit,
-      protectedWorktreePaths: options.protectedWorktreePaths ?? new Set(),
-    });
-  }
   const statusMerges = planSweepStatusMerges({
     baseCommit: runGit(["rev-parse", `${options.sourceCommit}^`], { quiet: true }).trim(),
     localCommit: options.sourceCommit,
@@ -1539,50 +1554,136 @@ function rebuildPublishCommit(options: {
 }
 
 function rebuildImmutableActionLedgerCommit(options: {
-  remoteCommit: string;
+  remote: string;
+  branch: string;
   message: string;
   paths: readonly string[];
   sourceCommit: string;
+}): { result: PublishResult; commit: string } {
+  runGit(["fetch", options.remote, options.branch]);
+  const remoteCommit = runGit(["rev-parse", `${options.remote}/${options.branch}`], {
+    quiet: true,
+  }).trim();
+  const remoteTree = runGit(["rev-parse", `${remoteCommit}^{tree}`], { quiet: true }).trim();
+  const tree = rewriteImmutableActionLedgerTree({
+    remoteTree,
+    sourceCommit: options.sourceCommit,
+    paths: options.paths,
+  });
+  if (tree === remoteTree) {
+    console.log("No immutable action-ledger changes after syncing remote");
+    return { result: "unchanged", commit: remoteCommit };
+  }
+
+  const commit = runGit(["commit-tree", tree, "-p", remoteCommit, "-m", options.message]).trim();
+  return { result: "committed", commit };
+}
+
+type GitTreeEntry = {
+  mode: string;
+  type: string;
+  oid: string;
+  name: string;
+};
+
+type GitTreePatch = {
+  files: Map<string, GitTreeEntry>;
+  directories: Map<string, GitTreePatch>;
+};
+
+function rewriteImmutableActionLedgerTree(options: {
+  remoteTree: string;
+  sourceCommit: string;
+  paths: readonly string[];
+}): string {
+  const patch: GitTreePatch = { files: new Map(), directories: new Map() };
+  const sourceEntries = chunked(options.paths, GIT_PATHSPEC_BATCH_SIZE).flatMap((paths) =>
+    readGitTreeEntries(["ls-tree", "-z", "--full-tree", options.sourceCommit, "--", ...paths]),
+  );
+  const sourceByPath = new Map(sourceEntries.map((entry) => [entry.name, entry]));
+  for (const path of options.paths) {
+    const entry = sourceByPath.get(path);
+    if (!entry || entry.type !== "blob") {
+      throw new Error(`Immutable action-ledger source path is not a blob: ${path}`);
+    }
+    addGitTreePatch(patch, path.split("/"), entry);
+  }
+  return writePatchedGitTree(options.remoteTree, patch);
+}
+
+function addGitTreePatch(patch: GitTreePatch, parts: readonly string[], entry: GitTreeEntry): void {
+  const [name, ...rest] = parts;
+  if (!name) throw new Error("Immutable action-ledger path is empty");
+  if (rest.length === 0) {
+    patch.files.set(name, { ...entry, name });
+    return;
+  }
+  const child = patch.directories.get(name) ?? { files: new Map(), directories: new Map() };
+  patch.directories.set(name, child);
+  addGitTreePatch(child, rest, entry);
+}
+
+function writePatchedGitTree(baseTree: string | null, patch: GitTreePatch): string {
+  const entries = new Map(
+    (baseTree ? readGitTreeEntries(["ls-tree", "-z", baseTree]) : []).map((entry) => [
+      entry.name,
+      entry,
+    ]),
+  );
+  for (const [name, childPatch] of patch.directories) {
+    const existing = entries.get(name);
+    if (existing && existing.type !== "tree") {
+      throw new Error(`Immutable action-ledger directory collides with ${existing.type}: ${name}`);
+    }
+    const oid = writePatchedGitTree(existing?.oid ?? null, childPatch);
+    entries.set(name, { mode: "040000", type: "tree", oid, name });
+  }
+  for (const [name, entry] of patch.files) entries.set(name, entry);
+  const input = [...entries.values()]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((entry) => `${entry.mode} ${entry.type} ${entry.oid}\t${entry.name}\0`)
+    .join("");
+  return runGit(["mktree", "-z"], { input, quiet: true }).trim();
+}
+
+function readGitTreeEntries(args: readonly string[]): GitTreeEntry[] {
+  return runGit(args, { quiet: true })
+    .split("\0")
+    .filter(Boolean)
+    .map((record) => {
+      const separator = record.indexOf("\t");
+      const match = /^(\d+) ([a-z]+) ([a-f0-9]+)$/.exec(record.slice(0, separator));
+      if (separator < 0 || !match) throw new Error("Git tree entry is malformed");
+      return {
+        mode: match[1]!,
+        type: match[2]!,
+        oid: match[3]!,
+        name: record.slice(separator + 1),
+      };
+    });
+}
+
+function finalizeImmutableActionLedgerCheckout(options: {
+  previousCommit: string;
+  publishedCommit: string;
+  paths: readonly string[];
   protectedWorktreePaths: ReadonlySet<string>;
-}): PublishResult {
-  const previousCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
-  const remoteWorktreePaths = changedPathsBetween(previousCommit, options.remoteCommit).filter(
+}): void {
+  const remoteWorktreePaths = changedPathsBetween(
+    options.previousCommit,
+    options.publishedCommit,
+  ).filter(
     (path) =>
       !options.paths.includes(path) &&
       ![...options.protectedWorktreePaths].some(
         (protectedPath) => pathIsWithin(path, protectedPath) || pathIsWithin(protectedPath, path),
       ),
   );
-  // The state checkout can contain hundreds of thousands of files. Replacing
-  // only the index avoids rewriting that entire worktree after every push race.
-  // The synchronous publish lane has already committed all staged entries, so
-  // only pre-existing worktree dirt—not caller staging—can reach this rebuild.
-  runGit(["read-tree", "--reset", options.remoteCommit]);
-  applyPathsFromCommit(options.paths, options.sourceCommit);
-  const tree = runGit(["write-tree"], { quiet: true }).trim();
-  const remoteTree = runGit(["rev-parse", `${options.remoteCommit}^{tree}`], {
-    quiet: true,
-  }).trim();
-  if (tree === remoteTree) {
-    runGit(["update-ref", "HEAD", options.remoteCommit]);
-    syncRemoteWorktreePaths(remoteWorktreePaths, options.remoteCommit);
-    console.log("No immutable action-ledger changes after syncing remote");
-    return "unchanged";
-  }
-
-  // commit-tree binds the exact rebuilt tree directly to the fetched remote
-  // parent; moving HEAD afterwards is constant-time and keeps the next push exact.
-  const commit = runGit([
-    "commit-tree",
-    tree,
-    "-p",
-    options.remoteCommit,
-    "-m",
-    options.message,
-  ]).trim();
-  runGit(["update-ref", "HEAD", commit]);
-  syncRemoteWorktreePaths(remoteWorktreePaths, commit);
-  return "committed";
+  // Refresh the large checkout once, after the remote ref accepted the commit.
+  // Its cost can no longer make the compare-and-swap candidate stale.
+  runGit(["read-tree", "--reset", options.publishedCommit]);
+  runGit(["update-ref", "HEAD", options.publishedCommit]);
+  syncRemoteWorktreePaths(remoteWorktreePaths, options.publishedCommit);
 }
 
 function captureDirtyWorktreePaths(): ReadonlySet<string> {
@@ -1605,20 +1706,6 @@ function syncRemoteWorktreePaths(paths: readonly string[], commit: string): void
   }
   for (const batch of chunked(deletedPaths, GIT_PATHSPEC_BATCH_SIZE)) {
     runGit(["clean", "-f", "-d", "-x", "--", ...batch]);
-  }
-}
-
-function applyPathsFromCommit(paths: readonly string[], commit: string): void {
-  for (const batch of chunked(paths, GIT_PATHSPEC_BATCH_SIZE)) {
-    runGit(["rm", "-r", "--ignore-unmatch", "--", ...batch], {
-      allowFailure: true,
-      quiet: true,
-    });
-  }
-  const existing = gitObjectExistence(paths.map((path) => ({ commit, path })));
-  const checkoutPaths = paths.filter((path) => existing.has(gitObjectSpec(commit, path)));
-  for (const batch of chunked(checkoutPaths, GIT_PATHSPEC_BATCH_SIZE)) {
-    runGit(["checkout", commit, "--", ...batch]);
   }
 }
 
