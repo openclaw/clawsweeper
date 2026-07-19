@@ -334,6 +334,20 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
     return completeStatePublish("committed", options.paths, stateBaseCommit);
   }
 
+  const publishPaths = uniqueNonEmpty(options.paths);
+  if (publishPaths.length > 0 && publishPaths.every(isActionEventPublishPath)) {
+    const result = pushImmutableActionLedgerCommit({
+      remote,
+      branch,
+      message: commitMessage,
+      paths: publishPaths,
+      sourceCommit,
+      maxAttempts,
+      pushAttempts,
+    });
+    return completeStatePublish(result, options.paths, stateBaseCommit);
+  }
+
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (
       pushCommit({
@@ -374,6 +388,38 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
     return completeStatePublish("committed", options.paths, stateBaseCommit);
   }
   throw new Error(`Failed to publish commit after ${maxAttempts} attempts`);
+}
+
+function pushImmutableActionLedgerCommit(options: {
+  remote: string;
+  branch: string;
+  message: string;
+  paths: readonly string[];
+  sourceCommit: string;
+  maxAttempts: number;
+  pushAttempts: number;
+}): PublishResult {
+  // Keep both retry knobs additive. Their former nesting multiplied every
+  // state race into another complete rebase loop.
+  const pushBudget = options.maxAttempts + options.pushAttempts + 1;
+  for (let attempt = 1; attempt <= pushBudget; attempt += 1) {
+    if (spawnGit(["push", options.remote, `HEAD:${options.branch}`]).status === 0) {
+      return "committed";
+    }
+    if (attempt === pushBudget) break;
+
+    // These paths are immutable and create-only, so rebuilding their exact batch
+    // is cheaper and safer than multiplying rebase probes inside nested retries.
+    const rebuildResult = rebuildPublishCommit({
+      remote: options.remote,
+      branch: options.branch,
+      message: options.message,
+      paths: options.paths,
+      sourceCommit: options.sourceCommit,
+    });
+    if (rebuildResult === "unchanged") return "unchanged";
+  }
+  throw new Error(`Failed to publish commit after ${pushBudget} push attempts`);
 }
 
 function pushReconciliationCommit(options: {

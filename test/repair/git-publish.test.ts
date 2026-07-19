@@ -1532,6 +1532,67 @@ test("publishMainCommit rebuilds immutable ledger batches within the router proc
   );
 });
 
+test("publishMainCommit bounds immutable ledger work across sustained state races", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const ledgerPaths = Array.from(
+    { length: 25 },
+    (_, index) => `ledger/v1/import-bindings/events/${index.toString(16).padStart(64, "0")}.json`,
+  );
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, "keep.txt"), "base\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  for (const ledgerPath of ledgerPaths) {
+    write(path.join(work, ledgerPath), `{"path":"${ledgerPath}"}\n`);
+  }
+  installPushRaceHook(work, other, 7);
+
+  const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: append command action ledger",
+        paths: ledgerPaths,
+        maxAttempts: 8,
+        pushAttempts: 3,
+      }),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  const metrics = lines.find((line) => line.startsWith("Git publish metrics:"));
+  assert.ok(metrics, "sustained ledger race publish emits metrics");
+  const processCount = Number(/processes=(\d+)/.exec(metrics)?.[1]);
+  assert.ok(
+    Number.isInteger(processCount) && processCount <= 125,
+    `sustained ledger races used ${processCount} git subprocesses; expected at most 125`,
+  );
+  assert.match(metrics, /actions=.*push:8(?:,|$)/, "one push is attempted per bounded retry");
+  assert.doesNotMatch(metrics, /actions=.*rebase:/, "immutable ledger retries never nest rebases");
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:remote.txt"], root),
+    Array.from({ length: 7 }, (_, index) => `race ${index + 1}\n`).join(""),
+  );
+  for (const ledgerPath of ledgerPaths) {
+    assert.equal(
+      run("git", ["--git-dir", origin, "show", `main:${ledgerPath}`], root),
+      `{"path":"${ledgerPath}"}\n`,
+    );
+  }
+});
+
 test("publishMainCommit publishes generated paths to state branch when state root is configured", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");
@@ -2505,6 +2566,27 @@ elif test "$count" -eq 2; then
   printf 'second race\\n' >> "${path.join(other, "remote.txt")}"
   git -C "${other}" add remote.txt
   git -C "${other}" commit -m 'second concurrent state update'
+  git -C "${other}" push origin HEAD:${branch}
+fi
+`,
+  );
+  fs.chmodSync(hook, 0o755);
+}
+
+function installPushRaceHook(work, other, raceCount, branch = "main") {
+  const hook = path.join(work, ".git/hooks/pre-push");
+  const counter = path.join(work, ".git/hooks/pre-push-count");
+  fs.writeFileSync(
+    hook,
+    `#!/bin/sh
+count=0
+if test -f "${counter}"; then count=$(cat "${counter}"); fi
+count=$((count + 1))
+printf '%s\\n' "$count" > "${counter}"
+if test "$count" -le ${raceCount}; then
+  printf 'race %s\\n' "$count" >> "${path.join(other, "remote.txt")}"
+  git -C "${other}" add remote.txt
+  git -C "${other}" commit -m "concurrent state update $count"
   git -C "${other}" push origin HEAD:${branch}
 fi
 `,
