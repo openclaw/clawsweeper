@@ -1057,7 +1057,7 @@ function classifyCommand(command: LooseRecord): JsonValue {
       const alreadyPlanned = autoRepairAlreadyPlanned(next);
       if (alreadyPlanned) return { ...next, status: "skipped", reason: alreadyPlanned };
     }
-    if (
+    const existingEnabledMode =
       !activationRepairReason &&
       existingModeStatusBlocksReplay({
         hasModeLabel: hasLabel(target, modeLabel),
@@ -1069,8 +1069,10 @@ function classifyCommand(command: LooseRecord): JsonValue {
           command.intent,
         ),
         forceReprocess,
-      })
-    ) {
+      });
+    if (existingEnabledMode && command.trusted_bot) {
+      // Label sweeps may stop at an already-armed plan, but a fresh maintainer
+      // resume must still coordinate an exact-head completed or active review.
       return {
         ...next,
         ...existingRepairLoopModeOutcome({
@@ -1079,6 +1081,7 @@ function classifyCommand(command: LooseRecord): JsonValue {
         }),
       };
     }
+    if (existingEnabledMode) next.reuse_prior_exact_head_review = true;
     const approvedProofOverride =
       command.intent === "automerge" && !activationRepairReason
         ? approvedMissingProofNeedsHuman(command, target)
@@ -3013,9 +3016,11 @@ function reviewDispatchDecisionForCommand(
       trustedAuthors: trustedBots,
       nowMs: Date.now(),
     });
-    const commandStartedAtMs = Date.parse(
-      String(command.comment_updated_at ?? command.comment_created_at ?? ""),
-    );
+    // An already-armed exact-head plan can have completed before the maintainer
+    // resume comment. Its head binding, rather than comment order, makes reuse safe.
+    const commandStartedAtMs = command.reuse_prior_exact_head_review
+      ? 0
+      : Date.parse(String(command.comment_updated_at ?? command.comment_created_at ?? ""));
     const completedReview = trustedExactHeadReviewCompletionSince({
       comments: comments as LooseRecord[],
       headSha: headAfter,

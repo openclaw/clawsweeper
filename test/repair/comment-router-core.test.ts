@@ -2550,6 +2550,12 @@ test("parseTrustedAutomation treats trusted ClawSweeper needs-human as a pause",
 test("canonical landing needs-human text can be approved by active automerge opt-in", () => {
   assert.equal(
     isCanonicalLandingNeedsHumanText(
+      "- [P2] No repair lane is needed: the PR already contains the narrow fix and should proceed through normal merge gates.",
+    ),
+    true,
+  );
+  assert.equal(
+    isCanonicalLandingNeedsHumanText(
       "No repair lane is needed because the PR already contains the narrow fix; maintainer action is to land one canonical fix.",
     ),
     true,

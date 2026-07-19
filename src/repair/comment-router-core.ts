@@ -717,7 +717,11 @@ export function existingRepairLoopModeOutcome({ intent, trustedBot }: LooseRecor
 export function isCanonicalLandingNeedsHumanText(value: JsonValue) {
   const text = String(value ?? "");
   if (!text) return false;
-  if (/security-sensitive|needs attention|review finding|\[P[0-3]\]/i.test(text)) return false;
+  if (/security-sensitive|needs attention|review finding/i.test(text)) return false;
+  // Review prose sometimes prefixes its non-finding landing conclusion with a
+  // priority token. Keep rejecting actual prioritized findings while allowing
+  // the canonical "No repair lane" conclusion to reach the exact-head gate.
+  if (/\[P[0-3]\](?!\s*No repair lane is needed\b)/i.test(text)) return false;
   return (
     /no repair lane is needed|maintainer action is to land|land .*canonical|canonical .*fix/i.test(
       text,

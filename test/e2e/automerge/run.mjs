@@ -286,25 +286,25 @@ export function runAutomergeE2E({
       });
       addCanonicalNeedsHumanVerdict(statePath, repairedHead);
     } else if (scenario === "completed-verdict-resume") {
+      updateGitHubState(statePath, (state) => {
+        if (!state.pr.labels.includes("clawsweeper:automerge")) {
+          state.pr.labels.push("clawsweeper:automerge");
+        }
+      });
+      const verdictId = addExactHeadVerdict(statePath, repairedHead);
       const commandId = addMaintainerAutomergeCommand(statePath);
       runCommentRouterExact(runtimeRoot, baseEnv, artifacts, "08-comment-router-command", {
         commentId: commandId,
       });
-      const verdictId = addExactHeadVerdict(statePath, repairedHead);
-      runCommentRouterExact(runtimeRoot, baseEnv, artifacts, "09-comment-router-command-replay", {
-        commentId: commandId,
-        forceReprocess: true,
-        attemptId: "completed-verdict-resume",
-      });
-      const replayState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-      const verdictHandoff = replayState.dispatches.findLast(
+      const resumedState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      const verdictHandoff = resumedState.dispatches.findLast(
         (dispatch) =>
           dispatch.event_type === "clawsweeper_comment" &&
           dispatch.client_payload?.comment_id === String(verdictId),
       );
       assert.ok(
         verdictHandoff,
-        "reusing a completed review must requeue its exact verdict after an earlier handoff was lost",
+        "an armed-plan resume must requeue an exact verdict that completed before the command",
       );
       assert.equal(verdictHandoff.client_payload.force_reprocess, "true");
       runCommentRouterExact(runtimeRoot, baseEnv, artifacts, "10-comment-router-verdict-handoff", {
@@ -628,7 +628,7 @@ function addCanonicalNeedsHumanVerdict(statePath, headSha) {
       "ClawSweeper needs maintainer judgment.",
       "",
       "**Next step before merge**",
-      "The PR is an active automerge candidate with no code finding, but missing real behavior proof needs maintainer handling.",
+      "- [P2] No repair lane is needed: the PR already contains the narrow fix, but missing real behavior proof needs maintainer handling.",
       "",
       `<!-- clawsweeper-verdict:needs-human item=${state.pr.number} sha=${headSha} reviewed_at=${now} -->`,
     ].join("\n"),
