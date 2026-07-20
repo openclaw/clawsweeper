@@ -1778,6 +1778,237 @@ test(
   },
 );
 
+test(
+  "state publish lease also serializes ordinary state branch writers",
+  { timeout: 60_000 },
+  async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-global-lease-"));
+    const origin = path.join(root, "origin.git");
+    const seed = path.join(root, "seed");
+    const exact = path.join(root, "exact");
+    const ordinary = path.join(root, "ordinary");
+    const ordinarySource = path.join(root, "ordinary-source");
+    const candidate = path.join(root, "candidate");
+    const exactReady = path.join(root, "exact-ready");
+    const releaseExact = path.join(root, "release-exact");
+    run("git", ["init", "--bare", origin], root);
+    run("git", ["clone", origin, seed], root);
+    configureUser(seed);
+    write(path.join(seed, "README.md"), "state\n");
+    run("git", ["add", "."], seed);
+    run("git", ["commit", "-m", "initial state"], seed);
+    run("git", ["push", "origin", "HEAD:state"], seed);
+    run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+    run("git", ["clone", "--depth", "1", `file://${origin}`, exact], root);
+    run("git", ["clone", "--depth", "1", `file://${origin}`, ordinary], root);
+    configureUser(exact);
+    configureUser(ordinary);
+
+    const number = 10_050;
+    const tuple = writeRecordTuple(candidate, {
+      number,
+      marker: "exact writer",
+      reviewedAt: "2026-07-20T19:00:00.000Z",
+      itemUpdatedAt: "2026-07-20T19:00:00Z",
+    });
+    const recordRoot = "records/openclaw-openclaw";
+    const ordinaryPath = "results/ordinary-writer.json";
+
+    const exactScript = String.raw`
+      import fs from "node:fs";
+      import path from "node:path";
+      const [work, candidate, ready, release, numberRaw] = process.argv.slice(1);
+      const number = Number(numberRaw);
+      const recordRoot = "records/openclaw-openclaw";
+      const paths = [
+        recordRoot + "/items/" + number + ".md",
+        recordRoot + "/closed/" + number + ".md",
+        recordRoot + "/plans/" + number + ".md",
+        recordRoot + "/decision-packets/" + number + ".json",
+      ];
+      const wait = new Int32Array(new SharedArrayBuffer(4));
+      const {
+        commitMessageForPublishedPaths,
+        hardResetToRemoteMain,
+        pushSingleRecordTupleCommit,
+        runGit,
+        stagePaths,
+        withStatePublishLease,
+      } = await import("./dist/repair/git-publish.js");
+      withStatePublishLease(
+        () => {
+          fs.writeFileSync(ready, "ready\n");
+          while (!fs.existsSync(release)) Atomics.wait(wait, 0, 0, 10);
+          hardResetToRemoteMain("origin", "state");
+          fs.cpSync(path.join(candidate, "records"), path.join(work, "records"), { recursive: true });
+          stagePaths(paths);
+          runGit([
+            "commit",
+            "-m",
+            commitMessageForPublishedPaths("chore: publish exact tuple " + number, paths),
+          ]);
+          if (!pushSingleRecordTupleCommit({ paths, branch: "state", pushAttempts: 1 })) {
+            throw new Error("exact tuple push lost the state race");
+          }
+        },
+        { branch: "state", acquireTimeoutMs: 10_000, ttlMs: 30_000, waitMs: 25 },
+      );
+    `;
+    const ordinaryScript = String.raw`
+      import fs from "node:fs";
+      import path from "node:path";
+      const [sourceRoot] = process.argv.slice(1);
+      const publishPath = "results/ordinary-writer.json";
+      const { publishMainCommit } = await import("./dist/repair/git-publish.js");
+      fs.mkdirSync(path.join(sourceRoot, "results"), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, publishPath), '{"writer":"ordinary"}\n');
+      process.chdir(sourceRoot);
+      publishMainCommit({
+        message: "chore: publish ordinary state update",
+        paths: [publishPath],
+        branch: "state",
+        maxAttempts: 2,
+        pushAttempts: 1,
+      });
+    `;
+
+    const exactResult = runAsync(
+      "node",
+      [
+        "--input-type=module",
+        "-e",
+        exactScript,
+        exact,
+        candidate,
+        exactReady,
+        releaseExact,
+        String(number),
+      ],
+      process.cwd(),
+      { CLAWSWEEPER_PUBLISH_ROOT: exact, CLAWSWEEPER_PUBLISH_BRANCH: "state" },
+    );
+    const wait = new Int32Array(new SharedArrayBuffer(4));
+    const readyDeadline = Date.now() + 10_000;
+    while (!fs.existsSync(exactReady) && Date.now() < readyDeadline) {
+      Atomics.wait(wait, 0, 0, 10);
+    }
+    assert.equal(fs.existsSync(exactReady), true, "exact writer did not acquire its lease");
+
+    const ordinaryRun = startAsync(
+      "node",
+      ["--input-type=module", "-e", ordinaryScript, ordinarySource],
+      process.cwd(),
+      { CLAWSWEEPER_PUBLISH_ROOT: ordinary, CLAWSWEEPER_PUBLISH_BRANCH: "state" },
+    );
+    const ordinaryDeadline = Date.now() + 10_000;
+    while (
+      !ordinaryRun.output().includes("State publish lease busy") &&
+      !ordinaryRun.settled() &&
+      Date.now() < ordinaryDeadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const ordinaryWaitedOnLease = ordinaryRun.output().includes("State publish lease busy");
+    fs.writeFileSync(releaseExact, "release\n");
+    const [exactOutput, ordinaryOutput] = await Promise.all([exactResult, ordinaryRun.result]);
+
+    assert.equal(
+      ordinaryWaitedOnLease,
+      true,
+      "ordinary state writer did not reach and wait on the exact owner's lease",
+    );
+    assert.match(exactOutput, /Acquired state publish lease/);
+    assert.match(ordinaryOutput, /Acquired state publish lease/);
+    assert.match(ordinaryOutput, /Released state publish lease/);
+    assert.equal(
+      run("git", ["--git-dir", origin, "show", `state:${recordRoot}/items/${number}.md`], root),
+      tuple.primary,
+    );
+    assert.equal(
+      run("git", ["--git-dir", origin, "show", `state:${ordinaryPath}`], root),
+      '{"writer":"ordinary"}\n',
+    );
+  },
+);
+
+test(
+  "state publish watchdog releases an owner terminated during a synchronous mutation",
+  {
+    timeout: 15_000,
+    skip:
+      process.platform === "win32" ? "POSIX signal cleanup runs in hosted Linux workflows" : false,
+  },
+  async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-lease-watchdog-"));
+    const origin = path.join(root, "origin.git");
+    const work = path.join(root, "work");
+    run("git", ["init", "--bare", origin], root);
+    run("git", ["clone", origin, work], root);
+    configureUser(work);
+    write(path.join(work, "README.md"), "state\n");
+    run("git", ["add", "."], work);
+    run("git", ["commit", "-m", "initial state"], work);
+    run("git", ["push", "origin", "HEAD:state"], work);
+    run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+
+    const childScript = String.raw`
+      import { spawnSync } from "node:child_process";
+      const { withStatePublishLease } = await import("./dist/repair/git-publish.js");
+      withStatePublishLease(
+        () => {
+          process.stdout.write("lease-held\n");
+          spawnSync(process.execPath, ["-e", "setTimeout(() => {}, 5000)"]);
+        },
+        { branch: "state", acquireTimeoutMs: 5_000, ttlMs: 30_000, waitMs: 10 },
+      );
+    `;
+    const childRun = startAsync("node", ["--input-type=module", "-e", childScript], process.cwd(), {
+      CLAWSWEEPER_PUBLISH_ROOT: work,
+      CLAWSWEEPER_PUBLISH_BRANCH: "state",
+    });
+    const readyDeadline = Date.now() + 5_000;
+    while (!childRun.output().includes("lease-held") && Date.now() < readyDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.match(childRun.output(), /lease-held/);
+    assert.match(
+      run(
+        "git",
+        [
+          "--git-dir",
+          origin,
+          "for-each-ref",
+          "--format=%(refname)",
+          "refs/heads/clawsweeper-publish-lease",
+        ],
+        root,
+      ),
+      /refs\/heads\/clawsweeper-publish-lease\/state/,
+    );
+
+    childRun.child.kill("SIGTERM");
+    await assert.rejects(childRun.result, /Process exited SIGTERM/);
+    const cleanupDeadline = Date.now() + 5_000;
+    let leaseRefs = "";
+    do {
+      leaseRefs = run(
+        "git",
+        [
+          "--git-dir",
+          origin,
+          "for-each-ref",
+          "--format=%(refname)",
+          "refs/heads/clawsweeper-publish-lease",
+        ],
+        root,
+      );
+      if (!leaseRefs) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    } while (Date.now() < cleanupDeadline);
+    assert.equal(leaseRefs, "");
+  },
+);
+
 test("state publish lease recovers an abandoned owner after its bounded TTL", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-lease-stale-"));
   const origin = path.join(root, "origin.git");
@@ -2931,6 +3162,7 @@ test("publishMainCommit escapes sustained immutable ledger races through a serve
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-server-merge-"));
   const origin = path.join(root, "origin.git");
   const work = path.join(root, "work");
+  const source = path.join(root, "source");
   const other = path.join(root, "other");
   const fakeBin = path.join(root, "bin");
   const ledgerPath =
@@ -2948,7 +3180,7 @@ test("publishMainCommit escapes sustained immutable ledger races through a serve
 
   run("git", ["clone", origin, other], root);
   configureUser(other);
-  write(path.join(work, ledgerPath), '{"local":true}\n');
+  write(path.join(source, ledgerPath), '{"local":true}\n');
   installSimplePushRaceHook(work, other, 65);
   installFakeGitHubMerge(fakeBin, origin);
 
@@ -2958,12 +3190,14 @@ test("publishMainCommit escapes sustained immutable ledger races through a serve
     result = withEnv(
       {
         CLAWSWEEPER_STATE_REPOSITORY: "openclaw/clawsweeper-state",
+        CLAWSWEEPER_PUBLISH_ROOT: work,
+        CLAWSWEEPER_PUBLISH_BRANCH: "main",
         GITHUB_RUN_ID: "12345",
         GITHUB_RUN_ATTEMPT: "1",
         PATH: `${fakeBin}:${process.env.PATH}`,
       },
       () =>
-        withCwd(work, () =>
+        withCwd(source, () =>
           publishMainCommit({
             message: "chore: append command action ledger",
             paths: [ledgerPath],
@@ -2981,12 +3215,30 @@ test("publishMainCommit escapes sustained immutable ledger races through a serve
   );
   assert.equal(
     run("git", ["--git-dir", origin, "show", "main:remote.txt"], root),
-    "base\nrace 1\nrace 2\n",
-    "the server merge preserves state writes that beat both client pushes",
+    "base\nrace 1\n",
+    "the server merge preserves the state write that beat the client push",
   );
   const metrics = lines.find((line) => line.startsWith("Git publish metrics:"));
   assert.match(metrics, /actions=.*gh-api:2(?:,|$)/, "merge and cleanup use the GitHub API");
-  assert.match(metrics, /actions=.*push:2(?:,|$)/, "the client stops racing the state ref");
+  assert.equal(
+    lines.filter((line) => line.includes("Acquired state publish lease")).length,
+    2,
+    "the direct push and server merge each coordinate their state mutation",
+  );
+  assert.equal(
+    run(
+      "git",
+      [
+        "--git-dir",
+        origin,
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/heads/clawsweeper-publish-lease",
+      ],
+      root,
+    ),
+    "",
+  );
 });
 
 test("publishMainCommit rebuilds a production-sized flat immutable ledger tree", () => {
@@ -4195,6 +4447,12 @@ function installSimplePushRaceHook(work, other, raceCount, branch = "main") {
     hook,
     `#!/bin/sh
 set -e
+target_ref="refs/heads/${branch}"
+targets_branch=false
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if test "$remote_ref" = "$target_ref"; then targets_branch=true; fi
+done
+if test "$targets_branch" != true; then exit 0; fi
 count=0
 if test -f "${counter}"; then count=$(cat "${counter}"); fi
 count=$((count + 1))
@@ -4283,6 +4541,12 @@ function installCheckpointFailureHook(work, other, branch) {
   fs.writeFileSync(
     hook,
     `#!/bin/sh
+target_ref="refs/heads/${branch}"
+targets_branch=false
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if test "$remote_ref" = "$target_ref"; then targets_branch=true; fi
+done
+if test "$targets_branch" != true; then exit 0; fi
 count=0
 if test -f "${counter}"; then count=$(cat "${counter}"); fi
 count=$((count + 1))
@@ -4317,6 +4581,39 @@ function runAsync(command, args, cwd, env = {}) {
       },
     );
   });
+}
+
+function startAsync(command, args, cwd, env = {}) {
+  let output = "";
+  let settled = false;
+  const child = execFile(command, args, {
+    cwd,
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: 55_000,
+  });
+  const result = new Promise((resolve, reject) => {
+    child.stdout?.on("data", (chunk) => {
+      output += String(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      output += String(chunk);
+    });
+    child.on("error", (error) => {
+      settled = true;
+      reject(new Error(`${error.message}\n${output}`));
+    });
+    child.on("close", (code, signal) => {
+      settled = true;
+      if (code !== 0) {
+        reject(new Error(`Process exited ${code ?? signal}\n${output}`));
+        return;
+      }
+      resolve(output);
+    });
+  });
+  return { child, result, output: () => output, settled: () => settled };
 }
 
 function captureConsoleLog(callback, lines = []) {

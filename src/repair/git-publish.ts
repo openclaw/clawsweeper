@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   cpSync,
@@ -106,6 +106,12 @@ type StatePublishLease = {
   ttlMs: number;
   remote: string;
   branch: string;
+  cleanup: StatePublishLeaseCleanup | null;
+};
+
+type StatePublishLeaseCleanup = {
+  track: (oid: string) => void;
+  close: () => void;
 };
 
 type ObservedStatePublishLease = {
@@ -484,7 +490,7 @@ function pushImmutableActionLedgerCommit(options: {
   for (let attempt = 1; attempt <= pushBudget; attempt += 1) {
     const pushArgs = ["push", options.remote, `${candidateCommit}:${options.branch}`];
     const pushDisplayArgs = ["push", options.remote, `<commit>:${options.branch}`];
-    let pushResult = spawnGit(pushArgs, { displayArgs: pushDisplayArgs });
+    let pushResult = pushPublishedCommit(candidateCommit, options.remote, options.branch);
     if (pushResult.status !== 0 && unavailableGitObjectIds(pushResult).length > 0) {
       if (unavailableObjectRecoveryUsed) {
         throw gitRunError(pushResult, pushArgs, pushDisplayArgs);
@@ -509,9 +515,7 @@ function pushImmutableActionLedgerCommit(options: {
         });
         return "unchanged";
       }
-      pushResult = spawnGit(["push", options.remote, `${candidateCommit}:${options.branch}`], {
-        displayArgs: pushDisplayArgs,
-      });
+      pushResult = pushPublishedCommit(candidateCommit, options.remote, options.branch);
       if (pushResult.status !== 0 && unavailableGitObjectIds(pushResult).length > 0) {
         throw gitRunError(pushResult, pushArgs, pushDisplayArgs);
       }
@@ -705,39 +709,42 @@ function mergeImmutableActionLedgerOnGitHub(options: {
     // GitHub resolves the merge against the live base ref in one server-side
     // transaction, so a fast state writer cannot invalidate a locally rebuilt
     // commit between fetch and push.
-    for (let attempt = 1; attempt <= 8; attempt += 1) {
-      spawnGitHubApi(
-        [
-          "api",
-          `repos/${options.repository}/merges`,
-          "--method",
-          "POST",
-          "-f",
-          `base=${options.branch}`,
-          "-f",
-          `head=${temporaryBranch}`,
-          "-f",
-          `commit_message=${options.message}`,
-        ],
-        options.repository,
-        options.token,
-      );
-      fetchPublishRemote(options.remote, options.branch);
-      const remoteCommit = runGit(["rev-parse", `${options.remote}/${options.branch}`], {
-        quiet: true,
-      }).trim();
-      if (
-        immutableActionLedgerPathsPresent({
-          commit: remoteCommit,
-          sourceCommit: options.sourceCommit,
-          paths: options.paths,
-        })
-      ) {
-        return remoteCommit;
+    return withStatePublishMutationLease(options.remote, options.branch, () => {
+      for (let attempt = 1; attempt <= 8; attempt += 1) {
+        renewStatePublishLeaseIfNeeded("before immutable ledger server merge");
+        spawnGitHubApi(
+          [
+            "api",
+            `repos/${options.repository}/merges`,
+            "--method",
+            "POST",
+            "-f",
+            `base=${options.branch}`,
+            "-f",
+            `head=${temporaryBranch}`,
+            "-f",
+            `commit_message=${options.message}`,
+          ],
+          options.repository,
+          options.token,
+        );
+        fetchPublishRemote(options.remote, options.branch);
+        const remoteCommit = runGit(["rev-parse", `${options.remote}/${options.branch}`], {
+          quiet: true,
+        }).trim();
+        if (
+          immutableActionLedgerPathsPresent({
+            commit: remoteCommit,
+            sourceCommit: options.sourceCommit,
+            paths: options.paths,
+          })
+        ) {
+          return remoteCommit;
+        }
+        console.log(`Server merge attempt ${attempt} did not publish the immutable ledger batch`);
       }
-      console.log(`Server merge attempt ${attempt} did not publish the immutable ledger batch`);
-    }
-    throw new Error("Failed to publish immutable ledger through GitHub server merge");
+      throw new Error("Failed to publish immutable ledger through GitHub server merge");
+    });
   } finally {
     if (pushed) {
       spawnGitHubApi(
@@ -1450,13 +1457,28 @@ export function withStatePublishLease<T>(
   const remote = options.remote ?? "origin";
   const branch = options.branch ?? publishDefaultBranch();
   const lease = acquireStatePublishLease(remote, branch, options);
+  lease.cleanup = startStatePublishLeaseCleanup(lease);
   activeStatePublishLease = lease;
   try {
     return operation();
   } finally {
     activeStatePublishLease = null;
     releaseStatePublishLease(lease);
+    lease.cleanup?.close();
   }
+}
+
+function withStatePublishMutationLease<T>(remote: string, branch: string, operation: () => T): T {
+  if (!publishRoot()) return operation();
+  if (!activeStatePublishLease) {
+    return withStatePublishLease(operation, { remote, branch });
+  }
+  if (activeStatePublishLease.remote !== remote || activeStatePublishLease.branch !== branch) {
+    throw new StatePublishContentionError(
+      `Active state publish lease does not cover ${remote}/${branch}`,
+    );
+  }
+  return operation();
 }
 
 function acquireStatePublishLease(
@@ -1500,9 +1522,9 @@ function acquireStatePublishLease(
         ).status === 0;
       if (acquired) {
         console.log(
-          `Acquired state publish lease owner=${owner} attempt=${attempt} stale_recovery=${observed ? "true" : "false"}`,
+          `Acquired state publish lease owner=${owner} attempt=${attempt} stale_recovery=${observed ? "true" : "false"} ttl_ms=${ttlMs}`,
         );
-        return { ref: leaseRef, oid, owner, expiresAtMs, ttlMs, remote, branch };
+        return { ref: leaseRef, oid, owner, expiresAtMs, ttlMs, remote, branch, cleanup: null };
       }
     } else {
       console.log(
@@ -1592,6 +1614,76 @@ function createStatePublishLeaseCommit(options: {
   }).trim();
 }
 
+function startStatePublishLeaseCleanup(lease: StatePublishLease): StatePublishLeaseCleanup {
+  const cleanupScript = String.raw`
+    import { spawnSync } from "node:child_process";
+
+    const [remote, leaseRef, workdir] = process.argv.slice(1);
+    const candidates = [];
+    let pending = "";
+    const capture = (value) => {
+      for (const line of value.split("\n")) {
+        const oid = line.trim();
+        if (/^[a-f0-9]{40,64}$/.test(oid) && !candidates.includes(oid)) candidates.push(oid);
+      }
+    };
+
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      pending += chunk;
+      const newline = pending.lastIndexOf("\n");
+      if (newline < 0) return;
+      capture(pending.slice(0, newline));
+      pending = pending.slice(newline + 1);
+    });
+    process.stdin.on("end", () => {
+      capture(pending);
+      for (const oid of candidates.reverse()) {
+        const deleted = spawnSync(
+          "git",
+          ["push", "--quiet", "--force-with-lease=" + leaseRef + ":" + oid, remote, ":" + leaseRef],
+          { cwd: workdir, stdio: "ignore", timeout: 60000 },
+        );
+        if (deleted.status === 0) break;
+      }
+    });
+    process.stdin.resume();
+  `;
+  const child = spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      cleanupScript,
+      lease.remote,
+      lease.ref,
+      resolve(publishRoot() ?? "."),
+    ],
+    {
+      detached: true,
+      windowsHide: true,
+      stdio: ["pipe", "ignore", "ignore"],
+    },
+  );
+  child.on("error", () => {});
+  child.stdin.on("error", () => {});
+  child.unref();
+
+  let closed = false;
+  const track = (oid: string) => {
+    if (!closed && !child.stdin.destroyed) child.stdin.write(`${oid}\n`);
+  };
+  track(lease.oid);
+  return {
+    track,
+    close: () => {
+      if (closed) return;
+      closed = true;
+      child.stdin.end();
+    },
+  };
+}
+
 function releaseStatePublishLease(lease: StatePublishLease): void {
   try {
     const released = spawnGit(
@@ -1618,6 +1710,7 @@ function renewStatePublishLease(lease: StatePublishLease, reason: string): void 
     owner: lease.owner,
     ttlMs: lease.ttlMs,
   });
+  lease.cleanup?.track(renewedOid);
   const renewed = spawnGit(
     [
       "push",
@@ -1646,6 +1739,14 @@ function renewStatePublishLease(lease: StatePublishLease, reason: string): void 
   console.log(`Renewed state publish lease owner=${lease.owner} ${reason}`);
 }
 
+function renewStatePublishLeaseIfNeeded(reason: string): void {
+  const lease = activeStatePublishLease;
+  if (!lease) throw new Error("State publish mutation is missing its owner lease");
+  if (lease.expiresAtMs - Date.now() <= STATE_PUBLISH_LEASE_RENEW_THRESHOLD_MS) {
+    renewStatePublishLease(lease, reason);
+  }
+}
+
 function remoteRefOid(remote: string, ref: string): string | null {
   const result = spawnGit(["ls-remote", "--refs", remote, ref], {
     allowFailure: true,
@@ -1664,8 +1765,17 @@ function remoteRefOid(remote: string, ref: string): string | null {
 }
 
 function pushPublishedBranch(remote: string, branch: string): GitRunResult {
+  return pushPublishedCommit("HEAD", remote, branch);
+}
+
+function pushPublishedCommit(source: string, remote: string, branch: string): GitRunResult {
   const lease = activeStatePublishLease;
-  if (!lease) return spawnGit(["push", remote, `HEAD:${branch}`]);
+  if (!lease && publishRoot()) {
+    return withStatePublishMutationLease(remote, branch, () =>
+      pushPublishedCommit(source, remote, branch),
+    );
+  }
+  if (!lease) return spawnGit(["push", remote, `${source}:${branch}`]);
   if (lease.remote !== remote || lease.branch !== branch) {
     throw new StatePublishContentionError(
       `Active state publish lease does not cover ${remote}/${branch}`,
@@ -1681,13 +1791,14 @@ function pushPublishedBranch(remote: string, branch: string): GitRunResult {
     owner: lease.owner,
     ttlMs: lease.ttlMs,
   });
+  lease.cleanup?.track(renewedOid);
   const pushed = spawnGit(
     [
       "push",
       "--atomic",
       `--force-with-lease=${lease.ref}:${lease.oid}`,
       lease.remote,
-      `HEAD:${branch}`,
+      `${source}:${branch}`,
       `${renewedOid}:${lease.ref}`,
     ],
     { allowFailure: true },
@@ -1695,8 +1806,8 @@ function pushPublishedBranch(remote: string, branch: string): GitRunResult {
   if (pushed.status !== 0) {
     const currentLeaseOid = remoteRefOid(remote, lease.ref);
     if (currentLeaseOid === renewedOid) {
-      const localHead = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
-      if (remoteRefOid(remote, `refs/heads/${branch}`) === localHead) {
+      const sourceCommit = runGit(["rev-parse", source], { quiet: true }).trim();
+      if (remoteRefOid(remote, `refs/heads/${branch}`) === sourceCommit) {
         lease.oid = renewedOid;
         lease.expiresAtMs = Date.now() + lease.ttlMs;
         return { ...pushed, status: 0 };
