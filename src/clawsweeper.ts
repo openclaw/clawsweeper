@@ -818,7 +818,16 @@ interface AgentsPolicyStatus {
 
 type GoodFirstIssueHumanLabelState = "removed" | "added" | "unknown";
 
+const completeActivityContextSymbol = Symbol("completeActivityContext");
+
+interface CompleteActivityContext {
+  comments: unknown[];
+  timeline: unknown[];
+  pullReviewComments: unknown[];
+}
+
 interface ItemContext {
+  [completeActivityContextSymbol]?: CompleteActivityContext;
   issue: unknown;
   comments: unknown[];
   timeline: unknown[];
@@ -9160,6 +9169,8 @@ function collectItemContext(
   let pullReviewComments: unknown[] | null = null;
   let filteredPullReviewComments: { included: unknown[]; filtered: number } | null = null;
   let digestPullReviewComments: { included: unknown[]; filtered: number } | null = null;
+  let completePullReviewComments: { included: unknown[]; filtered: number } | null = null;
+  let completePullReviewCommentsHydrated = item.kind !== "pull_request";
   if (item.kind === "issue") {
     const closingPullRequests = closingPullRequestsForIssue(item.number);
     if (closingPullRequests.length > 0) {
@@ -9210,13 +9221,20 @@ function collectItemContext(
     pullReviewComments = pullReviewCommentsWindow.items;
     filteredPullReviewComments = filterReviewContextComments(pullReviewComments, item.number);
     const fullPullReviewComments =
-      options.reviewCacheDigest && pullReviewCommentsWindow.truncated
+      (options.reviewCacheDigest || options.fullTimelineForRelations) &&
+      pullReviewCommentsWindow.truncated
         ? ghPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/comments`)
         : pullReviewComments;
     digestPullReviewComments =
+      !options.reviewCacheDigest || fullPullReviewComments === pullReviewComments
+        ? filteredPullReviewComments
+        : filterReviewContextComments(fullPullReviewComments, item.number);
+    completePullReviewComments =
       fullPullReviewComments === pullReviewComments
         ? filteredPullReviewComments
         : filterReviewContextComments(fullPullReviewComments, item.number);
+    completePullReviewCommentsHydrated =
+      fullPullReviewComments.length >= pullReviewCommentsWindow.total;
     context.pullRequest = compactPullRequest(pullRequest);
     context.pullFiles = compactMappedWindow(pullFiles, pullFilesWindow.total, 80, compactPullFile);
     context.semanticPullFiles =
@@ -9347,6 +9365,19 @@ function collectItemContext(
     if (context.counts?.closingPullRequests !== undefined)
       counts.closingPullRequests = context.counts.closingPullRequests;
     context.counts = counts;
+  }
+  const completeActivityHydrated =
+    sourceRevisionComments.length >= commentsWindow.total &&
+    (fullTimeline ?? timeline).length >= timelineWindow.total &&
+    completePullReviewCommentsHydrated;
+  if (options.fullTimelineForRelations && completeActivityHydrated) {
+    context[completeActivityContextSymbol] = {
+      comments: filterReviewContextComments(sourceRevisionComments, item.number).included.map(
+        compactComment,
+      ),
+      timeline: (fullTimeline ?? timeline).map(compactTimelineEvent),
+      pullReviewComments: (completePullReviewComments?.included ?? []).map(compactComment),
+    };
   }
   return context;
 }
@@ -16312,6 +16343,7 @@ function contextHasNonAutomationActivityAfter(
   reviewedAtMs: number,
   options: {
     truncationCountsAsActivity?: boolean;
+    useCompleteActivityContext?: boolean;
     ignoreTimelineCommentsThroughMs?: number;
     ignoreTrustedTimelineComment?: {
       authors: ReadonlySet<string>;
@@ -16320,12 +16352,15 @@ function contextHasNonAutomationActivityAfter(
   } = {},
 ): boolean {
   const truncationCountsAsActivity = options.truncationCountsAsActivity ?? true;
-  if (
-    truncationCountsAsActivity &&
-    (context.counts?.commentsTruncated ||
-      context.counts?.timelineTruncated ||
-      context.counts?.pullReviewCommentsTruncated)
-  ) {
+  const activityContextTruncated = Boolean(
+    context.counts?.commentsTruncated ||
+    context.counts?.timelineTruncated ||
+    context.counts?.pullReviewCommentsTruncated,
+  );
+  const completeActivityContext = options.useCompleteActivityContext
+    ? context[completeActivityContextSymbol]
+    : undefined;
+  if (truncationCountsAsActivity && activityContextTruncated && !completeActivityContext) {
     return true;
   }
   const hasNonAutomationComment = (comment: unknown): boolean => {
@@ -16363,29 +16398,53 @@ function contextHasNonAutomationActivityAfter(
     );
   };
   return (
-    context.comments.some(hasNonAutomationComment) ||
-    (context.pullReviewComments ?? []).some(hasNonAutomationComment) ||
-    context.timeline.some(hasNonAutomationEvent)
+    (completeActivityContext?.comments ?? context.comments).some(hasNonAutomationComment) ||
+    (completeActivityContext?.pullReviewComments ?? context.pullReviewComments ?? []).some(
+      hasNonAutomationComment,
+    ) ||
+    (completeActivityContext?.timeline ?? context.timeline).some(hasNonAutomationEvent)
   );
 }
 
 export function contextHasNonAutomationActivityAfterForTest(options: {
   comments?: unknown[];
   timeline?: unknown[];
+  pullReviewComments?: unknown[];
+  truncated?: {
+    comments?: boolean;
+    timeline?: boolean;
+    pullReviewComments?: boolean;
+  };
+  completeActivityContext?: Partial<CompleteActivityContext>;
   activityAfterMs: number;
   ignoreTimelineCommentsThroughMs?: number;
 }): boolean {
-  return contextHasNonAutomationActivityAfter(
-    {
-      issue: {},
-      comments: options.comments ?? [],
-      timeline: options.timeline ?? [],
+  const context: ItemContext = {
+    issue: {},
+    comments: options.comments ?? [],
+    timeline: options.timeline ?? [],
+    pullReviewComments: options.pullReviewComments ?? [],
+    counts: {
+      comments: options.comments?.length ?? 0,
+      commentsTruncated: options.truncated?.comments ?? false,
+      timeline: options.timeline?.length ?? 0,
+      timelineTruncated: options.truncated?.timeline ?? false,
+      pullReviewCommentsTruncated: options.truncated?.pullReviewComments ?? false,
     },
-    options.activityAfterMs,
-    options.ignoreTimelineCommentsThroughMs === undefined
+  };
+  if (options.completeActivityContext) {
+    context[completeActivityContextSymbol] = {
+      comments: options.completeActivityContext.comments ?? [],
+      timeline: options.completeActivityContext.timeline ?? [],
+      pullReviewComments: options.completeActivityContext.pullReviewComments ?? [],
+    };
+  }
+  return contextHasNonAutomationActivityAfter(context, options.activityAfterMs, {
+    ...(options.completeActivityContext ? { useCompleteActivityContext: true } : {}),
+    ...(options.ignoreTimelineCommentsThroughMs === undefined
       ? {}
-      : { ignoreTimelineCommentsThroughMs: options.ignoreTimelineCommentsThroughMs },
-  );
+      : { ignoreTimelineCommentsThroughMs: options.ignoreTimelineCommentsThroughMs }),
+  });
 }
 
 function pullRequestUrlForNumber(number: number): string {
@@ -28107,7 +28166,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       return !contextHasNonAutomationActivityAfter(
         currentItemContext(),
         storedUpdatedAtMs,
-        reviewedAtMs === null ? {} : { ignoreTimelineCommentsThroughMs: reviewedAtMs },
+        {
+          useCompleteActivityContext: true,
+          ...(reviewedAtMs === null ? {} : { ignoreTimelineCommentsThroughMs: reviewedAtMs }),
+        },
       );
     };
     const stalePrReviewHead =

@@ -51,6 +51,65 @@ test("command-only timeline activity is ignored only through the completed revie
   );
 });
 
+test("complete activity hydration distinguishes truncation from hidden human activity", () => {
+  const activityAfterMs = Date.parse("2026-07-03T21:42:48Z");
+  const surfaces = [
+    {
+      name: "comments",
+      automation: { author: "fixture[bot]", createdAt: "2026-07-03T21:45:00Z" },
+      human: { author: "maintainer", createdAt: "2026-07-03T21:46:00Z" },
+    },
+    {
+      name: "timeline",
+      automation: {
+        event: "labeled",
+        actor: "fixture[bot]",
+        createdAt: "2026-07-03T21:45:00Z",
+      },
+      human: {
+        event: "labeled",
+        actor: "maintainer",
+        createdAt: "2026-07-03T21:46:00Z",
+      },
+    },
+    {
+      name: "pullReviewComments",
+      automation: { author: "fixture[bot]", createdAt: "2026-07-03T21:45:00Z" },
+      human: { author: "maintainer", createdAt: "2026-07-03T21:46:00Z" },
+    },
+  ] as const;
+
+  for (const surface of surfaces) {
+    assert.equal(
+      contextHasNonAutomationActivityAfterForTest({
+        truncated: { [surface.name]: true },
+        completeActivityContext: { [surface.name]: [surface.automation] },
+        activityAfterMs,
+      }),
+      false,
+      `${surface.name} automation-only hydration should permit reconciliation`,
+    );
+    assert.equal(
+      contextHasNonAutomationActivityAfterForTest({
+        truncated: { [surface.name]: true },
+        completeActivityContext: { [surface.name]: [surface.automation, surface.human] },
+        activityAfterMs,
+      }),
+      true,
+      `${surface.name} hydration must preserve hidden human activity`,
+    );
+  }
+
+  assert.equal(
+    contextHasNonAutomationActivityAfterForTest({
+      truncated: { comments: true },
+      activityAfterMs,
+    }),
+    true,
+    "truncation without complete hydration must remain fail closed",
+  );
+});
+
 test("apply-decisions publishes a detected bulk-filer label from a failed exact review artifact", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -1665,6 +1724,42 @@ Full review comments:
 const { appendFileSync, readFileSync } = require("fs");
 const logPath = ${JSON.stringify(logPath)};
 const comment = ${JSON.stringify(synced.comment)};
+const comments = [
+  {
+    id: 987482,
+    html_url: "https://github.com/openclaw/openclaw/pull/74482#issuecomment-987482",
+    body: comment,
+    user: { login: "clawsweeper[bot]" },
+    created_at: "2026-07-03T21:33:21Z",
+    updated_at: "2026-07-03T21:33:21Z"
+  },
+  {
+    id: 987483,
+    html_url: "https://github.com/openclaw/openclaw/pull/74482#issuecomment-987483",
+    body: "Pushed a new head, please take another look.",
+    user: { login: "contributor" },
+    author_association: "CONTRIBUTOR",
+    created_at: "2026-07-03T21:42:28Z",
+    updated_at: "2026-07-03T21:42:28Z"
+  },
+  {
+    id: 987484,
+    html_url: "https://github.com/openclaw/openclaw/pull/74482#issuecomment-987484",
+    body: "@clawsweeper re-review",
+    user: { login: "contributor" },
+    author_association: "CONTRIBUTOR",
+    created_at: "2026-07-03T21:43:00Z",
+    updated_at: "2026-07-03T21:43:00Z"
+  },
+  ...Array.from({ length: 22 }, (_, index) => ({
+    id: 987500 + index,
+    html_url: "https://github.com/openclaw/openclaw/pull/74482#issuecomment-" + (987500 + index),
+    body: "automation update " + (index + 1),
+    user: { login: "fixture[bot]" },
+    created_at: "2026-07-03T21:45:00Z",
+    updated_at: "2026-07-03T21:45:00Z"
+  }))
+];
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
@@ -1688,6 +1783,7 @@ if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
     active_lock_reason: null,
     author_association: "CONTRIBUTOR",
     user: { login: "contributor" },
+    comments: comments.length,
     labels: ["status: 📣 needs proof", "rating: 🦪 silver shellfish"],
     pull_request: {}
   }));
@@ -1710,34 +1806,7 @@ if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
 } else if (args[0] === "api" && /\\/pulls\\/74482\\/(files|commits|comments|reviews)(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/74482\\/comments(?:\\?|$)/.test(path)) {
-  console.log(JSON.stringify([[
-    {
-      id: 987482,
-      html_url: "https://github.com/openclaw/openclaw/pull/74482#issuecomment-987482",
-      body: comment,
-      user: { login: "clawsweeper[bot]" },
-      created_at: "2026-07-03T21:33:21Z",
-      updated_at: "2026-07-03T21:33:21Z"
-    },
-    {
-      id: 987483,
-      html_url: "https://github.com/openclaw/openclaw/pull/74482#issuecomment-987483",
-      body: "Pushed a new head, please take another look.",
-      user: { login: "contributor" },
-      author_association: "CONTRIBUTOR",
-      created_at: "2026-07-03T21:42:28Z",
-      updated_at: "2026-07-03T21:42:28Z"
-    },
-    {
-      id: 987484,
-      html_url: "https://github.com/openclaw/openclaw/pull/74482#issuecomment-987484",
-      body: "@clawsweeper re-review",
-      user: { login: "contributor" },
-      author_association: "CONTRIBUTOR",
-      created_at: "2026-07-03T21:43:00Z",
-      updated_at: "2026-07-03T21:43:00Z"
-    }
-  ]]));
+  console.log(JSON.stringify(args.includes("--paginate") ? [comments] : comments));
 } else if (args[0] === "api" && /\\/issues\\/comments\\/987482$/.test(path)) {
   const input = args[args.indexOf("--input") + 1];
   appendFileSync(logPath, JSON.stringify(["patched-review-body", JSON.parse(readFileSync(input, "utf8")).body]) + "\\n");
@@ -1891,6 +1960,35 @@ Full review comments:
 const { appendFileSync, readFileSync } = require("fs");
 const logPath = ${JSON.stringify(logPath)};
 const comment = ${JSON.stringify(synced.comment)};
+const automationComments = Array.from({ length: 23 }, (_, index) => ({
+  id: 987500 + index,
+  html_url: "https://github.com/openclaw/openclaw/pull/74483#issuecomment-" + (987500 + index),
+  body: "automation update " + (index + 1),
+  user: { login: "fixture[bot]" },
+  created_at: "2026-07-03T21:45:00Z",
+  updated_at: "2026-07-03T21:45:00Z"
+}));
+const comments = [
+  {
+    id: 987484,
+    html_url: "https://github.com/openclaw/openclaw/pull/74483#issuecomment-987484",
+    body: comment,
+    user: { login: "clawsweeper[bot]" },
+    created_at: "2026-07-03T21:33:21Z",
+    updated_at: "2026-07-03T21:33:21Z"
+  },
+  ...automationComments.slice(0, 11),
+  {
+    id: 987485,
+    html_url: "https://github.com/openclaw/openclaw/pull/74483#issuecomment-987485",
+    body: "I already relabeled this myself, leave the labels alone.",
+    user: { login: "maintainer" },
+    author_association: "MEMBER",
+    created_at: "2026-07-03T21:44:00Z",
+    updated_at: "2026-07-03T21:44:00Z"
+  },
+  ...automationComments.slice(11)
+];
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
@@ -1908,6 +2006,7 @@ if (args[0] === "api" && /\\/issues\\/74483$/.test(path)) {
     active_lock_reason: null,
     author_association: "CONTRIBUTOR",
     user: { login: "contributor" },
+    comments: comments.length,
     labels: [],
     pull_request: {}
   }));
@@ -1930,25 +2029,7 @@ if (args[0] === "api" && /\\/issues\\/74483$/.test(path)) {
 } else if (args[0] === "api" && /\\/pulls\\/74483\\/(files|commits|comments|reviews)(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/74483\\/comments(?:\\?|$)/.test(path)) {
-  console.log(JSON.stringify([[
-    {
-      id: 987484,
-      html_url: "https://github.com/openclaw/openclaw/pull/74483#issuecomment-987484",
-      body: comment,
-      user: { login: "clawsweeper[bot]" },
-      created_at: "2026-07-03T21:33:21Z",
-      updated_at: "2026-07-03T21:33:21Z"
-    },
-    {
-      id: 987485,
-      html_url: "https://github.com/openclaw/openclaw/pull/74483#issuecomment-987485",
-      body: "I already relabeled this myself, leave the labels alone.",
-      user: { login: "maintainer" },
-      author_association: "MEMBER",
-      created_at: "2026-07-03T21:44:00Z",
-      updated_at: "2026-07-03T21:44:00Z"
-    }
-  ]]));
+  console.log(JSON.stringify(args.includes("--paginate") ? [comments] : comments));
 } else if (args[0] === "api" && /\\/issues\\/comments\\/987484$/.test(path)) {
   const input = args[args.indexOf("--input") + 1];
   appendFileSync(logPath, JSON.stringify(["patched-review-body", JSON.parse(readFileSync(input, "utf8")).body]) + "\\n");
