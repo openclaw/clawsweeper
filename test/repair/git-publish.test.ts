@@ -1538,6 +1538,99 @@ test("reconcile-records rebuilds on a shallow remote head without local ancestry
   );
 });
 
+test("checkpoint merge-base misses defer to a remote-head rebuild", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-checkpoint-merge-base-"));
+  const origin = path.join(root, "origin.git");
+  const state = path.join(root, "state");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const fakeBin = path.join(root, "bin");
+  const recordsRoot = "records/openclaw-openclaw";
+  const numbers = Array.from({ length: 129 }, (_, index) => 120_000 + index);
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, state], root);
+  configureUser(state);
+  for (const number of numbers) {
+    writeRecordTuple(state, {
+      number,
+      marker: `base ${number}`,
+      reviewedAt: "2026-07-20T06:00:00.000Z",
+      itemUpdatedAt: "2026-07-20T05:59:00Z",
+      packet: false,
+      plan: false,
+    });
+  }
+  run("git", ["add", "."], state);
+  run("git", ["commit", "-m", "initial state"], state);
+  run("git", ["push", "origin", "HEAD:state"], state);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["checkout", "-B", "state", "origin/state"], state);
+
+  fs.mkdirSync(work);
+  fs.cpSync(path.join(state, "records"), path.join(work, "records"), { recursive: true });
+  for (const number of numbers) {
+    writeRecordTuple(work, {
+      number,
+      marker: `closed ${number}`,
+      reviewedAt: "2026-07-20T06:02:00.000Z",
+      itemUpdatedAt: "2026-07-20T06:01:00Z",
+      location: "closed",
+      packet: false,
+      plan: false,
+    });
+  }
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  const remoteTuple = writeRecordTuple(other, {
+    number: 130_000,
+    marker: "concurrent remote tuple",
+    reviewedAt: "2026-07-20T06:03:00.000Z",
+    itemUpdatedAt: "2026-07-20T06:02:00Z",
+    packet: false,
+    plan: false,
+  });
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "concurrent remote tuple"], other);
+  installFirstPushRaceHook(state, other, "state");
+  installCheckpointMergeBaseFailureShim(fakeBin, state);
+
+  const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withEnv({ CLAWSWEEPER_STATE_DIR: state, PATH: `${fakeBin}:${process.env.PATH}` }, () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: publish checkpoint records",
+          paths: [recordsRoot],
+          maxAttempts: 1,
+          pushAttempts: 2,
+          rebaseStrategy: "reconcile-records",
+        }),
+      ),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  assert.equal(fs.existsSync(path.join(state, ".git", "checkpoint-merge-base-failed")), true);
+  assert.equal(
+    lines.some((line) => line.includes("deferring overlap detection to a remote-head rebuild")),
+    true,
+  );
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", origin, "show", `state:${recordsRoot}/closed/${numbers[0]}.md`],
+      root,
+    ).includes(`# closed ${numbers[0]}`),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/130000.md`], root),
+    remoteTuple.primary,
+  );
+});
+
 test("reconcile-records bounds git subprocesses for a 516-tuple publish", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-scale-"));
   const origin = path.join(root, "origin.git");
@@ -2020,7 +2113,7 @@ test("publishMainCommit converges after production-sized immutable ledger races"
   }
 });
 
-test("publishMainCommit refetches an unavailable immutable ledger object and retries once", () => {
+test("publishMainCommit rebuilds with unavailable unchanged remote ledger objects", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-missing-object-"));
   const origin = path.join(root, "origin.git");
   const seed = path.join(root, "seed");
@@ -2077,9 +2170,11 @@ test("publishMainCommit refetches an unavailable immutable ledger object and ret
   assert.equal(result, "committed");
   assert.equal(
     lines.some((line) => line === "Recovering 1 unavailable Git object(s) from origin"),
-    true,
+    false,
   );
+  assert.equal(fs.existsSync(path.join(work, ".git", "missing-object-removed")), true);
   for (const [index, remotePath] of remotePaths.entries()) {
+    assert.throws(() => run("git", ["cat-file", "-e", missingObjects[index]], work));
     assert.equal(
       run("git", ["--git-dir", origin, "show", `main:${remotePath}`], root),
       `{"remote":${index + 1}}\n`,
@@ -2089,6 +2184,51 @@ test("publishMainCommit refetches an unavailable immutable ledger object and ret
     run("git", ["--git-dir", origin, "show", `main:${localPath}`], root),
     '{"local":true}\n',
   );
+});
+
+test("publishMainCommit fails closed when a written ledger object is unavailable locally", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-missing-written-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const fakeBin = path.join(root, "bin");
+  const localPath =
+    "ledger/v1/import-bindings/events/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff.json";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, "remote.txt"), "base\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  write(path.join(other, "remote.txt"), "concurrent\n");
+  run("git", ["add", "remote.txt"], other);
+  run("git", ["commit", "-m", "concurrent state update"], other);
+  installFirstPushRaceHook(work, other);
+  installMissingWrittenObjectFetchShim(fakeBin, work, localPath);
+  write(path.join(work, localPath), '{"local":true}\n');
+
+  assert.throws(
+    () =>
+      withEnv({ PATH: `${fakeBin}:${process.env.PATH}` }, () =>
+        withCwd(work, () =>
+          publishMainCommit({
+            message: "chore: append command action ledger",
+            paths: [localPath],
+            maxAttempts: 1,
+            pushAttempts: 1,
+          }),
+        ),
+      ),
+    /Immutable action-ledger source object is unavailable locally/,
+  );
+  assert.equal(run("git", ["--git-dir", origin, "show", "main:remote.txt"], root), "concurrent\n");
+  assert.throws(() => run("git", ["--git-dir", origin, "show", `main:${localPath}`], root));
 });
 
 test("publishMainCommit escapes sustained immutable ledger races through a server merge", () => {
@@ -3231,6 +3371,51 @@ ${objectPaths.map((objectPath) => `  test -f "${objectPath}"\n  rm "${objectPath
   : > "${marker}"
 fi
 exit "$result"
+`,
+  );
+  fs.chmodSync(git, 0o755);
+}
+
+function installMissingWrittenObjectFetchShim(fakeBin, work, localPath) {
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const git = path.join(fakeBin, "git");
+  const marker = path.join(work, ".git", "missing-written-object-removed");
+  const pushCounter = path.join(work, ".git", "hooks", "pre-push-count");
+  const realGit = run("/usr/bin/env", ["which", "git"], process.cwd()).trim();
+  fs.writeFileSync(
+    git,
+    `#!/bin/sh
+set -u
+"${realGit}" "$@"
+result=$?
+if test "$result" -eq 0 && test "$1" = fetch && test -e "${pushCounter}" && test ! -e "${marker}"; then
+  object_id=$("${realGit}" -C "${work}" rev-parse "HEAD:${localPath}")
+  object_path="${path.join(work, ".git", "objects")}/$(printf '%s' "$object_id" | cut -c1-2)/$(printf '%s' "$object_id" | cut -c3-)"
+  test -f "$object_path"
+  rm "$object_path"
+  printf '%s\n' "$object_id" > "${marker}"
+fi
+exit "$result"
+`,
+  );
+  fs.chmodSync(git, 0o755);
+}
+
+function installCheckpointMergeBaseFailureShim(fakeBin, state) {
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const git = path.join(fakeBin, "git");
+  const pushCounter = path.join(state, ".git", "hooks", "pre-push-count");
+  const marker = path.join(state, ".git", "checkpoint-merge-base-failed");
+  const realGit = run("/usr/bin/env", ["which", "git"], process.cwd()).trim();
+  fs.writeFileSync(
+    git,
+    `#!/bin/sh
+set -u
+if test "$1" = merge-base && test -e "${pushCounter}" && test ! -e "${marker}"; then
+  : > "${marker}"
+  exit 1
+fi
+exec "${realGit}" "$@"
 `,
   );
   fs.chmodSync(git, 0o755);

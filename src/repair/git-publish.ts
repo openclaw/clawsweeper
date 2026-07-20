@@ -436,6 +436,7 @@ function pushImmutableActionLedgerCommit(options: {
   const protectedWorktreePaths = captureDirtyWorktreePaths();
   let candidateCommit = options.sourceCommit;
   let unavailableObjectRecoveryUsed = false;
+  const verifiedSourceObjectIds = new Set<string>();
   for (let attempt = 1; attempt <= pushBudget; attempt += 1) {
     const pushArgs = ["push", options.remote, `${candidateCommit}:${options.branch}`];
     const pushDisplayArgs = ["push", options.remote, `<commit>:${options.branch}`];
@@ -452,6 +453,7 @@ function pushImmutableActionLedgerCommit(options: {
         message: options.message,
         paths: options.paths,
         sourceCommit: options.sourceCommit,
+        verifiedSourceObjectIds,
       });
       candidateCommit = rebuilt.commit;
       if (rebuilt.result === "unchanged") {
@@ -512,6 +514,7 @@ function pushImmutableActionLedgerCommit(options: {
         message: options.message,
         paths: options.paths,
         sourceCommit: options.sourceCommit,
+        verifiedSourceObjectIds,
       });
     } catch (error) {
       if (unavailableObjectRecoveryUsed || unavailableGitObjectIds(error).length === 0) throw error;
@@ -523,6 +526,7 @@ function pushImmutableActionLedgerCommit(options: {
         message: options.message,
         paths: options.paths,
         sourceCommit: options.sourceCommit,
+        verifiedSourceObjectIds,
       });
     }
     candidateCommit = rebuilt.commit;
@@ -1469,9 +1473,9 @@ function reconciliationChangesOverlap(
   const args = ["merge-base", sourceCommit, remoteRef];
   const mergeBase = spawnGit(args, { quiet: true });
   if (mergeBase.status !== 0) {
-    if (mergeBase.status !== 1 || !isShallowRepository()) throw gitRunError(mergeBase, args);
+    if (mergeBase.status !== 1) throw gitRunError(mergeBase, args);
     console.log(
-      `No common Git base with ${remoteRef} after a shallow fetch; deferring overlap detection to a remote-head rebuild`,
+      `No common Git base with ${remoteRef}; deferring overlap detection to a remote-head rebuild`,
     );
     return true;
   }
@@ -1948,6 +1952,7 @@ function rebuildImmutableActionLedgerCommit(options: {
   message: string;
   paths: readonly string[];
   sourceCommit: string;
+  verifiedSourceObjectIds: Set<string>;
 }): { result: PublishResult; commit: string } {
   fetchPublishRemote(options.remote, options.branch);
   const remoteCommit = runGit(["rev-parse", `${options.remote}/${options.branch}`], {
@@ -1958,6 +1963,7 @@ function rebuildImmutableActionLedgerCommit(options: {
     remoteTree,
     sourceCommit: options.sourceCommit,
     paths: options.paths,
+    verifiedSourceObjectIds: options.verifiedSourceObjectIds,
   });
   if (tree === remoteTree) {
     console.log("No immutable action-ledger changes after syncing remote");
@@ -1984,6 +1990,7 @@ function rewriteImmutableActionLedgerTree(options: {
   remoteTree: string;
   sourceCommit: string;
   paths: readonly string[];
+  verifiedSourceObjectIds: Set<string>;
 }): string {
   const patch: GitTreePatch = { files: new Map(), directories: new Map() };
   const sourceEntries = chunked(options.paths, GIT_PATHSPEC_BATCH_SIZE).flatMap((paths) =>
@@ -1997,7 +2004,7 @@ function rewriteImmutableActionLedgerTree(options: {
     }
     addGitTreePatch(patch, path.split("/"), entry);
   }
-  return writePatchedGitTree(options.remoteTree, patch);
+  return writePatchedGitTree(options.remoteTree, patch, options.verifiedSourceObjectIds);
 }
 
 function addGitTreePatch(patch: GitTreePatch, parts: readonly string[], entry: GitTreeEntry): void {
@@ -2012,7 +2019,11 @@ function addGitTreePatch(patch: GitTreePatch, parts: readonly string[], entry: G
   addGitTreePatch(child, rest, entry);
 }
 
-function writePatchedGitTree(baseTree: string | null, patch: GitTreePatch): string {
+function writePatchedGitTree(
+  baseTree: string | null,
+  patch: GitTreePatch,
+  verifiedSourceObjectIds: Set<string>,
+): string {
   const entries = new Map(
     (baseTree ? readGitTreeEntries(["ls-tree", "-z", baseTree]) : []).map((entry) => [
       entry.name,
@@ -2024,9 +2035,19 @@ function writePatchedGitTree(baseTree: string | null, patch: GitTreePatch): stri
     if (existing && existing.type !== "tree") {
       throw new Error(`Immutable action-ledger directory collides with ${existing.type}: ${name}`);
     }
-    const oid = writePatchedGitTree(existing?.oid ?? null, childPatch);
+    const oid = writePatchedGitTree(existing?.oid ?? null, childPatch, verifiedSourceObjectIds);
     entries.set(name, { mode: "040000", type: "tree", oid, name });
   }
+  const locallyRequiredEntries = [...patch.files].flatMap(([name, entry]) => {
+    const existing = entries.get(name);
+    return !existing ||
+      existing.type !== entry.type ||
+      existing.mode !== entry.mode ||
+      existing.oid !== entry.oid
+      ? [entry]
+      : [];
+  });
+  assertLocalGitTreeEntries(locallyRequiredEntries, verifiedSourceObjectIds);
   for (const [name, entry] of patch.files) {
     const existing = entries.get(name);
     if (
@@ -2041,7 +2062,37 @@ function writePatchedGitTree(baseTree: string | null, patch: GitTreePatch): stri
     .sort((left, right) => left.name.localeCompare(right.name))
     .map((entry) => `${entry.mode} ${entry.type} ${entry.oid}\t${entry.name}\0`)
     .join("");
-  return runGit(["mktree", "-z"], { input, quiet: true }).trim();
+  // Unchanged entries came directly from the fetched remote tree. Their
+  // objects may be omitted by a partial checkout, but the remote already has
+  // them and does not need the client to include them in the push pack.
+  return runGit(["mktree", "--missing", "-z"], { input, quiet: true }).trim();
+}
+
+function assertLocalGitTreeEntries(
+  entries: readonly GitTreeEntry[],
+  verifiedSourceObjectIds: Set<string>,
+): void {
+  const uniqueEntries = [
+    ...new Map(
+      entries
+        .filter((entry) => !verifiedSourceObjectIds.has(entry.oid))
+        .map((entry) => [entry.oid, entry]),
+    ).values(),
+  ];
+  if (uniqueEntries.length === 0) return;
+  const output = runGit(["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
+    input: uniqueEntries.map((entry) => `${entry.oid}\n`).join(""),
+    quiet: true,
+  });
+  const results = output.trimEnd().split("\n");
+  for (const [index, entry] of uniqueEntries.entries()) {
+    if (results[index] !== `${entry.oid} ${entry.type}`) {
+      throw new Error(
+        `Immutable action-ledger source object is unavailable locally: ${entry.name} (${entry.oid})`,
+      );
+    }
+    verifiedSourceObjectIds.add(entry.oid);
+  }
 }
 
 function readGitTreeEntries(args: readonly string[]): GitTreeEntry[] {
