@@ -92,10 +92,7 @@ export type ExactReviewQueueItem = {
   publicationFailureAttempts?: number;
 };
 export type ExactReviewCompletionOutcome = "success" | "failure" | "cancelled";
-type ExactReviewPublicationFailureKind =
-  | "github_rate_limit"
-  | "github_transient"
-  | "state_contention";
+type ExactReviewPublicationFailureKind = "github_rate_limit" | "github_transient";
 export type ExactReviewPublicationCompletionKind =
   | "published"
   | "superseded"
@@ -228,7 +225,6 @@ const DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT = 60;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT = 4;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT = 24;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT = 48;
-const EXACT_REVIEW_PUBLICATION_STATE_CONTENTION_CONCURRENT = 4;
 const EXACT_REVIEW_PUBLICATION_CONCURRENT_SCALE_STEP = 8;
 const EXACT_REVIEW_PUBLICATION_RATE_LIMIT_COOLDOWN_MS = 15 * 60 * 1000;
 const EXACT_REVIEW_PUBLICATION_TRANSIENT_COOLDOWN_MS = 5 * 60 * 1000;
@@ -685,12 +681,6 @@ export class ExactReviewQueue {
       if (requeueLatest && outcome !== "success") {
         return json({ error: "invalid_requeue_latest_outcome" }, 400);
       }
-      const capacityFailureKind =
-        failureKind ??
-        (publicationCompletion?.kind === "retryable_failure" &&
-        publicationCompletion.reasonCode === "state_contention"
-          ? "state_contention"
-          : undefined);
 
       const now = Date.now();
       const requestedRetryAt = exactReviewCompletionRetryAt(body.retry_at, now);
@@ -794,7 +784,7 @@ export class ExactReviewQueue {
           ((publicationCompletion
             ? publicationCompletion.kind === "published" && !requeued
             : outcome === "success" && !requeued) ||
-            capacityFailureKind)
+            failureKind)
           ? {
               at: now,
               capacity: publicationDesiredCapacity,
@@ -804,7 +794,7 @@ export class ExactReviewQueue {
                   : outcome === "success") && !requeued
                   ? "success"
                   : "failure",
-              ...(capacityFailureKind ? { failureKind: capacityFailureKind } : {}),
+              ...(failureKind ? { failureKind } : {}),
             }
           : undefined,
         completionResult.deadLetter,
@@ -3453,9 +3443,7 @@ function exactReviewCompletionOutcome(
 
 function exactReviewPublicationFailureKind(value): ExactReviewPublicationFailureKind | null {
   const normalized = String(value || "");
-  return normalized === "github_rate_limit" ||
-    normalized === "github_transient" ||
-    normalized === "state_contention"
+  return normalized === "github_rate_limit" || normalized === "github_transient"
     ? normalized
     : null;
 }
@@ -4840,12 +4828,9 @@ function exactReviewPublicationControl(env, value: unknown): ExactReviewPublicat
   const rawRecoverySuccesses = Number(control.recoverySuccesses);
   const rawLastFailureAt = Number(control.lastFailureAt);
   const lastFailureKind = exactReviewPublicationFailureKind(control.lastFailureKind);
-  // A configured adaptive minimum must not erase a lower incident cap. Only
-  // clean recovery feedback is allowed to reopen capacity after contention.
-  const capacityFloor = Math.min(minimum, EXACT_REVIEW_PUBLICATION_STATE_CONTENTION_CONCURRENT);
   return {
     capacityCeiling: Number.isSafeInteger(rawCeiling)
-      ? Math.max(capacityFloor, Math.min(maximum, rawCeiling))
+      ? Math.max(minimum, Math.min(maximum, rawCeiling))
       : maximum,
     demandCapacity: Number.isSafeInteger(rawDemandCapacity)
       ? Math.max(minimum, Math.min(maximum, rawDemandCapacity))
@@ -4877,17 +4862,9 @@ function exactReviewPublicationControlAfterFeedback(
     const failureKind = feedback.failureKind || "github_transient";
     const rateLimited = failureKind === "github_rate_limit";
     const currentCapacity = Math.max(minimum, Math.min(control.capacityCeiling, feedback.capacity));
-    // A state lease timeout proves that the admitted publisher cohort is larger
-    // than the single serialized writer can drain. Stop admitting replacements
-    // immediately; clean publications can reopen capacity through the existing
-    // gradual recovery path.
-    const failureCeiling =
-      failureKind === "state_contention"
-        ? Math.min(maximum, EXACT_REVIEW_PUBLICATION_STATE_CONTENTION_CONCURRENT)
-        : rateLimited
-          ? Math.max(minimum, Math.floor(currentCapacity / 2))
-          : Math.max(minimum, currentCapacity - EXACT_REVIEW_PUBLICATION_CONCURRENT_SCALE_STEP);
-    const ceiling = Math.min(control.capacityCeiling, failureCeiling);
+    const ceiling = rateLimited
+      ? Math.max(minimum, Math.floor(currentCapacity / 2))
+      : Math.max(minimum, currentCapacity - EXACT_REVIEW_PUBLICATION_CONCURRENT_SCALE_STEP);
     return {
       ...control,
       capacityCeiling: ceiling,

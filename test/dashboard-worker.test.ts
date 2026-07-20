@@ -4930,17 +4930,10 @@ test("exact-review publication retries a state fetch timeout without throttling 
 test("exact-review publication gives state contention the transient retry budget", async () => {
   const storage = new MemoryDurableStorage();
   const item = leasedExactReviewPublicationItem(7803, "78030");
-  const laterFailure = leasedExactReviewPublicationItem(7804, "78040");
   item.publicationFailureAttempts = 4;
   item.firstFailureAt = Date.now() - 30 * 60_000;
-  await storage.put("exact-review-queue", {
-    deliveries: {},
-    items: { [item.key]: item, [laterFailure.key]: laterFailure },
-  });
-  const queue = new ExactReviewQueue(
-    { storage },
-    { EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT: "12" },
-  );
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
 
   const response = await queue.fetch(
     new Request("https://clawsweeper-exact-review-queue/complete", {
@@ -4975,41 +4968,9 @@ test("exact-review publication gives state contention the transient retry budget
     await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
   ).json();
   assert.equal(stats.lanes.publication.dead_letters.open, 0);
-  assert.equal(stats.lanes.publication.capacity, 4);
-  assert.equal(stats.lanes.publication.capacity_control.mode, "throttled");
-  assert.equal(stats.lanes.publication.capacity_control.minimum, 12);
-  assert.equal(stats.lanes.publication.capacity_control.ceiling, 4);
-  assert.equal(stats.lanes.publication.capacity_control.recovery_successes, 0);
-  assert.ok(
-    Date.parse(stats.lanes.publication.capacity_control.cooldown_until) > Date.now(),
-    "state contention should pause capacity recovery",
-  );
-  assert.equal(stats.lanes.publication.capacity_control.last_failure_kind, "state_contention");
-
-  const laterResponse = await queue.fetch(
-    new Request("https://clawsweeper-exact-review-queue/complete", {
-      method: "POST",
-      body: JSON.stringify({
-        lease_id: laterFailure.leaseId,
-        item_key: laterFailure.key,
-        lease_revision: laterFailure.leaseRevision,
-        claim_generation: laterFailure.claimGeneration,
-        run_id: laterFailure.claimedRunId,
-        run_attempt: laterFailure.claimedRunAttempt,
-        outcome: "failure",
-        failure_kind: "github_transient",
-        completion_kind: "retryable_failure",
-        reason_code: "github_transient",
-        error_fingerprint: "sha256:state-fetch-timeout",
-      }),
-    }),
-  );
-  assert.deepEqual(await laterResponse.json(), { ok: true, requeued: true });
-  const laterStats = await (
-    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
-  ).json();
-  assert.equal(laterStats.lanes.publication.capacity_control.ceiling, 4);
-  assert.equal(laterStats.lanes.publication.capacity_control.last_failure_kind, "github_transient");
+  assert.equal(stats.lanes.publication.capacity_control.mode, "adaptive");
+  assert.equal(stats.lanes.publication.capacity_control.ceiling, 48);
+  assert.equal(stats.lanes.publication.capacity_control.last_failure_kind, null);
 });
 
 test("exact-review publication defers an active review lease without throttling capacity", async () => {
@@ -7272,13 +7233,6 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
     elementFor("exact-review-lanes").innerHTML,
     /target 32 · pressure ceiling 24 after GitHub rate limit/,
   );
-  status.exact_review_queue.lanes.publication.capacity_control.last_failure_kind =
-    "state_contention";
-  context.renderDashboard(status, "");
-  assert.match(elementFor("exact-review-lanes").innerHTML, /after state publish contention/);
-  assert.doesNotMatch(elementFor("exact-review-lanes").innerHTML, /after GitHub 5xx/);
-  status.exact_review_queue.lanes.publication.capacity_control.last_failure_kind =
-    "github_rate_limit";
   assert.match(elementFor("exact-review-lanes").innerHTML, /No backlog history in this range/);
   status.workers = Array.from({ length: 130 }, (_, id) => ({ id, status: "in_progress" }));
   context.renderSystemMap(status);

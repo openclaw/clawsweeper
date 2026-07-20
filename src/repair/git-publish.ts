@@ -85,13 +85,9 @@ const RECOVERY_FETCH_TIMEOUT_MS = 300_000;
 const STATE_PUBLISH_LEASE_REF_ROOT = "refs/heads/clawsweeper-publish-lease";
 const STATE_PUBLISH_LEASE_TTL_MS = 2 * 60_000;
 const STATE_PUBLISH_LEASE_RENEW_THRESHOLD_MS = PUBLISH_FETCH_TIMEOUT_MS;
+const STATE_PUBLISH_LEASE_ACQUIRE_TIMEOUT_MS = 3 * 60_000;
 const STATE_PUBLISH_LEASE_WAIT_MS = 1_000;
 const STATE_PUBLISH_LEASE_MAX_WAIT_MS = 5_000;
-// Publication admission backs state contention down to four active workers.
-// Let one waiter observe a full lease TTL for each of the other three members
-// plus one complete jittered poll before returning the item to the durable queue.
-const STATE_PUBLISH_LEASE_ACQUIRE_TIMEOUT_MS =
-  3 * STATE_PUBLISH_LEASE_TTL_MS + STATE_PUBLISH_LEASE_MAX_WAIT_MS + STATE_PUBLISH_LEASE_WAIT_MS;
 const SKIP_CI_DIRECTIVE_PATTERN =
   /\[(?:skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks:\s*true$/im;
 

@@ -8821,11 +8821,7 @@ function renderExactReviewLanes(queue) {
       : "";
     const capacityNote = publicationControl?.mode === "throttled"
       ? " · target " + fmt.format(publicationControl.demand_capacity || capacity) + " · pressure ceiling " + fmt.format(publicationControl.ceiling || capacity) + " after " +
-        (publicationControl.last_failure_kind === "github_rate_limit"
-          ? "GitHub rate limit"
-          : publicationControl.last_failure_kind === "state_contention"
-            ? "state publish contention"
-            : "GitHub 5xx")
+        (publicationControl.last_failure_kind === "github_rate_limit" ? "GitHub rate limit" : "GitHub 5xx")
       : laneKey === "publication"
         ? " · target " + fmt.format(publicationControl?.demand_capacity || capacity) + " · adaptive " + fmt.format(publicationControl?.base || 24) + "–" + fmt.format(publicationControl?.maximum || capacity)
         : "";
