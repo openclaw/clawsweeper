@@ -435,12 +435,42 @@ function pushImmutableActionLedgerCommit(options: {
   const previousCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
   const protectedWorktreePaths = captureDirtyWorktreePaths();
   let candidateCommit = options.sourceCommit;
+  let unavailableObjectRecoveryUsed = false;
   for (let attempt = 1; attempt <= pushBudget; attempt += 1) {
-    if (
-      spawnGit(["push", options.remote, `${candidateCommit}:${options.branch}`], {
-        displayArgs: ["push", options.remote, `<commit>:${options.branch}`],
-      }).status === 0
-    ) {
+    const pushArgs = ["push", options.remote, `${candidateCommit}:${options.branch}`];
+    const pushDisplayArgs = ["push", options.remote, `<commit>:${options.branch}`];
+    let pushResult = spawnGit(pushArgs, { displayArgs: pushDisplayArgs });
+    if (pushResult.status !== 0 && unavailableGitObjectIds(pushResult).length > 0) {
+      if (unavailableObjectRecoveryUsed) {
+        throw gitRunError(pushResult, pushArgs, pushDisplayArgs);
+      }
+      recoverUnavailableGitObjects(options.remote, options.branch, pushResult);
+      unavailableObjectRecoveryUsed = true;
+      const rebuilt = rebuildImmutableActionLedgerCommit({
+        remote: options.remote,
+        branch: options.branch,
+        message: options.message,
+        paths: options.paths,
+        sourceCommit: options.sourceCommit,
+      });
+      candidateCommit = rebuilt.commit;
+      if (rebuilt.result === "unchanged") {
+        finalizeImmutableActionLedgerCheckout({
+          previousCommit,
+          publishedCommit: candidateCommit,
+          paths: options.paths,
+          protectedWorktreePaths,
+        });
+        return "unchanged";
+      }
+      pushResult = spawnGit(["push", options.remote, `${candidateCommit}:${options.branch}`], {
+        displayArgs: pushDisplayArgs,
+      });
+      if (pushResult.status !== 0 && unavailableGitObjectIds(pushResult).length > 0) {
+        throw gitRunError(pushResult, pushArgs, pushDisplayArgs);
+      }
+    }
+    if (pushResult.status === 0) {
       finalizeImmutableActionLedgerCheckout({
         previousCommit,
         publishedCommit: candidateCommit,
@@ -474,13 +504,27 @@ function pushImmutableActionLedgerCommit(options: {
     // Build only the affected ancestor trees. The state checkout has hundreds
     // of thousands of entries, so rebuilding its full index is slower than the
     // production write rate and guarantees that every retry starts stale.
-    const rebuilt = rebuildImmutableActionLedgerCommit({
-      remote: options.remote,
-      branch: options.branch,
-      message: options.message,
-      paths: options.paths,
-      sourceCommit: options.sourceCommit,
-    });
+    let rebuilt;
+    try {
+      rebuilt = rebuildImmutableActionLedgerCommit({
+        remote: options.remote,
+        branch: options.branch,
+        message: options.message,
+        paths: options.paths,
+        sourceCommit: options.sourceCommit,
+      });
+    } catch (error) {
+      if (unavailableObjectRecoveryUsed || unavailableGitObjectIds(error).length === 0) throw error;
+      recoverUnavailableGitObjects(options.remote, options.branch, error);
+      unavailableObjectRecoveryUsed = true;
+      rebuilt = rebuildImmutableActionLedgerCommit({
+        remote: options.remote,
+        branch: options.branch,
+        message: options.message,
+        paths: options.paths,
+        sourceCommit: options.sourceCommit,
+      });
+    }
     candidateCommit = rebuilt.commit;
     if (rebuilt.result === "unchanged") {
       finalizeImmutableActionLedgerCheckout({
@@ -493,6 +537,63 @@ function pushImmutableActionLedgerCommit(options: {
     }
   }
   throw new Error(`Failed to publish commit after ${pushBudget} push attempts`);
+}
+
+function unavailableGitObjectIds(value: unknown): string[] {
+  const message =
+    typeof value === "object" && value && "stderr" in value
+      ? `${String(value.stderr ?? "")}\n${String("stdout" in value ? value.stdout : "")}`
+      : errorMessage(value);
+  return [
+    ...new Set(
+      [...message.matchAll(/object ([a-f0-9]{40,64}) is unavailable/gi)].map((match) =>
+        match[1]!.toLowerCase(),
+      ),
+    ),
+  ];
+}
+
+function recoverUnavailableGitObjects(remote: string, branch: string, failure: unknown): void {
+  const objectIds = unavailableGitObjectIds(failure);
+  console.log(
+    `Recovering ${objectIds.length || "unidentified"} unavailable Git object(s) from ${remote}`,
+  );
+  if (objectIds.length > 0) {
+    objectIds.every(
+      (objectId) =>
+        spawnGit(["fetch", remote, objectId], {
+          quiet: true,
+          timeout: PUBLISH_FETCH_TIMEOUT_MS,
+        }).status === 0,
+    );
+  }
+
+  const shallow = isShallowRepository();
+  const refetchDepth = shallow ? ["--depth=1"] : [];
+  const refetched = spawnGit(["fetch", "--refetch", ...refetchDepth, remote, branch], {
+    quiet: true,
+    timeout: PUBLISH_FETCH_TIMEOUT_MS,
+  });
+  if (refetched.status === 0 && gitObjectIdsAvailable(objectIds)) return;
+  if (!shallow) return;
+  const deepened = spawnGit(["fetch", "--deepen=1", remote, branch], {
+    quiet: true,
+    timeout: PUBLISH_FETCH_TIMEOUT_MS,
+  });
+  if (deepened.status === 0 && (objectIds.length === 0 || gitObjectIdsAvailable(objectIds))) {
+    return;
+  }
+  if (!isShallowRepository()) return;
+  spawnGit(["fetch", "--unshallow", remote, branch], {
+    quiet: true,
+    timeout: PUBLISH_FETCH_TIMEOUT_MS,
+  });
+}
+
+function gitObjectIdsAvailable(objectIds: readonly string[]): boolean {
+  return objectIds.every(
+    (objectId) => spawnGit(["cat-file", "-e", objectId], { quiet: true }).status === 0,
+  );
 }
 
 function immutableLedgerStateRepository(): string | null {
@@ -720,6 +821,54 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message.replace(/[\r\n]+/g, " ") : String(error);
 }
 
+function gitRunError(
+  result: GitRunResult,
+  args: readonly string[],
+  displayArgs: readonly string[] = args,
+): Error {
+  const detail =
+    result.stderr ||
+    result.stdout ||
+    `${formatGitDisplayCommand(displayArgs)} exited ${result.status}`;
+  return new Error(detail.trim());
+}
+
+function mergeBaseWithShallowRecovery(
+  left: string,
+  right: string,
+  remote: string,
+  branch: string,
+): { base: string; recoveredShallowMiss: boolean } {
+  const args = ["merge-base", left, right];
+  let result = spawnGit(args, { quiet: true });
+  if (result.status === 0) {
+    return { base: result.stdout.trim(), recoveredShallowMiss: false };
+  }
+  if (result.status !== 1 || !isShallowRepository()) throw gitRunError(result, args);
+
+  spawnGit(["fetch", "--deepen=32", remote, branch], {
+    quiet: true,
+    timeout: PUBLISH_FETCH_TIMEOUT_MS,
+  });
+  result = spawnGit(args, { quiet: true });
+  if (result.status === 0) {
+    return { base: result.stdout.trim(), recoveredShallowMiss: true };
+  }
+  if (result.status !== 1) throw gitRunError(result, args);
+
+  if (isShallowRepository()) {
+    spawnGit(["fetch", "--unshallow", remote, branch], {
+      quiet: true,
+      timeout: PUBLISH_FETCH_TIMEOUT_MS,
+    });
+    result = spawnGit(args, { quiet: true });
+    if (result.status === 0) {
+      return { base: result.stdout.trim(), recoveredShallowMiss: true };
+    }
+  }
+  throw gitRunError(result, args);
+}
+
 function prepareReconciliationStateRoot(
   remote: string,
   branch: string,
@@ -739,9 +888,14 @@ function prepareReconciliationStateRoot(
   if (spawnGit(["merge-base", "--is-ancestor", "HEAD", remoteRef], { quiet: true }).status === 0) {
     return;
   }
-  const semanticBase = runGit(["merge-base", "HEAD", remoteRef], { quiet: true }).trim();
+  const semanticBase = mergeBaseWithShallowRecovery("HEAD", remoteRef, remote, branch);
+  if (semanticBase.recoveredShallowMiss) {
+    console.log(
+      `Recovered the common Git base with ${remoteRef} after hydrating the shallow state checkout`,
+    );
+  }
   console.log("Discarding an unpublished reconciliation checkpoint before retry");
-  runGit(["reset", "--hard", semanticBase]);
+  runGit(["reset", "--hard", semanticBase.base]);
 }
 
 function reconciliationTupleKeysForCommit(sourceCommit: string): string[] {
@@ -774,7 +928,14 @@ function publishReconciliationChunks(options: {
     const remoteRef = `${options.remote}/${options.branch}`;
     const remoteCommit = runGit(["rev-parse", remoteRef], { quiet: true }).trim();
     const allowedTupleKeys = new Set(tupleKeys);
-    if (!rebuildReconciliationCommit(remoteRef, options.sourceCommit, allowedTupleKeys)) {
+    if (
+      !rebuildReconciliationCommit(
+        options.remote,
+        options.branch,
+        options.sourceCommit,
+        allowedTupleKeys,
+      )
+    ) {
       throw new Error(`Failed to build reconciliation checkpoint ${index + 1}/${chunks.length}`);
     }
     const checkpointCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
@@ -1248,7 +1409,8 @@ export function pushCommit(options: {
       }
       if (
         !rebuildReconciliationCommit(
-          remoteRef,
+          remote,
+          branch,
           options.reconciliationSourceCommit,
           options.reconciliationTupleKeys,
         )
@@ -1304,7 +1466,16 @@ function reconciliationChangesOverlap(
   allowedTupleKeys?: ReadonlySet<string>,
 ): boolean {
   const sourceCommit = reconciliationSourceCommit ?? "HEAD";
-  const baseCommit = runGit(["merge-base", sourceCommit, remoteRef], { quiet: true }).trim();
+  const args = ["merge-base", sourceCommit, remoteRef];
+  const mergeBase = spawnGit(args, { quiet: true });
+  if (mergeBase.status !== 0) {
+    if (mergeBase.status !== 1 || !isShallowRepository()) throw gitRunError(mergeBase, args);
+    console.log(
+      `No common Git base with ${remoteRef} after a shallow fetch; deferring overlap detection to a remote-head rebuild`,
+    );
+    return true;
+  }
+  const baseCommit = mergeBase.stdout.trim();
   const localKeys = recordTupleKeysForPaths(changedPathsBetween(baseCommit, sourceCommit));
   const remoteKeys = recordTupleKeysForPaths(changedPathsBetween(baseCommit, remoteRef), true);
   for (const key of localKeys) {
@@ -1327,12 +1498,18 @@ function recordTupleKeysForPaths(paths: readonly string[], ignoreUnsupported = f
 }
 
 function rebuildReconciliationCommit(
-  remoteRef: string,
+  remote: string,
+  branch: string,
   reconciliationSourceCommit?: string,
   allowedTupleKeys?: ReadonlySet<string>,
 ): boolean {
+  const remoteRef = `${remote}/${branch}`;
   const sourceCommit = reconciliationSourceCommit ?? runGit(["rev-parse", "HEAD"]).trim();
-  const baseCommit = runGit(["merge-base", sourceCommit, remoteRef]).trim();
+  const mergeBase = mergeBaseWithShallowRecovery(sourceCommit, remoteRef, remote, branch);
+  const baseCommit = mergeBase.base;
+  if (mergeBase.recoveredShallowMiss) {
+    console.log(`Rebuilding reconciliation directly on ${remoteRef} after a shallow fetch`);
+  }
   const localPaths = changedPathsBetween(baseCommit, sourceCommit);
   const localIdentities = new Map<string, RecordTupleIdentity>();
   for (const path of localPaths) {
@@ -1950,13 +2127,16 @@ function fetchPublishRemote(remote: string, branch: string, options: GitRunOptio
   // Server-side immutable-ledger merges left merge-heavy ancestry on the state
   // branch. Preserve an existing shallow boundary without truncating complete
   // repositories whose reconciliation logic still needs full ancestry.
-  const shallow =
-    runGit(["rev-parse", "--is-shallow-repository"], { quiet: true }).trim() === "true";
+  const shallow = isShallowRepository();
   const depthArgs = shallow ? ["--depth=1"] : [];
   return runGit(["fetch", ...depthArgs, remote, branch], {
     ...options,
     timeout: PUBLISH_FETCH_TIMEOUT_MS,
   });
+}
+
+function isShallowRepository(): boolean {
+  return runGit(["rev-parse", "--is-shallow-repository"], { quiet: true }).trim() === "true";
 }
 
 export function uniqueNonEmpty(values: readonly string[]): string[] {

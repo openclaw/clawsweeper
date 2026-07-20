@@ -106,7 +106,7 @@ test("publisher fetches share the bounded fetch helper", () => {
   assert.match(source, /const PUBLISH_FETCH_TIMEOUT_MS = 60_000/);
   assert.match(
     source,
-    /function fetchPublishRemote\([\s\S]*runGit\(\["rev-parse", "--is-shallow-repository"\][\s\S]*runGit\(\["fetch", \.\.\.depthArgs, remote, branch\], \{/,
+    /function fetchPublishRemote\([\s\S]*const shallow = isShallowRepository\(\)[\s\S]*runGit\(\["fetch", \.\.\.depthArgs, remote, branch\], \{/,
   );
   assert.equal(source.match(/runGit\(\["fetch"/g)?.length, 1);
 });
@@ -1294,6 +1294,250 @@ test("reconcile-records fails closed when state and remote have no common base",
   );
 });
 
+test("reconcile-records fails closed when shallow state and remote are truly unrelated", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-shallow-unrelated-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const state = path.join(root, "state");
+  const work = path.join(root, "work");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  writeRecordTuple(seed, {
+    number: 42,
+    marker: "remote base",
+    reviewedAt: "2026-07-19T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-19T22:59:00Z",
+  });
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial state"], seed);
+  run("git", ["push", "origin", "HEAD:state"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["clone", "--depth", "1", `file://${origin}`, state], root);
+  configureUser(state);
+
+  fs.mkdirSync(work);
+  fs.cpSync(path.join(state, "records"), path.join(work, "records"), { recursive: true });
+  writeRecordTuple(work, {
+    number: 42,
+    marker: "candidate update",
+    reviewedAt: "2026-07-19T23:02:00.000Z",
+    itemUpdatedAt: "2026-07-19T23:01:00Z",
+  });
+
+  run("git", ["checkout", "--orphan", "replacement"], seed);
+  run("git", ["read-tree", "--empty"], seed);
+  fs.rmSync(path.join(seed, "records"), { force: true, recursive: true });
+  write(path.join(seed, "replacement.txt"), "replacement history\n");
+  run("git", ["add", "-A"], seed);
+  run("git", ["commit", "-m", "replace state history"], seed);
+  run("git", ["push", "--force", "origin", "HEAD:state"], seed);
+
+  const lines = [];
+  assert.throws(
+    () =>
+      captureConsoleLog(
+        () =>
+          withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+            withCwd(work, () =>
+              publishMainCommit({
+                message: "chore: reject unrelated shallow state",
+                paths: [recordsRoot],
+                maxAttempts: 1,
+                pushAttempts: 1,
+                rebaseStrategy: "reconcile-records",
+              }),
+            ),
+          ),
+        lines,
+      ),
+    /git merge-base <redacted-args> exited 1/,
+  );
+  assert.equal(
+    lines.some((line) => line.includes("Git publish failure: phase=prepare")),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "state:replacement.txt"], root),
+    "replacement history\n",
+  );
+});
+
+test("reconcile-records prepares a shallow state checkout from the remote head", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-shallow-prepare-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const state = path.join(root, "state");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  writeRecordTuple(seed, {
+    number: 42,
+    marker: "remote base",
+    reviewedAt: "2026-07-19T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-19T22:59:00Z",
+  });
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial state"], seed);
+  run("git", ["push", "origin", "HEAD:state"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["clone", "--depth", "1", `file://${origin}`, state], root);
+  configureUser(state);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  write(path.join(other, "remote.txt"), "remote update one\n");
+  const remoteTuple = writeRecordTuple(other, {
+    number: 42,
+    marker: "remote winner",
+    reviewedAt: "2026-07-19T23:05:00.000Z",
+    itemUpdatedAt: "2026-07-19T23:04:00Z",
+  });
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "remote update one"], other);
+  write(path.join(other, "remote.txt"), "remote update two\n");
+  run("git", ["commit", "-am", "remote update two"], other);
+  run("git", ["push", "origin", "HEAD:state"], other);
+
+  fs.mkdirSync(work);
+  fs.cpSync(path.join(state, "records"), path.join(work, "records"), { recursive: true });
+  writeRecordTuple(work, {
+    number: 42,
+    marker: "candidate close",
+    reviewedAt: "2026-07-19T23:03:00.000Z",
+    itemUpdatedAt: "2026-07-19T23:02:00Z",
+    location: "closed",
+    packet: false,
+    plan: false,
+  });
+  const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: prepare shallow state",
+          paths: [recordsRoot],
+          maxAttempts: 1,
+          pushAttempts: 1,
+          rebaseStrategy: "reconcile-records",
+        }),
+      ),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  assert.equal(
+    lines.some((line) =>
+      line.includes(
+        "Recovered the common Git base with origin/state after hydrating the shallow state checkout",
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/42.md`], root),
+    remoteTuple.primary,
+  );
+  assert.throws(() =>
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/closed/42.md`], root),
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "state:remote.txt"], root),
+    "remote update two\n",
+  );
+});
+
+test("reconcile-records rebuilds on a shallow remote head without local ancestry", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-shallow-reconcile-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  writeRecordTuple(seed, {
+    number: 42,
+    marker: "local base",
+    reviewedAt: "2026-07-19T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-19T22:59:00Z",
+  });
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial state"], seed);
+  run("git", ["push", "origin", "HEAD:main"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["clone", "--depth", "1", `file://${origin}`, work], root);
+  configureUser(work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  const remoteTuple = writeRecordTuple(other, {
+    number: 43,
+    marker: "remote update one",
+    reviewedAt: "2026-07-19T23:01:00.000Z",
+    itemUpdatedAt: "2026-07-19T23:00:00Z",
+  });
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "remote update one"], other);
+  write(path.join(other, "remote.txt"), "remote update two\n");
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "remote update two"], other);
+  run("git", ["push", "origin", "HEAD:main"], other);
+
+  const localTuple = writeRecordTuple(work, {
+    number: 42,
+    marker: "local close",
+    reviewedAt: "2026-07-19T23:03:00.000Z",
+    itemUpdatedAt: "2026-07-19T23:02:00Z",
+    location: "closed",
+    packet: false,
+    plan: false,
+  });
+  const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: reconcile shallow state",
+        paths: [recordsRoot],
+        maxAttempts: 1,
+        pushAttempts: 2,
+        rebaseStrategy: "reconcile-records",
+      }),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  assert.equal(
+    lines.some((line) => line.includes("deferring overlap detection to a remote-head rebuild")),
+    true,
+  );
+  assert.equal(
+    lines.some(
+      (line) => line === "Rebuilding reconciliation directly on origin/main after a shallow fetch",
+    ),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/closed/42.md`], root),
+    localTuple.primary,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/items/43.md`], root),
+    remoteTuple.primary,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:remote.txt"], root),
+    "remote update two\n",
+  );
+});
+
 test("reconcile-records bounds git subprocesses for a 516-tuple publish", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-scale-"));
   const origin = path.join(root, "origin.git");
@@ -1774,6 +2018,77 @@ test("publishMainCommit converges after production-sized immutable ledger races"
       `{"path":"${ledgerPath}"}\n`,
     );
   }
+});
+
+test("publishMainCommit refetches an unavailable immutable ledger object and retries once", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-missing-object-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const fakeBin = path.join(root, "bin");
+  const localPath =
+    "ledger/v1/import-bindings/events/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff.json";
+  const remotePaths = [
+    "ledger/v1/import-bindings/events/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+    "ledger/v1/import-bindings/events/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json",
+  ];
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  write(path.join(seed, "base.txt"), "base\n");
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial"], seed);
+  run("git", ["push", "origin", "HEAD:main"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["clone", "--depth", "1", `file://${origin}`, work], root);
+  configureUser(work);
+  run("git", ["config", "fetch.unpackLimit", "9999"], work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  for (const [index, remotePath] of remotePaths.entries()) {
+    write(path.join(other, remotePath), `{"remote":${index + 1}}\n`);
+  }
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "concurrent ledger event"], other);
+  const missingObjects = remotePaths.map((remotePath) =>
+    run("git", ["rev-parse", `HEAD:${remotePath}`], other).trim(),
+  );
+  installFirstPushRaceHook(work, other);
+  installMissingObjectFetchShim(fakeBin, work, missingObjects);
+  write(path.join(work, localPath), '{"local":true}\n');
+
+  const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withEnv({ PATH: `${fakeBin}:${process.env.PATH}` }, () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: append command action ledger",
+          paths: [localPath],
+          maxAttempts: 1,
+          pushAttempts: 1,
+        }),
+      ),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  assert.equal(
+    lines.some((line) => line === "Recovering 1 unavailable Git object(s) from origin"),
+    true,
+  );
+  for (const [index, remotePath] of remotePaths.entries()) {
+    assert.equal(
+      run("git", ["--git-dir", origin, "show", `main:${remotePath}`], root),
+      `{"remote":${index + 1}}\n`,
+    );
+  }
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${localPath}`], root),
+    '{"local":true}\n',
+  );
 });
 
 test("publishMainCommit escapes sustained immutable ledger races through a server merge", () => {
@@ -2891,6 +3206,34 @@ if test "$count" -eq 1; then git -C "${other}" push origin HEAD:${branch}; fi
 `,
   );
   fs.chmodSync(hook, 0o755);
+}
+
+function installMissingObjectFetchShim(fakeBin, work, objectIds) {
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const git = path.join(fakeBin, "git");
+  const marker = path.join(work, ".git", "missing-object-removed");
+  const objectPaths = objectIds.map((objectId) =>
+    path.join(work, ".git", "objects", objectId.slice(0, 2), objectId.slice(2)),
+  );
+  const realGit = run("/usr/bin/env", ["which", "git"], process.cwd()).trim();
+  fs.writeFileSync(
+    git,
+    `#!/bin/sh
+set -eu
+if test "$1" = fetch && test "$3" = "${objectIds[0]}"; then
+  printf '%s\n' 'fatal: remote rejected direct object want' >&2
+  exit 128
+fi
+"${realGit}" "$@"
+result=$?
+if test "$result" -eq 0 && test "$1" = fetch && test ! -e "${marker}"; then
+${objectPaths.map((objectPath) => `  test -f "${objectPath}"\n  rm "${objectPath}"`).join("\n")}
+  : > "${marker}"
+fi
+exit "$result"
+`,
+  );
+  fs.chmodSync(git, 0o755);
 }
 
 function installFirstTwoPushRaceHook(work, other, branch = "main") {
