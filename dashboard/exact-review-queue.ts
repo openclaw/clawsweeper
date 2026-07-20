@@ -362,6 +362,22 @@ export class ExactReviewQueue {
           exactReviewHeartbeatGraceMs(this.env),
         );
         const key = exactReviewItemKey(decision);
+        const publicationCoalescing = coalesceExactReviewPublications(state, decision);
+        if (publicationCoalescing.incomingStale) {
+          this.writeStateSync(state);
+          if (publicationCoalescing.superseded) {
+            this.incrementQueueMetricsSync({
+              publicationCompleted: publicationCoalescing.superseded,
+              publicationSuperseded: publicationCoalescing.superseded,
+            });
+          }
+          return {
+            deduped: true as const,
+            key: publicationCoalescing.freshestKey,
+            state,
+            stateChanged: publicationCoalescing.superseded > 0,
+          };
+        }
         const current = state.items[key];
         if (current) {
           const ignoredRecovery =
@@ -421,10 +437,20 @@ export class ExactReviewQueue {
           };
         }
         this.writeStateSync(state);
+        if (publicationCoalescing.superseded) {
+          this.incrementQueueMetricsSync({
+            publicationCompleted: publicationCoalescing.superseded,
+            publicationSuperseded: publicationCoalescing.superseded,
+          });
+        }
         return { deduped: false as const, key, state };
       });
       if (accepted.deduped) {
-        return json({ ok: true, deduped: true, item_key: exactReviewItemKey(decision) }, 202);
+        if (accepted.stateChanged) await this.scheduleNext(accepted.state, now);
+        return json(
+          { ok: true, deduped: true, item_key: accepted.key || exactReviewItemKey(decision) },
+          202,
+        );
       }
       if (accepted.shed) {
         return json({ ok: true, shed: true, reason: "backpressure" }, 202);
@@ -2032,17 +2058,9 @@ export class ExactReviewQueue {
     const state = this.readStateSync();
     let superseded = 0;
     for (const candidate of candidates) {
-      const item = state.items[candidate.itemKey];
-      if (
-        !item ||
-        item.revision !== candidate.revision ||
-        !exactReviewQueueIsPublication(item) ||
-        (item.state !== "pending" && item.state !== "parked")
-      ) {
-        continue;
+      if (supersedeExactReviewPublicationItem(state, candidate.itemKey, candidate.revision)) {
+        superseded += 1;
       }
-      delete state.items[item.key];
-      superseded += 1;
     }
     if (superseded) {
       await this.writeState(state, {
@@ -3399,6 +3417,97 @@ function exactReviewItemKey(decision: ExactReviewDecision) {
   return decision.publication
     ? `${base}@publish:${decision.publication.producerRunId}:${decision.publication.producerRunAttempt}`
     : base;
+}
+
+function coalesceExactReviewPublications(
+  state: ExactReviewQueueState,
+  incoming: ExactReviewDecision,
+) {
+  const incomingPublication = incoming.publication;
+  const incomingKey = exactReviewItemKey(incoming);
+  if (!incomingPublication) {
+    return { incomingStale: false, freshestKey: incomingKey, superseded: 0 };
+  }
+
+  let freshestKey = incomingKey;
+  let freshestPublication = incomingPublication;
+  const matchingItems: ExactReviewQueueItem[] = [];
+  for (const item of Object.values(state.items)) {
+    const publication = item.decision.publication;
+    if (!publication || publication.itemKey !== incomingPublication.itemKey) continue;
+    matchingItems.push(item);
+    if (compareExactReviewPublicationFreshness(publication, freshestPublication) > 0) {
+      freshestKey = item.key;
+      freshestPublication = publication;
+    }
+  }
+
+  let superseded = 0;
+  for (const item of matchingItems) {
+    const publication = item.decision.publication;
+    if (
+      publication &&
+      compareExactReviewPublicationFreshness(publication, freshestPublication) < 0 &&
+      supersedeExactReviewPublicationItem(state, item.key)
+    ) {
+      superseded += 1;
+    }
+  }
+  return {
+    incomingStale:
+      compareExactReviewPublicationFreshness(incomingPublication, freshestPublication) < 0,
+    freshestKey,
+    superseded,
+  };
+}
+
+function compareExactReviewPublicationFreshness(
+  left: ExactReviewPublication,
+  right: ExactReviewPublication,
+) {
+  // Review revisions are monotonic for one item. Within a revision, GitHub's
+  // run tuple orders redispatches; claim generation is only a final tie-breaker
+  // because clearing an expired lease resets it for the next dispatch.
+  if (left.protocolVersion === 2 && right.protocolVersion === 2) {
+    const revision = Number(left.leaseRevision) - Number(right.leaseRevision);
+    if (revision) return revision;
+  }
+  const run = compareUnsignedDecimalStrings(left.producerRunId, right.producerRunId);
+  if (run) return run;
+  const attempt = left.producerRunAttempt - right.producerRunAttempt;
+  if (attempt) return attempt;
+  if (left.protocolVersion === 2 && right.protocolVersion === 2) {
+    const generation = Number(left.claimGeneration) - Number(right.claimGeneration);
+    if (generation) return generation;
+  }
+  return left.protocolVersion - right.protocolVersion;
+}
+
+function compareUnsignedDecimalStrings(left: string, right: string) {
+  const normalizedLeft = left.replace(/^0+(?=\d)/, "");
+  const normalizedRight = right.replace(/^0+(?=\d)/, "");
+  if (normalizedLeft.length !== normalizedRight.length) {
+    return normalizedLeft.length - normalizedRight.length;
+  }
+  return normalizedLeft === normalizedRight ? 0 : normalizedLeft < normalizedRight ? -1 : 1;
+}
+
+function supersedeExactReviewPublicationItem(
+  state: ExactReviewQueueState,
+  itemKey: string,
+  revision?: number,
+) {
+  const item = state.items[itemKey];
+  if (
+    !item ||
+    (revision !== undefined && item.revision !== revision) ||
+    !exactReviewQueueIsPublication(item) ||
+    (item.state !== "pending" && item.state !== "parked")
+  ) {
+    return false;
+  }
+  delete state.items[item.key];
+  return true;
 }
 
 function isExactReviewQueueTargetEnabled(decision: ExactReviewDecision, env) {

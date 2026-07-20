@@ -266,6 +266,154 @@ test("exact-review queue bypasses debounce for commands and publications", async
   }
 });
 
+test("exact-review queue keeps only the newest pending or parked publication per item", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const targetRepo = "openclaw/openclaw";
+
+  await enqueueExactReviewPublication(queue, {
+    deliveryId: "publication-pending-old",
+    itemNumber: 753,
+    producerRunId: "7530",
+    targetRepo,
+  });
+  await enqueueExactReviewPublication(queue, {
+    deliveryId: "publication-parked-old",
+    itemNumber: 754,
+    producerRunId: "7540",
+    targetRepo,
+  });
+  await enqueueExactReviewPublication(queue, {
+    deliveryId: "publication-unrelated",
+    itemNumber: 758,
+    producerRunId: "7580",
+    targetRepo,
+  });
+  const parked = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { state: string; parkedReason?: string }>;
+  };
+  parked.items["openclaw/openclaw#754@publish:7540:1"].state = "parked";
+  parked.items["openclaw/openclaw#754@publish:7540:1"].parkedReason = "dead_letter_capacity";
+  await storage.put("exact-review-queue", parked);
+
+  for (const [itemNumber, runId] of [
+    [753, "7531"],
+    [754, "7541"],
+  ] as const) {
+    const response = await enqueueExactReviewPublication(queue, {
+      deliveryId: `publication-new-${itemNumber}`,
+      itemNumber,
+      producerRunId: runId,
+      producerSourceAction: "synchronize",
+      targetRepo,
+      leaseRevision: 2,
+    });
+    assert.equal(response.status, 202);
+    assert.equal((await response.json()).queued, true);
+  }
+
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { decision: { publication: { leaseRevision: number } } }>;
+  };
+  assert.deepEqual(Object.keys(state.items).sort(), [
+    "openclaw/openclaw#753@publish:7531:1",
+    "openclaw/openclaw#754@publish:7541:1",
+    "openclaw/openclaw#758@publish:7580:1",
+  ]);
+  assert.equal(
+    state.items["openclaw/openclaw#753@publish:7531:1"].decision.publication.leaseRevision,
+    2,
+  );
+  assert.equal(
+    state.items["openclaw/openclaw#754@publish:7541:1"].decision.publication.leaseRevision,
+    2,
+  );
+
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.publication.enqueued_total, 5);
+  assert.equal(stats.lanes.publication.completed_total, 2);
+  assert.equal(stats.lanes.publication.superseded_total, 2);
+});
+
+test("exact-review queue rejects a delayed stale publication without displacing newer work", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const targetRepo = "openclaw/openclaw";
+  const newer = await enqueueExactReviewPublication(queue, {
+    deliveryId: "publication-new-first",
+    itemNumber: 755,
+    producerRunId: "7551",
+    producerSourceAction: "synchronize",
+    targetRepo,
+  });
+  assert.equal((await newer.json()).queued, true);
+  const delayed = await enqueueExactReviewPublication(queue, {
+    deliveryId: "publication-old-delayed",
+    itemNumber: 755,
+    producerRunId: "7550",
+    producerSourceAction: "synchronize",
+    targetRepo,
+    claimGeneration: 2,
+  });
+  assert.equal(delayed.status, 202);
+  assert.deepEqual(await delayed.json(), {
+    ok: true,
+    deduped: true,
+    item_key: "openclaw/openclaw#755@publish:7551:1",
+  });
+
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, unknown>;
+  };
+  assert.deepEqual(Object.keys(state.items), ["openclaw/openclaw#755@publish:7551:1"]);
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.publication.enqueued_total, 1);
+  assert.equal(stats.lanes.publication.completed_total, 0);
+  assert.equal(stats.lanes.publication.superseded_total, 0);
+});
+
+test("exact-review queue does not delete active publications while coalescing newer results", async () => {
+  const storage = new MemoryDurableStorage();
+  const leased = leasedExactReviewPublicationItem(756, "7560");
+  const dispatching = leasedExactReviewPublicationItem(757, "7570");
+  dispatching.state = "dispatching";
+  dispatching.claimedRunId = undefined;
+  dispatching.claimedRunAttempt = undefined;
+  dispatching.claimGeneration = undefined;
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [leased.key]: leased, [dispatching.key]: dispatching },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  for (const [itemNumber, runId] of [
+    [756, "7561"],
+    [757, "7571"],
+  ] as const) {
+    await enqueueExactReviewPublication(queue, {
+      deliveryId: `publication-active-new-${itemNumber}`,
+      itemNumber,
+      producerRunId: runId,
+      producerSourceAction: "edited",
+      targetRepo: "openclaw/openclaw",
+      itemKind: "issue",
+      leaseRevision: 2,
+    });
+  }
+
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { state: string }>;
+  };
+  assert.equal(state.items[leased.key].state, "leased");
+  assert.equal(state.items[dispatching.key].state, "dispatching");
+  assert.equal(state.items["openclaw/openclaw#756@publish:7561:1"].state, "pending");
+  assert.equal(state.items["openclaw/openclaw#757@publish:7571:1"].state, "pending");
+});
+
 test("exact-review queue sheds only new recovery work above the pending soft limit", async () => {
   const storage = new MemoryDurableStorage();
   const env = {
@@ -11245,13 +11393,23 @@ function exactReviewPublicationOverrides(
   itemNumber: number,
   producerRunId: string,
   producerSourceAction = "opened",
+  options: {
+    targetRepo?: string;
+    itemKind?: "issue" | "pull_request";
+    leaseRevision?: number | null;
+    claimGeneration?: number | null;
+  } = {},
 ) {
+  const targetRepo = options.targetRepo || "openclaw/gogcli";
+  const itemKind = options.itemKind || "issue";
+  const leaseRevision = options.leaseRevision === undefined ? 1 : options.leaseRevision;
+  const claimGeneration = options.claimGeneration === undefined ? 1 : options.claimGeneration;
   const producerDecision = {
-    targetRepo: "openclaw/gogcli",
+    targetRepo,
     targetBranch: "main",
     itemNumber,
-    itemKind: "issue",
-    sourceEvent: "issues",
+    itemKind,
+    sourceEvent: itemKind === "issue" ? "issues" : "pull_request",
     sourceAction: producerSourceAction,
     supersedesInProgress: false,
   };
@@ -11261,10 +11419,10 @@ function exactReviewPublicationOverrides(
       producerRunId,
       producerRunAttempt: 1,
       sourceSha: "a".repeat(40),
-      itemKey: `openclaw/gogcli#${itemNumber}`,
+      itemKey: `${targetRepo}#${itemNumber}`,
       protocolVersion: 2,
-      leaseRevision: 1,
-      claimGeneration: 1,
+      leaseRevision,
+      claimGeneration,
       liveProceeded: true,
       liveTerminalNoop: false,
       liveTerminalMissing: false,
@@ -11272,6 +11430,45 @@ function exactReviewPublicationOverrides(
       producerDecision,
     },
   };
+}
+
+function enqueueExactReviewPublication(
+  queue: ExactReviewQueue,
+  {
+    deliveryId,
+    itemNumber,
+    producerRunId,
+    producerSourceAction = "opened",
+    targetRepo = "openclaw/openclaw",
+    itemKind = "pull_request",
+    leaseRevision = 1,
+    claimGeneration = 1,
+  }: {
+    deliveryId: string;
+    itemNumber: number;
+    producerRunId: string;
+    producerSourceAction?: string;
+    targetRepo?: string;
+    itemKind?: "issue" | "pull_request";
+    leaseRevision?: number;
+    claimGeneration?: number;
+  },
+) {
+  return queue.fetch(
+    buildExactReviewQueueRequest(
+      deliveryId,
+      itemNumber,
+      "exact_review_artifact_publish",
+      itemKind,
+      targetRepo,
+      exactReviewPublicationOverrides(itemNumber, producerRunId, producerSourceAction, {
+        targetRepo,
+        itemKind,
+        leaseRevision,
+        claimGeneration,
+      }),
+    ),
+  );
 }
 
 function leasedExactReviewQueueItem(itemNumber: number, runId: string, runAttempt = 1) {
