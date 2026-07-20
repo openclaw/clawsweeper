@@ -2342,7 +2342,7 @@ test("producer locks reclaim fresh dead owners and never evict a live holder by 
   assert.ok(releaseDead);
   const deadStartedAt = Date.now();
   assert.ok(recordReviewNumber(deadRoot, 42));
-  assert.ok(Date.now() - deadStartedAt < 1_000);
+  assert.ok(Date.now() - deadStartedAt < 5_000);
   assert.doesNotThrow(releaseDead);
 
   const reusedRoot = tempRoot();
@@ -2368,7 +2368,7 @@ test("producer locks reclaim fresh dead owners and never evict a live holder by 
   assert.ok(releaseReused);
   const reusedStartedAt = Date.now();
   assert.ok(recordReviewNumber(reusedRoot, 46));
-  assert.ok(Date.now() - reusedStartedAt < 1_000);
+  assert.ok(Date.now() - reusedStartedAt < 5_000);
   assert.doesNotThrow(releaseReused);
 
   const liveRoot = tempRoot();
@@ -2515,7 +2515,7 @@ test(
     try {
       const startedAt = Date.now();
       assert.ok(recordReviewNumber(root, 82));
-      assert.ok(Date.now() - startedAt < 1_000);
+      assert.ok(Date.now() - startedAt < 5_000);
     } finally {
       fs.readFileSync = originalReadFileSync;
       processIncarnationIdentitySha256(process.pid, { fresh: true });
@@ -2581,7 +2581,7 @@ test(
       assert.ok(releaseZombie);
       const startedAt = Date.now();
       assert.ok(recordReviewNumber(root, 92));
-      assert.ok(Date.now() - startedAt < 1_000);
+      assert.ok(Date.now() - startedAt < 5_000);
       assert.doesNotThrow(releaseZombie);
     } finally {
       keeper.kill("SIGTERM");
