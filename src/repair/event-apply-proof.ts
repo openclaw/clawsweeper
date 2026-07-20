@@ -157,8 +157,7 @@ export function exactEventApplyProof(
     terminalCount === 0 &&
     exactActions[0]?.terminalMissingVerified !== true;
   const activeReviewLeaseRetryAt =
-    soleExactAction === "kept_open" &&
-    soleExactResult?.activeReviewLeaseVerified === true
+    soleExactAction === "kept_open" && soleExactResult?.activeReviewLeaseVerified === true
       ? normalizedReviewLeaseRetryAt(soleExactResult.activeReviewLeaseExpiresAt)
       : null;
   return {
@@ -196,7 +195,9 @@ export function exactEventApplyProof(
 function normalizedReviewLeaseRetryAt(value: string): string | null {
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp)
-    ? new Date(Math.min(timestamp, Date.now() + ACTIVE_REVIEW_LEASE_RETRY_MAX_DELAY_MS)).toISOString()
+    ? new Date(
+        Math.min(timestamp, Date.now() + ACTIVE_REVIEW_LEASE_RETRY_MAX_DELAY_MS),
+      ).toISOString()
     : null;
 }
 

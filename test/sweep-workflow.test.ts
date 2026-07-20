@@ -586,7 +586,10 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.ok(publisher.steps.indexOf(publishResult) < publisher.steps.indexOf(publishComplete));
   assert.ok(publisher.steps.indexOf(publishComplete) < publisher.steps.indexOf(activeLeaseWaiting));
   assert.match(activeLeaseWaiting.if ?? "", /reason_code == 'review_lease_active'/);
-  assert.match(activeLeaseWaiting.if ?? "", /complete-exact-review-publication\.outcome == 'success'/);
+  assert.match(
+    activeLeaseWaiting.if ?? "",
+    /complete-exact-review-publication\.outcome == 'success'/,
+  );
   assert.match(activeLeaseWaiting.run ?? "", /--state "Waiting"/);
 
   const publisherSource = readText("src/repair/publish-event-result.ts");

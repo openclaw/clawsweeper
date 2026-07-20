@@ -319,7 +319,8 @@ test("exact event proof defers a close-coverage retry to the proof-capable apply
 });
 
 test("exact event proof defers only a verified active review lease until its expiry", () => {
-  const snapshot = "---\nrepository: openclaw/openclaw\nnumber: 42\naction_taken: proposed_close\n---\n";
+  const snapshot =
+    "---\nrepository: openclaw/openclaw\nnumber: 42\naction_taken: proposed_close\n---\n";
   const retryAt = "2026-07-20T08:44:43.900Z";
   const verified = exactEventApplyProof(
     [
