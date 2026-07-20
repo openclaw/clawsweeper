@@ -105,7 +105,6 @@ try {
     retryableTimeout ? "retryable_failure" : "permanent_failure",
     reasonCode,
     errorFingerprint(error),
-    retryableTimeout ? "github_transient" : undefined,
   );
   throw error;
 }
@@ -641,7 +640,6 @@ function writePublicationCompletionOutputs(
     | "policy_invariant"
     | "unknown_failure",
   fingerprint?: string,
-  failureKind?: "github_transient",
 ): void {
   const outputPath = process.env.GITHUB_OUTPUT;
   if (!outputPath) return;
@@ -650,7 +648,6 @@ function writePublicationCompletionOutputs(
     [
       `completion_kind=${completionKind}`,
       `reason_code=${reasonCode}`,
-      ...(failureKind ? [`failure_kind=${failureKind}`] : []),
       ...(fingerprint ? [`error_fingerprint=${fingerprint}`] : []),
       "",
     ].join("\n"),

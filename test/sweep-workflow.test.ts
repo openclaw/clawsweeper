@@ -606,6 +606,11 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(publisherSource, /GitCommandTimeoutError/);
   assert.match(publisherSource, /retryable_failure/);
   assert.match(publisherSource, /error instanceof GitCommandTimeoutError/);
+  assert.match(
+    publisherSource,
+    /writePublicationCompletionOutputs\(\s*retryableTimeout \? "retryable_failure" : "permanent_failure",\s*reasonCode,\s*errorFingerprint\(error\),\s*\);/,
+  );
+  assert.doesNotMatch(publisherSource, /retryableTimeout \? "github_transient" : undefined/);
   assert.ok(
     publisherSource.indexOf("eventSnapshotMatchesCurrent(paths)", completeStart) > completeStart,
   );

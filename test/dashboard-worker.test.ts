@@ -4774,6 +4774,45 @@ test("exact-review publication capacity backs off on GitHub pressure and recover
   }
 });
 
+test("exact-review publication retries a state fetch timeout without throttling capacity", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(7801, "78010");
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "failure",
+        completion_kind: "retryable_failure",
+        reason_code: "github_transient",
+        error_fingerprint: "sha256:state-fetch-timeout",
+      }),
+    }),
+  );
+
+  assert.deepEqual(await response.json(), { ok: true, requeued: true });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { state: string; lastFailureReason?: string }>;
+  };
+  assert.equal(state.items[item.key]?.state, "pending");
+  assert.equal(state.items[item.key]?.lastFailureReason, "github_transient");
+
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.publication.capacity_control.mode, "adaptive");
+  assert.equal(stats.lanes.publication.capacity_control.ceiling, 48);
+  assert.equal(stats.lanes.publication.capacity_control.last_failure_kind, null);
+});
+
 test("exact-review publication supersedes stale tuples without counting a publish", async () => {
   const storage = new MemoryDurableStorage();
   const item = leasedExactReviewPublicationItem(781, "7810");
