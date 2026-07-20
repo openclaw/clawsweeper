@@ -19863,6 +19863,7 @@ function issueReviewCommentState(
   number: number,
   fallbackBodies: readonly string[] = [],
 ): {
+  comments: Record<string, unknown>[];
   reviewComment: Record<string, unknown> | undefined;
   leaseComment: Record<string, unknown> | undefined;
   leaseComments: Record<string, unknown>[];
@@ -19885,6 +19886,7 @@ function issueReviewCommentState(
       : []),
   ];
   return {
+    comments,
     reviewComment,
     leaseComment: leaseComments[0],
     leaseComments,
@@ -20769,24 +20771,16 @@ export function supersededReviewPlaceholderCommentIds(options: {
 
 function cleanupSupersededReviewPlaceholderComments(options: {
   number: number;
+  // Pre-mutation snapshot from the apply flow; the sweep must not refetch the
+  // comment list after the durable-comment mutation (API-budget invariant).
+  comments: readonly Record<string, unknown>[];
   keepCommentIds: ReadonlySet<number>;
 }): void {
-  let ids: number[];
-  try {
-    ids = supersededReviewPlaceholderCommentIds({
-      number: options.number,
-      comments: fetchIssueReviewComments(options.number),
-      keepCommentIds: options.keepCommentIds,
-    });
-  } catch (error) {
-    if (error instanceof GitHubRuntimeBudgetError) throw error;
-    console.error(
-      `[apply] could not enumerate superseded review placeholder comments for #${options.number}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-    return;
-  }
+  const ids = supersededReviewPlaceholderCommentIds({
+    number: options.number,
+    comments: options.comments,
+    keepCommentIds: options.keepCommentIds,
+  });
   for (const id of ids) {
     try {
       ghObservedMutationCommand({
@@ -26969,6 +26963,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         if (!headBefore || headBefore !== headAfter || headAfter !== initialReviewHeadSha) {
           return {
             comment: refreshed.reviewComment,
+            comments: refreshed.comments,
             leaseComments: refreshed.leaseComments,
             headSha: headAfter,
             lease: null,
@@ -26979,6 +26974,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         if (item.kind === "issue" && reportReviewRevision && headAfter !== reportReviewRevision) {
           return {
             comment: refreshed.reviewComment,
+            comments: refreshed.comments,
             leaseComments: refreshed.leaseComments,
             headSha: headAfter,
             lease: null,
@@ -26986,11 +26982,14 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             blockReason: `live issue source revision ${headAfter} differs from reviewed revision ${reportReviewRevision}`,
           };
         }
-        return reviewStartLeaseStateForComments(
-          refreshed.leaseComments,
-          refreshed.reviewComment,
-          headAfter,
-        );
+        return {
+          ...reviewStartLeaseStateForComments(
+            refreshed.leaseComments,
+            refreshed.reviewComment,
+            headAfter,
+          ),
+          comments: refreshed.comments,
+        };
       } catch (error) {
         if (error instanceof GitHubRuntimeBudgetError) throw error;
         const detail = trimMiddle(
@@ -26999,6 +26998,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         );
         return {
           comment: undefined,
+          comments: [] as Record<string, unknown>[],
           leaseComments: [],
           headSha: "",
           lease: null,
@@ -28996,6 +28996,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             }
             cleanupSupersededReviewPlaceholderComments({
               number,
+              comments: latestLeaseState.comments,
               keepCommentIds: placeholderKeepCommentIds,
             });
           } catch (error) {
