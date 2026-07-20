@@ -76,6 +76,10 @@ const GIT_OBJECT_BATCH_MAX_BUFFER = 64 * 1024 * 1024;
 const GIT_TREE_LIST_MAX_BUFFER = 64 * 1024 * 1024;
 const RECONCILIATION_TUPLE_CHUNK_SIZE = 128;
 const PUBLISH_FETCH_TIMEOUT_MS = 60_000;
+// Recovery fetches (deepen/unshallow/refetch of the state history) are rare
+// one-time repairs but move far more data than an ordinary publish fetch; a
+// 60s budget times out on the grown state repo (prod run 29745570319).
+const RECOVERY_FETCH_TIMEOUT_MS = 300_000;
 const SKIP_CI_DIRECTIVE_PATTERN =
   /\[(?:skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks:\s*true$/im;
 
@@ -576,13 +580,13 @@ function recoverUnavailableGitObjects(remote: string, branch: string, failure: u
   const refetchDepth = shallow ? ["--depth=1"] : [];
   const refetched = spawnGit(["fetch", "--refetch", ...refetchDepth, remote, branch], {
     quiet: true,
-    timeout: PUBLISH_FETCH_TIMEOUT_MS,
+    timeout: RECOVERY_FETCH_TIMEOUT_MS,
   });
   if (refetched.status === 0 && gitObjectIdsAvailable(objectIds)) return;
   if (!shallow) return;
   const deepened = spawnGit(["fetch", "--deepen=1", remote, branch], {
     quiet: true,
-    timeout: PUBLISH_FETCH_TIMEOUT_MS,
+    timeout: RECOVERY_FETCH_TIMEOUT_MS,
   });
   if (deepened.status === 0 && (objectIds.length === 0 || gitObjectIdsAvailable(objectIds))) {
     return;
@@ -590,7 +594,7 @@ function recoverUnavailableGitObjects(remote: string, branch: string, failure: u
   if (!isShallowRepository()) return;
   spawnGit(["fetch", "--unshallow", remote, branch], {
     quiet: true,
-    timeout: PUBLISH_FETCH_TIMEOUT_MS,
+    timeout: RECOVERY_FETCH_TIMEOUT_MS,
   });
 }
 
@@ -852,7 +856,7 @@ function mergeBaseWithShallowRecovery(
 
   spawnGit(["fetch", "--deepen=32", remote, branch], {
     quiet: true,
-    timeout: PUBLISH_FETCH_TIMEOUT_MS,
+    timeout: RECOVERY_FETCH_TIMEOUT_MS,
   });
   result = spawnGit(args, { quiet: true });
   if (result.status === 0) {
@@ -863,7 +867,7 @@ function mergeBaseWithShallowRecovery(
   if (isShallowRepository()) {
     spawnGit(["fetch", "--unshallow", remote, branch], {
       quiet: true,
-      timeout: PUBLISH_FETCH_TIMEOUT_MS,
+      timeout: RECOVERY_FETCH_TIMEOUT_MS,
     });
     result = spawnGit(args, { quiet: true });
     if (result.status === 0) {
