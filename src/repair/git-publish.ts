@@ -1402,6 +1402,7 @@ export function pushCommit(options: {
   rebaseStrategy?: RebaseStrategy;
   reconciliationSourceCommit?: string;
   reconciliationTupleKeys?: ReadonlySet<string>;
+  boundedRemoteHeadRebuild?: boolean;
 }): boolean {
   const remote = options.remote ?? "origin";
   const branch = options.branch ?? publishDefaultBranch();
@@ -1434,6 +1435,7 @@ export function pushCommit(options: {
           branch,
           options.reconciliationSourceCommit,
           options.reconciliationTupleKeys,
+          options.boundedRemoteHeadRebuild,
         )
       ) {
         return false;
@@ -1481,6 +1483,30 @@ export function pushCommit(options: {
   return spawnGit(["push", remote, `HEAD:${branch}`]).status === 0;
 }
 
+export function pushSingleRecordTupleCommit(options: {
+  paths: readonly string[];
+  remote?: string;
+  branch?: string;
+  pushAttempts?: number;
+}): boolean {
+  const reconciliationTupleKeys = recordTupleKeysForPaths(options.paths);
+  if (reconciliationTupleKeys.size !== 1) {
+    throw new Error(
+      `Single-record reconciliation requires exactly one tuple; received ${reconciliationTupleKeys.size}`,
+    );
+  }
+  const reconciliationSourceCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
+  return pushCommit({
+    ...(options.remote !== undefined ? { remote: options.remote } : {}),
+    ...(options.branch !== undefined ? { branch: options.branch } : {}),
+    ...(options.pushAttempts !== undefined ? { pushAttempts: options.pushAttempts } : {}),
+    rebaseStrategy: "reconcile-records",
+    reconciliationSourceCommit,
+    reconciliationTupleKeys,
+    boundedRemoteHeadRebuild: true,
+  });
+}
+
 function reconciliationChangesOverlap(
   remoteRef: string,
   reconciliationSourceCommit?: string,
@@ -1523,10 +1549,13 @@ function rebuildReconciliationCommit(
   branch: string,
   reconciliationSourceCommit?: string,
   allowedTupleKeys?: ReadonlySet<string>,
+  boundedRemoteHeadRebuild = false,
 ): boolean {
   const remoteRef = `${remote}/${branch}`;
   const sourceCommit = reconciliationSourceCommit ?? runGit(["rev-parse", "HEAD"]).trim();
-  const mergeBase = mergeBaseWithShallowRecovery(sourceCommit, remoteRef, remote, branch);
+  const mergeBase = boundedRemoteHeadRebuild
+    ? mergeBaseWithoutHydration(sourceCommit, remoteRef)
+    : mergeBaseWithShallowRecovery(sourceCommit, remoteRef, remote, branch);
   let baseCommit: string;
   let localPaths: string[];
   if (!mergeBase.base) {
@@ -1618,6 +1647,19 @@ function rebuildReconciliationCommit(
 
   runGit(["commit", "-C", sourceCommit]);
   return true;
+}
+
+function mergeBaseWithoutHydration(
+  left: string,
+  right: string,
+): { base: string | null; recoveredShallowMiss: false } {
+  const args = ["merge-base", left, right];
+  const result = spawnGit(args, { quiet: true });
+  if (result.status === 0) {
+    return { base: result.stdout.trim(), recoveredShallowMiss: false };
+  }
+  if (result.status !== 1) throw gitRunError(result, args);
+  return { base: null, recoveredShallowMiss: false };
 }
 
 function normalizeReconciliationCommit(sourceCommit: string): {

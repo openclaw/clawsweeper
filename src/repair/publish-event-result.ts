@@ -28,7 +28,7 @@ import {
   hardResetToRemoteMain,
   hasStagedChanges,
   publishRoot,
-  pushCommit,
+  pushSingleRecordTupleCommit,
   refreshSourceAfterStatePublish,
   runGit,
   setTokenOrigin,
@@ -507,7 +507,7 @@ function publishSnapshot({
         commitPaths,
       ),
     ]);
-    if (!pushCommit({ pushAttempts: 3, rebaseStrategy: "reconcile-records" })) return null;
+    if (!pushSingleRecordTupleCommit({ paths: commitPaths, pushAttempts: 3 })) return null;
     return complete(true);
   } catch (error) {
     if (

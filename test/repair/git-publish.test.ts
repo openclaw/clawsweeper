@@ -12,6 +12,7 @@ import {
   GitCommandTimeoutError,
   hardResetToRemoteMain,
   publishMainCommit,
+  pushSingleRecordTupleCommit,
   refreshSourceAfterStatePublish,
   runGit,
   setTokenOrigin,
@@ -1543,6 +1544,92 @@ test("reconcile-records rebuilds on a shallow remote head without local ancestry
   assert.equal(
     run("git", ["--git-dir", origin, "show", "main:remote.txt"], root),
     "remote update two\n",
+  );
+});
+
+test("single-record publisher rebuilds a shallow losing writer without hydrating history", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-single-record-race-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const publisher = path.join(root, "publisher");
+  const other = path.join(root, "other");
+  const fakeBin = path.join(root, "bin");
+  const recordsRoot = "records/openclaw-openclaw";
+  const publisherPaths = [
+    `${recordsRoot}/items/42.md`,
+    `${recordsRoot}/closed/42.md`,
+    `${recordsRoot}/plans/42.md`,
+    `${recordsRoot}/decision-packets/42.json`,
+  ];
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  writeRecordTuple(seed, {
+    number: 42,
+    marker: "shared base",
+    reviewedAt: "2026-07-20T11:00:00.000Z",
+    itemUpdatedAt: "2026-07-20T10:59:00Z",
+  });
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial state"], seed);
+  run("git", ["push", "origin", "HEAD:state"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["clone", "--depth", "1", `file://${origin}`, publisher], root);
+  configureUser(publisher);
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+
+  const localTuple = writeRecordTuple(publisher, {
+    number: 42,
+    marker: "publisher update",
+    reviewedAt: "2026-07-20T11:02:00.000Z",
+    itemUpdatedAt: "2026-07-20T11:01:00Z",
+  });
+  run("git", ["add", "."], publisher);
+  run("git", ["commit", "-m", "publisher update"], publisher);
+
+  const remoteTuple = writeRecordTuple(other, {
+    number: 43,
+    marker: "concurrent remote update",
+    reviewedAt: "2026-07-20T11:03:00.000Z",
+    itemUpdatedAt: "2026-07-20T11:02:00Z",
+  });
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "concurrent remote update"], other);
+  run("git", ["push", "origin", "HEAD:state"], other);
+  installDeepenFetchFailureShim(fakeBin);
+
+  const lines = [];
+  let published;
+  captureConsoleLog(() => {
+    published = withEnv({ PATH: `${fakeBin}:${process.env.PATH}` }, () =>
+      withCwd(publisher, () =>
+        pushSingleRecordTupleCommit({
+          paths: publisherPaths,
+          branch: "state",
+          pushAttempts: 2,
+        }),
+      ),
+    );
+  }, lines);
+
+  assert.equal(published, true);
+  assert.equal(
+    lines.some(
+      (line) =>
+        line ===
+        "No common Git base with origin/state; rebuilding reconciliation on the remote head",
+    ),
+    true,
+  );
+  assert.equal(run("git", ["rev-parse", "--is-shallow-repository"], publisher).trim(), "true");
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/42.md`], root),
+    localTuple.primary,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/43.md`], root),
+    remoteTuple.primary,
   );
 });
 
