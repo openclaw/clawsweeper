@@ -1919,6 +1919,135 @@ test("state publish lease renews and fences a push after the original TTL", () =
   );
 });
 
+test("state publish lease survives a lost race without resetting the state worktree", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-lease-rebuild-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const candidate = path.join(root, "candidate");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  write(path.join(seed, "README.md"), "state\n");
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial state"], seed);
+  run("git", ["push", "origin", "HEAD:state"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["clone", "--depth", "1", `file://${origin}`, work], root);
+  configureUser(work);
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+
+  const localNumber = 10_101;
+  const remoteNumber = 10_102;
+  const localTuple = writeRecordTuple(candidate, {
+    number: localNumber,
+    marker: "leased local result",
+    reviewedAt: "2026-07-20T16:00:00.000Z",
+    itemUpdatedAt: "2026-07-20T15:59:00Z",
+  });
+  const remoteTuple = writeRecordTuple(other, {
+    number: remoteNumber,
+    marker: "unleased concurrent state writer",
+    reviewedAt: "2026-07-20T16:01:00.000Z",
+    itemUpdatedAt: "2026-07-20T16:00:00Z",
+  });
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "concurrent state update"], other);
+  const recordRoot = "records/openclaw-openclaw";
+  const paths = [
+    `${recordRoot}/items/${localNumber}.md`,
+    `${recordRoot}/closed/${localNumber}.md`,
+    `${recordRoot}/plans/${localNumber}.md`,
+    `${recordRoot}/decision-packets/${localNumber}.json`,
+  ];
+
+  let published = false;
+  let advertisedLease = "";
+  const lines = captureConsoleLog(() => {
+    withEnv(
+      {
+        CLAWSWEEPER_PUBLISH_ROOT: work,
+        CLAWSWEEPER_PUBLISH_BRANCH: "state",
+      },
+      () =>
+        withStatePublishLease(
+          () => {
+            advertisedLease = run(
+              "git",
+              [
+                "--git-dir",
+                origin,
+                "show",
+                "-s",
+                "--format=%B",
+                "refs/heads/clawsweeper-publish-lease/state",
+              ],
+              root,
+            );
+            hardResetToRemoteMain("origin", "state");
+            fs.cpSync(path.join(candidate, "records"), path.join(work, "records"), {
+              recursive: true,
+            });
+            stagePaths(paths);
+            runGit([
+              "commit",
+              "-m",
+              commitMessageForPublishedPaths("chore: publish leased tuple", paths),
+            ]);
+            run("git", ["push", "origin", "HEAD:state"], other);
+            published = pushSingleRecordTupleCommit({
+              paths,
+              branch: "state",
+              pushAttempts: 2,
+            });
+          },
+          { branch: "state", acquireTimeoutMs: 5_000, waitMs: 10 },
+        ),
+    );
+  });
+
+  assert.equal(published, true);
+  assert.match(advertisedLease, /ttl_ms: 120000/);
+  assert.equal(
+    lines.some(
+      (line) =>
+        line.includes("Renewed state publish lease") && line.includes("before state race recovery"),
+    ),
+    true,
+  );
+  assert.equal(
+    lines.some((line) => line === "Rebuilt reconciliation as a bounded record-tuple tree patch"),
+    true,
+  );
+  const recoveryStart = lines.findIndex((line) =>
+    line.includes("Push attempt 1 lost the state race"),
+  );
+  assert.notEqual(recoveryStart, -1);
+  assert.equal(
+    lines.slice(recoveryStart).some((line) => line.startsWith("$ git reset")),
+    false,
+  );
+  assert.equal(
+    lines.slice(recoveryStart).some((line) => line.startsWith("$ git read-tree")),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordRoot}/items/${localNumber}.md`], root),
+    localTuple.primary,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordRoot}/items/${remoteNumber}.md`], root),
+    remoteTuple.primary,
+  );
+  assert.equal(fs.readFileSync(path.join(work, paths[0]), "utf8"), localTuple.primary);
+  assert.equal(
+    fs.readFileSync(path.join(work, `${recordRoot}/items/${remoteNumber}.md`), "utf8"),
+    remoteTuple.primary,
+  );
+});
+
 test("checkpoint publish rebuilds on the remote head when histories are unrelated", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-checkpoint-unrelated-"));
   const origin = path.join(root, "origin.git");

@@ -75,6 +75,7 @@ const GIT_PATHSPEC_BATCH_SIZE = 256;
 const GIT_OBJECT_BATCH_SIZE = 512;
 const GIT_OBJECT_BATCH_MAX_BUFFER = 64 * 1024 * 1024;
 const GIT_TREE_LIST_MAX_BUFFER = 64 * 1024 * 1024;
+const GIT_STATE_DIFF_MAX_BUFFER = 256 * 1024 * 1024;
 const RECONCILIATION_TUPLE_CHUNK_SIZE = 128;
 const PUBLISH_FETCH_TIMEOUT_MS = 60_000;
 // Recovery fetches (deepen/unshallow/refetch of the state history) are rare
@@ -83,6 +84,7 @@ const PUBLISH_FETCH_TIMEOUT_MS = 60_000;
 const RECOVERY_FETCH_TIMEOUT_MS = 300_000;
 const STATE_PUBLISH_LEASE_REF_ROOT = "refs/heads/clawsweeper-publish-lease";
 const STATE_PUBLISH_LEASE_TTL_MS = 2 * 60_000;
+const STATE_PUBLISH_LEASE_RENEW_THRESHOLD_MS = PUBLISH_FETCH_TIMEOUT_MS;
 const STATE_PUBLISH_LEASE_ACQUIRE_TIMEOUT_MS = 3 * 60_000;
 const STATE_PUBLISH_LEASE_WAIT_MS = 1_000;
 const STATE_PUBLISH_LEASE_MAX_WAIT_MS = 5_000;
@@ -1583,6 +1585,7 @@ function createStatePublishLeaseCommit(options: {
       `owner: ${options.owner}`,
       `branch: ${options.branch}`,
       `ttl_ms: ${options.ttlMs}`,
+      `generation: ${randomUUID()}`,
       "",
     ].join("\n"),
     quiet: true,
@@ -1607,6 +1610,40 @@ function releaseStatePublishLease(lease: StatePublishLease): void {
       `State publish lease release failed owner=${lease.owner}; expiry will recover it: ${errorMessage(error)}`,
     );
   }
+}
+
+function renewStatePublishLease(lease: StatePublishLease, reason: string): void {
+  const renewedOid = createStatePublishLeaseCommit({
+    branch: lease.branch,
+    owner: lease.owner,
+    ttlMs: lease.ttlMs,
+  });
+  const renewed = spawnGit(
+    [
+      "push",
+      `--force-with-lease=${lease.ref}:${lease.oid}`,
+      lease.remote,
+      `${renewedOid}:${lease.ref}`,
+    ],
+    { allowFailure: true, quiet: true, timeout: PUBLISH_FETCH_TIMEOUT_MS },
+  );
+  if (renewed.timedOut) {
+    throw new GitCommandTimeoutError(["push"], PUBLISH_FETCH_TIMEOUT_MS);
+  }
+  if (renewed.status !== 0) {
+    const currentLeaseOid = remoteRefOid(lease.remote, lease.ref);
+    if (currentLeaseOid !== renewedOid) {
+      if (currentLeaseOid !== lease.oid) {
+        throw new StatePublishContentionError(
+          `State publish lease ownership changed while renewing ${reason}`,
+        );
+      }
+      throw new StatePublishContentionError(`Failed to renew state publish lease ${reason}`);
+    }
+  }
+  lease.oid = renewedOid;
+  lease.expiresAtMs = Date.now() + lease.ttlMs;
+  console.log(`Renewed state publish lease owner=${lease.owner} ${reason}`);
 }
 
 function remoteRefOid(remote: string, ref: string): string | null {
@@ -1635,6 +1672,10 @@ function pushPublishedBranch(remote: string, branch: string): GitRunResult {
     );
   }
 
+  if (lease.expiresAtMs - Date.now() <= STATE_PUBLISH_LEASE_RENEW_THRESHOLD_MS) {
+    renewStatePublishLease(lease, "before branch publication");
+  }
+
   const renewedOid = createStatePublishLeaseCommit({
     branch: lease.branch,
     owner: lease.owner,
@@ -1660,7 +1701,12 @@ function pushPublishedBranch(remote: string, branch: string): GitRunResult {
         lease.expiresAtMs = Date.now() + lease.ttlMs;
         return { ...pushed, status: 0 };
       }
-      throw new Error("Atomic state publish updated its lease without the branch");
+      lease.oid = renewedOid;
+      lease.expiresAtMs = Date.now() + lease.ttlMs;
+      console.log(
+        "State publish renewed its owner lease without the branch; recovering the lost state race",
+      );
+      return pushed;
     }
     if (currentLeaseOid !== lease.oid) {
       throw new StatePublishContentionError(
@@ -1692,6 +1738,9 @@ export function pushCommit(options: {
 
   for (let pushAttempt = 1; pushAttempt <= pushAttempts; pushAttempt += 1) {
     if (pushPublishedBranch(remote, branch).status === 0) return true;
+    if (activeStatePublishLease && options.boundedRemoteHeadRebuild) {
+      renewStatePublishLease(activeStatePublishLease, "before state race recovery");
+    }
     console.log(`Push attempt ${pushAttempt} lost the ${branch} race; rebasing`);
     const localCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
     const localCommitMessage = runGit(["log", "-1", "--format=%B"], { quiet: true });
@@ -1917,17 +1966,62 @@ function rebuildReconciliationCommit(
     );
   }
 
-  runGit(["reset", "--hard", remoteRef]);
-  const selectedPaths = applyRecordTupleSelections(selectedTuples);
-
-  if (selectedPaths.length > 0) stagePaths(selectedPaths);
-  if (!hasStagedChanges()) {
-    console.log("No reconciliation changes remain after preserving concurrent record tuples");
+  if (!boundedRemoteHeadRebuild) {
+    runGit(["reset", "--hard", remoteRef]);
+    const selectedPaths = applyRecordTupleSelections(selectedTuples);
+    if (selectedPaths.length > 0) stagePaths(selectedPaths);
+    if (!hasStagedChanges()) {
+      console.log("No reconciliation changes remain after preserving concurrent record tuples");
+      return true;
+    }
+    runGit(["commit", "-C", sourceCommit]);
     return true;
   }
 
-  runGit(["commit", "-C", sourceCommit]);
+  const remoteCommit = runGit(["rev-parse", remoteRef], { quiet: true }).trim();
+  const remoteTree = runGit(["rev-parse", `${remoteCommit}^{tree}`], { quiet: true }).trim();
+  const tree = rewriteRecordTupleSelectionsTree(remoteTree, selectedTuples);
+  if (tree === remoteTree) {
+    console.log("No reconciliation changes remain after preserving concurrent record tuples");
+    setReconciliationHead(remoteCommit);
+    return true;
+  }
+
+  const message = runGit(["log", "-1", "--format=%B", sourceCommit], { quiet: true });
+  const commit = runGit(["commit-tree", tree, "-p", remoteCommit], {
+    input: message,
+    quiet: true,
+  }).trim();
+  setReconciliationHead(commit);
+  console.log("Rebuilt reconciliation as a bounded record-tuple tree patch");
   return true;
+}
+
+function setReconciliationHead(commit: string): void {
+  // The bounded rebuild deliberately leaves the huge state worktree alone.
+  // Refresh the index and only materialize paths whose trees differ so a
+  // subsequent publish or source refresh cannot reuse stale record files.
+  const changedPaths = runGit(["diff", "--no-renames", "--name-only", "-z", "HEAD", commit], {
+    quiet: true,
+    maxBuffer: GIT_STATE_DIFF_MAX_BUFFER,
+  })
+    .split("\0")
+    .filter(Boolean);
+  runGit(["read-tree", commit]);
+  runGit(["update-ref", "HEAD", commit]);
+  const root = resolve(publishRoot() ?? ".");
+  for (const path of changedPaths) {
+    const target = resolve(root, path);
+    if (!isPathInsideOrEqual(root, target)) {
+      throw new Error(`Refusing to refresh reconciliation path outside publish root: ${path}`);
+    }
+    rmSync(target, { force: true, recursive: true });
+  }
+  const existing = gitObjectExistence(changedPaths.map((path) => ({ commit, path })));
+  const checkoutPaths = changedPaths.filter((path) => existing.has(gitObjectSpec(commit, path)));
+  for (const batch of chunked(checkoutPaths, GIT_PATHSPEC_BATCH_SIZE)) {
+    runGit(["checkout", commit, "--", ...batch]);
+  }
 }
 
 function mergeBaseWithoutHydration(
@@ -2348,9 +2442,32 @@ type GitTreeEntry = {
 };
 
 type GitTreePatch = {
-  files: Map<string, GitTreeEntry>;
+  files: Map<string, GitTreeEntry | null>;
   directories: Map<string, GitTreePatch>;
 };
+
+function rewriteRecordTupleSelectionsTree(
+  remoteTree: string,
+  selections: readonly { paths: RecordTuplePaths; commit: string }[],
+): string {
+  const patch: GitTreePatch = { files: new Map(), directories: new Map() };
+  for (const selection of selections) {
+    const paths = recordTuplePathList(selection.paths);
+    const entries = readGitTreeEntries([
+      "ls-tree",
+      "-z",
+      "--full-tree",
+      selection.commit,
+      "--",
+      ...paths,
+    ]);
+    const sourceByPath = new Map(entries.map((entry) => [entry.name, entry]));
+    for (const path of paths) {
+      addGitTreePatch(patch, path.split("/"), sourceByPath.get(path) ?? null);
+    }
+  }
+  return writePatchedGitTree(remoteTree, patch, new Set(), { allowReplace: true });
+}
 
 function rewriteImmutableActionLedgerTree(options: {
   remoteTree: string;
@@ -2373,11 +2490,15 @@ function rewriteImmutableActionLedgerTree(options: {
   return writePatchedGitTree(options.remoteTree, patch, options.verifiedSourceObjectIds);
 }
 
-function addGitTreePatch(patch: GitTreePatch, parts: readonly string[], entry: GitTreeEntry): void {
+function addGitTreePatch(
+  patch: GitTreePatch,
+  parts: readonly string[],
+  entry: GitTreeEntry | null,
+): void {
   const [name, ...rest] = parts;
-  if (!name) throw new Error("Immutable action-ledger path is empty");
+  if (!name) throw new Error("Git tree patch path is empty");
   if (rest.length === 0) {
-    patch.files.set(name, { ...entry, name });
+    patch.files.set(name, entry ? { ...entry, name } : null);
     return;
   }
   const child = patch.directories.get(name) ?? { files: new Map(), directories: new Map() };
@@ -2389,6 +2510,7 @@ function writePatchedGitTree(
   baseTree: string | null,
   patch: GitTreePatch,
   verifiedSourceObjectIds: Set<string>,
+  options: { allowReplace?: boolean } = {},
 ): string {
   const entries = new Map(
     (baseTree ? readGitTreeEntries(["ls-tree", "-z", baseTree]) : []).map((entry) => [
@@ -2401,10 +2523,16 @@ function writePatchedGitTree(
     if (existing && existing.type !== "tree") {
       throw new Error(`Immutable action-ledger directory collides with ${existing.type}: ${name}`);
     }
-    const oid = writePatchedGitTree(existing?.oid ?? null, childPatch, verifiedSourceObjectIds);
+    const oid = writePatchedGitTree(
+      existing?.oid ?? null,
+      childPatch,
+      verifiedSourceObjectIds,
+      options,
+    );
     entries.set(name, { mode: "040000", type: "tree", oid, name });
   }
   const locallyRequiredEntries = [...patch.files].flatMap(([name, entry]) => {
+    if (!entry) return [];
     const existing = entries.get(name);
     return !existing ||
       existing.type !== entry.type ||
@@ -2415,8 +2543,13 @@ function writePatchedGitTree(
   });
   assertLocalGitTreeEntries(locallyRequiredEntries, verifiedSourceObjectIds);
   for (const [name, entry] of patch.files) {
+    if (!entry) {
+      entries.delete(name);
+      continue;
+    }
     const existing = entries.get(name);
     if (
+      !options.allowReplace &&
       existing &&
       (existing.type !== entry.type || existing.mode !== entry.mode || existing.oid !== entry.oid)
     ) {
