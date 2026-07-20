@@ -571,7 +571,7 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(publishResult.run ?? "", /retry_at="\$PUBLISH_RETRY_AT"/);
   assert.match(
     publishResult.run ?? "",
-    /completion_kind" != "superseded".*completion_kind" != "deferred".*completion_kind" != "refresh_required"/,
+    /completion_kind" != "superseded".*completion_kind" != "deferred".*completion_kind" != "refresh_required".*completion_kind" != "retryable_failure"/,
   );
   assert.match(publishResult.run ?? "", /reason_code=artifact_unavailable/);
   assert.match(publishResult.run ?? "", /reason_code=invalid_artifact/);

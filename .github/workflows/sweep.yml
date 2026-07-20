@@ -1980,7 +1980,7 @@ jobs:
               outcome=success
             fi
           fi
-          if [ "$outcome" = "success" ] && [ "$completion_kind" != "superseded" ] && [ "$completion_kind" != "deferred" ] && [ "$completion_kind" != "refresh_required" ]; then
+          if [ "$outcome" = "success" ] && [ "$completion_kind" != "superseded" ] && [ "$completion_kind" != "deferred" ] && [ "$completion_kind" != "refresh_required" ] && [ "$completion_kind" != "retryable_failure" ]; then
             if [ "$PUBLISH_COMPLETION_KIND" = "published" ] && [ "$PUBLISH_REASON_CODE" = "publication_applied" ]; then
               completion_kind=published
               reason_code=publication_applied
