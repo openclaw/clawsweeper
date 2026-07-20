@@ -82,6 +82,7 @@ const BAY_TIDE_THRESHOLD = 20;
 const BAY_SEEN_EVENT_LIMIT = 256;
 const BAY_WASH_VISIBLE_MS = 60_000;
 const BAY_TIMING_WINDOW_MS = 60 * 60 * 1000;
+const BAY_INITIAL_TERMINAL_LOOKBACK_MS = BAY_TIMING_WINDOW_MS;
 const BAY_TIMING_MAX_SAMPLE_MS = 24 * 60 * 60 * 1000;
 const BAY_JOURNEY_LIMIT = 100;
 const BAY_JOURNEY_TTL_SECONDS = 24 * 60 * 60;
@@ -3537,18 +3538,34 @@ export function mergeBayTerminalState(
 ) {
   const now = Date.parse(generatedAt);
   const source = previous && previous.schema_version === 1 ? previous : {};
+  const storedWindowStartedAt = nullableString(source.terminal_window_started_at);
+  const bootstrapWindowStartedAt = Number.isFinite(Date.parse(storedWindowStartedAt || ""))
+    ? storedWindowStartedAt
+    : bayTerminalBootstrapWindowStartedAt(now);
   const activeKeys = new Set(
     (Array.isArray(activeItemKeys) ? activeItemKeys : []).map((value) => String(value)),
   );
-  const buffer = Array.isArray(source.terminal_buffer)
+  const bootstrapBuffer = Array.isArray(source.terminal_buffer)
     ? source.terminal_buffer.filter(
-        (item) => item?.event_id && item?.item_key && !activeKeys.has(String(item.item_key)),
+        (item) =>
+          item?.event_id &&
+          item?.item_key &&
+          isBayTerminalAtOrAfterWindowStart(item, bootstrapWindowStartedAt) &&
+          !activeKeys.has(String(item.item_key)),
       )
     : [];
+  let terminalWindowStartedAt = bayTerminalWindowStartedAt(source, now, bootstrapBuffer);
+  const buffer = bootstrapBuffer.filter((item) =>
+    isBayTerminalAtOrAfterWindowStart(item, terminalWindowStartedAt),
+  );
   const seenEvents = Array.isArray(source.seen_events)
     ? source.seen_events.filter((item) => item?.event_id)
     : [];
   const seenIds = new Set(seenEvents.map((item) => item.event_id));
+  let terminalWindowEventIds = Array.isArray(source.terminal_window_event_ids)
+    ? source.terminal_window_event_ids.map((eventId) => String(eventId)).filter(Boolean)
+    : [];
+  let terminalWindowEventIdSet = new Set(terminalWindowEventIds);
   const recentlyWashed =
     Array.isArray(source.recently_washed) &&
     Number.isFinite(now) &&
@@ -3561,6 +3578,10 @@ export function mergeBayTerminalState(
 
   for (const candidate of bayTerminalCandidates(attempts, closedItems)) {
     if (activeKeys.has(candidate.item_key)) continue;
+    if (
+      !isBayTerminalAfterWindowStart(candidate, terminalWindowStartedAt, terminalWindowEventIdSet)
+    )
+      continue;
     if (seenIds.has(candidate.event_id)) continue;
     seenIds.add(candidate.event_id);
     seenEvents.push({ event_id: candidate.event_id, seen_at: candidate.completed_at });
@@ -3585,6 +3606,11 @@ export function mergeBayTerminalState(
     washed = buffer.splice(0, BAY_TIDE_THRESHOLD);
     washedAt = generatedAt;
     lastTideAt = generatedAt;
+    terminalWindowStartedAt = nullableString(washed.at(-1)?.completed_at) || generatedAt;
+    terminalWindowEventIds = washed
+      .filter((item) => item.completed_at === terminalWindowStartedAt)
+      .map((item) => String(item.event_id));
+    terminalWindowEventIdSet = new Set(terminalWindowEventIds);
     tideGeneration += 1;
   }
 
@@ -3593,6 +3619,8 @@ export function mergeBayTerminalState(
     tide_threshold: BAY_TIDE_THRESHOLD,
     tide_generation: tideGeneration,
     last_tide_at: lastTideAt,
+    terminal_window_started_at: terminalWindowStartedAt,
+    terminal_window_event_ids: terminalWindowEventIds,
     terminal_count: buffer.length,
     terminal_buffer: buffer,
     washed_at: washedAt,
@@ -3608,12 +3636,50 @@ function bayTerminalStateSignature(state) {
     tide_threshold: state?.tide_threshold,
     tide_generation: state?.tide_generation,
     last_tide_at: state?.last_tide_at,
+    terminal_window_started_at: state?.terminal_window_started_at,
+    terminal_window_event_ids: state?.terminal_window_event_ids,
     terminal_count: state?.terminal_count,
     terminal_buffer: state?.terminal_buffer,
     washed_at: state?.washed_at,
     recently_washed: state?.recently_washed,
     seen_events: state?.seen_events,
   });
+}
+
+function bayTerminalWindowStartedAt(source, now, bootstrapBuffer = []) {
+  const storedWindowStart = nullableString(source?.terminal_window_started_at);
+  if (Number.isFinite(Date.parse(storedWindowStart || ""))) return storedWindowStart;
+  const bufferedWindowStart = [...bootstrapBuffer]
+    .map((item) => nullableString(item?.completed_at))
+    .filter((value) => Number.isFinite(Date.parse(value || "")))
+    .sort()[0];
+  if (bufferedWindowStart) return bufferedWindowStart;
+  const lastTideAt = nullableString(source?.last_tide_at);
+  if (Number.isFinite(Date.parse(lastTideAt || ""))) return lastTideAt;
+  return bayTerminalBootstrapWindowStartedAt(now);
+}
+
+function bayTerminalBootstrapWindowStartedAt(now) {
+  if (!Number.isFinite(now)) return null;
+  return new Date(now - BAY_INITIAL_TERMINAL_LOOKBACK_MS).toISOString();
+}
+
+function isBayTerminalAfterWindowStart(
+  candidate,
+  terminalWindowStartedAt,
+  terminalWindowEventIds = new Set(),
+) {
+  const completedAt = Date.parse(String(candidate?.completed_at || ""));
+  const windowStart = Date.parse(String(terminalWindowStartedAt || ""));
+  if (!Number.isFinite(completedAt) || !Number.isFinite(windowStart)) return false;
+  if (completedAt > windowStart) return true;
+  return completedAt === windowStart && !terminalWindowEventIds.has(String(candidate?.event_id));
+}
+
+function isBayTerminalAtOrAfterWindowStart(candidate, terminalWindowStartedAt) {
+  const completedAt = Date.parse(String(candidate?.completed_at || ""));
+  const windowStart = Date.parse(String(terminalWindowStartedAt || ""));
+  return Number.isFinite(completedAt) && Number.isFinite(windowStart) && completedAt >= windowStart;
 }
 
 function bayTerminalCandidates(attempts, closedItems) {

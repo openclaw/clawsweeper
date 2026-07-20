@@ -1263,10 +1263,55 @@ test("OpenClaw Bay shares a bounded 20-outcome tide buffer", () => {
   assert.equal(tide.tide_generation, 1);
   assert.equal(tide.recently_washed.length, 20);
   assert.equal(tide.last_tide_at, "2026-07-10T20:00:20Z");
+  assert.equal(tide.terminal_window_started_at, "2026-07-10T20:00:19Z");
+  assert.deepEqual(tide.terminal_window_event_ids, [
+    "worker:20:1019:openclaw/openclaw#9019:cancelled:2026-07-10T20:00:19Z",
+  ]);
   assert.deepEqual(
     tide.recently_washed.slice(-2).map((item: { outcome: string }) => item.outcome),
     ["failure", "cancelled"],
   );
+
+  const staleAfterTide = {
+    ...attempts[0],
+    run_id: 10_001,
+    job_id: 20_001,
+    completed_at: "2026-07-10T20:00:18Z",
+  };
+  const distinctBoundaryEvent = {
+    ...attempts[0],
+    run_id: 10_003,
+    job_id: 20_003,
+    item_numbers: [9_999],
+    completed_at: "2026-07-10T20:00:19Z",
+  };
+  const freshAfterTide = {
+    ...attempts[0],
+    run_id: 10_002,
+    job_id: 20_002,
+    completed_at: "2026-07-10T20:00:21Z",
+  };
+  const afterTide = mergeBayTerminalState(
+    tide,
+    [staleAfterTide, distinctBoundaryEvent, freshAfterTide],
+    [],
+    "2026-07-10T20:00:21Z",
+  );
+  assert.deepEqual(
+    afterTide.terminal_buffer.map((item: { run_id: number }) => item.run_id),
+    [10_003, 10_002],
+  );
+  assert.equal(
+    afterTide.seen_events.some((item: { event_id: string }) => item.event_id.includes(":10001:")),
+    false,
+  );
+  const boundaryReplay = mergeBayTerminalState(
+    { ...tide, seen_events: [] },
+    attempts.slice(-1),
+    [],
+    "2026-07-10T20:00:21Z",
+  );
+  assert.equal(boundaryReplay.terminal_count, 0);
 
   const burst = Array.from({ length: 50 }, (_, index) => ({
     run_id: 2000 + index,
@@ -1282,8 +1327,14 @@ test("OpenClaw Bay shares a bounded 20-outcome tide buffer", () => {
   assert.equal(burstTides.tide_generation, 2);
   assert.equal(burstTides.terminal_count, 10);
   assert.equal(burstTides.recently_washed.length, 20);
+  assert.equal(burstTides.terminal_window_started_at, "2026-07-10T21:00:39Z");
   assert.deepEqual(
     burstTides.terminal_buffer.map((item: { number: number }) => item.number),
+    Array.from({ length: 10 }, (_, index) => 10_040 + index),
+  );
+  const retainedBurstTail = mergeBayTerminalState(burstTides, [], [], "2026-07-10T21:00:51Z");
+  assert.deepEqual(
+    retainedBurstTail.terminal_buffer.map((item: { number: number }) => item.number),
     Array.from({ length: 10 }, (_, index) => 10_040 + index),
   );
 
@@ -1291,7 +1342,7 @@ test("OpenClaw Bay shares a bounded 20-outcome tide buffer", () => {
     null,
     attempts.slice(0, 1),
     [],
-    "2026-07-10T21:01:00Z",
+    "2026-07-10T20:00:00.500Z",
     ["openclaw/openclaw#9000"],
   );
   assert.equal(deferredWhileActive.terminal_count, 0);
@@ -1300,7 +1351,7 @@ test("OpenClaw Bay shares a bounded 20-outcome tide buffer", () => {
     deferredWhileActive,
     attempts.slice(0, 1),
     [],
-    "2026-07-10T21:01:01Z",
+    "2026-07-10T20:00:01Z",
   );
   assert.equal(visibleAfterActiveFeedSettles.terminal_count, 1);
   assert.equal(visibleAfterActiveFeedSettles.seen_events.length, 1);
@@ -1367,6 +1418,69 @@ test("OpenClaw Bay shares a bounded 20-outcome tide buffer", () => {
   const expiredWash = mergeBayTerminalState(replay, attempts, [], "2026-07-10T20:01:21Z");
   assert.equal(expiredWash.tide_generation, 1);
   assert.equal(expiredWash.recently_washed.length, 0);
+
+  const legacyNoTide = {
+    schema_version: 1,
+    tide_threshold: 20,
+    tide_generation: 0,
+    last_tide_at: null,
+    terminal_count: 1,
+    terminal_buffer: [
+      {
+        event_id: "worker:old",
+        item_key: "openclaw/openclaw#8000",
+        completed_at: "2026-07-10T17:00:00Z",
+      },
+    ],
+    washed_at: null,
+    recently_washed: [],
+    seen_events: [],
+    updated_at: "2026-07-10T17:00:00Z",
+  };
+  const migratedNoTide = mergeBayTerminalState(
+    legacyNoTide,
+    [
+      { ...attempts[0], run_id: 11_000, job_id: 21_000, completed_at: "2026-07-10T17:00:00Z" },
+      { ...attempts[0], run_id: 11_001, job_id: 21_001, completed_at: "2026-07-10T19:30:01Z" },
+    ],
+    [],
+    "2026-07-10T20:00:00Z",
+  );
+  assert.equal(migratedNoTide.terminal_window_started_at, "2026-07-10T19:00:00.000Z");
+  assert.deepEqual(
+    migratedNoTide.terminal_buffer.map((item: { run_id: number }) => item.run_id),
+    [11_001],
+  );
+
+  const legacyTideTail = {
+    schema_version: 1,
+    tide_threshold: 20,
+    tide_generation: 1,
+    last_tide_at: "2026-07-10T20:00:20Z",
+    terminal_count: 2,
+    terminal_buffer: [
+      {
+        event_id: "worker:stale",
+        item_key: "openclaw/openclaw#8001",
+        completed_at: "2026-07-10T17:00:00Z",
+      },
+      {
+        event_id: "worker:tail",
+        item_key: "openclaw/openclaw#8002",
+        completed_at: "2026-07-10T20:00:19.900Z",
+      },
+    ],
+    washed_at: "2026-07-10T20:00:20Z",
+    recently_washed: [],
+    seen_events: [],
+    updated_at: "2026-07-10T20:00:20Z",
+  };
+  const migratedTideTail = mergeBayTerminalState(legacyTideTail, [], [], "2026-07-10T20:00:21Z");
+  assert.equal(migratedTideTail.terminal_window_started_at, "2026-07-10T20:00:19.900Z");
+  assert.deepEqual(
+    migratedTideTail.terminal_buffer.map((item: { item_key: string }) => item.item_key),
+    ["openclaw/openclaw#8002"],
+  );
 });
 
 test("OpenClaw Bay averages completed trigger-to-summary journeys from the last hour", () => {
