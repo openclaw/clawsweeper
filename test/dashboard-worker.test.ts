@@ -4813,6 +4813,52 @@ test("exact-review publication retries a state fetch timeout without throttling 
   assert.equal(stats.lanes.publication.capacity_control.last_failure_kind, null);
 });
 
+test("exact-review publication gives state contention the transient retry budget", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(7803, "78030");
+  item.publicationFailureAttempts = 4;
+  item.firstFailureAt = Date.now() - 30 * 60_000;
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "failure",
+        completion_kind: "retryable_failure",
+        reason_code: "state_contention",
+        error_fingerprint: "sha256:state-publish-contention",
+      }),
+    }),
+  );
+
+  assert.deepEqual(await response.json(), { ok: true, requeued: true });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<
+      string,
+      { state: string; lastFailureReason?: string; publicationFailureAttempts?: number }
+    >;
+  };
+  assert.equal(state.items[item.key]?.state, "pending");
+  assert.equal(state.items[item.key]?.lastFailureReason, "state_contention");
+  assert.equal(state.items[item.key]?.publicationFailureAttempts, 5);
+
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.publication.dead_letters.open, 0);
+  assert.equal(stats.lanes.publication.capacity_control.mode, "adaptive");
+  assert.equal(stats.lanes.publication.capacity_control.ceiling, 48);
+  assert.equal(stats.lanes.publication.capacity_control.last_failure_kind, null);
+});
+
 test("exact-review publication defers an active review lease without throttling capacity", async () => {
   const storage = new MemoryDurableStorage();
   const item = leasedExactReviewPublicationItem(7802, "78020");

@@ -621,13 +621,20 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   const completeStart = publisherSource.indexOf("const complete =");
   assert.ok(publisherSource.indexOf("hardResetToRemoteMain();", completeStart) > completeStart);
   assert.match(publisherSource, /GitCommandTimeoutError/);
+  assert.match(publisherSource, /StatePublishContentionError/);
+  assert.match(publisherSource, /StatePublishContentionError\s*\? "state_contention"/);
+  assert.match(
+    publisherSource,
+    /const mutation = withStatePublishLease\(\(\) => \{\s*hardResetToRemoteMain\(\)/,
+  );
   assert.match(publisherSource, /retryable_failure/);
   assert.match(publisherSource, /error instanceof GitCommandTimeoutError/);
   assert.match(
     publisherSource,
-    /writePublicationCompletionOutputs\(\s*retryableTimeout \? "retryable_failure" : "permanent_failure",\s*reasonCode,\s*errorFingerprint\(error\),\s*\);/,
+    /writePublicationCompletionOutputs\(\s*retryableFailure \? "retryable_failure" : "permanent_failure",\s*reasonCode,\s*errorFingerprint\(error\),\s*\);/,
   );
-  assert.doesNotMatch(publisherSource, /retryableTimeout \? "github_transient" : undefined/);
+  assert.doesNotMatch(publisherSource, /retryableFailure \? "github_transient" : undefined/);
+  assert.match(publishComplete.run ?? "", /"state_contention"/);
   assert.ok(
     publisherSource.indexOf("eventSnapshotMatchesCurrent(paths)", completeStart) > completeStart,
   );

@@ -107,6 +107,7 @@ type ExactReviewPublicationReasonCode =
   | "live_terminal"
   | "github_rate_limit"
   | "github_transient"
+  | "state_contention"
   | "review_lease_active"
   | "workflow_cancelled"
   | "artifact_unavailable"
@@ -3468,6 +3469,7 @@ function exactReviewPublicationReasonCode(value): ExactReviewPublicationReasonCo
     "live_terminal",
     "github_rate_limit",
     "github_transient",
+    "state_contention",
     "review_lease_active",
     "workflow_cancelled",
     "artifact_unavailable",
@@ -3502,6 +3504,7 @@ function exactReviewPublicationCompletion(
     retryable_failure: new Set([
       "github_rate_limit",
       "github_transient",
+      "state_contention",
       "review_lease_active",
       "workflow_cancelled",
       "artifact_unavailable",

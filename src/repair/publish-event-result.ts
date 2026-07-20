@@ -33,7 +33,9 @@ import {
   runGit,
   setTokenOrigin,
   stagePaths,
+  StatePublishContentionError,
   syncPublishPaths,
+  withStatePublishLease,
 } from "./git-publish.js";
 import { isJsonObject } from "./json-types.js";
 import { RecordTupleError } from "./record-tuple.js";
@@ -93,16 +95,20 @@ const options = eventOptionsFromEnv();
 try {
   await publishEventResult(options);
 } catch (error) {
-  const retryableTimeout = error instanceof GitCommandTimeoutError;
-  const reasonCode = retryableTimeout
-    ? "github_transient"
-    : error instanceof PublicationResultError
-      ? error.reasonCode
-      : error instanceof RecordTupleError
-        ? "tuple_protocol_invalid"
-        : "unknown_failure";
+  const retryableFailure =
+    error instanceof GitCommandTimeoutError || error instanceof StatePublishContentionError;
+  const reasonCode =
+    error instanceof GitCommandTimeoutError
+      ? "github_transient"
+      : error instanceof StatePublishContentionError
+        ? "state_contention"
+        : error instanceof PublicationResultError
+          ? error.reasonCode
+          : error instanceof RecordTupleError
+            ? "tuple_protocol_invalid"
+            : "unknown_failure";
   writePublicationCompletionOutputs(
-    retryableTimeout ? "retryable_failure" : "permanent_failure",
+    retryableFailure ? "retryable_failure" : "permanent_failure",
     reasonCode,
     errorFingerprint(error),
   );
@@ -470,49 +476,54 @@ function publishSnapshot({
       summary();
       return published;
     };
-    hardResetToRemoteMain();
-    const stateRoot = publishRoot();
-    const snapshotResult = applyEventSnapshot(paths, stateRoot ? { remoteRoot: stateRoot } : {});
-    if (snapshotResult === "remote-closed") {
-      console.log(
-        `Remote already has closed record for ${paths.targetSlug}#${options.itemNumber}; skipping open-record publish`,
-      );
-      return complete(false, "remote_closed");
-    }
-    if (snapshotResult === "remote-newer") {
-      console.log(
-        `Remote has newer record tuple for ${paths.targetSlug}#${options.itemNumber}; skipping stale event publish`,
-      );
-      return complete(false, "remote_newer_tuple");
-    }
-    if (snapshotResult === "missing") {
-      throw new PublicationResultError(
-        "missing_record_tuple",
-        `No event record snapshot for ${paths.targetSlug}#${options.itemNumber}`,
-      );
-    }
+    const mutation = withStatePublishLease(() => {
+      hardResetToRemoteMain();
+      const stateRoot = publishRoot();
+      const snapshotResult = applyEventSnapshot(paths, stateRoot ? { remoteRoot: stateRoot } : {});
+      if (snapshotResult === "remote-closed") {
+        console.log(
+          `Remote already has closed record for ${paths.targetSlug}#${options.itemNumber}; skipping open-record publish`,
+        );
+        return { candidateApplied: false, supersededReason: "remote_closed" as const };
+      }
+      if (snapshotResult === "remote-newer") {
+        console.log(
+          `Remote has newer record tuple for ${paths.targetSlug}#${options.itemNumber}; skipping stale event publish`,
+        );
+        return { candidateApplied: false, supersededReason: "remote_newer_tuple" as const };
+      }
+      if (snapshotResult === "missing") {
+        throw new PublicationResultError(
+          "missing_record_tuple",
+          `No event record snapshot for ${paths.targetSlug}#${options.itemNumber}`,
+        );
+      }
 
-    syncPublishPaths(commitPaths);
-    stagePaths(commitPaths);
-    if (!hasStagedChanges()) {
-      console.log("No event result changes");
-      return complete(true);
-    }
+      syncPublishPaths(commitPaths);
+      stagePaths(commitPaths);
+      if (!hasStagedChanges()) {
+        console.log("No event result changes");
+        return { candidateApplied: true, supersededReason: undefined };
+      }
 
-    runGit([
-      "commit",
-      "-m",
-      commitMessageForPublishedPaths(
-        `chore: apply event sweep result for ${paths.targetSlug}#${options.itemNumber}`,
-        commitPaths,
-      ),
-    ]);
-    if (!pushSingleRecordTupleCommit({ paths: commitPaths, pushAttempts: 3 })) return null;
-    return complete(true);
+      runGit([
+        "commit",
+        "-m",
+        commitMessageForPublishedPaths(
+          `chore: apply event sweep result for ${paths.targetSlug}#${options.itemNumber}`,
+          commitPaths,
+        ),
+      ]);
+      if (!pushSingleRecordTupleCommit({ paths: commitPaths, pushAttempts: 3 })) return null;
+      return { candidateApplied: true, supersededReason: undefined };
+    });
+    if (!mutation) return null;
+    return complete(mutation.candidateApplied, mutation.supersededReason);
   } catch (error) {
     if (
       error instanceof GitCommandTimeoutError ||
       error instanceof RecordTupleError ||
+      error instanceof StatePublishContentionError ||
       error instanceof GuardedOpenPublishRaceError ||
       error instanceof RoutableSyncPublishRaceError ||
       error instanceof SourceDriftPublishRaceError ||
@@ -648,6 +659,7 @@ function writePublicationCompletionOutputs(
     | "remote_closed"
     | "close_coverage_deferred"
     | "github_transient"
+    | "state_contention"
     | "review_lease_active"
     | "missing_record_tuple"
     | "tuple_protocol_invalid"

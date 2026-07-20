@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import test from "node:test";
 
 import {
@@ -19,6 +19,7 @@ import {
   spawnGit,
   stagePaths,
   uniqueNonEmpty,
+  withStatePublishLease,
 } from "../../dist/repair/git-publish.js";
 
 for (const key of [
@@ -1630,6 +1631,291 @@ test("single-record publisher rebuilds a shallow losing writer without hydrating
   assert.equal(
     run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/43.md`], root),
     remoteTuple.primary,
+  );
+});
+
+test(
+  "state publish lease serializes concurrent exact record tuple writers",
+  { timeout: 60_000 },
+  async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-lease-race-"));
+    const origin = path.join(root, "origin.git");
+    const seed = path.join(root, "seed");
+    const barrier = path.join(root, "barrier");
+    const writerCount = 8;
+    run("git", ["init", "--bare", origin], root);
+    run("git", ["clone", origin, seed], root);
+    configureUser(seed);
+    write(path.join(seed, "README.md"), "state\n");
+    run("git", ["add", "."], seed);
+    run("git", ["commit", "-m", "initial state"], seed);
+    run("git", ["push", "origin", "HEAD:state"], seed);
+    run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+    fs.mkdirSync(barrier);
+
+    const writers = Array.from({ length: writerCount }, (_, index) => {
+      const number = 10_000 + index;
+      const work = path.join(root, `writer-${index}`);
+      const candidate = path.join(root, `candidate-${index}`);
+      run("git", ["clone", "--depth", "1", `file://${origin}`, work], root);
+      configureUser(work);
+      const tuple = writeRecordTuple(candidate, {
+        number,
+        marker: `leased writer ${index}`,
+        reviewedAt: `2026-07-20T14:${String(index).padStart(2, "0")}:00.000Z`,
+        itemUpdatedAt: `2026-07-20T14:${String(index).padStart(2, "0")}:00Z`,
+      });
+      return { index, number, work, candidate, tuple };
+    });
+
+    const childScript = String.raw`
+      import fs from "node:fs";
+      import path from "node:path";
+      const [work, candidate, barrier, writerCountRaw, indexRaw, numberRaw] = process.argv.slice(1);
+      const writerCount = Number(writerCountRaw);
+      const index = Number(indexRaw);
+      const number = Number(numberRaw);
+      const recordRoot = "records/openclaw-openclaw";
+      const paths = [
+        recordRoot + "/items/" + number + ".md",
+        recordRoot + "/closed/" + number + ".md",
+        recordRoot + "/plans/" + number + ".md",
+        recordRoot + "/decision-packets/" + number + ".json",
+      ];
+      fs.writeFileSync(path.join(barrier, String(index)), "ready\n");
+      const wait = new Int32Array(new SharedArrayBuffer(4));
+      while (fs.readdirSync(barrier).length < writerCount) Atomics.wait(wait, 0, 0, 10);
+
+      const {
+        commitMessageForPublishedPaths,
+        hardResetToRemoteMain,
+        pushSingleRecordTupleCommit,
+        runGit,
+        stagePaths,
+        withStatePublishLease,
+      } = await import("./dist/repair/git-publish.js");
+      withStatePublishLease(
+        () => {
+          hardResetToRemoteMain("origin", "state");
+          fs.cpSync(path.join(candidate, "records"), path.join(work, "records"), { recursive: true });
+          stagePaths(paths);
+          runGit([
+            "commit",
+            "-m",
+            commitMessageForPublishedPaths("chore: leased exact tuple " + number, paths),
+          ]);
+          if (!pushSingleRecordTupleCommit({ paths, branch: "state", pushAttempts: 1 })) {
+            throw new Error("leased exact tuple push lost the state race");
+          }
+        },
+        { branch: "state", acquireTimeoutMs: 30_000, ttlMs: 30_000, waitMs: 25 },
+      );
+    `;
+
+    const results = await Promise.all(
+      writers.map((writer) =>
+        runAsync(
+          "node",
+          [
+            "--input-type=module",
+            "-e",
+            childScript,
+            writer.work,
+            writer.candidate,
+            barrier,
+            String(writerCount),
+            String(writer.index),
+            String(writer.number),
+          ],
+          process.cwd(),
+          {
+            CLAWSWEEPER_PUBLISH_ROOT: writer.work,
+            CLAWSWEEPER_PUBLISH_BRANCH: "state",
+          },
+        ),
+      ),
+    );
+
+    for (const output of results) {
+      assert.match(output, /Acquired state publish lease/);
+      assert.match(output, /Released state publish lease/);
+      assert.doesNotMatch(output, /lost the state race/);
+    }
+    for (const writer of writers) {
+      assert.equal(
+        run(
+          "git",
+          [
+            "--git-dir",
+            origin,
+            "show",
+            `state:records/openclaw-openclaw/items/${writer.number}.md`,
+          ],
+          root,
+        ),
+        writer.tuple.primary,
+      );
+    }
+    assert.equal(
+      run("git", ["--git-dir", origin, "log", "--format=%s", "state"], root).trim().split("\n")
+        .length,
+      writerCount + 1,
+    );
+    assert.equal(
+      run(
+        "git",
+        [
+          "--git-dir",
+          origin,
+          "for-each-ref",
+          "--format=%(refname)",
+          "refs/heads/clawsweeper-publish-lease",
+        ],
+        root,
+      ),
+      "",
+    );
+  },
+);
+
+test("state publish lease recovers an abandoned owner after its bounded TTL", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-lease-stale-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, "README.md"), "state\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial state"], work);
+  run("git", ["push", "origin", "HEAD:state"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+
+  const staleEnv = {
+    ...process.env,
+    GIT_AUTHOR_DATE: "2026-07-20T12:00:00Z",
+    GIT_COMMITTER_DATE: "2026-07-20T12:00:00Z",
+  };
+  const tree = execFileSync("git", ["mktree"], {
+    cwd: work,
+    env: staleEnv,
+    input: "",
+    encoding: "utf8",
+  }).trim();
+  const staleCommit = execFileSync("git", ["commit-tree", tree], {
+    cwd: work,
+    env: staleEnv,
+    input: "ClawSweeper state publish lease\n\nowner: abandoned\nbranch: state\nttl_ms: 30000\n",
+    encoding: "utf8",
+  }).trim();
+  run("git", ["push", "origin", `${staleCommit}:refs/heads/clawsweeper-publish-lease/state`], work);
+
+  let operated = false;
+  const lines = captureConsoleLog(() => {
+    withEnv(
+      {
+        CLAWSWEEPER_PUBLISH_ROOT: work,
+        CLAWSWEEPER_PUBLISH_BRANCH: "state",
+      },
+      () =>
+        withStatePublishLease(
+          () => {
+            operated = true;
+          },
+          { branch: "state", acquireTimeoutMs: 1_000, ttlMs: 30_000, waitMs: 10 },
+        ),
+    );
+  });
+
+  assert.equal(operated, true);
+  assert.equal(
+    lines.some((line) => line.includes("stale_recovery=true")),
+    true,
+  );
+  assert.equal(
+    run(
+      "git",
+      [
+        "--git-dir",
+        origin,
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/heads/clawsweeper-publish-lease",
+      ],
+      root,
+    ),
+    "",
+  );
+});
+
+test("state publish lease renews and fences a push after the original TTL", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-lease-renew-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const candidate = path.join(root, "candidate");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, "README.md"), "state\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial state"], work);
+  run("git", ["push", "origin", "HEAD:state"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  const number = 10_100;
+  const tuple = writeRecordTuple(candidate, {
+    number,
+    marker: "renewed writer",
+    reviewedAt: "2026-07-20T15:00:00.000Z",
+    itemUpdatedAt: "2026-07-20T15:00:00Z",
+  });
+  const recordRoot = "records/openclaw-openclaw";
+  const paths = [
+    `${recordRoot}/items/${number}.md`,
+    `${recordRoot}/closed/${number}.md`,
+    `${recordRoot}/plans/${number}.md`,
+    `${recordRoot}/decision-packets/${number}.json`,
+  ];
+
+  let published = false;
+  const lines = captureConsoleLog(() => {
+    withEnv(
+      {
+        CLAWSWEEPER_PUBLISH_ROOT: work,
+        CLAWSWEEPER_PUBLISH_BRANCH: "state",
+      },
+      () =>
+        withStatePublishLease(
+          () => {
+            hardResetToRemoteMain("origin", "state");
+            fs.cpSync(path.join(candidate, "records"), path.join(work, "records"), {
+              recursive: true,
+            });
+            stagePaths(paths);
+            runGit([
+              "commit",
+              "-m",
+              commitMessageForPublishedPaths("chore: renewed exact tuple", paths),
+            ]);
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_100);
+            published = pushSingleRecordTupleCommit({
+              paths,
+              branch: "state",
+              pushAttempts: 1,
+            });
+          },
+          { branch: "state", acquireTimeoutMs: 5_000, ttlMs: 2_000, waitMs: 10 },
+        ),
+    );
+  });
+
+  assert.equal(published, true);
+  assert.equal(
+    lines.some((line) => line.includes("Renewed state publish lease")),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordRoot}/items/${number}.md`], root),
+    tuple.primary,
   );
 });
 
@@ -3879,6 +4165,29 @@ esac
 `,
   );
   fs.chmodSync(hook, 0o755);
+}
+
+function runAsync(command, args, cwd, env = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      command,
+      args,
+      {
+        cwd,
+        env: { ...process.env, ...env },
+        encoding: "utf8",
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: 55_000,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(`${error.message}\n${stdout}\n${stderr}`));
+          return;
+        }
+        resolve(`${stdout}${stderr}`);
+      },
+    );
+  });
 }
 
 function captureConsoleLog(callback, lines = []) {

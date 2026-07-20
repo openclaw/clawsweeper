@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   cpSync,
   existsSync,
@@ -80,6 +81,11 @@ const PUBLISH_FETCH_TIMEOUT_MS = 60_000;
 // one-time repairs but move far more data than an ordinary publish fetch; a
 // 60s budget times out on the grown state repo (prod run 29745570319).
 const RECOVERY_FETCH_TIMEOUT_MS = 300_000;
+const STATE_PUBLISH_LEASE_REF_ROOT = "refs/heads/clawsweeper-publish-lease";
+const STATE_PUBLISH_LEASE_TTL_MS = 2 * 60_000;
+const STATE_PUBLISH_LEASE_ACQUIRE_TIMEOUT_MS = 3 * 60_000;
+const STATE_PUBLISH_LEASE_WAIT_MS = 1_000;
+const STATE_PUBLISH_LEASE_MAX_WAIT_MS = 5_000;
 const SKIP_CI_DIRECTIVE_PATTERN =
   /\[(?:skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks:\s*true$/im;
 
@@ -90,7 +96,32 @@ type GitPublishMetrics = {
   phase: string;
 };
 
+type StatePublishLease = {
+  ref: string;
+  oid: string;
+  owner: string;
+  expiresAtMs: number;
+  ttlMs: number;
+  remote: string;
+  branch: string;
+};
+
+type ObservedStatePublishLease = {
+  oid: string;
+  owner: string;
+  expiresAtMs: number;
+};
+
+export type StatePublishLeaseOptions = {
+  remote?: string;
+  branch?: string;
+  acquireTimeoutMs?: number;
+  ttlMs?: number;
+  waitMs?: number;
+};
+
 let activeGitPublishMetrics: GitPublishMetrics | null = null;
+let activeStatePublishLease: StatePublishLease | null = null;
 
 export function configureGitUser(): void {
   runGit(["config", "user.name", clawsweeperGitUserName()]);
@@ -154,6 +185,13 @@ export class GitCommandTimeoutError extends Error {
   constructor(args: readonly string[], timeoutMs: number) {
     super(`git ${safeGitDisplayAction(args[0])} timed out after ${timeoutMs}ms`);
     this.name = "GitCommandTimeoutError";
+  }
+}
+
+export class StatePublishContentionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StatePublishContentionError";
   }
 }
 
@@ -1399,6 +1437,245 @@ function listFiles(root: string): string[] {
   return files;
 }
 
+export function withStatePublishLease<T>(
+  operation: () => T,
+  options: StatePublishLeaseOptions = {},
+): T {
+  if (!publishRoot()) return operation();
+  if (activeStatePublishLease) {
+    throw new Error("Nested state publication leases are not supported");
+  }
+  const remote = options.remote ?? "origin";
+  const branch = options.branch ?? publishDefaultBranch();
+  const lease = acquireStatePublishLease(remote, branch, options);
+  activeStatePublishLease = lease;
+  try {
+    return operation();
+  } finally {
+    activeStatePublishLease = null;
+    releaseStatePublishLease(lease);
+  }
+}
+
+function acquireStatePublishLease(
+  remote: string,
+  branch: string,
+  options: StatePublishLeaseOptions,
+): StatePublishLease {
+  const leaseRef = `${STATE_PUBLISH_LEASE_REF_ROOT}/${branch}`;
+  runGit(["check-ref-format", leaseRef], { quiet: true });
+  const owner = randomUUID();
+  const ttlMs = Math.min(
+    positiveInt(options.ttlMs, STATE_PUBLISH_LEASE_TTL_MS),
+    STATE_PUBLISH_LEASE_TTL_MS,
+  );
+  const acquireTimeoutMs = positiveInt(
+    options.acquireTimeoutMs,
+    STATE_PUBLISH_LEASE_ACQUIRE_TIMEOUT_MS,
+  );
+  const waitMs = positiveInt(options.waitMs, STATE_PUBLISH_LEASE_WAIT_MS);
+  const deadlineAtMs = Date.now() + acquireTimeoutMs;
+  const observedByOid = new Map<string, ObservedStatePublishLease>();
+  let attempt = 0;
+
+  // Spread a newly admitted publisher cohort before any of them attempts the
+  // empty-ref compare-and-swap. Once an owner exists, later contenders only
+  // poll the tiny lease ref instead of creating another state-branch push storm.
+  sleep(Math.floor(Math.random() * waitMs));
+
+  while (Date.now() < deadlineAtMs) {
+    attempt += 1;
+    const observed = observeStatePublishLease(remote, leaseRef, ttlMs, observedByOid);
+    const now = Date.now();
+    if (!observed || observed.expiresAtMs <= now) {
+      const expiresAtMs = now + ttlMs;
+      const oid = createStatePublishLeaseCommit({ branch, owner, ttlMs });
+      const expectedOid = observed?.oid ?? "";
+      const acquired =
+        spawnGit(
+          ["push", `--force-with-lease=${leaseRef}:${expectedOid}`, remote, `${oid}:${leaseRef}`],
+          { allowFailure: true, quiet: true, timeout: PUBLISH_FETCH_TIMEOUT_MS },
+        ).status === 0;
+      if (acquired) {
+        console.log(
+          `Acquired state publish lease owner=${owner} attempt=${attempt} stale_recovery=${observed ? "true" : "false"}`,
+        );
+        return { ref: leaseRef, oid, owner, expiresAtMs, ttlMs, remote, branch };
+      }
+    } else {
+      console.log(
+        `State publish lease busy owner=${observed.owner} attempt=${attempt} remaining_ms=${Math.max(0, observed.expiresAtMs - now)}`,
+      );
+    }
+
+    const remainingMs = deadlineAtMs - Date.now();
+    if (remainingMs <= 0) break;
+    const backoffMs = Math.min(
+      waitMs * 2 ** Math.min(attempt - 1, 3),
+      STATE_PUBLISH_LEASE_MAX_WAIT_MS,
+    );
+    sleep(Math.min(remainingMs, backoffMs + Math.floor(Math.random() * waitMs)));
+  }
+
+  throw new StatePublishContentionError(
+    `Failed to acquire the ${branch} state publish lease within ${acquireTimeoutMs}ms`,
+  );
+}
+
+function observeStatePublishLease(
+  remote: string,
+  leaseRef: string,
+  ttlMs: number,
+  observedByOid: Map<string, ObservedStatePublishLease>,
+): ObservedStatePublishLease | null {
+  const oid = remoteRefOid(remote, leaseRef);
+  if (!oid) return null;
+  const cached = observedByOid.get(oid);
+  if (cached) return cached;
+
+  const fetched = spawnGit(["fetch", "--no-tags", "--quiet", remote, leaseRef], {
+    allowFailure: true,
+    quiet: true,
+    timeout: PUBLISH_FETCH_TIMEOUT_MS,
+  });
+  if (fetched.timedOut) {
+    throw new GitCommandTimeoutError(["fetch"], PUBLISH_FETCH_TIMEOUT_MS);
+  }
+  if (fetched.status !== 0) {
+    if (!remoteRefOid(remote, leaseRef)) return null;
+    throw new Error(fetched.stderr.trim() || `Failed to fetch state publish lease ${leaseRef}`);
+  }
+  const raw = runGit(["show", "-s", "--format=%H%x00%ct%x00%B", "FETCH_HEAD"], {
+    quiet: true,
+  });
+  const [fetchedOid, committedAtRaw, ...messageParts] = raw.split("\0");
+  if (!fetchedOid || !/^[a-f0-9]{40,64}$/.test(fetchedOid)) {
+    throw new Error("Remote state publish lease did not resolve to a commit");
+  }
+  const committedAtMs = Number(committedAtRaw) * 1_000;
+  const message = messageParts.join("\0");
+  const owner = /^owner: ([0-9a-f-]+)$/m.exec(message)?.[1] ?? "unknown";
+  const advertisedTtlMs = Number(/^ttl_ms: ([0-9]+)$/m.exec(message)?.[1] ?? "");
+  const boundedTtlMs =
+    Number.isSafeInteger(advertisedTtlMs) && advertisedTtlMs > 0
+      ? Math.min(advertisedTtlMs, STATE_PUBLISH_LEASE_TTL_MS)
+      : ttlMs;
+  const expiresAtMs =
+    Number.isFinite(committedAtMs) && committedAtMs > 0
+      ? Math.min(committedAtMs + boundedTtlMs, Date.now() + STATE_PUBLISH_LEASE_TTL_MS)
+      : Date.now() + STATE_PUBLISH_LEASE_TTL_MS;
+  const observed = { oid: fetchedOid, owner, expiresAtMs };
+  observedByOid.set(oid, observed);
+  return observed;
+}
+
+function createStatePublishLeaseCommit(options: {
+  branch: string;
+  owner: string;
+  ttlMs: number;
+}): string {
+  const tree = runGit(["mktree"], { input: "", quiet: true }).trim();
+  if (!tree) throw new Error("Failed to create the state publish lease tree");
+  return runGit(["commit-tree", tree], {
+    input: [
+      "ClawSweeper state publish lease",
+      "",
+      `owner: ${options.owner}`,
+      `branch: ${options.branch}`,
+      `ttl_ms: ${options.ttlMs}`,
+      "",
+    ].join("\n"),
+    quiet: true,
+  }).trim();
+}
+
+function releaseStatePublishLease(lease: StatePublishLease): void {
+  try {
+    const released = spawnGit(
+      ["push", `--force-with-lease=${lease.ref}:${lease.oid}`, lease.remote, `:${lease.ref}`],
+      { allowFailure: true, quiet: true, timeout: PUBLISH_FETCH_TIMEOUT_MS },
+    );
+    if (released.status === 0) {
+      console.log(`Released state publish lease owner=${lease.owner}`);
+    } else {
+      console.log(
+        `State publish lease release skipped owner=${lease.owner}; ownership changed or cleanup failed`,
+      );
+    }
+  } catch (error) {
+    console.log(
+      `State publish lease release failed owner=${lease.owner}; expiry will recover it: ${errorMessage(error)}`,
+    );
+  }
+}
+
+function remoteRefOid(remote: string, ref: string): string | null {
+  const result = spawnGit(["ls-remote", "--refs", remote, ref], {
+    allowFailure: true,
+    quiet: true,
+    timeout: PUBLISH_FETCH_TIMEOUT_MS,
+  });
+  if (result.timedOut) throw new GitCommandTimeoutError(["ls-remote"], PUBLISH_FETCH_TIMEOUT_MS);
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || `Failed to inspect remote ref ${ref}`);
+  }
+  const output = result.stdout.trim();
+  if (!output) return null;
+  const match = /^([a-f0-9]{40,64})\s+(.+)$/.exec(output);
+  if (!match || match[2] !== ref) throw new Error(`Malformed remote ref response for ${ref}`);
+  return match[1]!;
+}
+
+function pushPublishedBranch(remote: string, branch: string): GitRunResult {
+  const lease = activeStatePublishLease;
+  if (!lease) return spawnGit(["push", remote, `HEAD:${branch}`]);
+  if (lease.remote !== remote || lease.branch !== branch) {
+    throw new StatePublishContentionError(
+      `Active state publish lease does not cover ${remote}/${branch}`,
+    );
+  }
+
+  const renewedOid = createStatePublishLeaseCommit({
+    branch: lease.branch,
+    owner: lease.owner,
+    ttlMs: lease.ttlMs,
+  });
+  const pushed = spawnGit(
+    [
+      "push",
+      "--atomic",
+      `--force-with-lease=${lease.ref}:${lease.oid}`,
+      lease.remote,
+      `HEAD:${branch}`,
+      `${renewedOid}:${lease.ref}`,
+    ],
+    { allowFailure: true },
+  );
+  if (pushed.status !== 0) {
+    const currentLeaseOid = remoteRefOid(remote, lease.ref);
+    if (currentLeaseOid === renewedOid) {
+      const localHead = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
+      if (remoteRefOid(remote, `refs/heads/${branch}`) === localHead) {
+        lease.oid = renewedOid;
+        lease.expiresAtMs = Date.now() + lease.ttlMs;
+        return { ...pushed, status: 0 };
+      }
+      throw new Error("Atomic state publish updated its lease without the branch");
+    }
+    if (currentLeaseOid !== lease.oid) {
+      throw new StatePublishContentionError(
+        "State publish lease ownership changed before branch publication",
+      );
+    }
+    return pushed;
+  }
+
+  lease.oid = renewedOid;
+  lease.expiresAtMs = Date.now() + lease.ttlMs;
+  console.log(`Renewed state publish lease owner=${lease.owner} with atomic branch update`);
+  return pushed;
+}
+
 export function pushCommit(options: {
   remote?: string;
   branch?: string;
@@ -1414,7 +1691,7 @@ export function pushCommit(options: {
   const rebaseStrategy = options.rebaseStrategy ?? "normal";
 
   for (let pushAttempt = 1; pushAttempt <= pushAttempts; pushAttempt += 1) {
-    if (spawnGit(["push", remote, `HEAD:${branch}`]).status === 0) return true;
+    if (pushPublishedBranch(remote, branch).status === 0) return true;
     console.log(`Push attempt ${pushAttempt} lost the ${branch} race; rebasing`);
     const localCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
     const localCommitMessage = runGit(["log", "-1", "--format=%B"], { quiet: true });
@@ -1484,7 +1761,7 @@ export function pushCommit(options: {
       return false;
     }
   }
-  return spawnGit(["push", remote, `HEAD:${branch}`]).status === 0;
+  return pushPublishedBranch(remote, branch).status === 0;
 }
 
 export function pushSingleRecordTupleCommit(options: {
