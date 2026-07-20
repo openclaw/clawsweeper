@@ -842,18 +842,24 @@ function mergeBaseWithShallowRecovery(
   right: string,
   remote: string,
   branch: string,
-): { base: string; recoveredShallowMiss: boolean } {
+): { base: string | null; recoveredShallowMiss: boolean } {
   const args = ["merge-base", left, right];
   let result = spawnGit(args, { quiet: true });
   if (result.status === 0) {
     return { base: result.stdout.trim(), recoveredShallowMiss: false };
   }
-  if (result.status !== 1 || !isShallowRepository()) throw gitRunError(result, args);
+  if (result.status !== 1) throw gitRunError(result, args);
+  if (!isShallowRepository()) {
+    return { base: null, recoveredShallowMiss: false };
+  }
 
-  spawnGit(["fetch", "--deepen=32", remote, branch], {
+  const deepenArgs = ["fetch", "--deepen=32", remote, branch];
+  const deepen = spawnGit(deepenArgs, {
     quiet: true,
     timeout: PUBLISH_FETCH_TIMEOUT_MS,
   });
+  if (deepen.timedOut) throw new GitCommandTimeoutError(deepenArgs, PUBLISH_FETCH_TIMEOUT_MS);
+  if (deepen.status !== 0) throw gitRunError(deepen, deepenArgs);
   result = spawnGit(args, { quiet: true });
   if (result.status === 0) {
     return { base: result.stdout.trim(), recoveredShallowMiss: true };
@@ -861,16 +867,23 @@ function mergeBaseWithShallowRecovery(
   if (result.status !== 1) throw gitRunError(result, args);
 
   if (isShallowRepository()) {
-    spawnGit(["fetch", "--unshallow", remote, branch], {
+    const unshallowArgs = ["fetch", "--unshallow", remote, branch];
+    const unshallow = spawnGit(unshallowArgs, {
       quiet: true,
       timeout: PUBLISH_FETCH_TIMEOUT_MS,
     });
+    if (unshallow.timedOut) {
+      throw new GitCommandTimeoutError(unshallowArgs, PUBLISH_FETCH_TIMEOUT_MS);
+    }
+    if (unshallow.status !== 0) throw gitRunError(unshallow, unshallowArgs);
     result = spawnGit(args, { quiet: true });
     if (result.status === 0) {
       return { base: result.stdout.trim(), recoveredShallowMiss: true };
     }
   }
-  throw gitRunError(result, args);
+  if (result.status !== 1) throw gitRunError(result, args);
+  if (isShallowRepository()) throw gitRunError(result, args);
+  return { base: null, recoveredShallowMiss: true };
 }
 
 function prepareReconciliationStateRoot(
@@ -893,13 +906,17 @@ function prepareReconciliationStateRoot(
     return;
   }
   const semanticBase = mergeBaseWithShallowRecovery("HEAD", remoteRef, remote, branch);
-  if (semanticBase.recoveredShallowMiss) {
+  if (!semanticBase.base) {
+    console.log(
+      `No common Git base with ${remoteRef}; resetting the unpublished reconciliation checkpoint to the remote head`,
+    );
+  } else if (semanticBase.recoveredShallowMiss) {
     console.log(
       `Recovered the common Git base with ${remoteRef} after hydrating the shallow state checkout`,
     );
   }
   console.log("Discarding an unpublished reconciliation checkpoint before retry");
-  runGit(["reset", "--hard", semanticBase.base]);
+  runGit(["reset", "--hard", semanticBase.base ?? remoteRef]);
 }
 
 function reconciliationTupleKeysForCommit(sourceCommit: string): string[] {
@@ -1510,11 +1527,30 @@ function rebuildReconciliationCommit(
   const remoteRef = `${remote}/${branch}`;
   const sourceCommit = reconciliationSourceCommit ?? runGit(["rev-parse", "HEAD"]).trim();
   const mergeBase = mergeBaseWithShallowRecovery(sourceCommit, remoteRef, remote, branch);
-  const baseCommit = mergeBase.base;
-  if (mergeBase.recoveredShallowMiss) {
-    console.log(`Rebuilding reconciliation directly on ${remoteRef} after a shallow fetch`);
+  let baseCommit: string;
+  let localPaths: string[];
+  if (!mergeBase.base) {
+    if (!reconciliationSourceCommit || !allowedTupleKeys) {
+      console.log(
+        `No common Git base with ${remoteRef}; refusing an unbounded reconciliation rebuild`,
+      );
+      return false;
+    }
+    const sourceBaseCommit = runGit(["rev-parse", `${sourceCommit}^`], { quiet: true }).trim();
+    // The rebuilt commit is rooted on remoteRef below, but tuple arbitration
+    // still needs the publication's real parent to recognize remote changes.
+    baseCommit = sourceBaseCommit;
+    localPaths = changedPathsBetween(sourceBaseCommit, sourceCommit);
+    console.log(
+      `No common Git base with ${remoteRef}; rebuilding reconciliation on the remote head`,
+    );
+  } else {
+    baseCommit = mergeBase.base;
+    localPaths = changedPathsBetween(baseCommit, sourceCommit);
+    if (mergeBase.recoveredShallowMiss) {
+      console.log(`Rebuilding reconciliation directly on ${remoteRef} after a shallow fetch`);
+    }
   }
-  const localPaths = changedPathsBetween(baseCommit, sourceCommit);
   const localIdentities = new Map<string, RecordTupleIdentity>();
   for (const path of localPaths) {
     const identity = recordTupleIdentityForPath(path);

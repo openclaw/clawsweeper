@@ -1229,7 +1229,7 @@ test("reconcile-records fails closed on a concurrent tuple filename alias", () =
   );
 });
 
-test("reconcile-records fails closed when state and remote have no common base", () => {
+test("reconcile-records preserves a newer remote tuple after resetting unrelated state", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-unrelated-"));
   const origin = path.join(root, "origin.git");
   const state = path.join(root, "state");
@@ -1238,11 +1238,11 @@ test("reconcile-records fails closed when state and remote have no common base",
   run("git", ["init", "--bare", origin], root);
   run("git", ["clone", origin, state], root);
   configureUser(state);
-  const baseTuple = writeRecordTuple(state, {
+  const remoteTuple = writeRecordTuple(state, {
     number: 42,
-    marker: "remote base",
-    reviewedAt: "2026-07-09T23:00:00.000Z",
-    itemUpdatedAt: "2026-07-09T22:59:00Z",
+    marker: "newer remote tuple",
+    reviewedAt: "2026-07-09T23:03:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:02:00Z",
   });
   run("git", ["add", "."], state);
   run("git", ["commit", "-m", "remote base"], state);
@@ -1265,36 +1265,38 @@ test("reconcile-records fails closed when state and remote have no common base",
   run("git", ["commit", "-m", "unrelated local history"], state);
 
   const lines = [];
-  assert.throws(
-    () =>
-      captureConsoleLog(
-        () =>
-          withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
-            withCwd(work, () =>
-              publishMainCommit({
-                message: "chore: reject unrelated state",
-                paths: [recordsRoot],
-                maxAttempts: 1,
-                pushAttempts: 1,
-                rebaseStrategy: "reconcile-records",
-              }),
-            ),
-          ),
-        lines,
+  let result;
+  captureConsoleLog(() => {
+    result = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: publish from unrelated state",
+          paths: [recordsRoot],
+          maxAttempts: 1,
+          pushAttempts: 1,
+          rebaseStrategy: "reconcile-records",
+        }),
       ),
-    /git merge-base <redacted-args> exited 1/,
-  );
+    );
+  }, lines);
+
+  assert.equal(result, "unchanged");
   assert.equal(
-    lines.some((line) => line.includes("Git publish failure: phase=prepare")),
+    lines.some((line) =>
+      line.includes(
+        "No common Git base with origin/state; resetting the unpublished reconciliation checkpoint to the remote head",
+      ),
+    ),
     true,
   );
   assert.equal(
     run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/42.md`], root),
-    baseTuple.primary,
+    remoteTuple.primary,
   );
+  assert.throws(() => run("git", ["--git-dir", origin, "show", "state:unrelated.txt"], root));
 });
 
-test("reconcile-records fails closed when shallow state and remote are truly unrelated", () => {
+test("reconcile-records resets shallow state to a truly unrelated remote head", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-shallow-unrelated-"));
   const origin = path.join(root, "origin.git");
   const seed = path.join(root, "seed");
@@ -1319,7 +1321,7 @@ test("reconcile-records fails closed when shallow state and remote are truly unr
 
   fs.mkdirSync(work);
   fs.cpSync(path.join(state, "records"), path.join(work, "records"), { recursive: true });
-  writeRecordTuple(work, {
+  const candidateTuple = writeRecordTuple(work, {
     number: 42,
     marker: "candidate update",
     reviewedAt: "2026-07-19T23:02:00.000Z",
@@ -1335,33 +1337,39 @@ test("reconcile-records fails closed when shallow state and remote are truly unr
   run("git", ["push", "--force", "origin", "HEAD:state"], seed);
 
   const lines = [];
-  assert.throws(
-    () =>
-      captureConsoleLog(
-        () =>
-          withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
-            withCwd(work, () =>
-              publishMainCommit({
-                message: "chore: reject unrelated shallow state",
-                paths: [recordsRoot],
-                maxAttempts: 1,
-                pushAttempts: 1,
-                rebaseStrategy: "reconcile-records",
-              }),
-            ),
-          ),
-        lines,
+  let result;
+  captureConsoleLog(() => {
+    result = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: publish from unrelated shallow state",
+          paths: [recordsRoot],
+          maxAttempts: 1,
+          pushAttempts: 1,
+          rebaseStrategy: "reconcile-records",
+        }),
       ),
-    /git merge-base <redacted-args> exited 1/,
-  );
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
   assert.equal(
-    lines.some((line) => line.includes("Git publish failure: phase=prepare")),
+    lines.some((line) =>
+      line.includes(
+        "No common Git base with origin/state; resetting the unpublished reconciliation checkpoint to the remote head",
+      ),
+    ),
     true,
   );
   assert.equal(
     run("git", ["--git-dir", origin, "show", "state:replacement.txt"], root),
     "replacement history\n",
   );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/42.md`], root),
+    candidateTuple.primary,
+  );
+  assert.equal(run("git", ["rev-parse", "--is-shallow-repository"], state).trim(), "false");
 });
 
 test("reconcile-records prepares a shallow state checkout from the remote head", () => {
@@ -1538,20 +1546,19 @@ test("reconcile-records rebuilds on a shallow remote head without local ancestry
   );
 });
 
-test("checkpoint merge-base misses defer to a remote-head rebuild", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-checkpoint-merge-base-"));
+test("checkpoint publish rebuilds on the remote head when histories are unrelated", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-checkpoint-unrelated-"));
   const origin = path.join(root, "origin.git");
-  const state = path.join(root, "state");
   const work = path.join(root, "work");
   const other = path.join(root, "other");
-  const fakeBin = path.join(root, "bin");
   const recordsRoot = "records/openclaw-openclaw";
   const numbers = Array.from({ length: 129 }, (_, index) => 120_000 + index);
+  const overlapNumber = numbers[0];
   run("git", ["init", "--bare", origin], root);
-  run("git", ["clone", origin, state], root);
-  configureUser(state);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
   for (const number of numbers) {
-    writeRecordTuple(state, {
+    writeRecordTuple(work, {
       number,
       marker: `base ${number}`,
       reviewedAt: "2026-07-20T06:00:00.000Z",
@@ -1560,14 +1567,12 @@ test("checkpoint merge-base misses defer to a remote-head rebuild", () => {
       plan: false,
     });
   }
-  run("git", ["add", "."], state);
-  run("git", ["commit", "-m", "initial state"], state);
-  run("git", ["push", "origin", "HEAD:state"], state);
+  write(path.join(work, "old-history-only.txt"), "must not be resurrected\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial state"], work);
+  run("git", ["push", "origin", "HEAD:state"], work);
   run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
-  run("git", ["checkout", "-B", "state", "origin/state"], state);
-
-  fs.mkdirSync(work);
-  fs.cpSync(path.join(state, "records"), path.join(work, "records"), { recursive: true });
+  run("git", ["checkout", "-B", "state", "origin/state"], work);
   for (const number of numbers) {
     writeRecordTuple(work, {
       number,
@@ -1582,51 +1587,240 @@ test("checkpoint merge-base misses defer to a remote-head rebuild", () => {
 
   run("git", ["clone", origin, other], root);
   configureUser(other);
+  run("git", ["checkout", "--orphan", "replacement"], other);
+  run("git", ["read-tree", "--empty"], other);
+  fs.rmSync(path.join(other, "records"), { force: true, recursive: true });
+  fs.rmSync(path.join(other, "old-history-only.txt"));
+  let remoteOverlapTuple;
+  for (const number of numbers) {
+    const tuple = writeRecordTuple(other, {
+      number,
+      marker: number === overlapNumber ? `newer remote ${number}` : `base ${number}`,
+      reviewedAt:
+        number === overlapNumber ? "2026-07-20T06:04:00.000Z" : "2026-07-20T06:00:00.000Z",
+      itemUpdatedAt: number === overlapNumber ? "2026-07-20T06:03:00Z" : "2026-07-20T05:59:00Z",
+      packet: false,
+      plan: false,
+    });
+    if (number === overlapNumber) remoteOverlapTuple = tuple;
+  }
   const remoteTuple = writeRecordTuple(other, {
     number: 130_000,
-    marker: "concurrent remote tuple",
+    marker: "replacement-history remote tuple",
     reviewedAt: "2026-07-20T06:03:00.000Z",
     itemUpdatedAt: "2026-07-20T06:02:00Z",
     packet: false,
     plan: false,
   });
   run("git", ["add", "."], other);
-  run("git", ["commit", "-m", "concurrent remote tuple"], other);
-  installFirstPushRaceHook(state, other, "state");
-  installCheckpointMergeBaseFailureShim(fakeBin, state);
+  run("git", ["commit", "-m", "replacement state history"], other);
+  run("git", ["push", "--force", "origin", "HEAD:state"], other);
 
   const lines = [];
   let result;
   captureConsoleLog(() => {
-    result = withEnv({ CLAWSWEEPER_STATE_DIR: state, PATH: `${fakeBin}:${process.env.PATH}` }, () =>
-      withCwd(work, () =>
-        publishMainCommit({
-          message: "chore: publish checkpoint records",
-          paths: [recordsRoot],
-          maxAttempts: 1,
-          pushAttempts: 2,
-          rebaseStrategy: "reconcile-records",
-        }),
-      ),
+    result = withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: publish checkpoint records",
+        paths: [recordsRoot],
+        branch: "state",
+        maxAttempts: 1,
+        pushAttempts: 2,
+        rebaseStrategy: "reconcile-records",
+      }),
     );
   }, lines);
 
   assert.equal(result, "committed");
-  assert.equal(fs.existsSync(path.join(state, ".git", "checkpoint-merge-base-failed")), true);
   assert.equal(
-    lines.some((line) => line.includes("deferring overlap detection to a remote-head rebuild")),
+    lines.some(
+      (line) =>
+        line ===
+        "No common Git base with origin/state; rebuilding reconciliation on the remote head",
+    ),
     true,
   );
   assert.equal(
     run(
       "git",
-      ["--git-dir", origin, "show", `state:${recordsRoot}/closed/${numbers[0]}.md`],
+      ["--git-dir", origin, "show", `state:${recordsRoot}/closed/${numbers[1]}.md`],
       root,
-    ).includes(`# closed ${numbers[0]}`),
+    ).includes(`# closed ${numbers[1]}`),
     true,
   );
   assert.equal(
+    run(
+      "git",
+      ["--git-dir", origin, "show", `state:${recordsRoot}/items/${overlapNumber}.md`],
+      root,
+    ),
+    remoteOverlapTuple.primary,
+  );
+  assert.equal(
     run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/130000.md`], root),
+    remoteTuple.primary,
+  );
+  assert.throws(() =>
+    run("git", ["--git-dir", origin, "show", "state:old-history-only.txt"], root),
+  );
+});
+
+test("reconcile-records keeps non-1 merge-base failures fatal", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-merge-base-error-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const fakeBin = path.join(root, "bin");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  writeRecordTuple(work, {
+    number: 42,
+    marker: "local base",
+    reviewedAt: "2026-07-20T06:00:00.000Z",
+    itemUpdatedAt: "2026-07-20T05:59:00Z",
+    packet: false,
+    plan: false,
+  });
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial state"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  writeRecordTuple(work, {
+    number: 42,
+    marker: "local close",
+    reviewedAt: "2026-07-20T06:02:00.000Z",
+    itemUpdatedAt: "2026-07-20T06:01:00Z",
+    location: "closed",
+    packet: false,
+    plan: false,
+  });
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  run("git", ["checkout", "--orphan", "replacement"], other);
+  run("git", ["read-tree", "--empty"], other);
+  fs.rmSync(path.join(other, "records"), { force: true, recursive: true });
+  const remoteTuple = writeRecordTuple(other, {
+    number: 43,
+    marker: "replacement remote tuple",
+    reviewedAt: "2026-07-20T06:03:00.000Z",
+    itemUpdatedAt: "2026-07-20T06:02:00Z",
+    packet: false,
+    plan: false,
+  });
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "replacement state history"], other);
+  run("git", ["push", "--force", "origin", "HEAD:main"], other);
+  installSecondMergeBaseFailureShim(fakeBin, work);
+
+  const lines = [];
+  assert.throws(
+    () =>
+      captureConsoleLog(
+        () =>
+          withEnv({ PATH: `${fakeBin}:${process.env.PATH}` }, () =>
+            withCwd(work, () =>
+              publishMainCommit({
+                message: "chore: reject broken merge-base",
+                paths: [recordsRoot],
+                maxAttempts: 1,
+                pushAttempts: 2,
+                rebaseStrategy: "reconcile-records",
+              }),
+            ),
+          ),
+        lines,
+      ),
+    /fatal: synthetic merge-base failure/,
+  );
+  assert.equal(
+    lines.some((line) => line.includes("Git publish failure: phase=push")),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/items/43.md`], root),
+    remoteTuple.primary,
+  );
+});
+
+test("reconcile-records keeps shallow hydration failures fatal", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-shallow-hydration-error-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const work = path.join(root, "work");
+  const fakeBin = path.join(root, "bin");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  writeRecordTuple(seed, {
+    number: 42,
+    marker: "local base",
+    reviewedAt: "2026-07-20T06:00:00.000Z",
+    itemUpdatedAt: "2026-07-20T05:59:00Z",
+    packet: false,
+    plan: false,
+  });
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial state"], seed);
+  run("git", ["push", "origin", "HEAD:main"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["clone", "--depth", "1", `file://${origin}`, work], root);
+  configureUser(work);
+  writeRecordTuple(work, {
+    number: 42,
+    marker: "local close",
+    reviewedAt: "2026-07-20T06:02:00.000Z",
+    itemUpdatedAt: "2026-07-20T06:01:00Z",
+    location: "closed",
+    packet: false,
+    plan: false,
+  });
+
+  run("git", ["checkout", "--orphan", "replacement"], seed);
+  run("git", ["read-tree", "--empty"], seed);
+  fs.rmSync(path.join(seed, "records"), { force: true, recursive: true });
+  const remoteTuple = writeRecordTuple(seed, {
+    number: 43,
+    marker: "replacement remote tuple",
+    reviewedAt: "2026-07-20T06:03:00.000Z",
+    itemUpdatedAt: "2026-07-20T06:02:00Z",
+    packet: false,
+    plan: false,
+  });
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "replacement state history"], seed);
+  run("git", ["push", "--force", "origin", "HEAD:main"], seed);
+  installDeepenFetchFailureShim(fakeBin);
+
+  const lines = [];
+  assert.throws(
+    () =>
+      captureConsoleLog(
+        () =>
+          withEnv({ PATH: `${fakeBin}:${process.env.PATH}` }, () =>
+            withCwd(work, () =>
+              publishMainCommit({
+                message: "chore: reject failed shallow hydration",
+                paths: [recordsRoot],
+                maxAttempts: 1,
+                pushAttempts: 2,
+                rebaseStrategy: "reconcile-records",
+              }),
+            ),
+          ),
+        lines,
+      ),
+    /fatal: synthetic deepen failure/,
+  );
+  assert.equal(
+    lines.some((line) => line.includes("Git publish failure: phase=push")),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/items/43.md`], root),
     remoteTuple.primary,
   );
 });
@@ -3401,19 +3595,42 @@ exit "$result"
   fs.chmodSync(git, 0o755);
 }
 
-function installCheckpointMergeBaseFailureShim(fakeBin, state) {
+function installSecondMergeBaseFailureShim(fakeBin, work) {
   fs.mkdirSync(fakeBin, { recursive: true });
   const git = path.join(fakeBin, "git");
-  const pushCounter = path.join(state, ".git", "hooks", "pre-push-count");
-  const marker = path.join(state, ".git", "checkpoint-merge-base-failed");
+  const counter = path.join(work, ".git", "merge-base-count");
   const realGit = run("/usr/bin/env", ["which", "git"], process.cwd()).trim();
   fs.writeFileSync(
     git,
     `#!/bin/sh
 set -u
-if test "$1" = merge-base && test -e "${pushCounter}" && test ! -e "${marker}"; then
-  : > "${marker}"
-  exit 1
+if test "$1" = merge-base; then
+  count=0
+  if test -f "${counter}"; then count=$(cat "${counter}"); fi
+  count=$((count + 1))
+  printf '%s\n' "$count" > "${counter}"
+  if test "$count" -eq 2; then
+    printf '%s\n' 'fatal: synthetic merge-base failure' >&2
+    exit 2
+  fi
+fi
+exec "${realGit}" "$@"
+`,
+  );
+  fs.chmodSync(git, 0o755);
+}
+
+function installDeepenFetchFailureShim(fakeBin) {
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const git = path.join(fakeBin, "git");
+  const realGit = run("/usr/bin/env", ["which", "git"], process.cwd()).trim();
+  fs.writeFileSync(
+    git,
+    `#!/bin/sh
+set -u
+if test "$1" = fetch && test "$2" = --deepen=32; then
+  printf '%s\n' 'fatal: synthetic deepen failure' >&2
+  exit 2
 fi
 exec "${realGit}" "$@"
 `,
