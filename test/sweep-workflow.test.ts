@@ -568,7 +568,7 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(publishResult.run ?? "", /reason_code=close_coverage_deferred/);
   assert.match(publishResult.run ?? "", /reason_code=review_lease_active/);
   assert.match(publishResult.run ?? "", /reason_code=review_lease_active[\s\S]*?outcome=success/);
-  assert.match(publishResult.run ?? "", /retry_at=\"\$PUBLISH_RETRY_AT\"/);
+  assert.match(publishResult.run ?? "", /retry_at="\$PUBLISH_RETRY_AT"/);
   assert.match(
     publishResult.run ?? "",
     /completion_kind" != "superseded".*completion_kind" != "deferred".*completion_kind" != "refresh_required"/,
