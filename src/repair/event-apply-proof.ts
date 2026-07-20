@@ -8,6 +8,8 @@ export type EventApplyAction = {
   terminalMissingVerified: boolean;
   terminalStateVerified: boolean;
   guardedOpenStateVerified: boolean;
+  activeReviewLeaseVerified: boolean;
+  activeReviewLeaseExpiresAt: string;
   terminalPolicyNoopVerified: boolean;
   sourceDriftVerified: boolean;
 };
@@ -30,6 +32,10 @@ const GUARDED_OPEN_ACTIONS = new Set([
 ]);
 
 const LEGACY_TUPLELESS_REVIEW_LEASE_REASON = "local report has no durable lease identity";
+// The durable queue rejects retry deadlines beyond two hours. Leave a small
+// margin for worker/queue clock skew; a still-active long lease is sampled
+// again at this bounded deadline instead of rejecting the completion.
+const ACTIVE_REVIEW_LEASE_RETRY_MAX_DELAY_MS = 110 * 60 * 1000;
 
 export function exactEventPublishDisposition({
   candidateMatchesCurrentTuple,
@@ -112,6 +118,7 @@ export function exactEventApplyProof(
   terminalMissingCount: number;
   terminalCount: number;
   guardedOpenAction: string | null;
+  activeReviewLeaseRetryAt: string | null;
   latestRevisionRequeueRequired: boolean;
   legacyTuplelessReviewLease: boolean;
   disposition: ExactEventApplyDisposition;
@@ -149,6 +156,11 @@ export function exactEventApplyProof(
     syncedCount === 0 &&
     terminalCount === 0 &&
     exactActions[0]?.terminalMissingVerified !== true;
+  const activeReviewLeaseRetryAt =
+    soleExactAction === "kept_open" &&
+    soleExactResult?.activeReviewLeaseVerified === true
+      ? normalizedReviewLeaseRetryAt(soleExactResult.activeReviewLeaseExpiresAt)
+      : null;
   return {
     exactActions,
     syncedCount,
@@ -160,6 +172,7 @@ export function exactEventApplyProof(
       GUARDED_OPEN_ACTIONS.has(soleExactAction)
         ? soleExactAction
         : null,
+    activeReviewLeaseRetryAt,
     latestRevisionRequeueRequired:
       snapshotActionTaken === "skipped_changed_since_review" &&
       soleExactAction === "skipped_changed_since_review",
@@ -178,6 +191,13 @@ export function exactEventApplyProof(
             ? "applied"
             : "unproven",
   };
+}
+
+function normalizedReviewLeaseRetryAt(value: string): string | null {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp)
+    ? new Date(Math.min(timestamp, Date.now() + ACTIVE_REVIEW_LEASE_RETRY_MAX_DELAY_MS)).toISOString()
+    : null;
 }
 
 export function eventRecordActionTaken(markdown: string | null): string | null {
@@ -202,6 +222,9 @@ export function eventApplyAction(value: LooseRecord): EventApplyAction {
     terminalMissingVerified: value.terminalMissingVerified === true,
     terminalStateVerified: value.terminalStateVerified === true,
     guardedOpenStateVerified: value.guardedOpenStateVerified === true,
+    activeReviewLeaseVerified: value.activeReviewLeaseVerified === true,
+    activeReviewLeaseExpiresAt:
+      typeof value.activeReviewLeaseExpiresAt === "string" ? value.activeReviewLeaseExpiresAt : "",
     terminalPolicyNoopVerified: value.terminalPolicyNoopVerified === true,
     sourceDriftVerified: value.sourceDriftVerified === true,
   };

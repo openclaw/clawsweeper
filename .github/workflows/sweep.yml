@@ -1776,7 +1776,7 @@ jobs:
           echo "confirmed=true" >> "$GITHUB_OUTPUT"
 
       - name: Mark re-review complete
-        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.has_command_context == 'true' }}
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.has_command_context == 'true' && !(steps.publish-event-result.outputs.completion_kind == 'retryable_failure' && steps.publish-event-result.outputs.reason_code == 'review_lease_active') }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -1934,6 +1934,7 @@ jobs:
           VALIDATE_OUTCOME: ${{ steps.validate-exact-review-bundle.outcome }}
           PUBLISH_COMPLETION_KIND: ${{ steps.publish-event-result.outputs.completion_kind }}
           PUBLISH_REASON_CODE: ${{ steps.publish-event-result.outputs.reason_code }}
+          PUBLISH_RETRY_AT: ${{ steps.publish-event-result.outputs.retry_at }}
           ERROR_FINGERPRINT: ${{ steps.publish-event-result.outputs.error_fingerprint }}
           REVIEW_ONLY: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
         run: |
@@ -1941,6 +1942,7 @@ jobs:
           outcome=failure
           completion_kind=permanent_failure
           reason_code=unknown_failure
+          retry_at=
           if [ "$PUBLISH_COMPLETION_KIND" = "superseded" ] && { [ "$PUBLISH_REASON_CODE" = "remote_newer_tuple" ] || [ "$PUBLISH_REASON_CODE" = "remote_closed" ]; }; then
             outcome=success
             completion_kind=superseded
@@ -1956,6 +1958,11 @@ jobs:
             outcome=success
             completion_kind=refresh_required
             reason_code=close_coverage_retry
+          elif [ "$PUBLISH_COMPLETION_KIND" = "retryable_failure" ] && [ "$PUBLISH_REASON_CODE" = "review_lease_active" ] && [ -n "$PUBLISH_RETRY_AT" ]; then
+            outcome=success
+            completion_kind=retryable_failure
+            reason_code=review_lease_active
+            retry_at="$PUBLISH_RETRY_AT"
           elif [ "$LEGACY_TUPLELESS" = "true" ] && [ "$SOURCE_DRIFT_OUTCOME" = "success" ]; then
             outcome=success
             completion_kind=superseded
@@ -2003,6 +2010,9 @@ jobs:
           if [ -n "$ERROR_FINGERPRINT" ]; then
             echo "error_fingerprint=$ERROR_FINGERPRINT" >> "$GITHUB_OUTPUT"
           fi
+          if [ -n "$retry_at" ]; then
+            echo "retry_at=$retry_at" >> "$GITHUB_OUTPUT"
+          fi
           if [ "$outcome" = "failure" ] && { [ "$FAILURE_KIND" = "github_rate_limit" ] || [ "$FAILURE_KIND" = "github_transient" ]; }; then
             echo "failure_kind=$FAILURE_KIND" >> "$GITHUB_OUTPUT"
           fi
@@ -2020,6 +2030,7 @@ jobs:
           COMPLETION_KIND: ${{ steps.exact-review-publication-result.outputs.completion_kind }}
           REASON_CODE: ${{ steps.exact-review-publication-result.outputs.reason_code }}
           ERROR_FINGERPRINT: ${{ steps.exact-review-publication-result.outputs.error_fingerprint }}
+          RETRY_AT: ${{ steps.exact-review-publication-result.outputs.retry_at }}
           QUEUE_LEASE_ID: ${{ steps.publication-context.outputs.publisher_lease_id }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -2043,12 +2054,14 @@ jobs:
             const completionKind = ["published", "superseded", "deferred", "retryable_failure", "refresh_required", "permanent_failure"].includes(process.env.COMPLETION_KIND)
               ? process.env.COMPLETION_KIND
               : undefined;
-            const reasonCode = ["publication_applied", "remote_newer_tuple", "remote_closed", "live_terminal", "github_rate_limit", "github_transient", "workflow_cancelled", "artifact_unavailable", "artifact_expired", "close_coverage_retry", "close_coverage_deferred", "invalid_artifact", "missing_record_tuple", "tuple_protocol_invalid", "policy_invariant", "unknown_failure", "retry_exhausted"].includes(process.env.REASON_CODE)
+            const reasonCode = ["publication_applied", "remote_newer_tuple", "remote_closed", "live_terminal", "github_rate_limit", "github_transient", "review_lease_active", "workflow_cancelled", "artifact_unavailable", "artifact_expired", "close_coverage_retry", "close_coverage_deferred", "invalid_artifact", "missing_record_tuple", "tuple_protocol_invalid", "policy_invariant", "unknown_failure", "retry_exhausted"].includes(process.env.REASON_CODE)
               ? process.env.REASON_CODE
               : undefined;
             const errorFingerprint = /^[A-Za-z0-9:._-]{1,200}$/.test(process.env.ERROR_FINGERPRINT || "")
               ? process.env.ERROR_FINGERPRINT
               : undefined;
+            const retryAt = String(process.env.RETRY_AT || "").trim();
+            if (retryAt && !Number.isFinite(Date.parse(retryAt))) process.exit(1);
             if (!completionKind || !reasonCode) process.exit(1);
             process.stdout.write(JSON.stringify({
               lease_id: process.env.QUEUE_LEASE_ID,
@@ -2061,6 +2074,7 @@ jobs:
               completion_kind: completionKind,
               reason_code: reasonCode,
               ...(errorFingerprint ? { error_fingerprint: errorFingerprint } : {}),
+              ...(retryAt ? { retry_at: retryAt } : {}),
               ...(outcome === "failure" && failureKind ? { failure_kind: failureKind } : {}),
             }));
           ')"
@@ -2077,6 +2091,26 @@ jobs:
             fi
           done
           exit 1
+
+      - name: Mark active lease retry waiting
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.has_command_context == 'true' && steps.exact-review-publication-result.outputs.outcome == 'success' && steps.exact-review-publication-result.outputs.completion_kind == 'retryable_failure' && steps.exact-review-publication-result.outputs.reason_code == 'review_lease_active' && steps.complete-exact-review-publication.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
+          COMMAND_STATUS_MARKER: ${{ fromJSON(steps.publication-context.outputs.decision).commandStatusMarker || '' }}
+          STATUS_COMMENT_ID: ${{ fromJSON(steps.publication-context.outputs.decision).statusCommentId || '' }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          pnpm run repair:update-command-status -- \
+            --repo "$TARGET_REPO" \
+            --item-number "$ITEM_NUMBER" \
+            --marker "$COMMAND_STATUS_MARKER" \
+            --status-comment-id "$STATUS_COMMENT_ID" \
+            --state "Waiting" \
+            --detail "Another same-revision review is active; durable publication will retry after its lease expires." \
+            --run-url "$RUN_URL"
 
       - name: Fail unsuccessful exact review publication
         if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && (steps.exact-review-publication-result.outputs.outcome != 'success' || steps.complete-exact-review-publication.outcome != 'success') }}

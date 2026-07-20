@@ -317,6 +317,55 @@ test("exact event proof defers a close-coverage retry to the proof-capable apply
     false,
   );
 });
+
+test("exact event proof defers only a verified active review lease until its expiry", () => {
+  const snapshot = "---\nrepository: openclaw/openclaw\nnumber: 42\naction_taken: proposed_close\n---\n";
+  const retryAt = "2026-07-20T08:44:43.900Z";
+  const verified = exactEventApplyProof(
+    [
+      eventApplyAction({
+        number: 42,
+        action: "kept_open",
+        activeReviewLeaseVerified: true,
+        activeReviewLeaseExpiresAt: retryAt,
+      }),
+    ],
+    42,
+    eventRecordActionTaken(snapshot),
+  );
+  assert.equal(verified.activeReviewLeaseRetryAt, retryAt);
+
+  for (const action of ["skipped_locked_conversation", "kept_open"]) {
+    const proof = exactEventApplyProof(
+      [
+        eventApplyAction({
+          number: 42,
+          action,
+          activeReviewLeaseVerified: action === "kept_open",
+          activeReviewLeaseExpiresAt: "not-a-timestamp",
+        }),
+      ],
+      42,
+      eventRecordActionTaken(snapshot),
+    );
+    assert.equal(proof.activeReviewLeaseRetryAt, null, action);
+  }
+
+  const tooLong = exactEventApplyProof(
+    [
+      eventApplyAction({
+        number: 42,
+        action: "kept_open",
+        activeReviewLeaseVerified: true,
+        activeReviewLeaseExpiresAt: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
+      }),
+    ],
+    42,
+    eventRecordActionTaken(snapshot),
+  ).activeReviewLeaseRetryAt;
+  assert.ok(tooLong !== null);
+  assert.ok(Date.parse(tooLong) <= Date.now() + 2 * 60 * 60 * 1000);
+});
 test("exact event proof completes live-shaped deterministic guarded-open results", () => {
   for (const action of [
     "skipped_same_author_pair",

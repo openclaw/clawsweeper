@@ -514,6 +514,7 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.equal(status.env?.LIVE_TERMINAL_MISSING, undefined);
   assert.equal(status.env?.LIVE_GUARDED_OPEN, undefined);
   assert.match(status.env?.PUBLISH_COMPLETION_KIND ?? "", /publish-event-result/);
+  assert.match(status.if ?? "", /reason_code == 'review_lease_active'/);
   assert.match(status.run ?? "", /PUBLISH_COMPLETION_KIND.*superseded/);
   const commandComplete = step(publisher, "Mark re-review complete");
   assert.doesNotMatch(commandComplete.if ?? "", /completion_kind != 'deferred'/);
@@ -531,6 +532,7 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   );
   const publishResult = step(publisher, "Export exact review publication result");
   const publishComplete = step(publisher, "Complete durable exact review publication");
+  const activeLeaseWaiting = step(publisher, "Mark active lease retry waiting");
   const publicationPressure = step(publisher, "Probe GitHub pressure after publication failure");
   const releaseTerminal = step(publisher, "Release terminal review leases");
   const releaseUnsuccessful = step(
@@ -550,6 +552,7 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(publishResult.env?.DOWNLOAD_OUTCOME ?? "", /download-exact-review-bundle/);
   assert.match(publishResult.env?.VALIDATE_OUTCOME ?? "", /validate-exact-review-bundle/);
   assert.match(publishResult.env?.PUBLISH_COMPLETION_KIND ?? "", /publish-event-result/);
+  assert.match(publishResult.env?.PUBLISH_RETRY_AT ?? "", /publish-event-result/);
   assert.match(publicationPressure.if ?? "", /failure\(\)/);
   assert.match(publicationPressure.run ?? "", /gh api rate_limit/);
   assert.match(publicationPressure.run ?? "", /failure_kind=github_rate_limit/);
@@ -563,6 +566,9 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(publishResult.run ?? "", /completion_kind=refresh_required/);
   assert.match(publishResult.run ?? "", /reason_code=close_coverage_retry/);
   assert.match(publishResult.run ?? "", /reason_code=close_coverage_deferred/);
+  assert.match(publishResult.run ?? "", /reason_code=review_lease_active/);
+  assert.match(publishResult.run ?? "", /reason_code=review_lease_active[\s\S]*?outcome=success/);
+  assert.match(publishResult.run ?? "", /retry_at=\"\$PUBLISH_RETRY_AT\"/);
   assert.match(
     publishResult.run ?? "",
     /completion_kind" != "superseded".*completion_kind" != "deferred".*completion_kind" != "refresh_required"/,
@@ -572,10 +578,16 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.doesNotMatch(publishResult.run ?? "", /LIVE_TERMINAL_NOOP/);
   assert.match(publishComplete.run ?? "", /internal\/exact-review\/complete/);
   assert.match(publishComplete.env?.FAILURE_KIND ?? "", /exact-review-publication-result/);
+  assert.match(publishComplete.env?.RETRY_AT ?? "", /exact-review-publication-result/);
   assert.match(publishComplete.run ?? "", /failure_kind: failureKind/);
   assert.match(publishComplete.run ?? "", /completion_kind: completionKind/);
   assert.match(publishComplete.run ?? "", /reason_code: reasonCode/);
+  assert.match(publishComplete.run ?? "", /retry_at: retryAt/);
   assert.ok(publisher.steps.indexOf(publishResult) < publisher.steps.indexOf(publishComplete));
+  assert.ok(publisher.steps.indexOf(publishComplete) < publisher.steps.indexOf(activeLeaseWaiting));
+  assert.match(activeLeaseWaiting.if ?? "", /reason_code == 'review_lease_active'/);
+  assert.match(activeLeaseWaiting.if ?? "", /complete-exact-review-publication\.outcome == 'success'/);
+  assert.match(activeLeaseWaiting.run ?? "", /--state "Waiting"/);
 
   const publisherSource = readText("src/repair/publish-event-result.ts");
   assert.match(
@@ -584,6 +596,8 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   );
   assert.match(publisherSource, /"--exact-event-publication"/);
   assert.match(publisherSource, /legacyTuplelessReviewLease/);
+  assert.match(publisherSource, /activeReviewLeaseRetryAt/);
+  assert.match(publisherSource, /review_lease_active/);
   assert.match(publisherSource, /applyDisposition === "close_coverage_deferred"/);
   assert.match(publisherSource, /EXACT_REVIEW_CLOSE_COVERAGE_DEFERRED/);
   assert.match(publisherSource, /writeLegacyRefreshRequiredOutputs/);

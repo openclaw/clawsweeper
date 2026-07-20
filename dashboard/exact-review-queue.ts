@@ -107,6 +107,7 @@ type ExactReviewPublicationReasonCode =
   | "live_terminal"
   | "github_rate_limit"
   | "github_transient"
+  | "review_lease_active"
   | "workflow_cancelled"
   | "artifact_unavailable"
   | "artifact_expired"
@@ -653,14 +654,15 @@ export class ExactReviewQueue {
       if (hasStructuredCompletion && !publicationCompletion) {
         return json({ error: "invalid_publication_completion" }, 400);
       }
-      if (
+      const completionSucceeds =
         publicationCompletion &&
         (publicationCompletion.kind === "published" ||
           publicationCompletion.kind === "superseded" ||
           publicationCompletion.kind === "refresh_required" ||
-          publicationCompletion.kind === "deferred") !==
-          (outcome === "success")
-      ) {
+          publicationCompletion.kind === "deferred" ||
+          (publicationCompletion.kind === "retryable_failure" &&
+            publicationCompletion.reasonCode === "review_lease_active"));
+      if (publicationCompletion && completionSucceeds !== (outcome === "success")) {
         return json({ error: "completion_outcome_mismatch" }, 400);
       }
       if (
@@ -3466,6 +3468,7 @@ function exactReviewPublicationReasonCode(value): ExactReviewPublicationReasonCo
     "live_terminal",
     "github_rate_limit",
     "github_transient",
+    "review_lease_active",
     "workflow_cancelled",
     "artifact_unavailable",
     "artifact_expired",
@@ -3499,6 +3502,7 @@ function exactReviewPublicationCompletion(
     retryable_failure: new Set([
       "github_rate_limit",
       "github_transient",
+      "review_lease_active",
       "workflow_cancelled",
       "artifact_unavailable",
       "unknown_failure",

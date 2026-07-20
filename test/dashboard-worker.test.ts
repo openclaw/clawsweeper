@@ -4813,6 +4813,47 @@ test("exact-review publication retries a state fetch timeout without throttling 
   assert.equal(stats.lanes.publication.capacity_control.last_failure_kind, null);
 });
 
+test("exact-review publication defers an active review lease without throttling capacity", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(7802, "78020");
+  const retryAt = Date.now() + 12 * 60_000;
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "success",
+        completion_kind: "retryable_failure",
+        reason_code: "review_lease_active",
+        retry_at: new Date(retryAt).toISOString(),
+      }),
+    }),
+  );
+
+  assert.deepEqual(await response.json(), { ok: true, requeued: true });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { state: string; lastFailureReason?: string; nextAttemptAt?: number }>;
+  };
+  assert.equal(state.items[item.key]?.state, "pending");
+  assert.equal(state.items[item.key]?.lastFailureReason, "review_lease_active");
+  assert.ok(Number(state.items[item.key]?.nextAttemptAt) >= retryAt);
+
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.publication.capacity_control.mode, "adaptive");
+  assert.equal(stats.lanes.publication.capacity_control.ceiling, 48);
+  assert.equal(stats.lanes.publication.capacity_control.last_failure_kind, null);
+});
+
 test("exact-review publication supersedes stale tuples without counting a publish", async () => {
   const storage = new MemoryDurableStorage();
   const item = leasedExactReviewPublicationItem(781, "7810");

@@ -1127,6 +1127,8 @@ interface ApplyResult {
   terminalMissingVerified?: boolean;
   terminalStateVerified?: boolean;
   guardedOpenStateVerified?: boolean;
+  activeReviewLeaseVerified?: boolean;
+  activeReviewLeaseExpiresAt?: string;
   terminalPolicyNoopVerified?: boolean;
   sourceDriftVerified?: boolean;
 }
@@ -27100,6 +27102,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       action: "kept_open" | "skipped_stale_review_comment_sync",
       reason: string,
       restoreOriginal = true,
+      activeReviewLeaseExpiresAt?: string,
     ): boolean => {
       markdown = replaceFrontMatterValue(
         restoreOriginal ? markdownBeforeApplyDecisionMutations : markdown,
@@ -27107,7 +27110,17 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         new Date().toISOString(),
       );
       if (!dryRun) writeReportMarkdown(path, markdown);
-      results.push({ number, action, reason });
+      results.push({
+        number,
+        action,
+        reason,
+        ...(emitEventApplyProof && action === "kept_open" && activeReviewLeaseExpiresAt
+          ? {
+              activeReviewLeaseVerified: true,
+              activeReviewLeaseExpiresAt,
+            }
+          : {}),
+      });
       processedCount += 1;
       maybeLogProgress(`skipped #${number}: ${reason}`);
       return processedCount >= processedLimit;
@@ -27117,7 +27130,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       reason === "pull request review activity exceeds the bounded reviewed cursor";
     const exactEventSourceRevisionChanged = (reason: string): boolean =>
       exactEventPublication && isExactEventSourceRevisionChange(item.kind, reason);
-    const recordReviewLeaseSkip = (reason: string, restoreOriginal = true): boolean =>
+    const recordReviewLeaseSkip = (
+      reason: string,
+      restoreOriginal = true,
+      activeReviewLeaseExpiresAt?: string,
+    ): boolean =>
       reviewActivitySourceChanged(reason) || exactEventSourceRevisionChanged(reason)
         ? markApplySkipped("skipped_changed_since_review", reason)
         : staleCanonicalCommentSyncPending
@@ -27125,11 +27142,13 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             "retry_stale_canonical_comment_sync",
             `${reason}; stale canonical comment correction remains pending`,
           )
-        : recordReviewGuardSkip("kept_open", reason, restoreOriginal);
+        : recordReviewGuardSkip("kept_open", reason, restoreOriginal, activeReviewLeaseExpiresAt);
     recordApplyMutationGuardReason = (reason) => recordReviewLeaseSkip(reason, false);
     const recordActiveReviewLeaseSkip = (expiresAt: string): boolean =>
       recordReviewLeaseSkip(
         `${item.kind === "pull_request" ? "same-head" : "same-revision"} ClawSweeper review is active until ${expiresAt}`,
+        true,
+        expiresAt,
       );
     let existingReviewComment: Record<string, unknown> | undefined;
     const pendingStaleCanonicalCommentReason = staleCanonicalCommentSyncPending

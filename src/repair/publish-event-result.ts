@@ -206,6 +206,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     terminalMissingCount: missingCount,
     terminalCount: closedCount,
     guardedOpenAction,
+    activeReviewLeaseRetryAt,
     legacyTuplelessReviewLease,
     disposition: applyDisposition,
   } = exactEventApplyProof(actions, Number(options.itemNumber), snapshotActionTaken);
@@ -220,6 +221,18 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     );
   }
   const deferredCloseCoverageExpected = applyDisposition === "close_coverage_deferred";
+  if (activeReviewLeaseRetryAt !== null) {
+    console.log(
+      `Deferring ${options.targetRepo}#${options.itemNumber}: active review lease remains active until ${activeReviewLeaseRetryAt}`,
+    );
+    writePublicationCompletionOutputs(
+      "retryable_failure",
+      "review_lease_active",
+      undefined,
+      activeReviewLeaseRetryAt,
+    );
+    return;
+  }
   const deferredCloseCoverageEnabled = process.env.EXACT_REVIEW_CLOSE_COVERAGE_DEFERRED === "true";
   if (deferredCloseCoverageExpected) {
     console.log(
@@ -635,11 +648,13 @@ function writePublicationCompletionOutputs(
     | "remote_closed"
     | "close_coverage_deferred"
     | "github_transient"
+    | "review_lease_active"
     | "missing_record_tuple"
     | "tuple_protocol_invalid"
     | "policy_invariant"
     | "unknown_failure",
   fingerprint?: string,
+  retryAt?: string,
 ): void {
   const outputPath = process.env.GITHUB_OUTPUT;
   if (!outputPath) return;
@@ -649,6 +664,7 @@ function writePublicationCompletionOutputs(
       `completion_kind=${completionKind}`,
       `reason_code=${reasonCode}`,
       ...(fingerprint ? [`error_fingerprint=${fingerprint}`] : []),
+      ...(retryAt ? [`retry_at=${retryAt}`] : []),
       "",
     ].join("\n"),
     "utf8",
