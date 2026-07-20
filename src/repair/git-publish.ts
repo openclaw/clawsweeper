@@ -1536,7 +1536,14 @@ function rebuildReconciliationCommit(
       );
       return false;
     }
-    const sourceBaseCommit = runGit(["rev-parse", `${sourceCommit}^`], { quiet: true }).trim();
+    // A root checkpoint has no parent; the empty tree is the correct baseline
+    // there (every publication path is new), so the initial-publication race
+    // still reconciles instead of crashing on `<root>^`.
+    const sourceParent = spawnGit(["rev-parse", `${sourceCommit}^`], { quiet: true });
+    const sourceBaseCommit =
+      sourceParent.status === 0
+        ? sourceParent.stdout.trim()
+        : runGit(["hash-object", "-t", "tree", "/dev/null"], { quiet: true }).trim();
     // The rebuilt commit is rooted on remoteRef below, but tuple arbitration
     // still needs the publication's real parent to recognize remote changes.
     baseCommit = sourceBaseCommit;
