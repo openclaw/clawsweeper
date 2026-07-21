@@ -283,9 +283,7 @@ export async function runStateMaterializer(
         fetchImpl,
       });
       if (acked > drain.records.length) {
-        throw new Error(
-          `state ack count ${acked} exceeded drained count ${drain.records.length}`,
-        );
+        throw new Error(`state ack count ${acked} exceeded drained count ${drain.records.length}`);
       }
       if (acked < drain.records.length) {
         // An expired drain lease re-exposes the rows for the next cycle and a
