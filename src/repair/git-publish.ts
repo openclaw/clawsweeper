@@ -56,13 +56,20 @@ export type RebaseStrategy = "normal" | "theirs" | "apply-records" | "reconcile-
 export type GitRunOptions = {
   allowFailure?: boolean;
   displayArgs?: readonly string[];
-  input?: string;
+  env?: NodeJS.ProcessEnv;
+  input?: string | Uint8Array;
   maxBuffer?: number;
   quiet?: boolean;
   timeout?: number;
 };
 
 export type PublishResult = "committed" | "unchanged";
+
+export type GitProcessMeasurement = {
+  durationMs: number;
+  processes: number;
+  actions: Readonly<Record<string, number>>;
+};
 
 const GENERATED_PUBLISH_PATHS = [
   "apply-report.json",
@@ -200,11 +207,11 @@ export function runGit(args: readonly string[], options: GitRunOptions = {}): st
 }
 
 export function spawnGit(args: readonly string[], options: GitRunOptions = {}): GitRunResult {
-  recordGitProcess(args[0]);
+  recordGitProcess(gitSubcommand(args));
   console.log(`$ ${formatGitDisplayCommand(options.displayArgs ?? args)}`);
   const child = spawnSync("git", [...args], {
     cwd: publishRoot(),
-    env: process.env,
+    env: options.env ?? process.env,
     encoding: "utf8",
     input: options.input,
     maxBuffer: options.maxBuffer ?? 16 * 1024 * 1024,
@@ -218,6 +225,35 @@ export function spawnGit(args: readonly string[], options: GitRunOptions = {}): 
     stderr: child.stderr ?? "",
     timedOut: (child.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT",
   };
+}
+
+export function measureGitProcesses<T>(operation: () => T): {
+  result: T;
+  measurement: GitProcessMeasurement;
+} {
+  if (activeGitPublishMetrics) {
+    throw new Error("Nested Git process measurements are not supported");
+  }
+  const metrics: GitPublishMetrics = {
+    startedAtMs: Date.now(),
+    processes: 0,
+    actions: new Map(),
+    phase: "measured-operation",
+  };
+  activeGitPublishMetrics = metrics;
+  try {
+    const result = operation();
+    return {
+      result,
+      measurement: {
+        durationMs: Date.now() - metrics.startedAtMs,
+        processes: metrics.processes,
+        actions: Object.fromEntries([...metrics.actions].sort(([a], [b]) => a.localeCompare(b))),
+      },
+    };
+  } finally {
+    activeGitPublishMetrics = null;
+  }
 }
 
 export class GitCommandTimeoutError extends Error {
@@ -243,7 +279,19 @@ function recordGitProcess(action: string | undefined): void {
 }
 
 function formatGitDisplayCommand(args: readonly string[]): string {
-  return `git ${safeGitDisplayAction(args[0])} <redacted-args>`;
+  return `git ${safeGitDisplayAction(gitSubcommand(args))} <redacted-args>`;
+}
+
+function gitSubcommand(args: readonly string[]): string | undefined {
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === "-c") {
+      index += 1;
+      continue;
+    }
+    if (!argument?.startsWith("-")) return argument;
+  }
+  return undefined;
 }
 
 function safeGitDisplayAction(action: string | undefined): string {
@@ -255,8 +303,10 @@ function safeGitDisplayAction(action: string | undefined): string {
     case "fetch":
     case "checkout":
     case "cat-file":
+    case "check-ref-format":
     case "clean":
     case "log":
+    case "ls-remote":
     case "ls-files":
     case "ls-tree":
     case "merge-base":
@@ -271,6 +321,8 @@ function safeGitDisplayAction(action: string | undefined): string {
     case "rm":
     case "status":
     case "update-ref":
+    case "update-index":
+    case "hash-object":
     case "write-tree":
     case "commit-tree":
       return action;
@@ -2023,11 +2075,16 @@ function pushPublishedBranch(remote: string, branch: string): GitRunResult {
   return pushPublishedCommit("HEAD", remote, branch);
 }
 
-function pushPublishedCommit(source: string, remote: string, branch: string): GitRunResult {
+function pushPublishedCommit(
+  source: string,
+  remote: string,
+  branch: string,
+  receiptRef?: string,
+): GitRunResult {
   const lease = activeStatePublishLease;
   if (!lease && publishRoot()) {
     return withStatePublishMutationLease(remote, branch, () =>
-      pushPublishedCommit(source, remote, branch),
+      pushPublishedCommit(source, remote, branch, receiptRef),
     );
   }
   if (!lease) return spawnGit(["push", remote, `${source}:${branch}`]);
@@ -2052,9 +2109,11 @@ function pushPublishedCommit(source: string, remote: string, branch: string): Gi
       "push",
       "--atomic",
       `--force-with-lease=${lease.ref}:${lease.oid}`,
+      ...(receiptRef ? [`--force-with-lease=${receiptRef}:`] : []),
       lease.remote,
       `${source}:${branch}`,
       `${renewedOid}:${lease.ref}`,
+      ...(receiptRef ? [`${source}:${receiptRef}`] : []),
     ],
     { allowFailure: true },
   );
@@ -2062,7 +2121,10 @@ function pushPublishedCommit(source: string, remote: string, branch: string): Gi
     const currentLeaseOid = remoteRefOid(remote, lease.ref);
     if (currentLeaseOid === renewedOid) {
       const sourceCommit = runGit(["rev-parse", source], { quiet: true }).trim();
-      if (remoteRefOid(remote, `refs/heads/${branch}`) === sourceCommit) {
+      if (
+        remoteRefOid(remote, `refs/heads/${branch}`) === sourceCommit &&
+        (!receiptRef || remoteRefOid(remote, receiptRef) === sourceCommit)
+      ) {
         lease.oid = renewedOid;
         lease.expiresAtMs = Date.now() + lease.ttlMs;
         return { ...pushed, status: 0 };
@@ -2086,6 +2148,20 @@ function pushPublishedCommit(source: string, remote: string, branch: string): Gi
   lease.expiresAtMs = Date.now() + lease.ttlMs;
   console.log(`Renewed state publish lease owner=${lease.owner} with atomic branch update`);
   return pushed;
+}
+
+export function pushStateCommitUnderLease(
+  commit: string,
+  remote: string,
+  branch: string,
+  receiptRef?: string,
+): void {
+  const pushed = pushPublishedCommit(commit, remote, branch, receiptRef);
+  if (pushed.status !== 0) {
+    throw new StatePublishContentionError(
+      pushed.stderr.trim() || `Failed to publish the prepared state commit to ${remote}/${branch}`,
+    );
+  }
 }
 
 export function pushCommit(options: {
