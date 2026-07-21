@@ -36,7 +36,7 @@ the user asks for Testbox/Blacksmith.
 ```sh
 command -v crabbox
 ../crabbox/bin/crabbox --version
-pnpm crabbox:run -- --help | sed -n '1,120p'
+../crabbox/bin/crabbox run --help | sed -n '1,120p'
 ../crabbox/bin/crabbox desktop launch --help
 ../crabbox/bin/crabbox webvnc --help
 ```
@@ -49,6 +49,15 @@ pnpm crabbox:run -- --help | sed -n '1,120p'
 - Omitting `--provider` means "use the resolved configuration". Pass it only
   when the task specifically requires a different backend, and report the
   provider from Crabbox output rather than inferring it from bootstrap wording.
+- Treat `CRABBOX_PROVIDER` as part of that resolved provider configuration. If
+  `crabbox config show` reports `provider=local-container`, keep that provider;
+  a hydration or test failure is not permission to retry on AWS or Testbox.
+  Override the resolved provider only when the user or the required proof lane
+  explicitly names another backend.
+- Some package-manager wrappers insert a command delimiter before Crabbox
+  options. If the printed command looks like `crabbox run -- --provider ...`
+  or `crabbox run -- --no-hydrate ...`, call the trusted Crabbox binary
+  directly so lifecycle flags are parsed by Crabbox.
 - The brokered AWS default is a Linux developer image in `eu-west-1`; the repo
   config pins hot `eu-west-1a/b/c` placement so Fast Snapshot Restore can apply.
   If warmup drifts well past the minute-scale path, verify image promotion,
@@ -71,10 +80,12 @@ pnpm crabbox:run -- --help | sed -n '1,120p'
   is available, say true live provider auth is blocked instead of silently using
   a fake key.
 - Prefer local targeted tests for tight edit loops. Broad gates belong remote.
-- Do not treat inherited shell env as operator intent. In particular,
-  `OPENCLAW_LOCAL_CHECK_MODE=throttled` from the local shell is not permission
-  to move broad `pnpm check:changed`, `pnpm test:changed`, full `pnpm test`, or
-  lint/typecheck fan-out onto the laptop.
+- Do not treat unrelated inherited shell controls as operator intent. In
+  particular, `OPENCLAW_LOCAL_CHECK_MODE=throttled` from the local shell is not
+  permission to move broad `pnpm check:changed`, `pnpm test:changed`, full
+  `pnpm test`, or lint/typecheck fan-out onto the laptop. This does not negate
+  provider-selection variables such as `CRABBOX_PROVIDER`, which are resolved
+  and reported by `crabbox config show`.
 - Only use `OPENCLAW_LOCAL_CHECK_MODE=throttled|full` when the user explicitly
   asks for local proof in the current task. If Testbox is queued or capacity is
   constrained, report the blocker and keep only targeted local edit-loop checks
@@ -514,7 +525,7 @@ Fast checks:
 ```sh
 command -v crabbox
 ../crabbox/bin/crabbox --version
-pnpm crabbox:run -- --help | sed -n '1,140p'
+../crabbox/bin/crabbox run --help | sed -n '1,140p'
 ../crabbox/bin/crabbox doctor
 command -v blacksmith
 blacksmith --version
@@ -525,9 +536,20 @@ Common Crabbox-only failures:
 
 - Provider missing or old CLI: use `../crabbox/bin/crabbox` from the sibling
   repo, or update/install Crabbox before retrying.
+- Local-container hydration rejects a configured Actions `uses` step: stay on
+  `provider=local-container`, add `--no-hydrate`, and perform the required
+  dependency setup inside the container command. For example:
+
+  ```sh
+  ../crabbox/bin/crabbox run --no-hydrate --timing-json --shell -- \
+    "corepack enable && pnpm install --frozen-lockfile && <check-command>"
+  ```
+
+  This is a hydration transport workaround, not permission to run the broad
+  check on the host or silently select a remote provider.
 - Bad local config: inspect `.crabbox.yaml`, `crabbox config show`, and
-  `crabbox whoami`; normal OpenClaw proof should use brokered AWS without
-  asking for cloud keys.
+  `crabbox whoami`; preserve the resolved provider unless the requested proof
+  specifically requires another backend.
 - Slug/claim confusion: use the raw `cbx_...` / `tbx_...` id, or run one-shot
   without `--id`.
 - Sync/timing bug: add `--debug --timing-json`; capture the final JSON and the
