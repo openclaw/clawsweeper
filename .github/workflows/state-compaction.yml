@@ -71,7 +71,6 @@ jobs:
         if: ${{ steps.preflight.outputs.compact == 'true' }}
         env:
           BACKUP_REF: ${{ steps.backup.outputs.backup_ref }}
-          CLAWSWEEPER_STATE_REPO_TOKEN: ${{ steps.state-token.outputs.token }}
           EXPECTED_HEAD: ${{ steps.backup.outputs.expected_head }}
         run: |
           set -euo pipefail
@@ -90,8 +89,14 @@ jobs:
             origin "$new_head:refs/heads/main"
           remote_head="$(git -C "$state_dir" ls-remote --refs origin refs/heads/main | awk '{print $1}')"
           test "$remote_head" = "$new_head"
-          STATE_COMPACTION_BACKUP_REF="$BACKUP_REF" \
-            STATE_COMPACTION_EXPECTED_HEAD="$EXPECTED_HEAD" \
-            STATE_COMPACTION_NEW_HEAD="$new_head" \
-            node dist/repair/state-compaction.js cleanup-backup
+          git -C "$state_dir" push --atomic \
+            --force-with-lease="refs/heads/main:$new_head" \
+            --force-with-lease="refs/heads/$BACKUP_REF:$EXPECTED_HEAD" \
+            origin \
+            "$new_head:refs/heads/main" \
+            ":refs/heads/$BACKUP_REF"
+          verified_refs="$(git -C "$state_dir" ls-remote --refs \
+            origin refs/heads/main "refs/heads/$BACKUP_REF")"
+          test "$(printf '%s\n' "$verified_refs" | awk '$2 == "refs/heads/main" {print $1}')" = "$new_head"
+          test -z "$(printf '%s\n' "$verified_refs" | awk -v ref="refs/heads/$BACKUP_REF" '$2 == ref {print $1}')"
           echo "state compaction: replaced $EXPECTED_HEAD with orphan $new_head; transactional backup removed"

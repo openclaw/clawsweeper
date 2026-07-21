@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
-  cleanupStateCompactionBackup,
   createStateCompactionBackup,
   runStateCompactionPreflight,
 } from "../../dist/repair/state-compaction.js";
@@ -140,50 +139,16 @@ test("backup creation refuses to continue when GitHub rejects the backup ref", a
   assert.equal(requests, 3);
 });
 
-test("transactional backup cleanup verifies both refs before deleting history", async () => {
-  const newHead = "b".repeat(40);
-  const requests: Array<{ method: string; path: string }> = [];
-  const result = await cleanupStateCompactionBackup({
-    env: env({
-      STATE_COMPACTION_BACKUP_REF: "backup/pre-compact-2026-07-21",
-      STATE_COMPACTION_EXPECTED_HEAD: expectedHead,
-      STATE_COMPACTION_NEW_HEAD: newHead,
-    }),
-    fetchImpl: (async (input, init) => {
-      const url = new URL(input instanceof Request ? input.url : input.toString());
-      requests.push({ method: init?.method ?? "GET", path: url.pathname });
-      if (init?.method === "DELETE") return new Response(null, { status: 204 });
-      if (url.pathname.endsWith("/git/ref/heads/main")) {
-        return Response.json({ object: { sha: newHead } });
-      }
-      return Response.json({ object: { sha: expectedHead } });
-    }) as typeof fetch,
-  });
-  assert.deepEqual(result, {
-    backupRef: "backup/pre-compact-2026-07-21",
-    expectedHead,
-    newHead,
-  });
-  assert.deepEqual(requests, [
-    { method: "GET", path: "/repos/openclaw/clawsweeper-state/git/ref/heads/main" },
-    {
-      method: "GET",
-      path: "/repos/openclaw/clawsweeper-state/git/ref/heads/backup/pre-compact-2026-07-21",
-    },
-    {
-      method: "DELETE",
-      path: "/repos/openclaw/clawsweeper-state/git/refs/heads/backup/pre-compact-2026-07-21",
-    },
-  ]);
-});
-
 test("compaction workflow preserves backup and lease safety", () => {
   const workflow = readFileSync(".github/workflows/state-compaction.yml", "utf8");
   assert.match(workflow, /cron: "17 9 1 \* \*"/);
   assert.match(workflow, /node dist\/repair\/state-compaction\.js preflight/);
   assert.match(workflow, /node dist\/repair\/state-compaction\.js prepare-backup/);
-  assert.match(workflow, /node dist\/repair\/state-compaction\.js cleanup-backup/);
   assert.match(workflow, /git -C "\$state_dir" commit-tree "\$tree"/);
   assert.match(workflow, /--force-with-lease="refs\/heads\/main:\$EXPECTED_HEAD"/);
+  assert.match(workflow, /git -C "\$state_dir" push --atomic/);
+  assert.match(workflow, /--force-with-lease="refs\/heads\/main:\$new_head"/);
+  assert.match(workflow, /--force-with-lease="refs\/heads\/\$BACKUP_REF:\$EXPECTED_HEAD"/);
+  assert.match(workflow, /":refs\/heads\/\$BACKUP_REF"/);
   assert.match(workflow, /test "\$remote_head" = "\$new_head"/);
 });

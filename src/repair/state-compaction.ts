@@ -22,10 +22,6 @@ export type StateCompactionBackup = {
   expectedHead: string;
 };
 
-export type StateCompactionCleanup = StateCompactionBackup & {
-  newHead: string;
-};
-
 function writeOutput(env: NodeJS.ProcessEnv, values: Record<string, string>): void {
   if (!env.GITHUB_OUTPUT) return;
   appendFileSync(
@@ -138,69 +134,12 @@ export async function createStateCompactionBackup(
   return { backupRef, expectedHead };
 }
 
-export async function cleanupStateCompactionBackup(
-  options: StateCompactionOptions = {},
-): Promise<StateCompactionCleanup> {
-  const env = options.env ?? process.env;
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const repository = env.STATE_REPOSITORY ?? "openclaw/clawsweeper-state";
-  const branch = env.STATE_COMPACTION_BRANCH ?? "main";
-  const backupRef = env.STATE_COMPACTION_BACKUP_REF ?? "";
-  const expectedHead = env.STATE_COMPACTION_EXPECTED_HEAD ?? "";
-  const newHead = env.STATE_COMPACTION_NEW_HEAD ?? "";
-  const token = env.CLAWSWEEPER_STATE_REPO_TOKEN ?? "";
-  const apiUrl = (env.GITHUB_API_URL ?? "https://api.github.com").replace(/\/$/, "");
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
-    throw new Error("state repository is invalid");
-  }
-  if (!/^[A-Za-z0-9_./-]+$/.test(branch)) throw new Error("compaction branch is invalid");
-  if (!/^backup\/pre-compact-\d{4}-\d{2}-\d{2}$/.test(backupRef)) {
-    throw new Error("backup ref is invalid");
-  }
-  if (!/^[0-9a-fA-F]{40}$/.test(expectedHead)) throw new Error("expected head is invalid");
-  if (!/^[0-9a-fA-F]{40}$/.test(newHead)) throw new Error("new head is invalid");
-  if (!token) throw new Error("state repository token is missing");
-
-  const request = async (path: string, init: RequestInit = {}): Promise<Response> =>
-    fetchImpl(`${apiUrl}${path}`, {
-      ...init,
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${token}`,
-        "x-github-api-version": "2022-11-28",
-        ...init.headers,
-      },
-    });
-
-  const mainResponse = await request(`/repos/${repository}/git/ref/heads/${branch}`);
-  if (!mainResponse.ok) throw new Error(`GET compacted head returned ${mainResponse.status}`);
-  const main = (await mainResponse.json()) as { object?: { sha?: unknown } | null };
-  if (main.object?.sha !== newHead) {
-    throw new Error("compacted head verification failed before backup cleanup");
-  }
-
-  const backupResponse = await request(`/repos/${repository}/git/ref/heads/${backupRef}`);
-  if (!backupResponse.ok) throw new Error(`GET backup ref returned ${backupResponse.status}`);
-  const backup = (await backupResponse.json()) as { object?: { sha?: unknown } | null };
-  if (backup.object?.sha !== expectedHead) {
-    throw new Error("backup ref moved before cleanup");
-  }
-
-  const deleteResponse = await request(`/repos/${repository}/git/refs/heads/${backupRef}`, {
-    method: "DELETE",
-  });
-  if (!deleteResponse.ok) throw new Error(`DELETE backup ref returned ${deleteResponse.status}`);
-  console.log(`state compaction: removed transactional backup ${backupRef}`);
-  return { backupRef, expectedHead, newHead };
-}
-
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
 if (invokedPath && invokedPath === fileURLToPath(import.meta.url)) {
   const command = process.argv[2] ?? "preflight";
   try {
     if (command === "preflight") await runStateCompactionPreflight();
     else if (command === "prepare-backup") await createStateCompactionBackup();
-    else if (command === "cleanup-backup") await cleanupStateCompactionBackup();
     else throw new Error(`unknown state-compaction command: ${command}`);
   } catch (error) {
     console.error(
