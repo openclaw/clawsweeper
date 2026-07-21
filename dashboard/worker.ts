@@ -7517,10 +7517,13 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .capacity-note { margin-top: 5px; color: var(--muted); font-size: 11px; }
 .exact-lanes {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   margin-top: 10px;
 }
+/* The queue lanes and state writer update independently, but they are one
+   operator workflow and must share a single three-stage layout. */
+.exact-review-lanes { display: contents; }
 .exact-lane {
   padding: 14px;
   border: 1px solid var(--line);
@@ -7534,6 +7537,11 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
 .lane-count { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; }
 .exact-lane > .lane-count { margin-top: 14px; }
 .lane-count strong { color: var(--text); font-weight: 600; }
+.lane-metrics { display: grid; gap: 6px; margin: 12px 0 0; }
+.lane-metrics > div { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; }
+.lane-metrics dt, .lane-metrics dd { margin: 0; }
+.lane-metrics dd { color: var(--text); font-weight: 600; text-align: right; }
+.state-writer-note { margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .lane-flow { margin-top: 12px; }
 .lane-flow summary {
   display: flex;
@@ -8182,6 +8190,7 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   .flow-node { padding-top: 0; padding-left: 20px; }
   .flow-node::before { display: none; }
   .flow-node::after { top: 5px; }
+  .exact-lanes { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
   .automerge-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -8219,7 +8228,6 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   .worker-progress { display: none; }
   .exact-handoff-head, .handoff-foot { align-items: start; flex-direction: column; }
   .handoff-phases { grid-template-columns: 1fr; }
-  .exact-lanes { grid-template-columns: 1fr; }
   dialog { margin: 7px; max-height: calc(100vh - 14px); }
 }
 </style>
@@ -8275,8 +8283,10 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
         <button class="trend-range" type="button" data-trend-range="7d">7 days</button>
       </div>
     </div>
-    <div class="exact-lanes" id="exact-review-lanes" aria-live="polite"></div>
-    <div id="state-writer-health" aria-live="polite"></div>
+    <div class="exact-lanes">
+      <div class="exact-review-lanes" id="exact-review-lanes" aria-live="polite"></div>
+      <section class="exact-lane" id="state-writer-health" aria-live="polite"></section>
+    </div>
     <h3 class="overview-section-title">Handoff Health</h3>
     <div id="exact-review-handoff" aria-live="polite"></div>
     <div id="apply-health"></div>
@@ -8928,7 +8938,7 @@ function renderStateWriter(writer) {
   const target = document.getElementById("state-writer-health");
   if (!target) return;
   if (!writer || !writer.collection) {
-    target.innerHTML = '<section class="exact-lane"><h3>State writer</h3><p class="muted">Unavailable — writer telemetry has not been collected.</p></section>';
+    target.innerHTML = '<div class="exact-lane-head"><strong>State writer</strong><span>Unavailable</span></div><p class="state-writer-note">Writer telemetry has not been collected.</p>';
     return;
   }
   const collection = writer.collection || {};
@@ -8969,25 +8979,24 @@ function renderStateWriter(writer) {
     value?.samples ? "p50 " + metric(value.p50) + "ms · p95 " + metric(value.p95) + "ms · n=" + value.samples : "unknown";
   const itemTrend = history.map((sample) => ({ at: sample.at, pending: sample.items }));
   target.innerHTML =
-    '<section class="exact-lane">' +
-    '<h3>State writer <span class="muted">' + mode + " · " + metric(collection.status) + " · " + esc(rangeLabel) + "</span></h3>" +
-    '<p>Global state lease: <strong>' + metric(lease.status) + '</strong> · 1 writer maximum</p>' +
-    '<p>Tracked exact publishers: ' +
+    '<div class="exact-lane-head"><strong>State writer</strong><span>' + esc(mode) + " · " + esc(metric(collection.status)) + " · " + esc(rangeLabel) + "</span></div>" +
+    '<div class="lane-counts">' +
+    '<div class="lane-count"><span>Global state lease</span><strong>' + esc(metric(lease.status)) + ' · 1 writer max</strong></div>' +
+    '<div class="lane-count"><span>Tracked publishers</span><strong>' +
     (liveFresh
       ? metric(live.tracked_holding, "unknown") + " holding · " + metric(live.tracked_waiting, "unknown") + " waiting"
       : "unknown holding · unknown waiting") +
-    "</p>" +
+    "</strong></div></div>" +
     exactReviewTrend(itemTrend, "Materialized items") +
     '<dl class="lane-metrics">' +
-    "<div><dt>Materialized</dt><dd>" + metric(itemsPerHour ?? hour.materialized_items) + " items/hour</dd></div>" +
-    "<div><dt>State commits</dt><dd>" + metric(commitsPerHour ?? hour.state_commits) + "/hour</dd></div>" +
-    "<div><dt>Items / commit</dt><dd>" + metric(itemsPerCommit) + "</dd></div>" +
-    "<div><dt>Lease wait</dt><dd>" + percentile(wait) + "</dd></div>" +
-    "<div><dt>Lease hold</dt><dd>" + percentile(hold) + "</dd></div>" +
+    "<div><dt>Materialized</dt><dd>" + esc(metric(itemsPerHour ?? hour.materialized_items)) + " items/hour</dd></div>" +
+    "<div><dt>State commits</dt><dd>" + esc(metric(commitsPerHour ?? hour.state_commits)) + "/hour</dd></div>" +
+    "<div><dt>Items / commit</dt><dd>" + esc(metric(itemsPerCommit)) + "</dd></div>" +
+    "<div><dt>Lease wait</dt><dd>" + esc(percentile(wait)) + "</dd></div>" +
+    "<div><dt>Lease hold</dt><dd>" + esc(percentile(hold)) + "</dd></div>" +
     "</dl>" +
-    '<p class="muted">Live holding/waiting require fresh progress. Throughput uses the selected ' + esc(rangeLabel) + " history when available; otherwise the rolling hour.</p>" +
-    '<p class="muted">Publication workflows can run concurrently, but they feed one serialized state-ref writer.</p>' +
-    "</section>";
+    '<p class="state-writer-note">Live holding/waiting require fresh progress. Throughput uses the selected ' + esc(rangeLabel) + " history when available; otherwise the rolling hour.</p>" +
+    '<p class="state-writer-note">Publication workflows can run concurrently, but they feed one serialized state-ref writer.</p>';
 }
 
 function renderExactReviewLanes(queue) {

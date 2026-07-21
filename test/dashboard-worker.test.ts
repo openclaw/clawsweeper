@@ -6860,6 +6860,8 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /Capacity/);
   assert.match(html, /Only jobs that execute Codex count against this budget/);
   assert.match(html, /id="exact-review-lanes"/);
+  assert.match(html, /grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
+  assert.match(html, /\.exact-review-lanes \{ display: contents; \}/);
   assert.match(html, /Review admission/);
   assert.match(html, /Result publication/);
   assert.match(html, /Net publication rate/);
@@ -6867,6 +6869,10 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.doesNotMatch(html, /Control Plane · GitHub Actions, not Codex/);
   assert.doesNotMatch(html, /id="control-plane"/);
   assert.match(html, /\.exact-lanes \{ grid-template-columns: 1fr; \}/);
+  assert.match(
+    html,
+    /<div class="exact-lanes">\s*<div class="exact-review-lanes" id="exact-review-lanes"[\s\S]*?<section class="exact-lane" id="state-writer-health"/,
+  );
   assert.ok(html.indexOf("Codex Capacity") < html.indexOf('id="exact-review-lanes"'));
   assert.ok(html.indexOf("Review reliability") < html.indexOf('id="exact-review-lanes"'));
   assert.ok(html.indexOf('id="exact-review-lanes"') < html.indexOf("Handoff Health"));
@@ -7185,6 +7191,30 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(elementFor("exact-review-lanes").innerHTML, /52 review admission slots open/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /Result publication/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /3 result publication slots open/);
+  assert.match(
+    elementFor("state-writer-health").innerHTML,
+    /<div class="exact-lane-head"><strong>State writer<\/strong><span>Unavailable<\/span><\/div>/,
+  );
+  context.renderStateWriter({
+    collection: { status: "fresh" },
+    global_lease: { status: "held" },
+    last_60_minutes: {
+      materialized_items: 2,
+      state_commits: 1,
+      items_per_commit: 2,
+      wait_ms: { p50: 10, p95: 20, samples: 2 },
+      hold_ms: { p50: 30, p95: 40, samples: 2 },
+    },
+    live: { freshness_seconds: 10, tracked_holding: 1, tracked_waiting: 3 },
+    mode: "single_item",
+  });
+  const stateWriterHtml = elementFor("state-writer-health").innerHTML;
+  assert.match(stateWriterHtml, /class="exact-lane-head"/);
+  assert.match(stateWriterHtml, /Single-item · fresh · 6h/);
+  assert.match(stateWriterHtml, /Global state lease<\/span><strong>held · 1 writer max/);
+  assert.match(stateWriterHtml, /Tracked publishers<\/span><strong>1 holding · 3 waiting/);
+  assert.match(stateWriterHtml, /class="lane-metrics"/);
+  assert.doesNotMatch(stateWriterHtml, /<section class="exact-lane">/);
   const initialLaneHtml = elementFor("exact-review-lanes").innerHTML;
   assert.match(
     initialLaneHtml,
