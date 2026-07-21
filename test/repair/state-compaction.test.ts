@@ -150,5 +150,9 @@ test("compaction workflow preserves backup and lease safety", () => {
   assert.match(workflow, /--force-with-lease="refs\/heads\/\$BACKUP_REF:\$EXPECTED_HEAD"/);
   assert.match(workflow, /":refs\/heads\/\$BACKUP_REF"/);
   assert.equal(workflow.match(/git -C "\$state_dir" push/g)?.length, 1);
-  assert.match(workflow, /refs\/heads\/main" \{print \$1\}.*= "\$new_head"/);
+  assert.ok(
+    workflow.includes(
+      `test "$(printf '%s\\n' "$verified_refs" | awk '$2 == "refs/heads/main" {print $1}')" = "$new_head"`,
+    ),
+  );
 });
