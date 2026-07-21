@@ -86,7 +86,7 @@ const STATE_PUBLISH_LEASE_REF_ROOT = "refs/heads/clawsweeper-publish-lease";
 const STATE_PUBLISH_LEASE_TTL_MS = 2 * 60_000;
 const STATE_PUBLISH_LEASE_RENEW_THRESHOLD_MS = PUBLISH_FETCH_TIMEOUT_MS;
 const STATE_PUBLISH_LEASE_ACQUIRE_TIMEOUT_MS = (() => {
-  const fallback = 3 * 60_000;
+  const fallback = 8 * 60_000;
   // Rare, high-value publishers (the apply lane) starve behind the review
   // herd inside the default window; their workflows may raise the budget so
   // one apply publish out-waits contention instead of failing the run.
