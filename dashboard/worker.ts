@@ -541,6 +541,21 @@ export default {
       return authenticatedExactReviewQueueRequest(request, env, "/review-telemetry");
     if (url.pathname === "/internal/exact-review/review-run-telemetry" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/review-run-telemetry");
+    if (
+      url.pathname === "/internal/exact-review/publication-batches/claim" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/publication-batches/claim");
+    if (
+      url.pathname === "/internal/exact-review/publication-batches/fetch" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/publication-batches/fetch");
+    if (
+      url.pathname === "/internal/exact-review/publication-batches/complete" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/publication-batches/complete");
     if (url.pathname === "/internal/exact-review/reconcile" && request.method === "POST")
       return authenticatedExactReviewReconcile(request, env);
     if (url.pathname === "/api/exact-review-queue" && request.method === "GET")

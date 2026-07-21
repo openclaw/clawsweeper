@@ -1,0 +1,786 @@
+import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import test from "node:test";
+
+import { ExactReviewPublicationBatchStore } from "../dashboard/exact-review-publication-batches.ts";
+import { ExactReviewQueue } from "../dashboard/exact-review-queue.ts";
+import worker from "../dashboard/worker.ts";
+
+class SqlCursor<T extends Record<string, unknown>> implements Iterable<T> {
+  private readonly rows: T[];
+
+  constructor(rows: T[]) {
+    this.rows = rows;
+  }
+
+  *[Symbol.iterator]() {
+    yield* this.rows;
+  }
+}
+
+class TestStorage {
+  private readonly database = new DatabaseSync(":memory:");
+  private readonly values = new Map<string, unknown>();
+  private alarmAt: number | null = null;
+  readonly sql = {
+    exec: (query: string, ...bindings: unknown[]) => {
+      const statement = this.database.prepare(query);
+      if (/^\s*(?:SELECT|WITH)\b/i.test(query) || /\bRETURNING\b/i.test(query)) {
+        return new SqlCursor(statement.all(...bindings) as Record<string, unknown>[]);
+      }
+      statement.run(...bindings);
+      return new SqlCursor<Record<string, unknown>>([]);
+    },
+  };
+  readonly kv = {
+    get: (key: string) => this.values.get(key),
+    put: (key: string, value: unknown) => this.values.set(key, structuredClone(value)),
+    delete: (key: string) => this.values.delete(key),
+  };
+
+  transactionSync<T>(callback: () => T) {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const result = callback();
+      this.database.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  scalar(query: string) {
+    return Number((this.database.prepare(query).get() as { value: number }).value);
+  }
+
+  exec(query: string) {
+    this.database.exec(query);
+  }
+
+  async get(key: string) {
+    return this.values.get(key);
+  }
+
+  async put(key: string, value: unknown) {
+    this.values.set(key, structuredClone(value));
+  }
+
+  async delete(key: string) {
+    this.values.delete(key);
+  }
+
+  async getAlarm() {
+    return this.alarmAt;
+  }
+
+  async setAlarm(at: number) {
+    this.alarmAt = at;
+  }
+
+  async deleteAlarm() {
+    this.alarmAt = null;
+  }
+
+  scheduledAlarm() {
+    return this.alarmAt;
+  }
+}
+
+const candidates = [
+  { itemKey: "openclaw/openclaw#1@publish:10:1", revision: 1 },
+  { itemKey: "openclaw/openclaw#2@publish:20:1", revision: 2 },
+  { itemKey: "openclaw/openclaw#3@publish:30:1", revision: 3 },
+];
+
+test("publication batches atomically select ready items without duplicate active ownership", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+
+  const first = batches.claim({
+    batchId: "batch-1",
+    leaseOwner: "worker-1",
+    leaseExpiresAt: 2_000,
+    now: 1_000,
+    maxItems: 2,
+    candidates,
+  });
+  const second = batches.claim({
+    batchId: "batch-2",
+    leaseOwner: "worker-2",
+    leaseExpiresAt: 2_000,
+    now: 1_000,
+    maxItems: 2,
+    candidates,
+  });
+
+  assert.deepEqual(
+    first?.items.map((item) => item.itemKey),
+    candidates.slice(0, 2).map((item) => item.itemKey),
+  );
+  assert.equal(second, null);
+  assert.deepEqual(batches.activeLeaseSnapshot(1_500), {
+    itemKeys: candidates.slice(0, 2).map((item) => item.itemKey),
+    nextLeaseExpiresAt: 2_000,
+  });
+  assert.equal(batches.fetch("batch-1", "wrong-worker", 1_500), null);
+});
+
+test("expired unfinished membership is reclaimable with a new fencing generation", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+  const first = batches.claim({
+    batchId: "batch-expiring",
+    leaseOwner: "worker-1",
+    leaseExpiresAt: 2_000,
+    now: 1_000,
+    maxItems: 1,
+    candidates,
+  });
+  assert.equal(first?.items[0].claimGeneration, 1);
+
+  const reclaimed = batches.claim({
+    batchId: "batch-reclaimed",
+    leaseOwner: "worker-2",
+    leaseExpiresAt: 4_000,
+    now: 2_001,
+    maxItems: 1,
+    candidates,
+  });
+  assert.equal(reclaimed?.items[0].itemKey, candidates[0].itemKey);
+  assert.equal(reclaimed?.items[0].claimGeneration, 2);
+  assert.equal(batches.fetch("batch-expiring", "worker-1", 2_001), null);
+
+  const staleCompletion = batches.complete(
+    "batch-reclaimed",
+    "worker-2",
+    [
+      {
+        ...candidates[0],
+        claimGeneration: 1,
+        terminalOutcome: "published",
+      },
+    ],
+    2_100,
+  );
+  assert.equal(staleCompletion?.state, "leased");
+  assert.equal(staleCompletion?.items[0].terminalOutcome, null);
+});
+
+test("batch completion is fenced per item and retains publication metadata", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+  const batch = batches.claim({
+    batchId: "batch-complete",
+    leaseOwner: "worker-1",
+    leaseExpiresAt: 5_000,
+    now: 1_000,
+    maxItems: 2,
+    candidates,
+  });
+  assert.ok(batch);
+
+  const rejected = batches.complete(
+    batch.batchId,
+    batch.leaseOwner,
+    [
+      {
+        ...batch.items[0],
+        claimGeneration: batch.items[0].claimGeneration + 1,
+        terminalOutcome: "published",
+      },
+    ],
+    1_500,
+    { stateCommitSha: "c".repeat(40), failureFingerprint: "stale" },
+  );
+  assert.equal(rejected?.stateCommitSha, null);
+  assert.equal(rejected?.failureFingerprint, null);
+
+  const completed = batches.complete(
+    batch.batchId,
+    batch.leaseOwner,
+    batch.items.map((item, index) => ({
+      itemKey: item.itemKey,
+      revision: item.revision,
+      claimGeneration: item.claimGeneration,
+      terminalOutcome: index === 0 ? "published" : "superseded",
+    })),
+    2_000,
+    { stateCommitSha: "a".repeat(40), failureFingerprint: "none" },
+  );
+
+  assert.equal(completed?.state, "completed");
+  assert.equal(completed?.completedAt, 2_000);
+  assert.equal(completed?.stateCommitSha, "a".repeat(40));
+  assert.deepEqual(
+    completed?.items.map((item) => item.terminalOutcome),
+    ["published", "superseded"],
+  );
+
+  const retried = batches.complete(
+    batch.batchId,
+    batch.leaseOwner,
+    batch.items.map((item, index) => ({
+      itemKey: item.itemKey,
+      revision: item.revision,
+      claimGeneration: item.claimGeneration,
+      terminalOutcome: index === 0 ? "published" : "superseded",
+    })),
+    2_100,
+  );
+  assert.deepEqual(retried, completed);
+  assert.equal(
+    batches.complete(
+      batch.batchId,
+      batch.leaseOwner,
+      [{ ...batch.items[0], terminalOutcome: "superseded" }],
+      2_100,
+    ),
+    null,
+  );
+});
+
+test("bounded cleanup preserves active batches and open dead letters", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+  storage.exec(
+    "CREATE TABLE exact_review_queue_dead_letters (dead_letter_id TEXT PRIMARY KEY, status TEXT)",
+  );
+  storage.exec(
+    "INSERT INTO exact_review_queue_dead_letters (dead_letter_id, status) VALUES ('dlq-1', 'open')",
+  );
+
+  for (let index = 0; index < 3; index += 1) {
+    const batch = batches.claim({
+      batchId: `completed-${index}`,
+      leaseOwner: "worker",
+      leaseExpiresAt: 5_000,
+      now: 1_000 + index,
+      maxItems: 1,
+      candidates: [{ itemKey: `item-${index}`, revision: 1 }],
+    });
+    assert.ok(batch);
+    batches.complete(
+      batch.batchId,
+      batch.leaseOwner,
+      [
+        {
+          itemKey: batch.items[0].itemKey,
+          revision: 1,
+          claimGeneration: 1,
+          terminalOutcome: "published",
+        },
+      ],
+      2_000 + index,
+    );
+  }
+  batches.claim({
+    batchId: "still-active",
+    leaseOwner: "worker",
+    leaseExpiresAt: 20_000,
+    now: 3_000,
+    maxItems: 1,
+    candidates: [{ itemKey: "active-item", revision: 1 }],
+  });
+
+  const stats = batches.stats(10_000, { completedTtlMs: 1_000, cleanupLimit: 2 });
+  assert.equal(stats.cleanup.deletedThisPass, 2);
+  assert.equal(stats.cleanup.eligibleRemaining, 1);
+  assert.equal(stats.leased, 1);
+  assert.equal(stats.activeItems, 1);
+  assert.equal(storage.scalar("SELECT COUNT(*) AS value FROM exact_review_queue_dead_letters"), 1);
+});
+
+test("cleanup retains fencing generations when a batch id is reused", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+  const candidate = { itemKey: "item-reclaimed-after-cleanup", revision: 1 };
+  const first = batches.claim({
+    batchId: "reused-batch",
+    leaseOwner: "worker",
+    leaseExpiresAt: 5_000,
+    now: 1_000,
+    maxItems: 1,
+    candidates: [candidate],
+  });
+  assert.ok(first);
+  batches.complete(
+    first.batchId,
+    first.leaseOwner,
+    [
+      {
+        ...candidate,
+        claimGeneration: first.items[0].claimGeneration,
+        terminalOutcome: "published",
+      },
+    ],
+    2_000,
+  );
+  batches.stats(10_000, { completedTtlMs: 1_000, cleanupLimit: 1 });
+
+  const reclaimed = batches.claim({
+    batchId: "reused-batch",
+    leaseOwner: "worker",
+    leaseExpiresAt: 20_000,
+    now: 10_000,
+    maxItems: 1,
+    candidates: [candidate],
+  });
+  assert.equal(reclaimed?.items[0].claimGeneration, 2);
+
+  const staleCompletion = batches.complete(
+    "reused-batch",
+    "worker",
+    [
+      {
+        ...candidate,
+        claimGeneration: 1,
+        terminalOutcome: "published",
+      },
+    ],
+    11_000,
+  );
+  assert.equal(staleCompletion?.state, "leased");
+  assert.equal(staleCompletion?.items[0].terminalOutcome, null);
+});
+
+function publicationRequest(deliveryId: string, number: number, producerRunId: string) {
+  const producerDecision = {
+    targetRepo: "openclaw/openclaw",
+    targetBranch: "main",
+    itemNumber: number,
+    itemKind: "issue",
+    sourceEvent: "issues",
+    sourceAction: "opened",
+    supersedesInProgress: false,
+  };
+  return new Request("https://queue/enqueue", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      delivery_id: deliveryId,
+      decision: {
+        ...producerDecision,
+        sourceAction: "exact_review_artifact_publish",
+        publication: {
+          artifactName: `exact-review-${producerRunId}-1`,
+          producerRunId,
+          producerRunAttempt: 1,
+          sourceSha: "a".repeat(40),
+          itemKey: `openclaw/openclaw#${number}`,
+          protocolVersion: 2,
+          leaseRevision: 1,
+          claimGeneration: 1,
+          liveProceeded: true,
+          liveTerminalNoop: false,
+          liveTerminalMissing: false,
+          liveGuardedOpen: false,
+          producerDecision,
+        },
+      },
+    }),
+  });
+}
+
+function batchRequest(path: string, body: unknown) {
+  return new Request(`https://queue${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+test("queue batch claim defaults off and additive schema keeps the legacy version", async () => {
+  const queue = new ExactReviewQueue({ storage: new TestStorage() }, {});
+  await queue.fetch(publicationRequest("delivery-1", 101, "1001"));
+  const claim = await queue.fetch(
+    batchRequest("/publication-batches/claim", {
+      claim_id: "claim-disabled",
+      lease_owner: "worker-1",
+    }),
+  );
+  assert.equal(claim.status, 409);
+  assert.deepEqual(await claim.json(), { error: "publication_batching_disabled" });
+
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.storage_schema_version, 1);
+  assert.equal(stats.lanes.publication.batches.enabled, false);
+  assert.equal(stats.lanes.publication.batches.leased, 0);
+});
+
+test("legacy queue migration preserves receipts while adding empty batch tables", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 3_000_000;
+  try {
+    const storage = new TestStorage();
+    await storage.put("exact-review-queue", {
+      items: {},
+      deliveries: { "legacy-delivery": 3_000_000 },
+    });
+    const queue = new ExactReviewQueue({ storage }, {});
+    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+
+    assert.equal(stats.delivery_receipts, 1);
+    assert.equal(stats.storage_schema_version, 1);
+    assert.equal(stats.lanes.publication.batches.active_items, 0);
+    assert.equal(
+      storage.scalar("SELECT COUNT(*) AS value FROM exact_review_publication_batches"),
+      0,
+    );
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("batch claim honors the existing dispatcher pause gate", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 4_000_000;
+  try {
+    const storage = new TestStorage();
+    const queue = new ExactReviewQueue(
+      { storage },
+      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+    );
+    await queue.fetch(publicationRequest("delivery-paused", 104, "1004"));
+    Array.from(
+      storage.sql.exec(
+        "UPDATE exact_review_queue_meta SET dispatcher_json = ? WHERE singleton_id = 1",
+        JSON.stringify({
+          state: "paused",
+          checkedAt: 4_000_000,
+          retryAt: 4_060_000,
+          reason: "workflow_not_active",
+        }),
+      ),
+    );
+
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-paused",
+          lease_owner: "worker-1",
+          max_items: 1,
+        }),
+      )
+    ).json();
+    assert.equal(claim.claimed, false);
+    assert.equal(claim.batch, null);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("an active batch blocks the legacy publisher until its lease expires", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 5_000_000;
+  try {
+    const storage = new TestStorage();
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+        EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT: "1",
+        EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "1",
+        EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT: "1",
+      },
+    );
+    await queue.fetch(publicationRequest("delivery-owned", 105, "1005"));
+    await queue.fetch(publicationRequest("delivery-unowned", 106, "1006"));
+    await queue.fetch(publicationRequest("delivery-unowned-2", 107, "1007"));
+
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-blocks-legacy",
+          lease_owner: "worker-1",
+          max_items: 2,
+        }),
+      )
+    ).json();
+    assert.equal(claim.claimed, true, JSON.stringify(claim));
+    assert.equal(claim.batch.items.length, 2);
+
+    await queue.alarm();
+    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.pending, 3);
+    assert.equal(stats.lanes.publication.dispatching, 0);
+    assert.equal(stats.admissible_pending, 0);
+    assert.equal(storage.scheduledAlarm(), 5_060_000);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("batch protocol routes require the shared internal signature", async () => {
+  const secret = "test-secret";
+  const body = JSON.stringify({ claim_id: "claim-authenticated", lease_owner: "worker-1" });
+  let forwardedPath = "";
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: {
+      idFromName: () => "global",
+      get: () => ({
+        fetch: async (request: Request) => {
+          forwardedPath = new URL(request.url).pathname;
+          return new Response(JSON.stringify({ ok: true }));
+        },
+      }),
+    },
+  };
+  const url = "https://clawsweeper.openclaw.ai/internal/exact-review/publication-batches/claim";
+  const unauthorized = await worker.fetch(new Request(url, { method: "POST", body }), env);
+  assert.equal(unauthorized.status, 401);
+
+  const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+  const authorized = await worker.fetch(
+    new Request(url, {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": signature },
+      body,
+    }),
+    env,
+  );
+  assert.equal(authorized.status, 200);
+  assert.equal(forwardedPath, "/publication-batches/claim");
+});
+
+test("queue fetch terminalizes a stale batch revision before dispatch", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 1_000_000;
+  try {
+    const storage = new TestStorage();
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+      },
+    );
+    const enqueued = await queue.fetch(publicationRequest("delivery-stale-1", 102, "1002"));
+    assert.equal(enqueued.status, 202, JSON.stringify(await enqueued.clone().json()));
+    const beforeClaim = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(beforeClaim.lanes.publication.pending, 1, JSON.stringify(beforeClaim));
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-stale-revision-1",
+          lease_owner: "worker-1",
+          max_items: 1,
+        }),
+      )
+    ).json();
+    assert.equal(claim.claimed, true, JSON.stringify(claim));
+    assert.equal(claim.batch.items[0].revision, 1);
+
+    const retriedClaim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-stale-revision-1",
+          lease_owner: "worker-1",
+          max_items: 1,
+        }),
+      )
+    ).json();
+    assert.deepEqual(retriedClaim, claim);
+
+    const competingClaim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-competing",
+          lease_owner: "worker-2",
+          max_items: 1,
+        }),
+      )
+    ).json();
+    assert.equal(competingClaim.claimed, false);
+    assert.equal(competingClaim.batch, null);
+
+    await queue.alarm();
+    const ownedStats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(ownedStats.lanes.publication.pending, 1);
+    assert.equal(ownedStats.lanes.publication.dispatching, 0);
+    assert.equal(storage.scheduledAlarm(), 1_060_000);
+
+    await queue.fetch(publicationRequest("delivery-stale-2", 102, "1002"));
+    const fetched = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/fetch", {
+          batch_id: claim.batch.batch_id,
+          lease_owner: "worker-1",
+        }),
+      )
+    ).json();
+    assert.equal(fetched.superseded, 1);
+    assert.equal(fetched.items.length, 0);
+    assert.equal(fetched.batch.state, "completed");
+    assert.equal(fetched.batch.items[0].terminal_outcome, "superseded");
+    assert.equal(storage.scheduledAlarm(), 1_001_000);
+
+    const retriedFetch = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/fetch", {
+          batch_id: claim.batch.batch_id,
+          lease_owner: "worker-1",
+        }),
+      )
+    ).json();
+    assert.equal(retriedFetch.batch.state, "completed");
+    assert.equal(retriedFetch.superseded, 1);
+
+    const next = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-stale-revision-2",
+          lease_owner: "worker-2",
+          max_items: 1,
+        }),
+      )
+    ).json();
+    assert.equal(next.batch.items[0].revision, 2);
+    assert.equal(next.batch.items[0].claim_generation, 2);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("queue completion atomically removes only the owned publication revision", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 2_000_000;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+    );
+    const enqueued = await queue.fetch(publicationRequest("delivery-complete", 103, "1003"));
+    assert.equal(enqueued.status, 202, JSON.stringify(await enqueued.clone().json()));
+    const beforeClaim = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(beforeClaim.lanes.publication.pending, 1, JSON.stringify(beforeClaim));
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-complete",
+          lease_owner: "worker-1",
+          max_items: 1,
+        }),
+      )
+    ).json();
+    assert.equal(claim.claimed, true, JSON.stringify(claim));
+    const member = claim.batch.items[0];
+    const unsupportedFailure = await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+        items: [
+          {
+            item_key: member.item_key,
+            revision: member.revision,
+            claim_generation: member.claim_generation,
+            terminal_outcome: "retryable_failure",
+          },
+        ],
+      }),
+    );
+    assert.equal(unsupportedFailure.status, 400);
+    const completion = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/complete", {
+          batch_id: claim.batch.batch_id,
+          lease_owner: "worker-1",
+          state_commit_sha: "b".repeat(40),
+          items: [
+            {
+              item_key: member.item_key,
+              revision: member.revision,
+              claim_generation: member.claim_generation,
+              terminal_outcome: "published",
+            },
+          ],
+        }),
+      )
+    ).json();
+    assert.equal(completion.accepted, 1);
+    assert.equal(completion.batch.state, "completed");
+
+    const retriedCompletion = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/complete", {
+          batch_id: claim.batch.batch_id,
+          lease_owner: "worker-1",
+          state_commit_sha: "b".repeat(40),
+          items: [
+            {
+              item_key: member.item_key,
+              revision: member.revision,
+              claim_generation: member.claim_generation,
+              terminal_outcome: "published",
+            },
+          ],
+        }),
+      )
+    ).json();
+    assert.equal(retriedCompletion.accepted, 0);
+    assert.equal(retriedCompletion.batch.state, "completed");
+
+    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.pending, 0);
+    assert.equal(stats.lanes.publication.published_total, 1);
+    assert.equal(stats.lanes.publication.batches.completed, 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("batch completion wakes publications that were blocked by its lease", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 6_000_000;
+  try {
+    const storage = new TestStorage();
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+      },
+    );
+    await queue.fetch(publicationRequest("delivery-completing", 108, "1008"));
+    await queue.fetch(publicationRequest("delivery-waiting", 109, "1009"));
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-wakes-legacy",
+          lease_owner: "worker-1",
+          max_items: 1,
+        }),
+      )
+    ).json();
+    await queue.alarm();
+    assert.equal(storage.scheduledAlarm(), 6_060_000);
+
+    const member = claim.batch.items[0];
+    const completion = await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+        items: [
+          {
+            item_key: member.item_key,
+            revision: member.revision,
+            claim_generation: member.claim_generation,
+            terminal_outcome: "published",
+          },
+        ],
+      }),
+    );
+    assert.equal(completion.status, 200);
+    assert.equal(storage.scheduledAlarm(), 6_001_000);
+  } finally {
+    Date.now = originalNow;
+  }
+});
