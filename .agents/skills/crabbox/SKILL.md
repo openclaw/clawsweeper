@@ -36,6 +36,15 @@ provider-selection policy. Their validation commands intentionally omit
 `--provider`; add it only to carry out an explicit user override of the resolved
 configuration.
 
+Provider identity must remain attached to a lease after creation. A lease
+created through the resolved configuration can keep using provider-neutral
+commands while that configuration is unchanged. If the user explicitly
+overrode the provider, or the resolved configuration has changed since the
+lease was created, pass the provider reported by Crabbox to every later command
+that targets that lease, including hydrate, rerun, desktop/WebVNC, status,
+inspect, SSH, and stop. This preserves resource identity; it does not select a
+provider for unrelated work.
+
 When the resolved configuration selects Blacksmith Testbox, or the user
 explicitly requests it, do not describe the run as "AWS Crabbox". Report it as
 Testbox-through-Crabbox with the `tbx_...` id and Actions run.
@@ -511,6 +520,11 @@ Interactive CLI/onboarding:
 For most Crabbox calls, one-shot is enough. Use reuse only when you need
 multiple manual commands on the same hydrated box.
 
+The examples below assume the lease came from the still-current resolved
+configuration. For a lease created through an explicit provider override, add
+`--provider <reported-provider>` to every reuse, inspection, and cleanup command
+instead of relying on the id to recover its backend.
+
 If Crabbox returns a reusable id or you intentionally keep a lease:
 
 ```sh
@@ -526,10 +540,18 @@ blacksmith testbox stop --id <tbx_id>
 
 ## Interactive Desktop And WebVNC
 
-Prefer WebVNC for human inspection because the browser portal can preload the
-lease VNC password and avoids a native VNC client's copy/paste/password dance.
-Use native `crabbox vnc` only when WebVNC is unavailable, the browser portal is
-broken, or the user explicitly wants a local VNC client.
+Before using WebVNC, confirm the resolved provider supports both desktop and a
+coordinator-backed WebVNC lease, and that broker login is configured. Crabbox
+0.39 WebVNC supports coordinator-backed Hetzner, AWS, and Azure desktop leases;
+this capability list does not establish a provider preference. If the resolved
+provider lacks WebVNC, do not switch providers: use native `crabbox vnc` on the
+same provider when it supports that path, or report the capability blocker.
+
+When those preconditions hold, prefer WebVNC for human inspection because the
+browser portal can preload the lease VNC password and avoids a native VNC
+client's copy/paste/password dance. Use native `crabbox vnc` when the browser
+portal is unavailable or broken, or the user explicitly wants a local VNC
+client.
 
 Common desktop flow:
 
