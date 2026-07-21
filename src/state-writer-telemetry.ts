@@ -101,6 +101,8 @@ export function normalizeStateWriterOperation(value: unknown): StateWriterOperat
         commitCount !== 0 ||
         materializedItems !== 0)) ||
     (commitCount === 1 && (!acquired || materializedItems < 1)) ||
+    (outcome === "materialized" && (commitCount !== 1 || materializedItems < 1)) ||
+    (outcome !== "materialized" && (commitCount !== 0 || materializedItems !== 0)) ||
     (mode === "single_item" &&
       (configuredBatchSize !== 1 || actualBatchSize !== 1 || batchWaitMs !== null)) ||
     (mode === "batch" && batchWaitMs === null) ||

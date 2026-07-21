@@ -8858,6 +8858,33 @@ function renderSystemMap(data) {
     ? "Live jobs with " + fallbacks + " workflow fallback" + (fallbacks === 1 ? "" : "s")
     : "Live GitHub job and step telemetry";
 }
+function stateWriterHistorySamples() {
+  return healthHistorySamples.flatMap((sample) => {
+    const writer = sample?.state_writer;
+    if (!writer || writer.collection_ok !== true) return [];
+    return [{
+      at: sample.at,
+      accepted: Number(writer.accepted_operations_total || 0),
+      commits: Number(writer.state_commits_total || 0),
+      items: Number(writer.materialized_items_total || 0),
+      wait: writer.wait_ms,
+      hold: writer.hold_ms,
+    }];
+  });
+}
+
+function stateWriterRateFromHistory(samples, field) {
+  if (samples.length < 2) return null;
+  let start = samples[0];
+  for (let index = 1; index < samples.length; index += 1) {
+    if (samples[index][field] < start[field]) start = samples[index];
+  }
+  const end = samples[samples.length - 1];
+  const elapsedHours = (Date.parse(end.at) - Date.parse(start.at)) / 3_600_000;
+  if (!(elapsedHours > 0) || end[field] < start[field]) return null;
+  return Math.round(((end[field] - start[field]) / elapsedHours) * 10) / 10;
+}
+
 function renderStateWriter(writer) {
   const target = document.getElementById("state-writer-health");
   if (!target) return;
@@ -8869,6 +8896,20 @@ function renderStateWriter(writer) {
   const live = writer.live || {};
   const lease = writer.global_lease || {};
   const hour = writer.last_60_minutes || {};
+  const history = stateWriterHistorySamples();
+  const latestHistory = history.at(-1);
+  const itemsPerHour = stateWriterRateFromHistory(history, "items");
+  const commitsPerHour = stateWriterRateFromHistory(history, "commits");
+  const itemsPerCommit =
+    history.length >= 2 &&
+    latestHistory &&
+    history[0] &&
+    latestHistory.commits > history[0].commits
+      ? Math.round(((latestHistory.items - history[0].items) / (latestHistory.commits - history[0].commits)) * 100) / 100
+      : hour.items_per_commit;
+  const wait = latestHistory?.wait || hour.wait_ms;
+  const hold = latestHistory?.hold || hour.hold_ms;
+  const rangeLabel = activeHealthRange === "7d" ? "7d" : activeHealthRange;
   const mode =
     writer.mode === "mixed"
       ? "Mixed · legacy draining + batch active"
@@ -8880,18 +8921,21 @@ function renderStateWriter(writer) {
   const metric = (value, fallback = "unknown") => value === null || value === undefined ? fallback : value;
   const percentile = (value) =>
     value?.samples ? "p50 " + metric(value.p50) + "ms · p95 " + metric(value.p95) + "ms · n=" + value.samples : "unknown";
+  const itemTrend = history.map((sample) => ({ at: sample.at, pending: sample.items }));
   target.innerHTML =
     '<section class="exact-lane">' +
-    '<h3>State writer <span class="muted">' + mode + " · " + metric(collection.status) + "</span></h3>" +
+    '<h3>State writer <span class="muted">' + mode + " · " + metric(collection.status) + " · " + esc(rangeLabel) + "</span></h3>" +
     '<p>Global state lease: <strong>' + metric(lease.status) + '</strong> · 1 writer maximum</p>' +
-    '<p>Tracked exact publishers: ' + metric(live.tracked_holding) + " holding · " + metric(live.tracked_waiting) + " waiting</p>" +
+    '<p>Tracked exact publishers: ' + metric(live.tracked_holding, "unknown") + " holding · " + metric(live.tracked_waiting, "unknown") + " waiting</p>" +
+    exactReviewTrend(itemTrend, "Materialized items") +
     '<dl class="lane-metrics">' +
-    "<div><dt>Materialized</dt><dd>" + metric(hour.materialized_items) + " items/hour</dd></div>" +
-    "<div><dt>State commits</dt><dd>" + metric(hour.state_commits) + "/hour</dd></div>" +
-    "<div><dt>Items / commit</dt><dd>" + metric(hour.items_per_commit) + "</dd></div>" +
-    "<div><dt>Lease wait</dt><dd>" + percentile(hour.wait_ms) + "</dd></div>" +
-    "<div><dt>Lease hold</dt><dd>" + percentile(hour.hold_ms) + "</dd></div>" +
+    "<div><dt>Materialized</dt><dd>" + metric(itemsPerHour ?? hour.materialized_items) + " items/hour</dd></div>" +
+    "<div><dt>State commits</dt><dd>" + metric(commitsPerHour ?? hour.state_commits) + "/hour</dd></div>" +
+    "<div><dt>Items / commit</dt><dd>" + metric(itemsPerCommit) + "</dd></div>" +
+    "<div><dt>Lease wait</dt><dd>" + percentile(wait) + "</dd></div>" +
+    "<div><dt>Lease hold</dt><dd>" + percentile(hold) + "</dd></div>" +
     "</dl>" +
+    '<p class="muted">Live holding/waiting come from current progress. Throughput uses the selected ' + esc(rangeLabel) + " history when available; otherwise the rolling hour.</p>" +
     '<p class="muted">Publication workflows can run concurrently, but they feed one serialized state-ref writer.</p>' +
     "</section>";
 }

@@ -61,6 +61,24 @@ test("state writer telemetry enforces lease and batch invariants", () => {
     normalizeStateWriterOperation(operation({ outcome: "contention_timeout", acquired: true })),
     null,
   );
+  assert.equal(
+    normalizeStateWriterOperation(
+      operation({ outcome: "materialized", commit_count: 0, materialized_items: 0 }),
+    ),
+    null,
+  );
+  assert.equal(
+    normalizeStateWriterOperation(
+      operation({
+        outcome: "unchanged",
+        commit_count: 0,
+        materialized_items: 0,
+        hold_ms: 20,
+        released: true,
+      }),
+    )?.outcome,
+    "unchanged",
+  );
 });
 
 test("state writer progress accepts only monotonic-shaped valid payloads", () => {
