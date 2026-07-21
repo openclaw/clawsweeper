@@ -99,6 +99,10 @@ const STATE_PUBLISH_LEASE_ACQUIRE_TIMEOUT_MS = (() => {
 })();
 const STATE_PUBLISH_LEASE_WAIT_MS = 1_000;
 const STATE_PUBLISH_LEASE_MAX_WAIT_MS = 5_000;
+const STATE_PUBLISH_PRIORITY_INTENT_ATTEMPT = 2;
+const STATE_PUBLISH_PRIORITY_INTENT_MAX_TTL_MS = 5 * 60_000;
+const STATE_PUBLISH_OWNER_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SKIP_CI_DIRECTIVE_PATTERN =
   /\[(?:skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks:\s*true$/im;
 
@@ -128,6 +132,12 @@ type StatePublishLeaseCleanup = {
 type ObservedStatePublishLease = {
   oid: string;
   owner: string;
+  expiresAtMs: number;
+  malformed?: boolean;
+};
+
+type StatePublishPriorityIntent = {
+  oid: string;
   expiresAtMs: number;
 };
 
@@ -1525,8 +1535,11 @@ function acquireStatePublishLease(
   options: StatePublishLeaseOptions,
 ): StatePublishLease {
   const leaseRef = `${STATE_PUBLISH_LEASE_REF_ROOT}/${branch}`;
+  const priorityIntentRef = `${leaseRef}-priority`;
   runGit(["check-ref-format", leaseRef], { quiet: true });
+  runGit(["check-ref-format", priorityIntentRef], { quiet: true });
   const owner = randomUUID();
+  const priority = process.env.CLAWSWEEPER_STATE_LEASE_PRIORITY === "1";
   const ttlMs = Math.min(
     positiveInt(options.ttlMs, STATE_PUBLISH_LEASE_TTL_MS),
     STATE_PUBLISH_LEASE_TTL_MS,
@@ -1538,6 +1551,8 @@ function acquireStatePublishLease(
   const waitMs = positiveInt(options.waitMs, STATE_PUBLISH_LEASE_WAIT_MS);
   const deadlineAtMs = Date.now() + acquireTimeoutMs;
   const observedByOid = new Map<string, ObservedStatePublishLease>();
+  const observedPriorityByOid = new Map<string, ObservedStatePublishLease>();
+  let priorityIntent: StatePublishPriorityIntent | null = null;
   let attempt = 0;
   activeStateWriterTelemetry?.enteredWaiting();
 
@@ -1546,40 +1561,75 @@ function acquireStatePublishLease(
   // poll the tiny lease ref instead of creating another state-branch push storm.
   sleep(Math.floor(Math.random() * waitMs));
 
-  while (Date.now() < deadlineAtMs) {
-    attempt += 1;
-    activeStateWriterTelemetry?.recordAcquireAttempt();
-    const observed = observeStatePublishLease(remote, leaseRef, ttlMs, observedByOid);
-    const now = Date.now();
-    if (!observed || observed.expiresAtMs <= now) {
-      const expiresAtMs = now + ttlMs;
-      const oid = createStatePublishLeaseCommit({ branch, owner, ttlMs });
-      const expectedOid = observed?.oid ?? "";
-      const acquired =
-        spawnGit(
-          ["push", `--force-with-lease=${leaseRef}:${expectedOid}`, remote, `${oid}:${leaseRef}`],
-          { allowFailure: true, quiet: true, timeout: PUBLISH_FETCH_TIMEOUT_MS },
-        ).status === 0;
-      if (acquired) {
-        activeStateWriterTelemetry?.acquiredLease();
+  try {
+    while (Date.now() < deadlineAtMs) {
+      attempt += 1;
+      activeStateWriterTelemetry?.recordAcquireAttempt();
+      const observed = observeStatePublishLease(remote, leaseRef, ttlMs, observedByOid);
+      const now = Date.now();
+      if (!observed || observed.expiresAtMs <= now) {
+        const shouldYield =
+          !priority &&
+          shouldYieldToStatePublishPriorityIntent(
+            remote,
+            priorityIntentRef,
+            owner,
+            observedPriorityByOid,
+          );
+        if (!shouldYield) {
+          const expiresAtMs = now + ttlMs;
+          const oid = createStatePublishLeaseCommit({ branch, owner, ttlMs });
+          const expectedOid = observed?.oid ?? "";
+          const acquired =
+            spawnGit(
+              [
+                "push",
+                `--force-with-lease=${leaseRef}:${expectedOid}`,
+                remote,
+                `${oid}:${leaseRef}`,
+              ],
+              { allowFailure: true, quiet: true, timeout: PUBLISH_FETCH_TIMEOUT_MS },
+            ).status === 0;
+          if (acquired) {
+            activeStateWriterTelemetry?.acquiredLease();
+            console.log(
+              `Acquired state publish lease owner=${owner} attempt=${attempt} stale_recovery=${observed ? "true" : "false"} ttl_ms=${ttlMs}`,
+            );
+            return { ref: leaseRef, oid, owner, expiresAtMs, ttlMs, remote, branch, cleanup: null };
+          }
+        }
+      } else {
         console.log(
-          `Acquired state publish lease owner=${owner} attempt=${attempt} stale_recovery=${observed ? "true" : "false"} ttl_ms=${ttlMs}`,
+          `State publish lease busy owner=${observed.owner} attempt=${attempt} remaining_ms=${Math.max(0, observed.expiresAtMs - now)}`,
         );
-        return { ref: leaseRef, oid, owner, expiresAtMs, ttlMs, remote, branch, cleanup: null };
       }
-    } else {
-      console.log(
-        `State publish lease busy owner=${observed.owner} attempt=${attempt} remaining_ms=${Math.max(0, observed.expiresAtMs - now)}`,
-      );
-    }
 
-    const remainingMs = deadlineAtMs - Date.now();
-    if (remainingMs <= 0) break;
-    const backoffMs = Math.min(
-      waitMs * 2 ** Math.min(attempt - 1, 3),
-      STATE_PUBLISH_LEASE_MAX_WAIT_MS,
-    );
-    sleep(Math.min(remainingMs, backoffMs + Math.floor(Math.random() * waitMs)));
+      const remainingMs = deadlineAtMs - Date.now();
+      if (remainingMs <= 0) break;
+      if (
+        priority &&
+        attempt >= STATE_PUBLISH_PRIORITY_INTENT_ATTEMPT &&
+        (!priorityIntent || priorityIntent.expiresAtMs <= Date.now())
+      ) {
+        priorityIntent = publishStatePublishPriorityIntent(
+          remote,
+          priorityIntentRef,
+          branch,
+          owner,
+          remainingMs,
+          observedPriorityByOid,
+        );
+      }
+      const backoffMs = Math.min(
+        waitMs * 2 ** Math.min(attempt - 1, 3),
+        STATE_PUBLISH_LEASE_MAX_WAIT_MS,
+      );
+      sleep(Math.min(remainingMs, backoffMs + Math.floor(Math.random() * waitMs)));
+    }
+  } finally {
+    if (priorityIntent) {
+      deleteStatePublishPriorityIntent(remote, priorityIntentRef, priorityIntent.oid, owner);
+    }
   }
 
   throw new StatePublishContentionError(
@@ -1587,11 +1637,124 @@ function acquireStatePublishLease(
   );
 }
 
+function shouldYieldToStatePublishPriorityIntent(
+  remote: string,
+  priorityIntentRef: string,
+  owner: string,
+  observedByOid: Map<string, ObservedStatePublishLease>,
+): boolean {
+  try {
+    const observed = observeStatePublishLease(
+      remote,
+      priorityIntentRef,
+      STATE_PUBLISH_PRIORITY_INTENT_MAX_TTL_MS,
+      observedByOid,
+      true,
+    );
+    if (!observed) return false;
+    if (observed.malformed || observed.expiresAtMs <= Date.now()) {
+      deleteStatePublishPriorityIntent(remote, priorityIntentRef, observed.oid, owner);
+      return false;
+    }
+    if (observed.owner === owner) return false;
+    console.log(`State publish lease yielding to priority intent owner=${observed.owner}`);
+    return true;
+  } catch (error) {
+    console.log(
+      `State publish priority intent read failed; proceeding without priority: ${errorMessage(error)}`,
+    );
+    return false;
+  }
+}
+
+function publishStatePublishPriorityIntent(
+  remote: string,
+  priorityIntentRef: string,
+  branch: string,
+  owner: string,
+  remainingMs: number,
+  observedByOid: Map<string, ObservedStatePublishLease>,
+): StatePublishPriorityIntent | null {
+  try {
+    const now = Date.now();
+    const observed = observeStatePublishLease(
+      remote,
+      priorityIntentRef,
+      STATE_PUBLISH_PRIORITY_INTENT_MAX_TTL_MS,
+      observedByOid,
+      true,
+    );
+    if (observed && !observed.malformed && observed.expiresAtMs > now) {
+      if (observed.owner === owner) {
+        return { oid: observed.oid, expiresAtMs: observed.expiresAtMs };
+      }
+      console.log(`State publish priority intent busy owner=${observed.owner}`);
+      return null;
+    }
+
+    const intentTtlMs = Math.min(remainingMs, STATE_PUBLISH_PRIORITY_INTENT_MAX_TTL_MS);
+    if (intentTtlMs <= 0) return null;
+    const expiresAtMs = now + intentTtlMs;
+    const oid = createStatePublishLeaseCommit({
+      branch,
+      owner,
+      ttlMs: intentTtlMs,
+      expiresAtMs,
+      subject: "ClawSweeper state publish priority intent",
+    });
+    const expectedOid = observed?.oid ?? "";
+    const published = spawnGit(
+      [
+        "push",
+        `--force-with-lease=${priorityIntentRef}:${expectedOid}`,
+        remote,
+        `${oid}:${priorityIntentRef}`,
+      ],
+      { allowFailure: true, quiet: true, timeout: PUBLISH_FETCH_TIMEOUT_MS },
+    );
+    if (published.status !== 0) {
+      console.log("State publish priority intent write failed; proceeding without priority");
+      return null;
+    }
+    console.log(`Published state publish priority intent owner=${owner}`);
+    return { oid, expiresAtMs };
+  } catch (error) {
+    console.log(
+      `State publish priority intent write failed; proceeding without priority: ${errorMessage(error)}`,
+    );
+    return null;
+  }
+}
+
+function deleteStatePublishPriorityIntent(
+  remote: string,
+  priorityIntentRef: string,
+  oid: string,
+  owner: string,
+): void {
+  try {
+    const deleted = spawnGit(
+      ["push", `--force-with-lease=${priorityIntentRef}:${oid}`, remote, `:${priorityIntentRef}`],
+      { allowFailure: true, quiet: true, timeout: PUBLISH_FETCH_TIMEOUT_MS },
+    );
+    if (deleted.status === 0) {
+      console.log(`Cleared state publish priority intent owner=${owner}`);
+    } else {
+      console.log(`State publish priority intent cleanup skipped owner=${owner}`);
+    }
+  } catch (error) {
+    console.log(
+      `State publish priority intent cleanup failed owner=${owner}; expiry will recover it: ${errorMessage(error)}`,
+    );
+  }
+}
+
 function observeStatePublishLease(
   remote: string,
   leaseRef: string,
   ttlMs: number,
   observedByOid: Map<string, ObservedStatePublishLease>,
+  requireExpiresAt = false,
 ): ObservedStatePublishLease | null {
   const oid = remoteRefOid(remote, leaseRef);
   if (!oid) return null;
@@ -1620,16 +1783,26 @@ function observeStatePublishLease(
   const committedAtMs = Number(committedAtRaw) * 1_000;
   const message = messageParts.join("\0");
   const owner = /^owner: ([0-9a-f-]+)$/m.exec(message)?.[1] ?? "unknown";
+  const expiresAtRaw = /^expires_at: (.+)$/m.exec(message)?.[1];
+  const advertisedExpiresAtMs = expiresAtRaw ? Date.parse(expiresAtRaw) : Number.NaN;
   const advertisedTtlMs = Number(/^ttl_ms: ([0-9]+)$/m.exec(message)?.[1] ?? "");
+  const malformed =
+    requireExpiresAt &&
+    (!STATE_PUBLISH_OWNER_PATTERN.test(owner) ||
+      !Number.isFinite(advertisedExpiresAtMs) ||
+      advertisedExpiresAtMs <= 0);
   const boundedTtlMs =
     Number.isSafeInteger(advertisedTtlMs) && advertisedTtlMs > 0
       ? Math.min(advertisedTtlMs, STATE_PUBLISH_LEASE_TTL_MS)
       : ttlMs;
-  const expiresAtMs =
-    Number.isFinite(committedAtMs) && committedAtMs > 0
-      ? Math.min(committedAtMs + boundedTtlMs, Date.now() + STATE_PUBLISH_LEASE_TTL_MS)
-      : Date.now() + STATE_PUBLISH_LEASE_TTL_MS;
-  const observed = { oid: fetchedOid, owner, expiresAtMs };
+  const expiresAtMs = malformed
+    ? 0
+    : requireExpiresAt
+      ? Math.min(advertisedExpiresAtMs, Date.now() + STATE_PUBLISH_PRIORITY_INTENT_MAX_TTL_MS)
+      : Number.isFinite(committedAtMs) && committedAtMs > 0
+        ? Math.min(committedAtMs + boundedTtlMs, Date.now() + STATE_PUBLISH_LEASE_TTL_MS)
+        : Date.now() + STATE_PUBLISH_LEASE_TTL_MS;
+  const observed = { oid: fetchedOid, owner, expiresAtMs, malformed };
   observedByOid.set(oid, observed);
   return observed;
 }
@@ -1638,16 +1811,21 @@ function createStatePublishLeaseCommit(options: {
   branch: string;
   owner: string;
   ttlMs: number;
+  expiresAtMs?: number;
+  subject?: string;
 }): string {
   const tree = runGit(["mktree"], { input: "", quiet: true }).trim();
   if (!tree) throw new Error("Failed to create the state publish lease tree");
   return runGit(["commit-tree", tree], {
     input: [
-      "ClawSweeper state publish lease",
+      options.subject ?? "ClawSweeper state publish lease",
       "",
       `owner: ${options.owner}`,
       `branch: ${options.branch}`,
       `ttl_ms: ${options.ttlMs}`,
+      ...(options.expiresAtMs
+        ? [`expires_at: ${new Date(options.expiresAtMs).toISOString()}`]
+        : []),
       `generation: ${randomUUID()}`,
       "",
     ].join("\n"),

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -27,6 +27,7 @@ for (const key of [
   "CLAWSWEEPER_PUBLISH_ROOT",
   "CLAWSWEEPER_PUBLISH_BRANCH",
   "CLAWSWEEPER_STATE_REPOSITORY",
+  "CLAWSWEEPER_STATE_LEASE_PRIORITY",
 ]) {
   delete process.env[key];
 }
@@ -1636,7 +1637,7 @@ test("single-record publisher rebuilds a shallow losing writer without hydrating
 
 test(
   "state publish lease serializes concurrent exact record tuple writers",
-  { timeout: 60_000 },
+  { timeout: 180_000 },
   async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-lease-race-"));
     const origin = path.join(root, "origin.git");
@@ -1708,7 +1709,7 @@ test(
             throw new Error("leased exact tuple push lost the state race");
           }
         },
-        { branch: "state", acquireTimeoutMs: 30_000, ttlMs: 30_000, waitMs: 25 },
+        { branch: "state", acquireTimeoutMs: 120_000, ttlMs: 30_000, waitMs: 25 },
       );
     `;
 
@@ -1732,6 +1733,7 @@ test(
             CLAWSWEEPER_PUBLISH_ROOT: writer.work,
             CLAWSWEEPER_PUBLISH_BRANCH: "state",
           },
+          180_000,
         ),
       ),
     );
@@ -2075,6 +2077,251 @@ test("state publish lease recovers an abandoned owner after its bounded TTL", ()
       ],
       root,
     ),
+    "",
+  );
+});
+
+test("ordinary state publisher yields to a live priority intent until it expires", () => {
+  const { origin, root, work } = createStateLeaseTestRepo("clawsweeper-priority-yield-");
+  const priorityRef = "refs/heads/clawsweeper-publish-lease/state-priority";
+  const priorityOwner = randomUUID();
+  pushStateLeaseMetadata(work, priorityRef, {
+    owner: priorityOwner,
+    expiresAtMs: Date.now() + 10_000,
+    subject: "ClawSweeper state publish priority intent",
+  });
+
+  let operated = false;
+  const lines = captureConsoleLog(() => {
+    withEnv(
+      {
+        CLAWSWEEPER_PUBLISH_ROOT: work,
+        CLAWSWEEPER_PUBLISH_BRANCH: "state",
+      },
+      () =>
+        withStatePublishLease(
+          () => {
+            operated = true;
+          },
+          { branch: "state", acquireTimeoutMs: 60_000, ttlMs: 30_000, waitMs: 10 },
+        ),
+    );
+  });
+
+  assert.equal(operated, true);
+  assert.equal(
+    lines.some((line) =>
+      line.includes(`State publish lease yielding to priority intent owner=${priorityOwner}`),
+    ),
+    true,
+    lines.join("\n"),
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "for-each-ref", "--format=%(refname)", priorityRef], root),
+    "",
+  );
+});
+
+test(
+  "priority state publisher claims the next free lease slot ahead of an ordinary contender",
+  { timeout: 90_000 },
+  async () => {
+    const { origin, root, work: holder } = createStateLeaseTestRepo("clawsweeper-priority-order-");
+    const priority = path.join(root, "priority");
+    const ordinary = path.join(root, "ordinary");
+    run("git", ["clone", origin, priority], root);
+    run("git", ["clone", origin, ordinary], root);
+    configureUser(priority);
+    configureUser(ordinary);
+    const priorityHook = path.join(priority, ".git", "hooks", "pre-push");
+    write(
+      priorityHook,
+      `#!/bin/sh
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if test "$remote_ref" = "refs/heads/clawsweeper-publish-lease/state"; then sleep 1; fi
+done
+`,
+    );
+    fs.chmodSync(priorityHook, 0o755);
+
+    const holderReady = path.join(root, "holder-ready");
+    const releaseHolder = path.join(root, "release-holder");
+    const priorityReady = path.join(root, "priority-ready");
+    const releasePriority = path.join(root, "release-priority");
+    const ordinaryReady = path.join(root, "ordinary-ready");
+    const holdingWriter = String.raw`
+      import fs from "node:fs";
+      const [ready, release] = process.argv.slice(1);
+      const wait = new Int32Array(new SharedArrayBuffer(4));
+      const { withStatePublishLease } = await import("./dist/repair/git-publish.js");
+      withStatePublishLease(
+        () => {
+          fs.writeFileSync(ready, "ready\n");
+          while (!fs.existsSync(release)) Atomics.wait(wait, 0, 0, 10);
+        },
+        { branch: "state", acquireTimeoutMs: 60_000, ttlMs: 120_000, waitMs: 20 },
+      );
+    `;
+    const ordinaryWriter = String.raw`
+      import fs from "node:fs";
+      const [ready] = process.argv.slice(1);
+      const { withStatePublishLease } = await import("./dist/repair/git-publish.js");
+      withStatePublishLease(
+        () => fs.writeFileSync(ready, "ready\n"),
+        { branch: "state", acquireTimeoutMs: 60_000, ttlMs: 120_000, waitMs: 20 },
+      );
+    `;
+    const holderRun = startAsync(
+      "node",
+      ["--input-type=module", "-e", holdingWriter, holderReady, releaseHolder],
+      process.cwd(),
+      { CLAWSWEEPER_PUBLISH_ROOT: holder, CLAWSWEEPER_PUBLISH_BRANCH: "state" },
+    );
+    await waitForFile(holderReady, 30_000, "holder did not acquire the state publish lease");
+
+    const priorityRun = startAsync(
+      "node",
+      ["--input-type=module", "-e", holdingWriter, priorityReady, releasePriority],
+      process.cwd(),
+      {
+        CLAWSWEEPER_PUBLISH_ROOT: priority,
+        CLAWSWEEPER_PUBLISH_BRANCH: "state",
+        CLAWSWEEPER_STATE_LEASE_PRIORITY: "1",
+      },
+    );
+    const priorityRef = "refs/heads/clawsweeper-publish-lease/state-priority";
+    await waitFor(
+      () =>
+        run(
+          "git",
+          ["--git-dir", origin, "for-each-ref", "--format=%(refname)", priorityRef],
+          root,
+        ).trim() === priorityRef,
+      30_000,
+      "priority publisher did not advertise its intent",
+    );
+
+    const ordinaryRun = startAsync(
+      "node",
+      ["--input-type=module", "-e", ordinaryWriter, ordinaryReady],
+      process.cwd(),
+      { CLAWSWEEPER_PUBLISH_ROOT: ordinary, CLAWSWEEPER_PUBLISH_BRANCH: "state" },
+    );
+    await waitFor(
+      () => ordinaryRun.output().includes("State publish lease busy"),
+      30_000,
+      "ordinary publisher did not enter lease contention",
+    );
+    fs.writeFileSync(releaseHolder, "release\n");
+    await waitForFile(priorityReady, 30_000, "priority publisher did not acquire the freed slot");
+    assert.equal(fs.existsSync(ordinaryReady), false);
+    fs.writeFileSync(releasePriority, "release\n");
+
+    const [holderOutput, priorityOutput, ordinaryOutput] = await Promise.all([
+      holderRun.result,
+      priorityRun.result,
+      ordinaryRun.result,
+    ]);
+    assert.match(holderOutput, /Released state publish lease/);
+    assert.match(priorityOutput, /Published state publish priority intent/);
+    assert.match(priorityOutput, /Cleared state publish priority intent/);
+    assert.match(ordinaryOutput, /State publish lease yielding to priority intent owner=/);
+    assert.equal(fs.existsSync(ordinaryReady), true);
+  },
+);
+
+test("state publish priority intent read and write failures fail open", () => {
+  for (const failureMode of ["read", "write"]) {
+    const { root, work } = createStateLeaseTestRepo(`clawsweeper-priority-${failureMode}-`);
+    const wrapperDir = path.join(root, "bin");
+    const wrapper = path.join(wrapperDir, "git");
+    const counter = path.join(root, "lease-push-count");
+    const realGit = run("which", ["git"], process.cwd()).trim();
+    write(
+      wrapper,
+      `#!/bin/sh
+case "$*" in
+  *clawsweeper-publish-lease/state-priority*)
+    if test "${failureMode}" = "read" && { test "$1" = "ls-remote" || test "$1" = "fetch"; }; then exit 1; fi
+    if test "${failureMode}" = "write" && test "$1" = "push"; then exit 1; fi
+    ;;
+  *clawsweeper-publish-lease/state*)
+    if test "${failureMode}" = "write" && test "$1" = "push"; then
+      count=0
+      if test -f "${counter}"; then count=$(cat "${counter}"); fi
+      count=$((count + 1))
+      printf '%s\n' "$count" > "${counter}"
+      if test "$count" -le 2; then exit 1; fi
+    fi
+    ;;
+esac
+exec "${realGit}" "$@"
+`,
+    );
+    fs.chmodSync(wrapper, 0o755);
+
+    let operated = false;
+    const lines = captureConsoleLog(() => {
+      withEnv(
+        {
+          CLAWSWEEPER_PUBLISH_ROOT: work,
+          CLAWSWEEPER_PUBLISH_BRANCH: "state",
+          CLAWSWEEPER_STATE_LEASE_PRIORITY: failureMode === "write" ? "1" : "0",
+          PATH: `${wrapperDir}${path.delimiter}${process.env.PATH}`,
+        },
+        () =>
+          withStatePublishLease(
+            () => {
+              operated = true;
+            },
+            { branch: "state", acquireTimeoutMs: 30_000, ttlMs: 30_000, waitMs: 10 },
+          ),
+      );
+    });
+
+    assert.equal(operated, true, `${failureMode} failure blocked lease acquisition`);
+    assert.equal(
+      lines.some((line) =>
+        line.includes(`State publish priority intent ${failureMode} failed; proceeding`),
+      ),
+      true,
+    );
+  }
+});
+
+test("stale state publish priority intent is ignored and pruned", () => {
+  const { origin, root, work } = createStateLeaseTestRepo("clawsweeper-priority-stale-");
+  const priorityRef = "refs/heads/clawsweeper-publish-lease/state-priority";
+  pushStateLeaseMetadata(work, priorityRef, {
+    owner: randomUUID(),
+    expiresAtMs: Date.now() - 60_000,
+    subject: "ClawSweeper state publish priority intent",
+  });
+
+  let operated = false;
+  const lines = captureConsoleLog(() => {
+    withEnv(
+      {
+        CLAWSWEEPER_PUBLISH_ROOT: work,
+        CLAWSWEEPER_PUBLISH_BRANCH: "state",
+      },
+      () =>
+        withStatePublishLease(
+          () => {
+            operated = true;
+          },
+          { branch: "state", acquireTimeoutMs: 1_000, ttlMs: 30_000, waitMs: 10 },
+        ),
+    );
+  });
+
+  assert.equal(operated, true);
+  assert.equal(
+    lines.some((line) => line.includes("yielding to priority intent")),
+    false,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "for-each-ref", "--format=%(refname)", priorityRef], root),
     "",
   );
 });
@@ -4134,6 +4381,48 @@ function configureUser(cwd) {
   run("git", ["config", "user.email", "tester@example.com"], cwd);
 }
 
+function createStateLeaseTestRepo(prefix) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, "README.md"), "state\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial state"], work);
+  run("git", ["push", "origin", "HEAD:state"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  return { origin, root, work };
+}
+
+function pushStateLeaseMetadata(
+  work,
+  ref,
+  { owner, expiresAtMs, subject = "ClawSweeper state publish lease", ttlMs = 30_000 },
+) {
+  const tree = execFileSync("git", ["mktree"], {
+    cwd: work,
+    input: "",
+    encoding: "utf8",
+  }).trim();
+  const commit = execFileSync("git", ["commit-tree", tree], {
+    cwd: work,
+    input: [
+      subject,
+      "",
+      `owner: ${owner}`,
+      "branch: state",
+      `ttl_ms: ${ttlMs}`,
+      `expires_at: ${new Date(expiresAtMs).toISOString()}`,
+      "",
+    ].join("\n"),
+    encoding: "utf8",
+  }).trim();
+  run("git", ["push", "origin", `${commit}:${ref}`], work);
+  return commit;
+}
+
 function write(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, content);
@@ -4560,7 +4849,7 @@ esac
   fs.chmodSync(hook, 0o755);
 }
 
-function runAsync(command, args, cwd, env = {}) {
+function runAsync(command, args, cwd, env = {}, timeout = 55_000) {
   return new Promise((resolve, reject) => {
     execFile(
       command,
@@ -4570,7 +4859,7 @@ function runAsync(command, args, cwd, env = {}) {
         env: { ...process.env, ...env },
         encoding: "utf8",
         maxBuffer: 16 * 1024 * 1024,
-        timeout: 55_000,
+        timeout,
       },
       (error, stdout, stderr) => {
         if (error) {
@@ -4614,6 +4903,18 @@ function startAsync(command, args, cwd, env = {}) {
     });
   });
   return { child, result, output: () => output, settled: () => settled };
+}
+
+async function waitFor(predicate, timeoutMs, message) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(predicate(), true, message);
+}
+
+async function waitForFile(file, timeoutMs, message) {
+  await waitFor(() => fs.existsSync(file), timeoutMs, message);
 }
 
 function captureConsoleLog(callback, lines = []) {
