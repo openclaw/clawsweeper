@@ -84,13 +84,8 @@ jobs:
           message="chore: compact state history (backup: $BACKUP_REF)"
           new_head="$(printf '%s\n' "$message" | git -C "$state_dir" commit-tree "$tree")"
           test "$(git -C "$state_dir" rev-list --parents -n 1 "$new_head" | wc -w | tr -d ' ')" = "1"
-          git -C "$state_dir" push \
-            --force-with-lease="refs/heads/main:$EXPECTED_HEAD" \
-            origin "$new_head:refs/heads/main"
-          remote_head="$(git -C "$state_dir" ls-remote --refs origin refs/heads/main | awk '{print $1}')"
-          test "$remote_head" = "$new_head"
           git -C "$state_dir" push --atomic \
-            --force-with-lease="refs/heads/main:$new_head" \
+            --force-with-lease="refs/heads/main:$EXPECTED_HEAD" \
             --force-with-lease="refs/heads/$BACKUP_REF:$EXPECTED_HEAD" \
             origin \
             "$new_head:refs/heads/main" \

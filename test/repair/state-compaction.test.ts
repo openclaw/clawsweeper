@@ -145,10 +145,10 @@ test("compaction workflow preserves backup and lease safety", () => {
   assert.match(workflow, /node dist\/repair\/state-compaction\.js preflight/);
   assert.match(workflow, /node dist\/repair\/state-compaction\.js prepare-backup/);
   assert.match(workflow, /git -C "\$state_dir" commit-tree "\$tree"/);
-  assert.match(workflow, /--force-with-lease="refs\/heads\/main:\$EXPECTED_HEAD"/);
   assert.match(workflow, /git -C "\$state_dir" push --atomic/);
-  assert.match(workflow, /--force-with-lease="refs\/heads\/main:\$new_head"/);
+  assert.match(workflow, /--force-with-lease="refs\/heads\/main:\$EXPECTED_HEAD"/);
   assert.match(workflow, /--force-with-lease="refs\/heads\/\$BACKUP_REF:\$EXPECTED_HEAD"/);
   assert.match(workflow, /":refs\/heads\/\$BACKUP_REF"/);
-  assert.match(workflow, /test "\$remote_head" = "\$new_head"/);
+  assert.equal(workflow.match(/git -C "\$state_dir" push/g)?.length, 1);
+  assert.match(workflow, /refs\/heads\/main" \{print \$1\}.*= "\$new_head"/);
 });
