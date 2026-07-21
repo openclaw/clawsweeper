@@ -491,63 +491,69 @@ function publishSnapshot({
       summary();
       return published;
     };
-    const mutation = withStatePublishLease(() => {
-      hardResetToRemoteMain();
-      const stateRoot = publishRoot();
-      const snapshotResult = applyEventSnapshot(paths, stateRoot ? { remoteRoot: stateRoot } : {});
-      if (snapshotResult === "remote-closed") {
-        console.log(
-          `Remote already has closed record for ${paths.targetSlug}#${options.itemNumber}; skipping open-record publish`,
+    const mutation = withStatePublishLease(
+      () => {
+        hardResetToRemoteMain();
+        const stateRoot = publishRoot();
+        const snapshotResult = applyEventSnapshot(
+          paths,
+          stateRoot ? { remoteRoot: stateRoot } : {},
         );
-        return {
-          candidateApplied: false,
-          supersededReason: "remote_closed" as const,
-          writerOutcome: "superseded" as const,
-        };
-      }
-      if (snapshotResult === "remote-newer") {
-        console.log(
-          `Remote has newer record tuple for ${paths.targetSlug}#${options.itemNumber}; skipping stale event publish`,
-        );
-        return {
-          candidateApplied: false,
-          supersededReason: "remote_newer_tuple" as const,
-          writerOutcome: "superseded" as const,
-        };
-      }
-      if (snapshotResult === "missing") {
-        throw new PublicationResultError(
-          "missing_record_tuple",
-          `No event record snapshot for ${paths.targetSlug}#${options.itemNumber}`,
-        );
-      }
+        if (snapshotResult === "remote-closed") {
+          console.log(
+            `Remote already has closed record for ${paths.targetSlug}#${options.itemNumber}; skipping open-record publish`,
+          );
+          return {
+            candidateApplied: false,
+            supersededReason: "remote_closed" as const,
+            writerOutcome: "superseded" as const,
+          };
+        }
+        if (snapshotResult === "remote-newer") {
+          console.log(
+            `Remote has newer record tuple for ${paths.targetSlug}#${options.itemNumber}; skipping stale event publish`,
+          );
+          return {
+            candidateApplied: false,
+            supersededReason: "remote_newer_tuple" as const,
+            writerOutcome: "superseded" as const,
+          };
+        }
+        if (snapshotResult === "missing") {
+          throw new PublicationResultError(
+            "missing_record_tuple",
+            `No event record snapshot for ${paths.targetSlug}#${options.itemNumber}`,
+          );
+        }
 
-      syncPublishPaths(commitPaths);
-      stagePaths(commitPaths);
-      if (!hasStagedChanges()) {
-        console.log("No event result changes");
+        syncPublishPaths(commitPaths);
+        stagePaths(commitPaths);
+        if (!hasStagedChanges()) {
+          console.log("No event result changes");
+          return {
+            candidateApplied: true,
+            supersededReason: undefined,
+            writerOutcome: "unchanged" as const,
+          };
+        }
+
+        runGit([
+          "commit",
+          "-m",
+          commitMessageForPublishedPaths(
+            `chore: apply event sweep result for ${paths.targetSlug}#${options.itemNumber}`,
+            commitPaths,
+          ),
+        ]);
+        if (!pushSingleRecordTupleCommit({ paths: commitPaths, pushAttempts: 3 })) return null;
         return {
           candidateApplied: true,
           supersededReason: undefined,
-          writerOutcome: "unchanged" as const,
+          writerOutcome: "materialized" as const,
         };
-      }
-
-      runGit([
-        "commit",
-        "-m",
-        commitMessageForPublishedPaths(
-          `chore: apply event sweep result for ${paths.targetSlug}#${options.itemNumber}`,
-          commitPaths,
-        ),
-      ]);
-      if (!pushSingleRecordTupleCommit({ paths: commitPaths, pushAttempts: 3 })) return null;
-      return {
-        candidateApplied: true,
-        supersededReason: undefined,
-        writerOutcome: "materialized" as const,
-      };
-    });
+      },
+      { observer: recorder },
+    );
     if (!mutation) {
       recorder.finalize("failed");
       writeStateWriterOutput(recorder);
@@ -557,9 +563,13 @@ function publishSnapshot({
     if (mutation.writerOutcome === "materialized" && published.remoteTupleVerified) {
       recorder.recordMaterializedCommit(1);
     }
-    recorder.finalize(
-      published.completionKind === "superseded" ? "superseded" : mutation.writerOutcome,
-    );
+    const writerOutcome =
+      published.completionKind === "superseded"
+        ? "superseded"
+        : mutation.writerOutcome === "materialized" && !published.remoteTupleVerified
+          ? "failed"
+          : mutation.writerOutcome;
+    recorder.finalize(writerOutcome);
     const stateWriter = recorder.toTerminalObject();
     return { ...published, ...(stateWriter ? { stateWriter } : {}) };
   } catch (error) {

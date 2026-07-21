@@ -166,6 +166,36 @@ test("health history preserves legacy samples and normalizes exact-review backlo
   );
 });
 
+test("health history keeps legacy samples when optional state_writer is absent or invalid", () => {
+  const legacy = legacyHistorySample();
+  assert.equal(normalizeHealthHistorySample(legacy)?.state_writer, undefined);
+  assert.deepEqual(
+    normalizeHealthHistorySample({
+      ...legacy,
+      state_writer: {
+        collection_ok: true,
+        mode: "single_item",
+        tracked_holding: 1,
+        tracked_waiting: 2,
+        tracked_releasing: 0,
+        accepted_operations_total: 3,
+        state_commits_total: 3,
+        materialized_items_total: 3,
+        contention_timeouts_total: 0,
+        wait_ms: { p50: 10, p95: 20, samples: 3 },
+        hold_ms: { p50: 30, p95: 40, samples: 3 },
+        last_successful_materialization_at: CHECKED_AT,
+      },
+    })?.state_writer?.mode,
+    "single_item",
+  );
+  const withInvalidWriter = normalizeHealthHistorySample({
+    ...legacy,
+    state_writer: { collection_ok: true, mode: "not-a-mode" },
+  });
+  assert.deepEqual(withInvalidWriter, legacy);
+});
+
 test("health history rejects non-finite or incomplete samples", () => {
   const sample = legacyHistorySample();
   assert.equal(normalizeHealthHistorySample({ ...sample, queued: "Infinity" }), null);

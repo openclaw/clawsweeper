@@ -1480,11 +1480,12 @@ export function withStatePublishLease<T>(
   const branch = options.branch ?? publishDefaultBranch();
   const previousTelemetry = activeStateWriterTelemetry;
   activeStateWriterTelemetry = options.observer ?? previousTelemetry;
+  const telemetry = () => activeStateWriterTelemetry;
   let lease: StatePublishLease;
   try {
     lease = acquireStatePublishLease(remote, branch, options);
   } catch (error) {
-    options.observer?.finalize(
+    telemetry()?.finalize(
       error instanceof StatePublishContentionError ? "contention_timeout" : "failed",
     );
     activeStateWriterTelemetry = previousTelemetry;
@@ -1496,10 +1497,10 @@ export function withStatePublishLease<T>(
     return operation();
   } finally {
     activeStatePublishLease = null;
-    options.observer?.enteredReleasing();
+    telemetry()?.enteredReleasing();
     const released = releaseStatePublishLease(lease);
-    options.observer?.releasedLease(released);
-    options.observer?.finished();
+    telemetry()?.releasedLease(released);
+    telemetry()?.finished();
     lease.cleanup?.close();
     activeStateWriterTelemetry = previousTelemetry;
   }
@@ -1538,7 +1539,7 @@ function acquireStatePublishLease(
   const deadlineAtMs = Date.now() + acquireTimeoutMs;
   const observedByOid = new Map<string, ObservedStatePublishLease>();
   let attempt = 0;
-  options.observer?.enteredWaiting();
+  activeStateWriterTelemetry?.enteredWaiting();
 
   // Spread a newly admitted publisher cohort before any of them attempts the
   // empty-ref compare-and-swap. Once an owner exists, later contenders only
@@ -1547,7 +1548,7 @@ function acquireStatePublishLease(
 
   while (Date.now() < deadlineAtMs) {
     attempt += 1;
-    options.observer?.recordAcquireAttempt();
+    activeStateWriterTelemetry?.recordAcquireAttempt();
     const observed = observeStatePublishLease(remote, leaseRef, ttlMs, observedByOid);
     const now = Date.now();
     if (!observed || observed.expiresAtMs <= now) {
@@ -1560,6 +1561,7 @@ function acquireStatePublishLease(
           { allowFailure: true, quiet: true, timeout: PUBLISH_FETCH_TIMEOUT_MS },
         ).status === 0;
       if (acquired) {
+        activeStateWriterTelemetry?.acquiredLease();
         console.log(
           `Acquired state publish lease owner=${owner} attempt=${attempt} stale_recovery=${observed ? "true" : "false"} ttl_ms=${ttlMs}`,
         );

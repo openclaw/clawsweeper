@@ -179,9 +179,9 @@ export function stateWriterHistorySample(value: unknown): StateWriterHistorySamp
     tracked_waiting: nonNegativeInteger(live.tracked_waiting) ?? 0,
     tracked_releasing: nonNegativeInteger(live.tracked_releasing) ?? 0,
     accepted_operations_total: nonNegativeInteger(diagnostics.accepted_terminal_total) ?? 0,
-    state_commits_total: nonNegativeInteger(window.state_commits) ?? 0,
-    materialized_items_total: nonNegativeInteger(window.materialized_items) ?? 0,
-    contention_timeouts_total: nonNegativeInteger(window.contention_timeouts) ?? 0,
+    state_commits_total: nonNegativeInteger(diagnostics.state_commits_total) ?? 0,
+    materialized_items_total: nonNegativeInteger(diagnostics.materialized_items_total) ?? 0,
+    contention_timeouts_total: nonNegativeInteger(diagnostics.contention_timeouts_total) ?? 0,
     wait_ms: historyPercentiles(window.wait_ms),
     hold_ms: historyPercentiles(window.hold_ms),
     last_successful_materialization_at:

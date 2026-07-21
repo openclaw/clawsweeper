@@ -24,13 +24,14 @@ export type StateWriterTelemetryRecorderOptions = {
 };
 
 export class StateWriterTelemetryRecorder {
-  private readonly now;
-  private readonly startedAtMs;
-  private readonly operationId;
-  private readonly mode;
-  private readonly configuredBatchSize;
-  private actualBatchSize;
-  private readonly batchWaitMs;
+  private readonly options: StateWriterTelemetryRecorderOptions;
+  private readonly now: () => number;
+  private readonly startedAtMs: number;
+  private readonly operationId: string;
+  private readonly mode: "single_item" | "batch";
+  private readonly configuredBatchSize: number;
+  private actualBatchSize: number;
+  private readonly batchWaitMs: number | null;
   private waitStartedAtMs: number | null = null;
   private holdStartedAtMs: number | null = null;
   private acquired = false;
@@ -46,7 +47,8 @@ export class StateWriterTelemetryRecorder {
   private sequence = 0;
   private terminal: StateWriterOperation | null = null;
 
-  constructor(private readonly options: StateWriterTelemetryRecorderOptions = {}) {
+  constructor(options: StateWriterTelemetryRecorderOptions = {}) {
+    this.options = options;
     this.now = options.now ?? Date.now;
     this.startedAtMs = this.now();
     this.mode = options.mode ?? "single_item";
@@ -120,6 +122,10 @@ export class StateWriterTelemetryRecorder {
     }
     this.outcome = outcome;
     this.emit("finished");
+    const safeOutcome =
+      !this.acquired && outcome !== "contention_timeout" && outcome !== "failed"
+        ? "failed"
+        : outcome;
     const candidate = {
       schema_version: STATE_WRITER_SCHEMA_VERSION,
       operation_id: this.operationId,
@@ -129,23 +135,46 @@ export class StateWriterTelemetryRecorder {
       wait_ms: this.waitMs,
       acquire_attempts: this.acquireAttempts,
       acquired: this.acquired,
-      hold_ms: this.acquired ? this.holdMs : null,
+      hold_ms: this.acquired ? (this.holdMs ?? 0) : null,
       renewals: this.acquired ? this.renewals : 0,
-      released: this.acquired ? this.released : null,
+      released: this.acquired ? (this.released ?? false) : null,
       git_duration_ms: Math.max(0, finishedAtMs - this.startedAtMs),
       git_processes: this.gitProcesses,
       commit_count: this.commitCount,
       materialized_items: this.materializedItems,
       configured_batch_size: this.configuredBatchSize,
-      actual_batch_size: this.actualBatchSize,
-      batch_wait_ms: this.batchWaitMs,
-      outcome: this.outcome,
+      actual_batch_size:
+        this.mode === "single_item"
+          ? 1
+          : Math.max(1, this.actualBatchSize || this.configuredBatchSize),
+      batch_wait_ms: this.mode === "single_item" ? null : (this.batchWaitMs ?? 0),
+      outcome: safeOutcome,
     };
-    this.terminal = normalizeStateWriterOperation(candidate) ?? {
+    const normalized = normalizeStateWriterOperation(candidate);
+    if (normalized) {
+      this.terminal = normalized;
+      return this.terminal;
+    }
+    // Keep publication authoritative: emit a minimal valid failed sample rather
+    // than an invariant-breaking payload that the queue would reject.
+    const fallback = normalizeStateWriterOperation({
       ...candidate,
-      actual_batch_size: this.mode === "single_item" ? 1 : Math.max(1, this.actualBatchSize),
-      materialized_items: this.commitCount ? Math.max(1, this.materializedItems) : 0,
-    };
+      acquired: false,
+      hold_ms: null,
+      renewals: 0,
+      released: null,
+      commit_count: 0,
+      materialized_items: 0,
+      configured_batch_size: 1,
+      actual_batch_size: 1,
+      batch_wait_ms: null,
+      mode: "single_item",
+      outcome: "failed",
+    });
+    if (!fallback) {
+      throw new Error("state writer telemetry fallback normalization failed");
+    }
+    this.terminal = fallback;
     return this.terminal;
   }
 

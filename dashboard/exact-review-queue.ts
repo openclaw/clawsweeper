@@ -2468,12 +2468,38 @@ export class ExactReviewQueue {
          conflicted_terminal_total INTEGER NOT NULL DEFAULT 0,
          accepted_progress_total INTEGER NOT NULL DEFAULT 0,
          rejected_progress_total INTEGER NOT NULL DEFAULT 0,
+         state_commits_total INTEGER NOT NULL DEFAULT 0,
+         materialized_items_total INTEGER NOT NULL DEFAULT 0,
+         contention_timeouts_total INTEGER NOT NULL DEFAULT 0,
          last_observed_at INTEGER
        ) STRICT`,
     );
+    this.ensureStateWriterDiagnosticColumnsSync();
     this.storage.sql.exec(
       `INSERT OR IGNORE INTO ${EXACT_REVIEW_STATE_WRITER_DIAGNOSTICS_TABLE} (singleton_id) VALUES (1)`,
     );
+  }
+
+  private ensureStateWriterDiagnosticColumnsSync() {
+    const columns = new Set(
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_STATE_WRITER_DIAGNOSTICS_TABLE}')`,
+        ),
+      ).map((row) => String((row as { name?: string }).name || "")),
+    );
+    for (const column of [
+      "state_commits_total",
+      "materialized_items_total",
+      "contention_timeouts_total",
+    ]) {
+      if (!columns.has(column)) {
+        this.storage.sql.exec(
+          `ALTER TABLE ${EXACT_REVIEW_STATE_WRITER_DIAGNOSTICS_TABLE}
+             ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`,
+        );
+      }
+    }
   }
 
   private readStorageMetaSync() {
@@ -3113,7 +3139,19 @@ export class ExactReviewQueue {
           ),
         );
         if (inserted.length) {
-          this.incrementStateWriterDiagnosticSync("accepted_terminal_total", now);
+          this.storage.sql.exec(
+            `UPDATE ${EXACT_REVIEW_STATE_WRITER_DIAGNOSTICS_TABLE}
+                SET accepted_terminal_total = accepted_terminal_total + 1,
+                    state_commits_total = state_commits_total + ?,
+                    materialized_items_total = materialized_items_total + ?,
+                    contention_timeouts_total = contention_timeouts_total + ?,
+                    last_observed_at = ?
+              WHERE singleton_id = 1`,
+            operation.commit_count,
+            operation.materialized_items,
+            operation.outcome === "contention_timeout" ? 1 : 0,
+            now,
+          );
           return;
         }
         const existing = Array.from(
@@ -3317,6 +3355,9 @@ export class ExactReviewQueue {
         conflicted_terminal_total: Number(diagnostics.conflicted_terminal_total || 0),
         accepted_progress_total: Number(diagnostics.accepted_progress_total || 0),
         rejected_progress_total: Number(diagnostics.rejected_progress_total || 0),
+        state_commits_total: Number(diagnostics.state_commits_total || 0),
+        materialized_items_total: Number(diagnostics.materialized_items_total || 0),
+        contention_timeouts_total: Number(diagnostics.contention_timeouts_total || 0),
       },
     };
   }

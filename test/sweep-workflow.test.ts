@@ -636,8 +636,10 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(publisherSource, /StatePublishContentionError\s*\? "state_contention"/);
   assert.match(
     publisherSource,
-    /const mutation = withStatePublishLease\(\(\) => \{\s*hardResetToRemoteMain\(\)/,
+    /const mutation = withStatePublishLease\(\s*\(\) => \{\s*hardResetToRemoteMain\(\)/,
   );
+  assert.match(publisherSource, /observer:\s*recorder/);
+  assert.match(publisherSource, /state_writer_json=/);
   assert.match(publisherSource, /retryable_failure/);
   assert.match(publisherSource, /error instanceof GitCommandTimeoutError/);
   assert.match(
