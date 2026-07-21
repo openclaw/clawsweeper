@@ -40,13 +40,19 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(source, /repair:exact-review-batch heartbeat/);
   assert.equal(source.match(/repair:exact-review-batch commit/g)?.length, 1);
   assert.equal(source.match(/repair:exact-review-batch complete/g)?.length, 1);
+  assert.equal(source.match(/repair:exact-review-batch release/g)?.length, 1);
   assert.match(source, /Finalize healthy members under a fenced heartbeat/);
+  assert.match(source, /Release unfinished batch members/);
+  assert.match(source, /always\(\).*steps\.batch\.outputs\.claimed/);
+  assert.match(source, /name: Release unfinished batch members[\s\S]*?continue-on-error: true/);
   assert.match(source, /while sleep 60/);
   assert.match(source, /test ! -f "\$heartbeat_failed"/);
   assert.match(source, /Leaving .* retryable: artifact download failed/);
   assert.match(source, /Leaving .* retryable: artifact validation failed/);
   assert.match(source, /Leaving .* retryable: item publication failed/);
   assert.match(source, /Leaving .* retryable: legacy tuple-less artifact/);
+  assert.match(source, /write_failure .*retryable_failure artifact_unavailable/);
+  assert.match(source, /write_failure .*permanent_failure tuple_protocol_invalid/);
   assert.match(source, /EXACT_REVIEW_BATCH_MUTATION_OUTPUT/);
   // Keep the fixture from looking like an embedded credential while still
   // proving that artifact downloads use the owner-scoped repository token.
@@ -82,4 +88,11 @@ test("batch claim treats an all-stale fetched batch as terminal", () => {
   assert.ok(
     cliSource.indexOf("if (!manifest.items.length) return;") < cliSource.indexOf("owners.size"),
   );
+});
+
+test("batch failure cleanup completes manifest fences without a queue fetch", () => {
+  const releaseSource = /async function release\(\) \{([\s\S]*?)\n\}/.exec(cliSource)?.[1] ?? "";
+  assert.match(releaseSource, /manifest\.items\.map/);
+  assert.match(releaseSource, /acknowledge\(manifest, completions\)/);
+  assert.doesNotMatch(releaseSource, /client\.fetch/);
 });

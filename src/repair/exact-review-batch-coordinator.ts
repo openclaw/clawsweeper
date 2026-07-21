@@ -74,7 +74,19 @@ export async function coordinateExactReviewBatch(
         commit: (plans) => dependencies.commit(lease.batchId, plans),
       });
       await assertLease();
-      if (!publication.completions.length) {
+      const failureFingerprint = publication.retryable.length
+        ? retryableFingerprint(publication.retryable)
+        : undefined;
+      const completions = [
+        ...publication.completions,
+        ...publication.retryable.map(({ reason, ...member }) => ({
+          ...member,
+          terminalOutcome: "retryable_failure" as const,
+          reasonCode: retryableReasonCode(reason),
+          ...(failureFingerprint ? { errorFingerprint: failureFingerprint } : {}),
+        })),
+      ];
+      if (!completions.length) {
         return {
           kind: "claimed" as const,
           batchId: lease.batchId,
@@ -86,11 +98,9 @@ export async function coordinateExactReviewBatch(
       const completion = await dependencies.queue.complete({
         batchId: lease.batchId,
         leaseOwner: options.leaseOwner,
-        items: publication.completions,
+        items: completions,
         ...(publication.stateCommitSha ? { stateCommitSha: publication.stateCommitSha } : {}),
-        ...(publication.retryable.length
-          ? { failureFingerprint: retryableFingerprint(publication.retryable) }
-          : {}),
+        ...(failureFingerprint ? { failureFingerprint } : {}),
       });
       return {
         kind: "claimed" as const,
@@ -171,4 +181,16 @@ function retryableFingerprint(
     .sort((left, right) => left.itemKey.localeCompare(right.itemKey))
     .map(({ itemKey, revision, reason }) => ({ itemKey, revision, reason }));
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
+function retryableReasonCode(reason: string): string {
+  const normalized = reason.toLowerCase();
+  if (normalized.includes("artifact")) return "artifact_unavailable";
+  if (normalized.includes("rate limit") || normalized.includes("rate_limit")) {
+    return "github_rate_limit";
+  }
+  if (normalized.includes("contention") || normalized.includes("statepublishcontentionerror")) {
+    return "state_contention";
+  }
+  return "unknown_failure";
 }

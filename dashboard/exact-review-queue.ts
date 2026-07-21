@@ -137,6 +137,9 @@ type ExactReviewPublicationCompletion = {
   reasonCode: ExactReviewPublicationReasonCode;
   errorFingerprint?: string;
 };
+type ExactReviewPublicationBatchCompletion = PublicationBatchCompletion & {
+  publicationCompletion?: ExactReviewPublicationCompletion;
+};
 type ExactReviewPublicationFeedback = {
   at: number;
   capacity: number;
@@ -2680,11 +2683,26 @@ export class ExactReviewQueue {
       return json({ error: "invalid_failure_fingerprint" }, 400);
     }
     let acceptedCount = 0;
+    const requestedByFence = new Map(
+      completions.map(
+        (completion) =>
+          [
+            `${completion.itemKey}:${completion.revision}:${completion.claimGeneration}`,
+            completion,
+          ] as const,
+      ),
+    );
+    const now = Date.now();
     const batch = this.batchStore.complete(
       batchId,
       leaseOwner,
-      completions,
-      Date.now(),
+      completions.map(({ itemKey, revision, claimGeneration, terminalOutcome }) => ({
+        itemKey,
+        revision,
+        claimGeneration,
+        terminalOutcome,
+      })),
+      now,
       {
         ...(stateCommitSha ? { stateCommitSha } : {}),
         ...(failureFingerprint ? { failureFingerprint } : {}),
@@ -2695,13 +2713,15 @@ export class ExactReviewQueue {
         const state = this.readStateSync();
         let published = 0;
         let superseded = 0;
+        let completed = 0;
+        let retried = 0;
+        let deadLettered = 0;
+        let refreshed = 0;
         for (const completion of accepted) {
-          if (
-            completion.terminalOutcome !== "published" &&
-            completion.terminalOutcome !== "superseded"
-          ) {
-            continue;
-          }
+          const requested = requestedByFence.get(
+            `${completion.itemKey}:${completion.revision}:${completion.claimGeneration}`,
+          );
+          if (!requested) continue;
           const item = state.items[completion.itemKey];
           if (
             !item ||
@@ -2710,21 +2730,45 @@ export class ExactReviewQueue {
           ) {
             continue;
           }
+          if (requested.publicationCompletion) {
+            const result = finishExactReviewPublicationQueueItem({
+              state,
+              item,
+              now,
+              completion: requested.publicationCompletion,
+              ownedRevision: completion.revision,
+              deadLetterCapacityAvailable: this.deadLetterCapacityAvailableSync(
+                exactReviewDeadLetterId(item, completion.revision),
+              ),
+              env: this.env,
+            });
+            if (result.deadLetter) {
+              this.insertDeadLetterSync(result.deadLetter);
+              deadLettered += 1;
+            }
+            if (!result.requeued && !result.parked) completed += 1;
+            if (result.retried) retried += 1;
+            if (result.refreshed) refreshed += 1;
+            continue;
+          }
           delete state.items[completion.itemKey];
+          completed += 1;
           if (completion.terminalOutcome === "published") published += 1;
-          else superseded += 1;
+          else if (completion.terminalOutcome === "superseded") superseded += 1;
         }
-        if (!published && !superseded) return;
         this.writeStateSync(state);
         this.incrementQueueMetricsSync({
-          publicationCompleted: published + superseded,
+          publicationCompleted: completed,
           publicationPublished: published,
           publicationSuperseded: superseded,
+          publicationRetried: retried,
+          publicationDeadLettered: deadLettered,
+          publicationRefreshed: refreshed,
         });
       },
     );
     if (!batch) return json({ error: "batch_lease_not_active" }, 409);
-    if (acceptedCount) await this.scheduleNext(this.readStateSync(), Date.now());
+    if (acceptedCount) await this.scheduleNext(this.readStateSync(), now);
     return json({
       ok: true,
       accepted: acceptedCount,
@@ -4944,6 +4988,7 @@ function finishExactReviewPublicationQueueItem({
   item,
   now,
   completion,
+  ownedRevision,
   requestedRetryAt = 0,
   requeueLatest = false,
   deadLetterCapacityAvailable,
@@ -4953,6 +4998,7 @@ function finishExactReviewPublicationQueueItem({
   item: ExactReviewQueueItem;
   now: number;
   completion: ExactReviewPublicationCompletion;
+  ownedRevision?: number;
   requestedRetryAt?: number;
   requeueLatest?: boolean;
   deadLetterCapacityAvailable: boolean;
@@ -4964,7 +5010,8 @@ function finishExactReviewPublicationQueueItem({
   parked: boolean;
   deadLetter?: ExactReviewDeadLetterInsert;
 } {
-  const hasNewerRevision = item.revision > Number(item.leaseRevision || 0);
+  const completionRevision = ownedRevision ?? Number(item.leaseRevision || 0);
+  const hasNewerRevision = item.revision > completionRevision;
   if (hasNewerRevision || requeueLatest) {
     const requeued = finishExactReviewQueueItem(
       state,
@@ -5028,6 +5075,7 @@ function finishExactReviewPublicationQueueItem({
       firstFailureAt,
       now,
       completion.errorFingerprint,
+      completionRevision,
     );
     if (deadLetterCapacityAvailable) {
       delete state.items[item.key];
@@ -5115,8 +5163,8 @@ function exactReviewPublicationRetryDelayMs(
   return delay + Math.floor(delay * ((hash % 21) / 100));
 }
 
-function exactReviewDeadLetterId(item: ExactReviewQueueItem) {
-  return `${item.key}@revision:${item.leaseRevision || item.revision}`;
+function exactReviewDeadLetterId(item: ExactReviewQueueItem, ownedRevision?: number) {
+  return `${item.key}@revision:${ownedRevision || item.leaseRevision || item.revision}`;
 }
 
 function exactReviewDeadLetterInsert(
@@ -5126,13 +5174,14 @@ function exactReviewDeadLetterInsert(
   firstFailedAt: number,
   lastFailedAt: number,
   errorFingerprint?: string,
+  ownedRevision?: number,
 ): ExactReviewDeadLetterInsert {
   const publication = item.decision.publication;
   if (!publication) throw new Error(`publication metadata missing for ${item.key}`);
   return {
-    id: exactReviewDeadLetterId(item),
+    id: exactReviewDeadLetterId(item, ownedRevision),
     itemKey: item.key,
-    revision: Number(item.leaseRevision || item.revision),
+    revision: Number(ownedRevision || item.leaseRevision || item.revision),
     targetRepo: item.decision.targetRepo,
     itemNumber: item.decision.itemNumber,
     producerRunId: publication.producerRunId,
@@ -7031,20 +7080,26 @@ function exactReviewPublicationBatchOwner(value) {
   return /^[A-Za-z0-9._:@/-]{1,200}$/.test(text) ? text : "";
 }
 
-function exactReviewPublicationBatchCompletions(value): PublicationBatchCompletion[] | null {
+function exactReviewPublicationBatchCompletions(
+  value,
+): ExactReviewPublicationBatchCompletion[] | null {
   if (!Array.isArray(value) || value.length > MAX_EXACT_REVIEW_PUBLICATION_BATCH_SIZE) return null;
-  // PR1 only exposes outcomes whose existing queue terminal semantics are complete.
-  // Retry and dead-letter classifications stay on the legacy path until PR3 wires
-  // per-item batch failures through finishExactReviewPublicationQueueItem.
-  const outcomes = new Set(["published", "superseded"]);
   const seen = new Set<string>();
-  const completions: PublicationBatchCompletion[] = [];
+  const completions: ExactReviewPublicationBatchCompletion[] = [];
   for (const raw of value) {
     const item = objectValue(raw);
     const itemKey = String(item.item_key || "").trim();
     const revision = Number(item.revision);
     const claimGeneration = Number(item.claim_generation);
     const terminalOutcome = String(item.terminal_outcome || "").trim();
+    const publicationCompletion =
+      terminalOutcome === "published" || terminalOutcome === "superseded"
+        ? null
+        : exactReviewPublicationCompletion(
+            terminalOutcome,
+            item.reason_code,
+            item.error_fingerprint,
+          );
     if (
       !itemKey ||
       itemKey.length > 500 ||
@@ -7053,7 +7108,12 @@ function exactReviewPublicationBatchCompletions(value): PublicationBatchCompleti
       revision < 1 ||
       !Number.isInteger(claimGeneration) ||
       claimGeneration < 1 ||
-      !outcomes.has(terminalOutcome)
+      (terminalOutcome !== "published" &&
+        terminalOutcome !== "superseded" &&
+        !publicationCompletion) ||
+      publicationCompletion?.kind === "published" ||
+      publicationCompletion?.kind === "superseded" ||
+      publicationCompletion?.kind === "deferred"
     ) {
       return null;
     }
@@ -7062,7 +7122,11 @@ function exactReviewPublicationBatchCompletions(value): PublicationBatchCompleti
       itemKey,
       revision,
       claimGeneration,
-      terminalOutcome: terminalOutcome as PublicationBatchCompletion["terminalOutcome"],
+      terminalOutcome:
+        terminalOutcome === "published" || terminalOutcome === "superseded"
+          ? terminalOutcome
+          : "lease_expired",
+      ...(publicationCompletion ? { publicationCompletion } : {}),
     });
   }
   return completions;

@@ -90,6 +90,15 @@ jobs:
           REPO_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
+          write_failure() {
+            local path="$1"
+            local kind="$2"
+            local reason_code="$3"
+            jq -n \
+              --arg kind "$kind" \
+              --arg reasonCode "$reason_code" \
+              '{ kind: $kind, reasonCode: $reasonCode }' > "$path"
+          }
           jq -c '.items[]' "$EXACT_REVIEW_BATCH_MANIFEST" | while IFS= read -r item; do
             pnpm run --silent repair:exact-review-batch heartbeat || exit 1
             outcome_path="$(jq -r '.outcomePath' <<<"$item")"
@@ -106,6 +115,7 @@ jobs:
             if ! GH_TOKEN="$REPO_TOKEN" gh run download "$producer_run_id" --repo "$GITHUB_REPOSITORY" \
               --name "$artifact_name" --dir "$bundle_dir"; then
               echo "::warning::Leaving $target_repo#$item_number retryable: artifact download failed"
+              write_failure "$outcome_path" retryable_failure artifact_unavailable
               continue
             fi
             if ! env \
@@ -129,6 +139,7 @@ jobs:
               EXACT_REVIEW_TARGET_REPO="$target_repo" \
               pnpm run --silent repair:exact-review-bundle validate; then
               echo "::warning::Leaving $target_repo#$item_number retryable: artifact validation failed"
+              write_failure "$outcome_path" retryable_failure unknown_failure
               continue
             fi
             report="$bundle_dir/review/$item_number.md"
@@ -143,6 +154,7 @@ jobs:
           NODE
             then
               echo "::warning::Leaving $target_repo#$item_number retryable: legacy tuple-less artifact"
+              write_failure "$outcome_path" permanent_failure tuple_protocol_invalid
               continue
             fi
             if [ -f "$report" ]; then cp "$report" "artifacts/event/$item_number.md"; fi
@@ -160,7 +172,7 @@ jobs:
               EXACT_REVIEW_BATCH_MUTATION_OUTPUT="$outcome_path" \
               pnpm run --silent repair:publish-event-result; then
               echo "::warning::Leaving $target_repo#$item_number retryable: item publication failed"
-              rm -f "$outcome_path"
+              write_failure "$outcome_path" retryable_failure unknown_failure
               continue
             fi
           done
@@ -248,3 +260,10 @@ jobs:
           done
           test ! -f "$heartbeat_failed"
           pnpm run --silent repair:exact-review-batch complete
+
+      - name: Release unfinished batch members
+        if: ${{ always() && steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
+        continue-on-error: true
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: pnpm run --silent repair:exact-review-batch release

@@ -6,10 +6,17 @@ export type ExactReviewBatchMember = {
   claimGeneration: number;
 };
 
-export type ExactReviewBatchTerminalOutcome = "published" | "superseded";
+export type ExactReviewBatchTerminalOutcome =
+  | "published"
+  | "superseded"
+  | "retryable_failure"
+  | "refresh_required"
+  | "permanent_failure";
 
 export type ExactReviewBatchCompletion = ExactReviewBatchMember & {
   terminalOutcome: ExactReviewBatchTerminalOutcome;
+  reasonCode?: string;
+  errorFingerprint?: string;
 };
 
 export type ExactReviewBatchItemResult =

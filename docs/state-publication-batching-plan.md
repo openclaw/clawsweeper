@@ -91,6 +91,54 @@ minutes, and `state_writer.mode=unknown`. A matching-ref query at `13:43:23Z`
 returned no lease refs, and the lease ref is also empty after the later failure;
 absence of a stale ref does not repair unfair handoff among live writers.
 
+### Batch failure terminalization
+
+Repository-wide writer serialization addresses fair access to the generated
+state branch, but a batch must also relinquish its own queue ownership whenever
+publication cannot finish. A failed or partially successful workflow must not
+leave unfinished members behind until the 30-minute lease expiry, because one
+active batch blocks every later batch departure.
+
+Every claimed member therefore reaches one fenced acknowledgement before the
+workflow exits:
+
+- `published` or `superseded` removes the matching queue revision; or
+- `retryable_failure`, `refresh_required`, or `permanent_failure` terminalizes
+  only the matching batch membership and routes the underlying publication item
+  through the existing backoff, refresh, and dead-letter policy.
+
+Explicit failure release uses the existing `lease_expired` membership value so
+the additive SQLite schema remains migration-free. Revision and
+claim-generation fencing still prevent an old worker from releasing newer
+ownership. An `always()` workflow cleanup acknowledges any member left
+unfinished by cancellation or an unexpected step failure, while lease expiry
+remains the final crash fallback rather than the normal recovery path.
+
+The first post-coordinator production batch exposed a second availability
+dependency. [Run 29854892938](https://github.com/openclaw/clawsweeper/actions/runs/29854892938)
+claimed and prepared two members, then failed almost immediately when the batch
+commit command's queue `fetch` returned invalid JSON with HTTP 500. At
+`2026-07-21T18:11:00Z`, publication still had 1,729 pending and ready items,
+zero resolutions in the prior 60 minutes, one leased batch with two active
+members, and 8,020 pending state-append rows. The prior cleanup repeated the
+same `fetch`, so it could not release the members during that queue read
+failure.
+
+Failure cleanup now sends the revision and claim-generation fences persisted in
+the claimed manifest directly to the batch `complete` route. It does not depend
+on a fresh queue read. The route applies accepted retryable outcomes through
+`finishExactReviewPublicationQueueItem`, while a delayed cleanup that races an
+already completed or expired same-fence batch is an idempotent no-op. Wrong
+owners and stale generations remain rejected. The `always()` cleanup is also
+non-fatal after a successful primary publication, so a transient cleanup
+transport error cannot convert a completed publisher into a failed workflow;
+an earlier publication failure remains visible as the job's primary failure.
+
+This contract is independent of the coordinator rollout: the coordinator from
+#738/#756 makes state-writer admission durable and fair, while batch failure
+terminalization keeps the exact-review publication queue live when the admitted
+writer, artifact processing, or GitHub effects fail.
+
 ### Writer audit
 
 The production evidence and call-site/workflow audit identify these generated

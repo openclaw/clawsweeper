@@ -42,7 +42,7 @@ export type PublicationBatch = {
 
 export type PublicationBatchCompletion = PublicationBatchCandidate & {
   claimGeneration: number;
-  terminalOutcome: Exclude<PublicationBatchTerminalOutcome, "lease_expired">;
+  terminalOutcome: PublicationBatchTerminalOutcome;
 };
 
 export type PublicationBatchFence = PublicationBatchCandidate & {
@@ -265,19 +265,20 @@ export class ExactReviewPublicationBatchStore {
       this.reclaimExpiredSync(now);
       const batch = this.readBatchSync(batchId);
       if (!batch || batch.leaseOwner !== leaseOwner) return null;
-      if (batch.state === "completed") {
+      if (batch.state !== "leased") {
         const membersByKey = new Map(batch.items.map((item) => [item.itemKey, item]));
-        const matchesReceipt = completions.every((completion) => {
+        const matchesFence = completions.every((completion) => {
           const member = membersByKey.get(completion.itemKey);
           return (
             member?.revision === completion.revision &&
-            member.claimGeneration === completion.claimGeneration &&
-            member.terminalOutcome === completion.terminalOutcome
+            member.claimGeneration === completion.claimGeneration
           );
         });
-        return matchesReceipt ? batch : null;
+        // A delayed always() cleanup may race a successful acknowledgement or
+        // lease expiry. Matching immutable fences make either retry an
+        // idempotent no-op; stale generations and wrong owners still fail.
+        return matchesFence ? batch : null;
       }
-      if (batch.state !== "leased") return null;
       const unfinishedByKey = new Map(
         batch.items
           .filter((item) => item.terminalOutcome === null)

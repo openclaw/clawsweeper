@@ -51,10 +51,49 @@ test("coordinator heartbeats, isolates mixed outcomes, and acknowledges terminal
   assert.ok(heartbeats >= 6);
   assert.equal(completed.length, 1);
   assert.deepEqual(
+    (completed[0] as { items: Array<{ terminalOutcome: string; reasonCode?: string }> }).items
+      .map((item) => [item.terminalOutcome, item.reasonCode ?? null])
+      .sort(),
+    [
+      ["published", null],
+      ["retryable_failure", "artifact_unavailable"],
+      ["superseded", null],
+    ],
+  );
+  assert.deepEqual(
     result.kind === "claimed"
       ? result.publication.completions.map((item) => item.terminalOutcome).sort()
       : [],
     ["published", "superseded"],
+  );
+});
+
+test("shared commit contention releases every eligible batch member", async () => {
+  const completed: Array<{ items: Array<{ terminalOutcome: string; reasonCode?: string }> }> = [];
+  const result = await coordinateExactReviewBatch(
+    { claimId: "claim-1", leaseOwner: "run-1", maxItems: 3 },
+    {
+      queue: fakeQueue({
+        complete: (input) => completed.push(input as (typeof completed)[number]),
+      }),
+      async prepare(item) {
+        return { kind: "eligible", plan: plan(item) };
+      },
+      async deliverGithubEffects() {
+        return "ready";
+      },
+      async commit() {
+        throw new Error("StatePublishContentionError: lease wait exhausted");
+      },
+    },
+  );
+
+  assert.equal(result.kind, "claimed");
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0]!.items.length, 3);
+  assert.deepEqual(
+    completed[0]!.items.map((item) => [item.terminalOutcome, item.reasonCode]),
+    Array.from({ length: 3 }, () => ["retryable_failure", "state_contention"]),
   );
 });
 
@@ -116,6 +155,8 @@ test("queue client signs protocol calls and rejects malformed responses", async 
         JSON.stringify({
           ok: true,
           claimed: true,
+          accepted: 1,
+          skipped: 0,
           batch: leaseJson(),
         }),
       );
@@ -124,9 +165,22 @@ test("queue client signs protocol calls and rejects malformed responses", async 
   const lease = await client.claim({ claimId: "claim-1", leaseOwner: "run-1", maxItems: 3 });
   assert.equal(lease?.batchId, "claim-1");
   await client.heartbeat({ batchId: "claim-1", leaseOwner: "run-1", items: queueItems });
+  await client.complete({
+    batchId: "claim-1",
+    leaseOwner: "run-1",
+    items: [
+      {
+        ...queueItems[0]!,
+        terminalOutcome: "retryable_failure",
+        reasonCode: "state_contention",
+        errorFingerprint: "state-contention-proof",
+      },
+    ],
+  });
   assert.deepEqual(paths, [
     "/internal/exact-review/publication-batches/claim",
     "/internal/exact-review/publication-batches/heartbeat",
+    "/internal/exact-review/publication-batches/complete",
   ]);
   assert.deepEqual(bodies[1], {
     batch_id: "claim-1",
@@ -136,6 +190,20 @@ test("queue client signs protocol calls and rejects malformed responses", async 
       revision: item.revision,
       claim_generation: item.claimGeneration,
     })),
+  });
+  assert.deepEqual(bodies[2], {
+    batch_id: "claim-1",
+    lease_owner: "run-1",
+    items: [
+      {
+        item_key: queueItems[0]!.itemKey,
+        revision: queueItems[0]!.revision,
+        claim_generation: queueItems[0]!.claimGeneration,
+        terminal_outcome: "retryable_failure",
+        reason_code: "state_contention",
+        error_fingerprint: "state-contention-proof",
+      },
+    ],
   });
 });
 

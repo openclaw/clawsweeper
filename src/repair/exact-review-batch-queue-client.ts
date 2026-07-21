@@ -115,6 +115,8 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
         revision: item.revision,
         claim_generation: item.claimGeneration,
         terminal_outcome: item.terminalOutcome,
+        ...(item.reasonCode ? { reason_code: item.reasonCode } : {}),
+        ...(item.errorFingerprint ? { error_fingerprint: item.errorFingerprint } : {}),
       })),
       ...(input.stateCommitSha ? { state_commit_sha: input.stateCommitSha } : {}),
       ...(input.failureFingerprint ? { failure_fingerprint: input.failureFingerprint } : {}),
