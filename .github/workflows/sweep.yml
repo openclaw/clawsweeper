@@ -3959,8 +3959,6 @@ jobs:
 
   apply-proof:
     name: Prove close coverage without write credentials
-    env:
-      CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
     if: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -3970,6 +3968,7 @@ jobs:
       issues: read
       pull-requests: read
     env:
+      CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
       CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
       CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED || 'false' }}
       CLAWSWEEPER_IDEA_REVIVAL_REACTIONS: ${{ vars.CLAWSWEEPER_IDEA_REVIVAL_REACTIONS || '5' }}
@@ -4258,8 +4257,6 @@ jobs:
 
   apply-existing:
     name: Apply close proposals
-    env:
-      CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
     needs: [apply-proof, publish-apply-proof-action-ledger]
     if: ${{ always() && !cancelled() && needs.apply-proof.outputs.proof_ready == 'true' && ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: ubuntu-latest
@@ -4269,6 +4266,7 @@ jobs:
       cancel-in-progress: false
       queue: max
     env:
+      CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
       CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
       CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED || 'false' }}
       CLAWSWEEPER_IDEA_REVIVAL_REACTIONS: ${{ vars.CLAWSWEEPER_IDEA_REVIVAL_REACTIONS || '5' }}
