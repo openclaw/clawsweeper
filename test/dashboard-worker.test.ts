@@ -2694,12 +2694,15 @@ test("optional exact-review telemetry failures do not freeze an idle status snap
   globalThis.fetch = async () => {
     throw new Error("shared snapshot should avoid GitHub requests");
   };
+  let queueReads = 0;
   const failingQueue = {
-    fetch: async () =>
-      new Response(JSON.stringify({ error: "queue_read_failed" }), {
+    fetch: async () => {
+      queueReads += 1;
+      return new Response(JSON.stringify({ error: "queue_read_failed" }), {
         status: 503,
         headers: { "content-type": "application/json" },
-      }),
+      });
+    },
   };
   const env = {
     CACHE_TTL_SECONDS: "60",
@@ -2725,6 +2728,7 @@ test("optional exact-review telemetry failures do not freeze an idle status snap
     );
     assert.equal(cached.headers.get("x-clawsweeper-cache"), "fresh");
     assert.equal((await cached.json()).diagnostics.exact_review_queue_error, "queue_read_failed");
+    assert.equal(queueReads, 1);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -8931,7 +8935,7 @@ test("dashboard serves stale status while coalescing one background refresh", as
     value: { default: cache },
   });
   await cache.put(
-    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v2/stale"),
+    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v3/stale"),
     jsonResponse({
       schema_version: 1,
       generated_at: "2026-06-13T18:00:00Z",
@@ -8967,8 +8971,12 @@ test("dashboard serves stale status while coalescing one background refresh", as
       },
     },
   };
+  let queueReads = 0;
   const exactReviewQueue = new MemoryDurableNamespace({
-    fetch: async () => jsonResponse(currentQueue),
+    fetch: async () => {
+      queueReads += 1;
+      return jsonResponse(currentQueue);
+    },
   });
 
   let releaseFetch!: () => void;
@@ -9014,18 +9022,24 @@ test("dashboard serves stale status while coalescing one background refresh", as
     const firstStatus = await first.json();
     const secondStatus = await second.json();
     assert.equal(firstStatus.pipeline[0].id, "stale-row");
-    assert.equal(firstStatus.exact_review_queue.pending, 7);
-    assert.equal(firstStatus.exact_review_queue.handoff_health.status, "healthy");
-    assert.equal(secondStatus.exact_review_queue.handoff_health.status, "healthy");
+    assert.equal(firstStatus.exact_review_queue.pending, 1);
+    assert.equal(firstStatus.exact_review_queue.handoff_health.status, "stalled");
+    assert.equal(secondStatus.exact_review_queue.handoff_health.status, "stalled");
+    assert.equal(queueReads, 0);
     assert.equal(waitUntilPromises.length, 2);
 
     releaseFetch();
     await Promise.all(waitUntilPromises);
     assert.equal(unfilteredRunRequests, 1);
+    assert.equal(queueReads, 1);
 
     const refreshed = await worker.fetch(request, env);
     assert.equal(refreshed.headers.get("x-clawsweeper-cache"), "fresh");
-    assert.deepEqual((await refreshed.json()).pipeline, []);
+    const refreshedStatus = await refreshed.json();
+    assert.deepEqual(refreshedStatus.pipeline, []);
+    assert.equal(refreshedStatus.exact_review_queue.pending, 7);
+    assert.equal(refreshedStatus.exact_review_queue.handoff_health.status, "healthy");
+    assert.equal(queueReads, 1);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });

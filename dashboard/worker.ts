@@ -602,17 +602,17 @@ export default {
 async function statusJson(request, env, ctx) {
   const cache = caches.default;
   const cached = await cache.match(statusCacheRequest(request, "fresh"));
-  if (cached) return cachedStatusResponse(cached, "fresh", env);
+  if (cached) return cachedStatusResponse(cached, "fresh");
 
   const stale = await cache.match(statusCacheRequest(request, "stale"));
   if (stale && ctx?.waitUntil) {
     ctx.waitUntil(refreshStatus(request, env).catch(() => undefined));
-    return cachedStatusResponse(stale, "stale", env);
+    return cachedStatusResponse(stale, "stale");
   }
 
   const refreshed = await refreshStatus(request, env);
-  if (refreshed.looksEmpty && stale) return cachedStatusResponse(stale, "stale", env);
-  return statusSnapshotResponse(refreshed.snapshot, "miss", env);
+  if (refreshed.looksEmpty && stale) return cachedStatusResponse(stale, "stale");
+  return statusSnapshotResponse(refreshed.snapshot, "miss");
 }
 
 async function healthHistoryJson(request: Request, env: DashboardEnv) {
@@ -713,19 +713,22 @@ async function appendHealthHistorySample(env, sample) {
   );
 }
 
-async function cachedStatusResponse(cached, cacheState, env) {
-  const snapshot = await cached.json();
+function cachedStatusResponse(cached, cacheState) {
   const headers = new Headers(cached.headers);
-  return statusSnapshotResponse(snapshot, cacheState, env, cached.status, headers);
+  headers.set("content-type", "application/json; charset=utf-8");
+  headers.set("cache-control", "no-store");
+  headers.set("x-clawsweeper-cache", cacheState);
+  return cors(new Response(cached.body, { status: cached.status, headers }));
 }
 
-async function statusSnapshotResponse(snapshot, cacheState, env, status = 200, headers?) {
-  const current = await attachExactReviewQueueStatus(snapshot, env);
+function statusSnapshotResponse(snapshot, cacheState, status = 200, headers?) {
   const responseHeaders = new Headers(headers);
   responseHeaders.set("content-type", "application/json; charset=utf-8");
   responseHeaders.set("cache-control", "no-store");
   responseHeaders.set("x-clawsweeper-cache", cacheState);
-  return cors(new Response(JSON.stringify(current, null, 2), { status, headers: responseHeaders }));
+  return cors(
+    new Response(JSON.stringify(snapshot, null, 2), { status, headers: responseHeaders }),
+  );
 }
 
 function refreshStatus(request, env) {
@@ -755,7 +758,11 @@ function refreshStatus(request, env) {
 async function refreshStatusCaches(request, env) {
   const ttl = numberFrom(env.CACHE_TTL_SECONDS, 20);
   const staleTtl = numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS);
-  const snapshot = await statusSnapshot(env);
+  const baseSnapshot = await statusSnapshot(env);
+  // Queue stats and the GitHub-backed global lease are operational observations, not
+  // request-specific data. Cache the composed document so a cache hit never waits on
+  // those remote probes; the existing stale-while-revalidate path refreshes them safely.
+  const snapshot = await attachExactReviewQueueStatus(baseSnapshot, env);
   const body = JSON.stringify(snapshot, null, 2);
   const hasErrors = Boolean(snapshot.diagnostics?.errors?.length);
   const looksEmpty =
@@ -788,7 +795,7 @@ async function refreshStatusCaches(request, env) {
 }
 
 function statusCacheRequest(request, bucket) {
-  return new Request(new URL(`/api/status-cache/v2/${bucket}`, request.url).toString(), {
+  return new Request(new URL(`/api/status-cache/v3/${bucket}`, request.url).toString(), {
     method: "GET",
   });
 }
