@@ -7257,7 +7257,9 @@ function exactReviewQueueLane(item: ExactReviewQueueItem) {
 // state. Keep this representation bounded and scrubbed: it is public dashboard
 // data, not a queue-inspection API. Live workers remain the authority for the
 // reviewing stage; these records only make the otherwise invisible admission,
-// setup, publication, and recovery phases visible.
+// setup, publication, and recovery phases visible. Publication is distinct
+// from the publisher workflow's deterministic follow-up, which the Bay shows
+// from the live worker as Applying.
 const EXACT_REVIEW_BAY_SAMPLE_LIMIT = 24;
 // The dashboard can retain both a terminal-buffer card and its washed card
 // while their live queue retry is pending. Accept all bounded Bay candidates
@@ -7267,6 +7269,7 @@ const EXACT_REVIEW_BAY_STAGES = [
   "arriving",
   "setting-up",
   "reviewing",
+  "publishing",
   "applying",
   "repairing",
 ] as const;
@@ -7283,7 +7286,7 @@ type ExactReviewBayProjectionItem = {
 };
 
 function exactReviewQueueBayStage(item: ExactReviewQueueItem): ExactReviewBayStage {
-  if (exactReviewQueueIsPublication(item)) return "applying";
+  if (exactReviewQueueIsPublication(item)) return "publishing";
   if (isLowPriorityExactReviewDecision(item.decision)) return "repairing";
   return item.state === "pending" ? "arriving" : "setting-up";
 }

@@ -255,7 +255,7 @@ function queueProjection() {
   const bayStages = [
     { stage: "arriving", queue_state: "pending" },
     { stage: "setting-up", queue_state: "leased" },
-    { stage: "applying", queue_state: "dispatching" },
+    { stage: "publishing", queue_state: "dispatching" },
     { stage: "repairing", queue_state: "pending" },
   ];
   const items = Array.from({ length: 6 }, (_, batch) =>
@@ -293,7 +293,14 @@ function queueProjection() {
     bay_projection: {
       sample_limit: 24,
       total: 36,
-      stages: { arriving: 9, "setting-up": 9, reviewing: 0, applying: 9, repairing: 9 },
+      stages: {
+        arriving: 9,
+        "setting-up": 9,
+        reviewing: 0,
+        publishing: 9,
+        applying: 0,
+        repairing: 9,
+      },
       items,
     },
   };
@@ -320,7 +327,14 @@ function denseFilteredQueueProjection() {
     bay_projection: {
       sample_limit: 24,
       total: 24,
-      stages: { arriving: 24, "setting-up": 0, reviewing: 0, applying: 0, repairing: 0 },
+      stages: {
+        arriving: 24,
+        "setting-up": 0,
+        reviewing: 0,
+        publishing: 0,
+        applying: 0,
+        repairing: 0,
+      },
       items,
     },
   };
@@ -647,7 +661,14 @@ try {
     arriving_queue_samples: await page
       .locator('[data-stage="arriving"] [data-item^="queue:"]')
       .count(),
+    publishing_queue_samples: await page
+      .locator('[data-stage="publishing"] [data-item^="queue:"]')
+      .count(),
+    applying_queue_samples: await page
+      .locator('[data-stage="applying"] [data-item^="queue:"]')
+      .count(),
     queue_header: await page.locator('[data-stage="arriving"] h2').innerText(),
+    publishing_header: await page.locator('[data-stage="publishing"] h2').innerText(),
     queue_omission: await page.locator('[data-stage="arriving"] .overflow-note').count(),
     queue_omission_label: await page.locator('[data-stage="arriving"] .overflow-note').innerText(),
     queue_omission_role: await page
@@ -667,7 +688,10 @@ try {
       /\/ hour/.test(bayControl.rate_hover_label) &&
       bayControl.queue_items === 1 &&
       bayControl.arriving_queue_samples === 6 &&
+      bayControl.publishing_queue_samples === 6 &&
+      bayControl.applying_queue_samples === 0 &&
       /^ARRIVING 9/.test(bayControl.queue_header) &&
+      /^PUBLISHING 9/.test(bayControl.publishing_header) &&
       bayControl.queue_omission === 1 &&
       bayControl.queue_omission_label === "+3 queued IDs not shown" &&
       bayControl.queue_omission_role === null &&
@@ -964,7 +988,7 @@ try {
   await capture(
     "01b-portrait-workflow",
     "Portrait workflow: top to bottom",
-    "Phone portrait mode stacks Arriving through Applying vertically, then places the terminal pools at the waterline without horizontal scrolling.",
+    "Phone portrait mode stacks Arriving through Publishing and Applying vertically, then places the terminal pools at the waterline without horizontal scrolling.",
   );
   await page.setViewportSize({ width: 1900, height: 1000 });
   await page.waitForFunction(

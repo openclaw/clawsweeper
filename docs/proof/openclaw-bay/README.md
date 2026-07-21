@@ -10,7 +10,7 @@ The sequence proves:
 
 - visible partial-telemetry diagnostics;
 - the Bay timing badge naming its bounded **review trigger → final review** measurement, completed by the command-status update emitted after the durable review summary;
-- a 390px portrait layout that stacks Arriving through Applying vertically, keeps the terminal pools at the waterline, and has no horizontal page overflow;
+- a 390px portrait layout that stacks Arriving through Publishing and Applying vertically, keeps the terminal pools at the waterline, and has no horizontal page overflow;
 - advancing crustacean-claw and master-sweeper animations;
 - a READY flag followed by a physical forward sweep and landing;
 - a changed run ID using the retrigger tunnel and resurfacing path;

@@ -3256,18 +3256,21 @@ async function activeWorkerSnapshot(
   const results = await mapWithConcurrency(detailRuns, fetchConcurrency, async (run) => {
     try {
       const jobs = await workflowJobsForRun(env, repo, run.id, github);
+      const activeJobs = jobs.filter((job) => isActiveWorkflowJob(job));
       return {
         run,
-        workers: jobs
-          .filter((job) => isActiveWorkflowJob(job) && isCodexWorkerJob(job))
+        workers: activeJobs
+          .filter((job) => isDashboardWorkerJob(job))
           .map((job) => normalizeWorkerJob(run, job)),
-        hasWorkerJobs: jobs.some((job) => isCodexWorkerJob(job)),
+        codexWorkers: activeJobs.filter((job) => isCodexWorkerJob(job)).length,
+        hasWorkerJobs: jobs.some((job) => isDashboardWorkerJob(job)),
         error: null,
       };
     } catch (error) {
       return {
         run,
         workers: [],
+        codexWorkers: 0,
         hasWorkerJobs: false,
         error: error instanceof Error ? error.message : String(error),
       };
@@ -3276,12 +3279,15 @@ async function activeWorkerSnapshot(
   const workers = [];
   const errors = [];
   let fallbacks = 0;
+  let codexWorkers = 0;
   for (const result of results) {
+    codexWorkers += result.codexWorkers;
     if (result.error) {
       errors.push(`workflow jobs ${result.run.id}: ${result.error}`);
       if (isCodexWorkflowFallback(result.run)) {
         workers.push(normalizeFallbackWorker(result.run));
         fallbacks += 1;
+        codexWorkers += 1;
       }
       continue;
     }
@@ -3290,12 +3296,14 @@ async function activeWorkerSnapshot(
     } else if (!result.hasWorkerJobs && isCodexWorkflowFallback(result.run)) {
       workers.push(normalizeFallbackWorker(result.run));
       fallbacks += 1;
+      codexWorkers += 1;
     }
   }
   for (const run of runs.slice(detailRunLimit)) {
     if (!isCodexWorkflowFallback(run)) continue;
     workers.push(normalizeFallbackWorker(run));
     fallbacks += 1;
+    codexWorkers += 1;
   }
   workers.sort(
     (left, right) =>
@@ -3305,7 +3313,7 @@ async function activeWorkerSnapshot(
   );
   await attachWorkerTargets(env, workers, errors);
   return {
-    count: workers.length,
+    count: codexWorkers,
     workers,
     detailRuns: detailRuns.length,
     fallbacks,
@@ -4263,7 +4271,7 @@ async function workflowJobsForRun(
       break;
     }
   }
-  const hasActiveWorker = jobs.some((job) => isActiveWorkflowJob(job) && isCodexWorkerJob(job));
+  const hasActiveWorker = jobs.some((job) => isActiveWorkflowJob(job) && isDashboardWorkerJob(job));
   await writeStoredJson(
     env,
     key,
@@ -4286,6 +4294,23 @@ function isCodexWorkerJob(job) {
   return /review shard|review, comment, and apply event item|review commit|plan and review cluster|execute and apply cluster actions|assist/i.test(
     name,
   );
+}
+
+function isExactReviewPublicationJob(job) {
+  const name = String(job?.name || "");
+  const steps = Array.isArray(job?.steps) ? job.steps : [];
+  return (
+    /publish exact review artifact/i.test(name) ||
+    steps.some((step) =>
+      /claim durable exact review publication|publish event result and apply safe close|complete durable exact review publication/i.test(
+        String(step?.name || ""),
+      ),
+    )
+  );
+}
+
+function isDashboardWorkerJob(job) {
+  return isCodexWorkerJob(job) || isExactReviewPublicationJob(job);
 }
 
 function normalizeWorkerJob(run, job) {

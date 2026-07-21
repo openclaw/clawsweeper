@@ -2067,7 +2067,8 @@ test("dashboard status reads the exact-review handoff model from the durable que
     arriving: 2,
     "setting-up": 1,
     reviewing: 0,
-    applying: 1,
+    publishing: 1,
+    applying: 0,
     repairing: 1,
   });
   assert.deepEqual(
@@ -2079,7 +2080,7 @@ test("dashboard status reads the exact-review handoff model from the durable que
     [
       { item_key: "openclaw/gogcli#597", stage: "arriving", queue_state: "pending" },
       { item_key: "openclaw/gogcli#600", stage: "setting-up", queue_state: "leased" },
-      { item_key: "openclaw/gogcli#599", stage: "applying", queue_state: "leased" },
+      { item_key: "openclaw/gogcli#599", stage: "publishing", queue_state: "leased" },
       { item_key: "openclaw/gogcli#601", stage: "repairing", queue_state: "pending" },
       { item_key: "openclaw/gogcli#598", stage: "arriving", queue_state: "pending" },
     ],
@@ -2139,6 +2140,7 @@ test("Bay queue projection applies its public sample cap across all stages", asy
     arriving: 9,
     "setting-up": 9,
     reviewing: 0,
+    publishing: 0,
     applying: 0,
     repairing: 9,
   });
@@ -2276,7 +2278,16 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   assert.match(body, /bay-control-axis-label/);
   assert.match(body, /api\/health-history\?range="\+encodeURIComponent\(range\)/);
   assert.match(body, /function expandQueue/);
+  assert.match(body, /function queueProjectionStage/);
   assert.match(body, /Repair cove/);
+  assert.match(body, /"publishing":"Publishing"/);
+  assert.match(body, /Waiting to publish the final review/);
+  assert.match(body, /bounded result-publication queue/);
+  assert.match(
+    body,
+    /var hasPublishing=Object\.prototype\.hasOwnProperty\.call\(stages,"publishing"\)/,
+  );
+  assert.match(body, /if\(stage==="applying"&&!hasPublishing\)reported=0/);
   assert.match(body, /id="tunnel-layer"/);
   assert.match(body, /function startTunnelJourney/);
   assert.doesNotMatch(body, /function drawTunnels/);
@@ -2361,17 +2372,67 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   assert.ok(new Set(chatContext.copies.map((copy) => copy.answer)).size > 1);
   assert.ok(chatContext.copies.every((copy) => copy.answer.includes("7m")));
   const runChangedSource = body.match(/function runChanged\([^}]+\}/)?.[0];
+  const stageForSource = body.match(/function stageFor\([^]*?return "arriving";\}/)?.[0];
+  const queueProjectionStageSource = body.match(
+    /function queueProjectionStage\([^]*?return STAGES\.indexOf\(stage\)>=0\?stage:"arriving";\}/,
+  )?.[0];
   const transitionKindSource = body.match(
     /function transitionKind\([^]*?return oldIndex>=0&&nextIndex>oldIndex\?"forward":null;\}/,
   )?.[0];
   assert.ok(runChangedSource);
+  assert.ok(stageForSource);
+  assert.ok(queueProjectionStageSource);
   assert.ok(transitionKindSource);
+  const normalizeQueueStage = new Script(
+    `${queueProjectionStageSource};queueProjectionStage`,
+  ).runInNewContext({
+    STAGES: ["arriving", "setting-up", "reviewing", "publishing", "applying", "repairing"],
+  });
+  assert.equal(normalizeQueueStage("applying"), "publishing");
+  assert.equal(normalizeQueueStage("publishing"), "publishing");
+  const classifyBayStage = new Script(`${stageForSource};stageFor`).runInNewContext({
+    STAGES: ["arriving", "setting-up", "reviewing", "publishing", "applying", "repairing"],
+  });
+  const publicationSteps = [{ name: "Claim durable exact review publication" }];
+  assert.equal(
+    classifyBayStage({
+      status: "in_progress",
+      current_step: "Validate exact review artifact bundle",
+      steps: publicationSteps,
+    }),
+    "publishing",
+  );
+  assert.equal(
+    classifyBayStage({
+      status: "queued",
+      current_step: "Waiting for runner",
+      steps: publicationSteps,
+    }),
+    "publishing",
+  );
+  assert.equal(
+    classifyBayStage({
+      name: "Publish exact review artifact",
+      status: "queued",
+      current_step: "Waiting for runner",
+      steps: [],
+    }),
+    "publishing",
+  );
+  assert.equal(
+    classifyBayStage({
+      status: "in_progress",
+      current_step: "Publish event result and apply safe close",
+      steps: publicationSteps,
+    }),
+    "applying",
+  );
   const classifyTransition = new Script(
     `${runChangedSource};(${transitionKindSource})`,
   ).runInNewContext({
-    MAIN_STAGES: ["arriving", "setting-up", "reviewing", "applying"],
+    MAIN_STAGES: ["arriving", "setting-up", "reviewing", "publishing", "applying"],
   });
-  for (const stage of ["setting-up", "reviewing", "applying"]) {
+  for (const stage of ["setting-up", "reviewing", "publishing", "applying"]) {
     assert.equal(
       classifyTransition({ run_id: "old", stage: "reviewing" }, { run_id: "new", stage }),
       "retrigger",
@@ -2387,6 +2448,13 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   assert.equal(
     classifyTransition(
       { run_id: "same", stage: "reviewing" },
+      { run_id: "same", stage: "publishing" },
+    ),
+    "forward",
+  );
+  assert.equal(
+    classifyTransition(
+      { run_id: "same", stage: "publishing" },
       { run_id: "same", stage: "applying" },
     ),
     "forward",
@@ -11023,10 +11091,11 @@ test("dashboard preserves issue titles across generated PR repair events", () =>
 test("dashboard exposes active worker jobs and their current steps", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
+  const cache = new MemoryCache();
   Object.defineProperty(globalThis, "caches", {
     configurable: true,
     value: {
-      default: new MemoryCache(),
+      default: cache,
     },
   });
   const run = {
@@ -11097,10 +11166,25 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
           },
           {
             id: 4202,
-            name: "Publish review artifacts",
-            status: "queued",
+            name: "Publish exact review artifact",
+            status: "in_progress",
             conclusion: null,
-            steps: [],
+            html_url: "https://github.com/openclaw/clawsweeper/actions/runs/42/job/4202",
+            started_at: isoAgo(60_000),
+            steps: [
+              {
+                number: 1,
+                name: "Claim durable exact review publication",
+                status: "completed",
+                conclusion: "success",
+              },
+              {
+                number: 2,
+                name: "Publish event result and apply safe close",
+                status: "in_progress",
+                conclusion: null,
+              },
+            ],
           },
         ],
       });
@@ -11166,7 +11250,7 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
     assert.equal(status.fleet.active_codex_jobs, 2);
     assert.equal(status.fleet.worker_detail_runs, 2);
     assert.equal(status.fleet.worker_detail_fallbacks, 1);
-    assert.equal(status.workers.length, 2);
+    assert.equal(status.workers.length, 3);
     assert.equal(status.workers[0].id, 4201);
     assert.equal(status.workers[0].name, "Review shard 0 · openclaw/openclaw#92521,92522");
     assert.equal(status.workers[0].repository, "openclaw/openclaw");
@@ -11191,10 +11275,19 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
         type: "pull_request",
       },
     ]);
-    assert.equal(status.workers[1].id, "run-43");
-    assert.equal(status.workers[1].source, "workflow-fallback");
-    assert.equal(status.workers[1].current_step, "reviewing");
-    assert.equal(status.workers[1].target_items[0].title, "Queued terminal resize follow-up");
+    assert.equal(status.workers[1].id, 4202);
+    assert.equal(status.workers[1].name, "Publish exact review artifact");
+    assert.equal(status.workers[1].item_number, 92521);
+    assert.equal(status.workers[1].current_step, "Publish event result and apply safe close");
+    assert.equal(status.workers[1].steps[0].name, "Claim durable exact review publication");
+    const cachedPublisherJobs = await cache.match(
+      new Request("https://clawsweeper.internal/store/workflow-jobs%3Aopenclaw%2Fclawsweeper%3A42"),
+    );
+    assert.equal(cachedPublisherJobs?.headers.get("cache-control"), "public, max-age=60");
+    assert.equal(status.workers[2].id, "run-43");
+    assert.equal(status.workers[2].source, "workflow-fallback");
+    assert.equal(status.workers[2].current_step, "reviewing");
+    assert.equal(status.workers[2].target_items[0].title, "Queued terminal resize follow-up");
 
     const cachedResponse = await worker.fetch(
       new Request("https://clawsweeper.openclaw.ai/api/status"),
