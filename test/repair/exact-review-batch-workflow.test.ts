@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import YAML from "yaml";
@@ -66,6 +67,14 @@ test("batch workflow uses owner-scoped mutation credentials and isolated state c
   assert.match(source, /uses: \.\/\.github\/actions\/create-state-token/);
   assert.match(source, /uses: \.\/\.github\/actions\/setup-state/);
   assert.doesNotMatch(source, /permissions:\n(?:.*\n)*?\s+issues: write/);
+});
+
+test("batch workflow shell steps are valid Bash", () => {
+  for (const step of workflow.jobs.publish!.steps) {
+    if (!step.run) continue;
+    const syntax = spawnSync("bash", ["-n"], { input: step.run, encoding: "utf8" });
+    assert.equal(syntax.status, 0, `${step.name ?? "unnamed step"}: ${syntax.stderr}`);
+  }
 });
 
 test("batch claim treats an all-stale fetched batch as terminal", () => {

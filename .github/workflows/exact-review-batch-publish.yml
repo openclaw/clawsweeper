@@ -129,14 +129,14 @@ jobs:
             fi
             report="$bundle_dir/review/$item_number.md"
             if REPORT_PATH="$report" node <<'NODE'
-            const fs = require("node:fs");
-            const path = process.env.REPORT_PATH;
-            if (!path || !fs.existsSync(path)) process.exit(1);
-            const markdown = fs.readFileSync(path, "utf8");
-            const owner = /^review_lease_owner:\s*(.+)\s*$/m.exec(markdown)?.[1]?.trim() || "";
-            const commentId = Number(/^review_lease_comment_id:\s*(\d+)\s*$/m.exec(markdown)?.[1] || "0");
-            process.exit((!owner || owner === "unknown") && (!Number.isInteger(commentId) || commentId <= 0) ? 0 : 1);
-            NODE
+          const fs = require("node:fs");
+          const path = process.env.REPORT_PATH;
+          if (!path || !fs.existsSync(path)) process.exit(1);
+          const markdown = fs.readFileSync(path, "utf8");
+          const owner = /^review_lease_owner:\s*(.+)\s*$/m.exec(markdown)?.[1]?.trim() || "";
+          const commentId = Number(/^review_lease_comment_id:\s*(\d+)\s*$/m.exec(markdown)?.[1] || "0");
+          process.exit((!owner || owner === "unknown") && (!Number.isInteger(commentId) || commentId <= 0) ? 0 : 1);
+          NODE
             then
               echo "::warning::Leaving $target_repo#$item_number retryable: legacy tuple-less artifact"
               continue
