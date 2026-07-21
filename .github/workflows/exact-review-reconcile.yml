@@ -10,6 +10,9 @@ on:
 
 permissions: {}
 
+env:
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+
 concurrency:
   # Exact-review completions share one pending slot. Each surviving run scans all
   # live claims, so GitHub may safely coalesce a burst without losing a terminal run.
@@ -158,9 +161,17 @@ jobs:
 
       - uses: actions/checkout@v7
 
+      - name: Create state token
+        id: state-token
+        continue-on-error: true
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
       - uses: ./.github/actions/setup-pnpm
         with:
-          build-script: build
+          build-script: build:all
 
       - name: Recover orphaned review placeholders
         env:
@@ -173,3 +184,17 @@ jobs:
           TARGET_BRANCH: main
           TARGET_REPO: openclaw/openclaw
         run: node dist/review-placeholder-recovery.js
+
+      - name: Clean scratch state branches and report repository size
+        continue-on-error: true
+        env:
+          CLAWSWEEPER_STATE_REPO_TOKEN: ${{ steps.state-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+          STATE_BRANCH_MAX_AGE_HOURS: ${{ vars.STATE_BRANCH_MAX_AGE_HOURS || '24' }}
+          STATE_BRANCH_MAX_DELETIONS: ${{ vars.STATE_BRANCH_MAX_DELETIONS || '50' }}
+          STATE_BRANCH_RUN_REPOSITORY: openclaw/clawsweeper
+          STATE_REPOSITORY: openclaw/clawsweeper-state
+          STATE_REPO_SIZE_WARN_GB: ${{ vars.STATE_REPO_SIZE_WARN_GB || '5' }}
+        run: |
+          node dist/repair/state-branch-janitor.js
+          node dist/repair/state-repo-size.js
