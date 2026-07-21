@@ -194,6 +194,7 @@ export async function runStateMaterializer(
   const now = options.now ?? (() => new Date());
   const queueUrl = (env.QUEUE_URL ?? "").replace(/\/$/, "");
   const webhookSecret = env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
+  registerStateSecretForRedaction(webhookSecret);
   const maximumRows = boundedPositiveInteger(
     env.CLAWSWEEPER_STATE_MATERIALIZER_MAX_ROWS ?? env.STATE_MATERIALIZER_MAX_ROWS,
     DEFAULT_STATE_MATERIALIZER_MAX_ROWS,
@@ -451,7 +452,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  return redactStateSecrets(message);
+}
+
+let stateSecretsToRedact: string[] = [];
+
+function registerStateSecretForRedaction(secret: string): void {
+  if (secret && !stateSecretsToRedact.includes(secret)) stateSecretsToRedact.push(secret);
+}
+
+// Error text can transit request internals; never let a registered secret
+// value reach the log stream in clear text.
+function redactStateSecrets(message: string): string {
+  let redacted = message;
+  for (const secret of stateSecretsToRedact) {
+    redacted = redacted.split(secret).join("<redacted>");
+  }
+  return redacted;
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
