@@ -1,12 +1,13 @@
 # State publication batching plan
 
-**Status:** PR 1 through PR 4 and the rollout hotfix are merged. Production is
-still fixed at batch size 2 and a 60-second maximum wait. Two real size-2
-publishers have failed after waiting the full 480 seconds at the repository-wide
-state publish lease, so every size increase is frozen while the durable FIFO
-state-writer coordinator is delivered. The implementation and bounded local
-Node 24 proof plus the final full check are complete; autoreview, pull-request
-checks, landing, and live size-2 verification remain pending.
+**Status:** PR 1 through PR 4, the rollout hotfix, and the repository-wide FIFO
+state-writer coordinator are merged. Production remains fixed at batch size 2
+and a 60-second maximum wait. Coordinator admission is effective and the
+pre-cutover writer cohort has drained, but live size-2 proof is blocked by a
+narrow Git fence integration defect: a post-cutover ordinary writer acquired
+FIFO ticket 19 immediately, then `git commit-tree` rejected the fence commit
+because no author identity had been configured yet. Every size increase remains
+frozen until that defect is fixed and the size-2 live gates pass.
 **Incident:** CSW-049
 **Decision scope:** replace normal contention on the single generated-`state`
 publication lease with one recoverable, repository-wide serialization boundary,
@@ -23,7 +24,7 @@ generated state layout.
 | PR 3: end-to-end batch publisher              | Complete; merged default off         | Merged as [`openclaw/clawsweeper#746`](https://github.com/openclaw/clawsweeper/pull/746) at `8b5bbf8678b88f172340f1108d1bccdeed366618`. The equivalent synthetic maintainer proof verified one commit for two healthy items, isolated retryable and superseded items, per-item GitHub effects, and disabled fallback.                                                        |
 | PR 4: production rollout configuration        | Complete; landed                     | Landed as [`openclaw/clawsweeper#752`](https://github.com/openclaw/clawsweeper/pull/752). It enabled one event-driven batch publisher at size 2 and a 60-second maximum wait, blocked new legacy admission while enabled, preserved in-flight legacy work, and exposed active configuration plus last dispatch outcome.                                                      |
 | Rollout hotfix                                | Complete; landed                     | Landed as [`openclaw/clawsweeper#753`](https://github.com/openclaw/clawsweeper/pull/753). The deployed dashboard config remains `EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED=1`, `EXACT_REVIEW_PUBLICATION_BATCH_SIZE=2`, and `EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS=60000`; the workflow independently caps `EXACT_REVIEW_BATCH_MAX_ITEMS=2`.                                |
-| Repository-wide state-writer serialization    | Implemented locally; rollout blocked | Durable FIFO implementation, writer wiring, focused tests, a bounded direct-Docker Node 24 proof, and the full post-fix check are complete. Autoreview, pull request, merged-main/deployment verification, coordinator enablement, and a new production size-2 proof remain pending. The repository variable that enables coordinator mode is not present in production yet. |
+| Repository-wide state-writer serialization    | Landed; live proof blocked            | Landed as [`openclaw/clawsweeper#756`](https://github.com/openclaw/clawsweeper/pull/756) at `f422cbdd10b1ea42c9bd79d25c229e4d9fb07d79`; the dashboard deployment and smoke passed, coordinator mode is effective, and pre-cutover publishers have drained. [Run 29853679287](https://github.com/openclaw/clawsweeper/actions/runs/29853679287) acquired FIFO ticket 19 before failing to create the Git fence commit because author identity was not configured. A narrow identity hotfix and new size-2 proof remain pending. |
 
 ## Production incident and root cause
 
@@ -953,6 +954,47 @@ Only after the live size-2 proof and both samples pass may maintainers discuss a
 separate explicit change to size 4. Size 8 remains blocked until size 4 passes
 the same end-to-end and two-sample gate. No automatic `2 -> 4 -> 8` progression
 is permitted.
+
+### Follow-up task: fence identity hotfix and controlled 2 -> 4 -> 8 rollout
+
+Treat this as one ordered rollout task. A later phase must not begin merely
+because the earlier configuration has been deployed; it begins only after the
+earlier behavior and observation gates are recorded as passing.
+
+- [ ] Fix Git fence identity at the fence-commit boundary. Lease acquire,
+      renewal, stale-owner recovery, and cleanup must not depend on a caller
+      having configured repository or global `user.name` and `user.email`.
+- [ ] Add the narrow regression proof: an ordinary coordinator writer and a
+      batch coordinator writer must create and renew their fence from a checkout
+      with no preconfigured Git identity. Preserve existing commit authorship
+      for generated-state data commits.
+- [ ] Run focused tests and `pnpm run check` on local Node 24, run autoreview to
+      a clean result, land the hotfix through a green pull request, and verify
+      the merged `main` workflow. Do not use remote Crabbox or Testbox.
+- [ ] Keep production at `max_items=2` and `max_wait_seconds=60`. Let failed
+      batch ownership recover through the durable protocol; do not cancel live
+      workflows, replay or clean the DLQ, or run live apply/close as rollout
+      shortcuts.
+- [ ] Complete the first valid size-2 proof: one generated-state commit for two
+      claimed members, two correct independent outcomes and acknowledgements,
+      unrelated-sibling preservation, successful remote-HEAD CAS and fence
+      verification, attributable coordinator metrics, and no new normal
+      480-second lease wait.
+- [ ] Record two complete, consecutive five-minute size-2 samples satisfying
+      every gate above. Any contention increase, lost sibling, same-path safety
+      regression, ambiguous completion, or guard regression stops rollout and
+      returns configuration to the last proven size.
+- [ ] Increase to size 4 only through an explicit reviewed configuration change.
+      Inspect at least one four-member single commit and all four independent
+      outcomes, then record two new complete, consecutive five-minute samples.
+      Roll back to size 2 on any failed gate.
+- [ ] Increase to size 8 only through a second explicit reviewed configuration
+      change after size 4 passes. Inspect at least one eight-member single commit
+      and all eight independent outcomes, then record two new complete,
+      consecutive five-minute samples. Roll back to size 4 on any failed gate.
+- [ ] Update this document with pull requests, merged commits, production run
+      URLs, state commit identities, queue outcomes, coordinator/lease metrics,
+      sample windows, and the final keep-or-rollback decision at each size.
 
 After the writer path is stable, dead-letter recovery is a separate authorized
 operation. Start with one representative item, then batches of at most two when

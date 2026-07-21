@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createHmac } from "node:crypto";
 import fs from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -215,6 +215,127 @@ test(
   },
 );
 
+test("fence commits do not require a preconfigured Git identity", { timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-fence-identity-"));
+  const repository = createStateRepositoryWithoutIdentity(root);
+  const batchSource = path.join(root, "batch-source");
+  const ordinarySource = path.join(root, "ordinary-source");
+  const batchReady = path.join(root, "batch-ready");
+  const releaseBatch = path.join(root, "release-batch");
+  fs.mkdirSync(batchSource);
+  fs.mkdirSync(ordinarySource);
+  assertNoGitIdentity(repository.batchWork);
+  assertNoGitIdentity(repository.ordinaryWork);
+  const coordinatorServer = await startCoordinatorServer();
+  const commonEnv: Record<string, string> = {
+    CLAWSWEEPER_PUBLISH_BRANCH: "state",
+    CLAWSWEEPER_STATE_COORDINATOR_ENABLED: "1",
+    CLAWSWEEPER_STATE_COORDINATOR_URL: coordinatorServer.url,
+    ["CLAWSWEEPER_STATE_COORDINATOR_SECRET"]: COORDINATOR_HMAC_FIXTURE,
+    CLAWSWEEPER_STATE_LEASE_PRIORITY: "0",
+    GITHUB_REPOSITORY: "openclaw/clawsweeper",
+    GITHUB_RUN_ATTEMPT: "1",
+    CLAWSWEEPER_GIT_USER_NAME: "",
+    CLAWSWEEPER_GIT_USER_EMAIL: "",
+  };
+  let batchRun: AsyncProcess | undefined;
+  let ordinaryRun: AsyncProcess | undefined;
+
+  try {
+    batchRun = startAsync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        logicalSizeTwoBatchWriter,
+        batchSource,
+        batchReady,
+        releaseBatch,
+      ],
+      process.cwd(),
+      {
+        ...commonEnv,
+        CLAWSWEEPER_STATE_DIR: repository.batchWork,
+        GITHUB_WORKFLOW: "Exact review batch publish",
+        GITHUB_JOB: "publish",
+        GITHUB_RUN_ID: "92001",
+      },
+    );
+    await waitForFile(batchReady, 15_000, "batch writer did not acquire its ticket");
+    assert.match(batchRun.output(), /Acquired state publish lease/);
+    const fenceAuthor = gitBare(
+      repository.origin,
+      "show",
+      "-s",
+      "--format=%an <%ae>",
+      "refs/heads/clawsweeper-publish-lease/state",
+    ).trim();
+    assert.equal(fenceAuthor, "clawsweeper <274271284+clawsweeper[bot]@users.noreply.github.com>");
+    const fenceMessage = gitBare(
+      repository.origin,
+      "show",
+      "-s",
+      "--format=%B",
+      "refs/heads/clawsweeper-publish-lease/state",
+    );
+    assert.match(fenceMessage, /^ticket_id: state-writer:[0-9a-f-]+$/m);
+
+    fs.writeFileSync(releaseBatch, "release\n");
+    const batchOutput = await batchRun.result;
+    assert.match(batchOutput, /Released durable state writer ticket/);
+    assert.deepEqual(changedPaths(repository.origin, "state"), [...BATCH_PATHS]);
+
+    ordinaryRun = startAsync(
+      process.execPath,
+      ["--input-type=module", "-e", ordinaryWriter, ordinarySource],
+      process.cwd(),
+      {
+        ...commonEnv,
+        CLAWSWEEPER_STATE_DIR: repository.ordinaryWork,
+        GITHUB_WORKFLOW: "Sweep ordinary state writer",
+        GITHUB_JOB: "status",
+        GITHUB_RUN_ID: "92002",
+      },
+    );
+    const ordinaryOutput = await ordinaryRun.result;
+    assert.match(ordinaryOutput, /Acquired state publish lease/);
+    assert.deepEqual(changedPaths(repository.origin, "state"), [ORDINARY_PATH]);
+
+    assert.equal(gitBare(repository.origin, "rev-list", "--count", "state").trim(), "3");
+    assert.equal(
+      gitBare(repository.origin, "show", `state:${BATCH_PATHS[0]}`),
+      "logical batch item 1\n",
+    );
+    assert.equal(
+      gitBare(repository.origin, "show", `state:${BATCH_PATHS[1]}`),
+      "logical batch item 2\n",
+    );
+    assert.equal(
+      gitBare(repository.origin, "show", `state:${ORDINARY_PATH}`),
+      '{"writer":"ordinary"}\n',
+    );
+    const stateAuthors = gitBare(repository.origin, "log", "-2", "--format=%an", "state").trim();
+    assert.ok(
+      stateAuthors.split("\n").every((author) => author === "clawsweeper"),
+      "data commits retain the clawsweeper author identity",
+    );
+    assert.equal(
+      gitBare(
+        repository.origin,
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/heads/clawsweeper-publish-lease",
+      ).trim(),
+      "",
+    );
+  } finally {
+    if (batchRun && !batchRun.settled()) batchRun.child.kill("SIGKILL");
+    if (ordinaryRun && !ordinaryRun.settled()) ordinaryRun.child.kill("SIGKILL");
+    await coordinatorServer.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 const logicalSizeTwoBatchWriter = String.raw`
   import fs from "node:fs";
   import path from "node:path";
@@ -405,6 +526,35 @@ function createStateRepository(root: string) {
   configureUser(batchWork);
   configureUser(ordinaryWork);
   return { origin, batchWork, ordinaryWork };
+}
+
+function createStateRepositoryWithoutIdentity(root: string) {
+  const repository = createStateRepository(root);
+  unsetGitIdentity(repository.batchWork);
+  unsetGitIdentity(repository.ordinaryWork);
+  return repository;
+}
+
+function unsetGitIdentity(work: string): void {
+  git(work, "config", "--unset", "user.name");
+  git(work, "config", "--unset", "user.email");
+}
+
+function localGitConfig(work: string, key: string): string {
+  const result = spawnSync("git", ["config", "--local", "--get", key], {
+    cwd: work,
+    encoding: "utf8",
+    stdio: "pipe",
+  });
+  // git config --get exits 1 when the key is unset; treat that as empty.
+  if (result.status === 0) return result.stdout.trim();
+  if (result.status === 1) return "";
+  throw new Error(`git config --get ${key} failed: ${result.stderr.trim()}`);
+}
+
+function assertNoGitIdentity(work: string): void {
+  assert.equal(localGitConfig(work, "user.name"), "", `${work} must not preconfigure user.name`);
+  assert.equal(localGitConfig(work, "user.email"), "", `${work} must not preconfigure user.email`);
 }
 
 function configureUser(root: string): void {

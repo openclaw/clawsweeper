@@ -14,7 +14,11 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
-import { clawsweeperGitUserEmail, clawsweeperGitUserName } from "./process-env.js";
+import {
+  clawsweeperGitIdentityEnv,
+  clawsweeperGitUserEmail,
+  clawsweeperGitUserName,
+} from "./process-env.js";
 import {
   chooseRecordTupleWinner,
   RecordTupleError,
@@ -1947,7 +1951,11 @@ function createStatePublishLeaseCommit(options: {
 }): string {
   const tree = runGit(["mktree"], { input: "", quiet: true }).trim();
   if (!tree) throw new Error("Failed to create the state publish lease tree");
+  // Fence commits run before the data-publish path configures user.identity.
+  // Supply the ClawSweeper identity inline so acquire, renewal, and
+  // stale-owner recovery never depend on repo/global Git identity.
   return runGit(["commit-tree", tree], {
+    env: { ...process.env, ...clawsweeperGitIdentityEnv() },
     input: [
       options.subject ?? "ClawSweeper state publish lease",
       "",
