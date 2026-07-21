@@ -7,21 +7,28 @@ const path = ".github/workflows/exact-review-batch-publish.yml";
 const source = readFileSync(path, "utf8");
 const cliSource = readFileSync("src/repair/exact-review-batch-cli.ts", "utf8");
 const workflow = YAML.parse(source) as {
-  on: Record<string, unknown>;
+  on: {
+    schedule?: unknown;
+    workflow_dispatch: { inputs: Record<string, unknown> };
+  };
   permissions: Record<string, string>;
   concurrency: Record<string, unknown>;
   jobs: Record<
     string,
-    { if: string; steps: Array<{ name?: string; run?: string; uses?: string }> }
+    {
+      if: string;
+      env: Record<string, string>;
+      steps: Array<{ name?: string; run?: string; uses?: string }>;
+    }
   >;
 };
 
-test("batch publisher stays default-off with one non-cancelling serial workflow", () => {
-  assert.ok(workflow.on.schedule);
+test("batch publisher is event-driven with one non-cancelling serial workflow", () => {
+  assert.equal(workflow.on.schedule, undefined);
   assert.ok(workflow.on.workflow_dispatch);
-  assert.match(workflow.jobs.publish!.if, /EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED/);
-  assert.match(workflow.jobs.publish!.if, /== 'true'.*== '1'/);
   assert.match(workflow.jobs.publish!.if, /inputs\.execute/);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ["execute"]);
+  assert.equal(workflow.jobs.publish!.env.EXACT_REVIEW_BATCH_MAX_ITEMS, "2");
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
   assert.deepEqual(workflow.permissions, { actions: "write", contents: "read" });
 });

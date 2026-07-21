@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHmac, generateKeyPairSync } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
@@ -393,6 +393,25 @@ function publicationRequest(
   });
 }
 
+function reviewRequest(deliveryId: string, number: number) {
+  return new Request("https://queue/enqueue", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      delivery_id: deliveryId,
+      decision: {
+        targetRepo: "openclaw/openclaw",
+        targetBranch: "main",
+        itemNumber: number,
+        itemKind: "issue",
+        sourceEvent: "issues",
+        sourceAction: "opened",
+        supersedesInProgress: false,
+      },
+    }),
+  });
+}
+
 function batchRequest(path: string, body: unknown) {
   return new Request(`https://queue${path}`, {
     method: "POST",
@@ -416,6 +435,8 @@ test("queue batch claim defaults off and additive schema keeps the legacy versio
   const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
   assert.equal(stats.storage_schema_version, 1);
   assert.equal(stats.lanes.publication.batches.enabled, false);
+  assert.equal(stats.lanes.publication.batches.max_items, 8);
+  assert.equal(stats.lanes.publication.batches.max_wait_seconds, 60);
   assert.equal(stats.lanes.publication.batches.leased, 0);
 });
 
@@ -518,6 +539,201 @@ test("an active batch blocks the legacy publisher until its lease expires", asyn
     assert.equal(stats.lanes.publication.dispatching, 0);
     assert.equal(stats.admissible_pending, 0);
     assert.equal(storage.scheduledAlarm(), 5_060_000);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("rollout dispatches one full batch workflow without admitting legacy publishers", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  let now = 7_000_000;
+  Date.now = () => now;
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const dispatches: unknown[] = [];
+  const regularDispatches: unknown[] = [];
+  let signalBatchDispatch!: () => void;
+  let releaseBatchDispatch!: () => void;
+  const batchDispatchStarted = new Promise<void>((resolve) => {
+    signalBatchDispatch = resolve;
+  });
+  const batchDispatchRelease = new Promise<void>((resolve) => {
+    releaseBatchDispatch = resolve;
+  });
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation") {
+      return new Response(JSON.stringify({ id: 999 }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/app/installations/999/access_tokens") {
+      const body = JSON.parse(String(init?.body));
+      assert.deepEqual(body.permissions, { actions: "write", contents: "write" });
+      return new Response(JSON.stringify({ token: "test-token" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (
+      url.pathname ===
+      "/repos/openclaw/clawsweeper/actions/workflows/exact-review-batch-publish.yml/dispatches"
+    ) {
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer test-token");
+      dispatches.push(JSON.parse(String(init?.body)));
+      signalBatchDispatch();
+      await batchDispatchRelease;
+      return new Response(null, { status: 204 });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml") {
+      return new Response(JSON.stringify({ state: "active" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
+      regularDispatches.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  try {
+    const storage = new TestStorage();
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+        EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS: "60000",
+        EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
+      },
+    );
+    await queue.fetch(publicationRequest("delivery-batch-1", 110, "1010"));
+    await queue.fetch(publicationRequest("delivery-batch-2", 111, "1011"));
+    await queue.fetch(reviewRequest("delivery-review", 114));
+
+    const alarm = queue.alarm();
+    await batchDispatchStarted;
+
+    assert.deepEqual(dispatches, [{ ref: "main", inputs: { execute: "true" } }]);
+    const dispatchedStats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(
+      dispatchedStats.lanes.publication.batches.dispatch_pending_until,
+      "1970-01-01T02:06:40.000Z",
+    );
+    const claimed = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-dispatched",
+          lease_owner: "worker-1",
+          max_items: 2,
+        }),
+      )
+    ).json();
+    assert.equal(claimed.claimed, true);
+    releaseBatchDispatch();
+    await alarm;
+
+    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.pending, 2);
+    assert.equal(stats.lanes.publication.dispatching, 0);
+    assert.equal(stats.admissible_pending, 0);
+    assert.equal(stats.lanes.publication.batches.max_items, 2);
+    assert.equal(stats.lanes.publication.batches.max_wait_seconds, 60);
+    assert.equal(stats.lanes.publication.batches.last_dispatch_succeeded, true);
+    assert.equal(stats.lanes.publication.batches.dispatch_pending_until, null);
+    assert.equal(regularDispatches.length, 1);
+    assert.equal(storage.scheduledAlarm(), 7_001_000);
+
+    await queue.alarm();
+    assert.equal(dispatches.length, 1);
+
+    const partialStorage = new TestStorage();
+    const partialQueue = new ExactReviewQueue(
+      { storage: partialStorage },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+        EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS: "60000",
+      },
+    );
+    now = 8_000_000;
+    await partialQueue.fetch(publicationRequest("delivery-partial", 112, "1012"));
+    await partialQueue.alarm();
+    assert.equal(dispatches.length, 1);
+    assert.equal(partialStorage.scheduledAlarm(), 8_060_000);
+
+    now = 8_060_000;
+    await partialQueue.alarm();
+    assert.deepEqual(dispatches[1], {
+      ref: "main",
+      inputs: { execute: "true" },
+    });
+    assert.equal(partialStorage.scheduledAlarm(), 8_660_000);
+
+    const multiOwnerStorage = new TestStorage();
+    const multiOwnerQueue = new ExactReviewQueue(
+      { storage: multiOwnerStorage },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+        EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS: "60000",
+      },
+    );
+    now = 10_000_000;
+    await multiOwnerQueue.fetch(publicationRequest("delivery-owner-a", 115, "1014", "aaa/repo"));
+    await multiOwnerQueue.fetch(publicationRequest("delivery-owner-b1", 116, "1015", "bbb/repo"));
+    await multiOwnerQueue.fetch(publicationRequest("delivery-owner-b2", 117, "1016", "bbb/repo"));
+    await multiOwnerQueue.alarm();
+    assert.equal(dispatches.length, 3);
+  } finally {
+    Date.now = originalNow;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("batch rollout wakes a retryable publication at its next eligibility time", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 9_000_000;
+  try {
+    const storage = new TestStorage();
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+        EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS: "60000",
+      },
+    );
+    await queue.fetch(publicationRequest("delivery-future-retry", 113, "1013"));
+    const [row] = Array.from(
+      storage.sql.exec(
+        "SELECT item_key, item_json FROM exact_review_queue_items WHERE item_key LIKE ?",
+        "%#113@publish:%",
+      ),
+    ) as Array<{ item_key: string; item_json: string }>;
+    assert.ok(row);
+    const item = JSON.parse(row.item_json);
+    item.nextAttemptAt = 9_030_000;
+    Array.from(
+      storage.sql.exec(
+        "UPDATE exact_review_queue_items SET item_json = ? WHERE item_key = ?",
+        JSON.stringify(item),
+        row.item_key,
+      ),
+    );
+
+    await queue.alarm();
+
+    assert.equal(storage.scheduledAlarm(), 9_030_000);
   } finally {
     Date.now = originalNow;
   }
@@ -626,7 +842,7 @@ test("queue fetch terminalizes a stale batch revision before dispatch", async ()
     assert.equal(fetched.items.length, 0);
     assert.equal(fetched.batch.state, "completed");
     assert.equal(fetched.batch.items[0].terminal_outcome, "superseded");
-    assert.equal(storage.scheduledAlarm(), 1_001_000);
+    assert.equal(storage.scheduledAlarm(), 1_060_000);
 
     const retriedFetch = await (
       await queue.fetch(
@@ -874,7 +1090,7 @@ test("queue completion atomically removes only the owned publication revision", 
   }
 });
 
-test("batch completion wakes publications that were blocked by its lease", async () => {
+test("batch completion schedules the remaining partial batch at its departure deadline", async () => {
   const originalNow = Date.now;
   Date.now = () => 6_000_000;
   try {
@@ -916,7 +1132,7 @@ test("batch completion wakes publications that were blocked by its lease", async
       }),
     );
     assert.equal(completion.status, 200);
-    assert.equal(storage.scheduledAlarm(), 6_001_000);
+    assert.equal(storage.scheduledAlarm(), 6_060_000);
   } finally {
     Date.now = originalNow;
   }

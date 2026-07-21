@@ -1,8 +1,6 @@
 name: Publish exact review batch
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       execute:
@@ -10,10 +8,6 @@ on:
         required: true
         type: boolean
         default: false
-      max_items:
-        description: "Maximum items in this proof batch"
-        required: false
-        default: "8"
 
 concurrency:
   group: exact-review-batch-publisher
@@ -27,8 +21,7 @@ jobs:
   publish:
     if: >-
       ${{
-        (github.event_name == 'workflow_dispatch' && inputs.execute) ||
-        (github.event_name == 'schedule' && (vars.EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED == 'true' || vars.EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED == '1'))
+        github.event_name == 'workflow_dispatch' && inputs.execute
       }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -38,7 +31,7 @@ jobs:
       EXACT_REVIEW_BATCH_ID: exact-review-batch:${{ github.run_id }}
       EXACT_REVIEW_BATCH_LEASE_OWNER: github:${{ github.run_id }}
       EXACT_REVIEW_BATCH_MANIFEST: .artifacts/exact-review-batch/manifest.json
-      EXACT_REVIEW_BATCH_MAX_ITEMS: ${{ inputs.max_items || vars.EXACT_REVIEW_PUBLICATION_BATCH_SIZE || '8' }}
+      EXACT_REVIEW_BATCH_MAX_ITEMS: "2"
       CLAWSWEEPER_APP_CLIENT_ID: ${{ vars.CLAWSWEEPER_APP_CLIENT_ID }}
       CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
     steps:

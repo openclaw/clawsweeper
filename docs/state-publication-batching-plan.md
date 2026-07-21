@@ -1,7 +1,8 @@
 # State publication batching plan
 
-**Status:** PR 1 and PR 2 implementation complete; PR 3 implemented locally and
-default off; PR 2 remote performance proof and production rollout remain pending
+**Status:** PR 1 through PR 3 merged; PR 2 performance and PR 3 equivalent
+synthetic end-to-end gates complete; PR 4 initial size-2 rollout implementation
+complete and authorized
 **Incident:** CSW-049
 **Decision scope:** reduce the existing single-`state`-ref publication bottleneck
 without migrating authoritative state to a new database or changing the generated
@@ -9,13 +10,13 @@ state layout.
 
 ## Delivery status
 
-| Stage | Status | Evidence |
-| --- | --- | --- |
-| State writer observability prerequisite | Complete | Merged before batching ownership as [`openclaw/clawsweeper#735`](https://github.com/openclaw/clawsweeper/pull/735). |
-| PR 1: durable batch ownership protocol | Complete | Merged as [`openclaw/clawsweeper#734`](https://github.com/openclaw/clawsweeper/pull/734) at `c074a99c0b18848be7a7d8f80f0fa57b7875b129`; post-merge proof is recorded below. |
-| PR 2: bounded multi-item Git commit primitive | Implementation complete; performance gate pending | Merged as [`openclaw/clawsweeper#740`](https://github.com/openclaw/clawsweeper/pull/740) at `a04c4c4cfbd29be9d6bf5036c824481b31d2233d`; the CI-fixture stabilization followed in [`openclaw/clawsweeper#742`](https://github.com/openclaw/clawsweeper/pull/742) at `de0a7a2a4e11ad8a22596580b8dbd984084246a1`. Bare-Git correctness proof passed, but Crabbox and realistic-repository p95 proof remain pending. |
-| PR 3: end-to-end batch publisher | Implemented locally, default off | The dedicated workflow, signed queue client, heartbeat, per-item isolation, one-commit materialization, and fenced acknowledgement path have focused local proof. Merge and any production rollout remain gated on the unresolved PR 2 remote performance proof. |
-| PR 4: production rollout configuration | Not authorized | Requires the later proof and explicit rollout decision described in this plan. |
+| Stage                                         | Status                                            | Evidence                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| State writer observability prerequisite       | Complete                                          | Merged before batching ownership as [`openclaw/clawsweeper#735`](https://github.com/openclaw/clawsweeper/pull/735).                                                                                                                                                                                                                                                                                              |
+| PR 1: durable batch ownership protocol        | Complete                                          | Merged as [`openclaw/clawsweeper#734`](https://github.com/openclaw/clawsweeper/pull/734) at `c074a99c0b18848be7a7d8f80f0fa57b7875b129`; post-merge proof is recorded below.                                                                                                                                                                                                                                      |
+| PR 2: bounded multi-item Git commit primitive | Complete                                          | Merged as [`openclaw/clawsweeper#740`](https://github.com/openclaw/clawsweeper/pull/740) at `a04c4c4cfbd29be9d6bf5036c824481b31d2233d`; stabilization followed in [`openclaw/clawsweeper#742`](https://github.com/openclaw/clawsweeper/pull/742). Local-container p95 proof against a 385,840-path structural fixture passed at 3,295.2 projected items/hour for size 2.                                                                 |
+| PR 3: end-to-end batch publisher              | Complete; merged default off                      | Merged as [`openclaw/clawsweeper#746`](https://github.com/openclaw/clawsweeper/pull/746) at `8b5bbf8678b88f172340f1108d1bccdeed366618`. The equivalent synthetic maintainer proof verified one commit for two healthy items, isolated retryable and superseded items, per-item GitHub effects, and disabled fallback.                                                                                                       |
+| PR 4: production rollout configuration        | Implementation complete; initial rollout authorized | Enables one event-driven serial publisher at size 2 and 60-second maximum wait, blocks new legacy admission while enabled, preserves in-flight legacy work, and exposes active configuration plus last dispatch outcome.                                                                                                                                                                                          |
 
 PR 1 did not enable batching or add a batch publisher. The live legacy publisher
 continues to consume the existing queue while the additive ownership protocol
@@ -217,12 +218,11 @@ PR 4 production rollout.
 
 ### PR 2: bounded multi-item Git commit primitive
 
-**Delivery status:** implementation complete and landed on 2026-07-21 via
+**Delivery status:** complete and landed on 2026-07-21 via
 [`openclaw/clawsweeper#740`](https://github.com/openclaw/clawsweeper/pull/740),
 with the CI-fixture stabilization in
 [`openclaw/clawsweeper#742`](https://github.com/openclaw/clawsweeper/pull/742).
-Correctness proof passed; the Crabbox and realistic-repository performance gate
-remain pending.
+Correctness and local-container realistic-tree performance proof passed.
 
 **Purpose:** prove that several independently validated item mutations can be
 applied to the latest remote state tree and published in one commit without
@@ -299,23 +299,58 @@ wiring an ineffective batch path into production.
 - Those timings came from small synthetic bare repositories. They are useful
   regression evidence but are not the required realistic-state-repository p95
   benchmark and must not be used as the production go/no-go decision.
-- Crabbox remote proof did not run: the AWS coordinator returned HTTP 401 and
-  the Blacksmith workflow endpoint returned HTTP 404 before a Testbox could be
-  allocated. No remote-provider proof is claimed.
-- Until a realistic proof records p95 total and phase durations, changed paths
-  and bytes, lease acquisition and hold time, and projected throughput of at
-  least 203 useful items/hour, PR 3 must remain default-off and PR 4 production
-  rollout remains unauthorized.
+- The final proof used Crabbox provider `local-container`, lease
+  `cbx_32488263d3cf`, Ubuntu 26.04, Node 24.15.0, and 20 samples for each batch
+  size. No remote Crabbox, AWS, or Testbox provider was used.
+- The structural fixture was derived from real state snapshot
+  `34dabd7915c124c1b5852274a6a0b7e82225bb5e` and retained all 385,840 path
+  names. To fit the isolated local-container transfer, file payloads shared one
+  small blob; the derived fixture head was
+  `15fb20fc3008c67e80ecd82d28fd4e72cab5adcd`. This preserves the tree/index
+  shape that dominates this path while intentionally not claiming a large-blob
+  transport benchmark.
 
-**Recorded decision:** PR 3 implementation may start as an isolated,
-default-off integration. Its merge and all production enablement remain gated
-on completing the missing PR 2 remote performance proof and re-evaluating the
-go/no-go threshold.
+| Batch size | Total p50 | Total p95 | Acquire p95 | Hold p95 | Tree p95 | Push p95 | Paths / bytes p95 | Git processes p95 | Projected items/hour |
+| ---------- | --------- | --------- | ----------- | -------- | -------- | -------- | ----------------- | ----------------- | -------------------- |
+| 1          | 2.102 s   | 2.214 s   | 56 ms       | 2.134 s  | 1.746 s  | 279 ms   | 1 / 1,280         | 24                | 1,626.0              |
+| 2          | 2.111 s   | 2.185 s   | 63 ms       | 2.098 s  | 1.703 s  | 291 ms   | 2 / 2,560         | 24                | 3,295.2              |
+| 4          | 2.146 s   | 2.200 s   | 69 ms       | 2.106 s  | 1.687 s  | 302 ms   | 4 / 5,120         | 24                | 6,545.5              |
+| 8          | 2.166 s   | 2.248 s   | 73 ms       | 2.147 s  | 1.727 s  | 313 ms   | 8 / 10,240        | 24                | 12,811.4             |
+
+The size-2 candidate exceeds the 203 items/hour gate by more than 16 times,
+while p95 duration is effectively flat across sizes. The performance decision
+is **go for the initial size-2 rollout**; larger sizes still require the live
+observation gates below.
+
+This local-container proof measures the state-tree/index/commit shape, not a
+production GitHub upload. At size 2 the 203 items/hour threshold permits a
+35.47-second p95 batch, leaving 33.28 seconds above the measured 2.185-second
+p95 for transport and environment overhead. That margin authorizes only the
+initial live size-2 measurement: the first two post-enable samples and the
+immediate rollback rules below remain mandatory. It is not evidence for a
+larger batch size or for ignoring slower live measurements.
+
+The checked-in harness measures proof behavior; it does not issue a trusted
+rollout authorization. Its default full-proof contract requires `--mode all`,
+at least 20 samples per batch size, at least 300,000 source paths, and a threshold
+of at least 203 items/hour. Partial modes and weaker parameters require
+`--diagnostic`. Reports record the observed provider/id and whether the source
+matches head `15fb20fc3008c67e80ecd82d28fd4e72cab5adcd` with exactly 385,840
+paths, but those process inputs are evidence rather than security attestation.
+The go/no-go decision above uses the Crabbox wrapper's actual provider/id output,
+the recorded fixture construction, the measurement table, and maintainer review
+together; a harness `passed` value alone cannot satisfy the rollout gate.
+
+**Recorded decision (updated 2026-07-21):** the PR 2 performance gate is
+complete. PR 3 remained default-off until its equivalent synthetic end-to-end
+proof also completed on the PR 4 branch.
 
 ### PR 3: end-to-end batch publisher, default off
 
-**Delivery status:** implemented locally on 2026-07-21; default off and not
-authorized for production rollout.
+**Delivery status:** merged on 2026-07-21 as
+[`openclaw/clawsweeper#746`](https://github.com/openclaw/clawsweeper/pull/746)
+at `8b5bbf8678b88f172340f1108d1bccdeed366618`; default off and not authorized
+for production rollout.
 
 **Purpose:** connect the proven queue protocol and Git primitive through one
 dedicated workflow while preserving per-item GitHub and queue outcomes.
@@ -403,11 +438,33 @@ and recoverable.
   `--no-lazy-fetch` option; rerunning with an isolated Git 2.54.0 installation
   made both affected unavailable-object recovery tests pass without changing
   the system Git installation.
+- After rebasing onto the latest `main`, the full check passed again with 1,438
+  unit tests and 1,052 repair tests passing, zero failures, and the 466-file
+  formatting check clean. All 11 PR checks passed, including CodeQL, containment
+  smoke, sparse build, Windows launcher, automerge E2E, and `pnpm check`.
 
-This local proof does not replace the manual non-production Actions run required
-above, and it does not satisfy the missing PR 2 realistic-repository p95 gate.
+**Equivalent synthetic maintainer proof:** passed in Crabbox local-container
+`cbx_32488263d3cf` without using the production queue.
+
+1. An isolated in-process queue, GitHub-effect journal, and temporary bare Git
+   remote supplied the non-production target.
+2. One coordinator run represented four queue items.
+3. The two healthy items produced one state commit and preserved an unrelated
+   sibling path.
+4. Both healthy items recorded their expected review comment and label effects
+   and completed independently as published.
+5. One invalid item remained retryable and one stale item completed as
+   superseded without blocking the healthy items.
+6. Disabling batching prevented another batch claim and returned the retryable
+   item to legacy-ready consumption.
+
+This satisfies the plan's explicitly allowed equivalent-synthetic path while
+avoiding production data. The PR 3 decision is **go for PR 4 size 2**.
 
 ### PR 4: production rollout configuration
+
+**Delivery status:** implementation and entry-gate proof complete on the PR 4
+branch; initial size-2 production rollout authorized.
 
 **Purpose:** make the production behavior change explicit, small, and easily
 revertible after the implementation is already reviewed and deployed inertly.
@@ -427,6 +484,20 @@ This pull request exists separately because an implementation rollback and a
 production-behavior rollback are different decisions. A maintainer must be able
 to inspect all inert implementation proof before approving the one configuration
 change that affects live publication.
+
+**Entry gates before PR 4 may merge or enable batching:**
+
+1. Complete the missing PR 2 Crabbox and realistic-repository p95 proof.
+2. Provide an isolated non-production queue or equivalent synthetic target.
+3. Complete and record all six PR 3 maintainer verification steps before the PR
+   4 configuration change lands.
+4. Re-evaluate the throughput and safety evidence and record an explicit go/no-go
+   decision.
+
+All four entry gates passed on 2026-07-21. The proof used an isolated synthetic
+queue and local temporary Git remotes; no production queue item was consumed.
+The explicit decision is **go** for one publisher, batch size 2, and 60-second
+maximum wait. This does not authorize size 4 or 8 before live observation.
 
 **Maintainer manual verification:**
 
@@ -450,8 +521,11 @@ automatic adaptive behavior in the first version.
 Use a simple event-driven bus policy:
 
 ```text
-maximum items: 8
+initial maximum items: 2 (future explicit ceilings: 4, then 8)
 maximum wait after the first eligible item: 60 seconds
+successful dispatch cooldown: 30 seconds (240 items/hour size-2 ceiling)
+failed dispatch retry: 60 seconds
+accepted-dispatch reservation before claim: 10 minutes (cleared immediately on claim)
 active batch writers: 1
 ```
 
