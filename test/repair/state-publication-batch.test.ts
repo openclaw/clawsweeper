@@ -318,13 +318,22 @@ test("batch receipt recovery remains durable beyond 256 newer state commits", ()
   const sibling = path.join(fixture.root, "receipt-history-writer");
   git(fixture.root, "clone", "--branch", "state", fixture.origin, sibling);
   configureUser(sibling);
-  fs.mkdirSync(path.join(sibling, "results"), { recursive: true });
+  const tree = git(sibling, "rev-parse", "HEAD^{tree}").trim();
+  let parent = git(sibling, "rev-parse", "HEAD").trim();
+  // Only ancestry depth matters here. Plumbing commits avoid Git auto-maintenance
+  // racing hundreds of disposable worktree/index updates on shared CI runners.
   for (let index = 0; index < 300; index += 1) {
-    fs.writeFileSync(path.join(sibling, "results", "history.txt"), `${index}\n`);
-    git(sibling, "add", "results/history.txt");
-    git(sibling, "commit", "-m", `ordinary state commit ${index}`);
+    parent = git(
+      sibling,
+      "commit-tree",
+      tree,
+      "-p",
+      parent,
+      "-m",
+      `ordinary state commit ${index}`,
+    ).trim();
   }
-  git(sibling, "push", "origin", "HEAD:state");
+  git(sibling, "push", "origin", `${parent}:state`);
 
   const recovered = withStateEnvironment(fixture.work, () =>
     commitPreparedStateBatch({ batchId: "durable-receipt", plans: [plan] }),
