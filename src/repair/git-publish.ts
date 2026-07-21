@@ -387,6 +387,10 @@ export function hasWorktreePath(path: string): boolean {
 export function publishMainCommit(options: GitPublishOptions): PublishResult {
   const remote = options.remote ?? "origin";
   const branch = options.branch ?? publishDefaultBranch();
+  // Every commit-creating path (lease commits included) flows through here;
+  // callers reached via publish-main entrypoints may run in checkouts without
+  // a configured git identity (observed: reconcile-before-apply, run 29852061381).
+  configureGitUser();
   if (publishRoot() && stateWriterCoordinatorEnabled() && !activeStatePublishLease) {
     // Coordinator mode admits the complete read-modify-write operation. Taking
     // a fresh ticket for each failed push would preserve CAS safety but defeat
