@@ -2306,6 +2306,10 @@ jobs:
         if: ${{ !((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true' && github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) }}
         continue-on-error: true
         working-directory: clawsweeper
+        env:
+          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           target_slug="${{ steps.target.outputs.target_repo }}"
           target_slug="${target_slug//\//-}"
@@ -2619,7 +2623,10 @@ jobs:
         continue-on-error: true
         working-directory: clawsweeper
         env:
+          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ github.token }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
         run: |
           target_slug="$TARGET_REPO"
@@ -3185,9 +3192,12 @@ jobs:
         id: commit-review-records
         if: ${{ always() && !cancelled() && steps.apply-review-artifacts.outputs.artifacts_applied == 'true' }}
         env:
+          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           EXACT_ITEM: ${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
           GH_TOKEN: ${{ github.token }}
           HOT_INTAKE: ${{ needs.plan.outputs.hot_intake }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
         run: |
           target_slug="$TARGET_REPO"
@@ -3397,7 +3407,10 @@ jobs:
         if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && ((github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep') || github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '') }}
         timeout-minutes: 15
         env:
+          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
         run: |
           set -euo pipefail
@@ -3950,6 +3963,9 @@ jobs:
 
       - name: Commit Audit Health
         env:
+          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
         run: |
           target_slug="$TARGET_REPO"
@@ -4393,12 +4409,15 @@ jobs:
         id: apply-existing-run
         timeout-minutes: 350
         env:
+          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
-          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           CLAWSWEEPER_PUBLISH_THROTTLE_STATUS: "true"
           CLAWSWEEPER_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CLAWSWEEPER_THROTTLE_STATUS_MIN_WAIT_MS: "60000"
           CLAWSWEEPER_THROTTLE_STATUS_MIN_INTERVAL_MS: "120000"
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
@@ -4788,6 +4807,10 @@ jobs:
 
       - name: Retry final apply status publication
         if: ${{ always() && !cancelled() && steps.primary-apply-result.outputs.succeeded == 'true' }}
+        env:
+          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           if [ "${APPLY_NOOP:-false}" = "true" ]; then
             echo "No proposed closes were ready; no final apply status to retry."
