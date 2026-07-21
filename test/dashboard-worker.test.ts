@@ -4402,6 +4402,210 @@ test("exact-review queue defers retained backlog until a paused dispatcher retry
   }
 });
 
+test("state append is idempotent by delivery and reports bounded-window stats", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const payload = {
+    delivery_id: "state-delivery-1",
+    records: [
+      {
+        kind: "sweep_status",
+        key: "openclaw/openclaw:sweep",
+        payload: { run_id: "123", status: "completed" },
+        produced_at: "2026-07-20T12:00:00.000Z",
+      },
+      {
+        kind: "comment_router",
+        key: "openclaw/openclaw#738",
+        payload: { comment_id: 456 },
+        produced_at: "2026-07-20T12:01:00.000Z",
+      },
+    ],
+  };
+
+  const first = await queue.fetch(stateAppendQueueRequest("/state/append", payload));
+  assert.equal(first.status, 202);
+  assert.deepEqual(await first.json(), {
+    ok: true,
+    appended: 2,
+    first_seq: 1,
+    last_seq: 2,
+  });
+  const duplicate = await queue.fetch(stateAppendQueueRequest("/state/append", payload));
+  assert.equal(duplicate.status, 202);
+  assert.deepEqual(await duplicate.json(), { ok: true, deduped: true });
+
+  const invalid = await queue.fetch(
+    stateAppendQueueRequest("/state/append", {
+      delivery_id: "state-delivery-invalid",
+      records: [{ ...payload.records[0], kind: "unknown" }],
+    }),
+  );
+  assert.equal(invalid.status, 400);
+  assert.deepEqual(await invalid.json(), { error: "invalid_state_append_kind" });
+
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.deepEqual(stats.state_append, {
+    pending_rows: 2,
+    pending_bytes:
+      Buffer.byteLength(JSON.stringify(payload.records[0].payload)) +
+      Buffer.byteLength(JSON.stringify(payload.records[1].payload)),
+    oldest_produced_at: "2026-07-20T12:00:00.000Z",
+    sheds_since_reset: 0,
+    delivery_receipts: 1,
+    max_pending_rows: 50_000,
+    max_pending_bytes: 100 * 1024 * 1024,
+  });
+});
+
+test("state append sheds atomically at the configured cap without consuming its receipt", async () => {
+  const queue = new ExactReviewQueue(
+    { storage: new MemoryDurableStorage() },
+    { STATE_APPEND_MAX_PENDING_ROWS: "1" },
+  );
+  const firstPayload = stateAppendPayload("state-cap-first", "sweep_status", "first");
+  const shedPayload = stateAppendPayload("state-cap-retry", "apply_proof", "second");
+  assert.equal(
+    (await queue.fetch(stateAppendQueueRequest("/state/append", firstPayload))).status,
+    202,
+  );
+
+  const shed = await queue.fetch(stateAppendQueueRequest("/state/append", shedPayload));
+  assert.equal(shed.status, 429);
+  assert.deepEqual(await shed.json(), { ok: false, shed: true, reason: "capacity" });
+  let stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.state_append.pending_rows, 1);
+  assert.equal(stats.state_append.sheds_since_reset, 1);
+  assert.equal(stats.state_append.delivery_receipts, 1);
+
+  const drained = await (
+    await queue.fetch(stateAppendQueueRequest("/state/drain", { max_rows: 1, max_bytes: 1024 }))
+  ).json();
+  const acked = await queue.fetch(
+    stateAppendQueueRequest("/state/ack", { drain_token: drained.drain_token }),
+  );
+  assert.deepEqual(await acked.json(), { ok: true, acked: 1 });
+
+  const retried = await queue.fetch(stateAppendQueueRequest("/state/append", shedPayload));
+  assert.equal(retried.status, 202);
+  assert.equal((await retried.json()).appended, 1);
+  stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.state_append.pending_rows, 1);
+  assert.equal(stats.state_append.delivery_receipts, 2);
+});
+
+test("state drain replays its active batch and deletes rows only after ack", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const payload = {
+    delivery_id: "state-drain",
+    records: [
+      stateAppendRecord("sweep_status", "one", { n: 1 }),
+      stateAppendRecord("comment_router", "two", { n: 2 }),
+      stateAppendRecord("apply_proof", "three", { n: 3 }),
+    ],
+  };
+  await queue.fetch(stateAppendQueueRequest("/state/append", payload));
+
+  const first = await (
+    await queue.fetch(stateAppendQueueRequest("/state/drain", { max_rows: 2, max_bytes: 1024 }))
+  ).json();
+  assert.equal(typeof first.drain_token, "string");
+  assert.deepEqual(
+    first.records.map((record) => [record.seq, record.kind, record.key, record.payload]),
+    [
+      [1, "sweep_status", "one", { n: 1 }],
+      [2, "comment_router", "two", { n: 2 }],
+    ],
+  );
+
+  const replay = await (
+    await queue.fetch(stateAppendQueueRequest("/state/drain", { max_rows: 1, max_bytes: 1 }))
+  ).json();
+  assert.equal(replay.drain_token, first.drain_token);
+  assert.deepEqual(replay.records, first.records);
+  let stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.state_append.pending_rows, 3);
+
+  const ack = await queue.fetch(
+    stateAppendQueueRequest("/state/ack", { drain_token: first.drain_token }),
+  );
+  assert.deepEqual(await ack.json(), { ok: true, acked: 2 });
+  const repeatedAck = await queue.fetch(
+    stateAppendQueueRequest("/state/ack", { drain_token: first.drain_token }),
+  );
+  assert.deepEqual(await repeatedAck.json(), { ok: true, acked: 0 });
+
+  const next = await (
+    await queue.fetch(stateAppendQueueRequest("/state/drain", { max_rows: 10, max_bytes: 1024 }))
+  ).json();
+  assert.notEqual(next.drain_token, first.drain_token);
+  assert.deepEqual(
+    next.records.map((record) => record.seq),
+    [3],
+  );
+  stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.state_append.pending_rows, 1);
+});
+
+test("expired state drain leases make the same rows available under a new token", async () => {
+  const originalNow = Date.now;
+  let now = Date.parse("2026-07-20T12:00:00.000Z");
+  Date.now = () => now;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new MemoryDurableStorage() },
+      { STATE_APPEND_DRAIN_LEASE_MS: "1000" },
+    );
+    await queue.fetch(
+      stateAppendQueueRequest(
+        "/state/append",
+        stateAppendPayload("state-expiry", "apply_proof", "proof"),
+      ),
+    );
+    const first = await (
+      await queue.fetch(stateAppendQueueRequest("/state/drain", { max_rows: 1, max_bytes: 1024 }))
+    ).json();
+    now += 1_001;
+    const redrained = await (
+      await queue.fetch(stateAppendQueueRequest("/state/drain", { max_rows: 1, max_bytes: 1024 }))
+    ).json();
+    assert.notEqual(redrained.drain_token, first.drain_token);
+    assert.deepEqual(redrained.records, first.records);
+
+    const staleAck = await queue.fetch(
+      stateAppendQueueRequest("/state/ack", { drain_token: first.drain_token }),
+    );
+    assert.deepEqual(await staleAck.json(), { ok: true, acked: 0 });
+    const activeAck = await queue.fetch(
+      stateAppendQueueRequest("/state/ack", { drain_token: redrained.drain_token }),
+    );
+    assert.deepEqual(await activeAck.json(), { ok: true, acked: 1 });
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("internal state endpoints reject invalid HMAC signatures", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const payload = stateAppendPayload("state-auth", "sweep_status", "auth");
+  const unsigned = await worker.fetch(
+    stateAppendQueueRequest("/internal/state/append", payload, "https://clawsweeper.openclaw.ai"),
+    env,
+  );
+  assert.equal(unsigned.status, 401);
+  assert.deepEqual(await unsigned.json(), { error: "invalid_signature" });
+
+  const signed = await worker.fetch(
+    signedStateAppendRequest("/internal/state/append", payload, "test-secret"),
+    env,
+  );
+  assert.equal(signed.status, 202);
+  assert.equal((await signed.json()).appended, 1);
+});
+
 test("authenticated legacy exact-review intake enters the durable queue", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
@@ -11399,6 +11603,43 @@ function signedGithubWebhookBodyRequest({
       "x-github-event": event,
       "x-github-delivery": "test-delivery",
       "x-hub-signature-256": signature,
+    },
+    body,
+  });
+}
+
+function stateAppendRecord(kind: string, key: string, payload: unknown) {
+  return {
+    kind,
+    key,
+    payload,
+    produced_at: "2026-07-20T12:00:00.000Z",
+  };
+}
+
+function stateAppendPayload(deliveryId: string, kind: string, key: string) {
+  return {
+    delivery_id: deliveryId,
+    records: [stateAppendRecord(kind, key, { delivery_id: deliveryId })],
+  };
+}
+
+function stateAppendQueueRequest(path: string, payload: unknown, origin = "https://queue") {
+  return new Request(`${origin}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+function signedStateAppendRequest(path: string, payload: unknown, secret: string) {
+  const body = JSON.stringify(payload);
+  const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+  return new Request(`https://clawsweeper.openclaw.ai${path}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-clawsweeper-exact-review-signature": signature,
     },
     body,
   });

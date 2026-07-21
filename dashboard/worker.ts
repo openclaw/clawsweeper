@@ -503,6 +503,12 @@ export default {
       return githubWebhook(request, env, ctx);
     if (url.pathname === "/internal/exact-review/enqueue" && request.method === "POST")
       return authenticatedExactReviewEnqueue(request, env);
+    if (url.pathname === "/internal/state/append" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/state/append");
+    if (url.pathname === "/internal/state/drain" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/state/drain");
+    if (url.pathname === "/internal/state/ack" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/state/ack");
     if (url.pathname === "/internal/exact-review/claim" && request.method === "POST")
       return exactReviewQueueRequest(env, "/claim", request);
     // Heartbeat authenticates by full lease tuple, matching /claim and /complete: the
