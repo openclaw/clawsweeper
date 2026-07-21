@@ -55,7 +55,12 @@ export async function publishMainWithStateAppend(
 
   let plan: StateAppendPlan;
   try {
-    plan = planSweepStatusAppend(options.paths, runtime.root ?? process.cwd(), runtime.now);
+    plan = planSweepStatusAppend(
+      options.paths,
+      runtime.root ?? process.cwd(),
+      env.CLAWSWEEPER_STATE_DIR,
+      runtime.now,
+    );
   } catch {
     console.warn("state-append shed/failed; falling back to git publish");
     return publishGit(options);
@@ -92,6 +97,7 @@ export async function publishMainWithStateAppend(
 function planSweepStatusAppend(
   paths: readonly string[],
   root: string,
+  stateRoot: string | undefined,
   now: (() => Date) | undefined,
 ): StateAppendPlan {
   const consumedPaths = new Set<string>();
@@ -109,9 +115,17 @@ function planSweepStatusAppend(
     if (path !== SWEEP_STATUS_DIRECTORY) continue;
     const absolute = resolve(root, path);
     if (!existsSync(absolute) || !statSync(absolute).isDirectory()) continue;
-    const directoryFiles = readdirSync(absolute)
-      .filter((name) => /^[A-Za-z0-9][A-Za-z0-9_.-]*\.json$/.test(name))
-      .map((name) => `${SWEEP_STATUS_DIRECTORY}/${name}`);
+    if (!stateRoot) throw new Error("cannot prove sweep status directory append is lossless");
+    const stateDirectory = resolve(stateRoot, path);
+    if (!existsSync(stateDirectory) || !statSync(stateDirectory).isDirectory()) {
+      throw new Error("cannot compare sweep status directory with state checkout");
+    }
+    const sourceNames = sweepStatusDirectoryNames(absolute);
+    const stateNames = sweepStatusDirectoryNames(stateDirectory);
+    if (stateNames.some((name) => !sourceNames.includes(name))) {
+      throw new Error("sweep status directory contains a deletion that requires git publish");
+    }
+    const directoryFiles = sourceNames.map((name) => `${SWEEP_STATUS_DIRECTORY}/${name}`);
     if (directoryFiles.length === 0) continue;
     consumedPaths.add(originalPath);
     for (const file of directoryFiles) files.add(file);
@@ -134,6 +148,18 @@ function planSweepStatusAppend(
     };
   });
   return { consumedPaths, records };
+}
+
+function sweepStatusDirectoryNames(directory: string): string[] {
+  const entries = readdirSync(directory, { withFileTypes: true });
+  if (
+    entries.some(
+      (entry) => !entry.isFile() || !/^[A-Za-z0-9][A-Za-z0-9_.-]*\.json$/.test(entry.name),
+    )
+  ) {
+    throw new Error("sweep status directory contains an unrepresentable entry");
+  }
+  return entries.map((entry) => entry.name).sort();
 }
 
 function normalizedPath(path: string): string {

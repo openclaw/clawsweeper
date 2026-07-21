@@ -72,6 +72,7 @@ test("publish-main keeps mixed non-status paths on the git publisher", async () 
 
 test("publish-main falls back to the original git publish on shed", async (t) => {
   const root = statusFixture();
+  const stateRoot = statusFixture();
   const gitPublishes: GitPublishOptions[] = [];
   const warnings: string[] = [];
   t.mock.method(console, "warn", (message: string) => warnings.push(message));
@@ -84,7 +85,7 @@ test("publish-main falls back to the original git publish on shed", async (t) =>
   assert.equal(
     await publishMainWithStateAppend(original, {
       root,
-      env: appendEnv(),
+      env: appendEnv({ CLAWSWEEPER_STATE_DIR: stateRoot }),
       fetchImpl: (async () =>
         Response.json({ ok: false, shed: true }, { status: 429 })) as typeof fetch,
       publishGit: capturePublishes(gitPublishes),
@@ -95,30 +96,66 @@ test("publish-main falls back to the original git publish on shed", async (t) =>
   assert.deepEqual(warnings, ["state-append shed/failed; falling back to git publish"]);
 });
 
+test("publish-main keeps directory deletions on the git fallback path", async (t) => {
+  const root = statusFixture();
+  const stateRoot = statusFixture();
+  writeStatus(stateRoot, "openclaw-clawhub");
+  const gitPublishes: GitPublishOptions[] = [];
+  const warnings: string[] = [];
+  let fetchCalls = 0;
+  t.mock.method(console, "warn", (message: string) => warnings.push(message));
+  const original = {
+    message: "chore: delete stale sweep status",
+    paths: ["results/sweep-status"],
+    rebaseStrategy: "apply-records" as const,
+  };
+
+  assert.equal(
+    await publishMainWithStateAppend(original, {
+      root,
+      env: appendEnv({ CLAWSWEEPER_STATE_DIR: stateRoot }),
+      fetchImpl: (async () => {
+        fetchCalls += 1;
+        return Response.json({ ok: true }, { status: 202 });
+      }) as typeof fetch,
+      publishGit: capturePublishes(gitPublishes),
+    }),
+    "committed",
+  );
+  assert.equal(fetchCalls, 0);
+  assert.deepEqual(gitPublishes, [original]);
+  assert.deepEqual(warnings, ["state-append shed/failed; falling back to git publish"]);
+});
+
 function statusFixture(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-main-"));
-  const target = path.join(root, statusPath);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, `${JSON.stringify(sweepStatus())}\n`);
+  writeStatus(root, "openclaw-openclaw");
   return root;
 }
 
-function sweepStatus(): Record<string, unknown> {
+function writeStatus(root: string, slug: string): void {
+  const target = path.join(root, `results/sweep-status/${slug}.json`);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, `${JSON.stringify(sweepStatus(slug))}\n`);
+}
+
+function sweepStatus(slug = "openclaw-openclaw"): Record<string, unknown> {
   return {
     schema_version: 1,
-    slug: "openclaw-openclaw",
+    slug,
     state: "Review in progress",
     updated_at: "2026-07-21T12:00:00.000Z",
   };
 }
 
-function appendEnv(): NodeJS.ProcessEnv {
+function appendEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     CLAWSWEEPER_STATE_APPEND_ENABLED: "1",
     QUEUE_URL: "https://queue.test",
     CLAWSWEEPER_WEBHOOK_SECRET: "publish-main-test-secret",
     GITHUB_RUN_ID: "1234",
     GITHUB_RUN_ATTEMPT: "2",
+    ...overrides,
   };
 }
 
