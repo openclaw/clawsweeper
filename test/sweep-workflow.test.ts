@@ -1443,6 +1443,7 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(applyHelper, /max_close_processed_limit=900/);
   assert.match(applyStep, /close_processed_limit="\$base_close_processed_limit"/);
   assert.match(applyStep, /source scripts\/apply-workflow-helpers\.sh/);
+  assert.match(workflow, /id: finalize-apply\n[\s\S]*ACTION_LEDGER_OUTCOME: \$\{\{ steps\.finalize-apply\.outcome/);
   assert.match(applyStep, /timeout-minutes: 70/);
   assert.match(
     applyStep,

@@ -40,6 +40,11 @@ import {
   normalizeAutomergeMetricEvent,
   summarizeAutomergeMetrics,
 } from "./automerge-metrics.ts";
+import {
+  APPLY_OBSERVABILITY_RETENTION_MS,
+  normalizeApplyObservabilityEvent,
+  summarizeApplyObservability,
+} from "./apply-observability.ts";
 
 export {
   ExactReviewQueue,
@@ -96,6 +101,7 @@ const GITHUB_TIMEOUT_MS = 4500;
 const DEFAULT_STALE_QUEUED_WORKFLOW_MS = 6 * 60 * 60 * 1000;
 const HEALTH_HISTORY_TTL_SECONDS = (HEALTH_HISTORY_RETENTION_DAYS + 1) * 24 * 60 * 60;
 const HEALTH_HISTORY_KEY_PREFIX = "health-history:";
+const APPLY_OBSERVABILITY_KEY_PREFIX = "apply-observability:";
 const CLAWSWEEPER_REVIEW_REPO = "openclaw/clawsweeper";
 const CLAWSWEEPER_STATE_REPO = "openclaw/clawsweeper-state";
 const CLAWSWEEPER_STATE_REF = "state";
@@ -311,6 +317,26 @@ export class StatusStore {
       return json({ version: 1, telemetry_since: events[0]?.occurred_at ?? null, events });
     }
 
+    if (request.method === "GET" && key === "apply-observability") {
+      const entries = (await this.storage.list({
+        prefix: APPLY_OBSERVABILITY_KEY_PREFIX,
+        limit: 5_000,
+        reverse: true,
+      })) as Map<string, StoredValue>;
+      const events = [];
+      for (const stored of entries.values()) {
+        if (stored.expires_at && stored.expires_at <= Date.now()) continue;
+        try {
+          const event = normalizeApplyObservabilityEvent(JSON.parse(stored.value));
+          if (event) events.push(event);
+        } catch {
+          // A malformed isolated event must not hide healthy durable observations.
+        }
+      }
+      events.sort((left, right) => Date.parse(left.occurred_at) - Date.parse(right.occurred_at));
+      return json({ schema_version: 1, events });
+    }
+
     if (request.method === "GET") {
       const stored = (await this.storage.get(key)) as StoredValue | undefined;
       if (!stored) return new Response(null, { status: 404 });
@@ -427,6 +453,17 @@ export class StatusStore {
         [eventKey]: { value: JSON.stringify(event), expires_at: expiresAt },
         [idKey]: { value: eventKey, expires_at: expiresAt },
       });
+      await this.scheduleCleanup(expiresAt);
+      return json({ ok: true });
+    }
+
+    if (request.method === "POST" && key === "apply-observability") {
+      const event = normalizeApplyObservabilityEvent((await request.json()).event);
+      if (!event) return new Response("invalid apply observability event", { status: 400 });
+      const expiresAt = Date.parse(event.occurred_at) + APPLY_OBSERVABILITY_RETENTION_MS;
+      if (expiresAt <= Date.now()) return json({ ok: true, expired: true });
+      const key = `${APPLY_OBSERVABILITY_KEY_PREFIX}${encodeURIComponent(event.repo)}:${event.run_id}:${event.run_attempt}`;
+      await this.storage.put(key, { value: JSON.stringify(event), expires_at: expiresAt });
       await this.scheduleCleanup(expiresAt);
       return json({ ok: true });
     }
@@ -578,6 +615,8 @@ export default {
       request.method === "POST"
     )
       return authenticatedExactReviewQueueRequest(request, env, "/publication-batches/complete");
+    if (url.pathname === "/internal/apply-observability" && request.method === "POST")
+      return authenticatedApplyObservability(request, env);
     if (url.pathname === "/internal/exact-review/reconcile" && request.method === "POST")
       return authenticatedExactReviewReconcile(request, env);
     if (url.pathname === "/api/exact-review-queue" && request.method === "GET")
@@ -588,6 +627,8 @@ export default {
       return exactReviewQueueRequest(env, `/review-telemetry?${url.searchParams.toString()}`);
     if (url.pathname === "/api/review-observability" && request.method === "GET")
       return exactReviewQueueRequest(env, `/review-observability?${url.searchParams.toString()}`);
+    if (url.pathname === "/api/apply-observability" && request.method === "GET")
+      return applyObservabilityJson(request, env);
     if (url.pathname === "/api/health-history" && request.method === "GET")
       return healthHistoryJson(request, env);
     if (url.pathname === "/api/automerge-metrics" && request.method === "GET")
@@ -1605,6 +1646,49 @@ async function authenticatedExactReviewOperatorRequest(request, env, path: strin
       body,
     }),
   );
+}
+
+async function authenticatedApplyObservability(request, env) {
+  const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
+  if (!secret) return json({ error: "webhook_not_configured" }, 503);
+  if (!isDurableStatusStore(env.STATUS_STORE))
+    return json({ error: "apply_observability_not_configured" }, 503);
+  const body = await request.text();
+  const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
+  if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText: body }))) {
+    return json({ error: "invalid_signature" }, 401);
+  }
+  return durableStatusStoreStub(env.STATUS_STORE).fetch(
+    new Request(statusStoreRequest("apply-observability", "POST"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    }),
+  );
+}
+
+async function applyObservabilityJson(request: Request, env: DashboardEnv) {
+  const params = new URL(request.url).searchParams;
+  const rangeValue = params.get("range");
+  const range = rangeValue === "6h" || rangeValue === "7d" ? rangeValue : "24h";
+  const repoValue = params.get("repo");
+  const repo = repoValue && repoValue !== "all" ? repoValue : null;
+  if (!isDurableStatusStore(env.STATUS_STORE)) {
+    return json({ error: "apply_observability_not_configured" }, 503);
+  }
+  const response = await durableStatusStoreStub(env.STATUS_STORE).fetch(
+    statusStoreRequest("apply-observability"),
+  );
+  if (!response.ok) return json({ error: "apply_observability_unavailable" }, 503);
+  const body = objectValue(await response.json().catch(() => null));
+  const events = Array.isArray(body.events)
+    ? body.events.map((event) => normalizeApplyObservabilityEvent(event)).filter(Boolean)
+    : [];
+  const repositories = String(env.APPLY_TARGET_REPOS || "openclaw/openclaw")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return json(summarizeApplyObservability({ events, range, repo, repositories }));
 }
 
 async function authenticatedExactReviewReconcile(request, env) {
@@ -7729,6 +7813,19 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
   border-radius: 10px;
   background: var(--panel);
 }
+.apply-observability { margin-top: 22px; }
+.apply-observability .exact-review-head { margin-top: 0; }
+.apply-observability .overview-section-title { margin: 0 0 3px; }
+.apply-observability .apply-observability-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+.apply-observability .apply-observability-metric { min-width: 0; padding: 11px 12px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--panel); }
+.apply-observability .apply-observability-metric > span { display: block; color: var(--muted); font-size: 10px; line-height: 1.2; }
+.apply-observability .apply-observability-metric > strong { display: block; margin-top: 5px; font: 700 15px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.apply-observability .apply-observability-metric small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.25; }
+.apply-observability .review-anomalies { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--panel); font-size: 11px; }
+.apply-observability .review-anomaly { display: flex; justify-content: space-between; gap: 12px; }
+.apply-observability .review-status { font-weight: 700; }
+.apply-observability .review-status.healthy { color: var(--green); }
+.apply-observability .review-status.degraded { color: var(--claw); }
 .exact-lane-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .exact-lane-head strong { font-size: 13px; }
 .exact-lane-head span { color: var(--muted); font-size: 11px; }
@@ -8390,6 +8487,7 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   .flow-node::before { display: none; }
   .flow-node::after { top: 5px; }
   .exact-lanes { grid-template-columns: 1fr; }
+  .apply-observability .apply-observability-kpis { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
   .automerge-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -8465,6 +8563,20 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
       <div class="exact-review-lanes" id="exact-review-lanes" aria-live="polite"></div>
       <section class="exact-lane" id="state-writer-health" aria-live="polite"></section>
     </div>
+    <section class="apply-observability" aria-labelledby="apply-observability-title">
+      <div class="exact-review-head">
+        <div>
+          <h3 class="overview-section-title" id="apply-observability-title">Apply / close health</h3>
+          <span class="muted" id="apply-observability-summary">Loading durable apply telemetry…</span>
+        </div>
+        <div class="trend-ranges" id="apply-observability-ranges" aria-label="Apply and close health range">
+          <button class="trend-range" type="button" data-apply-range="6h">6 hours</button>
+          <button class="trend-range active" type="button" data-apply-range="24h">24 hours</button>
+          <button class="trend-range" type="button" data-apply-range="7d">7 days</button>
+        </div>
+      </div>
+      <div id="apply-observability-body" aria-live="polite"><div class="empty">Loading apply and close telemetry…</div></div>
+    </section>
     <h3 class="overview-section-title">Handoff Health</h3>
     <div id="exact-review-handoff" aria-live="polite"></div>
     <div id="apply-health"></div>
@@ -8610,8 +8722,10 @@ let activeWorkerFilter = "all";
 let workerIndex = new Map();
 let automaticIndex = new Map();
 let activeHealthRange = "6h";
+let activeApplyRange = "24h";
 let healthHistoryLoadedAt = 0;
 let healthHistorySamples = [];
+let applyObservabilityRequestGeneration = 0;
 
 function exactReviewHistory(lane) {
   return healthHistorySamples.flatMap(sample => {
@@ -8892,6 +9006,60 @@ function renderExecutionAlert(current) {
   if (incomplete) parts.push("work execution telemetry is incomplete");
   const details = "Total GitHub queued " + fmt.format(Number(current?.queued_runs) || 0) + " · oldest queued " + formatAgeMinutes(current?.oldest_queued_minutes) + " · oldest running " + formatAgeMinutes(current?.oldest_running_minutes);
   target.innerHTML = '<details class="execution-alert"><summary><span class="execution-alert-title"><strong>⚠ Work execution needs attention</strong><span>' + esc(parts.join(" · ")) + '</span></span><span class="execution-alert-toggle">Details ▾</span></summary><div class="execution-alert-body">' + esc(details) + '</div></details>';
+}
+
+function applyMetric(label, value, detail) {
+  return '<div class="apply-observability-metric"><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong>' + (detail ? '<small>' + esc(detail) + '</small>' : '') + '</div>';
+}
+function applyValue(value) {
+  if (value == null) return "unknown";
+  return Number.isFinite(Number(value)) ? fmt.format(Number(value)) : "unknown";
+}
+function renderApplyObservability(payload) {
+  const summary = document.getElementById("apply-observability-summary");
+  const target = document.getElementById("apply-observability-body");
+  if (!summary || !target) return;
+  const queue = payload.queue || {};
+  const fifteen = payload.last_15_minutes || {};
+  const sixty = payload.last_60_minutes || {};
+  const failures = payload.failures || {};
+  const known = payload.telemetry_complete === true;
+  summary.innerHTML = '<span class="review-status ' + (known ? "healthy" : "degraded") + '">' + (known ? "Observed" : "Awaiting producer") + '</span> · ' + esc(payload.range || activeApplyRange) + ' window';
+  const queueRows = [
+    ["Active / capacity", applyValue(queue.active) + " / " + applyValue(queue.capacity), "durable run observation"],
+    ["Ready / backoff", applyValue(queue.ready) + " / " + applyValue(queue.backoff), "oldest ready " + (queue.oldest_ready_age_seconds == null ? "unknown" : elapsed(queue.oldest_ready_age_seconds * 1000))],
+    ["Dispatching / leased", applyValue(queue.dispatching) + " / " + applyValue(queue.leased), "oldest lease " + (queue.oldest_lease_age_seconds == null ? "unknown" : elapsed(queue.oldest_lease_age_seconds * 1000))],
+    ["Lease wait / hold", payload.lease?.wait_ms == null ? "unknown" : elapsed(payload.lease.wait_ms), payload.lease?.hold_ms == null ? "hold unknown" : "hold " + elapsed(payload.lease.hold_ms)]
+  ];
+  const resultRows = [
+    ["15m arrivals / applied / closed", applyValue(fifteen.arrivals) + " / " + applyValue(fifteen.applied) + " / " + applyValue(fifteen.closed)],
+    ["60m arrivals / applied / closed", applyValue(sixty.arrivals) + " / " + applyValue(sixty.applied) + " / " + applyValue(sixty.closed)],
+    ["60m net drain / retries", applyValue(sixty.net_drain) + " / " + applyValue(sixty.retried)],
+    ["Range superseded / dead-lettered", applyValue(payload.totals?.superseded) + " / " + applyValue(payload.totals?.dead_lettered)],
+    ["Retry amplification", payload.retry_amplification == null ? "unknown" : Number(payload.retry_amplification).toFixed(2)]
+  ];
+  const failureText = failures.last_failure_kind ? failures.last_failure_kind + " · " + since(failures.last_failure_at) : "No observed failure";
+  const failureRows = [
+    ["Lease timeout / contention", applyValue(failures.state_lease_timeout) + " / " + applyValue(failures.state_lease_contention)],
+    ["Ledger / state publication", applyValue(failures.action_ledger) + " / " + applyValue(failures.state_publication)],
+    ["Safe-close blocked / failure", applyValue(failures.safe_close_blocked) + " / " + applyValue(failures.safe_close_failure)]
+  ];
+  const blocks = (rows) => '<div class="apply-observability-kpis">' + rows.map(row => applyMetric(row[0], row[1], row[2] || "")).join("") + '</div>';
+  target.innerHTML = blocks(queueRows) + blocks(resultRows) + '<div class="review-anomalies"><div class="review-anomaly"><span><strong>Last failure</strong> ' + esc(failureText) + '</span>' + link(failures.last_failure_run_url, "Actions run") + '</div></div>' + blocks(failureRows);
+}
+async function loadApplyObservability() {
+  const generation = ++applyObservabilityRequestGeneration;
+  try {
+    const response = await fetch("/api/apply-observability?range=" + encodeURIComponent(activeApplyRange), { cache: "no-store" });
+    if (!response.ok) throw new Error("apply observability returned " + response.status);
+    const payload = await response.json();
+    if (generation !== applyObservabilityRequestGeneration) return;
+    renderApplyObservability(payload);
+  } catch {
+    if (generation !== applyObservabilityRequestGeneration) return;
+    document.getElementById("apply-observability-summary").innerHTML = '<span class="review-status degraded">Telemetry unavailable</span>';
+    document.getElementById("apply-observability-body").innerHTML = '<div class="empty">Durable apply telemetry could not be loaded.</div>';
+  }
 }
 
 function formatAgeMinutes(value) {
@@ -9501,6 +9669,7 @@ async function load() {
         : "",
   );
   loadHealthHistory(activeHealthRange, false).catch(() => undefined);
+  loadApplyObservability().catch(() => undefined);
   loadAutomergeMetrics().catch(() => undefined);
   } catch (error) {
     if (lastData) {
@@ -10050,6 +10219,13 @@ document.getElementById("trend-ranges").addEventListener("click", event => {
   if (!button) return;
   document.querySelectorAll("button[data-trend-range]").forEach(item => item.classList.toggle("active", item === button));
   loadHealthHistory(button.dataset.trendRange || "6h", true).catch(() => undefined);
+});
+document.getElementById("apply-observability-ranges").addEventListener("click", event => {
+  const button = event.target.closest("button[data-apply-range]");
+  if (!button) return;
+  activeApplyRange = button.dataset.applyRange || "24h";
+  document.querySelectorAll("button[data-apply-range]").forEach(item => item.classList.toggle("active", item === button));
+  loadApplyObservability().catch(() => undefined);
 });
 document.getElementById("automerge-ranges").addEventListener("click", event => {
   const button = event.target.closest("button[data-automerge-range]");
