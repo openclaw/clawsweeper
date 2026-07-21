@@ -321,7 +321,9 @@ const STATE_APPEND_KINDS = new Set<StateAppendKind>([
 const DEFAULT_STATE_APPEND_MAX_PENDING_ROWS = 50_000;
 const DEFAULT_STATE_APPEND_MAX_PENDING_BYTES = 100 * 1024 * 1024;
 const DEFAULT_STATE_APPEND_MAX_RECORD_BYTES = 256 * 1024;
-const DEFAULT_STATE_APPEND_DRAIN_LEASE_MS = 10 * 60 * 1000;
+// Must outlast a worst-case materializer publish (observed 17 min under
+// residual lease contention during the #738 transition).
+const DEFAULT_STATE_APPEND_DRAIN_LEASE_MS = 30 * 60 * 1000;
 const EXACT_REVIEW_REVIEW_TELEMETRY_TABLE = "exact_review_review_telemetry";
 const EXACT_REVIEW_RUN_TELEMETRY_TABLE = "exact_review_run_telemetry";
 const EXACT_REVIEW_STATE_WRITER_OPERATION_TABLE = "exact_review_state_writer_operations";

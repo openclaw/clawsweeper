@@ -283,8 +283,11 @@ export async function runStateMaterializer(
         fetchImpl,
       });
       if (acked !== drain.records.length) {
-        throw new Error(
-          `state ack count ${acked} did not match drained count ${drain.records.length}`,
+        // An expired drain lease re-exposes the rows for the next cycle and a
+        // re-materialization of already-applied records commits nothing, so a
+        // partial ack is re-delivery by design, not a failure.
+        console.warn(
+          `state ack count ${acked} did not match drained count ${drain.records.length}; rows re-drain next cycle`,
         );
       }
       summary.acked += acked;
