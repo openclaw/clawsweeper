@@ -1535,7 +1535,12 @@ function acquireStatePublishLease(
   options: StatePublishLeaseOptions,
 ): StatePublishLease {
   const leaseRef = `${STATE_PUBLISH_LEASE_REF_ROOT}/${branch}`;
-  const priorityIntentRef = `${leaseRef}-priority`;
+  // Distinct namespace: suffixing leaseRef would collide with the lease ref
+  // of a branch literally named "<branch>-priority".
+  const priorityIntentRef = leaseRef.replace(
+    STATE_PUBLISH_LEASE_REF_ROOT,
+    "refs/heads/clawsweeper-publish-priority",
+  );
   runGit(["check-ref-format", leaseRef], { quiet: true });
   runGit(["check-ref-format", priorityIntentRef], { quiet: true });
   const owner = randomUUID();

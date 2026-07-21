@@ -2083,7 +2083,7 @@ test("state publish lease recovers an abandoned owner after its bounded TTL", ()
 
 test("ordinary state publisher yields to a live priority intent until it expires", () => {
   const { origin, root, work } = createStateLeaseTestRepo("clawsweeper-priority-yield-");
-  const priorityRef = "refs/heads/clawsweeper-publish-lease/state-priority";
+  const priorityRef = "refs/heads/clawsweeper-publish-priority/state";
   const priorityOwner = randomUUID();
   pushStateLeaseMetadata(work, priorityRef, {
     owner: priorityOwner,
@@ -2189,7 +2189,7 @@ done
         CLAWSWEEPER_STATE_LEASE_PRIORITY: "1",
       },
     );
-    const priorityRef = "refs/heads/clawsweeper-publish-lease/state-priority";
+    const priorityRef = "refs/heads/clawsweeper-publish-priority/state";
     await waitFor(
       () =>
         run(
@@ -2241,7 +2241,7 @@ test("state publish priority intent read and write failures fail open", () => {
       wrapper,
       `#!/bin/sh
 case "$*" in
-  *clawsweeper-publish-lease/state-priority*)
+  *clawsweeper-publish-priority/state*)
     if test "${failureMode}" = "read" && { test "$1" = "ls-remote" || test "$1" = "fetch"; }; then exit 1; fi
     if test "${failureMode}" = "write" && test "$1" = "push"; then exit 1; fi
     ;;
@@ -2291,7 +2291,7 @@ exec "${realGit}" "$@"
 
 test("stale state publish priority intent is ignored and pruned", () => {
   const { origin, root, work } = createStateLeaseTestRepo("clawsweeper-priority-stale-");
-  const priorityRef = "refs/heads/clawsweeper-publish-lease/state-priority";
+  const priorityRef = "refs/heads/clawsweeper-publish-priority/state";
   pushStateLeaseMetadata(work, priorityRef, {
     owner: randomUUID(),
     expiresAtMs: Date.now() - 60_000,
