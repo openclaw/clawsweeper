@@ -53,6 +53,8 @@ jobs:
 
       - uses: ./.github/actions/setup-state
         with:
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: actions/setup-node@v6
@@ -189,6 +191,7 @@ jobs:
       - name: Commit result ledger
         if: ${{ steps.download.outputs.has_artifacts == '1' }}
         env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
           set -euo pipefail

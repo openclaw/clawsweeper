@@ -27,7 +27,6 @@ jobs:
     timeout-minutes: 60
     env:
       EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-      CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
       EXACT_REVIEW_BATCH_ID: exact-review-batch:${{ github.run_id }}
       EXACT_REVIEW_BATCH_LEASE_OWNER: github:${{ github.run_id }}
       EXACT_REVIEW_BATCH_MANIFEST: .artifacts/exact-review-batch/manifest.json
@@ -48,6 +47,8 @@ jobs:
 
       - name: Claim one durable publication batch
         id: batch
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: pnpm run --silent repair:exact-review-batch claim
 
       - name: Create target owner token
@@ -76,12 +77,15 @@ jobs:
       - uses: ./.github/actions/setup-state
         if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
         with:
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
 
       - name: Prepare each item independently
         if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
         env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
           REPO_TOKEN: ${{ github.token }}
         run: |
@@ -164,6 +168,7 @@ jobs:
       - name: Finalize healthy members under a fenced heartbeat
         if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
         env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
           CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}

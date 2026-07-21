@@ -26,6 +26,7 @@ import {
   REVIEW_OBSERVABILITY_RANGES,
   summarizeReviewObservability,
 } from "./review-observability.ts";
+import { StateWriterCoordinator, type StateWriterTicketInput } from "./state-writer-coordinator.ts";
 import {
   type DurableReviewRunTelemetry,
   normalizeReviewRunTelemetry,
@@ -350,6 +351,12 @@ const DEFAULT_EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS = 30 * 60 * 1000;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS = 60_000;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_COOLDOWN_MS = 30_000;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_RESERVATION_MS = 10 * 60_000;
+const DEFAULT_STATE_WRITER_COORDINATOR_LEASE_MS = 2 * 60_000;
+const DEFAULT_STATE_WRITER_COORDINATOR_QUEUED_STALE_MS = 2 * 60_000;
+// A watchdog may keep a synchronous Git operation alive, but it cannot turn a
+// hung runner into a permanent queue owner. The Git fence blocks any in-flight
+// push that outlives this absolute coordinator horizon.
+const DEFAULT_STATE_WRITER_COORDINATOR_MAX_LEASE_AGE_MS = 30 * 60_000;
 
 export class ExactReviewQueue {
   private storage;
@@ -359,12 +366,14 @@ export class ExactReviewQueue {
   private legacyMirrorDisabled = false;
   private legacyMirrorWarningReported = false;
   private batchStore;
+  private stateWriterCoordinator;
   private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
 
   constructor(state, env) {
     this.storage = state.storage;
     this.env = env;
     this.batchStore = new ExactReviewPublicationBatchStore(this.storage);
+    this.stateWriterCoordinator = new StateWriterCoordinator(this.storage);
     const initialize = () => this.initializeStorage();
     this.ready =
       typeof state.blockConcurrencyWhile === "function"
@@ -519,6 +528,63 @@ export class ExactReviewQueue {
         return deleted;
       });
       return json({ ok: true, acked });
+    }
+
+    if (request.method === "POST" && url.pathname === "/state-writer/acquire") {
+      const input = stateWriterTicketInput(await request.json().catch(() => null));
+      if (!input) return json({ error: "invalid_state_writer_ticket" }, 400);
+      const ticket = this.stateWriterCoordinator.acquire(
+        input,
+        Date.now(),
+        stateWriterCoordinatorLeaseMs(this.env),
+        stateWriterCoordinatorQueuedStaleMs(this.env),
+        stateWriterCoordinatorMaxLeaseAgeMs(this.env),
+      );
+      if (ticket.state === "completed" || ticket.state === "expired") {
+        return json({ error: `state_writer_ticket_${ticket.state}`, ticket }, 409);
+      }
+      return json({ ok: true, ticket });
+    }
+
+    if (request.method === "POST" && url.pathname === "/state-writer/heartbeat") {
+      const body = objectValue(await request.json().catch(() => null));
+      const ticketId = boundedStateWriterIdentity(body.ticket_id);
+      const owner = boundedStateWriterIdentity(body.owner);
+      const leaseToken = boundedStateWriterIdentity(body.lease_token);
+      if (!ticketId || !owner || !leaseToken) {
+        return json({ error: "invalid_state_writer_heartbeat" }, 400);
+      }
+      const ticket = this.stateWriterCoordinator.heartbeat(
+        ticketId,
+        owner,
+        leaseToken,
+        Date.now(),
+        stateWriterCoordinatorLeaseMs(this.env),
+        stateWriterCoordinatorQueuedStaleMs(this.env),
+      );
+      return ticket
+        ? json({ ok: true, ticket })
+        : json({ error: "state_writer_ticket_not_active" }, 409);
+    }
+
+    if (request.method === "POST" && url.pathname === "/state-writer/release") {
+      const body = objectValue(await request.json().catch(() => null));
+      const ticketId = boundedStateWriterIdentity(body.ticket_id);
+      const owner = boundedStateWriterIdentity(body.owner);
+      const leaseToken = boundedStateWriterIdentity(body.lease_token);
+      if (!ticketId || !owner || !leaseToken) {
+        return json({ error: "invalid_state_writer_release" }, 400);
+      }
+      const released = this.stateWriterCoordinator.release(
+        ticketId,
+        owner,
+        leaseToken,
+        Date.now(),
+        stateWriterCoordinatorQueuedStaleMs(this.env),
+      );
+      return released
+        ? json({ ok: true, released: true })
+        : json({ error: "state_writer_ticket_not_active" }, 409);
     }
 
     if (request.method === "POST" && url.pathname === "/enqueue") {
@@ -1302,6 +1368,12 @@ export class ExactReviewQueue {
         stateWriter,
         stateAppend,
       } = snapshot;
+      // Coordinator methods own their SQLite transaction. Keep this adjacent to
+      // the queue snapshot without nesting transactionSync calls.
+      const stateWriterCoordinator = this.stateWriterCoordinator.stats(
+        now,
+        stateWriterCoordinatorQueuedStaleMs(this.env),
+      );
       const publicationBatches = this.batchStore.stats(now);
       const batchOwnedItemKeys = new Set<string>(publicationBatches.activeItemKeys);
       const legacyExcludedItemKeys = new Set(batchOwnedItemKeys);
@@ -1395,7 +1467,7 @@ export class ExactReviewQueue {
         },
         delivery_receipts: this.deliveryReceiptCountSync(),
         review_telemetry_health: reviewTelemetryHealth,
-        state_writer: stateWriter,
+        state_writer: { ...stateWriter, coordinator: stateWriterCoordinator },
         state_append: {
           ...stateAppend,
           max_pending_rows: stateAppendMaxPendingRows(this.env),
@@ -2664,6 +2736,7 @@ export class ExactReviewQueue {
   private async initializeStorage() {
     this.ensureStorageSchemaSync();
     this.batchStore.ensureSchemaSync();
+    this.stateWriterCoordinator.ensureSchemaSync();
     let meta = this.readStorageMetaSync();
     let migratedLegacy = false;
     const legacy = this.storage.kv.get(EXACT_REVIEW_QUEUE_STATE_KEY) as
@@ -6545,6 +6618,94 @@ function stateAppendDrainLeaseMs(env) {
       Math.floor(numberFrom(env.STATE_APPEND_DRAIN_LEASE_MS, DEFAULT_STATE_APPEND_DRAIN_LEASE_MS)),
     ),
   );
+}
+
+function stateWriterCoordinatorLeaseMs(env) {
+  return Math.max(
+    30_000,
+    Math.min(
+      10 * 60_000,
+      Math.floor(
+        numberFrom(
+          env.STATE_WRITER_COORDINATOR_LEASE_MS,
+          DEFAULT_STATE_WRITER_COORDINATOR_LEASE_MS,
+        ),
+      ),
+    ),
+  );
+}
+
+function stateWriterCoordinatorQueuedStaleMs(env) {
+  return Math.max(
+    30_000,
+    Math.min(
+      10 * 60_000,
+      Math.floor(
+        numberFrom(
+          env.STATE_WRITER_COORDINATOR_QUEUED_STALE_MS,
+          DEFAULT_STATE_WRITER_COORDINATOR_QUEUED_STALE_MS,
+        ),
+      ),
+    ),
+  );
+}
+
+function stateWriterCoordinatorMaxLeaseAgeMs(env) {
+  return Math.max(
+    5 * 60_000,
+    Math.min(
+      60 * 60_000,
+      Math.floor(
+        numberFrom(
+          env.STATE_WRITER_COORDINATOR_MAX_LEASE_AGE_MS,
+          DEFAULT_STATE_WRITER_COORDINATOR_MAX_LEASE_AGE_MS,
+        ),
+      ),
+    ),
+  );
+}
+
+function stateWriterTicketInput(value: unknown): StateWriterTicketInput | null {
+  const body = objectValue(value);
+  const ticketId = boundedStateWriterIdentity(body.ticket_id);
+  const owner = boundedStateWriterIdentity(body.owner);
+  const branch = boundedStateWriterIdentity(body.branch);
+  const repository = boundedStateWriterIdentity(body.repository);
+  const workflow = boundedStateWriterMetadata(body.workflow);
+  const job = boundedStateWriterMetadata(body.job);
+  const runId = boundedStateWriterIdentity(body.run_id);
+  const runAttempt = Number(body.run_attempt);
+  if (
+    !ticketId ||
+    !owner ||
+    !branch ||
+    !repository ||
+    !workflow ||
+    !job ||
+    !runId ||
+    !Number.isSafeInteger(runAttempt) ||
+    runAttempt < 1
+  ) {
+    return null;
+  }
+  return { ticketId, owner, branch, repository, workflow, job, runId, runAttempt };
+}
+
+function boundedStateWriterIdentity(value: unknown): string | null {
+  const normalized = String(value || "").trim();
+  return normalized && normalized.length <= 200 && /^[A-Za-z0-9._:/@-]+$/.test(normalized)
+    ? normalized
+    : null;
+}
+
+function boundedStateWriterMetadata(value: unknown): string | null {
+  const normalized = String(value || "").trim();
+  return normalized &&
+    normalized.length <= 500 &&
+    !/[\r\n]/.test(normalized) &&
+    !normalized.includes("\u0000")
+    ? normalized
+    : null;
 }
 
 function stateAppendDrainLimit(value: unknown) {

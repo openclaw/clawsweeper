@@ -509,6 +509,12 @@ export default {
       return authenticatedExactReviewQueueRequest(request, env, "/state/drain");
     if (url.pathname === "/internal/state/ack" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/state/ack");
+    if (url.pathname === "/internal/state-writer/acquire" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/state-writer/acquire");
+    if (url.pathname === "/internal/state-writer/heartbeat" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/state-writer/heartbeat");
+    if (url.pathname === "/internal/state-writer/release" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/state-writer/release");
     if (url.pathname === "/internal/exact-review/claim" && request.method === "POST")
       return exactReviewQueueRequest(env, "/claim", request);
     // Heartbeat authenticates by full lease tuple, matching /claim and /complete: the

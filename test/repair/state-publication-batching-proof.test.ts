@@ -14,6 +14,7 @@ function git(cwd: string, ...args: string[]) {
 test("state publication batching proof exposes its safety contract", () => {
   const output = execFileSync(process.execPath, [script, "--help"], { encoding: "utf8" });
   assert.match(output, /The source repository is cloned read-only/);
+  assert.match(output, /preventing accidental hydration of the live state object store/);
   assert.match(output, /--mode <all\|performance\|e2e>/);
   assert.match(output, /Outputs:/);
   assert.match(output, /Examples:/);

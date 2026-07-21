@@ -4611,6 +4611,98 @@ test("internal state endpoints reject invalid HMAC signatures", async () => {
   assert.equal((await signed.json()).appended, 1);
 });
 
+test("internal state writer routes authenticate and preserve durable ticket identity", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: "test-clawsweeper-webhook-secret",
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const acquire = {
+    ticket_id: "state-writer:test-route",
+    owner: "11111111-1111-4111-8111-111111111111",
+    branch: "state",
+    repository: "openclaw/clawsweeper-state",
+    workflow: "State materializer",
+    job: "materialize",
+    run_id: "12345",
+    run_attempt: 1,
+  };
+
+  const unsigned = await worker.fetch(
+    stateAppendQueueRequest(
+      "/internal/state-writer/acquire",
+      acquire,
+      "https://clawsweeper.openclaw.ai",
+    ),
+    env,
+  );
+  assert.equal(unsigned.status, 401);
+  assert.deepEqual(await unsigned.json(), { error: "invalid_signature" });
+
+  const invalid = await worker.fetch(
+    signedStateAppendRequest(
+      "/internal/state-writer/acquire",
+      { ...acquire, ticket_id: "state-writer:invalid", workflow: "bad\u0000metadata" },
+      "test-clawsweeper-webhook-secret",
+    ),
+    env,
+  );
+  assert.equal(invalid.status, 400);
+  assert.deepEqual(await invalid.json(), { error: "invalid_state_writer_ticket" });
+
+  const acquiredResponse = await worker.fetch(
+    signedStateAppendRequest(
+      "/internal/state-writer/acquire",
+      acquire,
+      "test-clawsweeper-webhook-secret",
+    ),
+    env,
+  );
+  assert.equal(acquiredResponse.status, 200);
+  const acquired = (await acquiredResponse.json()) as {
+    ok: boolean;
+    ticket: { ticketId: string; owner: string; leaseToken: string; state: string };
+  };
+  assert.equal(acquired.ok, true);
+  assert.equal(acquired.ticket.ticketId, acquire.ticket_id);
+  assert.equal(acquired.ticket.owner, acquire.owner);
+  assert.equal(acquired.ticket.state, "leased");
+
+  const ownership = {
+    ticket_id: acquired.ticket.ticketId,
+    owner: acquired.ticket.owner,
+    ["lease_token"]: acquired.ticket.leaseToken,
+  };
+  const heartbeat = await worker.fetch(
+    signedStateAppendRequest(
+      "/internal/state-writer/heartbeat",
+      ownership,
+      "test-clawsweeper-webhook-secret",
+    ),
+    env,
+  );
+  assert.equal(heartbeat.status, 200);
+  assert.equal(((await heartbeat.json()) as { ticket: { state: string } }).ticket.state, "leased");
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const release = await worker.fetch(
+      signedStateAppendRequest(
+        "/internal/state-writer/release",
+        ownership,
+        "test-clawsweeper-webhook-secret",
+      ),
+      env,
+    );
+    assert.equal(release.status, 200);
+    assert.deepEqual(await release.json(), { ok: true, released: true });
+  }
+  const stats = (await (await queue.fetch(new Request("https://queue/stats"))).json()) as {
+    state_writer: { coordinator: { completed: number; active: unknown } };
+  };
+  assert.equal(stats.state_writer.coordinator.completed, 1);
+  assert.equal(stats.state_writer.coordinator.active, null);
+});
+
 test("authenticated legacy exact-review intake enters the durable queue", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});

@@ -108,6 +108,8 @@ jobs:
 
       - uses: ./.github/actions/setup-state
         with:
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
@@ -116,6 +118,7 @@ jobs:
 
       - name: Run proof nudges
         env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-proof-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           PROOF_NUDGES_EXECUTE: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.execute == 'true') || (github.event_name == 'schedule' && vars.CLAWSWEEPER_PROOF_NUDGES_EXECUTE == '1') }}

@@ -1533,6 +1533,8 @@ jobs:
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
         id: setup-state
         with:
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
 
@@ -1540,6 +1542,7 @@ jobs:
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
         id: publish-event-result
         env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           REPO_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
@@ -2154,6 +2157,8 @@ jobs:
 
       - uses: ./.github/actions/setup-state
         with:
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
@@ -2195,6 +2200,8 @@ jobs:
             --ref main
 
       - name: Publish fanout cursor
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
           pnpm run repair:publish-main -- \
             --message "chore: update target fanout cursor" \
@@ -2293,6 +2300,8 @@ jobs:
 
       - uses: ./clawsweeper/.github/actions/setup-state
         with:
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ steps.state-token.outputs.token }}
           worktree-path: clawsweeper
           fetch-depth: 1
@@ -3036,6 +3045,8 @@ jobs:
       - uses: ./.github/actions/setup-state
         id: setup-publish-state
         with:
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
@@ -3756,6 +3767,8 @@ jobs:
 
       - uses: ./.github/actions/setup-state
         with:
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
@@ -3818,6 +3831,8 @@ jobs:
 
       - name: Publish failed-review retry state
         if: ${{ always() && vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_ENABLED == '1' && hashFiles('results/failed-review-retries/openclaw-openclaw/*.json') != '' }}
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
           pnpm run repair:publish-main -- \
             --message "chore: update failed review retry state" \
@@ -3952,6 +3967,8 @@ jobs:
 
       - uses: ./.github/actions/setup-state
         with:
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
@@ -4060,6 +4077,8 @@ jobs:
 
       - uses: ./.github/actions/setup-state
         with:
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ github.token }}
           persist-credentials: "false"
 
@@ -4266,6 +4285,8 @@ jobs:
       - uses: ./.github/actions/setup-state
         if: ${{ needs.apply-proof.outputs.action_ledger_artifact_name != '' }}
         with:
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ steps.state-token.outputs.token }}
           filter: blob:none
           fetch-depth: 1
@@ -4391,6 +4412,8 @@ jobs:
 
       - uses: ./.github/actions/setup-state
         with:
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
@@ -4412,6 +4435,7 @@ jobs:
 
       - name: Reconcile before apply preselect
         env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
         run: |

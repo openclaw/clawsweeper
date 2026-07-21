@@ -160,6 +160,8 @@ jobs:
 
       - uses: ./.github/actions/setup-state
         with:
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
 

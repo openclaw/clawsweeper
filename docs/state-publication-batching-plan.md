@@ -1,58 +1,179 @@
 # State publication batching plan
 
-**Status:** PR 1 through PR 3 merged; PR 2 performance and PR 3 equivalent
-synthetic end-to-end gates complete; PR 4 initial size-2 rollout implementation
-complete and authorized
+**Status:** PR 1 through PR 4 and the rollout hotfix are merged. Production is
+still fixed at batch size 2 and a 60-second maximum wait. Two real size-2
+publishers have failed after waiting the full 480 seconds at the repository-wide
+state publish lease, so every size increase is frozen while the durable FIFO
+state-writer coordinator is delivered. The implementation and bounded local
+Node 24 proof plus the final full check are complete; autoreview, pull-request
+checks, landing, and live size-2 verification remain pending.
 **Incident:** CSW-049
-**Decision scope:** reduce the existing single-`state`-ref publication bottleneck
-without migrating authoritative state to a new database or changing the generated
-state layout.
+**Decision scope:** replace normal contention on the single generated-`state`
+publication lease with one recoverable, repository-wide serialization boundary,
+without migrating authoritative state to a new database or changing the
+generated state layout.
 
 ## Delivery status
 
-| Stage                                         | Status                                            | Evidence                                                                                                                                                                                                                                                                                                                                                                                                         |
-| --------------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| State writer observability prerequisite       | Complete                                          | Merged before batching ownership as [`openclaw/clawsweeper#735`](https://github.com/openclaw/clawsweeper/pull/735).                                                                                                                                                                                                                                                                                              |
-| PR 1: durable batch ownership protocol        | Complete                                          | Merged as [`openclaw/clawsweeper#734`](https://github.com/openclaw/clawsweeper/pull/734) at `c074a99c0b18848be7a7d8f80f0fa57b7875b129`; post-merge proof is recorded below.                                                                                                                                                                                                                                      |
-| PR 2: bounded multi-item Git commit primitive | Complete                                          | Merged as [`openclaw/clawsweeper#740`](https://github.com/openclaw/clawsweeper/pull/740) at `a04c4c4cfbd29be9d6bf5036c824481b31d2233d`; stabilization followed in [`openclaw/clawsweeper#742`](https://github.com/openclaw/clawsweeper/pull/742). Local-container p95 proof against a 385,840-path structural fixture passed at 3,295.2 projected items/hour for size 2.                                                                 |
-| PR 3: end-to-end batch publisher              | Complete; merged default off                      | Merged as [`openclaw/clawsweeper#746`](https://github.com/openclaw/clawsweeper/pull/746) at `8b5bbf8678b88f172340f1108d1bccdeed366618`. The equivalent synthetic maintainer proof verified one commit for two healthy items, isolated retryable and superseded items, per-item GitHub effects, and disabled fallback.                                                                                                       |
-| PR 4: production rollout configuration        | Implementation complete; initial rollout authorized | Enables one event-driven serial publisher at size 2 and 60-second maximum wait, blocks new legacy admission while enabled, preserves in-flight legacy work, and exposes active configuration plus last dispatch outcome.                                                                                                                                                                                          |
+| Stage                                         | Status                               | Evidence                                                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| State writer observability prerequisite       | Complete                             | Merged before batching ownership as [`openclaw/clawsweeper#735`](https://github.com/openclaw/clawsweeper/pull/735).                                                                                                                                                                                                                                                          |
+| PR 1: durable batch ownership protocol        | Complete                             | Merged as [`openclaw/clawsweeper#734`](https://github.com/openclaw/clawsweeper/pull/734) at `c074a99c0b18848be7a7d8f80f0fa57b7875b129`; post-merge proof is recorded below.                                                                                                                                                                                                  |
+| PR 2: bounded multi-item Git commit primitive | Complete                             | Merged as [`openclaw/clawsweeper#740`](https://github.com/openclaw/clawsweeper/pull/740) at `a04c4c4cfbd29be9d6bf5036c824481b31d2233d`; stabilization followed in [`openclaw/clawsweeper#742`](https://github.com/openclaw/clawsweeper/pull/742). Local-container p95 proof against a 385,840-path structural fixture passed at 3,295.2 projected items/hour for size 2.     |
+| PR 3: end-to-end batch publisher              | Complete; merged default off         | Merged as [`openclaw/clawsweeper#746`](https://github.com/openclaw/clawsweeper/pull/746) at `8b5bbf8678b88f172340f1108d1bccdeed366618`. The equivalent synthetic maintainer proof verified one commit for two healthy items, isolated retryable and superseded items, per-item GitHub effects, and disabled fallback.                                                        |
+| PR 4: production rollout configuration        | Complete; landed                     | Landed as [`openclaw/clawsweeper#752`](https://github.com/openclaw/clawsweeper/pull/752). It enabled one event-driven batch publisher at size 2 and a 60-second maximum wait, blocked new legacy admission while enabled, preserved in-flight legacy work, and exposed active configuration plus last dispatch outcome.                                                      |
+| Rollout hotfix                                | Complete; landed                     | Landed as [`openclaw/clawsweeper#753`](https://github.com/openclaw/clawsweeper/pull/753). The deployed dashboard config remains `EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED=1`, `EXACT_REVIEW_PUBLICATION_BATCH_SIZE=2`, and `EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS=60000`; the workflow independently caps `EXACT_REVIEW_BATCH_MAX_ITEMS=2`.                                |
+| Repository-wide state-writer serialization    | Implemented locally; rollout blocked | Durable FIFO implementation, writer wiring, focused tests, a bounded direct-Docker Node 24 proof, and the full post-fix check are complete. Autoreview, pull request, merged-main/deployment verification, coordinator enablement, and a new production size-2 proof remain pending. The repository variable that enables coordinator mode is not present in production yet. |
 
-PR 1 did not enable batching or add a batch publisher. The live legacy publisher
-continues to consume the existing queue while the additive ownership protocol
-remains inert behind `EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED`.
+## Production incident and root cause
+
+The first real size-2 batch was
+[Actions run 29832766649](https://github.com/openclaw/clawsweeper/actions/runs/29832766649).
+It claimed `openclaw/openclaw#111587` and `openclaw/openclaw#89526`, created both
+required GitHub App tokens, checked out the state repository, and prepared both
+members independently. Finalization began at `2026-07-21T13:08:30Z`. At
+`13:15:16Z` it observed lease owner
+`4b08fdfb-9115-4a73-88bb-84cfb187df9c` with 58,711 ms remaining, then failed at
+`13:16:52Z` with:
+
+```text
+StatePublishContentionError:
+Failed to acquire the state state publish lease within 480000ms
+```
+
+No batch commit or per-item acknowledgement occurred. The generated `state`
+branch did not advance while that owner blocked the batch: the adjacent commits
+were [`f1c223bf`](https://github.com/openclaw/clawsweeper-state/commit/f1c223bf144612879390f9fe5461f8726a046134)
+at `12:58:03Z` and
+[`7cdaa155`](https://github.com/openclaw/clawsweeper-state/commit/7cdaa155eed65e0578a2d9ce92297e6a7929ff75)
+at `13:19:45Z`, both comment-router commits. Observations at `13:14:57.995Z`
+with 77,005 ms remaining and `13:15:26.150Z` with 48,850 ms remaining place the
+owner's last creation or renewal at approximately `13:14:15Z`; it was not
+renewed again. The ref was absent in a later probe, but the retained evidence
+cannot distinguish expiry cleanup from a late clean release.
+
+That first owner cannot be attributed to one workflow with the evidence the old
+lease preserved. Its commit payload recorded only `owner`, `branch`, `ttl_ms`,
+and `generation`, not repository, workflow, job, run ID, or run attempt. The
+state-writer telemetry had been stale since `12:12:42Z` and reported
+`mode=unknown`; organization audit-log access required `admin:org` and returned
+403; and the related workflow logs contain observations of the owner but no
+matching acquire, renew, or release line. The evidence is consistent with an
+orphaned or stalled owner, but it proves neither which writer created it nor
+whether expiry or a late release removed it.
+
+The failure is nevertheless not explained by one stale owner. A subsequent
+size-2 attempt,
+[Actions run 29835994320](https://github.com/openclaw/clawsweeper/actions/runs/29835994320),
+entered finalization at `13:50:44Z` and again waited the full 480 seconds before
+failing at `13:58:59Z`. During that one wait it observed at least five successive
+lease owners: `c0fd3605...` at `13:51:21Z`, `f7bad6fe...` at
+`13:54:21Z`, `6a6a7cce...` at `13:55:11Z` and `13:55:19Z`, `59219ce5...` at
+`13:57:09Z`, and `e19492ac...` at `13:58:36Z`. The only generated-state commit
+in the same late interval was the materializer commit
+[`b1a37bb1`](https://github.com/openclaw/clawsweeper-state/commit/b1a37bb1b92a0d188cd891f56bbffb6bb3a33a81)
+at `13:58:53Z`; its
+[materializer run 29836735366](https://github.com/openclaw/clawsweeper/actions/runs/29836735366)
+entered mutation at `13:58:24Z`. Old lease metadata still prevents mapping the
+other owner IDs to runs, but multiple owner generations in one timeout directly
+demonstrate repeated handoffs without fair batch progress rather than one stale
+lease explaining the full incident.
+
+The interrupted rollout did not later complete implicitly. Although
+[run 29833894391](https://github.com/openclaw/clawsweeper/actions/runs/29833894391)
+is marked successful, only its claim step ran; token creation, state setup,
+prepare, finalize, and completion were all skipped, so it was a no-op rather
+than a successful batch. At `13:43:13Z` production still reported
+`max_items=2`, `completed=0`, `leased=1`, `active_items=2`, `expired=2`,
+`reclaimed_items_retained=4`, `pending=1339`, no resolved items in the prior 15
+minutes, and `state_writer.mode=unknown`. A matching-ref query at `13:43:23Z`
+returned no lease refs, and the lease ref is also empty after the later failure;
+absence of a stale ref does not repair unfair handoff among live writers.
+
+### Writer audit
+
+The production evidence and call-site/workflow audit identify these generated
+`state` writers:
+
+| Writer class                                                  | Evidence and disposition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Exact-review batch publisher                                  | Runs [29832766649](https://github.com/openclaw/clawsweeper/actions/runs/29832766649) and [29835994320](https://github.com/openclaw/clawsweeper/actions/runs/29835994320) each held one active batch but starved as lease waiters. The first prepared two members but committed and acknowledged neither.                                                                                                                                                                                                                                      |
+| In-flight legacy exact-review and review-artifact publication | Pre-enable runs [29832129028](https://github.com/openclaw/clawsweeper/actions/runs/29832129028) and [29832129559](https://github.com/openclaw/clawsweeper/actions/runs/29832129559) observed `4b08fdfb...` as busy and also timed out. They were waiters, not that owner, but show that disabling new legacy admission does not remove already-running writers.                                                                                                                                                                               |
+| Comment router                                                | [Run 29833036994](https://github.com/openclaw/clawsweeper/actions/runs/29833036994) observed `4b08fdfb...` as busy and timed out. [Run 29833499545](https://github.com/openclaw/clawsweeper/actions/runs/29833499545) did not enter its commit step until `13:16:15Z`, after the first owner's inferred creation, so it cannot be that owner. The adjacent state commits prove this class is a live branch writer.                                                                                                                            |
+| Audit, status, and dashboard inputs                           | Audit runs [29833028285](https://github.com/openclaw/clawsweeper/actions/runs/29833028285) and [29833030127](https://github.com/openclaw/clawsweeper/actions/runs/29833030127) were ordinary lease waiters. Their `repair:publish-main` calls publish records, `README.md`, audit JSON, and sweep status; dashboard refresh itself is a downstream dispatch, not the owner of the generated-state push.                                                                                                                                       |
+| Action ledger and state materializer                          | Ordinary action-event publishers can append durable rows through the existing queue; `state-materializer.yml` drains them and calls the same Git publication primitive for one state commit. In [run 29833364262](https://github.com/openclaw/clawsweeper/actions/runs/29833364262), materialization began at `13:13:06Z`, made a local commit at `13:13:26Z`, and did not make its first remote atomic branch push until `13:26:00Z`, so it was not the first incident's `13:14:15Z` owner. It remains a member of the normal writer cohort. |
+| Repair, fanout, proof, scanner, and apply/status writers      | Generated result files are ultimately committed by `repair:publish-main`; exact event publication uses `repair:publish-event-result`, and both reach `src/repair/git-publish.ts`. Fanout runs [29832830989](https://github.com/openclaw/clawsweeper/actions/runs/29832830989) and [29832953331](https://github.com/openclaw/clawsweeper/actions/runs/29832953331) were waiters. Apply/close guards remain business-level preconditions and are not changed by serialization.                                                                  |
+| Other direct state-repository mutation                        | Monthly `state-compaction.yml` directly replaces the separate `main` branch with an atomic remote-HEAD CAS and backup ref. Publication uses the generated `state` branch, so compaction neither uses nor contends for `refs/heads/clawsweeper-publish-lease/state`; it stays outside this branch-specific coordinator boundary. Scratch-ref janitorial deletion is likewise not a generated-`state` publication.                                                                                                                              |
+
+The current Git ref remains necessary for crash fencing, ownership checks, and
+atomic branch-plus-fence publication. It is not a fair queue: a waiter has no
+durable position, every release starts another random CAS race, priority and
+random backoff can reorder writers indefinitely, and a process that misses the
+release repeatedly can wait 480 seconds despite multiple successful handoffs.
+Longer timeouts, more retries, sleeps, or more aggressive backoff do not increase
+the single branch's service rate and cannot provide fairness or attribution.
+
+The ref protocol was introduced by
+[`openclaw/clawsweeper#722`](https://github.com/openclaw/clawsweeper/pull/722)
+at `4fc1e3c1be` and its default acquisition budget was raised from three to eight
+minutes by
+[`openclaw/clawsweeper#731`](https://github.com/openclaw/clawsweeper/pull/731)
+at `b06b856d4d`. Those changes supplied necessary cross-run exclusion before all
+writers shared one admission boundary. They did not, and could not, turn a
+last-writer-wins ref CAS race into fair scheduling.
 
 ## Decision
 
-Use the existing SQLite-backed `ExactReviewQueue` publication lane as the durable
-buffer and replace one-workflow-per-item Git publication with one serial batch
-publisher:
+Place every normal generated-`state` read-modify-write operation behind one
+durable FIFO coordinator. Exact-review batching remains the durable per-item
+buffer; the coordinator is a separate admission boundary shared with ordinary
+writers:
 
 ```text
-existing SQLite publication items
-               |
-               v
-      atomically lease one batch
-               |
-               v
-   one batch publisher workflow
-               |
-               +-- validate each item independently
-               +-- perform idempotent per-item GitHub effects
-               +-- prepare bounded state path mutations
-               |
-               v
-       one state lease acquisition
-       one state commit and push
-               |
-               v
-     complete each SQLite queue item
+exact batch / router / audit / status / ledger materializer / repair / apply
+                                  |
+                                  v
+                  create or recover durable FIFO ticket
+                                  |
+                                  v
+                     wait for the single active turn
+                                  |
+                                  v
+             fetch latest remote HEAD and reconcile bounded paths
+                                  |
+                                  v
+            acquire Git ref as crash fence, not normal admission
+                                  |
+                                  v
+          remote-HEAD CAS + atomic branch/fence push + verification
+                                  |
+                                  v
+        release turn; preserve each producer's independent outcome/ack
 ```
 
-State writes remain serial. The unit of serialization changes from one item to
-one batch. Git remains the final generated-state store in this plan; SQLite is
-the durable publication buffer and broker, not a newly introduced second source
-of truth.
+The coordinator's SQLite ticket sequence supplies strict FIFO order, and a
+unique partial index permits at most one leased turn. A stable ticket identity
+recovers an acquire whose response was lost. The implementation uses a
+30-second watchdog heartbeat, a renewable two-minute ownership lease, and a
+30-minute absolute deadline so a hung runner cannot own the queue forever.
+Expired or crashed owners are reclaimed, terminal receipts are retained for
+bounded diagnosis, and status exposes queue depth, active workflow/job/run,
+wait time, completions, expirations, and recoveries.
+
+The admitted turn covers the complete read-modify-write operation, not only the
+final push. Within that turn the existing Git code still fetches the latest
+remote head, preserves unrelated siblings, rejects incompatible same-path
+mutations, and uses remote-head CAS. The Git lease ref remains an ownership
+fence against a stale in-flight process or an accidental bypass. Coordinator
+identity and run metadata are added to future fence commits, and ambiguous fence
+or state pushes are recovered by reading the remote ref/commit identity instead
+of pushing blindly. Random admission delay and priority-intent competition are
+disabled only in coordinator mode.
+
+Git remains the authoritative generated-state store. The existing exact-review
+queue remains the durable item/batch buffer, and the coordinator stores only
+admission tickets and receipts; neither becomes a second source of truth for
+review, apply, or close state.
 
 This is the preferred narrow repair because:
 
@@ -61,24 +182,29 @@ This is the preferred narrow repair because:
 - increasing the ordinary lease wait from 180 to 480 seconds converted many
   three-minute failures into eight-minute failures without increasing service
   rate;
-- fairer lock handoff could reduce starvation but would still publish only one
-  item per expensive Git critical section;
+- fairer lock handoff inside the Git-ref protocol would still provide no durable
+  queue position, attribution, or crash-reclaim receipt;
 - branch sharding or migration of operational state to a database would be a
   broader architecture and data-migration project;
 - the existing SQLite queue already contains the active backlog, item identity,
   revision, artifact reference, lease, retry, and dead-letter state, so batching
   requires no backlog migration.
 
-The most recent evidence reviewed for this plan continued to show a non-draining
+The pre-implementation baseline reviewed for this plan showed a non-draining
 lane: 586 pending, 635 total outstanding, 244 open dead letters, a 60-minute
 arrival rate of 135/hour, useful published plus superseded throughput of 39/hour,
-and a net drain rate of -77/hour. No open pull request was found implementing a
-state commit broker or publication batching path.
+and a net drain rate of -77/hour. The two production failures supersede the
+earlier size-2 capacity authorization: batching can reduce commits per item, but
+it cannot deliver that capacity while the one batch writer has no fair turn
+among the other generated-state writers.
 
 ## Scope and non-goals
 
-This plan changes only how durable exact-result publication work is consumed and
-committed to the generated `state` branch.
+This follow-up changes how every normal mutation is admitted to the generated
+`state` branch. It does not merge their business logic: exact-review batching,
+comment routing, audit/status, action-ledger materialization, repair, and apply
+retain their own inputs, validation, commit content, outcomes, and
+acknowledgements.
 
 It does not:
 
@@ -90,12 +216,33 @@ It does not:
 - automatically replay, resolve, or delete open dead letters;
 - pause the live sweep workflow;
 - cancel already-running publication workflows;
-- batch unrelated ordinary state writers in the first rollout.
+- route the separate `main` history-compaction branch or scratch-ref janitor
+  through the generated-`state` coordinator;
+- partially enable coordinator admission while a normal generated-`state`
+  writer is known to bypass it.
 
-The exact-result lane is the initial scope because it is the incident-dominant
-cohort and its durable queue already exists. Routing comment-router, status,
-action-ledger, and other state writers through the broker is a later decision,
-made only after exact-result batching proves its semantics and throughput.
+Read-only checkout, hydration, queue preparation, and target-GitHub work stay
+outside the turn. Every actual generated-`state` mutation must enter the same
+boundary before coordinator mode is considered enabled.
+
+### Coordinator configuration and credential scope
+
+The migration/rollback variable is
+`CLAWSWEEPER_STATE_COORDINATOR_ENABLED`; it does not yet exist in production.
+The endpoint comes from `CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL`, with the current
+production URL as its default. Enabling coordinator mode without a valid URL or
+credential fails closed before Git mutation.
+
+Coordinator requests use the existing HMAC-authenticated internal endpoint. The
+client accepts `CLAWSWEEPER_STATE_COORDINATOR_SECRET` or the existing
+`CLAWSWEEPER_WEBHOOK_SECRET`. The setup action exports only the gate and URL to
+`GITHUB_ENV`; it never receives or exports the credential. Ordinary workflows
+inject the existing secret only into trusted mutation steps, so Codex and
+foreign-branch validation steps do not inherit it. The exact batch job likewise
+injects the webhook secret only into its claim, prepare, and finalize steps; it
+is no longer job-scoped. No credential is stored in a ticket, fence commit,
+state commit, or log; tickets and future fence metadata contain only bounded
+identity and workflow/run attribution.
 
 ## Why this work is split into separate pull requests
 
@@ -277,7 +424,7 @@ throughput materially. If batch duration grows approximately linearly with item
 count, stop and reconsider the database or sharding architecture rather than
 wiring an ineffective batch path into production.
 
-**Post-merge verification:** correctness passed; performance gate pending.
+**Post-merge verification:** correctness and performance gates passed.
 
 - The reviewed PR 2 tree matched the landed `main` tree. The implementation
   prepares bounded per-item mutations outside the lease and performs one leased
@@ -463,8 +610,12 @@ avoiding production data. The PR 3 decision is **go for PR 4 size 2**.
 
 ### PR 4: production rollout configuration
 
-**Delivery status:** implementation and entry-gate proof complete on the PR 4
-branch; initial size-2 production rollout authorized.
+**Delivery status:** landed on 2026-07-21 as
+[`openclaw/clawsweeper#752`](https://github.com/openclaw/clawsweeper/pull/752),
+followed by rollout hotfix
+[`openclaw/clawsweeper#753`](https://github.com/openclaw/clawsweeper/pull/753).
+The initial size-2 configuration is live, but its end-to-end production gate is
+blocked on repository-wide state-writer serialization.
 
 **Purpose:** make the production behavior change explicit, small, and easily
 revertible after the implementation is already reviewed and deployed inertly.
@@ -514,14 +665,16 @@ maximum wait. This does not authorize size 4 or 8 before live observation.
    new safety-guard regression.
 
 **Stop/go decision:** batch-size increases are operational decisions, not
-automatic adaptive behavior in the first version.
+automatic adaptive behavior in the first version. The current decision is
+**stop at size 2**: neither failed run counts as the required first successful
+live batch, and no change to 4 or 8 is authorized.
 
 ## Batch departure policy
 
 Use a simple event-driven bus policy:
 
 ```text
-initial maximum items: 2 (future explicit ceilings: 4, then 8)
+current maximum items: 2 (frozen; future explicit gates may consider 4, then 8)
 maximum wait after the first eligible item: 60 seconds
 successful dispatch cooldown: 30 seconds (240 items/hour size-2 ceiling)
 failed dispatch retry: 60 seconds
@@ -545,7 +698,9 @@ active batch writers: 1
   `next_attempt_at`.
 
 Keep the first version static. Do not add another adaptive controller until the
-fixed policy has stable production measurements.
+fixed policy has stable production measurements. Keep `max_items=2` throughout
+the coordinator implementation, pull request, landing, and initial production
+verification.
 
 ## Buffer lifecycle and cleanup
 
@@ -595,14 +750,24 @@ The implementation is acceptable only if all of these remain true:
 9. An unresolved or ambiguous push never causes a blind second push.
 10. Open dead letters remain open until an authorized, evidence-backed recovery
     decision is made.
+11. FIFO sequence, not random CAS timing or priority, selects the next normal
+    generated-state writer.
+12. At most one coordinator turn is leased; heartbeat expiry or the absolute
+    deadline makes work reclaimable after a crash.
+13. A stale coordinator generation fails its ownership assertion before lease
+    renewal or branch push.
+14. Ordinary and batch writers cross the same admission boundary, so a
+    successful coordinator rollout has no normal 480-second Git-lease waiters.
 
 ## Performance go/no-go gate
 
 Measure batch sizes 1, 2, 4, and 8 against a realistic state repository in the
-same proof environment. Record:
+same local Node 24 container proof environment. Remote Crabbox, Testbox, and
+other remote validation providers are prohibited for this follow-up. Record:
 
 - total batch duration;
-- state lease acquisition and hold duration;
+- durable coordinator queue wait and active-turn duration;
+- Git fence acquisition and hold duration inside the admitted turn;
 - Git subprocess count by operation;
 - fetch, tree construction, commit, push, and verification duration;
 - paths and bytes changed;
@@ -620,17 +785,159 @@ arrival rate. With a reviewed arrival baseline of approximately 135 items/hour,
 the minimum projected service rate is approximately 203 items/hour. This is a
 go/no-go gate, not a promise that production will exactly match the proof.
 
-If the proof cannot meet that threshold without excessive lease hold, memory,
-paths, or payload size, stop the narrow batching plan and return to the broader
-state-database or sharding design decision.
+The proof must report the actual local container provider/id plus Node and Git
+versions. If it cannot meet that threshold without excessive turn/fence hold,
+memory, paths, or payload size, stop the narrow batching plan and return to the
+broader state-database or sharding design decision.
+
+### Direct local-container proof and OOM guard
+
+The interrupted validation exposed a separate local-container failure before
+the final proof could be trusted. Container
+`53df12b365b1fcc2646b1f1ba28f5dcbe0246a5782b548fe88209e3f71be2ab4`
+had `Memory=0`, `MemorySwap=0`, `PidsLimit=null`, `NanoCpus=0`, no init reaper,
+and no restart policy. It reached 53.2 GiB, approximately 22,900 processes and
+626 OOM kills before being stopped. The intended environment limits had never
+been translated into Docker `HostConfig` cgroup values, so they provided no
+enforcement.
+
+The workload trigger was also identified. The proof first created a blobless
+bare clone from the 385,840-path, 3.6 GiB state object store and then made an
+unfiltered local work clone from that partial origin. Git lazy-fetch/hydration
+fanned out across the live object store. An earlier interrupted unfiltered
+mirror clone had stopped its parent without reliably terminating the complete
+upload-pack/index-pack tree, and the `sleep infinity` PID 1 could not reap
+defunct descendants. This was a validation-harness failure, not evidence about
+coordinator capacity.
+
+The proof harness now refuses to create the work clone when a tree has at least
+300,000 paths but does not match the reviewed structural fixture head. Local
+Docker validation also runs with explicit `memory=8g`, `memory-swap=8g`,
+`pids-limit=1024`, `cpus=4`, and `--init`; the operator environment applies the
+same defaults to direct `docker run/create` calls. Compose or an explicit system
+Docker path remains outside that wrapper and must declare equivalent limits.
+
+The successful proof used direct local Docker Engine 27.3.1, not Crabbox or
+Testbox. The disposable proof container was
+`00a5b4814a2f40c7089e9c9cc4b498ffd12aee331cc3d90390945f4e65851ab8`
+(`node:24-trixie`, Node v24.18.0, Git 2.47.3). The source was the 13 MiB
+shared-small-blob structural fixture at
+`15fb20fc3008c67e80ecd82d28fd4e72cab5adcd`, retaining all 385,840 path names
+from real snapshot `34dabd7915c124c1b5852274a6a0b7e82225bb5e` without hydrating its blobs.
+One diagnostic sample per size passed before the full 20-sample run.
+
+| Batch size | Total p50 | Total p95 | Coordinator/fence acquire p95 | Fence hold p95 | Tree p95 | Push p95 | Git processes p95 | Projected items/hour |
+| ---------- | --------- | --------- | ----------------------------- | -------------- | -------- | -------- | ----------------- | -------------------- |
+| 1          | 2.568 s   | 2.652 s   | 353 ms                        | 2.190 s        | 1.769 s  | 223 ms   | 23                | 1,357.5              |
+| 2          | 2.577 s   | 2.676 s   | 364 ms                        | 2.217 s        | 1.777 s  | 234 ms   | 23                | 2,690.6              |
+| 4          | 2.594 s   | 2.677 s   | 371 ms                        | 2.194 s        | 1.750 s  | 243 ms   | 23                | 5,379.2              |
+| 8          | 2.617 s   | 2.693 s   | 376 ms                        | 2.213 s        | 1.757 s  | 256 ms   | 23                | 10,694.4             |
+
+All 85 durable tickets across the diagnostic, synthetic end-to-end, and full
+performance runs acquired and released in order without a queued contention
+wait. The synthetic proof retained its unrelated sibling and committed the two
+publishable members once, with independent `published`, `published`, and
+`superseded` acknowledgements.
+
+The bounded run also found and fixed a detached-helper lifecycle defect before
+delivery: successful coordinator and Git-fence release closed stdin but could
+leave the crash-recovery process alive for the rest of a long runner. The first
+bounded attempt reached 482 cgroup PIDs and retained many historical helpers,
+so it was stopped and not counted as proof. Successful release now terminates
+the helper immediately; failed or ambiguous release still sends EOF so the
+helper gets its final recovery attempt. In the repeated full proof, only the two
+helpers for the current turn were present and completed helpers did not
+accumulate. The cgroup limits prevented this newly discovered defect from
+becoming another host OOM during diagnosis.
+
+These measurements authorize code delivery and a new size-2 live proof only.
+They do not authorize size 4 or size 8.
+
+## Coordinator migration
+
+Migration is additive and fail-closed:
+
+1. Land the coordinator tables, internal HMAC routes, telemetry, Git-fence
+   attribution, and workflow wiring with
+   `CLAWSWEEPER_STATE_COORDINATOR_ENABLED` absent or false.
+2. Audit every `withStatePublishLease`, `acquireStatePublishLease`,
+   `publishMainCommit`, `publish-event-result`, materializer, and workflow call
+   site again against the merged tree. A generated-`state` mutation without the
+   shared boundary blocks enablement.
+3. Run focused coordinator/Git/batch tests, the complete `pnpm run check`, and a
+   realistic local state-repository performance proof in a Node 24 container.
+4. Run autoreview and require a clean result before opening the pull request;
+   then require all pull-request checks to pass before landing.
+5. Verify the merged `main` tree and dashboard deployment before creating the
+   repository variable. Keep batching enabled at size 2 throughout.
+6. Enable the coordinator once for all newly started publisher jobs. Do not
+   cancel live workflows. Wait for every pre-cutover, publish-capable run that
+   lacks coordinator wiring to finish naturally or expire before declaring the
+   system coordinator-only. During this overlap, the Git ref remains the safety
+   fence against a bypass.
+7. Verify coordinator status shows one active turn at most, FIFO progress,
+   attributable workflow/job/run metadata, bounded wait, and no growing normal
+   Git-lease contention.
+
+The enablement is not a partial per-workflow rollout. Schema and routes may be
+deployed inertly, but once the gate is true every new normal generated-`state`
+writer must fail closed if it cannot acquire a ticket. Durable tickets, terminal
+receipts, existing exact-review batch ownership, and state history require no
+data transformation.
 
 ## Rollout and recovery gates
 
-Deploy additive schema and implementation with batching disabled first. Do not
-use a dead-letter replay as the first behavior proof.
+Batch size remains 2. Do not use a dead-letter replay as the first behavior
+proof, and do not process or clean the existing DLQ as part of this rollout.
 
-For every enabled batch size, require two consecutive fully post-enable samples
-showing:
+The completed local implementation gates are:
+
+- focused proof for concurrent writer classes, strict FIFO/fairness, crash and
+  stale-owner recovery, and stale-generation fencing;
+- batch sizes 1, 2, 4, and 8 each producing one commit in the local proof, while
+  size 2 remains the only production setting;
+- remote sibling preservation and same-path conflict failure before push;
+- ordinary writer versus batch writer concurrency;
+- ambiguous push and acknowledgement-failure idempotent recovery;
+- a direct local Docker performance proof in which all 85 turns acquired their
+  durable ticket without a normal 480-second Git-ref competition wait.
+- clean local autoreview with zero findings (`patch is correct`, confidence
+  0.78).
+- the final `pnpm run check` in direct local Docker container
+  `e391c253320c958ab768408d77473120a8259b7caa80f00544c42690b4d8cc05`
+  with Node v24.18.0, Git 2.47.3, pnpm 11.10.0, 8 GiB memory and memory-swap
+  ceilings, 1,024 PIDs, four CPUs, and an init reaper. Build, lint, unit,
+  repair, changed/full coverage, and formatting gates exited successfully;
+  the container reported no OOM and was removed after completion.
+- the reusable local CI image was published as
+  `docker.io/masonxhuang/codex-node24-ci:20260721` and `:latest`; both remote
+  tags resolve to
+  `sha256:3255da7a04566b58ed091478a0a7df003477a60058bc3bdc79c314614ed0787d`
+  from local image
+  `sha256:50e3cb887b2111488dcd22673b424a9b121ee2fdbc8596e44c69386cdcdede04`.
+
+The outstanding delivery and live gates are:
+
+- green pull-request checks, landing, merged-main verification, and dashboard
+  deployment verification;
+- production coordinator enablement only after pre-cutover publishers drain;
+- the first real size-2 single-commit/two-ack proof and two complete,
+  consecutive five-minute samples below.
+
+After landing and coordinator enablement, the first valid live size-2 proof must
+show all of the following in one batch:
+
+- one generated-state commit contains both intended items;
+- both queue members reach their correct independent terminal outcome and ack;
+- an unrelated sibling present at the fetched remote head is preserved;
+- `state_writer` reports coordinator mode and attributable, internally
+  consistent metrics;
+- remote-head CAS/fence verification succeeds without an ambiguous result;
+- Git-lease contention does not grow and no normal writer waits 480 seconds;
+- protected-item, apply, and close guards are unchanged.
+
+Then observe two complete, consecutive five-minute samples, both entirely after
+coordinator-only cutover, showing:
 
 - pending decreases;
 - total outstanding (`pending + dispatching + leased`) decreases;
@@ -642,6 +949,11 @@ showing:
 - one state commit contains multiple intended item mutations;
 - no dead-letter disposal is being mistaken for successful delivery.
 
+Only after the live size-2 proof and both samples pass may maintainers discuss a
+separate explicit change to size 4. Size 8 remains blocked until size 4 passes
+the same end-to-end and two-sample gate. No automatic `2 -> 4 -> 8` progression
+is permitted.
+
 After the writer path is stable, dead-letter recovery is a separate authorized
 operation. Start with one representative item, then batches of at most two when
 GitHub pressure matters. Stop on the first repeated deterministic failure, new
@@ -649,42 +961,49 @@ rate-limit signal, or unexplained health regression.
 
 ## Rollback
 
-The production switch must support both:
+The narrow coordinator rollback is:
 
 ```text
-batching enabled = false
-```
-
-and a compatibility mode:
-
-```text
-maximum batch items = 1
+CLAWSWEEPER_STATE_COORDINATOR_ENABLED = false
 ```
 
 On rollback:
 
-1. stop creating new batch claims;
-2. allow an active batch to finish or its lease to expire;
-3. return unfinished members to the existing ready state;
-4. let the legacy per-item publisher consume those unchanged queue items;
-5. retain additive batch tables and receipts for diagnosis;
-6. do not reset the queue or rewrite state history.
+1. keep exact-review batching and `max_items=2` unchanged unless a separate,
+   explicitly authorized batching rollback is required;
+2. let an active coordinator owner finish or lose its renewable lease/absolute
+   deadline; do not cancel the workflow;
+3. return newly started publishers to the legacy Git-fence path, preserving
+   remote-head CAS and atomic branch-plus-fence safety;
+4. retain coordinator tickets, generations, terminal receipts, batch rows, and
+   state commit identities for recovery and diagnosis;
+5. do not reset either queue, delete receipts, rewrite generated-state history,
+   replay DLQ items, or change apply/close guards.
 
-Because existing queue items are not transformed into another storage model,
-rollback requires no data migration.
+Rollback can temporarily restore the old contention failure mode, so it is a
+safety fallback rather than a throughput fix. It requires no data migration. If
+the batching protocol itself later needs rollback, its existing disabled flag
+can stop new batch claims and allow active ownership to expire, but that is a
+separate decision and is not part of the current coordinator rollout.
 
 ## Completion criteria
 
 This incident repair is complete when:
 
-- exact-result publication uses one active batch writer rather than dozens of
-  workflows waiting for the same state lease;
+- all normal generated-`state` writers use one durable FIFO admission boundary,
+  while the Git ref serves only crash recovery, ownership fencing, stale-owner
+  recovery, and atomic publication;
+- exact-result publication uses one active size-2 batch writer and completes one
+  real two-item commit with two correct independent acknowledgements;
+- ordinary writers and the batch writer make FIFO progress without normal
+  480-second Git-lease competition;
 - sustained useful throughput remains above arrival rate with measured
   headroom;
 - the backlog and oldest age decline to their normal operating ranges;
 - state-contention retries and dead letters stop growing;
 - batch cleanup keeps SQLite growth bounded;
 - every live-enabled pull request has its manual verification evidence recorded;
+- two complete, consecutive five-minute size-2 samples pass every rollout gate;
 - the temporary fixed-capacity-50 configuration is removed in a separately
   reviewed cleanup after the backlog is materially cleared;
 - open dead letters have an explicit replay, fresh-review, or audited-resolution

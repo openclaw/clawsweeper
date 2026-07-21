@@ -32,6 +32,14 @@ inputs:
     description: Persist the checkout token in local git config for later state publication.
     required: false
     default: "true"
+  coordinator-url:
+    description: Durable FIFO coordinator used before any generated-state mutation.
+    required: false
+    default: https://clawsweeper.openclaw.ai
+  coordinator-enabled:
+    description: Enable durable FIFO admission; false is the explicit legacy-fence rollback mode.
+    required: false
+    default: "false"
 runs:
   using: composite
   steps:
@@ -48,9 +56,25 @@ runs:
 
     - name: Export state root
       shell: bash
+      env:
+        STATE_COORDINATOR_ENABLED: ${{ inputs.coordinator-enabled }}
+        STATE_COORDINATOR_URL: ${{ inputs.coordinator-url }}
       # Keep immutable ledger server merges dormant until state publishers can
       # fetch a merge-heavy shallow branch without hydrating its ancestry.
-      run: echo "CLAWSWEEPER_STATE_DIR=$GITHUB_WORKSPACE/${{ inputs.state-path }}" >> "$GITHUB_ENV"
+      # The repository variable is the migration/rollback boundary. Once it is
+      # enabled, the publisher itself fails closed if its step-scoped credential
+      # or this URL is missing; checkout-only jobs never receive that credential.
+      run: |
+        case "$STATE_COORDINATOR_ENABLED" in
+          true) coordinator_enabled=1 ;;
+          false) coordinator_enabled=0 ;;
+          *) echo "coordinator-enabled must be true or false" >&2; exit 2 ;;
+        esac
+        {
+          echo "CLAWSWEEPER_STATE_DIR=$GITHUB_WORKSPACE/${{ inputs.state-path }}"
+          echo "CLAWSWEEPER_STATE_COORDINATOR_ENABLED=$coordinator_enabled"
+          echo "CLAWSWEEPER_STATE_COORDINATOR_URL=$STATE_COORDINATOR_URL"
+        } >> "$GITHUB_ENV"
 
     - uses: actions/setup-node@v6
       with:

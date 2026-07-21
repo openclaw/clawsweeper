@@ -45,6 +45,8 @@ Description:
   Proves the PR2 batch committer against a realistic state tree and/or proves
   the PR3 coordinator against an isolated synthetic queue and GitHub journal.
   The source repository is cloned read-only; all writes target temporary repos.
+  Large trees must match the reviewed structural fixture before a work clone is
+  created, preventing accidental hydration of the live state object store.
 
 Options:
   --mode <all|performance|e2e>  Proof mode (default: all)
@@ -392,6 +394,15 @@ function prepareRealisticFixture(root, source, ref) {
   const sourceTreePaths = Number(
     git(origin, "ls-tree", "-r", "--name-only", ref).split("\n").filter(Boolean).length,
   );
+  if (sourceTreePaths >= DEFAULT_MINIMUM_SOURCE_PATHS && sourceHead !== ROLLOUT_SOURCE_HEAD) {
+    // A second local clone of a blobless live-state mirror can lazy-fetch the
+    // entire multi-gigabyte object store with unbounded Git subprocess fanout.
+    // Large proofs therefore require the reviewed shared-small-blob fixture.
+    throw new Error(
+      `Refusing to hydrate large non-structural state source ${sourceHead}; ` +
+        `expected reviewed fixture ${ROLLOUT_SOURCE_HEAD}`,
+    );
+  }
   git(root, "clone", "--no-checkout", origin, work);
   configureWorktree(work);
   return { origin, work, sourceHead, sourceTreePaths };

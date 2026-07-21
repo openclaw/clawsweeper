@@ -31,7 +31,13 @@ import {
 import { mergeSweepStatusJson } from "./sweep-status-merge.js";
 import { mergeCommentRouterLedgers } from "./comment-router-ledger-merge.js";
 import { isActionEventPublishPath } from "../action-ledger-paths.js";
+import { finishDetachedCleanupProcess } from "./detached-cleanup.js";
 import type { StateWriterTelemetryRecorder } from "./state-writer-telemetry-recorder.js";
+import {
+  acquireStateWriterCoordinator,
+  stateWriterCoordinatorEnabled,
+  type StateWriterCoordinatorGuard,
+} from "./state-writer-coordinator.js";
 
 export type GitRunResult = {
   status: number;
@@ -129,11 +135,12 @@ type StatePublishLease = {
   remote: string;
   branch: string;
   cleanup: StatePublishLeaseCleanup | null;
+  coordinator: StateWriterCoordinatorGuard | null;
 };
 
 type StatePublishLeaseCleanup = {
   track: (oid: string) => void;
-  close: () => void;
+  close: (ownershipReleased: boolean) => void;
 };
 
 type ObservedStatePublishLease = {
@@ -378,6 +385,18 @@ export function hasWorktreePath(path: string): boolean {
 }
 
 export function publishMainCommit(options: GitPublishOptions): PublishResult {
+  const remote = options.remote ?? "origin";
+  const branch = options.branch ?? publishDefaultBranch();
+  if (publishRoot() && stateWriterCoordinatorEnabled() && !activeStatePublishLease) {
+    // Coordinator mode admits the complete read-modify-write operation. Taking
+    // a fresh ticket for each failed push would preserve CAS safety but defeat
+    // FIFO fairness and create a carousel of commits built from stale heads.
+    return withStatePublishLease(() => publishMainCommitMeasured(options), { remote, branch });
+  }
+  return publishMainCommitMeasured(options);
+}
+
+function publishMainCommitMeasured(options: GitPublishOptions): PublishResult {
   const previousMetrics = activeGitPublishMetrics;
   const metrics: GitPublishMetrics = {
     startedAtMs: Date.now(),
@@ -822,7 +841,13 @@ function mergeImmutableActionLedgerOnGitHub(options: {
     // commit between fetch and push.
     return withStatePublishMutationLease(options.remote, options.branch, () => {
       for (let attempt = 1; attempt <= 8; attempt += 1) {
-        renewStatePublishLeaseIfNeeded("before immutable ledger server merge");
+        // The GitHub merge API cannot update the branch and lease ref atomically.
+        // Refreshing the fence unconditionally both proves current ownership and
+        // leaves a full TTL around the bounded API call. A coordinator owner that
+        // passed its absolute deadline therefore cannot mutate the state branch.
+        const lease = activeStatePublishLease;
+        if (!lease) throw new Error("Immutable ledger server merge is missing its owner lease");
+        renewStatePublishLease(lease, "before immutable ledger server merge");
         spawnGitHubApi(
           [
             "api",
@@ -880,13 +905,14 @@ function spawnGitHubApi(args: readonly string[], repository: string, token: stri
     env: { ...process.env, GH_TOKEN: token },
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
+    timeout: PUBLISH_FETCH_TIMEOUT_MS,
   });
   if (child.status !== 0 && child.stderr) process.stderr.write(child.stderr);
   return {
     status: child.status ?? 1,
     stdout: child.stdout ?? "",
     stderr: child.stderr ?? "",
-    timedOut: false,
+    timedOut: (child.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT",
   };
 }
 
@@ -1571,18 +1597,25 @@ export function withStatePublishLease<T>(
   activeStateWriterTelemetry = options.observer ?? previousTelemetry;
   const telemetry = () => activeStateWriterTelemetry;
   let lease: StatePublishLease;
+  let coordinator: StateWriterCoordinatorGuard | null = null;
   try {
-    lease = acquireStatePublishLease(remote, branch, options);
+    telemetry()?.enteredWaiting();
+    coordinator = acquireStateWriterCoordinator(branch, {
+      onAcquireAttempt: () => telemetry()?.recordAcquireAttempt(),
+    });
+    coordinator?.assertActive();
+    lease = acquireStatePublishLease(remote, branch, options, coordinator);
   } catch (error) {
+    coordinator?.release();
     telemetry()?.finalize(
       error instanceof StatePublishContentionError ? "contention_timeout" : "failed",
     );
     activeStateWriterTelemetry = previousTelemetry;
     throw error;
   }
-  lease.cleanup = startStatePublishLeaseCleanup(lease);
-  activeStatePublishLease = lease;
   try {
+    lease.cleanup = startStatePublishLeaseCleanup(lease);
+    activeStatePublishLease = lease;
     return operation();
   } finally {
     activeStatePublishLease = null;
@@ -1590,7 +1623,8 @@ export function withStatePublishLease<T>(
     const released = releaseStatePublishLease(lease);
     telemetry()?.releasedLease(released);
     telemetry()?.finished();
-    lease.cleanup?.close();
+    lease.cleanup?.close(released);
+    lease.coordinator?.release();
     activeStateWriterTelemetry = previousTelemetry;
   }
 }
@@ -1612,6 +1646,7 @@ function acquireStatePublishLease(
   remote: string,
   branch: string,
   options: StatePublishLeaseOptions,
+  coordinator: StateWriterCoordinatorGuard | null,
 ): StatePublishLease {
   const leaseRef = `${STATE_PUBLISH_LEASE_REF_ROOT}/${branch}`;
   // Distinct namespace: suffixing leaseRef would collide with the lease ref
@@ -1623,7 +1658,7 @@ function acquireStatePublishLease(
   runGit(["check-ref-format", leaseRef], { quiet: true });
   runGit(["check-ref-format", priorityIntentRef], { quiet: true });
   const owner = randomUUID();
-  const priority = process.env.CLAWSWEEPER_STATE_LEASE_PRIORITY === "1";
+  const priority = !coordinator && process.env.CLAWSWEEPER_STATE_LEASE_PRIORITY === "1";
   const ttlMs = Math.min(
     positiveInt(options.ttlMs, STATE_PUBLISH_LEASE_TTL_MS),
     STATE_PUBLISH_LEASE_TTL_MS,
@@ -1640,10 +1675,11 @@ function acquireStatePublishLease(
   let attempt = 0;
   activeStateWriterTelemetry?.enteredWaiting();
 
-  // Spread a newly admitted publisher cohort before any of them attempts the
-  // empty-ref compare-and-swap. Once an owner exists, later contenders only
-  // poll the tiny lease ref instead of creating another state-branch push storm.
-  sleep(Math.floor(Math.random() * waitMs));
+  if (!coordinator) {
+    // Legacy rollback mode still spreads an uncoordinated cohort. A durable FIFO
+    // owner is already unique and should proceed directly to the crash fence.
+    sleep(Math.floor(Math.random() * waitMs));
+  }
 
   try {
     while (Date.now() < deadlineAtMs) {
@@ -1653,6 +1689,7 @@ function acquireStatePublishLease(
       const now = Date.now();
       if (!observed || observed.expiresAtMs <= now) {
         const shouldYield =
+          !coordinator &&
           !priority &&
           shouldYieldToStatePublishPriorityIntent(
             remote,
@@ -1661,25 +1698,34 @@ function acquireStatePublishLease(
             observedPriorityByOid,
           );
         if (!shouldYield) {
+          coordinator?.assertActive();
           const expiresAtMs = now + ttlMs;
-          const oid = createStatePublishLeaseCommit({ branch, owner, ttlMs });
+          const oid = createStatePublishLeaseCommit({ branch, owner, ttlMs, coordinator });
           const expectedOid = observed?.oid ?? "";
-          const acquired =
-            spawnGit(
-              [
-                "push",
-                `--force-with-lease=${leaseRef}:${expectedOid}`,
-                remote,
-                `${oid}:${leaseRef}`,
-              ],
-              { allowFailure: true, quiet: true, timeout: PUBLISH_FETCH_TIMEOUT_MS },
-            ).status === 0;
+          const acquisition = spawnGit(
+            ["push", `--force-with-lease=${leaseRef}:${expectedOid}`, remote, `${oid}:${leaseRef}`],
+            { allowFailure: true, quiet: true, timeout: PUBLISH_FETCH_TIMEOUT_MS },
+          );
+          // A transport can lose the push response after the remote accepted the
+          // fence. Resolve that ambiguity by identity instead of waiting for our
+          // own lease to age out.
+          const acquired = acquisition.status === 0 || remoteRefOid(remote, leaseRef) === oid;
           if (acquired) {
             activeStateWriterTelemetry?.acquiredLease();
             console.log(
               `Acquired state publish lease owner=${owner} attempt=${attempt} stale_recovery=${observed ? "true" : "false"} ttl_ms=${ttlMs}`,
             );
-            return { ref: leaseRef, oid, owner, expiresAtMs, ttlMs, remote, branch, cleanup: null };
+            return {
+              ref: leaseRef,
+              oid,
+              owner,
+              expiresAtMs,
+              ttlMs,
+              remote,
+              branch,
+              cleanup: null,
+              coordinator,
+            };
           }
         }
       } else {
@@ -1897,6 +1943,7 @@ function createStatePublishLeaseCommit(options: {
   ttlMs: number;
   expiresAtMs?: number;
   subject?: string;
+  coordinator?: StateWriterCoordinatorGuard | null;
 }): string {
   const tree = runGit(["mktree"], { input: "", quiet: true }).trim();
   if (!tree) throw new Error("Failed to create the state publish lease tree");
@@ -1911,6 +1958,15 @@ function createStatePublishLeaseCommit(options: {
         ? [`expires_at: ${new Date(options.expiresAtMs).toISOString()}`]
         : []),
       `generation: ${randomUUID()}`,
+      ...(options.coordinator
+        ? [
+            `ticket_id: ${options.coordinator.ticket.ticketId}`,
+            `ticket_generation: ${options.coordinator.ticket.leaseGeneration}`,
+            `run_id: ${process.env.GITHUB_RUN_ID || "local"}`,
+            `workflow: ${(process.env.GITHUB_WORKFLOW || "local").replace(/[\r\n]/g, " ")}`,
+            `job: ${(process.env.GITHUB_JOB || "local").replace(/[\r\n]/g, " ")}`,
+          ]
+        : []),
       "",
     ].join("\n"),
     quiet: true,
@@ -1949,6 +2005,7 @@ function startStatePublishLeaseCleanup(lease: StatePublishLease): StatePublishLe
         );
         if (deleted.status === 0) break;
       }
+      process.exit(0);
     });
     process.stdin.resume();
   `;
@@ -1979,10 +2036,10 @@ function startStatePublishLeaseCleanup(lease: StatePublishLease): StatePublishLe
   track(lease.oid);
   return {
     track,
-    close: () => {
+    close: (ownershipReleased) => {
       if (closed) return;
       closed = true;
-      child.stdin.end();
+      finishDetachedCleanupProcess(child, ownershipReleased);
     },
   };
 }
@@ -2011,10 +2068,12 @@ function releaseStatePublishLease(lease: StatePublishLease): boolean {
 }
 
 function renewStatePublishLease(lease: StatePublishLease, reason: string): void {
+  lease.coordinator?.assertActive();
   const renewedOid = createStatePublishLeaseCommit({
     branch: lease.branch,
     owner: lease.owner,
     ttlMs: lease.ttlMs,
+    coordinator: lease.coordinator,
   });
   lease.cleanup?.track(renewedOid);
   const renewed = spawnGit(
@@ -2044,14 +2103,6 @@ function renewStatePublishLease(lease: StatePublishLease, reason: string): void 
   lease.expiresAtMs = Date.now() + lease.ttlMs;
   activeStateWriterTelemetry?.recordRenewal();
   console.log(`Renewed state publish lease owner=${lease.owner} ${reason}`);
-}
-
-function renewStatePublishLeaseIfNeeded(reason: string): void {
-  const lease = activeStatePublishLease;
-  if (!lease) throw new Error("State publish mutation is missing its owner lease");
-  if (lease.expiresAtMs - Date.now() <= STATE_PUBLISH_LEASE_RENEW_THRESHOLD_MS) {
-    renewStatePublishLease(lease, reason);
-  }
 }
 
 function remoteRefOid(remote: string, ref: string): string | null {
@@ -2097,11 +2148,13 @@ function pushPublishedCommit(
   if (lease.expiresAtMs - Date.now() <= STATE_PUBLISH_LEASE_RENEW_THRESHOLD_MS) {
     renewStatePublishLease(lease, "before branch publication");
   }
+  lease.coordinator?.assertActive();
 
   const renewedOid = createStatePublishLeaseCommit({
     branch: lease.branch,
     owner: lease.owner,
     ttlMs: lease.ttlMs,
+    coordinator: lease.coordinator,
   });
   lease.cleanup?.track(renewedOid);
   const pushed = spawnGit(
