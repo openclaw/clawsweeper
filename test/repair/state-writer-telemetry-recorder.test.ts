@@ -56,3 +56,28 @@ test("state writer recorder isolates progress observer failures", () => {
   assert.equal(recorder.toTerminalObject()?.outcome, "contention_timeout");
   assert.equal(recorder.toTerminalObject()?.acquired, false);
 });
+
+test("state writer recorder refreshes waiting progress during long acquisition", () => {
+  let now = 1_000;
+  const phases: Array<{ phase: string; at: number }> = [];
+  const recorder = new StateWriterTelemetryRecorder({
+    runId: "9",
+    runAttempt: 1,
+    now: () => now,
+    observer: {
+      progress(progress) {
+        phases.push({ phase: progress.phase, at: now });
+      },
+    },
+  });
+  recorder.enteredWaiting();
+  now = 20_000;
+  recorder.recordAcquireAttempt();
+  now = 40_000;
+  recorder.recordAcquireAttempt();
+  assert.deepEqual(
+    phases.map((entry) => entry.phase),
+    ["waiting", "waiting"],
+  );
+  assert.equal(phases[1]?.at, 40_000);
+});

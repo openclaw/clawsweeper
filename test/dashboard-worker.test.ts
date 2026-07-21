@@ -11495,7 +11495,7 @@ test("state writer telemetry is optional, idempotent, and summary-safe", async (
   const storage = new MemoryDurableStorage();
   const items = Object.fromEntries(
     Array.from({ length: 2 }, (_, index) => {
-      const item = leasedExactReviewQueueItem(96_000 + index, `9600${index}`);
+      const item = leasedExactReviewPublicationItem(96_000 + index, `9600${index}`);
       return [item.key, item];
     }),
   );
@@ -11535,6 +11535,8 @@ test("state writer telemetry is optional, idempotent, and summary-safe", async (
           run_id: item.claimedRunId,
           run_attempt: 1,
           outcome: "success",
+          completion_kind: "published",
+          reason_code: "publication_applied",
           state_writer: telemetry,
         }),
       }),
@@ -11553,7 +11555,7 @@ test("state writer telemetry is optional, idempotent, and summary-safe", async (
   assert.equal(stats.state_writer.diagnostics.state_commits_total, 1);
   assert.equal(stats.state_writer.diagnostics.materialized_items_total, 2);
 
-  const malformed = leasedExactReviewQueueItem(97_001, "97001");
+  const malformed = leasedExactReviewPublicationItem(97_001, "97001");
   await storage.put("exact-review-queue", {
     deliveries: {},
     items: { [malformed.key]: malformed },
@@ -11569,6 +11571,8 @@ test("state writer telemetry is optional, idempotent, and summary-safe", async (
         run_id: malformed.claimedRunId,
         run_attempt: 1,
         outcome: "success",
+        completion_kind: "published",
+        reason_code: "publication_applied",
         state_writer: { schema_version: 1, operation_id: "bad" },
       }),
     }),
@@ -11578,6 +11582,33 @@ test("state writer telemetry is optional, idempotent, and summary-safe", async (
     await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
   ).json();
   assert.equal(afterReject.state_writer.diagnostics.rejected_terminal_total, 1);
+
+  const reviewOnly = leasedExactReviewQueueItem(97_002, "97002");
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [reviewOnly.key]: reviewOnly },
+  });
+  const ignored = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: reviewOnly.leaseId,
+        item_key: reviewOnly.key,
+        lease_revision: 1,
+        claim_generation: 1,
+        run_id: reviewOnly.claimedRunId,
+        run_attempt: 1,
+        outcome: "success",
+        state_writer: telemetry,
+      }),
+    }),
+  );
+  assert.equal(ignored.status, 200);
+  const afterIgnore = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(afterIgnore.state_writer.last_15_minutes.operations, 1);
+  assert.equal(afterIgnore.state_writer.diagnostics.rejected_terminal_total, 2);
 });
 
 function unclaimedExactReviewQueueItem(itemNumber: number) {

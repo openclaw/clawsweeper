@@ -716,14 +716,18 @@ export class ExactReviewQueue {
       if ((item.claimProtocolVersion ?? 1) !== completionProtocolVersion) {
         return json({ error: "lease_protocol_not_claimed" }, 409);
       }
-      // Optional observability cannot alter a valid publication completion.
-      // Store only after the claim tuple has been authenticated.
-      this.recordStateWriterOperationSafely(
-        body.state_writer === undefined ? undefined : stateWriter,
-        body.state_writer !== undefined && !stateWriter,
-        now,
-      );
       const publicationItem = exactReviewQueueIsPublication(item);
+      // Optional observability cannot alter a valid publication completion.
+      // Accept writer telemetry only from currently claimed publication items.
+      if (publicationItem) {
+        this.recordStateWriterOperationSafely(
+          body.state_writer === undefined ? undefined : stateWriter,
+          body.state_writer !== undefined && !stateWriter,
+          now,
+        );
+      } else if (body.state_writer !== undefined) {
+        this.incrementStateWriterDiagnosticSafely("rejected_terminal_total");
+      }
       if (failureKind && !publicationItem) {
         return json({ error: "failure_kind_outside_publication" }, 400);
       }
@@ -839,6 +843,7 @@ export class ExactReviewQueue {
       const valid =
         progress &&
         item &&
+        exactReviewQueueIsPublication(item) &&
         item.state === "leased" &&
         item.leaseId === leaseId &&
         item.leaseRevision === leaseRevision &&

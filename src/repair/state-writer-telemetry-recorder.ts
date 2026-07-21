@@ -4,6 +4,8 @@ import {
   type StateWriterOutcome,
   type StateWriterPhase,
   type StateWriterProgress,
+  STATE_WRITER_MAX_COUNT,
+  STATE_WRITER_MAX_DURATION_MS,
   STATE_WRITER_SCHEMA_VERSION,
 } from "../state-writer-telemetry.js";
 
@@ -22,6 +24,8 @@ export type StateWriterTelemetryRecorderOptions = {
   observer?: StateWriterTelemetryObserver;
   now?: () => number;
 };
+
+const PROGRESS_REFRESH_MS = 30_000;
 
 export class StateWriterTelemetryRecorder {
   private readonly options: StateWriterTelemetryRecorderOptions;
@@ -45,6 +49,8 @@ export class StateWriterTelemetryRecorder {
   private materializedItems = 0;
   private outcome: StateWriterOutcome | null = null;
   private sequence = 0;
+  private lastProgressPhase: StateWriterPhase | null = null;
+  private lastProgressAtMs = 0;
   private terminal: StateWriterOperation | null = null;
 
   constructor(options: StateWriterTelemetryRecorderOptions = {}) {
@@ -69,7 +75,9 @@ export class StateWriterTelemetryRecorder {
   }
 
   recordAcquireAttempt() {
-    if (!this.terminal) this.acquireAttempts += 1;
+    if (this.terminal) return;
+    this.acquireAttempts += 1;
+    if (!this.acquired) this.refreshProgress("waiting");
   }
 
   acquiredLease() {
@@ -82,11 +90,16 @@ export class StateWriterTelemetryRecorder {
   }
 
   recordRenewal() {
-    if (this.acquired && !this.terminal) this.renewals += 1;
+    if (this.acquired && !this.terminal) {
+      this.renewals += 1;
+      this.refreshProgress("holding");
+    }
   }
 
   recordGitProcess() {
-    if (!this.terminal) this.gitProcesses += 1;
+    if (this.terminal) return;
+    this.gitProcesses += 1;
+    if (this.acquired) this.refreshProgress("holding");
   }
 
   recordMaterializedCommit(itemCount: number) {
@@ -111,7 +124,7 @@ export class StateWriterTelemetryRecorder {
     this.holdMs = Math.max(0, this.now() - (this.holdStartedAtMs ?? this.now()));
   }
 
-  finalize(outcome: StateWriterOutcome): StateWriterOperation {
+  finalize(outcome: StateWriterOutcome): StateWriterOperation | null {
     if (this.terminal) return this.terminal;
     const finishedAtMs = this.now();
     if (this.waitStartedAtMs !== null && !this.acquired) {
@@ -132,22 +145,22 @@ export class StateWriterTelemetryRecorder {
       mode: this.mode,
       started_at: new Date(this.startedAtMs).toISOString(),
       finished_at: new Date(finishedAtMs).toISOString(),
-      wait_ms: this.waitMs,
-      acquire_attempts: this.acquireAttempts,
+      wait_ms: clampDuration(this.waitMs),
+      acquire_attempts: clampCount(this.acquireAttempts),
       acquired: this.acquired,
-      hold_ms: this.acquired ? (this.holdMs ?? 0) : null,
-      renewals: this.acquired ? this.renewals : 0,
+      hold_ms: this.acquired ? clampDuration(this.holdMs ?? 0) : null,
+      renewals: this.acquired ? clampCount(this.renewals) : 0,
       released: this.acquired ? (this.released ?? false) : null,
-      git_duration_ms: Math.max(0, finishedAtMs - this.startedAtMs),
-      git_processes: this.gitProcesses,
+      git_duration_ms: clampDuration(Math.max(0, finishedAtMs - this.startedAtMs)),
+      git_processes: clampCount(this.gitProcesses),
       commit_count: this.commitCount,
-      materialized_items: this.materializedItems,
+      materialized_items: clampCount(this.materializedItems),
       configured_batch_size: this.configuredBatchSize,
       actual_batch_size:
         this.mode === "single_item"
           ? 1
           : Math.max(1, this.actualBatchSize || this.configuredBatchSize),
-      batch_wait_ms: this.mode === "single_item" ? null : (this.batchWaitMs ?? 0),
+      batch_wait_ms: this.mode === "single_item" ? null : clampDuration(this.batchWaitMs ?? 0),
       outcome: safeOutcome,
     };
     const normalized = normalizeStateWriterOperation(candidate);
@@ -155,26 +168,29 @@ export class StateWriterTelemetryRecorder {
       this.terminal = normalized;
       return this.terminal;
     }
-    // Keep publication authoritative: emit a minimal valid failed sample rather
-    // than an invariant-breaking payload that the queue would reject.
-    const fallback = normalizeStateWriterOperation({
-      ...candidate,
+    // Keep publication authoritative: omit malformed optional telemetry rather
+    // than throwing into the lease/publication path.
+    this.terminal = normalizeStateWriterOperation({
+      schema_version: STATE_WRITER_SCHEMA_VERSION,
+      operation_id: this.operationId.slice(0, 200) || `single:local:${this.startedAtMs}`,
+      mode: "single_item",
+      started_at: new Date(this.startedAtMs).toISOString(),
+      finished_at: new Date(finishedAtMs).toISOString(),
+      wait_ms: 0,
+      acquire_attempts: 0,
       acquired: false,
       hold_ms: null,
       renewals: 0,
       released: null,
+      git_duration_ms: 0,
+      git_processes: 0,
       commit_count: 0,
       materialized_items: 0,
       configured_batch_size: 1,
       actual_batch_size: 1,
       batch_wait_ms: null,
-      mode: "single_item",
       outcome: "failed",
     });
-    if (!fallback) {
-      throw new Error("state writer telemetry fallback normalization failed");
-    }
-    this.terminal = fallback;
     return this.terminal;
   }
 
@@ -182,8 +198,20 @@ export class StateWriterTelemetryRecorder {
     return this.terminal;
   }
 
+  private refreshProgress(phase: StateWriterPhase) {
+    if (this.terminal) return;
+    if (this.lastProgressPhase !== phase) {
+      this.emit(phase);
+      return;
+    }
+    if (this.now() - this.lastProgressAtMs < PROGRESS_REFRESH_MS) return;
+    this.emit(phase);
+  }
+
   private emit(phase: StateWriterPhase) {
     try {
+      this.lastProgressPhase = phase;
+      this.lastProgressAtMs = this.now();
       this.options.observer?.progress?.({
         schema_version: STATE_WRITER_SCHEMA_VERSION,
         operation_id: this.operationId,
@@ -198,4 +226,12 @@ export class StateWriterTelemetryRecorder {
       // Telemetry observers are always best effort.
     }
   }
+}
+
+function clampDuration(value: number): number {
+  return Math.min(STATE_WRITER_MAX_DURATION_MS, Math.max(0, value));
+}
+
+function clampCount(value: number): number {
+  return Math.min(STATE_WRITER_MAX_COUNT, Math.max(0, value));
 }
