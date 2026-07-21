@@ -2086,9 +2086,28 @@ async function cachedStateWriterLeaseProbe(env) {
   try {
     const repo = String(env.CLAWSWEEPER_STATE_REPO || CLAWSWEEPER_STATE_REPO);
     const branch = String(env.CLAWSWEEPER_STATE_REF || CLAWSWEEPER_STATE_REF);
+    // Prove repository access before treating a lease-ref 404 as "free". GitHub
+    // also returns 404 for private repos the token cannot see.
+    await githubJson(env, `/repos/${repo}`);
     const ref = `heads/clawsweeper-publish-lease/${branch}`;
-    const refPayload = await githubJson(env, `/repos/${repo}/git/ref/${ref}`);
-    const sha = String(objectValue(refPayload.object).sha || "");
+    let refPayload: unknown;
+    try {
+      refPayload = await githubJson(env, `/repos/${repo}/git/ref/${ref}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (/404|not found/i.test(message)) {
+        value = {
+          status: "free",
+          expires_at: null,
+          observed_at: observedAt,
+          freshness: "fresh",
+        };
+        stateWriterLeaseCache = { expiresAt: Date.now() + STATE_WRITER_LEASE_CACHE_MS, value };
+        return value;
+      }
+      throw error;
+    }
+    const sha = String(objectValue(objectValue(refPayload).object).sha || "");
     if (!/^[a-f0-9]{40,64}$/i.test(sha)) throw new Error("invalid lease ref");
     const commit = objectValue(await githubJson(env, `/repos/${repo}/git/commits/${sha}`));
     const committedAt = Date.parse(String(objectValue(commit.committer).date || ""));
@@ -2113,11 +2132,8 @@ async function cachedStateWriterLeaseProbe(env) {
             observed_at: observedAt,
             freshness: "stale",
           };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    value = /404|not found/i.test(message)
-      ? { status: "free", expires_at: null, observed_at: observedAt, freshness: "fresh" }
-      : { status: "unknown", expires_at: null, observed_at: observedAt, freshness: "unknown" };
+  } catch {
+    value = { status: "unknown", expires_at: null, observed_at: observedAt, freshness: "unknown" };
   }
   stateWriterLeaseCache = { expiresAt: Date.now() + STATE_WRITER_LEASE_CACHE_MS, value };
   return value;
@@ -8873,13 +8889,21 @@ function stateWriterHistorySamples() {
   });
 }
 
-function stateWriterRateFromHistory(samples, field) {
+function stateWriterHistorySegment(samples, field) {
   if (samples.length < 2) return null;
-  let start = samples[0];
+  let startIndex = 0;
   for (let index = 1; index < samples.length; index += 1) {
-    if (samples[index][field] < start[field]) start = samples[index];
+    if (samples[index][field] < samples[index - 1][field]) startIndex = index;
   }
-  const end = samples[samples.length - 1];
+  if (samples.length - startIndex < 2) return null;
+  return samples.slice(startIndex);
+}
+
+function stateWriterRateFromHistory(samples, field) {
+  const segment = stateWriterHistorySegment(samples, field);
+  if (!segment) return null;
+  const start = segment[0];
+  const end = segment[segment.length - 1];
   const elapsedHours = (Date.parse(end.at) - Date.parse(start.at)) / 3_600_000;
   if (!(elapsedHours > 0) || end[field] < start[field]) return null;
   return Math.round(((end[field] - start[field]) / elapsedHours) * 10) / 10;
@@ -8900,16 +8924,23 @@ function renderStateWriter(writer) {
   const latestHistory = history.at(-1);
   const itemsPerHour = stateWriterRateFromHistory(history, "items");
   const commitsPerHour = stateWriterRateFromHistory(history, "commits");
+  const commitSegment = stateWriterHistorySegment(history, "commits");
   const itemsPerCommit =
-    history.length >= 2 &&
-    latestHistory &&
-    history[0] &&
-    latestHistory.commits > history[0].commits
-      ? Math.round(((latestHistory.items - history[0].items) / (latestHistory.commits - history[0].commits)) * 100) / 100
+    commitSegment &&
+    commitSegment.length >= 2 &&
+    commitSegment[commitSegment.length - 1].commits > commitSegment[0].commits
+      ? Math.round(
+          ((commitSegment[commitSegment.length - 1].items - commitSegment[0].items) /
+            (commitSegment[commitSegment.length - 1].commits - commitSegment[0].commits)) *
+            100,
+        ) / 100
       : hour.items_per_commit;
   const wait = latestHistory?.wait || hour.wait_ms;
   const hold = latestHistory?.hold || hour.hold_ms;
   const rangeLabel = activeHealthRange === "7d" ? "7d" : activeHealthRange;
+  const liveFresh =
+    collection.status === "fresh" &&
+    (live.freshness_seconds == null || Number(live.freshness_seconds) <= 90);
   const mode =
     writer.mode === "mixed"
       ? "Mixed · legacy draining + batch active"
@@ -8926,7 +8957,11 @@ function renderStateWriter(writer) {
     '<section class="exact-lane">' +
     '<h3>State writer <span class="muted">' + mode + " · " + metric(collection.status) + " · " + esc(rangeLabel) + "</span></h3>" +
     '<p>Global state lease: <strong>' + metric(lease.status) + '</strong> · 1 writer maximum</p>' +
-    '<p>Tracked exact publishers: ' + metric(live.tracked_holding, "unknown") + " holding · " + metric(live.tracked_waiting, "unknown") + " waiting</p>" +
+    '<p>Tracked exact publishers: ' +
+    (liveFresh
+      ? metric(live.tracked_holding, "unknown") + " holding · " + metric(live.tracked_waiting, "unknown") + " waiting"
+      : "unknown holding · unknown waiting") +
+    "</p>" +
     exactReviewTrend(itemTrend, "Materialized items") +
     '<dl class="lane-metrics">' +
     "<div><dt>Materialized</dt><dd>" + metric(itemsPerHour ?? hour.materialized_items) + " items/hour</dd></div>" +
@@ -8935,7 +8970,7 @@ function renderStateWriter(writer) {
     "<div><dt>Lease wait</dt><dd>" + percentile(wait) + "</dd></div>" +
     "<div><dt>Lease hold</dt><dd>" + percentile(hold) + "</dd></div>" +
     "</dl>" +
-    '<p class="muted">Live holding/waiting come from current progress. Throughput uses the selected ' + esc(rangeLabel) + " history when available; otherwise the rolling hour.</p>" +
+    '<p class="muted">Live holding/waiting require fresh progress. Throughput uses the selected ' + esc(rangeLabel) + " history when available; otherwise the rolling hour.</p>" +
     '<p class="muted">Publication workflows can run concurrently, but they feed one serialized state-ref writer.</p>' +
     "</section>";
 }
