@@ -1286,11 +1286,8 @@ export class ExactReviewQueue {
           publicationFlow: this.publicationFlowSummarySync(now),
           deadLetters: this.deadLetterStatsSync(),
           reviewTelemetryHealth: this.reviewTelemetryHealthSync(now),
-          reviewExecutionHealth: this.reviewObservabilitySync({
-            range: "24h",
-            repo: null,
-            now,
-          }),
+          // Full review observability scans up to 10k durable records. Keep it on
+          // the diagnostic endpoint so the frequently-polled status path stays bounded.
           stateWriter: this.stateWriterSummarySync(now),
           stateAppend: this.stateAppendStatsSync(),
         };
@@ -1302,7 +1299,6 @@ export class ExactReviewQueue {
         publicationFlow,
         deadLetters,
         reviewTelemetryHealth,
-        reviewExecutionHealth,
         stateWriter,
         stateAppend,
       } = snapshot;
@@ -1399,7 +1395,6 @@ export class ExactReviewQueue {
         },
         delivery_receipts: this.deliveryReceiptCountSync(),
         review_telemetry_health: reviewTelemetryHealth,
-        review_execution_health: reviewExecutionHealth,
         state_writer: stateWriter,
         state_append: {
           ...stateAppend,

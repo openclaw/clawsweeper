@@ -811,6 +811,7 @@ test("dashboard status reads the exact-review handoff model from the durable que
   assert.equal(status.lanes.review.completed_total, 0);
   assert.equal(status.lanes.publication.enqueued_total, 1);
   assert.equal(status.lanes.publication.completed_total, 0);
+  assert.equal(status.review_execution_health, undefined);
   assert.deepEqual(
     {
       pending: status.lanes.review.pending,
@@ -7054,9 +7055,8 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.doesNotMatch(html, /id="health-trend-grid"/);
   assert.match(html, /\/api\/health-history\?range=/);
   assert.match(html, /Work execution needs attention/);
-  assert.match(html, /Review reliability/);
-  assert.match(html, /Awaiting v2 producers/);
-  assert.match(html, /\/api\/review-observability\?range=/);
+  assert.doesNotMatch(html, /Review reliability/);
+  assert.doesNotMatch(html, /\/api\/review-observability\?range=/);
   assert.match(html, /data-trend-range="6h"/);
   assert.match(html, /<details class="execution-alert">/);
   assert.match(html, /Error Rate/);
@@ -7078,7 +7078,6 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
     /<div class="exact-lanes">\s*<div class="exact-review-lanes" id="exact-review-lanes"[\s\S]*?<section class="exact-lane" id="state-writer-health"/,
   );
   assert.ok(html.indexOf("Codex Capacity") < html.indexOf('id="exact-review-lanes"'));
-  assert.ok(html.indexOf("Review reliability") < html.indexOf('id="exact-review-lanes"'));
   assert.ok(html.indexOf('id="exact-review-lanes"') < html.indexOf("Handoff Health"));
   assert.match(html, /Live terminals/);
   assert.match(html, /href="https:\/\/fleet\.example\.test\/terminal\?view=live&amp;mode=all"/);
@@ -7519,58 +7518,6 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(elementFor("execution-alert").innerHTML, /1 execution over 150m/);
   context.renderExecutionAlert({ ...healthyOperational, telemetry_complete: false });
   assert.match(elementFor("execution-alert").innerHTML, /telemetry is incomplete/);
-
-  const reviewReliability = {
-    mode: "passive",
-    health: "passive",
-    range: "24h",
-    terminal_coverage: null,
-    terminal_attempts: 0,
-    expected_attempts: 0,
-    success_rate_percent: null,
-    outcomes: {},
-    unresolved_failures: 0,
-    expected_superseded: 0,
-    unexpected_cancelled: 0,
-    refreshing: 0,
-    slow: 0,
-    orphan: 0,
-    phases: { total: { p95_ms: null } },
-    sources: [],
-    anomalies: [],
-  };
-  context.renderReviewReliability(reviewReliability);
-  assert.match(elementFor("review-reliability-summary").innerHTML, /Awaiting v2 producers/);
-  context.renderReviewReliability({
-    ...reviewReliability,
-    mode: "required",
-    health: "healthy",
-    terminal_coverage: 100,
-  });
-  assert.match(elementFor("review-reliability-summary").innerHTML, /review-status healthy/);
-  context.renderReviewReliability({
-    ...reviewReliability,
-    mode: "required",
-    health: "degraded",
-    anomalies: [
-      {
-        kind: "cancelled",
-        repo: "openclaw/openclaw",
-        item_number: 674,
-        item_url: "https://github.com/openclaw/openclaw/pull/674",
-        run_url: "https://github.com/openclaw/clawsweeper/actions/runs/123",
-        reason: "workflow_cancelled",
-      },
-    ],
-  });
-  assert.match(elementFor("review-reliability-summary").innerHTML, /review-status degraded/);
-  assert.match(elementFor("review-reliability-body").innerHTML, /actions\/runs\/123/);
-  context.renderReviewReliability({
-    ...reviewReliability,
-    mode: "required",
-    health: "critical",
-  });
-  assert.match(elementFor("review-reliability-summary").innerHTML, /review-status critical/);
 
   status.diagnostics.exact_review_queue_error = null;
   status.exact_review_queue = { handoff_health: { status: "healthy", phases: {} } };

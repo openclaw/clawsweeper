@@ -68,34 +68,6 @@ test("dashboard health maps critical and stalled signals to red", () => {
   });
 });
 
-test("dashboard health rolls required review execution up while passive rollout stays neutral", () => {
-  const passive = healthySnapshot();
-  (passive.exact_review_queue as Record<string, any>).review_execution_health = {
-    health: "passive",
-  };
-  assert.equal(summarizeDashboardHealth(passive).severity, "green");
-
-  const degraded = healthySnapshot();
-  (degraded.exact_review_queue as Record<string, any>).review_execution_health = {
-    health: "degraded",
-  };
-  assert.deepEqual(summarizeDashboardHealth(degraded), {
-    conclusion: "needs_attention",
-    severity: "amber",
-    reasons: ["review_execution_degraded"],
-  });
-
-  const critical = healthySnapshot();
-  (critical.exact_review_queue as Record<string, any>).review_execution_health = {
-    health: "critical",
-  };
-  assert.deepEqual(summarizeDashboardHealth(critical), {
-    conclusion: "needs_attention",
-    severity: "red",
-    reasons: ["review_execution_critical"],
-  });
-});
-
 test("dashboard health fails amber when a required signal is absent", () => {
   const snapshot = healthySnapshot();
   const queue = snapshot.exact_review_queue as Record<string, any>;

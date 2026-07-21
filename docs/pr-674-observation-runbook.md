@@ -53,9 +53,9 @@ The watchdog is deliberately read-only. An aged refreshing row without an active
 changes the outcome to `interrupted`. A producer may record `interrupted` only after it proves the
 GitHub run is terminal and no current lease owns the attempt.
 
-## Review reliability API and card
+## Review reliability API
 
-The main dashboard loads:
+Operators can query:
 
 ```text
 GET /api/review-observability?range=24h&repo=all
@@ -64,17 +64,18 @@ GET /api/review-observability?range=24h&repo=all
 Accepted ranges are `6h`, `24h`, and `7d`; repository values are `all` or one `owner/repo` slug.
 The bounded response includes terminal coverage, outcome totals, expected supersession,
 unexpected cancellation, recovered/unresolved failures, phase p50/p95, four lane freshness rows,
-and at most 20 anomalies with complete item and Actions URLs. The card sits after Work execution
-and before Exact Review. `normal_backfill` has its own row so exact-event or hot-intake success
-cannot conceal global review failure.
+and at most 20 anomalies with complete item and Actions URLs. `normal_backfill` has its own row so
+exact-event or hot-intake success cannot conceal global review failure. The main dashboard does not
+load this expensive diagnostic on its polling path; query it only when investigating review
+reliability.
 
 Coverage uses the observer's paginated GitHub job count as an independent denominator, so an
 entirely missing item-producer record lowers coverage instead of disappearing from both sides of
 the ratio. Observer reconciliation is bound to the exact run attempt, and operation recovery is
 scoped by repository plus operation ID.
 
-The prerequisite deployment sets `REVIEW_OBSERVABILITY_REQUIRED=0`, and the card displays
-`Awaiting v2 producers` instead of green. PR 674 sets the flag to `1` and records
+The prerequisite deployment sets `REVIEW_OBSERVABILITY_REQUIRED=0`, so the API reports passive
+mode instead of green. PR 674 sets the flag to `1` and records
 `REVIEW_OBSERVABILITY_REQUIRED_SINCE` at rollout; the first 30 minutes are warm-up. After warm-up:
 
 - Green requires terminal coverage at least 98%, no slow/orphan/unexpected cancellation or
