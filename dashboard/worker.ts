@@ -8709,7 +8709,7 @@ function formatAgeMinutes(value) {
 async function loadHealthHistory(range, force) {
   if (!force && range === activeHealthRange && Date.now() - healthHistoryLoadedAt < 60000) {
     renderExactReviewLanes(lastData?.exact_review_queue);
-    renderStateWriter(lastData?.exact_review_queue?.state_writer);
+    renderStateWriter(lastData?.exact_review_queue);
     return;
   }
   activeHealthRange = range;
@@ -8726,7 +8726,7 @@ async function loadHealthHistory(range, force) {
     healthHistorySamples = [];
   }
   renderExactReviewLanes(lastData?.exact_review_queue);
-  renderStateWriter(lastData?.exact_review_queue?.state_writer);
+  renderStateWriter(lastData?.exact_review_queue);
 }
 
 function workerGroup(worker) {
@@ -8831,7 +8831,10 @@ function renderSystemMap(data) {
 function stateWriterHistorySamples() {
   return healthHistorySamples.flatMap((sample) => {
     const writer = sample?.state_writer;
-    if (!writer || writer.collection_ok !== true) return [];
+    // Legacy samples predate the split and used collection_ok exclusively for
+    // terminal telemetry. New coordinator-only samples stay useful for queue
+    // history but must not contribute stale throughput counters.
+    if (!writer || writer.collection_ok !== true || writer.terminal_collection_ok === false) return [];
     return [{
       at: sample.at,
       accepted: Number(writer.accepted_operations_total || 0),
@@ -8863,10 +8866,20 @@ function stateWriterRateFromHistory(samples, field) {
   return Math.round(((end[field] - start[field]) / elapsedHours) * 10) / 10;
 }
 
-function renderStateWriter(writer) {
+function renderStateWriter(queue) {
   const target = document.getElementById("state-writer-health");
   if (!target) return;
-  if (!writer || !writer.collection) {
+  const writer = queue?.state_writer;
+  const coordinator = writer?.coordinator || {};
+  const batches = queue?.lanes?.publication?.batches || {};
+  const coordinatorLive = ["queued", "leased", "admitted", "completed"].every(
+    field =>
+      coordinator[field] !== null &&
+      coordinator[field] !== undefined &&
+      Number.isFinite(Number(coordinator[field])) &&
+      Number(coordinator[field]) >= 0
+  );
+  if (!writer || (!writer.collection && !coordinatorLive)) {
     target.innerHTML = '<div class="exact-lane-head"><strong>State writer</strong><span>Unavailable</span></div><p class="state-writer-note">Writer telemetry has not been collected.</p>';
     return;
   }
@@ -8876,9 +8889,13 @@ function renderStateWriter(writer) {
   const hour = writer.last_60_minutes || {};
   const history = stateWriterHistorySamples();
   const latestHistory = history.at(-1);
-  const itemsPerHour = stateWriterRateFromHistory(history, "items");
-  const commitsPerHour = stateWriterRateFromHistory(history, "commits");
-  const commitSegment = stateWriterHistorySegment(history, "commits");
+  const historyFresh = Boolean(
+    latestHistory && Date.now() - Date.parse(latestHistory.at) <= 12 * 60 * 1000
+  );
+  const itemsPerHour = historyFresh ? stateWriterRateFromHistory(history, "items") : null;
+  const commitsPerHour = historyFresh ? stateWriterRateFromHistory(history, "commits") : null;
+  const commitSegment = historyFresh ? stateWriterHistorySegment(history, "commits") : null;
+  const terminalFresh = collection.status === "fresh";
   const itemsPerCommit =
     commitSegment &&
     commitSegment.length >= 2 &&
@@ -8888,18 +8905,24 @@ function renderStateWriter(writer) {
             (commitSegment[commitSegment.length - 1].commits - commitSegment[0].commits)) *
             100,
         ) / 100
-      : hour.items_per_commit;
-  const wait = latestHistory?.wait || hour.wait_ms;
-  const hold = latestHistory?.hold || hour.hold_ms;
+      : terminalFresh
+        ? hour.items_per_commit
+        : null;
+  const wait = historyFresh ? latestHistory?.wait : terminalFresh ? hour.wait_ms : null;
+  const hold = historyFresh ? latestHistory?.hold : terminalFresh ? hour.hold_ms : null;
   const rangeLabel = activeHealthRange === "7d" ? "7d" : activeHealthRange;
   const liveFresh =
     collection.status === "fresh" &&
     (live.freshness_seconds == null || Number(live.freshness_seconds) <= 90);
+  const configuredBatchSize = Number.isInteger(Number(batches.max_items)) && Number(batches.max_items) > 0
+    ? Number(batches.max_items)
+    : null;
+  const batchingConfigured = batches.enabled === true;
   const mode =
     writer.mode === "mixed"
       ? "Mixed · legacy draining + batch active"
-      : writer.mode === "batch"
-        ? "Batch"
+      : batchingConfigured || writer.mode === "batch"
+        ? "Batch" + (configuredBatchSize ? " · configured " + configuredBatchSize : "")
         : writer.mode === "single_item"
           ? "Single-item"
           : "Unknown";
@@ -8907,25 +8930,44 @@ function renderStateWriter(writer) {
   const percentile = (value) =>
     value?.samples ? "p50 " + metric(value.p50) + "ms · p95 " + metric(value.p95) + "ms · n=" + value.samples : "unknown";
   const itemTrend = history.map((sample) => ({ at: sample.at, pending: sample.items }));
+  const coordinatorTurns = coordinatorLive
+    ? metric(coordinator.completed) + " completed · " + metric(coordinator.admitted) + " admitted" +
+      (Number(coordinator.recovered) || Number(coordinator.expired)
+        ? " · " + metric(coordinator.recovered, 0) + " recovered · " + metric(coordinator.expired, 0) + " expired"
+        : "")
+    : "unknown";
+  const coordinatorWait = coordinatorLive
+    ? "last " + elapsed(Number(coordinator.last_wait_ms)) + " · max " + elapsed(Number(coordinator.max_wait_ms))
+    : "unknown";
+  const terminalStatus = terminalFresh
+    ? "terminal telemetry fresh"
+    : collection.last_observed_at
+      ? "terminal telemetry stale · last observed " + since(collection.last_observed_at)
+      : "terminal telemetry unavailable";
   target.innerHTML =
-    '<div class="exact-lane-head"><strong>State writer</strong><span>' + esc(mode) + " · " + esc(metric(collection.status)) + " · " + esc(rangeLabel) + "</span></div>" +
+    '<div class="exact-lane-head"><strong>State writer</strong><span>' + esc(mode) + " · " + esc(coordinatorLive ? "coordinator live" : metric(collection.status)) + " · " + esc(rangeLabel) + "</span></div>" +
     '<div class="lane-counts">' +
-    '<div class="lane-count"><span>Global state lease</span><strong>' + esc(metric(lease.status)) + ' · 1 writer max</strong></div>' +
-    '<div class="lane-count"><span>Tracked publishers</span><strong>' +
-    (liveFresh
-      ? metric(live.tracked_holding, "unknown") + " holding · " + metric(live.tracked_waiting, "unknown") + " waiting"
-      : "unknown holding · unknown waiting") +
+    '<div class="lane-count"><span>Serialization queue</span><strong>' +
+    (coordinatorLive
+      ? metric(coordinator.leased) + " active · " + metric(coordinator.queued) + " queued · 1 writer max"
+      : liveFresh
+        ? metric(live.tracked_holding, "unknown") + " active · " + metric(live.tracked_waiting, "unknown") + " queued · 1 writer max"
+        : "unknown active · unknown queued · 1 writer max") +
+    '</strong></div>' +
+    '<div class="lane-count"><span>Git crash fence</span><strong>' + esc(metric(lease.status)) +
     "</strong></div></div>" +
     exactReviewTrend(itemTrend, "Materialized items") +
     '<dl class="lane-metrics">' +
-    "<div><dt>Materialized</dt><dd>" + esc(metric(itemsPerHour ?? hour.materialized_items)) + " items/hour</dd></div>" +
-    "<div><dt>State commits</dt><dd>" + esc(metric(commitsPerHour ?? hour.state_commits)) + "/hour</dd></div>" +
+    "<div><dt>Coordinator turns</dt><dd>" + esc(coordinatorTurns) + "</dd></div>" +
+    "<div><dt>Coordinator wait</dt><dd>" + esc(coordinatorWait) + "</dd></div>" +
+    "<div><dt>Exact-review materialized</dt><dd>" + esc(metric(itemsPerHour ?? (terminalFresh ? hour.materialized_items : null))) + " items/hour</dd></div>" +
+    "<div><dt>Exact-review commits</dt><dd>" + esc(metric(commitsPerHour ?? (terminalFresh ? hour.state_commits : null))) + "/hour</dd></div>" +
     "<div><dt>Items / commit</dt><dd>" + esc(metric(itemsPerCommit)) + "</dd></div>" +
-    "<div><dt>Lease wait</dt><dd>" + esc(percentile(wait)) + "</dd></div>" +
-    "<div><dt>Lease hold</dt><dd>" + esc(percentile(hold)) + "</dd></div>" +
+    "<div><dt>Git fence wait</dt><dd>" + esc(percentile(wait)) + "</dd></div>" +
+    "<div><dt>Git fence hold</dt><dd>" + esc(percentile(hold)) + "</dd></div>" +
     "</dl>" +
-    '<p class="state-writer-note">Live holding/waiting require fresh progress. Throughput uses the selected ' + esc(rangeLabel) + " history when available; otherwise the rolling hour.</p>" +
-    '<p class="state-writer-note">Publication workflows can run concurrently, but they feed one serialized state-ref writer.</p>';
+    '<p class="state-writer-note">' + esc(terminalStatus) + ". Exact-review throughput uses recent " + esc(rangeLabel) + " history when available; stale terminal samples are never rendered as current zeroes.</p>" +
+    '<p class="state-writer-note">The durable coordinator is authoritative for active and queued writers. The Git ref remains only a crash-recovery fence.</p>';
 }
 
 function renderExactReviewLanes(queue) {
@@ -9245,7 +9287,7 @@ function renderDashboard(data, note) {
   renderExecutionAlert(data.operational_health);
   renderSystemMap(data);
   renderExactReviewLanes(data.exact_review_queue);
-  renderStateWriter(data.exact_review_queue?.state_writer);
+  renderStateWriter(data.exact_review_queue);
   renderExactReviewHandoff(data.exact_review_queue);
   renderApplyHealth(data);
   renderAutomaticWork(data.automatic_work || []);

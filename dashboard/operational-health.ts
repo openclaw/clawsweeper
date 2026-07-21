@@ -54,6 +54,7 @@ export type ExactReviewLaneHistorySample = {
 
 export type StateWriterHistorySample = {
   collection_ok: boolean;
+  terminal_collection_ok?: boolean;
   mode?: "single_item" | "batch" | "mixed" | "unknown";
   tracked_holding?: number;
   tracked_waiting?: number;
@@ -166,17 +167,30 @@ export function stateWriterHistorySample(value: unknown): StateWriterHistorySamp
   const writer = objectValue(value);
   const collection = objectValue(writer.collection);
   const live = objectValue(writer.live);
+  const coordinator = objectValue(writer.coordinator);
   const window = objectValue(writer.last_15_minutes);
   const diagnostics = objectValue(writer.diagnostics);
   const mode = ["single_item", "batch", "mixed", "unknown"].includes(String(writer.mode))
     ? (writer.mode as StateWriterHistorySample["mode"])
     : "unknown";
-  const collectionOk = collection.status === "fresh";
+  const coordinatorQueued = nonNegativeInteger(coordinator.queued);
+  const coordinatorLeased = nonNegativeInteger(coordinator.leased);
+  const coordinatorOk = coordinatorQueued !== null && coordinatorLeased !== null;
+  // Progress events legitimately go stale while the serialized writer is idle.
+  // The coordinator snapshot is the authoritative liveness source after the
+  // repo-wide serialization cutover, so an idle writer must remain a valid
+  // history sample instead of disappearing from the panel.
+  const collectionOk = collection.status === "fresh" || coordinatorOk;
   return {
     collection_ok: collectionOk,
+    terminal_collection_ok: collection.status === "fresh",
     mode,
-    tracked_holding: nonNegativeInteger(live.tracked_holding) ?? 0,
-    tracked_waiting: nonNegativeInteger(live.tracked_waiting) ?? 0,
+    tracked_holding: coordinatorOk
+      ? coordinatorLeased
+      : (nonNegativeInteger(live.tracked_holding) ?? 0),
+    tracked_waiting: coordinatorOk
+      ? coordinatorQueued
+      : (nonNegativeInteger(live.tracked_waiting) ?? 0),
     tracked_releasing: nonNegativeInteger(live.tracked_releasing) ?? 0,
     accepted_operations_total: nonNegativeInteger(diagnostics.accepted_terminal_total) ?? 0,
     state_commits_total: nonNegativeInteger(diagnostics.state_commits_total) ?? 0,
@@ -251,6 +265,8 @@ function normalizeStateWriterHistorySample(value: unknown): StateWriterHistorySa
       : null;
   return {
     collection_ok: true,
+    terminal_collection_ok:
+      typeof sample.terminal_collection_ok === "boolean" ? sample.terminal_collection_ok : true,
     mode,
     ...values,
     wait_ms: wait,

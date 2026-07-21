@@ -327,6 +327,18 @@ recovery progress, and last classified GitHub pressure failure. `/api/status` re
 `control_plane` compatibility field, but the dashboard no longer renders that
 low-actionability section.
 
+The standalone **State writer** panel separates the repo-wide serialization
+boundary from exact-review materialization telemetry. After the coordinator
+cutover, `state_writer.coordinator` is authoritative for the active writer,
+FIFO queue depth, completed turns, recovery counters, and coordinator wait.
+The Git lease ref is displayed only as a crash-recovery fence. Exact-review
+terminal telemetry still owns item/commit throughput and Git fence timing; an
+idle or failed publisher can make that telemetry stale without making the
+coordinator unavailable. The panel therefore shows the configured publication
+batch size independently, labels stale terminal data, and never renders stale
+zeroes as current throughput. Five-minute history samples use coordinator
+liveness and queue depth when progress events are idle.
+
 Executors report the GitHub job outcome from their finalizer. Failure or
 cancellation clears the lease and requeues the item. Finalizer success remains
 provisional because GitHub can still cancel the run or fail a post-action; only

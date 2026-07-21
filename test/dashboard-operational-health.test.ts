@@ -5,6 +5,7 @@ import {
   exactReviewHistorySample,
   mergeHealthHistorySample,
   normalizeHealthHistorySample,
+  stateWriterHistorySample,
   summarizeOperationalHealth,
 } from "../dashboard/operational-health.ts";
 
@@ -194,6 +195,39 @@ test("health history keeps legacy samples when optional state_writer is absent o
     state_writer: { collection_ok: true, mode: "not-a-mode" },
   });
   assert.deepEqual(withInvalidWriter, legacy);
+});
+
+test("state writer history uses the coordinator while terminal progress is idle", () => {
+  assert.deepEqual(
+    stateWriterHistorySample({
+      collection: { status: "stale" },
+      coordinator: { queued: 3, leased: 1 },
+      diagnostics: {
+        accepted_terminal_total: 12,
+        state_commits_total: 6,
+        materialized_items_total: 11,
+        contention_timeouts_total: 2,
+      },
+      last_15_minutes: {},
+      live: { tracked_holding: 0, tracked_waiting: 0, tracked_releasing: 0 },
+      mode: "batch",
+    }),
+    {
+      collection_ok: true,
+      terminal_collection_ok: false,
+      mode: "batch",
+      tracked_holding: 1,
+      tracked_waiting: 3,
+      tracked_releasing: 0,
+      accepted_operations_total: 12,
+      state_commits_total: 6,
+      materialized_items_total: 11,
+      contention_timeouts_total: 2,
+      wait_ms: { p50: null, p95: null, samples: 0 },
+      hold_ms: { p50: null, p95: null, samples: 0 },
+      last_successful_materialization_at: null,
+    },
+  );
 });
 
 test("health history rejects non-finite or incomplete samples", () => {

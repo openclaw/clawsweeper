@@ -7495,23 +7495,75 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
     /<div class="exact-lane-head"><strong>State writer<\/strong><span>Unavailable<\/span><\/div>/,
   );
   context.renderStateWriter({
-    collection: { status: "fresh" },
-    global_lease: { status: "held" },
-    last_60_minutes: {
-      materialized_items: 2,
-      state_commits: 1,
-      items_per_commit: 2,
-      wait_ms: { p50: 10, p95: 20, samples: 2 },
-      hold_ms: { p50: 30, p95: 40, samples: 2 },
+    lanes: { publication: { batches: { enabled: true, max_items: 2 } } },
+    state_writer: {
+      collection: { status: "stale", last_observed_at: "2026-07-21T12:12:42.397Z" },
+      coordinator: {
+        queued: 0,
+        leased: 0,
+        admitted: 16,
+        completed: 16,
+        expired: 0,
+        recovered: 0,
+        last_wait_ms: 0,
+        max_wait_ms: 300_309,
+      },
+      global_lease: { status: "free" },
+      last_60_minutes: {
+        materialized_items: 0,
+        state_commits: 0,
+        items_per_commit: null,
+        wait_ms: { p50: null, p95: null, samples: 0 },
+        hold_ms: { p50: null, p95: null, samples: 0 },
+      },
+      live: { freshness_seconds: null, tracked_holding: 0, tracked_waiting: 0 },
+      mode: "unknown",
     },
-    live: { freshness_seconds: 10, tracked_holding: 1, tracked_waiting: 3 },
-    mode: "single_item",
   });
   const stateWriterHtml = elementFor("state-writer-health").innerHTML;
   assert.match(stateWriterHtml, /class="exact-lane-head"/);
-  assert.match(stateWriterHtml, /Single-item · fresh · 6h/);
-  assert.match(stateWriterHtml, /Global state lease<\/span><strong>held · 1 writer max/);
-  assert.match(stateWriterHtml, /Tracked publishers<\/span><strong>1 holding · 3 waiting/);
+  assert.match(stateWriterHtml, /Batch · configured 2 · coordinator live · 6h/);
+  assert.match(
+    stateWriterHtml,
+    /Serialization queue<\/span><strong>0 active · 0 queued · 1 writer max/,
+  );
+  assert.match(stateWriterHtml, /Git crash fence<\/span><strong>free/);
+  assert.match(stateWriterHtml, /Coordinator turns<\/dt><dd>16 completed · 16 admitted/);
+  assert.match(stateWriterHtml, /Coordinator wait<\/dt><dd>last 0s · max 5m/);
+  assert.match(stateWriterHtml, /Exact-review materialized<\/dt><dd>unknown items\/hour/);
+  assert.match(stateWriterHtml, /terminal telemetry stale/);
+  assert.doesNotMatch(stateWriterHtml, /Exact-review materialized<\/dt><dd>0 items\/hour/);
+
+  context.healthHistorySamples = [
+    {
+      at: new Date().toISOString(),
+      state_writer: {
+        collection_ok: true,
+        terminal_collection_ok: false,
+        accepted_operations_total: 16,
+        state_commits_total: 8,
+        materialized_items_total: 16,
+      },
+    },
+  ];
+  context.renderStateWriter({
+    lanes: { publication: { batches: { enabled: true, max_items: 2 } } },
+    state_writer: {
+      collection: { status: "stale" },
+      coordinator: { queued: 0, leased: 0, admitted: 16, completed: 16 },
+      global_lease: { status: "free" },
+      last_60_minutes: { materialized_items: 0, state_commits: 0 },
+      mode: "batch",
+    },
+  });
+  assert.match(
+    elementFor("state-writer-health").innerHTML,
+    /Exact-review materialized<\/dt><dd>unknown items\/hour/,
+  );
+  assert.doesNotMatch(
+    elementFor("state-writer-health").innerHTML,
+    /Exact-review materialized<\/dt><dd>0 items\/hour/,
+  );
   assert.match(stateWriterHtml, /class="lane-metrics"/);
   assert.doesNotMatch(stateWriterHtml, /<section class="exact-lane">/);
   const initialLaneHtml = elementFor("exact-review-lanes").innerHTML;
