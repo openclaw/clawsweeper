@@ -36,6 +36,7 @@ export type HealthHistorySample = {
   oldest_running_minutes?: number;
   collection_ok?: boolean;
   exact_review?: ExactReviewHistorySample;
+  state_writer?: StateWriterHistorySample;
 };
 
 export type ExactReviewHistorySample = {
@@ -49,6 +50,21 @@ export type ExactReviewLaneHistorySample = {
   enqueued_total?: number;
   completed_total?: number;
   shed_total?: number;
+};
+
+export type StateWriterHistorySample = {
+  collection_ok: boolean;
+  mode?: "single_item" | "batch" | "mixed" | "unknown";
+  tracked_holding?: number;
+  tracked_waiting?: number;
+  tracked_releasing?: number;
+  accepted_operations_total?: number;
+  state_commits_total?: number;
+  materialized_items_total?: number;
+  contention_timeouts_total?: number;
+  wait_ms?: { p50: number | null; p95: number | null; samples: number };
+  hold_ms?: { p50: number | null; p95: number | null; samples: number };
+  last_successful_materialization_at?: string | null;
 };
 
 export function summarizeOperationalHealth(
@@ -115,7 +131,7 @@ export function normalizeHealthHistorySample(value: unknown): HealthHistorySampl
   const hasOperationalFields = ["status", "collection_ok", ...countFields].some((field) =>
     Object.hasOwn(sample, field),
   );
-  let operational: Omit<HealthHistorySample, "at" | "exact_review"> = {};
+  let operational: Omit<HealthHistorySample, "at" | "exact_review" | "state_writer"> = {};
   if (hasOperationalFields) {
     const rawStatus = String(sample.status || "");
     if (!["healthy", "degraded", "stalled", "unknown"].includes(rawStatus)) return null;
@@ -136,11 +152,42 @@ export function normalizeHealthHistorySample(value: unknown): HealthHistorySampl
     };
   }
   const exactReview = normalizeExactReviewHistorySample(sample.exact_review);
-  if (!hasOperationalFields && !exactReview) return null;
+  const stateWriter = normalizeStateWriterHistorySample(sample.state_writer);
+  if (!hasOperationalFields && !exactReview && !stateWriter) return null;
   return {
     at,
     ...operational,
     ...(exactReview ? { exact_review: exactReview } : {}),
+    ...(stateWriter ? { state_writer: stateWriter } : {}),
+  };
+}
+
+export function stateWriterHistorySample(value: unknown): StateWriterHistorySample {
+  const writer = objectValue(value);
+  const collection = objectValue(writer.collection);
+  const live = objectValue(writer.live);
+  const window = objectValue(writer.last_15_minutes);
+  const diagnostics = objectValue(writer.diagnostics);
+  const mode = ["single_item", "batch", "mixed", "unknown"].includes(String(writer.mode))
+    ? (writer.mode as StateWriterHistorySample["mode"])
+    : "unknown";
+  const collectionOk = collection.status === "fresh";
+  return {
+    collection_ok: collectionOk,
+    mode,
+    tracked_holding: nonNegativeInteger(live.tracked_holding) ?? 0,
+    tracked_waiting: nonNegativeInteger(live.tracked_waiting) ?? 0,
+    tracked_releasing: nonNegativeInteger(live.tracked_releasing) ?? 0,
+    accepted_operations_total: nonNegativeInteger(diagnostics.accepted_terminal_total) ?? 0,
+    state_commits_total: nonNegativeInteger(window.state_commits) ?? 0,
+    materialized_items_total: nonNegativeInteger(window.materialized_items) ?? 0,
+    contention_timeouts_total: nonNegativeInteger(window.contention_timeouts) ?? 0,
+    wait_ms: historyPercentiles(window.wait_ms),
+    hold_ms: historyPercentiles(window.hold_ms),
+    last_successful_materialization_at:
+      typeof writer.last_successful_materialization_at === "string"
+        ? writer.last_successful_materialization_at
+        : null,
   };
 }
 
@@ -170,6 +217,64 @@ function normalizeExactReviewHistorySample(value: unknown): ExactReviewHistorySa
     review,
     publication,
   };
+}
+
+function normalizeStateWriterHistorySample(value: unknown): StateWriterHistorySample | null {
+  if (value === undefined) return null;
+  const sample = objectValue(value);
+  if (typeof sample.collection_ok !== "boolean") return null;
+  if (!sample.collection_ok) return { collection_ok: false };
+  const mode = ["single_item", "batch", "mixed", "unknown"].includes(String(sample.mode))
+    ? (sample.mode as StateWriterHistorySample["mode"])
+    : null;
+  const integerFields = [
+    "tracked_holding",
+    "tracked_waiting",
+    "tracked_releasing",
+    "accepted_operations_total",
+    "state_commits_total",
+    "materialized_items_total",
+    "contention_timeouts_total",
+  ] as const;
+  const values = Object.fromEntries(
+    integerFields.map((field) => [field, optionalNonNegativeInteger(sample[field])]),
+  ) as Record<(typeof integerFields)[number], number | undefined | null>;
+  if (!mode || Object.values(values).some((entry) => entry === null)) return null;
+  const wait = normalizeHistoryPercentiles(sample.wait_ms);
+  const hold = normalizeHistoryPercentiles(sample.hold_ms);
+  if (!wait || !hold) return null;
+  const lastSuccessfulMaterialization =
+    sample.last_successful_materialization_at === null ||
+    (typeof sample.last_successful_materialization_at === "string" &&
+      Number.isFinite(Date.parse(sample.last_successful_materialization_at)))
+      ? (sample.last_successful_materialization_at as string | null)
+      : null;
+  return {
+    collection_ok: true,
+    mode,
+    ...values,
+    wait_ms: wait,
+    hold_ms: hold,
+    last_successful_materialization_at: lastSuccessfulMaterialization,
+  };
+}
+
+function historyPercentiles(value: unknown) {
+  const input = objectValue(value);
+  return {
+    p50: optionalNonNegativeInteger(input.p50) ?? null,
+    p95: optionalNonNegativeInteger(input.p95) ?? null,
+    samples: nonNegativeInteger(input.samples) ?? 0,
+  };
+}
+
+function normalizeHistoryPercentiles(value: unknown) {
+  if (value === undefined) return { p50: null, p95: null, samples: 0 };
+  const input = objectValue(value);
+  const p50 = input.p50 === null ? null : optionalNonNegativeInteger(input.p50);
+  const p95 = input.p95 === null ? null : optionalNonNegativeInteger(input.p95);
+  const samples = nonNegativeInteger(input.samples);
+  return p50 === undefined || p95 === undefined || samples === null ? null : { p50, p95, samples };
 }
 
 function queueLaneHistorySample(value: unknown, includeShed: boolean) {

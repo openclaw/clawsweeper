@@ -1553,6 +1553,11 @@ jobs:
           LIVE_TERMINAL_NOOP: ${{ steps.publication-context.outputs.live_terminal_noop }}
           LIVE_TERMINAL_MISSING: ${{ steps.publication-context.outputs.live_terminal_missing }}
           LIVE_GUARDED_OPEN: ${{ steps.publication-context.outputs.live_guarded_open }}
+          EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          EXACT_REVIEW_LEASE_ID: ${{ steps.publication-context.outputs.publisher_lease_id }}
+          EXACT_REVIEW_ITEM_KEY: ${{ steps.publication-context.outputs.publisher_item_key }}
+          EXACT_REVIEW_LEASE_REVISION: ${{ steps.publication-context.outputs.publisher_lease_revision }}
+          EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.publication-context.outputs.publisher_claim_generation }}
         run: |
           set -euo pipefail
           record_publication_failure_kind() {
@@ -1936,6 +1941,7 @@ jobs:
           PUBLISH_REASON_CODE: ${{ steps.publish-event-result.outputs.reason_code }}
           PUBLISH_RETRY_AT: ${{ steps.publish-event-result.outputs.retry_at }}
           ERROR_FINGERPRINT: ${{ steps.publish-event-result.outputs.error_fingerprint }}
+          STATE_WRITER_JSON: ${{ steps.publish-event-result.outputs.state_writer_json }}
           REVIEW_ONLY: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
         run: |
           set -euo pipefail
@@ -2016,6 +2022,9 @@ jobs:
           if [ "$outcome" = "failure" ] && { [ "$FAILURE_KIND" = "github_rate_limit" ] || [ "$FAILURE_KIND" = "github_transient" ]; }; then
             echo "failure_kind=$FAILURE_KIND" >> "$GITHUB_OUTPUT"
           fi
+          if [ -n "$STATE_WRITER_JSON" ]; then
+            echo "state_writer_json=$STATE_WRITER_JSON" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Complete durable exact review publication
         id: complete-exact-review-publication
@@ -2031,6 +2040,7 @@ jobs:
           REASON_CODE: ${{ steps.exact-review-publication-result.outputs.reason_code }}
           ERROR_FINGERPRINT: ${{ steps.exact-review-publication-result.outputs.error_fingerprint }}
           RETRY_AT: ${{ steps.exact-review-publication-result.outputs.retry_at }}
+          STATE_WRITER_JSON: ${{ steps.exact-review-publication-result.outputs.state_writer_json }}
           QUEUE_LEASE_ID: ${{ steps.publication-context.outputs.publisher_lease_id }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -2063,6 +2073,11 @@ jobs:
             const retryAt = String(process.env.RETRY_AT || "").trim();
             if (retryAt && !Number.isFinite(Date.parse(retryAt))) process.exit(1);
             if (!completionKind || !reasonCode) process.exit(1);
+            let stateWriter;
+            try {
+              const parsed = JSON.parse(process.env.STATE_WRITER_JSON || "");
+              if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) stateWriter = parsed;
+            } catch {}
             process.stdout.write(JSON.stringify({
               lease_id: process.env.QUEUE_LEASE_ID,
               item_key: process.env.ITEM_KEY,
@@ -2076,6 +2091,7 @@ jobs:
               ...(errorFingerprint ? { error_fingerprint: errorFingerprint } : {}),
               ...(retryAt ? { retry_at: retryAt } : {}),
               ...(outcome === "failure" && failureKind ? { failure_kind: failureKind } : {}),
+              ...(stateWriter ? { state_writer: stateWriter } : {}),
             }));
           ')"
           for attempt in 1 2 3; do

@@ -32,6 +32,7 @@ import {
   refreshSourceAfterStatePublish,
   runGit,
   setTokenOrigin,
+  setStatePublishTelemetryObserver,
   stagePaths,
   StatePublishContentionError,
   syncPublishPaths,
@@ -39,6 +40,12 @@ import {
 } from "./git-publish.js";
 import { isJsonObject } from "./json-types.js";
 import { RecordTupleError } from "./record-tuple.js";
+import {
+  StateWriterTelemetryRecorder,
+  type StateWriterTelemetryObserver,
+} from "./state-writer-telemetry-recorder.js";
+import { stateWriterProgressReporter } from "./state-writer-progress-reporter.js";
+import type { StateWriterOperation } from "../state-writer-telemetry.js";
 import {
   staleEventDisposition,
   staleEventDispositionOutputLines,
@@ -71,6 +78,7 @@ type PublishedEventSnapshot = {
   routingDeferred: boolean;
   terminalClosed: boolean;
   terminalMissing: boolean;
+  stateWriter?: StateWriterOperation;
 };
 
 class GuardedOpenPublishRaceError extends Error {}
@@ -382,12 +390,19 @@ function publishSnapshot({
   terminalClosedExpected: boolean;
   terminalMissingExpected: boolean;
 }): PublishedEventSnapshot | null {
+  const observer = stateWriterObserver();
+  const recorder = new StateWriterTelemetryRecorder({
+    ...(process.env.GITHUB_RUN_ID ? { runId: process.env.GITHUB_RUN_ID } : {}),
+    ...(process.env.GITHUB_RUN_ATTEMPT ? { runAttempt: process.env.GITHUB_RUN_ATTEMPT } : {}),
+    ...(observer ? { observer } : {}),
+  });
   const commitPaths = [
     paths.itemRecord,
     paths.closedRecord,
     paths.planRecord,
     paths.decisionPacket,
   ];
+  const resetTelemetry = setStatePublishTelemetryObserver(recorder);
   try {
     const complete = (
       candidateApplied: boolean,
@@ -484,13 +499,21 @@ function publishSnapshot({
         console.log(
           `Remote already has closed record for ${paths.targetSlug}#${options.itemNumber}; skipping open-record publish`,
         );
-        return { candidateApplied: false, supersededReason: "remote_closed" as const };
+        return {
+          candidateApplied: false,
+          supersededReason: "remote_closed" as const,
+          writerOutcome: "superseded" as const,
+        };
       }
       if (snapshotResult === "remote-newer") {
         console.log(
           `Remote has newer record tuple for ${paths.targetSlug}#${options.itemNumber}; skipping stale event publish`,
         );
-        return { candidateApplied: false, supersededReason: "remote_newer_tuple" as const };
+        return {
+          candidateApplied: false,
+          supersededReason: "remote_newer_tuple" as const,
+          writerOutcome: "superseded" as const,
+        };
       }
       if (snapshotResult === "missing") {
         throw new PublicationResultError(
@@ -503,7 +526,11 @@ function publishSnapshot({
       stagePaths(commitPaths);
       if (!hasStagedChanges()) {
         console.log("No event result changes");
-        return { candidateApplied: true, supersededReason: undefined };
+        return {
+          candidateApplied: true,
+          supersededReason: undefined,
+          writerOutcome: "unchanged" as const,
+        };
       }
 
       runGit([
@@ -515,11 +542,31 @@ function publishSnapshot({
         ),
       ]);
       if (!pushSingleRecordTupleCommit({ paths: commitPaths, pushAttempts: 3 })) return null;
-      return { candidateApplied: true, supersededReason: undefined };
+      return {
+        candidateApplied: true,
+        supersededReason: undefined,
+        writerOutcome: "materialized" as const,
+      };
     });
-    if (!mutation) return null;
-    return complete(mutation.candidateApplied, mutation.supersededReason);
+    if (!mutation) {
+      recorder.finalize("failed");
+      writeStateWriterOutput(recorder);
+      return null;
+    }
+    const published = complete(mutation.candidateApplied, mutation.supersededReason);
+    if (mutation.writerOutcome === "materialized" && published.remoteTupleVerified) {
+      recorder.recordMaterializedCommit(1);
+    }
+    recorder.finalize(
+      published.completionKind === "superseded" ? "superseded" : mutation.writerOutcome,
+    );
+    const stateWriter = recorder.toTerminalObject();
+    return { ...published, ...(stateWriter ? { stateWriter } : {}) };
   } catch (error) {
+    recorder.finalize(
+      error instanceof StatePublishContentionError ? "contention_timeout" : "failed",
+    );
+    writeStateWriterOutput(recorder);
     if (
       error instanceof GitCommandTimeoutError ||
       error instanceof RecordTupleError ||
@@ -533,6 +580,8 @@ function publishSnapshot({
       throw error;
     console.error(error instanceof Error ? error.message : String(error));
     return null;
+  } finally {
+    resetTelemetry();
   }
 }
 
@@ -625,10 +674,36 @@ function writeEventDispositionOutputs(published: PublishedEventSnapshot): void {
       `policy_noop=${published.policyNoop ? "true" : "false"}`,
       `requeue_latest=${published.requeueLatest ? "true" : "false"}`,
       `routing_deferred=${published.routingDeferred ? "true" : "false"}`,
+      ...(published.stateWriter
+        ? [`state_writer_json=${JSON.stringify(published.stateWriter)}`]
+        : []),
       "",
     ].join("\n"),
     "utf8",
   );
+}
+
+function writeStateWriterOutput(recorder: StateWriterTelemetryRecorder): void {
+  const terminal = recorder.toTerminalObject();
+  const outputPath = process.env.GITHUB_OUTPUT;
+  if (!terminal || !outputPath) return;
+  fs.appendFileSync(outputPath, `state_writer_json=${JSON.stringify(terminal)}\n`, "utf8");
+}
+
+function stateWriterObserver(): StateWriterTelemetryObserver | undefined {
+  const integer = (value: string | undefined) => {
+    const number = Number(value);
+    return Number.isInteger(number) && number > 0 ? number : null;
+  };
+  return stateWriterProgressReporter({
+    queueUrl: String(process.env.EXACT_REVIEW_QUEUE_URL || ""),
+    leaseId: String(process.env.EXACT_REVIEW_LEASE_ID || ""),
+    itemKey: String(process.env.EXACT_REVIEW_ITEM_KEY || ""),
+    leaseRevision: integer(process.env.EXACT_REVIEW_LEASE_REVISION) ?? 0,
+    claimGeneration: integer(process.env.EXACT_REVIEW_CLAIM_GENERATION) ?? 0,
+    runId: String(process.env.GITHUB_RUN_ID || ""),
+    runAttempt: integer(process.env.GITHUB_RUN_ATTEMPT) ?? 0,
+  });
 }
 
 function writeLegacyRefreshRequiredOutputs(): void {

@@ -11491,6 +11491,65 @@ function leasedExactReviewPublicationItem(itemNumber: number, runId: string) {
   };
 }
 
+test("state writer telemetry is optional, idempotent, and summary-safe", async () => {
+  const storage = new MemoryDurableStorage();
+  const items = Object.fromEntries(
+    Array.from({ length: 2 }, (_, index) => {
+      const item = leasedExactReviewQueueItem(96_000 + index, `9600${index}`);
+      return [item.key, item];
+    }),
+  );
+  await storage.put("exact-review-queue", { deliveries: {}, items });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const now = new Date().toISOString();
+  const telemetry = {
+    schema_version: 1,
+    operation_id: "batch:telemetry-test",
+    mode: "batch",
+    started_at: now,
+    finished_at: now,
+    wait_ms: 1,
+    acquire_attempts: 1,
+    acquired: true,
+    hold_ms: 2,
+    renewals: 0,
+    released: true,
+    git_duration_ms: 3,
+    git_processes: 4,
+    commit_count: 1,
+    materialized_items: 2,
+    configured_batch_size: 2,
+    actual_batch_size: 2,
+    batch_wait_ms: 1,
+    outcome: "materialized",
+  };
+  for (const item of Object.values(items)) {
+    const response = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: item.leaseId,
+          item_key: item.key,
+          lease_revision: 1,
+          claim_generation: 1,
+          run_id: item.claimedRunId,
+          run_attempt: 1,
+          outcome: "success",
+          state_writer: telemetry,
+        }),
+      }),
+    );
+    assert.equal(response.status, 200);
+  }
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.state_writer.last_15_minutes.operations, 1);
+  assert.equal(stats.state_writer.last_15_minutes.state_commits, 1);
+  assert.equal(stats.state_writer.last_15_minutes.materialized_items, 2);
+  assert.equal(stats.state_writer.last_15_minutes.items_per_commit, 2);
+});
+
 function unclaimedExactReviewQueueItem(itemNumber: number) {
   return {
     ...leasedExactReviewQueueItem(itemNumber, "unclaimed"),

@@ -1,5 +1,11 @@
 import { stableJson } from "../src/stable-json.ts";
 import {
+  normalizeStateWriterOperation,
+  normalizeStateWriterProgress,
+  payloadHash,
+  type StateWriterOperation,
+} from "../src/state-writer-telemetry.ts";
+import {
   summarizeExactReviewHandoff,
   summarizeExactReviewPressure,
 } from "./exact-review-health.ts";
@@ -283,6 +289,11 @@ const EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE = "exact_review_queue_metric_bucket
 const EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE = "exact_review_queue_dead_letters";
 const EXACT_REVIEW_REVIEW_TELEMETRY_TABLE = "exact_review_review_telemetry";
 const EXACT_REVIEW_RUN_TELEMETRY_TABLE = "exact_review_run_telemetry";
+const EXACT_REVIEW_STATE_WRITER_OPERATION_TABLE = "exact_review_state_writer_operations";
+const EXACT_REVIEW_STATE_WRITER_LIVE_TABLE = "exact_review_state_writer_live";
+const EXACT_REVIEW_STATE_WRITER_DIAGNOSTICS_TABLE = "exact_review_state_writer_diagnostics";
+const EXACT_REVIEW_STATE_WRITER_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const EXACT_REVIEW_STATE_WRITER_LIVE_MS = 90 * 1000;
 const REVIEW_OBSERVABILITY_SCAN_LIMIT = 10_000;
 const EXACT_REVIEW_QUEUE_DEAD_LETTER_LIMIT = 5_000;
 const EXACT_REVIEW_QUEUE_DEAD_LETTER_RESOLVED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -605,6 +616,10 @@ export class ExactReviewQueue {
 
     if (request.method === "POST" && url.pathname === "/complete") {
       const body = objectValue(await request.json().catch(() => null));
+      const stateWriter =
+        body.state_writer === undefined
+          ? undefined
+          : normalizeStateWriterOperation(body.state_writer);
       const leaseId = String(body.lease_id || "").trim();
       const itemKey = String(body.item_key || "").trim();
       const leaseRevision = Number(body.lease_revision);
@@ -701,6 +716,13 @@ export class ExactReviewQueue {
       if ((item.claimProtocolVersion ?? 1) !== completionProtocolVersion) {
         return json({ error: "lease_protocol_not_claimed" }, 409);
       }
+      // Optional observability cannot alter a valid publication completion.
+      // Store only after the claim tuple has been authenticated.
+      this.recordStateWriterOperationSafely(
+        body.state_writer === undefined ? undefined : stateWriter,
+        body.state_writer !== undefined && !stateWriter,
+        now,
+      );
       const publicationItem = exactReviewQueueIsPublication(item);
       if (failureKind && !publicationItem) {
         return json({ error: "failure_kind_outside_publication" }, 400);
@@ -801,6 +823,40 @@ export class ExactReviewQueue {
       );
       await this.scheduleNext(state, now);
       return json({ ok: true, requeued });
+    }
+
+    if (request.method === "POST" && url.pathname === "/state-writer-progress") {
+      const body = objectValue(await request.json().catch(() => null));
+      const progress = normalizeStateWriterProgress(body);
+      const itemKey = String(body.item_key || "").trim();
+      const leaseId = String(body.lease_id || "").trim();
+      const leaseRevision = Number(body.lease_revision);
+      const claimGeneration = Number(body.claim_generation);
+      const runId = String(body.run_id || "").trim();
+      const runAttempt = exactReviewRunAttempt(body.run_attempt);
+      const now = Date.now();
+      const item = this.readStateSync().items[itemKey];
+      const valid =
+        progress &&
+        item &&
+        item.state === "leased" &&
+        item.leaseId === leaseId &&
+        item.leaseRevision === leaseRevision &&
+        exactReviewClaimGeneration(item.claimGeneration) === claimGeneration &&
+        item.claimedRunId === runId &&
+        (item.claimedRunAttempt ?? null) === runAttempt &&
+        isLiveExactReviewLease(
+          item,
+          now,
+          exactReviewPublicationDispatchLeaseMs(this.env),
+          exactReviewHeartbeatGraceMs(this.env),
+        );
+      if (!valid) {
+        this.incrementStateWriterDiagnosticSafely("rejected_progress_total");
+        return json({ ok: false, accepted: false }, 202);
+      }
+      this.recordStateWriterProgressSafely(progress, now);
+      return json({ ok: true, accepted: true }, 202);
     }
 
     if (request.method === "POST" && url.pathname === "/claimed-runs") {
@@ -1019,6 +1075,7 @@ export class ExactReviewQueue {
             repo: null,
             now,
           }),
+          stateWriter: this.stateWriterSummarySync(now),
         };
       });
       const {
@@ -1029,6 +1086,7 @@ export class ExactReviewQueue {
         deadLetters,
         reviewTelemetryHealth,
         reviewExecutionHealth,
+        stateWriter,
       } = snapshot;
       const publicationControl = this.refreshPublicationControlSync(state, now);
       await this.scheduleNext(state, now);
@@ -1082,6 +1140,7 @@ export class ExactReviewQueue {
         delivery_receipts: this.deliveryReceiptCountSync(),
         review_telemetry_health: reviewTelemetryHealth,
         review_execution_health: reviewExecutionHealth,
+        state_writer: stateWriter,
         storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
         legacy_rollback_available:
           !this.legacyMirrorDisabled &&
@@ -2357,6 +2416,64 @@ export class ExactReviewQueue {
          ON ${EXACT_REVIEW_RUN_TELEMETRY_TABLE}
          (trigger_lane, target_repo, completed_at, workflow_outcome)`,
     );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_STATE_WRITER_OPERATION_TABLE} (
+         operation_id TEXT PRIMARY KEY,
+         observed_at INTEGER NOT NULL,
+         mode TEXT NOT NULL CHECK (mode IN ('single_item', 'batch')),
+         started_at INTEGER NOT NULL,
+         finished_at INTEGER NOT NULL,
+         wait_ms INTEGER NOT NULL,
+         acquire_attempts INTEGER NOT NULL,
+         acquired INTEGER NOT NULL,
+         hold_ms INTEGER,
+         renewals INTEGER NOT NULL,
+         released INTEGER,
+         git_duration_ms INTEGER NOT NULL,
+         git_processes INTEGER NOT NULL,
+         commit_count INTEGER NOT NULL,
+         materialized_items INTEGER NOT NULL,
+         configured_batch_size INTEGER NOT NULL,
+         actual_batch_size INTEGER NOT NULL,
+         batch_wait_ms INTEGER,
+         outcome TEXT NOT NULL,
+         payload_hash TEXT NOT NULL
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_state_writer_operations_finished
+         ON ${EXACT_REVIEW_STATE_WRITER_OPERATION_TABLE} (finished_at, mode)`,
+    );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_STATE_WRITER_LIVE_TABLE} (
+         operation_id TEXT PRIMARY KEY,
+         mode TEXT NOT NULL,
+         phase TEXT NOT NULL,
+         sequence INTEGER NOT NULL,
+         observed_at INTEGER NOT NULL,
+         configured_batch_size INTEGER NOT NULL,
+         actual_batch_size INTEGER NOT NULL
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_state_writer_live_observed
+         ON ${EXACT_REVIEW_STATE_WRITER_LIVE_TABLE} (observed_at)`,
+    );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_STATE_WRITER_DIAGNOSTICS_TABLE} (
+         singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+         accepted_terminal_total INTEGER NOT NULL DEFAULT 0,
+         duplicate_terminal_total INTEGER NOT NULL DEFAULT 0,
+         rejected_terminal_total INTEGER NOT NULL DEFAULT 0,
+         conflicted_terminal_total INTEGER NOT NULL DEFAULT 0,
+         accepted_progress_total INTEGER NOT NULL DEFAULT 0,
+         rejected_progress_total INTEGER NOT NULL DEFAULT 0,
+         last_observed_at INTEGER
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `INSERT OR IGNORE INTO ${EXACT_REVIEW_STATE_WRITER_DIAGNOSTICS_TABLE} (singleton_id) VALUES (1)`,
+    );
   }
 
   private readStorageMetaSync() {
@@ -2942,6 +3059,266 @@ export class ExactReviewQueue {
         WHERE status != 'open' AND resolved_at < ?`,
       now - EXACT_REVIEW_QUEUE_DEAD_LETTER_RESOLVED_TTL_MS,
     );
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_STATE_WRITER_OPERATION_TABLE} WHERE observed_at < ?`,
+      now - EXACT_REVIEW_STATE_WRITER_RETENTION_MS,
+    );
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_STATE_WRITER_LIVE_TABLE} WHERE observed_at < ?`,
+      now - EXACT_REVIEW_STATE_WRITER_LIVE_MS,
+    );
+  }
+
+  private recordStateWriterOperationSafely(
+    operation: StateWriterOperation | undefined,
+    rejected: boolean,
+    now: number,
+  ) {
+    try {
+      this.storage.transactionSync(() => {
+        if (rejected) {
+          this.incrementStateWriterDiagnosticSync("rejected_terminal_total");
+          return;
+        }
+        if (!operation) return;
+        const hash = payloadHash(operation);
+        const inserted = Array.from(
+          this.storage.sql.exec(
+            `INSERT OR IGNORE INTO ${EXACT_REVIEW_STATE_WRITER_OPERATION_TABLE}
+             (operation_id, observed_at, mode, started_at, finished_at, wait_ms, acquire_attempts,
+              acquired, hold_ms, renewals, released, git_duration_ms, git_processes, commit_count,
+              materialized_items, configured_batch_size, actual_batch_size, batch_wait_ms, outcome, payload_hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             RETURNING operation_id`,
+            operation.operation_id,
+            now,
+            operation.mode,
+            Date.parse(operation.started_at),
+            Date.parse(operation.finished_at),
+            operation.wait_ms,
+            operation.acquire_attempts,
+            operation.acquired ? 1 : 0,
+            operation.hold_ms,
+            operation.renewals,
+            operation.released === null ? null : operation.released ? 1 : 0,
+            operation.git_duration_ms,
+            operation.git_processes,
+            operation.commit_count,
+            operation.materialized_items,
+            operation.configured_batch_size,
+            operation.actual_batch_size,
+            operation.batch_wait_ms,
+            operation.outcome,
+            hash,
+          ),
+        );
+        if (inserted.length) {
+          this.incrementStateWriterDiagnosticSync("accepted_terminal_total", now);
+          return;
+        }
+        const existing = Array.from(
+          this.storage.sql.exec(
+            `SELECT payload_hash FROM ${EXACT_REVIEW_STATE_WRITER_OPERATION_TABLE} WHERE operation_id = ?`,
+            operation.operation_id,
+          ),
+        )[0] as { payload_hash?: string } | undefined;
+        this.incrementStateWriterDiagnosticSync(
+          existing?.payload_hash === hash
+            ? "duplicate_terminal_total"
+            : "conflicted_terminal_total",
+        );
+      });
+    } catch {
+      // Completion remains authoritative if telemetry storage is unavailable.
+    }
+  }
+
+  private recordStateWriterProgressSafely(progress, now: number) {
+    try {
+      this.storage.transactionSync(() => {
+        const existing = Array.from(
+          this.storage.sql.exec(
+            `SELECT phase, sequence, observed_at FROM ${EXACT_REVIEW_STATE_WRITER_LIVE_TABLE}
+              WHERE operation_id = ?`,
+            progress.operation_id,
+          ),
+        )[0] as { phase?: string; sequence?: number; observed_at?: number } | undefined;
+        if (
+          existing &&
+          (Number(existing.sequence) >= progress.sequence ||
+            (existing.phase === progress.phase && now - Number(existing.observed_at) < 30 * 1000))
+        ) {
+          return;
+        }
+        this.storage.sql.exec(
+          `INSERT INTO ${EXACT_REVIEW_STATE_WRITER_LIVE_TABLE}
+             (operation_id, mode, phase, sequence, observed_at, configured_batch_size, actual_batch_size)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(operation_id) DO UPDATE SET
+             mode = excluded.mode, phase = excluded.phase, sequence = excluded.sequence,
+             observed_at = excluded.observed_at, configured_batch_size = excluded.configured_batch_size,
+             actual_batch_size = excluded.actual_batch_size`,
+          progress.operation_id,
+          progress.mode,
+          progress.phase,
+          progress.sequence,
+          now,
+          progress.configured_batch_size,
+          progress.actual_batch_size,
+        );
+        this.incrementStateWriterDiagnosticSync("accepted_progress_total", now);
+      });
+    } catch {
+      // Progress is deliberately best effort.
+    }
+  }
+
+  private incrementStateWriterDiagnosticSafely(column: string) {
+    try {
+      this.storage.transactionSync(() => this.incrementStateWriterDiagnosticSync(column));
+    } catch {
+      // Diagnostics must not make an endpoint fail.
+    }
+  }
+
+  private incrementStateWriterDiagnosticSync(column: string, observedAt?: number) {
+    const allowed = new Set([
+      "accepted_terminal_total",
+      "duplicate_terminal_total",
+      "rejected_terminal_total",
+      "conflicted_terminal_total",
+      "accepted_progress_total",
+      "rejected_progress_total",
+    ]);
+    if (!allowed.has(column)) return;
+    this.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_STATE_WRITER_DIAGNOSTICS_TABLE}
+          SET ${column} = ${column} + 1,
+              last_observed_at = COALESCE(?, last_observed_at)
+        WHERE singleton_id = 1`,
+      observedAt ?? null,
+    );
+  }
+
+  private stateWriterSummarySync(now: number) {
+    const diagnostics = (Array.from(
+      this.storage.sql.exec(
+        `SELECT * FROM ${EXACT_REVIEW_STATE_WRITER_DIAGNOSTICS_TABLE} WHERE singleton_id = 1`,
+      ),
+    )[0] || {}) as Record<string, unknown>;
+    const liveRows = Array.from(
+      this.storage.sql.exec(
+        `SELECT mode, phase, observed_at FROM ${EXACT_REVIEW_STATE_WRITER_LIVE_TABLE}
+          WHERE observed_at >= ?`,
+        now - EXACT_REVIEW_STATE_WRITER_LIVE_MS,
+      ),
+    ) as Array<{ mode: string; phase: string; observed_at: number }>;
+    const summarize = (windowMs: number) => {
+      const rows = Array.from(
+        this.storage.sql.exec(
+          `SELECT * FROM ${EXACT_REVIEW_STATE_WRITER_OPERATION_TABLE} WHERE finished_at >= ?`,
+          now - windowMs,
+        ),
+      ) as Array<Record<string, number | string | null>>;
+      const values = (field: string) =>
+        rows
+          .map((row) => row[field])
+          .filter((value): value is number => typeof value === "number")
+          .sort((left, right) => left - right);
+      const percentile = (field: string) => {
+        const sample = values(field);
+        const at = (ratio: number) =>
+          sample.length
+            ? sample[Math.min(sample.length - 1, Math.ceil(sample.length * ratio) - 1)]
+            : null;
+        return { p50: at(0.5), p95: at(0.95), samples: sample.length };
+      };
+      const sum = (field: string) =>
+        rows.reduce(
+          (total, row) => total + (typeof row[field] === "number" ? Number(row[field]) : 0),
+          0,
+        );
+      const commits = sum("commit_count");
+      const batch = rows.filter((row) => row.mode === "batch");
+      return {
+        operations: rows.length,
+        acquired: rows.filter((row) => row.acquired === 1).length,
+        contention_timeouts: rows.filter((row) => row.outcome === "contention_timeout").length,
+        state_commits: commits,
+        materialized_items: sum("materialized_items"),
+        items_per_commit: commits ? sum("materialized_items") / commits : null,
+        wait_ms: percentile("wait_ms"),
+        hold_ms: percentile("hold_ms"),
+        git_duration_ms: percentile("git_duration_ms"),
+        actual_batch_size: {
+          average: batch.length ? sumFor(batch, "actual_batch_size") / batch.length : null,
+          ...percentileFor(batch, "actual_batch_size"),
+        },
+        batch_wait_ms: percentileFor(batch, "batch_wait_ms"),
+        batch_fullness: batch.length
+          ? sumFor(batch, "actual_batch_size") / sumFor(batch, "configured_batch_size")
+          : null,
+      };
+    };
+    const recent = summarize(15 * 60 * 1000);
+    const modes = new Set([
+      ...liveRows.map((row) => row.mode),
+      ...(
+        Array.from(
+          this.storage.sql.exec(
+            `SELECT DISTINCT mode FROM ${EXACT_REVIEW_STATE_WRITER_OPERATION_TABLE} WHERE finished_at >= ?`,
+            now - 15 * 60 * 1000,
+          ),
+        ) as Array<{ mode: string }>
+      ).map((row) => row.mode),
+    ]);
+    const lastObserved = Number(diagnostics.last_observed_at || 0);
+    const lastSuccessful = Array.from(
+      this.storage.sql.exec(
+        `SELECT MAX(finished_at) AS finished_at
+           FROM ${EXACT_REVIEW_STATE_WRITER_OPERATION_TABLE}
+          WHERE outcome = 'materialized'`,
+      ),
+    )[0] as { finished_at?: number } | undefined;
+    const lastSuccessfulAt = Number(lastSuccessful?.finished_at || 0);
+    return {
+      schema_version: 1,
+      collection: {
+        status: lastObserved
+          ? now - lastObserved <= 15 * 60 * 1000
+            ? "fresh"
+            : "stale"
+          : "unknown",
+        last_observed_at: lastObserved ? new Date(lastObserved).toISOString() : null,
+        rejected_total: Number(diagnostics.rejected_terminal_total || 0),
+        conflicted_total: Number(diagnostics.conflicted_terminal_total || 0),
+      },
+      mode: modes.size === 0 ? "unknown" : modes.size === 1 ? [...modes][0] : "mixed",
+      live: {
+        tracked_holding: liveRows.filter((row) => row.phase === "holding").length,
+        tracked_waiting: liveRows.filter((row) => row.phase === "waiting").length,
+        tracked_releasing: liveRows.filter((row) => row.phase === "releasing").length,
+        freshness_seconds: liveRows.length
+          ? Math.max(
+              0,
+              Math.round((now - Math.max(...liveRows.map((row) => row.observed_at))) / 1000),
+            )
+          : null,
+      },
+      last_15_minutes: recent,
+      last_60_minutes: summarize(60 * 60 * 1000),
+      last_successful_materialization_at: lastSuccessfulAt
+        ? new Date(lastSuccessfulAt).toISOString()
+        : null,
+      diagnostics: {
+        accepted_terminal_total: Number(diagnostics.accepted_terminal_total || 0),
+        duplicate_terminal_total: Number(diagnostics.duplicate_terminal_total || 0),
+        rejected_terminal_total: Number(diagnostics.rejected_terminal_total || 0),
+        conflicted_terminal_total: Number(diagnostics.conflicted_terminal_total || 0),
+        accepted_progress_total: Number(diagnostics.accepted_progress_total || 0),
+        rejected_progress_total: Number(diagnostics.rejected_progress_total || 0),
+      },
+    };
   }
 
   private publicationFlowSummarySync(now: number) {
@@ -4365,6 +4742,25 @@ export function exactReviewQueueAdmittedItems(
     admitted.push(item);
   }
   return admitted;
+}
+
+function sumFor(rows: Array<Record<string, number | string | null>>, field: string) {
+  return rows.reduce(
+    (total, row) => total + (typeof row[field] === "number" ? Number(row[field]) : 0),
+    0,
+  );
+}
+
+function percentileFor(rows: Array<Record<string, number | string | null>>, field: string) {
+  const values = rows
+    .map((row) => row[field])
+    .filter((value): value is number => typeof value === "number")
+    .sort((left, right) => left - right);
+  const at = (ratio: number) =>
+    values.length
+      ? values[Math.min(values.length - 1, Math.ceil(values.length * ratio) - 1)]
+      : null;
+  return { p50: at(0.5), p95: at(0.95), samples: values.length };
 }
 
 function exactReviewQueueStats(
