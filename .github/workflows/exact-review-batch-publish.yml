@@ -1,0 +1,252 @@
+name: Publish exact review batch
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: "Claim and publish one batch"
+        required: true
+        type: boolean
+        default: false
+      max_items:
+        description: "Maximum items in this proof batch"
+        required: false
+        default: "8"
+
+concurrency:
+  group: exact-review-batch-publisher
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  publish:
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' && inputs.execute) ||
+        (github.event_name == 'schedule' && (vars.EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED == 'true' || vars.EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED == '1'))
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+      CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+      EXACT_REVIEW_BATCH_ID: exact-review-batch:${{ github.run_id }}
+      EXACT_REVIEW_BATCH_LEASE_OWNER: github:${{ github.run_id }}
+      EXACT_REVIEW_BATCH_MANIFEST: .artifacts/exact-review-batch/manifest.json
+      EXACT_REVIEW_BATCH_MAX_ITEMS: ${{ inputs.max_items || vars.EXACT_REVIEW_PUBLICATION_BATCH_SIZE || '8' }}
+      CLAWSWEEPER_APP_CLIENT_ID: ${{ vars.CLAWSWEEPER_APP_CLIENT_ID }}
+      CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          filter: blob:none
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:all
+
+      - name: Claim one durable publication batch
+        id: batch
+        run: pnpm run --silent repair:exact-review-batch claim
+
+      - name: Create target owner token
+        if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
+        id: target-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ env.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.batch.outputs.target_owner }}
+          repositories: ${{ steps.batch.outputs.target_repositories }}
+          permission-checks: read
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-statuses: read
+
+      - name: Create state token
+        if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
+        id: state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ env.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
+        with:
+          token: ${{ steps.state-token.outputs.token }}
+          fetch-depth: 1
+
+      - name: Prepare each item independently
+        if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
+        env:
+          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          REPO_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          jq -c '.items[]' "$EXACT_REVIEW_BATCH_MANIFEST" | while IFS= read -r item; do
+            pnpm run --silent repair:exact-review-batch heartbeat || exit 1
+            outcome_path="$(jq -r '.outcomePath' <<<"$item")"
+            decision="$(jq -c '.decision' <<<"$item")"
+            producer="$(jq -c '.publication.producerDecision' <<<"$decision")"
+            item_number="$(jq -r '.itemNumber' <<<"$decision")"
+            target_repo="$(jq -r '.targetRepo' <<<"$decision")"
+            artifact_name="$(jq -r '.publication.artifactName' <<<"$decision")"
+            producer_run_id="$(jq -r '.publication.producerRunId' <<<"$decision")"
+            bundle_dir=".artifacts/exact-review-batch/bundles/$item_number"
+            rm -rf "$bundle_dir" artifacts/event .artifacts/event-record-snapshot
+            mkdir -p "$bundle_dir" artifacts/event "$(dirname "$outcome_path")"
+
+            if ! GH_TOKEN="$REPO_TOKEN" gh run download "$producer_run_id" --repo "$GITHUB_REPOSITORY" \
+              --name "$artifact_name" --dir "$bundle_dir"; then
+              echo "::warning::Leaving $target_repo#$item_number retryable: artifact download failed"
+              continue
+            fi
+            if ! env \
+              EXACT_REVIEW_BUNDLE_DIR="$bundle_dir" \
+              EXACT_REVIEW_CLAIM_GENERATION="$(jq -r '.publication.claimGeneration' <<<"$decision")" \
+              EXACT_REVIEW_DECISION="$producer" \
+              EXACT_REVIEW_GENERATION_ATTEMPT="$(jq -r '.publication.producerRunAttempt' <<<"$decision")" \
+              EXACT_REVIEW_ITEM_KEY="$(jq -r '.publication.itemKey' <<<"$decision")" \
+              EXACT_REVIEW_ITEM_KIND="$(jq -r '.itemKind' <<<"$decision")" \
+              EXACT_REVIEW_ITEM_NUMBER="$item_number" \
+              EXACT_REVIEW_LEASE_REVISION="$(jq -r '.publication.leaseRevision' <<<"$decision")" \
+              EXACT_REVIEW_LIVE_GUARDED_OPEN="$(jq -r '.publication.liveGuardedOpen' <<<"$decision")" \
+              EXACT_REVIEW_LIVE_PROCEEDED="$(jq -r '.publication.liveProceeded' <<<"$decision")" \
+              EXACT_REVIEW_LIVE_TERMINAL_MISSING="$(jq -r '.publication.liveTerminalMissing' <<<"$decision")" \
+              EXACT_REVIEW_LIVE_TERMINAL_NOOP="$(jq -r '.publication.liveTerminalNoop' <<<"$decision")" \
+              EXACT_REVIEW_PRODUCER_JOB=event-review-apply \
+              EXACT_REVIEW_PRODUCER_RUN_ID="$producer_run_id" \
+              EXACT_REVIEW_PROTOCOL_VERSION="$(jq -r '.publication.protocolVersion' <<<"$decision")" \
+              EXACT_REVIEW_SOURCE_SHA="$(jq -r '.publication.sourceSha' <<<"$decision")" \
+              EXACT_REVIEW_TARGET_BRANCH="$(jq -r '.targetBranch' <<<"$decision")" \
+              EXACT_REVIEW_TARGET_REPO="$target_repo" \
+              pnpm run --silent repair:exact-review-bundle validate; then
+              echo "::warning::Leaving $target_repo#$item_number retryable: artifact validation failed"
+              continue
+            fi
+            report="$bundle_dir/review/$item_number.md"
+            if REPORT_PATH="$report" node <<'NODE'
+            const fs = require("node:fs");
+            const path = process.env.REPORT_PATH;
+            if (!path || !fs.existsSync(path)) process.exit(1);
+            const markdown = fs.readFileSync(path, "utf8");
+            const owner = /^review_lease_owner:\s*(.+)\s*$/m.exec(markdown)?.[1]?.trim() || "";
+            const commentId = Number(/^review_lease_comment_id:\s*(\d+)\s*$/m.exec(markdown)?.[1] || "0");
+            process.exit((!owner || owner === "unknown") && (!Number.isInteger(commentId) || commentId <= 0) ? 0 : 1);
+            NODE
+            then
+              echo "::warning::Leaving $target_repo#$item_number retryable: legacy tuple-less artifact"
+              continue
+            fi
+            if [ -f "$report" ]; then cp "$report" "artifacts/event/$item_number.md"; fi
+            if ! env \
+              TARGET_REPO="$target_repo" \
+              ITEM_NUMBER="$item_number" \
+              CLOSE_REASONS=implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr \
+              MIN_AGE_MINUTES=0 \
+              REVIEW_ONLY="$(jq -r '.sourceAction == "failed_review_shard_recovery"' <<<"$producer")" \
+              EXACT_EVENT_PUBLICATION=true \
+              EXACT_REVIEW_CLOSE_COVERAGE_DEFERRED=true \
+              EXACT_REVIEW_BATCH_ITEM_KEY="$(jq -r '.itemKey' <<<"$item")" \
+              EXACT_REVIEW_BATCH_REVISION="$(jq -r '.revision' <<<"$item")" \
+              EXACT_REVIEW_BATCH_CLAIM_GENERATION="$(jq -r '.claimGeneration' <<<"$item")" \
+              EXACT_REVIEW_BATCH_MUTATION_OUTPUT="$outcome_path" \
+              pnpm run --silent repair:publish-event-result; then
+              echo "::warning::Leaving $target_repo#$item_number retryable: item publication failed"
+              rm -f "$outcome_path"
+              continue
+            fi
+          done
+
+      - name: Finalize healthy members under a fenced heartbeat
+        if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
+          CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
+        run: |
+          set -euo pipefail
+          heartbeat_failed=".artifacts/exact-review-batch/heartbeat-failed"
+          rm -f "$heartbeat_failed"
+          pnpm run --silent repair:exact-review-batch heartbeat
+          (
+            while sleep 60; do
+              if ! pnpm run --silent repair:exact-review-batch heartbeat; then
+                touch "$heartbeat_failed"
+                exit 1
+              fi
+            done
+          ) &
+          heartbeat_pid=$!
+          stop_heartbeat() {
+            kill "$heartbeat_pid" 2>/dev/null || true
+            wait "$heartbeat_pid" 2>/dev/null || true
+          }
+          trap stop_heartbeat EXIT
+
+          pnpm run --silent repair:exact-review-batch commit
+          test ! -f "$heartbeat_failed"
+          jq -c '.items[]' "$EXACT_REVIEW_BATCH_MANIFEST" | while IFS= read -r item; do
+            test ! -f "$heartbeat_failed"
+            outcome_path="$(jq -r '.outcomePath' <<<"$item")"
+            [ -f "$outcome_path" ] || continue
+            if ! jq -e '.kind == "eligible" or (.kind == "superseded" and .disposition.requeueLatestExpected == true)' "$outcome_path" >/dev/null; then
+              continue
+            fi
+            target_repo="$(jq -r '.decision.targetRepo' <<<"$item")"
+            target_branch="$(jq -r '.decision.targetBranch' <<<"$item")"
+            item_number="$(jq -r '.decision.itemNumber' <<<"$item")"
+            source_action="$(jq -r '.decision.publication.producerDecision.sourceAction' <<<"$item")"
+            if jq -e '.disposition.requeueLatestExpected == true' "$outcome_path" >/dev/null; then
+              delivery_id="publisher-source-drift:$(jq -r '.itemKey' <<<"$item"):$(jq -r '.revision' <<<"$item")"
+              producer_decision="$(jq -c '.decision.publication.producerDecision' <<<"$item")"
+              payload="$(jq -cn \
+                --arg delivery_id "$delivery_id" \
+                --arg source_action "$source_action" \
+                --argjson decision "$producer_decision" \
+                '{
+                  delivery_id: $delivery_id,
+                  decision: ($decision + {
+                    sourceAction: (if $source_action == "failed_review_shard_recovery" then $source_action else "source_drift_requeue" end),
+                    supersedesInProgress: true
+                  })
+                }')"
+              signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
+              response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+                --request POST \
+                --header "content-type: application/json" \
+                --header "x-clawsweeper-exact-review-signature: $signature" \
+                --data "$payload" \
+                "${EXACT_REVIEW_QUEUE_URL%/}/internal/exact-review/enqueue")"
+              jq -e '.ok == true and (.queued == true or .deduped == true or .shed == true)' <<<"$response" >/dev/null
+            elif jq -e '.disposition.deferredCloseCoverageExpected == true' "$outcome_path" >/dev/null; then
+              # The committed tuple is the durable input consumed by the bounded
+              # scheduled proof lane; no immediate mutation workflow is dispatched.
+              :
+            elif jq -e '.disposition.routableSyncExpected == true' "$outcome_path" >/dev/null && [ "$source_action" != "failed_review_shard_recovery" ]; then
+              gh workflow run repair-comment-router.yml \
+                --repo "$GITHUB_REPOSITORY" \
+                --ref main \
+                -f execute=true \
+                -f target_repo="$target_repo" \
+                -f target_branch="$target_branch" \
+                -f item_numbers="$item_number" \
+                -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
+                -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS"
+            fi
+            temporary="${outcome_path}.tmp"
+            jq '.postEffectsComplete = true' "$outcome_path" > "$temporary"
+            mv "$temporary" "$outcome_path"
+          done
+          test ! -f "$heartbeat_failed"
+          pnpm run --silent repair:exact-review-batch complete

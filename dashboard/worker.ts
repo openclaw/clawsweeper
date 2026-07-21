@@ -558,6 +558,11 @@ export default {
     )
       return authenticatedExactReviewQueueRequest(request, env, "/publication-batches/fetch");
     if (
+      url.pathname === "/internal/exact-review/publication-batches/heartbeat" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/publication-batches/heartbeat");
+    if (
       url.pathname === "/internal/exact-review/publication-batches/complete" &&
       request.method === "POST"
     )

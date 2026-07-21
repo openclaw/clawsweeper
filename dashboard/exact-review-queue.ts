@@ -12,6 +12,7 @@ import {
 import {
   ExactReviewPublicationBatchStore,
   type PublicationBatchCompletion,
+  type PublicationBatchFence,
 } from "./exact-review-publication-batches.ts";
 import {
   REVIEW_TELEMETRY_DEGRADED_MS,
@@ -1136,6 +1137,10 @@ export class ExactReviewQueue {
 
     if (request.method === "POST" && url.pathname === "/publication-batches/fetch") {
       return this.fetchPublicationBatch(await request.json().catch(() => null));
+    }
+
+    if (request.method === "POST" && url.pathname === "/publication-batches/heartbeat") {
+      return this.heartbeatPublicationBatch(await request.json().catch(() => null));
     }
 
     if (request.method === "POST" && url.pathname === "/publication-batches/complete") {
@@ -2391,10 +2396,11 @@ export class ExactReviewQueue {
       true,
       publicationControl.demandCapacity,
     );
-    // One batch consumes one publisher slot regardless of membership count. Reuse
-    // normal readiness/pause admission, but charge capacity once for the whole claim.
+    // The outer comparison charges one publisher slot for the whole batch. The
+    // shared helper counts candidate rows, so widen only its scan window by
+    // requestedSize; passing +1 here would silently collapse every batch to one.
     const activePublishers = exactReviewQueueActivePublicationCount(state);
-    const candidates =
+    const readyCandidates =
       activePublishers >= publicationCapacity
         ? []
         : exactReviewQueueAdmittedItems(
@@ -2404,10 +2410,15 @@ export class ExactReviewQueue {
             exactReviewTargetCapacity(this.env),
             activePublishers + requestedSize,
             new Set<string>(batchOwnership.itemKeys),
-          )
-            .filter(exactReviewQueueIsPublication)
-            .slice(0, requestedSize)
-            .map((item) => ({ itemKey: item.key, revision: item.revision }));
+          ).filter(exactReviewQueueIsPublication);
+    const firstOwner = readyCandidates[0]?.decision.targetRepo.split("/", 1)[0]?.toLowerCase();
+    // One GitHub App installation token is scoped to one owner. Keeping a batch
+    // owner-homogeneous lets the workflow retain least privilege without serially
+    // minting and exporting a different credential for every item.
+    const candidates = readyCandidates
+      .filter((item) => item.decision.targetRepo.split("/", 1)[0]?.toLowerCase() === firstOwner)
+      .slice(0, requestedSize)
+      .map((item) => ({ itemKey: item.key, revision: item.revision }));
     const batch = this.batchStore.claim({
       batchId: claimId,
       leaseOwner,
@@ -2467,6 +2478,25 @@ export class ExactReviewQueue {
       items,
       superseded: batch.items.filter((item) => item.terminalOutcome === "superseded").length,
     });
+  }
+
+  private heartbeatPublicationBatch(value: unknown) {
+    const body = objectValue(value);
+    const batchId = exactReviewPublicationBatchId(body.batch_id);
+    const leaseOwner = exactReviewPublicationBatchOwner(body.lease_owner);
+    const members = exactReviewPublicationBatchMembers(body.items);
+    if (!batchId || !leaseOwner) return json({ error: "invalid_batch_identity" }, 400);
+    if (!members?.length) return json({ error: "invalid_batch_members" }, 400);
+    const now = Date.now();
+    const batch = this.batchStore.heartbeat(
+      batchId,
+      leaseOwner,
+      members,
+      now + exactReviewPublicationBatchLeaseMs(this.env),
+      now,
+    );
+    if (!batch) return json({ error: "batch_lease_not_active" }, 409);
+    return json({ ok: true, batch: exactReviewPublicationBatchJson(batch) });
   }
 
   private async completePublicationBatch(value: unknown) {
@@ -6631,6 +6661,32 @@ function exactReviewPublicationBatchCompletions(value): PublicationBatchCompleti
     });
   }
   return completions;
+}
+
+function exactReviewPublicationBatchMembers(value): PublicationBatchFence[] | null {
+  if (!Array.isArray(value) || value.length > MAX_EXACT_REVIEW_PUBLICATION_BATCH_SIZE) return null;
+  const seen = new Set<string>();
+  const members: PublicationBatchFence[] = [];
+  for (const raw of value) {
+    const item = objectValue(raw);
+    const itemKey = String(item.item_key || "").trim();
+    const revision = Number(item.revision);
+    const claimGeneration = Number(item.claim_generation);
+    if (
+      !itemKey ||
+      itemKey.length > 500 ||
+      seen.has(itemKey) ||
+      !Number.isInteger(revision) ||
+      revision < 1 ||
+      !Number.isInteger(claimGeneration) ||
+      claimGeneration < 1
+    ) {
+      return null;
+    }
+    seen.add(itemKey);
+    members.push({ itemKey, revision, claimGeneration });
+  }
+  return members;
 }
 
 function exactReviewPublicationBatchJson(batch) {

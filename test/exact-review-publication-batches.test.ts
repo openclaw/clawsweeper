@@ -350,9 +350,14 @@ test("cleanup retains fencing generations when a batch id is reused", () => {
   assert.equal(staleCompletion?.items[0].terminalOutcome, null);
 });
 
-function publicationRequest(deliveryId: string, number: number, producerRunId: string) {
+function publicationRequest(
+  deliveryId: string,
+  number: number,
+  producerRunId: string,
+  targetRepo = "openclaw/openclaw",
+) {
   const producerDecision = {
-    targetRepo: "openclaw/openclaw",
+    targetRepo,
     targetBranch: "main",
     itemNumber: number,
     itemKind: "issue",
@@ -373,7 +378,7 @@ function publicationRequest(deliveryId: string, number: number, producerRunId: s
           producerRunId,
           producerRunAttempt: 1,
           sourceSha: "a".repeat(40),
-          itemKey: `openclaw/openclaw#${number}`,
+          itemKey: `${targetRepo}#${number}`,
           protocolVersion: 2,
           leaseRevision: 1,
           claimGeneration: 1,
@@ -645,6 +650,138 @@ test("queue fetch terminalizes a stale batch revision before dispatch", async ()
     ).json();
     assert.equal(next.batch.items[0].revision, 2);
     assert.equal(next.batch.items[0].claim_generation, 2);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("batch heartbeat extends only the active fenced lease", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 1_500_000;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      {
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+      },
+    );
+    await queue.fetch(publicationRequest("delivery-heartbeat-1", 110, "1010"));
+    await queue.fetch(publicationRequest("delivery-heartbeat-2", 111, "1011"));
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-heartbeat",
+          lease_owner: "worker-1",
+          max_items: 2,
+        }),
+      )
+    ).json();
+    assert.equal(claim.batch.lease_expires_at, new Date(1_560_000).toISOString());
+    const members = claim.batch.items.map((item) => ({
+      item_key: item.item_key,
+      revision: item.revision,
+      claim_generation: item.claim_generation,
+    }));
+
+    Date.now = () => 1_530_000;
+    const heartbeat = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/heartbeat", {
+          batch_id: claim.batch.batch_id,
+          lease_owner: "worker-1",
+          items: members,
+        }),
+      )
+    ).json();
+    assert.equal(heartbeat.batch.lease_expires_at, new Date(1_590_000).toISOString());
+
+    await queue.fetch(publicationRequest("delivery-heartbeat-3", 110, "1010"));
+    const fetched = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/fetch", {
+          batch_id: claim.batch.batch_id,
+          lease_owner: "worker-1",
+        }),
+      )
+    ).json();
+    assert.equal(fetched.superseded, 1);
+    assert.equal(fetched.items.length, 1);
+
+    Date.now = () => 1_540_000;
+    const originalFence = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/heartbeat", {
+          batch_id: claim.batch.batch_id,
+          lease_owner: "worker-1",
+          items: members,
+        }),
+      )
+    ).json();
+    assert.equal(originalFence.batch.lease_expires_at, new Date(1_600_000).toISOString());
+
+    const staleOwner = await queue.fetch(
+      batchRequest("/publication-batches/heartbeat", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-2",
+        items: members,
+      }),
+    );
+    assert.equal(staleOwner.status, 409);
+
+    const staleGeneration = await queue.fetch(
+      batchRequest("/publication-batches/heartbeat", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+        items: members.map((item) => ({
+          ...item,
+          claim_generation: item.claim_generation + 1,
+        })),
+      }),
+    );
+    assert.equal(staleGeneration.status, 409);
+
+    Date.now = () => 1_600_000;
+    const expired = await queue.fetch(
+      batchRequest("/publication-batches/heartbeat", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+        items: members,
+      }),
+    );
+    assert.equal(expired.status, 409);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("batch admission keeps one target owner for least-privilege credentials", async () => {
+  const originalNow = Date.now;
+  let now = 1_700_000;
+  Date.now = () => now;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+    );
+    await queue.fetch(publicationRequest("owner-a-1", 120, "1020"));
+    now += 1;
+    await queue.fetch(publicationRequest("owner-b", 121, "1021", "example/project"));
+    now += 1;
+    await queue.fetch(publicationRequest("owner-a-2", 122, "1022"));
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-owner-scoped",
+          lease_owner: "worker-1",
+          max_items: 3,
+        }),
+      )
+    ).json();
+    assert.deepEqual(
+      claim.batch.items.map((item) => item.item_key),
+      ["openclaw/openclaw#120@publish:1020:1", "openclaw/openclaw#122@publish:1022:1"],
+    );
   } finally {
     Date.now = originalNow;
   }

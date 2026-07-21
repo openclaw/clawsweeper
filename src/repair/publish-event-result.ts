@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { dirname } from "node:path";
 import {
   applyEventSnapshot,
   applyEventSnapshotIfCurrent,
@@ -51,6 +52,10 @@ import {
   staleEventDispositionOutputLines,
   type StaleEventDisposition,
 } from "./stale-event-disposition.js";
+import {
+  prepareStateMutationPlan,
+  type StateMutationSourceOperation,
+} from "./state-publication-mutation.js";
 
 type EventOptions = {
   targetRepo: string;
@@ -61,6 +66,7 @@ type EventOptions = {
   exactEventPublication: boolean;
   reportPath: string;
   snapshotDir: string;
+  batchMutationOutput: string | null;
 };
 
 type PublishedEventSnapshot = {
@@ -198,6 +204,11 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     // `requeue_latest` hands remote-newer to the source-drift requeue step,
     // which reviews the LATEST revision.
     writeStaleEventDispositionOutputs(disposition);
+    if (options.batchMutationOutput && preflightResult !== "missing")
+      writeBatchMutationResult(options.batchMutationOutput, {
+        kind: "superseded",
+        disposition: { requeueLatestExpected: disposition.requeueLatest },
+      });
     if (preflightResult !== "missing") {
       writePublicationCompletionOutputs(
         "superseded",
@@ -287,6 +298,22 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     missingCount === 0 &&
     guardedOpenAction === null &&
     !requeueLatestExpected;
+  if (options.batchMutationOutput) {
+    const prepared = prepareBatchMutation({
+      paths: recordPaths,
+      options,
+      stateBaseCommit,
+      guardedOpenAction,
+      requeueLatestExpected,
+      routableSyncExpected,
+      deferredCloseCoverageExpected,
+      terminalClosedExpected: closedCount > 0,
+      terminalMissingExpected: missingCount > 0,
+    });
+    writeBatchMutationResult(options.batchMutationOutput, prepared);
+    summary();
+    return;
+  }
   for (let attempt = 1; attempt <= 20; attempt += 1) {
     const published = publishSnapshot({
       paths: recordPaths,
@@ -328,6 +355,92 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     );
   }
   writeEventDispositionOutputs(published);
+}
+
+function prepareBatchMutation({
+  paths,
+  options,
+  stateBaseCommit,
+  guardedOpenAction,
+  requeueLatestExpected,
+  routableSyncExpected,
+  deferredCloseCoverageExpected,
+  terminalClosedExpected,
+  terminalMissingExpected,
+}: {
+  paths: EventRecordPaths;
+  options: EventOptions;
+  stateBaseCommit: string | null;
+  guardedOpenAction: string | null;
+  requeueLatestExpected: boolean;
+  routableSyncExpected: boolean;
+  deferredCloseCoverageExpected: boolean;
+  terminalClosedExpected: boolean;
+  terminalMissingExpected: boolean;
+}) {
+  const stateRoot = publishRoot();
+  if (!stateRoot) throw new Error("Batch mutation preparation requires an isolated state root");
+  hardResetToRemoteMain();
+  const snapshotResult = applyEventSnapshot(paths, { remoteRoot: stateRoot });
+  if (snapshotResult === "remote-closed" || snapshotResult === "remote-newer") {
+    return { kind: "superseded" as const };
+  }
+  if (snapshotResult === "missing") {
+    throw new PublicationResultError(
+      "missing_record_tuple",
+      `No event record snapshot for ${paths.targetSlug}#${options.itemNumber}`,
+    );
+  }
+  const commitPaths = [
+    paths.itemRecord,
+    paths.closedRecord,
+    paths.planRecord,
+    paths.decisionPacket,
+  ];
+  syncPublishPaths(commitPaths);
+  const operations: StateMutationSourceOperation[] = [];
+  for (const path of commitPaths) {
+    const expectedOid = runGit(["rev-parse", "--verify", `HEAD:${path}`], {
+      allowFailure: true,
+      quiet: true,
+    }).trim();
+    const statePath = `${stateRoot}/${path}`;
+    if (!fs.existsSync(statePath)) {
+      if (expectedOid) operations.push({ path, expectedOid, delete: true });
+      continue;
+    }
+    operations.push({
+      path,
+      expectedOid: expectedOid || null,
+      content: fs.readFileSync(statePath),
+    });
+  }
+  if (!operations.length) {
+    throw new Error(`Batch mutation for ${paths.targetSlug}#${options.itemNumber} is empty`);
+  }
+  const plan = prepareStateMutationPlan({
+    identity: {
+      itemKey: envValue("EXACT_REVIEW_BATCH_ITEM_KEY"),
+      revision: positiveEnvInteger("EXACT_REVIEW_BATCH_REVISION"),
+      claimGeneration: positiveEnvInteger("EXACT_REVIEW_BATCH_CLAIM_GENERATION"),
+    },
+    operations,
+  });
+  // These expectations are emitted with the plan so the batch workflow can run
+  // post-commit routing without re-running GitHub mutations.
+  return {
+    kind: "eligible" as const,
+    plan,
+    disposition: {
+      stateBaseCommit,
+      guardedOpenAction,
+      requeueLatestExpected,
+      routableSyncExpected,
+      deferredCloseCoverageExpected,
+      terminalClosedExpected,
+      terminalMissingExpected,
+    },
+  };
 }
 
 function runApplyDecisions(options: EventOptions): void {
@@ -615,7 +728,20 @@ function eventOptionsFromEnv(): EventOptions {
     exactEventPublication: process.env.EXACT_EVENT_PUBLICATION === "true",
     reportPath: ".artifacts/event-apply-report.json",
     snapshotDir: ".artifacts/event-record-snapshot",
+    batchMutationOutput: process.env.EXACT_REVIEW_BATCH_MUTATION_OUTPUT || null,
   };
+}
+
+function writeBatchMutationResult(path: string, result: unknown): void {
+  fs.mkdirSync(dirname(path), { recursive: true });
+  fs.writeFileSync(path, `${JSON.stringify(result, null, 2)}\n`, "utf8");
+}
+
+function positiveEnvInteger(name: string): number {
+  const value = Number(envValue(name));
+  if (!Number.isSafeInteger(value) || value < 1)
+    throw new Error(`${name} must be a positive integer`);
+  return value;
 }
 
 function readApplyActions(reportPath: string): EventApplyAction[] {

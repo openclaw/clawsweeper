@@ -45,6 +45,10 @@ export type PublicationBatchCompletion = PublicationBatchCandidate & {
   terminalOutcome: Exclude<PublicationBatchTerminalOutcome, "lease_expired">;
 };
 
+export type PublicationBatchFence = PublicationBatchCandidate & {
+  claimGeneration: number;
+};
+
 export type PublicationBatchStats = {
   leased: number;
   completed: number;
@@ -198,6 +202,47 @@ export class ExactReviewPublicationBatchStore {
         (batch.state === "leased" || batch.state === "completed")
         ? batch
         : null;
+    });
+  }
+
+  heartbeat(
+    batchId: string,
+    leaseOwner: string,
+    members: PublicationBatchFence[],
+    leaseExpiresAt: number,
+    now: number,
+  ): PublicationBatch | null {
+    return this.storage.transactionSync(() => {
+      this.reclaimExpiredSync(now);
+      const batch = this.readBatchSync(batchId);
+      if (!batch || batch.state !== "leased" || batch.leaseOwner !== leaseOwner) return null;
+      const unfinished = batch.items.filter((item) => item.terminalOutcome === null);
+      const batchMembers = new Map(batch.items.map((item) => [item.itemKey, item]));
+      const supplied = new Map(members.map((member) => [member.itemKey, member]));
+      if (
+        supplied.size !== members.length ||
+        members.some((member) => {
+          const item = batchMembers.get(member.itemKey);
+          return (
+            item?.revision !== member.revision || item.claimGeneration !== member.claimGeneration
+          );
+        }) ||
+        unfinished.some((item) => !supplied.has(item.itemKey))
+      ) {
+        return null;
+      }
+      // Extend from the server clock. A delayed worker must never shorten its own
+      // lease by replaying a heartbeat calculated before an earlier renewal.
+      const nextExpiry = Math.max(batch.leaseExpiresAt, leaseExpiresAt);
+      this.storage.sql.exec(
+        `UPDATE ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
+            SET lease_expires_at = ?
+          WHERE batch_id = ? AND state = 'leased' AND lease_owner = ?`,
+        nextExpiry,
+        batchId,
+        leaseOwner,
+      );
+      return this.readBatchSync(batchId);
     });
   }
 
