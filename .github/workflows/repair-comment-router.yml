@@ -281,6 +281,10 @@ jobs:
 
       - name: Commit comment router ledger
         if: always()
+        env:
+          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           if jq -e '.short_circuited == true' results/comment-router-latest.json >/dev/null 2>&1; then
             echo "Exact terminal comment version already recorded; skipping state publication."
@@ -413,6 +417,10 @@ jobs:
 
       - name: Commit comment router retry ledger
         if: ${{ always() && steps.waiting-repair-dispatches.outputs.count != '' && steps.waiting-repair-dispatches.outputs.count != '0' }}
+        env:
+          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           pnpm run repair:publish-main -- \
             --message "chore: record ClawSweeper repair dispatch retry" \
@@ -447,6 +455,10 @@ jobs:
 
       - name: Publish immutable command action ledger
         if: ${{ always() && steps.setup-pnpm.outcome == 'success' && steps.finalize-command-action-ledger.outputs.publish == 'true' }}
+        env:
+          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"

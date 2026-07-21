@@ -3096,6 +3096,10 @@ jobs:
       - name: Publish immutable review action ledger
         if: ${{ always() && steps.import-review-action-ledger.outcome == 'success' }}
         continue-on-error: true
+        env:
+          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           if [ ! -s .artifacts/action-ledger-paths.txt ]; then
             echo "No immutable review action events to publish."
@@ -3158,6 +3162,10 @@ jobs:
 
       - name: Publish review artifact action ledger
         if: ${{ always() && steps.apply-review-artifacts.outputs.artifacts_applied == 'true' }}
+        env:
+          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
@@ -3484,6 +3492,10 @@ jobs:
 
       - name: Publish selected review comment action ledger
         if: ${{ always() && steps.sync-selected-review-comments.outcome != 'skipped' && steps.finalize-selected-review-comment-action-ledger.outcome == 'success' }}
+        env:
+          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
@@ -3814,6 +3826,10 @@ jobs:
 
       - name: Publish failed-review retry action ledger
         if: ${{ always() }}
+        env:
+          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
@@ -4000,6 +4016,7 @@ jobs:
       issues: read
       pull-requests: read
     env:
+      CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
       CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
       CLAWSWEEPER_STATE_LEASE_PRIORITY: "1"
       CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
@@ -4218,6 +4235,7 @@ jobs:
   publish-apply-proof-action-ledger:
     name: Publish immutable apply proof action ledger
     env:
+      CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
       CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
       CLAWSWEEPER_STATE_LEASE_PRIORITY: "1"
     needs: apply-proof
@@ -4259,6 +4277,9 @@ jobs:
 
       - name: Publish apply proof action events
         if: ${{ needs.apply-proof.outputs.action_ledger_artifact_name != '' }}
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
@@ -4300,6 +4321,7 @@ jobs:
       cancel-in-progress: false
       queue: max
     env:
+      CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
       CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
       CLAWSWEEPER_STATE_LEASE_PRIORITY: "1"
       CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
@@ -4409,7 +4431,6 @@ jobs:
         id: apply-existing-run
         timeout-minutes: 350
         env:
-          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           CLAWSWEEPER_PUBLISH_THROTTLE_STATUS: "true"
@@ -4808,7 +4829,6 @@ jobs:
       - name: Retry final apply status publication
         if: ${{ always() && !cancelled() && steps.primary-apply-result.outputs.succeeded == 'true' }}
         env:
-          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
@@ -4825,6 +4845,9 @@ jobs:
 
       - name: Publish apply action events
         if: ${{ always() }}
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"

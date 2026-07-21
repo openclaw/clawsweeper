@@ -10,6 +10,7 @@ import { actionLedgerJson } from "../../dist/action-ledger.js";
 import {
   DEFAULT_STATE_MATERIALIZER_MAX_BYTES,
   DEFAULT_STATE_MATERIALIZER_MAX_ROWS,
+  planStateMaterialization,
   runStateMaterializer,
   type StateAppendRecord,
 } from "../../dist/repair/state-materializer.js";
@@ -17,6 +18,23 @@ import {
 const webhookSecret = "state-materializer-test-secret";
 const producedAt = "2026-07-20T12:00:00.000Z";
 const proofPath = `ledger/v1/import-bindings/events/${"a".repeat(64)}.json`;
+
+test("materializer preserves canonical apply-proof content supplied as a string", () => {
+  const content = `${actionLedgerJson({
+    event_id: "proof-event-string",
+    schema: "clawsweeper.action-ledger-import-event-binding",
+    schema_version: 1,
+  })}\n`;
+
+  const plan = planStateMaterialization([record(1, "apply_proof", proofPath, content)]);
+
+  assert.deepEqual(plan, {
+    publishPaths: [proofPath],
+    writes: [{ path: proofPath, content }],
+    selected: 1,
+    skipped: 0,
+  });
+});
 
 test("materializer applies every record kind in sequence and keeps the last value per key", async () => {
   const fixture = createStateFixture();

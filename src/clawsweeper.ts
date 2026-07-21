@@ -216,7 +216,7 @@ import {
   workflowActionProducer,
 } from "./action-ledger-runtime.js";
 import { isActionEventPublishPath } from "./action-ledger-paths.js";
-import { publishMainCommit } from "./repair/git-publish.js";
+import { publishMainWithStateAppend } from "./repair/publish-main.js";
 
 export {
   codexEnv,
@@ -32223,7 +32223,7 @@ export function actionEventPublishPathsForTest(content: string): string[] {
   return paths;
 }
 
-function publishActionEventPathsCommand(args: Args): void {
+async function publishActionEventPathsCommand(args: Args): Promise<void> {
   const pathsFile = resolve(stringArg(args.paths_file, ""));
   const message = stringArg(args.message, "");
   if (!pathsFile || pathsFile === ROOT) {
@@ -32250,7 +32250,7 @@ function publishActionEventPathsCommand(args: Args): void {
       throw new Error(`action event publish path is not a regular file: ${path}`);
     }
   }
-  const result = publishMainCommit({
+  const result = await publishMainWithStateAppend({
     message,
     paths,
     rebaseStrategy: "normal",
@@ -32291,7 +32291,7 @@ export async function main(
     else if (command === "apply-artifacts") applyArtifactsCommand(args);
     else if (command === "apply-decisions") applyDecisionsCommand(args);
     else if (command === "publish-action-events") publishActionEventsCommand(args);
-    else if (command === "publish-action-event-paths") publishActionEventPathsCommand(args);
+    else if (command === "publish-action-event-paths") await publishActionEventPathsCommand(args);
     else if (command === "proof-nudges") proofNudgesCommand(args);
     else if (command === "bot-proof") botProofCommand(args);
     else if (command === "audit") auditCommand(args);

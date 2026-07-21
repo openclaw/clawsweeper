@@ -810,6 +810,20 @@ test("sweep publishes complete immutable shards for every review and apply produ
   assert.match(workflow, /--state-root "\$CLAWSWEEPER_STATE_DIR"/);
   assert.match(workflow, /durable_event_path="\$CLAWSWEEPER_STATE_DIR\/\$event_path"/);
   assert.equal((workflow.match(/publish-action-event-paths/g) ?? []).length, 6);
+  for (const name of [
+    "Publish immutable review action ledger",
+    "Publish review artifact action ledger",
+    "Publish selected review comment action ledger",
+    "Publish failed-review retry action ledger",
+  ]) {
+    assertStateAppendPublisherWiring(namedWorkflowStep(workflow, name), true);
+  }
+  for (const name of ["Publish apply proof action events", "Publish apply action events"]) {
+    assertStateAppendPublisherWiring(namedWorkflowStep(workflow, name), false);
+  }
+  for (const job of ["apply-proof", "publish-apply-proof-action-ledger", "apply-existing"]) {
+    assert.match(namedWorkflowJob(workflow, job), /CLAWSWEEPER_STATE_APPEND_ENABLED: "1"/);
+  }
   assert.doesNotMatch(
     workflow,
     /--message "chore: append (?:review|apply).*action ledger"[\s\S]{0,180}--path "ledger\/v1\/events"/,
@@ -819,6 +833,7 @@ test("sweep publishes complete immutable shards for every review and apply produ
 test("comment router publishes immutable command receipts for initial and retry invocations", () => {
   const setupAction = readText(".github/actions/setup-action-ledger/action.yml");
   const workflow = readText(".github/workflows/repair-comment-router.yml");
+  const repairWorkerWorkflow = readText(".github/workflows/repair-cluster-worker.yml");
   const finalizeStart = workflow.indexOf("- name: Finalize command action ledger");
   const publishStart = workflow.indexOf("- name: Publish immutable command action ledger");
   const finalizeStep = workflow.slice(finalizeStart, publishStart);
@@ -842,6 +857,17 @@ test("comment router publishes immutable command receipts for initial and retry 
   assert.match(publishStep, /repair:action-ledger -- publish/);
   assert.match(publishStep, /--message "chore: append command action ledger"/);
   assert.match(publishStep, /action_ledger_args\+=\(--path "\$event_path"\)/);
+  for (const name of [
+    "Commit comment router ledger",
+    "Commit comment router retry ledger",
+    "Publish immutable command action ledger",
+  ]) {
+    assertStateAppendPublisherWiring(namedWorkflowStep(workflow, name), true);
+  }
+  assertStateAppendPublisherWiring(
+    namedWorkflowStep(repairWorkerWorkflow, "Publish immutable repair requeue action ledger"),
+    true,
+  );
   assert.doesNotMatch(
     publishStep,
     /--message "chore: append command action ledger"[\s\S]{0,180}--path "ledger\/v1\/events"/,
@@ -876,4 +902,27 @@ function assertCommandPublisherUsesCanonicalRoot(step: string): void {
   assert.match(step, /if \[ ! -s "\$event_paths_file" \]; then[\s\S]*?exit 1[\s\S]*?fi/);
   assert.doesNotMatch(step, /command_shard_found/);
   assert.doesNotMatch(step, /\.created > 0/);
+}
+
+function assertStateAppendPublisherWiring(step: string, expectEnabled: boolean): void {
+  if (expectEnabled) assert.match(step, /CLAWSWEEPER_STATE_APPEND_ENABLED: "1"/);
+  assert.match(step, /CLAWSWEEPER_WEBHOOK_SECRET:/);
+  assert.match(step, /QUEUE_URL:/);
+}
+
+function namedWorkflowStep(workflow: string, name: string): string {
+  const start = workflow.indexOf(`- name: ${name}`);
+  assert.ok(start >= 0, `missing workflow step ${name}`);
+  const end = workflow.indexOf("\n      - ", start + 1);
+  return workflow.slice(start, end < 0 ? workflow.length : end);
+}
+
+function namedWorkflowJob(workflow: string, name: string): string {
+  const start = workflow.indexOf(`\n  ${name}:`);
+  assert.ok(start >= 0, `missing workflow job ${name}`);
+  const remainder = workflow.slice(start + 1);
+  const next = /^  [a-zA-Z0-9_-]+:\s*$/gm;
+  next.lastIndex = name.length + 4;
+  const match = next.exec(remainder);
+  return remainder.slice(0, match?.index ?? remainder.length);
 }

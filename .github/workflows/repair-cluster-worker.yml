@@ -801,6 +801,10 @@ jobs:
 
       - name: Publish immutable repair requeue action ledger
         if: ${{ always() && steps.execute-setup-pnpm.outcome == 'success' && steps.repair-requeue-ledger.outcome == 'success' && steps.repair_requeue.outputs.count != '' && steps.repair_requeue.outputs.count != '0' }}
+        env:
+          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
           test -n "${CLAWSWEEPER_STATE_DIR:-}"
