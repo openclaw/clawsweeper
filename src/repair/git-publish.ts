@@ -113,7 +113,17 @@ const PUBLISH_FETCH_TIMEOUT_MS = 60_000;
 // 60s budget times out on the grown state repo (prod run 29745570319).
 const RECOVERY_FETCH_TIMEOUT_MS = 300_000;
 const STATE_PUBLISH_LEASE_REF_ROOT = "refs/heads/clawsweeper-publish-lease";
-const STATE_PUBLISH_LEASE_TTL_MS = 2 * 60_000;
+// A small publish renews well inside two minutes, but a materializer batch of
+// thousands of paths stages and pushes for longer than that and loses the lease
+// mid-publish. Writers that move large batches raise this deliberately.
+const STATE_PUBLISH_LEASE_TTL_MS = (() => {
+  const fallback = 2 * 60_000;
+  const configured = Number(process.env.CLAWSWEEPER_STATE_LEASE_TTL_MS);
+  if (Number.isInteger(configured) && configured > fallback) {
+    return Math.min(configured, 30 * 60_000);
+  }
+  return fallback;
+})();
 const STATE_PUBLISH_LEASE_RENEW_THRESHOLD_MS = PUBLISH_FETCH_TIMEOUT_MS;
 const STATE_PUBLISH_LEASE_ACQUIRE_TIMEOUT_MS = (() => {
   const fallback = 8 * 60_000;
