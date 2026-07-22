@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import {
   measureGitProcesses,
@@ -29,6 +29,7 @@ export const STATE_PUBLICATION_BATCH_MAX_BYTES = 32 * 16 * 1024 * 1024;
 export const STATE_PUBLICATION_BATCH_MAX_PATH_BYTES = 128 * 1024;
 
 const STATE_FETCH_TIMEOUT_MS = 60_000;
+const STATE_RECEIPT_RECOVERY_DEEPEN = 512;
 const BATCH_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const GIT_OID_PATTERN = /^[a-f0-9]{40,64}$/;
 
@@ -122,6 +123,8 @@ function commitUnderLease(options: {
   hooks?: StateBatchCommitHooks;
 }): Pick<StateBatchCommitResult, "outcome" | "commitSha"> {
   const receiptRef = batchReceiptRef(options.batchId);
+  const remoteRef = fetchLatestState(options.remote, options.branch);
+  const remoteCommit = runGit(["rev-parse", remoteRef], { quiet: true }).trim();
   const recovered = findBatchReceipt(options.remote, receiptRef, options.batchId);
   if (recovered) {
     if (recovered.fingerprint !== options.fingerprint) {
@@ -129,11 +132,27 @@ function commitUnderLease(options: {
         `Batch id ${options.batchId} is already bound to a different mutation fingerprint`,
       );
     }
-    return { outcome: "already_committed", commitSha: recovered.commit };
+    const recoveredParent = runGit(["rev-parse", `${recovered.commit}^`], {
+      quiet: true,
+    }).trim();
+    if (
+      remoteCommit === recovered.commit ||
+      (remoteCommit !== recoveredParent &&
+        stateContainsCommit(options.remote, options.branch, remoteCommit, recovered.commit))
+    ) {
+      return { outcome: "already_committed", commitSha: recovered.commit };
+    }
+    if (remoteCommit === recoveredParent) {
+      options.hooks?.beforePush?.(recovered.commit);
+      pushStateCommitUnderLease(recovered.commit, options.remote, options.branch, receiptRef);
+      verifyRemoteCommit(options.remote, options.branch, receiptRef, recovered.commit);
+      options.hooks?.afterPush?.(recovered.commit);
+      return { outcome: "committed", commitSha: recovered.commit };
+    }
+    throw new StateMutationConflictError(
+      `Batch id ${options.batchId} has a prepared receipt but state advanced before retry`,
+    );
   }
-
-  const remoteRef = fetchLatestState(options.remote, options.branch);
-  const remoteCommit = runGit(["rev-parse", remoteRef], { quiet: true }).trim();
 
   const remoteEntries = readRemoteEntries(
     remoteCommit,
@@ -253,8 +272,8 @@ function findBatchReceipt(
   if (!receiptCommit || !GIT_OID_PATTERN.test(receiptCommit)) {
     throw new StateMutationConflictError(`State batch receipt ${receiptRef} is malformed`);
   }
-  if (spawnGit(["cat-file", "-e", `${receiptCommit}^{commit}`], { quiet: true }).status !== 0) {
-    runGit(["fetch", "--no-tags", "--depth=1", remote, receiptRef], {
+  if (spawnGit(["cat-file", "-e", `${receiptCommit}^1^{commit}`], { quiet: true }).status !== 0) {
+    runGit(["fetch", "--no-tags", "--depth=2", remote, receiptRef], {
       quiet: true,
       timeout: STATE_FETCH_TIMEOUT_MS,
     });
@@ -279,6 +298,78 @@ function findBatchReceipt(
     throw new StateMutationConflictError(`State batch receipt ${receiptRef} is malformed`);
   }
   return { commit, fingerprint };
+}
+
+function stateContainsCommit(
+  remote: string,
+  branch: string,
+  stateCommit: string,
+  candidateCommit: string,
+): boolean {
+  if (isAncestor(candidateCommit, stateCommit)) return true;
+  const recoveryRef = `refs/clawsweeper-recovery/state-receipts/${createHash("sha256")
+    .update(`${remote}\0${branch}\0${candidateCommit}`)
+    .digest("hex")}`;
+  const recoveryRefspec = `+refs/heads/${branch}:${recoveryRef}`;
+  try {
+    runGit(
+      ["fetch", "--no-tags", `--depth=${STATE_RECEIPT_RECOVERY_DEEPEN}`, remote, recoveryRefspec],
+      { quiet: true, timeout: STATE_FETCH_TIMEOUT_MS },
+    );
+    const inspectedStateCommit = runGit(["rev-parse", recoveryRef], { quiet: true }).trim();
+    if (isAncestor(candidateCommit, inspectedStateCommit)) return true;
+    let shallowBoundaries = reachableShallowBoundaries(inspectedStateCommit);
+    while (shallowBoundaries.length > 0) {
+      runGit(
+        [
+          "fetch",
+          "--no-tags",
+          `--deepen=${STATE_RECEIPT_RECOVERY_DEEPEN}`,
+          remote,
+          recoveryRefspec,
+        ],
+        { quiet: true, timeout: STATE_FETCH_TIMEOUT_MS },
+      );
+      if (isAncestor(candidateCommit, inspectedStateCommit)) return true;
+      const nextBoundaries = reachableShallowBoundaries(inspectedStateCommit);
+      if (
+        nextBoundaries.length > 0 &&
+        nextBoundaries.length === shallowBoundaries.length &&
+        nextBoundaries.every((boundary, index) => boundary === shallowBoundaries[index])
+      ) {
+        throw new Error("State batch receipt recovery could not deepen shallow state history");
+      }
+      shallowBoundaries = nextBoundaries;
+    }
+    return false;
+  } finally {
+    spawnGit(["update-ref", "-d", recoveryRef], { allowFailure: true, quiet: true });
+  }
+}
+
+function reachableShallowBoundaries(stateCommit: string): string[] {
+  const gitPath = runGit(["rev-parse", "--git-path", "shallow"], { quiet: true }).trim();
+  const shallowPath = resolve(publishRoot() ?? process.cwd(), gitPath);
+  if (!existsSync(shallowPath)) return [];
+  return readFileSync(shallowPath, "utf8")
+    .split("\n")
+    .map((boundary) => boundary.trim())
+    .filter(
+      (boundary) =>
+        GIT_OID_PATTERN.test(boundary) &&
+        (boundary === stateCommit || isAncestor(boundary, stateCommit)),
+    )
+    .sort(compareCanonicalText);
+}
+
+function isAncestor(candidateCommit: string, stateCommit: string): boolean {
+  const result = spawnGit(["merge-base", "--is-ancestor", candidateCommit, stateCommit], {
+    allowFailure: true,
+    quiet: true,
+  });
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  throw new Error(result.stderr.trim() || "Failed to inspect state batch ancestry");
 }
 
 function readRemoteEntries(

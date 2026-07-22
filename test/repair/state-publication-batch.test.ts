@@ -155,10 +155,10 @@ test("batch commits use the ClawSweeper identity without repository or global Gi
   );
 });
 
-test("GitHub three-ref commit_refs rejection falls back to an atomic state and receipt push", () => {
+test("GitHub multi-ref commit_refs rejection falls back to fenced single-ref pushes", () => {
   const fixture = createRepositoryFixture();
   const plan = newItemPlan(fixture, 25);
-  installThreeRefCommitRefsFailure(fixture.origin);
+  installMultiRefCommitRefsFailure(fixture.origin);
 
   const result = withStateEnvironment(fixture.work, () =>
     commitPreparedStateBatch({
@@ -178,6 +178,177 @@ test("GitHub three-ref commit_refs rejection falls back to an atomic state and r
   assert.equal(
     git(fixture.origin, "rev-parse", "state").trim(),
     git(fixture.origin, "rev-parse", receiptRef).trim(),
+  );
+});
+
+test("a receipt created after lookup cannot be overwritten", () => {
+  const fixture = createRepositoryFixture();
+  const plan = newItemPlan(fixture, 29);
+  const batchId = "concurrent-receipt";
+  const receiptRef = `refs/heads/clawsweeper-state-batches/${createHash("sha256")
+    .update(batchId)
+    .digest("hex")}`;
+  const stateBefore = git(fixture.origin, "rev-parse", "state").trim();
+  const tree = git(fixture.origin, "rev-parse", "state^{tree}").trim();
+  const foreignReceipt = git(
+    fixture.work,
+    "commit-tree",
+    tree,
+    "-p",
+    stateBefore,
+    "-m",
+    "foreign receipt",
+  ).trim();
+
+  assert.throws(
+    () =>
+      withStateEnvironment(fixture.work, () =>
+        commitPreparedStateBatch({
+          batchId,
+          plans: [plan],
+          hooks: {
+            beforePush: () => {
+              git(fixture.work, "push", "origin", `${foreignReceipt}:${receiptRef}`);
+            },
+          },
+        }),
+      ),
+    /receipt .* changed before branch publication/,
+  );
+
+  assert.equal(git(fixture.origin, "rev-parse", receiptRef).trim(), foreignReceipt);
+  assert.equal(git(fixture.origin, "rev-parse", "state").trim(), stateBefore);
+  assert.equal(
+    git(fixture.origin, "show", "state:records/openclaw-openclaw/items/29.md", true),
+    "",
+  );
+});
+
+test("a prepared receipt resumes the same batch without a blind second state commit", () => {
+  const fixture = createRepositoryFixture();
+  const plan = newItemPlan(fixture, 26);
+  const before = git(fixture.origin, "rev-list", "--count", "state").trim();
+  installMultiRefAndFirstStateFailure(fixture.origin);
+
+  assert.throws(
+    () =>
+      withStateEnvironment(fixture.work, () =>
+        commitPreparedStateBatch({
+          batchId: "github-single-ref-resume",
+          plans: [plan],
+        }),
+      ),
+    /simulated state push failure/,
+  );
+
+  const receiptRef = `refs/heads/clawsweeper-state-batches/${createHash("sha256")
+    .update("github-single-ref-resume")
+    .digest("hex")}`;
+  assert.notEqual(git(fixture.origin, "rev-parse", receiptRef, true), "");
+  assert.equal(
+    git(fixture.origin, "show", "state:records/openclaw-openclaw/items/26.md", true),
+    "",
+  );
+
+  const recovered = withStateEnvironment(fixture.work, () =>
+    commitPreparedStateBatch({
+      batchId: "github-single-ref-resume",
+      plans: [plan],
+    }),
+  );
+
+  assert.equal(recovered.outcome, "committed");
+  assert.equal(
+    git(fixture.origin, "show", "state:records/openclaw-openclaw/items/26.md"),
+    "item 26\n",
+  );
+  assert.equal(
+    git(fixture.origin, "rev-list", "--count", "state").trim(),
+    String(Number(before) + 1),
+  );
+  assert.equal(
+    git(fixture.origin, "rev-parse", "state").trim(),
+    git(fixture.origin, "rev-parse", receiptRef).trim(),
+  );
+});
+
+test("a prepared receipt resumes from a fresh shallow state checkout", () => {
+  const fixture = createRepositoryFixture();
+  const plan = newItemPlan(fixture, 28);
+  installMultiRefAndFirstStateFailure(fixture.origin);
+
+  assert.throws(
+    () =>
+      withStateEnvironment(fixture.work, () =>
+        commitPreparedStateBatch({
+          batchId: "github-single-ref-shallow-resume",
+          plans: [plan],
+        }),
+      ),
+    /simulated state push failure/,
+  );
+
+  const shallow = path.join(fixture.root, "shallow-retry");
+  git(fixture.root, "clone", "--depth=1", "--branch", "state", `file://${fixture.origin}`, shallow);
+  configureUser(shallow);
+  const transferredBlob = path.join(fixture.root, "transferred-item-28.md");
+  fs.writeFileSync(transferredBlob, "item 28\n");
+  assert.equal(
+    git(shallow, "hash-object", "-w", transferredBlob).trim(),
+    plan.operations[0]?.targetOid,
+  );
+
+  const recovered = withStateEnvironment(shallow, () =>
+    commitPreparedStateBatch({
+      batchId: "github-single-ref-shallow-resume",
+      plans: [plan],
+    }),
+  );
+
+  assert.equal(recovered.outcome, "committed");
+  assert.equal(
+    git(fixture.origin, "show", "state:records/openclaw-openclaw/items/28.md"),
+    "item 28\n",
+  );
+});
+
+test("a prepared receipt fails closed when state advances before retry", () => {
+  const fixture = createRepositoryFixture();
+  const plan = newItemPlan(fixture, 27);
+  installMultiRefAndFirstStateFailure(fixture.origin);
+
+  assert.throws(
+    () =>
+      withStateEnvironment(fixture.work, () =>
+        commitPreparedStateBatch({
+          batchId: "github-single-ref-drift",
+          plans: [plan],
+        }),
+      ),
+    /simulated state push failure/,
+  );
+
+  publishSibling(fixture, "results/intervening.json", '{"writer":"ordinary"}\n');
+
+  assert.throws(
+    () =>
+      withStateEnvironment(fixture.work, () =>
+        commitPreparedStateBatch({
+          batchId: "github-single-ref-drift",
+          plans: [plan],
+        }),
+      ),
+    (error: unknown) =>
+      error instanceof StateMutationConflictError &&
+      /prepared receipt.*state advanced/i.test(error.message),
+  );
+  assert.equal(
+    git(fixture.origin, "show", "state:results/intervening.json"),
+    '{"writer":"ordinary"}\n',
+  );
+  assert.equal(
+    git(fixture.origin, "show", "state:records/openclaw-openclaw/items/27.md", true),
+    "",
   );
 });
 
@@ -373,7 +544,7 @@ test("a reused batch id cannot acknowledge a different mutation payload", () => 
   );
 });
 
-test("batch receipt recovery remains durable beyond 256 newer state commits", () => {
+test("batch receipt recovery deepens past 512 newer commits in a fresh shallow checkout", () => {
   const fixture = createRepositoryFixture();
   const plan = newItemPlan(fixture, 20);
   const committed = withStateEnvironment(fixture.work, () =>
@@ -386,7 +557,7 @@ test("batch receipt recovery remains durable beyond 256 newer state commits", ()
   let parent = git(sibling, "rev-parse", "HEAD").trim();
   // Only ancestry depth matters here. Plumbing commits avoid Git auto-maintenance
   // racing hundreds of disposable worktree/index updates on shared CI runners.
-  for (let index = 0; index < 300; index += 1) {
+  for (let index = 0; index < 700; index += 1) {
     parent = git(
       sibling,
       "commit-tree",
@@ -399,7 +570,10 @@ test("batch receipt recovery remains durable beyond 256 newer state commits", ()
   }
   git(sibling, "push", "origin", `${parent}:state`);
 
-  const recovered = withStateEnvironment(fixture.work, () =>
+  const shallow = path.join(fixture.root, "receipt-history-shallow");
+  git(fixture.root, "clone", "--depth=1", "--branch", "state", `file://${fixture.origin}`, shallow);
+  configureUser(shallow);
+  const recovered = withStateEnvironment(shallow, () =>
     commitPreparedStateBatch({ batchId: "durable-receipt", plans: [plan] }),
   );
 
@@ -643,7 +817,7 @@ function publishSibling(fixture: RepositoryFixture, file: string, content: strin
   git(sibling, "push", "origin", "HEAD:state");
 }
 
-function installThreeRefCommitRefsFailure(origin: string): void {
+function installMultiRefCommitRefsFailure(origin: string): void {
   const hook = path.join(origin, "hooks", "pre-receive");
   fs.writeFileSync(
     hook,
@@ -653,8 +827,37 @@ function installThreeRefCommitRefsFailure(origin: string): void {
       "while read -r old_oid new_oid ref_name; do",
       "  count=$((count + 1))",
       "done",
-      'if [ "$count" -ge 3 ]; then',
+      'if [ "$count" -ge 2 ]; then',
       '  echo "fatal error in commit_refs" >&2',
+      "  exit 1",
+      "fi",
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
+  fs.chmodSync(hook, 0o755);
+}
+
+function installMultiRefAndFirstStateFailure(origin: string): void {
+  const hook = path.join(origin, "hooks", "pre-receive");
+  const rejectedStateMarker = path.join(origin, "hooks", "rejected-state-once");
+  fs.writeFileSync(
+    hook,
+    [
+      "#!/bin/sh",
+      "count=0",
+      'only_ref=""',
+      "while read -r old_oid new_oid ref_name; do",
+      "  count=$((count + 1))",
+      '  only_ref="$ref_name"',
+      "done",
+      'if [ "$count" -ge 2 ]; then',
+      '  echo "fatal error in commit_refs" >&2',
+      "  exit 1",
+      "fi",
+      `if [ "$only_ref" = "refs/heads/state" ] && [ ! -f '${rejectedStateMarker}' ]; then`,
+      `  touch '${rejectedStateMarker}'`,
+      '  echo "simulated state push failure" >&2',
       "  exit 1",
       "fi",
       "exit 0",

@@ -2313,6 +2313,13 @@ function pushPublishedCommit(
     renewStatePublishLease(lease, "before branch publication");
   }
   lease.coordinator?.assertActive();
+  const sourceCommit = receiptRef ? runGit(["rev-parse", source], { quiet: true }).trim() : null;
+  const expectedReceiptOid = receiptRef ? remoteRefOid(remote, receiptRef) : null;
+  if (receiptRef && expectedReceiptOid && expectedReceiptOid !== sourceCommit) {
+    throw new StatePublishContentionError(
+      `State batch receipt ${receiptRef} changed before branch publication`,
+    );
+  }
 
   const renewedOid = createStatePublishLeaseCommit({
     branch: lease.branch,
@@ -2326,7 +2333,7 @@ function pushPublishedCommit(
       "push",
       "--atomic",
       `--force-with-lease=${lease.ref}:${lease.oid}`,
-      ...(receiptRef ? [`--force-with-lease=${receiptRef}:`] : []),
+      ...(receiptRef ? [`--force-with-lease=${receiptRef}:${expectedReceiptOid ?? ""}`] : []),
       lease.remote,
       `${source}:${branch}`,
       `${renewedOid}:${lease.ref}`,
@@ -2337,10 +2344,10 @@ function pushPublishedCommit(
   if (pushed.status !== 0) {
     const currentLeaseOid = remoteRefOid(remote, lease.ref);
     if (currentLeaseOid === renewedOid) {
-      const sourceCommit = runGit(["rev-parse", source], { quiet: true }).trim();
+      const publishedCommit = sourceCommit ?? runGit(["rev-parse", source], { quiet: true }).trim();
       if (
-        remoteRefOid(remote, `refs/heads/${branch}`) === sourceCommit &&
-        (!receiptRef || remoteRefOid(remote, receiptRef) === sourceCommit)
+        remoteRefOid(remote, `refs/heads/${branch}`) === publishedCommit &&
+        (!receiptRef || remoteRefOid(remote, receiptRef) === publishedCommit)
       ) {
         lease.oid = renewedOid;
         lease.expiresAtMs = Date.now() + lease.ttlMs;
@@ -2352,7 +2359,14 @@ function pushPublishedCommit(
         "State publish renewed its owner lease without the branch; recovering the lost state race",
       );
       if (receiptRef && isCommitRefsTransactionFailure(pushed)) {
-        return pushStateAndReceiptAfterCommitRefsFailure(source, remote, branch, receiptRef, lease);
+        return pushStateAndReceiptAfterCommitRefsFailure(
+          source,
+          remote,
+          branch,
+          receiptRef,
+          expectedReceiptOid,
+          lease,
+        );
       }
       return pushed;
     }
@@ -2363,7 +2377,14 @@ function pushPublishedCommit(
     }
     if (receiptRef && isCommitRefsTransactionFailure(pushed)) {
       renewStatePublishLease(lease, "before commit_refs recovery");
-      return pushStateAndReceiptAfterCommitRefsFailure(source, remote, branch, receiptRef, lease);
+      return pushStateAndReceiptAfterCommitRefsFailure(
+        source,
+        remote,
+        branch,
+        receiptRef,
+        expectedReceiptOid,
+        lease,
+      );
     }
     return pushed;
   }
@@ -2383,13 +2404,16 @@ function pushStateAndReceiptAfterCommitRefsFailure(
   remote: string,
   branch: string,
   receiptRef: string,
+  expectedReceiptOid: string | null,
   lease: StatePublishLease,
 ): GitRunResult {
   lease.coordinator?.assertActive();
   const sourceCommit = runGit(["rev-parse", source], { quiet: true }).trim();
-  const remoteBranchOid = remoteRefOid(remote, `refs/heads/${branch}`);
-  const remoteReceiptOid = remoteRefOid(remote, receiptRef);
-  if (remoteReceiptOid && remoteReceiptOid !== sourceCommit) {
+  const sourceParent = runGit(["rev-parse", `${sourceCommit}^`], { quiet: true }).trim();
+  const branchRef = `refs/heads/${branch}`;
+  let remoteBranchOid = remoteRefOid(remote, branchRef);
+  let remoteReceiptOid = remoteRefOid(remote, receiptRef);
+  if (remoteReceiptOid !== expectedReceiptOid && remoteReceiptOid !== sourceCommit) {
     throw new StatePublishContentionError(
       `State batch receipt ${receiptRef} changed before commit_refs recovery`,
     );
@@ -2397,29 +2421,59 @@ function pushStateAndReceiptAfterCommitRefsFailure(
   if (remoteBranchOid === sourceCommit && remoteReceiptOid === sourceCommit) {
     return { status: 0, stdout: "", stderr: "", timedOut: false };
   }
+  if (remoteBranchOid !== sourceCommit && remoteBranchOid !== sourceParent) {
+    throw new StatePublishContentionError(
+      `State branch ${branchRef} changed before commit_refs recovery`,
+    );
+  }
   if (lease.expiresAtMs - Date.now() <= STATE_PUBLISH_LEASE_RENEW_THRESHOLD_MS) {
-    renewStatePublishLease(lease, "before commit_refs recovery push");
+    renewStatePublishLease(lease, "before commit_refs receipt recovery");
   }
   lease.coordinator?.assertActive();
 
   console.log(
-    "State publish retrying GitHub commit_refs failure with the lease held and an atomic state/receipt update",
+    "State publish retrying GitHub commit_refs failure with fenced single-ref receipt and state updates",
   );
-  const recovered = spawnGit(
-    [
-      "push",
-      "--atomic",
-      `--force-with-lease=${receiptRef}:${remoteReceiptOid ?? ""}`,
-      remote,
-      `${source}:${branch}`,
-      `${source}:${receiptRef}`,
-    ],
+  if (remoteReceiptOid !== sourceCommit) {
+    const receiptPush = spawnGit(
+      [
+        "push",
+        `--force-with-lease=${receiptRef}:${remoteReceiptOid ?? ""}`,
+        remote,
+        `${source}:${receiptRef}`,
+      ],
+      { allowFailure: true },
+    );
+    if (receiptPush.status !== 0 && remoteRefOid(remote, receiptRef) !== sourceCommit) {
+      return receiptPush;
+    }
+    remoteReceiptOid = sourceCommit;
+  }
+
+  if (lease.expiresAtMs - Date.now() <= STATE_PUBLISH_LEASE_RENEW_THRESHOLD_MS) {
+    renewStatePublishLease(lease, "before commit_refs state recovery");
+  }
+  lease.coordinator?.assertActive();
+  remoteBranchOid = remoteRefOid(remote, branchRef);
+  if (remoteBranchOid === sourceCommit) {
+    console.log(`Recovered GitHub commit_refs failure for ${remote}/${branch}`);
+    return { status: 0, stdout: "", stderr: "", timedOut: false };
+  }
+  if (remoteBranchOid !== sourceParent) {
+    throw new StatePublishContentionError(
+      `State branch ${branchRef} changed during commit_refs recovery`,
+    );
+  }
+
+  const statePush = spawnGit(
+    ["push", `--force-with-lease=${branchRef}:${sourceParent}`, remote, `${source}:${branchRef}`],
     { allowFailure: true },
   );
-  if (recovered.status === 0) {
-    console.log(`Recovered GitHub commit_refs failure for ${remote}/${branch}`);
+  if (statePush.status !== 0 && remoteRefOid(remote, branchRef) !== sourceCommit) {
+    return statePush;
   }
-  return recovered;
+  console.log(`Recovered GitHub commit_refs failure for ${remote}/${branch}`);
+  return { ...statePush, status: 0 };
 }
 
 export function pushStateCommitUnderLease(
