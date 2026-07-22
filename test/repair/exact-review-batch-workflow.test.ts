@@ -84,6 +84,8 @@ test("batch preparation is bounded, heartbeat-fenced, and deterministically aggr
   assert.match(prepareSource, /EXACT_REVIEW_BATCH_HEARTBEAT_FAILURE_PATH/);
   assert.match(prepareSource, /DEFAULT_ITEM_TIMEOUT_MS/);
   assert.match(prepareSource, /DEFAULT_TOTAL_TIMEOUT_MS/);
+  assert.match(prepareSource, /Math\.min\(itemTimeoutMs, remainingTimeout\(deadline\)\)/);
+  assert.match(prepareSource, /terminate\("SIGKILL"\)/);
   assert.match(prepareSource, /prepare-telemetry\.json/);
 });
 

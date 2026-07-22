@@ -66,6 +66,7 @@ async function controller() {
     process.env.EXACT_REVIEW_BATCH_PREPARE_TIMEOUT_MS,
     DEFAULT_TOTAL_TIMEOUT_MS,
   );
+  const deadline = startedAt + totalTimeoutMs;
   const stateRoot = resolve(env("CLAWSWEEPER_STATE_DIR"));
   const baselineSha = (await capture("git", ["-C", stateRoot, "rev-parse", "HEAD"])).trim();
   const workersRoot = resolve(workspace, ".artifacts/exact-review-batch/workers");
@@ -75,7 +76,9 @@ async function controller() {
       ".artifacts/exact-review-batch/heartbeat-failed",
   );
   rmSync(workersRoot, { recursive: true, force: true });
-  await runChecked("git", ["-C", stateRoot, "worktree", "prune"]);
+  await runChecked("git", ["-C", stateRoot, "worktree", "prune"], {
+    timeoutMs: remainingTimeout(deadline),
+  });
   mkdirSync(workersRoot, { recursive: true });
   let gitQueue = Promise.resolve();
   let cleanupFailures = 0;
@@ -91,7 +94,7 @@ async function controller() {
 
   const { peak } = await runBoundedPool(items, concurrency, async (item, index) => {
     const outcomePath = checkedOutcomePath(workspace, item.outcomePath);
-    if (existsSync(heartbeatFailurePath) || Date.now() - startedAt >= totalTimeoutMs) {
+    if (existsSync(heartbeatFailurePath) || Date.now() >= deadline) {
       writeFailure(outcomePath, "retryable_failure", "unknown_failure");
       return { kind: "not_admitted", durationMs: 0 };
     }
@@ -110,21 +113,17 @@ async function controller() {
     let worktreeAdded = false;
     try {
       await withGitQueue(() =>
-        runChecked("git", [
-          "-C",
-          stateRoot,
-          "worktree",
-          "add",
-          "--detach",
-          stateWorktree,
-          baselineSha,
-        ]),
+        runChecked(
+          "git",
+          ["-C", stateRoot, "worktree", "add", "--detach", stateWorktree, baselineSha],
+          { timeoutMs: remainingTimeout(deadline) },
+        ),
       );
       worktreeAdded = true;
       const status = await run(
         process.execPath,
         [process.argv[1], "worker", itemPath, root, stateWorktree, workspace],
-        { timeoutMs: itemTimeoutMs },
+        { timeoutMs: Math.min(itemTimeoutMs, remainingTimeout(deadline)) },
       );
       timedOut = status.timedOut;
       if (timedOut) timeouts += 1;
@@ -140,7 +139,9 @@ async function controller() {
       if (worktreeAdded) {
         try {
           await withGitQueue(() =>
-            runChecked("git", ["-C", stateRoot, "worktree", "remove", "--force", stateWorktree]),
+            runChecked("git", ["-C", stateRoot, "worktree", "remove", "--force", stateWorktree], {
+              timeoutMs: remainingTimeout(deadline),
+            }),
           );
         } catch {
           cleanupFailures += 1;
@@ -341,7 +342,7 @@ function env(name) {
   return value;
 }
 
-function run(command, args, options = {}) {
+export function run(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -350,18 +351,32 @@ function run(command, args, options = {}) {
       stdio: "inherit",
     });
     let timedOut = false;
+    let forceTimer = null;
+    const terminate = (signal) => {
+      try {
+        if (child.pid) process.kill(-child.pid, signal);
+      } catch {
+        // The process group may already have exited between the timer and signal.
+      }
+    };
     const timer = options.timeoutMs
       ? setTimeout(() => {
           timedOut = true;
-          if (child.pid) process.kill(-child.pid, "SIGTERM");
+          terminate("SIGTERM");
+          forceTimer = setTimeout(() => terminate("SIGKILL"), 5_000);
         }, options.timeoutMs)
       : null;
     child.once("error", reject);
     child.once("exit", (code, signal) => {
       if (timer) clearTimeout(timer);
+      if (forceTimer) clearTimeout(forceTimer);
       resolvePromise({ code: code ?? 1, signal, timedOut });
     });
   });
+}
+
+function remainingTimeout(deadline) {
+  return Math.max(1, deadline - Date.now());
 }
 
 async function runChecked(command, args, options = {}) {

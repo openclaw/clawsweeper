@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runBoundedPool } from "../../scripts/prepare-exact-review-batch.mjs";
+import { run, runBoundedPool } from "../../scripts/prepare-exact-review-batch.mjs";
 
 test("bounded preparation never exceeds four workers and preserves manifest order", async () => {
   const completionOrder = [];
@@ -36,4 +36,13 @@ test("concurrency one is serial and invalid concurrency fails closed", async () 
   assert.deepEqual(results, [6, 4, 2]);
   assert.equal(peak, 1);
   await assert.rejects(() => runBoundedPool([1], 5, async () => 1), /between 1 and 4/);
+});
+
+test("a process timeout terminates the full worker process group", async () => {
+  const startedAt = Date.now();
+  const result = await run(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], {
+    timeoutMs: 25,
+  });
+  assert.equal(result.timedOut, true);
+  assert.ok(Date.now() - startedAt < 1_000);
 });
