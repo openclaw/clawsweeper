@@ -5671,6 +5671,8 @@ function firstBeforeMergeAction(body: string): string {
   const section = markdownSection(body, "Before merge");
   if (!section) return "";
   for (const line of section.split(/\r?\n/)) {
+    const task = line.match(/^- \[[ xX]\]\s+(?:\*\*[^*]+\*\*\s+-\s+)?(.+)$/);
+    if (task?.[1]) return task[1].trim();
     const cells = markdownTableCells(line);
     if (cells.length < 2) continue;
     if (cells.every((cell) => /^:?-{3,}:?$/.test(cell))) continue;
@@ -12031,14 +12033,6 @@ function publicRealBehaviorProofLine(proof: RealBehaviorProof): string {
   }
 }
 
-function publicProofBlock(proof: RealBehaviorProof, evidence: readonly string[]): string {
-  if (!["sufficient", "override"].includes(proof.status)) return "";
-  return [
-    `- **Real behavior:** ${publicRealBehaviorProofLine(proof)}`,
-    ...evidence.slice(0, 2),
-  ].join("\n");
-}
-
 function publicRankDetailsBlock(): string {
   return [
     "| Score | Internal tier | Crab rank | Meaning |",
@@ -12057,7 +12051,7 @@ function publicRankDetailsBlock(): string {
 }
 
 function publicMergeReadinessResult(rating: PrRating, proof: RealBehaviorProof): string {
-  if (rating.overallTier === "NA") return "rating does not apply to this item.";
+  if (rating.overallTier === "NA") return "needs maintainer review before merge.";
   switch (proof.status) {
     case "missing":
       return "blocked until real behavior proof is added.";
@@ -12110,29 +12104,120 @@ function publicStatusText(value: string): string {
   return text ? `${text[0]?.toUpperCase()}${text.slice(1)}` : "";
 }
 
+function publicReviewScoresBlock(
+  rating: PrRating,
+  proof: RealBehaviorProof,
+  findings: readonly ReviewFinding[],
+  securityReview: SecurityReview,
+): string {
+  const shiny = hasShinyProof(proof) ? " ✨ media proof bonus" : "";
+  const overallMeaning =
+    sentence(rating.summary) || "Overall readiness follows the weaker of proof and patch quality.";
+  const proofMeaning =
+    publicRealBehaviorProofLine(proof) || "Real behavior proof does not apply to this change.";
+  const patchMeaning =
+    securityReview.status === "needs_attention" || securityReview.concerns.length > 0
+      ? "Security review found an item that needs attention."
+      : findings.length > 0
+        ? `${findings.length} actionable review ${findings.length === 1 ? "finding" : "findings"} remain.`
+        : "No actionable review findings were identified.";
+  return [
+    "| Measure | Result | What it means |",
+    "|---|---|---|",
+    `| **Overall readiness** | ${publicRatedName(rating.overallTier)} | ${publicTableCell(overallMeaning)} |`,
+    `| **Proof confidence** | ${publicRatedName(rating.proofTier)}${shiny} | ${publicTableCell(proofMeaning)} |`,
+    `| **Patch quality** | ${publicRatedName(rating.patchTier)} | ${publicTableCell(patchMeaning)} |`,
+  ].join("\n");
+}
+
+function publicVerificationBlock(
+  proof: RealBehaviorProof,
+  evidence: readonly Evidence[],
+  findings: readonly ReviewFinding[],
+  securityReview: SecurityReview,
+): string {
+  const proofResult =
+    proof.status === "sufficient" || proof.status === "override"
+      ? "Verified"
+      : proof.status === "not_applicable"
+        ? "Not applicable"
+        : "Needs proof";
+  const proofEvidence =
+    publicRealBehaviorProofLine(proof) || "Real behavior proof does not apply to this change.";
+  const evidenceResult =
+    evidence.length === 0
+      ? "None listed"
+      : `${evidence.length} ${evidence.length === 1 ? "item" : "items"}`;
+  const evidenceSummary =
+    evidence.length === 0
+      ? "None."
+      : evidence
+          .slice(0, 3)
+          .map((entry) =>
+            publicTableCell(
+              `${entry.label.trim() ? `${entry.label.trim()}: ` : ""}${sentence(entry.detail)}`,
+            ),
+          )
+          .join("<br>");
+  const findingResult =
+    findings.length === 0
+      ? "None"
+      : `${findings.length} actionable ${findings.length === 1 ? "finding" : "findings"}`;
+  const findingEvidence =
+    findings.length === 0
+      ? "None."
+      : findings
+          .slice(0, 3)
+          .map((finding) => `[${priorityLabel(finding.priority)}] ${finding.title.trim()}`)
+          .join("<br>");
+  const securityNeedsAttention =
+    securityReview.status === "needs_attention" || securityReview.concerns.length > 0;
+  const securityEvidence = securityNeedsAttention
+    ? securityReview.concerns.length > 0
+      ? securityReview.concerns
+          .slice(0, 3)
+          .map((concern) => `${concern.title.trim()}: ${sentence(concern.body)}`)
+          .join("<br>")
+      : sentence(securityReview.summary)
+    : "None.";
+  return [
+    "| Check | Result | Evidence |",
+    "|---|---|---|",
+    `| **Real behavior** | ${proofResult} | ${publicTableCell(proofEvidence)} |`,
+    `| **Tests and checks** | ${evidenceResult} | ${evidenceSummary} |`,
+    `| **Findings** | ${findingResult} | ${publicTableCell(findingEvidence)} |`,
+    `| **Security** | ${securityNeedsAttention ? "Needs attention" : "None"} | ${publicTableCell(securityEvidence)} |`,
+  ].join("\n");
+}
+
 function publicMergeReadinessBlock(
   rating: PrRating,
   proof: RealBehaviorProof,
   priority: TriagePriority,
-  securityReview: SecurityReview,
   bottomLine: string,
+  remainingItemCount: number,
+  decisionNeeded: boolean,
 ): string {
-  const shiny = hasShinyProof(proof) ? " ✨ media proof bonus" : "";
-  const security =
-    securityReview.status === "needs_attention" || securityReview.concerns.length > 0
-      ? "Needs attention"
-      : "None";
+  const result = publicStatusText(publicMergeReadinessResult(rating, proof)).replace(/\.$/, "");
+  const icon = /^blocked\b/i.test(result)
+    ? "⛔"
+    : /^ready\b/i.test(result) && remainingItemCount === 0
+      ? "✅"
+      : "⚠️";
+  const remaining =
+    remainingItemCount > 0
+      ? ` - ${remainingItemCount} ${remainingItemCount === 1 ? "item remains" : "items remain"}`
+      : "";
   const lines = [
-    `| **Status** | ${publicStatusText(publicMergeReadinessResult(rating, proof))} |`,
-    "|---|---|",
-    `| **Overall** | ${publicRatedName(rating.overallTier)} |`,
-    `| **Proof** | ${publicRatedName(rating.proofTier)}${shiny} |`,
-    `| **Patch quality** | ${publicRatedName(rating.patchTier)} |`,
-    `| **Priority** | ${priority === "none" ? "None" : priority} |`,
-    `| **Security** | ${security} |`,
+    `${icon} **${result}${remaining}**`,
     "",
-    `**Bottom line:** ${sentence(bottomLine)}`,
+    sentence(bottomLine),
+    "",
+    `**Priority:** ${priority === "none" ? "None" : priority}`,
   ];
+  if (decisionNeeded) {
+    lines.push("**Owner decision:** Required. See [Decision needed](#decision-needed).");
+  }
   return lines.join("\n");
 }
 
@@ -18559,7 +18644,12 @@ function isRoutineBeforeMergeStep(value: string): boolean {
   );
 }
 
-function publicBeforeMergeBlock(options: {
+interface PublicBeforeMergeItem {
+  label: string;
+  detail: string;
+}
+
+function publicBeforeMergeItems(options: {
   reviewFailed: boolean;
   proof: RealBehaviorProof;
   proofBlocked: boolean;
@@ -18568,10 +18658,10 @@ function publicBeforeMergeBlock(options: {
   risks: string;
   nextStep: string;
   ratingNextSteps: readonly string[];
-}): string {
-  const rows: Array<{ needed: string; detail: string }> = [];
+}): PublicBeforeMergeItem[] {
+  const items: PublicBeforeMergeItem[] = [];
   const seen = new Set<string>();
-  const add = (needed: string, detail: string) => {
+  const add = (label: string, detail: string) => {
     const rawDetail = stripPriorityPrefix(detail);
     const cleanDetail = sentence(stripPriorityPrefix(detail));
     const key = normalizePublicReviewText(cleanDetail);
@@ -18580,54 +18670,62 @@ function publicBeforeMergeBlock(options: {
       /^none[.!]?$/i.test(rawDetail) ||
       isReportNoneList(cleanDetail) ||
       seen.has(key) ||
-      rows.some((row) => !publicReviewTextDiffers(row.detail, cleanDetail))
+      items.some((item) => !publicReviewTextDiffers(item.detail, cleanDetail))
     ) {
       return;
     }
     seen.add(key);
-    rows.push({ needed, detail: cleanDetail });
+    items.push({ label, detail: cleanDetail });
   };
-  const addPrioritized = (text: string, fallback: PublicPriority, plainLabel: string) => {
+  const addPrioritized = (text: string, fallback: PublicPriority, label: string) => {
     for (const line of publicRiskBulletsFromText(text, fallback).split("\n")) {
       const match = line.match(/^-\s+\[(P[0-2])\]\s+(.+)$/);
       if (match?.[1] && match[2]) {
-        add(match[1], match[2]);
+        add(`${label} (${match[1]})`, match[2]);
       } else {
-        add(plainLabel, line);
+        add(label, line);
       }
     }
   };
 
   if (options.reviewFailed) {
-    add("Retry the review", "ClawSweeper must complete a fresh review before readiness is known.");
+    add(
+      "Retry ClawSweeper review",
+      "ClawSweeper must complete a fresh review before readiness is known.",
+    );
   }
   if (options.proofBlocked) {
     add("Add real behavior proof", publicRealBehaviorProofLine(options.proof));
   }
   for (const finding of options.findings.slice(0, 3)) {
-    add(priorityLabel(finding.priority), `${finding.title}: ${finding.body}`);
+    add(`${finding.title.trim()} (${priorityLabel(finding.priority)})`, finding.body);
   }
   for (const concern of options.securityReview.concerns.slice(0, 3)) {
-    add(`Security: ${concern.severity}`, `${concern.title}: ${concern.body}`);
+    add(`Resolve security concern: ${concern.title.trim()}`, concern.body);
   }
-  if (!isReportNoneList(options.risks)) addPrioritized(options.risks, "P1", "Merge risk");
+  if (!isReportNoneList(options.risks)) addPrioritized(options.risks, "P1", "Resolve merge risk");
   if (!isRoutineBeforeMergeStep(options.nextStep)) {
     if (isActionablePriorityText(options.nextStep)) {
-      add(publicPriorityFromText(options.nextStep, "P2"), options.nextStep);
+      add(
+        `Complete next step (${publicPriorityFromText(options.nextStep, "P2")})`,
+        options.nextStep,
+      );
     } else {
-      add("Next step", options.nextStep);
+      add("Complete next step", options.nextStep);
     }
   }
   for (const step of options.ratingNextSteps.slice(0, 3)) {
     add("Improve readiness", step);
   }
 
-  if (rows.length === 0) return "None.";
-  return [
-    "| Needed | Why |",
-    "|---|---|",
-    ...rows.map((row) => `| **${publicTableCell(row.needed)}** | ${publicTableCell(row.detail)} |`),
-  ].join("\n");
+  return items;
+}
+
+function publicBeforeMergeBlock(items: readonly PublicBeforeMergeItem[]): string {
+  if (items.length === 0) return "None.";
+  return items
+    .map((item) => `- [ ] **${publicTableCell(item.label)}** - ${publicTableCell(item.detail)}`)
+    .join("\n");
 }
 
 function publicRootCauseClusterBlock(cluster: RootCauseClusterAssessment | undefined): string {
@@ -18871,7 +18969,8 @@ function renderKeepOpenCommentFromReport(
   markdown: string,
   options: ReviewCommentRenderOptions = {},
 ): string {
-  const evidence = reportEvidence(markdown).slice(0, 6).map(closeEvidenceLine);
+  const evidenceEntries = reportEvidence(markdown).slice(0, 6);
+  const evidence = evidenceEntries.map(closeEvidenceLine);
   const likelyOwners = reportLikelyOwners(markdown).slice(0, 5).map(likelyOwnerLine);
   const reviewFindings = reportReviewFindings(markdown);
   const securityReview = reportSecurityReview(markdown);
@@ -19041,6 +19140,16 @@ function renderKeepOpenCommentFromReport(
   );
 
   if (isPullRequest) {
+    const beforeMergeItems = publicBeforeMergeItems({
+      reviewFailed,
+      proof: realBehaviorProof,
+      proofBlocked: hasRealBehaviorProofBlocker,
+      findings: reviewFindings,
+      securityReview,
+      risks,
+      nextStep: nextStepLine,
+      ratingNextSteps: prRating.nextSteps,
+    });
     lines.push("# ClawSweeper review", "");
     appendHeadingSection(lines, "What this changes", changeSummaryLine);
     appendHeadingSection(
@@ -19052,10 +19161,23 @@ function renderKeepOpenCommentFromReport(
             prRating,
             realBehaviorProof,
             triagePriority,
-            securityReview,
             summaryLine,
+            beforeMergeItems.length,
+            Boolean(decisionPacketBlock),
           ),
     );
+    if (!reviewFailed) {
+      appendHeadingSection(
+        lines,
+        "Review scores",
+        publicReviewScoresBlock(prRating, realBehaviorProof, reviewFindings, securityReview),
+      );
+      appendHeadingSection(
+        lines,
+        "Verification",
+        publicVerificationBlock(realBehaviorProof, evidenceEntries, reviewFindings, securityReview),
+      );
+    }
     if (systemContext && architectureDiagram) {
       appendHeadingSection(
         lines,
@@ -19063,37 +19185,20 @@ function renderKeepOpenCommentFromReport(
         `${systemContext}\n\n\`\`\`mermaid\n${architectureDiagram}\n\`\`\``,
       );
     }
-    const proofBlock = publicProofBlock(realBehaviorProof, evidence);
-    if (proofBlock) {
-      appendHeadingSection(lines, "Proof", proofBlock);
-    }
     if (decisionPacketBlock) {
       appendHeadingSection(lines, "Decision needed", decisionPacketBlock);
     }
-    appendHeadingSection(
-      lines,
-      "Before merge",
-      publicBeforeMergeBlock({
-        reviewFailed,
-        proof: realBehaviorProof,
-        proofBlocked: hasRealBehaviorProofBlocker,
-        findings: reviewFindings,
-        securityReview,
-        risks,
-        nextStep: nextStepLine,
-        ratingNextSteps: prRating.nextSteps,
-      }),
-    );
-    appendHeadingSection(
-      lines,
-      "Findings",
-      reviewFindings.length || securityReview.concerns.length
-        ? [
-            ...reviewFindings.slice(0, 3).map(reviewFindingSummaryLine),
-            ...securityReview.concerns.slice(0, 3).map(securityConcernSummaryLine),
-          ].join("\n")
-        : "None.",
-    );
+    appendHeadingSection(lines, "Before merge", publicBeforeMergeBlock(beforeMergeItems));
+    if (reviewFindings.length || securityReview.concerns.length) {
+      appendHeadingSection(
+        lines,
+        "Findings",
+        [
+          ...reviewFindings.slice(0, 3).map(reviewFindingSummaryLine),
+          ...securityReview.concerns.slice(0, 3).map(securityConcernSummaryLine),
+        ].join("\n"),
+      );
+    }
 
     const agentDetails: string[] = ["### Security", "", securityLine || "None."];
     if (prSurface) agentDetails.push("", "### PR surface", "", prSurface);

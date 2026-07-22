@@ -50,26 +50,28 @@ PR comments use a human-first shape:
 1. `## What this changes` is first. It comes from the typed `changeSummary`
    field and should define unfamiliar subsystem terms briefly and explain the
    effect in plain language.
-2. `## Merge readiness` comes directly after the change summary. Its `Status`
-   row doubles as the table header so GitHub does not render an empty header
-   band. The table also shows overall rank, proof rank, patch-quality rank,
-   priority, and security. Crab ranks stay visible, but every ranked value also
-   shows its six-point score: S is `6/6`, A is `5/6`, B is `4/6`, C is `3/6`,
-   D is `2/6`, and F is `1/6`.
-3. `## How this fits together` appears when the review can establish concrete
+2. `## Merge readiness` comes directly after the change summary. It leads with
+   one dynamic plain-language outcome, the number of real items remaining, a
+   short bottom line, priority, and an owner-decision pointer only when a
+   decision packet exists.
+3. `## Review scores` separates the three ratings into a scannable
+   `Measure | Result | What it means` table. Crab ranks stay visible, but every
+   ranked value also shows its six-point score: S is `6/6`, A is `5/6`, B is
+   `4/6`, C is `3/6`, D is `2/6`, and F is `1/6`.
+4. `## Verification` folds proof, concrete evidence/checks, findings, and
+   security into one compact `Check | Result | Evidence` table. Uneventful
+   findings and security rows say `None.`
+5. `## How this fits together` appears when the review can establish concrete
    system context. It uses one or two plain-language sentences plus a compact
    Mermaid flowchart showing the changed subsystem's inputs, decisions, and
    outputs.
-4. `## Proof` appears when real-behavior proof is sufficient or explicitly
-   overridden. It keeps the proof status and the first two concrete evidence
-   items visible because contributors commonly use those signals when asking
-   for maintainer review. The full evidence list remains collapsed below.
-5. `## Decision needed` appears only when a maintainer decision packet exists.
+6. `## Decision needed` appears only when a maintainer decision packet exists.
    It shows the concrete question and recommended option in a table.
-6. `## Before merge` lists only real remaining actions or risks. Routine CI,
-   ordinary maintainer review, and no-op guidance collapse to `None.`
-7. `## Findings` always appears. It renders concise typed review/security
-   findings or `None.`
+7. `## Before merge` uses native Markdown task checkboxes for real remaining
+   actions or risks. Routine CI, ordinary maintainer review, and no-op guidance
+   collapse to `None.`
+8. `## Findings` appears only when actionable review or security findings need
+   a little more visible detail.
 
 Everything primarily useful to agents or deep reviewers lives under one
 collapsed `Agent review details` section: security evidence, PR surface,

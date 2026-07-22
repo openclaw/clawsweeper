@@ -72,10 +72,10 @@ Full review comments:
   const comment = renderReviewCommentFromReport(report, "none");
 
   assert.match(comment, /## Merge readiness/);
-  assert.match(comment, /\| \*\*Overall\*\* \| 🦀 challenger crab \*\*\(6\/6\)\*\* \|/);
+  assert.match(comment, /\| \*\*Overall readiness\*\* \| 🦀 challenger crab \*\*\(6\/6\)\*\* \|/);
   assert.match(
     comment,
-    /\| \*\*Proof\*\* \| 🦀 challenger crab \*\*\(6\/6\)\*\* ✨ media proof bonus \|/,
+    /\| \*\*Proof confidence\*\* \| 🦀 challenger crab \*\*\(6\/6\)\*\* ✨ media proof bonus \|/,
   );
   assert.match(comment, /Shiny media proof means a screenshot, video, or linked artifact/);
   assert.doesNotMatch(comment, /Rank-up moves:/);
@@ -132,7 +132,7 @@ Full review comments:
   const markers = reviewAutomationMarkersFromReport(report);
 
   assert.match(comment, /## Merge readiness/);
-  assert.match(comment, /\| \*\*Proof\*\* \| 🌊 off-meta tidepool \|/);
+  assert.match(comment, /\| \*\*Proof confidence\*\* \| 🌊 off-meta tidepool \|/);
   assert.match(markers, /clawsweeper-verdict:pass/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
 });
@@ -479,7 +479,7 @@ ${prRatingReportSection({
     "rating: 🦞 diamond lobster",
   ]);
   assert.match(comment, /\| \*\*Patch quality\*\* \| 🦞 diamond lobster \*\*\(5\/6\)\*\* \|/);
-  assert.match(comment, /\| \*\*Status\*\* \| Ready for maintainer review\. \|/);
+  assert.match(comment, /✅ \*\*Ready for maintainer review\*\*/);
   assert.doesNotMatch(comment, /Blocked by patch quality or review findings\./);
   assert.doesNotMatch(comment, /Add changelog entry/i);
 });
@@ -643,7 +643,7 @@ Full review comments:
   assert.match(comment, /Codex review: passed\./);
   assert.match(
     comment,
-    /\| \*\*Next step\*\* \| Leave this draft open after fixes are complete\. \|/,
+    /- \[ \] \*\*Complete next step\*\* - Leave this draft open after fixes are complete\./,
   );
   assert.doesNotMatch(comment, /\[P2\] Leave this draft open after fixes are complete/);
   assert.doesNotMatch(comment, /Autofix follow-up:/);

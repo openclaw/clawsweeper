@@ -132,7 +132,7 @@ Reason: ${duplicateRisk}
   );
 
   assert.match(comment, /## Before merge/);
-  assert.ok(comment.includes(`| **P1** | ${duplicateRisk} |`));
+  assert.ok(comment.includes(`- [ ] **Resolve merge risk (P1)** - ${duplicateRisk}`));
   assert.doesNotMatch(comment, /Remaining risk \/ open question:/);
   assert.doesNotMatch(comment, /### Merge-risk options/);
   assert.equal(comment.split(duplicateRisk).length - 1, 1);
@@ -170,8 +170,14 @@ Confirm both merge risks before merge.
   );
 
   assert.match(comment, /## Before merge/);
-  assert.match(comment, /\| \*\*P1\*\* \| Blocked workflow actions must render as P1\. \|/);
-  assert.match(comment, /\| \*\*P2\*\* \| Timeout fallback wording should remain scannable\. \|/);
+  assert.match(
+    comment,
+    /- \[ \] \*\*Resolve merge risk \(P1\)\*\* - Blocked workflow actions must render as P1\./,
+  );
+  assert.match(
+    comment,
+    /- \[ \] \*\*Resolve merge risk \(P2\)\*\* - Timeout fallback wording should remain scannable\./,
+  );
 });
 
 test("pull request risk text does not priority-prefix routine CI noise", () => {
@@ -206,12 +212,7 @@ ${routineCiRisk}
   );
 
   assert.match(comment, /## Before merge/);
-  assert.match(
-    comment,
-    new RegExp(
-      `\\| \\*\\*Merge risk\\*\\* \\| ${routineCiRisk.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\|`,
-    ),
-  );
+  assert.ok(comment.includes(`- [ ] **Resolve merge risk** - ${routineCiRisk}`));
   assert.doesNotMatch(
     comment,
     new RegExp(`\\[P[12]\\] ${routineCiRisk.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
@@ -304,12 +305,7 @@ ${actionableCiRisk}
   );
 
   assert.match(comment, /## Before merge/);
-  assert.match(
-    comment,
-    new RegExp(
-      `\\| \\*\\*P1\\*\\* \\| ${actionableCiRisk.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\|`,
-    ),
-  );
+  assert.ok(comment.includes(`- [ ] **Resolve merge risk (P1)** - ${actionableCiRisk}`));
 });
 
 test("pull request risk text keeps diff-caused status-check risk actionable", () => {
@@ -344,12 +340,7 @@ ${actionableStatusRisk}
   );
 
   assert.match(comment, /## Before merge/);
-  assert.match(
-    comment,
-    new RegExp(
-      `\\| \\*\\*P1\\*\\* \\| ${actionableStatusRisk.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\|`,
-    ),
-  );
+  assert.ok(comment.includes(`- [ ] **Resolve merge risk (P1)** - ${actionableStatusRisk}`));
 });
 
 test("pull request risk text keeps diff-caused required-check risk actionable", () => {
@@ -385,12 +376,7 @@ ${actionableRequiredRisk}
   );
 
   assert.match(comment, /## Before merge/);
-  assert.match(
-    comment,
-    new RegExp(
-      `\\| \\*\\*P1\\*\\* \\| ${actionableRequiredRisk.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\|`,
-    ),
-  );
+  assert.ok(comment.includes(`- [ ] **Resolve merge risk (P1)** - ${actionableRequiredRisk}`));
 });
 
 test("pull request risk text keeps broken passing-check risk actionable", () => {
@@ -458,7 +444,7 @@ ${actionablePassingRisk}
     assert.match(
       comment,
       new RegExp(
-        `\\| \\*\\*P[01]\\*\\* \\| ${actionablePassingRisk.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\|`,
+        `- \\[ \\] \\*\\*Resolve merge risk \\(P[01]\\)\\*\\* - ${actionablePassingRisk.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
       ),
     );
   }

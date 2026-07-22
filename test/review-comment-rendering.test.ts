@@ -621,19 +621,22 @@ Reason: Maintainers should review the tests after the targeted lane is green.
     /## What this changes\n\nAdds regression coverage for session-scoped model overrides\./,
   );
   assert.ok(comment.indexOf("## What this changes") < comment.indexOf("## Merge readiness"));
-  assert.match(comment, /## Merge readiness\n\n\| \*\*Status\*\* \|/);
+  assert.match(
+    comment,
+    /## Merge readiness\n\n.*\*\*Ready for maintainer review - 1 item remains\*\*/,
+  );
   assert.doesNotMatch(comment, /\| \| \|\n\|---\|---\|/);
+  assert.match(comment, /## Review scores\n\n\| Measure \| Result \| What it means \|/);
+  assert.match(comment, /\| \*\*Overall readiness\*\* \| .* \*\*\(5\/6\)\*\* \|/);
+  assert.match(comment, /## Verification\n\n\| Check \| Result \| Evidence \|/);
+  assert.match(comment, /\| \*\*Real behavior\*\* \| Verified \| Sufficient \(terminal\):/);
+  assert.match(comment, /\| \*\*Tests and checks\*\* \| 1 item \| targeted lane:/);
   assert.match(
     comment,
     /## How this fits together\n\nOpenClaw resolves a session's model override before sending the next agent request\.\n\n```mermaid\nflowchart LR/,
   );
-  assert.ok(comment.indexOf("## Merge readiness") < comment.indexOf("## How this fits together"));
-  assert.match(
-    comment,
-    /## Proof\n\n- \*\*Real behavior:\*\* Sufficient \(terminal\): A live session confirmed the override reaches the next request\./,
-  );
-  assert.match(comment, /- \*\*targeted lane:\*\* The PR is test-only/);
-  assert.ok(comment.indexOf("## How this fits together") < comment.indexOf("## Proof"));
+  assert.ok(comment.indexOf("## Verification") < comment.indexOf("## How this fits together"));
+  assert.doesNotMatch(comment, /## Proof/);
   assert.doesNotMatch(comment, /\*\*Workflow note:\*\*/);
   assert.match(comment, /### Workflow/);
   assert.match(
@@ -1165,7 +1168,7 @@ Prove the fail-closed compatibility break is handled before merge.
 
   assert.match(
     comment,
-    /\| \*\*P1\*\* \| Prove the fail-closed compatibility break is handled before merge\. \|/,
+    /- \[ \] \*\*Complete next step \(P1\)\*\* - Prove the fail-closed compatibility break is handled before merge\./,
   );
   assert.doesNotMatch(comment, /\*\*\[P1\]\*\*/);
 });

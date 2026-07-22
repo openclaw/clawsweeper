@@ -330,6 +330,47 @@ test("latest review extraction reads the first action from the before-merge tabl
   assert.equal(review?.nextStep, "Add proof for the `a | b` path.");
 });
 
+test("latest review extraction reads the first action from the before-merge checklist", () => {
+  const body = [
+    "Codex review: needs changes before merge. _Reviewed 2026-07-21T20:00:00.000Z._",
+    "",
+    "# ClawSweeper review",
+    "",
+    "## What this changes",
+    "",
+    "Updates the review comment layout.",
+    "",
+    "## Merge readiness",
+    "",
+    "⚠️ **Needs changes before merge - 2 items remain**",
+    "",
+    "## Before merge",
+    "",
+    "- [ ] **Add real behavior proof** - Show the fixed path on a real setup.",
+    "- [ ] **Resolve merge risk (P1)** - Confirm the fallback remains fail-closed.",
+    "",
+    "## Findings",
+    "",
+    "None.",
+    "",
+    "<!-- clawsweeper-verdict:needs-changes item=101 sha=abc123 confidence=high reviewed_at=2026-07-21T20:00:00.000Z -->",
+    "<!-- clawsweeper-review item=101 -->",
+  ].join("\n");
+  const review = extractLatestClawSweeperReviewForTest(
+    [
+      {
+        id: 101,
+        body,
+        updated_at: "2026-07-21T20:00:00.000Z",
+        user: { login: "clawsweeper[bot]" },
+      },
+    ],
+    101,
+  );
+
+  assert.equal(review?.nextStep, "Show the fixed path on a real setup.");
+});
+
 test("state report prior-review identity preserves the original render context", () => {
   const unsyncedReport = keepOpenPullReport({ labels: JSON.stringify(["P2"]) });
   const body = markedReviewCommentForTest(
@@ -508,7 +549,7 @@ test("previous durable comment converts into a ledger cycle", () => {
 
 test("next-step priority bullets do not become review findings", () => {
   const comment = renderReviewCommentFromReport(keepOpenPullReport(), "none");
-  assert.match(comment, /## Before merge[\s\S]*\| \*\*P2\*\* \|/);
+  assert.match(comment, /## Before merge[\s\S]*- \[ \] \*\*Complete next step \(P2\)\*\*/);
   assert.deepEqual(reviewHistoryCycleFromCommentBody(comment)?.findings, []);
 });
 
