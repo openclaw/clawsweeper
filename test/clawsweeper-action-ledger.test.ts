@@ -772,7 +772,7 @@ test("sweep publishes complete immutable shards for every review and apply produ
   assert.ok(applyPublish > applyFinalizer);
   assert.match(
     workflow.slice(applyStep, applyFinalizer),
-    /id: apply-existing-run[\s\S]*timeout-minutes: 350/,
+    /id: apply-existing-run[\s\S]*timeout-minutes: 70/,
   );
   assert.match(
     workflow.slice(applyFinalizer, applyPublish),
