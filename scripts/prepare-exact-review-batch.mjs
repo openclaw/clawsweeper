@@ -46,6 +46,20 @@ export async function runBoundedPool(items, concurrency, worker) {
   return { results, peak };
 }
 
+export async function createIsolatedStateClone({ stateRoot, destination, baselineSha, timeoutMs }) {
+  const remoteUrl = (await capture("git", ["-C", stateRoot, "remote", "get-url", "origin"])).trim();
+  if (!remoteUrl) throw new Error("state origin URL is required");
+  await runChecked("git", ["clone", "--shared", "--no-checkout", stateRoot, destination], {
+    timeoutMs,
+  });
+  await runChecked("git", ["-C", destination, "remote", "set-url", "origin", remoteUrl], {
+    timeoutMs,
+  });
+  await runChecked("git", ["-C", destination, "checkout", "--detach", baselineSha], {
+    timeoutMs,
+  });
+}
+
 async function controller() {
   const startedAt = Date.now();
   const workspace = resolve(process.env.GITHUB_WORKSPACE || process.cwd());
@@ -76,21 +90,11 @@ async function controller() {
       ".artifacts/exact-review-batch/heartbeat-failed",
   );
   rmSync(workersRoot, { recursive: true, force: true });
-  await runChecked("git", ["-C", stateRoot, "worktree", "prune"], {
-    timeoutMs: remainingTimeout(deadline),
-  });
   mkdirSync(workersRoot, { recursive: true });
-  let gitQueue = Promise.resolve();
   let cleanupFailures = 0;
   const durations = [];
   let timeouts = 0;
   let admitted = 0;
-
-  const withGitQueue = (operation) => {
-    const pending = gitQueue.then(operation, operation);
-    gitQueue = pending.catch(() => undefined);
-    return pending;
-  };
 
   const { peak } = await runBoundedPool(items, concurrency, async (item, index) => {
     const outcomePath = checkedOutcomePath(workspace, item.outcomePath);
@@ -104,25 +108,22 @@ async function controller() {
       .digest("hex")
       .slice(0, 16);
     const root = join(workersRoot, `${String(index).padStart(2, "0")}-${identity}`);
-    const stateWorktree = join(root, "state");
+    const stateClone = join(root, "state");
     const itemPath = join(root, "item.json");
     mkdirSync(root, { recursive: true });
     writeFileSync(itemPath, `${JSON.stringify(item)}\n`, "utf8");
     const workerStartedAt = Date.now();
     let timedOut = false;
-    let worktreeAdded = false;
     try {
-      await withGitQueue(() =>
-        runChecked(
-          "git",
-          ["-C", stateRoot, "worktree", "add", "--detach", stateWorktree, baselineSha],
-          { timeoutMs: remainingTimeout(deadline) },
-        ),
-      );
-      worktreeAdded = true;
+      await createIsolatedStateClone({
+        stateRoot,
+        destination: stateClone,
+        baselineSha,
+        timeoutMs: remainingTimeout(deadline),
+      });
       const status = await run(
         process.execPath,
-        [process.argv[1], "worker", itemPath, root, stateWorktree, workspace],
+        [process.argv[1], "worker", itemPath, root, stateClone, workspace],
         { timeoutMs: Math.min(itemTimeoutMs, remainingTimeout(deadline)) },
       );
       timedOut = status.timedOut;
@@ -136,18 +137,11 @@ async function controller() {
       }
     } finally {
       durations.push(Date.now() - workerStartedAt);
-      if (worktreeAdded) {
-        try {
-          await withGitQueue(() =>
-            runChecked("git", ["-C", stateRoot, "worktree", "remove", "--force", stateWorktree], {
-              timeoutMs: remainingTimeout(deadline),
-            }),
-          );
-        } catch {
-          cleanupFailures += 1;
-        }
+      try {
+        rmSync(root, { recursive: true, force: true });
+      } catch {
+        cleanupFailures += 1;
       }
-      rmSync(root, { recursive: true, force: true });
     }
     return { kind: timedOut ? "timeout" : "complete", durationMs: Date.now() - workerStartedAt };
   });
