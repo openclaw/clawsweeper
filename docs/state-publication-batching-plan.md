@@ -995,9 +995,69 @@ With unchanged sequential preparation, estimated batch time is approximately
 16 to 51 items/hour, and size 32 to 58 items/hour. The asymptotic serial ceiling
 is about 66 items/hour, below the observed 76-item/hour sustained arrival rate.
 There is therefore no finite item-count-only setting that can prove backlog
-drain under the current preparation design. A serial size 32 would also project
-to about 33 minutes, leaving inadequate margin against workflow, batch lease,
-token, and recovery deadlines.
+drain under the current preparation design. A serial size 32 projects to about
+33 minutes from this one-run model. That duration is a throughput and operational
+occupancy problem, not a hard 30-minute batch-lease violation.
+
+The relevant clocks are distinct:
+
+- the publication batch lease is a renewable 30-minute sliding lease;
+  `heartbeat` extends it from the server clock and it has no 30-minute absolute
+  lifetime;
+- the state-writer coordinator has a renewable two-minute lease plus a
+  30-minute absolute deadline, but that deadline starts only after finalization
+  enters the coordinator, not when batch preparation starts;
+- the Git publication fence has its own renewable two-minute TTL and exists only
+  around the final state mutation;
+- the Actions job has the actual end-to-end hard timeout of 60 minutes.
+
+A healthy 33-minute batch can therefore retain ownership if heartbeat continues.
+It is still unacceptable as the target design: one active batch blocks the next
+publication departure for roughly half an hour, useful throughput remains below
+arrivals, a hung member has more time to consume the 60-minute job/token budget,
+and failure recovery covers up to 32 members. The 15-minute target below is an
+operational and capacity SLO, not a lease correctness boundary.
+
+### Current prepare contract and unsafe shared state
+
+`Prepare each item independently` currently means logically independent, not
+filesystem-independent. For each manifest member the workflow:
+
+1. heartbeats the batch lease;
+2. downloads the producer run artifact and validates the exact-review tuple,
+   source SHA, protocol version, lease revision, and claim generation;
+3. rejects legacy tuple-less artifacts;
+4. imports the review report into the local event record tree;
+5. fetches and hard-resets the state checkout, compares the candidate tuple with
+   current state, and terminalizes stale or superseded input;
+6. runs guarded `apply-decisions`, which can synchronize a durable review
+   comment or perform an already-authorized close on that one GitHub item;
+7. snapshots the resulting record tuple and emits an `eligible`, `superseded`,
+   retryable, or permanent outcome containing the fenced mutation plan.
+
+Prepare does not commit the generated state branch. Finalization re-fetches the
+active queue members, validates every plan identity and expected OID, combines
+the healthy plans, and performs the one serialized state commit and per-item
+acknowledgements.
+
+The live shell loop and the reusable publisher both await members serially. A
+mechanical `xargs -P` or backgrounding change is unsafe because workers currently
+share all of the following mutable locations:
+
+- `artifacts/event`;
+- `.artifacts/event-record-snapshot`;
+- `.artifacts/event-apply-report.json`;
+- the generated record tree under `records/<repo-slug>/...`;
+- the checkout, worktree, index, and HEAD referenced by
+  `CLAWSWEEPER_STATE_DIR`;
+- bundle directories named only by item number, which can collide when two
+  repositories owned by the same organization have the same item number.
+
+Per-item GitHub effects are semantically parallelizable only for distinct fenced
+item identities. They remain subject to installation-token and secondary-rate-
+limit pressure. The batch must reject duplicate `(target repo, item number)`
+identities before starting workers and must never use concurrency to weaken the
+existing snapshot, protected-item, apply, or close guards.
 
 The capacity correction is split across two new decision boundaries after the
 size-8 safety checkpoint.
@@ -1006,33 +1066,130 @@ size-8 safety checkpoint.
 
 This is an implementation and proof PR, not a configuration expansion. It must
 leave both production maxima at 8 and address the failure modes that would make
-a direct serial `8 -> 32` increase unsafe:
+a direct serial `8 -> 32` increase unsafe.
 
-- prepare at most four members concurrently, with an explicit configuration
-  default and a concurrency-one compatibility mode;
-- give every member an isolated checkout/workspace, report, outcome file, and
-  cleanup boundary so workers do not mutate shared preparation state;
-- keep manifest aggregation deterministic and commit exactly one bounded union
-  of the independently prepared healthy members;
-- preserve per-item revision, claim-generation, snapshot, apply/close guard,
-  and acknowledgement fences;
-- keep one member's deterministic failure from cancelling or poisoning healthy
-  siblings, and terminalize every unfinished member through the existing
-  manifest-based cleanup path;
-- heartbeat batch ownership throughout preparation as well as finalization, and
-  stop before the absolute lease/recovery deadline rather than relying on lease
-  expiry;
-- bound the batch by item count, changed paths, payload bytes, GitHub request
-  pressure, and total runtime; rate-limit or transport pressure must reduce
-  concurrency or produce fenced retryable outcomes instead of a partial blind
-  push;
-- expose preparation concurrency, prepare duration, total duration, maximum
-  worker duration, eligible/retryable counts, and limit-trigger reason in
-  telemetry;
-- add focused proofs for 8, 16, and 32 manifest members, concurrency 1 and 4,
-  mixed healthy/retryable/superseded members, worker cancellation, heartbeat
-  failure, acknowledgement failure, sibling preservation, and deterministic
-  retry recovery.
+#### Implementation boundaries
+
+Keep orchestration and one-item behavior separately testable:
+
+- add `src/repair/exact-review-batch-prepare.ts` for the bounded worker pool,
+  batch heartbeat, deadlines, deterministic result collection, and cleanup;
+- add `src/repair/exact-review-batch-prepare-worker.ts` for exactly one manifest
+  member: download, validate, guarded apply, and mutation-plan output;
+- add a `prepare` lifecycle command to
+  `src/repair/exact-review-batch-cli.ts`; the workflow should invoke that one
+  command instead of retaining another orchestration implementation in Bash;
+- update `src/repair/publish-event-result.ts` and the narrow artifact/apply
+  entry points to accept explicit artifact, record, snapshot, report, and state
+  roots in batch mode instead of using process-global relative paths;
+- update `src/repair/exact-review-batch-publisher.ts` to use the same bounded
+  preparation primitive or retire its serial loop as a live behavior model;
+- keep state-plan validation and `commitPreparedStateBatch` unchanged as the
+  single serialized final commit boundary unless a proven correctness gap
+  requires a narrow change.
+
+The workflow exposes `EXACT_REVIEW_BATCH_PREPARE_CONCURRENCY`, initially `4`,
+and keeps `1` as an explicit rollback/compatibility value. This PR must not
+change either configured batch maximum from 8.
+
+#### Worker workspace and state baseline
+
+The controller must create a stable root such as
+`.artifacts/exact-review-batch/workers/<manifest-index>-<item-key-hash>/` for
+every member. Item number alone is not a unique directory key. Each root owns:
+
+- the downloaded bundle and `artifacts/event` input;
+- generated `records/<repo-slug>/items|closed|plans|decision-packets` paths;
+- event base/candidate snapshots and the apply report;
+- a temporary outcome path followed by an atomic rename to the manifest's final
+  outcome path;
+- an isolated state worktree and Git index.
+
+Fetch the state branch once before workers start and record that immutable base
+SHA. Create detached per-worker state worktrees from that SHA so no worker can
+reset another worker's HEAD or index. Prefer worktrees sharing the controller
+state repository's object database: prepared plans contain blob OIDs, so blobs
+written by workers must remain visible to the final committer. If implementation
+uses separate clones instead, it must explicitly transfer and verify every
+referenced blob before plan validation. Worker cleanup must remove only its own
+validated worktree path and must run on success, failure, and cancellation.
+
+All workers may prepare against the same immutable base. Finalization remains
+authoritative: it fetches the latest remote state, rechecks queue identity and
+expected OIDs, preserves unrelated siblings, and rejects or retries an
+incompatible same-path change before one push. The shared base optimization must
+not weaken source-drift or remote-newer handling merely to avoid per-item fetches.
+
+#### Controller sequence and failure policy
+
+The controller executes this order:
+
+1. read the manifest once and reject duplicate fenced member identities or
+   duplicate `(target repo, item number)` pairs;
+2. start one batch-level heartbeat loop before state-baseline setup or worker
+   launch and renew every 60 seconds for the entire prepare command;
+3. fetch one state baseline and create isolated worker roots;
+4. run at most four one-item workers, without fail-fast cancellation of healthy
+   siblings, while preserving manifest order in collected results;
+5. stop launching new work immediately if heartbeat ownership is lost; wait for
+   already-started workers only within the bounded shutdown budget and do not
+   enter commit;
+6. write a fenced failure outcome for each worker that times out or fails before
+   producing a valid outcome; leave no ambiguous missing outcome for the normal
+   path;
+7. atomically write a prepare summary only after all outcomes are durable, then
+   stop the prepare heartbeat and remove worker roots without deleting outcome
+   files or their shared Git objects;
+8. let the existing finalization step establish its heartbeat before reading the
+   outcomes, re-fetching queue/state, and invoking the single final commit; the
+   handoff is covered by the renewed sliding batch lease, not by an unrenewed
+   long-running worker;
+9. retain the existing `always()` manifest-based release as the final crash and
+   cancellation fallback.
+
+Use a bounded per-item timeout, initially five minutes, and a bounded prepare
+deadline, initially twenty minutes. These are fail-fast operational guards, not
+lease TTLs. A timeout becomes the existing fenced retryable outcome so one slow
+GitHub request cannot consume the 60-minute job. Do not add an unbounded internal
+retry loop. Installation-token rate-limit or transport pressure must stop or
+slow new worker admission and produce retryable outcomes; it must never permit a
+partial blind state push.
+
+The existing decision that GitHub delivery may precede state publication still
+applies independently per member. Parallel workers may act only on distinct
+fenced items, retain all protected-item/apply/close checks, and rely on existing
+idempotent comment/close recovery. One member's deterministic failure must not
+cancel or poison healthy siblings.
+
+#### Telemetry and tests
+
+Record configured concurrency, observed peak workers, baseline SHA, prepare
+duration, total duration, per-worker maximum and p95 duration, counts by outcome,
+timeouts, heartbeat failures, workspace-cleanup failures, and any item/path/
+byte/runtime limit that stopped admission. Do not record tokens or artifact
+payloads.
+
+Add the narrowest matching tests, including a new
+`test/repair/exact-review-batch-prepare.test.ts`, and extend the workflow and
+publisher tests to prove:
+
+- concurrency never exceeds 4 and concurrency 1 preserves current semantics;
+- output and final plan order remain manifest-stable even when workers finish
+  out of order;
+- two repositories with the same item number receive different workspaces;
+- workers cannot modify another worker's records, snapshots, report, outcome,
+  state worktree, HEAD, or index;
+- one state fetch/base setup can feed 8, 16, and 32 members while finalization
+  still rejects remote-newer and same-path conflicts;
+- a blocked worker does not stop heartbeat, and heartbeat loss prevents commit;
+- mixed eligible, superseded, retryable, permanent, timeout, and cancelled
+  members terminalize independently;
+- 32 healthy plans still create exactly one state commit, preserve an unrelated
+  sibling, and produce 32 accepted acknowledgements;
+- cancellation before and after commit remains recoverable through the receipt
+  and manifest-based release paths;
+- existing protected-item, snapshot drift, apply, close, GitHub-effect
+  idempotency, and rate-limit behavior remain unchanged.
 
 The live gate for this PR is at size 8: at least one full eight-member batch
 must produce one state commit and eight independent accepted outcomes, with its
@@ -1058,8 +1215,10 @@ The size-32 keep gate requires:
 
 - one full batch with 32 claimed identities, one state commit containing exactly
   the intended bounded union, and 32 independent fenced outcomes;
-- total and p95 runtime below 15 minutes, leaving at least two-times margin to
-  the 30-minute recovery boundary;
+- total and rolling p95 runtime below the 15-minute operational SLO, with the
+  final state-writer coordinator hold independently remaining inside its
+  existing absolute deadline and the end-to-end job retaining ample margin to
+  its 60-minute timeout;
 - no increase in contention timeouts, open DLQ count, retry amplification,
   sibling loss, stale-generation rejection, guard bypass, or ordinary-writer
   starvation;
