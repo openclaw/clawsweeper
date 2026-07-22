@@ -55,9 +55,33 @@ export async function createIsolatedStateClone({ stateRoot, destination, baselin
   await runChecked("git", ["-C", destination, "remote", "set-url", "origin", remoteUrl], {
     timeoutMs,
   });
+  const config = await capture("git", ["-C", stateRoot, "config", "--local", "--null", "--list"]);
+  for (const entry of workerGitConfigEntries(config)) {
+    await runChecked(
+      "git",
+      ["-C", destination, "config", "--local", "--add", entry.key, entry.value],
+      {
+        timeoutMs,
+      },
+    );
+  }
   await runChecked("git", ["-C", destination, "checkout", "--detach", baselineSha], {
     timeoutMs,
   });
+}
+
+function workerGitConfigEntries(config) {
+  const allowed =
+    /^(?:http\..*\.extraheader|credential\..*|core\.sshcommand|user\.(?:name|email))$/i;
+  return config
+    .split("\0")
+    .filter(Boolean)
+    .flatMap((entry) => {
+      const separator = entry.indexOf("\n");
+      if (separator < 1) return [];
+      const key = entry.slice(0, separator);
+      return allowed.test(key) ? [{ key, value: entry.slice(separator + 1) }] : [];
+    });
 }
 
 async function controller() {
@@ -179,7 +203,7 @@ async function controller() {
   if (telemetry.heartbeatFailed || cleanupFailures > 0) process.exitCode = 1;
 }
 
-async function worker(itemPath, root, stateWorktree, workspace) {
+async function worker(itemPath, root, stateClone, workspace) {
   const item = JSON.parse(readFileSync(itemPath, "utf8"));
   const decision = item.decision;
   const publication = decision.publication;
@@ -258,7 +282,7 @@ async function worker(itemPath, root, stateWorktree, workspace) {
     cwd: workspace,
     env: {
       ...process.env,
-      CLAWSWEEPER_STATE_DIR: stateWorktree,
+      CLAWSWEEPER_STATE_DIR: stateClone,
       EXACT_REVIEW_WORK_ROOT: root,
       TARGET_REPO: targetRepo,
       ITEM_NUMBER: itemNumber,

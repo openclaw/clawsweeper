@@ -72,6 +72,15 @@ test("parallel preparers use independent shallow state repositories", async (t) 
   git(source, "push", "origin", "state");
   const remoteUrl = `file://${origin}`;
   git(root, "clone", "--depth", "1", "--branch", "state", remoteUrl, stateRoot);
+  git(stateRoot, "config", "--local", "user.name", "State Publisher");
+  git(stateRoot, "config", "--local", "user.email", "state-publisher@example.com");
+  git(
+    stateRoot,
+    "config",
+    "--local",
+    "http.https://github.invalid/.extraheader",
+    "AUTHORIZATION: basic fixture",
+  );
   const baselineSha = git(stateRoot, "rev-parse", "HEAD");
   const left = join(root, "left");
   const right = join(root, "right");
@@ -93,6 +102,12 @@ test("parallel preparers use independent shallow state repositories", async (t) 
 
   assert.equal(git(left, "remote", "get-url", "origin"), remoteUrl);
   assert.equal(git(right, "remote", "get-url", "origin"), remoteUrl);
+  assert.equal(git(left, "config", "--local", "user.name"), "State Publisher");
+  assert.equal(git(right, "config", "--local", "user.email"), "state-publisher@example.com");
+  assert.equal(
+    git(left, "config", "--local", "http.https://github.invalid/.extraheader"),
+    "AUTHORIZATION: basic fixture",
+  );
   assert.equal(git(left, "rev-parse", "HEAD"), baselineSha);
   assert.equal(git(right, "rev-parse", "HEAD"), baselineSha);
   assert.equal(git(left, "rev-parse", "--is-shallow-repository"), "true");

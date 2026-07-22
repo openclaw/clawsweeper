@@ -72,8 +72,9 @@ test("batch workflow uses owner-scoped mutation credentials and isolated state c
   assert.match(source, /uses: \.\/\.github\/actions\/create-state-token/);
   assert.match(source, /uses: \.\/\.github\/actions\/setup-state/);
   assert.doesNotMatch(source, /permissions:\n(?:.*\n)*?\s+issues: write/);
-  assert.match(prepareSource, /"worktree",[\s\S]*?"add",[\s\S]*?"--detach"/);
-  assert.match(prepareSource, /CLAWSWEEPER_STATE_DIR: stateWorktree/);
+  assert.match(prepareSource, /"clone",[\s\S]*?"--shared",[\s\S]*?"--no-checkout"/);
+  assert.match(prepareSource, /http\\\.\.\*\\\.extraheader/);
+  assert.match(prepareSource, /CLAWSWEEPER_STATE_DIR: stateClone/);
   assert.match(prepareSource, /EXACT_REVIEW_WORK_ROOT: root/);
 });
 

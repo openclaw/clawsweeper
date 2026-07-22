@@ -133,13 +133,13 @@ export class StateWriterTelemetryRecorder {
     if (this.acquired && this.holdMs === null) {
       this.holdMs = Math.max(0, finishedAtMs - (this.holdStartedAtMs ?? finishedAtMs));
     }
-    this.outcome = outcome;
-    this.emit("finished");
     const safeOutcome =
       (!this.acquired && outcome !== "contention_timeout" && outcome !== "failed") ||
       (this.acquired && outcome === "contention_timeout")
         ? "failed"
         : outcome;
+    this.outcome = safeOutcome;
+    this.emit("finished");
     const candidate = {
       schema_version: STATE_WRITER_SCHEMA_VERSION,
       operation_id: this.operationId,
