@@ -45,34 +45,30 @@ starts with:
 Codex review: needs real behavior proof before merge.
 ```
 
-The body should include the strongest actionable, non-overlapping sections the
-report has:
+PR comments use a human-first shape:
 
-- `**Summary**` from the typed `changeSummary` field, not from the
-  merge verdict or maintainer follow-up summary; when `reproductionAssessment`
-  is present, this section also includes a compact `Reproducibility:` line
-- `**Real behavior proof**` near the top for PRs, from the typed
-  `realBehaviorProof` field. When proof is missing, mock-only, or insufficient,
-  this section should tell contributors that terminal screenshots, console
-  output, copied live output, linked artifacts, recordings, and redacted logs
-  count even for non-visual CLI or text changes. Ordinary app screenshots count
-  only for behavior they directly show; browser runtime, network, CSP, and
-  security proof needs visible diagnostic output, not a "no visible console
-  violation" claim
-- `**Next step before merge**` for PRs, or `**Next step**` for issues, from the
-  work-candidate reason or next action
-- `**Security**` from the typed `securityReview` field, so supply-chain,
-  permission, secret-handling, and code-execution concerns have a dedicated
-  visible pass; omit this section when the review is `not_applicable` and has
-  no concerns
-- `**Review findings**` for Codex `/review`-style findings, using typed priority,
-  confidence, file, and line-range data from the report
-- `Best possible solution:` only when it adds a distinct end-state that is not
-  already covered by the next-step section
-- `Acceptance criteria:`
-- `What I checked:`
-- `Remaining risk:` only when it is not a restatement of the required change or
-  best solution
+1. `## What this changes` is first. It comes from the typed `changeSummary`
+   field and should define unfamiliar subsystem terms briefly and explain the
+   effect in plain language.
+2. `## Merge readiness` comes directly after the change summary. It uses a compact table for status, overall
+   rank, proof rank, patch-quality rank, priority, and security. Crab ranks stay
+   visible, but every ranked value also shows its six-point score: S is `6/6`,
+   A is `5/6`, B is `4/6`, C is `3/6`, D is `2/6`, and F is `1/6`.
+3. `## Decision needed` appears only when a maintainer decision packet exists.
+   It shows the concrete question and recommended option in a table.
+4. `## Before merge` lists only real remaining actions or risks. Routine CI,
+   ordinary maintainer review, and no-op guidance collapse to `None.`
+5. `## Findings` always appears. It renders concise typed review/security
+   findings or `None.`
+
+Everything primarily useful to agents or deep reviewers lives under one
+collapsed `Agent review details` section: security evidence, PR surface,
+review metrics, stored-data warnings, root-cause clusters, proof suggestions,
+merge-risk options, full review comments, labels, evidence, rank legend,
+workflow notes, and review history.
+
+Security defaults to `None.` when there are no concerns. Do not spend public
+space explaining why an uneventful security pass is uneventful.
 
 Concrete blockers or required work in risk, finding, next-step,
 merge-blocking proof guidance, acceptance criteria, and remaining-risk text may
@@ -84,8 +80,8 @@ as label justifications, AGENTS.md notes, Mantis/workflow notes, model metadata,
 related people, PR stats, or generic evidence lists.
 
 Full review comments, source links, owner routing, acceptance criteria, and
-evidence stay under the collapsed `Review details` block so the top-level PR
-comment reads like a concise review.
+evidence stay under the collapsed `Agent review details` block so the top-level
+PR comment reads like a concise review.
 
 Automerge and autofix state belongs in the command/status comment and hidden
 markers, not in the public review section headings. A clean opted-in PR should

@@ -69,9 +69,14 @@ For PRs, set `changeSummary` to a neutral one-sentence summary of what the PR
 branch changes, based on the title, body, diff, files, and commits. Describe the
 actual code/docs/tests/workflow/package surface touched; do not use
 `changeSummary` for the merge verdict, maintainer follow-up, risk, or whether
-the PR is redundant. For issues, set `changeSummary` to the requested behavior,
-bug, or cleanup in one sentence. Keep `summary` for the review decision and
-rationale.
+the PR is redundant. Write for a contributor who does not already know the
+subsystem: prefer plain verbs, briefly define the first unfamiliar repository
+term, and explain the user-visible or operator-visible effect instead of
+listing internal class or function names. For example, write "Memory Core is
+OpenClaw's local search index; this repairs older SQLite databases whose legacy
+and current rows disagree" instead of naming only migration helpers. For
+issues, set `changeSummary` to the requested behavior, bug, or cleanup in one
+sentence. Keep `summary` for the review decision and rationale.
 
 Keep user-visible fields non-overlapping. `summary` is the verdict and
 rationale, `changeSummary` is only the requested change or PR diff,
