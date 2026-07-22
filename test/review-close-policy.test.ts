@@ -615,6 +615,8 @@ test("skill-only OpenClaw PRs can close through ClawHub with upload guidance", (
     summary:
       "The branch adds an optional bundled skill and does not change required core behavior.",
     changeSummary: "Adds bundled Higgsfield skill files under skills/higgsfield.",
+    systemContext: "",
+    architectureDiagram: "",
     bestSolution:
       "Publish the skill through ClawHub so it stays installable outside OpenClaw core.",
     itemCategory: "skill",

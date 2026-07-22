@@ -756,6 +756,8 @@ interface Decision {
   confidence: Confidence;
   summary: string;
   changeSummary: string;
+  systemContext: string;
+  architectureDiagram: string;
   evidence: Evidence[];
   likelyOwners: LikelyOwner[];
   risks: string[];
@@ -2093,6 +2095,8 @@ const DECISION_SCHEMA_KEYS = new Set([
   "confidence",
   "summary",
   "changeSummary",
+  "systemContext",
+  "architectureDiagram",
   "evidence",
   "likelyOwners",
   "risks",
@@ -2218,6 +2222,8 @@ const LIKELY_OWNER_SCHEMA_KEYS = new Set([
 const REVIEW_SECTIONS = {
   summary: "Summary",
   changeSummary: "What This Changes",
+  systemContext: "System Context",
+  architectureDiagram: "Architecture Diagram",
   bestSolution: "Best Possible Solution",
   maintainerDecision: "Maintainer Decision",
   reproductionAssessment: "Reproduction Assessment",
@@ -4017,6 +4023,8 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
     confidence: requireEnum(record.confidence, CONFIDENCES, "decision.confidence"),
     summary: requireString(record.summary, "decision.summary"),
     changeSummary: requireString(record.changeSummary, "decision.changeSummary"),
+    systemContext: requireString(record.systemContext, "decision.systemContext"),
+    architectureDiagram: requireString(record.architectureDiagram, "decision.architectureDiagram"),
     evidence,
     likelyOwners,
     risks: requireStringArray(record.risks, "decision.risks").filter(
@@ -5641,6 +5649,43 @@ function firstNonEmptyLine(value: string): string {
   );
 }
 
+function markdownTableCells(line: string): string[] {
+  const value = line.trim();
+  if (!value.startsWith("|") || !value.endsWith("|")) return [];
+  const cells: string[] = [];
+  let cell = "";
+  for (let index = 1; index < value.length - 1; index += 1) {
+    const character = value[index];
+    if (character === "|" && value[index - 1] !== "\\") {
+      cells.push(cell.trim().replace(/\\\|/g, "|"));
+      cell = "";
+      continue;
+    }
+    cell += character;
+  }
+  cells.push(cell.trim().replace(/\\\|/g, "|"));
+  return cells;
+}
+
+function firstBeforeMergeAction(body: string): string {
+  const section = markdownSection(body, "Before merge");
+  if (!section) return "";
+  for (const line of section.split(/\r?\n/)) {
+    const cells = markdownTableCells(line);
+    if (cells.length < 2) continue;
+    if (cells.every((cell) => /^:?-{3,}:?$/.test(cell))) continue;
+    const labels = cells.map((cell) =>
+      cell
+        .replace(/^\*\*|\*\*$/g, "")
+        .trim()
+        .toLowerCase(),
+    );
+    if (labels[0] === "needed" && labels[1] === "why") continue;
+    if (cells[1]) return cells[1];
+  }
+  return firstNonEmptyLine(section);
+}
+
 function previousReviewStatus(body: string): string {
   const status = firstLineAfterPrefix(body, "Codex review:");
   const reviewedIndex = status.toLowerCase().indexOf("_reviewed ");
@@ -5747,7 +5792,7 @@ function extractLatestClawSweeperReview(
     proofStatus: previousReviewProofStatus(body),
     rating: previousReviewRating(body),
     nextStep:
-      firstNonEmptyLine(markdownSection(body, "Before merge")) ||
+      firstBeforeMergeAction(body) ||
       firstNonEmptyLine(markdownSection(body, "Next step before merge")) ||
       firstNonEmptyLine(markdownSection(body, "Next step")),
     findings: reviewHistoryFindings(latestCompletedCycle),
@@ -10088,6 +10133,8 @@ function codexFailureDecision(
     confidence: "low",
     summary: `Codex review failed: ${reason}${status === null ? "" : ` (exit ${status})`}.`,
     changeSummary: "Review failed before ClawSweeper could summarize the requested change.",
+    systemContext: "",
+    architectureDiagram: "",
     evidence: [
       evidenceEntry({ label: "failure reason", detail: reason }),
       evidenceEntry({ label: "codex failure detail", detail: trimMiddle(failureDetail, 4000) }),
@@ -12068,9 +12115,8 @@ function publicMergeReadinessBlock(
       ? "Needs attention"
       : "None";
   const lines = [
-    "| | |",
-    "|---|---|",
     `| **Status** | ${publicStatusText(publicMergeReadinessResult(rating, proof))} |`,
+    "|---|---|",
     `| **Overall** | ${publicRatedName(rating.overallTier)} |`,
     `| **Proof** | ${publicRatedName(rating.proofTier)}${shiny} |`,
     `| **Patch quality** | ${publicRatedName(rating.patchTier)} |`,
@@ -16157,6 +16203,8 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
     confidence: "high",
     summary: reviewSectionValue(markdown, "summary"),
     changeSummary: reviewSectionValue(markdown, "changeSummary"),
+    systemContext: reviewSectionValue(markdown, "systemContext"),
+    architectureDiagram: reviewSectionValue(markdown, "architectureDiagram"),
     evidence: reportEvidence(markdown),
     likelyOwners: reportLikelyOwners(markdown),
     risks: [],
@@ -18826,6 +18874,8 @@ function renderKeepOpenCommentFromReport(
   const rootCauseCluster = reportRootCauseCluster(markdown);
   const summary = reviewSectionValue(markdown, "summary");
   const changeSummary = reviewSectionValue(markdown, "changeSummary");
+  const systemContext = reviewSectionValue(markdown, "systemContext");
+  const architectureDiagram = reviewSectionValue(markdown, "architectureDiagram");
   const bestSolution = reviewSectionValue(markdown, "bestSolution");
   const reproductionAssessment = reviewSectionValue(markdown, "reproductionAssessment");
   const solutionAssessment = reviewSectionValue(markdown, "solutionAssessment");
@@ -18998,6 +19048,13 @@ function renderKeepOpenCommentFromReport(
             summaryLine,
           ),
     );
+    if (systemContext && architectureDiagram) {
+      appendHeadingSection(
+        lines,
+        "How this fits together",
+        `${systemContext}\n\n\`\`\`mermaid\n${architectureDiagram}\n\`\`\``,
+      );
+    }
     if (decisionPacketBlock) {
       appendHeadingSection(lines, "Decision needed", decisionPacketBlock);
     }
@@ -21709,6 +21766,14 @@ ${options.decision.summary}
 ## ${REVIEW_SECTIONS.changeSummary}
 
 ${options.decision.changeSummary}
+
+## ${REVIEW_SECTIONS.systemContext}
+
+${options.decision.systemContext}
+
+## ${REVIEW_SECTIONS.architectureDiagram}
+
+${options.decision.architectureDiagram}
 
 ## ${REVIEW_SECTIONS.bestSolution}
 

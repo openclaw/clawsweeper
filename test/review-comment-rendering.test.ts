@@ -548,6 +548,16 @@ Keep this test-only PR open for maintainer review.
 
 Adds regression coverage for session-scoped model overrides.
 
+## System Context
+
+OpenClaw resolves a session's model override before sending the next agent request.
+
+## Architecture Diagram
+
+flowchart LR
+    session["Session settings"] --> resolver["Model resolver"]
+    resolver --> request["Agent request"]
+
 ## Best Possible Solution
 
 Land the tests after targeted validation is green.
@@ -601,6 +611,13 @@ Reason: Maintainers should review the tests after the targeted lane is green.
     /## What this changes\n\nAdds regression coverage for session-scoped model overrides\./,
   );
   assert.ok(comment.indexOf("## What this changes") < comment.indexOf("## Merge readiness"));
+  assert.match(comment, /## Merge readiness\n\n\| \*\*Status\*\* \|/);
+  assert.doesNotMatch(comment, /\| \| \|\n\|---\|---\|/);
+  assert.match(
+    comment,
+    /## How this fits together\n\nOpenClaw resolves a session's model override before sending the next agent request\.\n\n```mermaid\nflowchart LR/,
+  );
+  assert.ok(comment.indexOf("## Merge readiness") < comment.indexOf("## How this fits together"));
   assert.doesNotMatch(comment, /\*\*Workflow note:\*\*/);
   assert.match(comment, /### Workflow/);
   assert.match(

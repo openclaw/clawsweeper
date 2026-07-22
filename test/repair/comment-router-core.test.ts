@@ -33,6 +33,7 @@ import {
   createCachedLabelNumberLookup,
   existingCommandStatusBlocksReplay,
   existingModeStatusBlocksReplay,
+  extractMarkdownSection,
   expiredReviewStartStatusLeases,
   freshExactHeadReviewStartLease,
   hasCommandResponseMarker,
@@ -61,6 +62,7 @@ import {
   reviewOnlyRepairLoopTerminalChecks,
   repairLoopPauseLabels,
   repairLoopStopPauseReason,
+  reviewSummaryFromCommentBody,
   reviewedHeadShaBlockReason,
   renderAutomergeJob,
   renderIssueImplementationJob,
@@ -78,6 +80,61 @@ import {
 import { CLAWSWEEPER_CO_AUTHOR_TRAILER } from "../../dist/repair/co-author-credit.js";
 import { issueSourceRevisionSha256 } from "../../dist/repair/issue-source-guard.js";
 import { parseSimpleYaml, validateJob } from "../../dist/repair/lib.js";
+
+test("review comment section extraction supports headings and stops at metadata", () => {
+  const body = [
+    "# ClawSweeper review",
+    "",
+    "## What this changes",
+    "",
+    "Adds a human-first review summary.",
+    "",
+    "A second paragraph stays with the summary.",
+    "",
+    "## Merge readiness",
+    "",
+    "| **Status** | Needs review |",
+    "",
+    "<details>",
+    "<summary>Agent review details</summary>",
+    "Hidden diagnostics.",
+    "</details>",
+    "",
+    "<!-- clawsweeper-verdict:needs-human sha=abc123 -->",
+  ].join("\n");
+
+  assert.equal(
+    extractMarkdownSection(body, "What this changes"),
+    "Adds a human-first review summary.\n\nA second paragraph stays with the summary.",
+  );
+  assert.equal(
+    extractMarkdownSection("**Summary**\n\nLegacy summary.\n\n**Next step**\n\nWait.", "Summary"),
+    "Legacy summary.",
+  );
+  assert.equal(
+    extractMarkdownSection("Summary:\n\nColon-style summary.\n\nNext step:\nWait.", "Summary"),
+    "Colon-style summary.",
+  );
+  assert.equal(extractMarkdownSection(body, "Missing"), null);
+});
+
+test("review summaries prefer the human-first change summary over legacy summary text", () => {
+  const body = [
+    "**Summary**",
+    "Legacy automation summary.",
+    "",
+    "## What this changes",
+    "",
+    "Plain-language change summary.",
+    "",
+    "## Merge readiness",
+    "",
+    "Ready for review.",
+  ].join("\n");
+
+  assert.equal(reviewSummaryFromCommentBody(body), "Plain-language change summary.");
+  assert.equal(reviewSummaryFromCommentBody("**Summary**\n\nLegacy only."), "Legacy only.");
+});
 
 test("planCommandAckConvergence scopes duplicate cleanup to the current status marker", () => {
   const requestedStatus = "<!-- clawsweeper-command-status:81564:re_review:new -->";

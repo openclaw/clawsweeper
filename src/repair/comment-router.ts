@@ -52,6 +52,7 @@ import {
   existingCommandStatusBlocksReplay,
   existingModeStatusBlocksReplay,
   existingRepairLoopModeOutcome,
+  extractMarkdownSection,
   freshExactHeadReviewStartLease,
   isAuthorReadOnlyCommandAllowed,
   isMaintainerCommandAllowed,
@@ -75,6 +76,7 @@ import {
   reviewOnlyRepairLoopTerminalChecks,
   repairLoopPauseLabels,
   repairLoopStopPauseReason,
+  reviewSummaryFromCommentBody,
   reviewedHeadShaBlockReason,
   renderAutomergeJob,
   renderIssueImplementationJob,
@@ -479,9 +481,7 @@ function routedCommandForComment(comment: JsonValue): LooseRecord | null {
     trusted_bot_author: parsed.trusted_bot_author ?? null,
     automation_source: parsed.automation_source ?? null,
     repair_reason: parsed.repair_reason ?? null,
-    review_summary:
-      extractMarkdownSection(comment.body, "Summary") ??
-      extractMarkdownSection(comment.body, "What this changes"),
+    review_summary: reviewSummaryFromCommentBody(comment.body),
     review_followup:
       extractMarkdownSection(comment.body, "Next step before merge") ??
       extractMarkdownSection(comment.body, "Automerge follow-up") ??
@@ -4396,17 +4396,6 @@ function listCandidateComments() {
     durableComments: listRepairLoopReviewComments(),
     maxComments,
   });
-}
-
-function extractMarkdownSection(body: JsonValue, heading: string): string | null {
-  const text = String(body ?? "");
-  const pattern = new RegExp(
-    `(?:^|\\n)(?:\\*\\*${escapeRegExp(heading)}\\*\\*|${escapeRegExp(
-      heading,
-    )}:)\\s*\\n+([\\s\\S]*?)(?=\\n\\n(?:\\*\\*[^\\n*]{1,80}\\*\\*|[A-Z][^\\n:]{0,80}:\\n)|\\n<details>|\\n<!--|$)`,
-    "i",
-  );
-  return pattern.exec(text)?.[1]?.trim() || null;
 }
 
 function issueCommentsFor(number: JsonValue): JsonValue[] {

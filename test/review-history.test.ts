@@ -284,6 +284,52 @@ test("state report prior-review identity matches the marked durable comment", ()
   );
 });
 
+test("latest review extraction reads the first action from the before-merge table", () => {
+  const body = [
+    "Codex review: needs changes before merge. _Reviewed 2026-07-21T20:00:00.000Z._",
+    "",
+    "# ClawSweeper review",
+    "",
+    "## What this changes",
+    "",
+    "Updates the review comment layout.",
+    "",
+    "## Merge readiness",
+    "",
+    "| | |",
+    "|---|---|",
+    "| **Overall** | 🦐 gold shrimp **(3/6)** |",
+    "",
+    "## Before merge",
+    "",
+    "| Needed | Why |",
+    "|---|---|",
+    "| **P1** | Add proof for the `a \\| b` path. |",
+    "| **P2** | Ask for maintainer review. |",
+    "",
+    "## Findings",
+    "",
+    "None.",
+    "",
+    "<!-- clawsweeper-verdict:needs-changes item=101 sha=abc123 confidence=high reviewed_at=2026-07-21T20:00:00.000Z -->",
+    "<!-- clawsweeper-review item=101 -->",
+  ].join("\n");
+  const review = extractLatestClawSweeperReviewForTest(
+    [
+      {
+        id: 101,
+        body,
+        updated_at: "2026-07-21T20:00:00.000Z",
+        user: { login: "clawsweeper[bot]" },
+      },
+    ],
+    101,
+  );
+
+  assert.equal(review?.summary, "Updates the review comment layout.");
+  assert.equal(review?.nextStep, "Add proof for the `a | b` path.");
+});
+
 test("state report prior-review identity preserves the original render context", () => {
   const unsyncedReport = keepOpenPullReport({ labels: JSON.stringify(["P2"]) });
   const body = markedReviewCommentForTest(

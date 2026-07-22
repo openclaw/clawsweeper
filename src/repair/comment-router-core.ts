@@ -2083,6 +2083,38 @@ export function isProofNudgeCommentBody(body: string) {
   return /<!--\s*clawsweeper-proof-nudge(?:\s|-->)/i.test(String(body ?? ""));
 }
 
+function isMarkdownSectionBoundary(line: string): boolean {
+  if (!line.startsWith("#") && !line.startsWith("**") && !line.startsWith("<")) {
+    const colon = line.indexOf(":");
+    if (colon >= 0 && line.slice(colon + 1).trim()) return false;
+  }
+  return /^(?:#{1,6}\s+\S|\*\*[^*\n]+\*\*|[A-Z][^:\n]{0,80}:|<\/?details(?:\s|>)|<!--)/.test(line);
+}
+
+export function extractMarkdownSection(body: JsonValue, heading: string): string | null {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const headingPattern = new RegExp(
+    `^(?:\\*\\*${escaped}\\*\\*|#{1,6}\\s+${escaped}|${escaped}:)\\s*$`,
+    "i",
+  );
+  const lines = String(body ?? "").split(/\r?\n/);
+  const headingIndex = lines.findIndex((line) => headingPattern.test(line.trim()));
+  if (headingIndex < 0) return null;
+
+  const section: string[] = [];
+  for (const line of lines.slice(headingIndex + 1)) {
+    if (isMarkdownSectionBoundary(line.trim())) break;
+    section.push(line);
+  }
+  return section.join("\n").trim() || null;
+}
+
+export function reviewSummaryFromCommentBody(body: JsonValue): string | null {
+  return (
+    extractMarkdownSection(body, "What this changes") ?? extractMarkdownSection(body, "Summary")
+  );
+}
+
 function trustedCommentHasPriorityFinding(body: string) {
   const reviewFindings =
     markdownSection(body, "Findings") || markdownSection(body, "Review findings");
@@ -2105,14 +2137,7 @@ function trustedHumanReviewReason(body: string, verdict: LooseRecord | null) {
 }
 
 function markdownSection(body: string, heading: string) {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = String(body ?? "").match(
-    new RegExp(
-      `(?:^|\\n)(?:\\*\\*${escaped}\\*\\*|#{1,6}\\s+${escaped})\\s*\\n([\\s\\S]*?)(?=\\n(?:\\*\\*[^*\\n]+\\*\\*|#{1,6}\\s+\\S|<details>|<\\/details>|<!--)|$)`,
-      "i",
-    ),
-  );
-  return compactReason(match?.[1] ?? "", 220);
+  return compactReason(extractMarkdownSection(body, heading) ?? "", 220);
 }
 
 function firstReviewFinding(body: string) {

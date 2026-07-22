@@ -8,6 +8,8 @@
     "confidence",
     "summary",
     "changeSummary",
+    "systemContext",
+    "architectureDiagram",
     "evidence",
     "likelyOwners",
     "risks",
@@ -95,6 +97,14 @@
     "changeSummary": {
       "type": "string",
       "description": "Neutral one-sentence summary of the requested change or PR diff. For pull requests, describe what the branch changes, not the merge verdict, maintainer next action, risk, or whether the PR is redundant."
+    },
+    "systemContext": {
+      "type": "string",
+      "description": "One or two plain-language sentences explaining where the changed subsystem sits in the larger product and what enters and leaves it. Use an empty string only when no concrete system context can be established."
+    },
+    "architectureDiagram": {
+      "type": "string",
+      "description": "Mermaid flowchart source without code fences. Use 4-8 plainly labeled nodes to show the changed subsystem, its important inputs, decisions, and outputs. Do not use click directives, URLs, HTML, initialization directives, styling directives, or source-code-only symbol names. Use an empty string when systemContext is empty."
     },
     "evidence": {
       "type": "array",

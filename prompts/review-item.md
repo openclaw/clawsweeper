@@ -78,8 +78,20 @@ and current rows disagree" instead of naming only migration helpers. For
 issues, set `changeSummary` to the requested behavior, bug, or cleanup in one
 sentence. Keep `summary` for the review decision and rationale.
 
+Set `systemContext` to one or two plain-language sentences that orient a reader
+inside the larger product: name the changed subsystem, what feeds into it, and
+what it affects next. Set `architectureDiagram` to Mermaid `flowchart` source
+without code fences. Use 4-8 short, human-readable nodes to show the subsystem's
+important inputs, decision or transformation, and outputs. Prefer product terms
+over class/function names. Do not include click directives, URLs, HTML,
+initialization directives, styling directives, or speculative components. Use
+empty strings for both fields only when the repository evidence cannot support
+a concrete system explanation.
+
 Keep user-visible fields non-overlapping. `summary` is the verdict and
 rationale, `changeSummary` is only the requested change or PR diff,
+`systemContext` and `architectureDiagram` explain how that change fits into the
+surrounding system,
 `workReason` is the routing or next-action reason, `bestSolution` is the desired
 end state, `reproductionAssessment` answers whether the issue has a
 high-confidence reproduction path, `solutionAssessment` answers whether the
