@@ -56,10 +56,10 @@ EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = "60000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = "45000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "180000"
 EXACT_REVIEW_PENDING_SOFT_LIMIT = "300"
-# Bounded four-worker preparation keeps the size-32 lease inside the operational
-# runtime target while preserving one deterministic final state commit.
+# Keep bounded four-worker preparation, but return the live mutation lease to 8:
+# the first size-32 run exceeded the 15-minute operational target during prepare.
 EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED = "1"
-EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "32"
+EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "8"
 EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS = "60000"
 EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_COOLDOWN_MS = "30000"
 EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_RESERVATION_MS = "600000"
