@@ -1317,13 +1317,19 @@ test("apply workflow rejects malformed or oversized coverage proof artifact tree
 
 test("apply workflow target token can inspect source workflow runs", () => {
   const workflow = readText(".github/workflows/sweep.yml");
+  const action = readText(".github/actions/create-target-write-token/action.yml");
   const applyJob = workflow.slice(workflow.indexOf("\n  apply-existing:"));
   const tokenStart = applyJob.indexOf("- name: Create target write token");
   const stateTokenStart = applyJob.indexOf("- name: Create state token", tokenStart);
 
   assert.ok(tokenStart !== -1);
   assert.ok(stateTokenStart > tokenStart);
-  assert.match(applyJob.slice(tokenStart, stateTokenStart), /permission-actions: read/);
+  assert.match(
+    applyJob.slice(tokenStart, stateTokenStart),
+    /uses: \.\/\.github\/actions\/create-target-write-token/,
+  );
+  assert.match(action, /permission-actions: read/);
+  assert.match(action, /minted-at-ms:[\s\S]*steps\.minted-at\.outputs\.milliseconds/);
 });
 
 test("targeted apply dispatches keep apply names ahead of exact-review names", () => {
@@ -1388,10 +1394,17 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(applyStep, /Capping apply checkpoint size at 20/);
   assert.match(applyStep, /base_close_processed_limit=300/);
   assert.match(applyHelper, /coverage_proof_limit=2/);
+  assert.match(applyHelper, /apply_token_budget_ms=3300000/);
   assert.match(applyHelper, /max_runtime_arg=\(--max-runtime-ms 600000\)/);
   assert.match(applyHelper, /max_close_processed_limit=900/);
   assert.match(applyStep, /close_processed_limit="\$base_close_processed_limit"/);
   assert.match(applyStep, /source scripts\/apply-workflow-helpers\.sh/);
+  assert.match(applyStep, /timeout-minutes: 70/);
+  assert.match(
+    applyStep,
+    /CLAWSWEEPER_APPLY_TOKEN_MINTED_AT_MS: \$\{\{ steps\.target-write-token\.outputs\.minted-at-ms \}\}/,
+  );
+  assert.match(applyStep, /initialize_apply_token_budget/);
   assert.match(applyStep, /select_adaptive_apply_batch/);
   assert.match(applyHelper, /adaptive-apply-batch-size/);
   assert.match(applyHelper, /--status-path "results\/sweep-status\/\$\{target_slug\}\.json"/);
@@ -1505,7 +1518,9 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(applyStep, /true\|1\|yes\|on\) product_direction_enabled=true/);
   assert.match(applyStep, /if \[ "\$result_count" -ge "\$close_processed_limit" \]; then/);
   assert.match(applyHelper, /--action skipped_runtime_budget/);
-  assert.match(applyStep, /if automatic_apply_runtime_reached/);
+  assert.match(applyStep, /if apply_checkpoint_runtime_reached/);
+  assert.match(applyStep, /report_apply_token_budget_stop .*"\$result_count"/);
+  assert.match(applyStep, /apply_checkpoint_runtime_reached .*"\$result_count"/);
   assert.match(applyHelper, /runtime budget before cursor progress/);
   assert.match(applyHelper, /fresh-token continuation will resume the lane/);
   assert.doesNotMatch(
@@ -1576,7 +1591,7 @@ test("apply workflow finalization retries only target status after checkpointed 
   assert.ok(cursorPath > closePaths);
   assert.ok(closeCheckpoint > cursorPath);
   for (const laterBranch of [
-    'if automatic_apply_runtime_reached ".artifacts/apply-reports/apply-report-$checkpoint.json"',
+    'if apply_checkpoint_runtime_reached ".artifacts/apply-reports/apply-report-$checkpoint.json"',
     'if [ "$result_count" -ge "$close_processed_limit" ]; then',
     'if [ "$result_count" -eq 0 ]; then',
     'if [ "$closed_in_chunk" -eq 0 ]; then',
@@ -1650,6 +1665,53 @@ test("apply workflow does not queue runtime-yield continuation without cursor pr
         .filter((line) => line.includes("|")),
       ["yielded|false", "yielded|true"],
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply checkpoint publishes a clean token-budget stop and a later run resumes", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const stoppedReport = join(root, "stopped.json");
+  const resumedReport = join(root, "resumed.json");
+  writeFileSync(
+    stoppedReport,
+    JSON.stringify([
+      {
+        number: 0,
+        action: "skipped_runtime_budget",
+        reason: "apply token budget reached at 4300000ms since epoch",
+      },
+    ]),
+  );
+  writeFileSync(resumedReport, JSON.stringify([{ number: 42, action: "closed" }]));
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          "source scripts/apply-workflow-helpers.sh",
+          "CLAWSWEEPER_APPLY_TOKEN_MINTED_AT_MS=1000000",
+          "initialize_apply_token_budget",
+          'printf "deadline=%s\\n" "$CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS"',
+          'if apply_token_budget_reached "$STOPPED_REPORT"; then apply_token_budget_stop_summary 7 12; fi',
+          'if apply_token_budget_reached "$RESUMED_REPORT"; then echo stopped-again; else echo resumed; fi',
+        ].join("\n"),
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, STOPPED_REPORT: stoppedReport, RESUMED_REPORT: resumedReport },
+      },
+    );
+    assert.match(output, /deadline=4300000/);
+    assert.match(
+      output,
+      /apply stopped at token budget: processed=7 remaining=~12; next run continues/,
+    );
+    assert.match(output, /resumed/);
+    assert.doesNotMatch(output, /stopped-again/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

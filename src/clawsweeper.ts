@@ -2515,6 +2515,7 @@ const GITHUB_RUNTIME_REPORT_FLUSH_RESERVE_MS = 1_000;
 interface GitHubRuntimeBudget {
   startedAtMs: number;
   maxRuntimeMs: number;
+  limitReason?: string;
   onYield?: (reason: string, resumeCurrent?: boolean) => void;
   onFailure?: (error: unknown) => void;
   yieldReason?: string;
@@ -2550,7 +2551,9 @@ function githubRuntimeRemainingMs(nowMs = Date.now()): number | null {
 function githubRuntimeBudgetError(phase: string): GitHubRuntimeBudgetError {
   const budget = activeGitHubRuntimeBudget;
   const reason =
-    budget?.yieldReason ?? `max runtime ${budget?.maxRuntimeMs ?? 0}ms reached ${phase}`;
+    budget?.yieldReason ??
+    budget?.limitReason ??
+    `max runtime ${budget?.maxRuntimeMs ?? 0}ms reached ${phase}`;
   if (budget) budget.yieldReason = reason;
   return new GitHubRuntimeBudgetError(reason);
 }
@@ -26333,11 +26336,56 @@ function recordApplyActionEvents(options: {
   options.ledger.terminal = true;
 }
 
-function applyDecisionsCommand(args: Args): void {
-  const runtimeBudget: GitHubRuntimeBudget = {
-    startedAtMs: Date.now(),
-    maxRuntimeMs: numberArg(args.max_runtime_ms, 0),
+function applyRuntimeBudget(
+  configuredMaxRuntimeMs: number,
+  tokenDeadlineText: string | undefined,
+  nowMs = Date.now(),
+): GitHubRuntimeBudget {
+  if (!tokenDeadlineText) {
+    return { startedAtMs: nowMs, maxRuntimeMs: configuredMaxRuntimeMs };
+  }
+  if (!/^\d+$/.test(tokenDeadlineText)) {
+    throw new Error("CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS must be a Unix timestamp in milliseconds");
+  }
+  const tokenDeadlineMs = Number(tokenDeadlineText);
+  if (!Number.isSafeInteger(tokenDeadlineMs)) {
+    throw new Error("CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS is outside the safe integer range");
+  }
+  const remainingMs = tokenDeadlineMs - nowMs;
+  if (remainingMs <= 0) {
+    return {
+      startedAtMs: nowMs - 1,
+      maxRuntimeMs: 1,
+      limitReason: `apply token budget reached at ${tokenDeadlineMs}ms since epoch`,
+    };
+  }
+  if (configuredMaxRuntimeMs > 0 && configuredMaxRuntimeMs <= remainingMs) {
+    return { startedAtMs: nowMs, maxRuntimeMs: configuredMaxRuntimeMs };
+  }
+  return {
+    startedAtMs: nowMs,
+    maxRuntimeMs: remainingMs,
+    limitReason: `apply token budget reached at ${tokenDeadlineMs}ms since epoch`,
   };
+}
+
+export function applyRuntimeBudgetForTest(options: {
+  configuredMaxRuntimeMs: number;
+  tokenDeadlineMs?: number;
+  nowMs: number;
+}): Pick<GitHubRuntimeBudget, "startedAtMs" | "maxRuntimeMs" | "limitReason"> {
+  return applyRuntimeBudget(
+    options.configuredMaxRuntimeMs,
+    options.tokenDeadlineMs === undefined ? undefined : String(options.tokenDeadlineMs),
+    options.nowMs,
+  );
+}
+
+function applyDecisionsCommand(args: Args): void {
+  const runtimeBudget = applyRuntimeBudget(
+    numberArg(args.max_runtime_ms, 0),
+    process.env.CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS,
+  );
   withGitHubRuntimeBudget(runtimeBudget, () => {
     try {
       applyDecisionsCommandInner(args, runtimeBudget);
@@ -26379,7 +26427,6 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
   const emitEventApplyProof = boolArg(args.event_apply_proof);
   const exactEventPublication = boolArg(args.exact_event_publication);
   const commentSyncMinAgeDays = numberArg(args.comment_sync_min_age_days, 0);
-  const maxRuntimeMs = numberArg(args.max_runtime_ms, 0);
   const reportPath = resolve(stringArg(args.report_path, join(ROOT, "apply-report.json")));
   const artifactDir = resolve(stringArg(args.artifact_dir, join(ROOT, "artifacts", "apply")));
   const cursorTraceArg = stringArg(args.cursor_trace, "").trim();
@@ -26399,6 +26446,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       : {}),
   };
   const startedAtMs = Date.now();
+  const { maxRuntimeMs } = runtimeBudget;
   const bulkFilerRepositoryPermissionCache: BulkFilerRepositoryPermissionCache = new Map();
   const requestedItemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
   const requestedItemNumberSet = new Set(requestedItemNumbers);
@@ -26630,12 +26678,14 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     const file = entry.name;
     const path = entry.path;
     if (runtimeBudgetExceeded(startedAtMs, maxRuntimeMs, Date.now())) {
+      const reason =
+        runtimeBudget.limitReason ?? `max runtime ${maxRuntimeMs}ms reached`;
       results.push({
         number: 0,
         action: "skipped_runtime_budget",
-        reason: `max runtime ${maxRuntimeMs}ms reached`,
+        reason,
       });
-      logProgress(`stopping apply: max runtime ${maxRuntimeMs}ms reached`);
+      logProgress(`stopping apply: ${reason}`);
       break;
     }
     let markdown = entry.markdown;

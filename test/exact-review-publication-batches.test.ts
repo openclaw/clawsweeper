@@ -550,6 +550,74 @@ test("an active batch blocks the legacy publisher until its lease expires", asyn
   }
 });
 
+test("batch claim serializes distinct publication events for the same durable item", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 6_000_000;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+    );
+    await queue.fetch(publicationRequest("delivery-duplicate-old", 108676, "2001"));
+    await queue.fetch(publicationRequest("delivery-duplicate-new", 108676, "2002"));
+    await queue.fetch(publicationRequest("delivery-distinct", 108677, "2003"));
+
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-unique-durable-items",
+          lease_owner: "worker-1",
+          max_items: 2,
+        }),
+      )
+    ).json();
+
+    assert.equal(claim.claimed, true, JSON.stringify(claim));
+    assert.deepEqual(
+      claim.batch.items.map((item: { item_key: string }) => item.item_key),
+      ["openclaw/openclaw#108676@publish:2001:1", "openclaw/openclaw#108677@publish:2003:1"],
+    );
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("batch claim cannot exceed the configured rollout size", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 6_500_000;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      {
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "4",
+      },
+    );
+    for (let itemNumber = 1; itemNumber <= 8; itemNumber += 1) {
+      await queue.fetch(
+        publicationRequest(`delivery-cap-${itemNumber}`, itemNumber, `${3000 + itemNumber}`),
+      );
+    }
+
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-configured-cap",
+          lease_owner: "worker-1",
+          max_items: 32,
+        }),
+      )
+    ).json();
+
+    assert.equal(claim.claimed, true, JSON.stringify(claim));
+    assert.equal(claim.requested_max_items, 32);
+    assert.equal(claim.effective_max_items, 4);
+    assert.equal(claim.batch.items.length, 4);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("rollout dispatches one full batch workflow without admitting legacy publishers", async () => {
   const originalFetch = globalThis.fetch;
   const originalNow = Date.now;

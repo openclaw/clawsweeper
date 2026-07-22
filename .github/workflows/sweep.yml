@@ -4392,16 +4392,12 @@ jobs:
       - name: Create target write token
         id: target-write-token
         continue-on-error: true
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: ./.github/actions/create-target-write-token
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: ${{ steps.target.outputs.target_repo_owner }}
-          repositories: ${{ steps.target.outputs.target_repo_name }}
-          permission-contents: write
-          permission-actions: read
-          permission-issues: write
-          permission-pull-requests: write
+          repository: ${{ steps.target.outputs.target_repo_name }}
 
       - name: Create state token
         id: state-token
@@ -4453,10 +4449,11 @@ jobs:
 
       - name: Apply unchanged proposed decisions with checkpoints
         id: apply-existing-run
-        timeout-minutes: 350
+        timeout-minutes: 70
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          CLAWSWEEPER_APPLY_TOKEN_MINTED_AT_MS: ${{ steps.target-write-token.outputs.minted-at-ms }}
           CLAWSWEEPER_PUBLISH_THROTTLE_STATUS: "true"
           CLAWSWEEPER_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CLAWSWEEPER_THROTTLE_STATUS_MIN_WAIT_MS: "60000"
@@ -4467,6 +4464,7 @@ jobs:
           set -euo pipefail
           test -n "$GH_TOKEN"
           source scripts/apply-workflow-helpers.sh
+          initialize_apply_token_budget
           limit="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '20' }}"
           min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
           min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
@@ -4668,6 +4666,7 @@ jobs:
               --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
               --apply-health-file ".artifacts/apply-health-$checkpoint.json"
             publish_status "chore: update sweep comment sync status"
+            report_apply_token_budget_stop ".artifacts/apply-reports/apply-report-$checkpoint.json" "$result_count" "unknown"
             echo "::endgroup::"
           fi
           while [ "$closed_total" -lt "$limit" ]; do
@@ -4745,7 +4744,7 @@ jobs:
             publish_status "chore: update sweep apply checkpoint $checkpoint status"
             echo "::endgroup::"
             drop_bounded_coverage_proof_tail "$cursor_trace_path"
-            if automatic_apply_runtime_reached ".artifacts/apply-reports/apply-report-$checkpoint.json"; then break; fi
+            if apply_checkpoint_runtime_reached ".artifacts/apply-reports/apply-report-$checkpoint.json" "$result_count" "$((limit - closed_total))"; then break; fi
             if [ "$result_count" -ge "$close_processed_limit" ]; then
               if [ "$closed_in_chunk" -gt 0 ]; then
                 echo "Close scan reached its $close_processed_limit-record budget; queueing a fresh-token continuation."

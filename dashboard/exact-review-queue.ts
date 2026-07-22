@@ -2535,10 +2535,8 @@ export class ExactReviewQueue {
     const claimId = exactReviewPublicationBatchId(body.claim_id);
     if (!leaseOwner) return json({ error: "invalid_lease_owner" }, 400);
     if (!claimId) return json({ error: "invalid_claim_id" }, 400);
-    const requestedSize =
-      body.max_items === undefined
-        ? exactReviewPublicationBatchSize(this.env)
-        : Number(body.max_items);
+    const configuredSize = exactReviewPublicationBatchSize(this.env);
+    const requestedSize = body.max_items === undefined ? configuredSize : Number(body.max_items);
     if (
       !Number.isInteger(requestedSize) ||
       requestedSize < 1 ||
@@ -2546,6 +2544,7 @@ export class ExactReviewQueue {
     ) {
       return json({ error: "invalid_max_items" }, 400);
     }
+    const effectiveSize = Math.min(requestedSize, configuredSize);
     const now = Date.now();
     const state = this.readStateSync();
     const batchOwnership = this.batchStore.activeLeaseSnapshot(now);
@@ -2560,7 +2559,7 @@ export class ExactReviewQueue {
     );
     // The outer comparison charges one publisher slot for the whole batch. The
     // shared helper counts candidate rows, so widen only its scan window by
-    // requestedSize; passing +1 here would silently collapse every batch to one.
+    // effectiveSize; passing +1 here would silently collapse every batch to one.
     const activePublishers = exactReviewQueueActivePublicationCount(state);
     const readyCandidates =
       activePublishers >= publicationCapacity
@@ -2570,8 +2569,10 @@ export class ExactReviewQueue {
             now,
             exactReviewQueueCapacity(this.env),
             exactReviewTargetCapacity(this.env),
-            activePublishers + requestedSize,
+            activePublishers + effectiveSize,
             new Set<string>(batchOwnership.itemKeys),
+            false, // batching replaces legacy publication blocking at this admission point
+            true, // one durable item path per commit; later events remain FIFO candidates
           ).filter(exactReviewQueueIsPublication);
     const firstOwner = readyCandidates[0]?.decision.targetRepo.split("/", 1)[0]?.toLowerCase();
     // One GitHub App installation token is scoped to one owner. Keeping a batch
@@ -2579,14 +2580,14 @@ export class ExactReviewQueue {
     // minting and exporting a different credential for every item.
     const candidates = readyCandidates
       .filter((item) => item.decision.targetRepo.split("/", 1)[0]?.toLowerCase() === firstOwner)
-      .slice(0, requestedSize)
+      .slice(0, effectiveSize)
       .map((item) => ({ itemKey: item.key, revision: item.revision }));
     const batch = this.batchStore.claim({
       batchId: claimId,
       leaseOwner,
       leaseExpiresAt: now + exactReviewPublicationBatchLeaseMs(this.env),
       now,
-      maxItems: requestedSize,
+      maxItems: effectiveSize,
       candidates,
     });
     if (state.dispatcher?.publicationBatchDispatchPendingUntil) {
@@ -2595,7 +2596,15 @@ export class ExactReviewQueue {
       state.dispatcher = dispatcher;
       this.writeStateSync(state);
     }
-    if (!batch) return json({ ok: true, claimed: false, batch: null });
+    if (!batch) {
+      return json({
+        ok: true,
+        claimed: false,
+        batch: null,
+        requested_max_items: requestedSize,
+        effective_max_items: effectiveSize,
+      });
+    }
     const oldestCandidateAt = batch.items.reduce(
       (oldest, membership) =>
         Math.min(oldest, state.items[membership.itemKey]?.createdAt ?? batch.createdAt),
@@ -2606,6 +2615,8 @@ export class ExactReviewQueue {
       claimed: true,
       batch: exactReviewPublicationBatchJson(batch),
       batch_wait_ms: Math.max(0, now - oldestCandidateAt),
+      requested_max_items: requestedSize,
+      effective_max_items: effectiveSize,
     });
   }
 
@@ -5692,6 +5703,7 @@ export function exactReviewQueueAdmittedItems(
   publicationCapacity: number,
   excludedItemKeys: ReadonlySet<string> = new Set(),
   publicationAdmissionBlocked = false,
+  uniquePublicationItems = false,
 ) {
   const dispatcherRetryAt = Number(state.dispatcher?.retryAt || 0);
   if (
@@ -5713,6 +5725,7 @@ export function exactReviewQueueAdmittedItems(
     activeTargets.set(target, (activeTargets.get(target) || 0) + 1);
   }
   const admitted: ExactReviewQueueItem[] = [];
+  const admittedPublicationItems = new Set<string>();
   let admittedReviews = 0;
   const pending = Object.values(state.items)
     .filter(
@@ -5724,8 +5737,16 @@ export function exactReviewQueueAdmittedItems(
     const publication = exactReviewQueueIsPublication(item);
     if (publication) {
       if (publicationAdmissionBlocked) continue;
+      // Distinct publication events may target the same durable record path. A batch
+      // must serialize those events across commits or their prepared mutations can
+      // disagree even though their queue keys and fencing revisions are independent.
+      const publicationItem = uniquePublicationItems
+        ? `${item.decision.targetRepo.toLowerCase()}#${item.decision.itemNumber}`
+        : "";
+      if (uniquePublicationItems && admittedPublicationItems.has(publicationItem)) continue;
       if (activePublishers >= publicationCapacity) continue;
       activePublishers += 1;
+      if (uniquePublicationItems) admittedPublicationItems.add(publicationItem);
       admitted.push(item);
       continue;
     }
