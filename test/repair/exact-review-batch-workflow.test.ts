@@ -7,6 +7,7 @@ import YAML from "yaml";
 const path = ".github/workflows/exact-review-batch-publish.yml";
 const source = readFileSync(path, "utf8");
 const cliSource = readFileSync("src/repair/exact-review-batch-cli.ts", "utf8");
+const prepareSource = readFileSync("scripts/prepare-exact-review-batch.mjs", "utf8");
 const workflow = YAML.parse(source) as {
   on: {
     schedule?: unknown;
@@ -29,7 +30,8 @@ test("batch publisher is event-driven with one non-cancelling serial workflow", 
   assert.ok(workflow.on.workflow_dispatch);
   assert.match(workflow.jobs.publish!.if, /inputs\.execute/);
   assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ["execute"]);
-  assert.equal(workflow.jobs.publish!.env.EXACT_REVIEW_BATCH_MAX_ITEMS, "32");
+  assert.equal(workflow.jobs.publish!.env.EXACT_REVIEW_BATCH_MAX_ITEMS, "50");
+  assert.equal(workflow.jobs.publish!.env.EXACT_REVIEW_BATCH_PREPARE_CONCURRENCY, "4");
   assert.equal(workflow.jobs.publish!.env.CLAWSWEEPER_APP_CLIENT_ID, "Iv23liOECG0slfuhz093");
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
   assert.deepEqual(workflow.permissions, { actions: "write", contents: "read" });
@@ -47,17 +49,14 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(source, /name: Release unfinished batch members[\s\S]*?continue-on-error: true/);
   assert.match(source, /while sleep 60/);
   assert.match(source, /test ! -f "\$heartbeat_failed"/);
-  assert.match(source, /Leaving .* retryable: artifact download failed/);
-  assert.match(source, /Leaving .* retryable: artifact validation failed/);
-  assert.match(source, /Leaving .* retryable: item publication failed/);
-  assert.match(source, /Leaving .* retryable: legacy tuple-less artifact/);
-  assert.match(source, /write_failure .*retryable_failure artifact_unavailable/);
-  assert.match(source, /write_failure .*permanent_failure tuple_protocol_invalid/);
-  assert.match(source, /EXACT_REVIEW_BATCH_MUTATION_OUTPUT/);
+  assert.match(source, /node scripts\/prepare-exact-review-batch\.mjs/);
+  assert.match(prepareSource, /"retryable_failure", "artifact_unavailable"/);
+  assert.match(prepareSource, /"permanent_failure", "tuple_protocol_invalid"/);
+  assert.match(prepareSource, /EXACT_REVIEW_BATCH_MUTATION_OUTPUT/);
   // Keep the fixture from looking like an embedded credential while still
   // proving that artifact downloads use the owner-scoped repository token.
   const ghToken = ["GH", "TOKEN"].join("_");
-  assert.match(source, new RegExp(`${ghToken}="\\$REPO_TOKEN" gh run download`));
+  assert.match(prepareSource, new RegExp(`${ghToken}: env\\("REPO_TOKEN"\\)`));
   assert.match(source, /gh workflow run repair-comment-router\.yml/);
   assert.match(source, /internal\/exact-review\/enqueue/);
   assert.match(source, /source_drift_requeue/);
@@ -73,6 +72,19 @@ test("batch workflow uses owner-scoped mutation credentials and isolated state c
   assert.match(source, /uses: \.\/\.github\/actions\/create-state-token/);
   assert.match(source, /uses: \.\/\.github\/actions\/setup-state/);
   assert.doesNotMatch(source, /permissions:\n(?:.*\n)*?\s+issues: write/);
+  assert.match(prepareSource, /"worktree",[\s\S]*?"add",[\s\S]*?"--detach"/);
+  assert.match(prepareSource, /CLAWSWEEPER_STATE_DIR: stateWorktree/);
+  assert.match(prepareSource, /EXACT_REVIEW_WORK_ROOT: root/);
+});
+
+test("batch preparation is bounded, heartbeat-fenced, and deterministically aggregated", () => {
+  assert.match(prepareSource, /const MAX_CONCURRENCY = 4/);
+  assert.match(prepareSource, /const MAX_ITEMS = 32/);
+  assert.match(prepareSource, /results\[index\] = await worker/);
+  assert.match(prepareSource, /EXACT_REVIEW_BATCH_HEARTBEAT_FAILURE_PATH/);
+  assert.match(prepareSource, /DEFAULT_ITEM_TIMEOUT_MS/);
+  assert.match(prepareSource, /DEFAULT_TOTAL_TIMEOUT_MS/);
+  assert.match(prepareSource, /prepare-telemetry\.json/);
 });
 
 test("batch workflow shell steps are valid Bash", () => {

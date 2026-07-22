@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { dirname } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   applyEventSnapshot,
   applyEventSnapshotIfCurrent,
@@ -64,6 +64,7 @@ type EventOptions = {
   minAgeMinutes: string;
   reviewOnly: boolean;
   exactEventPublication: boolean;
+  artifactDir: string;
   reportPath: string;
   snapshotDir: string;
   batchMutationOutput: string | null;
@@ -154,7 +155,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     "--target-repo",
     options.targetRepo,
     "--artifact-dir",
-    "artifacts/event",
+    options.artifactDir,
     "--skip-reconcile",
     "--skip-dashboard",
     "--replay-closed-artifacts",
@@ -717,6 +718,7 @@ function candidateEventTupleState(paths: EventRecordPaths): "closed" | "open" | 
 }
 
 function eventOptionsFromEnv(): EventOptions {
+  const workRoot = resolve(process.env.EXACT_REVIEW_WORK_ROOT || ".");
   return {
     targetRepo: envValue("TARGET_REPO"),
     itemNumber: envValue("ITEM_NUMBER"),
@@ -726,8 +728,9 @@ function eventOptionsFromEnv(): EventOptions {
     minAgeMinutes: process.env.MIN_AGE_MINUTES || "0",
     reviewOnly: process.env.REVIEW_ONLY === "true",
     exactEventPublication: process.env.EXACT_EVENT_PUBLICATION === "true",
-    reportPath: ".artifacts/event-apply-report.json",
-    snapshotDir: ".artifacts/event-record-snapshot",
+    artifactDir: join(workRoot, "artifacts/event"),
+    reportPath: join(workRoot, ".artifacts/event-apply-report.json"),
+    snapshotDir: join(workRoot, ".artifacts/event-record-snapshot"),
     batchMutationOutput: process.env.EXACT_REVIEW_BATCH_MUTATION_OUTPUT || null,
   };
 }

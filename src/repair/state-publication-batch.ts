@@ -20,12 +20,11 @@ import {
   type PreparedStateMutationPlan,
 } from "./state-publication-mutation.js";
 
-export const STATE_PUBLICATION_BATCH_MAX_ITEMS = 8;
-// Until the PR 2 proof supplies tighter operational limits, reuse the already
-// validated exact-review artifact envelope per item. This keeps the primitive
-// bounded without inventing a second payload contract before integration.
-export const STATE_PUBLICATION_BATCH_MAX_PATHS = 8 * 512;
-export const STATE_PUBLICATION_BATCH_MAX_BYTES = 8 * 16 * 1024 * 1024;
+export const STATE_PUBLICATION_BATCH_MAX_ITEMS = 32;
+// Reuse the validated exact-review envelope per item while keeping aggregate
+// cardinality and bytes proportional to the hard batch bound.
+export const STATE_PUBLICATION_BATCH_MAX_PATHS = 32 * 512;
+export const STATE_PUBLICATION_BATCH_MAX_BYTES = 32 * 16 * 1024 * 1024;
 export const STATE_PUBLICATION_BATCH_MAX_PATH_BYTES = 128 * 1024;
 
 const STATE_FETCH_TIMEOUT_MS = 60_000;

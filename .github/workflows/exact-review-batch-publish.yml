@@ -30,7 +30,9 @@ jobs:
       EXACT_REVIEW_BATCH_ID: exact-review-batch:${{ github.run_id }}
       EXACT_REVIEW_BATCH_LEASE_OWNER: github:${{ github.run_id }}
       EXACT_REVIEW_BATCH_MANIFEST: .artifacts/exact-review-batch/manifest.json
-      EXACT_REVIEW_BATCH_MAX_ITEMS: "32"
+      # Scan the full queue window so owner filtering can still fill the 32-item lease cap.
+      EXACT_REVIEW_BATCH_MAX_ITEMS: "50"
+      EXACT_REVIEW_BATCH_PREPARE_CONCURRENCY: "4"
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
       CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
     steps:
@@ -90,93 +92,27 @@ jobs:
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
           REPO_TOKEN: ${{ github.token }}
         run: |
-          set -uo pipefail
-          write_failure() {
-            local path="$1"
-            local kind="$2"
-            local reason_code="$3"
-            jq -n \
-              --arg kind "$kind" \
-              --arg reasonCode "$reason_code" \
-              '{ kind: $kind, reasonCode: $reasonCode }' > "$path"
+          set -euo pipefail
+          heartbeat_failed=".artifacts/exact-review-batch/heartbeat-failed"
+          rm -f "$heartbeat_failed"
+          pnpm run --silent repair:exact-review-batch heartbeat
+          (
+            while sleep 60; do
+              if ! pnpm run --silent repair:exact-review-batch heartbeat; then
+                touch "$heartbeat_failed"
+                exit 1
+              fi
+            done
+          ) &
+          heartbeat_pid=$!
+          stop_heartbeat() {
+            kill "$heartbeat_pid" 2>/dev/null || true
+            wait "$heartbeat_pid" 2>/dev/null || true
           }
-          jq -c '.items[]' "$EXACT_REVIEW_BATCH_MANIFEST" | while IFS= read -r item; do
-            pnpm run --silent repair:exact-review-batch heartbeat || exit 1
-            outcome_path="$(jq -r '.outcomePath' <<<"$item")"
-            decision="$(jq -c '.decision' <<<"$item")"
-            producer="$(jq -c '.publication.producerDecision' <<<"$decision")"
-            item_number="$(jq -r '.itemNumber' <<<"$decision")"
-            target_repo="$(jq -r '.targetRepo' <<<"$decision")"
-            artifact_name="$(jq -r '.publication.artifactName' <<<"$decision")"
-            producer_run_id="$(jq -r '.publication.producerRunId' <<<"$decision")"
-            bundle_dir=".artifacts/exact-review-batch/bundles/$item_number"
-            rm -rf "$bundle_dir" artifacts/event .artifacts/event-record-snapshot
-            mkdir -p "$bundle_dir" artifacts/event "$(dirname "$outcome_path")"
-
-            if ! GH_TOKEN="$REPO_TOKEN" gh run download "$producer_run_id" --repo "$GITHUB_REPOSITORY" \
-              --name "$artifact_name" --dir "$bundle_dir"; then
-              echo "::warning::Leaving $target_repo#$item_number retryable: artifact download failed"
-              write_failure "$outcome_path" retryable_failure artifact_unavailable
-              continue
-            fi
-            if ! env \
-              EXACT_REVIEW_BUNDLE_DIR="$bundle_dir" \
-              EXACT_REVIEW_CLAIM_GENERATION="$(jq -r '.publication.claimGeneration' <<<"$decision")" \
-              EXACT_REVIEW_DECISION="$producer" \
-              EXACT_REVIEW_GENERATION_ATTEMPT="$(jq -r '.publication.producerRunAttempt' <<<"$decision")" \
-              EXACT_REVIEW_ITEM_KEY="$(jq -r '.publication.itemKey' <<<"$decision")" \
-              EXACT_REVIEW_ITEM_KIND="$(jq -r '.itemKind' <<<"$decision")" \
-              EXACT_REVIEW_ITEM_NUMBER="$item_number" \
-              EXACT_REVIEW_LEASE_REVISION="$(jq -r '.publication.leaseRevision' <<<"$decision")" \
-              EXACT_REVIEW_LIVE_GUARDED_OPEN="$(jq -r '.publication.liveGuardedOpen' <<<"$decision")" \
-              EXACT_REVIEW_LIVE_PROCEEDED="$(jq -r '.publication.liveProceeded' <<<"$decision")" \
-              EXACT_REVIEW_LIVE_TERMINAL_MISSING="$(jq -r '.publication.liveTerminalMissing' <<<"$decision")" \
-              EXACT_REVIEW_LIVE_TERMINAL_NOOP="$(jq -r '.publication.liveTerminalNoop' <<<"$decision")" \
-              EXACT_REVIEW_PRODUCER_JOB=event-review-apply \
-              EXACT_REVIEW_PRODUCER_RUN_ID="$producer_run_id" \
-              EXACT_REVIEW_PROTOCOL_VERSION="$(jq -r '.publication.protocolVersion' <<<"$decision")" \
-              EXACT_REVIEW_SOURCE_SHA="$(jq -r '.publication.sourceSha' <<<"$decision")" \
-              EXACT_REVIEW_TARGET_BRANCH="$(jq -r '.targetBranch' <<<"$decision")" \
-              EXACT_REVIEW_TARGET_REPO="$target_repo" \
-              pnpm run --silent repair:exact-review-bundle validate; then
-              echo "::warning::Leaving $target_repo#$item_number retryable: artifact validation failed"
-              write_failure "$outcome_path" retryable_failure unknown_failure
-              continue
-            fi
-            report="$bundle_dir/review/$item_number.md"
-            if REPORT_PATH="$report" node <<'NODE'
-          const fs = require("node:fs");
-          const path = process.env.REPORT_PATH;
-          if (!path || !fs.existsSync(path)) process.exit(1);
-          const markdown = fs.readFileSync(path, "utf8");
-          const owner = /^review_lease_owner:\s*(.+)\s*$/m.exec(markdown)?.[1]?.trim() || "";
-          const commentId = Number(/^review_lease_comment_id:\s*(\d+)\s*$/m.exec(markdown)?.[1] || "0");
-          process.exit((!owner || owner === "unknown") && (!Number.isInteger(commentId) || commentId <= 0) ? 0 : 1);
-          NODE
-            then
-              echo "::warning::Leaving $target_repo#$item_number retryable: legacy tuple-less artifact"
-              write_failure "$outcome_path" permanent_failure tuple_protocol_invalid
-              continue
-            fi
-            if [ -f "$report" ]; then cp "$report" "artifacts/event/$item_number.md"; fi
-            if ! env \
-              TARGET_REPO="$target_repo" \
-              ITEM_NUMBER="$item_number" \
-              CLOSE_REASONS=implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr \
-              MIN_AGE_MINUTES=0 \
-              REVIEW_ONLY="$(jq -r '.sourceAction == "failed_review_shard_recovery"' <<<"$producer")" \
-              EXACT_EVENT_PUBLICATION=true \
-              EXACT_REVIEW_CLOSE_COVERAGE_DEFERRED=true \
-              EXACT_REVIEW_BATCH_ITEM_KEY="$(jq -r '.itemKey' <<<"$item")" \
-              EXACT_REVIEW_BATCH_REVISION="$(jq -r '.revision' <<<"$item")" \
-              EXACT_REVIEW_BATCH_CLAIM_GENERATION="$(jq -r '.claimGeneration' <<<"$item")" \
-              EXACT_REVIEW_BATCH_MUTATION_OUTPUT="$outcome_path" \
-              pnpm run --silent repair:publish-event-result; then
-              echo "::warning::Leaving $target_repo#$item_number retryable: item publication failed"
-              write_failure "$outcome_path" retryable_failure unknown_failure
-              continue
-            fi
-          done
+          trap stop_heartbeat EXIT
+          EXACT_REVIEW_BATCH_HEARTBEAT_FAILURE_PATH="$heartbeat_failed" \
+            node scripts/prepare-exact-review-batch.mjs
+          test ! -f "$heartbeat_failed"
 
       - name: Finalize healthy members under a fenced heartbeat
         if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}

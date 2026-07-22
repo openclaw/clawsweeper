@@ -638,7 +638,7 @@ test("batch claim serializes distinct publication events for the same durable it
   }
 });
 
-test("batch claim cannot exceed the configured rollout size", async () => {
+test("batch claim scans beyond but cannot exceed the configured rollout size", async () => {
   const originalNow = Date.now;
   Date.now = () => 6_500_000;
   try {
@@ -660,13 +660,13 @@ test("batch claim cannot exceed the configured rollout size", async () => {
         batchRequest("/publication-batches/claim", {
           claim_id: "claim-configured-cap",
           lease_owner: "worker-1",
-          max_items: 32,
+          max_items: 50,
         }),
       )
     ).json();
 
     assert.equal(claim.claimed, true, JSON.stringify(claim));
-    assert.equal(claim.requested_max_items, 32);
+    assert.equal(claim.requested_max_items, 50);
     assert.equal(claim.effective_max_items, 4);
     assert.equal(claim.batch.items.length, 4);
   } finally {

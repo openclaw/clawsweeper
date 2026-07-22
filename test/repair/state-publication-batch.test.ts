@@ -20,9 +20,9 @@ type RepositoryFixture = {
   work: string;
 };
 
-test("bounded batches publish 1, 2, 4, and 8 item tuples in one state commit", () => {
+test("bounded batches publish 1, 2, 4, 8, and 32 item tuples in one state commit", () => {
   const proof: Array<Record<string, unknown>> = [];
-  for (const size of [1, 2, 4, 8]) {
+  for (const size of [1, 2, 4, 8, 32]) {
     const fixture = createRepositoryFixture();
     const beforeCount = Number(git(fixture.origin, "rev-list", "--count", "state").trim());
     const plans = Array.from({ length: size }, (_, index) => {
