@@ -1077,6 +1077,45 @@ test("batch admission keeps one target owner for least-privilege credentials", a
   }
 });
 
+test("batch ask widens owner scanning without exceeding the configured lease size", async () => {
+  const originalNow = Date.now;
+  let now = 1_800_000;
+  Date.now = () => now;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      {
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+      },
+    );
+    await queue.fetch(publicationRequest("owner-a-oldest", 130, "1030"));
+    now += 1;
+    await queue.fetch(publicationRequest("owner-b-interleaved", 131, "1031", "example/project"));
+    now += 1;
+    await queue.fetch(publicationRequest("owner-a-second", 132, "1032"));
+    now += 1;
+    await queue.fetch(publicationRequest("owner-a-over-cap", 133, "1033"));
+
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-owner-scan-cap",
+          lease_owner: "worker-1",
+          max_items: 4,
+        }),
+      )
+    ).json();
+
+    assert.deepEqual(
+      claim.batch.items.map((item) => item.item_key),
+      ["openclaw/openclaw#130@publish:1030:1", "openclaw/openclaw#132@publish:1032:1"],
+    );
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("queue completion atomically removes only the owned publication revision", async () => {
   const originalNow = Date.now;
   Date.now = () => 2_000_000;

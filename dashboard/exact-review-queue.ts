@@ -2544,7 +2544,10 @@ export class ExactReviewQueue {
     ) {
       return json({ error: "invalid_max_items" }, 400);
     }
-    const effectiveSize = Math.min(requestedSize, configuredSize);
+    // The workflow may ask to scan farther than the deployed lease size so an
+    // owner-homogeneous batch can be filled through interleaved repositories.
+    // Keep the configured size as the hard mutation/lease boundary.
+    const leaseSize = Math.min(requestedSize, configuredSize);
     const now = Date.now();
     const state = this.readStateSync();
     const batchOwnership = this.batchStore.activeLeaseSnapshot(now);
@@ -2559,7 +2562,7 @@ export class ExactReviewQueue {
     );
     // The outer comparison charges one publisher slot for the whole batch. The
     // shared helper counts candidate rows, so widen only its scan window by
-    // effectiveSize; passing +1 here would silently collapse every batch to one.
+    // requestedSize; passing +1 here would silently collapse every batch to one.
     const activePublishers = exactReviewQueueActivePublicationCount(state);
     const readyCandidates =
       activePublishers >= publicationCapacity
@@ -2569,7 +2572,7 @@ export class ExactReviewQueue {
             now,
             exactReviewQueueCapacity(this.env),
             exactReviewTargetCapacity(this.env),
-            activePublishers + effectiveSize,
+            activePublishers + requestedSize,
             new Set<string>(batchOwnership.itemKeys),
             false, // batching replaces legacy publication blocking at this admission point
             true, // one durable item path per commit; later events remain FIFO candidates
@@ -2580,14 +2583,14 @@ export class ExactReviewQueue {
     // minting and exporting a different credential for every item.
     const candidates = readyCandidates
       .filter((item) => item.decision.targetRepo.split("/", 1)[0]?.toLowerCase() === firstOwner)
-      .slice(0, effectiveSize)
+      .slice(0, leaseSize)
       .map((item) => ({ itemKey: item.key, revision: item.revision }));
     const batch = this.batchStore.claim({
       batchId: claimId,
       leaseOwner,
       leaseExpiresAt: now + exactReviewPublicationBatchLeaseMs(this.env),
       now,
-      maxItems: effectiveSize,
+      maxItems: leaseSize,
       candidates,
     });
     if (state.dispatcher?.publicationBatchDispatchPendingUntil) {
@@ -2602,7 +2605,7 @@ export class ExactReviewQueue {
         claimed: false,
         batch: null,
         requested_max_items: requestedSize,
-        effective_max_items: effectiveSize,
+        effective_max_items: leaseSize,
       });
     }
     const oldestCandidateAt = batch.items.reduce(
@@ -2616,7 +2619,7 @@ export class ExactReviewQueue {
       batch: exactReviewPublicationBatchJson(batch),
       batch_wait_ms: Math.max(0, now - oldestCandidateAt),
       requested_max_items: requestedSize,
-      effective_max_items: effectiveSize,
+      effective_max_items: leaseSize,
     });
   }
 
