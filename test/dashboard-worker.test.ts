@@ -7530,22 +7530,57 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(stateWriterHtml, /Git crash fence<\/span><strong>free/);
   assert.match(stateWriterHtml, /Coordinator turns<\/dt><dd>16 completed · 16 admitted/);
   assert.match(stateWriterHtml, /Coordinator wait<\/dt><dd>last 0s · max 5m/);
-  assert.match(stateWriterHtml, /Exact-review materialized<\/dt><dd>unknown items\/hour/);
+  assert.match(stateWriterHtml, /Queue history<\/dt><dd>collecting samples/);
+  assert.match(stateWriterHtml, /Terminal telemetry<\/dt><dd>terminal telemetry stale/);
   assert.match(stateWriterHtml, /terminal telemetry stale/);
-  assert.doesNotMatch(stateWriterHtml, /Exact-review materialized<\/dt><dd>0 items\/hour/);
+  assert.doesNotMatch(stateWriterHtml, /Exact-review materialized/);
 
-  context.healthHistorySamples = [
+  const coordinatorSamples = [
     {
-      at: new Date().toISOString(),
+      at: new Date(Date.now() - 15 * 60_000).toISOString(),
       state_writer: {
         collection_ok: true,
         terminal_collection_ok: false,
+        tracked_holding: null,
+        tracked_waiting: "",
+      },
+    },
+    {
+      at: new Date(Date.now() - 10 * 60_000).toISOString(),
+      state_writer: {
+        collection_ok: true,
+        terminal_collection_ok: false,
+        tracked_holding: 1,
+        tracked_waiting: 5,
         accepted_operations_total: 16,
         state_commits_total: 8,
         materialized_items_total: 16,
       },
     },
+    {
+      at: new Date(Date.now() - 5 * 60_000).toISOString(),
+      state_writer: {
+        collection_ok: true,
+        terminal_collection_ok: false,
+        tracked_holding: 1,
+        tracked_waiting: 2,
+      },
+    },
+    {
+      at: new Date().toISOString(),
+      state_writer: {
+        collection_ok: true,
+        terminal_collection_ok: false,
+        tracked_holding: 1,
+        tracked_waiting: 4,
+      },
+    },
   ];
+  context.fetch = async () => ({
+    ok: true,
+    json: async () => ({ samples: coordinatorSamples }),
+  });
+  await context.loadHealthHistory("6h", true);
   context.renderStateWriter({
     lanes: { publication: { batches: { enabled: true, max_items: 2 } } },
     state_writer: {
@@ -7558,12 +7593,17 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   });
   assert.match(
     elementFor("state-writer-health").innerHTML,
-    /Exact-review materialized<\/dt><dd>unknown items\/hour/,
+    /Queue history<\/dt><dd>3 samples · 2–5 queued/,
   );
-  assert.doesNotMatch(
+  assert.match(
     elementFor("state-writer-health").innerHTML,
-    /Exact-review materialized<\/dt><dd>0 items\/hour/,
+    /Latest queue sample<\/dt><dd>1 active · 4 queued ·/,
   );
+  assert.match(
+    elementFor("state-writer-health").innerHTML,
+    /Serialized writer queue depth over 6h/,
+  );
+  assert.doesNotMatch(elementFor("state-writer-health").innerHTML, /Exact-review materialized/);
   assert.match(stateWriterHtml, /class="lane-metrics"/);
   assert.doesNotMatch(stateWriterHtml, /<section class="exact-lane">/);
   const initialLaneHtml = elementFor("exact-review-lanes").innerHTML;

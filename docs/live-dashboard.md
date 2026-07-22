@@ -335,9 +335,10 @@ The Git lease ref is displayed only as a crash-recovery fence. Exact-review
 terminal telemetry still owns item/commit throughput and Git fence timing; an
 idle or failed publisher can make that telemetry stale without making the
 coordinator unavailable. The panel therefore shows the configured publication
-batch size independently, labels stale terminal data, and never renders stale
-zeroes as current throughput. Five-minute history samples use coordinator
-liveness and queue depth when progress events are idle.
+batch size independently, uses five-minute coordinator queue depth for its
+primary chart and recent sample summary, and never renders stale terminal
+zeroes as current throughput. Exact-review item, commit, and Git-fence timing
+metrics appear only while that separate terminal telemetry is fresh.
 
 Executors report the GitHub job outcome from their finalizer. Failure or
 cancellation clears the lease and requeues the item. Finalizer success remains

@@ -8581,7 +8581,7 @@ function oneHourTrend(samples) {
   return { className: "stable", label: "Stable · no change in the last hour" };
 }
 
-function exactReviewTrend(samples, label) {
+function exactReviewTrend(samples, label, ariaMetric = "pending backlog") {
   if (!samples.length) {
     return '<div class="exact-trend"><div class="exact-trend-status collecting">Collecting 1h trend</div><div class="trend-empty">No backlog history in this range.</div></div>';
   }
@@ -8603,7 +8603,7 @@ function exactReviewTrend(samples, label) {
   const direction = oneHourTrend(visible);
   const rangeLabel = activeHealthRange === "7d" ? "7d ago" : activeHealthRange + " ago";
   const axis = '<text class="trend-axis-label" x="' + plot.left + '" y="' + (height - 7) + '">' + rangeLabel + '</text><text class="trend-axis-label" x="' + (plot.left + plot.width) + '" y="' + (height - 7) + '" text-anchor="end">now</text>';
-  return '<div class="exact-trend"><div class="exact-trend-status ' + direction.className + '">' + esc(direction.label) + '</div><svg class="exact-trend-svg" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="' + esc(label + " pending backlog over " + activeHealthRange) + '">' + grid + '<path class="exact-trend-line" d="' + trendPath(geometry) + '"></path>' + points + axis + '</svg></div>';
+  return '<div class="exact-trend"><div class="exact-trend-status ' + direction.className + '">' + esc(direction.label) + '</div><svg class="exact-trend-svg" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="' + esc(label + " " + ariaMetric + " over " + activeHealthRange) + '">' + grid + '<path class="exact-trend-line" d="' + trendPath(geometry) + '"></path>' + points + axis + '</svg></div>';
 }
 
 function laneSpeedStatus(sample) {
@@ -8846,6 +8846,25 @@ function stateWriterHistorySamples() {
   });
 }
 
+function stateWriterCoordinatorHistorySamples() {
+  return healthHistorySamples.flatMap((sample) => {
+    const writer = sample?.state_writer;
+    const active = writer?.tracked_holding;
+    const queued = writer?.tracked_waiting;
+    if (
+      !writer ||
+      writer.collection_ok !== true ||
+      typeof active !== "number" ||
+      !Number.isInteger(active) ||
+      active < 0 ||
+      typeof queued !== "number" ||
+      !Number.isInteger(queued) ||
+      queued < 0
+    ) return [];
+    return [{ at: sample.at, active, queued }];
+  });
+}
+
 function stateWriterHistorySegment(samples, field) {
   if (samples.length < 2) return null;
   let startIndex = 0;
@@ -8888,6 +8907,8 @@ function renderStateWriter(queue) {
   const lease = writer.global_lease || {};
   const hour = writer.last_60_minutes || {};
   const history = stateWriterHistorySamples();
+  const coordinatorHistory = stateWriterCoordinatorHistorySamples();
+  const latestCoordinatorHistory = coordinatorHistory.at(-1);
   const latestHistory = history.at(-1);
   const historyFresh = Boolean(
     latestHistory && Date.now() - Date.parse(latestHistory.at) <= 12 * 60 * 1000
@@ -8929,7 +8950,14 @@ function renderStateWriter(queue) {
   const metric = (value, fallback = "unknown") => value === null || value === undefined ? fallback : value;
   const percentile = (value) =>
     value?.samples ? "p50 " + metric(value.p50) + "ms · p95 " + metric(value.p95) + "ms · n=" + value.samples : "unknown";
-  const itemTrend = history.map((sample) => ({ at: sample.at, pending: sample.items }));
+  const queueTrend = coordinatorHistory.map((sample) => ({ at: sample.at, pending: sample.queued }));
+  const queuedHistory = coordinatorHistory.map((sample) => sample.queued);
+  const coordinatorHistorySummary = coordinatorHistory.length
+    ? metric(coordinatorHistory.length) + " samples · " + metric(Math.min(...queuedHistory)) + "–" + metric(Math.max(...queuedHistory)) + " queued"
+    : "collecting samples";
+  const latestCoordinatorSummary = latestCoordinatorHistory
+    ? metric(latestCoordinatorHistory.active) + " active · " + metric(latestCoordinatorHistory.queued) + " queued · " + since(latestCoordinatorHistory.at)
+    : "collecting samples";
   const coordinatorTurns = coordinatorLive
     ? metric(coordinator.completed) + " completed · " + metric(coordinator.admitted) + " admitted" +
       (Number(coordinator.recovered) || Number(coordinator.expired)
@@ -8944,6 +8972,14 @@ function renderStateWriter(queue) {
     : collection.last_observed_at
       ? "terminal telemetry stale · last observed " + since(collection.last_observed_at)
       : "terminal telemetry unavailable";
+  const terminalMetrics = terminalFresh
+    ? "<div><dt>Exact-review materialized</dt><dd>" + esc(metric(itemsPerHour ?? hour.materialized_items)) + " items/hour</dd></div>" +
+      "<div><dt>Exact-review commits</dt><dd>" + esc(metric(commitsPerHour ?? hour.state_commits)) + "/hour</dd></div>" +
+      "<div><dt>Items / commit</dt><dd>" + esc(metric(itemsPerCommit)) + "</dd></div>" +
+      "<div><dt>Git fence wait</dt><dd>" + esc(percentile(wait)) + "</dd></div>" +
+      "<div><dt>Git fence hold</dt><dd>" + esc(percentile(hold)) + "</dd></div>"
+    : "<div><dt>Last exact-review materialization</dt><dd>" + esc(writer.last_successful_materialization_at ? since(writer.last_successful_materialization_at) : "not observed") + "</dd></div>" +
+      "<div><dt>Terminal telemetry</dt><dd>" + esc(terminalStatus) + "</dd></div>";
   target.innerHTML =
     '<div class="exact-lane-head"><strong>State writer</strong><span>' + esc(mode) + " · " + esc(coordinatorLive ? "coordinator live" : metric(collection.status)) + " · " + esc(rangeLabel) + "</span></div>" +
     '<div class="lane-counts">' +
@@ -8956,17 +8992,15 @@ function renderStateWriter(queue) {
     '</strong></div>' +
     '<div class="lane-count"><span>Git crash fence</span><strong>' + esc(metric(lease.status)) +
     "</strong></div></div>" +
-    exactReviewTrend(itemTrend, "Materialized items") +
+    exactReviewTrend(queueTrend, "Serialized writer queue", "depth") +
     '<dl class="lane-metrics">' +
     "<div><dt>Coordinator turns</dt><dd>" + esc(coordinatorTurns) + "</dd></div>" +
     "<div><dt>Coordinator wait</dt><dd>" + esc(coordinatorWait) + "</dd></div>" +
-    "<div><dt>Exact-review materialized</dt><dd>" + esc(metric(itemsPerHour ?? (terminalFresh ? hour.materialized_items : null))) + " items/hour</dd></div>" +
-    "<div><dt>Exact-review commits</dt><dd>" + esc(metric(commitsPerHour ?? (terminalFresh ? hour.state_commits : null))) + "/hour</dd></div>" +
-    "<div><dt>Items / commit</dt><dd>" + esc(metric(itemsPerCommit)) + "</dd></div>" +
-    "<div><dt>Git fence wait</dt><dd>" + esc(percentile(wait)) + "</dd></div>" +
-    "<div><dt>Git fence hold</dt><dd>" + esc(percentile(hold)) + "</dd></div>" +
+    "<div><dt>Queue history</dt><dd>" + esc(coordinatorHistorySummary) + "</dd></div>" +
+    "<div><dt>Latest queue sample</dt><dd>" + esc(latestCoordinatorSummary) + "</dd></div>" +
+    terminalMetrics +
     "</dl>" +
-    '<p class="state-writer-note">' + esc(terminalStatus) + ". Exact-review throughput uses recent " + esc(rangeLabel) + " history when available; stale terminal samples are never rendered as current zeroes.</p>" +
+    '<p class="state-writer-note">The chart uses five-minute coordinator queue samples from the selected ' + esc(rangeLabel) + " range. Exact-review throughput appears only while its separate terminal telemetry is fresh.</p>" +
     '<p class="state-writer-note">The durable coordinator is authoritative for active and queued writers. The Git ref remains only a crash-recovery fence.</p>';
 }
 
