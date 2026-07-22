@@ -31,6 +31,7 @@ runs:
         private-key: ${{ inputs.private-key }}
         owner: ${{ inputs.owner }}
         repositories: ${{ inputs.repository }}
+        permission-actions: read
         permission-checks: read
         permission-contents: write
         permission-issues: write
