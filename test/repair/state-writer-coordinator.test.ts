@@ -15,6 +15,7 @@ type RequestPayload = {
   job?: string;
   run_id?: string;
   run_attempt?: number;
+  writer_class?: string;
   lease_token?: string;
 };
 
@@ -114,6 +115,7 @@ test("queued polling preserves one durable identity through heartbeat and releas
       "job",
       "run_id",
       "run_attempt",
+      "writer_class",
     ]),
     {
       branch: "state",
@@ -122,6 +124,7 @@ test("queued polling preserves one durable identity through heartbeat and releas
       job: "publish",
       run_id: "12345",
       run_attempt: 2,
+      writer_class: "ordinary",
     },
   );
   assert.deepEqual(sleeps, [1_000]);

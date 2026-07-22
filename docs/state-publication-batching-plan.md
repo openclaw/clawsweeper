@@ -1,6 +1,6 @@
 # State publication batching plan
 
-**Status (verified 2026-07-22 at 01:13 UTC):** PR 1 through PR 4, the rollout
+**Status (verified 2026-07-22 at 01:27 UTC):** PR 1 through PR 4, the rollout
 hotfix, the repository-wide FIFO state-writer coordinator, the fence identity
 hotfix, and the shared `publishMainCommit` identity follow-up are merged.
 Production remains fixed at batch size 2 and a 60-second maximum wait. Three
@@ -9,12 +9,16 @@ two-member generated-state commit and accepted both acknowledgements, beginning
 with [run 29865701885](https://github.com/openclaw/clawsweeper/actions/runs/29865701885)
 and state commit
 [`49777f30`](https://github.com/openclaw/clawsweeper-state/commit/49777f30284d01fb2255c763cc3b8e5668b9709a).
-The formal size-2 gate is still incomplete: dashboard state-writer telemetry is
-stale and reports `mode=unknown`, the required two five-minute samples have not
-passed, and current publication throughput is below arrivals. Batch failure
+The formal size-2 gate is still incomplete: batch telemetry has landed but is
+not yet deployed and live-verified, the required two five-minute samples have
+not passed, and current publication throughput is below arrivals. Batch failure
 terminalization landed in maintainer-owned
 [`openclaw/clawsweeper#764`](https://github.com/openclaw/clawsweeper/pull/764),
-and fresh batch writer telemetry is proposed in PR 766.
+and fresh batch writer telemetry landed in
+[`openclaw/clawsweeper#766`](https://github.com/openclaw/clawsweeper/pull/766).
+The remaining service-rate root cause is strict FIFO coordinator admission:
+batch publishers wait behind dozens of ordinary writers instead of amortizing
+the state commit bottleneck.
 The final rollout target is batch size 8, reached only by explicit reviewed
 `2 -> 4 -> 8` changes with a fresh live proof and two passing samples at each
 size.
@@ -39,7 +43,8 @@ generated state layout.
 | Shared `publishMainCommit` identity follow-up | Complete; landed after PR 761                  | Landed as [`openclaw/clawsweeper#758`](https://github.com/openclaw/clawsweeper/pull/758) at `fef846a851e2a5fbcfe114721b5c779b0ded53a2`, after the evidence-only documentation PR 761. It calls `configureGitUser()` at the shared commit-producing `publishMainCommit` entry so ordinary repair/apply publication paths do not depend on caller identity setup. The upstream `pnpm check` passed in [run 29858459637](https://github.com/openclaw/clawsweeper/actions/runs/29858459637). This complements, rather than replaces, PR 759's inline identity at the lower-level fence `commit-tree` boundary.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | Fence hotfix evidence documentation           | Complete; landed                               | Landed as [`openclaw/clawsweeper#761`](https://github.com/openclaw/clawsweeper/pull/761) at `ac16e73dc3b18893e9c0edee38a054cb7b78ba6c`, recording PR 759, its regression proof, and CI evidence. This plan update incorporates the subsequently merged PR 758 and later live rollout evidence.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Batch failure terminalization                 | Complete; landed                               | Landed as [`openclaw/clawsweeper#764`](https://github.com/openclaw/clawsweeper/pull/764) at `b657a55bb6e4499825a9adffecb44e32cd0e9ed5`, superseding the narrower external [`openclaw/clawsweeper#760`](https://github.com/openclaw/clawsweeper/pull/760). It adds fenced retryable/refresh/permanent outcomes, receipt-aware cancellation recovery, newer-revision preservation, and manifest-based cleanup so a failed or cancelled publisher does not retain both members until lease expiry. Upstream `pnpm check` passed in [run 29881719295](https://github.com/openclaw/clawsweeper/actions/runs/29881719295); CodeQL, Windows, sparse build, and automerge E2E also passed. Live controlled failure-path verification remains required before size 4.                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Batch writer telemetry restoration            | Draft PR 766                                   | Proposed in [`openclaw/clawsweeper#766`](https://github.com/openclaw/clawsweeper/pull/766). The batch committer owns one `mode=batch` telemetry recorder for the shared coordinator/Git operation. Authenticated batch heartbeats carry fresh waiting/holding/releasing progress, and the durable batch receipt carries the idempotent terminal operation into completion or cancellation cleanup. The terminal payload records configured and actual size, oldest selected-item wait, coordinator/Git wait and hold, process count, commit count, and materialized members. Queue-side batch fences validate progress identity before accepting it. Thirty-five focused queue, workflow, batch-client, and telemetry tests and the full Node 24 / Git 2.47.3 `pnpm run check` pass.                                                                                                                                                                                                                                                                                                                                                                                 |
+| Batch writer telemetry restoration            | Complete; landed                               | Landed as [`openclaw/clawsweeper#766`](https://github.com/openclaw/clawsweeper/pull/766) at `6aae6e674234d6ac6680c520cc18050c4ff3f5ab`. The batch committer owns one `mode=batch` telemetry recorder for the shared coordinator/Git operation. Authenticated batch heartbeats carry fresh waiting/holding/releasing progress, and the durable batch receipt carries the idempotent terminal operation into completion or cancellation cleanup. The terminal payload records configured and actual size, oldest selected-item wait, coordinator/Git wait and hold, process count, commit count, and materialized members. Queue-side batch fences validate progress identity before accepting it. Thirty-five focused queue, workflow, batch-client, and telemetry tests and the full Node 24 / Git 2.47.3 `pnpm run check` pass. Live deployment evidence remains pending.                                                                                                                                                                                                                                                                                              |
+| Bounded batch writer priority                 | In implementation                              | The `feature/batch-writer-fairness` follow-up gives authenticated publication-batch tickets priority over an ordinary backlog while preserving one active writer, immutable ticket metadata, lease-generation fencing, and FIFO order within each class. At most two batch turns may run consecutively while an ordinary writer waits; the next ordinary turn resets the streak. Coordinator status exposes queued counts by class and the current streak. This targets the observed 25–50 minute batch admission delay without starving ordinary state writers. Focused Node 24 tests pass; pull-request and live evidence remain pending.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 ## Production incident and root cause
 
@@ -985,9 +990,10 @@ remaining live and capacity gates are:
 
 - land, deploy, and verify batch failure terminalization from
   [`openclaw/clawsweeper#764`](https://github.com/openclaw/clawsweeper/pull/764);
-- restore fresh state-writer telemetry so it reports coordinator mode and
-  attributable commit, wait, and contention metrics through
-  [`openclaw/clawsweeper#766`](https://github.com/openclaw/clawsweeper/pull/766);
+- deploy and live-verify the state-writer telemetry landed through
+  [`openclaw/clawsweeper#766`](https://github.com/openclaw/clawsweeper/pull/766)
+  so it reports coordinator mode and attributable commit, wait, and contention
+  metrics;
 - record a formal size-2 proof containing the already observed
   single-commit/two-ack behavior together with the missing telemetry and safety
   evidence;
@@ -1077,6 +1083,17 @@ preconfigured Git identity` in `test/repair/state-writer-coordinator-git.test.ts
       [`openclaw/clawsweeper#764`](https://github.com/openclaw/clawsweeper/pull/764),
       merged at `b657a55bb6e4499825a9adffecb44e32cd0e9ed5` after all required
       checks passed.
+- [x] Land batch writer telemetry restoration from
+      [`openclaw/clawsweeper#766`](https://github.com/openclaw/clawsweeper/pull/766)
+      at `6aae6e674234d6ac6680c520cc18050c4ff3f5ab`. Live deployment and the first
+      fresh attributable batch operation remain separate verification gates.
+- [ ] Land and deploy bounded batch-priority coordinator admission. The current
+      strict FIFO queue had 59 queued writers and a latest admitted wait of
+      1,542,067 ms at 2026-07-22 01:21 UTC; the active size-2 batch had already
+      waited about 17 minutes. Publication-batch tickets may skip the ordinary
+      backlog, but after at most two consecutive batch turns one waiting
+      ordinary writer must be admitted. Do not change the single-active-writer
+      invariant or any lease/crash fence.
 - [ ] Verify one controlled failure releases only its own fenced members
       promptly and does not wait for the 30-minute batch lease expiry.
 - [ ] Record two complete, consecutive five-minute size-2 samples satisfying
@@ -1090,6 +1107,11 @@ preconfigured Git identity` in `test/repair/state-writer-coordinator-git.test.ts
       queued writers and one leased writer; and its latest/max waits were
       2,903,656/3,048,142 ms. Fix observability and writer service rate before
       requesting size 4.
+      A later 2026-07-22 01:21 UTC no-go snapshot had 2,177 publication items
+      pending, oldest age 93,256 seconds, 79 arrivals and four resolutions over
+      60 minutes (`-75/hour` net drain), 59 queued coordinator tickets, and
+      18,751 pending state-append rows. No DLQ disposal contributed to those
+      figures.
 - [ ] Increase to size 4 only through an explicit reviewed configuration change.
       Inspect at least one four-member single commit and all four independent
       outcomes, then record two new complete, consecutive five-minute samples.

@@ -2,6 +2,9 @@ const STATE_WRITER_TICKET_TABLE = "state_writer_tickets";
 const STATE_WRITER_META_TABLE = "state_writer_meta";
 const STATE_WRITER_TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const STATE_WRITER_TERMINAL_PRUNE_LIMIT = 256;
+const MAX_CONSECUTIVE_BATCH_TURNS = 2;
+
+export type StateWriterClass = "ordinary" | "publication_batch";
 
 type SqlStorage = {
   exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
@@ -21,6 +24,7 @@ export type StateWriterTicketInput = {
   job: string;
   runId: string;
   runAttempt: number;
+  writerClass: StateWriterClass;
 };
 
 export type StateWriterTicket = {
@@ -37,6 +41,8 @@ export type StateWriterTicket = {
 
 export type StateWriterCoordinatorStats = {
   queued: number;
+  queued_batch: number;
+  queued_ordinary: number;
   leased: number;
   admitted: number;
   completed: number;
@@ -44,6 +50,7 @@ export type StateWriterCoordinatorStats = {
   recovered: number;
   last_wait_ms: number;
   max_wait_ms: number;
+  consecutive_batch_turns: number;
   active: null | {
     ticket_id: string;
     owner: string;
@@ -80,6 +87,8 @@ export class StateWriterCoordinator {
          job TEXT NOT NULL,
          run_id TEXT NOT NULL,
          run_attempt INTEGER NOT NULL CHECK (run_attempt >= 1),
+         writer_class TEXT NOT NULL DEFAULT 'ordinary'
+           CHECK (writer_class IN ('ordinary', 'publication_batch')),
          state TEXT NOT NULL CHECK (state IN ('queued', 'leased', 'completed', 'expired')),
          enqueued_at INTEGER NOT NULL,
          last_seen_at INTEGER NOT NULL,
@@ -113,7 +122,9 @@ export class StateWriterCoordinator {
          expired_total INTEGER NOT NULL DEFAULT 0 CHECK (expired_total >= 0),
          recovered_total INTEGER NOT NULL DEFAULT 0 CHECK (recovered_total >= 0),
          last_wait_ms INTEGER NOT NULL DEFAULT 0 CHECK (last_wait_ms >= 0),
-         max_wait_ms INTEGER NOT NULL DEFAULT 0 CHECK (max_wait_ms >= 0)
+         max_wait_ms INTEGER NOT NULL DEFAULT 0 CHECK (max_wait_ms >= 0),
+         consecutive_batch_turns INTEGER NOT NULL DEFAULT 0
+           CHECK (consecutive_batch_turns >= 0)
        ) STRICT`,
     );
     this.ensureMetaColumnsSync();
@@ -135,9 +146,9 @@ export class StateWriterCoordinator {
       if (!row) {
         this.storage.sql.exec(
           `INSERT INTO ${STATE_WRITER_TICKET_TABLE}
-             (ticket_id, owner, branch, repository, workflow, job, run_id, run_attempt,
+             (ticket_id, owner, branch, repository, workflow, job, run_id, run_attempt, writer_class,
               state, enqueued_at, last_seen_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
           input.ticketId,
           input.owner,
           input.branch,
@@ -146,6 +157,7 @@ export class StateWriterCoordinator {
           input.job,
           input.runId,
           input.runAttempt,
+          input.writerClass,
           now,
           now,
         );
@@ -188,10 +200,15 @@ export class StateWriterCoordinator {
             `UPDATE ${STATE_WRITER_META_TABLE}
                 SET admitted_total = admitted_total + 1,
                     last_wait_ms = ?,
-                    max_wait_ms = MAX(max_wait_ms, ?)
+                    max_wait_ms = MAX(max_wait_ms, ?),
+                    consecutive_batch_turns = CASE
+                      WHEN ? = 'publication_batch' THEN consecutive_batch_turns + 1
+                      ELSE 0
+                    END
               WHERE singleton_id = 1`,
             waitMs,
             waitMs,
+            input.writerClass,
           );
         }
         row = this.ticketRowSync(input.ticketId);
@@ -293,19 +310,31 @@ export class StateWriterCoordinator {
       const meta = Array.from(
         this.storage.sql.exec(
           `SELECT admitted_total, completed_total, expired_total, recovered_total,
-                  last_wait_ms, max_wait_ms
+                  last_wait_ms, max_wait_ms, consecutive_batch_turns
              FROM ${STATE_WRITER_META_TABLE} WHERE singleton_id = 1`,
         ),
       )[0] as Record<string, unknown> | undefined;
+      const queuedClasses = { publication_batch: 0, ordinary: 0 };
+      for (const row of this.storage.sql.exec(
+        `SELECT writer_class, COUNT(*) AS count FROM ${STATE_WRITER_TICKET_TABLE}
+          WHERE state = 'queued' GROUP BY writer_class`,
+      ) as Iterable<{ writer_class: StateWriterClass; count: number }>) {
+        if (Object.hasOwn(queuedClasses, row.writer_class)) {
+          queuedClasses[row.writer_class] = Number(row.count || 0);
+        }
+      }
       const active = this.activeRowSync();
       return {
         ...liveCounts,
+        queued_batch: queuedClasses.publication_batch,
+        queued_ordinary: queuedClasses.ordinary,
         admitted: Number(meta?.admitted_total || 0),
         completed: Number(meta?.completed_total || 0),
         expired: Number(meta?.expired_total || 0),
         recovered: Number(meta?.recovered_total || 0),
         last_wait_ms: Number(meta?.last_wait_ms || 0),
         max_wait_ms: Number(meta?.max_wait_ms || 0),
+        consecutive_batch_turns: Number(meta?.consecutive_batch_turns || 0),
         active: active
           ? {
               ticket_id: String(active.ticket_id),
@@ -340,6 +369,7 @@ export class StateWriterCoordinator {
       "recovered_total",
       "last_wait_ms",
       "max_wait_ms",
+      "consecutive_batch_turns",
     ]) {
       if (!columns.has(column)) {
         this.storage.sql.exec(
@@ -363,6 +393,12 @@ export class StateWriterCoordinator {
     if (!columns.has("lease_deadline_at")) {
       this.storage.sql.exec(
         `ALTER TABLE ${STATE_WRITER_TICKET_TABLE} ADD COLUMN lease_deadline_at INTEGER`,
+      );
+    }
+    if (!columns.has("writer_class")) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${STATE_WRITER_TICKET_TABLE}
+           ADD COLUMN writer_class TEXT NOT NULL DEFAULT 'ordinary'`,
       );
     }
   }
@@ -423,29 +459,52 @@ export class StateWriterCoordinator {
   }
 
   private queuedHeadSync() {
-    return Array.from(
+    return this.queuedOrderSync()[0];
+  }
+
+  private queuedOrderSync(): Record<string, unknown>[] {
+    const rows = Array.from(
       this.storage.sql.exec(
-        `SELECT * FROM ${STATE_WRITER_TICKET_TABLE}
-          WHERE state = 'queued' ORDER BY seq LIMIT 1`,
+        `SELECT * FROM ${STATE_WRITER_TICKET_TABLE} WHERE state = 'queued' ORDER BY seq`,
       ),
-    )[0] as Record<string, unknown> | undefined;
+    ) as Record<string, unknown>[];
+    const batches = rows.filter((row) => row.writer_class === "publication_batch");
+    const ordinary = rows.filter((row) => row.writer_class !== "publication_batch");
+    const ordered: Record<string, unknown>[] = [];
+    let consecutiveBatchTurns = this.consecutiveBatchTurnsSync();
+    while (batches.length || ordinary.length) {
+      // A publication batch may skip the ordinary backlog, but after two such
+      // turns an ordinary writer is guaranteed the next lease. This keeps the
+      // incident lane serviceable without replacing one FIFO starvation mode
+      // with permanent starvation of status, repair, and dashboard writers.
+      if (
+        batches.length > 0 &&
+        (ordinary.length === 0 || consecutiveBatchTurns < MAX_CONSECUTIVE_BATCH_TURNS)
+      ) {
+        ordered.push(batches.shift()!);
+        consecutiveBatchTurns += 1;
+      } else {
+        ordered.push(ordinary.shift()!);
+        consecutiveBatchTurns = 0;
+      }
+    }
+    return ordered;
+  }
+
+  private consecutiveBatchTurnsSync(): number {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT consecutive_batch_turns FROM ${STATE_WRITER_META_TABLE} WHERE singleton_id = 1`,
+      ),
+    )[0] as { consecutive_batch_turns?: number } | undefined;
+    return Number(row?.consecutive_batch_turns || 0);
   }
 
   private ticketJsonSync(row: Record<string, unknown>): StateWriterTicket {
     const seq = Number(row.seq);
     const position =
       row.state === "queued"
-        ? Number(
-            (
-              Array.from(
-                this.storage.sql.exec(
-                  `SELECT COUNT(*) AS count FROM ${STATE_WRITER_TICKET_TABLE}
-                    WHERE state = 'queued' AND seq <= ?`,
-                  seq,
-                ),
-              )[0] as { count?: number } | undefined
-            )?.count || 0,
-          )
+        ? this.queuedOrderSync().findIndex((candidate) => Number(candidate.seq) === seq) + 1
         : 0;
     return {
       seq,
@@ -469,7 +528,8 @@ function ticketMatchesInput(row: Record<string, unknown>, input: StateWriterTick
     String(row.workflow) === input.workflow &&
     String(row.job) === input.job &&
     String(row.run_id) === input.runId &&
-    Number(row.run_attempt) === input.runAttempt
+    Number(row.run_attempt) === input.runAttempt &&
+    String(row.writer_class) === input.writerClass
   );
 }
 

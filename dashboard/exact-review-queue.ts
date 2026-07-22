@@ -6781,6 +6781,12 @@ function stateWriterTicketInput(value: unknown): StateWriterTicketInput | null {
   const job = boundedStateWriterMetadata(body.job);
   const runId = boundedStateWriterIdentity(body.run_id);
   const runAttempt = Number(body.run_attempt);
+  const writerClass =
+    body.writer_class === "publication_batch"
+      ? "publication_batch"
+      : body.writer_class === "ordinary" || body.writer_class === undefined
+        ? "ordinary"
+        : null;
   if (
     !ticketId ||
     !owner ||
@@ -6790,11 +6796,12 @@ function stateWriterTicketInput(value: unknown): StateWriterTicketInput | null {
     !job ||
     !runId ||
     !Number.isSafeInteger(runAttempt) ||
-    runAttempt < 1
+    runAttempt < 1 ||
+    !writerClass
   ) {
     return null;
   }
-  return { ticketId, owner, branch, repository, workflow, job, runId, runAttempt };
+  return { ticketId, owner, branch, repository, workflow, job, runId, runAttempt, writerClass };
 }
 
 function boundedStateWriterIdentity(value: unknown): string | null {

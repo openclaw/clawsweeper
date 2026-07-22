@@ -61,7 +61,7 @@ class TestStorage {
 }
 
 test(
-  "durable FIFO ignores legacy priority intent and keeps an ordinary writer behind a size-2 batch",
+  "durable coordinator keeps an ordinary writer behind an active size-2 batch",
   { timeout: 60_000 },
   async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-writer-fifo-git-"));
@@ -104,6 +104,7 @@ test(
           GITHUB_WORKFLOW: "Exact review batch publish",
           GITHUB_JOB: "publish",
           GITHUB_RUN_ID: "91001",
+          CLAWSWEEPER_STATE_COORDINATOR_CLASS: "publication_batch",
         },
       );
       await waitForFile(batchReady, 15_000, "logical size-2 writer did not acquire its ticket");
@@ -494,6 +495,7 @@ function ticketInput(payload: Record<string, unknown>): StateWriterTicketInput {
     job: String(payload.job || ""),
     runId: String(payload.run_id || ""),
     runAttempt: Number(payload.run_attempt),
+    writerClass: payload.writer_class === "publication_batch" ? "publication_batch" : "ordinary",
   };
 }
 

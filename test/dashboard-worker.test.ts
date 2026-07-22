@@ -4626,6 +4626,7 @@ test("internal state writer routes authenticate and preserve durable ticket iden
     job: "materialize",
     run_id: "12345",
     run_attempt: 1,
+    writer_class: "ordinary",
   };
 
   const unsigned = await worker.fetch(
@@ -4667,6 +4668,21 @@ test("internal state writer routes authenticate and preserve durable ticket iden
   assert.equal(acquired.ticket.ticketId, acquire.ticket_id);
   assert.equal(acquired.ticket.owner, acquire.owner);
   assert.equal(acquired.ticket.state, "leased");
+
+  const legacyTicket = await worker.fetch(
+    signedStateAppendRequest(
+      "/internal/state-writer/acquire",
+      {
+        ...acquire,
+        ticket_id: "state-writer:legacy-route",
+        owner: "22222222-2222-4222-8222-222222222222",
+        writer_class: undefined,
+      },
+      "test-clawsweeper-webhook-secret",
+    ),
+    env,
+  );
+  assert.equal(legacyTicket.status, 200, "rolling-deploy clients default to ordinary admission");
 
   const ownership = {
     ticket_id: acquired.ticket.ticketId,

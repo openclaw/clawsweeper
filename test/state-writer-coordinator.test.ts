@@ -92,6 +92,7 @@ test("coordinator schema upgrades pre-deadline ticket storage in place", () => {
   const coordinator = new StateWriterCoordinator(storage);
   coordinator.ensureSchemaSync();
   assert.ok(storage.columns("state_writer_tickets").includes("lease_deadline_at"));
+  assert.ok(storage.columns("state_writer_tickets").includes("writer_class"));
   const lease = acquire(
     coordinator,
     writer("migrated", "State materializer", "materialize"),
@@ -101,7 +102,7 @@ test("coordinator schema upgrades pre-deadline ticket storage in place", () => {
   assert.equal(lease.leaseDeadlineAt, 1_000 + MAXIMUM_LEASE_AGE_MS);
 });
 
-test("state writer coordinator admits different writer classes in strict FIFO order", () => {
+test("state writer coordinator preserves FIFO order within the ordinary writer class", () => {
   const { coordinator } = fixture();
   const batch = writer("batch", "Exact review batch publish", "publish");
   const router = writer("router", "Repair comment router", "route");
@@ -160,6 +161,79 @@ test("state writer coordinator admits different writer classes in strict FIFO or
     job: materializer.job,
     run_id: materializer.runId,
   });
+});
+
+test("publication batches skip ordinary backlog but yield after two consecutive turns", () => {
+  const { coordinator } = fixture();
+  const active = writer("active", "State materializer", "materialize");
+  const ordinary = writer("ordinary", "Repair comment router", "route");
+  const batchOne = writer(
+    "batch-one",
+    "Publish exact review batch",
+    "publish",
+    "publication_batch",
+  );
+  const batchTwo = writer(
+    "batch-two",
+    "Publish exact review batch",
+    "publish",
+    "publication_batch",
+  );
+  const batchThree = writer(
+    "batch-three",
+    "Publish exact review batch",
+    "publish",
+    "publication_batch",
+  );
+
+  const activeLease = acquire(coordinator, active, 1_000);
+  assert.equal(acquire(coordinator, ordinary, 1_100).position, 1);
+  assert.equal(acquire(coordinator, batchOne, 1_200).position, 1);
+  assert.equal(acquire(coordinator, batchTwo, 1_300).position, 2);
+  assert.equal(acquire(coordinator, batchThree, 1_400).position, 4);
+  assert.equal(
+    coordinator.release(
+      active.ticketId,
+      active.owner,
+      required(activeLease.leaseToken),
+      1_500,
+      QUEUED_STALE_MS,
+    ),
+    true,
+  );
+
+  const firstBatchLease = acquire(coordinator, batchOne, 1_600);
+  assert.equal(firstBatchLease.state, "leased");
+  assert.equal(
+    coordinator.release(
+      batchOne.ticketId,
+      batchOne.owner,
+      required(firstBatchLease.leaseToken),
+      1_700,
+      QUEUED_STALE_MS,
+    ),
+    true,
+  );
+  const secondBatchLease = acquire(coordinator, batchTwo, 1_800);
+  assert.equal(secondBatchLease.state, "leased");
+  assert.equal(
+    coordinator.release(
+      batchTwo.ticketId,
+      batchTwo.owner,
+      required(secondBatchLease.leaseToken),
+      1_900,
+      QUEUED_STALE_MS,
+    ),
+    true,
+  );
+
+  assert.equal(acquire(coordinator, batchThree, 2_000).position, 2);
+  const ordinaryLease = acquire(coordinator, ordinary, 2_001);
+  assert.equal(ordinaryLease.state, "leased");
+  const stats = coordinator.stats(2_002, QUEUED_STALE_MS);
+  assert.equal(stats.queued_batch, 1);
+  assert.equal(stats.queued_ordinary, 0);
+  assert.equal(stats.consecutive_batch_turns, 0);
 });
 
 test("expired active and abandoned queue-head writers recover without accepting stale owners", () => {
@@ -234,6 +308,7 @@ test("a durable ticket rejects every metadata mutation and release remains idemp
     { job: "other-job" },
     { runId: "999" },
     { runAttempt: 2 },
+    { writerClass: "publication_batch" },
   ];
   for (const mutation of mutations) {
     assert.throws(
@@ -339,7 +414,12 @@ function fixture() {
   return { coordinator, storage };
 }
 
-function writer(suffix: string, workflow: string, job: string): StateWriterTicketInput {
+function writer(
+  suffix: string,
+  workflow: string,
+  job: string,
+  writerClass: StateWriterTicketInput["writerClass"] = "ordinary",
+): StateWriterTicketInput {
   return {
     ticketId: `ticket-${suffix}`,
     owner: `owner-${suffix}`,
@@ -349,6 +429,7 @@ function writer(suffix: string, workflow: string, job: string): StateWriterTicke
     job,
     runId: `run-${suffix}`,
     runAttempt: 1,
+    writerClass,
   };
 }
 

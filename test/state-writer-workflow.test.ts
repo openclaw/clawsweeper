@@ -61,9 +61,25 @@ test("the setup action exports no long-lived coordinator credential", () => {
 
   assert.equal(action.inputs?.["coordinator-enabled"]?.default, "false");
   assert.equal(action.inputs?.["coordinator-url"]?.default, "https://clawsweeper.openclaw.ai");
+  assert.equal(action.inputs?.["coordinator-class"]?.default, "ordinary");
   assert.doesNotMatch(source, /coordinator-secret|CLAWSWEEPER_WEBHOOK_SECRET/);
   assert.match(source, /CLAWSWEEPER_STATE_COORDINATOR_ENABLED=\$coordinator_enabled/);
   assert.match(source, /CLAWSWEEPER_STATE_COORDINATOR_URL=\$STATE_COORDINATOR_URL/);
+  assert.match(source, /CLAWSWEEPER_STATE_COORDINATOR_CLASS=\$\{\{ inputs\.coordinator-class \}\}/);
+});
+
+test("only the exact-review batch publisher requests priority admission", () => {
+  const prioritySetups: string[] = [];
+  for (const { file, workflow } of workflows()) {
+    for (const [job, definition] of Object.entries(workflow.jobs ?? {})) {
+      for (const step of definition.steps ?? []) {
+        if (isSetupState(step) && step.with?.["coordinator-class"] === "publication_batch") {
+          prioritySetups.push(`${file}:${job}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(prioritySetups, [".github/workflows/exact-review-batch-publish.yml:publish"]);
 });
 
 test("trusted generated-state mutation steps receive a step-scoped coordinator credential", () => {

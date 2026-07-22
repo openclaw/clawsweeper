@@ -81,6 +81,10 @@ export function acquireStateWriterCoordinator(
         job: env.GITHUB_JOB || "local",
         run_id: env.GITHUB_RUN_ID || "local",
         run_attempt: positiveInteger(env.GITHUB_RUN_ATTEMPT, 1),
+        writer_class:
+          env.CLAWSWEEPER_STATE_COORDINATOR_CLASS === "publication_batch"
+            ? "publication_batch"
+            : "ordinary",
       });
       ambiguousRequestFailures = 0;
     } catch (error) {

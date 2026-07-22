@@ -1,6 +1,10 @@
 name: Setup ClawSweeper state
 description: Checkout generated state and hydrate it into the ClawSweeper worktree.
 inputs:
+  coordinator-class:
+    description: Durable state-writer scheduling class
+    required: false
+    default: ordinary
   token:
     description: GitHub token with contents read/write access to the state repo.
     required: true
@@ -74,6 +78,7 @@ runs:
           echo "CLAWSWEEPER_STATE_DIR=$GITHUB_WORKSPACE/${{ inputs.state-path }}"
           echo "CLAWSWEEPER_STATE_COORDINATOR_ENABLED=$coordinator_enabled"
           echo "CLAWSWEEPER_STATE_COORDINATOR_URL=$STATE_COORDINATOR_URL"
+          echo "CLAWSWEEPER_STATE_COORDINATOR_CLASS=${{ inputs.coordinator-class }}"
         } >> "$GITHUB_ENV"
 
     - uses: actions/setup-node@v6
