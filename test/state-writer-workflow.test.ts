@@ -126,7 +126,7 @@ test("the rollout returns to the last safe batch size during item deduplication"
   const workflow = readFileSync(join(workflowDirectory, "exact-review-batch-publish.yml"), "utf8");
   const worker = readFileSync("dashboard/wrangler.toml", "utf8");
   assert.match(workflow, /EXACT_REVIEW_BATCH_MAX_ITEMS: "4"/);
-  assert.match(worker, /EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "4"/);
+  assert.match(worker, /EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "32"/);
   assert.match(worker, /EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS = "60000"/);
 });
 

@@ -56,10 +56,11 @@ EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = "60000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = "45000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "180000"
 EXACT_REVIEW_PENDING_SOFT_LIMIT = "300"
-# The first size-8 batch selected two events for one durable item and failed its
-# single-commit gate. Hold at the last safe size while claim deduplication deploys.
+# Size-8 initially failed when one durable item claimed two events in a batch;
+# #772's in-batch serialization fixed that class, so the grant advances to the
+# batch-32 rollout target (workflow ask raised in #773).
 EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED = "1"
-EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "4"
+EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "32"
 EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS = "60000"
 EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_COOLDOWN_MS = "30000"
 EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_RESERVATION_MS = "600000"
