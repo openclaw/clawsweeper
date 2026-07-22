@@ -77,12 +77,14 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
     if (response.claimed !== true) return null;
     return {
       ...parseLease(response.batch),
-      // During a rolling dashboard deploy, an older worker may omit the effective
-      // cap. Preserve the former request-based telemetry until the new protocol is live.
+      // During a rolling dashboard deploy, current-main workers advertise the cap
+      // under effective_max_items. Only older uncapped workers require request fallback.
       configuredBatchSize:
-        response.configured_batch_size === undefined
-          ? input.maxItems
-          : positiveInteger(response.configured_batch_size, "configured_batch_size"),
+        response.configured_batch_size !== undefined
+          ? positiveInteger(response.configured_batch_size, "configured_batch_size")
+          : response.effective_max_items !== undefined
+            ? positiveInteger(response.effective_max_items, "effective_max_items")
+            : input.maxItems,
       batchWaitMs: nonNegativeInteger(response.batch_wait_ms, "batch_wait_ms"),
     };
   }

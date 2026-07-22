@@ -211,6 +211,26 @@ test("queue client signs protocol calls and rejects malformed responses", async 
   });
 });
 
+test("queue client uses the current-main effective cap during a rolling deploy", async () => {
+  const client = new ExactReviewBatchQueueClient({
+    baseUrl: "https://queue.example",
+    webhookSecret: "secret",
+    fetch: async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          claimed: true,
+          effective_max_items: 4,
+          batch_wait_ms: 0,
+          batch: leaseJson(),
+        }),
+      ),
+  });
+
+  const lease = await client.claim({ claimId: "claim-1", leaseOwner: "run-1", maxItems: 32 });
+  assert.equal(lease?.configuredBatchSize, 4);
+});
+
 function fakeQueue(
   hooks: {
     heartbeat?: () => void;
