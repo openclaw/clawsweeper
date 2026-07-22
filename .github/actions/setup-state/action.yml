@@ -1,10 +1,6 @@
 name: Setup ClawSweeper state
 description: Checkout generated state and hydrate it into the ClawSweeper worktree.
 inputs:
-  coordinator-class:
-    description: Durable state-writer scheduling class
-    required: false
-    default: ordinary
   token:
     description: GitHub token with contents read/write access to the state repo.
     required: true
@@ -44,6 +40,10 @@ inputs:
     description: Enable durable FIFO admission; false is the explicit legacy-fence rollback mode.
     required: false
     default: "false"
+  coordinator-class:
+    description: Durable state-writer scheduling class
+    required: false
+    default: ordinary
 runs:
   using: composite
   steps:
