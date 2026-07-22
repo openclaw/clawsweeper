@@ -205,6 +205,12 @@ test("recovery context redacts credentials before hashing or model invocation", 
     `fatal: OPENAI_API_KEY=${openAiKey}`,
     `Authorization: Bearer ${githubToken}`,
     `https://x-access-token:${githubToken}@github.com/openclaw/clawsweeper-state.git`,
+    "https://opaque-access-token@git.example/private.git?access_token=another-secret&depth=1",
+    "(https://punctuation-token@git.example/private.git).",
+    "https://account.blob.core.windows.net/container/blob?sv=1&sig=azure-secret",
+    "https://proxy.test/?target=https%3A%2F%2Fapi.test%2F%3Faccess_token%3Dnested-secret",
+    "https://safe.example,https://adjacent-token@git.example/private.git",
+    "https://user:abc'def@git.example/repo.git",
   ].join("\n");
   const redacted = redactRecoverySecrets(value, {
     OPENAI_API_KEY: openAiKey,
@@ -214,7 +220,28 @@ test("recovery context redacts credentials before hashing or model invocation", 
   assert.doesNotMatch(redacted, /super-secret|supersecret/);
   assert.match(redacted, /OPENAI_API_KEY=\[REDACTED\]/);
   assert.match(redacted, /Bearer \[REDACTED\]/);
-  assert.match(redacted, /https:\/\/\[REDACTED\]@github\.com/);
+  assert.match(redacted, /\[REDACTED_URL\]/);
+  assert.doesNotMatch(
+    redacted,
+    /opaque-access-token|another-secret|access_token|punctuation-token|azure-secret|nested-secret|adjacent-token|abc'def/,
+  );
+  assert.doesNotMatch(redacted, /depth=1|sig=|sv=1/);
+  assert.equal(
+    redactRecoverySecrets("https://git.example?email=owner@example.org"),
+    "[REDACTED_URL]",
+  );
+  assert.equal(
+    redactRecoverySecrets("opaque-token@git.example:private/repo.git"),
+    "[REDACTED_GIT_REMOTE]",
+  );
+  assert.equal(
+    redactRecoverySecrets("opaque-token@git_internal:private/repo.git"),
+    "[REDACTED_GIT_REMOTE]",
+  );
+  assert.equal(
+    redactRecoverySecrets("opaque-token@[2001:db8::1]:private/repo.git"),
+    "[REDACTED_GIT_REMOTE]",
+  );
 
   const failureContext = buildRecoveryFailureContext({
     phase: "push_commit",

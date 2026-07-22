@@ -332,10 +332,7 @@ export function recordRecoveryOutcome(
         subject: {
           repository: env.GITHUB_REPOSITORY ?? "openclaw/clawsweeper",
           kind: "publication",
-          subjectId: machineToken(
-            `${advice.context.remote}.${advice.context.branch}`,
-            "publication",
-          ),
+          subjectId: "git_recovery",
           sourceRevision: advice.contextHash,
         },
         action: {
@@ -405,7 +402,8 @@ export function redactRecoverySecrets(value: string, env: NodeJS.ProcessEnv = pr
       "$1=[REDACTED]",
     )
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 [REDACTED]")
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S*/gi, "[REDACTED_URL]")
+    .replace(/\b[^\s/@:]+@[^\s]+:[^\s]+/g, "[REDACTED_GIT_REMOTE]");
 }
 
 export function formatRecoveryAction(action: RecoveryAction): string {
