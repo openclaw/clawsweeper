@@ -121,11 +121,47 @@ test("publication batches atomically select ready items without duplicate active
     candidates.slice(0, 2).map((item) => item.itemKey),
   );
   assert.equal(second, null);
+  assert.equal(first?.configuredBatchSize, 2);
   assert.deepEqual(batches.activeLeaseSnapshot(1_500), {
     itemKeys: candidates.slice(0, 2).map((item) => item.itemKey),
     nextLeaseExpiresAt: 2_000,
   });
   assert.equal(batches.fetch("batch-1", "wrong-worker", 1_500), null);
+});
+
+test("batch schema migration derives a safe cap for an active legacy lease", () => {
+  const storage = new TestStorage();
+  storage.exec(
+    `CREATE TABLE exact_review_publication_batches (
+       batch_id TEXT PRIMARY KEY,
+       state TEXT NOT NULL,
+       lease_owner TEXT NOT NULL,
+       lease_expires_at INTEGER NOT NULL,
+       attempt INTEGER NOT NULL,
+       created_at INTEGER NOT NULL,
+       completed_at INTEGER,
+       state_commit_sha TEXT,
+       failure_fingerprint TEXT
+     ) STRICT;
+     CREATE TABLE exact_review_publication_batch_items (
+       batch_id TEXT NOT NULL,
+       item_key TEXT NOT NULL,
+       revision INTEGER NOT NULL,
+       claim_generation INTEGER NOT NULL,
+       terminal_outcome TEXT,
+       PRIMARY KEY (batch_id, item_key)
+     ) STRICT;
+     INSERT INTO exact_review_publication_batches
+       (batch_id, state, lease_owner, lease_expires_at, attempt, created_at)
+       VALUES ('legacy-active', 'leased', 'worker', 2000, 1, 1000);
+     INSERT INTO exact_review_publication_batch_items
+       (batch_id, item_key, revision, claim_generation)
+       VALUES ('legacy-active', 'item-1', 1, 1), ('legacy-active', 'item-2', 1, 1);`,
+  );
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+
+  assert.equal(batches.fetch("legacy-active", "worker", 1_500)?.configuredBatchSize, 2);
 });
 
 test("expired unfinished membership is reclaimable with a new fencing generation", () => {
@@ -1111,6 +1147,51 @@ test("batch ask widens owner scanning without exceeding the configured lease siz
       claim.batch.items.map((item) => item.item_key),
       ["openclaw/openclaw#130@publish:1030:1", "openclaw/openclaw#132@publish:1032:1"],
     );
+    assert.equal(claim.configured_batch_size, 2);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("idempotent batch claims retain the cap recorded by the original lease", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 1_900_000;
+  try {
+    const storage = new TestStorage();
+    const initialQueue = new ExactReviewQueue(
+      { storage },
+      {
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+      },
+    );
+    await initialQueue.fetch(publicationRequest("stable-cap-1", 140, "1040"));
+    await initialQueue.fetch(publicationRequest("stable-cap-2", 141, "1041"));
+    const requestBody = {
+      claim_id: "claim-stable-cap",
+      lease_owner: "worker-1",
+      max_items: 4,
+    };
+    const initial = await (
+      await initialQueue.fetch(batchRequest("/publication-batches/claim", requestBody))
+    ).json();
+    assert.equal(initial.configured_batch_size, 2);
+
+    for (const configuredSize of [1, 4]) {
+      const retryQueue = new ExactReviewQueue(
+        { storage },
+        {
+          EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+          EXACT_REVIEW_PUBLICATION_BATCH_SIZE: String(configuredSize),
+        },
+      );
+      const retried = await (
+        await retryQueue.fetch(batchRequest("/publication-batches/claim", requestBody))
+      ).json();
+      assert.equal(retried.configured_batch_size, 2);
+      assert.equal(retried.batch.configured_batch_size, 2);
+      assert.equal(retried.batch.items.length, 2);
+    }
   } finally {
     Date.now = originalNow;
   }

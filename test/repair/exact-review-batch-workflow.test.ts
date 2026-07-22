@@ -90,6 +90,14 @@ test("batch claim treats an all-stale fetched batch as terminal", () => {
   );
 });
 
+test("batch manifest records the dashboard effective lease size", () => {
+  assert.match(cliSource, /configuredBatchSize: lease\.configuredBatchSize/);
+  assert.doesNotMatch(
+    cliSource,
+    /configuredBatchSize: positiveInteger\(env\("EXACT_REVIEW_BATCH_MAX_ITEMS"\)\)/,
+  );
+});
+
 test("batch failure cleanup completes manifest fences without a queue fetch", () => {
   const releaseSource = /async function release\(\) \{([\s\S]*?)\n\}/.exec(cliSource)?.[1] ?? "";
   assert.match(releaseSource, /manifest\.items\.map/);
