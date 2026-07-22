@@ -251,16 +251,19 @@ export function buildDecisionPacketFromReport(
 export function renderDecisionPacketPublicBlock(markdown: string): string {
   const packet = buildDecisionPacketFromReport(markdown);
   if (!packet) return "";
-  const options = packet.options.map(
-    (option) =>
-      `  - **${option.title}${option.recommended ? " (recommended)" : ""}:** ${option.body}`,
-  );
+  const recommendation = packet.options.find((option) => option.recommended);
+  if (!recommendation) return "";
+  const tableCell = (value: string) =>
+    value
+      .replace(/\r?\n|\r/g, "<br>")
+      .replace(/\|/g, "\\|")
+      .trim();
   return [
-    `- Question: ${packet.question}`,
-    `- Rationale: ${packet.rationale}`,
-    `- Likely owner: ${packet.likelyOwner.person} — ${packet.likelyOwner.reason}`,
-    "- Options:",
-    ...options,
+    "| Question | Recommendation |",
+    "|---|---|",
+    `| ${tableCell(packet.question)} | **${tableCell(recommendation.title)}:** ${tableCell(recommendation.body)} |`,
+    "",
+    `Why: ${packet.rationale}`,
   ].join("\n");
 }
 

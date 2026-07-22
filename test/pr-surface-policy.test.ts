@@ -389,7 +389,7 @@ Full review comments:
   const comment = renderReviewCommentFromReport(report, "none");
   const markers = reviewAutomationMarkersFromReport(report);
 
-  assert.match(comment, /\*\*Stored data model\*\*/);
+  assert.match(comment, /### Stored data model/);
   assert.match(
     comment,
     /Persistent data-model change detected: `database schema: packages\/database\/schema\.ts`\./,

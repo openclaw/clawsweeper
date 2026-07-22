@@ -57,19 +57,16 @@ Full review comments:
   });
   const markers = reviewAutomationMarkersFromReport(report);
 
-  assert.match(comment, /\*\*Merge readiness\*\*\nOverall: 🦞 diamond lobster/);
-  assert.match(comment, /Proof: 🦞 diamond lobster/);
-  assert.match(comment, /Patch quality: 🦞 diamond lobster/);
-  assert.match(comment, /Result: ready for maintainer review\./);
-  assert.match(
-    comment,
-    /Overall follows the weaker of proof and patch quality, so missing proof can cap an otherwise strong patch\./,
-  );
+  assert.match(comment, /## Merge readiness/);
+  assert.match(comment, /\| \*\*Overall\*\* \| 🦞 diamond lobster \*\*\(5\/6\)\*\* \|/);
+  assert.match(comment, /\| \*\*Proof\*\* \| 🦞 diamond lobster \*\*\(5\/6\)\*\* \|/);
+  assert.match(comment, /\| \*\*Patch quality\*\* \| 🦞 diamond lobster \*\*\(5\/6\)\*\* \|/);
+  assert.match(comment, /\| \*\*Status\*\* \| Ready for maintainer review\. \|/);
   assert.doesNotMatch(comment, /\*\*PR rating\*\*/);
   assert.doesNotMatch(comment, /\*\*Real behavior proof\*\*/);
-  assert.match(comment, /<summary>What the crustacean ranks mean<\/summary>/);
-  assert.match(comment, /🦀 challenger crab: rare, exceptional readiness/);
-  assert.match(comment, /🧂 unranked krab: not merge-ready/);
+  assert.match(comment, /<summary><strong>Agent review details<\/strong><\/summary>/);
+  assert.match(comment, /\| \*\*6\/6\*\* \| S \| 🦀 challenger crab \|/);
+  assert.match(comment, /\| \*\*1\/6\*\* \| F \| 🧂 unranked krab \|/);
   assert.match(markers, /clawsweeper-verdict:pass/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
 });
@@ -122,15 +119,11 @@ Full review comments:
   const comment = renderReviewCommentFromReport(report, "none");
   const labelDetails = detailsBody(comment, "Label changes");
 
-  assert.match(comment, /\*\*Merge readiness\*\*\nOverall: 🧂 unranked krab/);
-  assert.match(comment, /Proof: 🧂 unranked krab/);
-  assert.match(comment, /Patch quality: 🦞 diamond lobster/);
-  assert.match(comment, /Result: blocked until real behavior proof is added\./);
-  assert.match(
-    comment,
-    /Overall follows the weaker of proof and patch quality, so missing proof can cap an otherwise strong patch\./,
-  );
-  assert.match(comment, /Proof guidance:\n- \[P1\] Needs real behavior proof before merge:/);
+  assert.match(comment, /\| \*\*Overall\*\* \| 🧂 unranked krab \*\*\(1\/6\)\*\* \|/);
+  assert.match(comment, /\| \*\*Proof\*\* \| 🧂 unranked krab \*\*\(1\/6\)\*\* \|/);
+  assert.match(comment, /\| \*\*Patch quality\*\* \| 🦞 diamond lobster \*\*\(5\/6\)\*\* \|/);
+  assert.match(comment, /\| \*\*Status\*\* \| Blocked until real behavior proof is added\. \|/);
+  assert.match(comment, /\| \*\*Add real behavior proof\*\* \| Needs real behavior proof/);
   assert.match(comment, /The PR has no real ingestion-run proof yet\./);
   assert.match(comment, /After adding proof, update the PR body/);
   assert.match(comment, /@clawsweeper re-review/);
@@ -206,14 +199,14 @@ ${prRatingReportSection({
     comment,
     /^ClawSweeper review: did not complete due to Codex infrastructure failure\./,
   );
-  assert.match(comment, /\*\*Merge readiness\*\*\nNot assessed\./);
+  assert.match(comment, /## Merge readiness\n\nNot assessed\./);
   assert.match(
     comment,
     /This is a ClawSweeper\/Codex infrastructure failure, not a PR readiness or patch-quality verdict\./,
   );
   assert.doesNotMatch(comment, /Codex review: needs real behavior proof before merge\./);
   assert.doesNotMatch(comment, /Overall follows the weaker of proof and patch quality/);
-  assert.doesNotMatch(comment, /<summary>What the crustacean ranks mean<\/summary>/);
+  assert.doesNotMatch(comment, /### Rating scale/);
   assert.match(
     labelDetails,
     /- remove `rating: 🌊 off-meta tidepool`: Current review failed before PR readiness was assessed, so no rating label should remain\./,
@@ -287,18 +280,9 @@ Full review comments:
 
   const comment = renderReviewCommentFromReport(report, "none");
 
-  assert.match(comment, /<summary>Label changes<\/summary>/);
-  assert.ok(
-    comment.indexOf("<summary>Label changes</summary>") <
-      comment.indexOf("<summary>What the crustacean ranks mean</summary>"),
-  );
-  assert.ok(
-    comment.indexOf("<summary>What the crustacean ranks mean</summary>") <
-      comment.indexOf("<summary>How this review workflow works</summary>"),
-  );
-  if (comment.includes("<summary>Review details</summary>")) {
-    assert.doesNotMatch(detailsBody(comment, "Review details"), /Label changes:/);
-  }
+  assert.match(comment, /<summary><strong>Agent review details<\/strong><\/summary>/);
+  assert.ok(comment.indexOf("### Labels") < comment.indexOf("### Rating scale"));
+  assert.ok(comment.indexOf("### Rating scale") < comment.indexOf("### Workflow"));
   const labelDetails = detailsBody(comment, "Label changes");
   assert.match(labelDetails, /Label changes:/);
   assert.match(

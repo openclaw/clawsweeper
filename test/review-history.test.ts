@@ -462,7 +462,7 @@ test("previous durable comment converts into a ledger cycle", () => {
 
 test("next-step priority bullets do not become review findings", () => {
   const comment = renderReviewCommentFromReport(keepOpenPullReport(), "none");
-  assert.match(comment, /\*\*Next step before merge\*\*[\s\S]*- \[P2\]/);
+  assert.match(comment, /## Before merge[\s\S]*\| \*\*P2\*\* \|/);
   assert.deepEqual(reviewHistoryCycleFromCommentBody(comment)?.findings, []);
 });
 

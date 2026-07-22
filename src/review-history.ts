@@ -268,10 +268,14 @@ function reviewFindingLines(lines: readonly string[]): readonly string[] {
     );
     return end < 0 ? detailsLines : detailsLines.slice(0, end);
   }
-  const summaryStart = lines.findIndex((line) => line.trim() === "**Review findings**");
+  const summaryStart = lines.findIndex((line) =>
+    ["**Review findings**", "## Findings"].includes(line.trim()),
+  );
   if (summaryStart < 0) return [];
   const summaryLines = lines.slice(summaryStart + 1);
-  const end = summaryLines.findIndex((line) => /^(?:\*\*|<details>|<!--)/.test(line.trim()));
+  const end = summaryLines.findIndex((line) =>
+    /^(?:\*\*|#{1,6}\s|<details>|<\/details>|<!--)/.test(line.trim()),
+  );
   return end < 0 ? summaryLines : summaryLines.slice(0, end);
 }
 

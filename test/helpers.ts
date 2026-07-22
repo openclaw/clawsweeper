@@ -297,10 +297,40 @@ ${values.nextSteps}
 
 export function detailsBody(markdown, summary) {
   const marker = `<summary>${summary}</summary>`;
-  const markerIndex = markdown.indexOf(marker);
+  let markerIndex = markdown.indexOf(marker);
+  let matchedMarker = marker;
+  if (markerIndex === -1 && summary === "Agent review details") {
+    matchedMarker = "<summary><strong>Agent review details</strong></summary>";
+    markerIndex = markdown.indexOf(matchedMarker);
+  }
+  if (
+    markerIndex === -1 &&
+    ["Review details", "Label changes", "Evidence reviewed"].includes(summary)
+  ) {
+    matchedMarker = "<summary><strong>Agent review details</strong></summary>";
+    markerIndex = markdown.indexOf(matchedMarker);
+  }
   assert.notEqual(markerIndex, -1, `missing details summary ${summary}`);
-  const bodyStart = markerIndex + marker.length;
-  const bodyEnd = markdown.indexOf("</details>", bodyStart);
+  const bodyStart = markerIndex + matchedMarker.length;
+  let depth = 1;
+  let cursor = bodyStart;
+  let bodyEnd = -1;
+  while (depth > 0) {
+    const nextOpen = markdown.indexOf("<details>", cursor);
+    const nextClose = markdown.indexOf("</details>", cursor);
+    if (nextClose === -1) break;
+    if (nextOpen !== -1 && nextOpen < nextClose) {
+      depth += 1;
+      cursor = nextOpen + "<details>".length;
+      continue;
+    }
+    depth -= 1;
+    if (depth === 0) {
+      bodyEnd = nextClose;
+      break;
+    }
+    cursor = nextClose + "</details>".length;
+  }
   assert.notEqual(bodyEnd, -1, `missing details close for ${summary}`);
   return markdown.slice(bodyStart, bodyEnd);
 }

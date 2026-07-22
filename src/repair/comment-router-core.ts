@@ -2084,12 +2084,14 @@ export function isProofNudgeCommentBody(body: string) {
 }
 
 function trustedCommentHasPriorityFinding(body: string) {
-  const reviewFindings = markdownSection(body, "Review findings");
+  const reviewFindings =
+    markdownSection(body, "Findings") || markdownSection(body, "Review findings");
   return /(?:^|;|\n)\s*(?:[-*]\s*)?(?:\*\*)?\[P[0-3]\]/i.test(reviewFindings);
 }
 
 function trustedHumanReviewReason(body: string, verdict: LooseRecord | null) {
   const details = [
+    markdownSection(body, "Before merge"),
     markdownSection(body, "Next step before merge"),
     markdownSection(body, "Security"),
     firstReviewFinding(body),
@@ -2106,7 +2108,7 @@ function markdownSection(body: string, heading: string) {
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = String(body ?? "").match(
     new RegExp(
-      `(?:^|\\n)\\*\\*${escaped}\\*\\*\\s*\\n([\\s\\S]*?)(?=\\n\\n\\*\\*|\\n<details|\\n<!--|$)`,
+      `(?:^|\\n)(?:\\*\\*${escaped}\\*\\*|#{1,6}\\s+${escaped})\\s*\\n([\\s\\S]*?)(?=\\n(?:\\*\\*[^*\\n]+\\*\\*|#{1,6}\\s+\\S|<details>|<\\/details>|<!--)|$)`,
       "i",
     ),
   );
@@ -2114,7 +2116,7 @@ function markdownSection(body: string, heading: string) {
 }
 
 function firstReviewFinding(body: string) {
-  const section = markdownSection(body, "Review findings");
+  const section = markdownSection(body, "Findings") || markdownSection(body, "Review findings");
   const finding = section.match(/(?:^|;\s*|\n)\s*[-*]\s*(.+?)(?:$|;\s*|\n)/)?.[1] ?? "";
   return finding ? compactReason(`Review finding: ${finding}`, 180) : "";
 }
