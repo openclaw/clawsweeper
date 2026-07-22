@@ -1031,13 +1031,55 @@ test("queue completion atomically removes only the owned publication revision", 
       )
     ).json();
     assert.equal(claim.claimed, true, JSON.stringify(claim));
+    assert.equal(claim.batch_wait_ms, 0);
     const member = claim.batch.items[0];
+    const progress = {
+      schema_version: 1,
+      operation_id: "batch:claim-complete",
+      mode: "batch",
+      phase: "holding",
+      sequence: 2,
+      observed_at: new Date(1_999_500).toISOString(),
+      configured_batch_size: 1,
+      actual_batch_size: 1,
+    };
+    const heartbeat = await queue.fetch(
+      batchRequest("/publication-batches/heartbeat", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+        items: [member],
+        state_writer_progress: progress,
+      }),
+    );
+    assert.equal(heartbeat.status, 200, JSON.stringify(await heartbeat.clone().json()));
+    const stateWriter = {
+      schema_version: 1,
+      operation_id: "batch:claim-complete",
+      mode: "batch",
+      started_at: new Date(1_999_000).toISOString(),
+      finished_at: new Date(2_000_000).toISOString(),
+      wait_ms: 500,
+      acquire_attempts: 2,
+      acquired: true,
+      hold_ms: 500,
+      renewals: 0,
+      released: true,
+      git_duration_ms: 1_000,
+      git_processes: 8,
+      commit_count: 1,
+      materialized_items: 1,
+      configured_batch_size: 1,
+      actual_batch_size: 1,
+      batch_wait_ms: 0,
+      outcome: "materialized",
+    };
     const completion = await (
       await queue.fetch(
         batchRequest("/publication-batches/complete", {
           batch_id: claim.batch.batch_id,
           lease_owner: "worker-1",
           state_commit_sha: "b".repeat(40),
+          state_writer: stateWriter,
           items: [
             {
               item_key: member.item_key,
@@ -1077,6 +1119,10 @@ test("queue completion atomically removes only the owned publication revision", 
     assert.equal(stats.lanes.publication.pending, 0);
     assert.equal(stats.lanes.publication.published_total, 1);
     assert.equal(stats.lanes.publication.batches.completed, 1);
+    assert.equal(stats.state_writer.mode, "batch");
+    assert.equal(stats.state_writer.collection.status, "fresh");
+    assert.equal(stats.state_writer.last_15_minutes.state_commits, 1);
+    assert.equal(stats.state_writer.last_15_minutes.materialized_items, 1);
   } finally {
     Date.now = originalNow;
   }

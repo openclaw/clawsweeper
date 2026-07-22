@@ -2596,7 +2596,17 @@ export class ExactReviewQueue {
       this.writeStateSync(state);
     }
     if (!batch) return json({ ok: true, claimed: false, batch: null });
-    return json({ ok: true, claimed: true, batch: exactReviewPublicationBatchJson(batch) });
+    const oldestCandidateAt = batch.items.reduce(
+      (oldest, membership) =>
+        Math.min(oldest, state.items[membership.itemKey]?.createdAt ?? batch.createdAt),
+      batch.createdAt,
+    );
+    return json({
+      ok: true,
+      claimed: true,
+      batch: exactReviewPublicationBatchJson(batch),
+      batch_wait_ms: Math.max(0, now - oldestCandidateAt),
+    });
   }
 
   private async fetchPublicationBatch(value: unknown) {
@@ -2653,8 +2663,16 @@ export class ExactReviewQueue {
     const batchId = exactReviewPublicationBatchId(body.batch_id);
     const leaseOwner = exactReviewPublicationBatchOwner(body.lease_owner);
     const members = exactReviewPublicationBatchMembers(body.items);
+    const progress =
+      body.state_writer_progress === undefined
+        ? undefined
+        : normalizeStateWriterProgress(body.state_writer_progress);
     if (!batchId || !leaseOwner) return json({ error: "invalid_batch_identity" }, 400);
     if (!members?.length) return json({ error: "invalid_batch_members" }, 400);
+    if (body.state_writer_progress !== undefined && !progress) {
+      this.incrementStateWriterDiagnosticSafely("rejected_progress_total");
+      return json({ error: "invalid_state_writer_progress" }, 400);
+    }
     const now = Date.now();
     const batch = this.batchStore.heartbeat(
       batchId,
@@ -2664,6 +2682,14 @@ export class ExactReviewQueue {
       now,
     );
     if (!batch) return json({ error: "batch_lease_not_active" }, 409);
+    if (progress) {
+      const expectedOperationId = `batch:${batchId}`;
+      if (progress.mode !== "batch" || progress.operation_id !== expectedOperationId) {
+        this.incrementStateWriterDiagnosticSafely("rejected_progress_total");
+        return json({ error: "invalid_batch_state_writer_progress" }, 400);
+      }
+      this.recordStateWriterProgressSafely(progress, now);
+    }
     return json({ ok: true, batch: exactReviewPublicationBatchJson(batch) });
   }
 
@@ -2672,8 +2698,23 @@ export class ExactReviewQueue {
     const batchId = exactReviewPublicationBatchId(body.batch_id);
     const leaseOwner = exactReviewPublicationBatchOwner(body.lease_owner);
     const completions = exactReviewPublicationBatchCompletions(body.items);
+    const stateWriter =
+      body.state_writer === undefined
+        ? undefined
+        : normalizeStateWriterOperation(body.state_writer);
     if (!batchId || !leaseOwner) return json({ error: "invalid_batch_identity" }, 400);
     if (!completions) return json({ error: "invalid_batch_completions" }, 400);
+    if (body.state_writer !== undefined && !stateWriter) {
+      this.incrementStateWriterDiagnosticSafely("rejected_terminal_total");
+      return json({ error: "invalid_batch_state_writer" }, 400);
+    }
+    if (
+      stateWriter &&
+      (stateWriter.mode !== "batch" || stateWriter.operation_id !== `batch:${batchId}`)
+    ) {
+      this.incrementStateWriterDiagnosticSafely("rejected_terminal_total");
+      return json({ error: "invalid_batch_state_writer_identity" }, 400);
+    }
     const stateCommitSha = String(body.state_commit_sha || "").trim();
     if (stateCommitSha && !/^[0-9a-f]{40}$/i.test(stateCommitSha)) {
       return json({ error: "invalid_state_commit_sha" }, 400);
@@ -2783,6 +2824,7 @@ export class ExactReviewQueue {
       },
     );
     if (!batch) return json({ error: "batch_lease_not_active" }, 409);
+    this.recordStateWriterOperationSafely(stateWriter, false, now);
     if (acceptedCount) await this.scheduleNext(this.readStateSync(), now);
     return json({
       ok: true,

@@ -9,7 +9,11 @@ import {
   type ExactReviewBatchQueueItem,
 } from "./exact-review-batch-queue-client.js";
 import { StatePublishContentionError } from "./git-publish.js";
+import { setStatePublishTelemetryObserver } from "./git-publish.js";
+import { exactReviewBatchStateWriterProgressReporter } from "./exact-review-batch-state-writer-progress.js";
 import { commitPreparedStateBatch } from "./state-publication-batch.js";
+import { StateWriterTelemetryRecorder } from "./state-writer-telemetry-recorder.js";
+import type { StateWriterOperation } from "../state-writer-telemetry.js";
 import {
   validatePreparedStateMutationPlans,
   type PreparedStateMutationPlan,
@@ -18,6 +22,8 @@ import {
 type BatchManifest = {
   batchId: string;
   leaseOwner: string;
+  configuredBatchSize: number;
+  batchWaitMs: number;
   items: Array<ExactReviewBatchQueueItem & { outcomePath: string }>;
 };
 
@@ -25,6 +31,7 @@ type BatchReceipt = {
   batchId: string;
   publishedItemKeys: Set<string>;
   stateCommitSha?: string;
+  stateWriter?: StateWriterOperation;
 };
 
 const command = process.argv[2];
@@ -64,6 +71,8 @@ async function claim() {
   const manifest: BatchManifest = {
     batchId: lease.batchId,
     leaseOwner,
+    configuredBatchSize: positiveInteger(env("EXACT_REVIEW_BATCH_MAX_ITEMS")),
+    batchWaitMs: lease.batchWaitMs,
     items: fetched.items.map((item, index) => ({
       ...item,
       outcomePath: join(outcomeDir, `${index}.json`),
@@ -135,14 +144,41 @@ async function commit() {
   }
 
   let stateCommitSha: string | undefined;
+  let stateWriter: StateWriterOperation | undefined;
+  const progressObserver = exactReviewBatchStateWriterProgressReporter({
+    queueUrl: env("EXACT_REVIEW_QUEUE_URL"),
+    webhookSecret: env("CLAWSWEEPER_WEBHOOK_SECRET"),
+    batchId: manifest.batchId,
+    leaseOwner: manifest.leaseOwner,
+    items: manifest.items,
+  });
+  const recorder = plans.length
+    ? new StateWriterTelemetryRecorder({
+        mode: "batch",
+        operationId: `batch:${manifest.batchId}`,
+        configuredBatchSize: manifest.configuredBatchSize,
+        actualBatchSize: plans.length,
+        batchWaitMs: manifest.batchWaitMs,
+        ...(progressObserver ? { observer: progressObserver } : {}),
+      })
+    : null;
+  const resetTelemetry = recorder ? setStatePublishTelemetryObserver(recorder) : () => undefined;
   try {
     if (plans.length) {
-      stateCommitSha = commitPreparedStateBatch({
+      const committed = commitPreparedStateBatch({
         batchId: manifest.batchId,
         plans,
-      }).commitSha;
+      });
+      stateCommitSha = committed.commitSha;
+      if (committed.outcome === "committed") recorder?.recordMaterializedCommit(plans.length);
+      recorder?.finalize(committed.outcome === "committed" ? "materialized" : "unchanged");
+      stateWriter = recorder?.toTerminalObject() ?? undefined;
     }
   } catch (error) {
+    recorder?.finalize(
+      error instanceof StatePublishContentionError ? "contention_timeout" : "failed",
+    );
+    stateWriter = recorder?.toTerminalObject() ?? undefined;
     const fingerprint = failureFingerprint(error);
     const reasonCode =
       error instanceof StatePublishContentionError ? "state_contention" : "unknown_failure";
@@ -153,13 +189,21 @@ async function commit() {
       errorFingerprint: fingerprint,
     }));
     try {
-      await acknowledge(manifest, [...superseded, ...retryable], undefined, fingerprint);
+      await acknowledge(
+        manifest,
+        [...superseded, ...retryable],
+        undefined,
+        fingerprint,
+        stateWriter,
+      );
     } catch (releaseError) {
       console.error(
         `Failed to release batch after commit error: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}`,
       );
     }
     throw error;
+  } finally {
+    resetTelemetry();
   }
   const receiptPath = batchReceiptPath();
   mkdirSync(dirname(receiptPath), { recursive: true });
@@ -170,6 +214,7 @@ async function commit() {
         batchId: manifest.batchId,
         stateCommitSha: stateCommitSha ?? null,
         publishedItemKeys: plans.map((plan) => plan.identity.itemKey),
+        stateWriter: stateWriter ?? null,
       },
       null,
       2,
@@ -226,7 +271,13 @@ async function complete() {
     if (hasPendingPostEffects(outcome)) continue;
     completions.push({ ...current, terminalOutcome: "published" });
   }
-  const result = await acknowledge(manifest, completions, receipt.stateCommitSha);
+  const result = await acknowledge(
+    manifest,
+    completions,
+    receipt.stateCommitSha,
+    undefined,
+    receipt.stateWriter,
+  );
   const retryable = completions.filter(
     (completion) =>
       completion.terminalOutcome !== "published" && completion.terminalOutcome !== "superseded",
@@ -273,7 +324,13 @@ async function release() {
     }
     return retryableCompletion(member, "workflow_cancelled");
   });
-  const result = await acknowledge(manifest, completions, receipt?.stateCommitSha);
+  const result = await acknowledge(
+    manifest,
+    completions,
+    receipt?.stateCommitSha,
+    undefined,
+    receipt?.stateWriter,
+  );
   console.log(
     JSON.stringify({
       ok: true,
@@ -288,14 +345,16 @@ async function acknowledge(
   completions: ExactReviewBatchCompletion[],
   stateCommitSha?: string,
   failure?: string,
+  stateWriter?: StateWriterOperation,
 ) {
-  if (!completions.length) return null;
+  if (!completions.length && !stateWriter) return null;
   return client.complete({
     batchId: manifest.batchId,
     leaseOwner: manifest.leaseOwner,
     items: completions,
     ...(stateCommitSha ? { stateCommitSha } : {}),
     ...(failure ? { failureFingerprint: failure } : {}),
+    ...(stateWriter ? { stateWriter } : {}),
   });
 }
 
@@ -352,6 +411,8 @@ function readManifest(): BatchManifest {
   return {
     batchId: stringValue(value.batchId, "batchId"),
     leaseOwner: stringValue(value.leaseOwner, "leaseOwner"),
+    configuredBatchSize: positiveInteger(value.configuredBatchSize),
+    batchWaitMs: nonNegativeInteger(value.batchWaitMs),
     items: value.items.map((entry) => {
       const item = objectValue(entry);
       return {
@@ -390,10 +451,15 @@ function readBatchReceipt(manifest: BatchManifest, required: boolean): BatchRece
     typeof receipt.stateCommitSha === "string" && receipt.stateCommitSha
       ? receipt.stateCommitSha
       : undefined;
+  const stateWriter =
+    receipt.stateWriter && typeof receipt.stateWriter === "object"
+      ? (receipt.stateWriter as StateWriterOperation)
+      : undefined;
   return {
     batchId,
     publishedItemKeys,
     ...(stateCommitSha ? { stateCommitSha } : {}),
+    ...(stateWriter ? { stateWriter } : {}),
   };
 }
 
@@ -435,6 +501,13 @@ function stringValue(value: unknown, name: string): string {
 function positiveInteger(value: unknown): number {
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < 1) throw new Error("Expected a positive integer");
+  return number;
+}
+
+function nonNegativeInteger(value: unknown): number {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0)
+    throw new Error("Expected a non-negative integer");
   return number;
 }
 

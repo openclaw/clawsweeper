@@ -96,6 +96,7 @@ test("batch failure cleanup completes manifest fences without a queue fetch", ()
   assert.match(releaseSource, /readBatchReceipt\(manifest, false\)/);
   assert.match(releaseSource, /receipt\?\.publishedItemKeys\.has\(member\.itemKey\)/);
   assert.match(releaseSource, /terminalOutcome: "published"/);
-  assert.match(releaseSource, /acknowledge\(manifest, completions, receipt\?\.stateCommitSha\)/);
+  assert.match(releaseSource, /receipt\?\.stateCommitSha/);
+  assert.match(releaseSource, /receipt\?\.stateWriter/);
   assert.doesNotMatch(releaseSource, /client\.fetch/);
 });

@@ -4,6 +4,7 @@ import type {
   ExactReviewBatchCompletion,
   ExactReviewBatchMember,
 } from "./exact-review-batch-publisher.js";
+import type { StateWriterOperation, StateWriterProgress } from "../state-writer-telemetry.js";
 
 export type ExactReviewBatchQueueItem = ExactReviewBatchMember & { decision: unknown };
 
@@ -13,6 +14,8 @@ export type ExactReviewBatchLease = {
   leaseExpiresAt: string;
   items: ExactReviewBatchMember[];
 };
+
+export type ExactReviewBatchClaim = ExactReviewBatchLease & { batchWaitMs: number };
 
 export type ExactReviewBatchFetch = {
   batch: ExactReviewBatchLease;
@@ -25,12 +28,13 @@ export interface ExactReviewBatchQueue {
     claimId: string;
     leaseOwner: string;
     maxItems: number;
-  }): Promise<ExactReviewBatchLease | null>;
+  }): Promise<ExactReviewBatchClaim | null>;
   fetch(input: { batchId: string; leaseOwner: string }): Promise<ExactReviewBatchFetch>;
   heartbeat(input: {
     batchId: string;
     leaseOwner: string;
     items: readonly ExactReviewBatchMember[];
+    stateWriterProgress?: StateWriterProgress;
   }): Promise<ExactReviewBatchLease>;
   complete(input: {
     batchId: string;
@@ -38,6 +42,7 @@ export interface ExactReviewBatchQueue {
     items: readonly ExactReviewBatchCompletion[];
     stateCommitSha?: string;
     failureFingerprint?: string;
+    stateWriter?: StateWriterOperation;
   }): Promise<{ accepted: number; skipped: number; batch: ExactReviewBatchLease }>;
 }
 
@@ -67,7 +72,10 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
       max_items: input.maxItems,
     });
     if (response.claimed !== true) return null;
-    return parseLease(response.batch);
+    return {
+      ...parseLease(response.batch),
+      batchWaitMs: nonNegativeInteger(response.batch_wait_ms, "batch_wait_ms"),
+    };
   }
 
   async fetch(input: { batchId: string; leaseOwner: string }) {
@@ -87,6 +95,7 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
     batchId: string;
     leaseOwner: string;
     items: readonly ExactReviewBatchMember[];
+    stateWriterProgress?: StateWriterProgress;
   }) {
     const response = await this.post("heartbeat", {
       batch_id: input.batchId,
@@ -96,6 +105,7 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
         revision: item.revision,
         claim_generation: item.claimGeneration,
       })),
+      ...(input.stateWriterProgress ? { state_writer_progress: input.stateWriterProgress } : {}),
     });
     return parseLease(response.batch);
   }
@@ -106,6 +116,7 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
     items: readonly ExactReviewBatchCompletion[];
     stateCommitSha?: string;
     failureFingerprint?: string;
+    stateWriter?: StateWriterOperation;
   }) {
     const response = await this.post("complete", {
       batch_id: input.batchId,
@@ -120,6 +131,7 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
       })),
       ...(input.stateCommitSha ? { state_commit_sha: input.stateCommitSha } : {}),
       ...(input.failureFingerprint ? { failure_fingerprint: input.failureFingerprint } : {}),
+      ...(input.stateWriter ? { state_writer: input.stateWriter } : {}),
     });
     return {
       accepted: nonNegativeInteger(response.accepted, "accepted"),
