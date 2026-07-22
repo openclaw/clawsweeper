@@ -2572,6 +2572,8 @@ export class ExactReviewQueue {
             exactReviewTargetCapacity(this.env),
             activePublishers + requestedSize,
             new Set<string>(batchOwnership.itemKeys),
+            false, // batching replaces legacy publication blocking at this admission point
+            true, // one durable item path per commit; later events remain FIFO candidates
           ).filter(exactReviewQueueIsPublication);
     const firstOwner = readyCandidates[0]?.decision.targetRepo.split("/", 1)[0]?.toLowerCase();
     // One GitHub App installation token is scoped to one owner. Keeping a batch
@@ -5692,6 +5694,7 @@ export function exactReviewQueueAdmittedItems(
   publicationCapacity: number,
   excludedItemKeys: ReadonlySet<string> = new Set(),
   publicationAdmissionBlocked = false,
+  uniquePublicationItems = false,
 ) {
   const dispatcherRetryAt = Number(state.dispatcher?.retryAt || 0);
   if (
@@ -5713,6 +5716,7 @@ export function exactReviewQueueAdmittedItems(
     activeTargets.set(target, (activeTargets.get(target) || 0) + 1);
   }
   const admitted: ExactReviewQueueItem[] = [];
+  const admittedPublicationItems = new Set<string>();
   let admittedReviews = 0;
   const pending = Object.values(state.items)
     .filter(
@@ -5724,8 +5728,16 @@ export function exactReviewQueueAdmittedItems(
     const publication = exactReviewQueueIsPublication(item);
     if (publication) {
       if (publicationAdmissionBlocked) continue;
+      // Distinct publication events may target the same durable record path. A batch
+      // must serialize those events across commits or their prepared mutations can
+      // disagree even though their queue keys and fencing revisions are independent.
+      const publicationItem = uniquePublicationItems
+        ? `${item.decision.targetRepo.toLowerCase()}#${item.decision.itemNumber}`
+        : "";
+      if (uniquePublicationItems && admittedPublicationItems.has(publicationItem)) continue;
       if (activePublishers >= publicationCapacity) continue;
       activePublishers += 1;
+      if (uniquePublicationItems) admittedPublicationItems.add(publicationItem);
       admitted.push(item);
       continue;
     }
