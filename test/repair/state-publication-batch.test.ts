@@ -117,6 +117,44 @@ test("filesystem-path remotes publish without constructing an invalid tracking r
   );
 });
 
+test("batch commits use the ClawSweeper identity without repository or global Git config", () => {
+  const fixture = createRepositoryFixture();
+  const plan = newItemPlan(fixture, 24);
+  git(fixture.work, "config", "--unset-all", "user.name");
+  git(fixture.work, "config", "--unset-all", "user.email");
+
+  const result = withProcessEnv(
+    {
+      CLAWSWEEPER_GIT_USER_NAME: "",
+      CLAWSWEEPER_GIT_USER_EMAIL: "",
+      GIT_AUTHOR_NAME: "",
+      GIT_AUTHOR_EMAIL: "",
+      GIT_COMMITTER_NAME: "",
+      GIT_COMMITTER_EMAIL: "",
+      GIT_CONFIG_GLOBAL: os.devNull,
+      GIT_CONFIG_SYSTEM: os.devNull,
+    },
+    () =>
+      withStateEnvironment(fixture.work, () =>
+        commitPreparedStateBatch({
+          batchId: "explicit-git-identity",
+          plans: [plan],
+        }),
+      ),
+  );
+
+  assert.equal(result.outcome, "committed");
+  assert.equal(
+    git(fixture.origin, "log", "-1", "--format=%an%n%ae%n%cn%n%ce", "state").trim(),
+    [
+      "clawsweeper",
+      "274271284+clawsweeper[bot]@users.noreply.github.com",
+      "clawsweeper",
+      "274271284+clawsweeper[bot]@users.noreply.github.com",
+    ].join("\n"),
+  );
+});
+
 test("GitHub three-ref commit_refs rejection falls back to an atomic state and receipt push", () => {
   const fixture = createRepositoryFixture();
   const plan = newItemPlan(fixture, 25);
@@ -643,6 +681,23 @@ function withStateEnvironment<T>(work: string, operation: () => T): T {
     else process.env.CLAWSWEEPER_STATE_DIR = previousDir;
     if (previousBranch === undefined) delete process.env.CLAWSWEEPER_PUBLISH_BRANCH;
     else process.env.CLAWSWEEPER_PUBLISH_BRANCH = previousBranch;
+  }
+}
+
+function withProcessEnv<T>(values: Record<string, string | undefined>, operation: () => T): T {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(values)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return operation();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 }
 

@@ -19,6 +19,7 @@ import {
   type PreparedStateMutationOperation,
   type PreparedStateMutationPlan,
 } from "./state-publication-mutation.js";
+import { clawsweeperGitIdentityEnv } from "./process-env.js";
 
 export const STATE_PUBLICATION_BATCH_MAX_ITEMS = 32;
 // Reuse the validated exact-review envelope per item while keeping aggregate
@@ -159,6 +160,7 @@ function commitUnderLease(options: {
   // marker commit lets a later ambiguous retry prove which payload this id owns.
   const tree = pending.length === 0 ? remoteTree : applyOperationsToTree(remoteTree, pending);
   const commitSha = runGit(["commit-tree", tree, "-p", remoteCommit], {
+    env: { ...process.env, ...clawsweeperGitIdentityEnv() },
     input: batchCommitMessage(options),
     quiet: true,
   }).trim();
