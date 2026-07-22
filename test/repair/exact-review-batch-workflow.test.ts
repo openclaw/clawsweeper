@@ -93,6 +93,9 @@ test("batch claim treats an all-stale fetched batch as terminal", () => {
 test("batch failure cleanup completes manifest fences without a queue fetch", () => {
   const releaseSource = /async function release\(\) \{([\s\S]*?)\n\}/.exec(cliSource)?.[1] ?? "";
   assert.match(releaseSource, /manifest\.items\.map/);
-  assert.match(releaseSource, /acknowledge\(manifest, completions\)/);
+  assert.match(releaseSource, /readBatchReceipt\(manifest, false\)/);
+  assert.match(releaseSource, /receipt\?\.publishedItemKeys\.has\(member\.itemKey\)/);
+  assert.match(releaseSource, /terminalOutcome: "published"/);
+  assert.match(releaseSource, /acknowledge\(manifest, completions, receipt\?\.stateCommitSha\)/);
   assert.doesNotMatch(releaseSource, /client\.fetch/);
 });

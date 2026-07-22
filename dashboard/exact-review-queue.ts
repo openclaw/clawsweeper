@@ -2723,10 +2723,14 @@ export class ExactReviewQueue {
           );
           if (!requested) continue;
           const item = state.items[completion.itemKey];
+          // A newer source revision may arrive while the batch store still owns
+          // the original fenced membership. The store validated that immutable
+          // tuple before this callback; requiring the mutable current revision
+          // to match would bypass the newer-revision requeue path below.
           if (
             !item ||
-            item.revision !== completion.revision ||
-            !exactReviewQueueIsPublication(item)
+            !exactReviewQueueIsPublication(item) ||
+            item.revision < completion.revision
           ) {
             continue;
           }
@@ -2751,8 +2755,19 @@ export class ExactReviewQueue {
             if (result.refreshed) refreshed += 1;
             continue;
           }
-          delete state.items[completion.itemKey];
-          completed += 1;
+          const result = finishExactReviewPublicationQueueItem({
+            state,
+            item,
+            now,
+            completion:
+              completion.terminalOutcome === "published"
+                ? { kind: "published", reasonCode: "publication_applied" }
+                : { kind: "superseded", reasonCode: "remote_newer_tuple" },
+            ownedRevision: completion.revision,
+            deadLetterCapacityAvailable: true,
+            env: this.env,
+          });
+          if (!result.requeued) completed += 1;
           if (completion.terminalOutcome === "published") published += 1;
           else if (completion.terminalOutcome === "superseded") superseded += 1;
         }
@@ -5013,21 +5028,20 @@ function finishExactReviewPublicationQueueItem({
   const completionRevision = ownedRevision ?? Number(item.leaseRevision || 0);
   const hasNewerRevision = item.revision > completionRevision;
   if (hasNewerRevision || requeueLatest) {
-    const requeued = finishExactReviewQueueItem(
-      state,
-      item,
-      now,
-      "success",
-      requestedRetryAt,
-      requeueLatest,
-    );
-    if (requeued) {
-      item.publicationFailureAttempts = 0;
-      item.firstFailureAt = undefined;
-      item.lastFailureReason = undefined;
-    }
+    // Batch membership is stored separately from the queue lease fields. Reset
+    // this item directly from the explicit owned revision instead of asking the
+    // generic lease finalizer to infer ownership from item.leaseRevision.
+    clearExactReviewLease(item);
+    item.state = "pending";
+    item.parkedReason = undefined;
+    item.attempts = 0;
+    item.publicationFailureAttempts = 0;
+    item.firstFailureAt = undefined;
+    item.lastFailureReason = undefined;
+    item.nextAttemptAt = Math.max(exactReviewQueueEnqueueAttemptAt(state, now), requestedRetryAt);
+    item.updatedAt = now;
     return {
-      requeued,
+      requeued: true,
       retried: false,
       refreshed: false,
       parked: false,
@@ -5039,8 +5053,9 @@ function finishExactReviewPublicationQueueItem({
     completion.kind === "superseded" ||
     completion.kind === "deferred"
   ) {
+    delete state.items[item.key];
     return {
-      requeued: finishExactReviewQueueItem(state, item, now, "success"),
+      requeued: false,
       retried: false,
       refreshed: false,
       parked: false,
