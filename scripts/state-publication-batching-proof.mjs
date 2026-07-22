@@ -292,6 +292,7 @@ async function runSyntheticE2e(root) {
   assert.deepEqual(completed.map((item) => item.terminalOutcome).sort(), [
     "published",
     "published",
+    "retryable_failure",
     "superseded",
   ]);
   enabled = false;
@@ -361,7 +362,11 @@ function syntheticQueue(items, completed, enabled) {
     },
     async complete(input) {
       completed.push(...input.items);
-      for (const item of input.items) remaining.delete(item.itemKey);
+      for (const item of input.items) {
+        // Retryable completion releases fenced batch ownership but preserves the
+        // underlying publication item for the normal retry/legacy admission path.
+        if (item.terminalOutcome !== "retryable_failure") remaining.delete(item.itemKey);
+      }
       return { accepted: input.items.length, skipped: 0, batch: lease() };
     },
     legacyReadyItems() {
