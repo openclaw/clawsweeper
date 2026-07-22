@@ -60,11 +60,15 @@ PR comments use a human-first shape:
    system context. It uses one or two plain-language sentences plus a compact
    Mermaid flowchart showing the changed subsystem's inputs, decisions, and
    outputs.
-4. `## Decision needed` appears only when a maintainer decision packet exists.
+4. `## Proof` appears when real-behavior proof is sufficient or explicitly
+   overridden. It keeps the proof status and the first two concrete evidence
+   items visible because contributors commonly use those signals when asking
+   for maintainer review. The full evidence list remains collapsed below.
+5. `## Decision needed` appears only when a maintainer decision packet exists.
    It shows the concrete question and recommended option in a table.
-5. `## Before merge` lists only real remaining actions or risks. Routine CI,
+6. `## Before merge` lists only real remaining actions or risks. Routine CI,
    ordinary maintainer review, and no-op guidance collapse to `None.`
-6. `## Findings` always appears. It renders concise typed review/security
+7. `## Findings` always appears. It renders concise typed review/security
    findings or `None.`
 
 Everything primarily useful to agents or deep reviewers lives under one

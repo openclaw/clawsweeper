@@ -558,6 +558,16 @@ flowchart LR
     session["Session settings"] --> resolver["Model resolver"]
     resolver --> request["Agent request"]
 
+## Real Behavior Proof
+
+Status: sufficient
+
+Evidence kind: terminal
+
+Needs contributor action: false
+
+Summary: A live session confirmed the override reaches the next request.
+
 ## Best Possible Solution
 
 Land the tests after targeted validation is green.
@@ -618,6 +628,12 @@ Reason: Maintainers should review the tests after the targeted lane is green.
     /## How this fits together\n\nOpenClaw resolves a session's model override before sending the next agent request\.\n\n```mermaid\nflowchart LR/,
   );
   assert.ok(comment.indexOf("## Merge readiness") < comment.indexOf("## How this fits together"));
+  assert.match(
+    comment,
+    /## Proof\n\n- \*\*Real behavior:\*\* Sufficient \(terminal\): A live session confirmed the override reaches the next request\./,
+  );
+  assert.match(comment, /- \*\*targeted lane:\*\* The PR is test-only/);
+  assert.ok(comment.indexOf("## How this fits together") < comment.indexOf("## Proof"));
   assert.doesNotMatch(comment, /\*\*Workflow note:\*\*/);
   assert.match(comment, /### Workflow/);
   assert.match(

@@ -12031,6 +12031,14 @@ function publicRealBehaviorProofLine(proof: RealBehaviorProof): string {
   }
 }
 
+function publicProofBlock(proof: RealBehaviorProof, evidence: readonly string[]): string {
+  if (!["sufficient", "override"].includes(proof.status)) return "";
+  return [
+    `- **Real behavior:** ${publicRealBehaviorProofLine(proof)}`,
+    ...evidence.slice(0, 2),
+  ].join("\n");
+}
+
 function publicRankDetailsBlock(): string {
   return [
     "| Score | Internal tier | Crab rank | Meaning |",
@@ -19054,6 +19062,10 @@ function renderKeepOpenCommentFromReport(
         "How this fits together",
         `${systemContext}\n\n\`\`\`mermaid\n${architectureDiagram}\n\`\`\``,
       );
+    }
+    const proofBlock = publicProofBlock(realBehaviorProof, evidence);
+    if (proofBlock) {
+      appendHeadingSection(lines, "Proof", proofBlock);
     }
     if (decisionPacketBlock) {
       appendHeadingSection(lines, "Decision needed", decisionPacketBlock);
