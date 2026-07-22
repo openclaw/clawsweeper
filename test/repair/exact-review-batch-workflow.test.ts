@@ -29,7 +29,7 @@ test("batch publisher is event-driven with one non-cancelling serial workflow", 
   assert.ok(workflow.on.workflow_dispatch);
   assert.match(workflow.jobs.publish!.if, /inputs\.execute/);
   assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ["execute"]);
-  assert.equal(workflow.jobs.publish!.env.EXACT_REVIEW_BATCH_MAX_ITEMS, "4");
+  assert.equal(workflow.jobs.publish!.env.EXACT_REVIEW_BATCH_MAX_ITEMS, "32");
   assert.equal(workflow.jobs.publish!.env.CLAWSWEEPER_APP_CLIENT_ID, "Iv23liOECG0slfuhz093");
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
   assert.deepEqual(workflow.permissions, { actions: "write", contents: "read" });
