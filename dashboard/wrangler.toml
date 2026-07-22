@@ -58,6 +58,9 @@ EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "180000"
 EXACT_REVIEW_PENDING_SOFT_LIMIT = "300"
 # Keep bounded four-worker preparation, but return the live mutation lease to 8:
 # the first size-32 run exceeded the 15-minute operational target during prepare.
+# A full-window publish moves ~2k paths and observed ~40 min; the drain lease
+# must outlive it or the ack lands after expiry and the cycle makes no progress.
+STATE_APPEND_DRAIN_LEASE_MS = "5400000"
 EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED = "1"
 EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "8"
 EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS = "60000"
