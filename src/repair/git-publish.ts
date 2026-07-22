@@ -42,6 +42,18 @@ import {
   stateWriterCoordinatorEnabled,
   type StateWriterCoordinatorGuard,
 } from "./state-writer-coordinator.js";
+import {
+  buildRecoveryFailureContext,
+  executeRecoveryActions,
+  modelRecoveryConfigured,
+  recordRecoveryOutcome,
+  requestRecoveryAdvice,
+  publicDiagnosisSummary,
+  type RecoveryActionHandlers,
+  type RecoveryActionName,
+  type RecoveryAdvice,
+  type RecoveryExecution,
+} from "./recovery-advisor.js";
 
 export type GitRunResult = {
   status: number;
@@ -597,6 +609,8 @@ function pushImmutableActionLedgerCommit(options: {
   const protectedWorktreePaths = captureDirtyWorktreePaths();
   let candidateCommit = options.sourceCommit;
   let unavailableObjectRecoveryUsed = false;
+  let modelPushRecoveryConsulted = false;
+  const modelPushAttemptHistory: string[] = [];
   const verifiedSourceObjectIds = new Set<string>();
   for (let attempt = 1; attempt <= pushBudget; attempt += 1) {
     const pushArgs = ["push", options.remote, `${candidateCommit}:${options.branch}`];
@@ -640,8 +654,43 @@ function pushImmutableActionLedgerCommit(options: {
       });
       return "committed";
     }
+    modelPushAttemptHistory.push(gitFailureSummary(pushResult));
+    let modelRequestedRebuild = false;
+    let modelRequestedRebuildAdvice: RecoveryAdvice | null = null;
+    if (!modelPushRecoveryConsulted) {
+      modelPushRecoveryConsulted = true;
+      const recovery = modelGuidedPushRecovery({
+        phase: "push_immutable_action_ledger",
+        failure: pushResult,
+        remote: options.remote,
+        branch: options.branch,
+        recentAttempts: modelPushAttemptHistory,
+        allowRebuildOnRemoteHead: true,
+      });
+      if (recovery?.directive === "retry_push") {
+        if (activeStatePublishLease) {
+          renewStatePublishLease(activeStatePublishLease, "before model-guided retry");
+        }
+        pushResult = pushPublishedCommit(candidateCommit, options.remote, options.branch);
+        if (pushResult.status === 0) {
+          recordRecoveryOutcome(recovery.advice, "retry_push_succeeded");
+          finalizeImmutableActionLedgerCheckout({
+            previousCommit,
+            publishedCommit: candidateCommit,
+            paths: options.paths,
+            protectedWorktreePaths,
+          });
+          return "committed";
+        }
+        recordRecoveryOutcome(recovery.advice, "retry_push_failed");
+      }
+      if (recovery?.directive === "rebuild_on_remote_head") {
+        modelRequestedRebuild = true;
+        modelRequestedRebuildAdvice = recovery.advice;
+      }
+    }
     const stateRepository = immutableLedgerStateRepository();
-    if (attempt === 1 && stateRepository) {
+    if (!modelRequestedRebuild && attempt === 1 && stateRepository) {
       const publishedCommit = mergeImmutableActionLedgerOnGitHub({
         remote: options.remote,
         branch: options.branch,
@@ -676,17 +725,36 @@ function pushImmutableActionLedgerCommit(options: {
         verifiedSourceObjectIds,
       });
     } catch (error) {
-      if (unavailableObjectRecoveryUsed || unavailableGitObjectIds(error).length === 0) throw error;
+      if (unavailableObjectRecoveryUsed || unavailableGitObjectIds(error).length === 0) {
+        if (modelRequestedRebuildAdvice) {
+          recordRecoveryOutcome(modelRequestedRebuildAdvice, "rebuild_on_remote_head_failed", {
+            error,
+          });
+        }
+        throw error;
+      }
       recoverUnavailableGitObjects(options.remote, options.branch, error);
       unavailableObjectRecoveryUsed = true;
-      rebuilt = rebuildImmutableActionLedgerCommit({
-        remote: options.remote,
-        branch: options.branch,
-        message: options.message,
-        paths: options.paths,
-        sourceCommit: options.sourceCommit,
-        verifiedSourceObjectIds,
-      });
+      try {
+        rebuilt = rebuildImmutableActionLedgerCommit({
+          remote: options.remote,
+          branch: options.branch,
+          message: options.message,
+          paths: options.paths,
+          sourceCommit: options.sourceCommit,
+          verifiedSourceObjectIds,
+        });
+      } catch (recoveryError) {
+        if (modelRequestedRebuildAdvice) {
+          recordRecoveryOutcome(modelRequestedRebuildAdvice, "rebuild_on_remote_head_failed", {
+            error: recoveryError,
+          });
+        }
+        throw recoveryError;
+      }
+    }
+    if (modelRequestedRebuildAdvice) {
+      recordRecoveryOutcome(modelRequestedRebuildAdvice, "rebuild_on_remote_head_succeeded");
     }
     candidateCommit = rebuilt.commit;
     if (rebuilt.result === "unchanged") {
@@ -725,6 +793,40 @@ function recoverUnavailableGitObjects(remote: string, branch: string, failure: u
   }
   requireNoLazyFetchSupport();
   console.log(`Recovering ${objectIds.length} unavailable Git object(s) from ${remote}`);
+  if (modelRecoveryConfigured()) {
+    const shallow = isShallowRepository();
+    const attempt = executeModelRecovery({
+      phase: "recover_unavailable_git_objects",
+      failure,
+      shallow,
+      remote,
+      branch,
+      recentAttempts: objectIds.map((objectId) => `unavailable_object:${objectId}`),
+      availableActions: [
+        "fetch_object",
+        "refetch_depth1",
+        "deepen",
+        "unshallow",
+        "defer_to_next_run",
+        "give_up",
+      ],
+      handlers: gitFetchRecoveryHandlers(remote, branch, {
+        deferToNextRun: () => {},
+        giveUp: () => {},
+      }),
+    });
+    if (attempt) {
+      throwForModelRecoveryDirective(attempt.advice, attempt.execution);
+      if (gitObjectIdsAvailable(objectIds)) {
+        recordRecoveryOutcome(attempt.advice, "objects_recovered");
+        return;
+      }
+      recordRecoveryOutcome(attempt.advice, "verification_failed");
+      console.warn(
+        "Model-guided Git object recovery did not restore every object; using deterministic fallback",
+      );
+    }
+  }
   for (const objectId of objectIds) {
     spawnBoundedFetch(["fetch", remote, objectId], PUBLISH_FETCH_TIMEOUT_MS);
   }
@@ -1047,6 +1149,56 @@ function mergeBaseWithShallowRecovery(
   if (result.status !== 1) throw gitRunError(result, args);
   if (!isShallowRepository()) {
     return { base: null, recoveredShallowMiss: false };
+  }
+
+  if (modelRecoveryConfigured()) {
+    const attempt = executeModelRecovery({
+      phase: "merge_base_shallow_recovery",
+      failure: gitRunError(result, args),
+      shallow: true,
+      remote,
+      branch,
+      recentAttempts: [`merge_base:${left}:${right}:status=${result.status}`],
+      availableActions: [
+        "refetch_depth1",
+        "deepen",
+        "unshallow",
+        "rebuild_on_remote_head",
+        "defer_to_next_run",
+        "give_up",
+      ],
+      handlers: gitFetchRecoveryHandlers(remote, branch, {
+        rebuildOnRemoteHead: () => {},
+        deferToNextRun: () => {},
+        giveUp: () => {},
+      }),
+    });
+    if (attempt) {
+      throwForModelRecoveryDirective(attempt.advice, attempt.execution);
+      if (attempt.execution.directive === "rebuild_on_remote_head") {
+        recordRecoveryOutcome(attempt.advice, "rebuild_on_remote_head_selected");
+        return { base: null, recoveredShallowMiss: true };
+      }
+      result = spawnGit(args, { quiet: true });
+      if (result.status === 0) {
+        recordRecoveryOutcome(attempt.advice, "merge_base_recovered");
+        return { base: result.stdout.trim(), recoveredShallowMiss: true };
+      }
+      if (result.status !== 1) {
+        recordRecoveryOutcome(attempt.advice, "verification_failed", {
+          error: gitRunError(result, args),
+        });
+        throw gitRunError(result, args);
+      }
+      if (!isShallowRepository()) {
+        recordRecoveryOutcome(attempt.advice, "history_hydrated_no_merge_base");
+        return { base: null, recoveredShallowMiss: true };
+      }
+      recordRecoveryOutcome(attempt.advice, "verification_failed");
+      console.warn(
+        "Model-guided shallow recovery did not find a merge base; using deterministic fallback",
+      );
+    }
   }
 
   const deepenArgs = ["fetch", "--deepen=32", remote, branch];
@@ -2297,9 +2449,62 @@ export function pushCommit(options: {
   const branch = options.branch ?? publishDefaultBranch();
   const pushAttempts = positiveInt(options.pushAttempts, 3);
   const rebaseStrategy = options.rebaseStrategy ?? "normal";
+  let modelPushRecoveryConsulted = false;
+  const modelPushAttemptHistory: string[] = [];
 
   for (let pushAttempt = 1; pushAttempt <= pushAttempts; pushAttempt += 1) {
-    if (pushPublishedBranch(remote, branch).status === 0) return true;
+    let pushResult = pushPublishedBranch(remote, branch);
+    if (pushResult.status === 0) return true;
+    modelPushAttemptHistory.push(gitFailureSummary(pushResult));
+    if (!modelPushRecoveryConsulted) {
+      modelPushRecoveryConsulted = true;
+      const recovery = modelGuidedPushRecovery({
+        phase: "push_commit",
+        failure: pushResult,
+        remote,
+        branch,
+        recentAttempts: modelPushAttemptHistory,
+        allowRebuildOnRemoteHead: rebaseStrategy === "reconcile-records",
+      });
+      if (recovery?.directive === "retry_push") {
+        if (activeStatePublishLease) {
+          renewStatePublishLease(activeStatePublishLease, "before model-guided retry");
+        }
+        pushResult = pushPublishedBranch(remote, branch);
+        if (pushResult.status === 0) {
+          recordRecoveryOutcome(recovery.advice, "retry_push_succeeded");
+          return true;
+        }
+        recordRecoveryOutcome(recovery.advice, "retry_push_failed");
+        modelPushAttemptHistory.push(gitFailureSummary(pushResult));
+      }
+      if (recovery?.directive === "rebuild_on_remote_head") {
+        if (activeStatePublishLease && options.boundedRemoteHeadRebuild) {
+          renewStatePublishLease(activeStatePublishLease, "before model-guided state rebuild");
+        }
+        if (rebaseStrategy !== "reconcile-records") return false;
+        fetchPublishRemote(remote, branch, { allowFailure: true });
+        let rebuilt = false;
+        try {
+          rebuilt = rebuildReconciliationCommit(
+            remote,
+            branch,
+            options.reconciliationSourceCommit,
+            options.reconciliationTupleKeys,
+            options.boundedRemoteHeadRebuild,
+          );
+        } catch (error) {
+          recordRecoveryOutcome(recovery.advice, "rebuild_on_remote_head_failed", { error });
+          throw error;
+        }
+        if (!rebuilt) {
+          recordRecoveryOutcome(recovery.advice, "rebuild_on_remote_head_failed");
+          return false;
+        }
+        recordRecoveryOutcome(recovery.advice, "rebuild_on_remote_head_succeeded");
+        continue;
+      }
+    }
     if (activeStatePublishLease && options.boundedRemoteHeadRebuild) {
       renewStatePublishLease(activeStatePublishLease, "before state race recovery");
     }
@@ -2373,6 +2578,123 @@ export function pushCommit(options: {
     }
   }
   return pushPublishedBranch(remote, branch).status === 0;
+}
+
+function executeModelRecovery(options: {
+  phase: string;
+  failure: unknown;
+  shallow: boolean;
+  remote: string;
+  branch: string;
+  recentAttempts: readonly string[];
+  availableActions: readonly RecoveryActionName[];
+  handlers: RecoveryActionHandlers;
+}): { advice: RecoveryAdvice; execution: RecoveryExecution } | null {
+  const context = buildRecoveryFailureContext({
+    phase: options.phase,
+    gitError: options.failure,
+    shallow: options.shallow,
+    remote: options.remote,
+    branch: options.branch,
+    recentAttempts: options.recentAttempts,
+    availableActions: options.availableActions,
+  });
+  const advice = requestRecoveryAdvice(context);
+  if (!advice) return null;
+  try {
+    return { advice, execution: executeRecoveryActions(advice.plan.actions, options.handlers) };
+  } catch (error) {
+    recordRecoveryOutcome(advice, "execution_failed", { error });
+    console.warn(
+      `Model-guided Git recovery action failed; using deterministic fallback: ${errorMessage(error)}`,
+    );
+    return null;
+  }
+}
+
+function modelGuidedPushRecovery(options: {
+  phase: string;
+  failure: unknown;
+  remote: string;
+  branch: string;
+  recentAttempts: readonly string[];
+  allowRebuildOnRemoteHead: boolean;
+}): { advice: RecoveryAdvice; directive: "retry_push" | "rebuild_on_remote_head" } | null {
+  if (!modelRecoveryConfigured()) return null;
+  const shallow = isShallowRepository();
+  const availableActions: RecoveryActionName[] = [
+    "fetch_object",
+    "retry_push",
+    "defer_to_next_run",
+    "give_up",
+  ];
+  if (options.allowRebuildOnRemoteHead) availableActions.splice(1, 0, "rebuild_on_remote_head");
+  if (shallow) availableActions.splice(1, 0, "refetch_depth1", "deepen", "unshallow");
+  const attempt = executeModelRecovery({
+    ...options,
+    shallow,
+    availableActions,
+    handlers: gitFetchRecoveryHandlers(options.remote, options.branch, {
+      rebuildOnRemoteHead: () => {},
+      retryPush: () => {},
+      deferToNextRun: () => {},
+      giveUp: () => {},
+    }),
+  });
+  if (!attempt) return null;
+  throwForModelRecoveryDirective(attempt.advice, attempt.execution);
+  const directive =
+    attempt.execution.directive === "rebuild_on_remote_head"
+      ? "rebuild_on_remote_head"
+      : "retry_push";
+  return { advice: attempt.advice, directive };
+}
+
+function gitFetchRecoveryHandlers(
+  remote: string,
+  branch: string,
+  directives: RecoveryActionHandlers,
+): RecoveryActionHandlers {
+  return {
+    fetchObject: (sha) => {
+      spawnBoundedFetch(["fetch", remote, sha], PUBLISH_FETCH_TIMEOUT_MS);
+    },
+    refetchDepth1: () => {
+      spawnBoundedFetch(
+        ["fetch", "--refetch", "--depth=1", remote, branch],
+        RECOVERY_FETCH_TIMEOUT_MS,
+      );
+    },
+    deepen: (depth) => {
+      spawnBoundedFetch(["fetch", `--deepen=${depth}`, remote, branch], RECOVERY_FETCH_TIMEOUT_MS);
+    },
+    unshallow: () => {
+      spawnBoundedFetch(["fetch", "--unshallow", remote, branch], RECOVERY_FETCH_TIMEOUT_MS);
+    },
+    ...directives,
+  };
+}
+
+function throwForModelRecoveryDirective(
+  advice: RecoveryAdvice,
+  execution: RecoveryExecution,
+): void {
+  if (execution.directive === "defer_to_next_run") {
+    recordRecoveryOutcome(advice, execution.directive);
+    throw new Error(
+      `Model-guided Git recovery deferred to the next run: ${publicDiagnosisSummary(advice.plan.diagnosis)}`,
+    );
+  }
+  if (execution.directive === "give_up") {
+    recordRecoveryOutcome(advice, execution.directive);
+    throw new Error(
+      `Model-guided Git recovery gave up: ${publicDiagnosisSummary(advice.plan.diagnosis)}`,
+    );
+  }
+}
+
+function gitFailureSummary(value: GitRunResult): string {
+  return `${value.timedOut ? "timeout" : `status=${value.status}`}: ${value.stderr || value.stdout}`;
 }
 
 export function pushSingleRecordTupleCommit(options: {

@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
+      CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "1"
       # Priority intent wins a slot quickly; a long acquire budget just lets one
       # contended wait eat the whole run (observed: six consecutive 20-min
       # timeout-cancels while the append window grew to ~25k rows).
@@ -36,6 +37,9 @@ jobs:
           filter: blob:none
           fetch-depth: 1
           persist-credentials: false
+
+      - uses: ./.github/actions/setup-action-ledger
+        continue-on-error: true
 
       - name: Create state token
         id: state-token
@@ -53,11 +57,64 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         with:
-          build-script: build:repair
+          build-script: build:all
+
+      - uses: ./.github/actions/setup-codex
+        continue-on-error: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
+        with:
+          auth-mode: login
 
       - name: Materialize queued state
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_STATE_REPO_TOKEN: ${{ steps.state-token.outputs.token }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: node dist/repair/state-materializer.js
+
+      - name: Finalize materializer recovery action ledger
+        if: ${{ always() }}
+        run: pnpm run --silent finalize-action-events
+
+      - name: Publish materializer recovery action events
+        if: ${{ always() }}
+        env:
+          CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "0"
+          CLAWSWEEPER_STATE_REPO_TOKEN: ${{ steps.state-token.outputs.token }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:-}" ]; then
+            echo "Materializer recovery action ledger is disabled."
+            exit 0
+          fi
+          source_root="$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT"
+          if [ ! -d "$source_root/ledger" ]; then
+            echo "No materializer recovery action events were finalized."
+            exit 0
+          fi
+          event_paths_file=".artifacts/materializer-recovery-action-ledger-paths.txt"
+          mkdir -p .artifacts
+          pnpm run --silent publish-action-events -- \
+            --source-root "$source_root" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --expected-producer-job "$GITHUB_JOB" |
+            jq -r '.paths[]?' |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "Materializer recovery events existed but no paths were imported." >&2
+            exit 1
+          fi
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+          done < "$event_paths_file"
+          node dist/clawsweeper.js publish-action-event-paths \
+            --paths-file "$event_paths_file" \
+            --message "chore: append materializer recovery action ledger"

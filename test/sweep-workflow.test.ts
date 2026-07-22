@@ -1057,7 +1057,7 @@ test("broad record publishers isolate tuple reconciliation from status and auxil
   }
 });
 
-test("apply workflow isolates Codex proof from the credentialed mutation runner", () => {
+test("apply workflow isolates proof Codex and limits mutation Codex to model-guided recovery", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const workflowConcurrency = workflow.slice(
     workflow.indexOf("\nconcurrency:"),
@@ -1149,7 +1149,11 @@ test("apply workflow isolates Codex proof from the credentialed mutation runner"
   );
   assert.doesNotMatch(applyCondition, /needs\.apply-proof\.result/);
   assert.doesNotMatch(applyCondition, /needs\.publish-apply-proof-action-ledger/);
-  assert.doesNotMatch(applyJob, /setup-codex|OPENAI_API_KEY|CLAWSWEEPER_INTERNAL_MODEL/);
+  assert.match(applyJob, /CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "1"/);
+  assert.match(applyJob, /OPENAI_API_KEY: \$\{\{ secrets\.OPENAI_API_KEY \}\}/);
+  assert.match(applyJob, /uses: \.\/\.github\/actions\/setup-codex/);
+  assert.match(applyJob, /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ secrets\.CLAWSWEEPER_MODEL \}\}/);
+  assert.doesNotMatch(applyJob, /--codex-model|--codex-reasoning-effort/);
   assert.match(applyJob, /Create target write token/);
   assert.match(applyJob, /Create state token/);
   assert.match(applyJob, /actions\/download-artifact@v8/);

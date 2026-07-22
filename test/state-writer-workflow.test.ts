@@ -10,6 +10,7 @@ type WorkflowStep = {
   run?: string;
   env?: Record<string, unknown>;
   with?: Record<string, unknown>;
+  "continue-on-error"?: boolean;
 };
 
 type WorkflowJob = {
@@ -69,6 +70,65 @@ test("the setup action exports no long-lived coordinator credential", () => {
   assert.match(source, /CLAWSWEEPER_STATE_COORDINATOR_CLASS=\$\{\{ inputs\.coordinator-class \}\}/);
 });
 
+test("state materializer and apply publishers enable model-guided recovery with the existing Codex key", () => {
+  const expectedKey = "${{ secrets.OPENAI_API_KEY }}";
+  const expectedModel = "${{ secrets.CLAWSWEEPER_MODEL }}";
+  const expectedJobs = [
+    [".github/workflows/state-materializer.yml", "materialize", ["Materialize queued state"]],
+    [".github/workflows/sweep.yml", "apply-proof", ["Generate bound close coverage proofs"]],
+    [
+      ".github/workflows/sweep.yml",
+      "apply-existing",
+      [
+        "Reconcile before apply preselect",
+        "Apply unchanged proposed decisions with checkpoints",
+        "Retry final apply status publication",
+      ],
+    ],
+  ] as const;
+  const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
+
+  for (const [file, jobName, recoverySteps] of expectedJobs) {
+    const job = byFile.get(file)?.jobs?.[jobName];
+    assert.ok(job, `${file}:${jobName}`);
+    assert.equal(job.env?.CLAWSWEEPER_MODEL_RECOVERY_ENABLED, "1", `${file}:${jobName}`);
+    assert.equal(job.env?.OPENAI_API_KEY, undefined, `${file}:${jobName}: key must be step-scoped`);
+    const setupCodex = job.steps?.find((step) =>
+      step.uses?.endsWith("/.github/actions/setup-codex"),
+    );
+    assert.ok(setupCodex, `${file}:${jobName}: setup-codex`);
+    assert.equal(setupCodex.env?.OPENAI_API_KEY, expectedKey, `${file}:${jobName}`);
+    assert.equal(setupCodex.env?.CLAWSWEEPER_INTERNAL_MODEL, expectedModel, `${file}:${jobName}`);
+    if (jobName !== "apply-proof") {
+      assert.equal(setupCodex["continue-on-error"], true, `${file}:${jobName}: optional setup`);
+    }
+    for (const stepName of recoverySteps) {
+      const step = job.steps?.find((candidate) => candidate.name === stepName);
+      assert.ok(step, `${file}:${jobName}:${stepName}`);
+      assert.equal(step.env?.OPENAI_API_KEY, expectedKey, `${file}:${jobName}:${stepName}`);
+    }
+  }
+  const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
+  const recoveryPublisher = materializer?.steps?.find(
+    (step) => step.name === "Publish materializer recovery action events",
+  );
+  assert.equal(
+    recoveryPublisher?.env?.CLAWSWEEPER_STATE_REPO_TOKEN,
+    "${{ steps.state-token.outputs.token }}",
+  );
+  assert.equal(recoveryPublisher?.env?.CLAWSWEEPER_MODEL_RECOVERY_ENABLED, "0");
+  assert.equal(recoveryPublisher?.env?.OPENAI_API_KEY, undefined);
+
+  const sweep = byFile.get(".github/workflows/sweep.yml");
+  const proofPublisher = sweep?.jobs?.["publish-apply-proof-action-ledger"];
+  assert.equal(proofPublisher?.env?.CLAWSWEEPER_MODEL_RECOVERY_ENABLED, "0");
+  const applyEventPublisher = sweep?.jobs?.["apply-existing"]?.steps?.find(
+    (step) => step.name === "Publish apply action events",
+  );
+  assert.equal(applyEventPublisher?.env?.CLAWSWEEPER_MODEL_RECOVERY_ENABLED, "0");
+  assert.equal(applyEventPublisher?.env?.OPENAI_API_KEY, undefined);
+});
+
 test("only the exact-review batch publisher requests priority admission", () => {
   const prioritySetups: string[] = [];
   for (const { file, workflow } of workflows()) {
@@ -111,7 +171,7 @@ test("trusted generated-state mutation steps receive a step-scoped coordinator c
   }
   assert.equal(
     publishers,
-    35,
+    36,
     "new or removed generated-state publication surfaces require an explicit credential audit",
   );
 });

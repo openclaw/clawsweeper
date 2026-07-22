@@ -4033,6 +4033,7 @@ jobs:
       issues: read
       pull-requests: read
     env:
+      CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "1"
       CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
       CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
       CLAWSWEEPER_STATE_LEASE_PRIORITY: "1"
@@ -4175,6 +4176,7 @@ jobs:
         if: ${{ steps.proof-select.outputs.item_numbers != '' }}
         timeout-minutes: 50
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -4254,6 +4256,7 @@ jobs:
   publish-apply-proof-action-ledger:
     name: Publish immutable apply proof action ledger
     env:
+      CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "0"
       CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
       CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
       CLAWSWEEPER_STATE_LEASE_PRIORITY: "1"
@@ -4342,6 +4345,7 @@ jobs:
       cancel-in-progress: false
       queue: max
     env:
+      CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "1"
       CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
       CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
       CLAWSWEEPER_STATE_LEASE_PRIORITY: "1"
@@ -4416,6 +4420,14 @@ jobs:
         with:
           build-script: build:all
 
+      - uses: ./.github/actions/setup-codex
+        continue-on-error: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
+        with:
+          auth-mode: login
+
       - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
@@ -4431,6 +4443,7 @@ jobs:
 
       - name: Reconcile before apply preselect
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -4451,6 +4464,7 @@ jobs:
         id: apply-existing-run
         timeout-minutes: 70
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           CLAWSWEEPER_APPLY_TOKEN_MINTED_AT_MS: ${{ steps.target-write-token.outputs.minted-at-ms }}
@@ -4852,6 +4866,7 @@ jobs:
       - name: Retry final apply status publication
         if: ${{ always() && !cancelled() && steps.primary-apply-result.outputs.succeeded == 'true' }}
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
@@ -4869,6 +4884,7 @@ jobs:
       - name: Publish apply action events
         if: ${{ always() }}
         env:
+          CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "0"
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
