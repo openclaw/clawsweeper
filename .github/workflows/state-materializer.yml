@@ -33,7 +33,10 @@ jobs:
       CLAWSWEEPER_STATE_LEASE_PRIORITY: "1"
       CLAWSWEEPER_STATE_LEASE_TTL_MS: "1200000"
       CLAWSWEEPER_STATE_MATERIALIZER_MAX_RUNTIME_MS: "2400000"
-      CLAWSWEEPER_STATE_MATERIALIZER_MAX_ROWS: "10000"
+      # 2k publishes cleanly against the shallow state checkout (run 29913644079
+      # committed 1974 paths); 10k batches are rejected at push with
+      # "atomic push failed ... status: 5". Size to what demonstrably lands.
+      CLAWSWEEPER_STATE_MATERIALIZER_MAX_ROWS: "2500"
       CLAWSWEEPER_STATE_MATERIALIZER_MAX_BYTES: "62914560"
     steps:
       - uses: actions/checkout@v7
