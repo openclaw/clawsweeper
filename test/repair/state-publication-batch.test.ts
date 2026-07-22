@@ -181,11 +181,11 @@ test("GitHub multi-ref commit_refs rejection falls back to fenced single-ref pus
   );
 });
 
-test("commit_refs recovery survives one transient lease renewal rejection", () => {
+test("commit_refs recovery retries transient receipt and lease renewal rejections", () => {
   const fixture = createRepositoryFixture();
   const plan = newItemPlan(fixture, 30);
-  const batchId = "github-lease-renewal-retry";
-  const rejectedRenewalMarker = installMultiRefAndFirstLeaseRenewalCommitRefsFailure(
+  const batchId = "github-single-ref-retries";
+  const rejectedMarkers = installMultiRefAndFirstSingleRefCommitRefsFailures(
     fixture.origin,
     batchId,
   );
@@ -198,7 +198,8 @@ test("commit_refs recovery survives one transient lease renewal rejection", () =
   );
 
   assert.equal(result.outcome, "committed");
-  assert.equal(fs.existsSync(rejectedRenewalMarker), true);
+  assert.equal(fs.existsSync(rejectedMarkers.receipt), true);
+  assert.equal(fs.existsSync(rejectedMarkers.renewal), true);
   assert.equal(
     git(fixture.origin, "show", "state:records/openclaw-openclaw/items/30.md"),
     "item 30\n",
@@ -869,11 +870,12 @@ function installMultiRefCommitRefsFailure(origin: string): void {
   fs.chmodSync(hook, 0o755);
 }
 
-function installMultiRefAndFirstLeaseRenewalCommitRefsFailure(
+function installMultiRefAndFirstSingleRefCommitRefsFailures(
   origin: string,
   batchId: string,
-): string {
+): { receipt: string; renewal: string } {
   const hook = path.join(origin, "hooks", "pre-receive");
+  const rejectedReceiptMarker = path.join(origin, "hooks", "rejected-receipt-once");
   const rejectedRenewalMarker = path.join(origin, "hooks", "rejected-lease-renewal-once");
   const receiptRef = `refs/heads/clawsweeper-state-batches/${createHash("sha256")
     .update(batchId)
@@ -893,6 +895,11 @@ function installMultiRefAndFirstLeaseRenewalCommitRefsFailure(
       '  only_ref="$ref_name"',
       "done",
       'if [ "$count" -ge 2 ]; then',
+      '  echo "fatal error in commit_refs" >&2',
+      "  exit 1",
+      "fi",
+      `if [ "$only_ref" = "${receiptRef}" ] && [ ! -f '${rejectedReceiptMarker}' ]; then`,
+      `  touch '${rejectedReceiptMarker}'`,
       '  echo "fatal error in commit_refs" >&2',
       "  exit 1",
       "fi",
@@ -921,7 +928,7 @@ function installMultiRefAndFirstLeaseRenewalCommitRefsFailure(
     ].join("\n"),
   );
   fs.chmodSync(hook, 0o755);
-  return rejectedRenewalMarker;
+  return { receipt: rejectedReceiptMarker, renewal: rejectedRenewalMarker };
 }
 
 function installMultiRefAndFirstStateFailure(origin: string): void {

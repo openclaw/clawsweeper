@@ -138,7 +138,7 @@ const STATE_PUBLISH_LEASE_ACQUIRE_TIMEOUT_MS = (() => {
 })();
 const STATE_PUBLISH_LEASE_WAIT_MS = 1_000;
 const STATE_PUBLISH_LEASE_MAX_WAIT_MS = 5_000;
-const STATE_PUBLISH_COMMIT_REFS_RENEW_ATTEMPTS = 3;
+const STATE_PUBLISH_COMMIT_REFS_SINGLE_REF_ATTEMPTS = 3;
 const STATE_PUBLISH_PRIORITY_INTENT_ATTEMPT = 2;
 const STATE_PUBLISH_PRIORITY_INTENT_MAX_TTL_MS = 5 * 60_000;
 const STATE_PUBLISH_OWNER_PATTERN =
@@ -2460,19 +2460,43 @@ function pushStateAndReceiptAfterCommitRefsFailure(
     // A batch-specific receipt may safely outlive this lease. A later retry
     // resumes only while state still equals sourceParent and otherwise fails
     // closed, so persist that progress before renewing the shared-state fence.
-    const receiptPush = spawnGit(
-      [
-        "push",
-        `--force-with-lease=${receiptRef}:${remoteReceiptOid ?? ""}`,
-        remote,
-        `${source}:${receiptRef}`,
-      ],
-      { allowFailure: true },
-    );
-    if (receiptPush.status !== 0 && remoteRefOid(remote, receiptRef) !== sourceCommit) {
+    for (let attempt = 1; attempt <= STATE_PUBLISH_COMMIT_REFS_SINGLE_REF_ATTEMPTS; attempt += 1) {
+      lease.coordinator?.assertActive();
+      const receiptPush = spawnGit(
+        [
+          "push",
+          `--force-with-lease=${receiptRef}:${remoteReceiptOid ?? ""}`,
+          remote,
+          `${source}:${receiptRef}`,
+        ],
+        { allowFailure: true },
+      );
+      if (receiptPush.status === 0) {
+        remoteReceiptOid = sourceCommit;
+        break;
+      }
+      const currentReceiptOid = remoteRefOid(remote, receiptRef);
+      if (currentReceiptOid === sourceCommit) {
+        remoteReceiptOid = sourceCommit;
+        break;
+      }
+      if (currentReceiptOid !== remoteReceiptOid) {
+        throw new StatePublishContentionError(
+          `State batch receipt ${receiptRef} changed during commit_refs recovery`,
+        );
+      }
+      if (
+        attempt < STATE_PUBLISH_COMMIT_REFS_SINGLE_REF_ATTEMPTS &&
+        isCommitRefsTransactionFailure(receiptPush)
+      ) {
+        console.log(
+          `State batch receipt push hit GitHub commit_refs; retrying attempt=${attempt + 1}/${STATE_PUBLISH_COMMIT_REFS_SINGLE_REF_ATTEMPTS}`,
+        );
+        sleep(Math.min(STATE_PUBLISH_LEASE_WAIT_MS * attempt, STATE_PUBLISH_LEASE_MAX_WAIT_MS));
+        continue;
+      }
       return receiptPush;
     }
-    remoteReceiptOid = sourceCommit;
   }
 
   lease.coordinator?.assertActive();
@@ -2488,7 +2512,7 @@ function pushStateAndReceiptAfterCommitRefsFailure(
   }
 
   renewStatePublishLease(lease, "before commit_refs state recovery", {
-    commitRefsAttempts: STATE_PUBLISH_COMMIT_REFS_RENEW_ATTEMPTS,
+    commitRefsAttempts: STATE_PUBLISH_COMMIT_REFS_SINGLE_REF_ATTEMPTS,
   });
   lease.coordinator?.assertActive();
   remoteBranchOid = remoteRefOid(remote, branchRef);
