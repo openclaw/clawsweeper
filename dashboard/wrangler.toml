@@ -56,11 +56,11 @@ EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = "60000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = "45000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "180000"
 EXACT_REVIEW_PENDING_SOFT_LIMIT = "300"
-# Size-8 initially failed when one durable item claimed two events in a batch;
-# #772's in-batch serialization fixed that class, so the grant advances to the
-# batch-32 rollout target (workflow ask raised in #773).
+# Keep 32 as the owner-homogeneous candidate scan width. Sequential preparation
+# made the first production size-32 ask claim 30 members, so the hard mutation
+# lease remains at the proven size-8 checkpoint.
 EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED = "1"
-EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "32"
+EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "8"
 EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS = "60000"
 EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_COOLDOWN_MS = "30000"
 EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_RESERVATION_MS = "600000"
