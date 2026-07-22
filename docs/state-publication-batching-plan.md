@@ -1,11 +1,13 @@
 # State publication batching plan
 
-**Status (verified 2026-07-22 at 02:35 UTC):** PR 1 through PR 4, the rollout
+**Status (verified 2026-07-22 at 03:42 UTC):** PR 1 through PR 4, the rollout
 hotfix, the repository-wide FIFO state-writer coordinator, the fence identity
 hotfix, the shared `publishMainCommit` identity follow-up, fresh batch telemetry,
-and bounded batch-writer priority are merged. Production remains at batch size 2
-and a 60-second maximum wait while the separately reviewed size-4 capacity step
-is prepared. Post-priority runs
+and bounded batch-writer priority are merged. The separately reviewed size-4
+capacity step also landed as
+[`openclaw/clawsweeper#768`](https://github.com/openclaw/clawsweeper/pull/768)
+at `f1aa674039692a66975f1bdc78c95826aa40efeb`; production now claims up to four
+items with a 60-second maximum wait. Post-priority size-2 runs
 [29885667172](https://github.com/openclaw/clawsweeper/actions/runs/29885667172)
 and [29885888814](https://github.com/openclaw/clawsweeper/actions/runs/29885888814)
 each acquired ahead of an ordinary backlog, produced one two-member state commit,
@@ -21,11 +23,22 @@ drain sample. Batch failure terminalization landed in maintainer-owned
 [`openclaw/clawsweeper#764`](https://github.com/openclaw/clawsweeper/pull/764),
 and fresh batch writer telemetry landed in
 [`openclaw/clawsweeper#766`](https://github.com/openclaw/clawsweeper/pull/766).
-The coordinator admission root cause is fixed; configured batch capacity is now
-the limiting factor. The final rollout target remains batch size 8, reached only
-by explicit reviewed `2 -> 4 -> 8` changes with fresh live proof and two measured
-samples at each size. Intermediate sizes must pass every safety gate; only the
-final keep size must also pass the backlog-drain capacity gate.
+The coordinator admission root cause is fixed, but the first size-4 production
+run showed that batch-internal preparation is still sequential. Run
+[29888170667](https://github.com/openclaw/clawsweeper/actions/runs/29888170667)
+took 8 minutes 6 seconds to publish four members in state commit
+[`880ab541`](https://github.com/openclaw/clawsweeper-state/commit/880ab541154514730958a0c30fd9946d1aeb1382),
+with `materialized=4`, `accepted=4`, and `retryable=0`. About 3 minutes 37
+seconds were spent preparing the four members sequentially. At 03:40 UTC the
+60-minute arrival rate was 76 items/hour, while resolved throughput was 20
+items/hour and 2,353 items remained pending. Increasing item count alone cannot
+overcome a measured per-item serial ceiling below the arrival rate. The revised
+rollout therefore treats size 8 as a safety checkpoint, adds one independent
+prepare-concurrency and size-32-readiness pull request while size remains 8, and
+then uses a separate reviewed configuration pull request to move directly from
+8 to the intended final size 32. Size 16 is not a mandatory production step.
+Every stage must pass the safety gate; size 32 must also pass the backlog-drain
+capacity gate before the final keep decision.
 **Incident:** CSW-049
 **Decision scope:** replace normal contention on the single generated-`state`
 publication lease with one recoverable, repository-wide serialization boundary,
@@ -49,7 +62,10 @@ generated state layout.
 | Batch failure terminalization                 | Complete; landed                               | Landed as [`openclaw/clawsweeper#764`](https://github.com/openclaw/clawsweeper/pull/764) at `b657a55bb6e4499825a9adffecb44e32cd0e9ed5`, superseding the narrower external [`openclaw/clawsweeper#760`](https://github.com/openclaw/clawsweeper/pull/760). It adds fenced retryable/refresh/permanent outcomes, receipt-aware cancellation recovery, newer-revision preservation, and manifest-based cleanup so a failed or cancelled publisher does not retain both members until lease expiry. Upstream `pnpm check` passed in [run 29881719295](https://github.com/openclaw/clawsweeper/actions/runs/29881719295); CodeQL, Windows, sparse build, and automerge E2E also passed. Deterministic post-fix failure coverage is the rollout gate; production failure injection is intentionally excluded.                                                                                                                                                                                                                                                                                                                                                              |
 | Batch writer telemetry restoration            | Complete; landed, deployed, and live-verified  | Landed as [`openclaw/clawsweeper#766`](https://github.com/openclaw/clawsweeper/pull/766) at `6aae6e674234d6ac6680c520cc18050c4ff3f5ab`; dashboard deployment passed in [run 29883131304](https://github.com/openclaw/clawsweeper/actions/runs/29883131304). Run [29883986427](https://github.com/openclaw/clawsweeper/actions/runs/29883986427) then recorded the first fresh terminal operation: one commit, two materialized members, actual size 2, full batch, zero contention timeouts, 1,932,699 ms coordinator wait, and 52,255 ms hold. Its state commit [`d69464d7`](https://github.com/openclaw/clawsweeper-state/commit/d69464d74ee65dfa05e401f25929ca552b75da2d) changed exactly the two intended item records and completion accepted both acknowledgements.                                                                                                                                                                                                                                                                                                                                                                                            |
 | Bounded batch writer priority                 | Complete; landed, deployed, and live-verified  | Landed as [`openclaw/clawsweeper#767`](https://github.com/openclaw/clawsweeper/pull/767) at `550316892d107815a36260356f623301393b4be0`; CI [run 29883477235](https://github.com/openclaw/clawsweeper/actions/runs/29883477235) and dashboard deploy [run 29884056241](https://github.com/openclaw/clawsweeper/actions/runs/29884056241) passed. The pre-deploy control run [29883986427](https://github.com/openclaw/clawsweeper/actions/runs/29883986427) entered as ordinary ticket 499 at position 55 and waited about 32 minutes. Post-deploy run [29885667172](https://github.com/openclaw/clawsweeper/actions/runs/29885667172) entered as authenticated batch ticket 541, waited about 21 seconds despite 29 ordinary tickets, and completed commit [`527eceef`](https://github.com/openclaw/clawsweeper-state/commit/527eceefbfe65328e01642f523b011acde805215) with two accepted outcomes. Run [29885888814](https://github.com/openclaw/clawsweeper/actions/runs/29885888814) repeated the bounded priority behavior after an ordinary turn, preserving fairness.                                                                                           |
-| Size-4 capacity step                          | Draft PR 768                                   | Proposed in [`openclaw/clawsweeper#768`](https://github.com/openclaw/clawsweeper/pull/768). Raise both the dashboard claim size and the workflow's frozen maximum from 2 to 4. Size-2 safety behavior is proven, while two consecutive samples show its useful rate remains below arrivals. This is a separately reviewed capacity step; size 8 remains blocked until a live four-member commit, four outcomes, and two new samples are recorded.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Size-4 capacity step                          | Complete; landed and live-verified             | Landed as [`openclaw/clawsweeper#768`](https://github.com/openclaw/clawsweeper/pull/768) at `f1aa674039692a66975f1bdc78c95826aa40efeb`; CI [run 29887336269](https://github.com/openclaw/clawsweeper/actions/runs/29887336269) and CodeQL [run 29887336268](https://github.com/openclaw/clawsweeper/actions/runs/29887336268) passed. First live size-4 run [29888170667](https://github.com/openclaw/clawsweeper/actions/runs/29888170667) published four independently prepared members in one state commit [`880ab541`](https://github.com/openclaw/clawsweeper-state/commit/880ab541154514730958a0c30fd9946d1aeb1382), then accepted all four acknowledgements with zero retryable outcomes. Contention and open DLQ counts did not grow. Its 8-minute-6-second runtime also exposed sequential per-item preparation as the next capacity bottleneck. |
+| Size-8 safety checkpoint                     | Planned; separate configuration PR             | Raise the dashboard claim size and workflow maximum from 4 to 8 only after size-4 safety evidence and samples are recorded. Size 8 must prove an eight-member single commit and eight independent outcomes, but it is no longer the final capacity target. Its live runtime supplies the baseline for the prepare-concurrency follow-up. |
+| Parallel prepare and size-32 readiness        | Planned; new independent implementation PR     | Keep production claim size at 8 while making preparation boundedly concurrent, initially four workers. Isolate per-item workspaces and outcomes, preserve deterministic aggregation and fencing, extend heartbeat coverage across preparation, enforce item/path/byte/runtime limits, and prove failure isolation plus concurrency-one equivalence. This PR must not change production batch size to 32. |
+| Size-32 capacity step                         | Planned; separate configuration PR             | After the readiness PR passes at size 8, move directly from 8 to 32; size 16 is not a required production stage. Require one 32-member single commit, 32 independent outcomes, bounded runtime with lease margin, unchanged contention/DLQ safety, and consecutive samples showing resolved work exceeds arrivals while pending and oldest age fall. |
 
 ## Production incident and root cause
 
@@ -959,17 +975,118 @@ writer must fail closed if it cannot acquire a ticket. Durable tickets, terminal
 receipts, existing exact-review batch ownership, and state history require no
 data transformation.
 
+## Revised capacity plan: size 8 checkpoint, parallel prepare, size 32
+
+Repository-wide serialization removed random Git-lease competition; it did not
+make batch-internal item work concurrent. The first size-4 production run gives
+the current capacity model:
+
+- total runtime: 8 minutes 6 seconds for four items;
+- fixed setup, coordinator, commit, and completion cost: approximately 4.5
+  minutes per batch;
+- sequential preparation cost: approximately 0.9 minutes per item;
+- observed 60-minute arrivals at 03:40 UTC: 76 items/hour, with earlier
+  five-minute samples equivalent to 96-108 items/hour;
+- publication backlog at the same snapshot: 2,353 pending items.
+
+With unchanged sequential preparation, estimated batch time is approximately
+`4.5 + 0.9 * item_count` minutes. Size 8 projects to about 41 items/hour, size
+16 to 51 items/hour, and size 32 to 58 items/hour. The asymptotic serial ceiling
+is about 66 items/hour, below the observed 76-item/hour sustained arrival rate.
+There is therefore no finite item-count-only setting that can prove backlog
+drain under the current preparation design. A serial size 32 would also project
+to about 33 minutes, leaving inadequate margin against workflow, batch lease,
+token, and recovery deadlines.
+
+The capacity correction is split across two new decision boundaries after the
+size-8 safety checkpoint.
+
+### Follow-up PR: bounded parallel preparation at size 8
+
+This is an implementation and proof PR, not a configuration expansion. It must
+leave both production maxima at 8 and address the failure modes that would make
+a direct serial `8 -> 32` increase unsafe:
+
+- prepare at most four members concurrently, with an explicit configuration
+  default and a concurrency-one compatibility mode;
+- give every member an isolated checkout/workspace, report, outcome file, and
+  cleanup boundary so workers do not mutate shared preparation state;
+- keep manifest aggregation deterministic and commit exactly one bounded union
+  of the independently prepared healthy members;
+- preserve per-item revision, claim-generation, snapshot, apply/close guard,
+  and acknowledgement fences;
+- keep one member's deterministic failure from cancelling or poisoning healthy
+  siblings, and terminalize every unfinished member through the existing
+  manifest-based cleanup path;
+- heartbeat batch ownership throughout preparation as well as finalization, and
+  stop before the absolute lease/recovery deadline rather than relying on lease
+  expiry;
+- bound the batch by item count, changed paths, payload bytes, GitHub request
+  pressure, and total runtime; rate-limit or transport pressure must reduce
+  concurrency or produce fenced retryable outcomes instead of a partial blind
+  push;
+- expose preparation concurrency, prepare duration, total duration, maximum
+  worker duration, eligible/retryable counts, and limit-trigger reason in
+  telemetry;
+- add focused proofs for 8, 16, and 32 manifest members, concurrency 1 and 4,
+  mixed healthy/retryable/superseded members, worker cancellation, heartbeat
+  failure, acknowledgement failure, sibling preservation, and deterministic
+  retry recovery.
+
+The live gate for this PR is at size 8: at least one full eight-member batch
+must produce one state commit and eight independent accepted outcomes, with its
+full-batch runtime below 15 minutes and the rolling p95 below 15 minutes once
+enough post-deploy samples exist. It must show no new contention timeout, no DLQ
+disposal, and no fence, sibling, guard, or heartbeat regression. Two consecutive
+five-minute samples must be recorded, but a capacity-only failure does not roll
+back the parallel preparation code; it authorizes the separate size-32
+configuration step. Any safety failure disables parallel preparation and
+returns to concurrency 1 at the last proven batch size.
+
+### Follow-up PR: direct size 8 to size 32 configuration
+
+After the readiness PR passes every size-8 safety gate, a separate configuration
+PR may raise both the dashboard claim size and the workflow's frozen maximum
+directly from 8 to 32. A size-16 production step is optional diagnostic work,
+not a rollout requirement. Four-way preparation projects size 32 at about 12
+minutes and about 164 items/hour, enough to exceed the observed 108-item/hour
+short-window peak and drain the current backlog in roughly 42 hours if that peak
+persists, or roughly 27 hours at the observed 76-item/hour sustained rate.
+
+The size-32 keep gate requires:
+
+- one full batch with 32 claimed identities, one state commit containing exactly
+  the intended bounded union, and 32 independent fenced outcomes;
+- total and p95 runtime below 15 minutes, leaving at least two-times margin to
+  the 30-minute recovery boundary;
+- no increase in contention timeouts, open DLQ count, retry amplification,
+  sibling loss, stale-generation rejection, guard bypass, or ordinary-writer
+  starvation;
+- two complete consecutive five-minute samples where useful resolutions meet
+  or exceed arrivals, pending and total outstanding fall, and oldest pending age
+  falls without DLQ replay, cleanup, or audited disposal contributing to the
+  result;
+- continued positive drain over the following 60-minute dashboard window before
+  declaring size 32 the final keep configuration.
+
+Any size-32 safety failure rolls configuration back to size 8 while retaining
+the proven parallel preparation implementation. A capacity-only failure does
+not justify pretending the rollout is complete; retain the safest proven
+configuration and identify the remaining measured bottleneck before another
+capacity change.
+
 ## Rollout and recovery gates
 
-Batch size remains 2. Do not use a dead-letter replay as the first behavior
-proof, and do not process or clean the existing DLQ as part of this rollout.
+Production has advanced to batch size 4. Do not use a dead-letter replay as the
+first behavior proof, and do not process or clean the existing DLQ as part of
+this rollout.
 
 The completed local implementation gates are:
 
 - focused proof for concurrent writer classes, strict FIFO/fairness, crash and
   stale-owner recovery, and stale-generation fencing;
-- batch sizes 1, 2, 4, and 8 each producing one commit in the local proof, while
-  size 2 remains the only production setting;
+- batch sizes 1, 2, 4, and 8 each producing one commit in the original local
+  proof, while size 2 was the only production setting at proof time;
 - remote sibling preservation and same-path conflict failure before push;
 - ordinary writer versus batch writer concurrency;
 - ambiguous push and acknowledgement-failure idempotent recovery;
@@ -990,12 +1107,14 @@ The completed local implementation gates are:
   from local image
   `sha256:50e3cb887b2111488dcd22673b424a9b121ee2fdbc8596e44c69386cdcdede04`.
 
-The merged delivery, cutover, size-2 behavior proof, and size-2 safety samples
-are complete. The remaining live and capacity gates are to promote through
-separately reviewed size-4 and size-8 configuration changes, repeating the live
-commit/ack proof and two-sample measurement at each size. Size 4 must pass all
-safety gates. Size 8 must additionally make writer service rate sufficient for
-two consecutive samples to drain pending work and reduce oldest age.
+The merged delivery, cutover, size-2 behavior proof, size-2 safety samples, and
+size-4 configuration change are complete. The remaining gates are to finish
+size-4 observation, promote size 8 as a safety checkpoint, land bounded parallel
+preparation while staying at size 8, and finally promote directly to size 32 in
+a separate configuration PR. Repeat the live commit/ack proof and two-sample
+measurement at every live configuration. Size 32 must additionally make writer
+service rate sufficient for consecutive samples to drain pending work and
+reduce oldest age.
 
 After landing and coordinator enablement, the first valid live size-2 proof must
 show all of the following in one batch:
@@ -1028,11 +1147,14 @@ and contention safety gates pass. If both measured windows pass safety but fail
 only the useful-rate, pending, or oldest-age capacity criteria, that is evidence
 to advance through the next separately reviewed size instead of keeping an
 undersized configuration. Any safety failure rolls back to the last proven
-size. Size 8 is the first configuration expected to exceed the observed
-72-80-item/hour arrival rate and must pass both safety and capacity before the
-final keep decision. No automatic `2 -> 4 -> 8` progression is permitted.
+size. Sequential size 8 is a safety checkpoint, not a credible final capacity
+target: the measured serial preparation ceiling is below the observed sustained
+arrival rate. Only size 32 after the bounded-parallel-prepare PR is expected to
+provide enough headroom for backlog drain and must pass both safety and capacity
+before the final keep decision. No automatic `4 -> 8 -> 32` progression is
+permitted.
 
-### Follow-up task: fence identity hotfix and controlled 2 -> 4 -> 8 rollout
+### Follow-up task: fence identity hotfix and controlled 2 -> 4 -> 8 -> 32 rollout
 
 Treat this as one ordered rollout task. A later phase must not begin merely
 because the earlier configuration has been deployed; it begins only after the
@@ -1131,18 +1253,37 @@ preconfigured Git identity` in `test/repair/state-writer-coordinator-git.test.ts
       60 minutes (`-75/hour` net drain), 59 queued coordinator tickets, and
       18,751 pending state-append rows. No DLQ disposal contributed to those
       figures.
-- [ ] Increase to size 4 only through the explicit reviewed configuration in
-      [`openclaw/clawsweeper#768`](https://github.com/openclaw/clawsweeper/pull/768).
-      Inspect at least one four-member single commit and all four
-      independent outcomes, then record two new complete, consecutive
-      five-minute samples. Roll back to size 2 on any safety failure; advance to
-      size 8 if safety passes but size 4 still cannot drain arrivals.
+- [x] Increase to size 4 only through the explicit reviewed configuration in
+      [`openclaw/clawsweeper#768`](https://github.com/openclaw/clawsweeper/pull/768),
+      merged at `f1aa674039692a66975f1bdc78c95826aa40efeb`. Live run
+      [29888170667](https://github.com/openclaw/clawsweeper/actions/runs/29888170667)
+      produced state commit
+      [`880ab541`](https://github.com/openclaw/clawsweeper-state/commit/880ab541154514730958a0c30fd9946d1aeb1382)
+      for four members, then reported `materialized=4`, `accepted=4`, and
+      `retryable=0`; contention and open DLQ counts did not grow.
+- [ ] Finish the size-4 capacity record with two complete consecutive
+      five-minute samples. Advance to size 8 if safety continues to pass but
+      useful resolutions, pending, or oldest age show that size 4 cannot drain
+      arrivals. Roll back to size 2 only on a safety failure.
 - [ ] Increase to size 8 only through a second explicit reviewed configuration
       change after size 4 passes. Inspect at least one eight-member single commit
       and all eight independent outcomes, then record two new complete,
-      consecutive five-minute samples. Roll back to size 4 on any safety failure
-      or if size 8 cannot sustain a positive drain rate.
-      Size 8 is the final rollout target, not an optional later discussion.
+      consecutive five-minute samples. Roll back to size 4 on any safety
+      failure. A capacity-only failure is expected to authorize the next
+      readiness step; size 8 is a safety checkpoint, not the final keep target.
+- [ ] Land one independent bounded-parallel-prepare and size-32-readiness PR
+      while both production batch maxima remain 8. Start with four workers,
+      isolate per-item state, extend heartbeat coverage across preparation,
+      enforce item/path/byte/runtime bounds, and prove failure isolation plus
+      concurrency-one equivalence. Live-verify it at size 8 before changing
+      batch cardinality.
+- [ ] Increase directly from size 8 to size 32 only through a separate reviewed
+      configuration PR after the readiness gate passes. Size 16 is not a
+      mandatory production step. Inspect one 32-member single commit and all 32
+      independent outcomes, then record two new complete consecutive
+      five-minute samples and one following 60-minute window. Roll back
+      configuration to size 8 on any safety failure; keep size 32 only when
+      resolved work exceeds arrivals and both pending and oldest age fall.
 - [ ] Update this document with pull requests, merged commits, production run
       URLs, state commit identities, queue outcomes, coordinator/lease metrics,
       sample windows, and the final keep-or-rollback decision at each size.
@@ -1160,10 +1301,10 @@ The narrow coordinator rollback is:
 CLAWSWEEPER_STATE_COORDINATOR_ENABLED = false
 ```
 
-On rollback:
+On coordinator rollback:
 
-1. keep exact-review batching and `max_items=2` unchanged unless a separate,
-   explicitly authorized batching rollback is required;
+1. keep exact-review batching at the last separately proven size unless a
+   distinct, explicitly authorized batching rollback is required;
 2. let an active coordinator owner finish or lose its renewable lease/absolute
    deadline; do not cancel the workflow;
 3. return newly started publishers to the legacy Git-fence path, preserving
@@ -1179,6 +1320,13 @@ the batching protocol itself later needs rollback, its existing disabled flag
 can stop new batch claims and allow active ownership to expire, but that is a
 separate decision and is not part of the current coordinator rollout.
 
+Capacity rollout has narrower fallbacks. A parallel-prepare safety failure
+returns preparation concurrency to 1 without changing the last proven batch
+size. A size-32 safety failure returns both batch maxima to 8 without removing
+the independently proven parallel-prepare implementation. Do not cancel an
+active production batch to accelerate either rollback; let its fenced outcomes
+complete or use the existing expiry/recovery path.
+
 ## Completion criteria
 
 This incident repair is complete when:
@@ -1186,8 +1334,8 @@ This incident repair is complete when:
 - all normal generated-`state` writers use one durable FIFO admission boundary,
   while the Git ref serves only crash recovery, ownership fencing, stale-owner
   recovery, and atomic publication;
-- exact-result publication uses one active size-2 batch writer and completes one
-  real two-item commit with two correct independent acknowledgements;
+- exact-result publication uses one active batch writer and completes real
+  configured-size commits with correct independent acknowledgements;
 - ordinary writers and the batch writer make FIFO progress without normal
   480-second Git-lease competition;
 - sustained useful throughput remains above arrival rate with measured
@@ -1196,22 +1344,25 @@ This incident repair is complete when:
 - state-contention retries and dead letters stop growing;
 - batch cleanup keeps SQLite growth bounded;
 - every live-enabled pull request has its manual verification evidence recorded;
-- two complete, consecutive five-minute size-2 samples pass every safety gate
-  and record the capacity shortfall that requires the next controlled size;
+- every live rollout size records its required behavior proof and complete
+  consecutive sample windows;
 - the temporary fixed-capacity-50 configuration is removed in a separately
   reviewed cleanup after the backlog is materially cleared;
 - open dead letters have an explicit replay, fresh-review, or audited-resolution
   disposition after the writer path is proven stable.
 
-The controlled batching rollout is complete only after size 4 and then size 8
-each land through an explicit reviewed configuration pull request, produce a
-live single commit with the configured number of independently acknowledged
-members, and record two complete consecutive five-minute samples. Intermediate
-sizes must pass all safety gates; a capacity-only failure advances to the next
-reviewed size. The final keep decision is production batch size 8 only after its
-samples also show sustained positive drain and falling oldest age; any failed
-size-8 safety or capacity gate rolls back to the last proven size 4
-configuration.
+The controlled batching rollout is complete only after size 4 and size 8 land
+through explicit reviewed configuration pull requests, the bounded-parallel-
+prepare readiness PR is proven live while size remains 8, and a separate
+configuration PR promotes directly from 8 to 32. Each live configuration must
+produce one single commit with the configured number of independently
+acknowledged members and record two complete consecutive five-minute samples.
+Intermediate stages must pass all safety gates; a capacity-only failure advances
+to the next reviewed stage. The final keep decision is production batch size 32
+only after its samples and following 60-minute window show sustained positive
+drain, falling pending, and falling oldest age. Any size-32 safety failure rolls
+configuration back to the proven size 8 checkpoint while retaining the proven
+parallel preparation path.
 
 Migration of authoritative operational state into a database remains a possible
 long-term architecture. It is not required to validate or roll back this
