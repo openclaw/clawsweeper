@@ -2532,7 +2532,11 @@ test("sweep target write tokens can merge pull requests", () => {
     .map((block) => block.split("\n      - ")[0]);
 
   assert.equal(targetWriteTokenBlocks.length, 4);
+  const compositeAction = readText(".github/actions/create-target-write-token/action.yml");
+  assert.match(compositeAction, /permission-contents: write/);
+  assert.match(compositeAction, /permission-pull-requests: write/);
   for (const block of targetWriteTokenBlocks) {
+    if (block.includes("uses: ./.github/actions/create-target-write-token")) continue;
     assert.match(block, /permission-contents: write/);
     assert.match(block, /permission-pull-requests: write/);
   }

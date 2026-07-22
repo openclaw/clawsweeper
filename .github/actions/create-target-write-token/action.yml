@@ -31,10 +31,11 @@ runs:
         private-key: ${{ inputs.private-key }}
         owner: ${{ inputs.owner }}
         repositories: ${{ inputs.repository }}
-        permission-actions: read
+        permission-checks: read
         permission-contents: write
         permission-issues: write
         permission-pull-requests: write
+        permission-statuses: read
 
     - name: Record token mint time
       id: minted-at
