@@ -1,6 +1,13 @@
 # State publication batching plan
 
-**Status (verified 2026-07-22 at 07:10 UTC):** PR 1 through PR 4, the rollout
+**Current stop-loss decision (verified 2026-07-22):** keep the bounded parallel
+prepare implementation, but keep the production ownership cap at 8. Size 32
+failed the runtime gate before finalization and produced no state commit. The
+subsequent size-8 retry produced one six-member commit, but two of its eight
+outcomes were retryable and the backlog still rose. The full closeout evidence
+is recorded below; the older rollout narrative is retained as incident history.
+
+**Historical status (verified 2026-07-22 at 07:10 UTC):** PR 1 through PR 4, the rollout
 hotfix, the repository-wide FIFO state-writer coordinator, the fence identity
 hotfix, the shared `publishMainCommit` identity follow-up, fresh batch telemetry,
 and bounded batch-writer priority are merged. The separately reviewed size-4
@@ -74,6 +81,76 @@ is kept.
 publication lease with one recoverable, repository-wide serialization boundary,
 without migrating authoritative state to a new database or changing the
 generated state layout.
+
+## 2026-07-22 stop-loss closeout
+
+The implementation handoff in
+[`openclaw/clawsweeper#775`](https://github.com/openclaw/clawsweeper/pull/775)
+was extracted onto current `main` and the stale PR was closed as superseded; it
+does not need to merge. The compatibility and rolling-cap repair landed through
+[`openclaw/clawsweeper#779`](https://github.com/openclaw/clawsweeper/pull/779)
+at `4eb8d80aaec429faba5b802ae15797e25a513fba`. The first conservative cap
+rollback landed through
+[`openclaw/clawsweeper#780`](https://github.com/openclaw/clawsweeper/pull/780)
+at `32682ce9116f76b57940a33b4026d67826122c34`.
+
+Bounded four-worker prepare and the size-32 implementation then landed together
+through
+[`openclaw/clawsweeper#781`](https://github.com/openclaw/clawsweeper/pull/781)
+at `bcafbf8f9d2657b2a6d782b530db26c4947da3f1`. It uses isolated per-item state
+worktrees and artifacts, deterministic aggregation, heartbeat fencing,
+per-item failure isolation, an eight-minute item timeout, a twenty-minute batch
+deadline, artifact size bounds, and process-group cancellation. The publisher
+primitive accepts at most 32 items and retains proportional path and byte
+limits. Incremental validation passed 51 focused tests, focused lint, and
+single-commit proofs at sizes 1, 2, 4, 8, and 32. Exactly one autoreview was run;
+its one valid finding, failure to stop active workers at the overall deadline,
+was fixed and the focused tests were rerun. No full local validation or second
+autoreview was run.
+
+The transition size-8 production
+[run 29902871577](https://github.com/openclaw/clawsweeper/actions/runs/29902871577)
+produced state commit
+[`4234a70d`](https://github.com/openclaw/clawsweeper-state/commit/4234a70d2747cfd2b2fef576f995ded16e95709b)
+with `materialized=3`, `accepted=3`, `retryable=0`, and `released=0`. The first
+size-32 production
+[run 29903573048](https://github.com/openclaw/clawsweeper/actions/runs/29903573048)
+claimed 32 distinct members, but preparation exceeded the 15-minute operating
+target and hit the controller's 20-minute deadline. It produced no state commit
+and cleanup safely reported `released=32`. The state repository contains
+544,632 paths; independent full worktree creation remained serialized enough
+that only about 20 members started before the deadline. This is a runtime gate
+failure, so size 32 was rejected immediately without cancelling the active run.
+
+The production cap rollback landed through
+[`openclaw/clawsweeper#782`](https://github.com/openclaw/clawsweeper/pull/782)
+at `26050df839c81cfee0a6966c6f24db0172d3db07`; it changes only the dashboard
+grant back to 8 and retains parallel prepare, the 50-candidate scan, and the
+32-capable primitive. Its first size-8 production
+[run 29905061908](https://github.com/openclaw/clawsweeper/actions/runs/29905061908)
+prepared all eight members, then GitHub rejected the atomic multi-ref push with
+`fatal error in commit_refs`. It produced no state commit; unconditional cleanup
+reported `released=8`. This repeats the intermittent publisher failure already
+seen in [run 29898251234](https://github.com/openclaw/clawsweeper/actions/runs/29898251234),
+not a batching safety regression.
+
+The immediately following size-8
+[run 29905963261](https://github.com/openclaw/clawsweeper/actions/runs/29905963261)
+completed in 13 minutes 21 seconds and proved the retained parallel path can
+publish one real multi-item commit. State commit
+[`746619bd`](https://github.com/openclaw/clawsweeper-state/commit/746619bd9735f7b973a47db0f6ef7a332cb285a8)
+contains six materialized members in one commit. Fenced completion accepted all
+eight outcomes, with `accepted=8`, `retryable=2`, and cleanup `released=0`.
+Thus accepted acknowledgements remained healthy and release did not grow, but
+the desired zero-retryable outcome was not met in this sample.
+
+The observed backlog did not drain: `pending` moved from approximately 2,699
+before rollout to 2,767, 2,789, 2,798, 2,803, and 2,805; oldest pending age moved
+from approximately 103,900 seconds to 105,876, 107,518, 108,347, 108,531, and
+109,088 seconds. At the last sample, `ready_pending=2,802` and the effective
+public `max_items=8`. Therefore the final decision is to retain 8, not 32. No
+DLQ was replayed or cleaned up, no workflow was paused, and no live apply or
+close was executed.
 
 ## Delivery status
 
