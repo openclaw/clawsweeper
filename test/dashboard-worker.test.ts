@@ -4760,6 +4760,7 @@ test("authenticated legacy exact-review intake enters the durable queue", async 
     ok: true,
     queued: true,
     item_key: "openclaw/gogcli#597",
+    superseded_publications: 0,
   });
   const stored = (await storage.get("exact-review-queue")) as {
     items: Record<string, { decision: Record<string, unknown> }>;
@@ -11024,6 +11025,7 @@ test("hosted webhook enqueues item events with the repository default branch", a
     ok: true,
     queued: true,
     item_key: "openclaw/gogcli#597",
+    superseded_publications: 0,
   });
 });
 
@@ -11080,6 +11082,7 @@ test("hosted webhook requeues unlocked and close-guard removal events", async ()
       ok: true,
       queued: true,
       item_key: `openclaw/gogcli#${number}`,
+      superseded_publications: 0,
     });
     const stored = (await storage.get("exact-review-queue")) as {
       items: Record<string, { decision: { sourceAction: string; supersedesInProgress: boolean } }>;
