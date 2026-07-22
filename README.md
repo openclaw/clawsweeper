@@ -815,7 +815,16 @@ pnpm run oxformat
 The `CI` GitHub Actions workflow uses the latest Node release and runs
 `pnpm run check` on pushes, pull requests, and manual dispatches. The check gate
 includes the full test suite, a strict changed-surface coverage threshold, and a
-full compiled-repo coverage ratchet.
+full compiled-repo coverage ratchet. It builds once, runs independent static and
+lint checks with bounded phase-level parallelism, and uses the full coverage run
+as the single source of complete test results. Standalone `test`, `test:repair`,
+and coverage commands still build their required outputs; their internal
+`*:no-build` variants are for the composed gate after `build:all`.
+
+Node test files are expanded by `scripts/run-node-tests.mjs` instead of the
+shell, so the same targets work on Linux, macOS, and Windows. The runner defaults
+to the smaller of the machine's available parallelism and 16, prints the chosen
+value, and accepts an explicit `--test-concurrency` override for diagnostics.
 
 ## GitHub Actions Setup
 
