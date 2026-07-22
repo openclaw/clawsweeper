@@ -60,7 +60,12 @@ jobs:
           coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ steps.state-token.outputs.token }}
-          fetch-depth: 1
+          # depth-1 cannot fast-forward or rebuild against a branch other
+          # writers keep advancing (non-fast-forward shallow push rejections,
+          # runs 29938808338 / 29957012043); a full clone of `state`'s own
+          # (large) history times out. 50 commits give the rebuild-on-remote-head
+          # path a real merge-base against recent advances while staying bounded.
+          fetch-depth: 50
 
       - uses: ./.github/actions/setup-pnpm
         with:
