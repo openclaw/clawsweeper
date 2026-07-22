@@ -70,7 +70,11 @@ export function calculateTestConcurrency(parallelism = availableParallelism()) {
 }
 
 export function parseArguments(argv) {
-  if (argv.includes("--help") || argv.includes("-h")) return { help: true };
+  const separatorIndex = argv.indexOf("--");
+  const wrapperArguments = separatorIndex === -1 ? argv : argv.slice(0, separatorIndex);
+  if (wrapperArguments.includes("--help") || wrapperArguments.includes("-h")) {
+    return { help: true };
+  }
 
   const [target, ...rest] = argv;
   if (!Object.hasOwn(TARGET_PATTERNS, target)) {

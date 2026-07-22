@@ -81,6 +81,12 @@ test("test runner parses CLI concurrency overrides and forwarded Node options", 
     concurrency: 1,
     nodeArguments: [],
   });
+  assert.deepEqual(parseArguments(["all", "--", "--help", "-h"]), {
+    help: false,
+    target: "all",
+    concurrency: undefined,
+    nodeArguments: ["--help", "-h"],
+  });
   assert.throws(() => parseArguments(["unit", "--test-concurrency", "0"]), /positive integer/);
   assert.throws(
     () => parseArguments(["unit", "--", "--test-concurrency=32"]),
