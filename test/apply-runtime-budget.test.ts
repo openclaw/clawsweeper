@@ -419,7 +419,7 @@ test("apply-decisions yields instead of starting a post-close delay that cannot 
   );
   writeFileSync(join(fixture.itemsDir, "725.md"), synced.report, "utf8");
   writeFileSync(clockHookPath, `Date.now = () => ${Date.now()};\n`, "utf8");
-  process.env.NODE_OPTIONS = [originalNodeOptions, `--require=${clockHookPath}`]
+  process.env.NODE_OPTIONS = [originalNodeOptions, `--require=${JSON.stringify(clockHookPath)}`]
     .filter(Boolean)
     .join(" ");
   try {
@@ -522,7 +522,7 @@ Date.now = () => existsSync(${JSON.stringify(closeCommandLogPath)})
 `,
     "utf8",
   );
-  process.env.NODE_OPTIONS = [originalNodeOptions, `--require=${clockHookPath}`]
+  process.env.NODE_OPTIONS = [originalNodeOptions, `--require=${JSON.stringify(clockHookPath)}`]
     .filter(Boolean)
     .join(" ");
   try {
