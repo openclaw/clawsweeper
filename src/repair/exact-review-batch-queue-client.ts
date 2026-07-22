@@ -15,7 +15,10 @@ export type ExactReviewBatchLease = {
   items: ExactReviewBatchMember[];
 };
 
-export type ExactReviewBatchClaim = ExactReviewBatchLease & { batchWaitMs: number };
+export type ExactReviewBatchClaim = ExactReviewBatchLease & {
+  configuredBatchSize: number;
+  batchWaitMs: number;
+};
 
 export type ExactReviewBatchFetch = {
   batch: ExactReviewBatchLease;
@@ -74,6 +77,12 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
     if (response.claimed !== true) return null;
     return {
       ...parseLease(response.batch),
+      // During a rolling dashboard deploy, an older worker may omit the effective
+      // cap. Preserve the former request-based telemetry until the new protocol is live.
+      configuredBatchSize:
+        response.configured_batch_size === undefined
+          ? input.maxItems
+          : positiveInteger(response.configured_batch_size, "configured_batch_size"),
       batchWaitMs: nonNegativeInteger(response.batch_wait_ms, "batch_wait_ms"),
     };
   }
