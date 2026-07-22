@@ -181,6 +181,37 @@ test("GitHub multi-ref commit_refs rejection falls back to fenced single-ref pus
   );
 });
 
+test("commit_refs recovery survives one transient lease renewal rejection", () => {
+  const fixture = createRepositoryFixture();
+  const plan = newItemPlan(fixture, 30);
+  const batchId = "github-lease-renewal-retry";
+  const rejectedRenewalMarker = installMultiRefAndFirstLeaseRenewalCommitRefsFailure(
+    fixture.origin,
+    batchId,
+  );
+
+  const result = withStateEnvironment(fixture.work, () =>
+    commitPreparedStateBatch({
+      batchId,
+      plans: [plan],
+    }),
+  );
+
+  assert.equal(result.outcome, "committed");
+  assert.equal(fs.existsSync(rejectedRenewalMarker), true);
+  assert.equal(
+    git(fixture.origin, "show", "state:records/openclaw-openclaw/items/30.md"),
+    "item 30\n",
+  );
+  const receiptRef = `refs/heads/clawsweeper-state-batches/${createHash("sha256")
+    .update(batchId)
+    .digest("hex")}`;
+  assert.equal(
+    git(fixture.origin, "rev-parse", "state").trim(),
+    git(fixture.origin, "rev-parse", receiptRef).trim(),
+  );
+});
+
 test("a receipt created after lookup cannot be overwritten", () => {
   const fixture = createRepositoryFixture();
   const plan = newItemPlan(fixture, 29);
@@ -836,6 +867,61 @@ function installMultiRefCommitRefsFailure(origin: string): void {
     ].join("\n"),
   );
   fs.chmodSync(hook, 0o755);
+}
+
+function installMultiRefAndFirstLeaseRenewalCommitRefsFailure(
+  origin: string,
+  batchId: string,
+): string {
+  const hook = path.join(origin, "hooks", "pre-receive");
+  const rejectedRenewalMarker = path.join(origin, "hooks", "rejected-lease-renewal-once");
+  const receiptRef = `refs/heads/clawsweeper-state-batches/${createHash("sha256")
+    .update(batchId)
+    .digest("hex")}`;
+  fs.writeFileSync(
+    hook,
+    [
+      "#!/bin/sh",
+      "count=0",
+      'only_old_oid=""',
+      'only_new_oid=""',
+      'only_ref=""',
+      "while read -r old_oid new_oid ref_name; do",
+      "  count=$((count + 1))",
+      '  only_old_oid="$old_oid"',
+      '  only_new_oid="$new_oid"',
+      '  only_ref="$ref_name"',
+      "done",
+      'if [ "$count" -ge 2 ]; then',
+      '  echo "fatal error in commit_refs" >&2',
+      "  exit 1",
+      "fi",
+      'case "$only_old_oid" in',
+      "  *[!0]*) old_oid_is_zero=0 ;;",
+      "  *) old_oid_is_zero=1 ;;",
+      "esac",
+      'case "$only_new_oid" in',
+      "  *[!0]*) new_oid_is_zero=0 ;;",
+      "  *) new_oid_is_zero=1 ;;",
+      "esac",
+      'if [ "$only_ref" = "refs/heads/clawsweeper-publish-lease/state" ] &&',
+      '   [ "$old_oid_is_zero" -eq 0 ] && [ "$new_oid_is_zero" -eq 0 ]; then',
+      `  if ! git --git-dir='${origin}' show-ref --verify --quiet '${receiptRef}'; then`,
+      '    echo "lease renewal occurred before receipt publication" >&2',
+      "    exit 1",
+      "  fi",
+      `  if [ ! -f '${rejectedRenewalMarker}' ]; then`,
+      `    touch '${rejectedRenewalMarker}'`,
+      '    echo "fatal error in commit_refs" >&2',
+      "    exit 1",
+      "  fi",
+      "fi",
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
+  fs.chmodSync(hook, 0o755);
+  return rejectedRenewalMarker;
 }
 
 function installMultiRefAndFirstStateFailure(origin: string): void {
