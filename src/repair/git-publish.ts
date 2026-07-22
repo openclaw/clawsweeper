@@ -2199,12 +2199,19 @@ function pushPublishedCommit(
       console.log(
         "State publish renewed its owner lease without the branch; recovering the lost state race",
       );
+      if (receiptRef && isCommitRefsTransactionFailure(pushed)) {
+        return pushStateAndReceiptAfterCommitRefsFailure(source, remote, branch, receiptRef, lease);
+      }
       return pushed;
     }
     if (currentLeaseOid !== lease.oid) {
       throw new StatePublishContentionError(
         "State publish lease ownership changed before branch publication",
       );
+    }
+    if (receiptRef && isCommitRefsTransactionFailure(pushed)) {
+      renewStatePublishLease(lease, "before commit_refs recovery");
+      return pushStateAndReceiptAfterCommitRefsFailure(source, remote, branch, receiptRef, lease);
     }
     return pushed;
   }
@@ -2213,6 +2220,54 @@ function pushPublishedCommit(
   lease.expiresAtMs = Date.now() + lease.ttlMs;
   console.log(`Renewed state publish lease owner=${lease.owner} with atomic branch update`);
   return pushed;
+}
+
+function isCommitRefsTransactionFailure(result: GitRunResult): boolean {
+  return /fatal error in commit_refs/i.test(`${result.stderr}\n${result.stdout}`);
+}
+
+function pushStateAndReceiptAfterCommitRefsFailure(
+  source: string,
+  remote: string,
+  branch: string,
+  receiptRef: string,
+  lease: StatePublishLease,
+): GitRunResult {
+  lease.coordinator?.assertActive();
+  const sourceCommit = runGit(["rev-parse", source], { quiet: true }).trim();
+  const remoteBranchOid = remoteRefOid(remote, `refs/heads/${branch}`);
+  const remoteReceiptOid = remoteRefOid(remote, receiptRef);
+  if (remoteReceiptOid && remoteReceiptOid !== sourceCommit) {
+    throw new StatePublishContentionError(
+      `State batch receipt ${receiptRef} changed before commit_refs recovery`,
+    );
+  }
+  if (remoteBranchOid === sourceCommit && remoteReceiptOid === sourceCommit) {
+    return { status: 0, stdout: "", stderr: "", timedOut: false };
+  }
+  if (lease.expiresAtMs - Date.now() <= STATE_PUBLISH_LEASE_RENEW_THRESHOLD_MS) {
+    renewStatePublishLease(lease, "before commit_refs recovery push");
+  }
+  lease.coordinator?.assertActive();
+
+  console.log(
+    "State publish retrying GitHub commit_refs failure with the lease held and an atomic state/receipt update",
+  );
+  const recovered = spawnGit(
+    [
+      "push",
+      "--atomic",
+      `--force-with-lease=${receiptRef}:${remoteReceiptOid ?? ""}`,
+      remote,
+      `${source}:${branch}`,
+      `${source}:${receiptRef}`,
+    ],
+    { allowFailure: true },
+  );
+  if (recovered.status === 0) {
+    console.log(`Recovered GitHub commit_refs failure for ${remote}/${branch}`);
+  }
+  return recovered;
 }
 
 export function pushStateCommitUnderLease(

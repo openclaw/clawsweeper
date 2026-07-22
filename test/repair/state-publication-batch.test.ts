@@ -117,6 +117,32 @@ test("filesystem-path remotes publish without constructing an invalid tracking r
   );
 });
 
+test("GitHub three-ref commit_refs rejection falls back to an atomic state and receipt push", () => {
+  const fixture = createRepositoryFixture();
+  const plan = newItemPlan(fixture, 25);
+  installThreeRefCommitRefsFailure(fixture.origin);
+
+  const result = withStateEnvironment(fixture.work, () =>
+    commitPreparedStateBatch({
+      batchId: "github-commit-refs-fallback",
+      plans: [plan],
+    }),
+  );
+
+  assert.equal(result.outcome, "committed");
+  assert.equal(
+    git(fixture.origin, "show", "state:records/openclaw-openclaw/items/25.md"),
+    "item 25\n",
+  );
+  const receiptRef = `refs/heads/clawsweeper-state-batches/${createHash("sha256")
+    .update("github-commit-refs-fallback")
+    .digest("hex")}`;
+  assert.equal(
+    git(fixture.origin, "rev-parse", "state").trim(),
+    git(fixture.origin, "rev-parse", receiptRef).trim(),
+  );
+});
+
 test("mutation plans reject oversized individual and aggregate path metadata", () => {
   const fixture = createRepositoryFixture();
   assert.throws(
@@ -577,6 +603,27 @@ function publishSibling(fixture: RepositoryFixture, file: string, content: strin
   git(sibling, "add", ".");
   git(sibling, "commit", "-m", "ordinary sibling update");
   git(sibling, "push", "origin", "HEAD:state");
+}
+
+function installThreeRefCommitRefsFailure(origin: string): void {
+  const hook = path.join(origin, "hooks", "pre-receive");
+  fs.writeFileSync(
+    hook,
+    [
+      "#!/bin/sh",
+      "count=0",
+      "while read -r old_oid new_oid ref_name; do",
+      "  count=$((count + 1))",
+      "done",
+      'if [ "$count" -ge 3 ]; then',
+      '  echo "fatal error in commit_refs" >&2',
+      "  exit 1",
+      "fi",
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
+  fs.chmodSync(hook, 0o755);
 }
 
 function configureUser(root: string): void {

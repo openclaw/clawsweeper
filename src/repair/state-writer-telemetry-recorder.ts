@@ -136,7 +136,8 @@ export class StateWriterTelemetryRecorder {
     this.outcome = outcome;
     this.emit("finished");
     const safeOutcome =
-      !this.acquired && outcome !== "contention_timeout" && outcome !== "failed"
+      (!this.acquired && outcome !== "contention_timeout" && outcome !== "failed") ||
+      (this.acquired && outcome === "contention_timeout")
         ? "failed"
         : outcome;
     const candidate = {
