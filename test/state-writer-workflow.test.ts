@@ -122,11 +122,11 @@ test("state compaction remains an explicitly separate main-branch writer", () =>
   assert.doesNotMatch(source, /\.github\/actions\/setup-state/);
 });
 
-test("the rollout returns to the last safe batch size during item deduplication", () => {
+test("the rollout holds the mutation lease at eight while scanning 32 candidates", () => {
   const workflow = readFileSync(join(workflowDirectory, "exact-review-batch-publish.yml"), "utf8");
   const worker = readFileSync("dashboard/wrangler.toml", "utf8");
-  assert.match(workflow, /EXACT_REVIEW_BATCH_MAX_ITEMS: "4"/);
-  assert.match(worker, /EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "32"/);
+  assert.match(workflow, /EXACT_REVIEW_BATCH_MAX_ITEMS: "32"/);
+  assert.match(worker, /EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "8"/);
   assert.match(worker, /EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS = "60000"/);
 });
 
