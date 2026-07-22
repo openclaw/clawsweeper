@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -20,6 +21,10 @@ const MAX_ITEMS = 32;
 const DEFAULT_ITEM_TIMEOUT_MS = 8 * 60_000;
 const DEFAULT_TOTAL_TIMEOUT_MS = 20 * 60_000;
 const DEFAULT_ARTIFACT_BYTES = 64 * 1024 * 1024;
+const MAX_MUTATION_FILES = 512;
+const MAX_MUTATION_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_MUTATION_TOTAL_BYTES = 16 * 1024 * 1024;
+const MAX_OUTCOME_BYTES = 2 * 1024 * 1024;
 
 export async function runBoundedPool(items, concurrency, worker) {
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > MAX_CONCURRENCY) {
@@ -67,6 +72,78 @@ export async function createIsolatedStateClone({ stateRoot, destination, baselin
   }
   await runChecked("git", ["-C", destination, "checkout", "--detach", baselineSha], {
     timeoutMs,
+  });
+}
+
+export async function importPreparedMutationObjects({
+  stateRoot,
+  stateClone,
+  outcomePath,
+  timeoutMs,
+}) {
+  if (!existsSync(outcomePath)) return;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new Error("prepared mutation object import deadline expired");
+  }
+  const outcomeStat = lstatSync(outcomePath);
+  if (!outcomeStat.isFile()) throw new Error("prepared mutation outcome must be a regular file");
+  if (outcomeStat.size > MAX_OUTCOME_BYTES) {
+    throw new Error("prepared mutation outcome exceeds the byte limit");
+  }
+  const deadline = Date.now() + timeoutMs;
+  const outcome = JSON.parse(readFileSync(outcomePath, "utf8"));
+  if (outcome.kind !== "eligible") return;
+  const operations = Array.isArray(outcome.plan?.operations) ? outcome.plan.operations : [];
+  if (operations.length > MAX_MUTATION_FILES) {
+    throw new Error("prepared mutation exceeds the file limit");
+  }
+  const bytesByOid = new Map();
+  let totalBytes = 0;
+  for (const operation of operations) {
+    const targetOid = operation?.targetOid;
+    if (targetOid === null) continue;
+    if (typeof targetOid !== "string" || !/^[a-f0-9]{40,64}$/.test(targetOid)) {
+      throw new Error("prepared mutation contains an invalid target object id");
+    }
+    const bytes = Number(operation?.bytes);
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > MAX_MUTATION_FILE_BYTES) {
+      throw new Error(`prepared mutation contains an invalid byte count for ${targetOid}`);
+    }
+    totalBytes += bytes;
+    if (totalBytes > MAX_MUTATION_TOTAL_BYTES) {
+      throw new Error("prepared mutation exceeds the total byte limit");
+    }
+    const existingBytes = bytesByOid.get(targetOid);
+    if (existingBytes !== undefined) {
+      if (existingBytes !== bytes) {
+        throw new Error(`prepared mutation repeats ${targetOid} with a different byte count`);
+      }
+      continue;
+    }
+    bytesByOid.set(targetOid, bytes);
+  }
+  if (outcome.plan?.totalBytes !== totalBytes) {
+    throw new Error("prepared mutation total does not match its operations");
+  }
+  const targetOids = [...bytesByOid.keys()];
+  if (!targetOids.length) return;
+  await validateMutationObjects({
+    root: stateClone,
+    bytesByOid,
+    deadline,
+    boundary: "source",
+  });
+  await transferGitObjects({
+    sourceRoot: stateClone,
+    destinationRoot: stateRoot,
+    oids: targetOids,
+    timeoutMs: importTimeout(deadline),
+  });
+  await validateMutationObjects({
+    root: stateRoot,
+    bytesByOid,
+    deadline,
+    boundary: "destination",
   });
 }
 
@@ -137,6 +214,7 @@ async function controller() {
     mkdirSync(root, { recursive: true });
     writeFileSync(itemPath, `${JSON.stringify(item)}\n`, "utf8");
     const workerStartedAt = Date.now();
+    const itemDeadline = Math.min(deadline, workerStartedAt + itemTimeoutMs);
     let timedOut = false;
     try {
       await createIsolatedStateClone({
@@ -152,6 +230,21 @@ async function controller() {
       );
       timedOut = status.timedOut;
       if (timedOut) timeouts += 1;
+      if (existsSync(outcomePath)) {
+        try {
+          await importPreparedMutationObjects({
+            stateRoot,
+            stateClone,
+            outcomePath,
+            timeoutMs: importTimeout(itemDeadline),
+          });
+        } catch (error) {
+          writeFailure(outcomePath, "retryable_failure", "unknown_failure");
+          console.error(
+            `Failed to import prepared mutation objects: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
       if ((status.code !== 0 || timedOut) && !existsSync(outcomePath)) {
         writeFailure(outcomePath, "retryable_failure", "unknown_failure");
       }
@@ -397,6 +490,12 @@ function remainingTimeout(deadline) {
   return Math.max(1, deadline - Date.now());
 }
 
+function importTimeout(deadline) {
+  const timeoutMs = deadline - Date.now();
+  if (timeoutMs < 1) throw new Error("prepared mutation object import deadline expired");
+  return timeoutMs;
+}
+
 async function runChecked(command, args, options = {}) {
   const result = await run(command, args, options);
   if (result.code !== 0 || result.timedOut) {
@@ -405,18 +504,150 @@ async function runChecked(command, args, options = {}) {
   return result;
 }
 
-async function capture(command, args) {
+async function transferGitObjects({ sourceRoot, destinationRoot, oids, timeoutMs }) {
+  await new Promise((resolvePromise, reject) => {
+    const pack = spawn(
+      "git",
+      ["-C", sourceRoot, "pack-objects", "--stdout", "--revs", "--no-reuse-object"],
+      {
+        detached: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    const unpack = spawn("git", ["-C", destinationRoot, "unpack-objects", "-r"], {
+      detached: true,
+      stdio: ["pipe", "ignore", "pipe"],
+    });
+    let packError = "";
+    let unpackError = "";
+    let packCode = null;
+    let unpackCode = null;
+    let timedOut = false;
+    let forceTimer = null;
+    const terminate = (child, signal) => {
+      try {
+        if (child.pid) process.kill(-child.pid, signal);
+      } catch {
+        // The process group may already have exited between the timer and signal.
+      }
+    };
+    const fail = (error) => {
+      terminate(pack, "SIGTERM");
+      terminate(unpack, "SIGTERM");
+      reject(error);
+    };
+    pack.once("error", fail);
+    unpack.once("error", fail);
+    pack.stderr.setEncoding("utf8");
+    pack.stderr.on("data", (chunk) => (packError += chunk));
+    unpack.stderr.setEncoding("utf8");
+    unpack.stderr.on("data", (chunk) => (unpackError += chunk));
+    pack.stdout.pipe(unpack.stdin);
+    unpack.stdin.on("error", () => {
+      // A failed unpack closes the pipe; process exit status supplies the useful error.
+    });
+    pack.stdin.end(`${oids.join("\n")}\n`);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      terminate(pack, "SIGTERM");
+      terminate(unpack, "SIGTERM");
+      forceTimer = setTimeout(() => {
+        terminate(pack, "SIGKILL");
+        terminate(unpack, "SIGKILL");
+      }, 5_000);
+    }, timeoutMs);
+    const complete = () => {
+      if (packCode === null || unpackCode === null) return;
+      clearTimeout(timer);
+      if (forceTimer) clearTimeout(forceTimer);
+      if (timedOut) return reject(new Error("prepared mutation object import timed out"));
+      if (packCode !== 0 || unpackCode !== 0) {
+        return reject(
+          new Error(
+            (
+              unpackError ||
+              packError ||
+              `Git object transfer exited ${packCode}/${unpackCode}`
+            ).trim(),
+          ),
+        );
+      }
+      resolvePromise();
+    };
+    pack.once("exit", (code) => {
+      packCode = code ?? 1;
+      complete();
+    });
+    unpack.once("exit", (code) => {
+      unpackCode = code ?? 1;
+      complete();
+    });
+  });
+}
+
+async function validateMutationObjects({ root, bytesByOid, deadline, boundary }) {
+  const targetOids = [...bytesByOid.keys()];
+  const output = await capture(
+    "git",
+    ["-C", root, "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+    {
+      input: `${targetOids.join("\n")}\n`,
+      timeoutMs: importTimeout(deadline),
+    },
+  );
+  const lines = output.trim().split("\n");
+  if (lines.length !== targetOids.length) {
+    throw new Error(`Git returned incomplete ${boundary} mutation metadata`);
+  }
+  for (let index = 0; index < targetOids.length; index += 1) {
+    const targetOid = targetOids[index];
+    const match = /^([a-f0-9]{40,64}) blob ([0-9]+)$/.exec(lines[index] || "");
+    if (match?.[1] !== targetOid || Number(match[2]) !== bytesByOid.get(targetOid)) {
+      throw new Error(`prepared mutation ${boundary} object does not match ${targetOid}`);
+    }
+  }
+}
+
+async function capture(command, args, options = {}) {
   return await new Promise((resolvePromise, reject) => {
     let stdout = "";
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "inherit"] });
+    let stderr = "";
+    let timedOut = false;
+    let forceTimer = null;
+    const child = spawn(command, args, {
+      detached: Boolean(options.timeoutMs),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => (stdout += chunk));
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => (stderr += chunk));
     child.once("error", reject);
-    child.once("exit", (code) =>
-      code === 0
-        ? resolvePromise(stdout)
-        : reject(new Error(`${basename(command)} exited ${code}`)),
-    );
+    const terminate = (signal) => {
+      try {
+        if (child.pid) process.kill(-child.pid, signal);
+      } catch {
+        // The process group may already have exited between the timer and signal.
+      }
+    };
+    const timer = options.timeoutMs
+      ? setTimeout(() => {
+          timedOut = true;
+          terminate("SIGTERM");
+          forceTimer = setTimeout(() => terminate("SIGKILL"), 5_000);
+        }, options.timeoutMs)
+      : null;
+    if (options.input === undefined) child.stdin.end();
+    else child.stdin.end(options.input);
+    child.once("exit", (code) => {
+      if (timer) clearTimeout(timer);
+      if (forceTimer) clearTimeout(forceTimer);
+      if (timedOut) return reject(new Error(`${basename(command)} timed out`));
+      if (code !== 0) {
+        return reject(new Error((stderr || `${basename(command)} exited ${code}`).trim()));
+      }
+      resolvePromise(stdout);
+    });
   });
 }
 

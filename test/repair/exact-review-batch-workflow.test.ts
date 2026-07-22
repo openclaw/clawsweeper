@@ -76,6 +76,10 @@ test("batch workflow uses owner-scoped mutation credentials and isolated state c
   assert.match(prepareSource, /http\\\.\.\*\\\.extraheader/);
   assert.match(prepareSource, /CLAWSWEEPER_STATE_DIR: stateClone/);
   assert.match(prepareSource, /EXACT_REVIEW_WORK_ROOT: root/);
+  assert.match(
+    prepareSource,
+    /await importPreparedMutationObjects\(\{[\s\S]*?stateRoot,[\s\S]*?stateClone,[\s\S]*?outcomePath,/,
+  );
 });
 
 test("batch preparation is bounded, heartbeat-fenced, and deterministically aggregated", () => {
@@ -85,7 +89,14 @@ test("batch preparation is bounded, heartbeat-fenced, and deterministically aggr
   assert.match(prepareSource, /EXACT_REVIEW_BATCH_HEARTBEAT_FAILURE_PATH/);
   assert.match(prepareSource, /DEFAULT_ITEM_TIMEOUT_MS/);
   assert.match(prepareSource, /DEFAULT_TOTAL_TIMEOUT_MS/);
+  assert.match(prepareSource, /const MAX_OUTCOME_BYTES = 2 \* 1024 \* 1024/);
   assert.match(prepareSource, /Math\.min\(itemTimeoutMs, remainingTimeout\(deadline\)\)/);
+  assert.match(prepareSource, /timeoutMs: importTimeout\(deadline\)/);
+  assert.match(prepareSource, /"pack-objects", "--stdout", "--revs", "--no-reuse-object"/);
+  assert.match(
+    prepareSource,
+    /catch \(error\) \{[\s\S]*?writeFailure\(outcomePath, "retryable_failure", "unknown_failure"\);[\s\S]*?console\.error/,
+  );
   assert.match(prepareSource, /terminate\("SIGKILL"\)/);
   assert.match(prepareSource, /prepare-telemetry\.json/);
 });

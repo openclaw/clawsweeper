@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   createIsolatedStateClone,
+  importPreparedMutationObjects,
   run,
   runBoundedPool,
 } from "../../scripts/prepare-exact-review-batch.mjs";
@@ -133,6 +134,114 @@ test("parallel preparers use independent shallow state repositories", async (t) 
   git(right, "reset", "--hard", "FETCH_HEAD");
   assert.equal(git(left, "rev-parse", "HEAD"), updatedSha);
   assert.equal(git(right, "rev-parse", "HEAD"), updatedSha);
+});
+
+test("prepared mutation blobs survive isolated worker cleanup", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-exact-review-objects-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const origin = join(root, "origin.git");
+  const source = join(root, "source");
+  const stateRoot = join(root, "state");
+  const worker = join(root, "worker");
+  const outcomePath = join(root, "outcome.json");
+  git(root, "init", "--bare", origin);
+  git(root, "clone", origin, source);
+  git(source, "config", "user.name", "ClawSweeper Test");
+  git(source, "config", "user.email", "clawsweeper@example.com");
+  writeFileSync(join(source, "record.md"), "record\n");
+  git(source, "add", "record.md");
+  git(source, "commit", "-m", "seed state");
+  git(source, "branch", "-M", "state");
+  git(source, "push", "origin", "state");
+  git(root, "clone", "--depth", "1", "--branch", "state", `file://${origin}`, stateRoot);
+  const baselineSha = git(stateRoot, "rev-parse", "HEAD");
+  await createIsolatedStateClone({
+    stateRoot,
+    destination: worker,
+    baselineSha,
+    timeoutMs: 5_000,
+  });
+
+  const content = "prepared in an isolated worker\n";
+  const targetOid = execFileSync("git", ["-C", worker, "hash-object", "-w", "--stdin"], {
+    encoding: "utf8",
+    input: content,
+    stdio: ["pipe", "pipe", "pipe"],
+  }).trim();
+  const writeOutcome = (bytes) =>
+    writeFileSync(
+      outcomePath,
+      `${JSON.stringify({
+        kind: "eligible",
+        plan: {
+          identity: { itemKey: "openclaw/openclaw#1", revision: 1, claimGeneration: 1 },
+          operations: [
+            {
+              path: "records/openclaw-openclaw/items/1.md",
+              expectedOid: null,
+              targetOid,
+              mode: "100644",
+              bytes,
+            },
+          ],
+          totalBytes: bytes,
+        },
+      })}\n`,
+    );
+  writeFileSync(outcomePath, "x".repeat(2 * 1024 * 1024 + 1));
+  await assert.rejects(
+    () =>
+      importPreparedMutationObjects({
+        stateRoot,
+        stateClone: worker,
+        outcomePath,
+        timeoutMs: 5_000,
+      }),
+    /outcome exceeds the byte limit/,
+  );
+  writeOutcome(Buffer.byteLength(content));
+  assert.throws(() => git(stateRoot, "cat-file", "-e", targetOid));
+  await assert.rejects(
+    () =>
+      importPreparedMutationObjects({
+        stateRoot,
+        stateClone: worker,
+        outcomePath,
+        timeoutMs: 0,
+      }),
+    /deadline expired/,
+  );
+
+  writeOutcome(1);
+  await assert.rejects(
+    () =>
+      importPreparedMutationObjects({
+        stateRoot,
+        stateClone: worker,
+        outcomePath,
+        timeoutMs: 5_000,
+      }),
+    /source object does not match/,
+  );
+  assert.throws(() => git(stateRoot, "cat-file", "-e", targetOid));
+  writeOutcome(Buffer.byteLength(content));
+
+  let eventLoopProgressed = false;
+  const progressTimer = setTimeout(() => {
+    eventLoopProgressed = true;
+  }, 0);
+  await importPreparedMutationObjects({
+    stateRoot,
+    stateClone: worker,
+    outcomePath,
+    timeoutMs: 5_000,
+  });
+  clearTimeout(progressTimer);
+  rmSync(worker, { recursive: true, force: true });
+
+  assert.equal(eventLoopProgressed, true);
+  assert.equal(git(stateRoot, "cat-file", "-t", targetOid), "blob");
+  assert.equal(git(stateRoot, "cat-file", "blob", targetOid), content.trim());
 });
 
 function git(cwd, ...args) {
