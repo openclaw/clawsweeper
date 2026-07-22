@@ -6,6 +6,43 @@
 
 max_close_processed_limit=900
 coverage_proof_limit=2
+apply_token_budget_ms=3300000
+
+initialize_apply_token_budget() {
+  local minted_at_ms="${CLAWSWEEPER_APPLY_TOKEN_MINTED_AT_MS:-}"
+  if ! [[ "$minted_at_ms" =~ ^[0-9]+$ ]]; then
+    echo "Target write token mint time is missing or invalid." >&2
+    return 1
+  fi
+  CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS=$((minted_at_ms + apply_token_budget_ms))
+  export CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS
+  echo "Apply token deadline is ${CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS}ms since epoch (55 minutes after mint)."
+}
+
+apply_token_budget_reached() {
+  local report_path="$1"
+  jq -e '
+    any(.[];
+      .action == "skipped_runtime_budget" and
+      ((.reason // "") | startswith("apply token budget reached"))
+    )
+  ' "$report_path" >/dev/null
+}
+
+apply_token_budget_stop_summary() {
+  local processed="$1"
+  local remaining="$2"
+  echo "apply stopped at token budget: processed=$processed remaining=~$remaining; next run continues"
+}
+
+report_apply_token_budget_stop() {
+  local report_path="$1"
+  local processed="$2"
+  local remaining="$3"
+  if apply_token_budget_reached "$report_path"; then
+    apply_token_budget_stop_summary "$processed" "$remaining"
+  fi
+}
 
 validate_coverage_proof_tree() {
   local proof_dir="$1"
@@ -209,11 +246,25 @@ automatic_apply_runtime_reached() {
   fi
   if [ "$runtime_auto_selected_apply_batch" = "true" ] &&
     { [ -z "$runtime_cursor_advance_count" ] || [ "$runtime_cursor_advance_count" -eq 0 ]; }; then
-    echo "Automatic close checkpoint reached its 600000ms runtime budget before cursor progress; cursor is unchanged and scheduled apply will retry without queueing an immediate continuation."
+    echo "Apply checkpoint reached its runtime budget before cursor progress; cursor is unchanged and scheduled apply will retry without queueing an immediate continuation."
     return 0
   fi
-  echo "Automatic close checkpoint reached its 600000ms runtime budget; cursor is persisted and a fresh-token continuation will resume the lane."
+  echo "Apply checkpoint reached its runtime budget; cursor is persisted and a fresh-token continuation will resume the lane."
   continue_apply=true
+  return 0
+}
+
+apply_checkpoint_runtime_reached() {
+  local report_path="$1"
+  local processed="$2"
+  local remaining="$3"
+  if ! automatic_apply_runtime_reached "$report_path"; then
+    return 1
+  fi
+  if [ "${auto_selected_apply_batch:-false}" = "true" ] && [ -n "${apply_ready_count:-}" ]; then
+    remaining="$apply_ready_count"
+  fi
+  report_apply_token_budget_stop "$report_path" "$processed" "$remaining"
   return 0
 }
 
