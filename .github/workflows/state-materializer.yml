@@ -20,10 +20,14 @@ jobs:
   materialize:
     name: Drain queued state into one commit
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     env:
-      CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
+      # Priority intent wins a slot quickly; a long acquire budget just lets one
+      # contended wait eat the whole run (observed: six consecutive 20-min
+      # timeout-cancels while the append window grew to ~25k rows).
+      CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "300000"
       CLAWSWEEPER_STATE_LEASE_PRIORITY: "1"
+      CLAWSWEEPER_STATE_MATERIALIZER_MAX_RUNTIME_MS: "2400000"
     steps:
       - uses: actions/checkout@v7
         with:
