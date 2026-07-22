@@ -30,7 +30,7 @@ jobs:
       EXACT_REVIEW_BATCH_ID: exact-review-batch:${{ github.run_id }}
       EXACT_REVIEW_BATCH_LEASE_OWNER: github:${{ github.run_id }}
       EXACT_REVIEW_BATCH_MANIFEST: .artifacts/exact-review-batch/manifest.json
-      EXACT_REVIEW_BATCH_MAX_ITEMS: "4"
+      EXACT_REVIEW_BATCH_MAX_ITEMS: "8"
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
       CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
     steps:

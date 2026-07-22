@@ -122,11 +122,11 @@ test("state compaction remains an explicitly separate main-branch writer", () =>
   assert.doesNotMatch(source, /\.github\/actions\/setup-state/);
 });
 
-test("the rollout remains frozen at exact-review publication batch size four", () => {
+test("the rollout remains frozen at exact-review publication batch size eight", () => {
   const workflow = readFileSync(join(workflowDirectory, "exact-review-batch-publish.yml"), "utf8");
   const worker = readFileSync("dashboard/wrangler.toml", "utf8");
-  assert.match(workflow, /EXACT_REVIEW_BATCH_MAX_ITEMS: "4"/);
-  assert.match(worker, /EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "4"/);
+  assert.match(workflow, /EXACT_REVIEW_BATCH_MAX_ITEMS: "8"/);
+  assert.match(worker, /EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "8"/);
   assert.match(worker, /EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS = "60000"/);
 });
 

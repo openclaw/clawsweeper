@@ -1,11 +1,14 @@
 # State publication batching plan
 
-**Status (verified 2026-07-22 at 02:35 UTC):** PR 1 through PR 4, the rollout
+**Status (verified 2026-07-22 at 03:32 UTC):** PR 1 through PR 4, the rollout
 hotfix, the repository-wide FIFO state-writer coordinator, the fence identity
 hotfix, the shared `publishMainCommit` identity follow-up, fresh batch telemetry,
-and bounded batch-writer priority are merged. Production remains at batch size 2
-and a 60-second maximum wait while the separately reviewed size-4 capacity step
-is prepared. Post-priority runs
+and bounded batch-writer priority are merged. The separately reviewed size-4
+capacity step landed as
+[`openclaw/clawsweeper#768`](https://github.com/openclaw/clawsweeper/pull/768)
+at `f1aa674039692a66975f1bdc78c95826aa40efeb`; CI, CodeQL, dashboard deployment,
+and live smoke passed. Production now uses batch size 4 and a 60-second maximum
+wait. Post-priority size-2 runs
 [29885667172](https://github.com/openclaw/clawsweeper/actions/runs/29885667172)
 and [29885888814](https://github.com/openclaw/clawsweeper/actions/runs/29885888814)
 each acquired ahead of an ordinary backlog, produced one two-member state commit,
@@ -21,11 +24,18 @@ drain sample. Batch failure terminalization landed in maintainer-owned
 [`openclaw/clawsweeper#764`](https://github.com/openclaw/clawsweeper/pull/764),
 and fresh batch writer telemetry landed in
 [`openclaw/clawsweeper#766`](https://github.com/openclaw/clawsweeper/pull/766).
-The coordinator admission root cause is fixed; configured batch capacity is now
-the limiting factor. The final rollout target remains batch size 8, reached only
-by explicit reviewed `2 -> 4 -> 8` changes with fresh live proof and two measured
-samples at each size. Intermediate sizes must pass every safety gate; only the
-final keep size must also pass the backlog-drain capacity gate.
+The first size-4 production run
+[29888170667](https://github.com/openclaw/clawsweeper/actions/runs/29888170667)
+then claimed four members and published them in one state commit,
+[`880ab541`](https://github.com/openclaw/clawsweeper-state/commit/880ab541154514730958a0c30fd9946d1aeb1382),
+with `materialized=4`, `accepted=4`, and `retryable=0`. Contention and open dead
+letters did not grow. Two consecutive observation windows still showed a net
+backlog increase: arrivals/completions were 9/0 and then 5/4, with pending
+moving `2339 -> 2348 -> 2349`. Size 4 therefore passes safety but fails only
+capacity, authorizing the separately reviewed size-8 step. The coordinator
+admission root cause is fixed; configured batch capacity is the limiting factor.
+The final rollout target remains batch size 8 and must pass both safety and
+backlog-drain capacity gates before the keep decision.
 **Incident:** CSW-049
 **Decision scope:** replace normal contention on the single generated-`state`
 publication lease with one recoverable, repository-wide serialization boundary,
@@ -49,7 +59,8 @@ generated state layout.
 | Batch failure terminalization                 | Complete; landed                               | Landed as [`openclaw/clawsweeper#764`](https://github.com/openclaw/clawsweeper/pull/764) at `b657a55bb6e4499825a9adffecb44e32cd0e9ed5`, superseding the narrower external [`openclaw/clawsweeper#760`](https://github.com/openclaw/clawsweeper/pull/760). It adds fenced retryable/refresh/permanent outcomes, receipt-aware cancellation recovery, newer-revision preservation, and manifest-based cleanup so a failed or cancelled publisher does not retain both members until lease expiry. Upstream `pnpm check` passed in [run 29881719295](https://github.com/openclaw/clawsweeper/actions/runs/29881719295); CodeQL, Windows, sparse build, and automerge E2E also passed. Deterministic post-fix failure coverage is the rollout gate; production failure injection is intentionally excluded.                                                                                                                                                                                                                                                                                                                                                              |
 | Batch writer telemetry restoration            | Complete; landed, deployed, and live-verified  | Landed as [`openclaw/clawsweeper#766`](https://github.com/openclaw/clawsweeper/pull/766) at `6aae6e674234d6ac6680c520cc18050c4ff3f5ab`; dashboard deployment passed in [run 29883131304](https://github.com/openclaw/clawsweeper/actions/runs/29883131304). Run [29883986427](https://github.com/openclaw/clawsweeper/actions/runs/29883986427) then recorded the first fresh terminal operation: one commit, two materialized members, actual size 2, full batch, zero contention timeouts, 1,932,699 ms coordinator wait, and 52,255 ms hold. Its state commit [`d69464d7`](https://github.com/openclaw/clawsweeper-state/commit/d69464d74ee65dfa05e401f25929ca552b75da2d) changed exactly the two intended item records and completion accepted both acknowledgements.                                                                                                                                                                                                                                                                                                                                                                                            |
 | Bounded batch writer priority                 | Complete; landed, deployed, and live-verified  | Landed as [`openclaw/clawsweeper#767`](https://github.com/openclaw/clawsweeper/pull/767) at `550316892d107815a36260356f623301393b4be0`; CI [run 29883477235](https://github.com/openclaw/clawsweeper/actions/runs/29883477235) and dashboard deploy [run 29884056241](https://github.com/openclaw/clawsweeper/actions/runs/29884056241) passed. The pre-deploy control run [29883986427](https://github.com/openclaw/clawsweeper/actions/runs/29883986427) entered as ordinary ticket 499 at position 55 and waited about 32 minutes. Post-deploy run [29885667172](https://github.com/openclaw/clawsweeper/actions/runs/29885667172) entered as authenticated batch ticket 541, waited about 21 seconds despite 29 ordinary tickets, and completed commit [`527eceef`](https://github.com/openclaw/clawsweeper-state/commit/527eceefbfe65328e01642f523b011acde805215) with two accepted outcomes. Run [29885888814](https://github.com/openclaw/clawsweeper/actions/runs/29885888814) repeated the bounded priority behavior after an ordinary turn, preserving fairness.                                                                                           |
-| Size-4 capacity step                          | Draft PR 768                                   | Proposed in [`openclaw/clawsweeper#768`](https://github.com/openclaw/clawsweeper/pull/768). Raise both the dashboard claim size and the workflow's frozen maximum from 2 to 4. Size-2 safety behavior is proven, while two consecutive samples show its useful rate remains below arrivals. This is a separately reviewed capacity step; size 8 remains blocked until a live four-member commit, four outcomes, and two new samples are recorded.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Size-4 capacity step                          | Complete; landed, deployed, and live-verified  | Landed as [`openclaw/clawsweeper#768`](https://github.com/openclaw/clawsweeper/pull/768) at `f1aa674039692a66975f1bdc78c95826aa40efeb`. CI [run 29887336269](https://github.com/openclaw/clawsweeper/actions/runs/29887336269), CodeQL [run 29887336268](https://github.com/openclaw/clawsweeper/actions/runs/29887336268), and dashboard deployment [run 29887905376](https://github.com/openclaw/clawsweeper/actions/runs/29887905376) passed. Production run [29888170667](https://github.com/openclaw/clawsweeper/actions/runs/29888170667) claimed `openclaw/openclaw#110382`, `#111301`, `#111813`, and `#78031`; state commit [`880ab541`](https://github.com/openclaw/clawsweeper-state/commit/880ab541154514730958a0c30fd9946d1aeb1382) contains only those four item scopes, reports `materialized=4`, and completion reports `accepted=4`, `retryable=0`. Telemetry moved commits/materialized from 55/64 to 56/68 while contention remained 1,958 and open dead letters remained 413. Two consecutive windows recorded arrivals/completions of 9/0 and 5/4, so safety passed but capacity did not. |
+| Size-8 capacity step                          | In review                                      | Raise both the dashboard claim size and workflow's frozen maximum from 4 to 8 while preserving the 60-second wait. This is the final controlled capacity step authorized by the size-4 safety pass and capacity-only failure. It is not a keep decision until one live eight-member commit, eight independent acknowledgements, unchanged safety metrics, and two consecutive five-minute samples show positive drain and falling oldest age.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## Production incident and root cause
 
@@ -1131,17 +1142,42 @@ preconfigured Git identity` in `test/repair/state-writer-coordinator-git.test.ts
       60 minutes (`-75/hour` net drain), 59 queued coordinator tickets, and
       18,751 pending state-append rows. No DLQ disposal contributed to those
       figures.
-- [ ] Increase to size 4 only through the explicit reviewed configuration in
+- [x] Increase to size 4 only through the explicit reviewed configuration in
       [`openclaw/clawsweeper#768`](https://github.com/openclaw/clawsweeper/pull/768).
-      Inspect at least one four-member single commit and all four
-      independent outcomes, then record two new complete, consecutive
-      five-minute samples. Roll back to size 2 on any safety failure; advance to
-      size 8 if safety passes but size 4 still cannot drain arrivals.
-- [ ] Increase to size 8 only through a second explicit reviewed configuration
-      change after size 4 passes. Inspect at least one eight-member single commit
-      and all eight independent outcomes, then record two new complete,
-      consecutive five-minute samples. Roll back to size 4 on any safety failure
-      or if size 8 cannot sustain a positive drain rate.
+      The pull request merged at `f1aa674039692a66975f1bdc78c95826aa40efeb`;
+      CI [run 29887336269](https://github.com/openclaw/clawsweeper/actions/runs/29887336269),
+      CodeQL [run 29887336268](https://github.com/openclaw/clawsweeper/actions/runs/29887336268),
+      and dashboard deploy [run 29887905376](https://github.com/openclaw/clawsweeper/actions/runs/29887905376)
+      passed. Production run
+      [29888170667](https://github.com/openclaw/clawsweeper/actions/runs/29888170667)
+      claimed `openclaw/openclaw#110382`, `openclaw/openclaw#111301`,
+      `openclaw/openclaw#111813`, and `openclaw/openclaw#78031`. It acquired
+      durable writer ticket 621, recovered one ambiguous acquire response using
+      the same identity, acquired the state fence on its first attempt, and
+      created exactly one state commit,
+      [`880ab541`](https://github.com/openclaw/clawsweeper-state/commit/880ab541154514730958a0c30fd9946d1aeb1382).
+      The commit message records four batch items; its changed paths are limited
+      to records derived from those four item numbers. The batch reported
+      `materialized=4`, `superseded=0`, `accepted=4`, `retryable=0`, and released
+      no unfinished members. Telemetry moved state commits/materialized items
+      from 55/64 to 56/68 while contention timeouts stayed at 1,958 and open
+      dead letters stayed at 413.
+- [x] Record two consecutive size-4 observation windows. From 03:20:34 to
+      03:26:22 UTC, arrivals/completions were 9/0 and pending increased
+      `2339 -> 2348`; oldest pending age increased `97586 -> 97934` seconds.
+      From 03:26:22 to 03:32:02 UTC, arrivals/completions were 5/4 and pending
+      increased `2348 -> 2349`; oldest age fell `97934 -> 97588` seconds after
+      the four oldest members completed. Across both windows contention stayed
+      at 1,958, open dead letters stayed at 413, no DLQ item was disposed, and
+      the live four-member commit and acknowledgements passed every safety gate.
+      Size 4 therefore fails only capacity: over the combined interval arrivals
+      exceeded completions 14/4 and pending rose by 10. The explicit decision is
+      to advance to size 8 rather than keep size 4.
+- [ ] Increase to size 8 through this second explicit reviewed configuration
+      change after size 4 passed safety. Inspect at least one eight-member
+      single commit and all eight independent outcomes, then record two new
+      complete, consecutive five-minute samples. Roll back to size 4 on any
+      safety failure or if size 8 cannot sustain a positive drain rate.
       Size 8 is the final rollout target, not an optional later discussion.
 - [ ] Update this document with pull requests, merged commits, production run
       URLs, state commit identities, queue outcomes, coordinator/lease metrics,
