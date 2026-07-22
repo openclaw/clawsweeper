@@ -400,6 +400,8 @@ test("apply-decisions yields instead of starting a post-close delay that cannot 
   const fixture = runtimeBudgetFixture(725);
   const maxRuntimeMs = 15_000;
   const proofLogPath = join(fixture.root, "proof.log");
+  const clockHookPath = join(fixture.root, "runtime-clock.cjs");
+  const originalNodeOptions = process.env.NODE_OPTIONS;
   const synced = reportWithSyncedReviewComment(
     lowSignalCloseReport({
       number: 725,
@@ -416,6 +418,10 @@ test("apply-decisions yields instead of starting a post-close delay that cannot 
     "duplicate_or_superseded",
   );
   writeFileSync(join(fixture.itemsDir, "725.md"), synced.report, "utf8");
+  writeFileSync(clockHookPath, `Date.now = () => ${Date.now()};\n`, "utf8");
+  process.env.NODE_OPTIONS = [originalNodeOptions, `--require=${clockHookPath}`]
+    .filter(Boolean)
+    .join(" ");
   try {
     const startedAt = Date.now();
     withMockGh(
@@ -476,6 +482,8 @@ test("apply-decisions yields instead of starting a post-close delay that cannot 
     const report = JSON.parse(readFileSync(fixture.reportPath, "utf8"));
     assert.match(report[0]?.reason ?? "", /before close$/);
   } finally {
+    if (originalNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = originalNodeOptions;
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
@@ -483,7 +491,12 @@ test("apply-decisions yields instead of starting a post-close delay that cannot 
 test("apply-decisions records a successful close before yielding after it", () => {
   const fixture = runtimeBudgetFixture(727);
   const maxRuntimeMs = 25_000;
+  const closeDelayMs = 8_000;
   const proofLogPath = join(fixture.root, "proof.log");
+  const closeCommandLogPath = join(fixture.root, "close-command.log");
+  const clockHookPath = join(fixture.root, "runtime-clock.cjs");
+  const startedAtMs = Date.now();
+  const originalNodeOptions = process.env.NODE_OPTIONS;
   const synced = reportWithSyncedReviewComment(
     lowSignalCloseReport({
       number: 727,
@@ -500,6 +513,18 @@ test("apply-decisions records a successful close before yielding after it", () =
     "duplicate_or_superseded",
   );
   writeFileSync(join(fixture.itemsDir, "727.md"), synced.report, "utf8");
+  writeFileSync(
+    clockHookPath,
+    `const { existsSync } = require("node:fs");
+Date.now = () => existsSync(${JSON.stringify(closeCommandLogPath)})
+  ? ${startedAtMs + maxRuntimeMs - closeDelayMs}
+  : ${startedAtMs};
+`,
+    "utf8",
+  );
+  process.env.NODE_OPTIONS = [originalNodeOptions, `--require=${clockHookPath}`]
+    .filter(Boolean)
+    .join(" ");
   try {
     withMockGh(
       fixture.root,
@@ -507,7 +532,7 @@ test("apply-decisions records a successful close before yielding after it", () =
         number: 727,
         title: "Provider route fallback",
         comment: synced.comment,
-        closeCommandDelayMs: 8_000,
+        closeCommandLogPath,
         itemUpdatedAtAfterProofLogPath: proofLogPath,
         linkedPulls: {
           400: {
@@ -542,7 +567,7 @@ test("apply-decisions records a successful close before yielding after it", () =
                 "--max-runtime-ms",
                 String(maxRuntimeMs),
                 "--close-delay-ms",
-                "8000",
+                String(closeDelayMs),
                 "--cursor-trace",
                 fixture.cursorTracePath,
               ],
@@ -552,6 +577,7 @@ test("apply-decisions records a successful close before yielding after it", () =
       },
     );
 
+    assert.match(readFileSync(closeCommandLogPath, "utf8"), /pr close 727/);
     const report = JSON.parse(readFileSync(fixture.reportPath, "utf8"));
     const cursorTrace = JSON.parse(readFileSync(fixture.cursorTracePath, "utf8"));
     assert.deepEqual(
@@ -564,6 +590,8 @@ test("apply-decisions records a successful close before yielding after it", () =
     assert.deepEqual(cursorTrace, { schema_version: 1, examined_item_numbers: [727] });
     assert.equal(existsSync(join(fixture.closedDir, "727.md")), true);
   } finally {
+    if (originalNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = originalNodeOptions;
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
