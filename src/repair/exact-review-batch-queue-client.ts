@@ -75,16 +75,20 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
       max_items: input.maxItems,
     });
     if (response.claimed !== true) return null;
+    const batch = parseLease(response.batch);
+    const legacyConfiguredBatchSize =
+      response.effective_max_items !== undefined
+        ? positiveInteger(response.effective_max_items, "effective_max_items")
+        : input.maxItems;
     return {
-      ...parseLease(response.batch),
+      ...batch,
       // During a rolling dashboard deploy, current-main workers advertise the cap
-      // under effective_max_items. Only older uncapped workers require request fallback.
+      // under effective_max_items. On rollback, an older worker can return a lease
+      // created at a larger cap, so its membership is also a safe lower bound.
       configuredBatchSize:
         response.configured_batch_size !== undefined
           ? positiveInteger(response.configured_batch_size, "configured_batch_size")
-          : response.effective_max_items !== undefined
-            ? positiveInteger(response.effective_max_items, "effective_max_items")
-            : input.maxItems,
+          : Math.max(legacyConfiguredBatchSize, batch.items.length),
       batchWaitMs: nonNegativeInteger(response.batch_wait_ms, "batch_wait_ms"),
     };
   }
