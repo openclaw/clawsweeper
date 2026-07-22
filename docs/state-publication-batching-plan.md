@@ -4,8 +4,10 @@
 prepare implementation, but keep the production ownership cap at 8. Size 32
 failed the runtime gate before finalization and produced no state commit. The
 subsequent size-8 retry produced one six-member commit, but two of its eight
-outcomes were retryable and the backlog still rose. The full closeout evidence
-is recorded below; the older rollout narrative is retained as incident history.
+outcomes were retryable. The first fresh post-commit sample began to decline,
+although the backlog remained above its pre-rollout baseline. The full closeout
+evidence is recorded below; the older rollout narrative is retained as incident
+history.
 
 **Historical status (verified 2026-07-22 at 07:10 UTC):** PR 1 through PR 4, the rollout
 hotfix, the repository-wide FIFO state-writer coordinator, the fence identity
@@ -144,13 +146,15 @@ eight outcomes, with `accepted=8`, `retryable=2`, and cleanup `released=0`.
 Thus accepted acknowledgements remained healthy and release did not grow, but
 the desired zero-retryable outcome was not met in this sample.
 
-The observed backlog did not drain: `pending` moved from approximately 2,699
+The observed backlog did not drain across the rollout: `pending` moved from approximately 2,699
 before rollout to 2,767, 2,789, 2,798, 2,803, and 2,805; oldest pending age moved
 from approximately 103,900 seconds to 105,876, 107,518, 108,347, 108,531, and
-109,088 seconds. At the last sample, `ready_pending=2,802` and the effective
-public `max_items=8`. Therefore the final decision is to retain 8, not 32. No
-DLQ was replayed or cleaned up, no workflow was paused, and no live apply or
-close was executed.
+109,088 seconds. The first fresh sample after the successful retained-size-8
+commit then moved `pending 2,805 -> 2,800`, `ready_pending 2,802 -> 2,796`, and
+oldest pending age `109,088 -> 108,959` seconds. This is the requested start of
+a decline, not yet a sustained drain proof. The effective public `max_items=8`.
+Therefore the final decision is to retain 8, not 32. No DLQ was replayed or
+cleaned up, no workflow was paused, and no live apply or close was executed.
 
 ## Delivery status
 
