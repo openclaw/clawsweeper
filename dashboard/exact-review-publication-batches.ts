@@ -80,7 +80,7 @@ export class ExactReviewPublicationBatchStore {
          state TEXT NOT NULL CHECK (state IN ('leased', 'completed', 'expired')),
          lease_owner TEXT NOT NULL,
          lease_expires_at INTEGER NOT NULL,
-         configured_batch_size INTEGER NOT NULL CHECK (configured_batch_size >= 1),
+         configured_batch_size INTEGER NOT NULL DEFAULT 1 CHECK (configured_batch_size >= 1),
          attempt INTEGER NOT NULL CHECK (attempt >= 1),
          created_at INTEGER NOT NULL,
          completed_at INTEGER,

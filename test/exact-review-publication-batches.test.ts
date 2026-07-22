@@ -164,6 +164,26 @@ test("batch schema migration derives a safe cap for an active legacy lease", () 
   assert.equal(batches.fetch("legacy-active", "worker", 1_500)?.configuredBatchSize, 2);
 });
 
+test("fresh batch schema remains writable by the current-main insert after rollback", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+
+  storage.exec(
+    `INSERT INTO exact_review_publication_batches
+       (batch_id, state, lease_owner, lease_expires_at, attempt, created_at)
+     VALUES ('rollback-writer', 'leased', 'worker', 2000, 1, 1000)`,
+  );
+
+  assert.equal(
+    storage.scalar(
+      `SELECT configured_batch_size AS value
+         FROM exact_review_publication_batches WHERE batch_id = 'rollback-writer'`,
+    ),
+    1,
+  );
+});
+
 test("expired unfinished membership is reclaimable with a new fencing generation", () => {
   const storage = new TestStorage();
   const batches = new ExactReviewPublicationBatchStore(storage);
