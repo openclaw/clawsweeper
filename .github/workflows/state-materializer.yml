@@ -2,7 +2,10 @@ name: Materialize queued state
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    # A cycle now drains up to 10k rows and can run for tens of minutes; a
+    # 5-minute schedule queued runs faster than they could execute (observed
+    # 2h14m wait for a slot). Fire at the cadence a cycle can actually finish.
+    - cron: "*/20 * * * *"
   workflow_dispatch:
 
 concurrency:
