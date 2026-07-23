@@ -12,6 +12,26 @@ intentionally opens it wider. Safety thresholds such as
 close age floors, apply delays, retry counts, and comment caps stay near the
 code that owns those decisions.
 
+Review-intake rate limits and the default-off per-author PR-budget and
+obsolescence policies follow that safety-threshold rule. Their tunables and
+safety floors live beside the owning policy rather than in the global worker
+budget:
+
+| Environment variable                              | Default | Meaning                                              |
+| ------------------------------------------------- | ------: | ---------------------------------------------------- |
+| `CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED`      | `false` | Enables live per-author budget closes.               |
+| `CLAWSWEEPER_AUTHOR_PR_BUDGET`                    |      15 | Allowed open PRs per external author and repository. |
+| `CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN` |       5 | Gradual trim cap per author in one apply run.        |
+| `CLAWSWEEPER_BULK_FILER_THRESHOLD`                |      10 | Recent authored-issue count that marks bulk filing.  |
+| `CLAWSWEEPER_BULK_FILER_WINDOW_DAYS`              |       7 | Lookback window for authored issue filing rate.      |
+| `CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED`     | `false` | Enables stale-version bug closes after 120 days.     |
+| `CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED`       | `false` | Enables obsolete small-fix PR closes after 90 days. |
+
+See [`author-pr-budget-close-policy.md`](author-pr-budget-close-policy.md) for
+the rating, proof, inactivity, engagement, and fail-closed gates.
+See [`obsolescence-close-policies.md`](obsolescence-close-policies.md) for the
+120/90-day issue and 90/30-day PR age/inactivity contracts.
+
 GitHub repository variables still override selected live limits. When a variable
 is unset, workflows read the checked-in budget after checkout. The one exception
 is the `workflow_dispatch.inputs.shard_count.default` value in
@@ -22,6 +42,8 @@ docs stay in sync with the derived budget.
 The mental model:
 
 - `workers.max` is the global Codex capacity budget.
+- GitHub Actions workflows that only route comments, publish exact-review results,
+  or reconcile leases do not execute Codex and do not consume that budget.
 - Priority lanes are repair, issue implementation, and exact-item review.
 - Background lanes are normal review, hot intake, and commit review.
 - Assist has a small fixed cap because it is lightweight maintainer Q&A, not a
@@ -101,6 +123,33 @@ The scheduler does this for background lanes:
 6. cap the result at the lane's derived quiet-system ceiling
 7. return at least 1 so an enabled lane can still make slow progress
 
+The normal result is then reduced when the exact-review queue is under pressure.
+Each planner reads the public, unauthenticated `GET /api/exact-review-queue`
+endpoint once and uses its top-level pending count and oldest-pending age. A
+failed, timed-out, or malformed response is treated as no pressure so a dashboard
+outage cannot stall reviews.
+
+| Tier | Trigger, either condition                                     | Background budget                            |
+| ---- | ------------------------------------------------------------- | -------------------------------------------- |
+| none | Below both soft thresholds                                    | Normal dynamic budget                        |
+| soft | At least 150 pending or oldest pending is at least 30 minutes | `ceil(normal dynamic budget * 0.5)`          |
+| hard | At least 400 pending or oldest pending is at least 2 hours    | `max(1, floor(normal dynamic budget * 0.1))` |
+
+The thresholds can be overridden with repository variables or process
+environment variables. Values are non-negative counts or millisecond durations;
+unset, empty, or invalid values use the defaults.
+
+| Environment variable                      | Default |
+| ----------------------------------------- | ------: |
+| `CLAWSWEEPER_QUEUE_PRESSURE_SOFT_PENDING` |     150 |
+| `CLAWSWEEPER_QUEUE_PRESSURE_HARD_PENDING` |     400 |
+| `CLAWSWEEPER_QUEUE_PRESSURE_SOFT_AGE_MS`  | 1800000 |
+| `CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS`  | 7200000 |
+
+Only normal review, hot intake, and commit review use this pressure multiplier.
+Repair, assist, issue implementation, cluster repair, and exact-item review keep
+their existing priority budgets.
+
 Background planner jobs serialize per target repository. A sweep that is still
 planning, queued, or expanding its matrix reserves its quiet lane size. Once
 its shard jobs exist and all finish, its publish phase counts as zero workers,
@@ -113,7 +162,10 @@ their derived lane ceiling and at the remaining global budget after other active
 priority work.
 
 Exact-item webhooks are admitted by the dashboard Worker's durable
-`ExactReviewQueue`, not by a live Actions semaphore. The queue coalesces
+`ExactReviewQueue`, not by a live Actions semaphore. Its production queue logic,
+including storage migrations, leasing, reclamation, debounce, and shedding, lives
+in `dashboard/exact-review-queue.ts`; `dashboard/worker.ts` is the fetch and
+dashboard router and only imports that service boundary. The queue coalesces
 deliveries by repository and item number, so a new webhook updates the latest
 desired review rather than consuming another runner. Only
 `EXACT_REVIEW_QUEUE_MAX_CONCURRENT` leased items may dispatch an exact-review
@@ -123,6 +175,28 @@ to 60 so other target repositories retain four global slots during an OpenClaw
 backlog drain. Exact capacity is consumed only while queue work is pending. As
 those priority workers start, normal, hot-intake, and commit-review planners
 count them and reduce their next background wave.
+
+Fresh webhook work waits for `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS` (45 seconds by
+default) so rapid edits and pushes coalesce before dispatch. Repeated pending
+revisions extend that delay up to `EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS` (three
+minutes by default) from the item's first enqueue. Explicit command work and
+publication work bypass the delay. When pending depth reaches
+`EXACT_REVIEW_PENDING_SOFT_LIMIT` (300 by default), new recovery-only work is
+shed; existing items, webhook events, commands, and publications remain admitted.
+
+Exact-review result publication has a separate adaptive Actions lane. It starts
+at 24 and rises in steps of 8 up to 48 when ready-plus-backoff demand, oldest
+age, or the 15-minute net drain rate shows sustained pressure. Scale-up requires
+two five-minute samples and is limited to one step per ten minutes; healthy
+scale-down requires 30 minutes below 80 pending. GitHub rate limits halve the
+pressure ceiling for at least 15 minutes, while transient GitHub failures reduce
+it by 8 for at least five minutes. Admission also leaves 16 slots inside
+`WORKER_BUDGET` after active exact reviews. Its checkout, artifact handling,
+comment sync, and result routing are deterministic
+control-plane work: they consume GitHub runners, but not Codex slots. The
+comment router and the singleton lease reconciler follow the same accounting
+rule. Dashboard Codex capacity therefore counts only jobs whose steps execute
+Codex and does not deduct these control-plane workflows from `workers.max`.
 
 Each dispatched workflow claims its opaque lease before checkout. Protocol v2
 binds claim and completion to the item key, lease revision, run attempt, claim
@@ -145,8 +219,21 @@ workflows holding the expired lease cannot claim it.
 Run-attempt binding and a per-claim generation check keep delayed terminal
 decisions from releasing a later rerun; queued and in-progress runs are never
 released. If a workflow never claims or completes, the Durable Object reclaims
-the expired lease. This keeps capacity waiting and retry state out of GitHub
-Actions runners.
+the expired lease. Claimed review workers heartbeat every five minutes; after the first
+heartbeat, `EXACT_REVIEW_HEARTBEAT_GRACE_MS` bounds liveness to 20 minutes by default while
+never extending the original 130-minute execution lease. Leases created before heartbeat
+support was deployed retain their original execution expiry. This keeps capacity waiting and
+retry state out of GitHub Actions runners.
+
+Publication completion distinguishes durable publishes from results superseded
+by a newer or closed remote tuple. Superseded publications terminate without a
+GitHub mutation and do not count as successful publishes. GitHub/transient
+failures retry for at most 12 attempts or 24 hours; deterministic permanent
+failures receive two confirmation retries before entering the bounded
+dead-letter store. An artifact unavailable for three attempts atomically queues
+one fresh review. Public queue status reports publish, supersede, retry, refresh,
+and dead-letter totals separately; signed internal endpoints list, replay,
+resolve, and exact-revision supersede records without exposing decisions publicly.
 
 Examples with the current config:
 
@@ -176,6 +263,41 @@ hot intake `14`, and commit review `2`. Existing repair lanes keep their
 
 ## Runtime Overrides
 
+- `EXACT_REVIEW_PUBLICATION_RECOVERY_SUCCESSES` overrides how many consecutive
+  clean publications raise the adaptive publication ceiling by one step; the
+  default is 10 (clamped 1-1000). The former hardcoded 50 pinned the lane at
+  its minimum under hourly rate-limit bursts because the counter resets on
+  every failure.
+- `CLAWSWEEPER_MAINTAINER_LOGINS` (comma-separated) supplements the maintainer
+  author-association check in the idea-archive revival watcher — needed where
+  GitHub reports an org owner as `CONTRIBUTOR` on app-operated repositories. A
+  qualifying maintainer or allowlisted author sponsors revival by commenting
+  `@clawsweeper revive` (or `@clawsweeper sponsor`) on the closed issue.
+- `CLAWSWEEPER_IDEA_REVIVAL_REACTIONS` overrides the positive-reaction threshold
+  for reopening an issue parked with `clawsweeper:idea-archive`; the default is 5.
+- `CLAWSWEEPER_IDEA_ARCHIVE_SCAN_PAGES` overrides the bounded created-order scan
+  page count; the default is 5 and the maximum is 10. The watcher first checks
+  the two most recently updated pages for sponsorship commands, then alternates
+  newest/oldest created-order scans. Reaction-only revival can lag in very large
+  archives; raise this override to scan deeper per run.
+- `REVIEW_PLACEHOLDER_MAX_CHECKS` overrides the number of open search candidates
+  examined by each 15-minute orphaned-placeholder recovery pass; the default is
+  20 and the maximum is 1000.
+- `REVIEW_PLACEHOLDER_MIN_AGE_HOURS` overrides how old the latest ClawSweeper bot
+  review-start placeholder must be before recovery; the default is 2 hours and
+  the maximum is 720 hours.
+- `REVIEW_PLACEHOLDER_MAX_RECOVERIES` overrides the number of orphaned review
+  placeholders enqueued per recovery pass; the default is 5 and the maximum is
+  100.
+- `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS` overrides the 45,000 ms coalescing delay
+  for fresh non-command exact-review events.
+- `EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS` overrides the 180,000 ms maximum
+  coalescing window measured from the item's first enqueue.
+- `EXACT_REVIEW_PENDING_SOFT_LIMIT` overrides the pending-depth threshold for
+  shedding new recovery-only exact-review work; the default is 300.
+- `EXACT_REVIEW_HEARTBEAT_GRACE_MS` overrides the 1,200,000 ms exact-review worker heartbeat
+  grace. It is clamped to at least 420,000 ms so a configured grace can never dip
+  below the five-minute worker heartbeat interval plus request time and jitter.
 - `CLAWSWEEPER_COMMIT_REVIEW_PAGE_SIZE` overrides
   `commit_review.page_size_default`.
 - `CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED=1` enables the scheduled

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { windowsSystemExecutable } from "../command.js";
 import { createTrustedSandboxRoot } from "./contained-command-sandbox.js";
@@ -20,6 +22,7 @@ type WorkerInput = {
 
 type WorkerResult = {
   backgroundProcesses: number;
+  capabilitySummary?: ContainmentCapabilitySummary;
   error?: { code: string | undefined; message: string };
   signal: NodeJS.Signals | null;
   status: number | null;
@@ -27,16 +30,31 @@ type WorkerResult = {
   stdout: string;
 };
 
+export type ContainmentCapabilitySummary = {
+  landlock: string;
+  mountReadonly: "legacy" | "native";
+};
+
 type ContainmentProtocol = {
   backgroundProcesses?: number;
-  containmentError?: string;
+  capabilitySummary?: {
+    landlock?: unknown;
+    mount_readonly?: unknown;
+  };
+  containmentError?: {
+    errno?: unknown;
+    stage?: unknown;
+    syscall?: unknown;
+  };
   signal?: NodeJS.Signals | null;
   status?: number | null;
 };
 
-const input = JSON.parse(await readStdin()) as WorkerInput;
-const result = await runContained(input);
-process.stdout.write(JSON.stringify(result));
+async function main(): Promise<void> {
+  const input = JSON.parse(await readStdin()) as WorkerInput;
+  const result = await runContained(input);
+  process.stdout.write(JSON.stringify(result));
+}
 
 async function runContained(input: WorkerInput): Promise<WorkerResult> {
   if (process.platform !== "linux" && process.env.NODE_TEST_CONTEXT === undefined) {
@@ -162,6 +180,7 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
 
   let contained: {
     backgroundProcesses: number;
+    capabilitySummary?: ContainmentCapabilitySummary;
     signal: NodeJS.Signals | null;
     status: number | null;
   };
@@ -188,6 +207,7 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
         : undefined;
   return {
     backgroundProcesses: contained.backgroundProcesses,
+    ...(contained.capabilitySummary ? { capabilitySummary: contained.capabilitySummary } : {}),
     ...(error ? { error } : {}),
     signal: contained.signal,
     status: contained.status,
@@ -196,14 +216,14 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
   };
 }
 
-function parseContainmentProtocol(
+export function parseContainmentProtocol(
   chunks: readonly Buffer[],
   exit: { signal: NodeJS.Signals | null; status: number | null },
 ) {
   const raw = Buffer.concat(chunks).toString("utf8").trim();
   if (!raw) {
     throw new Error(
-      `validation subreaper exited without a result (${exit.status ?? exit.signal ?? "unknown"})`,
+      `validation process containment failed: stage=namespace_setup exit=${exit.status ?? exit.signal ?? "unknown"}`,
     );
   }
   let result: ContainmentProtocol;
@@ -213,22 +233,49 @@ function parseContainmentProtocol(
     throw new Error("validation subreaper returned an invalid result");
   }
   if (result.containmentError) {
-    throw new Error(`validation process containment failed: ${result.containmentError}`);
+    const stage = safeDiagnosticToken(result.containmentError.stage, "unknown");
+    const syscall = safeDiagnosticInteger(result.containmentError.syscall);
+    const errorNumber = safeDiagnosticInteger(result.containmentError.errno);
+    throw new Error(
+      [
+        "validation process containment failed:",
+        `stage=${stage}`,
+        ...(syscall === undefined ? [] : [`syscall=${syscall}`]),
+        ...(errorNumber === undefined ? [] : [`errno=${errorNumber}`]),
+      ].join(" "),
+    );
   }
+  const mountReadonly = result.capabilitySummary?.mount_readonly;
+  const landlock = result.capabilitySummary?.landlock;
   if (
     exit.status !== 0 ||
     !Number.isInteger(result.backgroundProcesses) ||
     result.backgroundProcesses! < 0 ||
     (result.status !== null && !Number.isInteger(result.status)) ||
-    (result.signal !== null && typeof result.signal !== "string")
+    (result.signal !== null && typeof result.signal !== "string") ||
+    (mountReadonly !== "native" && mountReadonly !== "legacy") ||
+    typeof landlock !== "string" ||
+    !/^(?:abi-[0-9]+|unavailable)$/.test(landlock)
   ) {
     throw new Error("validation subreaper returned an invalid result");
   }
   return {
     backgroundProcesses: result.backgroundProcesses!,
+    capabilitySummary: {
+      landlock: landlock as string,
+      mountReadonly: mountReadonly as "legacy" | "native",
+    },
     signal: result.signal ?? null,
     status: result.status ?? null,
   };
+}
+
+function safeDiagnosticInteger(value: unknown): number | undefined {
+  return Number.isInteger(value) && Number(value) >= 0 ? Number(value) : undefined;
+}
+
+function safeDiagnosticToken(value: unknown, fallback: string): string {
+  return typeof value === "string" && /^[a-z_]+$/.test(value) ? value : fallback;
 }
 
 async function reapProcessGroup(pid: number | undefined) {
@@ -296,4 +343,17 @@ async function readStdin() {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks).toString("utf8");
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  try {
+    await main();
+  } catch (error) {
+    // The worker is a security boundary: return its validated diagnostic only,
+    // never a stack trace containing runner paths or target command details.
+    process.stderr.write(
+      error instanceof Error ? error.message : "validation process containment failed",
+    );
+    process.exitCode = 1;
+  }
 }

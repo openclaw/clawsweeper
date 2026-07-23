@@ -64,6 +64,48 @@ test("strict reproducible bug reports are eligible for implementation intake", (
   assert.equal(decision.status, "queued_for_repair");
 });
 
+test("owner policy admits allowed owners and rejects the rest before durable intake", () => {
+  const markdown = report({ repository: "steipete/oracle" });
+  const parsed = parseReviewReport(markdown);
+  const base = {
+    targetRepo: "steipete/oracle",
+    report: parsed,
+    reportMarkdown: markdown,
+  };
+
+  // Review-only external owner: policy does not include it, so nothing is queued.
+  const reviewOnly = reportOnlyDecision({ ...base, allowedOwner: "openclaw" });
+  assert.equal(reviewOnly.shouldRepair, false);
+  assert.equal(reviewOnly.status, "owner_policy_blocked");
+  assert.match(reviewOnly.reason, /unsupported target repo owner steipete/);
+  assert.match(reviewOnly.reason, /repair owner policy allows openclaw/);
+
+  // Explicitly approved external repair owner: the same report queues.
+  const approved = reportOnlyDecision({ ...base, allowedOwner: "openclaw, steipete" });
+  assert.equal(approved.shouldRepair, true);
+  assert.equal(approved.status, "queued_for_repair");
+
+  // Allowed primary owner keeps working under the widened policy.
+  const internalMarkdown = report();
+  const internal = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(internalMarkdown),
+    reportMarkdown: internalMarkdown,
+    allowedOwner: "openclaw,steipete",
+  });
+  assert.equal(internal.shouldRepair, true);
+  assert.equal(internal.status, "queued_for_repair");
+
+  // An operator override cannot bypass the owner policy.
+  const overridden = reportOnlyDecision({
+    ...base,
+    allowedOwner: "openclaw",
+    operatorOverride: true,
+  });
+  assert.equal(overridden.shouldRepair, false);
+  assert.equal(overridden.status, "owner_policy_blocked");
+});
+
 test("implementation intake rejects feature and config-option work", () => {
   for (const overrides of [
     { item_category: "feature" },

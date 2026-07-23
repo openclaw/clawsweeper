@@ -1,0 +1,144 @@
+name: Materialize queued state
+
+on:
+  schedule:
+    # A cycle now drains up to 10k rows and can run for tens of minutes; a
+    # 5-minute schedule queued runs faster than they could execute (observed
+    # 2h14m wait for a slot). Fire at the cadence a cycle can actually finish.
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: clawsweeper-state-materializer
+  cancel-in-progress: false
+  queue: max
+
+permissions:
+  contents: read
+
+env:
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+
+jobs:
+  materialize:
+    name: Drain queued state into one commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "1"
+      # Priority intent wins a slot quickly; a long acquire budget just lets one
+      # contended wait eat the whole run (observed: six consecutive 20-min
+      # timeout-cancels while the append window grew to ~25k rows).
+      CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "300000"
+      # The durable-ticket queue can legitimately run tens of minutes deep
+      # behind the long-tail writers (run 29996334590 waited 31 minutes for
+      # seq 2284). 35 minutes of waiting still leaves a late grant enough of
+      # the 60-minute job for one publish and the finalize steps; a clean
+      # timeout beats a job kill either way.
+      CLAWSWEEPER_STATE_COORDINATOR_ACQUIRE_TIMEOUT_MS: "2100000"
+      CLAWSWEEPER_STATE_LEASE_PRIORITY: "1"
+      CLAWSWEEPER_STATE_LEASE_TTL_MS: "1200000"
+      CLAWSWEEPER_STATE_MATERIALIZER_MAX_RUNTIME_MS: "2400000"
+      # 2k publishes cleanly against the shallow state checkout (run 29913644079
+      # committed 1974 paths); 10k batches are rejected at push with
+      # "atomic push failed ... status: 5". Size to what demonstrably lands.
+      CLAWSWEEPER_STATE_MATERIALIZER_MAX_ROWS: "2500"
+      CLAWSWEEPER_STATE_MATERIALIZER_MAX_BYTES: "62914560"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          filter: blob:none
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-action-ledger
+        continue-on-error: true
+
+      - name: Create state token
+        id: state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        with:
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          # The materializer is the designated bulk writer of the single-writer
+          # plan (RFC #738). In the ordinary lane it starves behind batch-class
+          # turns (run 30003798477 timed out after 35 minutes at queue
+          # position 3); the batch lane's two-turn cap still guarantees
+          # ordinary writers a slot.
+          coordinator-class: publication_batch
+          token: ${{ steps.state-token.outputs.token }}
+          # depth-1 cannot fast-forward or rebuild against a branch other
+          # writers keep advancing (non-fast-forward shallow push rejections,
+          # runs 29938808338 / 29957012043); a full clone of `state`'s own
+          # (large) history times out. 50 commits give the rebuild-on-remote-head
+          # path a real merge-base against recent advances while staying bounded.
+          fetch-depth: 50
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:all
+
+      - uses: ./.github/actions/setup-codex
+        continue-on-error: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
+        with:
+          auth-mode: login
+
+      - name: Materialize queued state
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CLAWSWEEPER_STATE_REPO_TOKEN: ${{ steps.state-token.outputs.token }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+        run: node dist/repair/state-materializer.js
+
+      - name: Finalize materializer recovery action ledger
+        if: ${{ always() }}
+        run: pnpm run --silent finalize-action-events
+
+      - name: Publish materializer recovery action events
+        if: ${{ always() }}
+        env:
+          CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "0"
+          CLAWSWEEPER_STATE_REPO_TOKEN: ${{ steps.state-token.outputs.token }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:-}" ]; then
+            echo "Materializer recovery action ledger is disabled."
+            exit 0
+          fi
+          source_root="$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT"
+          if [ ! -d "$source_root/ledger" ]; then
+            echo "No materializer recovery action events were finalized."
+            exit 0
+          fi
+          event_paths_file=".artifacts/materializer-recovery-action-ledger-paths.txt"
+          mkdir -p .artifacts
+          pnpm run --silent publish-action-events -- \
+            --source-root "$source_root" \
+            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --expected-producer-job "$GITHUB_JOB" |
+            jq -r '.paths[]?' |
+            sort -u > "$event_paths_file"
+          if [ ! -s "$event_paths_file" ]; then
+            echo "Materializer recovery events existed but no paths were imported." >&2
+            exit 1
+          fi
+          while IFS= read -r event_path; do
+            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
+            test -f "$durable_event_path"
+            mkdir -p "$(dirname "$event_path")"
+            cp "$durable_event_path" "$event_path"
+          done < "$event_paths_file"
+          node dist/clawsweeper.js publish-action-event-paths \
+            --paths-file "$event_paths_file" \
+            --message "chore: append materializer recovery action ledger"

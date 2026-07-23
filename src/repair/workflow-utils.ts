@@ -6,6 +6,11 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "./lib.js";
 import { isJsonObject } from "./json-types.js";
 import { AUTOMATION_LIMITS, WORKER_CONFIG, workerLimit, type WorkerLane } from "./limits.js";
+import {
+  fetchExactReviewQueuePressure,
+  queuePressureLevel,
+  type QueuePressureLevel,
+} from "../queue-pressure.js";
 
 type ApplyAction = {
   action: string;
@@ -153,7 +158,7 @@ type AdaptiveApplyBatchSize = {
 
 const args = parseArgs(process.argv.slice(2));
 
-function runCli(): void {
+async function runCli(): Promise<void> {
   const command = args._[0];
   if (!command) throw new Error("workflow utility command is required");
 
@@ -267,10 +272,20 @@ function runCli(): void {
           workerLimit(requiredWorkerLane(optionalString("lane") || positionalString(1)), {
             activeCritical: numberArg("active-critical", 0),
             activeBackground: numberArg("active-background", 0),
+            pressureLevel: requiredQueuePressureLevel(optionalString("pressure-level") || "none"),
           }),
         ),
       );
       break;
+    case "queue-pressure": {
+      const pressure = await fetchExactReviewQueuePressure({
+        queueUrl: requiredString("queue-url"),
+      });
+      process.stdout.write(
+        `${JSON.stringify({ ...pressure, level: queuePressureLevel(pressure) })}\n`,
+      );
+      break;
+    }
     case "worker-config":
       process.stdout.write(JSON.stringify(WORKER_CONFIG, null, 2));
       break;
@@ -331,6 +346,11 @@ function requiredWorkerLane(value: string): WorkerLane {
   ]);
   if (allowed.has(value as WorkerLane)) return value as WorkerLane;
   throw new Error(`unknown worker lane: ${value}`);
+}
+
+function requiredQueuePressureLevel(value: string): QueuePressureLevel {
+  if (value === "none" || value === "soft" || value === "hard") return value;
+  throw new Error(`unknown queue pressure level: ${value}`);
 }
 
 export function automationLimit(limitPath: string): number {
@@ -1294,6 +1314,7 @@ const APPLY_PROMOTION_PROBE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 const ALLOWED_CLOSE_REASONS = new Set([
   "abandoned_pr",
+  "author_pr_budget_exceeded",
   "cannot_reproduce",
   "clawhub",
   "duplicate_or_superseded",
@@ -1660,7 +1681,8 @@ function proposedItemQualityBucket(options: {
   if (options.prCloseCoverageProofCanRun) return "needs_pr_close_coverage";
   if (
     options.closeReason === "unconfirmed_product_direction" ||
-    options.closeReason === "unsponsored_feature_request"
+    options.closeReason === "unsponsored_feature_request" ||
+    options.closeReason === "author_pr_budget_exceeded"
   )
     return "policy_sensitive";
   if (
@@ -1746,6 +1768,8 @@ function hasPullRequestClosePromotionSignal(
   options: { staleMinAgeMs: number },
 ): boolean {
   return (
+    (hasAuthorPrBudgetPromotionSignal(markdown) &&
+      olderThan(frontMatterValue(markdown, "item_created_at"), 7 * 24 * 60 * 60 * 1000)) ||
     hasLinkedPullRequestSupersessionSignal(markdown, targetRepo) ||
     ((hasRecommendedPauseOrCloseOption(markdown) ||
       hasLowSignalPullRequestPromotionSignal(markdown)) &&
@@ -1757,10 +1781,18 @@ function pullRequestClosePromotionReasons(
   markdown: string,
   targetRepo: string,
   options: { staleMinAgeMs: number },
-): Array<"duplicate_or_superseded" | "low_signal_unmergeable_pr"> {
+): Array<"author_pr_budget_exceeded" | "duplicate_or_superseded" | "low_signal_unmergeable_pr"> {
   const linkedSupersession = hasLinkedPullRequestSupersessionSignal(markdown, targetRepo);
   const recommendedPauseOrClose = hasRecommendedPauseOrCloseOption(markdown);
-  const reasons: Array<"duplicate_or_superseded" | "low_signal_unmergeable_pr"> = [];
+  const reasons: Array<
+    "author_pr_budget_exceeded" | "duplicate_or_superseded" | "low_signal_unmergeable_pr"
+  > = [];
+  if (
+    hasAuthorPrBudgetPromotionSignal(markdown) &&
+    olderThan(frontMatterValue(markdown, "item_created_at"), 7 * 24 * 60 * 60 * 1000)
+  ) {
+    reasons.push("author_pr_budget_exceeded");
+  }
   if (linkedSupersession || recommendedPauseOrClose) reasons.push("duplicate_or_superseded");
   // Pause-or-close is a deterministic duplicate promotion. A linked PR is only
   // speculative until live hydration, so an F-rated report can still fall back
@@ -1840,6 +1872,24 @@ function hasLowSignalPullRequestPromotionSignal(markdown: string): boolean {
   return (
     overallTier === "F" &&
     (proofTier === "F" || ["missing", "mock_only", "insufficient"].includes(proofStatus))
+  );
+}
+
+function hasAuthorPrBudgetPromotionSignal(markdown: string): boolean {
+  const ratingSection = sectionValue(markdown, "PR Rating");
+  const proofSection = sectionValue(markdown, "Real Behavior Proof");
+  const overallTier =
+    sectionLineValue(ratingSection, "Overall tier") ||
+    frontMatterValue(markdown, "pr_rating_overall");
+  const proofStatus =
+    sectionLineValue(proofSection, "Status") ||
+    frontMatterValue(markdown, "real_behavior_proof_status");
+  if (["S", "A", "B"].includes(overallTier) && ["sufficient", "override"].includes(proofStatus)) {
+    return false;
+  }
+  return (
+    ["D", "F"].includes(overallTier) ||
+    ["missing", "mock_only", "insufficient"].includes(proofStatus)
   );
 }
 
@@ -2409,6 +2459,7 @@ function allowedForTarget(
       (type === "pull_request" && reason === "mostly_implemented_on_main")
     );
   if (type !== "pull_request" && reason === "unconfirmed_product_direction") return false;
+  if (type !== "pull_request" && reason === "author_pr_budget_exceeded") return false;
   if (type === "pull_request" && reason === "unsponsored_feature_request") return false;
   if (type === "pull_request" && reason === "stale_insufficient_info") return false;
   if (type !== "pull_request" && reason === "mostly_implemented_on_main") return false;
@@ -2429,4 +2480,4 @@ function isCliEntrypoint(): boolean {
   return Boolean(entrypoint && import.meta.url === pathToFileURL(entrypoint).href);
 }
 
-if (isCliEntrypoint()) runCli();
+if (isCliEntrypoint()) await runCli();

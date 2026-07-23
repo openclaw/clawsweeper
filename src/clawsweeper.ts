@@ -120,6 +120,11 @@ import {
 } from "./commit-sweeper.js";
 import { AUTOMATION_LIMITS } from "./limits.js";
 import {
+  IDEA_ARCHIVE_LABEL,
+  ideaRevivalReactionThreshold,
+  positiveReactionCount,
+} from "./idea-archive-revival.js";
+import {
   expiredReviewStartStatusLeases,
   freshExactHeadReviewStartLease,
 } from "./repair/comment-router-core.js";
@@ -210,7 +215,8 @@ import {
   recordWorkflowPhaseEvent,
   workflowActionProducer,
 } from "./action-ledger-runtime.js";
-import { publishMainCommit } from "./repair/git-publish.js";
+import { isActionEventPublishPath } from "./action-ledger-paths.js";
+import { publishMainWithStateAppend } from "./repair/publish-main.js";
 
 export {
   codexEnv,
@@ -386,6 +392,9 @@ type CloseReason =
   | "abandoned_pr"
   | "unconfirmed_product_direction"
   | "unsponsored_feature_request"
+  | "author_pr_budget_exceeded"
+  | "stale_version_bug"
+  | "obsolete_fix_pr"
   | "not_actionable_in_repo"
   | "incoherent"
   | "stale_insufficient_info"
@@ -416,6 +425,15 @@ type ActionTaken =
   | "skipped_runtime_budget";
 
 const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+// The bulk-filer policy is intentionally narrower than the general maintainer
+// policy: repository owners and members can legitimately create high volumes
+// of coordinated issues, while outside collaborators remain in scope.
+const BULK_FILER_EXEMPT_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER"]);
+// GitHub can redact an organization member's issue author_association to
+// CONTRIBUTOR for an App installation token. Elevated repository roles are a
+// narrow, independently readable fallback for that case; ordinary write
+// collaborators remain subject to the bulk-filer policy.
+const BULK_FILER_EXEMPT_REPOSITORY_PERMISSIONS = new Set(["admin", "maintain"]);
 
 interface GitHubUser {
   login?: string;
@@ -450,6 +468,33 @@ interface Item {
   activeLockReason?: string | null;
 }
 
+export interface BulkFilerReviewContext {
+  detected: true;
+  issueCount: number;
+  threshold: number;
+  windowDays: number;
+  windowStart: string;
+  label: typeof BULK_FILED_LABEL;
+}
+
+export interface BulkFilerDetectionResult {
+  context: BulkFilerReviewContext | null;
+  labelPending: boolean;
+  labelApplied: boolean;
+}
+
+type BulkFilerCountCache = Map<string, number | null>;
+type BulkFilerRepositoryPermissionCache = Map<string, string | null>;
+
+interface BulkFilerDetectionOptions {
+  item: Pick<Item, "author" | "authorAssociation" | "createdAt" | "kind" | "labels" | "number">;
+  cache: BulkFilerCountCache;
+  now: number;
+  env?: Record<string, string | undefined>;
+  searchCount: (options: { author: string; windowStart: string }) => number;
+  onSearchError?: (error: unknown) => void;
+}
+
 export interface ReviewStartStatusCommentOptions {
   number: number;
   kind: string;
@@ -469,11 +514,59 @@ type AcquiredReviewStartLease = {
   owner: string;
   commentId: number;
   headSha: string;
+  comment?: Record<string, unknown>;
 };
 
 type ReviewStartStatusCommentResult =
   | { status: "posted"; lease: AcquiredReviewStartLease; didMutate: true }
   | { status: "held"; lease: null; retryAt: string; didMutate: boolean };
+
+function suppliedReviewStartLeaseFromArgs(
+  args: Args,
+): Pick<AcquiredReviewStartLease, "owner" | "commentId"> | null {
+  const owner = stringArg(args.review_lease_owner, "").trim();
+  const commentId = numberArg(args.review_lease_comment_id, 0);
+  if (!owner && commentId === 0) return null;
+  if (!owner || !Number.isInteger(commentId) || commentId <= 0) {
+    throw new UserFacingCommandError(
+      "--review-lease-owner and --review-lease-comment-id must be supplied together.",
+    );
+  }
+  if (!/^[a-zA-Z0-9._-]{1,200}$/.test(owner)) {
+    throw new UserFacingCommandError("--review-lease-owner contains unsupported characters.");
+  }
+  return { owner, commentId };
+}
+
+function isSuppliedReviewStartLease(
+  supplied: Pick<AcquiredReviewStartLease, "owner" | "commentId"> | null,
+  lease: Pick<AcquiredReviewStartLease, "owner" | "commentId">,
+): boolean {
+  return supplied?.owner === lease.owner && supplied.commentId === lease.commentId;
+}
+
+export function isSuppliedReviewStartLeaseForTest(
+  supplied: Pick<AcquiredReviewStartLease, "owner" | "commentId"> | null,
+  lease: Pick<AcquiredReviewStartLease, "owner" | "commentId">,
+): boolean {
+  return isSuppliedReviewStartLease(supplied, lease);
+}
+
+function reviewLeaseStillMatchesContext(
+  itemKind: "issue" | "pull_request",
+  contextPullHeadSha: string | null,
+  leaseHeadSha: string,
+): boolean {
+  return itemKind !== "pull_request" || contextPullHeadSha?.trim().toLowerCase() === leaseHeadSha;
+}
+
+export function reviewLeaseStillMatchesContextForTest(
+  itemKind: "issue" | "pull_request",
+  contextPullHeadSha: string | null,
+  leaseHeadSha: string,
+): boolean {
+  return reviewLeaseStillMatchesContext(itemKind, contextPullHeadSha, leaseHeadSha);
+}
 
 function heldReviewStartStatusCommentResult(
   retryAt: string,
@@ -725,7 +818,16 @@ interface AgentsPolicyStatus {
 
 type GoodFirstIssueHumanLabelState = "removed" | "added" | "unknown";
 
+const completeActivityContextSymbol = Symbol("completeActivityContext");
+
+interface CompleteActivityContext {
+  comments: unknown[];
+  timeline: unknown[];
+  pullReviewComments: unknown[];
+}
+
 interface ItemContext {
+  [completeActivityContextSymbol]?: CompleteActivityContext;
   issue: unknown;
   comments: unknown[];
   timeline: unknown[];
@@ -746,6 +848,7 @@ interface ItemContext {
   pullReviewCommentsRevision?: string;
   pullReviewActivityCursor?: string;
   pullChecks?: unknown;
+  bulkFiler?: BulkFilerReviewContext;
   counts?: {
     comments: number;
     commentsHydrated?: number;
@@ -1033,6 +1136,8 @@ interface ApplyResult {
   terminalMissingVerified?: boolean;
   terminalStateVerified?: boolean;
   guardedOpenStateVerified?: boolean;
+  activeReviewLeaseVerified?: boolean;
+  activeReviewLeaseExpiresAt?: string;
   terminalPolicyNoopVerified?: boolean;
   sourceDriftVerified?: boolean;
 }
@@ -1318,6 +1423,24 @@ const UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS = 14;
 const UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS = 7;
 const UNSPONSORED_FEATURE_MIN_AGE_DAYS = 90;
 const UNSPONSORED_FEATURE_MIN_INACTIVE_DAYS = 60;
+const AUTHOR_PR_BUDGET_MIN_AGE_DAYS = 7;
+const AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS = 7;
+const STALE_VERSION_BUG_MIN_AGE_DAYS = 120;
+const STALE_VERSION_BUG_MIN_INACTIVE_DAYS = 90;
+const OBSOLETE_FIX_PR_MIN_AGE_DAYS = 90;
+const OBSOLETE_FIX_PR_MIN_INACTIVE_DAYS = 30;
+const OBSOLETE_FIX_PR_MAX_CHANGED_FILES = 5;
+const DEFAULT_AUTHOR_PR_BUDGET = 15;
+const DEFAULT_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN = 5;
+const DEFAULT_BULK_FILER_THRESHOLD = 10;
+const DEFAULT_BULK_FILER_WINDOW_DAYS = 7;
+const BULK_FILER_SEARCH_TIMEOUT_MS = 15_000;
+const BULK_FILED_LABEL = "clawsweeper:bulk-filed";
+const BULK_FILED_LABEL_DEFINITION = {
+  name: BULK_FILED_LABEL,
+  color: "6E7781",
+  description: "ClawSweeper detected a high recent issue-filing volume from this author.",
+} as const;
 const STALLED_UNPROVEN_PR_MIN_AGE_DAYS = 14;
 const STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS = 14;
 const ABANDONED_PR_MIN_AGE_DAYS = 30;
@@ -1327,7 +1450,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const RECENT_MISSING_OPEN_MS = DAY_MS;
 const DEFAULT_CODEX_MODEL = PUBLIC_CODEX_MODEL;
 const DEFAULT_REASONING_EFFORT = "high";
-const DEFAULT_SERVICE_TIER = "";
+// Priority service tier for Codex calls (maintainer decision 2026-07-17:
+// "gpt 5.6 sol high fast"). Latency-only; excluded from review-policy hashing.
+const DEFAULT_SERVICE_TIER = "fast";
 const DEFAULT_REVIEW_CODEX_TIMEOUT_MS = 1_200_000;
 const DEFAULT_CODEX_FALLBACK_MIN_BUDGET_MS = 120_000;
 const REVIEW_POLICY_VERSION = "2026-07-09-policy-v24";
@@ -1364,6 +1489,9 @@ const FEATURE_SHOWCASE_LABEL = "feature: ✨ showcase";
 const FEATURE_SHOWCASE_LABEL_COLOR = "A371F7";
 const FEATURE_SHOWCASE_LABEL_DESCRIPTION =
   "ClawSweeper spotlight: unusually compelling feature idea for maintainer attention.";
+const IDEA_ARCHIVE_LABEL_COLOR = "8250DF";
+const IDEA_ARCHIVE_LABEL_DESCRIPTION =
+  "Parked feature idea eligible for automatic community or maintainer revival.";
 const PROOF_MEDIA_LABELS = [
   {
     evidenceKind: "screenshot",
@@ -1778,6 +1906,9 @@ const ALLOWED_REASONS = new Set<CloseReason>([
   "abandoned_pr",
   "unconfirmed_product_direction",
   "unsponsored_feature_request",
+  "author_pr_budget_exceeded",
+  "stale_version_bug",
+  "obsolete_fix_pr",
   "not_actionable_in_repo",
   "incoherent",
   "stale_insufficient_info",
@@ -2384,6 +2515,7 @@ const GITHUB_RUNTIME_REPORT_FLUSH_RESERVE_MS = 1_000;
 interface GitHubRuntimeBudget {
   startedAtMs: number;
   maxRuntimeMs: number;
+  limitReason?: string;
   onYield?: (reason: string, resumeCurrent?: boolean) => void;
   onFailure?: (error: unknown) => void;
   yieldReason?: string;
@@ -2419,7 +2551,9 @@ function githubRuntimeRemainingMs(nowMs = Date.now()): number | null {
 function githubRuntimeBudgetError(phase: string): GitHubRuntimeBudgetError {
   const budget = activeGitHubRuntimeBudget;
   const reason =
-    budget?.yieldReason ?? `max runtime ${budget?.maxRuntimeMs ?? 0}ms reached ${phase}`;
+    budget?.yieldReason ??
+    budget?.limitReason ??
+    `max runtime ${budget?.maxRuntimeMs ?? 0}ms reached ${phase}`;
   if (budget) budget.yieldReason = reason;
   return new GitHubRuntimeBudgetError(reason);
 }
@@ -3038,6 +3172,20 @@ export function itemSourceRevisionSha256ForTest(issue: unknown, comments: unknow
   return itemSourceRevisionSha256(issue, comments);
 }
 
+export function isExactEventSourceRevisionChange(itemKind: Item["kind"], reason: string): boolean {
+  if (itemKind === "pull_request") {
+    return (
+      reason.startsWith("PR head changed since context capture") ||
+      reason === "PR head changed while holding the apply mutation lease"
+    );
+  }
+  return (
+    reason.startsWith("issue source revision changed since context capture") ||
+    reason.startsWith("live issue source revision ") ||
+    reason === "issue source revision changed while holding the apply mutation lease"
+  );
+}
+
 function reviewCommentDigestParts(entries: unknown): unknown {
   if (!Array.isArray(entries)) return null;
   return entries
@@ -3166,10 +3314,20 @@ function reviewPolicyHash(options: {
     stableJson({
       version: REVIEW_POLICY_VERSION,
       freshDays: FRESH_DAYS,
-      model: options.model ?? DEFAULT_CODEX_MODEL,
+      // Maintainer decision 2026-07-17: the model is deliberately NOT part of
+      // review-policy identity. Baking it in made every model change invalidate
+      // all stored reviews (a fleet-wide re-review wave), which makes model
+      // swaps untestable in production. Model changes now roll through the
+      // normal review cadence instead; bump REVIEW_POLICY_VERSION explicitly
+      // when a full re-review is actually wanted. The sentinel migrates all
+      // hashes once, riding the 2026-07 prompt-change wave already in flight.
+      model: "model-excluded-2026-07",
       reasoningEffort: options.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
       sandboxMode: options.sandboxMode ?? "read-only",
-      serviceTier: options.serviceTier ?? DEFAULT_SERVICE_TIER,
+      // Service tier changes latency, never decisions. Pinned to the historical
+      // hash value so tier changes cannot mark every stored review policy-stale
+      // and trigger a fleet-wide re-review wave.
+      serviceTier: "",
       targetRepo: targetRepo(),
       repositoryProfile: targetProfile(),
       prompt: reviewPromptTemplate(),
@@ -3999,6 +4157,17 @@ function isMaintainerAuthorAssociation(value: unknown): boolean {
   return MAINTAINER_AUTHOR_ASSOCIATIONS.has(normalizeAuthorAssociation(value));
 }
 
+function isBulkFilerExemptAuthorAssociation(value: unknown): boolean {
+  return BULK_FILER_EXEMPT_AUTHOR_ASSOCIATIONS.has(normalizeAuthorAssociation(value));
+}
+
+function isBulkFilerExemptRepositoryPermission(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    BULK_FILER_EXEMPT_REPOSITORY_PERMISSIONS.has(value.trim().toLowerCase())
+  );
+}
+
 function isMaintainerAuthored(item: Pick<Item, "authorAssociation">): boolean {
   return isMaintainerAuthorAssociation(item.authorAssociation);
 }
@@ -4133,6 +4302,36 @@ export function unsponsoredFeatureAgeSkipReason(
 ): string | null {
   if (!isOlderThanDays(item.createdAt, UNSPONSORED_FEATURE_MIN_AGE_DAYS, now)) {
     return `unsponsored_feature_request requires issue older than ${UNSPONSORED_FEATURE_MIN_AGE_DAYS} days`;
+  }
+  return null;
+}
+
+export function authorPrBudgetAgeSkipReason(
+  item: Pick<Item, "createdAt">,
+  now = Date.now(),
+): string | null {
+  if (!isOlderThanDays(item.createdAt, AUTHOR_PR_BUDGET_MIN_AGE_DAYS, now)) {
+    return `author_pr_budget_exceeded requires PR older than ${AUTHOR_PR_BUDGET_MIN_AGE_DAYS} days`;
+  }
+  return null;
+}
+
+export function staleVersionBugAgeSkipReason(
+  item: Pick<Item, "createdAt">,
+  now = Date.now(),
+): string | null {
+  if (!isOlderThanDays(item.createdAt, STALE_VERSION_BUG_MIN_AGE_DAYS, now)) {
+    return `stale_version_bug requires issue older than ${STALE_VERSION_BUG_MIN_AGE_DAYS} days`;
+  }
+  return null;
+}
+
+export function obsoleteFixPrAgeSkipReason(
+  item: Pick<Item, "createdAt">,
+  now = Date.now(),
+): string | null {
+  if (!isOlderThanDays(item.createdAt, OBSOLETE_FIX_PR_MIN_AGE_DAYS, now)) {
+    return `obsolete_fix_pr requires PR older than ${OBSOLETE_FIX_PR_MIN_AGE_DAYS} days`;
   }
   return null;
 }
@@ -4445,13 +4644,24 @@ function unsponsoredFeatureApplyBlockReason(
     assignees?: unknown[];
     labels?: unknown[];
     milestone?: unknown;
-    reactions?: { total_count?: number };
+    reactions?: unknown;
     state?: string;
   }>(["api", `repos/${targetRepo()}/issues/${number}`]);
   if (issue.state !== "open") return "live issue is not open";
+  if (
+    labelNames(issue.labels)
+      .map(normalizeLabelName)
+      .some((label) => label.includes("security"))
+  ) {
+    return "security-labeled issue requires human triage";
+  }
   if ((issue.assignees ?? []).length > 0) return "assigned issue has maintainer engagement";
   if (issue.milestone) return "milestoned issue has maintainer engagement";
-  if ((issue.reactions?.total_count ?? 0) >= 20) {
+  if (positiveReactionCount(issue.reactions) >= ideaRevivalReactionThreshold()) {
+    return "issue already meets the idea-revival reaction threshold";
+  }
+  const totalReactions = asRecord(issue.reactions).total_count;
+  if (typeof totalReactions === "number" && totalReactions >= 20) {
     return "issue has strong community traction (20 or more reactions)";
   }
   if (labelNames(issue.labels).map(normalizeLabelName).includes("clawsweeper:linked-pr-open")) {
@@ -4481,21 +4691,101 @@ function unsponsoredFeatureApplyBlockReasonSafe(
   }
 }
 
-function pullRequestHumanEngagementBlockReason(number: number): string | null {
-  const issue = ghJson<{ assignees?: unknown[] }>([
-    "api",
-    `repos/${targetRepo()}/issues/${number}`,
-    "--jq",
-    "{assignees:[.assignees[]? | {login:.login}]}",
-  ]);
+function staleVersionBugApplyBlockReason(
+  number: number,
+  item: Pick<Item, "createdAt">,
+): string | null {
+  if (!staleVersionBugCloseEnabled()) return "stale-version bug apply policy is disabled";
+  const ageBlock = staleVersionBugAgeSkipReason(item);
+  if (ageBlock) return ageBlock;
+
+  const issue = ghJson<{
+    assignees?: unknown[];
+    created_at?: string;
+    labels?: unknown[];
+    milestone?: unknown;
+    reactions?: unknown;
+    state?: string;
+  }>(["api", `repos/${targetRepo()}/issues/${number}`]);
+  if (issue.state !== "open") return "live issue is not open";
+  // Stored records can carry stale timestamps; the age floor must hold live.
+  if (!Number.isFinite(Date.parse(issue.created_at ?? ""))) {
+    return "live issue creation date is unavailable";
+  }
+  const liveAgeBlock = staleVersionBugAgeSkipReason({ createdAt: issue.created_at ?? "" });
+  if (liveAgeBlock) return liveAgeBlock;
+  const labels = labelNames(issue.labels).map(normalizeLabelName);
+  const protectedLabel =
+    protectedLabels(labelNames(issue.labels))[0] ??
+    prAutoCloseExemptLabel(labelNames(issue.labels));
+  if (protectedLabel) return `protected label: ${protectedLabel}`;
+  if (labels.some((label) => label.includes("security"))) {
+    return "security-labeled issue requires human triage";
+  }
+  if ((issue.assignees ?? []).length > 0) return "assigned issue has maintainer engagement";
+  if (issue.milestone) return "milestoned issue has maintainer engagement";
+  const totalReactions = asRecord(issue.reactions).total_count;
+  if (!Number.isInteger(totalReactions) || Number(totalReactions) < 0) {
+    return "live issue reaction count is unavailable";
+  }
+  if (Number(totalReactions) >= 20)
+    return "issue has strong community traction (20 or more reactions)";
+  if (labels.includes("clawsweeper:linked-pr-open")) {
+    return "clawsweeper:linked-pr-open blocks stale-version bug auto-close";
+  }
+
+  const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`);
+  if (maintainerAssociatedEntries(comments).length > 0) {
+    return "maintainer issue comment confirms engagement";
+  }
+  return issueRecentHumanCommentBlockReasonFromComments(
+    comments,
+    STALE_VERSION_BUG_MIN_INACTIVE_DAYS,
+  );
+}
+
+function staleVersionBugApplyBlockReasonSafe(
+  number: number,
+  item: Pick<Item, "createdAt">,
+): string | null {
+  try {
+    return staleVersionBugApplyBlockReason(number, item);
+  } catch (error) {
+    return `stale-version bug liveness check failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+}
+
+function pullRequestHumanEngagementBlockReason(
+  number: number,
+  known?: {
+    assignees?: unknown[];
+    requestedReviewers?: unknown[];
+    requestedTeams?: unknown[];
+  },
+): string | null {
+  const issue = known
+    ? { assignees: known.assignees }
+    : ghJson<{ assignees?: unknown[] }>([
+        "api",
+        `repos/${targetRepo()}/issues/${number}`,
+        "--jq",
+        "{assignees:[.assignees[]? | {login:.login}]}",
+      ]);
   if ((issue.assignees ?? []).length > 0) return "assigned PR has active human signal";
 
-  const pull = ghJson<{ requested_reviewers?: unknown[]; requested_teams?: unknown[] }>([
-    "api",
-    `repos/${targetRepo()}/pulls/${number}`,
-    "--jq",
-    "{requested_reviewers:[.requested_reviewers[]? | {login:.login}],requested_teams:[.requested_teams[]? | {slug:.slug}]}",
-  ]);
+  const pull = known
+    ? {
+        requested_reviewers: known.requestedReviewers,
+        requested_teams: known.requestedTeams,
+      }
+    : ghJson<{ requested_reviewers?: unknown[]; requested_teams?: unknown[] }>([
+        "api",
+        `repos/${targetRepo()}/pulls/${number}`,
+        "--jq",
+        "{requested_reviewers:[.requested_reviewers[]? | {login:.login}],requested_teams:[.requested_teams[]? | {slug:.slug}]}",
+      ]);
   if ((pull.requested_reviewers ?? []).length > 0 || (pull.requested_teams ?? []).length > 0) {
     return "requested reviewers or teams indicate active review signal";
   }
@@ -4520,9 +4810,15 @@ function pullRequestHumanEngagementBlockReason(number: number): string | null {
 }
 
 interface PullRequestLiveActivity {
+  state: string;
+  createdAt: string;
   draft: boolean;
   headSha: string;
+  changedFiles: number | null;
+  requestedReviewers: unknown[];
+  requestedTeams: unknown[];
   headActivityAtMs: number | null;
+  headStatusActivityAtMs: number | null;
   headChecksFailing: boolean;
   headConflicted: boolean;
 }
@@ -4593,24 +4889,48 @@ function pullRequestLiveActivity(number: number): PullRequestLiveActivity {
   const pull = ghJson<{
     created_at?: string;
     draft?: boolean;
+    state?: string;
+    changed_files?: number;
     mergeable?: boolean | null;
     mergeable_state?: string | null;
+    requested_reviewers?: unknown[];
+    requested_teams?: unknown[];
     head?: { ref?: string; repo?: { full_name?: string; id?: unknown }; sha?: string };
   }>(["api", `repos/${targetRepo()}/pulls/${number}`]);
   const { headSha, headActivityAtMs } = pullRequestHeadActivity(number, pull);
   let headChecksFailing = false;
+  let headStatusActivityAtMs: number | null = null;
+  const observeStatusActivity = (value: unknown): void => {
+    const record = asRecord(value);
+    for (const candidate of [
+      record.completed_at,
+      record.started_at,
+      record.updated_at,
+      record.created_at,
+    ]) {
+      const timestamp = Date.parse(typeof candidate === "string" ? candidate : "");
+      if (
+        Number.isFinite(timestamp) &&
+        (headStatusActivityAtMs === null || timestamp > headStatusActivityAtMs)
+      ) {
+        headStatusActivityAtMs = timestamp;
+      }
+    }
+  };
   if (headSha) {
-    const combined = ghJson<{ state?: string }>([
+    const combined = ghJson<{ state?: string; statuses?: unknown[] }>([
       "api",
       `repos/${targetRepo()}/commits/${headSha}/status`,
     ]);
     if (combined.state === "failure" || combined.state === "error") headChecksFailing = true;
+    for (const status of combined.statuses ?? []) observeStatusActivity(status);
     const checks = ghJson<{ check_runs?: unknown[] }>([
       "api",
       `repos/${targetRepo()}/commits/${headSha}/check-runs?per_page=100`,
     ]);
     for (const run of checks.check_runs ?? []) {
       const record = asRecord(run);
+      observeStatusActivity(record);
       if (
         typeof record.conclusion === "string" &&
         FAILING_CHECK_RUN_CONCLUSIONS.has(record.conclusion)
@@ -4621,9 +4941,15 @@ function pullRequestLiveActivity(number: number): PullRequestLiveActivity {
   }
   const headConflicted = pull.mergeable === false || pull.mergeable_state === "dirty";
   return {
+    state: pull.state ?? "",
+    createdAt: pull.created_at ?? "",
     draft: pull.draft === true,
     headSha,
+    changedFiles: Number.isInteger(pull.changed_files) ? Number(pull.changed_files) : null,
+    requestedReviewers: pull.requested_reviewers ?? [],
+    requestedTeams: pull.requested_teams ?? [],
     headActivityAtMs,
+    headStatusActivityAtMs,
     headChecksFailing,
     headConflicted,
   };
@@ -4648,6 +4974,12 @@ function prAutoCloseExemptDecisionReason(
   }
   if (closeReason === "abandoned_pr") {
     return `${exemptLabel} exempts this PR from abandoned-PR auto-close`;
+  }
+  if (closeReason === "author_pr_budget_exceeded") {
+    return `${exemptLabel} exempts this PR from author-budget auto-close`;
+  }
+  if (closeReason === "obsolete_fix_pr") {
+    return `${exemptLabel} exempts this PR from obsolete-fix auto-close`;
   }
   return null;
 }
@@ -4792,6 +5124,299 @@ function abandonedPrApplyBlockReasonSafe(
     return `abandoned-PR liveness check failed: ${
       error instanceof Error ? error.message : String(error)
     }`;
+  }
+}
+
+function isWorkflowOrCiPath(path: string): boolean {
+  const normalized = path.toLowerCase();
+  return (
+    normalized.startsWith(".github/workflows/") ||
+    normalized.startsWith(".github/actions/") ||
+    normalized.startsWith(".circleci/") ||
+    normalized.startsWith(".buildkite/") ||
+    normalized.startsWith("ci/") ||
+    normalized === ".gitlab-ci.yml" ||
+    normalized === "azure-pipelines.yml" ||
+    normalized === "jenkinsfile"
+  );
+}
+
+function githubContentsPath(path: string): string {
+  return path
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+}
+
+function defaultBranchPathMissing(path: string, defaultBranch: string): boolean {
+  try {
+    ghJson<unknown>([
+      "api",
+      `repos/${targetRepo()}/contents/${githubContentsPath(path)}?ref=${encodeURIComponent(defaultBranch)}`,
+    ]);
+    return false;
+  } catch (error) {
+    if (isGitHubNotFoundError(error)) return true;
+    throw error;
+  }
+}
+
+function obsoleteFixPrApplyBlockReason(
+  number: number,
+  item: Pick<Item, "createdAt">,
+): string | null {
+  if (!obsoleteFixPrCloseEnabled()) return "obsolete-fix PR apply policy is disabled";
+  const storedAgeBlock = obsoleteFixPrAgeSkipReason(item);
+  if (storedAgeBlock) return storedAgeBlock;
+
+  const activity = pullRequestLiveActivity(number);
+  if (activity.state !== "open") return "live PR is not open";
+  const liveAgeBlock = obsoleteFixPrAgeSkipReason({ createdAt: activity.createdAt });
+  if (liveAgeBlock) return liveAgeBlock;
+  if (!activity.headSha) return "obsolete_fix_pr requires a live PR head SHA";
+  if (
+    activity.changedFiles === null ||
+    activity.changedFiles < 1 ||
+    activity.changedFiles > OBSOLETE_FIX_PR_MAX_CHANGED_FILES
+  ) {
+    return `obsolete_fix_pr requires between 1 and ${OBSOLETE_FIX_PR_MAX_CHANGED_FILES} live changed files`;
+  }
+
+  const commit = ghJson<{ commit?: { committer?: { date?: string } } }>([
+    "api",
+    `repos/${targetRepo()}/commits/${activity.headSha}`,
+  ]);
+  const committedAt = commit.commit?.committer?.date ?? "";
+  const committedAtMs = Date.parse(committedAt);
+  if (!Number.isFinite(committedAtMs)) {
+    return "obsolete_fix_pr requires a dated current-head committer timestamp";
+  }
+  const latestActivityAtMs = Math.max(
+    committedAtMs,
+    activity.headActivityAtMs ?? Number.NEGATIVE_INFINITY,
+    activity.headStatusActivityAtMs ?? Number.NEGATIVE_INFINITY,
+  );
+  if (Date.now() - latestActivityAtMs <= OBSOLETE_FIX_PR_MIN_INACTIVE_DAYS * DAY_MS) {
+    return `obsolete_fix_pr requires ${OBSOLETE_FIX_PR_MIN_INACTIVE_DAYS} days without current-head commit, status, or check-run activity`;
+  }
+
+  const issue = ghJson<{ assignees?: unknown[]; labels?: unknown[] }>([
+    "api",
+    `repos/${targetRepo()}/issues/${number}`,
+  ]);
+  const protectedLabel = protectedLabels(labelNames(issue.labels))[0];
+  if (protectedLabel) return `protected label: ${protectedLabel}`;
+  const engagementBlock = pullRequestHumanEngagementBlockReason(number, {
+    assignees: issue.assignees ?? [],
+    requestedReviewers: activity.requestedReviewers,
+    requestedTeams: activity.requestedTeams,
+  });
+  if (engagementBlock) return engagementBlock;
+
+  const repository = ghJson<{ default_branch?: string }>(["api", `repos/${targetRepo()}`]);
+  const defaultBranch = repository.default_branch?.trim() ?? "";
+  if (!defaultBranch) return "obsolete_fix_pr requires the repository default branch";
+  const files = ghJson<unknown[]>([
+    "api",
+    `repos/${targetRepo()}/pulls/${number}/files?per_page=${OBSOLETE_FIX_PR_MAX_CHANGED_FILES}`,
+  ]);
+  if (files.length !== activity.changedFiles) {
+    return "obsolete_fix_pr live changed-file list is incomplete";
+  }
+  const changedEntries = files.map((file) => ({
+    path: stringOrUndefined(asRecord(file).filename)?.trim() ?? "",
+    status: stringOrUndefined(asRecord(file).status)?.trim() ?? "",
+  }));
+  const paths = changedEntries.map((entry) => entry.path);
+  if (paths.some((path) => !path) || new Set(paths).size !== paths.length) {
+    return "obsolete_fix_pr live changed-file paths are incomplete";
+  }
+
+  const since = new Date(committedAtMs + 1).toISOString();
+  for (const { path, status } of changedEntries) {
+    const commits = ghJson<unknown[]>([
+      "api",
+      `repos/${targetRepo()}/commits?sha=${encodeURIComponent(defaultBranch)}&path=${encodeURIComponent(path)}&since=${encodeURIComponent(since)}&per_page=1`,
+    ]);
+    if (commits.length === 0) {
+      // A missing path only signals deletion when `filename` names a path that
+      // pre-existed on main. Added files never lived there, and renamed/copied
+      // entries carry the NEW path in `filename`, so absence proves nothing.
+      if (
+        (status === "modified" || status === "removed" || status === "changed") &&
+        isWorkflowOrCiPath(path) &&
+        defaultBranchPathMissing(path, defaultBranch)
+      ) {
+        continue;
+      }
+      return `touched path unchanged on main; fix may still be relevant: ${path}`;
+    }
+    const changedAt = asRecord(asRecord(commits[0]).commit).committer;
+    const changedDate = stringOrUndefined(asRecord(changedAt).date) ?? "";
+    if (!Number.isFinite(Date.parse(changedDate)) || Date.parse(changedDate) <= committedAtMs) {
+      return `post-PR main-side change date is unavailable for touched path: ${path}`;
+    }
+  }
+  return null;
+}
+
+function obsoleteFixPrApplyBlockReasonSafe(
+  number: number,
+  item: Pick<Item, "createdAt">,
+): string | null {
+  try {
+    return obsoleteFixPrApplyBlockReason(number, item);
+  } catch (error) {
+    return `obsolete-fix PR live check failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+}
+
+interface AuthorPrBudgetApplyState {
+  author: string;
+  openPrCount: number;
+  budget: number;
+}
+
+type AuthorPrBudgetApplyGate =
+  | { allowed: true; state: AuthorPrBudgetApplyState }
+  | { allowed: false; reason: string };
+
+function authorPrBudgetSignalBlockReason(markdown: string): string | null {
+  const proof = reportRealBehaviorProof(markdown);
+  const rating = reportPrRating(markdown);
+  if (
+    ["S", "A", "B"].includes(rating.overallTier) &&
+    ["sufficient", "override"].includes(proof.status)
+  ) {
+    return "author_pr_budget_exceeded cannot close a high-quality proven pull request";
+  }
+  if (
+    !["D", "F"].includes(rating.overallTier) &&
+    !STALLED_UNPROVEN_PROOF_STATUSES.has(proof.status)
+  ) {
+    return "author_pr_budget_exceeded requires a D/F rating or missing, mock-only, or insufficient real behavior proof";
+  }
+  return null;
+}
+
+function authorOpenPullRequestCount(author: string): number {
+  const query = [
+    `repo:${targetRepo()}`,
+    "is:pr",
+    "is:open",
+    `author:${quoteGitHubSearchTerm(author)}`,
+  ].join(" ");
+  const result = ghJson<{ total_count?: number; incomplete_results?: boolean }>([
+    "api",
+    "search/issues",
+    "--method",
+    "GET",
+    "-f",
+    `q=${query}`,
+    "-f",
+    "per_page=1",
+  ]);
+  if (result.incomplete_results === true) {
+    throw new Error("GitHub author open-PR search returned incomplete results");
+  }
+  if (!Number.isInteger(result.total_count) || Number(result.total_count) < 0) {
+    throw new Error("GitHub author open-PR search omitted a valid total_count");
+  }
+  return Number(result.total_count);
+}
+
+function authorPrBudgetApplyGate(
+  number: number,
+  item: Pick<Item, "author" | "authorAssociation" | "createdAt" | "kind" | "labels">,
+  markdown: string,
+): AuthorPrBudgetApplyGate {
+  if (!authorPrBudgetCloseEnabled()) {
+    return { allowed: false, reason: "author PR-budget apply policy is disabled" };
+  }
+  if (item.kind !== "pull_request") {
+    return {
+      allowed: false,
+      reason: "author_pr_budget_exceeded is allowed only for pull requests",
+    };
+  }
+  if (isMaintainerAuthored(item)) {
+    return {
+      allowed: false,
+      reason: "author_pr_budget_exceeded cannot close maintainer-authored pull requests",
+    };
+  }
+  const exemptLabel = prAutoCloseExemptLabel(item.labels);
+  if (exemptLabel) {
+    return {
+      allowed: false,
+      reason: `${exemptLabel} exempts this PR from author-budget auto-close`,
+    };
+  }
+  const ageBlock = authorPrBudgetAgeSkipReason(item);
+  if (ageBlock) return { allowed: false, reason: ageBlock };
+  const signalBlock = authorPrBudgetSignalBlockReason(markdown);
+  if (signalBlock) return { allowed: false, reason: signalBlock };
+  if (!item.author.trim()) {
+    return { allowed: false, reason: "author_pr_budget_exceeded requires a known PR author" };
+  }
+
+  const activity = pullRequestLiveActivity(number);
+  if (!activity.headSha) {
+    return { allowed: false, reason: "author_pr_budget_exceeded requires a live PR head SHA" };
+  }
+  const commit = ghJson<{ commit?: { committer?: { date?: string } } }>([
+    "api",
+    `repos/${targetRepo()}/commits/${activity.headSha}`,
+  ]);
+  const committedAtMs = Date.parse(commit.commit?.committer?.date ?? "");
+  if (!Number.isFinite(committedAtMs)) {
+    return {
+      allowed: false,
+      reason: "author_pr_budget_exceeded requires a dated current-head committer timestamp",
+    };
+  }
+  const latestActivityAtMs = Math.max(
+    committedAtMs,
+    activity.headActivityAtMs ?? Number.NEGATIVE_INFINITY,
+    activity.headStatusActivityAtMs ?? Number.NEGATIVE_INFINITY,
+  );
+  if (Date.now() - latestActivityAtMs <= AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS * DAY_MS) {
+    return {
+      allowed: false,
+      reason: `author_pr_budget_exceeded requires ${AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS} days without current-head commit, status, or check-run activity`,
+    };
+  }
+
+  const engagementBlock = pullRequestHumanEngagementBlockReason(number);
+  if (engagementBlock) return { allowed: false, reason: engagementBlock };
+
+  const budget = authorPrBudget();
+  const openPrCount = authorOpenPullRequestCount(item.author);
+  if (openPrCount <= budget) {
+    return {
+      allowed: false,
+      reason: `author has ${openPrCount} open PRs; author PR budget is ${budget}`,
+    };
+  }
+  return { allowed: true, state: { author: item.author, openPrCount, budget } };
+}
+
+function authorPrBudgetApplyGateSafe(
+  number: number,
+  item: Pick<Item, "author" | "authorAssociation" | "createdAt" | "kind" | "labels">,
+  markdown: string,
+): AuthorPrBudgetApplyGate {
+  try {
+    return authorPrBudgetApplyGate(number, item, markdown);
+  } catch (error) {
+    return {
+      allowed: false,
+      reason: `author PR-budget live check failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
   }
 }
 
@@ -5797,6 +6422,196 @@ export function unsponsoredFeatureCloseEnabled(
   env: Record<string, string | undefined> = process.env,
 ): boolean {
   return envFlagEnabled(env.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED);
+}
+
+export function authorPrBudgetCloseEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return envFlagEnabled(env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED);
+}
+
+export function staleVersionBugCloseEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return envFlagEnabled(env.CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED);
+}
+
+export function obsoleteFixPrCloseEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return envFlagEnabled(env.CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED);
+}
+
+function positiveIntegerEnv(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function authorPrBudget(env: Record<string, string | undefined> = process.env): number {
+  return positiveIntegerEnv(env.CLAWSWEEPER_AUTHOR_PR_BUDGET, DEFAULT_AUTHOR_PR_BUDGET);
+}
+
+export function authorPrBudgetMaxClosesPerRun(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  return positiveIntegerEnv(
+    env.CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN,
+    DEFAULT_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN,
+  );
+}
+
+export function bulkFilerThreshold(env: Record<string, string | undefined> = process.env): number {
+  return positiveIntegerEnv(env.CLAWSWEEPER_BULK_FILER_THRESHOLD, DEFAULT_BULK_FILER_THRESHOLD);
+}
+
+export function bulkFilerWindowDays(env: Record<string, string | undefined> = process.env): number {
+  return positiveIntegerEnv(env.CLAWSWEEPER_BULK_FILER_WINDOW_DAYS, DEFAULT_BULK_FILER_WINDOW_DAYS);
+}
+
+function detectBulkFiler(options: BulkFilerDetectionOptions): BulkFilerDetectionResult {
+  if (options.item.kind !== "issue" || !options.item.author.trim()) {
+    return { context: null, labelPending: false, labelApplied: false };
+  }
+  if (isBulkFilerExemptAuthorAssociation(options.item.authorAssociation)) {
+    return { context: null, labelPending: false, labelApplied: false };
+  }
+  const windowDays = bulkFilerWindowDays(options.env);
+  const windowStartMs = options.now - windowDays * DAY_MS;
+  const itemCreatedAtMs = Date.parse(options.item.createdAt);
+  if (!Number.isFinite(itemCreatedAtMs) || itemCreatedAtMs <= windowStartMs) {
+    return { context: null, labelPending: false, labelApplied: false };
+  }
+  const threshold = bulkFilerThreshold(options.env);
+  const windowStart = new Date(windowStartMs).toISOString();
+  const cacheKey = options.item.author.trim().toLowerCase();
+  let issueCount = options.cache.get(cacheKey);
+  if (!options.cache.has(cacheKey)) {
+    try {
+      const searchedCount = options.searchCount({
+        author: options.item.author,
+        windowStart,
+      });
+      if (!Number.isInteger(searchedCount) || searchedCount < 0) {
+        throw new Error("GitHub bulk-filer search omitted a valid total_count");
+      }
+      issueCount = searchedCount;
+    } catch (error) {
+      issueCount = null;
+      options.onSearchError?.(error);
+    }
+    options.cache.set(cacheKey, issueCount ?? null);
+  }
+  if (issueCount === undefined || issueCount === null || issueCount < threshold) {
+    return { context: null, labelPending: false, labelApplied: false };
+  }
+  const alreadyLabeled = options.item.labels.some(
+    (label) => label.toLowerCase() === BULK_FILED_LABEL,
+  );
+  return {
+    context: {
+      detected: true,
+      issueCount,
+      threshold,
+      windowDays,
+      windowStart,
+      label: BULK_FILED_LABEL,
+    },
+    labelPending: !alreadyLabeled,
+    labelApplied: false,
+  };
+}
+
+export function detectBulkFilerForTest(
+  options: BulkFilerDetectionOptions,
+): BulkFilerDetectionResult {
+  return detectBulkFiler(options);
+}
+
+function updateBulkFilerDetectedFrontMatter(
+  markdown: string,
+  detection: BulkFilerDetectionResult,
+): string {
+  return replaceFrontMatterValue(
+    markdown,
+    "bulk_filer_detected",
+    String(detection.context?.detected === true),
+  );
+}
+
+export function updateBulkFilerDetectedFrontMatterForTest(
+  markdown: string,
+  detection: BulkFilerDetectionResult,
+): string {
+  return updateBulkFilerDetectedFrontMatter(markdown, detection);
+}
+
+function bulkFilerPolicyInvalidatesCachedReview(
+  markdown: string | null,
+  exemptionApplied: boolean,
+): boolean {
+  if (!exemptionApplied || markdown === null) return false;
+  // Legacy reports predate this field. Refresh them once rather than preserving
+  // a possibly bulk-filer-suppressed cached verdict under the new exemption.
+  return !/^false$/i.test(frontMatterValue(markdown, "last_full_review_bulk_filer_detected") ?? "");
+}
+
+export function bulkFilerPolicyInvalidatesCachedReviewForTest(
+  markdown: string | null,
+  exemptionApplied: boolean,
+): boolean {
+  return bulkFilerPolicyInvalidatesCachedReview(markdown, exemptionApplied);
+}
+
+function authorIssueCountInBulkFilerWindow(author: string, windowStart: string): number {
+  const query = [
+    `repo:${targetRepo()}`,
+    "type:issue",
+    `author:${quoteGitHubSearchTerm(author)}`,
+    `created:>${windowStart}`,
+  ].join(" ");
+  const result = ghJsonOnce<{ total_count?: number; incomplete_results?: boolean }>(
+    ["api", "search/issues", "--method", "GET", "-f", `q=${query}`, "-f", "per_page=1"],
+    BULK_FILER_SEARCH_TIMEOUT_MS,
+  );
+  if (result.incomplete_results === true) {
+    throw new Error("GitHub bulk-filer search returned incomplete results");
+  }
+  if (!Number.isInteger(result.total_count) || Number(result.total_count) < 0) {
+    throw new Error("GitHub bulk-filer search omitted a valid total_count");
+  }
+  return Number(result.total_count);
+}
+
+function bulkFilerRepositoryPermission(
+  author: string,
+  cache: BulkFilerRepositoryPermissionCache,
+): string | null {
+  const normalizedAuthor = author.trim().toLowerCase();
+  if (!normalizedAuthor) return null;
+  if (cache.has(normalizedAuthor)) return cache.get(normalizedAuthor) ?? null;
+  let permission: string | null = null;
+  try {
+    const result = ghJson<{
+      permission?: unknown;
+      role_name?: unknown;
+      user?: { role_name?: unknown };
+    }>([
+      "api",
+      `repos/${targetRepo()}/collaborators/${encodeURIComponent(normalizedAuthor)}/permission`,
+    ]);
+    const roleName = result.role_name ?? result.user?.role_name;
+    permission =
+      typeof roleName === "string"
+        ? roleName.toLowerCase()
+        : typeof result.permission === "string"
+          ? result.permission.toLowerCase()
+          : null;
+  } catch {
+    // A read-token lookup failure must not broaden the exemption.
+    permission = null;
+  }
+  cache.set(normalizedAuthor, permission);
+  return permission;
 }
 
 function quoteGitHubSearchTerm(term: string): string {
@@ -6923,6 +7738,52 @@ function replaceFrontMatterValue(markdown: string, key: string, value: string): 
   const pattern = new RegExp(`^${key}:\\s*.*$`, "m");
   if (pattern.test(markdown)) return markdown.replace(pattern, line);
   return markdown.replace(/^---\n/, `---\n${line}\n`);
+}
+
+type ExactEventReviewLeaseDisposition =
+  | { status: "current" }
+  | { status: "legacy_tupleless"; reason: string }
+  | { status: "source_drift"; reportRevision: string; liveRevision: string }
+  | { status: "invalid"; reason: string };
+
+function exactEventReviewLeaseDisposition(
+  markdown: string,
+  liveRevision: string,
+): ExactEventReviewLeaseDisposition {
+  const reportRevision = reviewLeaseRevisionFromReport(markdown);
+  if (!reportRevision) {
+    return {
+      status: "invalid",
+      reason: "exact event review artifact lacks a durable reviewed revision",
+    };
+  }
+  if (!liveRevision || reportRevision !== liveRevision) {
+    return { status: "source_drift", reportRevision, liveRevision };
+  }
+  const leaseOwner = frontMatterValue(markdown, "review_lease_owner");
+  const leaseCommentId = Number(frontMatterValue(markdown, "review_lease_comment_id"));
+  const missingOwner = !leaseOwner || leaseOwner === "unknown";
+  const missingCommentId = !Number.isInteger(leaseCommentId) || leaseCommentId <= 0;
+  if (missingOwner && missingCommentId) {
+    return {
+      status: "legacy_tupleless",
+      reason: "local report has no durable lease identity",
+    };
+  }
+  if (missingOwner || missingCommentId) {
+    return {
+      status: "invalid",
+      reason: "exact event review artifact has an incomplete durable review lease tuple",
+    };
+  }
+  return { status: "current" };
+}
+
+export function exactEventReviewLeaseDispositionForTest(
+  markdown: string,
+  liveRevision: string,
+): ExactEventReviewLeaseDisposition {
+  return exactEventReviewLeaseDisposition(markdown, liveRevision);
 }
 
 function sectionValue(markdown: string, heading: string): string {
@@ -8311,6 +9172,8 @@ function collectItemContext(
   let pullReviewComments: unknown[] | null = null;
   let filteredPullReviewComments: { included: unknown[]; filtered: number } | null = null;
   let digestPullReviewComments: { included: unknown[]; filtered: number } | null = null;
+  let completePullReviewComments: { included: unknown[]; filtered: number } | null = null;
+  let completePullReviewCommentsHydrated = item.kind !== "pull_request";
   if (item.kind === "issue") {
     const closingPullRequests = closingPullRequestsForIssue(item.number);
     if (closingPullRequests.length > 0) {
@@ -8361,13 +9224,20 @@ function collectItemContext(
     pullReviewComments = pullReviewCommentsWindow.items;
     filteredPullReviewComments = filterReviewContextComments(pullReviewComments, item.number);
     const fullPullReviewComments =
-      options.reviewCacheDigest && pullReviewCommentsWindow.truncated
+      (options.reviewCacheDigest || options.fullTimelineForRelations) &&
+      pullReviewCommentsWindow.truncated
         ? ghPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/comments`)
         : pullReviewComments;
     digestPullReviewComments =
+      !options.reviewCacheDigest || fullPullReviewComments === pullReviewComments
+        ? filteredPullReviewComments
+        : filterReviewContextComments(fullPullReviewComments, item.number);
+    completePullReviewComments =
       fullPullReviewComments === pullReviewComments
         ? filteredPullReviewComments
         : filterReviewContextComments(fullPullReviewComments, item.number);
+    completePullReviewCommentsHydrated =
+      fullPullReviewComments.length >= pullReviewCommentsWindow.total;
     context.pullRequest = compactPullRequest(pullRequest);
     context.pullFiles = compactMappedWindow(pullFiles, pullFilesWindow.total, 80, compactPullFile);
     context.semanticPullFiles =
@@ -8498,6 +9368,19 @@ function collectItemContext(
     if (context.counts?.closingPullRequests !== undefined)
       counts.closingPullRequests = context.counts.closingPullRequests;
     context.counts = counts;
+  }
+  const completeActivityHydrated =
+    sourceRevisionComments.length >= commentsWindow.total &&
+    (fullTimeline ?? timeline).length >= timelineWindow.total &&
+    completePullReviewCommentsHydrated;
+  if (options.fullTimelineForRelations && completeActivityHydrated) {
+    context[completeActivityContextSymbol] = {
+      comments: filterReviewContextComments(sourceRevisionComments, item.number).included.map(
+        compactComment,
+      ),
+      timeline: (fullTimeline ?? timeline).map(compactTimelineEvent),
+      pullReviewComments: (completePullReviewComments?.included ?? []).map(compactComment),
+    };
   }
   return context;
 }
@@ -10125,6 +11008,12 @@ function closeReasonText(reason: CloseReason): string {
       return "feature-like PR without confirmed product direction";
     case "unsponsored_feature_request":
       return "feature request without maintainer sponsorship";
+    case "author_pr_budget_exceeded":
+      return "lowest-signal PR over the author's open-PR budget";
+    case "stale_version_bug":
+      return "bug report against a stale version";
+    case "obsolete_fix_pr":
+      return "fix made obsolete by later main-branch changes";
     case "not_actionable_in_repo":
       return "not actionable in this repository";
     case "incoherent":
@@ -11342,7 +12231,13 @@ function closeIntro(reason: CloseReason): string {
     case "unconfirmed_product_direction":
       return "Thanks for the contribution. ClawSweeper proposes closing this for now: the implementation may be reasonable, but passing review and proof does not establish that OpenClaw should add this product surface.";
     case "unsponsored_feature_request":
-      return "Thanks for sharing this idea. ClawSweeper proposes closing it as not planned unless a maintainer sponsors the direction, because no maintainer has confirmed this product direction.";
+      return "Thanks for sharing this idea. ClawSweeper is parking it in the idea archive because no maintainer has confirmed this product direction yet.";
+    case "author_pr_budget_exceeded":
+      return "Thanks for the contribution. ClawSweeper is trimming this lowest-signal PR because the author is over the repository's open-PR budget.";
+    case "stale_version_bug":
+      return "Thanks for the report. This was filed against an older version, and the relevant code has changed substantially since then.";
+    case "obsolete_fix_pr":
+      return "Thanks for the contribution. The target code has since been rewritten or removed on `main`, so this fix no longer applies in its original form.";
     case "not_actionable_in_repo":
       return "Thanks for writing this up. I checked the repo boundary, and this lives outside the OpenClaw source shell.";
     case "incoherent":
@@ -11375,7 +12270,13 @@ function closeOutro(reason: CloseReason, canonicalLinks: string[] = []): string 
     case "unconfirmed_product_direction":
       return "This is a proposal only until the separate default-off apply policy is enabled and all live maintainer-signal checks pass. A maintainer can sponsor the direction, request a narrower version, or apply `clawsweeper:human-review` to keep it open.";
     case "unsponsored_feature_request":
-      return `So I’m closing this as not planned unless a maintainer sponsors the direction. A maintainer can sponsor it and reopen this issue, or anyone can ask to reopen if the situation changes. When the idea fits an extension, ${markdownLink("ClawHub.com", targetProfile().communityUrl ?? "https://clawhub.ai/")} remains the self-serve path.`;
+      return `This idea is parked, not rejected. A maintainer can comment \`@clawsweeper revive\` on this closed issue to bring it back automatically. It will also reopen when it reaches at least ${ideaRevivalReactionThreshold()} positive reactions (thumbs-up, heart, or hooray). When the idea fits an extension, ${markdownLink("ClawHub.com", targetProfile().communityUrl ?? "https://clawhub.ai/")} remains the self-serve path.`;
+    case "author_pr_budget_exceeded":
+      return "Closing or finishing other open PRs frees review budget. This PR can be reopened once the author is under budget, or sooner when real behavior proof is added.";
+    case "stale_version_bug":
+      return "Please retest on the current release. If the problem still reproduces, add a fresh reproduction with the current version and this issue will be reopened.";
+    case "obsolete_fix_pr":
+      return "If the original problem still reproduces on current `main`, a fresh PR against the current code is very welcome.";
     case "not_actionable_in_repo":
       return "So I’m closing this as outside the OpenClaw source repository rather than keeping it open as core work.";
     default:
@@ -13402,6 +14303,78 @@ function ensureImpactLabel(name: ImpactLabelName, onMutation?: () => void): void
   }
 }
 
+function ensureBulkFilerLabel(onMutation?: () => void): void {
+  try {
+    ghObservedMutationCommand({
+      identity: `label_create:${BULK_FILED_LABEL_DEFINITION.name}`,
+      args: [
+        "label",
+        "create",
+        BULK_FILED_LABEL_DEFINITION.name,
+        "--color",
+        BULK_FILED_LABEL_DEFINITION.color,
+        "--description",
+        BULK_FILED_LABEL_DEFINITION.description,
+      ],
+      attempts: 2,
+      onMutation,
+      knownNoMutation: labelAlreadyExistsError,
+    });
+  } catch (error) {
+    if (!labelAlreadyExistsError(error)) throw error;
+  }
+}
+
+function syncBulkFilerLabel(options: {
+  number: number;
+  labels: readonly string[];
+  bulkFilerDetected: boolean;
+  authorAssociation: string;
+  repositoryPermission?: string | null;
+  dryRun: boolean;
+  onMutation?: () => void;
+}): { labels: string[]; changed: boolean } {
+  const hasBulkFilerLabel = hasNormalizedLabel(options.labels, BULK_FILED_LABEL);
+  if (
+    isBulkFilerExemptAuthorAssociation(options.authorAssociation) ||
+    isBulkFilerExemptRepositoryPermission(options.repositoryPermission)
+  ) {
+    if (!hasBulkFilerLabel) return { labels: [...options.labels], changed: false };
+    // This is ClawSweeper policy state, not a human triage label. Remove a
+    // pre-exemption value so owners and members are not still deprioritized.
+    const nextLabels = options.labels.filter(
+      (label) => normalizeLabelName(label) !== normalizeLabelName(BULK_FILED_LABEL),
+    );
+    if (options.dryRun) return { labels: nextLabels, changed: true };
+    removeIssueLabel(options.number, BULK_FILED_LABEL, options.onMutation);
+    return { labels: nextLabels, changed: true };
+  }
+  if (!options.bulkFilerDetected || hasBulkFilerLabel) {
+    return { labels: [...options.labels], changed: false };
+  }
+  const nextLabels = [...options.labels, BULK_FILED_LABEL];
+  if (options.dryRun) return { labels: nextLabels, changed: true };
+  ensureBulkFilerLabel(options.onMutation);
+  const applied = tryAddOptionalLabel({
+    number: options.number,
+    label: BULK_FILED_LABEL,
+    currentLabels: options.labels,
+    onMutation: options.onMutation,
+  });
+  return { labels: applied ? nextLabels : [...options.labels], changed: applied };
+}
+
+export function syncBulkFilerLabelForTest(options: {
+  number: number;
+  labels: readonly string[];
+  bulkFilerDetected: boolean;
+  authorAssociation: string;
+  repositoryPermission?: string | null;
+  dryRun: boolean;
+}): { labels: string[]; changed: boolean } {
+  return syncBulkFilerLabel(options);
+}
+
 function ensureMergeRiskLabel(name: MergeRiskLabelName, onMutation?: () => void): void {
   const definition = MERGE_RISK_LABELS.find((label) => label.name === name);
   if (!definition) return;
@@ -13490,6 +14463,7 @@ function isGoodFirstIssue(
     state.hasWorkValidation &&
     !state.goodFirstIssueOptedOut &&
     !state.locked &&
+    !hasNormalizedLabel(currentLabels, BULK_FILED_LABEL) &&
     !currentLabels.some(isSecuritySensitiveLabel) &&
     protectedLabels(currentLabels).length === 0 &&
     !state.hasOpenLinkedPullRequest
@@ -13536,6 +14510,7 @@ function wantedIssueAdvisoryLabels(
 ): Set<string> {
   const labels = new Set<string>();
   if (state.type !== "issue") return labels;
+  const isBulkFiled = hasNormalizedLabel(currentLabels, BULK_FILED_LABEL);
   const issueRatingLabel = issueRatingLabelForState(state);
   if (issueRatingLabel) labels.add(issueRatingLabel);
   if (state.reproductionConfidence === "high") {
@@ -13556,6 +14531,7 @@ function wantedIssueAdvisoryLabels(
     labels.add("clawsweeper:linked-pr-open");
   }
   if (
+    !isBulkFiled &&
     state.workCandidate === "queue_fix_pr" &&
     state.workStatus === "candidate" &&
     state.workConfidence === "high"
@@ -13587,16 +14563,21 @@ function wantedIssueAdvisoryLabels(
     state.workStatus === "manual_review" ||
     state.requiresProductDecision ||
     state.itemCategory === "security" ||
-    state.securityReviewStatus === "needs_attention"
+    state.securityReviewStatus === "needs_attention" ||
+    isBulkFiled
   ) {
     labels.add("clawsweeper:no-new-fix-pr");
   }
   return labels;
 }
 
-function issueAdvisoryStateNeedsStaleProtection(state: IssueAdvisoryLabelState): boolean {
+function issueAdvisoryStateNeedsStaleProtection(
+  state: IssueAdvisoryLabelState,
+  currentLabels: readonly string[],
+): boolean {
   return (
     state.type === "issue" &&
+    !hasNormalizedLabel(currentLabels, BULK_FILED_LABEL) &&
     state.workCandidate === "queue_fix_pr" &&
     state.workStatus === "candidate" &&
     state.workConfidence === "high"
@@ -13612,7 +14593,7 @@ function nextIssueAdvisoryLabels(
   state: IssueAdvisoryLabelState,
 ): string[] {
   const wantedLabels = wantedIssueAdvisoryLabels(state, labels);
-  const needsStaleProtection = issueAdvisoryStateNeedsStaleProtection(state);
+  const needsStaleProtection = issueAdvisoryStateNeedsStaleProtection(state, labels);
   const hadQueueableProtection = issueAdvisoryLabelsHadQueueableProtection(labels);
   const nextLabels = labels.filter(
     (label) =>
@@ -14190,6 +15171,28 @@ function ensureTelegramVisibleProofLabel(onMutation?: () => void): void {
   }
 }
 
+function ensureIdeaArchiveLabel(onMutation?: () => void): void {
+  try {
+    ghObservedMutationCommand({
+      identity: `label_create:${IDEA_ARCHIVE_LABEL}`,
+      args: [
+        "label",
+        "create",
+        IDEA_ARCHIVE_LABEL,
+        "--color",
+        IDEA_ARCHIVE_LABEL_COLOR,
+        "--description",
+        IDEA_ARCHIVE_LABEL_DESCRIPTION,
+      ],
+      attempts: 2,
+      onMutation,
+      knownNoMutation: labelAlreadyExistsError,
+    });
+  } catch (error) {
+    if (!labelAlreadyExistsError(error)) throw error;
+  }
+}
+
 function missingLabelError(error: unknown, label: string): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes(`'${label}' not found`) || message.includes(`"${label}" not found`);
@@ -14458,6 +15461,7 @@ function proofNudgeProtectedLabels(labels: readonly string[]): string[] {
       label === "beta-blocker" ||
       label === "release-blocker" ||
       label === "clawsweeper:needs-security-review" ||
+      label === BULK_FILED_LABEL ||
       label.startsWith("release") ||
       label.includes("security")
     );
@@ -15294,6 +16298,40 @@ function upgradePullRequestClosePromotionReport(
   return upgraded;
 }
 
+function authorPrBudgetPromotion(
+  markdown: string,
+  state: AuthorPrBudgetApplyState,
+): PullRequestClosePromotion {
+  const proof = reportRealBehaviorProof(markdown);
+  const rating = reportPrRating(markdown);
+  const author = `@${state.author.replace(/^@/, "")}`;
+  const summary = `${author} currently has ${state.openPrCount} open PRs in this repository, above the budget of ${state.budget}. ClawSweeper is closing this PR as one of the author's lowest-signal submissions under that budget: its overall rating is ${rating.overallTier} and its real behavior proof is ${proof.status}. Closing or finishing other PRs frees review budget, and this PR can be reopened once the author is under budget or when real proof is added.`;
+  return {
+    closeReason: "author_pr_budget_exceeded",
+    summary,
+    coverageProofFallbackRefs: false,
+    bestSolution:
+      "Close this lowest-signal PR for now. Finish or close other open PRs to free review budget, then reopen this PR once the author is under budget; adding real behavior proof also makes it eligible for reconsideration.",
+    evidence: [
+      `- **live author budget:** ${author} has ${state.openPrCount} open PRs in this repository; the configured budget is ${state.budget}.`,
+      `- **lowest-signal classification:** overall PR rating is \`${rating.overallTier}\` and real behavior proof is \`${proof.status}\`.`,
+      `- **inactivity floor:** the PR and its current-head commit, status, and check-run activity are all older than ${AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS} days.`,
+    ].join("\n"),
+    closeComment: `Thanks for the contribution. ${summary}`,
+  };
+}
+
+function applyAuthorPrBudgetStateToReport(
+  markdown: string,
+  state: AuthorPrBudgetApplyState,
+): string {
+  const promotion = authorPrBudgetPromotion(markdown, state);
+  let next = replaceSectionValue(markdown, REVIEW_SECTIONS.summary, promotion.summary);
+  next = replaceSectionValue(next, REVIEW_SECTIONS.bestSolution, promotion.bestSolution);
+  next = replaceSectionValue(next, REVIEW_SECTIONS.evidence, promotion.evidence);
+  return replaceSectionValue(next, REVIEW_SECTIONS.closeComment, promotion.closeComment);
+}
+
 function closePromotionHasNonAutomationActivityAfterReview(
   markdown: string,
   context: ItemContext,
@@ -15308,16 +16346,24 @@ function contextHasNonAutomationActivityAfter(
   reviewedAtMs: number,
   options: {
     truncationCountsAsActivity?: boolean;
+    useCompleteActivityContext?: boolean;
     ignoreTimelineCommentsThroughMs?: number;
+    ignoreTrustedTimelineComment?: {
+      authors: ReadonlySet<string>;
+      createdAt: string;
+    };
   } = {},
 ): boolean {
   const truncationCountsAsActivity = options.truncationCountsAsActivity ?? true;
-  if (
-    truncationCountsAsActivity &&
-    (context.counts?.commentsTruncated ||
-      context.counts?.timelineTruncated ||
-      context.counts?.pullReviewCommentsTruncated)
-  ) {
+  const activityContextTruncated = Boolean(
+    context.counts?.commentsTruncated ||
+    context.counts?.timelineTruncated ||
+    context.counts?.pullReviewCommentsTruncated,
+  );
+  const completeActivityContext = options.useCompleteActivityContext
+    ? context[completeActivityContextSymbol]
+    : undefined;
+  if (truncationCountsAsActivity && activityContextTruncated && !completeActivityContext) {
     return true;
   }
   const hasNonAutomationComment = (comment: unknown): boolean => {
@@ -15329,6 +16375,16 @@ function contextHasNonAutomationActivityAfter(
   };
   const hasNonAutomationEvent = (event: unknown): boolean => {
     const record = asRecord(event);
+    const eventActor = (stringOrUndefined(record.actor) ?? "").trim().toLowerCase();
+    const trustedTimelineComment = options.ignoreTrustedTimelineComment;
+    if (
+      stringOrUndefined(record.event) === "commented" &&
+      trustedTimelineComment &&
+      eventTimestampMs(event) === timestampMs(trustedTimelineComment.createdAt) &&
+      trustedTimelineComment.authors.has(eventActor)
+    ) {
+      return false;
+    }
     // Issue comments are checked above with their bodies. Ignore timeline
     // duplicates only through the completed review; later commands are fresh
     // activity and must keep stale labels from being restored.
@@ -15345,29 +16401,53 @@ function contextHasNonAutomationActivityAfter(
     );
   };
   return (
-    context.comments.some(hasNonAutomationComment) ||
-    (context.pullReviewComments ?? []).some(hasNonAutomationComment) ||
-    context.timeline.some(hasNonAutomationEvent)
+    (completeActivityContext?.comments ?? context.comments).some(hasNonAutomationComment) ||
+    (completeActivityContext?.pullReviewComments ?? context.pullReviewComments ?? []).some(
+      hasNonAutomationComment,
+    ) ||
+    (completeActivityContext?.timeline ?? context.timeline).some(hasNonAutomationEvent)
   );
 }
 
 export function contextHasNonAutomationActivityAfterForTest(options: {
   comments?: unknown[];
   timeline?: unknown[];
+  pullReviewComments?: unknown[];
+  truncated?: {
+    comments?: boolean;
+    timeline?: boolean;
+    pullReviewComments?: boolean;
+  };
+  completeActivityContext?: Partial<CompleteActivityContext>;
   activityAfterMs: number;
   ignoreTimelineCommentsThroughMs?: number;
 }): boolean {
-  return contextHasNonAutomationActivityAfter(
-    {
-      issue: {},
-      comments: options.comments ?? [],
-      timeline: options.timeline ?? [],
+  const context: ItemContext = {
+    issue: {},
+    comments: options.comments ?? [],
+    timeline: options.timeline ?? [],
+    pullReviewComments: options.pullReviewComments ?? [],
+    counts: {
+      comments: options.comments?.length ?? 0,
+      commentsTruncated: options.truncated?.comments ?? false,
+      timeline: options.timeline?.length ?? 0,
+      timelineTruncated: options.truncated?.timeline ?? false,
+      pullReviewCommentsTruncated: options.truncated?.pullReviewComments ?? false,
     },
-    options.activityAfterMs,
-    options.ignoreTimelineCommentsThroughMs === undefined
+  };
+  if (options.completeActivityContext) {
+    context[completeActivityContextSymbol] = {
+      comments: options.completeActivityContext.comments ?? [],
+      timeline: options.completeActivityContext.timeline ?? [],
+      pullReviewComments: options.completeActivityContext.pullReviewComments ?? [],
+    };
+  }
+  return contextHasNonAutomationActivityAfter(context, options.activityAfterMs, {
+    ...(options.completeActivityContext ? { useCompleteActivityContext: true } : {}),
+    ...(options.ignoreTimelineCommentsThroughMs === undefined
       ? {}
-      : { ignoreTimelineCommentsThroughMs: options.ignoreTimelineCommentsThroughMs },
-  );
+      : { ignoreTimelineCommentsThroughMs: options.ignoreTimelineCommentsThroughMs }),
+  });
 }
 
 function pullRequestUrlForNumber(number: number): string {
@@ -15828,7 +16908,8 @@ function duplicateCanonicalPullRequestBlockReason(
       }
       const reason = unsafeCanonicalPullRequestReason(linkedPull, options);
       if (reason) return `${reason}; refusing duplicate/superseded auto-close`;
-    } catch {
+    } catch (error) {
+      if (error instanceof GitHubRuntimeBudgetError) throw error;
       if (ref.kind !== "pull_url" && shorthandRefIsIssue(number)) continue;
       return `linked canonical PR #${number} could not be read; refusing duplicate/superseded auto-close`;
     }
@@ -16115,6 +17196,7 @@ function prCloseCoverageProofGateResult(options: {
     try {
       covering = coveringView(linkedNumber);
     } catch (error) {
+      if (error instanceof GitHubRuntimeBudgetError) throw error;
       const hydrationBudgetBlock = prCloseCoverageRuntimeBudgetBlock(
         options.runtimeBudget,
         "while hydrating",
@@ -16215,6 +17297,7 @@ function prCloseCoverageProofGateResult(options: {
         reason: `PR close coverage proof kept this PR open against ${covering.url}: ${closeDecision.reason}`,
       };
     } catch (error) {
+      if (error instanceof GitHubRuntimeBudgetError) throw error;
       const proofBudgetBlock = prCloseCoverageRuntimeBudgetBlock(
         options.runtimeBudget,
         "while running",
@@ -17878,7 +18961,9 @@ export function renderReviewCommentFromReport(
   const body =
     decision === "close" &&
     reason !== "none" &&
-    (!requiresMaintainerDecision || reason === "unsponsored_feature_request")
+    (!requiresMaintainerDecision ||
+      reason === "unsponsored_feature_request" ||
+      reason === "author_pr_budget_exceeded")
       ? renderCloseCommentFromReport(markdown, reason)
       : renderKeepOpenCommentFromReport(markdown, options);
   const markers = options.suppressAutomationMarkers
@@ -18066,6 +19151,50 @@ function abandonedPrDecisionBlockReason(
   return null;
 }
 
+function authorPrBudgetDecisionBlockReason(
+  item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "authorAssociation">>,
+  decision: Decision,
+): string | null {
+  const externalBlock = externalPrCloseDecisionBlockReason(
+    item,
+    "author_pr_budget_exceeded",
+    "author-budget auto-close",
+  );
+  if (externalBlock) return externalBlock;
+  if (
+    ["S", "A", "B"].includes(decision.prRating.overallTier) &&
+    ["sufficient", "override"].includes(decision.realBehaviorProof.status)
+  ) {
+    return "author_pr_budget_exceeded cannot close a high-quality proven pull request";
+  }
+  if (
+    !["D", "F"].includes(decision.prRating.overallTier) &&
+    !STALLED_UNPROVEN_PROOF_STATUSES.has(decision.realBehaviorProof.status)
+  ) {
+    return "author_pr_budget_exceeded requires a D/F rating or missing, mock-only, or insufficient real behavior proof";
+  }
+  return null;
+}
+
+export function staleVersionBugDecisionBlockReason(
+  item: Pick<Item, "kind" | "labels">,
+  decision: Pick<Decision, "itemCategory">,
+): string | null {
+  if (item.kind !== "issue") return "stale_version_bug is allowed only for issues";
+  if (decision.itemCategory !== "bug") return "stale_version_bug requires bug item category";
+  const securityLabel = item.labels
+    .map(normalizeLabelName)
+    .find((label) => label.includes("security"));
+  if (securityLabel) return `${securityLabel} blocks stale-version bug auto-close`;
+  return null;
+}
+
+function obsoleteFixPrDecisionBlockReason(
+  item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "authorAssociation">>,
+): string | null {
+  return externalPrCloseDecisionBlockReason(item, "obsolete_fix_pr", "obsolete-fix auto-close");
+}
+
 export function validateCloseDecision(
   item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "repo" | "authorAssociation">>,
   decision: Decision,
@@ -18160,6 +19289,36 @@ export function validateCloseDecision(
         ok: false,
         actionTaken: "skipped_invalid_decision",
         reason: abandonedBlock,
+      };
+    }
+  }
+  if (decision.closeReason === "author_pr_budget_exceeded") {
+    const authorBudgetBlock = authorPrBudgetDecisionBlockReason(item, decision);
+    if (authorBudgetBlock) {
+      return {
+        ok: false,
+        actionTaken: "skipped_invalid_decision",
+        reason: authorBudgetBlock,
+      };
+    }
+  }
+  if (decision.closeReason === "stale_version_bug") {
+    const staleVersionBlock = staleVersionBugDecisionBlockReason(item, decision);
+    if (staleVersionBlock) {
+      return {
+        ok: false,
+        actionTaken: "skipped_invalid_decision",
+        reason: staleVersionBlock,
+      };
+    }
+  }
+  if (decision.closeReason === "obsolete_fix_pr") {
+    const obsoleteFixBlock = obsoleteFixPrDecisionBlockReason(item);
+    if (obsoleteFixBlock) {
+      return {
+        ok: false,
+        actionTaken: "skipped_invalid_decision",
+        reason: obsoleteFixBlock,
       };
     }
   }
@@ -18768,6 +19927,7 @@ function issueReviewCommentState(
   number: number,
   fallbackBodies: readonly string[] = [],
 ): {
+  comments: Record<string, unknown>[];
   reviewComment: Record<string, unknown> | undefined;
   leaseComment: Record<string, unknown> | undefined;
   leaseComments: Record<string, unknown>[];
@@ -18790,6 +19950,7 @@ function issueReviewCommentState(
       : []),
   ];
   return {
+    comments,
     reviewComment,
     leaseComment: leaseComments[0],
     leaseComments,
@@ -19508,6 +20669,11 @@ function postReviewStartStatusComment(options: {
   );
   const body = renderReviewStartStatusComment(leaseOptions);
   const payload = writeCommentPayload(options.item.number, body);
+  // Every acquisition POSTs a fresh comment: the lowest-server-id election
+  // needs distinct ids per contender, so refreshing a leftover placeholder in
+  // place would let two racing workers both validate ownership of the same
+  // comment. Superseded placeholders are swept when the durable review
+  // comment is published instead.
   const createArgs = [
     "api",
     `repos/${targetRepo()}/issues/${options.item.number}/comments`,
@@ -19543,19 +20709,24 @@ function postReviewStartStatusComment(options: {
     );
   }
   const winner = confirmed[0];
+  if (!winner) {
+    deleteOwnedDedicatedReviewStartLease(options.item.number, acquired);
+    throw new Error(
+      `could not identify the winning review lease for #${options.item.number}; retry required`,
+    );
+  }
   if (
-    commentId(winner?.comment) !== createdCommentId ||
-    reviewStartLeaseOwner(winner?.comment) !== leaseOwner
+    commentId(winner.comment) !== createdCommentId ||
+    reviewStartLeaseOwner(winner.comment) !== leaseOwner
   ) {
     deleteOwnedDedicatedReviewStartLease(options.item.number, acquired);
-    if (!winner) {
-      throw new Error(
-        `could not identify the winning review lease for #${options.item.number}; retry required`,
-      );
-    }
     return heldReviewStartStatusCommentResult(winner.expiresAt, true);
   }
-  return { status: "posted", lease: acquired, didMutate: true };
+  return {
+    status: "posted",
+    lease: { ...acquired, comment: winner.comment },
+    didMutate: true,
+  };
 }
 
 function deleteOwnedDedicatedReviewStartLease(
@@ -19623,6 +20794,71 @@ function reapExpiredDedicatedReviewStartLeases(
       // A failed reap must never block acquiring the new lease.
       console.error(
         `[review] could not reap expired review lease comment ${lease.commentId} for #${itemNumber}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+}
+
+const REVIEW_PLACEHOLDER_BODY_PATTERN = /^ClawSweeper status: review started\./i;
+
+export function supersededReviewPlaceholderCommentIds(options: {
+  number: number;
+  comments: readonly Record<string, unknown>[];
+  keepCommentIds: ReadonlySet<number>;
+  nowMs?: number;
+}): number[] {
+  const nowMs = options.nowMs ?? Date.now();
+  const ids: number[] = [];
+  for (const comment of options.comments) {
+    const id = commentId(comment);
+    if (id === null || options.keepCommentIds.has(id)) continue;
+    if (!canPatchReviewComment(comment)) continue;
+    const body = (commentBody(comment) ?? "").trimStart();
+    // Placeholder bodies start with the status line; the durable review
+    // comment never does, and its marker is an extra guard against deletion.
+    if (!REVIEW_PLACEHOLDER_BODY_PATTERN.test(body)) continue;
+    if (body.includes(reviewCommentMarker(options.number))) continue;
+    // An unexpired lease may belong to a racing worker on a newer revision;
+    // only provably superseded placeholders (expired lease or marker-less
+    // legacy body) are swept after the durable review comment is published.
+    const marker = body.match(/<!--\s*clawsweeper-review-status:started\b([^>]*)-->/i);
+    if (marker) {
+      const expiresAtMs = Date.parse(marker[1]?.match(/\blease_expires_at=([^\s>]+)/i)?.[1] ?? "");
+      if (Number.isFinite(expiresAtMs) && expiresAtMs >= nowMs) continue;
+    }
+    ids.push(id);
+  }
+  return ids;
+}
+
+function cleanupSupersededReviewPlaceholderComments(options: {
+  number: number;
+  // Pre-mutation snapshot from the apply flow; the sweep must not refetch the
+  // comment list after the durable-comment mutation (API-budget invariant).
+  comments: readonly Record<string, unknown>[];
+  keepCommentIds: ReadonlySet<number>;
+}): void {
+  const ids = supersededReviewPlaceholderCommentIds({
+    number: options.number,
+    comments: options.comments,
+    keepCommentIds: options.keepCommentIds,
+  });
+  for (const id of ids) {
+    try {
+      ghObservedMutationCommand({
+        identity: `review_placeholder_sweep:${options.number}:${id}`,
+        args: ["api", `repos/${targetRepo()}/issues/comments/${id}`, "--method", "DELETE"],
+      });
+      console.error(
+        `[apply] deleted superseded review placeholder comment ${id} for #${options.number}`,
+      );
+    } catch (error) {
+      if (error instanceof GitHubRuntimeBudgetError) throw error;
+      // A failed sweep must never fail the publish; the next apply retries it.
+      console.error(
+        `[apply] could not delete superseded review placeholder comment ${id} for #${options.number}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -20152,6 +21388,7 @@ item_updated_at: ${options.item.updatedAt}
 author: ${options.item.author}
 author_association: ${options.item.authorAssociation}
 labels: ${JSON.stringify(options.item.labels)}
+bulk_filer_detected: ${options.context.bulkFiler?.detected === true}
 reviewed_at: ${reviewedAt}
 review_lease_owner: ${options.reviewLeaseOwner ?? "unknown"}
 review_lease_comment_id: ${options.reviewLeaseCommentId ?? "unknown"}
@@ -20189,6 +21426,7 @@ item_snapshot_hash: ${options.snapshotHash}
 review_content_digest: ${options.contentDigest}
 last_full_review_at: ${reviewedAt}
 last_full_review_decision: ${options.decision.decision}
+last_full_review_bulk_filer_detected: ${options.context.bulkFiler?.detected === true}
 review_cache_hit: false
 review_structural_cache_version: ${options.structuralRecord?.version ?? "unknown"}
 review_structural_fingerprint: ${options.structuralRecord?.fingerprint ?? "unknown"}
@@ -21351,6 +22589,54 @@ function finishReviewActionLedger(options: {
   options.ledger.terminal = true;
 }
 
+function reserveReviewLeaseCommand(args: Args): void {
+  repoFromArgs(args);
+  const itemNumber = numberArg(args.item_number, 0);
+  const reviewTimeoutMs = numberArg(args.review_timeout_ms, 0);
+  if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
+    throw new UserFacingCommandError("--item-number must be a positive integer.");
+  }
+  if (!Number.isInteger(reviewTimeoutMs) || reviewTimeoutMs <= 0) {
+    throw new UserFacingCommandError("--review-timeout-ms must be a positive integer.");
+  }
+  const { item, state } = fetchItem(itemNumber);
+  if (state !== "open") {
+    throw new UserFacingCommandError(
+      `Cannot reserve a review lease for #${itemNumber}: state is ${state}.`,
+    );
+  }
+  const currentRevision =
+    item.kind === "pull_request"
+      ? pullRequestHeadSha(itemNumber)
+      : collectItemContext(item, { fullTimelineForRelations: true }).sourceRevision;
+  if (!currentRevision || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(currentRevision)) {
+    throw new UserFacingCommandError(
+      `Could not resolve the current review revision for #${itemNumber}.`,
+    );
+  }
+  const result = postReviewStartStatusComment({
+    item,
+    headSha: currentRevision,
+    reviewTimeoutMs,
+    position: 1,
+    total: 1,
+    shardIndex: 0,
+    shardCount: 1,
+  });
+  if (result.status === "held") {
+    console.log(JSON.stringify({ status: "held", retryAt: result.retryAt }));
+    return;
+  }
+  console.log(
+    JSON.stringify({
+      status: "posted",
+      owner: result.lease.owner,
+      commentId: result.lease.commentId,
+      headSha: result.lease.headSha,
+    }),
+  );
+}
+
 function reviewCommand(args: Args): void {
   const profile = repoFromArgs(args);
   // `--local-range` is inherently a local, offline operation, so it implies `--local-only`
@@ -21466,6 +22752,17 @@ function reviewCommand(args: Args): void {
   const hotIntake = boolArg(args.hot_intake);
   const readonlyOpenclaw = boolArg(args.readonly_openclaw);
   const skipStartComment = boolArg(args.skip_start_comment) || localOnly || localRange;
+  const suppliedReviewLease = suppliedReviewStartLeaseFromArgs(args);
+  if (suppliedReviewLease && !skipStartComment) {
+    throw new UserFacingCommandError(
+      "A supplied review lease requires --skip-start-comment to prevent a second lease from being created.",
+    );
+  }
+  if (suppliedReviewLease && localOnly) {
+    throw new UserFacingCommandError(
+      "A supplied review lease cannot be used with local-only review.",
+    );
+  }
   const forcedLoginMethod = reviewCodexForcedLoginMethod(args);
   const loadReviewGitInfo = (): GitInfo =>
     checkout.gitTargetBranch
@@ -21483,6 +22780,12 @@ function reviewCommand(args: Args): void {
   const maintainerRequest = additionalPrompt.trim().length > 0;
   const readonlyModeSnapshots = readonlyOpenclaw ? makeTreeReadOnly(openclawDir) : [];
   const acquiredReviewLeases: Array<{ itemNumber: number; lease: AcquiredReviewStartLease }> = [];
+  const releaseOwnedReviewLease = (itemNumber: number, lease: AcquiredReviewStartLease): boolean =>
+    // The exact-event workflow reserves a supplied lease in its write-token
+    // step and owns cleanup outside this read-token review. Every lease this
+    // command creates itself must still be deleted, even for a read-only checkout.
+    isSuppliedReviewStartLease(suppliedReviewLease, lease) ||
+    deleteOwnedDedicatedReviewStartLease(itemNumber, lease);
   let reviewLedger: ReviewActionLedger | null = null;
   let activeReviewItem: Item | null = null;
   let completed = 0;
@@ -21507,6 +22810,11 @@ function reviewCommand(args: Args): void {
     const { candidates, scannedPages } = localRangeData
       ? { candidates: [localRangeData.item], scannedPages: 0 }
       : selectCandidates(selectionOptions);
+    if (suppliedReviewLease && candidates.length !== 1) {
+      throw new UserFacingCommandError(
+        "A supplied review lease requires exactly one selected item.",
+      );
+    }
     if (expectedSourceRevision && candidates.length !== 1) {
       throw new UserFacingCommandError(
         `--expected-source-revision requires exactly one selected issue; selected ${candidates.length}.`,
@@ -21553,6 +22861,9 @@ function reviewCommand(args: Args): void {
     let semanticCacheRevalidationFailures = 0;
     let semanticCacheRevalidationMs = 0;
     let hydrationRuns = 0;
+    const bulkFilerCountCache: BulkFilerCountCache = new Map();
+    const bulkFilerRepositoryPermissionCache: BulkFilerRepositoryPermissionCache = new Map();
+    const bulkFilerWindowNow = Date.now();
     const structuralCacheReasons = new Map<string, number>();
     const structuralCacheRevalidationReasons = new Map<string, number>();
     const semanticCacheReasons = new Map<string, number>();
@@ -21568,6 +22879,23 @@ function reviewCommand(args: Args): void {
       try {
       startReviewActionLedgerItem(reviewLedger, item);
       activeReviewMutationRunner = reviewMutationRunner(reviewLedger, item);
+      const bulkFilerDetection =
+        !localOnly && item.kind === "issue"
+          ? detectBulkFiler({
+              item,
+              cache: bulkFilerCountCache,
+              now: bulkFilerWindowNow,
+              searchCount: ({ author, windowStart }) =>
+                authorIssueCountInBulkFilerWindow(author, windowStart),
+              onSearchError: (error) => {
+                console.error(
+                  `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} bulk-filer-search=failed #${item.number}: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                );
+              },
+            })
+          : { context: null, labelPending: false, labelApplied: false };
       if (humanLocalReview) {
         console.error("");
         console.error("Collecting GitHub context");
@@ -21577,7 +22905,30 @@ function reviewCommand(args: Args): void {
         );
       }
       const existingPriorReview = localRangeData ? null : existingReview(item, itemsDir);
-      const priorReview =
+      const lastFullReviewBulkFilerState = frontMatterValue(
+        existingPriorReview?.markdown ?? "",
+        "last_full_review_bulk_filer_detected",
+      );
+      const lastFullReviewBulkFilerStateMayNeedRecheck =
+        existingPriorReview !== null && !/^false$/i.test(lastFullReviewBulkFilerState ?? "");
+      const needsBulkFilerPermissionLookup =
+        !localOnly &&
+        item.kind === "issue" &&
+        !isBulkFilerExemptAuthorAssociation(item.authorAssociation) &&
+        (bulkFilerDetection.context?.detected || lastFullReviewBulkFilerStateMayNeedRecheck);
+      const bulkFilerExemptionApplied =
+        item.kind === "issue" &&
+        (isBulkFilerExemptAuthorAssociation(item.authorAssociation) ||
+          (needsBulkFilerPermissionLookup &&
+            isBulkFilerExemptRepositoryPermission(
+              bulkFilerRepositoryPermission(item.author, bulkFilerRepositoryPermissionCache),
+            )));
+      if (bulkFilerDetection.context?.detected && bulkFilerExemptionApplied) {
+        bulkFilerDetection.context = null;
+        bulkFilerDetection.labelPending = false;
+        bulkFilerDetection.labelApplied = false;
+      }
+      let priorReview =
         item.kind === "pull_request" &&
         existingPriorReview &&
         !isReviewedPrActivityCursor(
@@ -21585,6 +22936,11 @@ function reviewCommand(args: Args): void {
         )
           ? null
           : existingPriorReview;
+      if (bulkFilerPolicyInvalidatesCachedReview(priorReview?.markdown ?? null, bulkFilerExemptionApplied)) {
+        // A prior full review was made under a now-inapplicable bulk-filer policy.
+        // Re-run it instead of refreshing its cached suppression fields.
+        priorReview = null;
+      }
       const expectedPreviousReviewDigest = priorReview
         ? previousClawSweeperReviewDigestFromReport(priorReview.markdown)
         : null;
@@ -21745,7 +23101,7 @@ function reviewCommand(args: Args): void {
             );
             if (!revalidationDecision.hit || !previousReviewIdentityMatches) {
               const leaseToRelease = acquiredReviewLease!;
-              if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
+              if (!releaseOwnedReviewLease(item.number, leaseToRelease)) {
                 leaseAcquisitionFailures += 1;
                 leaseAcquisitionFailureDetails.push(
                   `#${item.number}: could not release structural cache lease after ${revalidationReason}`,
@@ -21785,6 +23141,7 @@ function reviewCommand(args: Args): void {
                 String(acquiredReviewLease.commentId),
               );
               carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
+              carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
               carried = updateReviewStructuralFrontMatter(carried, structuralRecord, true);
               writeFileSync(reportPath, carried, "utf8");
               finishReviewActionLedgerItem({
@@ -21874,9 +23231,68 @@ function reviewCommand(args: Args): void {
             reviewCacheDigest: true,
             reviewCacheGitDir: openclawDir,
           });
+      if (bulkFilerDetection.context) context.bulkFiler = bulkFilerDetection.context;
       const contextElapsedMs = Date.now() - contextStartedAt;
       const contextItemUpdatedAt = stringOrUndefined(asRecord(context.issue).updatedAt);
       if (contextItemUpdatedAt) item.updatedAt = contextItemUpdatedAt;
+      if (suppliedReviewLease) {
+        const currentRevision =
+          item.kind === "pull_request"
+            ? pullHeadShaFromContext(context)
+            : context.sourceRevision ?? null;
+        if (!currentRevision) {
+          coordinationHeldRetryAt = new Date(Date.now() + 60_000).toISOString();
+          leaseAcquisitionFailures += 1;
+          leaseAcquisitionFailureDetails.push(
+            `#${item.number}: current revision could not be resolved for the reserved review lease`,
+          );
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=stale-reservation #${item.number}`,
+          );
+          continue;
+        }
+        const freshLeases = freshDedicatedReviewStartLeases({
+          comments: issueReviewCommentState(item.number).leaseComments,
+          itemNumber: item.number,
+          headSha: currentRevision,
+          nowMs: Date.now(),
+        });
+        const winner = freshLeases[0];
+        const supplied = freshLeases.find(
+          (lease) =>
+            commentId(lease.comment) === suppliedReviewLease.commentId &&
+            lease.owner === suppliedReviewLease.owner,
+        );
+        if (!supplied || !winner) {
+          coordinationHeldRetryAt = new Date(Date.now() + 60_000).toISOString();
+          leaseAcquisitionFailures += 1;
+          leaseAcquisitionFailureDetails.push(
+            `#${item.number}: reserved review lease is no longer fresh for the current revision`,
+          );
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=stale-reservation #${item.number}`,
+          );
+          continue;
+        }
+        if (
+          commentId(winner.comment) !== suppliedReviewLease.commentId ||
+          winner.owner !== suppliedReviewLease.owner
+        ) {
+          coordinationHeldRetryAt = winner.expiresAt;
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=held #${item.number}`,
+          );
+          continue;
+        }
+        const claimedLease: AcquiredReviewStartLease = {
+          owner: suppliedReviewLease.owner,
+          commentId: suppliedReviewLease.commentId,
+          headSha: currentRevision,
+          comment: supplied.comment,
+        };
+        acquiredReviewLease = claimedLease;
+        acquiredReviewLeases.push({ itemNumber: item.number, lease: claimedLease });
+      }
       if (!localRangeData && contextItemUpdatedAt && preHydrationStructuralRecord) {
         structuralCacheRevalidations += 1;
         const structuralRevalidationStartedAt = Date.now();
@@ -21960,7 +23376,11 @@ function reviewCommand(args: Args): void {
       };
       if (
         acquiredReviewLease &&
-        pullHeadShaFromContext(context)?.trim().toLowerCase() !== acquiredReviewLease.headSha
+        !reviewLeaseStillMatchesContext(
+          item.kind,
+          pullHeadShaFromContext(context),
+          acquiredReviewLease.headSha,
+        )
       ) {
         leaseAcquisitionFailures += 1;
         leaseAcquisitionFailureDetails.push(
@@ -22044,7 +23464,7 @@ function reviewCommand(args: Args): void {
               error instanceof Error ? error.message : String(error)
             }`,
           );
-          if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
+          if (!releaseOwnedReviewLease(item.number, leaseToRelease)) {
             leaseAcquisitionFailureDetails.push(
               `#${item.number}: could not release issue review lease after durable review refresh failed`,
             );
@@ -22149,7 +23569,7 @@ function reviewCommand(args: Args): void {
             (semanticCacheRevalidationReasons.get(revalidationReason) ?? 0) + 1,
           );
           const leaseToRelease = acquiredReviewLease!;
-          if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
+          if (!releaseOwnedReviewLease(item.number, leaseToRelease)) {
             leaseAcquisitionFailures += 1;
             leaseAcquisitionFailureDetails.push(
               `#${item.number}: could not release semantic cache lease after ${revalidationReason}`,
@@ -22219,7 +23639,7 @@ function reviewCommand(args: Args): void {
         );
         if (!revalidatedStructuralRecord || !semanticRevalidationDecision.hit) {
           const leaseToRelease = acquiredReviewLease!;
-          if (!deleteOwnedDedicatedReviewStartLease(item.number, leaseToRelease)) {
+          if (!releaseOwnedReviewLease(item.number, leaseToRelease)) {
             leaseAcquisitionFailures += 1;
             leaseAcquisitionFailureDetails.push(
               `#${item.number}: could not release semantic cache lease after ${revalidationReason}`,
@@ -22274,6 +23694,7 @@ function reviewCommand(args: Args): void {
         );
         carried = replaceFrontMatterValue(carried, "main_sha", git.mainSha);
         carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
+        carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
         carried = updateReviewStructuralFrontMatter(carried, structuralRecord, false);
         carried = updateReviewSemanticFrontMatter(carried, semanticRecord, true);
         writeFileSync(reportPath, carried, "utf8");
@@ -22344,6 +23765,7 @@ function reviewCommand(args: Args): void {
           itemSnapshotHash(item, context),
         );
         carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
+        carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
         carried = structuralRecord
           ? updateReviewStructuralFrontMatter(carried, structuralRecord, false)
           : replaceFrontMatterValue(carried, "review_structural_cache_hit", "false");
@@ -22660,7 +24082,7 @@ function reviewCommand(args: Args): void {
         const previousReviewMutationRunner = activeReviewMutationRunner;
         activeReviewMutationRunner = reviewMutationRunner(reviewLedger, state.item);
         try {
-          deleteOwnedDedicatedReviewStartLease(acquired.itemNumber, acquired.lease);
+          releaseOwnedReviewLease(acquired.itemNumber, acquired.lease);
         } finally {
           activeReviewMutationRunner = previousReviewMutationRunner;
         }
@@ -24914,11 +26336,56 @@ function recordApplyActionEvents(options: {
   options.ledger.terminal = true;
 }
 
-function applyDecisionsCommand(args: Args): void {
-  const runtimeBudget: GitHubRuntimeBudget = {
-    startedAtMs: Date.now(),
-    maxRuntimeMs: numberArg(args.max_runtime_ms, 0),
+function applyRuntimeBudget(
+  configuredMaxRuntimeMs: number,
+  tokenDeadlineText: string | undefined,
+  nowMs = Date.now(),
+): GitHubRuntimeBudget {
+  if (!tokenDeadlineText) {
+    return { startedAtMs: nowMs, maxRuntimeMs: configuredMaxRuntimeMs };
+  }
+  if (!/^\d+$/.test(tokenDeadlineText)) {
+    throw new Error("CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS must be a Unix timestamp in milliseconds");
+  }
+  const tokenDeadlineMs = Number(tokenDeadlineText);
+  if (!Number.isSafeInteger(tokenDeadlineMs)) {
+    throw new Error("CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS is outside the safe integer range");
+  }
+  const remainingMs = tokenDeadlineMs - nowMs;
+  if (remainingMs <= 0) {
+    return {
+      startedAtMs: nowMs - 1,
+      maxRuntimeMs: 1,
+      limitReason: `apply token budget reached at ${tokenDeadlineMs}ms since epoch`,
+    };
+  }
+  if (configuredMaxRuntimeMs > 0 && configuredMaxRuntimeMs <= remainingMs) {
+    return { startedAtMs: nowMs, maxRuntimeMs: configuredMaxRuntimeMs };
+  }
+  return {
+    startedAtMs: nowMs,
+    maxRuntimeMs: remainingMs,
+    limitReason: `apply token budget reached at ${tokenDeadlineMs}ms since epoch`,
   };
+}
+
+export function applyRuntimeBudgetForTest(options: {
+  configuredMaxRuntimeMs: number;
+  tokenDeadlineMs?: number;
+  nowMs: number;
+}): Pick<GitHubRuntimeBudget, "startedAtMs" | "maxRuntimeMs" | "limitReason"> {
+  return applyRuntimeBudget(
+    options.configuredMaxRuntimeMs,
+    options.tokenDeadlineMs === undefined ? undefined : String(options.tokenDeadlineMs),
+    options.nowMs,
+  );
+}
+
+function applyDecisionsCommand(args: Args): void {
+  const runtimeBudget = applyRuntimeBudget(
+    numberArg(args.max_runtime_ms, 0),
+    process.env.CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS,
+  );
   withGitHubRuntimeBudget(runtimeBudget, () => {
     try {
       applyDecisionsCommandInner(args, runtimeBudget);
@@ -24958,8 +26425,8 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
   const syncCommentsOnly = boolArg(args.sync_comments_only);
   const suppressAutomationMarkers = boolArg(args.suppress_automation_markers);
   const emitEventApplyProof = boolArg(args.event_apply_proof);
+  const exactEventPublication = boolArg(args.exact_event_publication);
   const commentSyncMinAgeDays = numberArg(args.comment_sync_min_age_days, 0);
-  const maxRuntimeMs = numberArg(args.max_runtime_ms, 0);
   const reportPath = resolve(stringArg(args.report_path, join(ROOT, "apply-report.json")));
   const artifactDir = resolve(stringArg(args.artifact_dir, join(ROOT, "artifacts", "apply")));
   const cursorTraceArg = stringArg(args.cursor_trace, "").trim();
@@ -24979,6 +26446,8 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       : {}),
   };
   const startedAtMs = Date.now();
+  const { maxRuntimeMs } = runtimeBudget;
+  const bulkFilerRepositoryPermissionCache: BulkFilerRepositoryPermissionCache = new Map();
   const requestedItemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
   const requestedItemNumberSet = new Set(requestedItemNumbers);
   const requestedItemOrder = orderedApplyItemNumbers(args.item_numbers, args.item_number);
@@ -25070,6 +26539,21 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
   const allOpenFileEntries = applyReportEntriesForDir(itemsDir, "items", false);
   const openFileEntryByNumber = new Map(allOpenFileEntries.map((entry) => [entry.number, entry]));
   const closedThisRun = new Set<string>();
+  const authorPrBudgetClosesThisRun = new Map<string, number>();
+  // Counts every same-author PR closed this run regardless of reason: the budget
+  // projection must see closes GitHub Search has not indexed yet, whatever closed them.
+  const authorPrClosesThisRun = new Map<string, number>();
+  const recordAuthorPrClose = (author: string, closeReason: CloseReason | "none" | null): void => {
+    const authorKey = author.trim().toLowerCase();
+    if (!authorKey) return;
+    authorPrClosesThisRun.set(authorKey, (authorPrClosesThisRun.get(authorKey) ?? 0) + 1);
+    if (closeReason === "author_pr_budget_exceeded") {
+      authorPrBudgetClosesThisRun.set(
+        authorKey,
+        (authorPrBudgetClosesThisRun.get(authorKey) ?? 0) + 1,
+      );
+    }
+  };
   const applyLedger = startApplyActionLedger({
     applyKind,
     closeReasons: applyCloseReasons,
@@ -25194,12 +26678,14 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     const file = entry.name;
     const path = entry.path;
     if (runtimeBudgetExceeded(startedAtMs, maxRuntimeMs, Date.now())) {
+      const reason =
+        runtimeBudget.limitReason ?? `max runtime ${maxRuntimeMs}ms reached`;
       results.push({
         number: 0,
         action: "skipped_runtime_budget",
-        reason: `max runtime ${maxRuntimeMs}ms reached`,
+        reason,
       });
-      logProgress(`stopping apply: max runtime ${maxRuntimeMs}ms reached`);
+      logProgress(`stopping apply: ${reason}`);
       break;
     }
     let markdown = entry.markdown;
@@ -25502,6 +26988,35 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       item.kind === "pull_request"
         ? (pullHeadShaFromContext(currentItemContext()) ?? "")
         : liveIssueSourceRevision(number);
+    if (state === "open" && exactEventPublication) {
+      const exactLeaseDisposition = exactEventReviewLeaseDisposition(
+        markdownBeforeApplyDecisionMutations,
+        initialReviewHeadSha,
+      );
+      if (exactLeaseDisposition.status === "source_drift") {
+        const reason =
+          item.kind === "pull_request"
+            ? `live PR head ${exactLeaseDisposition.liveRevision || "unknown"} differs from reviewed head ${exactLeaseDisposition.reportRevision}`
+            : `live issue source revision ${exactLeaseDisposition.liveRevision || "unknown"} differs from reviewed revision ${exactLeaseDisposition.reportRevision}`;
+        if (markApplySkipped("skipped_changed_since_review", reason)) break;
+        continue;
+      }
+      if (exactLeaseDisposition.status === "legacy_tupleless") {
+        if (
+          markApplySkipped(
+            "skipped_stale_review_comment_sync",
+            exactLeaseDisposition.reason,
+          )
+        ) {
+          break;
+        }
+        continue;
+      }
+      if (exactLeaseDisposition.status === "invalid") {
+        if (markApplySkipped("kept_open", exactLeaseDisposition.reason)) break;
+        continue;
+      }
+    }
     const reviewStartLeaseStateForComments = (
       leaseComments: Record<string, unknown>[],
       reviewComment: Record<string, unknown> | undefined,
@@ -25533,6 +27048,9 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           leaseCommentId: lease.commentId,
         }),
       );
+      // A matching report tuple deliberately returns `preserve: false`: the exact publisher
+      // adopts that completed review lease as its mutation lock. Any different or incomplete
+      // live lease remains preserved and blocks the older artifact.
       return {
         comment: reviewComment,
         leaseComments,
@@ -25556,6 +27074,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         if (!headBefore || headBefore !== headAfter || headAfter !== initialReviewHeadSha) {
           return {
             comment: refreshed.reviewComment,
+            comments: refreshed.comments,
             leaseComments: refreshed.leaseComments,
             headSha: headAfter,
             lease: null,
@@ -25566,6 +27085,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         if (item.kind === "issue" && reportReviewRevision && headAfter !== reportReviewRevision) {
           return {
             comment: refreshed.reviewComment,
+            comments: refreshed.comments,
             leaseComments: refreshed.leaseComments,
             headSha: headAfter,
             lease: null,
@@ -25573,11 +27093,14 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             blockReason: `live issue source revision ${headAfter} differs from reviewed revision ${reportReviewRevision}`,
           };
         }
-        return reviewStartLeaseStateForComments(
-          refreshed.leaseComments,
-          refreshed.reviewComment,
-          headAfter,
-        );
+        return {
+          ...reviewStartLeaseStateForComments(
+            refreshed.leaseComments,
+            refreshed.reviewComment,
+            headAfter,
+          ),
+          comments: refreshed.comments,
+        };
       } catch (error) {
         if (error instanceof GitHubRuntimeBudgetError) throw error;
         const detail = trimMiddle(
@@ -25586,6 +27109,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         );
         return {
           comment: undefined,
+          comments: [] as Record<string, unknown>[],
           leaseComments: [],
           headSha: "",
           lease: null,
@@ -25687,6 +27211,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       action: "kept_open" | "skipped_stale_review_comment_sync",
       reason: string,
       restoreOriginal = true,
+      activeReviewLeaseExpiresAt?: string,
     ): boolean => {
       markdown = replaceFrontMatterValue(
         restoreOriginal ? markdownBeforeApplyDecisionMutations : markdown,
@@ -25694,7 +27219,17 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         new Date().toISOString(),
       );
       if (!dryRun) writeReportMarkdown(path, markdown);
-      results.push({ number, action, reason });
+      results.push({
+        number,
+        action,
+        reason,
+        ...(emitEventApplyProof && action === "kept_open" && activeReviewLeaseExpiresAt
+          ? {
+              activeReviewLeaseVerified: true,
+              activeReviewLeaseExpiresAt,
+            }
+          : {}),
+      });
       processedCount += 1;
       maybeLogProgress(`skipped #${number}: ${reason}`);
       return processedCount >= processedLimit;
@@ -25702,19 +27237,27 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     const reviewActivitySourceChanged = (reason: string): boolean =>
       reason === "pull request review activity changed since review" ||
       reason === "pull request review activity exceeds the bounded reviewed cursor";
-    const recordReviewLeaseSkip = (reason: string, restoreOriginal = true): boolean =>
-      reviewActivitySourceChanged(reason)
+    const exactEventSourceRevisionChanged = (reason: string): boolean =>
+      exactEventPublication && isExactEventSourceRevisionChange(item.kind, reason);
+    const recordReviewLeaseSkip = (
+      reason: string,
+      restoreOriginal = true,
+      activeReviewLeaseExpiresAt?: string,
+    ): boolean =>
+      reviewActivitySourceChanged(reason) || exactEventSourceRevisionChanged(reason)
         ? markApplySkipped("skipped_changed_since_review", reason)
         : staleCanonicalCommentSyncPending
         ? markApplySkipped(
             "retry_stale_canonical_comment_sync",
             `${reason}; stale canonical comment correction remains pending`,
           )
-        : recordReviewGuardSkip("kept_open", reason, restoreOriginal);
+        : recordReviewGuardSkip("kept_open", reason, restoreOriginal, activeReviewLeaseExpiresAt);
     recordApplyMutationGuardReason = (reason) => recordReviewLeaseSkip(reason, false);
     const recordActiveReviewLeaseSkip = (expiresAt: string): boolean =>
       recordReviewLeaseSkip(
         `${item.kind === "pull_request" ? "same-head" : "same-revision"} ClawSweeper review is active until ${expiresAt}`,
+        true,
+        expiresAt,
       );
     let existingReviewComment: Record<string, unknown> | undefined;
     const pendingStaleCanonicalCommentReason = staleCanonicalCommentSyncPending
@@ -25832,6 +27375,48 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       if (!dryRun) allowedSelfMutationUpdatedAts.add(fetchItem(number).item.updatedAt);
     };
     let cachedPrCloseCoverageProofGateResult: PrCloseCoverageProofGateResult | undefined;
+    let cachedAuthorPrBudgetApplyGate: AuthorPrBudgetApplyGate | undefined;
+    let cachedStaleVersionBugBlockReason: string | null | undefined;
+    let cachedObsoleteFixPrBlockReason: string | null | undefined;
+    const currentStaleVersionBugBlockReason = (): string | null => {
+      if (cachedStaleVersionBugBlockReason === undefined) {
+        cachedStaleVersionBugBlockReason = staleVersionBugApplyBlockReasonSafe(number, item);
+      }
+      return cachedStaleVersionBugBlockReason;
+    };
+    const currentObsoleteFixPrBlockReason = (): string | null => {
+      if (cachedObsoleteFixPrBlockReason === undefined) {
+        cachedObsoleteFixPrBlockReason = obsoleteFixPrApplyBlockReasonSafe(number, item);
+      }
+      return cachedObsoleteFixPrBlockReason;
+    };
+    const currentAuthorPrBudgetApplyGate = (): AuthorPrBudgetApplyGate => {
+      const authorKey = item.author.trim().toLowerCase();
+      const closedForAuthor = authorPrBudgetClosesThisRun.get(authorKey) ?? 0;
+      const maxCloses = authorPrBudgetMaxClosesPerRun();
+      if (closedForAuthor >= maxCloses) {
+        return {
+          allowed: false,
+          reason: `author PR-budget per-run close cap of ${maxCloses} reached for @${item.author.replace(/^@/, "")}`,
+        };
+      }
+      cachedAuthorPrBudgetApplyGate ??= authorPrBudgetApplyGateSafe(number, item, markdown);
+      if (!cachedAuthorPrBudgetApplyGate.allowed) return cachedAuthorPrBudgetApplyGate;
+      // GitHub Search may not reflect this run's own closes yet, so project them
+      // onto the live count: one run must never trim an author below the budget.
+      // Uses the all-reasons counter — a same-author PR closed as abandoned or
+      // duplicate earlier in this run stales the search count just the same.
+      const projectedOpenPrCount =
+        cachedAuthorPrBudgetApplyGate.state.openPrCount -
+        (authorPrClosesThisRun.get(authorKey) ?? 0);
+      if (projectedOpenPrCount <= cachedAuthorPrBudgetApplyGate.state.budget) {
+        return {
+          allowed: false,
+          reason: `author is projected at ${projectedOpenPrCount} open PRs after this run's closes; author PR budget is ${cachedAuthorPrBudgetApplyGate.state.budget}`,
+        };
+      }
+      return cachedAuthorPrBudgetApplyGate;
+    };
     let prCloseCoverageProofGateChecked = false;
     let prCloseCoverageProofStartedAtMs: number | null = null;
     const runtimeBudgetProofBlock = (phase = "before"): PrCloseCoverageProofGateResult => ({
@@ -25914,7 +27499,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     };
     const sameAuthorPairStartCloseable = new Map<string, boolean>();
     const currentCloseGatesPassed = (): boolean => {
-      if (requiredMaintainerDecision?.required && closeReason !== "unsponsored_feature_request")
+      if (
+        requiredMaintainerDecision?.required &&
+        closeReason !== "unsponsored_feature_request" &&
+        closeReason !== "author_pr_budget_exceeded"
+      )
         return false;
       if (!closeReason || !closeReasonEnabled(closeReason, applyCloseReasons)) return false;
       if (needsReviewCommentSync) return false;
@@ -25965,6 +27554,24 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       if (
         closeReason === "unsponsored_feature_request" &&
         unsponsoredFeatureApplyBlockReasonSafe(number, item)
+      ) {
+        return false;
+      }
+      if (
+        closeReason === "stale_version_bug" &&
+        currentStaleVersionBugBlockReason()
+      ) {
+        return false;
+      }
+      if (
+        closeReason === "obsolete_fix_pr" &&
+        currentObsoleteFixPrBlockReason()
+      ) {
+        return false;
+      }
+      if (
+        closeReason === "author_pr_budget_exceeded" &&
+        !currentAuthorPrBudgetApplyGate().allowed
       ) {
         return false;
       }
@@ -26255,13 +27862,21 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     ) {
       attemptedPullRequestClosePromotion = true;
       const promotionContext = currentItemContext();
-      const promotion = pullRequestClosePromotion(
-        markdown,
-        item,
-        promotionContext,
-        staleMinAgeDays,
-        { reportDirs: [itemsDir, closedDir] },
-      );
+      let promotion: PullRequestClosePromotion | null = null;
+      if (
+        authorPrBudgetCloseEnabled() &&
+        closeReasonEnabled("author_pr_budget_exceeded", applyCloseReasons) &&
+        !authorPrBudgetAgeSkipReason(item) &&
+        !authorPrBudgetSignalBlockReason(markdown)
+      ) {
+        const authorBudgetGate = currentAuthorPrBudgetApplyGate();
+        if (authorBudgetGate.allowed) {
+          promotion = authorPrBudgetPromotion(markdown, authorBudgetGate.state);
+        }
+      }
+      promotion ??= pullRequestClosePromotion(markdown, item, promotionContext, staleMinAgeDays, {
+        reportDirs: [itemsDir, closedDir],
+      });
       if (promotion && closeReasonEnabled(promotion.closeReason, applyCloseReasons)) {
         markdown = upgradePullRequestClosePromotionReport(
           markdown,
@@ -26275,6 +27890,21 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         isCloseProposal = true;
         cachedPrCloseCoverageProofGateResult = undefined;
       }
+    }
+    if (
+      state === "open" &&
+      isCloseProposal &&
+      closeReason === "author_pr_budget_exceeded" &&
+      !syncCommentsOnly &&
+      (applyKind === "all" || item.kind === applyKind) &&
+      closeReasonEnabled(closeReason, applyCloseReasons)
+    ) {
+      const authorBudgetGate = currentAuthorPrBudgetApplyGate();
+      if (!authorBudgetGate.allowed) {
+        if (markApplySkipped("kept_open", authorBudgetGate.reason)) break;
+        continue;
+      }
+      markdown = applyAuthorPrBudgetStateToReport(markdown, authorBudgetGate.state);
     }
     if (
       state === "open" &&
@@ -26295,6 +27925,34 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       const unsponsoredFeatureBlockReason = unsponsoredFeatureApplyBlockReasonSafe(number, item);
       if (unsponsoredFeatureBlockReason) {
         if (markApplySkipped("kept_open", unsponsoredFeatureBlockReason)) break;
+        continue;
+      }
+    }
+    if (
+      state === "open" &&
+      isCloseProposal &&
+      closeReason === "stale_version_bug" &&
+      !syncCommentsOnly &&
+      (applyKind === "all" || item.kind === applyKind) &&
+      closeReasonEnabled(closeReason, applyCloseReasons)
+    ) {
+      const staleVersionBlockReason = currentStaleVersionBugBlockReason();
+      if (staleVersionBlockReason) {
+        if (markApplySkipped("kept_open", staleVersionBlockReason)) break;
+        continue;
+      }
+    }
+    if (
+      state === "open" &&
+      isCloseProposal &&
+      closeReason === "obsolete_fix_pr" &&
+      !syncCommentsOnly &&
+      (applyKind === "all" || item.kind === applyKind) &&
+      closeReasonEnabled(closeReason, applyCloseReasons)
+    ) {
+      const obsoleteFixBlockReason = currentObsoleteFixPrBlockReason();
+      if (obsoleteFixBlockReason) {
+        if (markApplySkipped("kept_open", obsoleteFixBlockReason)) break;
         continue;
       }
     }
@@ -26473,8 +28131,67 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         truncationCountsAsActivity: true,
       }),
     );
+    // A deferred duplicate/superseded close is not eligible to mutate until
+    // apply-proof has produced a new read-only coverage proof. Its publisher
+    // updates the command acknowledgement to make that handoff visible, which
+    // advances issue.updated_at without changing the reviewed source. Admit
+    // only that exact configured ClawSweeper status-comment churn; any human activity still
+    // forces a fresh review before proof or close work proceeds.
+    let retryCloseCoverageCommandStatusComments: Record<string, unknown>[] | undefined;
+    const reviewedSourceRevision = frontMatterValue(
+      markdownBeforeApplyDecisionMutations,
+      "item_source_revision",
+    );
+    const retryCloseCoverageCommandStatusOnlyUpdate = (
+      candidate: typeof item,
+      candidateContext: ItemContext,
+    ): boolean => {
+      if (
+        action !== "retry_pr_close_coverage_proof" ||
+        candidate.updatedAt === storedUpdatedAt ||
+        storedUpdatedAtMs === null ||
+        !reviewedSourceRevision ||
+        reviewedSourceRevision === "unknown" ||
+        candidateContext.sourceRevision !== reviewedSourceRevision
+      ) {
+        return false;
+      }
+      // Command-status comments are deliberately excluded from review context as bot noise.
+      // Read raw comments only for this narrow, trusted handoff and reuse them through the
+      // post-proof freshness check. The source-revision match prevents a human title/body
+      // edit made before this bot comment from being masked; ordinary drift remains fail-closed.
+      const rawComments =
+        retryCloseCoverageCommandStatusComments ??= fetchIssueReviewComments(number);
+      const statusComment = rawComments.find(
+        (comment) =>
+          commentUpdatedAt(comment) === candidate.updatedAt &&
+          CLAWSWEEPER_BOT_AUTHORS.has(
+            (login(asRecord(comment).user) ?? "").trim().toLowerCase(),
+          ) &&
+          (commentBody(comment) ?? "").includes("<!-- clawsweeper-command-status:"),
+      );
+      const statusCreatedAt = statusComment
+        ? stringOrUndefined(statusComment.created_at)
+        : undefined;
+      return Boolean(
+        statusCreatedAt &&
+          !contextHasNonAutomationActivityAfter(candidateContext, storedUpdatedAtMs, {
+            truncationCountsAsActivity: true,
+            ignoreTrustedTimelineComment: {
+              authors: CLAWSWEEPER_BOT_AUTHORS,
+              createdAt: statusCreatedAt,
+            },
+          }),
+      );
+    };
+    const commandStatusOnlyUpdate =
+      action === "retry_pr_close_coverage_proof" &&
+      retryCloseCoverageCommandStatusOnlyUpdate(item, currentItemContext());
     const automationOnlyUpdate =
-      reviewCommentOnlyUpdate || labelSyncOnlyUpdate || ownedIssueReviewLeaseOnlyUpdate;
+      reviewCommentOnlyUpdate ||
+      labelSyncOnlyUpdate ||
+      ownedIssueReviewLeaseOnlyUpdate ||
+      commandStatusOnlyUpdate;
     const labelSyncFreshEnough = (): boolean => {
       if (!storedUpdatedAt) return false;
       if (!updatedSinceReview || automationOnlyUpdate) return true;
@@ -26499,7 +28216,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       return !contextHasNonAutomationActivityAfter(
         currentItemContext(),
         storedUpdatedAtMs,
-        reviewedAtMs === null ? {} : { ignoreTimelineCommentsThroughMs: reviewedAtMs },
+        {
+          useCompleteActivityContext: true,
+          ...(reviewedAtMs === null ? {} : { ignoreTimelineCommentsThroughMs: reviewedAtMs }),
+        },
       );
     };
     const stalePrReviewHead =
@@ -26731,10 +28451,18 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           currentUpdatedAt: refreshed.item.updatedAt,
         };
       }
-      const refreshedSelfMutationOnlyUpdate = allowedSelfMutationUpdatedAts.has(
-        refreshed.item.updatedAt,
-      );
       let refreshedContext: ItemContext | null = null;
+      const refreshedCommandStatusOnlyUpdate =
+        action === "retry_pr_close_coverage_proof" &&
+        retryCloseCoverageCommandStatusOnlyUpdate(
+          refreshed.item,
+          (refreshedContext ??= collectItemContext(refreshed.item, {
+            fullTimelineForRelations: true,
+          })),
+        );
+      const refreshedSelfMutationOnlyUpdate =
+        allowedSelfMutationUpdatedAts.has(refreshed.item.updatedAt) ||
+        refreshedCommandStatusOnlyUpdate;
       const selfMutationMaskedNonAutomationActivity = (): boolean => {
         if (prCloseCoverageProofStartedAtMs === null) return true;
         refreshedContext ??= collectItemContext(refreshed.item, {
@@ -26913,10 +28641,42 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         continue;
       }
     }
+    const isCurrentLabelSyncReport = !stalePrReviewHead && labelSyncFreshEnough();
     const isCurrentCompleteReport =
-      frontMatterValue(markdown, "review_status") === "complete" &&
-      !stalePrReviewHead &&
-      labelSyncFreshEnough();
+      frontMatterValue(markdown, "review_status") === "complete" && isCurrentLabelSyncReport;
+    if (state === "open" && isCurrentLabelSyncReport) {
+      const mutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
+      if (mutationLeaseBlockReason) {
+        if (recordReviewLeaseSkip(mutationLeaseBlockReason, false)) break;
+        continue;
+      }
+      try {
+        const bulkFilerDetected = frontMatterBoolean(markdown, "bulk_filer_detected");
+        const needsBulkFilerPermissionLookup =
+          item.kind === "issue" &&
+          !isBulkFilerExemptAuthorAssociation(item.authorAssociation) &&
+          (bulkFilerDetected || hasNormalizedLabel(item.labels, BULK_FILED_LABEL));
+        const bulkFilerSyncResult = syncBulkFilerLabel({
+          number,
+          labels: item.labels,
+          bulkFilerDetected,
+          authorAssociation: item.authorAssociation,
+          repositoryPermission: needsBulkFilerPermissionLookup
+            ? bulkFilerRepositoryPermission(item.author, bulkFilerRepositoryPermissionCache)
+            : null,
+          dryRun,
+          onMutation: recordMutation,
+        });
+        item.labels = bulkFilerSyncResult.labels;
+        clawSweeperLabelsChanged ||= bulkFilerSyncResult.changed;
+        markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
+        if (bulkFilerSyncResult.changed) rememberSelfMutationUpdatedAt();
+      } catch (error) {
+        if (!isGitHubRequiresAuthenticationError(error)) throw error;
+        if (markLabelSyncAuthSkipped("ClawSweeper bulk-filer")) break;
+        continue;
+      }
+    }
     if (state === "open" && isCurrentCompleteReport) {
       const mutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
       if (mutationLeaseBlockReason) {
@@ -27351,6 +29111,25 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
               allowedSelfMutationUpdatedAts.add(syncedCommentUpdatedAt);
             }
             syncReasons.push("updated durable Codex review comment");
+            // The durable review comment is now published, so stale "review
+            // started" placeholders from failed earlier attempts are clutter.
+            const placeholderKeepCommentIds = new Set<number>();
+            const syncedCommentId = commentId(syncedComment);
+            if (syncedCommentId !== null) placeholderKeepCommentIds.add(syncedCommentId);
+            // Closures assign the active lease, so read it through a cast to
+            // defeat TypeScript's stale null narrowing at this use site.
+            const heldMutationLease = activeApplyMutationLease as {
+              itemNumber: number;
+              lease: AcquiredReviewStartLease;
+            } | null;
+            if (heldMutationLease?.itemNumber === number) {
+              placeholderKeepCommentIds.add(heldMutationLease.lease.commentId);
+            }
+            cleanupSupersededReviewPlaceholderComments({
+              number,
+              comments: latestLeaseState.comments,
+              keepCommentIds: placeholderKeepCommentIds,
+            });
           } catch (error) {
             const commentAuthError = isGitHubRequiresAuthenticationError(error);
             if (!commentAuthError && !isLockedConversationCommentError(error)) throw error;
@@ -27438,7 +29217,11 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       if (!isCloseProposal && attemptedPullRequestClosePromotion) markApplyChecked();
       continue;
     }
-    if (requiredMaintainerDecision?.required && closeReason !== "unsponsored_feature_request") {
+    if (
+      requiredMaintainerDecision?.required &&
+      closeReason !== "unsponsored_feature_request" &&
+      closeReason !== "author_pr_budget_exceeded"
+    ) {
       if (
         markApplySkipped(
           "kept_open",
@@ -27557,9 +29340,18 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         ? stalledUnprovenPrApplyBlockReasonSafe(number, item)
         : closeReason === "abandoned_pr"
           ? abandonedPrApplyBlockReasonSafe(number, item)
-          : closeReason === "unsponsored_feature_request"
-            ? unsponsoredFeatureApplyBlockReasonSafe(number, item)
-            : closeReason === "stale_insufficient_info"
+        : closeReason === "unsponsored_feature_request"
+          ? unsponsoredFeatureApplyBlockReasonSafe(number, item)
+          : closeReason === "author_pr_budget_exceeded"
+            ? (() => {
+                const gate = currentAuthorPrBudgetApplyGate();
+                return gate.allowed ? null : gate.reason;
+              })()
+          : closeReason === "stale_version_bug"
+            ? currentStaleVersionBugBlockReason()
+            : closeReason === "obsolete_fix_pr"
+              ? currentObsoleteFixPrBlockReason()
+          : closeReason === "stale_insufficient_info"
               ? issueRecentHumanCommentBlockReasonSafe(
                   number,
                   STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS,
@@ -27600,6 +29392,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       });
       logProgress(`would close #${number}`);
       closedThisRun.add(pairCloseKey(repo, number));
+      if (item.kind === "pull_request") recordAuthorPrClose(item.author, closeReason);
       if (processedCount >= processedLimit) break;
       continue;
     }
@@ -27620,6 +29413,20 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     }
     ensureRuntimeDelayFits(closeDelayMs, "before close");
     const appliedCloseReason = closeReason;
+    const needsIdeaArchiveLabel =
+      appliedCloseReason === "unsponsored_feature_request" &&
+      !item.labels.map(normalizeLabelName).includes(IDEA_ARCHIVE_LABEL);
+    if (appliedCloseReason === "unsponsored_feature_request") {
+      ensureIdeaArchiveLabel(recordMutation);
+      if (needsIdeaArchiveLabel) {
+        addIssueLabel(number, IDEA_ARCHIVE_LABEL, recordMutation);
+        item.labels.push(IDEA_ARCHIVE_LABEL);
+        markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
+      }
+    }
+    // On a failed/uncertain close the archive label deliberately stays: the
+    // revival watcher removes it if the issue is still open, and if the close
+    // actually landed the issue stays discoverable in the archive.
     closeItem({ number, kind: item.kind, reason: appliedCloseReason });
     let postCloseRuntimeYieldReason: string | null = null;
     try {
@@ -27647,6 +29454,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     });
     logProgress(`closed #${number}`);
     closedThisRun.add(pairCloseKey(repo, number));
+    if (item.kind === "pull_request") recordAuthorPrClose(item.author, closeReason);
     if (postCloseRuntimeYieldReason) {
       runtimeBudget.onYield?.(postCloseRuntimeYieldReason, false);
       return;
@@ -30406,22 +32214,37 @@ function publishActionEventsCommand(args: Args): void {
   if (!expectedProducerJob) {
     throw new UserFacingCommandError("--expected-producer-job is required");
   }
+  const expectedProducerRunAttempt = optionalNumberArg(args.expected_producer_run_attempt);
+  if (
+    expectedProducerRunAttempt !== undefined &&
+    (!Number.isInteger(expectedProducerRunAttempt) || expectedProducerRunAttempt < 1)
+  ) {
+    throw new UserFacingCommandError("--expected-producer-run-attempt must be a positive integer");
+  }
+  const expectedProducerRunId = stringArg(args.expected_producer_run_id, "");
+  if (expectedProducerRunId && !/^\d{1,30}$/.test(expectedProducerRunId)) {
+    throw new UserFacingCommandError(
+      "--expected-producer-run-id must be a numeric workflow run ID",
+    );
+  }
+  const expectedProducerSha = stringArg(args.expected_producer_sha, "");
+  if (expectedProducerSha && !/^[0-9a-f]{40}$/.test(expectedProducerSha)) {
+    throw new UserFacingCommandError("--expected-producer-sha must be a lowercase commit SHA");
+  }
   const currentProducer = workflowActionProducer("action_event_publisher");
   const result = importActionEventShards(sourceRoot, stateRoot, {
     expectedProducer: {
       repository: currentProducer.repository,
-      sha: currentProducer.sha,
+      sha: expectedProducerSha || currentProducer.sha,
       workflow: currentProducer.workflow,
       job: expectedProducerJob,
-      runId: currentProducer.runId,
-      runAttempt: currentProducer.runAttempt,
+      runId: expectedProducerRunId || currentProducer.runId,
+      runAttempt: expectedProducerRunAttempt ?? currentProducer.runAttempt,
     },
   });
   console.log(JSON.stringify(result, null, 2));
 }
 
-const ACTION_EVENT_PUBLISH_PATH_PATTERN =
-  /^ledger\/v1\/(?:events\/\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.jsonl|import-bindings\/(?:producer-runs|events|shard-sets|completed-shard-sets)\/[a-f0-9]{64}\.json)$/;
 const ACTION_EVENT_PUBLISH_PATH_FILE_MAX_BYTES = ACTION_EVENT_SHARD_IMPORT_MAX_PUBLISH_PATHS * 512;
 
 export function actionEventPublishPathsForTest(content: string): string[] {
@@ -30439,7 +32262,7 @@ export function actionEventPublishPathsForTest(content: string): string[] {
   }
   let previous = "";
   for (const path of paths) {
-    if (!ACTION_EVENT_PUBLISH_PATH_PATTERN.test(path)) {
+    if (!isActionEventPublishPath(path)) {
       throw new Error(`invalid action event publish path: ${path}`);
     }
     if (previous && path <= previous) {
@@ -30450,7 +32273,7 @@ export function actionEventPublishPathsForTest(content: string): string[] {
   return paths;
 }
 
-function publishActionEventPathsCommand(args: Args): void {
+async function publishActionEventPathsCommand(args: Args): Promise<void> {
   const pathsFile = resolve(stringArg(args.paths_file, ""));
   const message = stringArg(args.message, "");
   if (!pathsFile || pathsFile === ROOT) {
@@ -30477,7 +32300,7 @@ function publishActionEventPathsCommand(args: Args): void {
       throw new Error(`action event publish path is not a regular file: ${path}`);
     }
   }
-  const result = publishMainCommit({
+  const result = await publishMainWithStateAppend({
     message,
     paths,
     rebaseStrategy: "normal",
@@ -30512,12 +32335,13 @@ export async function main(
   let commandError: unknown;
   try {
     if (command === "plan") planCommand(args);
+    else if (command === "reserve-review-lease") reserveReviewLeaseCommand(args);
     else if (command === "review") reviewCommand(args);
     else if (command === "retry-failed-reviews") retryFailedReviewsCommand(args);
     else if (command === "apply-artifacts") applyArtifactsCommand(args);
     else if (command === "apply-decisions") applyDecisionsCommand(args);
     else if (command === "publish-action-events") publishActionEventsCommand(args);
-    else if (command === "publish-action-event-paths") publishActionEventPathsCommand(args);
+    else if (command === "publish-action-event-paths") await publishActionEventPathsCommand(args);
     else if (command === "proof-nudges") proofNudgesCommand(args);
     else if (command === "bot-proof") botProofCommand(args);
     else if (command === "audit") auditCommand(args);

@@ -119,8 +119,17 @@ is absent or a cache event lands in another Cloudflare colo.
 - a budget-sized capacity rail plus lane filters for issue-to-PR, PR repair,
   review, repair, commit, assist, and other workers
 - queued/waiting run count
+- operational health derived from queue age and running age: queued runs become
+  degraded after 30 minutes, and in-progress runs become stalled after 150
+  minutes
+- 24-hour and seven-day health trends for total queue depth, over-age queue
+  depth, and the oldest queued/running ages
 - job-level worker attempt error rate, recovery rate, and unresolved failures,
   including failures hidden by workflow `continue-on-error`
+- automerge worker reliability from the dedicated repair workflow, including
+  sampled failure rate, average and longest runtime, active or stalled attempts,
+  and the latest failure per target marked as unresolved or recovered by a later
+  successful run
 - active pipeline rows grouped as automerge, repair, exact review, hot review,
   apply, commit review, or background review
 - CI state for active PR rows when available
@@ -140,6 +149,8 @@ is absent or a cache event lands in another Cloudflare colo.
   apply-ready candidate count and an estimated number of cursor windows to
   revisit the close queue; scheduled cadence time is explanatory only because
   successful windows can dispatch immediate continuations
+- exact-review queue backlog, retry-ready backlog, target-admissible backlog,
+  and pressure classification from the current durable queue snapshot
 
 The Worker fetches job details only for the bounded active-run set, limits that
 GitHub fanout to 12 concurrent requests, and caches each run's jobs for 60
@@ -159,10 +170,70 @@ set. Other recent activity remains bounded independently.
 Status responses use stale-while-revalidate delivery. After the 20-second fresh
 window expires, the Worker immediately returns the last good snapshot, marks it
 with `X-ClawSweeper-Cache: stale`, and coalesces one background refresh per
-isolate. Recent automerge timing is cached for five minutes and recent
-ClawSweeper-owned closes for five minutes because those historical sections do
-not need worker-step freshness. The deployment smoke output includes cache
+isolate. Recent automerge timing and the latest 100 runs from
+`repair-cluster-worker.yml` are cached for five minutes, as are recent
+ClawSweeper-owned closes, because those historical sections do not need
+worker-step freshness. Reliability sampling filters those workflow runs to
+`automerge repair` titles, so failures remain visible even when a worker exits
+before publishing a status event. The deployment smoke output includes cache
 state, fetch time, and current diagnostics.
+
+## Exact Review history
+
+A Cloudflare Cron Trigger records one Exact Review queue sample every five
+minutes. It reuses the queue status read that also performs scheduled queue
+maintenance and makes no GitHub Actions request. The sample contains each
+lane's pending backlog plus cumulative counts for newly enqueued and
+successfully completed work. Review samples also retain the cumulative shed
+count so overload demand remains visible even when no queue item was admitted.
+
+Samples are stored in the existing `StatusStore` Durable Object under daily UTC
+keys named `health-history:YYYY-MM-DD`. Writes replace the current five-minute
+slot, making retries and overlapping triggers idempotent. Buckets expire after
+the seven-day retention window plus one day of boundary margin. No health
+history is written to `openclaw/clawsweeper-state`.
+
+`GET /api/health-history?range=6h` returns the dashboard's default chart range;
+`range=24h` and `range=7d` return the longer windows. The endpoint still accepts
+and returns legacy operational samples, but new samples omit those unused chart
+fields. Existing buckets expire naturally; no migration or manual cleanup is
+required.
+
+Each lane renders one signed net-rate value and curve: successfully completed
+work minus newly incoming work, expressed per hour. A positive rate means the
+lane is catching up, a negative rate means it is falling behind, and zero is
+balanced.
+Incoming counts newly created queue work units; review demand also includes
+shed recovery work. Pending merges, delivery replays, retries, and source-drift
+requeues do not create new demand. Completed work is counted only when a
+successful item actually leaves its lane, in the same queue storage transaction
+as the deletion. A help icon beside each net-rate label exposes this definition
+on hover, keyboard focus, or activation; the review explanation explicitly notes
+that incoming demand includes shed work.
+
+After two continuous samples roughly five minutes apart, the dashboard scales
+the observed net change to an hourly rate and labels it provisional with the
+actual window length. Once an hour of continuous counters exists, it uses a
+trailing hourly rate. Zero incoming or zero completed work remains valid data. A
+gap over 12 minutes, a cumulative counter reset, or a legacy sample without flow
+counters starts a new rate segment; a latest rate point older than 12 minutes
+is stale.
+Pre-deployment counter history cannot be backfilled, so the first provisional
+rate appears about five minutes after deployment.
+
+Operational health remains a current-snapshot alert rather than a historical
+chart. `/api/status` classifies the already-fetched active workflow runs as:
+
+- `healthy`: complete telemetry and no over-age runs;
+- `degraded`: at least one queued run is 30 minutes old;
+- `stalled`: at least one in-progress run is 150 minutes old;
+- `unknown`: one or more actionable-status reads failed.
+
+Healthy status stays hidden. A queued run over 30 minutes, an in-progress run
+over 150 minutes, or incomplete Actions telemetry opens the expandable “Work
+execution needs attention” alert. This live diagnostic reuses the status
+snapshot's Actions reads; the history cron no longer stores queue pressure or
+oldest-run values.
 
 ## Boundaries
 
@@ -218,9 +289,17 @@ workflow state, check time, and retry time so an intentional pause cannot look
 like occupied executor capacity. Re-enabling the workflow does not require a
 queue mutation; the next status check resumes normal admission.
 
-The same endpoint exposes `handoff_health` plus oldest timestamps and ages for
-the pending, dispatching, and leased phases. New dispatch and claim transitions
-carry explicit phase timestamps. Rows written by an older deployment derive
+The same endpoint exposes `generated_at`, `ready_pending`,
+`admissible_pending`, `pressure`, `handoff_health`, and oldest timestamps and
+ages for the pending, dispatching, and leased phases. `ready_pending` excludes
+retry-delayed items. `admissible_pending` further excludes ready items blocked
+by their target's exact-review cap. `pressure` is a deterministic observation
+from that same queue snapshot: it reports `congested` or `saturated` only when
+capacity is full, the dispatcher and handoff telemetry are known, and
+target-admissible backlog remains. The snapshot adds no GitHub API fanout, and
+no workflow, planner, admission, continuation, or dispatch decision consumes
+the pressure value. New dispatch and claim transitions carry explicit phase
+timestamps. Rows written by an older deployment derive
 their phase start from the active dispatch or execution lease; a stale timestamp
 left by a rollback cannot override that newer lease, and a wholly unknown legacy
 age stays non-alarming. A claim is degraded after one third of the dispatch
@@ -235,6 +314,31 @@ outage, but `/api/status` attaches queue telemetry after selecting that snapshot
 so handoff recovery stays live. If the optional queue read fails, it reports
 `exact_review_queue: null` and `diagnostics.exact_review_queue_error` without
 making the otherwise-current fleet snapshot eligible for stale fallback.
+
+For capacity displays, `/api/exact-review-queue` also exposes compatible
+`lanes.review` and `lanes.publication` objects. Each lane reports its own
+pending, ready, backoff, dispatching, leased, capacity, active, available-slot,
+oldest-pending, and next-attempt values. The existing top-level aggregate fields
+remain available for older consumers. Both lanes additionally report
+`enqueued_total` and `completed_total`; the review lane's existing
+`shed_since_reset` supplies overload demand. Publication also exposes
+`capacity_control` with the adaptive base, maximum, current ceiling, cooldown,
+recovery progress, and last classified GitHub pressure failure. `/api/status` retains its
+`control_plane` compatibility field, but the dashboard no longer renders that
+low-actionability section.
+
+The standalone **State writer** panel separates the repo-wide serialization
+boundary from exact-review materialization telemetry. After the coordinator
+cutover, `state_writer.coordinator` is authoritative for the active writer,
+FIFO queue depth, completed turns, recovery counters, and coordinator wait.
+The Git lease ref is displayed only as a crash-recovery fence. Exact-review
+terminal telemetry still owns item/commit throughput and Git fence timing; an
+idle or failed publisher can make that telemetry stale without making the
+coordinator unavailable. The panel therefore shows the configured publication
+batch size independently, uses five-minute coordinator queue depth for its
+primary chart and recent sample summary, and never renders stale terminal
+zeroes as current throughput. Exact-review item, commit, and Git-fence timing
+metrics appear only while that separate terminal telemetry is fresh.
 
 Executors report the GitHub job outcome from their finalizer. Failure or
 cancellation clears the lease and requeues the item. Finalizer success remains

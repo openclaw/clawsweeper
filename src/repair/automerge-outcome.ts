@@ -28,3 +28,33 @@ export function automergeOutcomeReviewedShaFromResult({
     targetView?.headRefOid ?? targetView?.head_sha ?? targetView?.pull_request?.head_sha ?? null
   );
 }
+
+export function automergePlanningHeadBlock({
+  expectedHeadSha,
+  currentHeadSha,
+}: {
+  expectedHeadSha: JsonValue;
+  currentHeadSha: JsonValue;
+}): { reason: string; expectedHeadSha: string; currentHeadSha: string } | null {
+  const expected = String(expectedHeadSha ?? "")
+    .trim()
+    .toLowerCase();
+  const current = String(currentHeadSha ?? "")
+    .trim()
+    .toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(expected)) {
+    return {
+      reason: "automerge planning result is missing a valid reviewed head SHA",
+      expectedHeadSha: expected,
+      currentHeadSha: current,
+    };
+  }
+  if (!/^[0-9a-f]{40}$/.test(current) || current !== expected) {
+    return {
+      reason: `source PR head changed after automerge planning: expected ${expected}, current ${current || "missing"}`,
+      expectedHeadSha: expected,
+      currentHeadSha: current,
+    };
+  }
+  return null;
+}

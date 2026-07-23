@@ -338,6 +338,14 @@ export async function runClawSweeperEventNotifier(
   const runRecord =
     runRecordPath && fs.existsSync(runRecordPath) ? readJsonFile(runRecordPath) : null;
   const collected = collectClawSweeperEvents({ applyRows, runRecord, ledger, runId });
+  if (!dryRun && dashboardConfig) {
+    await postAutomergeRepairCompletedBestEffort({
+      config: dashboardConfig,
+      fetcher,
+      record: asJsonObject(runRecord),
+      now: now(),
+    });
+  }
   const config = resolveOpenClawHookConfig(env);
   if (!config) {
     const summary = summaryRow(
@@ -434,6 +442,66 @@ export async function runClawSweeperEventNotifier(
   };
   log(JSON.stringify(summary, null, 2));
   return summary;
+}
+
+async function postAutomergeRepairCompletedBestEffort({
+  config,
+  fetcher,
+  record,
+  now,
+}: {
+  config: DashboardIngestConfig;
+  fetcher: typeof fetch;
+  record: JsonObject;
+  now: Date;
+}) {
+  const sessionId = stringOrNull(record.automerge_session_id);
+  const action = (Array.isArray(record.fix_actions) ? record.fix_actions : [])
+    .map(asJsonObject)
+    .find((row) => row.action === "repair_contributor_branch" && row.status === "pushed");
+  const repository = stringOrNull(record.repo);
+  const itemNumber = Number(sessionId?.match(/#(\d+):/)?.[1] ?? 0);
+  if (!sessionId || !action || !repository || !itemNumber) return;
+  const occurredAt = stringOrNull(record.published_at) ?? now.toISOString();
+  const timeoutMs = 5_000;
+  const controller = new AbortController();
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    const response = await Promise.race([
+      fetcher(config.url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          event_type: "clawsweeper.automerge_metric",
+          event_id: `${sessionId}:repair_completed:${stringOrNull(action.commit) ?? occurredAt}`,
+          session_id: sessionId,
+          phase: "repair_completed",
+          occurred_at: occurredAt,
+          repository,
+          item_number: itemNumber,
+          policy_version: "immediate-v1",
+          state: "waiting",
+          reason: stringOrNull(action.reason),
+          pr_url:
+            stringOrNull(action.target) ?? `https://github.com/${repository}/pull/${itemNumber}`,
+          run_url: stringOrNull(record.run_url),
+          base_sync: action.base_sync === true,
+        }),
+      }),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          reject(new Error("automerge repair metric ingest timed out"));
+        }, timeoutMs);
+      }),
+    ]);
+    if (!response.ok) return;
+  } catch {
+    // The durable run record remains the retry source; dashboard availability never gates repair.
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 function resolveDashboardIngestConfig(env: NodeJS.ProcessEnv): DashboardIngestConfig | null {

@@ -27,6 +27,7 @@ const sections = [
     [
       "repair/README.md",
       "repair/operations.md",
+      "repair/automatic-issue-prs.md",
       "repair/auto-update-prs.md",
       "repair/automerge-flow.md",
       "repair/internal-features.md",

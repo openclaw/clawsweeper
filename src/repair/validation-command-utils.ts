@@ -712,9 +712,13 @@ export function validationCommandForExecution(parts: readonly string[]): string[
     return [...envPrefix, "npm", "--ignore-scripts", ...commandParts.slice(1)];
   }
   if (invocation.executable === "pnpm") {
+    // pnpm can otherwise run an implicit install when its disposable validation
+    // profile uses a different store. Dependency setup is a separate reviewed
+    // phase, so validation must execute the requested script without mutation.
     return [
       ...envPrefix,
       "pnpm",
+      "--config.verify-deps-before-run=false",
       "--config.enable-pre-post-scripts=false",
       ...commandParts.slice(1),
     ];

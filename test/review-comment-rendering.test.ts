@@ -11,6 +11,7 @@ import {
   renderReviewStartStatusComment,
   reviewAutomationMarkersFromReport,
   reviewStartLeaseWinnerCommentIdForTest,
+  supersededReviewPlaceholderCommentIds,
   shouldPreserveReviewStartLease,
   withReviewStartStatusLease,
 } from "../dist/clawsweeper.js";
@@ -253,7 +254,7 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
   );
   assert.match(
     reviewLoop.slice(priorReviewRevalidation, relationRevalidation),
-    /catch \(error\)[\s\S]*durable_review_refresh_failed[\s\S]*deleteOwnedDedicatedReviewStartLease[\s\S]*acquiredReviewLeases\.splice[\s\S]*continue/,
+    /catch \(error\)[\s\S]*durable_review_refresh_failed[\s\S]*releaseOwnedReviewLease[\s\S]*acquiredReviewLeases\.splice[\s\S]*continue/,
   );
   assert.match(
     reviewLoop.slice(semanticRevalidation, semanticWrite),
@@ -1233,4 +1234,96 @@ Full review comments:
 
   assert.match(markers, /clawsweeper-verdict:needs-human/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
+});
+
+test("superseded review placeholder sweep deletes only stale bot placeholder comments", () => {
+  const nowMs = Date.parse("2026-07-18T22:13:00.000Z");
+  const bot = { login: "openclaw-clawsweeper[bot]" };
+  const expiredPlaceholder = renderReviewStartStatusComment({
+    number: 110918,
+    kind: "pull_request",
+    title: "fix webhook limiter",
+    headSha: "0123456789abcdef0123456789abcdef01234567",
+    startedAt: "2026-07-18T21:41:00.000Z",
+    leaseExpiresAt: "2026-07-18T22:11:00.000Z",
+  });
+  const freshPlaceholder = renderReviewStartStatusComment({
+    number: 110918,
+    kind: "pull_request",
+    title: "fix webhook limiter",
+    headSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    startedAt: "2026-07-18T22:06:00.000Z",
+    leaseExpiresAt: "2026-07-18T22:36:00.000Z",
+  });
+  const comments = [
+    {
+      id: 1,
+      user: bot,
+      body: "Codex review: keep open.\n\n<!-- clawsweeper-review item=110918 -->",
+    },
+    { id: 2, user: bot, body: expiredPlaceholder },
+    { id: 3, user: bot, body: freshPlaceholder },
+    {
+      id: 4,
+      user: bot,
+      body: "ClawSweeper status: review started.\n\nLegacy placeholder without a lease marker.",
+    },
+    { id: 5, user: { login: "steipete" }, body: expiredPlaceholder },
+    { id: 6, user: bot, body: expiredPlaceholder },
+  ];
+
+  assert.deepEqual(
+    supersededReviewPlaceholderCommentIds({
+      number: 110918,
+      comments,
+      keepCommentIds: new Set([6]),
+      nowMs,
+    }),
+    [2, 4],
+  );
+});
+
+test("superseded review placeholder sweep never selects the durable review comment", () => {
+  const nowMs = Date.parse("2026-07-18T22:13:00.000Z");
+  const comments = [
+    {
+      id: 7,
+      user: { login: "clawsweeper[bot]" },
+      body: [
+        "ClawSweeper status: review started.",
+        "",
+        "Codex review: keep open.",
+        "",
+        "<!-- clawsweeper-review item=110918 -->",
+      ].join("\n"),
+    },
+  ];
+
+  assert.deepEqual(
+    supersededReviewPlaceholderCommentIds({
+      number: 110918,
+      comments,
+      keepCommentIds: new Set(),
+      nowMs,
+    }),
+    [],
+  );
+});
+
+test("publishing the durable review comment sweeps superseded placeholders", () => {
+  const source = readFileSync("src/clawsweeper.ts", "utf8");
+  const functionStart = source.indexOf("function postReviewStartStatusComment");
+  const postStart = source.slice(
+    functionStart,
+    source.indexOf("function deleteOwnedDedicatedReviewStartLease", functionStart),
+  );
+  // Lease acquisition must keep POSTing a fresh comment per contender: the
+  // lowest-server-id election needs distinct ids, so no in-place PATCH reuse.
+  assert.match(postStart, /issues\/\$\{options\.item\.number\}\/comments/);
+  assert.doesNotMatch(postStart, /"PATCH"/);
+
+  const applyStart = source.indexOf('syncReasons.push("updated durable Codex review comment")');
+  assert.ok(applyStart >= 0);
+  const applyWindow = source.slice(applyStart, applyStart + 1200);
+  assert.match(applyWindow, /cleanupSupersededReviewPlaceholderComments\(\{/);
 });

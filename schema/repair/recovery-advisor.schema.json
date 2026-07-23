@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["diagnosis", "actions", "confidence"],
+  "properties": {
+    "diagnosis": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "string",
+        "pattern": "^(?:fetch_object [a-fA-F0-9]{40,64}|refetch_depth1|deepen [0-9]+|unshallow|rebuild_on_remote_head|reset_to_remote|retry_push|defer_to_next_run|give_up)$"
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  }
+}

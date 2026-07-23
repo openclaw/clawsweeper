@@ -22,10 +22,22 @@ test("sweep keeps optional media tooling out of review startup", () => {
   assert.doesNotMatch(workflow, /setup-media-proof-tools/);
 });
 
+test("exact publication forwards state writer telemetry through the Node payload builder", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  assert.match(
+    workflow,
+    /STATE_WRITER_JSON: \$\{\{ steps\.exact-review-publication-result\.outputs\.state_writer_json \}\}/,
+  );
+  assert.match(workflow, /const parsed = JSON\.parse\(process\.env\.STATE_WRITER_JSON \|\| ""\)/);
+  assert.match(workflow, /\.\.\.\(stateWriter \? \{ state_writer: stateWriter \} : \{\}\)/);
+  assert.doesNotMatch(workflow, /--data .*STATE_WRITER_JSON/);
+});
+
 test("ledger-producing jobs initialize immutable workflow context", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   for (const jobName of [
     "event-review-apply",
+    "event-review-publish",
     "review",
     "publish",
     "retry-failed-reviews",
@@ -95,6 +107,7 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
 
   for (const jobName of [
     "event-review-apply",
+    "event-review-publish",
     "review",
     "publish",
     "retry-failed-reviews",
@@ -118,24 +131,32 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
     );
   }
 
-  const exactPublish = step("event-review-apply", "Publish event result and apply safe close");
-  assert.match(exactPublish.if ?? "", /always\(\) && !cancelled\(\)/);
-  assert.match(exactPublish.if ?? "", /review-exact-event-item\.outcome == 'success'/);
-  assert.match(exactPublish.if ?? "", /setup-state\.outcome == 'success'/);
-  assert.doesNotMatch(exactPublish.if ?? "", /action-ledger/);
-  const exactPrimary = step("event-review-apply", "Export exact review primary result");
+  const exactBundle = step("event-review-apply", "Create exact review artifact bundle");
+  assert.match(exactBundle.if ?? "", /review-exact-event-item\.outcome == 'success'/);
+  assert.doesNotMatch(exactBundle.if ?? "", /action-ledger/);
+  const exactPrimary = step("event-review-apply", "Export exact review generation result");
   const exactQueue = step("event-review-apply", "Complete exact-review queue lease");
-  const exactLedger = step("event-review-apply", "Publish exact event action ledger");
+  const exactUpload = step("event-review-apply", "Upload exact review artifact bundle");
+  const exactPublicationQueue = step(
+    "event-review-apply",
+    "Queue durable exact review publication",
+  );
   const exactSteps = job("event-review-apply").steps;
-  assert.equal(exactPrimary.env?.PRIMARY_JOB_STATUS, "${{ job.status }}");
-  assert.equal(exactPrimary.env?.JOB_CANCELLED, undefined);
   assert.match(exactPrimary.run ?? "", /outcome=(?:failure|cancelled|success)/);
-  assert.match(exactPrimary.run ?? "", /PRIMARY_JOB_STATUS.*cancelled/);
-  assert.match(exactPrimary.run ?? "", /PRIMARY_JOB_STATUS.*success/);
-  assert.match(exactQueue.env?.PRIMARY_OUTCOME ?? "", /exact-review-primary-result/);
+  assert.match(exactPrimary.run ?? "", /REVIEW_OUTCOME.*cancelled/);
+  assert.match(exactPrimary.run ?? "", /PUBLICATION_QUEUE_OUTCOME.*success/);
+  assert.match(exactQueue.env?.PRIMARY_OUTCOME ?? "", /exact-review-generation-result/);
   assert.doesNotMatch(exactQueue.run ?? "", /JOB_STATUS|job\.status/);
+  assert.ok(exactSteps.indexOf(exactUpload) < exactSteps.indexOf(exactQueue));
+  assert.ok(exactSteps.indexOf(exactUpload) < exactSteps.indexOf(exactPublicationQueue));
+  assert.ok(exactSteps.indexOf(exactPublicationQueue) < exactSteps.indexOf(exactQueue));
   assert.ok(exactSteps.indexOf(exactQueue) > exactSteps.indexOf(exactPrimary));
-  assert.ok(exactSteps.indexOf(exactLedger) > exactSteps.indexOf(exactQueue));
+  assert.equal(
+    job("event-review-publish").steps.some(
+      (candidate) => candidate.name === "Publish exact review action ledger",
+    ),
+    false,
+  );
 
   const ledgerDownload = job("publish").steps.find(
     (candidate) => candidate.id === "download-review-action-ledger",
@@ -250,6 +271,7 @@ test("review workflow gives Codex a read-only inspection token", () => {
   assert.match(reviewJob, /uses: \.\/clawsweeper\/\.github\/actions\/setup-codex/);
   assert.doesNotMatch(reviewJob, /uses: \.\/\.github\/actions\/setup-codex/);
   assert.match(exactReviewStep, /--codex-sandbox read-only/);
+  assert.match(exactReviewStep, /--skip-start-comment/);
   assert.match(reviewJob, /--codex-sandbox read-only/);
   assert.doesNotMatch(workflow, /--codex-sandbox danger-full-access/);
 });
@@ -264,7 +286,7 @@ test("review execution tokens can read check runs and commit statuses", () => {
   const scheduledReviewJob = workflow.slice(reviewStart, publishStart);
 
   for (const [job, tokenId] of [
-    [eventReviewJob, "target-write-token"],
+    [eventReviewJob, "target-read-token"],
     [scheduledReviewJob, "target-read-token"],
   ] as const) {
     const permissions = job.slice(job.indexOf("\n    permissions:"), job.indexOf("\n    steps:"));
@@ -279,7 +301,7 @@ test("review execution tokens can read check runs and commit statuses", () => {
   }
   assert.match(
     eventReviewJob,
-    /Review exact event item[\s\S]*GH_TOKEN: \$\{\{ steps\.target-write-token\.outputs\.token \}\}/,
+    /Review exact event item[\s\S]*GH_TOKEN: \$\{\{ steps\.target-read-token\.outputs\.token \}\}/,
   );
 });
 
@@ -316,293 +338,324 @@ test("scheduled review shards receive the compiler-backed runtime artifact", () 
   assert.doesNotMatch(reviewJob, /npm pack "@typescript/);
 });
 
-test("exact event publish and routing require a successful fresh review artifact", () => {
-  const workflow = readText(".github/workflows/sweep.yml");
-  const routerWorkflow = readText(".github/workflows/repair-comment-router.yml");
-  const publisher = readText("src/repair/publish-event-result.ts");
-  const eventReviewJobStart = workflow.indexOf("\n  event-review-apply:");
-  const planJobStart = workflow.indexOf("\n  plan:", eventReviewJobStart);
-  const eventReviewJob = workflow.slice(eventReviewJobStart, planJobStart);
-  const liveItemStart = eventReviewJob.indexOf("- name: Check live target item state");
-  const setupPnpmStart = eventReviewJob.indexOf("- uses: ./.github/actions/setup-pnpm");
-  const setupCodexStart = eventReviewJob.indexOf("- uses: ./.github/actions/setup-codex");
-  const exactReviewStart = eventReviewJob.indexOf("- name: Review exact event item");
-  const publishStart = eventReviewJob.indexOf("- name: Publish event result and apply safe close");
-  const releaseUnsuccessfulStart = eventReviewJob.indexOf(
-    "- name: Release unsuccessful workflow-owned review lease",
-    publishStart,
+test("exact event review hands immutable artifacts to the queue-bounded publisher lane", () => {
+  type Step = {
+    "continue-on-error"?: boolean;
+    name?: string;
+    uses?: string;
+    id?: string;
+    if?: string;
+    run?: string;
+    env?: Record<string, string>;
+    with?: Record<string, string | number | boolean>;
+  };
+  type Job = {
+    needs?: string | string[];
+    if?: string;
+    "timeout-minutes"?: number;
+    permissions?: Record<string, string>;
+    concurrency?: { group?: string; "cancel-in-progress"?: boolean; queue?: string };
+    steps: Step[];
+  };
+  const source = readText(".github/workflows/sweep.yml");
+  const workflow = YAML.parse(source) as { jobs: Record<string, Job> };
+  const reviewer = workflow.jobs["event-review-apply"]!;
+  const publisher = workflow.jobs["event-review-publish"]!;
+  const batchPublisher = workflow.jobs.publish!;
+  const step = (job: Job, name: string) => {
+    const value = job.steps.find((candidate) => candidate.name === name);
+    assert.ok(value, `missing step: ${name}`);
+    return value;
+  };
+
+  assert.equal(reviewer.permissions?.contents, "read");
+  assert.equal(reviewer["timeout-minutes"], 120);
+  assert.equal(reviewer.permissions?.issues, "read");
+  assert.equal(
+    reviewer.steps.some((candidate) => candidate.uses?.endsWith("/setup-state")),
+    false,
   );
-  const routeStart = eventReviewJob.indexOf("- name: Route synced ClawSweeper verdict");
-  const deferredRouteStart = eventReviewJob.indexOf(
-    "- name: Queue deferred exact verdict router",
-    routeStart,
+  assert.equal(
+    reviewer.steps.some(
+      (candidate) => candidate.name === "Publish event result and apply safe close",
+    ),
+    false,
   );
-  const reactStart = eventReviewJob.indexOf("- name: React to target item completion");
-  const primaryResultStart = eventReviewJob.indexOf("- name: Export exact review primary result");
-  const releaseLeaseStart = eventReviewJob.indexOf("- name: Release terminal review leases");
-  const confirmTerminalStart = eventReviewJob.indexOf(
-    "- name: Confirm terminal item remains closed",
+  assert.equal(
+    step(reviewer, "Review exact event item").env?.GH_TOKEN,
+    "${{ steps.target-read-token.outputs.token }}",
   );
-  const completeStart = eventReviewJob.indexOf("- name: Mark re-review complete", routeStart);
-  const failStart = eventReviewJob.indexOf("- name: Fail unsuccessful exact review");
-  const leaseCompleteStart = eventReviewJob.indexOf("- name: Complete exact-review queue lease");
-  const exactLedgerStart = eventReviewJob.indexOf("- name: Publish exact event action ledger");
-  const liveItemStep = eventReviewJob.slice(liveItemStart, setupPnpmStart);
-  const setupCodexStep = eventReviewJob.slice(setupCodexStart, exactReviewStart);
-  const exactReviewStep = eventReviewJob.slice(exactReviewStart, publishStart);
-  const publishStep = eventReviewJob.slice(publishStart, releaseUnsuccessfulStart);
-  const releaseUnsuccessfulStep = eventReviewJob.slice(releaseUnsuccessfulStart, routeStart);
-  const routeStep = eventReviewJob.slice(routeStart, deferredRouteStart);
-  const deferredRouteStep = eventReviewJob.slice(deferredRouteStart, releaseLeaseStart);
-  const reactStep = eventReviewJob.slice(reactStart, primaryResultStart);
-  const releaseLeaseStep = eventReviewJob.slice(releaseLeaseStart, confirmTerminalStart);
-  const confirmTerminalStep = eventReviewJob.slice(confirmTerminalStart, completeStart);
-  const failStep = eventReviewJob.slice(failStart, exactLedgerStart);
-  const publisherCompleteStart = publisher.indexOf("const complete =");
-  const authoritativeReset = publisher.indexOf("hardResetToRemoteMain();", publisherCompleteStart);
-  const authoritativeRefresh = publisher.indexOf(
-    "refreshSourceAfterStatePublish(commitPaths, stateBaseCommit);",
-    publisherCompleteStart,
+  assert.match(step(reviewer, "Review exact event item").run ?? "", /--skip-start-comment/);
+  const reserveLease = step(reviewer, "Reserve exact review lease");
+  assert.equal(reserveLease.env?.GH_TOKEN, "${{ steps.target-write-token.outputs.token }}");
+  assert.match(reserveLease.run ?? "", /pnpm run --silent reserve-review-lease/);
+  assert.match(reserveLease.run ?? "", /review-timeout-ms/);
+  const resolvePayload = step(reviewer, "Resolve event payload");
+  assert.match(resolvePayload.run ?? "", /maxExactReviewCodexTimeoutMs = 2_700_000/);
+  assert.match(
+    resolvePayload.run ?? "",
+    /Math\.min\(maxExactReviewCodexTimeoutMs, configuredValue\)/,
   );
-  const finalTupleMatch = publisher.indexOf(
-    "eventSnapshotMatchesCurrent(paths)",
-    publisherCompleteStart,
+  assert.match(
+    resolvePayload.run ?? "",
+    /codex_timeout_ms: Math\.min\(\s*maxExactReviewCodexTimeoutMs/,
+  );
+  assert.match(
+    step(reviewer, "Review exact event item").if ?? "",
+    /reserve-exact-review-lease\.outputs\.status == 'posted'/,
+  );
+  assert.match(step(reviewer, "Review exact event item").run ?? "", /--review-lease-owner/);
+  assert.match(step(reviewer, "Review exact event item").run ?? "", /--review-lease-comment-id/);
+
+  const create = step(reviewer, "Create exact review artifact bundle");
+  const upload = step(reviewer, "Upload exact review artifact bundle");
+  const queuePublication = step(reviewer, "Queue durable exact review publication");
+  const complete = step(reviewer, "Complete exact-review queue lease");
+  const deferHeldReview = step(reviewer, "Defer exact review while same-head lease is held");
+  const failGeneration = step(reviewer, "Fail unsuccessful exact review generation");
+  const releaseGeneration = step(reviewer, "Release unsuccessful workflow-owned review lease");
+  assert.match(create.if ?? "", /review-exact-event-item\.outcome == 'success'/);
+  assert.match(create.if ?? "", /review-exact-event-item\.outputs\.retry_at == ''/);
+  assert.equal(create.env?.EXACT_REVIEW_PRODUCER_JOB, "event-review-apply");
+  assert.equal(
+    create.env?.EXACT_REVIEW_DECISION,
+    "${{ steps.claim-exact-review-queue.outputs.decision }}",
+  );
+  assert.match(create.run ?? "", /mkdir -p \.artifacts/);
+  assert.ok(
+    (create.run ?? "").indexOf("mkdir -p .artifacts") <
+      (create.run ?? "").indexOf("exact-review-bundle create"),
+  );
+  assert.equal(upload.uses, "actions/upload-artifact@v7");
+  assert.equal(upload.with?.["retention-days"], 90);
+  assert.match(queuePublication.run ?? "", /for attempt in 1 2 3/);
+  assert.match(queuePublication.run ?? "", /\.queued == true or \.deduped == true/);
+  assert.match(complete.env?.PRIMARY_OUTCOME ?? "", /exact-review-generation-result/);
+  assert.match(deferHeldReview.if ?? "", /reserve-exact-review-lease\.outputs\.status == 'held'/);
+  assert.match(deferHeldReview.run ?? "", /retry deferred/);
+  assert.match(failGeneration.if ?? "", /reserve-exact-review-lease\.outputs\.status != 'held'/);
+  assert.match(failGeneration.if ?? "", /complete-exact-review-queue\.outcome != 'success'/);
+  assert.match(releaseGeneration.if ?? "", /reserve-exact-review-lease\.outputs\.status != 'held'/);
+  assert.match(releaseGeneration.run ?? "", /content == "eyes"/);
+  assert.ok(reviewer.steps.indexOf(upload) < reviewer.steps.indexOf(complete));
+
+  assert.equal(publisher.needs, undefined);
+  assert.match(publisher.if ?? "", /source_action == 'exact_review_artifact_publish'/);
+  assert.match(
+    step(publisher, "Claim durable exact review publication").run ?? "",
+    /internal\/exact-review\/claim/,
+  );
+  assert.equal(publisher.concurrency, undefined);
+  assert.equal(publisher.permissions?.actions, "write");
+  assert.equal(
+    batchPublisher.concurrency?.group,
+    "clawsweeper-target-review-publish-${{ needs.plan.outputs.target_repo }}",
+  );
+  const publicationContext = step(publisher, "Claim durable exact review publication");
+  assert.match(
+    publicationContext.run ?? "",
+    /producerDecision\.commandStatusMarker \|\| producerDecision\.statusCommentId/,
   );
 
-  assert.ok(liveItemStart > 0);
-  assert.ok(setupPnpmStart > liveItemStart);
-  assert.ok(deferredRouteStart > routeStart);
-  assert.ok(releaseLeaseStart > routeStart);
-  assert.ok(confirmTerminalStart > releaseLeaseStart);
-  assert.ok(leaseCompleteStart > primaryResultStart);
-  assert.ok(failStart > leaseCompleteStart);
-  assert.ok(exactLedgerStart > failStart);
-  assert.match(liveItemStep, /id: live-item/);
-  assert.match(liveItemStep, /repos\/\$TARGET_REPO\/issues\/\$ITEM_NUMBER/);
-  assert.match(liveItemStep, /echo "proceed=false" >> "\$GITHUB_OUTPUT"/);
-  assert.match(liveItemStep, /grep -Eqi 'HTTP 404\|Not Found'/);
-  assert.match(liveItemStep, /gh api "repos\/\$TARGET_REPO" >\/dev\/null/);
-  assert.match(liveItemStep, /echo "terminal_missing=true" >> "\$GITHUB_OUTPUT"/);
-  assert.match(liveItemStep, /repository is accessible but the item is missing/);
-  assert.match(liveItemStep, /cat "\$live_item_error" >&2/);
-  assert.match(liveItemStep, /live_locked=.*\.locked == true/);
-  assert.match(liveItemStep, /echo "guarded_open=true" >> "\$GITHUB_OUTPUT"/);
-  assert.match(
-    liveItemStep,
-    /echo "guarded_open_action=skipped_locked_conversation" >> "\$GITHUB_OUTPUT"/,
+  const download = step(publisher, "Download exact review artifact bundle");
+  const validate = step(publisher, "Validate exact review artifact bundle");
+  const legacyArtifact = step(publisher, "Identify legacy tuple-less exact artifact");
+  const targetWriteStep = step(publisher, "Create target write token");
+  const stateSetup = publisher.steps.find((candidate) => candidate.uses?.endsWith("/setup-state"));
+  assert.ok(stateSetup);
+  const publisherCheckout = publisher.steps.find(
+    (candidate) => candidate.uses === "actions/checkout@v7",
   );
-  assert.match(liveItemStep, /without Codex because the open conversation is locked/);
-  assert.match(
-    eventReviewJob,
-    /- uses: \.\/\.github\/actions\/setup-pnpm\s+id: setup-pnpm\s+if: \$\{\{ steps\.live-item\.outputs\.proceed == 'true' \|\| \(\(steps\.live-item\.outputs\.terminal_noop == 'true' \|\| steps\.live-item\.outputs\.terminal_missing == 'true' \|\| steps\.live-item\.outputs\.guarded_open == 'true'\)/,
+  assert.ok(publisherCheckout);
+  assert.equal(publisherCheckout.with?.ref, "main");
+  assert.equal(download.uses, "actions/download-artifact@v8");
+  assert.equal(download["continue-on-error"], true);
+  assert.equal(download.with?.name, "${{ steps.publication-context.outputs.artifact_name }}");
+  assert.equal(
+    download.with?.["run-id"],
+    "${{ steps.publication-context.outputs.producer_run_id }}",
   );
-  assert.match(setupCodexStep, /if: \$\{\{ steps\.live-item\.outputs\.proceed == 'true' \}\}/);
-  assert.match(exactReviewStep, /if: \$\{\{ steps\.live-item\.outputs\.proceed == 'true' \}\}/);
-  assert.match(
-    publishStep,
-    /if: \$\{\{ always\(\) && !cancelled\(\) && steps\.review-exact-event-item\.outcome == 'success' && steps\.setup-state\.outcome == 'success' \}\}/,
+  assert.match(validate.run ?? "", /repair:exact-review-bundle validate/);
+  assert.equal(validate["continue-on-error"], true);
+  assert.match(legacyArtifact.run ?? "", /review_lease_owner/);
+  assert.match(legacyArtifact.run ?? "", /review_lease_comment_id/);
+  assert.doesNotMatch(create.run ?? "", /repair:exact-review-bundle -- create/);
+  assert.doesNotMatch(validate.run ?? "", /repair:exact-review-bundle -- validate/);
+  assert.ok(publisher.steps.indexOf(validate) < publisher.steps.indexOf(targetWriteStep));
+  assert.ok(publisher.steps.indexOf(validate) < publisher.steps.indexOf(stateSetup));
+  assert.match(stateSetup.if ?? "", /legacy-exact-artifact\.outputs\.legacy_tupleless != 'true'/);
+
+  const publish = step(publisher, "Publish event result and apply safe close");
+  assert.match(publish.run ?? "", /live_state=.*gh api/);
+  assert.match(publish.run ?? "", /LIVE_TERMINAL_NOOP.*LIVE_TERMINAL_MISSING/);
+  assert.match(publish.run ?? "", /LIVE_GUARDED_OPEN/);
+  assert.match(publish.run ?? "", /live_locked=.*jq -r '\.locked == true'/);
+  assert.match(publish.run ?? "", /live_locked.*true[\s\S]*guarded_open=true/);
+  assert.match(publish.run ?? "", /open\)[\s\S]*?requeue_latest=true/);
+  assert.match(publish.run ?? "", /test -f "artifacts\/event\/\$ITEM_NUMBER\.md"/);
+  assert.match(publish.run ?? "", /repair:publish-event-result/);
+  assert.match(publish.run ?? "", /failure_kind=github_rate_limit/);
+  assert.match(publish.run ?? "", /failure_kind=github_transient/);
+  assert.match(publish.run ?? "", /HTTP 429/);
+  assert.doesNotMatch(publish.run ?? "", /HTTP \(403\|429\)/);
+  assert.match(publish.run ?? "", /PIPESTATUS\[0\]/);
+  assert.equal(publish.env?.EXACT_EVENT_PUBLICATION, "true");
+  assert.equal(
+    publisher.steps.some((candidate) => candidate.name === "Route synced ClawSweeper verdict"),
+    false,
   );
-  assert.match(publishStep, /if \[ ! -f "artifacts\/event\/\$ITEM_NUMBER\.md" \]/);
-  assert.match(publishStep, /live_state="\$\(gh api/);
-  assert.match(publishStep, /echo "terminal_noop=true" >> "\$GITHUB_OUTPUT"/);
-  assert.match(publishStep, /echo "terminal_missing=true" >> "\$GITHUB_OUTPUT"/);
-  assert.match(publishStep, /echo "remote_tuple_verified=false" >> "\$GITHUB_OUTPUT"/);
-  assert.match(publishStep, /echo "routing_deferred=false" >> "\$GITHUB_OUTPUT"/);
-  assert.match(publishStep, /gh api "repos\/\$TARGET_REPO" >\/dev\/null/);
-  assert.match(publishStep, /cat "\$live_item_error" >&2/);
-  assert.match(publishStep, /Exact review produced no artifact for open item/);
-  assert.ok(releaseUnsuccessfulStart > publishStart);
-  assert.match(releaseUnsuccessfulStep, /always\(\)/);
-  assert.match(
-    releaseUnsuccessfulStep,
-    /github-run-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/,
+  const deferredRoute = step(publisher, "Queue deferred exact verdict router");
+  assert.match(deferredRoute.if ?? "", /publish-event-result\.outcome == 'success'/);
+  assert.match(deferredRoute.if ?? "", /routing_deferred == 'true'/);
+  assert.match(deferredRoute.run ?? "", /repair-comment-router\.yml/);
+  assert.equal(
+    deferredRoute.env?.ITEM_NUMBER,
+    "${{ steps.publication-context.outputs.item_number }}",
   );
-  assert.match(releaseUnsuccessfulStep, /clawsweeper-review-lease item=\$ITEM_NUMBER/);
-  assert.match(releaseUnsuccessfulStep, /owner=\$LEASE_OWNER/);
-  assert.match(releaseUnsuccessfulStep, /issues\/comments\/\$lease_id/);
-  assert.match(releaseUnsuccessfulStep, /--method DELETE/);
-  assert.match(releaseUnsuccessfulStep, /reactions\?content=eyes/);
-  assert.match(releaseUnsuccessfulStep, /Removed unsuccessful eyes reaction/);
-  assert.match(publisher, /"--event-apply-proof"/);
-  assert.match(publisher, /exactEventApplyProof\(/);
-  assert.match(publisher, /const requeueLatestExpected = applyDisposition === "source_drift"/);
-  assert.match(publisher, /terminal_missing=/);
-  assert.match(publisher, /terminal_closed=/);
-  assert.match(publisher, /guarded_open=/);
-  assert.match(publisher, /remote_tuple_verified=/);
-  assert.match(publisher, /routing_deferred=/);
-  assert.match(publisher, /class GuardedOpenPublishRaceError extends Error/);
-  assert.match(publisher, /class RoutableSyncPublishRaceError extends Error/);
-  assert.match(publisher, /class SourceDriftPublishRaceError extends Error/);
-  assert.match(publisher, /class TerminalClosedPublishRaceError extends Error/);
-  assert.match(publisher, /class TerminalMissingPublishRaceError extends Error/);
-  assert.match(publisher, /terminalClosedExpected: closedCount > 0/);
-  assert.match(publisher, /terminalMissingExpected: missingCount > 0/);
-  assert.match(publisher, /syncedCount > 0/);
-  assert.match(publisher, /routableSyncExpected && !published\.routableSyncVerified/);
-  assert.match(publisher, /eventSnapshotMatchesCurrent\(paths\)/);
-  assert.match(publisher, /candidateEventTupleState\(paths\)/);
-  assert.match(publisher, /fs\.existsSync\(paths\.snapshotClosed\)/);
-  assert.match(publisher, /fs\.existsSync\(paths\.snapshotItem\)/);
-  assert.match(publisher, /terminalClosedExpected && !published\.terminalClosed/);
-  assert.match(publisher, /guardedOpenAction !== null/);
-  assert.match(publisher, /error instanceof GuardedOpenPublishRaceError/);
-  assert.match(publisher, /error instanceof RoutableSyncPublishRaceError/);
-  assert.match(publisher, /error instanceof SourceDriftPublishRaceError/);
-  assert.match(publisher, /error instanceof TerminalClosedPublishRaceError/);
-  assert.match(publisher, /error instanceof TerminalMissingPublishRaceError/);
-  assert.match(publisher, /Event state .* was not applied because .*requeue/);
-  assert.match(publisher, /policy_noop=/);
-  assert.match(publisher, /requeue_latest=/);
-  assert.doesNotMatch(publisher, /entry\.action === "review_comment_synced"/);
-  assert.ok(authoritativeReset > publisherCompleteStart);
-  assert.ok(authoritativeRefresh > authoritativeReset);
-  assert.ok(finalTupleMatch > authoritativeRefresh);
-  assert.doesNotMatch(eventReviewJob, /- name: Dispatch viable issue implementation/);
-  assert.match(routeStep, /steps\.publish-event-result\.outputs\.terminal_noop != 'true'/);
-  assert.match(routeStep, /steps\.publish-event-result\.outputs\.terminal_missing != 'true'/);
-  assert.match(routeStep, /steps\.publish-event-result\.outputs\.terminal_closed != 'true'/);
-  assert.match(routeStep, /steps\.publish-event-result\.outputs\.guarded_open != 'true'/);
-  assert.match(routeStep, /steps\.publish-event-result\.outputs\.remote_tuple_verified == 'true'/);
-  assert.match(routeStep, /steps\.publish-event-result\.outputs\.routing_deferred == 'false'/);
-  assert.match(routeStep, /steps\.publish-event-result\.outputs\.policy_noop != 'true'/);
-  assert.match(routeStep, /steps\.publish-event-result\.outputs\.requeue_latest != 'true'/);
-  assert.doesNotMatch(routeStep, /outputs\.routing_deferred != 'true'/);
-  assert.match(
-    deferredRouteStep,
-    /steps\.publish-event-result\.outputs\.remote_tuple_verified == 'true'/,
+  assert.match(deferredRoute.run ?? "", /-f item_numbers="\$ITEM_NUMBER"/);
+  const drift = step(publisher, "Queue fresh review after source drift");
+  assert.match(drift.if ?? "", /requeue_latest == 'true'/);
+  assert.match(drift.if ?? "", /legacy-exact-artifact\.outputs\.legacy_tupleless == 'true'/);
+  assert.match(drift.run ?? "", /x-clawsweeper-exact-review-signature/);
+  assert.match(drift.run ?? "", /internal\/exact-review\/enqueue/);
+  assert.match(drift.run ?? "", /decision\.sourceAction === "failed_review_shard_recovery"/);
+  assert.match(drift.run ?? "", /\.queued == true or \.deduped == true or \.shed == true/);
+  assert.match(drift.run ?? "", /Source-drift recovery shed by exact-review queue backpressure/);
+  const status = step(publisher, "Mark re-review complete");
+  assert.equal(status.env?.LIVE_TERMINAL_MISSING, undefined);
+  assert.equal(status.env?.LIVE_GUARDED_OPEN, undefined);
+  assert.match(status.env?.PUBLISH_COMPLETION_KIND ?? "", /publish-event-result/);
+  assert.match(status.if ?? "", /reason_code == 'review_lease_active'/);
+  assert.match(status.run ?? "", /PUBLISH_COMPLETION_KIND.*superseded/);
+  const commandComplete = step(publisher, "Mark re-review complete");
+  assert.doesNotMatch(commandComplete.if ?? "", /completion_kind != 'deferred'/);
+  assert.match(commandComplete.run ?? "", /state="Complete"/);
+  assert.match(commandComplete.run ?? "", /independent bounded read-only proof check/);
+  assert.doesNotMatch(commandComplete.run ?? "", /Close coverage proof pending/);
+  assert.match(status.run ?? "", /stale result was superseded/);
+  assert.doesNotMatch(status.run ?? "", /LIVE_TERMINAL_MISSING|LIVE_GUARDED_OPEN/);
+  const reaction = step(publisher, "React to target item completion");
+  assert.match(reaction.if ?? "", /requeue_latest != 'true'/);
+  assert.doesNotMatch(reaction.if ?? "", /publication-context.*live_guarded_open/);
+  assert.equal(
+    publisher.steps.some((candidate) => candidate.name === "Publish exact review action ledger"),
+    false,
   );
-  assert.match(
-    deferredRouteStep,
-    /steps\.publish-event-result\.outputs\.routing_deferred == 'true'/,
+  const publishResult = step(publisher, "Export exact review publication result");
+  const publishComplete = step(publisher, "Complete durable exact review publication");
+  const activeLeaseWaiting = step(publisher, "Mark active lease retry waiting");
+  const publicationPressure = step(publisher, "Probe GitHub pressure after publication failure");
+  const releaseTerminal = step(publisher, "Release terminal review leases");
+  const releaseUnsuccessful = step(
+    publisher,
+    "Release superseded or unsuccessful publisher-owned review lease",
   );
-  assert.match(deferredRouteStep, /gh workflow run repair-comment-router\.yml/);
-  assert.match(deferredRouteStep, /-f execute=true/);
-  assert.match(deferredRouteStep, /-f target_repo="\$TARGET_REPO"/);
-  assert.match(deferredRouteStep, /-f target_branch="\$TARGET_BRANCH"/);
-  assert.doesNotMatch(deferredRouteStep, /-f item_numbers=/);
+  assert.doesNotMatch(releaseTerminal.if ?? "", /publication-context.*live_terminal_noop/);
+  assert.match(releaseTerminal.if ?? "", /publish-event-result.*terminal_noop/);
+  assert.match(releaseUnsuccessful.run ?? "", /\.user\.login == \\"clawsweeper\[bot\]\\"/);
+  assert.match(releaseUnsuccessful.run ?? "", /content == "eyes"/);
+  assert.match(releaseUnsuccessful.if ?? "", /completion_kind == 'superseded'/);
+  assert.doesNotMatch(releaseUnsuccessful.if ?? "", /completion_kind == 'deferred'/);
+  assert.match(publishResult.env?.PRIOR_JOB_STATUS ?? "", /job\.status/);
+  assert.match(publishResult.env?.LEGACY_TUPLELESS ?? "", /legacy-exact-artifact/);
+  assert.match(publishResult.env?.FAILURE_KIND ?? "", /publish-event-result/);
+  assert.match(publishResult.env?.FAILURE_KIND ?? "", /publication-pressure/);
+  assert.match(publishResult.env?.DOWNLOAD_OUTCOME ?? "", /download-exact-review-bundle/);
+  assert.match(publishResult.env?.VALIDATE_OUTCOME ?? "", /validate-exact-review-bundle/);
+  assert.match(publishResult.env?.PUBLISH_COMPLETION_KIND ?? "", /publish-event-result/);
+  assert.match(publishResult.env?.PUBLISH_RETRY_AT ?? "", /publish-event-result/);
+  assert.match(publicationPressure.if ?? "", /failure\(\)/);
+  assert.match(publicationPressure.run ?? "", /gh api rate_limit/);
+  assert.match(publicationPressure.run ?? "", /failure_kind=github_rate_limit/);
+  assert.match(publicationPressure.run ?? "", /failure_kind=github_transient/);
+  assert.match(publicationPressure.run ?? "", /HTTP 429/);
+  assert.doesNotMatch(publicationPressure.run ?? "", /HTTP \(403\|429\)/);
+  assert.match(publishResult.run ?? "", /REQUEUE_LATEST.*SOURCE_DRIFT_OUTCOME/);
+  assert.match(publishResult.run ?? "", /LEGACY_TUPLELESS.*SOURCE_DRIFT_OUTCOME/);
+  assert.match(publishResult.run ?? "", /completion_kind=superseded/);
+  assert.match(publishResult.run ?? "", /completion_kind=deferred/);
+  assert.match(publishResult.run ?? "", /completion_kind=refresh_required/);
+  assert.match(publishResult.run ?? "", /reason_code=close_coverage_retry/);
+  assert.match(publishResult.run ?? "", /reason_code=close_coverage_deferred/);
+  assert.match(publishResult.run ?? "", /reason_code=review_lease_active/);
+  assert.match(publishResult.run ?? "", /reason_code=review_lease_active[\s\S]*?outcome=success/);
+  assert.match(publishResult.run ?? "", /retry_at="\$PUBLISH_RETRY_AT"/);
   assert.match(
-    routerWorkflow,
-    /format\('repair-comment-router-\{0\}', github\.event\.inputs\.target_repo \|\| github\.event\.client_payload\.target_repo \|\| 'openclaw\/openclaw'\)/,
+    publishResult.run ?? "",
+    /completion_kind" != "superseded".*completion_kind" != "deferred".*completion_kind" != "refresh_required".*completion_kind" != "retryable_failure"/,
   );
-  assert.doesNotMatch(routerWorkflow, /repair-comment-router-\{0\}-items/);
+  assert.match(publishResult.run ?? "", /reason_code=artifact_unavailable/);
+  assert.match(publishResult.run ?? "", /reason_code=invalid_artifact/);
+  assert.doesNotMatch(publishResult.run ?? "", /LIVE_TERMINAL_NOOP/);
+  assert.match(publishComplete.run ?? "", /internal\/exact-review\/complete/);
+  assert.match(publishComplete.env?.FAILURE_KIND ?? "", /exact-review-publication-result/);
+  assert.match(publishComplete.env?.RETRY_AT ?? "", /exact-review-publication-result/);
+  assert.match(publishComplete.run ?? "", /failure_kind: failureKind/);
+  assert.match(publishComplete.run ?? "", /completion_kind: completionKind/);
+  assert.match(publishComplete.run ?? "", /reason_code: reasonCode/);
+  assert.match(publishComplete.run ?? "", /retry_at: retryAt/);
+  assert.ok(publisher.steps.indexOf(publishResult) < publisher.steps.indexOf(publishComplete));
+  assert.ok(publisher.steps.indexOf(publishComplete) < publisher.steps.indexOf(activeLeaseWaiting));
+  assert.match(activeLeaseWaiting.if ?? "", /reason_code == 'review_lease_active'/);
   assert.match(
-    eventReviewJob,
-    /INTAKE_TERMINAL_MISSING: \$\{\{ steps\.live-item\.outputs\.terminal_missing \}\}/,
+    activeLeaseWaiting.if ?? "",
+    /complete-exact-review-publication\.outcome == 'success'/,
   );
+  assert.match(activeLeaseWaiting.run ?? "", /--state "Waiting"/);
+
+  const publisherSource = readText("src/repair/publish-event-result.ts");
   assert.match(
-    eventReviewJob,
-    /TERMINAL_MISSING: \$\{\{ steps\.publish-event-result\.outputs\.terminal_missing \}\}/,
+    publisherSource,
+    /exactEventPublication: process\.env\.EXACT_EVENT_PUBLICATION === "true"/,
   );
+  assert.match(publisherSource, /"--exact-event-publication"/);
+  assert.match(publisherSource, /legacyTuplelessReviewLease/);
+  assert.match(publisherSource, /activeReviewLeaseRetryAt/);
+  assert.match(publisherSource, /review_lease_active/);
+  assert.match(publisherSource, /applyDisposition === "close_coverage_deferred"/);
+  assert.match(publisherSource, /EXACT_REVIEW_CLOSE_COVERAGE_DEFERRED/);
+  assert.match(publisherSource, /writeLegacyRefreshRequiredOutputs/);
+  assert.match(publisherSource, /read-only apply-proof lane/);
+  assert.match(publisherSource, /deferredCloseCoverageExpected/);
+  assert.match(publisherSource, /deferredCloseCoverageExpected && !candidateMatchesCurrentTuple/);
+  assert.match(publisherSource, /syncPublishPaths\(commitPaths\)/);
+  assert.match(publisherSource, /\}\) && !deferredCloseCoverage/);
+  assert.match(publisherSource, /writePublicationCompletionOutputs\(\s*"superseded"/);
+  assert.match(publisherSource, /completionKind: completionSupersededReason/);
+  const reviewSource = readText("src/clawsweeper.ts");
+  assert.match(reviewSource, /reserveReviewLeaseCommand/);
+  assert.match(reviewSource, /suppliedReviewStartLeaseFromArgs/);
+  assert.match(reviewSource, /exactEventReviewLeaseDisposition/);
+  assert.match(reviewSource, /retryCloseCoverageCommandStatusOnlyUpdate/);
+  assert.match(reviewSource, /clawsweeper-command-status:/);
+  assert.match(reviewSource, /CLAWSWEEPER_BOT_AUTHORS\.has/);
+  const completeStart = publisherSource.indexOf("const complete =");
+  assert.ok(publisherSource.indexOf("hardResetToRemoteMain();", completeStart) > completeStart);
+  assert.match(publisherSource, /GitCommandTimeoutError/);
+  assert.match(publisherSource, /StatePublishContentionError/);
+  assert.match(publisherSource, /StatePublishContentionError\s*\? "state_contention"/);
   assert.match(
-    eventReviewJob,
-    /TERMINAL_CLOSED: \$\{\{ steps\.publish-event-result\.outputs\.terminal_closed \}\}/,
+    publisherSource,
+    /const mutation = withStatePublishLease\(\s*\(\) => \{\s*hardResetToRemoteMain\(\)/,
   );
+  assert.match(publisherSource, /observer:\s*recorder/);
+  assert.match(publisherSource, /state_writer_json=/);
+  assert.match(publisherSource, /retryable_failure/);
+  assert.match(publisherSource, /error instanceof GitCommandTimeoutError/);
   assert.match(
-    eventReviewJob,
-    /INTAKE_GUARDED_OPEN: \$\{\{ steps\.live-item\.outputs\.guarded_open \}\}/,
+    publisherSource,
+    /writePublicationCompletionOutputs\(\s*retryableFailure \? "retryable_failure" : "permanent_failure",\s*reasonCode,\s*errorFingerprint\(error\),\s*\);/,
   );
-  assert.match(
-    eventReviewJob,
-    /GUARDED_OPEN: \$\{\{ steps\.publish-event-result\.outputs\.guarded_open \}\}/,
-  );
-  assert.match(
-    eventReviewJob,
-    /ROUTING_DEFERRED: \$\{\{ steps\.publish-event-result\.outputs\.routing_deferred \}\}/,
-  );
-  assert.match(
-    eventReviewJob,
-    /REMOTE_TUPLE_VERIFIED: \$\{\{ steps\.publish-event-result\.outputs\.remote_tuple_verified \}\}/,
-  );
-  assert.match(
-    eventReviewJob,
-    /ROUTE_HANDOFF_OUTCOME: \$\{\{ steps\.queue-deferred-verdict-router\.outcome \}\}/,
-  );
-  assert.match(
-    eventReviewJob,
-    /DIRECT_ROUTE_OUTCOME: \$\{\{ steps\.route-synced-verdict\.outcome \}\}/,
-  );
-  assert.match(
-    eventReviewJob,
-    /DEFERRED_ROUTE_OUTCOME: \$\{\{ steps\.queue-deferred-verdict-router\.outcome \}\}/,
-  );
-  assert.match(eventReviewJob, /queued an executing target-wide serialized router scan/);
-  assert.match(eventReviewJob, /deterministic remain-open guard/);
-  assert.match(eventReviewJob, /verified terminal close/);
-  assert.match(eventReviewJob, /repository is accessible but the item is missing/);
-  assert.match(eventReviewJob, /finished before Codex because the open conversation is locked/);
-  assert.match(
-    eventReviewJob,
-    /steps\.live-item\.outputs\.proceed == 'true' \|\| steps\.live-item\.outputs\.terminal_missing == 'true' \|\| steps\.live-item\.outputs\.guarded_open == 'true' \|\| steps\.confirm-terminal-item\.outputs\.confirmed == 'true'/,
-  );
-  assert.match(
-    eventReviewJob,
-    /\[ "\$TERMINAL_CLOSED" = "true" \] && \[ "\$\{\{ steps\.confirm-terminal-item\.outputs\.confirmed \}\}" = "true" \]/,
-  );
-  assert.match(reactStep, /steps\.publish-event-result\.outputs\.terminal_closed == 'true'/);
-  assert.match(reactStep, /steps\.publish-event-result\.outputs\.guarded_open == 'true'/);
-  assert.match(reactStep, /steps\.queue-deferred-verdict-router\.outcome == 'success'/);
-  assert.match(reactStep, /steps\.live-item\.outputs\.guarded_open == 'true'/);
-  assert.doesNotMatch(reactStep, /terminal_missing/);
-  assert.match(releaseLeaseStep, /steps\.live-item\.outputs\.terminal_noop == 'true'/);
-  assert.match(releaseLeaseStep, /steps\.publish-event-result\.outputs\.terminal_noop == 'true'/);
-  assert.match(releaseLeaseStep, /steps\.publish-event-result\.outputs\.terminal_closed == 'true'/);
-  assert.doesNotMatch(releaseLeaseStep, /terminal_missing/);
-  assert.doesNotMatch(releaseLeaseStep, /steps\.live-item\.outputs\.proceed == 'false'/);
-  assert.match(releaseLeaseStep, /clawsweeper-review-lease item=\$ITEM_NUMBER/);
-  assert.match(releaseLeaseStep, /--method DELETE/);
-  assert.match(releaseLeaseStep, /reactions\?content=eyes/);
-  assert.match(releaseLeaseStep, /Removed terminal eyes reaction/);
-  assert.ok(releaseLeaseStep.indexOf("lease_ids=") < releaseLeaseStep.indexOf('test "$(gh api'));
-  assert.match(confirmTerminalStep, /steps\.release-terminal-review-leases\.outcome == 'success'/);
-  assert.match(confirmTerminalStep, /live_state.*gh api/);
-  assert.match(confirmTerminalStep, /echo "confirmed=true" >> "\$GITHUB_OUTPUT"/);
-  assert.match(eventReviewJob, /terminal review leases were released/);
-  assert.match(failStep, /steps\.live-item\.outputs\.proceed != 'false'/);
-  assert.match(failStep, /steps\.publish-event-result\.outputs\.terminal_noop != 'true'/);
-  assert.match(failStep, /steps\.publish-event-result\.outputs\.terminal_missing != 'true'/);
-  assert.match(failStep, /steps\.publish-event-result\.outputs\.terminal_closed != 'true'/);
-  assert.match(failStep, /steps\.publish-event-result\.outputs\.guarded_open != 'true'/);
-  assert.match(failStep, /steps\.route-synced-verdict\.outcome != 'success'/);
-  assert.match(failStep, /steps\.queue-deferred-verdict-router\.outcome != 'success'/);
-  assert.match(failStep, /steps\.publish-event-result\.outputs\.policy_noop != 'true'/);
-  assert.match(failStep, /steps\.publish-event-result\.outputs\.requeue_latest != 'true'/);
-  assert.match(
-    eventReviewJob,
-    /RETRY_AT: \$\{\{ steps\.review-exact-event-item\.outputs\.retry_at \}\}/,
-  );
-  assert.match(eventReviewJob, /\.\.\.\(retryAt \? \{ retry_at: retryAt \} : \{\}\)/);
-  assert.match(
-    eventReviewJob,
-    /REQUEUE_LATEST: \$\{\{ steps\.publish-event-result\.outputs\.requeue_latest \}\}/,
-  );
-  assert.match(eventReviewJob, /\.\.\.\(requeueLatest \? \{ requeue_latest: true \} : \{\}\)/);
-  assert.match(eventReviewJob, /id: complete-exact-review-queue/);
-  assert.match(
-    eventReviewJob,
-    /Fail unacknowledged source-drift requeue[\s\S]*steps\.complete-exact-review-queue\.outcome != 'success'/,
-  );
-  const reReviewStatus = eventReviewJob.indexOf("- name: Mark source-drift re-review queued");
-  const completeQueue = eventReviewJob.indexOf("- name: Complete exact-review queue lease");
-  assert.ok(completeQueue > 0 && reReviewStatus > completeQueue);
-  assert.match(
-    eventReviewJob,
-    /Mark source-drift re-review queued[\s\S]*steps\.complete-exact-review-queue\.outcome == 'success'/,
-  );
-  assert.match(
-    eventReviewJob,
-    /React to target item completion[\s\S]*steps\.publish-event-result\.outputs\.policy_noop == 'true'/,
-  );
-  assert.match(
-    eventReviewJob,
-    /if \[ "\$POLICY_NOOP" != "true" \] && \[ "\$REVIEW_ONLY" != "true" \]; then/,
+  assert.doesNotMatch(publisherSource, /retryableFailure \? "github_transient" : undefined/);
+  assert.match(publishComplete.run ?? "", /"state_contention"/);
+  assert.ok(
+    publisherSource.indexOf("eventSnapshotMatchesCurrent(paths)", completeStart) > completeStart,
   );
 });
-
 test("exact event workflow binds all work to the canonical queue claim", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const eventStart = workflow.indexOf("\n  event-review-apply:");
-  const eventEnd = workflow.indexOf("\n  target-fanout:", eventStart);
+  const eventEnd = workflow.indexOf("\n  event-review-publish:", eventStart);
   const eventJob = workflow.slice(eventStart, eventEnd);
   const claimStart = eventJob.indexOf("- name: Claim exact-review queue lease");
   const checkoutStart = eventJob.indexOf("- uses: actions/checkout@v7", claimStart);
@@ -628,7 +681,11 @@ test("exact event workflow binds all work to the canonical queue claim", () => {
   assert.match(claimStep, /protocol_version=\$\{responseProtocol\}/);
   assert.match(claimStep, /decision=\$\{JSON\.stringify\(decision\)\}/);
   assert.doesNotMatch(claimedWork, /github\.event\.client_payload/);
-  assert.match(claimedWork, /gh api "repos\/\$TARGET_REPO" --jq \.default_branch/);
+  assert.match(
+    claimedWork,
+    /CLAIM_TARGET_BRANCH: \$\{\{ fromJSON\(steps\.claim-exact-review-queue\.outputs\.decision\)\.targetBranch \}\}/,
+  );
+  assert.match(claimedWork, /target_branch="\$CLAIM_TARGET_BRANCH"/);
   assert.match(claimedWork, /if \.pull_request then "pull_request" else "issue" end/);
   assert.match(claimedWork, /steps\.live-item\.outputs\.target_branch/);
   assert.match(
@@ -653,7 +710,7 @@ test("exact event workflow binds all work to the canonical queue claim", () => {
   );
   assert.match(
     claimedWork,
-    /Fail unsuccessful exact review[\s\S]*steps\.target\.outputs\.target_enabled != 'false'/,
+    /Create exact review artifact bundle[\s\S]*steps\.target\.outputs\.target_enabled == 'true'/,
   );
   assert.match(
     claimedWork,
@@ -666,6 +723,79 @@ test("exact event workflow binds all work to the canonical queue claim", () => {
   assert.match(claimedWork, /item_key: process\.env\.ITEM_KEY/);
   assert.match(claimedWork, /lease_revision: leaseRevision/);
   assert.match(claimedWork, /claim_generation: claimGeneration/);
+});
+
+test("exact event review heartbeats its queue lease while Codex runs", () => {
+  type Step = { name?: string; env?: Record<string, string>; run?: string };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: Step[] }>;
+  };
+  const review = workflow.jobs["event-review-apply"]!.steps.find(
+    (candidate) => candidate.name === "Review exact event item",
+  );
+  assert.ok(review);
+  assert.match(review.env?.EXACT_REVIEW_ITEM_KEY ?? "", /claim-exact-review-queue/);
+  assert.match(review.env?.EXACT_REVIEW_LEASE_ID ?? "", /claim-exact-review-queue/);
+  assert.match(review.env?.EXACT_REVIEW_LEASE_REVISION ?? "", /claim-exact-review-queue/);
+  // The Codex-adjacent review step must never receive the shared webhook secret;
+  // the heartbeat authenticates by lease tuple like /claim and /complete.
+  assert.equal(review.env?.CLAWSWEEPER_WEBHOOK_SECRET, undefined);
+  assert.match(review.run ?? "", /item_key: process\.env\.EXACT_REVIEW_ITEM_KEY/);
+  assert.match(review.run ?? "", /lease_id: process\.env\.EXACT_REVIEW_LEASE_ID/);
+  assert.match(review.run ?? "", /lease_revision: leaseRevision/);
+  assert.match(review.run ?? "", /run_id: process\.env\.GITHUB_RUN_ID/);
+  assert.doesNotMatch(review.run ?? "", /x-clawsweeper-exact-review-signature/);
+  assert.doesNotMatch(review.run ?? "", /CLAWSWEEPER_WEBHOOK_SECRET/);
+  assert.match(review.run ?? "", /internal\/exact-review\/heartbeat/);
+  assert.match(review.run ?? "", /sleep 300/);
+  assert.match(review.run ?? "", /heartbeat_payload=.*\|\| return 0/s);
+  assert.doesNotMatch(review.run ?? "", /test -n "\$CLAWSWEEPER_WEBHOOK_SECRET"/);
+  assert.match(review.run ?? "", /trap cleanup_heartbeat EXIT/);
+  assert.match(review.run ?? "", /kill "\$heartbeat_pid" 2>\/dev\/null \|\| true/);
+
+  const publisher = workflow.jobs["event-review-publish"]!;
+  assert.equal(
+    publisher.steps.some((step) => step.run?.includes("internal/exact-review/heartbeat")),
+    false,
+  );
+});
+
+test("exact-review lease competition skips only known conflicts and gates both owners", () => {
+  type Step = { name?: string; uses?: string; if?: string; run?: string };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: Step[] }>;
+  };
+
+  for (const [jobName, claimId] of [
+    ["event-review-apply", "claim-exact-review-queue"],
+    ["event-review-publish", "publication-context"],
+  ]) {
+    const steps = workflow.jobs[jobName]!.steps;
+    const claim = steps[0]!;
+    const claimRun = claim.run ?? "";
+    const gate = `steps.${claimId}.outputs.claimed == 'true'`;
+
+    assert.match(claimRun, /printf 'claimed=false\\ndecision=\{\}\\n'/, jobName);
+    assert.match(claimRun, /--write-out '%\{http_code\}'/, jobName);
+    assert.match(claimRun, /if \[ "\$status" = "409" \]/, jobName);
+    for (const reason of [
+      "lease_not_active",
+      "lease_already_claimed",
+      "lease_decision_unavailable",
+      "stale_run_attempt",
+    ]) {
+      assert.match(claimRun, new RegExp(`"${reason}"`), `${jobName}: ${reason}`);
+    }
+    assert.match(claimRun, /if \(!safeConflicts\.has\(response\.error\)\) process\.exit\(1\)/);
+    assert.match(claimRun, /if \[ "\$status" != "200" \]/, jobName);
+    assert.match(claimRun, /if \[\[ "\$status" != 5\* \]\]/, jobName);
+    assert.match(claimRun, /returned an invalid success payload/, jobName);
+    assert.doesNotMatch(claimRun, /curl --fail/, jobName);
+
+    for (const step of steps.slice(1)) {
+      assert.match(step.if ?? "", new RegExp(gate.replaceAll(".", "\\.")), step.name ?? step.uses);
+    }
+  }
 });
 
 test("exact event workflow keeps both queue protocol versions live during rolling deploys", () => {
@@ -728,35 +858,72 @@ test("dashboard CI refreshes on cadence without completion-trigger storms", () =
 
 test("terminal exact-review runs reconcile through a signed isolated backstop", () => {
   const workflow = readText(".github/workflows/exact-review-reconcile.yml");
+  const eventJob = workflow.slice(
+    workflow.indexOf("\n  reconcile:"),
+    workflow.indexOf("\n  sweep:"),
+  );
 
   assert.match(workflow, /name: Reconcile exact-review leases/);
   assert.match(workflow, /workflow_run:\s+workflows: \[ClawSweeper\]\s+types: \[completed\]/);
+  assert.match(workflow, /schedule:\s+- cron: "\*\/15 \* \* \* \*"/);
+  assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /permissions: \{\}/);
   assert.match(
     workflow,
-    /group: exact-review-reconcile-\$\{\{ github\.event\.workflow_run\.event == 'repository_dispatch' && startsWith\([\s\S]*'queue' \|\| github\.event\.workflow_run\.id \}\}/,
+    /group: exact-review-reconcile-\$\{\{ \(github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch'\) && 'sweep'/,
   );
   assert.match(workflow, /cancel-in-progress: false/);
-  assert.match(workflow, /github\.event\.workflow_run\.event == 'repository_dispatch'/);
+  assert.match(eventJob, /github\.event\.workflow_run\.event == 'repository_dispatch'/);
   assert.match(
-    workflow,
+    eventJob,
     /startsWith\(github\.event\.workflow_run\.display_title, 'Review event item '\)/,
   );
   assert.match(
-    workflow,
+    eventJob,
     /SOURCE_RUN_ATTEMPT: \$\{\{ github\.event\.workflow_run\.run_attempt \}\}/,
   );
-  assert.match(workflow, /SOURCE_RUN_ID: \$\{\{ github\.event\.workflow_run\.id \}\}/);
-  assert.match(workflow, /run_id: process\.env\.SOURCE_RUN_ID/);
-  assert.match(workflow, /run_attempt: runAttempt/);
-  assert.match(workflow, /include_all_claimed: true/);
-  assert.match(workflow, /CLAWSWEEPER_WEBHOOK_SECRET/);
-  assert.match(workflow, /x-clawsweeper-exact-review-signature: \$signature/);
-  assert.match(workflow, /--max-time 120/);
-  assert.match(workflow, /--data-binary "\$payload"/);
-  assert.match(workflow, /\/internal\/exact-review\/reconcile/);
-  assert.doesNotMatch(workflow, /actions\/checkout/);
-  assert.doesNotMatch(workflow, /(?:GH_TOKEN|GITHUB_TOKEN|github\.token)/);
+  assert.match(eventJob, /SOURCE_RUN_ID: \$\{\{ github\.event\.workflow_run\.id \}\}/);
+  assert.match(eventJob, /run_id: process\.env\.SOURCE_RUN_ID/);
+  assert.match(eventJob, /run_attempt: runAttempt/);
+  assert.match(eventJob, /include_all_claimed: true/);
+  assert.match(eventJob, /CLAWSWEEPER_WEBHOOK_SECRET/);
+  assert.match(eventJob, /x-clawsweeper-exact-review-signature: \$signature/);
+  assert.match(eventJob, /--max-time 120/);
+  assert.match(eventJob, /--data-binary "\$payload"/);
+  assert.match(eventJob, /\/internal\/exact-review\/reconcile/);
+  assert.doesNotMatch(eventJob, /actions\/checkout/);
+  assert.doesNotMatch(eventJob, /(?:GH_TOKEN|GITHUB_TOKEN|github\.token)/);
+
+  const sweepJob = workflow.slice(workflow.indexOf("\n  sweep:"));
+  assert.match(sweepJob, /timeout-minutes: 10/);
+  assert.match(
+    sweepJob,
+    /permissions:\s+actions: read\s+contents: read\s+issues: read\s+pull-requests: read/,
+  );
+  assert.match(sweepJob, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(sweepJob, /\/internal\/exact-review\/claimed-runs/);
+  assert.match(sweepJob, /include_all_claimed: true/);
+  assert.match(sweepJob, /actions\/runs\/\$\{runId\}\$\{suffix\}/);
+  assert.match(sweepJob, /terminal_runs: terminalRuns/);
+  assert.match(sweepJob, /\/internal\/exact-review\/reconcile/);
+  assert.match(sweepJob, /x-clawsweeper-exact-review-signature/);
+  assert.match(sweepJob, /actions\/checkout@v7/);
+  assert.match(sweepJob, /build-script: build/);
+  assert.match(sweepJob, /name: Recover orphaned review placeholders/);
+  assert.match(sweepJob, /run: node dist\/review-placeholder-recovery\.js/);
+  assert.match(
+    sweepJob,
+    /REVIEW_PLACEHOLDER_MAX_CHECKS: \$\{\{ vars\.REVIEW_PLACEHOLDER_MAX_CHECKS \|\| '20' \}\}/,
+  );
+  assert.match(
+    sweepJob,
+    /REVIEW_PLACEHOLDER_MAX_RECOVERIES: \$\{\{ vars\.REVIEW_PLACEHOLDER_MAX_RECOVERIES \|\| '5' \}\}/,
+  );
+  assert.match(
+    sweepJob,
+    /REVIEW_PLACEHOLDER_MIN_AGE_HOURS: \$\{\{ vars\.REVIEW_PLACEHOLDER_MIN_AGE_HOURS \|\| '2' \}\}/,
+  );
+  assert.match(sweepJob, /TARGET_REPO: openclaw\/openclaw/);
 });
 
 test("publish workflow dispatches immediate apply through the isolated lane", () => {
@@ -890,7 +1057,7 @@ test("broad record publishers isolate tuple reconciliation from status and auxil
   }
 });
 
-test("apply workflow isolates Codex proof from the credentialed mutation runner", () => {
+test("apply workflow isolates proof Codex and limits mutation Codex to model-guided recovery", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const workflowConcurrency = workflow.slice(
     workflow.indexOf("\nconcurrency:"),
@@ -982,7 +1149,11 @@ test("apply workflow isolates Codex proof from the credentialed mutation runner"
   );
   assert.doesNotMatch(applyCondition, /needs\.apply-proof\.result/);
   assert.doesNotMatch(applyCondition, /needs\.publish-apply-proof-action-ledger/);
-  assert.doesNotMatch(applyJob, /setup-codex|OPENAI_API_KEY|CLAWSWEEPER_INTERNAL_MODEL/);
+  assert.match(applyJob, /CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "1"/);
+  assert.match(applyJob, /OPENAI_API_KEY: \$\{\{ secrets\.OPENAI_API_KEY \}\}/);
+  assert.match(applyJob, /uses: \.\/\.github\/actions\/setup-codex/);
+  assert.match(applyJob, /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ secrets\.CLAWSWEEPER_MODEL \}\}/);
+  assert.doesNotMatch(applyJob, /--codex-model|--codex-reasoning-effort/);
   assert.match(applyJob, /Create target write token/);
   assert.match(applyJob, /Create state token/);
   assert.match(applyJob, /actions\/download-artifact@v8/);
@@ -1150,13 +1321,19 @@ test("apply workflow rejects malformed or oversized coverage proof artifact tree
 
 test("apply workflow target token can inspect source workflow runs", () => {
   const workflow = readText(".github/workflows/sweep.yml");
+  const action = readText(".github/actions/create-target-write-token/action.yml");
   const applyJob = workflow.slice(workflow.indexOf("\n  apply-existing:"));
   const tokenStart = applyJob.indexOf("- name: Create target write token");
   const stateTokenStart = applyJob.indexOf("- name: Create state token", tokenStart);
 
   assert.ok(tokenStart !== -1);
   assert.ok(stateTokenStart > tokenStart);
-  assert.match(applyJob.slice(tokenStart, stateTokenStart), /permission-actions: read/);
+  assert.match(
+    applyJob.slice(tokenStart, stateTokenStart),
+    /uses: \.\/\.github\/actions\/create-target-write-token/,
+  );
+  assert.match(action, /permission-actions: read/);
+  assert.match(action, /minted-at-ms:[\s\S]*steps\.minted-at\.outputs\.milliseconds/);
 });
 
 test("targeted apply dispatches keep apply names ahead of exact-review names", () => {
@@ -1221,10 +1398,17 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(applyStep, /Capping apply checkpoint size at 20/);
   assert.match(applyStep, /base_close_processed_limit=300/);
   assert.match(applyHelper, /coverage_proof_limit=2/);
+  assert.match(applyHelper, /apply_token_budget_ms=3300000/);
   assert.match(applyHelper, /max_runtime_arg=\(--max-runtime-ms 600000\)/);
   assert.match(applyHelper, /max_close_processed_limit=900/);
   assert.match(applyStep, /close_processed_limit="\$base_close_processed_limit"/);
   assert.match(applyStep, /source scripts\/apply-workflow-helpers\.sh/);
+  assert.match(applyStep, /timeout-minutes: 70/);
+  assert.match(
+    applyStep,
+    /CLAWSWEEPER_APPLY_TOKEN_MINTED_AT_MS: \$\{\{ steps\.target-write-token\.outputs\.minted-at-ms \}\}/,
+  );
+  assert.match(applyStep, /initialize_apply_token_budget/);
   assert.match(applyStep, /select_adaptive_apply_batch/);
   assert.match(applyHelper, /adaptive-apply-batch-size/);
   assert.match(applyHelper, /--status-path "results\/sweep-status\/\$\{target_slug\}\.json"/);
@@ -1338,7 +1522,9 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(applyStep, /true\|1\|yes\|on\) product_direction_enabled=true/);
   assert.match(applyStep, /if \[ "\$result_count" -ge "\$close_processed_limit" \]; then/);
   assert.match(applyHelper, /--action skipped_runtime_budget/);
-  assert.match(applyStep, /if automatic_apply_runtime_reached/);
+  assert.match(applyStep, /if apply_checkpoint_runtime_reached/);
+  assert.match(applyStep, /report_apply_token_budget_stop .*"\$result_count"/);
+  assert.match(applyStep, /apply_checkpoint_runtime_reached .*"\$result_count"/);
   assert.match(applyHelper, /runtime budget before cursor progress/);
   assert.match(applyHelper, /fresh-token continuation will resume the lane/);
   assert.doesNotMatch(
@@ -1409,7 +1595,7 @@ test("apply workflow finalization retries only target status after checkpointed 
   assert.ok(cursorPath > closePaths);
   assert.ok(closeCheckpoint > cursorPath);
   for (const laterBranch of [
-    'if automatic_apply_runtime_reached ".artifacts/apply-reports/apply-report-$checkpoint.json"',
+    'if apply_checkpoint_runtime_reached ".artifacts/apply-reports/apply-report-$checkpoint.json"',
     'if [ "$result_count" -ge "$close_processed_limit" ]; then',
     'if [ "$result_count" -eq 0 ]; then',
     'if [ "$closed_in_chunk" -eq 0 ]; then',
@@ -1483,6 +1669,53 @@ test("apply workflow does not queue runtime-yield continuation without cursor pr
         .filter((line) => line.includes("|")),
       ["yielded|false", "yielded|true"],
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply checkpoint publishes a clean token-budget stop and a later run resumes", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const stoppedReport = join(root, "stopped.json");
+  const resumedReport = join(root, "resumed.json");
+  writeFileSync(
+    stoppedReport,
+    JSON.stringify([
+      {
+        number: 0,
+        action: "skipped_runtime_budget",
+        reason: "apply token budget reached at 4300000ms since epoch",
+      },
+    ]),
+  );
+  writeFileSync(resumedReport, JSON.stringify([{ number: 42, action: "closed" }]));
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          "source scripts/apply-workflow-helpers.sh",
+          "CLAWSWEEPER_APPLY_TOKEN_MINTED_AT_MS=1000000",
+          "initialize_apply_token_budget",
+          'printf "deadline=%s\\n" "$CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS"',
+          'if apply_token_budget_reached "$STOPPED_REPORT"; then apply_token_budget_stop_summary 7 12; fi',
+          'if apply_token_budget_reached "$RESUMED_REPORT"; then echo stopped-again; else echo resumed; fi',
+        ].join("\n"),
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, STOPPED_REPORT: stoppedReport, RESUMED_REPORT: resumedReport },
+      },
+    );
+    assert.match(output, /deadline=4300000/);
+    assert.match(
+      output,
+      /apply stopped at token budget: processed=7 remaining=~12; next run continues/,
+    );
+    assert.match(output, /resumed/);
+    assert.doesNotMatch(output, /stopped-again/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1762,16 +1995,19 @@ test("event review completion removes ClawSweeper eyes reaction", () => {
   assert.doesNotMatch(block, /issues\/comments\/\$ITEM_NUMBER\/reactions/);
 });
 
-test("event re-review status lets the durable queue reconcile interruptions", () => {
+test("event re-review status distinguishes lease deferral from interruptions", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const block = workflow.slice(
-    workflow.indexOf("- name: Mark re-review complete"),
-    workflow.indexOf("- name: Commit event comment router ledger"),
+    workflow.indexOf("- name: Mark unsuccessful re-review"),
+    workflow.indexOf("- name: Export exact review generation result"),
   );
 
   assert.match(block, /\[ "\$REVIEW_OUTCOME" = "cancelled" \]/);
+  assert.match(block, /\[ "\$RESERVATION_STATUS" = "held" \]/);
+  assert.match(block, /state="Waiting"/);
+  assert.match(block, /Another exact-head review is already active/);
   assert.match(block, /state="Interrupted"/);
-  assert.match(block, /The exact-review queue will reconcile a newer pending item if one arrived/);
+  assert.match(block, /The durable queue will retry it/);
   assert.doesNotMatch(block, /CAPACITY_OUTCOME/);
   assert.doesNotMatch(block, /state="Superseded"/);
 });
@@ -1783,14 +2019,29 @@ test("trusted comment router owns command ledger capacity retries", () => {
   const eventEnd = sweepWorkflow.indexOf("\n  target-fanout:", eventStart);
   const eventJob = sweepWorkflow.slice(eventStart, eventEnd);
 
-  assert.match(eventJob, /publish-action-events/);
-  assert.match(eventJob, /publish-action-event-paths/);
+  assert.doesNotMatch(eventJob, /publish-action-events/);
+  assert.doesNotMatch(eventJob, /publish-action-event-paths/);
   assert.doesNotMatch(eventJob, /count-command-actions/);
   assert.doesNotMatch(eventJob, /--wait-for-capacity/);
   assert.match(routerWorkflow, /Commit comment router ledger/);
   assert.match(routerWorkflow, /Detect waiting repair dispatches/);
   assert.match(routerWorkflow, /--status waiting,active/);
   assert.match(routerWorkflow, /--wait-for-capacity/);
+});
+
+test("deferred exact verdict routers cannot replace each other's pending runs", () => {
+  const workflow = readText(".github/workflows/repair-comment-router.yml");
+  const concurrency = workflow.slice(workflow.indexOf("concurrency:"), workflow.indexOf("\njobs:"));
+
+  // GitHub keeps only one pending run per group even when cancel-in-progress is false.
+  // Binding exact workflow dispatches to their item preserves both handoffs under load.
+  assert.match(concurrency, /github\.event_name == 'workflow_dispatch'/);
+  assert.match(concurrency, /github\.event\.inputs\.item_numbers != ''/);
+  assert.match(
+    concurrency,
+    /format\('repair-comment-router-\{0\}-items-\{1\}'[\s\S]*github\.event\.inputs\.item_numbers/,
+  );
+  assert.match(concurrency, /cancel-in-progress: false/);
 });
 
 test("comment commands keep the router-to-sweep dispatch contract", () => {
@@ -2021,8 +2272,9 @@ test("failed review recovery waits for durable exact-review queue acknowledgemen
   );
   assert.match(
     recoveryBlock,
-    /\.ok == true and \(\.queued == true or \.deduped == true or \.accepted == false\)/,
+    /\.ok == true and \(\.queued == true or \.deduped == true or \.shed == true or \.accepted == false\)/,
   );
+  assert.match(recoveryBlock, /Recovery shed by exact-review queue backpressure/);
   assert.doesNotMatch(recoveryBlock, /workflow run sweep\.yml/);
   assert.doesNotMatch(recoveryBlock, /repos\/\$GITHUB_REPOSITORY\/dispatches/);
   assert.match(recoveryBlock, /for attempt in 1 2 3/);
@@ -2120,6 +2372,37 @@ test("background review capacity reserves expanding matrices and caps broad manu
   assert.match(commitBlock, /limit review_shards\.hard_cap/);
   assert.match(commitBlock, /reserved_shards="\$requested_shards"/);
   assert.match(commitBlock, /reserved_shards="\$item_count"/);
+});
+
+test("background planners fetch exact-review queue pressure once and pass its level", () => {
+  const sweepWorkflow = readText(".github/workflows/sweep.yml");
+  const sweepBlock = sweepWorkflow.slice(
+    sweepWorkflow.indexOf("- id: mode"),
+    sweepWorkflow.indexOf("- id: select"),
+  );
+  const commitWorkflow = readText(".github/workflows/commit-review.yml");
+  const commitBlock = commitWorkflow.slice(
+    commitWorkflow.indexOf("- name: Select commits"),
+    commitWorkflow.indexOf('if [ "$ENABLED" = "false" ]'),
+  );
+
+  for (const block of [sweepBlock, commitBlock]) {
+    assert.match(
+      block,
+      /QUEUE_URL: \$\{\{ vars\.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL \|\| 'https:\/\/clawsweeper\.openclaw\.ai' \}\}/,
+    );
+    assert.equal(block.match(/queue-pressure --queue-url/g)?.length, 1);
+    assert.match(block, /--pressure-level "\$pressure_level"/);
+    assert.match(block, /queue pressure: \$pressure_level/);
+    assert.match(block, /if ! pressure_json=/);
+    assert.match(block, /unavailable=probe_failed/);
+    assert.match(block, /CLAWSWEEPER_QUEUE_PRESSURE_SOFT_PENDING/);
+    assert.match(block, /CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS/);
+  }
+  assert.match(sweepBlock, /if \[ -z "\$exact_item" \]; then/);
+  assert.match(sweepBlock, /hot_intake \$hot_intake_unpressured->\$hot_intake_shards/);
+  assert.match(sweepBlock, /normal_review \$normal_unpressured->\$normal_shards/);
+  assert.match(commitBlock, /commit_review \$unpressured_page_size->\$PAGE_SIZE/);
 });
 
 test("review backstops identify sweep runs by stable workflow path", () => {
@@ -2229,6 +2512,9 @@ test("sweep event reviews and target fanout avoid storm amplification", () => {
   assert.match(eventBlock, /cancel-in-progress: false/);
   assert.match(legacyIntakeBlock, /legacy-event-queue-intake:/);
   assert.match(legacyIntakeBlock, /\/internal\/exact-review\/enqueue/);
+  assert.match(legacyIntakeBlock, /gh api "repos\/\$target_repo" --jq \.default_branch/);
+  assert.match(legacyIntakeBlock, /targetBranch: process\.env\.TARGET_BRANCH/);
+  assert.doesNotMatch(legacyIntakeBlock, /targetBranch: payload\.target_branch \|\| "main"/);
   assert.match(legacyIntakeBlock, /commandStatusMarker: payload\.command_status_marker/);
   assert.match(legacyIntakeBlock, /statusCommentId: payload\.status_comment_id/);
   assert.match(legacyIntakeBlock, /additionalPrompt: payload\.additional_prompt/);
@@ -2240,6 +2526,8 @@ test("sweep event reviews and target fanout avoid storm amplification", () => {
 
 test("setup-state defaults to an auth-safe shallow checkout", () => {
   const action = readText(".github/actions/setup-state/action.yml");
+  assert.doesNotMatch(action, /CLAWSWEEPER_STATE_REPOSITORY=/);
+  assert.doesNotMatch(action, /CLAWSWEEPER_STATE_TOKEN/);
   const filterBlock = action.slice(action.indexOf("filter:"), action.indexOf("fetch-depth:"));
   const fetchDepthBlock = action.slice(action.indexOf("fetch-depth:"), action.indexOf("runs:"));
 
@@ -2276,9 +2564,14 @@ test("sweep exact event reviews consume only the immutable claimed decision", ()
     /CONFIGURED_CODEX_TIMEOUT_MS: \$\{\{ vars\.CLAWSWEEPER_CODEX_TIMEOUT_MS \|\| '1200000' \}\}/,
   );
   assert.match(resolveBlock, /const decision = JSON\.parse\(process\.env\.CLAIM_DECISION/);
+  assert.match(resolveBlock, /const maxExactReviewCodexTimeoutMs = 2_700_000/);
+  assert.match(resolveBlock, /Math\.min\(maxExactReviewCodexTimeoutMs, configuredValue\)/);
   assert.match(resolveBlock, /Math\.min\(1_800_000, Math\.max\(600_000, adaptiveValue\)\)/);
   assert.match(resolveBlock, /Math\.min\(480_000, mediaValue\)/);
-  assert.match(resolveBlock, /codex_timeout_ms: Math\.max\(configuredTimeout, adaptiveTimeout\)/);
+  assert.match(
+    resolveBlock,
+    /codex_timeout_ms: Math\.min\(\s*maxExactReviewCodexTimeoutMs,\s*Math\.max\(configuredTimeout, adaptiveTimeout\)/,
+  );
   assert.match(resolveBlock, /media_proof_timeout_ms: mediaTimeout/);
   assert.doesNotMatch(resolveBlock, /github\.event\.client_payload/);
   assert.match(
@@ -2327,13 +2620,13 @@ test("every action-ledger publication authenticates the expected producer job", 
     /pnpm run --silent publish-action-events -- \\\n(?:\s+.*\\\n)*\s+--expected-producer-job [^\n]+/g,
   );
   assert.ok(commands);
-  assert.equal(commands.length, 8);
+  assert.equal(commands.length, 7);
   assert.ok(commands.every((command) => command.includes("--expected-producer-job")));
   assert.match(workflow, /--expected-producer-job review/);
   assert.match(workflow, /--expected-producer-job apply-proof/);
 });
 
-test("sweep exact event reviews preserve the configured fallback without an adaptive payload", () => {
+test("sweep exact event reviews cap the configured fallback within the lease and job budgets", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const resolveBlock = workflow.slice(
     workflow.indexOf("- name: Resolve event payload"),
@@ -2344,8 +2637,15 @@ test("sweep exact event reviews preserve the configured fallback without an adap
     resolveBlock,
     /CONFIGURED_CODEX_TIMEOUT_MS: \$\{\{ vars\.CLAWSWEEPER_CODEX_TIMEOUT_MS \|\| '1200000' \}\}/,
   );
-  assert.match(resolveBlock, /configuredValue > 0 \? configuredValue : 1_200_000/);
-  assert.match(resolveBlock, /codex_timeout_ms: Math\.max\(configuredTimeout, adaptiveTimeout\)/);
+  assert.match(resolveBlock, /const maxExactReviewCodexTimeoutMs = 2_700_000/);
+  assert.match(
+    resolveBlock,
+    /Number\.isInteger\(configuredValue\) && configuredValue > 0\s*\? Math\.min\(maxExactReviewCodexTimeoutMs, configuredValue\)\s*: 1_200_000/,
+  );
+  assert.match(
+    resolveBlock,
+    /codex_timeout_ms: Math\.min\(\s*maxExactReviewCodexTimeoutMs,\s*Math\.max\(configuredTimeout, adaptiveTimeout\)/,
+  );
 });
 
 test("github activity workflow scopes cancellation to matching item activity", () => {

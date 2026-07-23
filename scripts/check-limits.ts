@@ -88,7 +88,7 @@ const expectations: { file: string; label: string; pattern: RegExp }[] = [
     ),
   },
   {
-    file: "dashboard/worker.ts",
+    file: "dashboard/exact-review-queue.ts",
     label: "dashboard worker budget fallback",
     pattern: new RegExp(`numberFrom\\(env\\.WORKER_BUDGET, ${config.workers.max}\\)`),
   },

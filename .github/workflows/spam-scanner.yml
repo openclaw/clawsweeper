@@ -78,19 +78,7 @@ jobs:
             results
             schema/clawsweeper-pr-close-coverage-proof.schema.json
             scripts/hydrate-state.ts
-            src/clawsweeper-text.ts
-            src/command.ts
-            src/codex-env.ts
-            src/codex-output-capture.ts
-            src/codex-process-worker.ts
-            src/codex-process.ts
-            src/codex-spawn.ts
-            src/codex-transient.ts
-            src/github-json.ts
-            src/github-retry.ts
-            src/pr-close-coverage-proof.ts
-            src/repair
-            src/repository-profiles.ts
+            src
             package.json
             pnpm-lock.yaml
             pnpm-workspace.yaml
@@ -117,6 +105,8 @@ jobs:
 
       - uses: ./.github/actions/setup-state
         with:
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
 
@@ -173,6 +163,8 @@ jobs:
 
       - name: Commit spam scanner audit
         if: always()
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
           target_repo="${{ github.event_name == 'repository_dispatch' && (github.event.client_payload.target_repo || 'openclaw/openclaw') || github.event.inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"
           comment_ids="${{ github.event_name == 'workflow_dispatch' && inputs.comment_ids || github.event.client_payload.comment_id || '' }}"

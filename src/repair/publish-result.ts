@@ -111,6 +111,7 @@ function publishResult(resultPath: string) {
     workflow_updated_at:
       metadata?.updatedAt ?? metadata?.updated_at ?? previousRecord?.workflow_updated_at ?? null,
     result_status: result.status ?? null,
+    automerge_session_id: fixReport.automerge_session_id ?? null,
     source_job: clusterPlan?.source_job ?? null,
     published_at: new Date().toISOString(),
     canonical: result.canonical ?? null,
@@ -460,6 +461,8 @@ function sanitizeFixAction(action: LooseRecord) {
     reason: normalizeNullableText(action.reason),
     title: action.title ?? null,
     url: action.url ?? action.pr_url ?? null,
+    commit: action.commit ?? null,
+    base_sync: Boolean(action.fast_rebase || action.merge_preflight?.final_base_sync),
   };
 }
 

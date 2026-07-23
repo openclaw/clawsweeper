@@ -1433,6 +1433,12 @@ test("mutation actor guard accepts only trusted bot identities", () => {
   const trustedBots = new Set(["clawsweeper[bot]", "openclaw-clawsweeper[bot]"]);
 
   assert.equal(normalizeGitHubActor("ClawSweeper[bot]"), "clawsweeper");
+  // Idempotent suffix strip: a doubled suffix must not survive one pass and
+  // collide with a real bot's normalized identity (#574).
+  assert.equal(normalizeGitHubActor("ClawSweeper[bot][bot]"), "clawsweeper");
+  assert.equal(normalizeGitHubActor("evil[BOT][bot][Bot]"), "evil");
+  assert.equal(normalizeGitHubActor(normalizeGitHubActor("evil[bot][bot]")), "evil");
+  assert.equal(normalizeGitHubActor("keeps[bot]inside"), "keeps[bot]inside");
   assert.equal(isAllowedMutationActor("ClawSweeper[bot]", trustedBots), true);
   assert.equal(isAllowedMutationActor("clawsweeper[bot]", trustedBots), true);
   assert.equal(isAllowedMutationActor("clawsweeper", trustedBots), false);

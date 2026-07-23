@@ -802,7 +802,7 @@ test("bun test is treated as the built-in runner instead of a package script", (
   );
 });
 
-test("package validation execution suppresses lifecycle hooks", () => {
+test("package validation execution suppresses lifecycle hooks and implicit installs", () => {
   assert.deepEqual(validationCommandForExecution(["npm", "run", "check"]), [
     "npm",
     "--ignore-scripts",
@@ -811,6 +811,7 @@ test("package validation execution suppresses lifecycle hooks", () => {
   ]);
   assert.deepEqual(validationCommandForExecution(["pnpm", "--filter", "app", "check"]), [
     "pnpm",
+    "--config.verify-deps-before-run=false",
     "--config.enable-pre-post-scripts=false",
     "--fail-if-no-match",
     "--filter",
@@ -819,6 +820,7 @@ test("package validation execution suppresses lifecycle hooks", () => {
   ]);
   assert.deepEqual(validationCommandForExecution(["pnpm", "run", "--filter", "app", "check"]), [
     "pnpm",
+    "--config.verify-deps-before-run=false",
     "--config.enable-pre-post-scripts=false",
     "--fail-if-no-match",
     "run",
@@ -1101,7 +1103,7 @@ if (args.includes("--fail-if-no-match")) {
   );
   assert.equal(
     fs.readFileSync(logPath, "utf8"),
-    "--config.enable-pre-post-scripts=false --fail-if-no-match --filter __clawsweeper_no_such_workspace__ check",
+    "--config.verify-deps-before-run=false --config.enable-pre-post-scripts=false --fail-if-no-match --filter __clawsweeper_no_such_workspace__ check",
   );
 });
 
@@ -2161,12 +2163,16 @@ test("repair execution provisions pinned Bun before target validation can invoke
   assert.ok(setupBunIndex < executeFixIndex, "expected Bun setup before repair:execute-fix");
 
   const containmentStep = workflow.slice(containmentIndex, setupBunIndex);
-  assert.match(containmentStep, /\$\{RUNNER_OS:-\}" != "Linux"/);
-  assert.match(containmentStep, /\/usr\/bin\/unshare/);
-  assert.match(containmentStep, /--map-root-user/);
-  assert.match(containmentStep, /--kill-child=SIGKILL/);
-  assert.match(containmentStep, /ctypes\.c_long\(444\)/);
-  assert.match(containmentStep, /Landlock ABI 3 or newer is required/);
+  assert.match(containmentStep, /pnpm run repair:containment-smoke/);
+  const preflight = fs.readFileSync("src/repair/containment-preflight.ts", "utf8");
+  const worker = fs.readFileSync("src/repair/contained-command-worker.ts", "utf8");
+  const runtime = fs.readFileSync("src/repair/process-tree-containment.ts", "utf8");
+  assert.match(preflight, /process\.platform !== "linux"/);
+  assert.match(worker, /command: "\/usr\/bin\/unshare"/);
+  assert.match(worker, /"--map-root-user"/);
+  assert.match(worker, /"--kill-child=SIGKILL"/);
+  assert.match(runtime, /SYS_LANDLOCK_CREATE_RULESET = 444/);
+  assert.match(runtime, /if error\.errno not in \{errno\.ENOSYS, errno\.EOPNOTSUPP\}/);
   const setupBunStep = workflow.slice(setupBunIndex, executeFixIndex);
   assert.match(setupBunStep, /uses: oven-sh\/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6/);
   assert.match(setupBunStep, /bun-version: 1\.3\.14/);
@@ -2203,6 +2209,211 @@ test("bun-based target toolchain installs deps and runs configured validation", 
   ]);
 });
 
+test("dependency setup permits inert package-manager config files", () => {
+  for (const [configName, contents] of [
+    [".npmrc", ""],
+    [".npmrc", "# Registry and auth settings belong in the runner environment.\n; npm comment\n"],
+    ["bunfig.toml", "# Install settings belong in the runner environment.\n"],
+  ] as const) {
+    const cwd = gitBunPackageFixture({ check: "bun x tsc --noEmit" });
+    fs.writeFileSync(path.join(cwd, configName), contents);
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const { binDir } = fakeBunFixture(cwd);
+    withPathPrefix(binDir, () => {
+      assert.doesNotThrow(() =>
+        prepareTargetToolchain(cwd, {
+          ...validationOptions("openclaw/clawhub", clawhubToolchain()),
+          installTargetDeps: true,
+          installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+          setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        }),
+      );
+    });
+  }
+});
+
+test("dependency setup permits pnpm integrity strings containing double slashes", () => {
+  const cwd = gitBunPackageFixture({ check: "bun x tsc --noEmit" });
+  fs.writeFileSync(
+    path.join(cwd, "pnpm-lock.yaml"),
+    [
+      "lockfileVersion: '9.0'",
+      "",
+      "packages:",
+      "",
+      "  '@mistralai/mistralai@2.4.0':",
+      "    resolution: {integrity: sha512-t6hCx242MTGolB76CI+17jDtPIe/bzLsMdUTMMoMn9Qo1h02N2G5jQYHmKDGU3X//OgR2wvngTD7tO6tPp5poQ==}",
+      "",
+    ].join("\n"),
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const { binDir } = fakeBunFixture(cwd);
+  withPathPrefix(binDir, () => {
+    assert.doesNotThrow(() =>
+      prepareTargetToolchain(cwd, {
+        ...validationOptions("openclaw/clawhub", clawhubToolchain()),
+        installTargetDeps: true,
+        installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      }),
+    );
+  });
+});
+
+test("dependency setup permits external funding metadata in npm lockfiles", () => {
+  for (const lockfile of ["package-lock.json", "npm-shrinkwrap.json"]) {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    fs.rmSync(path.join(cwd, "pnpm-lock.yaml"));
+    const packagePath = path.join(cwd, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    packageJson.packageManager = "npm@11.0.0";
+    fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    fs.writeFileSync(
+      path.join(cwd, lockfile),
+      `${JSON.stringify(
+        {
+          name: "fixture",
+          lockfileVersion: 3,
+          packages: {
+            "": { name: "fixture", version: "1.0.0" },
+            "node_modules/funding-string": {
+              version: "1.0.0",
+              resolved: "https://registry.npmjs.org/funding-string/-/funding-string-1.0.0.tgz",
+              funding: "https://github.com/sponsors/example",
+            },
+            "node_modules/funding-object": {
+              version: "1.0.0",
+              resolved: "https://registry.npmjs.org/funding-object/-/funding-object-1.0.0.tgz",
+              funding: { type: "individual", url: "https://patreon.com/example" },
+            },
+            "node_modules/funding-array": {
+              version: "1.0.0",
+              resolved: "https://registry.npmjs.org/funding-array/-/funding-array-1.0.0.tgz",
+              funding: [
+                { type: "collective", url: "https://opencollective.com/example" },
+                "https://github.com/sponsors/example",
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-npm-funding-bin-"));
+    const npmPath = path.join(binDir, "npm.js");
+    fs.writeFileSync(
+      npmPath,
+      'require("node:fs").mkdirSync("node_modules", { recursive: true });\n',
+    );
+
+    withMockCommand("npm", npmPath, () =>
+      prepareTargetToolchain(cwd, {
+        ...validationOptions("steipete/example", {
+          toolchain: {
+            packageManager: "npm",
+            baseValidationCommands: [],
+            changedGate: null,
+          },
+        }),
+        installTargetDeps: true,
+        installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      }),
+    );
+  }
+});
+
+test("dependency setup keeps non-funding npm lockfile URLs fail-closed", () => {
+  for (const metadata of [
+    { resolved: "https://github.com/example/payload.tgz" },
+    { homepage: "https://github.com/example/payload" },
+  ]) {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    fs.writeFileSync(
+      path.join(cwd, "package-lock.json"),
+      `${JSON.stringify({
+        lockfileVersion: 3,
+        packages: { "node_modules/payload": { version: "1.0.0", ...metadata } },
+      })}\n`,
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+
+    assert.throws(
+      () =>
+        prepareTargetToolchain(cwd, {
+          ...validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "npm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+          installTargetDeps: true,
+          installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+          setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        }),
+      /destination is not approved: https:\/\/github\.com/,
+    );
+  }
+});
+
+test("dependency setup rejects install destinations for dependencies named funding", () => {
+  for (const dependencies of [
+    {
+      funding: {
+        version: "1.0.0",
+        resolved: "https://github.com/example/funding.tgz",
+      },
+    },
+    {
+      packages: {
+        version: "1.0.0",
+        dependencies: {
+          funding: {
+            version: "1.0.0",
+            resolved: "https://github.com/example/nested-funding.tgz",
+          },
+        },
+      },
+    },
+  ]) {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    fs.writeFileSync(
+      path.join(cwd, "package-lock.json"),
+      `${JSON.stringify({ lockfileVersion: 2, dependencies })}\n`,
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+
+    assert.throws(
+      () =>
+        prepareTargetToolchain(cwd, {
+          ...validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "npm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+          installTargetDeps: true,
+          installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+          setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        }),
+      /destination is not approved: https:\/\/github\.com/,
+    );
+  }
+});
+
 test("dependency setup rejects target-controlled network destinations", () => {
   const cases = [
     {
@@ -2219,6 +2430,44 @@ test("dependency setup rejects target-controlled network destinations", () => {
               changedGate: null,
             },
           }),
+        };
+      },
+    },
+    ...[
+      "//registry.npmjs.org/:_authToken=secret\n",
+      "proxy=http://127.0.0.1:8080/\n",
+      "cafile=./target-controlled-ca.pem\n",
+      "fetch-retries=9\n",
+      "future-network-setting=value\n",
+      "# comment\rregistry=http://attacker.example/\n",
+    ].map((contents) => ({
+      expected: /network config is not allowed: \.npmrc/,
+      prepare() {
+        const cwd = gitPackageFixture({ check: 'node -e ""' });
+        fs.writeFileSync(path.join(cwd, ".npmrc"), contents);
+        return {
+          cwd,
+          options: validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "pnpm" as const,
+              baseValidationCommands: ["pnpm check"],
+              changedGate: null,
+            },
+          }),
+        };
+      },
+    })),
+    {
+      expected: /network config is not allowed: bunfig\.toml/,
+      prepare() {
+        const cwd = gitBunPackageFixture({ check: 'node -e ""' });
+        fs.writeFileSync(
+          path.join(cwd, "bunfig.toml"),
+          '[install]\nregistry = "http://127.0.0.1:4873/"\n',
+        );
+        return {
+          cwd,
+          options: validationOptions("openclaw/clawhub", clawhubToolchain()),
         };
       },
     },
@@ -2239,6 +2488,39 @@ test("dependency setup rejects target-controlled network destinations", () => {
               changedGate: null,
             },
           }),
+        };
+      },
+    },
+    {
+      expected: /destination is not approved: https:\/\/evil\.example/,
+      prepare() {
+        const cwd = gitBunPackageFixture({ check: 'node -e ""' });
+        fs.writeFileSync(path.join(cwd, "bun.lock"), ";https://evil.example/payload.tgz\n");
+        return {
+          cwd,
+          options: validationOptions("openclaw/clawhub", clawhubToolchain()),
+        };
+      },
+    },
+    {
+      expected: /destination is not approved: https:\/\/evil\.example/,
+      prepare() {
+        const cwd = gitBunPackageFixture({ check: 'node -e ""' });
+        fs.writeFileSync(path.join(cwd, "bun.lock"), "@https://evil.example/payload.tgz\n");
+        return {
+          cwd,
+          options: validationOptions("openclaw/clawhub", clawhubToolchain()),
+        };
+      },
+    },
+    {
+      expected: /destination is not approved/,
+      prepare() {
+        const cwd = gitBunPackageFixture({ check: 'node -e ""' });
+        fs.writeFileSync(path.join(cwd, "bun.lock"), "@git://evil.example/payload.git\n");
+        return {
+          cwd,
+          options: validationOptions("openclaw/clawhub", clawhubToolchain()),
         };
       },
     },
@@ -2991,17 +3273,17 @@ if (args[0] === "enable") {
   assert.equal(fs.existsSync(hostLog), false, "host pnpm must never run");
   const corepackInvocations = fs.readFileSync(corepackLog, "utf8").trim().split(/\r?\n/);
   assert.equal(corepackInvocations.length, 4);
-  assert.match(corepackInvocations[0], /enable --install-directory .*[/\\]corepack[/\\]bin/);
+  assert.match(corepackInvocations[0], /enable --install-directory .*[/\\]corepack[/\\]bin pnpm$/);
   assert.equal(corepackInvocations[1], "prepare pnpm@9.15.0 --activate");
-  assert.match(corepackInvocations[2], /enable --install-directory .*[/\\]corepack[/\\]bin/);
+  assert.match(corepackInvocations[2], /enable --install-directory .*[/\\]corepack[/\\]bin pnpm$/);
   assert.equal(corepackInvocations[3], "prepare pnpm@9.15.0 --activate");
   const targetInvocations = fs.readFileSync(targetLog, "utf8").trim().split(/\r?\n/);
   assert.equal(targetInvocations.filter((line) => line.startsWith("install ")).length, 2);
   assert.deepEqual(
     targetInvocations.filter((line) => line.endsWith("verify")),
     [
-      "--config.enable-pre-post-scripts=false verify",
-      "--config.enable-pre-post-scripts=false verify",
+      "--config.verify-deps-before-run=false --config.enable-pre-post-scripts=false verify",
+      "--config.verify-deps-before-run=false --config.enable-pre-post-scripts=false verify",
     ],
   );
 });
@@ -3073,8 +3355,8 @@ if (args[0] === "enable") {
     assert.equal(fs.existsSync(maliciousMarker), false);
     assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/), [
       "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.registry=https://registry.npmjs.org/ --config.engine-strict=false --config.enable-pre-post-scripts=false",
-      "--config.enable-pre-post-scripts=false first",
-      "--config.enable-pre-post-scripts=false second",
+      "--config.verify-deps-before-run=false --config.enable-pre-post-scripts=false first",
+      "--config.verify-deps-before-run=false --config.enable-pre-post-scripts=false second",
     ]);
   },
 );
@@ -3497,6 +3779,44 @@ test(
 );
 
 test(
+  "runtime identity deduplicates shared symlink targets across ignored roots",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), "runtime-input/\n");
+    const runtimeInput = path.join(cwd, "runtime-input", "state.js");
+    fs.mkdirSync(path.dirname(runtimeInput), { recursive: true });
+    fs.writeFileSync(runtimeInput, "safe\n");
+    for (const dependency of ["first", "second"]) {
+      const dependencyDir = path.join(cwd, "node_modules", dependency);
+      fs.mkdirSync(dependencyDir, { recursive: true });
+      fs.symlinkSync(
+        path.relative(dependencyDir, runtimeInput),
+        path.join(dependencyDir, "state.js"),
+      );
+    }
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+
+    const originalOpenSync = fs.openSync;
+    let runtimeInputOpenCount = 0;
+    fs.openSync = ((filePath, flags, mode) => {
+      if (path.resolve(String(filePath)) === runtimeInput && flags === "r") {
+        runtimeInputOpenCount += 1;
+      }
+      return originalOpenSync(filePath, flags, mode);
+    }) as typeof fs.openSync;
+    try {
+      captureTargetCheckoutBinding(cwd);
+    } finally {
+      fs.openSync = originalOpenSync;
+    }
+
+    assert.equal(runtimeInputOpenCount, 1);
+  },
+);
+
+test(
   "pnpm setup rejects prepared executables that escape through symlinks",
   { skip: process.platform === "win32" },
   () => {
@@ -3552,7 +3872,7 @@ if (args[0] === "enable") {
 );
 
 test(
-  "pnpm setup freezes a runnable external Corepack shim",
+  "pnpm setup freezes runnable external Corepack code and package metadata",
   { skip: process.platform === "win32" },
   () => {
     const cwd = gitPackageFixture({ verify: 'node -e ""' });
@@ -3563,18 +3883,28 @@ test(
     const hostBin = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-corepack-shim-"));
     const distRoot = path.join(hostBin, "corepack-package", "dist");
     const corepackLib = path.join(distRoot, "lib", "corepack.cjs");
+    const corepackPackageJson = path.join(path.dirname(distRoot), "package.json");
     const pnpmEntrypoint = path.join(distRoot, "pnpm.js");
     const logPath = path.join(hostBin, "pnpm.log");
     const maliciousMarker = path.join(hostBin, "external-corepack-ran");
     fs.mkdirSync(path.dirname(corepackLib), { recursive: true });
+    fs.writeFileSync(
+      corepackPackageJson,
+      `${JSON.stringify({
+        name: "corepack",
+        version: "0.34.0-fixture",
+        exports: { "./package.json": "./package.json" },
+      })}\n`,
+    );
     fs.writeFileSync(pnpmEntrypoint, '#!/usr/bin/env node\nrequire("./lib/corepack.cjs");\n', {
       mode: 0o755,
     });
     fs.writeFileSync(
       corepackLib,
       `const fs = require("node:fs");
+const corepack = require("corepack/package.json");
 const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(logPath)}, args.join(" ") + "\\n");
+fs.appendFileSync(${JSON.stringify(logPath)}, corepack.version + " " + args.join(" ") + "\\n");
 if (args.includes("install")) fs.mkdirSync("node_modules", { recursive: true });
 `,
     );
@@ -3612,6 +3942,14 @@ if (args[0] === "enable") {
           corepackLib,
           `require("node:fs").writeFileSync(${JSON.stringify(maliciousMarker)}, "ran");\n`,
         );
+        fs.writeFileSync(
+          corepackPackageJson,
+          `${JSON.stringify({
+            name: "corepack",
+            version: "mutated-host-package",
+            exports: { "./package.json": "./package.json" },
+          })}\n`,
+        );
         assert.deepEqual(runAllowedValidationCommands(["pnpm verify"], cwd, options), [
           "pnpm verify",
         ]);
@@ -3620,8 +3958,8 @@ if (args[0] === "enable") {
 
     assert.equal(fs.existsSync(maliciousMarker), false);
     assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/), [
-      "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.registry=https://registry.npmjs.org/ --config.engine-strict=false --config.enable-pre-post-scripts=false",
-      "--config.enable-pre-post-scripts=false verify",
+      "0.34.0-fixture install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.registry=https://registry.npmjs.org/ --config.engine-strict=false --config.enable-pre-post-scripts=false",
+      "0.34.0-fixture --config.verify-deps-before-run=false --config.enable-pre-post-scripts=false verify",
     ]);
   },
 );
@@ -3892,6 +4230,23 @@ test("checkout identity capture quarantines transient Git objects", () => {
   assert.equal(git(cwd, "count-objects", "-v"), before);
 });
 
+test("checkout identity is stable after ignored runtime discovery refreshes index stats", () => {
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+
+  const packagePath = path.join(cwd, "package.json");
+  const packageContents = fs.readFileSync(packagePath);
+  fs.writeFileSync(packagePath, packageContents);
+  fs.mkdirSync(path.join(cwd, "node_modules"));
+  fs.writeFileSync(path.join(cwd, "node_modules", ".runtime-state"), "prepared\n");
+
+  const first = captureTargetCheckoutBinding(cwd);
+  const second = captureTargetCheckoutBinding(cwd);
+
+  assert.deepEqual(second, first);
+});
+
 test("final checkout binding preserves validated content across host commit", () => {
   const cwd = gitPackageFixture({ check: 'node -e ""' });
   fs.writeFileSync(path.join(cwd, "source.txt"), "initial\n");
@@ -3900,6 +4255,9 @@ test("final checkout binding preserves validated content across host commit", ()
   git(cwd, "commit", "-m", "initial");
   fs.writeFileSync(path.join(cwd, "source.txt"), "validated\n");
   fs.writeFileSync(path.join(cwd, "new.txt"), "validated\n");
+  // A host commit starts tracking new repair files without changing their
+  // working-tree permissions, so both identity captures must use Git modes.
+  fs.chmodSync(path.join(cwd, "new.txt"), 0o664);
   fs.rmSync(path.join(cwd, "deleted.txt"));
   const accepted = captureTargetCheckoutBinding(cwd);
 
@@ -4875,6 +5233,328 @@ test("Git identity probes reject target fsmonitor callbacks without executing th
     restoreEnv("OPENAI_API_KEY", previous);
   }
 });
+
+test(
+  "validation accepts tracked node_modules workspace links back to the checkout",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    const packagePath = path.join(cwd, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    packageJson.name = "openclaw";
+    fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    fs.writeFileSync(path.join(cwd, "source.txt"), "initial\n");
+    const workspaceModules = path.join(cwd, "packages", "speech-core", "node_modules");
+    fs.mkdirSync(workspaceModules, { recursive: true });
+    fs.symlinkSync("../../..", path.join(workspaceModules, "openclaw"));
+    git(cwd, "add", "--force", ".");
+    git(cwd, "commit", "-m", "initial");
+
+    const first = captureTargetCheckoutBinding(cwd);
+    const second = captureTargetCheckoutBinding(cwd);
+
+    assert.deepEqual(second, first);
+    fs.writeFileSync(path.join(cwd, "source.txt"), "changed\n");
+    assert.throws(
+      () => assertTargetCheckoutBinding(cwd, first),
+      /target checkout changed after validation/,
+    );
+  },
+);
+
+test(
+  "validation accepts tracked scoped node_modules workspace links back to the checkout",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    const packagePath = path.join(cwd, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    packageJson.name = "@openclaw/root";
+    fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    const workspaceScope = path.join(cwd, "packages", "speech-core", "node_modules", "@openclaw");
+    fs.mkdirSync(workspaceScope, { recursive: true });
+    fs.symlinkSync("../../../..", path.join(workspaceScope, "root"));
+    git(cwd, "add", "--force", ".");
+    git(cwd, "commit", "-m", "initial");
+
+    const first = captureTargetCheckoutBinding(cwd);
+
+    assert.deepEqual(captureTargetCheckoutBinding(cwd), first);
+  },
+);
+
+test(
+  "dependency setup accepts tracked links between workspaces with ignored runtime changes",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    const dependencyDir = path.join(cwd, "packages", "dependency");
+    const dependencySource = path.join(dependencyDir, "source.js");
+    fs.mkdirSync(dependencyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dependencyDir, "package.json"),
+      `${JSON.stringify({ name: "@fixture/dependency" }, null, 2)}\n`,
+    );
+    fs.writeFileSync(dependencySource, "export const value = 1;\n");
+    const dependencyLink = path.join(
+      cwd,
+      "packages",
+      "consumer",
+      "node_modules",
+      "@fixture",
+      "dependency",
+    );
+    fs.mkdirSync(path.dirname(dependencyLink), { recursive: true });
+    fs.symlinkSync(path.relative(path.dirname(dependencyLink), dependencyDir), dependencyLink);
+    git(cwd, "add", "--force", ".");
+    git(cwd, "commit", "-m", "initial");
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workspace-install-"));
+    const corepackPath = path.join(binDir, "corepack.js");
+    const pnpmPath = path.join(binDir, "pnpm.js");
+    const runtimeInput = path.join(dependencyDir, "node_modules", "generated", "state.js");
+    fs.writeFileSync(corepackPath, "");
+    fs.writeFileSync(
+      pnpmPath,
+      `const fs = require("node:fs");
+fs.mkdirSync(${JSON.stringify(path.dirname(runtimeInput))}, { recursive: true });
+fs.writeFileSync(${JSON.stringify(runtimeInput)}, "installed\\n");
+`,
+    );
+
+    withMockCommand("corepack", corepackPath, () =>
+      withMockCommand("pnpm", pnpmPath, () =>
+        prepareTargetToolchain(cwd, {
+          ...validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: ["pnpm check"],
+              changedGate: null,
+            },
+          }),
+          installTargetDeps: true,
+          installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+          setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        }),
+      ),
+    );
+
+    const accepted = captureTargetCheckoutBinding(cwd);
+    fs.writeFileSync(dependencySource, "export const value = 2;\n");
+    assert.throws(
+      () => assertTargetCheckoutBinding(cwd, accepted),
+      /target checkout changed after validation/,
+    );
+    fs.writeFileSync(dependencySource, "export const value = 1;\n");
+    fs.writeFileSync(runtimeInput, "mutated\n");
+    assert.throws(
+      () => assertTargetCheckoutBinding(cwd, accepted),
+      /target checkout changed after validation/,
+    );
+  },
+);
+
+test(
+  "prepared pnpm validation accepts install-managed links to tracked workspaces",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    const packagePath = path.join(cwd, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    packageJson.name = "openclaw";
+    fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    const consumerDir = path.join(cwd, "packages", "consumer");
+    fs.mkdirSync(consumerDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(consumerDir, "package.json"),
+      `${JSON.stringify({ name: "@fixture/consumer", dependencies: { openclaw: "workspace:*" } }, null, 2)}\n`,
+    );
+    const sourcePath = path.join(cwd, "source.ts");
+    fs.writeFileSync(sourcePath, "export const value = 1;\n");
+    fs.writeFileSync(path.join(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workspace-runtime-"));
+    const corepackPath = path.join(binDir, "corepack.js");
+    const pnpmPath = path.join(binDir, "pnpm.js");
+    const workspaceLink = path.join(consumerDir, "node_modules", "openclaw");
+    fs.writeFileSync(corepackPath, "");
+    fs.writeFileSync(
+      pnpmPath,
+      `const fs = require("node:fs");
+const path = require("node:path");
+if (process.argv.includes("install")) {
+  fs.mkdirSync(path.dirname(${JSON.stringify(workspaceLink)}), { recursive: true });
+  if (!fs.existsSync(${JSON.stringify(workspaceLink)})) {
+    fs.symlinkSync("../../..", ${JSON.stringify(workspaceLink)});
+  }
+}
+`,
+    );
+    const options = {
+      ...validationOptions("steipete/example", {
+        toolchain: {
+          packageManager: "pnpm",
+          baseValidationCommands: ["pnpm check"],
+          changedGate: null,
+        },
+      }),
+      installTargetDeps: true,
+      installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+    };
+
+    withMockCommand("corepack", corepackPath, () =>
+      withMockCommand("pnpm", pnpmPath, () => {
+        prepareTargetToolchain(cwd, options);
+        assert.deepEqual(runAllowedValidationCommands(["pnpm check"], cwd, options), [
+          "pnpm check:changed",
+        ]);
+        fs.writeFileSync(sourcePath, "export const value = 2;\n");
+        assert.throws(
+          () => runAllowedValidationCommands(["pnpm check"], cwd, options),
+          /prepared target pnpm toolchain is stale;.*(?:contentTreeSha|worktreeSha256)/,
+        );
+        prepareTargetToolchain(cwd, options);
+        assert.deepEqual(runAllowedValidationCommands(["pnpm check"], cwd, options), [
+          "pnpm check:changed",
+        ]);
+      }),
+    );
+  },
+);
+
+test(
+  "dependency setup accepts Git-equivalent tracked executable mode normalization",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    const executablePath = path.join(cwd, "cli.js");
+    fs.writeFileSync(executablePath, "#!/usr/bin/env node\n");
+    fs.chmodSync(executablePath, 0o775);
+    const executableLink = path.join(cwd, "node_modules", ".bin", "cli");
+    fs.mkdirSync(path.dirname(executableLink), { recursive: true });
+    fs.symlinkSync(path.relative(path.dirname(executableLink), executablePath), executableLink);
+    git(cwd, "add", ".");
+    git(cwd, "add", "--force", executableLink);
+    git(cwd, "commit", "-m", "initial");
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-mode-install-"));
+    const corepackPath = path.join(binDir, "corepack.js");
+    const pnpmPath = path.join(binDir, "pnpm.js");
+    fs.writeFileSync(corepackPath, "");
+    fs.writeFileSync(
+      pnpmPath,
+      `require("node:fs").chmodSync(${JSON.stringify(executablePath)}, 0o755);\n`,
+    );
+
+    withMockCommand("corepack", corepackPath, () =>
+      withMockCommand("pnpm", pnpmPath, () =>
+        prepareTargetToolchain(cwd, {
+          ...validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: ["pnpm check"],
+              changedGate: null,
+            },
+          }),
+          installTargetDeps: true,
+          installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+          setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        }),
+      ),
+    );
+
+    const accepted = captureTargetCheckoutBinding(cwd);
+    fs.chmodSync(executablePath, 0o644);
+    assert.throws(
+      () => assertTargetCheckoutBinding(cwd, accepted),
+      /target checkout changed after validation/,
+    );
+  },
+);
+
+test(
+  "validation rejects untracked node_modules workspace self-links",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    fs.rmSync(path.join(cwd, ".gitignore"));
+    const packagePath = path.join(cwd, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    packageJson.name = "openclaw";
+    fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    const workspaceModules = path.join(cwd, "packages", "speech-core", "node_modules");
+    fs.mkdirSync(workspaceModules, { recursive: true });
+    fs.symlinkSync("../../..", path.join(workspaceModules, "openclaw"));
+
+    assert.throws(() => captureTargetCheckoutBinding(cwd), /validation identity directory cycle/);
+  },
+);
+
+test(
+  "validation rejects workspace self-links with untracked target manifests",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    const targetDir = path.join(cwd, "packages", "root-package");
+    const targetModules = path.join(targetDir, "node_modules");
+    fs.mkdirSync(targetModules, { recursive: true });
+    fs.writeFileSync(
+      path.join(targetDir, "package.json"),
+      `${JSON.stringify({ name: "root-package" }, null, 2)}\n`,
+    );
+    const linkPath = path.join(targetModules, "root-package");
+    fs.symlinkSync("..", linkPath);
+    git(cwd, "add", ".gitignore", "package.json");
+    git(cwd, "add", "--force", linkPath);
+    git(cwd, "commit", "-m", "initial");
+
+    assert.throws(() => captureTargetCheckoutBinding(cwd), /validation identity directory cycle/);
+  },
+);
+
+test(
+  "validation rejects node_modules self-links with mismatched package identities",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    const packagePath = path.join(cwd, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    packageJson.name = "openclaw";
+    fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    const workspaceModules = path.join(cwd, "packages", "speech-core", "node_modules");
+    fs.mkdirSync(workspaceModules, { recursive: true });
+    fs.symlinkSync("../../..", path.join(workspaceModules, "not-openclaw"));
+    git(cwd, "add", "--force", ".");
+    git(cwd, "commit", "-m", "initial");
+
+    assert.throws(() => captureTargetCheckoutBinding(cwd), /validation identity directory cycle/);
+  },
+);
+
+test(
+  "validation rejects scoped self-links outside node_modules",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    const packagePath = path.join(cwd, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    packageJson.name = "@openclaw/root";
+    fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    const scopedPackage = path.join(cwd, "@openclaw");
+    fs.mkdirSync(scopedPackage, { recursive: true });
+    fs.symlinkSync("..", path.join(scopedPackage, "root"));
+    git(cwd, "add", "--force", ".");
+    git(cwd, "commit", "-m", "initial");
+
+    assert.throws(() => captureTargetCheckoutBinding(cwd), /validation identity directory cycle/);
+  },
+);
 
 test(
   "validation rejects tracked symlinks that escape the target checkout",

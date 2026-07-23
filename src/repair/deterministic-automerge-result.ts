@@ -84,6 +84,9 @@ export function deterministicAutomergeResult({
   return {
     status: "planned",
     repo,
+    // Execution must bind to the exact PR revision hydrated by this planning
+    // pass. The job file can outlive a source-head race and is not sufficient.
+    reviewed_sha: canonical.pull_request?.head_sha ?? null,
     cluster_id: String(clusterPlan?.cluster_id ?? job?.frontmatter?.cluster_id ?? ""),
     mode,
     summary,

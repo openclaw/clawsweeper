@@ -367,7 +367,10 @@ function preparePnpmToolchain({
 }) {
   const packageManager = targetPnpmPackageManager(packageJson);
   const corepackBin = path.join(String(validationEnv.COREPACK_HOME), "bin");
-  run("corepack", ["enable", "--install-directory", corepackBin], {
+  // Restrict Corepack to pnpm. Enabling every supported manager also creates
+  // Yarn shims that are outside this pnpm-only runtime's trust boundary and
+  // makes a clean target setup fail while freezing the prepared runtime.
+  run("corepack", ["enable", "--install-directory", corepackBin, "pnpm"], {
     cwd,
     env: validationEnv,
     timeoutMs: targetToolchainCommandTimeout(deadlineAt, setupTimeoutMs, "corepack enable"),
@@ -590,10 +593,12 @@ function assertTargetInstallNetworkPolicy(
   };
   for (const [relativeDir, manifest] of manifests) {
     const directory = relativeDir === "." ? cwd : path.join(cwd, relativeDir);
-    for (const configName of [".npmrc", "bunfig.toml"]) {
-      if (fs.existsSync(path.join(directory, configName))) {
-        throw new Error(`target dependency install network config is not allowed: ${configName}`);
-      }
+    for (const configName of [".npmrc", "bunfig.toml"] as const) {
+      assertTargetInstallNetworkConfigIsInert(
+        path.join(directory, configName),
+        configName,
+        deadlineAt,
+      );
     }
     assertManifestDependencyDestinations(manifest, relativeDir, localPolicy, registryOrigin);
   }
@@ -632,6 +637,26 @@ function assertTargetInstallNetworkPolicy(
     throw new Error("target dependency install network policy cannot inspect bun.lockb");
   }
   return installRegistry;
+}
+
+function assertTargetInstallNetworkConfigIsInert(
+  filePath: string,
+  configName: ".npmrc" | "bunfig.toml",
+  deadlineAt: number,
+) {
+  if (!fs.existsSync(filePath)) return;
+  const commentPrefixes = configName === ".npmrc" ? ["#", ";"] : ["#"];
+  const metadata = readTargetInstallMetadataText(filePath, deadlineAt);
+  // Repositories sometimes retain comment-only config files for stable Docker COPY paths.
+  // Permit only text that cannot affect installs; all actual directives stay fail-closed.
+  const hasActiveConfiguration = metadata
+    .split(/[\r\n]+/)
+    .some(
+      (line) => line.trim() && !commentPrefixes.some((prefix) => line.trim().startsWith(prefix)),
+    );
+  if (hasActiveConfiguration) {
+    throw new Error(`target dependency install network config is not allowed: ${configName}`);
+  }
 }
 
 function approvedTargetInstallRegistry(validationEnv: NodeJS.ProcessEnv) {
@@ -893,9 +918,12 @@ function assertTrackedPatchDependency(
 }
 
 function assertApprovedInstallMetadataDestinations(text: string, registryOrigin: string) {
-  const networkTokens =
-    text.match(/(?:https?:\/\/|\/\/|git\+[^:\s]+:\/\/|ssh:\/\/)[^\s"'`<>{}\x5b\x5d,]+/gi) ?? [];
-  for (const token of networkTokens) {
+  const explicitNetworkTokens =
+    text.match(/[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s"'`<>{}\x5b\x5d,]+/g) ?? [];
+  const protocolRelativeNetworkTokens = [
+    ...text.matchAll(/(?:^|[\s"'`<>{}\x5b\x5d(),;=])(\/\/[^\s"'`<>{}\x5b\x5d,]+)/gim),
+  ].flatMap((match) => (match[1] ? [match[1]] : []));
+  for (const token of [...explicitNetworkTokens, ...protocolRelativeNetworkTokens]) {
     assertApprovedInstallUrl(token.replace(/[);]+$/, ""), registryOrigin);
   }
   if (/(?:^|[\s"'`])(?:git@|github:|gitlab:|bitbucket:)/im.test(text)) {
@@ -909,6 +937,7 @@ function assertStructuredInstallMetadataDestinations(
   localPolicy: TargetInstallLocalPolicy,
   registryOrigin: string,
   fieldName?: string,
+  context: "root" | "package-record" | "nested" = "root",
 ): void {
   if (typeof value === "string") {
     if (
@@ -929,6 +958,7 @@ function assertStructuredInstallMetadataDestinations(
         localPolicy,
         registryOrigin,
         fieldName,
+        "nested",
       );
     }
     return;
@@ -942,7 +972,31 @@ function assertStructuredInstallMetadataDestinations(
       assertLocalPackageDependency(value.resolved.trim(), ".", localPolicy);
     }
     for (const [name, entry] of Object.entries(value)) {
+      // Funding is package display metadata, but a dependency map may also contain a package
+      // named "funding". Exempt only package records so those dependency records stay inspectable.
+      if (context === "package-record" && name === "funding") continue;
       if (workspaceLink && (name === "link" || name === "resolved")) continue;
+      // Only the document root owns the lockfile packages map; a dependency may also be named
+      // "packages", so recursive name matching would incorrectly grant package-record semantics.
+      if (
+        context === "root" &&
+        name === "packages" &&
+        entry &&
+        typeof entry === "object" &&
+        !Array.isArray(entry)
+      ) {
+        for (const [packageName, packageValue] of Object.entries(entry)) {
+          assertStructuredInstallMetadataDestinations(
+            packageValue,
+            ownerDir,
+            localPolicy,
+            registryOrigin,
+            packageName,
+            "package-record",
+          );
+        }
+        continue;
+      }
       if (name === "importers" && entry && typeof entry === "object" && !Array.isArray(entry)) {
         for (const [importer, importerValue] of Object.entries(entry)) {
           const importerDir = resolveTrackedImporterDir(importer, localPolicy);
@@ -951,6 +1005,8 @@ function assertStructuredInstallMetadataDestinations(
             importerDir,
             localPolicy,
             registryOrigin,
+            undefined,
+            "nested",
           );
         }
         continue;
@@ -961,6 +1017,7 @@ function assertStructuredInstallMetadataDestinations(
         localPolicy,
         registryOrigin,
         name,
+        "nested",
       );
     }
   }
@@ -1089,15 +1146,13 @@ export function runAllowedValidationCommandsWithBinding(
       baseRef,
       Date.now() + validationTimeoutMs,
     );
+    const currentSourceIdentity = sourceIdentityFromCheckout(checkoutIdentity);
     if (
       preparedPnpmRuntime &&
-      !sameValidationSourceIdentity(
-        sourceIdentityFromCheckout(checkoutIdentity),
-        preparedPnpmRuntime.sourceIdentity,
-      )
+      !sameValidationSourceIdentity(currentSourceIdentity, preparedPnpmRuntime.sourceIdentity)
     ) {
       throw new Error(
-        "prepared target pnpm toolchain is stale; refresh dependencies before validation",
+        `prepared target pnpm toolchain is stale; refresh dependencies before validation: ${validationSourceIdentityMismatchFields(currentSourceIdentity, preparedPnpmRuntime.sourceIdentity).join(", ")}`,
       );
     }
     const executed: string[] = [];
@@ -2277,7 +2332,9 @@ function assertValidationSourceIdentity(
 ) {
   const actual = validationSourceIdentity(cwd, deadlineAt);
   if (!sameValidationSourceIdentityExceptRuntime(actual, expected)) {
-    throw new Error("target dependency setup mutated checkout identity");
+    throw new Error(
+      `target dependency setup mutated checkout identity: ${validationSourceIdentityMismatchFields(actual, expected, { ignoreRuntimeInputs: true }).join(", ")}`,
+    );
   }
 }
 
@@ -2333,6 +2390,18 @@ function sameValidationSourceIdentityExceptRuntime(
   );
 }
 
+function validationSourceIdentityMismatchFields(
+  actual: ValidationSourceIdentity,
+  expected: ValidationSourceIdentity,
+  { ignoreRuntimeInputs = false }: { ignoreRuntimeInputs?: boolean } = {},
+) {
+  return (Object.keys(expected) as Array<keyof ValidationSourceIdentity>).filter(
+    (field) =>
+      !(ignoreRuntimeInputs && field === "runtimeInputsSha256") &&
+      actual[field] !== expected[field],
+  );
+}
+
 function assertValidationCheckoutIdentityWithinCommand(
   cwd: string,
   baseRef: string,
@@ -2370,6 +2439,7 @@ function worktreeContentSha256(cwd: string, deadlineAt: number) {
   )
     .split("\0")
     .filter(Boolean);
+  const trackedPaths = new Set(tracked);
   const paths = [...new Set([...tracked, ...untracked])].sort();
   for (const relativePath of paths) {
     assertValidationIdentityDeadline(deadlineAt, relativePath);
@@ -2384,10 +2454,18 @@ function worktreeContentSha256(cwd: string, deadlineAt: number) {
       throw error;
     }
     updateIdentityHash(hash, "worktree-path", relativePath);
-    updateIdentityHash(hash, "worktree-mode", String(stat.mode));
+    const worktreeMode = stat.isFile() ? gitFileMode(stat.mode) : stat.mode;
+    updateIdentityHash(hash, "worktree-mode", String(worktreeMode));
     if (stat.isSymbolicLink()) {
       updateIdentityHash(hash, "worktree-symlink", fs.readlinkSync(absolutePath));
-      updateSymlinkTargetDigest(hash, root, absolutePath, `${relativePath}\0target`, deadlineAt);
+      updateSymlinkTargetDigest(
+        hash,
+        root,
+        absolutePath,
+        `${relativePath}\0target`,
+        deadlineAt,
+        trackedPaths,
+      );
       continue;
     }
     if (stat.isFile()) {
@@ -2404,11 +2482,21 @@ function worktreeContentSha256(cwd: string, deadlineAt: number) {
   return hash.digest("hex");
 }
 
+function gitFileMode(mode: number) {
+  return mode & 0o100 ? 0o100755 : 0o100644;
+}
+
 function validationRuntimeInputsSha256(cwd: string, deadlineAt: number) {
   const hash = createHash("sha256");
   const root = fs.realpathSync(cwd);
+  const trackedPaths = new Set(
+    runIdentityGit(cwd, ["ls-files", "-z"], deadlineAt, "tracked runtime input listing")
+      .split("\0")
+      .filter(Boolean),
+  );
   const runtimePaths = validationRuntimeInputPaths(cwd, deadlineAt);
   updateIdentityHash(hash, "runtime-input-paths", runtimePaths.join("\0"));
+  const coveredEntries = new Map<string, string>();
   for (const relativePath of runtimePaths) {
     assertValidationIdentityDeadline(deadlineAt, relativePath);
     const entryPath = path.join(root, relativePath);
@@ -2420,7 +2508,15 @@ function validationRuntimeInputsSha256(cwd: string, deadlineAt: number) {
       updateIdentityHash(hash, "runtime-state", "absent");
       continue;
     }
-    updateRuntimeInputDigest(hash, root, entryPath, relativePath, deadlineAt, new Map());
+    updateRuntimeInputDigest(
+      hash,
+      root,
+      entryPath,
+      relativePath,
+      deadlineAt,
+      coveredEntries,
+      trackedPaths,
+    );
   }
   assertValidationIdentityDeadline(deadlineAt, "runtime input digest");
   return hash.digest("hex");
@@ -2489,6 +2585,7 @@ function updateRuntimeInputDigest(
   logicalPath: string,
   deadlineAt: number,
   coveredEntries: Map<string, string>,
+  trackedPaths: ReadonlySet<string>,
 ) {
   assertValidationIdentityDeadline(deadlineAt, logicalPath);
   const stat = fs.lstatSync(entryPath);
@@ -2499,6 +2596,20 @@ function updateRuntimeInputDigest(
     const targetPath = fs.realpathSync(entryPath);
     assertPathWithin(root, targetPath, logicalPath);
     updateIdentityHash(hash, "runtime-symlink-target", path.relative(root, targetPath));
+    const workspaceReference = trackedSymlinkTargetReference(
+      root,
+      entryPath,
+      targetPath,
+      trackedPaths,
+      { allowInstallManagedWorkspaceLink: true },
+    );
+    if (workspaceReference) {
+      // pnpm creates ignored node_modules links back to tracked workspaces. The
+      // checkout identity already binds their source, while traversing them here
+      // would also absorb mutable .git state and make a read-only fetch stale the runtime.
+      updateIdentityHash(hash, "runtime-workspace-reference", workspaceReference);
+      return;
+    }
     updateRuntimeInputDigest(
       hash,
       root,
@@ -2506,6 +2617,7 @@ function updateRuntimeInputDigest(
       `${logicalPath}\0target`,
       deadlineAt,
       coveredEntries,
+      trackedPaths,
     );
     return;
   }
@@ -2533,6 +2645,7 @@ function updateRuntimeInputDigest(
       `${logicalPath}/${child}`,
       deadlineAt,
       coveredEntries,
+      trackedPaths,
     );
   }
 }
@@ -3171,6 +3284,7 @@ function updateSymlinkTargetDigest(
   symlinkPath: string,
   logicalPath: string,
   deadlineAt: number,
+  trackedPaths: ReadonlySet<string>,
 ) {
   let targetPath: string;
   try {
@@ -3180,7 +3294,58 @@ function updateSymlinkTargetDigest(
   }
   assertPathWithin(root, targetPath, logicalPath);
   updateIdentityHash(hash, "symlink-target-path", path.relative(root, targetPath));
+  const trackedReference = trackedSymlinkTargetReference(
+    root,
+    symlinkPath,
+    targetPath,
+    trackedPaths,
+  );
+  if (trackedReference) {
+    updateIdentityHash(hash, "symlink-tracked-reference", trackedReference);
+    return;
+  }
   updateResolvedPathDigest(hash, root, targetPath, logicalPath, deadlineAt, new Set());
+}
+
+function trackedSymlinkTargetReference(
+  root: string,
+  symlinkPath: string,
+  targetPath: string,
+  trackedPaths: ReadonlySet<string>,
+  { allowInstallManagedWorkspaceLink = false }: { allowInstallManagedWorkspaceLink?: boolean } = {},
+) {
+  const relativeLink = path.relative(root, symlinkPath).split(path.sep).join("/");
+  const linkIsTracked = trackedPaths.has(relativeLink);
+  if (!linkIsTracked && !allowInstallManagedWorkspaceLink) return null;
+  const targetRelative = path.relative(root, targetPath).split(path.sep).join("/");
+  const targetStat = fs.statSync(targetPath);
+  if (targetStat.isFile()) {
+    return linkIsTracked && trackedPaths.has(targetRelative) ? `file\0${targetRelative}` : null;
+  }
+  if (!targetStat.isDirectory()) return null;
+  const linkParts = relativeLink.split("/");
+  const nodeModulesIndex = linkParts.lastIndexOf("node_modules");
+  const packageParts = linkParts.slice(nodeModulesIndex + 1);
+  const packageName =
+    nodeModulesIndex >= 0 && packageParts.length === 1
+      ? packageParts[0]
+      : nodeModulesIndex >= 0 && packageParts.length === 2 && packageParts[0]?.startsWith("@")
+        ? packageParts.join("/")
+        : null;
+  if (!packageName) return null;
+
+  const manifestRelative = targetRelative ? `${targetRelative}/package.json` : "package.json";
+  if (!trackedPaths.has(manifestRelative)) return null;
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(targetPath, "package.json"), "utf8"));
+    if (manifest?.name !== packageName) return null;
+  } catch {
+    return null;
+  }
+  // Source identity already binds tracked/untracked worktree content, ignored runtime inputs,
+  // and Git administrative state. Recording this authenticated workspace reference avoids
+  // duplicate traversal without allowing mutable target content to disappear from the identity.
+  return `workspace\0${packageName}\0${targetRelative}`;
 }
 
 function updateResolvedPathDigest(
@@ -3276,7 +3441,9 @@ function gitAdministrativeSha256(cwd: string, deadlineAt: number) {
       root: gitDir,
       paths: [
         "HEAD",
-        "index",
+        // Index trees and hidden flags are verified semantically elsewhere.
+        // Raw index bytes contain Git's mutable stat cache, so hashing them
+        // makes read-only discovery look like an administrative mutation.
         "ORIG_HEAD",
         "MERGE_HEAD",
         "CHERRY_PICK_HEAD",
@@ -3632,6 +3799,10 @@ function freezePreparedTargetPnpmRuntime(
       if (!copiedDist) {
         const destination = path.join(runtimeContainer, "dist");
         fs.mkdirSync(runtimeContainer, { recursive: true, mode: 0o700 });
+        // Corepack's integrity-pinned package-manager path resolves its own
+        // package.json at runtime. Keep that reviewed package boundary beside
+        // dist instead of letting the frozen shim reach back into the host.
+        fs.copyFileSync(shim.packageJson, path.join(runtimeContainer, "package.json"));
         fs.cpSync(shim.distRoot, destination, {
           recursive: true,
           verbatimSymlinks: true,
@@ -3702,6 +3873,12 @@ function preparedPnpmRuntimeSha256(
               deadlineAt,
               new Set(),
             );
+            updateIdentityHash(
+              hash,
+              "external-corepack-package-json-mode",
+              String(fs.statSync(shim.packageJson).mode & 0o777),
+            );
+            updateFileDigest(hash, shim.packageJson, "external-corepack-package.json", deadlineAt);
           }
         }
         updateIdentityHash(hash, "runtime-type", "symlink");
@@ -3735,10 +3912,15 @@ function externalCorepackShim(runtimeRoot: string, symlinkPath: string) {
     return null;
   }
   const distRoot = path.dirname(resolvedTarget);
+  const packageJson = path.join(path.dirname(distRoot), "package.json");
   const targetName = path.basename(resolvedTarget);
   let corepackRuntimeIsFile = false;
+  let corepackPackageIsValid = false;
   try {
     corepackRuntimeIsFile = fs.statSync(path.join(distRoot, "lib", "corepack.cjs")).isFile();
+    const packageMetadata = JSON.parse(fs.readFileSync(packageJson, "utf8"));
+    corepackPackageIsValid =
+      fs.statSync(packageJson).isFile() && packageMetadata?.name === "corepack";
   } catch {
     // Rejected below as an unrecognized external executable.
   }
@@ -3746,12 +3928,14 @@ function externalCorepackShim(runtimeRoot: string, symlinkPath: string) {
     path.basename(distRoot) !== "dist" ||
     (targetName !== "pnpm.js" && targetName !== "pnpx.js") ||
     !fs.statSync(resolvedTarget).isFile() ||
-    !corepackRuntimeIsFile
+    !corepackRuntimeIsFile ||
+    !corepackPackageIsValid
   ) {
     throw new Error(`prepared target pnpm symlink escapes runtime: ${path.basename(symlinkPath)}`);
   }
   return {
     distRoot,
+    packageJson,
     targetRelative: path.relative(distRoot, resolvedTarget),
   };
 }

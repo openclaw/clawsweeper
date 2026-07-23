@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { summarizeExactReviewHandoff } from "../dashboard/exact-review-health.ts";
+import {
+  summarizeExactReviewHandoff,
+  summarizeExactReviewPressure,
+} from "../dashboard/exact-review-health.ts";
 
 const NOW = Date.parse("2026-07-13T02:00:00.000Z");
 const DISPATCH_LEASE_MS = 10 * 60_000;
@@ -26,18 +29,24 @@ test("exact-review handoff health reports an empty queue as idle", () => {
   assert.equal(health.active, 0);
   assert.equal(health.available_slots, 28);
   assert.deepEqual(health.phases, {
-    pending: { count: 0, oldest_at: null, oldest_age_seconds: null },
-    dispatching: { count: 0, oldest_at: null, oldest_age_seconds: null },
-    leased: { count: 0, oldest_at: null, oldest_age_seconds: null },
+    pending: { count: 0, oldest_at: null, oldest_age_seconds: null, oldest_key: null },
+    dispatching: { count: 0, oldest_at: null, oldest_age_seconds: null, oldest_key: null },
+    leased: { count: 0, oldest_at: null, oldest_age_seconds: null, oldest_key: null },
   });
 });
 
 test("exact-review handoff health exposes phase counts, ages, and available capacity", () => {
   const health = summarize({
     capacity: 4,
+    shedSinceReset: 7,
     dispatcher: { state: "active" },
     items: [
-      { state: "pending", createdAt: NOW - 90_000, updatedAt: NOW - 90_000 },
+      {
+        key: "openclaw/openclaw#123",
+        state: "pending",
+        createdAt: NOW - 90_000,
+        updatedAt: NOW - 90_000,
+      },
       {
         state: "dispatching",
         createdAt: NOW - 5 * 60_000,
@@ -57,10 +66,13 @@ test("exact-review handoff health exposes phase counts, ages, and available capa
   assert.equal(health.reason, "handoff_current");
   assert.equal(health.active, 2);
   assert.equal(health.available_slots, 2);
+  assert.equal(health.pending_depth, 1);
+  assert.equal(health.shed_since_reset, 7);
   assert.deepEqual(health.phases.pending, {
     count: 1,
     oldest_at: "2026-07-13T01:58:30.000Z",
     oldest_age_seconds: 90,
+    oldest_key: "openclaw/openclaw#123",
   });
   assert.equal(health.phases.dispatching.oldest_age_seconds, 20);
   assert.equal(health.phases.leased.oldest_age_seconds, 40);
@@ -125,6 +137,25 @@ test("exact-review handoff health derives legacy dispatch age from its active le
   assert.equal(health.phases.dispatching.oldest_age_seconds, 20);
 });
 
+test("exact-review handoff health uses dispatch time when a longer lease has a future derived start", () => {
+  const health = summarize({
+    items: [
+      {
+        state: "dispatching",
+        createdAt: NOW - 10 * 60_000,
+        updatedAt: NOW - 6 * 60_000,
+        dispatchedAt: NOW - 6 * 60_000,
+        leaseExpiresAt: NOW + 15 * 60_000,
+      },
+    ],
+  });
+
+  assert.equal(health.status, "stalled");
+  assert.equal(health.reason, "claim_stalled");
+  assert.equal(health.phases.dispatching.oldest_at, "2026-07-13T01:54:00.000Z");
+  assert.equal(health.phases.dispatching.oldest_age_seconds, 360);
+});
+
 test("exact-review handoff health ignores stale rollback telemetry and unknown legacy ages", () => {
   const rolledBack = summarize({
     items: [
@@ -169,4 +200,73 @@ test("exact-review handoff health derives legacy leased age from its execution l
   assert.equal(health.status, "healthy");
   assert.equal(health.phases.leased.oldest_at, "2026-07-13T01:59:20.000Z");
   assert.equal(health.phases.leased.oldest_age_seconds, 40);
+});
+
+test("exact-review pressure distinguishes available, congested, and saturated capacity", () => {
+  const base = {
+    pending: 4,
+    readyPending: 4,
+    admissiblePending: 4,
+    dispatching: 4,
+    leased: 60,
+    capacity: 64,
+    dispatcherState: "active",
+    handoffStatus: "healthy",
+  };
+
+  assert.deepEqual(summarizeExactReviewPressure({ ...base, leased: 59 }), {
+    status: "idle",
+    reason: "capacity_available",
+    capacity: 64,
+    active: 63,
+    pending: 4,
+    ready_pending: 4,
+    admissible_pending: 4,
+  });
+  assert.equal(summarizeExactReviewPressure({ ...base, admissiblePending: 3 }).status, "congested");
+  assert.equal(
+    summarizeExactReviewPressure({ ...base, pending: 64, readyPending: 64, admissiblePending: 64 })
+      .status,
+    "saturated",
+  );
+});
+
+test("exact-review pressure preserves non-dispatchable and unknown states", () => {
+  const base = {
+    pending: 5,
+    readyPending: 5,
+    admissiblePending: 5,
+    dispatching: 4,
+    leased: 60,
+    capacity: 64,
+    dispatcherState: "active",
+    handoffStatus: "healthy",
+  };
+
+  assert.equal(
+    summarizeExactReviewPressure({ ...base, readyPending: 0 }).reason,
+    "no_ready_backlog",
+  );
+  assert.equal(
+    summarizeExactReviewPressure({ ...base, admissiblePending: 0 }).reason,
+    "no_admissible_backlog",
+  );
+  assert.deepEqual(
+    summarizeExactReviewPressure({
+      ...base,
+      pending: 2.9,
+      readyPending: 9,
+      admissiblePending: 8,
+      dispatcherState: "paused",
+    }),
+    {
+      status: "unknown",
+      reason: "dispatcher_inactive",
+      capacity: 64,
+      active: 64,
+      pending: 2,
+      ready_pending: 2,
+      admissible_pending: 2,
+    },
+  );
 });

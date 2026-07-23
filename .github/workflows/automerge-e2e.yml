@@ -1,0 +1,86 @@
+name: automerge e2e
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/automerge-e2e.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "scripts/e2e/**"
+      - "src/repair/**"
+      - "test/e2e/automerge/**"
+  pull_request:
+    paths:
+      - ".github/workflows/automerge-e2e.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "scripts/e2e/**"
+      - "src/repair/**"
+      - "test/e2e/automerge/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: automerge-e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  automerge-e2e:
+    name: production automerge flow
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 15
+    env:
+      AUTOMERGE_E2E_BASE_ARCHIVE: /tmp/clawsweeper-automerge-e2e-base.tar
+      AUTOMERGE_E2E_BASE_IMAGE: clawsweeper-automerge-e2e-base:repository
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Restore repository-built base image
+        id: base-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ env.AUTOMERGE_E2E_BASE_ARCHIVE }}
+          key: ${{ runner.os }}-automerge-e2e-base-${{ hashFiles('test/e2e/automerge/Dockerfile.base') }}
+
+      - name: Prepare repository-built base image
+        env:
+          CACHE_HIT: ${{ steps.base-cache.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          if [[ "$CACHE_HIT" == "true" ]]; then
+            docker load --input "$AUTOMERGE_E2E_BASE_ARCHIVE"
+          else
+            # Pull requests may consume default-branch caches but cannot replace
+            # them, so CI never trusts executable bytes from a contributor cache.
+            docker build \
+              --file test/e2e/automerge/Dockerfile.base \
+              --tag "$AUTOMERGE_E2E_BASE_IMAGE" \
+              .
+            docker save \
+              --output "$AUTOMERGE_E2E_BASE_ARCHIVE" \
+              "$AUTOMERGE_E2E_BASE_IMAGE"
+          fi
+
+      - name: Run hermetic automerge scenarios
+        run: >-
+          node scripts/e2e/automerge-container.mjs
+          --scenario all
+          --fixture all
+          --output test-results/automerge
+          --base-image "$AUTOMERGE_E2E_BASE_IMAGE"
+
+      - name: Upload automerge proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: automerge-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/automerge
+          if-no-files-found: error
+          retention-days: 14
