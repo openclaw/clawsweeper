@@ -282,8 +282,26 @@ function fencedLineStates(lines: readonly string[]): readonly boolean[] {
   });
 }
 
+// Depth of nested <details> per line (fenced lines keep the surrounding depth) so
+// collapsed agent details cannot be mistaken for top-level sections.
+function detailsDepthStates(
+  lines: readonly string[],
+  fenced: readonly boolean[],
+): readonly number[] {
+  let depth = 0;
+  return lines.map((raw, index) => {
+    const trimmed = raw.trim();
+    if (!fenced[index]) {
+      if (/^<details(?:\s|>)/i.test(trimmed)) depth += 1;
+      else if (/^<\/details>/i.test(trimmed)) depth = Math.max(0, depth - 1);
+    }
+    return depth;
+  });
+}
+
 function reviewFindingLines(lines: readonly string[]): readonly string[] {
   const fenced = fencedLineStates(lines);
+  const detailsDepth = detailsDepthStates(lines, fenced);
   const collect = (start: number, boundary: RegExp): string[] => {
     const section: string[] = [];
     for (let index = start; index < lines.length; index += 1) {
@@ -302,12 +320,15 @@ function reviewFindingLines(lines: readonly string[]): readonly string[] {
     }
   }
   if (detailsStart >= 0) {
-    return collect(detailsStart + 1, /^(?:Overall correctness:|<\/details>|<!--)/);
+    // Stop at later headings so subsequent detail subsections are never recorded as
+    // current findings when the Overall correctness delimiter is absent.
+    return collect(detailsStart + 1, /^(?:Overall correctness:|#{1,6}\s|<\/details>|<!--)/);
   }
   let summaryStart = -1;
   for (let index = 0; index < lines.length; index += 1) {
     if (
       !fenced[index] &&
+      detailsDepth[index] === 0 &&
       ["**Review findings**", "## Findings"].includes((lines[index] ?? "").trim())
     ) {
       summaryStart = index;
