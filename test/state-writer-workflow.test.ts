@@ -140,8 +140,10 @@ test("state materializer bounds its coordinator acquire below the job timeout", 
   const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
   const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
   const budgetMs = Number(materializer?.env?.CLAWSWEEPER_STATE_COORDINATOR_ACQUIRE_TIMEOUT_MS);
-  assert.equal(budgetMs, 2_700_000);
-  assert.equal(budgetMs < Number(materializer?.["timeout-minutes"]) * 60_000, true);
+  assert.equal(budgetMs, 2_100_000);
+  // A late grant still needs room inside the job window to publish one batch
+  // and run the finalize steps.
+  assert.equal(budgetMs + 15 * 60_000 <= Number(materializer?.["timeout-minutes"]) * 60_000, true);
 });
 
 test("only the exact-review batch publisher requests priority admission", () => {
