@@ -3,7 +3,9 @@ import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  allowedRepairOwners,
   hasSecuritySignalText,
+  isAllowedRepairOwner,
   makeRunDir,
   parseArgs,
   parseJob,
@@ -60,7 +62,7 @@ function prepare() {
   const branch = `clawsweeper/${clusterId}`;
   const latestMain = fetchLatestMain(targetRepo);
   const decision = reportRead.ok
-    ? intakeDecision({ enabled, report, reportMarkdown })
+    ? intakeDecision({ enabled, targetRepo, report, reportMarkdown })
     : { status: "report_missing", shouldRepair: false, reason: reportRead.reason };
   const preparedAt = new Date().toISOString();
   const runDir = decision.shouldRepair
@@ -142,9 +144,21 @@ function finalize() {
   console.log(JSON.stringify({ status, audit_path: relative(auditPath), pr_url: prUrl }, null, 2));
 }
 
-function intakeDecision({ enabled, report, reportMarkdown }: LooseRecord) {
+function intakeDecision({ enabled, targetRepo, report, reportMarkdown }: LooseRecord) {
   if (!truthy(enabled)) {
     return { status: "disabled", shouldRepair: false, reason: "commit finding intake disabled" };
+  }
+  // Same authoritative owner policy as issue intake and the execution gates:
+  // never commit a durable repair job that assertAllowedOwner or CrabFleet
+  // registration would reject (#604).
+  const repo = String(targetRepo ?? "");
+  const allowedOwner = process.env.CLAWSWEEPER_ALLOWED_OWNER;
+  if (!isAllowedRepairOwner(repo, allowedOwner)) {
+    return {
+      status: "owner_policy_blocked",
+      shouldRepair: false,
+      reason: `unsupported target repo owner ${repo.split("/")[0]}; repair owner policy allows ${allowedRepairOwners(allowedOwner).join(", ")}`,
+    };
   }
   if (report.result !== "findings") {
     return {
