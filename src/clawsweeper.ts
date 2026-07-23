@@ -18844,7 +18844,7 @@ function publicBeforeMergeItems(options: {
     add("Resolve security review attention item", options.securityReview.summary);
   }
   if (!isReportNoneList(options.risks)) addPrioritized(options.risks, "P1", "Resolve merge risk");
-  if (!isRoutineBeforeMergeStep(options.nextStep)) {
+  if (!isRoutineBeforeMergeStep(options.nextStep) && !isRoutineCiOrReviewText(options.nextStep)) {
     if (isActionablePriorityText(options.nextStep)) {
       add(
         `Complete next step (${publicPriorityFromText(options.nextStep, "P2")})`,
@@ -18884,10 +18884,11 @@ function publicBeforeMergeItems(options: {
 // Checklist entries are list items, not table cells; only flatten newlines so
 // downstream consumers of the checklist see command/path text unaltered.
 function publicChecklistText(value: string): string {
+  // Flatten line breaks (with their surrounding layout indentation) only; interior
+  // runs of spaces inside commands, quoted arguments, and paths stay exact.
   return value
     .replace(/<(?=[a-z/!?])/gi, "&lt;")
-    .replace(/\r?\n|\r/g, " ")
-    .replace(/\s+/g, " ")
+    .replace(/[ \t]*(?:\r?\n|\r)+[ \t]*/g, " ")
     .trim();
 }
 
