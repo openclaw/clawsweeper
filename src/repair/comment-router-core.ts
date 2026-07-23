@@ -2121,9 +2121,21 @@ function trustedCommentHasPriorityFinding(body: string) {
   return /(?:^|;|\n)\s*(?:[-*]\s*)?(?:\*\*)?\[P[0-3]\]/i.test(reviewFindings);
 }
 
+function beforeMergeReason(body: string): string {
+  const section = markdownSection(body, "Before merge");
+  // New-format comments render "None." when no checklist entries remain; that is a
+  // no-action sentinel, not a reason a human needs to look.
+  if (!section || /^none[.!]?$/i.test(section.trim())) return "";
+  const firstUnresolvedTask = section
+    .split(/;\s*|\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("- [ ]"));
+  return firstUnresolvedTask ?? section;
+}
+
 function trustedHumanReviewReason(body: string, verdict: LooseRecord | null) {
   const details = [
-    markdownSection(body, "Before merge"),
+    beforeMergeReason(body),
     markdownSection(body, "Next step before merge"),
     markdownSection(body, "Security"),
     firstReviewFinding(body),

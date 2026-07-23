@@ -12220,7 +12220,7 @@ function publicMergeReadinessBlock(
   const result = publicStatusText(publicMergeReadinessResult(rating, proof)).replace(/\.$/, "");
   const icon = /^blocked\b/i.test(result)
     ? "⛔"
-    : /^ready\b/i.test(result) && remainingItemCount === 0
+    : /^ready\b/i.test(result) && remainingItemCount === 0 && !decisionNeeded
       ? "✅"
       : "⚠️";
   const remaining =
@@ -18658,10 +18658,23 @@ function publicTableCell(value: string): string {
     .trim();
 }
 
+// A routine phrase inside a larger actionable or negated sentence ("Do not merge
+// after required checks are green; rotate the token first") must not suppress the
+// step, so require the routine phrase, reject negation, and re-check actionability.
 function isRoutineBeforeMergeStep(value: string): boolean {
-  return /\b(?:merge after (?:required )?checks are green|merge after maintainer review|normal (?:ci|maintainer review)|routine maintainer review|no further action)\b/i.test(
-    value,
-  );
+  const text = value.trim();
+  if (!text) return false;
+  if (
+    !/\b(?:merge after (?:required )?checks are green|merge after maintainer review|normal (?:ci|maintainer review)|routine maintainer review|no further action)\b/i.test(
+      text,
+    )
+  ) {
+    return false;
+  }
+  if (/\b(?:do not|don['’]t|must not|never|not merge|except|unless|until)\b/i.test(text)) {
+    return false;
+  }
+  return !isActionablePriorityText(text);
 }
 
 interface PublicBeforeMergeItem {
@@ -18974,7 +18987,11 @@ function sanitizeArchitectureDiagram(value: string): string {
   if (/%%\{/.test(diagram)) return "";
   if (/\bclick\b/i.test(diagram)) return "";
   if (/\b(?:classDef|linkStyle|style)\b/i.test(diagram)) return "";
-  if (/(?:https?|ftp|javascript):/i.test(diagram)) return "";
+  // No node metadata (image/icon nodes) and no URL of any form, including
+  // scheme-relative and data: URLs.
+  if (diagram.includes("@{") || diagram.includes("//")) return "";
+  if (/\b(?:img|icon)\s*:/i.test(diagram)) return "";
+  if (/\b(?:data|javascript|vbscript|https?|ftp|file|blob|mailto):/i.test(diagram)) return "";
   return diagram;
 }
 
@@ -19266,14 +19283,17 @@ function renderKeepOpenCommentFromReport(
     if (evidenceDetails.length) {
       agentDetails.push("", "### Evidence", "", ...evidenceDetails);
     }
-    if (!reviewFailed && prRating.nextSteps.length) {
+    const rankUpMoves = prRating.nextSteps
+      .map((step) => sentence(step))
+      .filter((step) => step && !isReportNoneList(step) && !/^none[.!]?$/i.test(step));
+    if (!reviewFailed && rankUpMoves.length) {
       agentDetails.push(
         "",
         "### Rank-up moves",
         "",
         "Optional improvements that raise the rating; they are not merge blockers.",
         "",
-        prRating.nextSteps.map((step) => `- ${sentence(step)}`).join("\n"),
+        rankUpMoves.map((step) => `- ${step}`).join("\n"),
       );
     }
     if (!reviewFailed) {
