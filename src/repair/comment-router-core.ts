@@ -2168,17 +2168,24 @@ function trustedCommentHasPriorityFinding(body: string) {
   return /(?:^|;|\n)\s*(?:[-*]\s*)?(?:\*\*)?\[P[0-3]\]/i.test(reviewFindings);
 }
 
+function decisionNeededReason(body: string): string {
+  const section = extractMarkdownSection(body, "Decision needed");
+  return section ? compactReason(`Maintainer decision needed: ${section}`, 220) : "";
+}
+
 function beforeMergeReason(body: string): string {
   const raw = extractMarkdownSection(body, "Before merge") ?? "";
   // New-format comments render "None." when no checklist entries remain; that is a
-  // no-action sentinel, not a reason a human needs to look.
-  if (!raw || /^none[.!]?$/i.test(raw.trim())) return "";
+  // no-action sentinel, not a reason a human needs to look. Decision-only reviews
+  // still carry their outstanding maintainer question.
+  if (!raw) return "";
+  if (/^none[.!]?$/i.test(raw.trim())) return decisionNeededReason(body);
   const lines = raw.split(/\r?\n/).map((line) => line.trim());
   const tasks = lines.filter((line) => /^- \[[ xX]\]/.test(line));
   if (tasks.length) {
-    // A checklist where every task is checked means nothing is left for a human.
+    // A checklist where every task is checked leaves only a pending decision, if any.
     const unresolved = tasks.find((line) => line.startsWith("- [ ]"));
-    return unresolved ? compactReason(unresolved, 220) : "";
+    return unresolved ? compactReason(unresolved, 220) : decisionNeededReason(body);
   }
   return compactReason(raw, 220);
 }
