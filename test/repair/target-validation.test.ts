@@ -3798,10 +3798,15 @@ test(
     git(cwd, "add", ".");
     git(cwd, "commit", "-m", "initial");
 
+    // The identity walk resolves the checkout root through realpath, so on
+    // macOS the opened path lives under /private/var while the fixture path
+    // references the /var tmpdir symlink; compare against the resolved path.
+    const resolvedRuntimeInput = fs.realpathSync(runtimeInput);
     const originalOpenSync = fs.openSync;
     let runtimeInputOpenCount = 0;
     fs.openSync = ((filePath, flags, mode) => {
-      if (path.resolve(String(filePath)) === runtimeInput && flags === "r") {
+      const openedPath = path.resolve(String(filePath));
+      if ((openedPath === runtimeInput || openedPath === resolvedRuntimeInput) && flags === "r") {
         runtimeInputOpenCount += 1;
       }
       return originalOpenSync(filePath, flags, mode);
