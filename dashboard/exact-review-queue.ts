@@ -6,8 +6,10 @@ import {
   type StateWriterOperation,
 } from "../src/state-writer-telemetry.ts";
 import {
+  elevateExactReviewPressureForPublication,
   summarizeExactReviewHandoff,
   summarizeExactReviewPressure,
+  type ExactReviewPublicationHealth,
 } from "./exact-review-health.ts";
 import {
   ExactReviewPublicationBatchStore,
@@ -1631,8 +1633,14 @@ export class ExactReviewQueue {
         legacyExcludedItemKeys,
         publicationBatches.nextLeaseExpiresAt,
       );
+      const publicationHealth = exactReviewPublicationHealth(
+        stats.lanes.publication,
+        publicationFlow,
+        deadLetters,
+      );
       return json({
         ...stats,
+        pressure: elevateExactReviewPressureForPublication(stats.pressure, publicationHealth),
         bay_projection: exactReviewQueueBayProjection(Object.values(state.items), bayPriorityKeys),
         lanes: {
           review: {
@@ -1653,11 +1661,7 @@ export class ExactReviewQueue {
             refreshed_total: metrics.publication.refreshed,
             flow: publicationFlow,
             dead_letters: deadLetters,
-            health: exactReviewPublicationHealth(
-              stats.lanes.publication,
-              publicationFlow,
-              deadLetters,
-            ),
+            health: publicationHealth,
             capacity_control: exactReviewPublicationControlStatus(this.env, publicationControl),
             batches: {
               enabled: exactReviewPublicationBatchingEnabled(this.env),
@@ -6474,7 +6478,7 @@ function exactReviewPublicationHealth(
   lane: ReturnType<typeof exactReviewQueueLaneStats>,
   flow: { last_15_minutes: { net_drain_rate_per_hour: number } },
   deadLetters: { open: number },
-) {
+): ExactReviewPublicationHealth & { reason: string | null } {
   const oldestAge = Number(lane.oldest_pending_age_seconds || 0);
   if (lane.parked > 0 || oldestAge >= 6 * 60 * 60) {
     return {

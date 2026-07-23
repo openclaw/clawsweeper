@@ -9082,6 +9082,11 @@ function renderExactReviewHandoff(queue) {
   const pressureStatus = ["idle", "congested", "saturated", "unknown"].includes(pressure?.status)
     ? pressure.status
     : "unknown";
+  const pressureLabel = pressure?.reason === "publication_critical"
+    ? "publication critical"
+    : pressure?.reason === "publication_degraded"
+      ? "publication degraded"
+      : "pressure " + pressureStatus;
   const labels = {
     pending: ["Pending", "waiting for admission"],
     dispatching: ["Dispatching", "waiting for run claim"],
@@ -9097,7 +9102,7 @@ function renderExactReviewHandoff(queue) {
   const slots = fmt.format(health.available_slots || 0) + " of " + fmt.format(health.capacity || 0) + " exact-review slots open";
   const backlog = fmt.format(queue?.pending || 0) + " total · " + fmt.format(queue?.ready_pending || 0) + " ready · " + fmt.format(queue?.admissible_pending || 0) + " admissible";
   const threshold = "stalled after " + elapsed((health.stalled_after_seconds || 0) * 1000);
-  target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Queue handoff health</strong><span>' + esc(health.message || "Queue phase telemetry") + '</span></div><div class="exact-handoff-badges"><span class="health-badge ' + esc(status) + '">' + esc(status) + '</span><span class="health-badge ' + esc(pressureStatus) + '">pressure ' + esc(pressureStatus) + '</span></div></div><div class="handoff-phases">' + phases + '</div><div class="handoff-foot"><span>' + esc(slots) + '</span><span>' + esc(backlog) + '</span><span>' + esc(threshold) + '</span></div></div>';
+  target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Queue handoff health</strong><span>' + esc(health.message || "Queue phase telemetry") + '</span></div><div class="exact-handoff-badges"><span class="health-badge ' + esc(status) + '">' + esc(status) + '</span><span class="health-badge ' + esc(pressureStatus) + '">' + esc(pressureLabel) + '</span></div></div><div class="handoff-phases">' + phases + '</div><div class="handoff-foot"><span>' + esc(slots) + '</span><span>' + esc(backlog) + '</span><span>' + esc(threshold) + '</span></div></div>';
 }
 function renderWorkers(rows) {
   workerIndex = new Map(rows.map(worker => [String(worker.id), worker]));

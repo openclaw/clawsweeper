@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  elevateExactReviewPressureForPublication,
   summarizeExactReviewHandoff,
   summarizeExactReviewPressure,
 } from "../dashboard/exact-review-health.ts";
@@ -268,5 +269,40 @@ test("exact-review pressure preserves non-dispatchable and unknown states", () =
       ready_pending: 2,
       admissible_pending: 2,
     },
+  );
+});
+
+test("publication health elevates an otherwise idle review pressure signal", () => {
+  const idle = summarizeExactReviewPressure({
+    pending: 1,
+    readyPending: 1,
+    admissiblePending: 1,
+    dispatching: 0,
+    leased: 1,
+    capacity: 64,
+    dispatcherState: "active",
+    handoffStatus: "healthy",
+  });
+
+  assert.deepEqual(elevateExactReviewPressureForPublication(idle, { status: "degraded" }), {
+    ...idle,
+    status: "congested",
+    reason: "publication_degraded",
+  });
+  assert.deepEqual(elevateExactReviewPressureForPublication(idle, { status: "critical" }), {
+    ...idle,
+    status: "saturated",
+    reason: "publication_critical",
+  });
+  assert.deepEqual(elevateExactReviewPressureForPublication(idle, { status: "healthy" }), idle);
+
+  const saturated = {
+    ...idle,
+    status: "saturated" as const,
+    reason: "capacity_full_with_backlog" as const,
+  };
+  assert.deepEqual(
+    elevateExactReviewPressureForPublication(saturated, { status: "critical" }),
+    saturated,
   );
 });

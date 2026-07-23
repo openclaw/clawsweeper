@@ -7963,6 +7963,7 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   status.recent.apply_health.items = [];
   status.exact_review_queue.handoff_health.status = "stalled";
   status.exact_review_queue.pressure.status = "saturated";
+  status.exact_review_queue.pressure.reason = "publication_critical";
   status.exact_review_queue.handoff_health.message =
     "A dispatched review has not been claimed within the expected handoff window.";
   context.renderDashboard(status, "");
@@ -7970,7 +7971,7 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.equal(elementFor("hero-dot").className, "hero-dot red");
   assert.match(elementFor("hero-headline").textContent, /^Needs attention/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /health-badge stalled/);
-  assert.match(elementFor("exact-review-handoff").innerHTML, /pressure saturated/);
+  assert.match(elementFor("exact-review-handoff").innerHTML, /publication critical/);
 
   Object.assign(status, { exact_review_queue: null });
   status.diagnostics.exact_review_queue_error = "exact-review queue timed out";

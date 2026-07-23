@@ -504,6 +504,27 @@ test("queue batch claim defaults off and additive schema keeps the legacy versio
   assert.equal(stats.lanes.publication.batches.leased, 0);
 });
 
+test("queue pressure cannot stay idle while publication health is critical", async () => {
+  const originalNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    const queue = new ExactReviewQueue({ storage: new TestStorage() }, {});
+    await queue.fetch(publicationRequest("delivery-critical", 102, "1002"));
+    now += 6 * 60 * 60 * 1_000;
+
+    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.deepEqual(stats.lanes.publication.health, {
+      status: "critical",
+      reason: "oldest_pending_over_6h",
+    });
+    assert.equal(stats.pressure.status, "saturated");
+    assert.equal(stats.pressure.reason, "publication_critical");
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("legacy queue migration preserves receipts while adding empty batch tables", async () => {
   const originalNow = Date.now;
   Date.now = () => 3_000_000;

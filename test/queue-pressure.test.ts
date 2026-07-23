@@ -69,10 +69,8 @@ test("queue pressure fetch reads public aggregate stats", async () => {
   assert.deepEqual(empty, { ok: true, pendingCount: 0, oldestPendingAgeMs: 0 });
 });
 
-test("queue pressure prefers the review lane over totals that include publications", async () => {
-  // 812 total pending, but only 36 are Codex-consuming review items — pressure
-  // must not throttle review shards because of a publication backlog.
-  const result = await fetchExactReviewQueuePressure({
+test("queue pressure uses review thresholds and elevates unhealthy publication", async () => {
+  const healthyPublication = await fetchExactReviewQueuePressure({
     queueUrl: "https://clawsweeper.example",
     fetchImpl: async () =>
       Response.json({
@@ -80,11 +78,51 @@ test("queue pressure prefers the review lane over totals that include publicatio
         oldest_pending_age_seconds: 80_000,
         lanes: {
           review: { pending: 36, oldest_pending_age_seconds: 120 },
-          publication: { pending: 776, oldest_pending_age_seconds: 80_000 },
+          publication: {
+            pending: 776,
+            oldest_pending_age_seconds: 80_000,
+            health: { status: "healthy" },
+          },
         },
       }),
   });
-  assert.deepEqual(result, { ok: true, pendingCount: 36, oldestPendingAgeMs: 120_000 });
+  assert.deepEqual(healthyPublication, {
+    ok: true,
+    pendingCount: 36,
+    oldestPendingAgeMs: 120_000,
+  });
+  assert.equal(queuePressureLevel(healthyPublication), "none");
+
+  const criticalPublication = await fetchExactReviewQueuePressure({
+    queueUrl: "https://clawsweeper.example",
+    fetchImpl: async () =>
+      Response.json({
+        lanes: {
+          review: { pending: 0, oldest_pending_age_seconds: null },
+          publication: {
+            pending: 776,
+            oldest_pending_age_seconds: 80_000,
+            health: { status: "critical" },
+          },
+        },
+      }),
+  });
+  assert.deepEqual(criticalPublication, {
+    ok: true,
+    pendingCount: 0,
+    oldestPendingAgeMs: 0,
+    publicationStatus: "critical",
+  });
+  assert.equal(queuePressureLevel(criticalPublication), "hard");
+  assert.equal(
+    queuePressureLevel({
+      ok: true,
+      pendingCount: QUEUE_PRESSURE_HARD_PENDING,
+      oldestPendingAgeMs: 0,
+      publicationStatus: "degraded",
+    }),
+    "hard",
+  );
 
   const emptyReviewLane = await fetchExactReviewQueuePressure({
     queueUrl: "https://clawsweeper.example",
