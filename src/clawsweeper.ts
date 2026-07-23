@@ -5720,11 +5720,30 @@ function markdownTableCells(line: string): string[] {
   return cells;
 }
 
+// Decision-only reviews render an empty Before merge checklist while the
+// outstanding maintainer question lives under "Decision needed"; surface that
+// question as the remaining action.
+function firstDecisionNeededQuestion(body: string): string {
+  const section = markdownSection(body, "Decision needed");
+  if (!section) return "";
+  for (const line of section.split(/\r?\n/)) {
+    const cells = markdownTableCells(line);
+    if (cells.length < 2) continue;
+    if (cells.every((cell) => /^:?-{3,}:?$/.test(cell))) continue;
+    const label = cells[0]?.trim().toLowerCase() ?? "";
+    if (label === "question") continue;
+    if (cells[0]) return cells[0];
+  }
+  return firstNonEmptyLine(section);
+}
+
 function firstBeforeMergeAction(body: string): string {
   const section = markdownSection(body, "Before merge");
   // "None." is the no-action sentinel; a checked task is finished work, not a
   // remaining action.
-  if (!section || /^none[.!]?$/i.test(section.trim())) return "";
+  if (!section || /^none[.!]?$/i.test(section.trim())) {
+    return firstDecisionNeededQuestion(body);
+  }
   let sawTask = false;
   for (const line of section.split(/\r?\n/)) {
     if (/^- \[[xX]\]/.test(line)) {
@@ -5746,8 +5765,9 @@ function firstBeforeMergeAction(body: string): string {
     if (labels[0] === "needed" && labels[1] === "why") continue;
     if (cells[1]) return cells[1];
   }
-  // A checklist whose tasks are all checked has no remaining action.
-  return sawTask ? "" : firstNonEmptyLine(section);
+  // A checklist whose tasks are all checked has no remaining checklist action, but
+  // an outstanding maintainer decision still is one.
+  return sawTask ? firstDecisionNeededQuestion(body) : firstNonEmptyLine(section);
 }
 
 function previousReviewStatus(body: string): string {
