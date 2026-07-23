@@ -30,6 +30,11 @@ jobs:
       # contended wait eat the whole run (observed: six consecutive 20-min
       # timeout-cancels while the append window grew to ~25k rows).
       CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "300000"
+      # The durable-ticket queue can legitimately run tens of minutes deep
+      # behind the long-tail writers (run 29996334590 waited 31 minutes for
+      # seq 2284); budget most of the job window but keep a clean failure
+      # ahead of the 60-minute job kill.
+      CLAWSWEEPER_STATE_COORDINATOR_ACQUIRE_TIMEOUT_MS: "2700000"
       CLAWSWEEPER_STATE_LEASE_PRIORITY: "1"
       CLAWSWEEPER_STATE_LEASE_TTL_MS: "1200000"
       CLAWSWEEPER_STATE_MATERIALIZER_MAX_RUNTIME_MS: "2400000"

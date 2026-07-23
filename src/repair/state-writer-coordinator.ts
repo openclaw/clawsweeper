@@ -7,6 +7,18 @@ const COORDINATOR_POLL_MS = 1_000;
 const COORDINATOR_HEARTBEAT_MS = 30_000;
 const COORDINATOR_REQUEST_TIMEOUT_MS = 10_000;
 const COORDINATOR_AMBIGUOUS_REQUEST_LIMIT = 3;
+const COORDINATOR_QUEUE_LOG_MS = 60_000;
+// The queue behind a deep writer backlog is a legitimate multi-minute wait,
+// but an uncapped poll turns any stuck leader into a silent hang that only the
+// job timeout can end (observed: 26 minutes of blocked Atomics.wait in run
+// 29996334590). Fail with a diagnosable error instead.
+const COORDINATOR_ACQUIRE_TIMEOUT_FALLBACK_MS = 30 * 60_000;
+
+function coordinatorAcquireTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const configured = Number(env.CLAWSWEEPER_STATE_COORDINATOR_ACQUIRE_TIMEOUT_MS);
+  if (Number.isInteger(configured) && configured > 0) return configured;
+  return COORDINATOR_ACQUIRE_TIMEOUT_FALLBACK_MS;
+}
 
 export type StateWriterCoordinatorTicket = {
   ticketId: string;
@@ -65,10 +77,22 @@ export function acquireStateWriterCoordinator(
   const ticketId = `state-writer:${randomUUID()}`;
   const request = runtime.request ?? signedCoordinatorRequest(config);
   const sleep = runtime.sleep ?? sleepSync;
+  const acquireDeadlineAt = Date.now() + coordinatorAcquireTimeoutMs(env);
   let lastPosition: number | null = null;
+  let lastQueueLogAt = Date.now();
   let ambiguousRequestFailures = 0;
 
   while (true) {
+    if (Date.now() >= acquireDeadlineAt) {
+      try {
+        request("/internal/state-writer/release", { ticket_id: ticketId, owner, branch });
+      } catch {
+        // Best effort: a queued ticket left behind is reclaimed as stale.
+      }
+      throw new Error(
+        `state writer coordinator acquire timed out after ${coordinatorAcquireTimeoutMs(env)}ms at queue position ${lastPosition ?? "unknown"}`,
+      );
+    }
     let response: CoordinatorResponse;
     try {
       runtime.onAcquireAttempt?.();
@@ -164,9 +188,12 @@ export function acquireStateWriterCoordinator(
       throw new Error(`state writer coordinator returned terminal ticket state ${ticket.state}`);
     }
     const position = Number(ticket.position || 0);
-    if (position !== lastPosition) {
-      console.log(`Queued durable state writer ticket position=${position} seq=${ticket.seq}`);
+    if (position !== lastPosition || Date.now() - lastQueueLogAt >= COORDINATOR_QUEUE_LOG_MS) {
+      console.log(
+        `Queued durable state writer ticket position=${position} seq=${ticket.seq} deadline_in_ms=${Math.max(0, acquireDeadlineAt - Date.now())}`,
+      );
       lastPosition = position;
+      lastQueueLogAt = Date.now();
     }
     sleep(COORDINATOR_POLL_MS);
   }

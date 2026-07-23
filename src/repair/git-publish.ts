@@ -112,6 +112,10 @@ const PUBLISH_FETCH_TIMEOUT_MS = 60_000;
 // one-time repairs but move far more data than an ordinary publish fetch; a
 // 60s budget times out on the grown state repo (prod run 29745570319).
 const RECOVERY_FETCH_TIMEOUT_MS = 300_000;
+// Branch pushes move materializer-sized batches and must outlast them, but a
+// push with no timeout turns a stalled transport into a silent hang that only
+// the job timeout can end.
+const PUBLISH_PUSH_TIMEOUT_MS = 300_000;
 const STATE_PUBLISH_LEASE_REF_ROOT = "refs/heads/clawsweeper-publish-lease";
 // A small publish renews well inside two minutes, but a materializer batch of
 // thousands of paths stages and pushes for longer than that and loses the lease
@@ -466,7 +470,11 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
     `paths=${uniqueNonEmpty(options.paths).length} strategy=${rebaseStrategy}`,
   );
   prepareReconciliationStateRoot(remote, branch, rebaseStrategy);
+  // Baseline before the head sync: the source-refresh diff below must span the
+  // remote commits this checkout had not seen yet, and the sync collapses them
+  // into the new HEAD.
   const stateBaseCommit = captureStatePublishBaseline();
+  syncStatePublishBaseToRemoteHead(remote, branch, rebaseStrategy);
 
   syncPublishPaths(options.paths, { rebaseStrategy });
   configureGitUser();
@@ -951,6 +959,7 @@ function mergeImmutableActionLedgerOnGitHub(options: {
       if (
         spawnGit(["push", options.remote, `${options.sourceCommit}:${temporaryRef}`], {
           displayArgs: ["push", options.remote, `<commit>:${temporaryRef}`],
+          timeout: PUBLISH_PUSH_TIMEOUT_MS,
         }).status === 0
       ) {
         pushed = true;
@@ -1278,6 +1287,37 @@ function prepareReconciliationStateRoot(
   }
   console.log("Discarding an unpublished reconciliation checkpoint before retry");
   runGit(["reset", "--hard", semanticBase.base ?? remoteRef]);
+}
+
+function syncStatePublishBaseToRemoteHead(
+  remote: string,
+  branch: string,
+  rebaseStrategy: RebaseStrategy,
+): void {
+  const stateRoot = publishRoot();
+  if (
+    rebaseStrategy === "reconcile-records" ||
+    !stateRoot ||
+    resolve(stateRoot) === resolve(process.cwd())
+  ) {
+    return;
+  }
+  // A publish can wait tens of minutes for its writer ticket while other
+  // writers advance the remote branch — or the compaction cron force-rewrites
+  // it, leaving no common ancestor at all (observed: run 29996334590 built a
+  // commit on a 34-minute-stale base and died on "fetch first"). The pending
+  // content lives in the source checkout and is copied (or merged) into the
+  // state root afterwards, so the checkout itself carries nothing worth
+  // keeping: reset it to the live head so both the commit base and the merge
+  // inputs are current, without needing any common ancestor.
+  fetchPublishRemote(remote, branch);
+  const remoteRef = `${remote}/${branch}`;
+  const remoteCommit = spawnGit(["rev-parse", remoteRef], { quiet: true });
+  if (remoteCommit.status !== 0) return;
+  const localCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
+  if (remoteCommit.stdout.trim() === localCommit) return;
+  console.log(`Rebasing the state publish base onto the live ${remoteRef} head`);
+  runGit(["reset", "--hard", remoteRef]);
 }
 
 function reconciliationTupleKeysForCommit(sourceCommit: string): string[] {
@@ -2367,7 +2407,7 @@ function pushPublishedCommit(
       `${renewedOid}:${lease.ref}`,
       ...(receiptRef ? [`${source}:${receiptRef}`] : []),
     ],
-    { allowFailure: true },
+    { allowFailure: true, timeout: PUBLISH_PUSH_TIMEOUT_MS },
   );
   if (pushed.status !== 0) {
     const currentLeaseOid = remoteRefOid(remote, lease.ref);
