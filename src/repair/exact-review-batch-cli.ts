@@ -120,6 +120,7 @@ async function commit() {
   const superseded: ExactReviewBatchCompletion[] = [];
   const commitMembers: ExactReviewBatchQueueItem[] = [];
   const plans: PreparedStateMutationPlan[] = [];
+  const outcomePathByItemKey = new Map<string, string>();
   for (const manifestItem of manifest.items) {
     const current = active.get(manifestItem.itemKey);
     if (!current || !existsSync(manifestItem.outcomePath)) continue;
@@ -144,6 +145,7 @@ async function commit() {
     }
     commitMembers.push(current);
     plans.push(plan);
+    outcomePathByItemKey.set(current.itemKey, manifestItem.outcomePath);
   }
 
   let stateCommitSha: string | undefined;
@@ -173,7 +175,7 @@ async function commit() {
         batchId: manifest.batchId,
         plans,
       });
-      stateCommitSha = committed.commitSha;
+      stateCommitSha = committed.commitSha ?? undefined;
       if (committed.outcome === "committed") recorder?.recordMaterializedCommit(committed.itemCount);
       recorder?.finalize(committed.outcome === "committed" ? "materialized" : "unchanged");
       stateWriter = recorder?.toTerminalObject() ?? undefined;
@@ -230,6 +232,25 @@ async function commit() {
     }
   }
   const quarantinedItemKeys = new Set(quarantined.map((item) => item.itemKey));
+  for (const itemKey of quarantinedItemKeys) {
+    const outcomePath = outcomePathByItemKey.get(itemKey);
+    if (!outcomePath || !existsSync(outcomePath)) continue;
+    const outcome = objectValue(JSON.parse(readFileSync(outcomePath, "utf8")));
+    // A quarantined item's local outcome file still says kind: "eligible"; the
+    // workflow's post-commit loop reads that file directly (not this receipt) to
+    // decide whether to dispatch comment-router or requeue effects, so it must be
+    // corrected here or the loop will run post-effects for state that was never
+    // committed.
+    writeFileSync(
+      outcomePath,
+      `${JSON.stringify(
+        { ...outcome, kind: "retryable_failure", reasonCode: "state_conflict_quarantined" },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+  }
   const receiptPath = batchReceiptPath();
   mkdirSync(dirname(receiptPath), { recursive: true });
   writeFileSync(

@@ -589,13 +589,13 @@ test("remote same-path drift is fenced before push", () => {
   publishSibling(fixture, "records/existing.md", "newer remote\n");
   const before = git(fixture.origin, "rev-parse", "state").trim();
 
-  assert.throws(
-    () =>
-      withStateEnvironment(fixture.work, () =>
-        commitPreparedStateBatch({ batchId: "same-path-drift", plans: [plan] }),
-      ),
-    /changed after mutation preparation/,
+  const result = withStateEnvironment(fixture.work, () =>
+    commitPreparedStateBatch({ batchId: "same-path-drift", plans: [plan] }),
   );
+  assert.equal(result.outcome, "quarantined");
+  assert.equal(result.commitSha, null);
+  assert.equal(result.quarantinedItems.length, 1);
+  assert.match(result.quarantinedItems[0].reason, /changed after mutation preparation/);
   assert.equal(git(fixture.origin, "rev-parse", "state").trim(), before);
   assert.equal(git(fixture.origin, "show", "state:records/existing.md"), "newer remote\n");
 });
@@ -749,13 +749,12 @@ test("literal Git path names cannot bypass the remote compare-and-swap fence", (
     }),
   );
 
-  assert.throws(
-    () =>
-      withStateEnvironment(fixture.work, () =>
-        commitPreparedStateBatch({ batchId: "literal-path-fence", plans: [plan] }),
-      ),
-    /changed after mutation preparation/,
+  const result = withStateEnvironment(fixture.work, () =>
+    commitPreparedStateBatch({ batchId: "literal-path-fence", plans: [plan] }),
   );
+  assert.equal(result.outcome, "quarantined");
+  assert.equal(result.quarantinedItems.length, 1);
+  assert.match(result.quarantinedItems[0].reason, /changed after mutation preparation/);
   assert.equal(git(fixture.origin, "show", `state:${literalPath}`), "remote literal\n");
 });
 

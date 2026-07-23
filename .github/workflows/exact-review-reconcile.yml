@@ -90,7 +90,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-      issues: read
+      issues: write
       pull-requests: read
     steps:
       - name: Reconcile claimed terminal runs

@@ -46,8 +46,8 @@ export type StateBatchQuarantinedItem = {
 };
 
 export type StateBatchCommitResult = {
-  outcome: "committed" | "already_committed";
-  commitSha: string;
+  outcome: "committed" | "already_committed" | "quarantined";
+  commitSha: string | null;
   batchId: string;
   fingerprint: string;
   itemCount: number;
@@ -162,7 +162,15 @@ function commitUnderLease(options: {
     return true;
   });
   if (survivingPlans.length === 0) {
-    throw new StateMutationConflictError(quarantinedItems.map((item) => item.reason).join("; "));
+    return {
+      outcome: "quarantined",
+      commitSha: null,
+      fingerprint: "",
+      itemCount: 0,
+      pathCount: 0,
+      totalBytes: 0,
+      quarantinedItems,
+    };
   }
 
   const operations =

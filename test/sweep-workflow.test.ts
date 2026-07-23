@@ -929,7 +929,7 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
   assert.match(sweepJob, /timeout-minutes: 10/);
   assert.match(
     sweepJob,
-    /permissions:\s+actions: read\s+contents: read\s+issues: read\s+pull-requests: read/,
+    /permissions:\s+actions: read\s+contents: read\s+issues: write\s+pull-requests: read/,
   );
   assert.match(sweepJob, /GH_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(sweepJob, /\/internal\/exact-review\/claimed-runs/);
