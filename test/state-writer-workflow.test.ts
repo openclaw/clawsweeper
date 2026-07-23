@@ -15,6 +15,7 @@ type WorkflowStep = {
 
 type WorkflowJob = {
   env?: Record<string, unknown>;
+  "runs-on"?: unknown;
   steps?: WorkflowStep[];
 };
 
@@ -127,6 +128,12 @@ test("state materializer and apply publishers enable model-guided recovery with 
   );
   assert.equal(applyEventPublisher?.env?.CLAWSWEEPER_MODEL_RECOVERY_ENABLED, "0");
   assert.equal(applyEventPublisher?.env?.OPENAI_API_KEY, undefined);
+});
+
+test("state materializer uses an available GitHub-hosted runner", () => {
+  const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
+  const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
+  assert.equal(materializer?.["runs-on"], "ubuntu-latest");
 });
 
 test("only the exact-review batch publisher requests priority admission", () => {

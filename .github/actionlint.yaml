@@ -5,6 +5,5 @@ self-hosted-runner:
     - crabbox
     - openclaw
     - clawsweeper
-    - clawsweeper-heavy
 
 config-variables: null
