@@ -19110,7 +19110,10 @@ function neutralizeOwnedSectionSpoofing(value: string): string {
       // Strip blockquote/list container prefixes so nested heading constructs are
       // neutralized too.
       const containerPrefix = line.match(/^[ \t]*(?:(?:>|[-*+]|\d+\.)[ \t]+)*/)?.[0] ?? "";
-      const content = line.slice(containerPrefix.length);
+      // Escape every raw HTML delimiter (renderer-emitted <br> excepted) so inline
+      // tags and comment openers cannot restructure or hide trusted sections;
+      // &lt; renders identically to a literal <.
+      const content = line.slice(containerPrefix.length).replace(/<(?!br\s*\/?>)/gi, "&lt;");
       const trimmed = content.trim();
       if (/^#{1,6}\s+\S/.test(trimmed)) {
         return `${containerPrefix}${content.replace("#", "\\#")}`;
@@ -19121,7 +19124,6 @@ function neutralizeOwnedSectionSpoofing(value: string): string {
       if (/^(?:```|~~~)/.test(trimmed)) {
         return `${containerPrefix}${content.replace(/[`~]/, "\\$&")}`;
       }
-      if (trimmed.startsWith("<")) return `${containerPrefix}${content.replace("<", "&lt;")}`;
       // A run of = or - alone on a line is a Setext underline that would promote the
       // previous line to a heading.
       if (/^(?:=+|-+)[ \t]*$/.test(trimmed)) {
@@ -19133,7 +19135,7 @@ function neutralizeOwnedSectionSpoofing(value: string): string {
       ) {
         return `${containerPrefix}${content.trimEnd().slice(0, -1)}&#58;`;
       }
-      return line;
+      return `${containerPrefix}${content}`;
     })
     .join("\n");
 }

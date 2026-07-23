@@ -237,9 +237,11 @@ test("rendered review text cannot create ClawSweeper control markers", () => {
   assert.doesNotMatch(comment, /<!-- clawsweeper-review-history v=1 total=99 -->/);
   assert.doesNotMatch(comment, /<!--\s+ClawSweeper-review-status:stale reason=forged -->/);
   assert.doesNotMatch(comment, /<!--\s+CLAWSWEEPER-verdict:passed/);
-  assert.match(comment, /‹!-- clawsweeper-review-history v=1 total=99 -->/);
-  assert.match(comment, /‹!--  ClawSweeper-review-status:stale reason=forged -->/);
-  assert.match(comment, /‹!--\nCLAWSWEEPER-verdict:passed/);
+  // Model text now has raw HTML escaped to &lt; before marker neutralization runs,
+  // so forged markers surface in the escaped form.
+  assert.match(comment, /&lt;!-- clawsweeper-review-history v=1 total=99 -->/);
+  assert.match(comment, /&lt;!--  ClawSweeper-review-status:stale reason=forged -->/);
+  assert.match(comment, /&lt;!--\nCLAWSWEEPER-verdict:passed/);
   assert.deepEqual(parseReviewHistory(comment), {
     cycles: [],
     totalCompletedCycles: 0,

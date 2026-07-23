@@ -2191,9 +2191,12 @@ function beforeMergeReason(body: string): string {
 }
 
 function trustedHumanReviewReason(body: string, verdict: LooseRecord | null) {
+  // A present Before merge section is authoritative; only legacy comments without
+  // it may fall back to the old follow-up heading.
+  const hasBeforeMergeSection = extractMarkdownSection(body, "Before merge") !== null;
   const details = [
     beforeMergeReason(body),
-    markdownSection(body, "Next step before merge"),
+    hasBeforeMergeSection ? "" : markdownSection(body, "Next step before merge"),
     markdownSection(body, "Security"),
     firstReviewFinding(body),
   ].filter(Boolean);
