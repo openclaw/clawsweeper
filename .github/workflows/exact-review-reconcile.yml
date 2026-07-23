@@ -14,19 +14,23 @@ env:
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
 
 concurrency:
-  # Exact-review completions share one pending slot. Each surviving run scans all
-  # live claims, so GitHub may safely coalesce a burst without losing a terminal run.
-  group: exact-review-reconcile-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'sweep' || github.event.workflow_run.event == 'repository_dispatch' && startsWith(github.event.workflow_run.display_title, 'Review event item ') && 'queue' || github.event.workflow_run.id }}
+  # This workflow owns both run telemetry and exact-lease repair. Keep terminal
+  # tuples distinct because coalescing workflow_run events would drop telemetry.
+  group: exact-review-reconcile-${{ github.event_name == 'workflow_run' && format('{0}-{1}', github.event.workflow_run.id, github.event.workflow_run.run_attempt) || 'sweep' }}
   cancel-in-progress: false
 
 jobs:
   reconcile:
-    name: Reconcile terminal exact-review run
-    if: ${{ github.event.workflow_run.event == 'repository_dispatch' && startsWith(github.event.workflow_run.display_title, 'Review event item ') }}
+    name: Observe and reconcile terminal review run
+    if: ${{ github.event_name == 'workflow_run' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Reconcile terminal run
+        if: ${{ github.event.workflow_run.event == 'repository_dispatch' && startsWith(github.event.workflow_run.display_title, 'Review event item ') }}
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -62,6 +66,21 @@ jobs:
             fi
           done
           exit 1
+
+      - uses: actions/checkout@v7
+        if: ${{ always() }}
+        # workflow_run may expose secrets, so execute observer code only from the trusted default branch.
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Record terminal review wave
+        if: ${{ always() }}
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          GH_TOKEN: ${{ github.token }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+        run: node scripts/review-run-observer.mjs --event-file "$GITHUB_EVENT_PATH"
 
   sweep:
     name: Sweep terminal exact-review runs

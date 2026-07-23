@@ -4033,6 +4033,7 @@ jobs:
       issues: read
       pull-requests: read
     env:
+      CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "1"
       CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
       CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
       CLAWSWEEPER_STATE_LEASE_PRIORITY: "1"
@@ -4175,6 +4176,7 @@ jobs:
         if: ${{ steps.proof-select.outputs.item_numbers != '' }}
         timeout-minutes: 50
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -4254,6 +4256,7 @@ jobs:
   publish-apply-proof-action-ledger:
     name: Publish immutable apply proof action ledger
     env:
+      CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "0"
       CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
       CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
       CLAWSWEEPER_STATE_LEASE_PRIORITY: "1"
@@ -4342,6 +4345,7 @@ jobs:
       cancel-in-progress: false
       queue: max
     env:
+      CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "1"
       CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
       CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
       CLAWSWEEPER_STATE_LEASE_PRIORITY: "1"
@@ -4392,16 +4396,12 @@ jobs:
       - name: Create target write token
         id: target-write-token
         continue-on-error: true
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: ./.github/actions/create-target-write-token
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: ${{ steps.target.outputs.target_repo_owner }}
-          repositories: ${{ steps.target.outputs.target_repo_name }}
-          permission-contents: write
-          permission-actions: read
-          permission-issues: write
-          permission-pull-requests: write
+          repository: ${{ steps.target.outputs.target_repo_name }}
 
       - name: Create state token
         id: state-token
@@ -4420,6 +4420,14 @@ jobs:
         with:
           build-script: build:all
 
+      - uses: ./.github/actions/setup-codex
+        continue-on-error: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
+        with:
+          auth-mode: login
+
       - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
@@ -4435,6 +4443,7 @@ jobs:
 
       - name: Reconcile before apply preselect
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -4453,10 +4462,12 @@ jobs:
 
       - name: Apply unchanged proposed decisions with checkpoints
         id: apply-existing-run
-        timeout-minutes: 350
+        timeout-minutes: 70
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          CLAWSWEEPER_APPLY_TOKEN_MINTED_AT_MS: ${{ steps.target-write-token.outputs.minted-at-ms }}
           CLAWSWEEPER_PUBLISH_THROTTLE_STATUS: "true"
           CLAWSWEEPER_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CLAWSWEEPER_THROTTLE_STATUS_MIN_WAIT_MS: "60000"
@@ -4467,6 +4478,7 @@ jobs:
           set -euo pipefail
           test -n "$GH_TOKEN"
           source scripts/apply-workflow-helpers.sh
+          initialize_apply_token_budget
           limit="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '20' }}"
           min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
           min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
@@ -4668,6 +4680,7 @@ jobs:
               --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
               --apply-health-file ".artifacts/apply-health-$checkpoint.json"
             publish_status "chore: update sweep comment sync status"
+            report_apply_token_budget_stop ".artifacts/apply-reports/apply-report-$checkpoint.json" "$result_count" "unknown"
             echo "::endgroup::"
           fi
           while [ "$closed_total" -lt "$limit" ]; do
@@ -4745,7 +4758,7 @@ jobs:
             publish_status "chore: update sweep apply checkpoint $checkpoint status"
             echo "::endgroup::"
             drop_bounded_coverage_proof_tail "$cursor_trace_path"
-            if automatic_apply_runtime_reached ".artifacts/apply-reports/apply-report-$checkpoint.json"; then break; fi
+            if apply_checkpoint_runtime_reached ".artifacts/apply-reports/apply-report-$checkpoint.json" "$result_count" "$((limit - closed_total))"; then break; fi
             if [ "$result_count" -ge "$close_processed_limit" ]; then
               if [ "$closed_in_chunk" -gt 0 ]; then
                 echo "Close scan reached its $close_processed_limit-record budget; queueing a fresh-token continuation."
@@ -4853,6 +4866,7 @@ jobs:
       - name: Retry final apply status publication
         if: ${{ always() && !cancelled() && steps.primary-apply-result.outputs.succeeded == 'true' }}
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
@@ -4870,6 +4884,7 @@ jobs:
       - name: Publish apply action events
         if: ${{ always() }}
         env:
+          CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "0"
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |

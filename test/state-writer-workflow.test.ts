@@ -10,10 +10,12 @@ type WorkflowStep = {
   run?: string;
   env?: Record<string, unknown>;
   with?: Record<string, unknown>;
+  "continue-on-error"?: boolean;
 };
 
 type WorkflowJob = {
   env?: Record<string, unknown>;
+  "runs-on"?: unknown;
   steps?: WorkflowStep[];
 };
 
@@ -29,6 +31,7 @@ const publicationEntryPoints = [
   /repair:publish-main\b/,
   /repair:publish-event-result\b/,
   /repair:exact-review-batch commit\b/,
+  /scripts\/prepare-exact-review-batch\.mjs\b/,
   /dist\/repair\/state-materializer\.js\b/,
   /repair:conflict-self-heal\b(?![^\n]*--verify-job-head)/,
   /\bpublish-action-event-paths\b/,
@@ -68,7 +71,82 @@ test("the setup action exports no long-lived coordinator credential", () => {
   assert.match(source, /CLAWSWEEPER_STATE_COORDINATOR_CLASS=\$\{\{ inputs\.coordinator-class \}\}/);
 });
 
-test("only the exact-review batch publisher requests priority admission", () => {
+test("state materializer and apply publishers enable model-guided recovery with the existing Codex key", () => {
+  const expectedKey = "${{ secrets.OPENAI_API_KEY }}";
+  const expectedModel = "${{ secrets.CLAWSWEEPER_MODEL }}";
+  const expectedJobs = [
+    [".github/workflows/state-materializer.yml", "materialize", ["Materialize queued state"]],
+    [".github/workflows/sweep.yml", "apply-proof", ["Generate bound close coverage proofs"]],
+    [
+      ".github/workflows/sweep.yml",
+      "apply-existing",
+      [
+        "Reconcile before apply preselect",
+        "Apply unchanged proposed decisions with checkpoints",
+        "Retry final apply status publication",
+      ],
+    ],
+  ] as const;
+  const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
+
+  for (const [file, jobName, recoverySteps] of expectedJobs) {
+    const job = byFile.get(file)?.jobs?.[jobName];
+    assert.ok(job, `${file}:${jobName}`);
+    assert.equal(job.env?.CLAWSWEEPER_MODEL_RECOVERY_ENABLED, "1", `${file}:${jobName}`);
+    assert.equal(job.env?.OPENAI_API_KEY, undefined, `${file}:${jobName}: key must be step-scoped`);
+    const setupCodex = job.steps?.find((step) =>
+      step.uses?.endsWith("/.github/actions/setup-codex"),
+    );
+    assert.ok(setupCodex, `${file}:${jobName}: setup-codex`);
+    assert.equal(setupCodex.env?.OPENAI_API_KEY, expectedKey, `${file}:${jobName}`);
+    assert.equal(setupCodex.env?.CLAWSWEEPER_INTERNAL_MODEL, expectedModel, `${file}:${jobName}`);
+    if (jobName !== "apply-proof") {
+      assert.equal(setupCodex["continue-on-error"], true, `${file}:${jobName}: optional setup`);
+    }
+    for (const stepName of recoverySteps) {
+      const step = job.steps?.find((candidate) => candidate.name === stepName);
+      assert.ok(step, `${file}:${jobName}:${stepName}`);
+      assert.equal(step.env?.OPENAI_API_KEY, expectedKey, `${file}:${jobName}:${stepName}`);
+    }
+  }
+  const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
+  const recoveryPublisher = materializer?.steps?.find(
+    (step) => step.name === "Publish materializer recovery action events",
+  );
+  assert.equal(
+    recoveryPublisher?.env?.CLAWSWEEPER_STATE_REPO_TOKEN,
+    "${{ steps.state-token.outputs.token }}",
+  );
+  assert.equal(recoveryPublisher?.env?.CLAWSWEEPER_MODEL_RECOVERY_ENABLED, "0");
+  assert.equal(recoveryPublisher?.env?.OPENAI_API_KEY, undefined);
+
+  const sweep = byFile.get(".github/workflows/sweep.yml");
+  const proofPublisher = sweep?.jobs?.["publish-apply-proof-action-ledger"];
+  assert.equal(proofPublisher?.env?.CLAWSWEEPER_MODEL_RECOVERY_ENABLED, "0");
+  const applyEventPublisher = sweep?.jobs?.["apply-existing"]?.steps?.find(
+    (step) => step.name === "Publish apply action events",
+  );
+  assert.equal(applyEventPublisher?.env?.CLAWSWEEPER_MODEL_RECOVERY_ENABLED, "0");
+  assert.equal(applyEventPublisher?.env?.OPENAI_API_KEY, undefined);
+});
+
+test("state materializer uses an available GitHub-hosted runner", () => {
+  const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
+  const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
+  assert.equal(materializer?.["runs-on"], "ubuntu-latest");
+});
+
+test("state materializer bounds its coordinator acquire below the job timeout", () => {
+  const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
+  const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
+  const budgetMs = Number(materializer?.env?.CLAWSWEEPER_STATE_COORDINATOR_ACQUIRE_TIMEOUT_MS);
+  assert.equal(budgetMs, 2_100_000);
+  // A late grant still needs room inside the job window to publish one batch
+  // and run the finalize steps.
+  assert.equal(budgetMs + 15 * 60_000 <= Number(materializer?.["timeout-minutes"]) * 60_000, true);
+});
+
+test("only the batch publisher and the state materializer request priority admission", () => {
   const prioritySetups: string[] = [];
   for (const { file, workflow } of workflows()) {
     for (const [job, definition] of Object.entries(workflow.jobs ?? {})) {
@@ -79,7 +157,10 @@ test("only the exact-review batch publisher requests priority admission", () => 
       }
     }
   }
-  assert.deepEqual(prioritySetups, [".github/workflows/exact-review-batch-publish.yml:publish"]);
+  assert.deepEqual(prioritySetups, [
+    ".github/workflows/exact-review-batch-publish.yml:publish",
+    ".github/workflows/state-materializer.yml:materialize",
+  ]);
 });
 
 test("trusted generated-state mutation steps receive a step-scoped coordinator credential", () => {
@@ -110,7 +191,7 @@ test("trusted generated-state mutation steps receive a step-scoped coordinator c
   }
   assert.equal(
     publishers,
-    35,
+    36,
     "new or removed generated-state publication surfaces require an explicit credential audit",
   );
 });
@@ -122,11 +203,11 @@ test("state compaction remains an explicitly separate main-branch writer", () =>
   assert.doesNotMatch(source, /\.github\/actions\/setup-state/);
 });
 
-test("the rollout returns to the last safe batch size during item deduplication", () => {
+test("the rollback scans 50 and grants 8 with bounded parallel preparation", () => {
   const workflow = readFileSync(join(workflowDirectory, "exact-review-batch-publish.yml"), "utf8");
   const worker = readFileSync("dashboard/wrangler.toml", "utf8");
-  assert.match(workflow, /EXACT_REVIEW_BATCH_MAX_ITEMS: "32"/);
-  assert.match(worker, /EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "4"/);
+  assert.match(workflow, /EXACT_REVIEW_BATCH_MAX_ITEMS: "50"/);
+  assert.match(worker, /EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "8"/);
   assert.match(worker, /EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS = "60000"/);
 });
 

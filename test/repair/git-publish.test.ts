@@ -490,6 +490,76 @@ test("publishMainCommit survives a shallow-checkout push race without a common G
   );
 });
 
+test("publishMainCommit rebases a stale state base onto a force-updated remote head", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const state = path.join(root, "state");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  write(path.join(seed, "results/other.txt"), "remote\n");
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial"], seed);
+  run("git", ["push", "origin", "HEAD:state"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["clone", origin, work], root);
+  run("git", ["clone", "--depth", "1", `file://${origin}`, state], root);
+  configureUser(state);
+
+  // The compaction cron rewrites the state branch: a force-pushed orphan head
+  // shares no ancestry with the stale checkout and carries newer content.
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  run("git", ["checkout", "--orphan", "compacted"], other);
+  write(path.join(other, "results/other.txt"), "compacted\n");
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "compacted"], other);
+  run("git", ["push", "--force", "origin", "HEAD:state"], other);
+  const compactedHead = run("git", ["rev-parse", "HEAD"], other).trim();
+
+  write(path.join(work, "results/spam-scanner.json"), '{"scans":9}\n');
+  const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: record ClawSweeper spam scan",
+          paths: ["results/spam-scanner.json"],
+          maxAttempts: 1,
+          pushAttempts: 1,
+          rebaseStrategy: "theirs",
+        }),
+      ),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  assert.equal(
+    lines.some((line) =>
+      line.includes("Rebasing the state publish base onto the live origin/state head"),
+    ),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "state:results/spam-scanner.json"], root),
+    '{"scans":9}\n',
+  );
+  // The stale checkout-era copy outside the publish paths must not shadow the
+  // newer remote content, and the publish lands directly on the rewritten head.
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "state:results/other.txt"], root),
+    "compacted\n",
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "rev-parse", "state^"], root).trim(),
+    compactedHead,
+  );
+});
+
 test("publishMainCommit fails closed when a racing sweep status is malformed", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");

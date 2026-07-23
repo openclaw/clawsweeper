@@ -20,9 +20,9 @@ type RepositoryFixture = {
   work: string;
 };
 
-test("bounded batches publish 1, 2, 4, and 8 item tuples in one state commit", () => {
+test("bounded batches publish 1, 2, 4, 8, and 32 item tuples in one state commit", () => {
   const proof: Array<Record<string, unknown>> = [];
-  for (const size of [1, 2, 4, 8]) {
+  for (const size of [1, 2, 4, 8, 32]) {
     const fixture = createRepositoryFixture();
     const beforeCount = Number(git(fixture.origin, "rev-list", "--count", "state").trim());
     const plans = Array.from({ length: size }, (_, index) => {
@@ -114,6 +114,273 @@ test("filesystem-path remotes publish without constructing an invalid tracking r
   assert.equal(
     git(fixture.origin, "show", "state:records/openclaw-openclaw/items/22.md"),
     "item 22\n",
+  );
+});
+
+test("batch commits use the ClawSweeper identity without repository or global Git config", () => {
+  const fixture = createRepositoryFixture();
+  const plan = newItemPlan(fixture, 24);
+  git(fixture.work, "config", "--unset-all", "user.name");
+  git(fixture.work, "config", "--unset-all", "user.email");
+
+  const result = withProcessEnv(
+    {
+      CLAWSWEEPER_GIT_USER_NAME: "",
+      CLAWSWEEPER_GIT_USER_EMAIL: "",
+      GIT_AUTHOR_NAME: "",
+      GIT_AUTHOR_EMAIL: "",
+      GIT_COMMITTER_NAME: "",
+      GIT_COMMITTER_EMAIL: "",
+      GIT_CONFIG_GLOBAL: os.devNull,
+      GIT_CONFIG_SYSTEM: os.devNull,
+    },
+    () =>
+      withStateEnvironment(fixture.work, () =>
+        commitPreparedStateBatch({
+          batchId: "explicit-git-identity",
+          plans: [plan],
+        }),
+      ),
+  );
+
+  assert.equal(result.outcome, "committed");
+  assert.equal(
+    git(fixture.origin, "log", "-1", "--format=%an%n%ae%n%cn%n%ce", "state").trim(),
+    [
+      "clawsweeper",
+      "274271284+clawsweeper[bot]@users.noreply.github.com",
+      "clawsweeper",
+      "274271284+clawsweeper[bot]@users.noreply.github.com",
+    ].join("\n"),
+  );
+});
+
+test("GitHub multi-ref commit_refs rejection falls back to fenced single-ref pushes", () => {
+  const fixture = createRepositoryFixture();
+  const plan = newItemPlan(fixture, 25);
+  installMultiRefCommitRefsFailure(fixture.origin);
+
+  const result = withStateEnvironment(fixture.work, () =>
+    commitPreparedStateBatch({
+      batchId: "github-commit-refs-fallback",
+      plans: [plan],
+    }),
+  );
+
+  assert.equal(result.outcome, "committed");
+  assert.equal(
+    git(fixture.origin, "show", "state:records/openclaw-openclaw/items/25.md"),
+    "item 25\n",
+  );
+  const receiptRef = `refs/heads/clawsweeper-state-batches/${createHash("sha256")
+    .update("github-commit-refs-fallback")
+    .digest("hex")}`;
+  assert.equal(
+    git(fixture.origin, "rev-parse", "state").trim(),
+    git(fixture.origin, "rev-parse", receiptRef).trim(),
+  );
+});
+
+test("commit_refs recovery retries transient receipt and lease renewal rejections", () => {
+  const fixture = createRepositoryFixture();
+  const plan = newItemPlan(fixture, 30);
+  const batchId = "github-single-ref-retries";
+  const rejectedMarkers = installMultiRefAndFirstSingleRefCommitRefsFailures(
+    fixture.origin,
+    batchId,
+  );
+
+  const result = withStateEnvironment(fixture.work, () =>
+    commitPreparedStateBatch({
+      batchId,
+      plans: [plan],
+    }),
+  );
+
+  assert.equal(result.outcome, "committed");
+  assert.equal(fs.existsSync(rejectedMarkers.receipt), true);
+  assert.equal(fs.existsSync(rejectedMarkers.renewal), true);
+  assert.equal(
+    git(fixture.origin, "show", "state:records/openclaw-openclaw/items/30.md"),
+    "item 30\n",
+  );
+  const receiptRef = `refs/heads/clawsweeper-state-batches/${createHash("sha256")
+    .update(batchId)
+    .digest("hex")}`;
+  assert.equal(
+    git(fixture.origin, "rev-parse", "state").trim(),
+    git(fixture.origin, "rev-parse", receiptRef).trim(),
+  );
+});
+
+test("a receipt created after lookup cannot be overwritten", () => {
+  const fixture = createRepositoryFixture();
+  const plan = newItemPlan(fixture, 29);
+  const batchId = "concurrent-receipt";
+  const receiptRef = `refs/heads/clawsweeper-state-batches/${createHash("sha256")
+    .update(batchId)
+    .digest("hex")}`;
+  const stateBefore = git(fixture.origin, "rev-parse", "state").trim();
+  const tree = git(fixture.origin, "rev-parse", "state^{tree}").trim();
+  const foreignReceipt = git(
+    fixture.work,
+    "commit-tree",
+    tree,
+    "-p",
+    stateBefore,
+    "-m",
+    "foreign receipt",
+  ).trim();
+
+  assert.throws(
+    () =>
+      withStateEnvironment(fixture.work, () =>
+        commitPreparedStateBatch({
+          batchId,
+          plans: [plan],
+          hooks: {
+            beforePush: () => {
+              git(fixture.work, "push", "origin", `${foreignReceipt}:${receiptRef}`);
+            },
+          },
+        }),
+      ),
+    /receipt .* changed before branch publication/,
+  );
+
+  assert.equal(git(fixture.origin, "rev-parse", receiptRef).trim(), foreignReceipt);
+  assert.equal(git(fixture.origin, "rev-parse", "state").trim(), stateBefore);
+  assert.equal(
+    git(fixture.origin, "show", "state:records/openclaw-openclaw/items/29.md", true),
+    "",
+  );
+});
+
+test("a prepared receipt resumes the same batch without a blind second state commit", () => {
+  const fixture = createRepositoryFixture();
+  const plan = newItemPlan(fixture, 26);
+  const before = git(fixture.origin, "rev-list", "--count", "state").trim();
+  installMultiRefAndFirstStateFailure(fixture.origin);
+
+  assert.throws(
+    () =>
+      withStateEnvironment(fixture.work, () =>
+        commitPreparedStateBatch({
+          batchId: "github-single-ref-resume",
+          plans: [plan],
+        }),
+      ),
+    /simulated state push failure/,
+  );
+
+  const receiptRef = `refs/heads/clawsweeper-state-batches/${createHash("sha256")
+    .update("github-single-ref-resume")
+    .digest("hex")}`;
+  assert.notEqual(git(fixture.origin, "rev-parse", receiptRef, true), "");
+  assert.equal(
+    git(fixture.origin, "show", "state:records/openclaw-openclaw/items/26.md", true),
+    "",
+  );
+
+  const recovered = withStateEnvironment(fixture.work, () =>
+    commitPreparedStateBatch({
+      batchId: "github-single-ref-resume",
+      plans: [plan],
+    }),
+  );
+
+  assert.equal(recovered.outcome, "committed");
+  assert.equal(
+    git(fixture.origin, "show", "state:records/openclaw-openclaw/items/26.md"),
+    "item 26\n",
+  );
+  assert.equal(
+    git(fixture.origin, "rev-list", "--count", "state").trim(),
+    String(Number(before) + 1),
+  );
+  assert.equal(
+    git(fixture.origin, "rev-parse", "state").trim(),
+    git(fixture.origin, "rev-parse", receiptRef).trim(),
+  );
+});
+
+test("a prepared receipt resumes from a fresh shallow state checkout", () => {
+  const fixture = createRepositoryFixture();
+  const plan = newItemPlan(fixture, 28);
+  installMultiRefAndFirstStateFailure(fixture.origin);
+
+  assert.throws(
+    () =>
+      withStateEnvironment(fixture.work, () =>
+        commitPreparedStateBatch({
+          batchId: "github-single-ref-shallow-resume",
+          plans: [plan],
+        }),
+      ),
+    /simulated state push failure/,
+  );
+
+  const shallow = path.join(fixture.root, "shallow-retry");
+  git(fixture.root, "clone", "--depth=1", "--branch", "state", `file://${fixture.origin}`, shallow);
+  configureUser(shallow);
+  const transferredBlob = path.join(fixture.root, "transferred-item-28.md");
+  fs.writeFileSync(transferredBlob, "item 28\n");
+  assert.equal(
+    git(shallow, "hash-object", "-w", transferredBlob).trim(),
+    plan.operations[0]?.targetOid,
+  );
+
+  const recovered = withStateEnvironment(shallow, () =>
+    commitPreparedStateBatch({
+      batchId: "github-single-ref-shallow-resume",
+      plans: [plan],
+    }),
+  );
+
+  assert.equal(recovered.outcome, "committed");
+  assert.equal(
+    git(fixture.origin, "show", "state:records/openclaw-openclaw/items/28.md"),
+    "item 28\n",
+  );
+});
+
+test("a prepared receipt fails closed when state advances before retry", () => {
+  const fixture = createRepositoryFixture();
+  const plan = newItemPlan(fixture, 27);
+  installMultiRefAndFirstStateFailure(fixture.origin);
+
+  assert.throws(
+    () =>
+      withStateEnvironment(fixture.work, () =>
+        commitPreparedStateBatch({
+          batchId: "github-single-ref-drift",
+          plans: [plan],
+        }),
+      ),
+    /simulated state push failure/,
+  );
+
+  publishSibling(fixture, "results/intervening.json", '{"writer":"ordinary"}\n');
+
+  assert.throws(
+    () =>
+      withStateEnvironment(fixture.work, () =>
+        commitPreparedStateBatch({
+          batchId: "github-single-ref-drift",
+          plans: [plan],
+        }),
+      ),
+    (error: unknown) =>
+      error instanceof StateMutationConflictError &&
+      /prepared receipt.*state advanced/i.test(error.message),
+  );
+  assert.equal(
+    git(fixture.origin, "show", "state:results/intervening.json"),
+    '{"writer":"ordinary"}\n',
+  );
+  assert.equal(
+    git(fixture.origin, "show", "state:records/openclaw-openclaw/items/27.md", true),
+    "",
   );
 });
 
@@ -309,7 +576,7 @@ test("a reused batch id cannot acknowledge a different mutation payload", () => 
   );
 });
 
-test("batch receipt recovery remains durable beyond 256 newer state commits", () => {
+test("batch receipt recovery deepens past 512 newer commits in a fresh shallow checkout", () => {
   const fixture = createRepositoryFixture();
   const plan = newItemPlan(fixture, 20);
   const committed = withStateEnvironment(fixture.work, () =>
@@ -322,7 +589,7 @@ test("batch receipt recovery remains durable beyond 256 newer state commits", ()
   let parent = git(sibling, "rev-parse", "HEAD").trim();
   // Only ancestry depth matters here. Plumbing commits avoid Git auto-maintenance
   // racing hundreds of disposable worktree/index updates on shared CI runners.
-  for (let index = 0; index < 300; index += 1) {
+  for (let index = 0; index < 700; index += 1) {
     parent = git(
       sibling,
       "commit-tree",
@@ -335,7 +602,10 @@ test("batch receipt recovery remains durable beyond 256 newer state commits", ()
   }
   git(sibling, "push", "origin", `${parent}:state`);
 
-  const recovered = withStateEnvironment(fixture.work, () =>
+  const shallow = path.join(fixture.root, "receipt-history-shallow");
+  git(fixture.root, "clone", "--depth=1", "--branch", "state", `file://${fixture.origin}`, shallow);
+  configureUser(shallow);
+  const recovered = withStateEnvironment(shallow, () =>
     commitPreparedStateBatch({ batchId: "durable-receipt", plans: [plan] }),
   );
 
@@ -579,6 +849,117 @@ function publishSibling(fixture: RepositoryFixture, file: string, content: strin
   git(sibling, "push", "origin", "HEAD:state");
 }
 
+function installMultiRefCommitRefsFailure(origin: string): void {
+  const hook = path.join(origin, "hooks", "pre-receive");
+  fs.writeFileSync(
+    hook,
+    [
+      "#!/bin/sh",
+      "count=0",
+      "while read -r old_oid new_oid ref_name; do",
+      "  count=$((count + 1))",
+      "done",
+      'if [ "$count" -ge 2 ]; then',
+      '  echo "fatal error in commit_refs" >&2',
+      "  exit 1",
+      "fi",
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
+  fs.chmodSync(hook, 0o755);
+}
+
+function installMultiRefAndFirstSingleRefCommitRefsFailures(
+  origin: string,
+  batchId: string,
+): { receipt: string; renewal: string } {
+  const hook = path.join(origin, "hooks", "pre-receive");
+  const rejectedReceiptMarker = path.join(origin, "hooks", "rejected-receipt-once");
+  const rejectedRenewalMarker = path.join(origin, "hooks", "rejected-lease-renewal-once");
+  const receiptRef = `refs/heads/clawsweeper-state-batches/${createHash("sha256")
+    .update(batchId)
+    .digest("hex")}`;
+  fs.writeFileSync(
+    hook,
+    [
+      "#!/bin/sh",
+      "count=0",
+      'only_old_oid=""',
+      'only_new_oid=""',
+      'only_ref=""',
+      "while read -r old_oid new_oid ref_name; do",
+      "  count=$((count + 1))",
+      '  only_old_oid="$old_oid"',
+      '  only_new_oid="$new_oid"',
+      '  only_ref="$ref_name"',
+      "done",
+      'if [ "$count" -ge 2 ]; then',
+      '  echo "fatal error in commit_refs" >&2',
+      "  exit 1",
+      "fi",
+      `if [ "$only_ref" = "${receiptRef}" ] && [ ! -f '${rejectedReceiptMarker}' ]; then`,
+      `  touch '${rejectedReceiptMarker}'`,
+      '  echo "fatal error in commit_refs" >&2',
+      "  exit 1",
+      "fi",
+      'case "$only_old_oid" in',
+      "  *[!0]*) old_oid_is_zero=0 ;;",
+      "  *) old_oid_is_zero=1 ;;",
+      "esac",
+      'case "$only_new_oid" in',
+      "  *[!0]*) new_oid_is_zero=0 ;;",
+      "  *) new_oid_is_zero=1 ;;",
+      "esac",
+      'if [ "$only_ref" = "refs/heads/clawsweeper-publish-lease/state" ] &&',
+      '   [ "$old_oid_is_zero" -eq 0 ] && [ "$new_oid_is_zero" -eq 0 ]; then',
+      `  if ! git --git-dir='${origin}' show-ref --verify --quiet '${receiptRef}'; then`,
+      '    echo "lease renewal occurred before receipt publication" >&2',
+      "    exit 1",
+      "  fi",
+      `  if [ ! -f '${rejectedRenewalMarker}' ]; then`,
+      `    touch '${rejectedRenewalMarker}'`,
+      '    echo "fatal error in commit_refs" >&2',
+      "    exit 1",
+      "  fi",
+      "fi",
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
+  fs.chmodSync(hook, 0o755);
+  return { receipt: rejectedReceiptMarker, renewal: rejectedRenewalMarker };
+}
+
+function installMultiRefAndFirstStateFailure(origin: string): void {
+  const hook = path.join(origin, "hooks", "pre-receive");
+  const rejectedStateMarker = path.join(origin, "hooks", "rejected-state-once");
+  fs.writeFileSync(
+    hook,
+    [
+      "#!/bin/sh",
+      "count=0",
+      'only_ref=""',
+      "while read -r old_oid new_oid ref_name; do",
+      "  count=$((count + 1))",
+      '  only_ref="$ref_name"',
+      "done",
+      'if [ "$count" -ge 2 ]; then',
+      '  echo "fatal error in commit_refs" >&2',
+      "  exit 1",
+      "fi",
+      `if [ "$only_ref" = "refs/heads/state" ] && [ ! -f '${rejectedStateMarker}' ]; then`,
+      `  touch '${rejectedStateMarker}'`,
+      '  echo "simulated state push failure" >&2',
+      "  exit 1",
+      "fi",
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
+  fs.chmodSync(hook, 0o755);
+}
+
 function configureUser(root: string): void {
   git(root, "config", "user.name", "ClawSweeper Test");
   git(root, "config", "user.email", "clawsweeper@example.com");
@@ -596,6 +977,23 @@ function withStateEnvironment<T>(work: string, operation: () => T): T {
     else process.env.CLAWSWEEPER_STATE_DIR = previousDir;
     if (previousBranch === undefined) delete process.env.CLAWSWEEPER_PUBLISH_BRANCH;
     else process.env.CLAWSWEEPER_PUBLISH_BRANCH = previousBranch;
+  }
+}
+
+function withProcessEnv<T>(values: Record<string, string | undefined>, operation: () => T): T {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(values)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return operation();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 }
 

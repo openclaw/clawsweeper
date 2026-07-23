@@ -61,6 +61,7 @@
     "repair:spam-comment-intake": "node dist/repair/spam-comment-intake.js",
     "repair:spam-scan": "node dist/repair/spam-scanner.js",
     "repair:exact-review-bundle": "node dist/repair/exact-review-bundle-cli.js",
+    "repair:exact-review-queue-maintenance": "node dist/repair/exact-review-queue-maintenance.js",
     "repair:exact-review-batch": "node dist/repair/exact-review-batch-cli.js",
     "proof:state-publication-batching": "node scripts/state-publication-batching-proof.mjs",
     "repair:publish-event-result": "node dist/repair/publish-event-result.js",

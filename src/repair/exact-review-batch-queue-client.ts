@@ -15,12 +15,24 @@ export type ExactReviewBatchLease = {
   items: ExactReviewBatchMember[];
 };
 
-export type ExactReviewBatchClaim = ExactReviewBatchLease & { batchWaitMs: number };
+export type ExactReviewBatchClaim = ExactReviewBatchLease & {
+  configuredBatchSize: number;
+  batchWaitMs: number;
+};
 
 export type ExactReviewBatchFetch = {
   batch: ExactReviewBatchLease;
   items: ExactReviewBatchQueueItem[];
   superseded: number;
+};
+
+export type ExactReviewPublicationReconcileResult = {
+  apply: boolean;
+  scanned: number;
+  eligible: number;
+  changed: number;
+  eligibleRemaining: number;
+  protectedBatchItems: number;
 };
 
 export interface ExactReviewBatchQueue {
@@ -72,8 +84,20 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
       max_items: input.maxItems,
     });
     if (response.claimed !== true) return null;
+    const batch = parseLease(response.batch);
+    const legacyConfiguredBatchSize =
+      response.effective_max_items !== undefined
+        ? positiveInteger(response.effective_max_items, "effective_max_items")
+        : input.maxItems;
     return {
-      ...parseLease(response.batch),
+      ...batch,
+      // During a rolling dashboard deploy, current-main workers advertise the cap
+      // under effective_max_items. On rollback, an older worker can return a lease
+      // created at a larger cap, so its membership is also a safe lower bound.
+      configuredBatchSize:
+        response.configured_batch_size !== undefined
+          ? positiveInteger(response.configured_batch_size, "configured_batch_size")
+          : Math.max(legacyConfiguredBatchSize, batch.items.length),
       batchWaitMs: nonNegativeInteger(response.batch_wait_ms, "batch_wait_ms"),
     };
   }
@@ -110,6 +134,24 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
     return parseLease(response.batch);
   }
 
+  async reconcilePublications(input: { apply: boolean; maxItems: number }) {
+    const response = await this.postUrl("/internal/exact-review/publications/reconcile", {
+      apply: input.apply,
+      max_items: input.maxItems,
+    });
+    return {
+      apply: response.apply === true,
+      scanned: nonNegativeInteger(response.scanned, "scanned"),
+      eligible: nonNegativeInteger(response.eligible, "eligible"),
+      changed: nonNegativeInteger(response.changed, "changed"),
+      eligibleRemaining: nonNegativeInteger(response.eligible_remaining, "eligible_remaining"),
+      protectedBatchItems: nonNegativeInteger(
+        response.protected_batch_items,
+        "protected_batch_items",
+      ),
+    } satisfies ExactReviewPublicationReconcileResult;
+  }
+
   async complete(input: {
     batchId: string;
     leaseOwner: string;
@@ -144,20 +186,24 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
     path: string,
     payload: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
+    return this.postUrl(`/internal/exact-review/publication-batches/${path}`, payload);
+  }
+
+  private async postUrl(
+    path: string,
+    payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
     const body = JSON.stringify(payload);
     const signature = `sha256=${createHmac("sha256", this.webhookSecret).update(body).digest("hex")}`;
-    const response = await this.request(
-      `${this.baseUrl}/internal/exact-review/publication-batches/${path}`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-clawsweeper-exact-review-signature": signature,
-        },
-        body,
-        signal: AbortSignal.timeout(20_000),
+    const response = await this.request(`${this.baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-clawsweeper-exact-review-signature": signature,
       },
-    );
+      body,
+      signal: AbortSignal.timeout(20_000),
+    });
     const text = await response.text();
     let parsed: unknown;
     try {

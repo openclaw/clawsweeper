@@ -32,6 +32,7 @@ export type PublicationBatch = {
   state: "leased" | "completed" | "expired";
   leaseOwner: string;
   leaseExpiresAt: number;
+  configuredBatchSize: number;
   attempt: number;
   createdAt: number;
   completedAt: number | null;
@@ -79,6 +80,7 @@ export class ExactReviewPublicationBatchStore {
          state TEXT NOT NULL CHECK (state IN ('leased', 'completed', 'expired')),
          lease_owner TEXT NOT NULL,
          lease_expires_at INTEGER NOT NULL,
+         configured_batch_size INTEGER NOT NULL DEFAULT 1 CHECK (configured_batch_size >= 1),
          attempt INTEGER NOT NULL CHECK (attempt >= 1),
          created_at INTEGER NOT NULL,
          completed_at INTEGER,
@@ -86,6 +88,20 @@ export class ExactReviewPublicationBatchStore {
          failure_fingerprint TEXT
        ) STRICT`,
     );
+    const batchColumns = new Set(
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}')`,
+        ),
+      ).map((row) => String(row.name || "")),
+    );
+    if (!batchColumns.has("configured_batch_size")) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
+           ADD COLUMN configured_batch_size INTEGER NOT NULL DEFAULT 1
+             CHECK (configured_batch_size >= 1)`,
+      );
+    }
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE} (
          batch_id TEXT NOT NULL,
@@ -120,6 +136,16 @@ export class ExactReviewPublicationBatchStore {
          item_key TEXT PRIMARY KEY,
          claim_generation INTEGER NOT NULL CHECK (claim_generation >= 1)
        ) STRICT`,
+    );
+    // Pre-column leases cannot recover their original configured cap. Use their
+    // durable membership count as the smallest safe telemetry denominator.
+    this.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
+          SET configured_batch_size = MAX(
+            configured_batch_size,
+            (SELECT COUNT(*) FROM ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE}
+              WHERE batch_id = ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}.batch_id)
+          )`,
     );
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_PUBLICATION_BATCH_GENERATION_TABLE}
@@ -161,11 +187,13 @@ export class ExactReviewPublicationBatchStore {
       if (activeBatch) return null;
       this.storage.sql.exec(
         `INSERT INTO ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
-           (batch_id, state, lease_owner, lease_expires_at, attempt, created_at)
-         VALUES (?, 'leased', ?, ?, 1, ?)`,
+           (batch_id, state, lease_owner, lease_expires_at, configured_batch_size,
+            attempt, created_at)
+         VALUES (?, 'leased', ?, ?, ?, 1, ?)`,
         input.batchId,
         input.leaseOwner,
         input.leaseExpiresAt,
+        input.maxItems,
         input.now,
       );
       for (const candidate of input.candidates) {
@@ -475,7 +503,7 @@ export class ExactReviewPublicationBatchStore {
     const row = Array.from(
       this.storage.sql.exec(
         `SELECT batch_id, state, lease_owner, lease_expires_at, attempt, created_at,
-                completed_at, state_commit_sha, failure_fingerprint
+                configured_batch_size, completed_at, state_commit_sha, failure_fingerprint
            FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE} WHERE batch_id = ?`,
         batchId,
       ),
@@ -503,6 +531,7 @@ export class ExactReviewPublicationBatchStore {
       state: row.state as PublicationBatch["state"],
       leaseOwner: String(row.lease_owner),
       leaseExpiresAt: Number(row.lease_expires_at),
+      configuredBatchSize: Number(row.configured_batch_size),
       attempt: Number(row.attempt),
       createdAt: Number(row.created_at),
       completedAt: row.completed_at === null ? null : Number(row.completed_at),

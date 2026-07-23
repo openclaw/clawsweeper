@@ -1,0 +1,44 @@
+name: Create ClawSweeper target write token
+description: Mint a GitHub App token for an apply target and record when its lifetime began.
+inputs:
+  client-id:
+    description: GitHub App client ID.
+    required: true
+  private-key:
+    description: GitHub App private key.
+    required: true
+  owner:
+    description: Target repository owner.
+    required: true
+  repository:
+    description: Target repository name.
+    required: true
+outputs:
+  token:
+    description: GitHub App installation token for the target repository.
+    value: ${{ steps.target-token.outputs.token }}
+  minted-at-ms:
+    description: Unix timestamp in milliseconds captured immediately after the token was minted.
+    value: ${{ steps.minted-at.outputs.milliseconds }}
+runs:
+  using: composite
+  steps:
+    - name: Create target repository token
+      id: target-token
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      with:
+        client-id: ${{ inputs.client-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: ${{ inputs.owner }}
+        repositories: ${{ inputs.repository }}
+        permission-actions: read
+        permission-checks: read
+        permission-contents: write
+        permission-issues: write
+        permission-pull-requests: write
+        permission-statuses: read
+
+    - name: Record token mint time
+      id: minted-at
+      shell: bash
+      run: echo "milliseconds=$(node -e 'process.stdout.write(String(Date.now()))')" >> "$GITHUB_OUTPUT"

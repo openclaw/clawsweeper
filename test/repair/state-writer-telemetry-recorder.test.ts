@@ -57,6 +57,28 @@ test("state writer recorder isolates progress observer failures", () => {
   assert.equal(recorder.toTerminalObject()?.acquired, false);
 });
 
+test("an acquired batch writer reports a push failure without losing its batch identity", () => {
+  const recorder = new StateWriterTelemetryRecorder({
+    mode: "batch",
+    operationId: "batch:exact-review-batch:123",
+    configuredBatchSize: 8,
+    actualBatchSize: 8,
+    batchWaitMs: 500,
+  });
+
+  recorder.enteredWaiting();
+  recorder.recordAcquireAttempt();
+  recorder.acquiredLease();
+  recorder.enteredReleasing();
+  recorder.releasedLease(true);
+  const terminal = recorder.finalize("contention_timeout");
+
+  assert.equal(terminal.mode, "batch");
+  assert.equal(terminal.operation_id, "batch:exact-review-batch:123");
+  assert.equal(terminal.outcome, "failed");
+  assert.equal(terminal.acquired, true);
+});
+
 test("state writer recorder refreshes waiting progress during long acquisition", () => {
   let now = 1_000;
   const phases: Array<{ phase: string; at: number }> = [];

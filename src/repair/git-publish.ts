@@ -42,6 +42,18 @@ import {
   stateWriterCoordinatorEnabled,
   type StateWriterCoordinatorGuard,
 } from "./state-writer-coordinator.js";
+import {
+  buildRecoveryFailureContext,
+  executeRecoveryActions,
+  modelRecoveryConfigured,
+  recordRecoveryOutcome,
+  requestRecoveryAdvice,
+  publicDiagnosisSummary,
+  type RecoveryActionHandlers,
+  type RecoveryActionName,
+  type RecoveryAdvice,
+  type RecoveryExecution,
+} from "./recovery-advisor.js";
 
 export type GitRunResult = {
   status: number;
@@ -100,8 +112,22 @@ const PUBLISH_FETCH_TIMEOUT_MS = 60_000;
 // one-time repairs but move far more data than an ordinary publish fetch; a
 // 60s budget times out on the grown state repo (prod run 29745570319).
 const RECOVERY_FETCH_TIMEOUT_MS = 300_000;
+// Branch pushes move materializer-sized batches and must outlast them, but a
+// push with no timeout turns a stalled transport into a silent hang that only
+// the job timeout can end.
+const PUBLISH_PUSH_TIMEOUT_MS = 300_000;
 const STATE_PUBLISH_LEASE_REF_ROOT = "refs/heads/clawsweeper-publish-lease";
-const STATE_PUBLISH_LEASE_TTL_MS = 2 * 60_000;
+// A small publish renews well inside two minutes, but a materializer batch of
+// thousands of paths stages and pushes for longer than that and loses the lease
+// mid-publish. Writers that move large batches raise this deliberately.
+const STATE_PUBLISH_LEASE_TTL_MS = (() => {
+  const fallback = 2 * 60_000;
+  const configured = Number(process.env.CLAWSWEEPER_STATE_LEASE_TTL_MS);
+  if (Number.isInteger(configured) && configured > fallback) {
+    return Math.min(configured, 30 * 60_000);
+  }
+  return fallback;
+})();
 const STATE_PUBLISH_LEASE_RENEW_THRESHOLD_MS = PUBLISH_FETCH_TIMEOUT_MS;
 const STATE_PUBLISH_LEASE_ACQUIRE_TIMEOUT_MS = (() => {
   const fallback = 8 * 60_000;
@@ -116,6 +142,7 @@ const STATE_PUBLISH_LEASE_ACQUIRE_TIMEOUT_MS = (() => {
 })();
 const STATE_PUBLISH_LEASE_WAIT_MS = 1_000;
 const STATE_PUBLISH_LEASE_MAX_WAIT_MS = 5_000;
+const STATE_PUBLISH_COMMIT_REFS_SINGLE_REF_ATTEMPTS = 3;
 const STATE_PUBLISH_PRIORITY_INTENT_ATTEMPT = 2;
 const STATE_PUBLISH_PRIORITY_INTENT_MAX_TTL_MS = 5 * 60_000;
 const STATE_PUBLISH_OWNER_PATTERN =
@@ -443,7 +470,11 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
     `paths=${uniqueNonEmpty(options.paths).length} strategy=${rebaseStrategy}`,
   );
   prepareReconciliationStateRoot(remote, branch, rebaseStrategy);
+  // Baseline before the head sync: the source-refresh diff below must span the
+  // remote commits this checkout had not seen yet, and the sync collapses them
+  // into the new HEAD.
   const stateBaseCommit = captureStatePublishBaseline();
+  syncStatePublishBaseToRemoteHead(remote, branch, rebaseStrategy);
 
   syncPublishPaths(options.paths, { rebaseStrategy });
   configureGitUser();
@@ -597,6 +628,8 @@ function pushImmutableActionLedgerCommit(options: {
   const protectedWorktreePaths = captureDirtyWorktreePaths();
   let candidateCommit = options.sourceCommit;
   let unavailableObjectRecoveryUsed = false;
+  let modelPushRecoveryConsulted = false;
+  const modelPushAttemptHistory: string[] = [];
   const verifiedSourceObjectIds = new Set<string>();
   for (let attempt = 1; attempt <= pushBudget; attempt += 1) {
     const pushArgs = ["push", options.remote, `${candidateCommit}:${options.branch}`];
@@ -640,8 +673,45 @@ function pushImmutableActionLedgerCommit(options: {
       });
       return "committed";
     }
+    modelPushAttemptHistory.push(gitFailureSummary(pushResult));
+    let modelRequestedRebuild = false;
+    let modelRequestedRebuildAdvice: RecoveryAdvice | null = null;
+    // Same contract as the branch loop: deterministic rebuild attempts first,
+    // the advisor only for what remains after they are spent.
+    if (!modelPushRecoveryConsulted && attempt === pushBudget) {
+      modelPushRecoveryConsulted = true;
+      const recovery = modelGuidedPushRecovery({
+        phase: "push_immutable_action_ledger",
+        failure: pushResult,
+        remote: options.remote,
+        branch: options.branch,
+        recentAttempts: modelPushAttemptHistory,
+        allowRebuildOnRemoteHead: true,
+      });
+      if (recovery?.directive === "retry_push") {
+        if (activeStatePublishLease) {
+          renewStatePublishLease(activeStatePublishLease, "before model-guided retry");
+        }
+        pushResult = pushPublishedCommit(candidateCommit, options.remote, options.branch);
+        if (pushResult.status === 0) {
+          recordRecoveryOutcome(recovery.advice, "retry_push_succeeded");
+          finalizeImmutableActionLedgerCheckout({
+            previousCommit,
+            publishedCommit: candidateCommit,
+            paths: options.paths,
+            protectedWorktreePaths,
+          });
+          return "committed";
+        }
+        recordRecoveryOutcome(recovery.advice, "retry_push_failed");
+      }
+      if (recovery?.directive === "rebuild_on_remote_head") {
+        modelRequestedRebuild = true;
+        modelRequestedRebuildAdvice = recovery.advice;
+      }
+    }
     const stateRepository = immutableLedgerStateRepository();
-    if (attempt === 1 && stateRepository) {
+    if (!modelRequestedRebuild && attempt === 1 && stateRepository) {
       const publishedCommit = mergeImmutableActionLedgerOnGitHub({
         remote: options.remote,
         branch: options.branch,
@@ -676,17 +746,36 @@ function pushImmutableActionLedgerCommit(options: {
         verifiedSourceObjectIds,
       });
     } catch (error) {
-      if (unavailableObjectRecoveryUsed || unavailableGitObjectIds(error).length === 0) throw error;
+      if (unavailableObjectRecoveryUsed || unavailableGitObjectIds(error).length === 0) {
+        if (modelRequestedRebuildAdvice) {
+          recordRecoveryOutcome(modelRequestedRebuildAdvice, "rebuild_on_remote_head_failed", {
+            error,
+          });
+        }
+        throw error;
+      }
       recoverUnavailableGitObjects(options.remote, options.branch, error);
       unavailableObjectRecoveryUsed = true;
-      rebuilt = rebuildImmutableActionLedgerCommit({
-        remote: options.remote,
-        branch: options.branch,
-        message: options.message,
-        paths: options.paths,
-        sourceCommit: options.sourceCommit,
-        verifiedSourceObjectIds,
-      });
+      try {
+        rebuilt = rebuildImmutableActionLedgerCommit({
+          remote: options.remote,
+          branch: options.branch,
+          message: options.message,
+          paths: options.paths,
+          sourceCommit: options.sourceCommit,
+          verifiedSourceObjectIds,
+        });
+      } catch (recoveryError) {
+        if (modelRequestedRebuildAdvice) {
+          recordRecoveryOutcome(modelRequestedRebuildAdvice, "rebuild_on_remote_head_failed", {
+            error: recoveryError,
+          });
+        }
+        throw recoveryError;
+      }
+    }
+    if (modelRequestedRebuildAdvice) {
+      recordRecoveryOutcome(modelRequestedRebuildAdvice, "rebuild_on_remote_head_succeeded");
     }
     candidateCommit = rebuilt.commit;
     if (rebuilt.result === "unchanged") {
@@ -725,6 +814,40 @@ function recoverUnavailableGitObjects(remote: string, branch: string, failure: u
   }
   requireNoLazyFetchSupport();
   console.log(`Recovering ${objectIds.length} unavailable Git object(s) from ${remote}`);
+  if (modelRecoveryConfigured()) {
+    const shallow = isShallowRepository();
+    const attempt = executeModelRecovery({
+      phase: "recover_unavailable_git_objects",
+      failure,
+      shallow,
+      remote,
+      branch,
+      recentAttempts: objectIds.map((objectId) => `unavailable_object:${objectId}`),
+      availableActions: [
+        "fetch_object",
+        "refetch_depth1",
+        "deepen",
+        "unshallow",
+        "defer_to_next_run",
+        "give_up",
+      ],
+      handlers: gitFetchRecoveryHandlers(remote, branch, {
+        deferToNextRun: () => {},
+        giveUp: () => {},
+      }),
+    });
+    if (attempt) {
+      throwForModelRecoveryDirective(attempt.advice, attempt.execution);
+      if (gitObjectIdsAvailable(objectIds)) {
+        recordRecoveryOutcome(attempt.advice, "objects_recovered");
+        return;
+      }
+      recordRecoveryOutcome(attempt.advice, "verification_failed");
+      console.warn(
+        "Model-guided Git object recovery did not restore every object; using deterministic fallback",
+      );
+    }
+  }
   for (const objectId of objectIds) {
     spawnBoundedFetch(["fetch", remote, objectId], PUBLISH_FETCH_TIMEOUT_MS);
   }
@@ -836,6 +959,7 @@ function mergeImmutableActionLedgerOnGitHub(options: {
       if (
         spawnGit(["push", options.remote, `${options.sourceCommit}:${temporaryRef}`], {
           displayArgs: ["push", options.remote, `<commit>:${temporaryRef}`],
+          timeout: PUBLISH_PUSH_TIMEOUT_MS,
         }).status === 0
       ) {
         pushed = true;
@@ -1049,6 +1173,56 @@ function mergeBaseWithShallowRecovery(
     return { base: null, recoveredShallowMiss: false };
   }
 
+  if (modelRecoveryConfigured()) {
+    const attempt = executeModelRecovery({
+      phase: "merge_base_shallow_recovery",
+      failure: gitRunError(result, args),
+      shallow: true,
+      remote,
+      branch,
+      recentAttempts: [`merge_base:${left}:${right}:status=${result.status}`],
+      availableActions: [
+        "refetch_depth1",
+        "deepen",
+        "unshallow",
+        "rebuild_on_remote_head",
+        "defer_to_next_run",
+        "give_up",
+      ],
+      handlers: gitFetchRecoveryHandlers(remote, branch, {
+        rebuildOnRemoteHead: () => {},
+        deferToNextRun: () => {},
+        giveUp: () => {},
+      }),
+    });
+    if (attempt) {
+      throwForModelRecoveryDirective(attempt.advice, attempt.execution);
+      if (attempt.execution.directive === "rebuild_on_remote_head") {
+        recordRecoveryOutcome(attempt.advice, "rebuild_on_remote_head_selected");
+        return { base: null, recoveredShallowMiss: true };
+      }
+      result = spawnGit(args, { quiet: true });
+      if (result.status === 0) {
+        recordRecoveryOutcome(attempt.advice, "merge_base_recovered");
+        return { base: result.stdout.trim(), recoveredShallowMiss: true };
+      }
+      if (result.status !== 1) {
+        recordRecoveryOutcome(attempt.advice, "verification_failed", {
+          error: gitRunError(result, args),
+        });
+        throw gitRunError(result, args);
+      }
+      if (!isShallowRepository()) {
+        recordRecoveryOutcome(attempt.advice, "history_hydrated_no_merge_base");
+        return { base: null, recoveredShallowMiss: true };
+      }
+      recordRecoveryOutcome(attempt.advice, "verification_failed");
+      console.warn(
+        "Model-guided shallow recovery did not find a merge base; using deterministic fallback",
+      );
+    }
+  }
+
   const deepenArgs = ["fetch", "--deepen=32", remote, branch];
   const deepen = spawnGit(deepenArgs, {
     quiet: true,
@@ -1113,6 +1287,37 @@ function prepareReconciliationStateRoot(
   }
   console.log("Discarding an unpublished reconciliation checkpoint before retry");
   runGit(["reset", "--hard", semanticBase.base ?? remoteRef]);
+}
+
+function syncStatePublishBaseToRemoteHead(
+  remote: string,
+  branch: string,
+  rebaseStrategy: RebaseStrategy,
+): void {
+  const stateRoot = publishRoot();
+  if (
+    rebaseStrategy === "reconcile-records" ||
+    !stateRoot ||
+    resolve(stateRoot) === resolve(process.cwd())
+  ) {
+    return;
+  }
+  // A publish can wait tens of minutes for its writer ticket while other
+  // writers advance the remote branch — or the compaction cron force-rewrites
+  // it, leaving no common ancestor at all (observed: run 29996334590 built a
+  // commit on a 34-minute-stale base and died on "fetch first"). The pending
+  // content lives in the source checkout and is copied (or merged) into the
+  // state root afterwards, so the checkout itself carries nothing worth
+  // keeping: reset it to the live head so both the commit base and the merge
+  // inputs are current, without needing any common ancestor.
+  fetchPublishRemote(remote, branch);
+  const remoteRef = `${remote}/${branch}`;
+  const remoteCommit = spawnGit(["rev-parse", remoteRef], { quiet: true });
+  if (remoteCommit.status !== 0) return;
+  const localCommit = runGit(["rev-parse", "HEAD"], { quiet: true }).trim();
+  if (remoteCommit.stdout.trim() === localCommit) return;
+  console.log(`Rebasing the state publish base onto the live ${remoteRef} head`);
+  runGit(["reset", "--hard", remoteRef]);
 }
 
 function reconciliationTupleKeysForCommit(sourceCommit: string): string[] {
@@ -2079,42 +2284,57 @@ function releaseStatePublishLease(lease: StatePublishLease): boolean {
   }
 }
 
-function renewStatePublishLease(lease: StatePublishLease, reason: string): void {
-  lease.coordinator?.assertActive();
-  const renewedOid = createStatePublishLeaseCommit({
-    branch: lease.branch,
-    owner: lease.owner,
-    ttlMs: lease.ttlMs,
-    coordinator: lease.coordinator,
-  });
-  lease.cleanup?.track(renewedOid);
-  const renewed = spawnGit(
-    [
-      "push",
-      `--force-with-lease=${lease.ref}:${lease.oid}`,
-      lease.remote,
-      `${renewedOid}:${lease.ref}`,
-    ],
-    { allowFailure: true, quiet: true, timeout: PUBLISH_FETCH_TIMEOUT_MS },
-  );
-  if (renewed.timedOut) {
-    throw new GitCommandTimeoutError(["push"], PUBLISH_FETCH_TIMEOUT_MS);
-  }
-  if (renewed.status !== 0) {
-    const currentLeaseOid = remoteRefOid(lease.remote, lease.ref);
-    if (currentLeaseOid !== renewedOid) {
-      if (currentLeaseOid !== lease.oid) {
-        throw new StatePublishContentionError(
-          `State publish lease ownership changed while renewing ${reason}`,
-        );
-      }
-      throw new StatePublishContentionError(`Failed to renew state publish lease ${reason}`);
+function renewStatePublishLease(
+  lease: StatePublishLease,
+  reason: string,
+  options: { commitRefsAttempts?: number } = {},
+): void {
+  const attempts = Math.max(1, options.commitRefsAttempts ?? 1);
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    lease.coordinator?.assertActive();
+    const renewedOid = createStatePublishLeaseCommit({
+      branch: lease.branch,
+      owner: lease.owner,
+      ttlMs: lease.ttlMs,
+      coordinator: lease.coordinator,
+    });
+    lease.cleanup?.track(renewedOid);
+    const renewed = spawnGit(
+      [
+        "push",
+        `--force-with-lease=${lease.ref}:${lease.oid}`,
+        lease.remote,
+        `${renewedOid}:${lease.ref}`,
+      ],
+      { allowFailure: true, quiet: true, timeout: PUBLISH_FETCH_TIMEOUT_MS },
+    );
+    if (renewed.timedOut) {
+      throw new GitCommandTimeoutError(["push"], PUBLISH_FETCH_TIMEOUT_MS);
     }
+    if (renewed.status !== 0) {
+      const currentLeaseOid = remoteRefOid(lease.remote, lease.ref);
+      if (currentLeaseOid !== renewedOid) {
+        if (currentLeaseOid !== lease.oid) {
+          throw new StatePublishContentionError(
+            `State publish lease ownership changed while renewing ${reason}`,
+          );
+        }
+        if (attempt < attempts && isCommitRefsTransactionFailure(renewed)) {
+          console.log(
+            `State publish lease renewal hit GitHub commit_refs ${reason}; retrying attempt=${attempt + 1}/${attempts}`,
+          );
+          sleep(Math.min(STATE_PUBLISH_LEASE_WAIT_MS * attempt, STATE_PUBLISH_LEASE_MAX_WAIT_MS));
+          continue;
+        }
+        throw new StatePublishContentionError(`Failed to renew state publish lease ${reason}`);
+      }
+    }
+    lease.oid = renewedOid;
+    lease.expiresAtMs = Date.now() + lease.ttlMs;
+    activeStateWriterTelemetry?.recordRenewal();
+    console.log(`Renewed state publish lease owner=${lease.owner} ${reason}`);
+    return;
   }
-  lease.oid = renewedOid;
-  lease.expiresAtMs = Date.now() + lease.ttlMs;
-  activeStateWriterTelemetry?.recordRenewal();
-  console.log(`Renewed state publish lease owner=${lease.owner} ${reason}`);
 }
 
 function remoteRefOid(remote: string, ref: string): string | null {
@@ -2161,6 +2381,13 @@ function pushPublishedCommit(
     renewStatePublishLease(lease, "before branch publication");
   }
   lease.coordinator?.assertActive();
+  const sourceCommit = receiptRef ? runGit(["rev-parse", source], { quiet: true }).trim() : null;
+  const expectedReceiptOid = receiptRef ? remoteRefOid(remote, receiptRef) : null;
+  if (receiptRef && expectedReceiptOid && expectedReceiptOid !== sourceCommit) {
+    throw new StatePublishContentionError(
+      `State batch receipt ${receiptRef} changed before branch publication`,
+    );
+  }
 
   const renewedOid = createStatePublishLeaseCommit({
     branch: lease.branch,
@@ -2174,21 +2401,21 @@ function pushPublishedCommit(
       "push",
       "--atomic",
       `--force-with-lease=${lease.ref}:${lease.oid}`,
-      ...(receiptRef ? [`--force-with-lease=${receiptRef}:`] : []),
+      ...(receiptRef ? [`--force-with-lease=${receiptRef}:${expectedReceiptOid ?? ""}`] : []),
       lease.remote,
       `${source}:${branch}`,
       `${renewedOid}:${lease.ref}`,
       ...(receiptRef ? [`${source}:${receiptRef}`] : []),
     ],
-    { allowFailure: true },
+    { allowFailure: true, timeout: PUBLISH_PUSH_TIMEOUT_MS },
   );
   if (pushed.status !== 0) {
     const currentLeaseOid = remoteRefOid(remote, lease.ref);
     if (currentLeaseOid === renewedOid) {
-      const sourceCommit = runGit(["rev-parse", source], { quiet: true }).trim();
+      const publishedCommit = sourceCommit ?? runGit(["rev-parse", source], { quiet: true }).trim();
       if (
-        remoteRefOid(remote, `refs/heads/${branch}`) === sourceCommit &&
-        (!receiptRef || remoteRefOid(remote, receiptRef) === sourceCommit)
+        remoteRefOid(remote, `refs/heads/${branch}`) === publishedCommit &&
+        (!receiptRef || remoteRefOid(remote, receiptRef) === publishedCommit)
       ) {
         lease.oid = renewedOid;
         lease.expiresAtMs = Date.now() + lease.ttlMs;
@@ -2199,11 +2426,31 @@ function pushPublishedCommit(
       console.log(
         "State publish renewed its owner lease without the branch; recovering the lost state race",
       );
+      if (receiptRef && isCommitRefsTransactionFailure(pushed)) {
+        return pushStateAndReceiptAfterCommitRefsFailure(
+          source,
+          remote,
+          branch,
+          receiptRef,
+          expectedReceiptOid,
+          lease,
+        );
+      }
       return pushed;
     }
     if (currentLeaseOid !== lease.oid) {
       throw new StatePublishContentionError(
         "State publish lease ownership changed before branch publication",
+      );
+    }
+    if (receiptRef && isCommitRefsTransactionFailure(pushed)) {
+      return pushStateAndReceiptAfterCommitRefsFailure(
+        source,
+        remote,
+        branch,
+        receiptRef,
+        expectedReceiptOid,
+        lease,
       );
     }
     return pushed;
@@ -2213,6 +2460,123 @@ function pushPublishedCommit(
   lease.expiresAtMs = Date.now() + lease.ttlMs;
   console.log(`Renewed state publish lease owner=${lease.owner} with atomic branch update`);
   return pushed;
+}
+
+function isCommitRefsTransactionFailure(result: GitRunResult): boolean {
+  return /fatal error in commit_refs/i.test(`${result.stderr}\n${result.stdout}`);
+}
+
+function pushStateAndReceiptAfterCommitRefsFailure(
+  source: string,
+  remote: string,
+  branch: string,
+  receiptRef: string,
+  expectedReceiptOid: string | null,
+  lease: StatePublishLease,
+): GitRunResult {
+  lease.coordinator?.assertActive();
+  const sourceCommit = runGit(["rev-parse", source], { quiet: true }).trim();
+  const sourceParent = runGit(["rev-parse", `${sourceCommit}^`], { quiet: true }).trim();
+  const branchRef = `refs/heads/${branch}`;
+  let remoteBranchOid = remoteRefOid(remote, branchRef);
+  let remoteReceiptOid = remoteRefOid(remote, receiptRef);
+  if (remoteReceiptOid !== expectedReceiptOid && remoteReceiptOid !== sourceCommit) {
+    throw new StatePublishContentionError(
+      `State batch receipt ${receiptRef} changed before commit_refs recovery`,
+    );
+  }
+  if (remoteBranchOid === sourceCommit && remoteReceiptOid === sourceCommit) {
+    return { status: 0, stdout: "", stderr: "", timedOut: false };
+  }
+  if (remoteBranchOid !== sourceCommit && remoteBranchOid !== sourceParent) {
+    throw new StatePublishContentionError(
+      `State branch ${branchRef} changed before commit_refs recovery`,
+    );
+  }
+  lease.coordinator?.assertActive();
+
+  console.log(
+    "State publish retrying GitHub commit_refs failure with fenced single-ref receipt and state updates",
+  );
+  if (remoteReceiptOid !== sourceCommit) {
+    // A batch-specific receipt may safely outlive this lease. A later retry
+    // resumes only while state still equals sourceParent and otherwise fails
+    // closed, so persist that progress before renewing the shared-state fence.
+    for (let attempt = 1; attempt <= STATE_PUBLISH_COMMIT_REFS_SINGLE_REF_ATTEMPTS; attempt += 1) {
+      lease.coordinator?.assertActive();
+      const receiptPush = spawnGit(
+        [
+          "push",
+          `--force-with-lease=${receiptRef}:${remoteReceiptOid ?? ""}`,
+          remote,
+          `${source}:${receiptRef}`,
+        ],
+        { allowFailure: true },
+      );
+      if (receiptPush.status === 0) {
+        remoteReceiptOid = sourceCommit;
+        break;
+      }
+      const currentReceiptOid = remoteRefOid(remote, receiptRef);
+      if (currentReceiptOid === sourceCommit) {
+        remoteReceiptOid = sourceCommit;
+        break;
+      }
+      if (currentReceiptOid !== remoteReceiptOid) {
+        throw new StatePublishContentionError(
+          `State batch receipt ${receiptRef} changed during commit_refs recovery`,
+        );
+      }
+      if (
+        attempt < STATE_PUBLISH_COMMIT_REFS_SINGLE_REF_ATTEMPTS &&
+        isCommitRefsTransactionFailure(receiptPush)
+      ) {
+        console.log(
+          `State batch receipt push hit GitHub commit_refs; retrying attempt=${attempt + 1}/${STATE_PUBLISH_COMMIT_REFS_SINGLE_REF_ATTEMPTS}`,
+        );
+        sleep(Math.min(STATE_PUBLISH_LEASE_WAIT_MS * attempt, STATE_PUBLISH_LEASE_MAX_WAIT_MS));
+        continue;
+      }
+      return receiptPush;
+    }
+  }
+
+  lease.coordinator?.assertActive();
+  remoteBranchOid = remoteRefOid(remote, branchRef);
+  if (remoteBranchOid === sourceCommit) {
+    console.log(`Recovered GitHub commit_refs failure for ${remote}/${branch}`);
+    return { status: 0, stdout: "", stderr: "", timedOut: false };
+  }
+  if (remoteBranchOid !== sourceParent) {
+    throw new StatePublishContentionError(
+      `State branch ${branchRef} changed during commit_refs recovery`,
+    );
+  }
+
+  renewStatePublishLease(lease, "before commit_refs state recovery", {
+    commitRefsAttempts: STATE_PUBLISH_COMMIT_REFS_SINGLE_REF_ATTEMPTS,
+  });
+  lease.coordinator?.assertActive();
+  remoteBranchOid = remoteRefOid(remote, branchRef);
+  if (remoteBranchOid === sourceCommit) {
+    console.log(`Recovered GitHub commit_refs failure for ${remote}/${branch}`);
+    return { status: 0, stdout: "", stderr: "", timedOut: false };
+  }
+  if (remoteBranchOid !== sourceParent) {
+    throw new StatePublishContentionError(
+      `State branch ${branchRef} changed during commit_refs recovery`,
+    );
+  }
+
+  const statePush = spawnGit(
+    ["push", `--force-with-lease=${branchRef}:${sourceParent}`, remote, `${source}:${branchRef}`],
+    { allowFailure: true },
+  );
+  if (statePush.status !== 0 && remoteRefOid(remote, branchRef) !== sourceCommit) {
+    return statePush;
+  }
+  console.log(`Recovered GitHub commit_refs failure for ${remote}/${branch}`);
+  return { ...statePush, status: 0 };
 }
 
 export function pushStateCommitUnderLease(
@@ -2242,9 +2606,66 @@ export function pushCommit(options: {
   const branch = options.branch ?? publishDefaultBranch();
   const pushAttempts = positiveInt(options.pushAttempts, 3);
   const rebaseStrategy = options.rebaseStrategy ?? "normal";
+  let modelPushRecoveryConsulted = false;
+  const modelPushAttemptHistory: string[] = [];
 
   for (let pushAttempt = 1; pushAttempt <= pushAttempts; pushAttempt += 1) {
-    if (pushPublishedBranch(remote, branch).status === 0) return true;
+    let pushResult = pushPublishedBranch(remote, branch);
+    if (pushResult.status === 0) return true;
+    modelPushAttemptHistory.push(gitFailureSummary(pushResult));
+    // The advisor rules on failures the deterministic loop cannot handle; an
+    // ordinary push race resolves through the remaining rebuild attempts, so
+    // consult only once those are exhausted (a defer on attempt 1 previously
+    // threw away the whole retry budget — materializer runs 29966193607 etc.).
+    if (!modelPushRecoveryConsulted && pushAttempt === pushAttempts) {
+      modelPushRecoveryConsulted = true;
+      const recovery = modelGuidedPushRecovery({
+        phase: "push_commit",
+        failure: pushResult,
+        remote,
+        branch,
+        recentAttempts: modelPushAttemptHistory,
+        allowRebuildOnRemoteHead: rebaseStrategy === "reconcile-records",
+      });
+      if (recovery?.directive === "retry_push") {
+        if (activeStatePublishLease) {
+          renewStatePublishLease(activeStatePublishLease, "before model-guided retry");
+        }
+        pushResult = pushPublishedBranch(remote, branch);
+        if (pushResult.status === 0) {
+          recordRecoveryOutcome(recovery.advice, "retry_push_succeeded");
+          return true;
+        }
+        recordRecoveryOutcome(recovery.advice, "retry_push_failed");
+        modelPushAttemptHistory.push(gitFailureSummary(pushResult));
+      }
+      if (recovery?.directive === "rebuild_on_remote_head") {
+        if (activeStatePublishLease && options.boundedRemoteHeadRebuild) {
+          renewStatePublishLease(activeStatePublishLease, "before model-guided state rebuild");
+        }
+        if (rebaseStrategy !== "reconcile-records") return false;
+        fetchPublishRemote(remote, branch, { allowFailure: true });
+        let rebuilt = false;
+        try {
+          rebuilt = rebuildReconciliationCommit(
+            remote,
+            branch,
+            options.reconciliationSourceCommit,
+            options.reconciliationTupleKeys,
+            options.boundedRemoteHeadRebuild,
+          );
+        } catch (error) {
+          recordRecoveryOutcome(recovery.advice, "rebuild_on_remote_head_failed", { error });
+          throw error;
+        }
+        if (!rebuilt) {
+          recordRecoveryOutcome(recovery.advice, "rebuild_on_remote_head_failed");
+          return false;
+        }
+        recordRecoveryOutcome(recovery.advice, "rebuild_on_remote_head_succeeded");
+        continue;
+      }
+    }
     if (activeStatePublishLease && options.boundedRemoteHeadRebuild) {
       renewStatePublishLease(activeStatePublishLease, "before state race recovery");
     }
@@ -2318,6 +2739,123 @@ export function pushCommit(options: {
     }
   }
   return pushPublishedBranch(remote, branch).status === 0;
+}
+
+function executeModelRecovery(options: {
+  phase: string;
+  failure: unknown;
+  shallow: boolean;
+  remote: string;
+  branch: string;
+  recentAttempts: readonly string[];
+  availableActions: readonly RecoveryActionName[];
+  handlers: RecoveryActionHandlers;
+}): { advice: RecoveryAdvice; execution: RecoveryExecution } | null {
+  const context = buildRecoveryFailureContext({
+    phase: options.phase,
+    gitError: options.failure,
+    shallow: options.shallow,
+    remote: options.remote,
+    branch: options.branch,
+    recentAttempts: options.recentAttempts,
+    availableActions: options.availableActions,
+  });
+  const advice = requestRecoveryAdvice(context);
+  if (!advice) return null;
+  try {
+    return { advice, execution: executeRecoveryActions(advice.plan.actions, options.handlers) };
+  } catch (error) {
+    recordRecoveryOutcome(advice, "execution_failed", { error });
+    console.warn(
+      `Model-guided Git recovery action failed; using deterministic fallback: ${errorMessage(error)}`,
+    );
+    return null;
+  }
+}
+
+function modelGuidedPushRecovery(options: {
+  phase: string;
+  failure: unknown;
+  remote: string;
+  branch: string;
+  recentAttempts: readonly string[];
+  allowRebuildOnRemoteHead: boolean;
+}): { advice: RecoveryAdvice; directive: "retry_push" | "rebuild_on_remote_head" } | null {
+  if (!modelRecoveryConfigured()) return null;
+  const shallow = isShallowRepository();
+  const availableActions: RecoveryActionName[] = [
+    "fetch_object",
+    "retry_push",
+    "defer_to_next_run",
+    "give_up",
+  ];
+  if (options.allowRebuildOnRemoteHead) availableActions.splice(1, 0, "rebuild_on_remote_head");
+  if (shallow) availableActions.splice(1, 0, "refetch_depth1", "deepen", "unshallow");
+  const attempt = executeModelRecovery({
+    ...options,
+    shallow,
+    availableActions,
+    handlers: gitFetchRecoveryHandlers(options.remote, options.branch, {
+      rebuildOnRemoteHead: () => {},
+      retryPush: () => {},
+      deferToNextRun: () => {},
+      giveUp: () => {},
+    }),
+  });
+  if (!attempt) return null;
+  throwForModelRecoveryDirective(attempt.advice, attempt.execution);
+  const directive =
+    attempt.execution.directive === "rebuild_on_remote_head"
+      ? "rebuild_on_remote_head"
+      : "retry_push";
+  return { advice: attempt.advice, directive };
+}
+
+function gitFetchRecoveryHandlers(
+  remote: string,
+  branch: string,
+  directives: RecoveryActionHandlers,
+): RecoveryActionHandlers {
+  return {
+    fetchObject: (sha) => {
+      spawnBoundedFetch(["fetch", remote, sha], PUBLISH_FETCH_TIMEOUT_MS);
+    },
+    refetchDepth1: () => {
+      spawnBoundedFetch(
+        ["fetch", "--refetch", "--depth=1", remote, branch],
+        RECOVERY_FETCH_TIMEOUT_MS,
+      );
+    },
+    deepen: (depth) => {
+      spawnBoundedFetch(["fetch", `--deepen=${depth}`, remote, branch], RECOVERY_FETCH_TIMEOUT_MS);
+    },
+    unshallow: () => {
+      spawnBoundedFetch(["fetch", "--unshallow", remote, branch], RECOVERY_FETCH_TIMEOUT_MS);
+    },
+    ...directives,
+  };
+}
+
+function throwForModelRecoveryDirective(
+  advice: RecoveryAdvice,
+  execution: RecoveryExecution,
+): void {
+  if (execution.directive === "defer_to_next_run") {
+    recordRecoveryOutcome(advice, execution.directive);
+    throw new Error(
+      `Model-guided Git recovery deferred to the next run: ${publicDiagnosisSummary(advice.plan.diagnosis)}`,
+    );
+  }
+  if (execution.directive === "give_up") {
+    recordRecoveryOutcome(advice, execution.directive);
+    throw new Error(
+      `Model-guided Git recovery gave up: ${publicDiagnosisSummary(advice.plan.diagnosis)}`,
+    );
+  }
+}
+
+function gitFailureSummary(value: GitRunResult): string {
+  return `${value.timedOut ? "timeout" : `status=${value.status}`}: ${value.stderr || value.stdout}`;
 }
 
 export function pushSingleRecordTupleCommit(options: {

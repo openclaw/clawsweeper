@@ -870,9 +870,11 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
   assert.match(workflow, /permissions: \{\}/);
   assert.match(
     workflow,
-    /group: exact-review-reconcile-\$\{\{ \(github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch'\) && 'sweep'/,
+    /group: exact-review-reconcile-\$\{\{ github\.event_name == 'workflow_run' && format\('\{0\}-\{1\}', github\.event\.workflow_run\.id, github\.event\.workflow_run\.run_attempt\) \|\| 'sweep' \}\}/,
   );
   assert.match(workflow, /cancel-in-progress: false/);
+  assert.match(eventJob, /if: \$\{\{ github\.event_name == 'workflow_run' \}\}/);
+  assert.match(eventJob, /permissions:\s+actions: read\s+contents: read/);
   assert.match(eventJob, /github\.event\.workflow_run\.event == 'repository_dispatch'/);
   assert.match(
     eventJob,
@@ -891,8 +893,11 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
   assert.match(eventJob, /--max-time 120/);
   assert.match(eventJob, /--data-binary "\$payload"/);
   assert.match(eventJob, /\/internal\/exact-review\/reconcile/);
-  assert.doesNotMatch(eventJob, /actions\/checkout/);
-  assert.doesNotMatch(eventJob, /(?:GH_TOKEN|GITHUB_TOKEN|github\.token)/);
+  assert.match(eventJob, /actions\/checkout@v7/);
+  assert.match(eventJob, /ref: \$\{\{ github\.event\.repository\.default_branch \}\}/);
+  assert.match(eventJob, /persist-credentials: false/);
+  assert.match(eventJob, /node scripts\/review-run-observer\.mjs --event-file/);
+  assert.match(eventJob, /GH_TOKEN: \$\{\{ github\.token \}\}/);
 
   const sweepJob = workflow.slice(workflow.indexOf("\n  sweep:"));
   assert.match(sweepJob, /timeout-minutes: 10/);
@@ -1057,7 +1062,7 @@ test("broad record publishers isolate tuple reconciliation from status and auxil
   }
 });
 
-test("apply workflow isolates Codex proof from the credentialed mutation runner", () => {
+test("apply workflow isolates proof Codex and limits mutation Codex to model-guided recovery", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const workflowConcurrency = workflow.slice(
     workflow.indexOf("\nconcurrency:"),
@@ -1149,7 +1154,11 @@ test("apply workflow isolates Codex proof from the credentialed mutation runner"
   );
   assert.doesNotMatch(applyCondition, /needs\.apply-proof\.result/);
   assert.doesNotMatch(applyCondition, /needs\.publish-apply-proof-action-ledger/);
-  assert.doesNotMatch(applyJob, /setup-codex|OPENAI_API_KEY|CLAWSWEEPER_INTERNAL_MODEL/);
+  assert.match(applyJob, /CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "1"/);
+  assert.match(applyJob, /OPENAI_API_KEY: \$\{\{ secrets\.OPENAI_API_KEY \}\}/);
+  assert.match(applyJob, /uses: \.\/\.github\/actions\/setup-codex/);
+  assert.match(applyJob, /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ secrets\.CLAWSWEEPER_MODEL \}\}/);
+  assert.doesNotMatch(applyJob, /--codex-model|--codex-reasoning-effort/);
   assert.match(applyJob, /Create target write token/);
   assert.match(applyJob, /Create state token/);
   assert.match(applyJob, /actions\/download-artifact@v8/);
@@ -1317,13 +1326,19 @@ test("apply workflow rejects malformed or oversized coverage proof artifact tree
 
 test("apply workflow target token can inspect source workflow runs", () => {
   const workflow = readText(".github/workflows/sweep.yml");
+  const action = readText(".github/actions/create-target-write-token/action.yml");
   const applyJob = workflow.slice(workflow.indexOf("\n  apply-existing:"));
   const tokenStart = applyJob.indexOf("- name: Create target write token");
   const stateTokenStart = applyJob.indexOf("- name: Create state token", tokenStart);
 
   assert.ok(tokenStart !== -1);
   assert.ok(stateTokenStart > tokenStart);
-  assert.match(applyJob.slice(tokenStart, stateTokenStart), /permission-actions: read/);
+  assert.match(
+    applyJob.slice(tokenStart, stateTokenStart),
+    /uses: \.\/\.github\/actions\/create-target-write-token/,
+  );
+  assert.match(action, /permission-actions: read/);
+  assert.match(action, /minted-at-ms:[\s\S]*steps\.minted-at\.outputs\.milliseconds/);
 });
 
 test("targeted apply dispatches keep apply names ahead of exact-review names", () => {
@@ -1388,10 +1403,17 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(applyStep, /Capping apply checkpoint size at 20/);
   assert.match(applyStep, /base_close_processed_limit=300/);
   assert.match(applyHelper, /coverage_proof_limit=2/);
+  assert.match(applyHelper, /apply_token_budget_ms=3300000/);
   assert.match(applyHelper, /max_runtime_arg=\(--max-runtime-ms 600000\)/);
   assert.match(applyHelper, /max_close_processed_limit=900/);
   assert.match(applyStep, /close_processed_limit="\$base_close_processed_limit"/);
   assert.match(applyStep, /source scripts\/apply-workflow-helpers\.sh/);
+  assert.match(applyStep, /timeout-minutes: 70/);
+  assert.match(
+    applyStep,
+    /CLAWSWEEPER_APPLY_TOKEN_MINTED_AT_MS: \$\{\{ steps\.target-write-token\.outputs\.minted-at-ms \}\}/,
+  );
+  assert.match(applyStep, /initialize_apply_token_budget/);
   assert.match(applyStep, /select_adaptive_apply_batch/);
   assert.match(applyHelper, /adaptive-apply-batch-size/);
   assert.match(applyHelper, /--status-path "results\/sweep-status\/\$\{target_slug\}\.json"/);
@@ -1505,7 +1527,9 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(applyStep, /true\|1\|yes\|on\) product_direction_enabled=true/);
   assert.match(applyStep, /if \[ "\$result_count" -ge "\$close_processed_limit" \]; then/);
   assert.match(applyHelper, /--action skipped_runtime_budget/);
-  assert.match(applyStep, /if automatic_apply_runtime_reached/);
+  assert.match(applyStep, /if apply_checkpoint_runtime_reached/);
+  assert.match(applyStep, /report_apply_token_budget_stop .*"\$result_count"/);
+  assert.match(applyStep, /apply_checkpoint_runtime_reached .*"\$result_count"/);
   assert.match(applyHelper, /runtime budget before cursor progress/);
   assert.match(applyHelper, /fresh-token continuation will resume the lane/);
   assert.doesNotMatch(
@@ -1576,7 +1600,7 @@ test("apply workflow finalization retries only target status after checkpointed 
   assert.ok(cursorPath > closePaths);
   assert.ok(closeCheckpoint > cursorPath);
   for (const laterBranch of [
-    'if automatic_apply_runtime_reached ".artifacts/apply-reports/apply-report-$checkpoint.json"',
+    'if apply_checkpoint_runtime_reached ".artifacts/apply-reports/apply-report-$checkpoint.json"',
     'if [ "$result_count" -ge "$close_processed_limit" ]; then',
     'if [ "$result_count" -eq 0 ]; then',
     'if [ "$closed_in_chunk" -eq 0 ]; then',
@@ -1650,6 +1674,53 @@ test("apply workflow does not queue runtime-yield continuation without cursor pr
         .filter((line) => line.includes("|")),
       ["yielded|false", "yielded|true"],
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply checkpoint publishes a clean token-budget stop and a later run resumes", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const stoppedReport = join(root, "stopped.json");
+  const resumedReport = join(root, "resumed.json");
+  writeFileSync(
+    stoppedReport,
+    JSON.stringify([
+      {
+        number: 0,
+        action: "skipped_runtime_budget",
+        reason: "apply token budget reached at 4300000ms since epoch",
+      },
+    ]),
+  );
+  writeFileSync(resumedReport, JSON.stringify([{ number: 42, action: "closed" }]));
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          "source scripts/apply-workflow-helpers.sh",
+          "CLAWSWEEPER_APPLY_TOKEN_MINTED_AT_MS=1000000",
+          "initialize_apply_token_budget",
+          'printf "deadline=%s\\n" "$CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS"',
+          'if apply_token_budget_reached "$STOPPED_REPORT"; then apply_token_budget_stop_summary 7 12; fi',
+          'if apply_token_budget_reached "$RESUMED_REPORT"; then echo stopped-again; else echo resumed; fi',
+        ].join("\n"),
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, STOPPED_REPORT: stoppedReport, RESUMED_REPORT: resumedReport },
+      },
+    );
+    assert.match(output, /deadline=4300000/);
+    assert.match(
+      output,
+      /apply stopped at token budget: processed=7 remaining=~12; next run continues/,
+    );
+    assert.match(output, /resumed/);
+    assert.doesNotMatch(output, /stopped-again/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

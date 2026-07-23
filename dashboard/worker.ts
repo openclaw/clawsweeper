@@ -549,6 +549,11 @@ export default {
       request.method === "POST"
     )
       return authenticatedExactReviewQueueRequest(request, env, "/publications/supersede");
+    if (
+      url.pathname === "/internal/exact-review/publications/reconcile" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/publications/reconcile");
     if (url.pathname === "/internal/exact-review/review-telemetry" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/review-telemetry");
     if (url.pathname === "/internal/exact-review/review-run-telemetry" && request.method === "POST")

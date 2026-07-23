@@ -2265,7 +2265,7 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
         ? [
             "I asked ClawSweeper to review this item again.",
             reviewDispatchLine(dispatched.clawsweeper, "Action", "item re-review queued"),
-            "Result: the existing ClawSweeper review comment will be edited in place when the review finishes.",
+            "Result: when the review finishes, ClawSweeper will create the durable review comment if needed or update the existing comment in place.",
           ].join("\n")
         : `Reason: ${command.reason ?? "re-review requires an open issue or PR"}.`,
     ].join("\n");

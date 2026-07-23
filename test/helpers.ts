@@ -488,6 +488,7 @@ export function promotionGhMock(options: {
   commentWriteLogPath?: string;
   commentWriteError?: string;
   closeAppliedBodyLogPath?: string;
+  closeCommandLogPath?: string;
   closeCommandDelayMs?: number;
   comments?: unknown[];
   commentsAfterFirstRead?: unknown[];
@@ -577,6 +578,7 @@ export function promotionGhMock(options: {
 	const commentWriteLogPath = ${JSON.stringify(options.commentWriteLogPath ?? "")};
 	const commentWriteError = ${JSON.stringify(options.commentWriteError ?? "")};
 	const closeAppliedBodyLogPath = ${JSON.stringify(options.closeAppliedBodyLogPath ?? "")};
+	const closeCommandLogPath = ${JSON.stringify(options.closeCommandLogPath ?? "")};
 	const closeCommandDelayMs = ${JSON.stringify(options.closeCommandDelayMs ?? 0)};
 	const number = ${options.number};
 	const commentStatePath = join(__dirname, "..", "comment-state-" + number + ".json");
@@ -880,6 +882,7 @@ export function promotionGhMock(options: {
 } else if (args[0] === "api" && new RegExp("/pulls/" + number + "/(files|commits)(?:\\\\?|$)").test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "pr" && args[1] === "close" && args[2] === String(number)) {
+  if (closeCommandLogPath) appendFileSync(closeCommandLogPath, args.join(" ") + "\\n");
   if (closeCommandDelayMs > 0) setTimeout(() => console.log(""), closeCommandDelayMs);
   else console.log("");
 	} else if (args[0] === "issue" && args[1] === "edit") {

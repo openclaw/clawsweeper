@@ -137,6 +137,42 @@ test("queued polling preserves one durable identity through heartbeat and releas
   assert.deepEqual(watchdogCloses, [true]);
 });
 
+test("queued polling times out at the coordinator acquire deadline", () => {
+  const paths: string[] = [];
+  const originalNow = Date.now;
+  let fakeNow = 0;
+  Date.now = () => fakeNow;
+  try {
+    assert.throws(
+      () =>
+        acquireStateWriterCoordinator(
+          "state",
+          {
+            request(path, rawPayload) {
+              paths.push(path);
+              if (path === "/internal/state-writer/acquire") {
+                return queued(requestPayload(rawPayload), 7);
+              }
+              assert.equal(path, "/internal/state-writer/release");
+              return { ok: true, released: true };
+            },
+            sleep(milliseconds) {
+              fakeNow += milliseconds;
+            },
+            startWatchdog() {
+              return { close() {} };
+            },
+          },
+          { ...enabledEnv, CLAWSWEEPER_STATE_COORDINATOR_ACQUIRE_TIMEOUT_MS: "500" },
+        ),
+      /state writer coordinator acquire timed out after 500ms at queue position 7/,
+    );
+  } finally {
+    Date.now = originalNow;
+  }
+  assert.equal(paths.at(-1), "/internal/state-writer/release");
+});
+
 test("an ambiguous acquire response rereads the same durable ticket identity", () => {
   const payloads: RequestPayload[] = [];
   const sleeps: number[] = [];

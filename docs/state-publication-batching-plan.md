@@ -1,6 +1,15 @@
 # State publication batching plan
 
-**Status (verified 2026-07-22 at 04:24 UTC):** PR 1 through PR 4, the rollout
+**Current stop-loss decision (verified 2026-07-22):** keep the bounded parallel
+prepare implementation, but keep the production ownership cap at 8. Size 32
+failed the runtime gate before finalization and produced no state commit. The
+subsequent size-8 retry produced one six-member commit, but two of its eight
+outcomes were retryable. The first fresh post-commit sample began to decline,
+although the backlog remained above its pre-rollout baseline. The full closeout
+evidence is recorded below; the older rollout narrative is retained as incident
+history.
+
+**Historical status (verified 2026-07-22 at 07:10 UTC):** PR 1 through PR 4, the rollout
 hotfix, the repository-wide FIFO state-writer coordinator, the fence identity
 hotfix, the shared `publishMainCommit` identity follow-up, fresh batch telemetry,
 and bounded batch-writer priority are merged. The separately reviewed size-4
@@ -41,7 +50,9 @@ and smoke passed, and the public status surface reported `max_items=8` with a
 60-second wait. Its first production run
 [29890385881](https://github.com/openclaw/clawsweeper/actions/runs/29890385881)
 then failed the safety gate before writing state. The claim contained distinct
-publication queue events that both targeted `openclaw/openclaw#108676`, so their
+publication queue events that both targeted
+[`openclaw/openclaw#108676`](https://github.com/openclaw/openclaw/issues/108676),
+so their
 prepared plans attempted incompatible mutations of
 `records/openclaw-openclaw/items/108676.md`. Cleanup released the unfinished
 members and open dead letters remained 413. The rollout therefore returns to
@@ -53,40 +64,143 @@ failed before commit when GitHub rejected the prepared multi-ref push with
 `invalid_batch_state_writer_identity`, while the workflow's unconditional
 cleanup step still completed successfully. This second failure is retained as a
 separate production signal rather than attributed to the duplicate-item root
-cause. The final target remains batch size 8, but it must be re-delivered and
-pass both safety and backlog-drain capacity gates before the keep decision.
+cause. The duplicate-item hotfix then landed through
+[`openclaw/clawsweeper#772`](https://github.com/openclaw/clawsweeper/pull/772)
+at `883ce9914e57733b18b96bcf70e9308a29c8e237`. The owner subsequently raised
+the publisher candidate ask to 32 through
+[`openclaw/clawsweeper#773`](https://github.com/openclaw/clawsweeper/pull/773)
+and the dashboard grant to 32 through
+[`openclaw/clawsweeper#778`](https://github.com/openclaw/clawsweeper/pull/778).
+At this snapshot, however, the workflow on `main` still freezes
+`EXACT_REVIEW_BATCH_MAX_ITEMS=4`; therefore the live publisher can request at
+most four candidates and there is no production size-8 or size-32 proof yet.
+The intended endpoint is size 32 after bounded parallel preparation. Size 8 is
+a safety checkpoint, not the final capacity target. Every stage must still pass
+the safety gates, and size 32 must also prove sustained backlog drain before it
+is kept.
 **Incident:** CSW-049
 **Decision scope:** replace normal contention on the single generated-`state`
 publication lease with one recoverable, repository-wide serialization boundary,
 without migrating authoritative state to a new database or changing the
 generated state layout.
 
+## 2026-07-22 stop-loss closeout
+
+The implementation handoff in
+[`openclaw/clawsweeper#775`](https://github.com/openclaw/clawsweeper/pull/775)
+was extracted onto current `main` and the stale PR was closed as superseded; it
+does not need to merge. The compatibility and rolling-cap repair landed through
+[`openclaw/clawsweeper#779`](https://github.com/openclaw/clawsweeper/pull/779)
+at `4eb8d80aaec429faba5b802ae15797e25a513fba`. The first conservative cap
+rollback landed through
+[`openclaw/clawsweeper#780`](https://github.com/openclaw/clawsweeper/pull/780)
+at `32682ce9116f76b57940a33b4026d67826122c34`.
+
+Bounded four-worker prepare and the size-32 implementation then landed together
+through
+[`openclaw/clawsweeper#781`](https://github.com/openclaw/clawsweeper/pull/781)
+at `bcafbf8f9d2657b2a6d782b530db26c4947da3f1`. It uses isolated per-item state
+worktrees and artifacts, deterministic aggregation, heartbeat fencing,
+per-item failure isolation, an eight-minute item timeout, a twenty-minute batch
+deadline, artifact size bounds, and process-group cancellation. The publisher
+primitive accepts at most 32 items and retains proportional path and byte
+limits. Incremental validation passed 51 focused tests, focused lint, and
+single-commit proofs at sizes 1, 2, 4, 8, and 32. Exactly one autoreview was run;
+its one valid finding, failure to stop active workers at the overall deadline,
+was fixed and the focused tests were rerun. No full local validation or second
+autoreview was run.
+
+The transition size-8 production
+[run 29902871577](https://github.com/openclaw/clawsweeper/actions/runs/29902871577)
+produced state commit
+[`4234a70d`](https://github.com/openclaw/clawsweeper-state/commit/4234a70d2747cfd2b2fef576f995ded16e95709b)
+with `materialized=3`, `accepted=3`, `retryable=0`, and `released=0`. The first
+size-32 production
+[run 29903573048](https://github.com/openclaw/clawsweeper/actions/runs/29903573048)
+claimed 32 distinct members, but preparation exceeded the 15-minute operating
+target and hit the controller's 20-minute deadline. It produced no state commit
+and cleanup safely reported `released=32`. The state repository contains
+544,632 paths; independent full worktree creation remained serialized enough
+that only about 20 members started before the deadline. This is a runtime gate
+failure, so size 32 was rejected immediately without cancelling the active run.
+
+The production cap rollback landed through
+[`openclaw/clawsweeper#782`](https://github.com/openclaw/clawsweeper/pull/782)
+at `26050df839c81cfee0a6966c6f24db0172d3db07`; it changes only the dashboard
+grant back to 8 and retains parallel prepare, the 50-candidate scan, and the
+32-capable primitive. Its first size-8 production
+[run 29905061908](https://github.com/openclaw/clawsweeper/actions/runs/29905061908)
+prepared all eight members, then GitHub rejected the atomic multi-ref push with
+`fatal error in commit_refs`. It produced no state commit; unconditional cleanup
+reported `released=8`. This repeats the intermittent publisher failure already
+seen in [run 29898251234](https://github.com/openclaw/clawsweeper/actions/runs/29898251234),
+not a batching safety regression.
+
+The immediately following size-8
+[run 29905963261](https://github.com/openclaw/clawsweeper/actions/runs/29905963261)
+completed in 13 minutes 21 seconds and proved the retained parallel path can
+publish one real multi-item commit. State commit
+[`746619bd`](https://github.com/openclaw/clawsweeper-state/commit/746619bd9735f7b973a47db0f6ef7a332cb285a8)
+contains six materialized members in one commit. Fenced completion accepted all
+eight outcomes, with `accepted=8`, `retryable=2`, and cleanup `released=0`.
+Thus accepted acknowledgements remained healthy and release did not grow, but
+the desired zero-retryable outcome was not met in this sample.
+
+The observed backlog did not drain across the rollout: `pending` moved from approximately 2,699
+before rollout to 2,767, 2,789, 2,798, 2,803, and 2,805; oldest pending age moved
+from approximately 103,900 seconds to 105,876, 107,518, 108,347, 108,531, and
+109,088 seconds. The first fresh sample after the successful retained-size-8
+commit then moved `pending 2,805 -> 2,800`, `ready_pending 2,802 -> 2,796`, and
+oldest pending age `109,088 -> 108,959` seconds. This is the requested start of
+a decline, not yet a sustained drain proof. The effective public `max_items=8`.
+Therefore the final decision is to retain 8, not 32. No DLQ was replayed or
+cleaned up, no workflow was paused, and no live apply or close was executed.
+
 ## Delivery status
 
-| Stage                                         | Status                                         | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| --------------------------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| State writer observability prerequisite       | Complete                                       | Merged before batching ownership as [`openclaw/clawsweeper#735`](https://github.com/openclaw/clawsweeper/pull/735).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| PR 1: durable batch ownership protocol        | Complete                                       | Merged as [`openclaw/clawsweeper#734`](https://github.com/openclaw/clawsweeper/pull/734) at `c074a99c0b18848be7a7d8f80f0fa57b7875b129`; post-merge proof is recorded below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| PR 2: bounded multi-item Git commit primitive | Complete                                       | Merged as [`openclaw/clawsweeper#740`](https://github.com/openclaw/clawsweeper/pull/740) at `a04c4c4cfbd29be9d6bf5036c824481b31d2233d`; stabilization followed in [`openclaw/clawsweeper#742`](https://github.com/openclaw/clawsweeper/pull/742). Local-container p95 proof against a 385,840-path structural fixture passed at 3,295.2 projected items/hour for size 2.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| PR 3: end-to-end batch publisher              | Complete; merged default off                   | Merged as [`openclaw/clawsweeper#746`](https://github.com/openclaw/clawsweeper/pull/746) at `8b5bbf8678b88f172340f1108d1bccdeed366618`. The equivalent synthetic maintainer proof verified one commit for two healthy items, isolated retryable and superseded items, per-item GitHub effects, and disabled fallback.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| PR 4: production rollout configuration        | Complete; landed                               | Landed as [`openclaw/clawsweeper#752`](https://github.com/openclaw/clawsweeper/pull/752). It enabled one event-driven batch publisher at size 2 and a 60-second maximum wait, blocked new legacy admission while enabled, preserved in-flight legacy work, and exposed active configuration plus last dispatch outcome.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Rollout hotfix                                | Complete; landed                               | Landed as [`openclaw/clawsweeper#753`](https://github.com/openclaw/clawsweeper/pull/753). The deployed dashboard config remains `EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED=1`, `EXACT_REVIEW_PUBLICATION_BATCH_SIZE=2`, and `EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS=60000`; the workflow independently caps `EXACT_REVIEW_BATCH_MAX_ITEMS=2`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Repository-wide state-writer serialization    | Landed; behavior proven, capacity gate blocked | Landed as [`openclaw/clawsweeper#756`](https://github.com/openclaw/clawsweeper/pull/756) at `f422cbdd10b1ea42c9bd79d25c229e4d9fb07d79`; the dashboard deployment and smoke passed, coordinator admission is effective, and pre-cutover publishers drained. After the fence identity hotfix, [run 29865701885](https://github.com/openclaw/clawsweeper/actions/runs/29865701885) acquired FIFO ticket 183, published two materialized members in state commit [`49777f30`](https://github.com/openclaw/clawsweeper-state/commit/49777f30284d01fb2255c763cc3b8e5668b9709a), and accepted both acknowledgements. Runs [29873949047](https://github.com/openclaw/clawsweeper/actions/runs/29873949047) and [29876112204](https://github.com/openclaw/clawsweeper/actions/runs/29876112204) repeated that result in commits [`f5ca2429`](https://github.com/openclaw/clawsweeper-state/commit/f5ca24292ba365f5270cfd39030759d5309911e8) and [`089c5c5b`](https://github.com/openclaw/clawsweeper-state/commit/089c5c5b59a1c329e0d1f6a9dea090210caab6be). The formal gate remains blocked by stale `state_writer` telemetry and failed throughput/backlog sample criteria. |
-| Fence identity hotfix                         | Complete; landed                               | Landed as [`openclaw/clawsweeper#759`](https://github.com/openclaw/clawsweeper/pull/759) at `09b3c2ba2959146e4a3960439c9450d10f122d67`. `createStatePublishLeaseCommit` now passes `clawsweeperGitIdentityEnv()` inline to `git commit-tree`, so fence acquire, renewal, stale-owner recovery, and cleanup do not depend on preconfigured repo/global `user.identity`. Data commits retain their existing authorship via `configureGitUser`. The regression test `fence commits do not require a preconfigured Git identity` proves both an ordinary coordinator writer and a batch coordinator writer create and renew their fence from a checkout with no preconfigured Git identity. Full `pnpm run check` passed in local Docker container `docker.io/masonxhuang/codex-node24-ci:20260721` (Node v24.18.0, Git 2.47.3, pnpm 11.10.0) with 8 GiB memory/swap, 1024 PIDs, 4 CPUs, and init.                                                                                                                                                                                                                                                                       |
-| Shared `publishMainCommit` identity follow-up | Complete; landed after PR 761                  | Landed as [`openclaw/clawsweeper#758`](https://github.com/openclaw/clawsweeper/pull/758) at `fef846a851e2a5fbcfe114721b5c779b0ded53a2`, after the evidence-only documentation PR 761. It calls `configureGitUser()` at the shared commit-producing `publishMainCommit` entry so ordinary repair/apply publication paths do not depend on caller identity setup. The upstream `pnpm check` passed in [run 29858459637](https://github.com/openclaw/clawsweeper/actions/runs/29858459637). This complements, rather than replaces, PR 759's inline identity at the lower-level fence `commit-tree` boundary.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| Fence hotfix evidence documentation           | Complete; landed                               | Landed as [`openclaw/clawsweeper#761`](https://github.com/openclaw/clawsweeper/pull/761) at `ac16e73dc3b18893e9c0edee38a054cb7b78ba6c`, recording PR 759, its regression proof, and CI evidence. This plan update incorporates the subsequently merged PR 758 and later live rollout evidence.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Batch failure terminalization                 | Complete; landed                               | Landed as [`openclaw/clawsweeper#764`](https://github.com/openclaw/clawsweeper/pull/764) at `b657a55bb6e4499825a9adffecb44e32cd0e9ed5`, superseding the narrower external [`openclaw/clawsweeper#760`](https://github.com/openclaw/clawsweeper/pull/760). It adds fenced retryable/refresh/permanent outcomes, receipt-aware cancellation recovery, newer-revision preservation, and manifest-based cleanup so a failed or cancelled publisher does not retain both members until lease expiry. Upstream `pnpm check` passed in [run 29881719295](https://github.com/openclaw/clawsweeper/actions/runs/29881719295); CodeQL, Windows, sparse build, and automerge E2E also passed. Deterministic post-fix failure coverage is the rollout gate; production failure injection is intentionally excluded.                                                                                                                                                                                                                                                                                                                                                              |
-| Batch writer telemetry restoration            | Complete; landed, deployed, and live-verified  | Landed as [`openclaw/clawsweeper#766`](https://github.com/openclaw/clawsweeper/pull/766) at `6aae6e674234d6ac6680c520cc18050c4ff3f5ab`; dashboard deployment passed in [run 29883131304](https://github.com/openclaw/clawsweeper/actions/runs/29883131304). Run [29883986427](https://github.com/openclaw/clawsweeper/actions/runs/29883986427) then recorded the first fresh terminal operation: one commit, two materialized members, actual size 2, full batch, zero contention timeouts, 1,932,699 ms coordinator wait, and 52,255 ms hold. Its state commit [`d69464d7`](https://github.com/openclaw/clawsweeper-state/commit/d69464d74ee65dfa05e401f25929ca552b75da2d) changed exactly the two intended item records and completion accepted both acknowledgements.                                                                                                                                                                                                                                                                                                                                                                                            |
-| Bounded batch writer priority                 | Complete; landed, deployed, and live-verified  | Landed as [`openclaw/clawsweeper#767`](https://github.com/openclaw/clawsweeper/pull/767) at `550316892d107815a36260356f623301393b4be0`; CI [run 29883477235](https://github.com/openclaw/clawsweeper/actions/runs/29883477235) and dashboard deploy [run 29884056241](https://github.com/openclaw/clawsweeper/actions/runs/29884056241) passed. The pre-deploy control run [29883986427](https://github.com/openclaw/clawsweeper/actions/runs/29883986427) entered as ordinary ticket 499 at position 55 and waited about 32 minutes. Post-deploy run [29885667172](https://github.com/openclaw/clawsweeper/actions/runs/29885667172) entered as authenticated batch ticket 541, waited about 21 seconds despite 29 ordinary tickets, and completed commit [`527eceef`](https://github.com/openclaw/clawsweeper-state/commit/527eceefbfe65328e01642f523b011acde805215) with two accepted outcomes. Run [29885888814](https://github.com/openclaw/clawsweeper/actions/runs/29885888814) repeated the bounded priority behavior after an ordinary turn, preserving fairness.                                                                                           |
-| Size-4 capacity step                          | Complete; landed, deployed, and live-verified  | Landed as [`openclaw/clawsweeper#768`](https://github.com/openclaw/clawsweeper/pull/768) at `f1aa674039692a66975f1bdc78c95826aa40efeb`. CI [run 29887336269](https://github.com/openclaw/clawsweeper/actions/runs/29887336269), CodeQL [run 29887336268](https://github.com/openclaw/clawsweeper/actions/runs/29887336268), and dashboard deployment [run 29887905376](https://github.com/openclaw/clawsweeper/actions/runs/29887905376) passed. Production run [29888170667](https://github.com/openclaw/clawsweeper/actions/runs/29888170667) claimed `openclaw/openclaw#110382`, `#111301`, `#111813`, and `#78031`; state commit [`880ab541`](https://github.com/openclaw/clawsweeper-state/commit/880ab541154514730958a0c30fd9946d1aeb1382) contains only those four item scopes, reports `materialized=4`, and completion reports `accepted=4`, `retryable=0`. Telemetry moved commits/materialized from 55/64 to 56/68 while contention remained 1,958 and open dead letters remained 413. Two consecutive windows recorded arrivals/completions of 9/0 and 5/4, so safety passed but capacity did not. |
-| Size-8 capacity step                          | Safety gate failed; rollback required          | [`openclaw/clawsweeper#771`](https://github.com/openclaw/clawsweeper/pull/771) landed at `5808a1829c8e7c584ce292b8a4649a5cd5bfe17b`; CI [run 29889947460](https://github.com/openclaw/clawsweeper/actions/runs/29889947460), CodeQL [run 29889947502](https://github.com/openclaw/clawsweeper/actions/runs/29889947502), and dashboard deployment [run 29890185892](https://github.com/openclaw/clawsweeper/actions/runs/29890185892) passed. Production run [29890385881](https://github.com/openclaw/clawsweeper/actions/runs/29890385881) failed before commit because two queue events for `openclaw/openclaw#108676` prepared incompatible mutations for the same durable record. Unfinished members were released and open dead letters remained 413. A second pre-rollback run [29890705127](https://github.com/openclaw/clawsweeper/actions/runs/29890705127) failed before commit on GitHub's `commit_refs` rejection; inner recovery reported `invalid_batch_state_writer_identity`, and unconditional cleanup succeeded. Restore both runtime settings to 4 before re-advancing and retain the second failure as an independent re-advance gate signal. |
-| Duplicate-item claim hotfix                  | In review                                      | [`openclaw/clawsweeper#772`](https://github.com/openclaw/clawsweeper/pull/772) changes batch admission to select at most one publication event per `targetRepo#itemNumber`, while preserving FIFO order for the deferred event. It also restores the dashboard claim size and workflow maximum to 4. Re-advance to 8 only after the deduplication regression test, CI, deployment, and a safe live recovery sample pass.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Stage                                         | Status                                         | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| State writer observability prerequisite       | Complete                                       | Merged before batching ownership as [`openclaw/clawsweeper#735`](https://github.com/openclaw/clawsweeper/pull/735).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| PR 1: durable batch ownership protocol        | Complete                                       | Merged as [`openclaw/clawsweeper#734`](https://github.com/openclaw/clawsweeper/pull/734) at `c074a99c0b18848be7a7d8f80f0fa57b7875b129`; post-merge proof is recorded below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| PR 2: bounded multi-item Git commit primitive | Complete                                       | Merged as [`openclaw/clawsweeper#740`](https://github.com/openclaw/clawsweeper/pull/740) at `a04c4c4cfbd29be9d6bf5036c824481b31d2233d`; stabilization followed in [`openclaw/clawsweeper#742`](https://github.com/openclaw/clawsweeper/pull/742). Local-container p95 proof against a 385,840-path structural fixture passed at 3,295.2 projected items/hour for size 2.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| PR 3: end-to-end batch publisher              | Complete; merged default off                   | Merged as [`openclaw/clawsweeper#746`](https://github.com/openclaw/clawsweeper/pull/746) at `8b5bbf8678b88f172340f1108d1bccdeed366618`. The equivalent synthetic maintainer proof verified one commit for two healthy items, isolated retryable and superseded items, per-item GitHub effects, and disabled fallback.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| PR 4: production rollout configuration        | Complete; landed                               | Landed as [`openclaw/clawsweeper#752`](https://github.com/openclaw/clawsweeper/pull/752). It enabled one event-driven batch publisher at size 2 and a 60-second maximum wait, blocked new legacy admission while enabled, preserved in-flight legacy work, and exposed active configuration plus last dispatch outcome.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Rollout hotfix                                | Complete; landed                               | Landed as [`openclaw/clawsweeper#753`](https://github.com/openclaw/clawsweeper/pull/753). The deployed dashboard config remains `EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED=1`, `EXACT_REVIEW_PUBLICATION_BATCH_SIZE=2`, and `EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS=60000`; the workflow independently caps `EXACT_REVIEW_BATCH_MAX_ITEMS=2`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Repository-wide state-writer serialization    | Landed; behavior proven, capacity gate blocked | Landed as [`openclaw/clawsweeper#756`](https://github.com/openclaw/clawsweeper/pull/756) at `f422cbdd10b1ea42c9bd79d25c229e4d9fb07d79`; the dashboard deployment and smoke passed, coordinator admission is effective, and pre-cutover publishers drained. After the fence identity hotfix, [run 29865701885](https://github.com/openclaw/clawsweeper/actions/runs/29865701885) acquired FIFO ticket 183, published two materialized members in state commit [`49777f30`](https://github.com/openclaw/clawsweeper-state/commit/49777f30284d01fb2255c763cc3b8e5668b9709a), and accepted both acknowledgements. Runs [29873949047](https://github.com/openclaw/clawsweeper/actions/runs/29873949047) and [29876112204](https://github.com/openclaw/clawsweeper/actions/runs/29876112204) repeated that result in commits [`f5ca2429`](https://github.com/openclaw/clawsweeper-state/commit/f5ca24292ba365f5270cfd39030759d5309911e8) and [`089c5c5b`](https://github.com/openclaw/clawsweeper-state/commit/089c5c5b59a1c329e0d1f6a9dea090210caab6be). The formal gate remains blocked by stale `state_writer` telemetry and failed throughput/backlog sample criteria.                                                                                                                                                                                                                     |
+| Fence identity hotfix                         | Complete; landed                               | Landed as [`openclaw/clawsweeper#759`](https://github.com/openclaw/clawsweeper/pull/759) at `09b3c2ba2959146e4a3960439c9450d10f122d67`. `createStatePublishLeaseCommit` now passes `clawsweeperGitIdentityEnv()` inline to `git commit-tree`, so fence acquire, renewal, stale-owner recovery, and cleanup do not depend on preconfigured repo/global `user.identity`. Data commits retain their existing authorship via `configureGitUser`. The regression test `fence commits do not require a preconfigured Git identity` proves both an ordinary coordinator writer and a batch coordinator writer create and renew their fence from a checkout with no preconfigured Git identity. Full `pnpm run check` passed in local Docker container `docker.io/masonxhuang/codex-node24-ci:20260721` (Node v24.18.0, Git 2.47.3, pnpm 11.10.0) with 8 GiB memory/swap, 1024 PIDs, 4 CPUs, and init.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Shared `publishMainCommit` identity follow-up | Complete; landed after PR 761                  | Landed as [`openclaw/clawsweeper#758`](https://github.com/openclaw/clawsweeper/pull/758) at `fef846a851e2a5fbcfe114721b5c779b0ded53a2`, after the evidence-only documentation PR 761. It calls `configureGitUser()` at the shared commit-producing `publishMainCommit` entry so ordinary repair/apply publication paths do not depend on caller identity setup. The upstream `pnpm check` passed in [run 29858459637](https://github.com/openclaw/clawsweeper/actions/runs/29858459637). This complements, rather than replaces, PR 759's inline identity at the lower-level fence `commit-tree` boundary.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Fence hotfix evidence documentation           | Complete; landed                               | Landed as [`openclaw/clawsweeper#761`](https://github.com/openclaw/clawsweeper/pull/761) at `ac16e73dc3b18893e9c0edee38a054cb7b78ba6c`, recording PR 759, its regression proof, and CI evidence. This plan update incorporates the subsequently merged PR 758 and later live rollout evidence.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Batch failure terminalization                 | Complete; landed                               | Landed as [`openclaw/clawsweeper#764`](https://github.com/openclaw/clawsweeper/pull/764) at `b657a55bb6e4499825a9adffecb44e32cd0e9ed5`, superseding the narrower external [`openclaw/clawsweeper#760`](https://github.com/openclaw/clawsweeper/pull/760). It adds fenced retryable/refresh/permanent outcomes, receipt-aware cancellation recovery, newer-revision preservation, and manifest-based cleanup so a failed or cancelled publisher does not retain both members until lease expiry. Upstream `pnpm check` passed in [run 29881719295](https://github.com/openclaw/clawsweeper/actions/runs/29881719295); CodeQL, Windows, sparse build, and automerge E2E also passed. Deterministic post-fix failure coverage is the rollout gate; production failure injection is intentionally excluded.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Batch writer telemetry restoration            | Complete; landed, deployed, and live-verified  | Landed as [`openclaw/clawsweeper#766`](https://github.com/openclaw/clawsweeper/pull/766) at `6aae6e674234d6ac6680c520cc18050c4ff3f5ab`; dashboard deployment passed in [run 29883131304](https://github.com/openclaw/clawsweeper/actions/runs/29883131304). Run [29883986427](https://github.com/openclaw/clawsweeper/actions/runs/29883986427) then recorded the first fresh terminal operation: one commit, two materialized members, actual size 2, full batch, zero contention timeouts, 1,932,699 ms coordinator wait, and 52,255 ms hold. Its state commit [`d69464d7`](https://github.com/openclaw/clawsweeper-state/commit/d69464d74ee65dfa05e401f25929ca552b75da2d) changed exactly the two intended item records and completion accepted both acknowledgements.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Bounded batch writer priority                 | Complete; landed, deployed, and live-verified  | Landed as [`openclaw/clawsweeper#767`](https://github.com/openclaw/clawsweeper/pull/767) at `550316892d107815a36260356f623301393b4be0`; CI [run 29883477235](https://github.com/openclaw/clawsweeper/actions/runs/29883477235) and dashboard deploy [run 29884056241](https://github.com/openclaw/clawsweeper/actions/runs/29884056241) passed. The pre-deploy control run [29883986427](https://github.com/openclaw/clawsweeper/actions/runs/29883986427) entered as ordinary ticket 499 at position 55 and waited about 32 minutes. Post-deploy run [29885667172](https://github.com/openclaw/clawsweeper/actions/runs/29885667172) entered as authenticated batch ticket 541, waited about 21 seconds despite 29 ordinary tickets, and completed commit [`527eceef`](https://github.com/openclaw/clawsweeper-state/commit/527eceefbfe65328e01642f523b011acde805215) with two accepted outcomes. Run [29885888814](https://github.com/openclaw/clawsweeper/actions/runs/29885888814) repeated the bounded priority behavior after an ordinary turn, preserving fairness.                                                                                                                                                                                                                                                                                                               |
+| Size-4 capacity step                          | Complete; landed, deployed, and live-verified  | Landed as [`openclaw/clawsweeper#768`](https://github.com/openclaw/clawsweeper/pull/768) at `f1aa674039692a66975f1bdc78c95826aa40efeb`. CI [run 29887336269](https://github.com/openclaw/clawsweeper/actions/runs/29887336269), CodeQL [run 29887336268](https://github.com/openclaw/clawsweeper/actions/runs/29887336268), and dashboard deployment [run 29887905376](https://github.com/openclaw/clawsweeper/actions/runs/29887905376) passed. Production run [29888170667](https://github.com/openclaw/clawsweeper/actions/runs/29888170667) claimed [`openclaw/openclaw#110382`](https://github.com/openclaw/openclaw/issues/110382), [`openclaw/openclaw#111301`](https://github.com/openclaw/openclaw/issues/111301), [`openclaw/openclaw#111813`](https://github.com/openclaw/openclaw/issues/111813), and [`openclaw/openclaw#78031`](https://github.com/openclaw/openclaw/issues/78031); state commit [`880ab541`](https://github.com/openclaw/clawsweeper-state/commit/880ab541154514730958a0c30fd9946d1aeb1382) contains only those four item scopes, reports `materialized=4`, and completion reports `accepted=4`, `retryable=0`. Telemetry moved commits/materialized from 55/64 to 56/68 while contention remained 1,958 and open dead letters remained 413. Two consecutive windows recorded arrivals/completions of 9/0 and 5/4, so safety passed but capacity did not. |
+| Size-8 capacity step                          | Safety gate failed; rollback required          | [`openclaw/clawsweeper#771`](https://github.com/openclaw/clawsweeper/pull/771) landed at `5808a1829c8e7c584ce292b8a4649a5cd5bfe17b`; CI [run 29889947460](https://github.com/openclaw/clawsweeper/actions/runs/29889947460), CodeQL [run 29889947502](https://github.com/openclaw/clawsweeper/actions/runs/29889947502), and dashboard deployment [run 29890185892](https://github.com/openclaw/clawsweeper/actions/runs/29890185892) passed. Production run [29890385881](https://github.com/openclaw/clawsweeper/actions/runs/29890385881) failed before commit because two queue events for [`openclaw/openclaw#108676`](https://github.com/openclaw/openclaw/issues/108676) prepared incompatible mutations for the same durable record. Unfinished members were released and open dead letters remained 413. A second pre-rollback run [29890705127](https://github.com/openclaw/clawsweeper/actions/runs/29890705127) failed before commit on GitHub's `commit_refs` rejection; inner recovery reported `invalid_batch_state_writer_identity`, and unconditional cleanup succeeded. Restore both runtime settings to 4 before re-advancing and retain the second failure as an independent re-advance gate signal.                                                                                                                                                                 |
+| Duplicate-item claim hotfix                   | Complete; landed and recovery-proven           | [`openclaw/clawsweeper#772`](https://github.com/openclaw/clawsweeper/pull/772) landed at `883ce9914e57733b18b96bcf70e9308a29c8e237`. It admits at most one publication event per `targetRepo#itemNumber` in a batch and preserves FIFO order for the deferred event. CI and CodeQL passed. Post-deploy recovery run [29891989901](https://github.com/openclaw/clawsweeper/actions/runs/29891989901) selected four distinct items, produced one state commit, and reported `materialized=4`, `accepted=4`, `retryable=0`, and `released=0`; the independent writer-identity signal did not recur.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Publisher candidate scan                      | Complete; landed                               | [`openclaw/clawsweeper#773`](https://github.com/openclaw/clawsweeper/pull/773) landed at `f743e89a8f79d4bf0827d23a1ff41d821ddbfa59` and raised the reusable publisher workflow ask to 32. This is a candidate-scan ceiling only when the queue service applies a smaller lease cap.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Dashboard batch grant                         | Complete; landed                               | [`openclaw/clawsweeper#778`](https://github.com/openclaw/clawsweeper/pull/778) landed at `ea45d30c1510dbcfabacc1ebf96a269d5eaf8975` and configured the dashboard grant as 32. CI and CodeQL passed. The current caller in `.github/workflows/sweep.yml` still supplies `EXACT_REVIEW_BATCH_MAX_ITEMS=4`, so this grant alone does not prove or activate a batch larger than four on that path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Size-8 cap and compatibility work             | Open handoff; do not merge as-is               | [`openclaw/clawsweeper#775`](https://github.com/openclaw/clawsweeper/pull/775) now carries the unlanded safety work at `b07f89b2416086e2c0beffc8630cdc113b8bc672`: separate candidate scan from the hard ownership cap, persist the effective cap across same-ID retries and rolling deploys, keep rollback compatible with old workers and fresh/migrated schemas, and report the effective cap in manifests and telemetry. It was rebased before this handoff and then pushed without another rebase. The owner should review and extract or supersede these changes against the active main-line design; its earlier remote form was conflicting and lacked the full compatibility fixes. Focused tests passed 50/50 after the final rebase; the last full pre-rebase `pnpm run check` passed 2,542 tests with zero failures and eight skips. The final head has not received a completed no-finding review.                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Parallel prepare and size-32 readiness        | Planned; separate implementation boundary      | Keep actual ownership bounded while preparation becomes concurrent, initially with four isolated workers. Preserve deterministic aggregation, batch heartbeat, fencing, per-item outcomes, GitHub-effect idempotency, resource bounds, and one final state commit. Prove this at size 8 before treating size 32 as safe.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Size-32 capacity proof                        | Not complete                                   | A dashboard value of 32 is configuration evidence, not behavior proof. Completion requires one 32-distinct-item state commit with 32 independent accepted outcomes, bounded runtime and lease margin, unchanged contention/DLQ safety, two consecutive positive five-minute windows, and a following positive 60-minute window.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+
+### Publication lineage deduplication
+
+Queue admission treats one protocol-v2 result tuple as one publication lineage:
+`targetRepo#itemNumber + leaseRevision + claimGeneration`. Producer run ids and
+attempts remain provenance, but retries for the same tuple do not create another
+effective publication chain. A pending lineage keeps its queue slot and retry
+history while adopting the newest producer artifact. A lineage already owned by
+a dispatch or durable batch lease is immutable; later equivalent deliveries are
+acknowledged as semantic duplicates without stealing ownership. New review
+revisions, comment routing, and apply work remain separate lanes. The queue
+reports `semantic_deduped_total` independently from stale-revision supersession
+so backlog reduction is not mistaken for completed review output. See #800.
 
 ## Production incident and root cause
 
 The first real size-2 batch was
 [Actions run 29832766649](https://github.com/openclaw/clawsweeper/actions/runs/29832766649).
-It claimed `openclaw/openclaw#111587` and `openclaw/openclaw#89526`, created both
+It claimed [`openclaw/openclaw#111587`](https://github.com/openclaw/openclaw/issues/111587)
+and [`openclaw/openclaw#89526`](https://github.com/openclaw/openclaw/issues/89526), created both
 required GitHub App tokens, checked out the state repository, and prepared both
 members independently. Finalization began at `2026-07-21T13:08:30Z`. At
 `13:15:16Z` it observed lease owner
@@ -990,17 +1104,145 @@ writer must fail closed if it cannot acquire a ticket. Durable tickets, terminal
 receipts, existing exact-review batch ownership, and state history require no
 data transformation.
 
+## Revised capacity plan: size 8 checkpoint, parallel prepare, size 32
+
+Repository-wide serialization removed random Git-lease competition; it did not
+make batch-internal item work concurrent. The first full size-4 production run
+took 8 minutes 6 seconds. Approximately 3 minutes 37 seconds were spent preparing
+the four members sequentially. At the corresponding snapshot, 60-minute arrivals
+were 76 items/hour, useful resolutions were 20 items/hour, and 2,353 publication
+items remained pending.
+
+Using that single-run baseline, serial batch time is approximately
+`4.5 + 0.9 * item_count` minutes. Size 8 projects to about 41 items/hour, size 16
+to 51 items/hour, and size 32 to 58 items/hour. The serial asymptote is about 66
+items/hour, below the observed sustained arrival rate. Raising cardinality alone
+therefore cannot establish positive drain. A serial size-32 batch also projects
+to roughly 33 minutes, which leaves poor operational margin even though the
+publication lease itself is renewable.
+
+The clocks must not be conflated:
+
+- the publication batch lease is a renewable 30-minute sliding lease;
+- the state-writer coordinator has a renewable two-minute lease and a 30-minute
+  absolute deadline that begins only when finalization enters the coordinator;
+- the Git publication fence has a renewable two-minute TTL around final state
+  mutation; and
+- the Actions job has the end-to-end hard timeout of 60 minutes.
+
+The capacity plan is therefore:
+
+1. establish a real size-8 safety checkpoint with eight distinct durable items,
+   one state commit, eight accepted outcomes, and no retryable or released
+   members;
+2. while actual ownership remains bounded at the proven checkpoint, land an
+   independently reviewable bounded-parallel-prepare implementation;
+3. prove that implementation live at size 8; and
+4. use a separate reviewed configuration change to make size 32 the effective
+   ownership cap and prove sustained drain. Size 16 is optional diagnostic work,
+   not a mandatory rollout step.
+
+### Prepare-concurrency implementation boundary
+
+Preparation is logically independent today but uses shared mutable checkout,
+record, report, snapshot, and outcome paths. Do not parallelize the existing
+shell loop in place. The implementation PR should introduce a controller plus a
+single-item worker with these properties:
+
+- at most four workers initially, with one isolated root and state worktree per
+  fenced item identity;
+- a shared immutable baseline is allowed, but workers must not share a mutable
+  Git index, checkout, report path, snapshot path, or outcome path;
+- one batch heartbeat spans baseline setup, worker execution, durable outcome
+  creation, and handoff to finalization;
+- heartbeat loss stops new admission and prevents final commit;
+- manifest order determines result aggregation even when workers finish out of
+  order;
+- one worker failure, timeout, or permanent outcome must not cancel healthy
+  siblings;
+- per-item and whole-prepare timeouts, item/path/byte limits, and bounded cleanup
+  prevent one batch from exhausting the 60-minute job budget; and
+- finalization remains the only state-commit boundary: it re-fetches queue and
+  remote state, revalidates identities and expected OIDs, preserves unrelated
+  siblings, and emits at most one commit.
+
+Required tests belong in the narrowest repair/workflow suites and must cover
+concurrency 1 equivalence, the four-worker bound, out-of-order completion,
+cross-repository item-number isolation, same-path rejection, heartbeat loss,
+mixed outcomes, cancellation before and after commit, cleanup, remote-newer and
+sibling preservation, plus a 32-plan single-commit/32-ack proof.
+
+Record configured concurrency, observed peak workers, baseline SHA, prepare and
+total duration, per-worker maximum and p95 duration, outcome counts, timeouts,
+heartbeat failures, cleanup failures, and the resource limit that stopped any
+admission. Do not record tokens or artifact payloads.
+
+### Current implementation handoff
+
+The main branch currently contains two independent 32 values: the publisher ask
+from [`openclaw/clawsweeper#773`](https://github.com/openclaw/clawsweeper/pull/773)
+and the dashboard grant from
+[`openclaw/clawsweeper#778`](https://github.com/openclaw/clawsweeper/pull/778).
+The active caller in `.github/workflows/sweep.yml` nevertheless freezes
+`EXACT_REVIEW_BATCH_MAX_ITEMS=4`, so the production claim request remains capped
+at four. Before increasing that caller, preserve an explicit distinction between
+candidate scan size and actual ownership size.
+
+[`openclaw/clawsweeper#775`](https://github.com/openclaw/clawsweeper/pull/775)
+is the implementation handoff for that distinction. Its useful pieces are:
+
+- request up to 32 candidates while clamping the returned lease to a hard cap;
+- persist `configured_batch_size` on the durable batch so same-ID retries do not
+  change fullness, manifests, or telemetry after a deploy;
+- allow rolling deploy fallback from `configured_batch_size` to
+  `effective_max_items` and then to the legacy request value;
+- on rollback, never advertise a cap below the already-returned membership;
+- keep both fresh-created and migrated SQLite schemas writable by old workers;
+  and
+- report the effective ownership cap, not the scan ask, in writer telemetry.
+
+The pull request is intentionally a handoff, not an automatic merge instruction.
+Its remote branch now contains the complete local work, but it conflicts with the
+owner's active main-line changes. Review, extract, or supersede the compatible
+parts rather than merging the stale composition blindly.
+
+### Live gates and rollback
+
+Size 8 is proven only when one batch contains eight distinct logical items, one
+state commit contains exactly their bounded union, and completion reports
+`materialized=8`, `accepted=8`, `retryable=0`, and `released=0`. Record two
+complete consecutive five-minute windows. A safety failure returns to the last
+proven cap; a capacity-only failure authorizes the parallel-prepare step.
+
+After parallel preparation passes at size 8, size 32 requires one full
+32-distinct-item commit and 32 independent accepted outcomes, total and rolling
+p95 runtime below the 15-minute operational target, unchanged contention and
+open-DLQ safety, and no sibling, fence, guard, heartbeat, or ordinary-writer
+fairness regression. Two consecutive five-minute windows must show useful
+resolutions at least matching arrivals while pending and oldest age fall, and a
+following 60-minute window must remain positive before the final keep decision.
+No DLQ replay, cleanup, or audited disposal may be counted as useful drain.
+
+A parallel-prepare safety failure returns concurrency to 1 without discarding
+the last proven batch size. A size-32 safety failure returns the effective cap to
+8 while retaining the separately proven preparation implementation. Do not
+cancel an active production batch to accelerate rollback; let fenced completion
+or existing expiry/recovery finish it.
+
 ## Rollout and recovery gates
 
-Batch size remains 2. Do not use a dead-letter replay as the first behavior
-proof, and do not process or clean the existing DLQ as part of this rollout.
+The public dashboard grant is 32, but the active sweep caller still freezes its
+claim request at 4. Treat 4 as the current effective production maximum until a
+larger live claim proves otherwise. Do not use a dead-letter replay as the first
+behavior proof, and do not process or clean the existing DLQ as part of this
+rollout.
 
 The completed local implementation gates are:
 
 - focused proof for concurrent writer classes, strict FIFO/fairness, crash and
   stale-owner recovery, and stale-generation fencing;
-- batch sizes 1, 2, 4, and 8 each producing one commit in the local proof, while
-  size 2 remains the only production setting;
+- batch sizes 1, 2, 4, and 8 each producing one commit in the original local
+  proof; production has separately proven full batches at sizes 2 and 4;
 - remote sibling preservation and same-path conflict failure before push;
 - ordinary writer versus batch writer concurrency;
 - ambiguous push and acknowledgement-failure idempotent recovery;
@@ -1021,12 +1263,12 @@ The completed local implementation gates are:
   from local image
   `sha256:50e3cb887b2111488dcd22673b424a9b121ee2fdbc8596e44c69386cdcdede04`.
 
-The merged delivery, cutover, size-2 behavior proof, and size-2 safety samples
-are complete. The remaining live and capacity gates are to promote through
-separately reviewed size-4 and size-8 configuration changes, repeating the live
-commit/ack proof and two-sample measurement at each size. Size 4 must pass all
-safety gates. Size 8 must additionally make writer service rate sufficient for
-two consecutive samples to drain pending work and reduce oldest age.
+The merged delivery, cutover, size-2 proof, size-2 samples, size-4 proof, and
+size-4 samples are complete. The remaining gates are a valid full size-8 proof,
+two size-8 windows, bounded parallel preparation proven while ownership remains
+at size 8, and a separate effective size-32 rollout with its behavior and drain
+evidence. Repeat the commit/ack and observation gates for every effective live
+configuration.
 
 After landing and coordinator enablement, the first valid live size-2 proof must
 show all of the following in one batch:
@@ -1059,11 +1301,13 @@ and contention safety gates pass. If both measured windows pass safety but fail
 only the useful-rate, pending, or oldest-age capacity criteria, that is evidence
 to advance through the next separately reviewed size instead of keeping an
 undersized configuration. Any safety failure rolls back to the last proven
-size. Size 8 is the first configuration expected to exceed the observed
-72-80-item/hour arrival rate and must pass both safety and capacity before the
-final keep decision. No automatic `2 -> 4 -> 8` progression is permitted.
+size. Sequential size 8 is a safety checkpoint, not a credible final capacity
+target: the measured serial preparation ceiling is below the sustained arrival
+rate. Only size 32 after bounded parallel preparation is expected to provide
+enough headroom for backlog drain. No automatic `4 -> 8 -> 32` progression is
+permitted.
 
-### Follow-up task: fence identity hotfix and controlled 2 -> 4 -> 8 rollout
+### Follow-up task: fence identity hotfix and controlled 2 -> 4 -> 8 -> 32 rollout
 
 Treat this as one ordered rollout task. A later phase must not begin merely
 because the earlier configuration has been deployed; it begins only after the
@@ -1170,8 +1414,11 @@ preconfigured Git identity` in `test/repair/state-writer-coordinator-git.test.ts
       and dashboard deploy [run 29887905376](https://github.com/openclaw/clawsweeper/actions/runs/29887905376)
       passed. Production run
       [29888170667](https://github.com/openclaw/clawsweeper/actions/runs/29888170667)
-      claimed `openclaw/openclaw#110382`, `openclaw/openclaw#111301`,
-      `openclaw/openclaw#111813`, and `openclaw/openclaw#78031`. It acquired
+      claimed [`openclaw/openclaw#110382`](https://github.com/openclaw/openclaw/issues/110382),
+      [`openclaw/openclaw#111301`](https://github.com/openclaw/openclaw/issues/111301),
+      [`openclaw/openclaw#111813`](https://github.com/openclaw/openclaw/issues/111813),
+      and [`openclaw/openclaw#78031`](https://github.com/openclaw/openclaw/issues/78031).
+      It acquired
       durable writer ticket 621, recovered one ambiguous acquire response using
       the same identity, acquired the state fence on its first attempt, and
       created exactly one state commit,
@@ -1193,12 +1440,39 @@ preconfigured Git identity` in `test/repair/state-writer-coordinator-git.test.ts
       Size 4 therefore fails only capacity: over the combined interval arrivals
       exceeded completions 14/4 and pending rose by 10. The explicit decision is
       to advance to size 8 rather than keep size 4.
-- [ ] Increase to size 8 through this second explicit reviewed configuration
-      change after size 4 passed safety. Inspect at least one eight-member
-      single commit and all eight independent outcomes, then record two new
-      complete, consecutive five-minute samples. Roll back to size 4 on any
-      safety failure or if size 8 cannot sustain a positive drain rate.
-      Size 8 is the final rollout target, not an optional later discussion.
+- [x] Land duplicate durable-item admission serialization through
+      [`openclaw/clawsweeper#772`](https://github.com/openclaw/clawsweeper/pull/772)
+      at `883ce9914e57733b18b96bcf70e9308a29c8e237`. Recovery run
+      [29891989901](https://github.com/openclaw/clawsweeper/actions/runs/29891989901)
+      proved four distinct items, one state commit, four accepted outcomes, and
+      zero retryable or released members.
+- [x] Record the owner's candidate-scan and dashboard-grant changes from
+      [`openclaw/clawsweeper#773`](https://github.com/openclaw/clawsweeper/pull/773)
+      and [`openclaw/clawsweeper#778`](https://github.com/openclaw/clawsweeper/pull/778).
+      Do not misreport those two configured 32 values as a live size-32 batch:
+      the current sweep caller still freezes its request at four.
+- [ ] Decide the disposition of
+      [`openclaw/clawsweeper#775`](https://github.com/openclaw/clawsweeper/pull/775):
+      extract its cap persistence, rolling-deploy, rollback-schema, membership,
+      and effective-telemetry protections into the owner's active design, merge
+      an updated composition, or close it as explicitly superseded. Do not merge
+      its conflicting composition as-is.
+- [ ] Produce a real size-8 batch with eight distinct durable items, exactly one
+      state commit, `materialized=8`, `accepted=8`, `retryable=0`, and
+      `released=0`, then record two complete consecutive five-minute safety
+      windows. A capacity-only failure advances to parallel-prepare readiness;
+      a safety failure returns to the last proven effective cap.
+- [ ] Land bounded parallel preparation in an independently reviewed PR while
+      effective ownership remains at the proven size-8 checkpoint. Prove worker
+      isolation, heartbeat coverage, deterministic aggregation, resource bounds,
+      failure isolation, concurrency-one equivalence, and one final commit.
+- [ ] Make size 32 effective only through a separate reviewed configuration
+      change after parallel preparation passes at size 8. Prove one 32-member
+      commit and 32 accepted outcomes, then record two positive five-minute
+      windows and one following positive 60-minute window before keeping it.
+- [ ] Eliminate the publication backlog trend: useful resolutions must remain at
+      least arrivals, while pending depth and oldest pending age fall without
+      counting DLQ replay, cleanup, or audited disposal as useful completion.
 - [ ] Update this document with pull requests, merged commits, production run
       URLs, state commit identities, queue outcomes, coordinator/lease metrics,
       sample windows, and the final keep-or-rollback decision at each size.
@@ -1216,10 +1490,10 @@ The narrow coordinator rollback is:
 CLAWSWEEPER_STATE_COORDINATOR_ENABLED = false
 ```
 
-On rollback:
+On coordinator rollback:
 
-1. keep exact-review batching and `max_items=2` unchanged unless a separate,
-   explicitly authorized batching rollback is required;
+1. keep exact-review batching at the last separately proven effective cap unless
+   a distinct, explicitly authorized batching rollback is required;
 2. let an active coordinator owner finish or lose its renewable lease/absolute
    deadline; do not cancel the workflow;
 3. return newly started publishers to the legacy Git-fence path, preserving
@@ -1242,8 +1516,8 @@ This incident repair is complete when:
 - all normal generated-`state` writers use one durable FIFO admission boundary,
   while the Git ref serves only crash recovery, ownership fencing, stale-owner
   recovery, and atomic publication;
-- exact-result publication uses one active size-2 batch writer and completes one
-  real two-item commit with two correct independent acknowledgements;
+- exact-result publication uses one active batch writer and completes real
+  configured-size commits with correct independent acknowledgements;
 - ordinary writers and the batch writer make FIFO progress without normal
   480-second Git-lease competition;
 - sustained useful throughput remains above arrival rate with measured
@@ -1252,22 +1526,22 @@ This incident repair is complete when:
 - state-contention retries and dead letters stop growing;
 - batch cleanup keeps SQLite growth bounded;
 - every live-enabled pull request has its manual verification evidence recorded;
-- two complete, consecutive five-minute size-2 samples pass every safety gate
-  and record the capacity shortfall that requires the next controlled size;
+- every effective rollout size records its required behavior proof and complete
+  consecutive observation windows;
 - the temporary fixed-capacity-50 configuration is removed in a separately
   reviewed cleanup after the backlog is materially cleared;
 - open dead letters have an explicit replay, fresh-review, or audited-resolution
   disposition after the writer path is proven stable.
 
-The controlled batching rollout is complete only after size 4 and then size 8
-each land through an explicit reviewed configuration pull request, produce a
-live single commit with the configured number of independently acknowledged
-members, and record two complete consecutive five-minute samples. Intermediate
-sizes must pass all safety gates; a capacity-only failure advances to the next
-reviewed size. The final keep decision is production batch size 8 only after its
-samples also show sustained positive drain and falling oldest age; any failed
-size-8 safety or capacity gate rolls back to the last proven size 4
-configuration.
+The controlled batching rollout is complete only after size 8 produces a full
+distinct-item behavior proof, bounded parallel preparation is independently
+proven at that checkpoint, and a separate effective size-32 change produces a
+full 32-member proof. Every effective configuration must record its required
+consecutive samples. The final keep decision is production size 32 only after
+two five-minute windows and the following 60-minute window show sustained
+positive drain, falling pending depth, and falling oldest age. A size-32 safety
+failure returns the effective cap to the proven size-8 checkpoint while retaining
+the independently proven preparation implementation.
 
 Migration of authoritative operational state into a database remains a possible
 long-term architecture. It is not required to validate or roll back this

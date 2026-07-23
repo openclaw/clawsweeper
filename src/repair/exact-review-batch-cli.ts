@@ -71,7 +71,7 @@ async function claim() {
   const manifest: BatchManifest = {
     batchId: lease.batchId,
     leaseOwner,
-    configuredBatchSize: positiveInteger(env("EXACT_REVIEW_BATCH_MAX_ITEMS")),
+    configuredBatchSize: lease.configuredBatchSize,
     batchWaitMs: lease.batchWaitMs,
     items: fetched.items.map((item, index) => ({
       ...item,

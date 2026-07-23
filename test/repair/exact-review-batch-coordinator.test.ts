@@ -157,6 +157,7 @@ test("queue client signs protocol calls and rejects malformed responses", async 
           claimed: true,
           accepted: 1,
           skipped: 0,
+          configured_batch_size: 2,
           batch_wait_ms: 4321,
           batch: leaseJson(),
         }),
@@ -165,6 +166,7 @@ test("queue client signs protocol calls and rejects malformed responses", async 
   });
   const lease = await client.claim({ claimId: "claim-1", leaseOwner: "run-1", maxItems: 3 });
   assert.equal(lease?.batchId, "claim-1");
+  assert.equal(lease?.configuredBatchSize, 2);
   assert.equal(lease?.batchWaitMs, 4321);
   await client.heartbeat({ batchId: "claim-1", leaseOwner: "run-1", items: queueItems });
   await client.complete({
@@ -207,6 +209,52 @@ test("queue client signs protocol calls and rejects malformed responses", async 
       },
     ],
   });
+});
+
+test("queue client uses the current-main effective cap during a rolling deploy", async () => {
+  const client = new ExactReviewBatchQueueClient({
+    baseUrl: "https://queue.example",
+    webhookSecret: "secret",
+    fetch: async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          claimed: true,
+          effective_max_items: 4,
+          batch_wait_ms: 0,
+          batch: leaseJson(),
+        }),
+      ),
+  });
+
+  const lease = await client.claim({ claimId: "claim-1", leaseOwner: "run-1", maxItems: 32 });
+  assert.equal(lease?.configuredBatchSize, 4);
+});
+
+test("queue client preserves a larger existing lease across dashboard rollback", async () => {
+  const rollbackItems = Array.from({ length: 8 }, (_, index) => ({
+    itemKey: `openclaw/openclaw#${index + 1}`,
+    revision: 1,
+    claimGeneration: 1,
+  }));
+  const client = new ExactReviewBatchQueueClient({
+    baseUrl: "https://queue.example",
+    webhookSecret: "secret",
+    fetch: async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          claimed: true,
+          effective_max_items: 4,
+          batch_wait_ms: 0,
+          batch: leaseJson(rollbackItems),
+        }),
+      ),
+  });
+
+  const lease = await client.claim({ claimId: "claim-1", leaseOwner: "run-1", maxItems: 32 });
+  assert.equal(lease?.items.length, 8);
+  assert.equal(lease?.configuredBatchSize, 8);
 });
 
 function fakeQueue(
@@ -261,12 +309,12 @@ function fakeQueue(
   };
 }
 
-function leaseJson() {
+function leaseJson(items = queueItems) {
   return {
     batch_id: "claim-1",
     lease_owner: "run-1",
     lease_expires_at: new Date(Date.now() + 60_000).toISOString(),
-    items: queueItems.map((item) => ({
+    items: items.map((item) => ({
       item_key: item.itemKey,
       revision: item.revision,
       claim_generation: item.claimGeneration,

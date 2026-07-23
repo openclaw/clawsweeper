@@ -121,11 +121,67 @@ test("publication batches atomically select ready items without duplicate active
     candidates.slice(0, 2).map((item) => item.itemKey),
   );
   assert.equal(second, null);
+  assert.equal(first?.configuredBatchSize, 2);
   assert.deepEqual(batches.activeLeaseSnapshot(1_500), {
     itemKeys: candidates.slice(0, 2).map((item) => item.itemKey),
     nextLeaseExpiresAt: 2_000,
   });
   assert.equal(batches.fetch("batch-1", "wrong-worker", 1_500), null);
+});
+
+test("batch schema migration derives a safe cap for an active legacy lease", () => {
+  const storage = new TestStorage();
+  storage.exec(
+    `CREATE TABLE exact_review_publication_batches (
+       batch_id TEXT PRIMARY KEY,
+       state TEXT NOT NULL,
+       lease_owner TEXT NOT NULL,
+       lease_expires_at INTEGER NOT NULL,
+       attempt INTEGER NOT NULL,
+       created_at INTEGER NOT NULL,
+       completed_at INTEGER,
+       state_commit_sha TEXT,
+       failure_fingerprint TEXT
+     ) STRICT;
+     CREATE TABLE exact_review_publication_batch_items (
+       batch_id TEXT NOT NULL,
+       item_key TEXT NOT NULL,
+       revision INTEGER NOT NULL,
+       claim_generation INTEGER NOT NULL,
+       terminal_outcome TEXT,
+       PRIMARY KEY (batch_id, item_key)
+     ) STRICT;
+     INSERT INTO exact_review_publication_batches
+       (batch_id, state, lease_owner, lease_expires_at, attempt, created_at)
+       VALUES ('legacy-active', 'leased', 'worker', 2000, 1, 1000);
+     INSERT INTO exact_review_publication_batch_items
+       (batch_id, item_key, revision, claim_generation)
+       VALUES ('legacy-active', 'item-1', 1, 1), ('legacy-active', 'item-2', 1, 1);`,
+  );
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+
+  assert.equal(batches.fetch("legacy-active", "worker", 1_500)?.configuredBatchSize, 2);
+});
+
+test("fresh batch schema remains writable by the current-main insert after rollback", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+
+  storage.exec(
+    `INSERT INTO exact_review_publication_batches
+       (batch_id, state, lease_owner, lease_expires_at, attempt, created_at)
+     VALUES ('rollback-writer', 'leased', 'worker', 2000, 1, 1000)`,
+  );
+
+  assert.equal(
+    storage.scalar(
+      `SELECT configured_batch_size AS value
+         FROM exact_review_publication_batches WHERE batch_id = 'rollback-writer'`,
+    ),
+    1,
+  );
 });
 
 test("expired unfinished membership is reclaimable with a new fencing generation", () => {
@@ -361,6 +417,8 @@ function publicationRequest(
   number: number,
   producerRunId: string,
   targetRepo = "openclaw/openclaw",
+  leaseRevision: number | null = 1,
+  protocolVersion: 1 | 2 = 2,
 ) {
   const producerDecision = {
     targetRepo,
@@ -385,9 +443,9 @@ function publicationRequest(
           producerRunAttempt: 1,
           sourceSha: "a".repeat(40),
           itemKey: `${targetRepo}#${number}`,
-          protocolVersion: 2,
-          leaseRevision: 1,
-          claimGeneration: 1,
+          protocolVersion,
+          leaseRevision: protocolVersion === 2 ? leaseRevision : null,
+          claimGeneration: protocolVersion === 2 ? 1 : null,
           liveProceeded: true,
           liveTerminalNoop: false,
           liveTerminalMissing: false,
@@ -577,6 +635,248 @@ test("batch claim serializes distinct publication events for the same durable it
       claim.batch.items.map((item: { item_key: string }) => item.item_key),
       ["openclaw/openclaw#108676@publish:2001:1", "openclaw/openclaw#108677@publish:2003:1"],
     );
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("publication ingress is never shed by the review pending soft limit", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 6_100_000;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      {
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PENDING_SOFT_LIMIT: "1",
+      },
+    );
+    await queue.fetch(reviewRequest("delivery-review-cap", 108699));
+    const response = await (
+      await queue.fetch(
+        publicationRequest(
+          "delivery-publication-over-cap",
+          108699,
+          "2099",
+          "openclaw/openclaw",
+          null,
+          1,
+        ),
+      )
+    ).json();
+
+    assert.equal(response.queued, true);
+    assert.equal(response.shed, undefined);
+    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.pending, 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("newer publication revisions supersede unowned pending rows at enqueue", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 6_200_000;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+    );
+    await queue.fetch(
+      publicationRequest("delivery-revision-1", 108700, "2101", "openclaw/openclaw", 1),
+    );
+    const response = await (
+      await queue.fetch(
+        publicationRequest("delivery-revision-2", 108700, "2102", "openclaw/openclaw", 2),
+      )
+    ).json();
+
+    assert.equal(response.queued, true);
+    assert.equal(response.superseded_publications, 1);
+    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.pending, 1);
+    assert.equal(stats.lanes.publication.completed_total, 1);
+    assert.equal(stats.lanes.publication.superseded_total, 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("semantic lineage dedupe cannot leave obsolete rows eligible for a batch", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 6_250_000;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      {
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "8",
+      },
+    );
+    for (let index = 0; index < 101; index += 1) {
+      await queue.fetch(
+        publicationRequest(
+          `delivery-many-old-${index}`,
+          108703,
+          String(2400 + index),
+          "openclaw/openclaw",
+          1,
+        ),
+      );
+    }
+    await queue.fetch(
+      publicationRequest("delivery-many-new", 108703, "2600", "openclaw/openclaw", 2),
+    );
+
+    const before = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(before.lanes.publication.pending, 1);
+    assert.equal(before.lanes.publication.semantic_deduped_total, 100);
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-skips-obsolete-remainder",
+          lease_owner: "worker-1",
+          max_items: 32,
+        }),
+      )
+    ).json();
+    assert.deepEqual(
+      claim.batch.items.map((item: { item_key: string }) => item.item_key),
+      ["openclaw/openclaw#108703@publish:2600:1"],
+    );
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("stale publication ingress is acknowledged without replacing a newer revision", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 6_300_000;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+    );
+    await queue.fetch(publicationRequest("delivery-newer", 108701, "2202", "openclaw/openclaw", 2));
+    const removedNewer = await (
+      await queue.fetch(
+        batchRequest("/publications/supersede", {
+          items: [{ item_key: "openclaw/openclaw#108701@publish:2202:1", revision: 1 }],
+        }),
+      )
+    ).json();
+    assert.equal(removedNewer.superseded, 1);
+    const response = await (
+      await queue.fetch(
+        publicationRequest("delivery-stale", 108701, "2201", "openclaw/openclaw", 1),
+      )
+    ).json();
+
+    assert.equal(response.deduped, true);
+    assert.equal(response.superseded, true);
+    assert.equal(response.publication_revision, 1);
+    assert.equal(response.superseded_by_revision, 2);
+    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.pending, 0);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("publication reconcile preserves active batches and removes older revisions after expiry", async () => {
+  const originalNow = Date.now;
+  let now = 6_400_000;
+  Date.now = () => now;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      {
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+      },
+    );
+    await queue.fetch(
+      publicationRequest("delivery-owned-old", 108702, "2301", "openclaw/openclaw", 1),
+    );
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-reconcile-protection",
+          lease_owner: "worker-1",
+          max_items: 1,
+        }),
+      )
+    ).json();
+    assert.equal(claim.claimed, true);
+    await queue.fetch(
+      publicationRequest("delivery-unowned-new", 108702, "2302", "openclaw/openclaw", 2),
+    );
+    const removedNewer = await (
+      await queue.fetch(
+        batchRequest("/publications/supersede", {
+          items: [{ item_key: "openclaw/openclaw#108702@publish:2302:1", revision: 1 }],
+        }),
+      )
+    ).json();
+    assert.equal(removedNewer.superseded, 1);
+
+    const protectedResult = await (
+      await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 100 }))
+    ).json();
+    assert.equal(protectedResult.changed, 0);
+    assert.equal(protectedResult.eligible, 0);
+
+    now += 60_001;
+    const dryRun = await (
+      await queue.fetch(batchRequest("/publications/reconcile", { max_items: 100 }))
+    ).json();
+    assert.equal(dryRun.apply, false);
+    assert.equal(dryRun.eligible, 1);
+    assert.equal(dryRun.changed, 0);
+
+    const applied = await (
+      await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 100 }))
+    ).json();
+    assert.equal(applied.changed, 1);
+    assert.equal(applied.eligible_remaining, 0);
+    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.pending, 0);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("batch claim scans beyond but cannot exceed the configured rollout size", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 6_500_000;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      {
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "4",
+      },
+    );
+    for (let itemNumber = 1; itemNumber <= 8; itemNumber += 1) {
+      await queue.fetch(
+        publicationRequest(`delivery-cap-${itemNumber}`, itemNumber, `${3000 + itemNumber}`),
+      );
+    }
+
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-configured-cap",
+          lease_owner: "worker-1",
+          max_items: 50,
+        }),
+      )
+    ).json();
+
+    assert.equal(claim.claimed, true, JSON.stringify(claim));
+    assert.equal(claim.requested_max_items, 50);
+    assert.equal(claim.effective_max_items, 4);
+    assert.equal(claim.batch.items.length, 4);
   } finally {
     Date.now = originalNow;
   }
@@ -810,6 +1110,39 @@ test("batch protocol routes require the shared internal signature", async () => 
   assert.equal(forwardedPath, "/publication-batches/claim");
 });
 
+test("publication reconciliation route requires the shared internal signature", async () => {
+  const secret = "test-secret";
+  const body = JSON.stringify({ apply: false, max_items: 1 });
+  let forwardedPath = "";
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: {
+      idFromName: () => "global",
+      get: () => ({
+        fetch: async (request: Request) => {
+          forwardedPath = new URL(request.url).pathname;
+          return new Response(JSON.stringify({ ok: true }));
+        },
+      }),
+    },
+  };
+  const url = "https://clawsweeper.openclaw.ai/internal/exact-review/publications/reconcile";
+  const unauthorized = await worker.fetch(new Request(url, { method: "POST", body }), env);
+  assert.equal(unauthorized.status, 401);
+
+  const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+  const authorized = await worker.fetch(
+    new Request(url, {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": signature },
+      body,
+    }),
+    env,
+  );
+  assert.equal(authorized.status, 200);
+  assert.equal(forwardedPath, "/publications/reconcile");
+});
+
 test("queue fetch terminalizes a stale batch revision before dispatch", async () => {
   const originalNow = Date.now;
   Date.now = () => 1_000_000;
@@ -1036,6 +1369,90 @@ test("batch admission keeps one target owner for least-privilege credentials", a
       claim.batch.items.map((item) => item.item_key),
       ["openclaw/openclaw#120@publish:1020:1", "openclaw/openclaw#122@publish:1022:1"],
     );
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("batch ask widens owner scanning without exceeding the configured lease size", async () => {
+  const originalNow = Date.now;
+  let now = 1_800_000;
+  Date.now = () => now;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      {
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+      },
+    );
+    await queue.fetch(publicationRequest("owner-a-oldest", 130, "1030"));
+    now += 1;
+    await queue.fetch(publicationRequest("owner-b-interleaved", 131, "1031", "example/project"));
+    now += 1;
+    await queue.fetch(publicationRequest("owner-a-second", 132, "1032"));
+    now += 1;
+    await queue.fetch(publicationRequest("owner-a-over-cap", 133, "1033"));
+
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-owner-scan-cap",
+          lease_owner: "worker-1",
+          max_items: 4,
+        }),
+      )
+    ).json();
+
+    assert.deepEqual(
+      claim.batch.items.map((item) => item.item_key),
+      ["openclaw/openclaw#130@publish:1030:1", "openclaw/openclaw#132@publish:1032:1"],
+    );
+    assert.equal(claim.configured_batch_size, 2);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("idempotent batch claims retain the cap recorded by the original lease", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 1_900_000;
+  try {
+    const storage = new TestStorage();
+    const initialQueue = new ExactReviewQueue(
+      { storage },
+      {
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+      },
+    );
+    await initialQueue.fetch(publicationRequest("stable-cap-1", 140, "1040"));
+    await initialQueue.fetch(publicationRequest("stable-cap-2", 141, "1041"));
+    const requestBody = {
+      claim_id: "claim-stable-cap",
+      lease_owner: "worker-1",
+      max_items: 4,
+    };
+    const initial = await (
+      await initialQueue.fetch(batchRequest("/publication-batches/claim", requestBody))
+    ).json();
+    assert.equal(initial.configured_batch_size, 2);
+
+    for (const configuredSize of [1, 4]) {
+      const retryQueue = new ExactReviewQueue(
+        { storage },
+        {
+          EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+          EXACT_REVIEW_PUBLICATION_BATCH_SIZE: String(configuredSize),
+        },
+      );
+      const retried = await (
+        await retryQueue.fetch(batchRequest("/publication-batches/claim", requestBody))
+      ).json();
+      assert.equal(retried.configured_batch_size, 2);
+      assert.equal(retried.batch.configured_batch_size, 2);
+      assert.equal(retried.batch.items.length, 2);
+    }
   } finally {
     Date.now = originalNow;
   }

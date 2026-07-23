@@ -419,10 +419,12 @@ export function isAllowedMutationActor(login: JsonValue, trustedBots: Iterable<s
 }
 
 export function normalizeGitHubActor(login: JsonValue) {
+  // Strip every trailing [bot] suffix: "evil[bot][bot]" must not normalize to
+  // "evil[bot]" and collide with a real bot's normalized identity (#574).
   return String(login ?? "")
     .trim()
     .toLowerCase()
-    .replace(/\[bot\]$/i, "");
+    .replace(/(\[bot\])+$/i, "");
 }
 
 export function isGitHubAppIntegrationAuthError(message: JsonValue) {
