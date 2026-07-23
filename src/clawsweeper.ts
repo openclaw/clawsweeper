@@ -18719,7 +18719,7 @@ function isRoutineBeforeMergeStep(value: string): boolean {
   const text = value.trim();
   if (!text) return false;
   if (
-    !/\b(?:merge after (?:required )?checks are green|merge after maintainer review|normal (?:ci|maintainer review)|routine maintainer review|no further action)\b/i.test(
+    !/\b(?:merge after (?:required )?checks are green|merge after maintainer review|normal (?:ci|maintainer review)|routine (?:ci|maintainer review)|ordinary (?:ci|maintainer review)|wait for (?:required |status )?(?:ci|checks|status checks)|no further action)\b/i.test(
       text,
     ) &&
     !/^(?:land|merge|ship|proceed|continue|wait)\b[^\n]{0,120}\bafter (?:normal |ordinary |routine )?maintainer review\b/i.test(
@@ -18817,10 +18817,22 @@ function publicBeforeMergeItems(options: {
   return items;
 }
 
+// Checklist entries are list items, not table cells; only flatten newlines so
+// downstream consumers of the checklist see command/path text unaltered.
+function publicChecklistText(value: string): string {
+  return value
+    .replace(/\r?\n|\r/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function publicBeforeMergeBlock(items: readonly PublicBeforeMergeItem[]): string {
   if (items.length === 0) return "None.";
   return items
-    .map((item) => `- [ ] **${publicTableCell(item.label)}** - ${publicTableCell(item.detail)}`)
+    .map(
+      (item) =>
+        `- [ ] **${publicChecklistText(item.label)}** - ${publicChecklistText(item.detail)}`,
+    )
     .join("\n");
 }
 
@@ -19108,7 +19120,9 @@ function sanitizeArchitectureDiagram(value: string): string {
   if (/<[a-z!/]/i.test(diagram)) return "";
   if (/%%\{/.test(diagram)) return "";
   if (diagram.includes("//")) return "";
-  if (/\b(?:data|javascript|vbscript|https?|ftp|file|blob|mailto):/i.test(diagram)) return "";
+  // Require a non-space after the colon so human-readable labels such as
+  // "Data: PR input" are not mistaken for data:/file: URLs.
+  if (/\b(?:data|javascript|vbscript|https?|ftp|file|blob|mailto):\S/i.test(diagram)) return "";
   // Interaction and styling directives start a statement (newline- or
   // semicolon-separated); the same words are fine inside human-readable node labels.
   for (const statement of diagram.split(/[;\r\n]+/)) {

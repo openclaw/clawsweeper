@@ -252,13 +252,27 @@ export function renderDecisionPacketPublicBlock(markdown: string): string {
   const packet = buildDecisionPacketFromReport(markdown);
   if (!packet) return "";
   const recommendation = packet.options.find((option) => option.recommended);
-  if (!recommendation) return "";
   const tableCell = (value: string) =>
     value
       .replace(/\\/g, "\\\\")
       .replace(/\r?\n|\r/g, "<br>")
       .replace(/\|/g, "\\|")
       .trim();
+  if (!recommendation) {
+    // A packet without a flagged recommendation is still an outstanding maintainer
+    // choice; show the question and the available options instead of hiding it.
+    if (packet.options.length === 0) return "";
+    const optionCells = packet.options
+      .map((option) => `**${tableCell(option.title)}:** ${tableCell(option.body)}`)
+      .join("<br>");
+    return [
+      "| Question | Options |",
+      "|---|---|",
+      `| ${tableCell(packet.question)} | ${optionCells} |`,
+      "",
+      `Why: ${packet.rationale}`,
+    ].join("\n");
+  }
   return [
     "| Question | Recommendation |",
     "|---|---|",
