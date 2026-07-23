@@ -5625,6 +5625,17 @@ function markdownFenceStateAfterLine(fence: string | null, line: string): string
 // Fence-aware so heading-shaped lines inside fenced blocks (for example the Mermaid
 // architecture diagram) can never open or terminate a section.
 function markdownSection(body: string, heading: string): string {
+  return markdownSectionInternal(body, heading, false);
+}
+
+// Renderer-owned scan-first sections always precede the collapsed details block, so
+// lookups for them stop at the first top-level <details> boundary; model text inside
+// the collapsed block can never supply them.
+function markdownTopLevelSection(body: string, heading: string): string {
+  return markdownSectionInternal(body, heading, true);
+}
+
+function markdownSectionInternal(body: string, heading: string, topLevelOnly: boolean): string {
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const headingPattern = new RegExp(
     `^(?:\\*\\*${escaped}\\*\\*|#{1,6}[ \\t]+${escaped})[ \\t]*$`,
@@ -5642,6 +5653,7 @@ function markdownSection(body: string, heading: string): string {
       fence = markdownFenceStateAfterLine(fence, line);
       continue;
     }
+    if (!fence && topLevelOnly && /^<details(?:\s|>)/i.test(line.trim())) break;
     if (!fence && headingPattern.test(line)) {
       contentStart = index + 1;
       break;
@@ -5737,7 +5749,7 @@ function markdownTableCells(line: string): string[] {
 // outstanding maintainer question lives under "Decision needed"; surface that
 // question as the remaining action.
 function firstDecisionNeededQuestion(body: string): string {
-  const section = markdownSection(body, "Decision needed");
+  const section = markdownTopLevelSection(body, "Decision needed");
   if (!section) return "";
   for (const line of section.split(/\r?\n/)) {
     const cells = markdownTableCells(line);
@@ -5751,7 +5763,7 @@ function firstDecisionNeededQuestion(body: string): string {
 }
 
 function firstBeforeMergeAction(body: string): string {
-  const section = markdownSection(body, "Before merge");
+  const section = markdownTopLevelSection(body, "Before merge");
   // "None." is the no-action sentinel; a checked task is finished work, not a
   // remaining action.
   if (!section || /^none[.!]?$/i.test(section.trim())) {
@@ -5804,7 +5816,7 @@ function previousReviewReviewedAt(body: string): string | null {
 }
 
 function sectionLabeledValue(body: string, heading: string, prefix: string): string {
-  const section = markdownSection(body, heading);
+  const section = markdownTopLevelSection(body, heading);
   if (!section) return "";
   const lowerPrefix = prefix.toLowerCase();
   const plain = section
@@ -5903,7 +5915,7 @@ function extractLatestClawSweeperReview(
     rating: previousReviewRating(body),
     // A present Before merge section is authoritative; legacy next-step headings are
     // consulted only for comments that predate the scan-first layout.
-    nextStep: markdownSection(body, "Before merge")
+    nextStep: markdownTopLevelSection(body, "Before merge")
       ? firstBeforeMergeAction(body)
       : firstNonEmptyLine(markdownSection(body, "Next step before merge")) ||
         firstNonEmptyLine(markdownSection(body, "Next step")),
@@ -18826,6 +18838,7 @@ function publicBeforeMergeItems(options: {
   securityReview: SecurityReview;
   risks: string;
   nextStep: string;
+  decisionPending: boolean;
   patchQualityBlocked: boolean;
   requiredRatingSteps: readonly string[];
 }): PublicBeforeMergeItem[] {
@@ -18889,15 +18902,16 @@ function publicBeforeMergeItems(options: {
     add("Resolve security review attention item", options.securityReview.summary);
   }
   if (!isReportNoneList(options.risks)) addPrioritized(options.risks, "P1", "Resolve merge risk");
-  if (!isRoutineBeforeMergeStep(options.nextStep) && !isRoutineCiOrReviewText(options.nextStep)) {
-    if (isActionablePriorityText(options.nextStep)) {
-      add(
-        `Complete next step (${publicPriorityFromText(options.nextStep, "P2")})`,
-        options.nextStep,
-      );
-    } else {
-      add("Complete next step", options.nextStep);
-    }
+  // Only actionable next-step text enters the checklist: routing rationale or other
+  // explanatory prose is not remaining merge work, and decision questions are
+  // already represented by the decision packet.
+  if (
+    !isRoutineBeforeMergeStep(options.nextStep) &&
+    !isRoutineCiOrReviewText(options.nextStep) &&
+    isActionablePriorityText(options.nextStep) &&
+    !(options.decisionPending && /\bdecision\b/i.test(options.nextStep))
+  ) {
+    add(`Complete next step (${publicPriorityFromText(options.nextStep, "P2")})`, options.nextStep);
   }
   // Routine advice never becomes a merge blocker; a step that deduplicates against
   // an existing item still counts as represented remediation.
@@ -19254,11 +19268,20 @@ function sanitizeArchitectureDiagram(value: string): string {
   // Require a non-space after the colon so human-readable labels such as
   // "Data: PR input" are not mistaken for data:/file: URLs.
   if (/\b(?:data|javascript|vbscript|https?|ftp|file|blob|mailto):\S/i.test(diagram)) return "";
+  // The declaration line must be exactly "flowchart <direction>" so no further
+  // statement can hide after it on the same line.
+  const declarationLine = diagram.split(/\r?\n/, 1)[0] ?? "";
+  if (!/^flowchart[ \t]+(?:LR|RL|TB|BT|TD)[ \t]*;?[ \t]*$/i.test(declarationLine)) return "";
   // Interaction and styling directives start a statement (newline- or
   // semicolon-separated); the same words are fine inside human-readable node labels.
   for (const statement of diagram.split(/[;\r\n]+/)) {
     if (/^\s*(?:click|style|classDef|class|linkStyle)\b/i.test(statement)) return "";
   }
+  // Directive shapes are also rejected mid-line, where Mermaid can begin a new
+  // statement without a separator.
+  if (/\bclick[ \t]+[\w-]+[ \t]+(?:href|call)\b/i.test(diagram)) return "";
+  if (/\b(?:style|linkStyle)[ \t]+[\w-]+[ \t]+[\w-]+[ \t]*:/i.test(diagram)) return "";
+  if (/\bclassDef[ \t]+[\w-]+[ \t]+[\w-]+[ \t]*:/i.test(diagram)) return "";
   return diagram;
 }
 
@@ -19487,6 +19510,7 @@ function renderKeepOpenCommentFromReport(
       securityReview,
       risks,
       nextStep: nextStepLine,
+      decisionPending: Boolean(decisionPacketBlock),
       patchQualityBlocked,
       requiredRatingSteps: patchQualityBlocked ? prRating.nextSteps : [],
     });

@@ -641,10 +641,8 @@ Full review comments:
   );
 
   assert.match(comment, /Codex review: passed\./);
-  assert.match(
-    comment,
-    /- \[ \] \*\*Complete next step\*\* - Leave this draft open after fixes are complete\./,
-  );
+  // Explanatory routing prose is not remaining merge work.
+  assert.match(comment, /## Before merge\n\nNone\./);
   assert.doesNotMatch(comment, /\[P2\] Leave this draft open after fixes are complete/);
   assert.doesNotMatch(comment, /Autofix follow-up:/);
   assert.match(comment, /<!-- clawsweeper-verdict:pass item=74610 sha=abc123def456/);

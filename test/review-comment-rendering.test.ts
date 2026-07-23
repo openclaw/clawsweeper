@@ -622,10 +622,7 @@ Reason: Maintainers should review the tests after the targeted lane is green.
     /## What this changes\n\nAdds regression coverage for session-scoped model overrides\./,
   );
   assert.ok(comment.indexOf("## What this changes") < comment.indexOf("## Merge readiness"));
-  assert.match(
-    comment,
-    /## Merge readiness\n\n.*\*\*Ready for maintainer review - 1 item remains\*\*/,
-  );
+  assert.match(comment, /## Merge readiness\n\n✅ \*\*Ready for maintainer review\*\*/);
   assert.doesNotMatch(comment, /\| \| \|\n\|---\|---\|/);
   assert.match(comment, /## Review scores\n\n\| Measure \| Result \| What it means \|/);
   assert.match(comment, /\| \*\*Overall readiness\*\* \| .* \*\*\(5\/6\)\*\* \|/);
@@ -669,8 +666,8 @@ Reason: Maintainers should review the tests after the targeted lane is green.
     comment,
     /- Maintainers can comment `@clawsweeper explain` to ask for more context, or `@clawsweeper stop` to stop active automation\./,
   );
-  assert.match(comment, /## Before merge/);
-  assert.match(comment, /Maintainers should review the tests after the targeted lane is green\./);
+  // Ordinary maintainer review guidance collapses out of the checklist.
+  assert.match(comment, /## Before merge\n\nNone\./);
   assert.match(comment, /<summary><strong>Agent review details<\/strong><\/summary>/);
   assert.match(
     comment,
