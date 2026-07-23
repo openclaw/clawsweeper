@@ -326,10 +326,15 @@ function reviewFindingLines(lines: readonly string[]): readonly string[] {
   }
   let summaryStart = -1;
   for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = (lines[index] ?? "").trim();
+    // Stop permanently at the first top-level details boundary: renderer-owned
+    // summary sections precede it, and collapsed model text could contain forged
+    // closing tags that would otherwise re-enter top level.
+    if (!fenced[index] && /^<details(?:\s|>)/i.test(trimmed)) break;
     if (
       !fenced[index] &&
       detailsDepth[index] === 0 &&
-      ["**Review findings**", "## Findings"].includes((lines[index] ?? "").trim())
+      ["**Review findings**", "## Findings"].includes(trimmed)
     ) {
       summaryStart = index;
       break;
