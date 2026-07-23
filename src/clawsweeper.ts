@@ -5718,10 +5718,18 @@ function markdownTableCells(line: string): string[] {
 
 function firstBeforeMergeAction(body: string): string {
   const section = markdownSection(body, "Before merge");
-  if (!section) return "";
+  // "None." is the no-action sentinel; a checked task is finished work, not a
+  // remaining action.
+  if (!section || /^none[.!]?$/i.test(section.trim())) return "";
+  let sawTask = false;
   for (const line of section.split(/\r?\n/)) {
-    const task = line.match(/^- \[[ xX]\][ \t]+(?:\*\*[^*\n]+\*\*[ \t]+-[ \t]+)?(\S.*)$/);
+    if (/^- \[[xX]\]/.test(line)) {
+      sawTask = true;
+      continue;
+    }
+    const task = line.match(/^- \[ \][ \t]+(?:\*\*[^*\n]+\*\*[ \t]+-[ \t]+)?(\S.*)$/);
     if (task?.[1]) return task[1].trim();
+    if (line.startsWith("- [")) sawTask = true;
     const cells = markdownTableCells(line);
     if (cells.length < 2) continue;
     if (cells.every((cell) => /^:?-{3,}:?$/.test(cell))) continue;
@@ -5734,7 +5742,8 @@ function firstBeforeMergeAction(body: string): string {
     if (labels[0] === "needed" && labels[1] === "why") continue;
     if (cells[1]) return cells[1];
   }
-  return firstNonEmptyLine(section);
+  // A checklist whose tasks are all checked has no remaining action.
+  return sawTask ? "" : firstNonEmptyLine(section);
 }
 
 function previousReviewStatus(body: string): string {
@@ -19383,9 +19392,12 @@ function renderKeepOpenCommentFromReport(
     }
     if (mergeRiskLine) {
       // Routine risks are not counted as Before-merge work, so keep their text
-      // visible next to the maintainer options.
+      // visible next to the maintainer options even when actionable risks coexist.
       const riskBullets = !isReportNoneList(risks) ? publicRiskBulletsFromText(risks, "P1") : "";
-      const routineRiskContext = riskBullets && !/\[P[0-2]\]/.test(riskBullets) ? riskBullets : "";
+      const routineRiskContext = riskBullets
+        .split("\n")
+        .filter((line) => line.startsWith("- ") && !/^- \[P[0-2]\]/.test(line))
+        .join("\n");
       agentDetails.push(
         "",
         "### Merge-risk options",
