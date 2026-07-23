@@ -447,11 +447,13 @@ async function measureAsync<T>(name: string, fn: () => Promise<T>): Promise<T> {
 function reviewFollowupFromCommentBody(body: JsonValue): string | null {
   const beforeMerge = extractMarkdownSection(body, "Before merge");
   if (beforeMerge && !/^none[.!]?$/i.test(beforeMerge.trim())) {
-    const firstUnresolvedTask = beforeMerge
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find((line) => line.startsWith("- [ ]"));
-    return firstUnresolvedTask ?? beforeMerge;
+    const lines = beforeMerge.split(/\r?\n/).map((line) => line.trim());
+    const tasks = lines.filter((line) => /^- \[[ xX]\]/.test(line));
+    if (tasks.length) {
+      // A checklist where every task is checked means no follow-up remains.
+      return tasks.find((line) => line.startsWith("- [ ]")) ?? null;
+    }
+    return beforeMerge;
   }
   return (
     extractMarkdownSection(body, "Next step before merge") ??

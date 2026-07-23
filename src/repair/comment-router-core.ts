@@ -2149,15 +2149,18 @@ function trustedCommentHasPriorityFinding(body: string) {
 }
 
 function beforeMergeReason(body: string): string {
-  const section = markdownSection(body, "Before merge");
+  const raw = extractMarkdownSection(body, "Before merge") ?? "";
   // New-format comments render "None." when no checklist entries remain; that is a
   // no-action sentinel, not a reason a human needs to look.
-  if (!section || /^none[.!]?$/i.test(section.trim())) return "";
-  const firstUnresolvedTask = section
-    .split(/;\s*|\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line.startsWith("- [ ]"));
-  return firstUnresolvedTask ?? section;
+  if (!raw || /^none[.!]?$/i.test(raw.trim())) return "";
+  const lines = raw.split(/\r?\n/).map((line) => line.trim());
+  const tasks = lines.filter((line) => /^- \[[ xX]\]/.test(line));
+  if (tasks.length) {
+    // A checklist where every task is checked means nothing is left for a human.
+    const unresolved = tasks.find((line) => line.startsWith("- [ ]"));
+    return unresolved ? compactReason(unresolved, 220) : "";
+  }
+  return compactReason(raw, 220);
 }
 
 function trustedHumanReviewReason(body: string, verdict: LooseRecord | null) {

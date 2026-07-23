@@ -18975,6 +18975,47 @@ function reviewFreshnessText(markdown: string): string {
 
 const REVIEW_HISTORY_RENDER_SLOT = "CLAWSWEEPER_REVIEW_HISTORY_RENDER_SLOT";
 
+const OWNED_REVIEW_SECTION_HEADINGS = new Set([
+  "summary",
+  "what this changes",
+  "merge readiness",
+  "review scores",
+  "verification",
+  "how this fits together",
+  "decision needed",
+  "before merge",
+  "next step",
+  "next step before merge",
+  "automerge follow-up",
+  "autofix follow-up",
+  "findings",
+  "review findings",
+  "security",
+  "label changes",
+]);
+
+// Model-generated text is rendered above renderer-owned sections such as
+// "## Before merge", and downstream routing extracts those sections from the first
+// matching Markdown heading. Escape heading-shaped lines in model text so injected
+// content can never spoof a renderer-owned section boundary.
+function neutralizeOwnedSectionSpoofing(value: string): string {
+  return value
+    .split("\n")
+    .map((line) => {
+      const trimmed = line.trim();
+      if (/^#{1,6}\s+\S/.test(trimmed)) return line.replace("#", "\\#");
+      if (/^\*\*[^*\n]+\*\*:?\s*$/.test(trimmed)) return line.replace("**", "\\*\\*");
+      if (
+        trimmed.endsWith(":") &&
+        OWNED_REVIEW_SECTION_HEADINGS.has(trimmed.slice(0, -1).trim().toLowerCase())
+      ) {
+        return `${line.trimEnd().slice(0, -1)}&#58;`;
+      }
+      return line;
+    })
+    .join("\n");
+}
+
 // The review prompt and schema require Mermaid flowchart source with no code fences,
 // click directives, URLs, HTML, or initialization/styling directives. The diagram is
 // model output that crosses into a trusted bot comment, so enforce that allowlist
@@ -18990,10 +19031,10 @@ function sanitizeArchitectureDiagram(value: string): string {
   if (/%%\{/.test(diagram)) return "";
   if (diagram.includes("//")) return "";
   if (/\b(?:data|javascript|vbscript|https?|ftp|file|blob|mailto):/i.test(diagram)) return "";
-  // Interaction and styling directives start a line; the same words are fine inside
-  // human-readable node labels.
-  for (const line of diagram.split(/\r?\n/)) {
-    if (/^\s*(?:click|style|classDef|class|linkStyle)\b/i.test(line)) return "";
+  // Interaction and styling directives start a statement (newline- or
+  // semicolon-separated); the same words are fine inside human-readable node labels.
+  for (const statement of diagram.split(/[;\r\n]+/)) {
+    if (/^\s*(?:click|style|classDef|class|linkStyle)\b/i.test(statement)) return "";
   }
   return diagram;
 }
@@ -19039,7 +19080,9 @@ function renderKeepOpenCommentFromReport(
   const rootCauseCluster = reportRootCauseCluster(markdown);
   const summary = reviewSectionValue(markdown, "summary");
   const changeSummary = reviewSectionValue(markdown, "changeSummary");
-  const systemContext = reviewSectionValue(markdown, "systemContext");
+  const systemContext = neutralizeOwnedSectionSpoofing(
+    reviewSectionValue(markdown, "systemContext"),
+  );
   const architectureDiagram = sanitizeArchitectureDiagram(
     reviewSectionValue(markdown, "architectureDiagram"),
   );
@@ -19062,8 +19105,10 @@ function renderKeepOpenCommentFromReport(
   const isRepairLoopPass = isPullRequest && Boolean(repairLoopPassModeFromReport(markdown));
   const hasRealBehaviorProofBlocker =
     isPullRequest && !reviewFailed && realBehaviorProofBlocksMerge(markdown);
-  const summaryLine = sentence(summary) || "_No summary provided._";
-  const changeSummaryLine = sentence(changeSummary || summary) || "_No change summary provided._";
+  const summaryLine = neutralizeOwnedSectionSpoofing(sentence(summary)) || "_No summary provided._";
+  const changeSummaryLine =
+    neutralizeOwnedSectionSpoofing(sentence(changeSummary || summary)) ||
+    "_No change summary provided._";
   const fallbackNextStep =
     "Continue tracking this item until the missing behavior is implemented or a maintainer decides the product direction.";
   const nextStepLine = sentence(
