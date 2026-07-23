@@ -19118,7 +19118,10 @@ function renderKeepOpenCommentFromReport(
   markdown: string,
   options: ReviewCommentRenderOptions = {},
 ): string {
-  const evidenceEntries = reportEvidence(markdown).slice(0, 6);
+  // Keep the full list for verification counts; only the rendered evidence list is
+  // abbreviated.
+  const allEvidenceEntries = reportEvidence(markdown);
+  const evidenceEntries = allEvidenceEntries.slice(0, 6);
   const evidence = evidenceEntries.map(closeEvidenceLine);
   const likelyOwners = reportLikelyOwners(markdown).slice(0, 5).map(likelyOwnerLine);
   const reviewFindings = reportReviewFindings(markdown);
@@ -19333,7 +19336,12 @@ function renderKeepOpenCommentFromReport(
       appendHeadingSection(
         lines,
         "Verification",
-        publicVerificationBlock(realBehaviorProof, evidenceEntries, reviewFindings, securityReview),
+        publicVerificationBlock(
+          realBehaviorProof,
+          allEvidenceEntries,
+          reviewFindings,
+          securityReview,
+        ),
       );
     }
     if (systemContext && architectureDiagram) {
