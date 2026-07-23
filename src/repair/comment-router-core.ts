@@ -2088,7 +2088,13 @@ function isMarkdownSectionBoundary(line: string): boolean {
     const colon = line.indexOf(":");
     if (colon >= 0 && line.slice(colon + 1).trim()) return false;
   }
-  return /^(?:#{1,6}\s+\S|\*\*[^*\n]+\*\*|[A-Z][^:\n]{0,80}:|<\/?details(?:\s|>)|<!--)/.test(line);
+  return /^(?:#{1,6}\s+\S|\*\*[^*\n]+\*\*:?$|[A-Z][^:\n]{0,80}:|<\/?details(?:\s|>)|<!--)/.test(
+    line,
+  );
+}
+
+function isCodeFenceLine(line: string): boolean {
+  return line.startsWith("```") || line.startsWith("~~~");
 }
 
 export function extractMarkdownSection(body: JsonValue, heading: string): string | null {
@@ -2098,12 +2104,33 @@ export function extractMarkdownSection(body: JsonValue, heading: string): string
     "i",
   );
   const lines = String(body ?? "").split(/\r?\n/);
-  const headingIndex = lines.findIndex((line) => headingPattern.test(line.trim()));
+  // Track fenced code blocks so model-generated fenced content (for example the
+  // Mermaid diagram) can never introduce or terminate a trusted section.
+  let inFence = false;
+  let headingIndex = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = (lines[index] ?? "").trim();
+    if (isCodeFenceLine(trimmed)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (!inFence && headingPattern.test(trimmed)) {
+      headingIndex = index;
+      break;
+    }
+  }
   if (headingIndex < 0) return null;
 
   const section: string[] = [];
+  inFence = false;
   for (const line of lines.slice(headingIndex + 1)) {
-    if (isMarkdownSectionBoundary(line.trim())) break;
+    const trimmed = line.trim();
+    if (isCodeFenceLine(trimmed)) {
+      inFence = !inFence;
+      section.push(line);
+      continue;
+    }
+    if (!inFence && isMarkdownSectionBoundary(trimmed)) break;
     section.push(line);
   }
   return section.join("\n").trim() || null;

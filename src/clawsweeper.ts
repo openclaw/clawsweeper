@@ -18983,15 +18983,18 @@ function sanitizeArchitectureDiagram(value: string): string {
   const diagram = value.trim();
   if (!diagram || diagram.length > 4000) return "";
   if (!/^flowchart\b/i.test(diagram)) return "";
-  if (diagram.includes("`") || diagram.includes("<")) return "";
+  // No fence-breaking backticks, node metadata (image/icon nodes), HTML tags, init
+  // directives, or URLs of any form, including scheme-relative and data: URLs.
+  if (diagram.includes("`") || diagram.includes("@{")) return "";
+  if (/<[a-z!/]/i.test(diagram)) return "";
   if (/%%\{/.test(diagram)) return "";
-  if (/\bclick\b/i.test(diagram)) return "";
-  if (/\b(?:classDef|linkStyle|style)\b/i.test(diagram)) return "";
-  // No node metadata (image/icon nodes) and no URL of any form, including
-  // scheme-relative and data: URLs.
-  if (diagram.includes("@{") || diagram.includes("//")) return "";
-  if (/\b(?:img|icon)\s*:/i.test(diagram)) return "";
+  if (diagram.includes("//")) return "";
   if (/\b(?:data|javascript|vbscript|https?|ftp|file|blob|mailto):/i.test(diagram)) return "";
+  // Interaction and styling directives start a line; the same words are fine inside
+  // human-readable node labels.
+  for (const line of diagram.split(/\r?\n/)) {
+    if (/^\s*(?:click|style|classDef|class|linkStyle)\b/i.test(line)) return "";
+  }
   return diagram;
 }
 
