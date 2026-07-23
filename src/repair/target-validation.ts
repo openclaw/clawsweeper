@@ -1145,13 +1145,24 @@ export function runAllowedValidationCommandsWithBinding(
       options.validationTimeoutMs ?? DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
       options.validationTimeoutMs,
     );
-    const identityCaptureDeadlineAt =
-      Date.now() + Math.max(validationTimeoutMs, MIN_VALIDATION_IDENTITY_WINDOW_MS);
+    // Match the pre-change shape: each capture stage gets its own fresh window
+    // so ignored-path enumeration cannot starve the checkout identity capture.
+    const identityCaptureWindowMs = Math.max(
+      validationTimeoutMs,
+      MIN_VALIDATION_IDENTITY_WINDOW_MS,
+    );
     let ignoredValidationInputs: string[];
     let checkoutIdentity: ValidationCheckoutIdentity;
     try {
-      ignoredValidationInputs = ignoredValidationRuntimePaths(cwd, identityCaptureDeadlineAt);
-      checkoutIdentity = validationCheckoutIdentity(cwd, baseRef, identityCaptureDeadlineAt);
+      ignoredValidationInputs = ignoredValidationRuntimePaths(
+        cwd,
+        Date.now() + identityCaptureWindowMs,
+      );
+      checkoutIdentity = validationCheckoutIdentity(
+        cwd,
+        baseRef,
+        Date.now() + identityCaptureWindowMs,
+      );
     } catch (error) {
       if (isValidationIdentityTimeoutError(error)) {
         throw new Error(
