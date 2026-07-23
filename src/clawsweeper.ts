@@ -18754,6 +18754,7 @@ function publicBeforeMergeItems(options: {
   securityReview: SecurityReview;
   risks: string;
   nextStep: string;
+  patchQualityBlocked: boolean;
   requiredRatingSteps: readonly string[];
 }): PublicBeforeMergeItem[] {
   const items: PublicBeforeMergeItem[] = [];
@@ -18824,8 +18825,22 @@ function publicBeforeMergeItems(options: {
       add("Complete next step", options.nextStep);
     }
   }
+  const itemsBeforeRatingSteps = items.length;
   for (const step of options.requiredRatingSteps) {
     add("Improve patch quality", step);
+  }
+  // A blocked patch rating must always leave a concrete follow-up, even when the
+  // rating supplied no usable next steps and no typed findings explain the block.
+  if (
+    options.patchQualityBlocked &&
+    items.length === itemsBeforeRatingSteps &&
+    options.findings.length === 0 &&
+    options.securityReview.concerns.length === 0
+  ) {
+    add(
+      "Improve patch quality",
+      "Address the low patch-quality rating before merge; see the review scores for what is holding it back.",
+    );
   }
 
   return items;
@@ -19376,6 +19391,7 @@ function renderKeepOpenCommentFromReport(
       securityReview,
       risks,
       nextStep: nextStepLine,
+      patchQualityBlocked,
       requiredRatingSteps: patchQualityBlocked ? prRating.nextSteps : [],
     });
     lines.push("# ClawSweeper review", "");
