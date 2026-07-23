@@ -2097,12 +2097,18 @@ function codeFenceDelimiter(line: string): string | null {
   return line.match(/^(?:`{3,}|~{3,})/)?.[0] ?? null;
 }
 
-function codeFenceStateAfterLine(fence: string | null, delimiter: string): string | null {
+function codeFenceStateAfterLine(fence: string | null, line: string): string | null {
+  const delimiter = line.match(/^(?:`{3,}|~{3,})/)?.[0];
+  if (!delimiter) return fence;
   if (!fence) return delimiter;
-  // Only a matching delimiter (same character, at least the opening length) closes
-  // the fence; an inner alternate marker like `~~~` inside a backtick fence is content.
-  if (delimiter[0] === fence[0] && delimiter.length >= fence.length) return null;
-  return fence;
+  // Only a bare matching delimiter (same character, at least the opening length, no
+  // trailing info text) closes the fence; an inner alternate marker like `~~~` inside
+  // a backtick fence or a delimiter run with trailing text is fence content.
+  const closes =
+    delimiter[0] === fence[0] &&
+    delimiter.length >= fence.length &&
+    line.slice(delimiter.length).trim() === "";
+  return closes ? null : fence;
 }
 
 export function extractMarkdownSection(body: JsonValue, heading: string): string | null {
@@ -2120,7 +2126,7 @@ export function extractMarkdownSection(body: JsonValue, heading: string): string
     const trimmed = (lines[index] ?? "").trim();
     const delimiter = codeFenceDelimiter(trimmed);
     if (delimiter) {
-      fence = codeFenceStateAfterLine(fence, delimiter);
+      fence = codeFenceStateAfterLine(fence, trimmed);
       continue;
     }
     if (!fence && headingPattern.test(trimmed)) {
@@ -2136,7 +2142,7 @@ export function extractMarkdownSection(body: JsonValue, heading: string): string
     const trimmed = line.trim();
     const delimiter = codeFenceDelimiter(trimmed);
     if (delimiter) {
-      fence = codeFenceStateAfterLine(fence, delimiter);
+      fence = codeFenceStateAfterLine(fence, trimmed);
       section.push(line);
       continue;
     }

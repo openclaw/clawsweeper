@@ -5591,10 +5591,18 @@ function markdownFenceDelimiter(line: string): string | null {
   return line.trimStart().match(/^(?:`{3,}|~{3,})/)?.[0] ?? null;
 }
 
-function markdownFenceStateAfterLine(fence: string | null, delimiter: string): string | null {
+function markdownFenceStateAfterLine(fence: string | null, line: string): string | null {
+  const trimmed = line.trim();
+  const delimiter = trimmed.match(/^(?:`{3,}|~{3,})/)?.[0];
+  if (!delimiter) return fence;
   if (!fence) return delimiter;
-  if (delimiter[0] === fence[0] && delimiter.length >= fence.length) return null;
-  return fence;
+  // Only a bare matching delimiter (same character, at least the opening length, no
+  // trailing info text) closes the fence; anything else is fence content.
+  const closes =
+    delimiter[0] === fence[0] &&
+    delimiter.length >= fence.length &&
+    trimmed.slice(delimiter.length).trim() === "";
+  return closes ? null : fence;
 }
 
 // Fence-aware so heading-shaped lines inside fenced blocks (for example the Mermaid
@@ -5614,7 +5622,7 @@ function markdownSection(body: string, heading: string): string {
     const line = lines[index] ?? "";
     const delimiter = markdownFenceDelimiter(line);
     if (delimiter) {
-      fence = markdownFenceStateAfterLine(fence, delimiter);
+      fence = markdownFenceStateAfterLine(fence, line);
       continue;
     }
     if (!fence && headingPattern.test(line)) {
@@ -5629,7 +5637,7 @@ function markdownSection(body: string, heading: string): string {
     const line = lines[index] ?? "";
     const delimiter = markdownFenceDelimiter(line);
     if (delimiter) {
-      fence = markdownFenceStateAfterLine(fence, delimiter);
+      fence = markdownFenceStateAfterLine(fence, line);
       section.push(line);
       continue;
     }
@@ -19190,7 +19198,11 @@ function renderKeepOpenCommentFromReport(
   const unsupportedMantisSuggestion = isPullRequest
     ? publicNonDispatchableMantisRecommendationBlock(mantisRecommendation)
     : "";
-  const decisionPacketBlock = renderDecisionPacketPublicBlock(markdown);
+  // The decision rationale is model text rendered above owned sections; escape
+  // heading-shaped lines so it cannot spoof them.
+  const decisionPacketBlock = neutralizeOwnedSectionSpoofing(
+    renderDecisionPacketPublicBlock(markdown),
+  );
   const securityLine = publicSecurityReviewLine(securityReview);
   if (bestSolutionLine && publicReviewTextDiffers(bestSolutionLine, nextStepLine)) {
     reviewDetails.push("Best possible solution:", "", bestSolutionLine);
@@ -19426,7 +19438,10 @@ function renderKeepOpenCommentFromReport(
       (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
     ),
   );
-  if (!reviewHistoryBlock || !isPullRequest) return publicBody;
+  if (!reviewHistoryBlock) return publicBody;
+  // Issues keep the pre-redesign trailing history block; only PRs moved it into the
+  // collapsed details slot.
+  if (!isPullRequest) return `${publicBody.trimEnd()}\n\n${reviewHistoryBlock}\n`;
   // The slot is always the renderer-appended last occurrence; report text earlier in
   // the body could mention the sentinel, and a plain replace would expand $-sequences.
   const slotIndex = publicBody.lastIndexOf(REVIEW_HISTORY_RENDER_SLOT);
