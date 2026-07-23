@@ -255,6 +255,7 @@ export function renderDecisionPacketPublicBlock(markdown: string): string {
   if (!recommendation) return "";
   const tableCell = (value: string) =>
     value
+      .replace(/\\/g, "\\\\")
       .replace(/\r?\n|\r/g, "<br>")
       .replace(/\|/g, "\\|")
       .trim();

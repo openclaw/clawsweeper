@@ -5674,7 +5674,7 @@ function firstBeforeMergeAction(body: string): string {
   const section = markdownSection(body, "Before merge");
   if (!section) return "";
   for (const line of section.split(/\r?\n/)) {
-    const task = line.match(/^- \[[ xX]\]\s+(?:\*\*[^*]+\*\*\s+-\s+)?(.+)$/);
+    const task = line.match(/^- \[[ xX]\][ \t]+(?:\*\*[^*\n]+\*\*[ \t]+-[ \t]+)?(\S.*)$/);
     if (task?.[1]) return task[1].trim();
     const cells = markdownTableCells(line);
     if (cells.length < 2) continue;
@@ -18636,6 +18636,7 @@ function appendHeadingSection(lines: string[], heading: string, body: string): v
 
 function publicTableCell(value: string): string {
   return value
+    .replace(/\\/g, "\\\\")
     .replace(/\r?\n|\r/g, "<br>")
     .replace(/\|/g, "\\|")
     .trim();
@@ -18682,7 +18683,7 @@ function publicBeforeMergeItems(options: {
   };
   const addPrioritized = (text: string, fallback: PublicPriority, label: string) => {
     for (const line of publicRiskBulletsFromText(text, fallback).split("\n")) {
-      const match = line.match(/^-\s+\[(P[0-2])\]\s+(.+)$/);
+      const match = line.match(/^-[ \t]+\[(P[0-2])\][ \t]+(\S.*)$/);
       if (match?.[1] && match[2]) {
         add(`${label} (${match[1]})`, match[2]);
       } else {
