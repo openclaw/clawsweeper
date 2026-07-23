@@ -107,6 +107,7 @@ jobs:
         if: ${{ always() }}
         env:
           CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "0"
+          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
           CLAWSWEEPER_STATE_REPO_TOKEN: ${{ steps.state-token.outputs.token }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}

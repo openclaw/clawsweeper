@@ -118,6 +118,7 @@ test("state materializer and apply publishers enable model-guided recovery with 
     "${{ steps.state-token.outputs.token }}",
   );
   assert.equal(recoveryPublisher?.env?.CLAWSWEEPER_MODEL_RECOVERY_ENABLED, "0");
+  assert.equal(recoveryPublisher?.env?.CLAWSWEEPER_STATE_APPEND_ENABLED, "1");
   assert.equal(recoveryPublisher?.env?.OPENAI_API_KEY, undefined);
 
   const sweep = byFile.get(".github/workflows/sweep.yml");
@@ -194,6 +195,24 @@ test("trusted generated-state mutation steps receive a step-scoped coordinator c
     36,
     "new or removed generated-state publication surfaces require an explicit credential audit",
   );
+});
+
+test("every immutable action-event publisher uses the state append window", () => {
+  const publishers: string[] = [];
+  for (const { file, workflow } of workflows()) {
+    for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+      for (const step of job.steps ?? []) {
+        if (!String(step.run || "").includes("publish-action-event-paths")) continue;
+        publishers.push(`${file}:${jobName}:${step.name}`);
+        assert.equal(
+          step.env?.CLAWSWEEPER_STATE_APPEND_ENABLED ?? job.env?.CLAWSWEEPER_STATE_APPEND_ENABLED,
+          "1",
+          `${file}:${jobName}:${step.name}`,
+        );
+      }
+    }
+  }
+  assert.equal(publishers.length, 7);
 });
 
 test("state compaction remains an explicitly separate main-branch writer", () => {
