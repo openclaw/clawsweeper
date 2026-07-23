@@ -532,7 +532,13 @@ Branch mutation still requires the downstream `CLAWSWEEPER_ALLOW_EXECUTE=1` and
 Ledgers:
 
 - `results/comment-router.json`: processed command ledger
-- `results/comment-router-latest.json`: latest scan report
+- `results/comment-router-latest.json`: run-local latest scan report; workflows
+  consume it before exit but do not publish it as durable state
+
+The processed command ledger publishes through the state append/materializer
+lane. `jobs/` enters the serialized Git state writer only when a command creates
+or updates durable repair work, so independent re-review and status commands do
+not contend on Git publication.
 
 Command replies are marker-backed and edited in place per item, intent, and
 head SHA. Repeated maintainer nudges update the same small status comment

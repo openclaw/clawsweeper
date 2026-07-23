@@ -2034,6 +2034,26 @@ test("trusted comment router owns command ledger capacity retries", () => {
   assert.match(routerWorkflow, /--wait-for-capacity/);
 });
 
+test("comment router keeps scan reports out of durable state and Git-publishes only changed jobs", () => {
+  const workflow = readText(".github/workflows/repair-comment-router.yml");
+  const initialStart = workflow.indexOf("- name: Commit comment router ledger");
+  const initialEnd = workflow.indexOf("- name: Detect waiting repair dispatches", initialStart);
+  const retryStart = workflow.indexOf("- name: Commit comment router retry ledger");
+  const retryEnd = workflow.indexOf("- name: Finalize command action ledger", retryStart);
+  const publishSteps = [
+    workflow.slice(initialStart, initialEnd),
+    workflow.slice(retryStart, retryEnd),
+  ];
+
+  for (const step of publishSteps) {
+    assert.match(step, /--path results\/comment-router\.json/);
+    assert.doesNotMatch(step, /--path results\/comment-router-latest\.json/);
+    assert.match(step, /git status --porcelain=v1 --untracked-files=all -- jobs/);
+    assert.match(step, /publish_args\+=\(--path jobs\)/);
+    assert.doesNotMatch(step, /--path jobs \\/);
+  }
+});
+
 test("deferred exact verdict routers cannot replace each other's pending runs", () => {
   const workflow = readText(".github/workflows/repair-comment-router.yml");
   const concurrency = workflow.slice(workflow.indexOf("concurrency:"), workflow.indexOf("\njobs:"));

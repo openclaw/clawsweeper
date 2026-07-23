@@ -292,12 +292,17 @@ jobs:
             echo "Exact terminal comment version already recorded; skipping state publication."
             exit 0
           fi
-          pnpm run repair:publish-main -- \
+          publish_args=(
             --message "chore: record ClawSweeper comment routing" \
             --path results/comment-router.json \
-            --path results/comment-router-latest.json \
-            --path jobs \
             --rebase-strategy theirs
+          )
+          # The latest scan report is run-local. Only commands that actually
+          # changed repair jobs need the serialized Git state writer.
+          if [ -n "$(git status --porcelain=v1 --untracked-files=all -- jobs)" ]; then
+            publish_args+=(--path jobs)
+          fi
+          pnpm run repair:publish-main -- "${publish_args[@]}"
 
       - name: Detect waiting repair dispatches
         id: waiting-repair-dispatches
@@ -424,12 +429,16 @@ jobs:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
-          pnpm run repair:publish-main -- \
+          publish_args=(
             --message "chore: record ClawSweeper repair dispatch retry" \
             --path results/comment-router.json \
-            --path results/comment-router-latest.json \
-            --path jobs \
             --rebase-strategy theirs
+          )
+          # Retry receipts are append-only unless the retry changed a repair job.
+          if [ -n "$(git status --porcelain=v1 --untracked-files=all -- jobs)" ]; then
+            publish_args+=(--path jobs)
+          fi
+          pnpm run repair:publish-main -- "${publish_args[@]}"
 
       - name: Finalize command action ledger
         id: finalize-command-action-ledger
