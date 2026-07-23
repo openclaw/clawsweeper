@@ -18720,7 +18720,7 @@ function publicTableCell(value: string): string {
   // renderer-owned <br> tags; &lt; renders identically to a literal <.
   return value
     .replace(/\\/g, "\\\\")
-    .replace(/<(?=[a-z/!])/gi, "&lt;")
+    .replace(/<(?=[a-z/!?])/gi, "&lt;")
     .replace(/\r?\n|\r/g, "<br>")
     .replace(/\|/g, "\\|")
     .trim();
@@ -18813,7 +18813,9 @@ function publicBeforeMergeItems(options: {
     });
   }
   for (const concern of options.securityReview.concerns) {
-    add(`Resolve security concern: ${concern.title.trim()}`, concern.body);
+    add(`Resolve security concern: ${concern.title.trim()}`, concern.body, {
+      distinctKey: `security ${concern.title}`,
+    });
   }
   if (
     options.securityReview.status === "needs_attention" &&
@@ -18832,15 +18834,21 @@ function publicBeforeMergeItems(options: {
       add("Complete next step", options.nextStep);
     }
   }
-  const itemsBeforeRatingSteps = items.length;
+  // Routine advice never becomes a merge blocker; a step that deduplicates against
+  // an existing item still counts as represented remediation.
+  let ratingRemediationRepresented = false;
   for (const step of options.requiredRatingSteps) {
+    if (isRoutineBeforeMergeStep(step) || isRoutineCiOrReviewText(step)) continue;
+    const cleanStep = sentence(stripPriorityPrefix(step));
+    if (!cleanStep || /^none[.!]?$/i.test(cleanStep) || isReportNoneList(cleanStep)) continue;
+    ratingRemediationRepresented = true;
     add("Improve patch quality", step);
   }
   // A blocked patch rating must always leave a concrete follow-up, even when the
   // rating supplied no usable next steps and no typed findings explain the block.
   if (
     options.patchQualityBlocked &&
-    items.length === itemsBeforeRatingSteps &&
+    !ratingRemediationRepresented &&
     options.findings.length === 0 &&
     options.securityReview.concerns.length === 0
   ) {
@@ -18857,7 +18865,7 @@ function publicBeforeMergeItems(options: {
 // downstream consumers of the checklist see command/path text unaltered.
 function publicChecklistText(value: string): string {
   return value
-    .replace(/<(?=[a-z/!])/gi, "&lt;")
+    .replace(/<(?=[a-z/!?])/gi, "&lt;")
     .replace(/\r?\n|\r/g, " ")
     .replace(/\s+/g, " ")
     .trim();

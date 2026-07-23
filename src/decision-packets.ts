@@ -255,7 +255,7 @@ export function renderDecisionPacketPublicBlock(markdown: string): string {
   const tableCell = (value: string) =>
     value
       .replace(/\\/g, "\\\\")
-      .replace(/<(?=[a-z/!])/gi, "&lt;")
+      .replace(/<(?=[a-z/!?])/gi, "&lt;")
       .replace(/\r?\n|\r/g, "<br>")
       .replace(/\|/g, "\\|")
       .trim();
