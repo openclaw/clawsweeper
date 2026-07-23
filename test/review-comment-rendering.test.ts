@@ -1098,7 +1098,8 @@ Land this docs-only PR after maintainer review.
     "none",
   );
 
-  assert.match(comment, /## Before merge[\s\S]*Land this docs-only PR after maintainer review\./);
+  // Ordinary maintainer review is routine, so it collapses out of Before merge.
+  assert.match(comment, /## Before merge\n\nNone\./);
   assert.doesNotMatch(comment, /\[P2\] Land this docs-only PR/);
   assert.doesNotMatch(comment, /Best possible solution:/);
 });

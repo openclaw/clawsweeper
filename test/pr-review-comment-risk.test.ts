@@ -212,7 +212,10 @@ ${routineCiRisk}
   );
 
   assert.match(comment, /## Before merge/);
-  assert.ok(comment.includes(`- [ ] **Resolve merge risk** - ${routineCiRisk}`));
+  // Routine CI noise stays visible in the collapsed details but is not counted as
+  // remaining merge work.
+  assert.doesNotMatch(comment, /- \[ \] \*\*Resolve merge risk\*\*/);
+  assert.ok(comment.includes(routineCiRisk));
   assert.doesNotMatch(
     comment,
     new RegExp(`\\[P[12]\\] ${routineCiRisk.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),

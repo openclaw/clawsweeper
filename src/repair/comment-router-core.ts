@@ -2118,9 +2118,11 @@ export function extractMarkdownSection(body: JsonValue, heading: string): string
     "i",
   );
   const lines = String(body ?? "").split(/\r?\n/);
-  // Track fenced code blocks so model-generated fenced content (for example the
-  // Mermaid diagram) can never introduce or terminate a trusted section.
+  // Track fenced code blocks and collapsed <details> depth so model-generated
+  // content in fences or the agent-details block can never introduce or terminate a
+  // trusted top-level section.
   let fence: string | null = null;
+  let detailsDepth = 0;
   let headingIndex = -1;
   for (let index = 0; index < lines.length; index += 1) {
     const trimmed = (lines[index] ?? "").trim();
@@ -2129,7 +2131,16 @@ export function extractMarkdownSection(body: JsonValue, heading: string): string
       fence = codeFenceStateAfterLine(fence, trimmed);
       continue;
     }
-    if (!fence && headingPattern.test(trimmed)) {
+    if (fence) continue;
+    if (/^<details(?:\s|>)/i.test(trimmed)) {
+      detailsDepth += 1;
+      continue;
+    }
+    if (/^<\/details>/i.test(trimmed)) {
+      detailsDepth = Math.max(0, detailsDepth - 1);
+      continue;
+    }
+    if (detailsDepth === 0 && headingPattern.test(trimmed)) {
       headingIndex = index;
       break;
     }

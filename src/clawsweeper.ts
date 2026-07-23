@@ -18712,6 +18712,9 @@ function isRoutineBeforeMergeStep(value: string): boolean {
   if (
     !/\b(?:merge after (?:required )?checks are green|merge after maintainer review|normal (?:ci|maintainer review)|routine maintainer review|no further action)\b/i.test(
       text,
+    ) &&
+    !/^(?:land|merge|ship|proceed|continue|wait)\b[^\n]{0,120}\bafter (?:normal |ordinary |routine )?maintainer review\b/i.test(
+      text,
     )
   ) {
     return false;
@@ -18757,10 +18760,10 @@ function publicBeforeMergeItems(options: {
   const addPrioritized = (text: string, fallback: PublicPriority, label: string) => {
     for (const line of publicRiskBulletsFromText(text, fallback).split("\n")) {
       const match = line.match(/^-[ \t]+\[(P[0-2])\][ \t]+(\S.*)$/);
+      // Unprioritized bullets are the ones classified as routine CI or ordinary
+      // maintainer review; they are not remaining merge work.
       if (match?.[1] && match[2]) {
         add(`${label} (${match[1]})`, match[2]);
-      } else {
-        add(label, line);
       }
     }
   };
@@ -19371,7 +19374,17 @@ function renderKeepOpenCommentFromReport(
       agentDetails.push("", "### Proof path suggestion", "", unsupportedMantisSuggestion);
     }
     if (mergeRiskLine) {
-      agentDetails.push("", "### Merge-risk options", "", mergeRiskLine);
+      // Routine risks are not counted as Before-merge work, so keep their text
+      // visible next to the maintainer options.
+      const riskBullets = !isReportNoneList(risks) ? publicRiskBulletsFromText(risks, "P1") : "";
+      const routineRiskContext = riskBullets && !/\[P[0-2]\]/.test(riskBullets) ? riskBullets : "";
+      agentDetails.push(
+        "",
+        "### Merge-risk options",
+        "",
+        ...(routineRiskContext ? [routineRiskContext, ""] : []),
+        mergeRiskLine,
+      );
     }
     if (reviewDetails.length) {
       agentDetails.push("", "### Technical review", "", ...reviewDetails);

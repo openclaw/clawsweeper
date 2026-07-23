@@ -259,24 +259,63 @@ function hasNonStartedReviewStatusMarker(body: string): boolean {
   return false;
 }
 
+// Marks each line that is part of a fenced code block (including the delimiters) so
+// fenced model output such as the Mermaid diagram cannot fake section markers.
+function fencedLineStates(lines: readonly string[]): readonly boolean[] {
+  let fence: string | null = null;
+  return lines.map((raw) => {
+    const trimmed = raw.trim();
+    const delimiter = trimmed.match(/^(?:`{3,}|~{3,})/)?.[0];
+    if (delimiter) {
+      if (!fence) {
+        fence = delimiter;
+      } else if (
+        delimiter[0] === fence[0] &&
+        delimiter.length >= fence.length &&
+        trimmed.slice(delimiter.length).trim() === ""
+      ) {
+        fence = null;
+      }
+      return true;
+    }
+    return fence !== null;
+  });
+}
+
 function reviewFindingLines(lines: readonly string[]): readonly string[] {
-  const detailsStart = lines.findLastIndex((line) => line.trim() === "Full review comments:");
-  if (detailsStart >= 0) {
-    const detailsLines = lines.slice(detailsStart + 1);
-    const end = detailsLines.findIndex((line) =>
-      /^(?:Overall correctness:|<\/details>|<!--)/.test(line.trim()),
-    );
-    return end < 0 ? detailsLines : detailsLines.slice(0, end);
+  const fenced = fencedLineStates(lines);
+  const collect = (start: number, boundary: RegExp): string[] => {
+    const section: string[] = [];
+    for (let index = start; index < lines.length; index += 1) {
+      const line = lines[index] ?? "";
+      if (fenced[index]) continue;
+      if (boundary.test(line.trim())) break;
+      section.push(line);
+    }
+    return section;
+  };
+  let detailsStart = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (!fenced[index] && (lines[index] ?? "").trim() === "Full review comments:") {
+      detailsStart = index;
+      break;
+    }
   }
-  const summaryStart = lines.findIndex((line) =>
-    ["**Review findings**", "## Findings"].includes(line.trim()),
-  );
+  if (detailsStart >= 0) {
+    return collect(detailsStart + 1, /^(?:Overall correctness:|<\/details>|<!--)/);
+  }
+  let summaryStart = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (
+      !fenced[index] &&
+      ["**Review findings**", "## Findings"].includes((lines[index] ?? "").trim())
+    ) {
+      summaryStart = index;
+      break;
+    }
+  }
   if (summaryStart < 0) return [];
-  const summaryLines = lines.slice(summaryStart + 1);
-  const end = summaryLines.findIndex((line) =>
-    /^(?:\*\*|#{1,6}\s|<details>|<\/details>|<!--)/.test(line.trim()),
-  );
-  return end < 0 ? summaryLines : summaryLines.slice(0, end);
+  return collect(summaryStart + 1, /^(?:\*\*|#{1,6}\s|<details>|<\/details>|<!--)/);
 }
 
 function commentBodyFindings(body: string): string[] {
