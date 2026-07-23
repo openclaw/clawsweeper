@@ -19500,7 +19500,9 @@ function renderKeepOpenCommentFromReport(
             realBehaviorProof,
             triagePriority,
             summaryLine,
-            beforeMergeItems.length,
+            // An outstanding maintainer decision is remaining work even though it
+            // lives outside the checklist.
+            beforeMergeItems.length + (decisionPacketBlock ? 1 : 0),
             Boolean(decisionPacketBlock),
             pullHeadShaFromReport(markdown) ?? "",
           ),
@@ -19594,7 +19596,7 @@ function renderKeepOpenCommentFromReport(
         "",
         "Optional improvements that raise the rating; they are not merge blockers.",
         "",
-        rankUpMoves.map((step) => `- ${step}`).join("\n"),
+        rankUpMoves.map((step) => `- ${publicChecklistText(step)}`).join("\n"),
       );
     }
     if (!reviewFailed) {
