@@ -65,6 +65,12 @@ jobs:
         with:
           coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          # The materializer is the designated bulk writer of the single-writer
+          # plan (RFC #738). In the ordinary lane it starves behind batch-class
+          # turns (run 30003798477 timed out after 35 minutes at queue
+          # position 3); the batch lane's two-turn cap still guarantees
+          # ordinary writers a slot.
+          coordinator-class: publication_batch
           token: ${{ steps.state-token.outputs.token }}
           # depth-1 cannot fast-forward or rebuild against a branch other
           # writers keep advancing (non-fast-forward shallow push rejections,

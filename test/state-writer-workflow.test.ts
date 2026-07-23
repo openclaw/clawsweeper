@@ -146,7 +146,7 @@ test("state materializer bounds its coordinator acquire below the job timeout", 
   assert.equal(budgetMs + 15 * 60_000 <= Number(materializer?.["timeout-minutes"]) * 60_000, true);
 });
 
-test("only the exact-review batch publisher requests priority admission", () => {
+test("only the batch publisher and the state materializer request priority admission", () => {
   const prioritySetups: string[] = [];
   for (const { file, workflow } of workflows()) {
     for (const [job, definition] of Object.entries(workflow.jobs ?? {})) {
@@ -157,7 +157,10 @@ test("only the exact-review batch publisher requests priority admission", () => 
       }
     }
   }
-  assert.deepEqual(prioritySetups, [".github/workflows/exact-review-batch-publish.yml:publish"]);
+  assert.deepEqual(prioritySetups, [
+    ".github/workflows/exact-review-batch-publish.yml:publish",
+    ".github/workflows/state-materializer.yml:materialize",
+  ]);
 });
 
 test("trusted generated-state mutation steps receive a step-scoped coordinator credential", () => {
