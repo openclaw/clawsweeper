@@ -12248,25 +12248,29 @@ function publicVerificationBlock(
       ? "None."
       : findings
           .slice(0, 3)
-          .map((finding) => `[${priorityLabel(finding.priority)}] ${finding.title.trim()}`)
+          .map((finding) =>
+            publicTableCell(`[${priorityLabel(finding.priority)}] ${finding.title.trim()}`),
+          )
           .join("<br>");
   const securityNeedsAttention =
     securityReview.status === "needs_attention" || securityReview.concerns.length > 0;
+  // Each report-provided entry is sanitized individually; the <br> separators are
+  // renderer-owned and must stay unescaped.
   const securityEvidence = securityNeedsAttention
     ? securityReview.concerns.length > 0
       ? securityReview.concerns
           .slice(0, 3)
-          .map((concern) => `${concern.title.trim()}: ${sentence(concern.body)}`)
+          .map((concern) => publicTableCell(`${concern.title.trim()}: ${sentence(concern.body)}`))
           .join("<br>")
-      : sentence(securityReview.summary)
+      : publicTableCell(sentence(securityReview.summary))
     : "None.";
   return [
     "| Check | Result | Evidence |",
     "|---|---|---|",
     `| **Real behavior** | ${proofResult} | ${publicTableCell(proofEvidence)} |`,
     `| **Evidence reviewed** | ${evidenceResult} | ${evidenceSummary} |`,
-    `| **Findings** | ${findingResult} | ${publicTableCell(findingEvidence)} |`,
-    `| **Security** | ${securityNeedsAttention ? "Needs attention" : "None"} | ${publicTableCell(securityEvidence)} |`,
+    `| **Findings** | ${findingResult} | ${findingEvidence} |`,
+    `| **Security** | ${securityNeedsAttention ? "Needs attention" : "None"} | ${securityEvidence} |`,
   ].join("\n");
 }
 
