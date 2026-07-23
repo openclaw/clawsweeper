@@ -668,7 +668,9 @@ function pushImmutableActionLedgerCommit(options: {
     modelPushAttemptHistory.push(gitFailureSummary(pushResult));
     let modelRequestedRebuild = false;
     let modelRequestedRebuildAdvice: RecoveryAdvice | null = null;
-    if (!modelPushRecoveryConsulted) {
+    // Same contract as the branch loop: deterministic rebuild attempts first,
+    // the advisor only for what remains after they are spent.
+    if (!modelPushRecoveryConsulted && attempt === pushBudget) {
       modelPushRecoveryConsulted = true;
       const recovery = modelGuidedPushRecovery({
         phase: "push_immutable_action_ledger",
@@ -2571,7 +2573,11 @@ export function pushCommit(options: {
     let pushResult = pushPublishedBranch(remote, branch);
     if (pushResult.status === 0) return true;
     modelPushAttemptHistory.push(gitFailureSummary(pushResult));
-    if (!modelPushRecoveryConsulted) {
+    // The advisor rules on failures the deterministic loop cannot handle; an
+    // ordinary push race resolves through the remaining rebuild attempts, so
+    // consult only once those are exhausted (a defer on attempt 1 previously
+    // threw away the whole retry budget — materializer runs 29966193607 etc.).
+    if (!modelPushRecoveryConsulted && pushAttempt === pushAttempts) {
       modelPushRecoveryConsulted = true;
       const recovery = modelGuidedPushRecovery({
         phase: "push_commit",
