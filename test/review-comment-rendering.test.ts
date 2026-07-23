@@ -630,7 +630,7 @@ Reason: Maintainers should review the tests after the targeted lane is green.
   assert.match(comment, /\| \*\*Overall readiness\*\* \| .* \*\*\(5\/6\)\*\* \|/);
   assert.match(comment, /## Verification\n\n\| Check \| Result \| Evidence \|/);
   assert.match(comment, /\| \*\*Real behavior\*\* \| Verified \| Sufficient \(terminal\):/);
-  assert.match(comment, /\| \*\*Tests and checks\*\* \| 1 item \| targeted lane:/);
+  assert.match(comment, /\| \*\*Evidence reviewed\*\* \| 1 item \| targeted lane:/);
   assert.match(
     comment,
     /## How this fits together\n\nOpenClaw resolves a session's model override before sending the next agent request\.\n\n```mermaid\nflowchart LR/,

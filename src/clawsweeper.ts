@@ -4026,8 +4026,12 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
     confidence: requireEnum(record.confidence, CONFIDENCES, "decision.confidence"),
     summary: requireString(record.summary, "decision.summary"),
     changeSummary: requireString(record.changeSummary, "decision.changeSummary"),
-    systemContext: requireString(record.systemContext, "decision.systemContext"),
-    architectureDiagram: requireString(record.architectureDiagram, "decision.architectureDiagram"),
+    systemContext: neutralizeOwnedSectionSpoofing(
+      requireString(record.systemContext, "decision.systemContext"),
+    ),
+    architectureDiagram: sanitizeArchitectureDiagram(
+      requireString(record.architectureDiagram, "decision.architectureDiagram"),
+    ),
     evidence,
     likelyOwners,
     risks: requireStringArray(record.risks, "decision.risks").filter(
@@ -12191,7 +12195,10 @@ function publicReviewScoresBlock(
       ? "Security review found an item that needs attention."
       : findings.length > 0
         ? `${findings.length} actionable review ${findings.length === 1 ? "finding" : "findings"} remain.`
-        : "No actionable review findings were identified.";
+        : rating.patchTier === "F" || rating.patchTier === "D"
+          ? sentence(rating.summary) ||
+            "Patch quality blocks readiness; see the Before merge checklist."
+          : "No actionable review findings were identified.";
   return [
     "| Measure | Result | What it means |",
     "|---|---|---|",
@@ -12257,7 +12264,7 @@ function publicVerificationBlock(
     "| Check | Result | Evidence |",
     "|---|---|---|",
     `| **Real behavior** | ${proofResult} | ${publicTableCell(proofEvidence)} |`,
-    `| **Tests and checks** | ${evidenceResult} | ${evidenceSummary} |`,
+    `| **Evidence reviewed** | ${evidenceResult} | ${evidenceSummary} |`,
     `| **Findings** | ${findingResult} | ${publicTableCell(findingEvidence)} |`,
     `| **Security** | ${securityNeedsAttention ? "Needs attention" : "None"} | ${publicTableCell(securityEvidence)} |`,
   ].join("\n");
@@ -19118,6 +19125,9 @@ function sanitizeArchitectureDiagram(value: string): string {
   // directives, or URLs of any form, including scheme-relative and data: URLs.
   if (diagram.includes("`") || diagram.includes("~~~") || diagram.includes("@{")) return "";
   if (/<[a-z!/]/i.test(diagram)) return "";
+  // Heading-shaped lines could terminate the report section the diagram is
+  // serialized into; Mermaid flowcharts never need a leading #.
+  if (/^[ \t]*#/m.test(diagram)) return "";
   if (/%%\{/.test(diagram)) return "";
   if (diagram.includes("//")) return "";
   // Require a non-space after the colon so human-readable labels such as
