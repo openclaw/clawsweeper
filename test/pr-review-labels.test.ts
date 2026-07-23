@@ -58,10 +58,10 @@ Full review comments:
   const markers = reviewAutomationMarkersFromReport(report);
 
   assert.match(comment, /## Merge readiness/);
-  assert.match(comment, /\| \*\*Overall\*\* \| 🦞 diamond lobster \*\*\(5\/6\)\*\* \|/);
-  assert.match(comment, /\| \*\*Proof\*\* \| 🦞 diamond lobster \*\*\(5\/6\)\*\* \|/);
+  assert.match(comment, /\| \*\*Overall readiness\*\* \| 🦞 diamond lobster \*\*\(5\/6\)\*\* \|/);
+  assert.match(comment, /\| \*\*Proof confidence\*\* \| 🦞 diamond lobster \*\*\(5\/6\)\*\* \|/);
   assert.match(comment, /\| \*\*Patch quality\*\* \| 🦞 diamond lobster \*\*\(5\/6\)\*\* \|/);
-  assert.match(comment, /\| \*\*Status\*\* \| Ready for maintainer review\. \|/);
+  assert.match(comment, /✅ \*\*Ready for maintainer review\*\*/);
   assert.doesNotMatch(comment, /\*\*PR rating\*\*/);
   assert.doesNotMatch(comment, /\*\*Real behavior proof\*\*/);
   assert.match(comment, /<summary><strong>Agent review details<\/strong><\/summary>/);
@@ -119,11 +119,11 @@ Full review comments:
   const comment = renderReviewCommentFromReport(report, "none");
   const labelDetails = detailsBody(comment, "Label changes");
 
-  assert.match(comment, /\| \*\*Overall\*\* \| 🧂 unranked krab \*\*\(1\/6\)\*\* \|/);
-  assert.match(comment, /\| \*\*Proof\*\* \| 🧂 unranked krab \*\*\(1\/6\)\*\* \|/);
+  assert.match(comment, /\| \*\*Overall readiness\*\* \| 🧂 unranked krab \*\*\(1\/6\)\*\* \|/);
+  assert.match(comment, /\| \*\*Proof confidence\*\* \| 🧂 unranked krab \*\*\(1\/6\)\*\* \|/);
   assert.match(comment, /\| \*\*Patch quality\*\* \| 🦞 diamond lobster \*\*\(5\/6\)\*\* \|/);
-  assert.match(comment, /\| \*\*Status\*\* \| Blocked until real behavior proof is added\. \|/);
-  assert.match(comment, /\| \*\*Add real behavior proof\*\* \| Needs real behavior proof/);
+  assert.match(comment, /⛔ \*\*Blocked until real behavior proof is added/);
+  assert.match(comment, /- \[ \] \*\*Add real behavior proof\*\* - Needs real behavior proof/);
   assert.match(comment, /The PR has no real ingestion-run proof yet\./);
   assert.match(comment, /After adding proof, update the PR body/);
   assert.match(comment, /@clawsweeper re-review/);
