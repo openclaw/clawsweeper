@@ -444,6 +444,22 @@ async function measureAsync<T>(name: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
+function reviewFollowupFromCommentBody(body: JsonValue): string | null {
+  const beforeMerge = extractMarkdownSection(body, "Before merge");
+  if (beforeMerge && !/^none[.!]?$/i.test(beforeMerge.trim())) {
+    const firstUnresolvedTask = beforeMerge
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.startsWith("- [ ]"));
+    return firstUnresolvedTask ?? beforeMerge;
+  }
+  return (
+    extractMarkdownSection(body, "Next step before merge") ??
+    extractMarkdownSection(body, "Automerge follow-up") ??
+    extractMarkdownSection(body, "Autofix follow-up")
+  );
+}
+
 function routedCommandForComment(comment: JsonValue): LooseRecord | null {
   const parsed: LooseRecord = parseRoutedCommentCommand(comment, { trustedAuthors: trustedBots });
   if (!parsed) return null;
@@ -482,10 +498,7 @@ function routedCommandForComment(comment: JsonValue): LooseRecord | null {
     automation_source: parsed.automation_source ?? null,
     repair_reason: parsed.repair_reason ?? null,
     review_summary: reviewSummaryFromCommentBody(comment.body),
-    review_followup:
-      extractMarkdownSection(comment.body, "Next step before merge") ??
-      extractMarkdownSection(comment.body, "Automerge follow-up") ??
-      extractMarkdownSection(comment.body, "Autofix follow-up"),
+    review_followup: reviewFollowupFromCommentBody(comment.body),
     freeform_prompt: parsed.freeform_prompt ?? null,
     visual_lens: parsed.visual_lens ?? null,
     expected_head_sha: parsed.expected_head_sha ?? null,

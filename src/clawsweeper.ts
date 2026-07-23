@@ -5596,7 +5596,7 @@ function markdownSection(body: string, heading: string): string {
   const contentStart = start.index + start[0].length;
   const relative = body.slice(contentStart);
   const end = relative.search(
-    /\n(?:(?:\*\*[^*\n]+\*\*|#{1,6}\s+\S)[ \t]*\r?\n|<details>|<\/details>|<!--)/,
+    /\n(?:(?:\*\*[^*\n]+\*\*[ \t]*|#{1,6}[ \t]+\S[^\n]*)\r?\n|<details>|<\/details>|<!--)/,
   );
   return (end < 0 ? relative : relative.slice(0, end)).trim();
 }
@@ -5711,27 +5711,32 @@ function previousReviewReviewedAt(body: string): string | null {
   return inline || null;
 }
 
-function firstMergeReadinessLine(body: string, prefix: string): string {
-  const readiness = markdownSection(body, "Merge readiness");
-  if (!readiness) return "";
+function sectionLabeledValue(body: string, heading: string, prefix: string): string {
+  const section = markdownSection(body, heading);
+  if (!section) return "";
   const lowerPrefix = prefix.toLowerCase();
-  const plain = readiness
+  const plain = section
     .split(/\r?\n/)
     .map((line) => line.trim())
     .find((line) => line.toLowerCase().startsWith(lowerPrefix));
   if (plain) return plain;
   const label = prefix.replace(/:$/, "");
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const tableRow = readiness.match(
-    new RegExp(`^\\|\\s*\\*\\*${escaped}\\*\\*\\s*\\|\\s*(.*?)\\s*\\|\\s*$`, "im"),
+  const tableRow = section.match(
+    new RegExp(`^\\|\\s*\\*\\*${escaped}\\*\\*\\s*\\|\\s*(.*?)\\s*\\|`, "im"),
   );
   return tableRow?.[1] ? `${label}: ${tableRow[1]}` : "";
+}
+
+function firstMergeReadinessLine(body: string, prefix: string): string {
+  return sectionLabeledValue(body, "Merge readiness", prefix);
 }
 
 function previousReviewRating(body: string): string {
   return (
     firstNonEmptyLine(markdownSection(body, "PR rating")) ||
-    firstMergeReadinessLine(body, "Overall:")
+    firstMergeReadinessLine(body, "Overall:") ||
+    sectionLabeledValue(body, "Review scores", "Overall readiness:")
   );
 }
 
@@ -5739,7 +5744,12 @@ function previousReviewProofStatus(body: string): string {
   const oldProofStatus = firstNonEmptyLine(markdownSection(body, "Real behavior proof"));
   if (oldProofStatus) return oldProofStatus;
   const readiness = markdownSection(body, "Merge readiness");
-  if (!readiness) return "";
+  if (!readiness) {
+    return (
+      sectionLabeledValue(body, "Review scores", "Proof confidence:") ||
+      sectionLabeledValue(body, "Verification", "Real behavior:")
+    );
+  }
   const lines = readiness.split(/\r?\n/);
   const proofGuidanceIndex = lines.findIndex(
     (line) => line.trim().toLowerCase() === "proof guidance:",
@@ -5751,7 +5761,11 @@ function previousReviewProofStatus(body: string): string {
       .find(Boolean);
     if (guidance) return guidance;
   }
-  return firstMergeReadinessLine(body, "Proof:");
+  return (
+    firstMergeReadinessLine(body, "Proof:") ||
+    sectionLabeledValue(body, "Review scores", "Proof confidence:") ||
+    sectionLabeledValue(body, "Verification", "Real behavior:")
+  );
 }
 
 function reviewHistoryFindings(
@@ -12140,11 +12154,13 @@ function publicVerificationBlock(
   securityReview: SecurityReview,
 ): string {
   const proofResult =
-    proof.status === "sufficient" || proof.status === "override"
+    proof.status === "sufficient"
       ? "Verified"
-      : proof.status === "not_applicable"
-        ? "Not applicable"
-        : "Needs proof";
+      : proof.status === "override"
+        ? "Overridden"
+        : proof.status === "not_applicable"
+          ? "Not applicable"
+          : "Needs proof";
   const proofEvidence =
     publicRealBehaviorProofLine(proof) || "Real behavior proof does not apply to this change.";
   const evidenceResult =
@@ -18661,7 +18677,6 @@ function publicBeforeMergeItems(options: {
   securityReview: SecurityReview;
   risks: string;
   nextStep: string;
-  ratingNextSteps: readonly string[];
 }): PublicBeforeMergeItem[] {
   const items: PublicBeforeMergeItem[] = [];
   const seen = new Set<string>();
@@ -18701,11 +18716,17 @@ function publicBeforeMergeItems(options: {
   if (options.proofBlocked) {
     add("Add real behavior proof", publicRealBehaviorProofLine(options.proof));
   }
-  for (const finding of options.findings.slice(0, 3)) {
+  for (const finding of options.findings) {
     add(`${finding.title.trim()} (${priorityLabel(finding.priority)})`, finding.body);
   }
-  for (const concern of options.securityReview.concerns.slice(0, 3)) {
+  for (const concern of options.securityReview.concerns) {
     add(`Resolve security concern: ${concern.title.trim()}`, concern.body);
+  }
+  if (
+    options.securityReview.status === "needs_attention" &&
+    options.securityReview.concerns.length === 0
+  ) {
+    add("Resolve security review attention item", options.securityReview.summary);
   }
   if (!isReportNoneList(options.risks)) addPrioritized(options.risks, "P1", "Resolve merge risk");
   if (!isRoutineBeforeMergeStep(options.nextStep)) {
@@ -18717,9 +18738,6 @@ function publicBeforeMergeItems(options: {
     } else {
       add("Complete next step", options.nextStep);
     }
-  }
-  for (const step of options.ratingNextSteps.slice(0, 3)) {
-    add("Improve readiness", step);
   }
 
   return items;
@@ -18944,6 +18962,22 @@ function reviewFreshnessText(markdown: string): string {
 
 const REVIEW_HISTORY_RENDER_SLOT = "CLAWSWEEPER_REVIEW_HISTORY_RENDER_SLOT";
 
+// The review prompt and schema require Mermaid flowchart source with no code fences,
+// click directives, URLs, HTML, or initialization/styling directives. The diagram is
+// model output that crosses into a trusted bot comment, so enforce that allowlist
+// here and drop the diagram entirely when it does not comply.
+function sanitizeArchitectureDiagram(value: string): string {
+  const diagram = value.trim();
+  if (!diagram || diagram.length > 4000) return "";
+  if (!/^flowchart\b/i.test(diagram)) return "";
+  if (diagram.includes("`") || diagram.includes("<")) return "";
+  if (/%%\{/.test(diagram)) return "";
+  if (/\bclick\b/i.test(diagram)) return "";
+  if (/\b(?:classDef|linkStyle|style)\b/i.test(diagram)) return "";
+  if (/(?:https?|ftp|javascript):/i.test(diagram)) return "";
+  return diagram;
+}
+
 function reviewHistoryForRender(
   markdown: string,
   previousReviewCommentBody: string | undefined,
@@ -18986,7 +19020,9 @@ function renderKeepOpenCommentFromReport(
   const summary = reviewSectionValue(markdown, "summary");
   const changeSummary = reviewSectionValue(markdown, "changeSummary");
   const systemContext = reviewSectionValue(markdown, "systemContext");
-  const architectureDiagram = reviewSectionValue(markdown, "architectureDiagram");
+  const architectureDiagram = sanitizeArchitectureDiagram(
+    reviewSectionValue(markdown, "architectureDiagram"),
+  );
   const bestSolution = reviewSectionValue(markdown, "bestSolution");
   const reproductionAssessment = reviewSectionValue(markdown, "reproductionAssessment");
   const solutionAssessment = reviewSectionValue(markdown, "solutionAssessment");
@@ -19152,7 +19188,6 @@ function renderKeepOpenCommentFromReport(
       securityReview,
       risks,
       nextStep: nextStepLine,
-      ratingNextSteps: prRating.nextSteps,
     });
     lines.push("# ClawSweeper review", "");
     appendHeadingSection(lines, "What this changes", changeSummaryLine);
@@ -19231,6 +19266,16 @@ function renderKeepOpenCommentFromReport(
     if (evidenceDetails.length) {
       agentDetails.push("", "### Evidence", "", ...evidenceDetails);
     }
+    if (!reviewFailed && prRating.nextSteps.length) {
+      agentDetails.push(
+        "",
+        "### Rank-up moves",
+        "",
+        "Optional improvements that raise the rating; they are not merge blockers.",
+        "",
+        prRating.nextSteps.map((step) => `- ${sentence(step)}`).join("\n"),
+      );
+    }
     if (!reviewFailed) {
       agentDetails.push("", "### Rating scale", "", publicRankDetailsBlock());
     }
@@ -19274,9 +19319,16 @@ function renderKeepOpenCommentFromReport(
       (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
     ),
   );
-  return reviewHistoryBlock
-    ? publicBody.replace(REVIEW_HISTORY_RENDER_SLOT, reviewHistoryBlock)
-    : publicBody;
+  if (!reviewHistoryBlock || !isPullRequest) return publicBody;
+  // The slot is always the renderer-appended last occurrence; report text earlier in
+  // the body could mention the sentinel, and a plain replace would expand $-sequences.
+  const slotIndex = publicBody.lastIndexOf(REVIEW_HISTORY_RENDER_SLOT);
+  if (slotIndex < 0) return publicBody;
+  return (
+    publicBody.slice(0, slotIndex) +
+    reviewHistoryBlock +
+    publicBody.slice(slotIndex + REVIEW_HISTORY_RENDER_SLOT.length)
+  );
 }
 
 export function renderReviewCommentFromReport(

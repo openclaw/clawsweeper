@@ -76,8 +76,8 @@ PR comments use a human-first shape:
 Everything primarily useful to agents or deep reviewers lives under one
 collapsed `Agent review details` section: security evidence, PR surface,
 review metrics, stored-data warnings, root-cause clusters, proof suggestions,
-merge-risk options, full review comments, labels, evidence, rank legend,
-workflow notes, and review history.
+merge-risk options, full review comments, labels, evidence, optional rank-up
+moves, the rank legend, workflow notes, and review history.
 
 Security defaults to `None.` when there are no concerns. Do not spend public
 space explaining why an uneventful security pass is uneventful.
