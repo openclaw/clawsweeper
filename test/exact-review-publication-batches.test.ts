@@ -702,7 +702,7 @@ test("newer publication revisions supersede unowned pending rows at enqueue", as
   }
 });
 
-test("bounded enqueue cleanup cannot leave obsolete rows eligible for a batch", async () => {
+test("semantic lineage dedupe cannot leave obsolete rows eligible for a batch", async () => {
   const originalNow = Date.now;
   Date.now = () => 6_250_000;
   try {
@@ -729,7 +729,8 @@ test("bounded enqueue cleanup cannot leave obsolete rows eligible for a batch", 
     );
 
     const before = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(before.lanes.publication.pending, 2);
+    assert.equal(before.lanes.publication.pending, 1);
+    assert.equal(before.lanes.publication.semantic_deduped_total, 100);
     const claim = await (
       await queue.fetch(
         batchRequest("/publication-batches/claim", {

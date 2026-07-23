@@ -182,6 +182,19 @@ cleaned up, no workflow was paused, and no live apply or close was executed.
 | Parallel prepare and size-32 readiness        | Planned; separate implementation boundary      | Keep actual ownership bounded while preparation becomes concurrent, initially with four isolated workers. Preserve deterministic aggregation, batch heartbeat, fencing, per-item outcomes, GitHub-effect idempotency, resource bounds, and one final state commit. Prove this at size 8 before treating size 32 as safe.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Size-32 capacity proof                        | Not complete                                   | A dashboard value of 32 is configuration evidence, not behavior proof. Completion requires one 32-distinct-item state commit with 32 independent accepted outcomes, bounded runtime and lease margin, unchanged contention/DLQ safety, two consecutive positive five-minute windows, and a following positive 60-minute window.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
+### Publication lineage deduplication
+
+Queue admission treats one protocol-v2 result tuple as one publication lineage:
+`targetRepo#itemNumber + leaseRevision + claimGeneration`. Producer run ids and
+attempts remain provenance, but retries for the same tuple do not create another
+effective publication chain. A pending lineage keeps its queue slot and retry
+history while adopting the newest producer artifact. A lineage already owned by
+a dispatch or durable batch lease is immutable; later equivalent deliveries are
+acknowledged as semantic duplicates without stealing ownership. New review
+revisions, comment routing, and apply work remain separate lanes. The queue
+reports `semantic_deduped_total` independently from stale-revision supersession
+so backlog reduction is not mistaken for completed review output. See #800.
+
 ## Production incident and root cause
 
 The first real size-2 batch was

@@ -266,6 +266,288 @@ test("exact-review queue bypasses debounce for commands and publications", async
   }
 });
 
+test("exact-review queue coalesces one pending publication lineage across producer runs", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const first = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "lineage-first",
+      753,
+      "exact_review_artifact_publish",
+      "issue",
+      undefined,
+      exactReviewPublicationOverrides(753, "7530"),
+    ),
+  );
+  assert.equal((await first.json()).queued, true);
+
+  const duplicate = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "lineage-duplicate",
+      753,
+      "exact_review_artifact_publish",
+      "issue",
+      undefined,
+      exactReviewPublicationOverrides(753, "7531"),
+    ),
+  );
+  assert.deepEqual(await duplicate.json(), {
+    ok: true,
+    deduped: true,
+    item_key: "openclaw/gogcli#753@publish:7530:1",
+    semantic_deduped: true,
+    semantic_duplicates_removed: 0,
+  });
+
+  const duplicateRetry = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "lineage-duplicate-retry",
+      753,
+      "exact_review_artifact_publish",
+      "issue",
+      undefined,
+      exactReviewPublicationOverrides(753, "7531"),
+    ),
+  );
+  assert.deepEqual(await duplicateRetry.json(), {
+    ok: true,
+    deduped: true,
+    item_key: "openclaw/gogcli#753@publish:7530:1",
+    semantic_deduped: true,
+    semantic_duplicates_removed: 0,
+  });
+
+  const delayedFirstProducer = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "lineage-first-producer-delayed",
+      753,
+      "exact_review_artifact_publish",
+      "issue",
+      undefined,
+      exactReviewPublicationOverrides(753, "7530"),
+    ),
+  );
+  assert.equal((await delayedFirstProducer.json()).deduped, true);
+
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { decision: { publication: { producerRunId: string } } }>;
+  };
+  assert.deepEqual(Object.keys(state.items), ["openclaw/gogcli#753@publish:7530:1"]);
+  assert.equal(
+    state.items["openclaw/gogcli#753@publish:7530:1"].decision.publication.producerRunId,
+    "7531",
+  );
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.publication.enqueued_total, 1);
+  assert.equal(stats.lanes.publication.semantic_deduped_total, 3);
+});
+
+test("exact-review queue cleans legacy sibling lineages without replacing newer provenance", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(
+    buildExactReviewQueueRequest(
+      "legacy-lineage-first",
+      755,
+      "exact_review_artifact_publish",
+      "issue",
+      undefined,
+      exactReviewPublicationOverrides(755, "7550"),
+    ),
+  );
+  const firstState = structuredClone(
+    (await storage.get("exact-review-queue")) as {
+      items: Record<string, { key: string; createdAt: number; decision: unknown }>;
+    },
+  );
+  await queue.fetch(
+    buildExactReviewQueueRequest(
+      "legacy-lineage-second",
+      755,
+      "exact_review_artifact_publish",
+      "issue",
+      undefined,
+      exactReviewPublicationOverrides(755, "7551"),
+    ),
+  );
+  const refreshedState = structuredClone(
+    (await storage.get("exact-review-queue")) as typeof firstState,
+  );
+  const firstKey = "openclaw/gogcli#755@publish:7550:1";
+  const siblingKey = "openclaw/gogcli#755@publish:7551:1";
+  const firstItem = firstState.items[firstKey];
+  const refreshedItem = refreshedState.items[firstKey];
+  await storage.put("exact-review-queue", {
+    ...refreshedState,
+    items: {
+      [firstKey]: firstItem,
+      [siblingKey]: {
+        ...refreshedItem,
+        key: siblingKey,
+        createdAt: firstItem.createdAt + 1,
+      },
+    },
+  });
+
+  const retry = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "legacy-lineage-first-retry",
+      755,
+      "exact_review_artifact_publish",
+      "issue",
+      undefined,
+      exactReviewPublicationOverrides(755, "7550"),
+    ),
+  );
+  assert.deepEqual(await retry.json(), {
+    ok: true,
+    deduped: true,
+    item_key: firstKey,
+    semantic_deduped: true,
+    semantic_duplicates_removed: 1,
+  });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<
+      string,
+      { revision: number; decision: { publication: { producerRunId: string } } }
+    >;
+  };
+  assert.deepEqual(Object.keys(state.items), [firstKey]);
+  assert.equal(state.items[firstKey].revision, 1);
+  assert.equal(state.items[firstKey].decision.publication.producerRunId, "7551");
+});
+
+test("exact-review queue persists legacy sibling cleanup during same-key redelivery", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(
+    buildExactReviewQueueRequest(
+      "legacy-sibling-first",
+      756,
+      "exact_review_artifact_publish",
+      "issue",
+      undefined,
+      exactReviewPublicationOverrides(756, "7560"),
+    ),
+  );
+  const firstState = structuredClone(
+    (await storage.get("exact-review-queue")) as {
+      items: Record<string, { key: string; createdAt: number; decision: unknown }>;
+    },
+  );
+  await queue.fetch(
+    buildExactReviewQueueRequest(
+      "legacy-sibling-second",
+      756,
+      "exact_review_artifact_publish",
+      "issue",
+      undefined,
+      exactReviewPublicationOverrides(756, "7561"),
+    ),
+  );
+  const refreshedState = structuredClone(
+    (await storage.get("exact-review-queue")) as typeof firstState,
+  );
+  const olderKey = "openclaw/gogcli#756@publish:7560:1";
+  const retainedKey = "openclaw/gogcli#756@publish:7561:1";
+  const olderItem = firstState.items[olderKey];
+  const refreshedItem = refreshedState.items[olderKey];
+  await storage.put("exact-review-queue", {
+    ...refreshedState,
+    items: {
+      [retainedKey]: {
+        ...refreshedItem,
+        key: retainedKey,
+        createdAt: 1,
+      },
+      [olderKey]: {
+        ...olderItem,
+        createdAt: 2,
+      },
+    },
+  });
+
+  const retry = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "legacy-sibling-retained-retry",
+      756,
+      "exact_review_artifact_publish",
+      "issue",
+      undefined,
+      exactReviewPublicationOverrides(756, "7561"),
+    ),
+  );
+  assert.deepEqual(await retry.json(), {
+    ok: true,
+    queued: true,
+    item_key: retainedKey,
+    superseded_publications: 0,
+  });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<
+      string,
+      { revision: number; decision: { publication: { producerRunId: string } } }
+    >;
+  };
+  assert.deepEqual(Object.keys(state.items), [retainedKey]);
+  assert.equal(state.items[retainedKey].revision, 2);
+  assert.equal(state.items[retainedKey].decision.publication.producerRunId, "7561");
+});
+
+test("exact-review queue protects an active batch lineage from a later duplicate", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "1",
+    },
+  );
+  await queue.fetch(
+    buildExactReviewQueueRequest(
+      "active-lineage-first",
+      754,
+      "exact_review_artifact_publish",
+      "issue",
+      undefined,
+      exactReviewPublicationOverrides(754, "7540"),
+    ),
+  );
+  const claim = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/publication-batches/claim", {
+      method: "POST",
+      body: JSON.stringify({
+        claim_id: "lineage-batch",
+        lease_owner: "lineage-owner",
+        max_items: 1,
+      }),
+    }),
+  );
+  assert.equal((await claim.json()).claimed, true);
+
+  const duplicate = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "active-lineage-duplicate",
+      754,
+      "exact_review_artifact_publish",
+      "issue",
+      undefined,
+      exactReviewPublicationOverrides(754, "7541"),
+    ),
+  );
+  assert.equal((await duplicate.json()).semantic_deduped, true);
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { decision: { publication: { producerRunId: string } } }>;
+  };
+  assert.deepEqual(Object.keys(state.items), ["openclaw/gogcli#754@publish:7540:1"]);
+  assert.equal(
+    state.items["openclaw/gogcli#754@publish:7540:1"].decision.publication.producerRunId,
+    "7540",
+  );
+});
+
 test("exact-review queue sheds only new recovery work above the pending soft limit", async () => {
   const storage = new MemoryDurableStorage();
   const env = {

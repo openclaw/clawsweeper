@@ -214,6 +214,7 @@ type ExactReviewQueueMetricTotals = {
     completed: number;
     published: number;
     superseded: number;
+    semanticDeduped: number;
     retried: number;
     deadLettered: number;
     refreshed: number;
@@ -228,6 +229,7 @@ type ExactReviewQueueMetricDelta = {
   publicationCompleted?: number;
   publicationPublished?: number;
   publicationSuperseded?: number;
+  publicationSemanticDeduped?: number;
   publicationRetried?: number;
   publicationDeadLettered?: number;
   publicationRefreshed?: number;
@@ -645,14 +647,20 @@ export class ExactReviewQueue {
         );
         let supersededPublications = 0;
         if (incomingPublicationRevision) {
+          const incomingLineage = exactReviewPublicationLineage(decision);
           const matching = Object.values(state.items)
-            .map((item) => ({ item, revision: exactReviewPublicationRevision(item.decision) }))
+            .map((item) => ({
+              item,
+              revision: exactReviewPublicationRevision(item.decision),
+              lineage: exactReviewPublicationLineage(item.decision),
+            }))
             .filter(
               (
                 entry,
               ): entry is {
                 item: ExactReviewQueueItem;
                 revision: { targetKey: string; sourceRevision: number };
+                lineage: ReturnType<typeof exactReviewPublicationLineage>;
               } => entry.revision?.targetKey === incomingPublicationRevision.targetKey,
             );
           const newestSourceRevision = matching.reduce(
@@ -676,6 +684,122 @@ export class ExactReviewQueue {
               supersededByRevision: newestSourceRevision,
               state,
             };
+          }
+
+          if (incomingLineage) {
+            const sameLineage = matching.filter(
+              (entry) =>
+                entry.lineage?.sourceRevision === incomingLineage.sourceRevision &&
+                entry.lineage.claimGeneration === incomingLineage.claimGeneration,
+            );
+            const activeLineage = sameLineage
+              .filter(
+                ({ item }) =>
+                  activeBatchItemKeys.has(item.key) ||
+                  item.state === "dispatching" ||
+                  item.state === "leased",
+              )
+              .sort((left, right) => left.item.key.localeCompare(right.item.key));
+            const retained =
+              activeLineage[0] ||
+              sameLineage
+                .filter(({ item }) => item.state === "pending" || item.state === "parked")
+                .sort(
+                  (left, right) =>
+                    left.item.createdAt - right.item.createdAt ||
+                    left.item.key.localeCompare(right.item.key),
+                )[0];
+            const retainedPublication = retained?.item.decision.publication;
+            const producerChanged =
+              retainedPublication?.producerRunId !== decision.publication?.producerRunId ||
+              retainedPublication?.producerRunAttempt !== decision.publication?.producerRunAttempt;
+            const retainedUsesIncomingKey = retained?.item.key === exactReviewItemKey(decision);
+            const newestPendingDecision = activeLineage.length
+              ? null
+              : sameLineage
+                  .filter(({ item }) => item.state === "pending" || item.state === "parked")
+                  .map(({ item }) => item.decision)
+                  .concat(decision)
+                  .reduce<ExactReviewDecision | null>((newest, candidate) => {
+                    if (!newest?.publication) return candidate;
+                    return exactReviewPublicationProducerIsNewer(
+                      candidate.publication!,
+                      newest.publication,
+                    )
+                      ? candidate
+                      : newest;
+                  }, null);
+            const incomingIsOlderThanPendingLineage = Boolean(
+              newestPendingDecision?.publication &&
+              decision.publication &&
+              exactReviewPublicationProducerIsNewer(
+                newestPendingDecision.publication,
+                decision.publication,
+              ),
+            );
+            const semanticIngress =
+              producerChanged || !retainedUsesIncomingKey || incomingIsOlderThanPendingLineage;
+            const hasRemovableDuplicate =
+              Boolean(retained) &&
+              sameLineage.some(
+                ({ item }) =>
+                  item.key !== retained?.item.key &&
+                  !activeBatchItemKeys.has(item.key) &&
+                  (item.state === "pending" || item.state === "parked"),
+              );
+            // Refreshing provenance deliberately preserves the existing queue
+            // key, so a redelivery from that refreshed producer must still
+            // collapse into it. Same-key redeliveries retain revision handoff.
+            if (retained && (semanticIngress || hasRemovableDuplicate)) {
+              let semanticDuplicatesRemoved = 0;
+              for (const entry of sameLineage) {
+                if (
+                  entry.item.key === retained.item.key ||
+                  activeBatchItemKeys.has(entry.item.key) ||
+                  (entry.item.state !== "pending" && entry.item.state !== "parked")
+                ) {
+                  continue;
+                }
+                delete state.items[entry.item.key];
+                semanticDuplicatesRemoved += 1;
+              }
+              if (
+                !activeLineage.length &&
+                retainedPublication &&
+                newestPendingDecision?.publication &&
+                exactReviewPublicationProducerIsNewer(
+                  newestPendingDecision.publication,
+                  retainedPublication,
+                )
+              ) {
+                // Keep the queue slot and its retry history, but refresh the
+                // producer provenance from the freshest known artifact.
+                retained.item.decision = newestPendingDecision;
+                retained.item.updatedAt = now;
+              }
+              if (semanticIngress) {
+                this.writeStateSync(state);
+                this.incrementQueueMetricsSync({
+                  publicationCompleted: semanticDuplicatesRemoved,
+                  publicationSuperseded: semanticDuplicatesRemoved,
+                  publicationSemanticDeduped: semanticDuplicatesRemoved + 1,
+                });
+                return {
+                  deduped: true as const,
+                  semantic: true as const,
+                  key: retained.item.key,
+                  semanticDuplicatesRemoved,
+                  state,
+                };
+              }
+              if (semanticDuplicatesRemoved) {
+                this.incrementQueueMetricsSync({
+                  publicationCompleted: semanticDuplicatesRemoved,
+                  publicationSuperseded: semanticDuplicatesRemoved,
+                  publicationSemanticDeduped: semanticDuplicatesRemoved,
+                });
+              }
+            }
           }
           for (const entry of matching
             .filter(
@@ -765,7 +889,16 @@ export class ExactReviewQueue {
           {
             ok: true,
             deduped: true,
-            item_key: exactReviewItemKey(decision),
+            item_key:
+              "semantic" in accepted && accepted.semantic
+                ? accepted.key
+                : exactReviewItemKey(decision),
+            ...("semantic" in accepted && accepted.semantic
+              ? {
+                  semantic_deduped: true,
+                  semantic_duplicates_removed: accepted.semanticDuplicatesRemoved,
+                }
+              : {}),
             ...(accepted.superseded
               ? {
                   superseded: true,
@@ -1514,6 +1647,7 @@ export class ExactReviewQueue {
             completed_total: metrics.publication.completed,
             published_total: metrics.publication.published,
             superseded_total: metrics.publication.superseded,
+            semantic_deduped_total: metrics.publication.semanticDeduped,
             retried_total: metrics.publication.retried,
             dead_lettered_total: metrics.publication.deadLettered,
             refreshed_total: metrics.publication.refreshed,
@@ -3279,6 +3413,7 @@ export class ExactReviewQueue {
       "publication_enqueued_total",
       "publication_published_total",
       "publication_superseded_total",
+      "publication_semantic_deduped_total",
       "publication_retried_total",
       "publication_dead_lettered_total",
       "publication_refreshed_total",
@@ -3317,12 +3452,20 @@ export class ExactReviewQueue {
          publication_resolved INTEGER NOT NULL DEFAULT 0 CHECK (publication_resolved >= 0),
          publication_published INTEGER NOT NULL DEFAULT 0 CHECK (publication_published >= 0),
          publication_superseded INTEGER NOT NULL DEFAULT 0 CHECK (publication_superseded >= 0),
+         publication_semantic_deduped INTEGER NOT NULL DEFAULT 0
+           CHECK (publication_semantic_deduped >= 0),
          publication_retried INTEGER NOT NULL DEFAULT 0 CHECK (publication_retried >= 0),
          publication_dead_lettered INTEGER NOT NULL DEFAULT 0
            CHECK (publication_dead_lettered >= 0)
        ) STRICT`,
     );
-    for (const column of ["review_enqueued", "review_completed", "review_retried", "review_shed"]) {
+    for (const column of [
+      "review_enqueued",
+      "review_completed",
+      "review_retried",
+      "review_shed",
+      "publication_semantic_deduped",
+    ]) {
       const present = Array.from(
         this.storage.sql.exec(
           `SELECT name FROM pragma_table_info('${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE}')
@@ -3821,6 +3964,7 @@ export class ExactReviewQueue {
         `SELECT review_enqueued_total, review_completed_total,
                 publication_enqueued_total, publication_completed_total,
                 publication_published_total, publication_superseded_total,
+                publication_semantic_deduped_total,
                 publication_retried_total, publication_dead_lettered_total,
                 publication_refreshed_total
            FROM ${EXACT_REVIEW_QUEUE_METRICS_TABLE}
@@ -3834,6 +3978,7 @@ export class ExactReviewQueue {
           publication_completed_total?: number;
           publication_published_total?: number;
           publication_superseded_total?: number;
+          publication_semantic_deduped_total?: number;
           publication_retried_total?: number;
           publication_dead_lettered_total?: number;
           publication_refreshed_total?: number;
@@ -3849,6 +3994,7 @@ export class ExactReviewQueue {
         completed: exactReviewMetricTotal(row?.publication_completed_total),
         published: exactReviewMetricTotal(row?.publication_published_total),
         superseded: exactReviewMetricTotal(row?.publication_superseded_total),
+        semanticDeduped: exactReviewMetricTotal(row?.publication_semantic_deduped_total),
         retried: exactReviewMetricTotal(row?.publication_retried_total),
         deadLettered: exactReviewMetricTotal(row?.publication_dead_lettered_total),
         refreshed: exactReviewMetricTotal(row?.publication_refreshed_total),
@@ -3865,6 +4011,7 @@ export class ExactReviewQueue {
     const publicationCompleted = exactReviewMetricDelta(delta.publicationCompleted);
     const publicationPublished = exactReviewMetricDelta(delta.publicationPublished);
     const publicationSuperseded = exactReviewMetricDelta(delta.publicationSuperseded);
+    const publicationSemanticDeduped = exactReviewMetricDelta(delta.publicationSemanticDeduped);
     const publicationRetried = exactReviewMetricDelta(delta.publicationRetried);
     const publicationDeadLettered = exactReviewMetricDelta(delta.publicationDeadLettered);
     const publicationRefreshed = exactReviewMetricDelta(delta.publicationRefreshed);
@@ -3877,6 +4024,7 @@ export class ExactReviewQueue {
       !publicationCompleted &&
       !publicationPublished &&
       !publicationSuperseded &&
+      !publicationSemanticDeduped &&
       !publicationRetried &&
       !publicationDeadLettered &&
       !publicationRefreshed
@@ -3891,6 +4039,7 @@ export class ExactReviewQueue {
               publication_completed_total = publication_completed_total + ?,
               publication_published_total = publication_published_total + ?,
               publication_superseded_total = publication_superseded_total + ?,
+              publication_semantic_deduped_total = publication_semantic_deduped_total + ?,
               publication_retried_total = publication_retried_total + ?,
               publication_dead_lettered_total = publication_dead_lettered_total + ?,
               publication_refreshed_total = publication_refreshed_total + ?
@@ -3901,6 +4050,7 @@ export class ExactReviewQueue {
       publicationCompleted,
       publicationPublished,
       publicationSuperseded,
+      publicationSemanticDeduped,
       publicationRetried,
       publicationDeadLettered,
       publicationRefreshed,
@@ -3914,6 +4064,7 @@ export class ExactReviewQueue {
       publicationCompleted,
       publicationPublished,
       publicationSuperseded,
+      publicationSemanticDeduped,
       publicationRetried,
       publicationDeadLettered,
     });
@@ -3928,6 +4079,7 @@ export class ExactReviewQueue {
     publicationCompleted,
     publicationPublished,
     publicationSuperseded,
+    publicationSemanticDeduped,
     publicationRetried,
     publicationDeadLettered,
   }: {
@@ -3939,6 +4091,7 @@ export class ExactReviewQueue {
     publicationCompleted: number;
     publicationPublished: number;
     publicationSuperseded: number;
+    publicationSemanticDeduped: number;
     publicationRetried: number;
     publicationDeadLettered: number;
   }) {
@@ -3951,6 +4104,7 @@ export class ExactReviewQueue {
       !publicationCompleted &&
       !publicationPublished &&
       !publicationSuperseded &&
+      !publicationSemanticDeduped &&
       !publicationRetried &&
       !publicationDeadLettered
     ) {
@@ -3963,8 +4117,9 @@ export class ExactReviewQueue {
       `INSERT INTO ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE}
          (bucket_start, review_enqueued, review_completed, review_retried, review_shed,
           publication_enqueued, publication_resolved, publication_published,
-          publication_superseded, publication_retried, publication_dead_lettered)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          publication_superseded, publication_semantic_deduped,
+          publication_retried, publication_dead_lettered)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(bucket_start) DO UPDATE SET
          review_enqueued = review_enqueued + excluded.review_enqueued,
          review_completed = review_completed + excluded.review_completed,
@@ -3974,6 +4129,8 @@ export class ExactReviewQueue {
          publication_resolved = publication_resolved + excluded.publication_resolved,
          publication_published = publication_published + excluded.publication_published,
          publication_superseded = publication_superseded + excluded.publication_superseded,
+         publication_semantic_deduped =
+           publication_semantic_deduped + excluded.publication_semantic_deduped,
          publication_retried = publication_retried + excluded.publication_retried,
          publication_dead_lettered =
            publication_dead_lettered + excluded.publication_dead_lettered`,
@@ -3986,6 +4143,7 @@ export class ExactReviewQueue {
       publicationCompleted,
       publicationPublished,
       publicationSuperseded,
+      publicationSemanticDeduped,
       publicationRetried,
       publicationDeadLettered,
     );
@@ -4403,6 +4561,7 @@ export class ExactReviewQueue {
                   COALESCE(SUM(publication_resolved), 0) AS resolved,
                   COALESCE(SUM(publication_published), 0) AS published,
                   COALESCE(SUM(publication_superseded), 0) AS superseded,
+                  COALESCE(SUM(publication_semantic_deduped), 0) AS semantic_deduped,
                   COALESCE(SUM(publication_retried), 0) AS retried,
                   COALESCE(SUM(publication_dead_lettered), 0) AS dead_lettered
              FROM ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE}
@@ -4416,6 +4575,7 @@ export class ExactReviewQueue {
       const retried = Number(row?.retried || 0);
       const published = Number(row?.published || 0);
       const superseded = Number(row?.superseded || 0);
+      const semanticDeduped = Number(row?.semantic_deduped || 0);
       const deadLettered = Number(row?.dead_lettered || 0);
       return {
         window_minutes: windowMs / 60_000,
@@ -4423,12 +4583,14 @@ export class ExactReviewQueue {
         resolved,
         published,
         superseded,
+        semantic_deduped: semanticDeduped,
         retried,
         dead_lettered: deadLettered,
         arrival_rate_per_hour: Math.round(enqueued * multiplier * 10) / 10,
         resolved_rate_per_hour: Math.round(resolved * multiplier * 10) / 10,
         published_rate_per_hour: Math.round(published * multiplier * 10) / 10,
         superseded_rate_per_hour: Math.round(superseded * multiplier * 10) / 10,
+        semantic_deduped_rate_per_hour: Math.round(semanticDeduped * multiplier * 10) / 10,
         retried_rate_per_hour: Math.round(retried * multiplier * 10) / 10,
         dead_lettered_rate_per_hour: Math.round(deadLettered * multiplier * 10) / 10,
         net_drain_rate_per_hour: Math.round((resolved - enqueued) * multiplier * 10) / 10,
@@ -4959,6 +5121,43 @@ function exactReviewPublicationRevision(decision: ExactReviewDecision): {
     targetKey: publication.itemKey.toLowerCase(),
     sourceRevision: publication.leaseRevision,
   };
+}
+
+function exactReviewPublicationLineage(decision: ExactReviewDecision): {
+  targetKey: string;
+  sourceRevision: number;
+  claimGeneration: number;
+} | null {
+  const publication = decision.publication;
+  if (!publication || publication.protocolVersion !== 2 || publication.leaseRevision === null) {
+    return null;
+  }
+  if (publication.claimGeneration === null) return null;
+  return {
+    targetKey: publication.itemKey.toLowerCase(),
+    sourceRevision: publication.leaseRevision,
+    claimGeneration: publication.claimGeneration,
+  };
+}
+
+function exactReviewPublicationProducerIsNewer(
+  incoming: ExactReviewPublication,
+  retained: ExactReviewPublication,
+) {
+  const runComparison = compareDecimalIdentifiers(incoming.producerRunId, retained.producerRunId);
+  return (
+    runComparison > 0 ||
+    (runComparison === 0 && incoming.producerRunAttempt > retained.producerRunAttempt)
+  );
+}
+
+function compareDecimalIdentifiers(left: string, right: string) {
+  const normalizedLeft = left.replace(/^0+/, "") || "0";
+  const normalizedRight = right.replace(/^0+/, "") || "0";
+  if (normalizedLeft.length !== normalizedRight.length) {
+    return normalizedLeft.length - normalizedRight.length;
+  }
+  return normalizedLeft.localeCompare(normalizedRight);
 }
 
 function exactReviewPublicationFrom(value): ExactReviewPublication | null {
