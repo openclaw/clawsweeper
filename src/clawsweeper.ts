@@ -5901,10 +5901,12 @@ function extractLatestClawSweeperReview(
       firstNonEmptyLine(markdownSection(body, "Summary")),
     proofStatus: previousReviewProofStatus(body),
     rating: previousReviewRating(body),
-    nextStep:
-      firstBeforeMergeAction(body) ||
-      firstNonEmptyLine(markdownSection(body, "Next step before merge")) ||
-      firstNonEmptyLine(markdownSection(body, "Next step")),
+    // A present Before merge section is authoritative; legacy next-step headings are
+    // consulted only for comments that predate the scan-first layout.
+    nextStep: markdownSection(body, "Before merge")
+      ? firstBeforeMergeAction(body)
+      : firstNonEmptyLine(markdownSection(body, "Next step before merge")) ||
+        firstNonEmptyLine(markdownSection(body, "Next step")),
     findings: reviewHistoryFindings(latestCompletedCycle),
     earlierReviewCycles,
     completedReviewCycles: history.totalCompletedCycles + (currentCycle ? 1 : 0),
