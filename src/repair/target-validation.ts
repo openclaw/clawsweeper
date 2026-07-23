@@ -1221,12 +1221,11 @@ export function runAllowedValidationCommandsWithBinding(
           } catch (error) {
             executionError = error as Error;
           }
-          const identityProofDeadlineAt = validationIdentityProofDeadlineAt(deadlineAt);
           try {
             clearNewIgnoredValidationRuntimePaths(
               cwd,
               ignoredValidationInputs,
-              identityProofDeadlineAt,
+              validationIdentityProofDeadlineAt(deadlineAt),
             );
           } catch (error) {
             executionError ??= error as Error;
@@ -1235,7 +1234,7 @@ export function runAllowedValidationCommandsWithBinding(
             cwd,
             baseRef,
             checkoutIdentity,
-            identityProofDeadlineAt,
+            validationIdentityProofDeadlineAt(deadlineAt),
             rendered,
             executionError,
           );
@@ -1273,12 +1272,11 @@ export function runAllowedValidationCommandsWithBinding(
               } catch (error) {
                 fallbackError = error as Error;
               }
-              const fallbackProofDeadlineAt = validationIdentityProofDeadlineAt(deadlineAt);
               try {
                 clearNewIgnoredValidationRuntimePaths(
                   cwd,
                   ignoredValidationInputs,
-                  fallbackProofDeadlineAt,
+                  validationIdentityProofDeadlineAt(deadlineAt),
                 );
               } catch (error) {
                 fallbackError ??= error as Error;
@@ -1287,7 +1285,7 @@ export function runAllowedValidationCommandsWithBinding(
                 cwd,
                 baseRef,
                 checkoutIdentity,
-                fallbackProofDeadlineAt,
+                validationIdentityProofDeadlineAt(deadlineAt),
                 rendered,
                 fallbackError ?? executionError,
               );
