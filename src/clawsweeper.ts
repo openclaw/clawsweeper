@@ -18758,16 +18758,21 @@ function publicBeforeMergeItems(options: {
 }): PublicBeforeMergeItem[] {
   const items: PublicBeforeMergeItem[] = [];
   const seen = new Set<string>();
-  const add = (label: string, detail: string) => {
+  const add = (label: string, detail: string, identity?: { distinctKey: string }) => {
     const rawDetail = stripPriorityPrefix(detail);
     const cleanDetail = sentence(stripPriorityPrefix(detail));
-    const key = normalizePublicReviewText(cleanDetail);
+    // Typed findings pass a distinct key (title and location) so independent
+    // findings that share remediation wording are all kept; free-form guidance
+    // still de-duplicates on the detail text across sections.
+    const key = normalizePublicReviewText(
+      identity ? `${identity.distinctKey} ${cleanDetail}` : cleanDetail,
+    );
     if (
       !cleanDetail ||
       /^none[.!]?$/i.test(rawDetail) ||
       isReportNoneList(cleanDetail) ||
       seen.has(key) ||
-      items.some((item) => !publicReviewTextDiffers(item.detail, cleanDetail))
+      (!identity && items.some((item) => !publicReviewTextDiffers(item.detail, cleanDetail)))
     ) {
       return;
     }
@@ -18795,7 +18800,9 @@ function publicBeforeMergeItems(options: {
     add("Add real behavior proof", publicRealBehaviorProofLine(options.proof));
   }
   for (const finding of options.findings) {
-    add(`${finding.title.trim()} (${priorityLabel(finding.priority)})`, finding.body);
+    add(`${finding.title.trim()} (${priorityLabel(finding.priority)})`, finding.body, {
+      distinctKey: `${finding.title} ${reviewFindingLocation(finding)}`,
+    });
   }
   for (const concern of options.securityReview.concerns) {
     add(`Resolve security concern: ${concern.title.trim()}`, concern.body);
@@ -19079,7 +19086,10 @@ const OWNED_REVIEW_SECTION_HEADINGS = new Set([
 // matching Markdown heading. Escape heading-shaped lines in model text so injected
 // content can never spoof a renderer-owned section boundary.
 function neutralizeOwnedSectionSpoofing(value: string): string {
+  // GitHub normalizes CRLF and bare CR to line endings, so normalize first or a
+  // bare-CR line break could smuggle a heading past the per-line checks.
   return value
+    .replace(/\r\n?/g, "\n")
     .split("\n")
     .map((line) => {
       // Strip blockquote/list container prefixes so nested heading constructs are

@@ -260,11 +260,12 @@ export function renderDecisionPacketPublicBlock(markdown: string): string {
       .trim();
   if (!recommendation) {
     // A packet without a flagged recommendation is still an outstanding maintainer
-    // choice; show the question and the available options instead of hiding it.
-    if (packet.options.length === 0) return "";
-    const optionCells = packet.options
-      .map((option) => `**${tableCell(option.title)}:** ${tableCell(option.body)}`)
-      .join("<br>");
+    // choice; show the question and any available options instead of hiding it.
+    const optionCells = packet.options.length
+      ? packet.options
+          .map((option) => `**${tableCell(option.title)}:** ${tableCell(option.body)}`)
+          .join("<br>")
+      : "Maintainer decision needed.";
     return [
       "| Question | Options |",
       "|---|---|",
