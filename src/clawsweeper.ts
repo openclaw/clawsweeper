@@ -18712,8 +18712,11 @@ function appendHeadingSection(lines: string[], heading: string, body: string): v
 }
 
 function publicTableCell(value: string): string {
+  // Escape report-provided HTML (tags and comment openers) before inserting the
+  // renderer-owned <br> tags; &lt; renders identically to a literal <.
   return value
     .replace(/\\/g, "\\\\")
+    .replace(/<(?=[a-z/!])/gi, "&lt;")
     .replace(/\r?\n|\r/g, "<br>")
     .replace(/\|/g, "\\|")
     .trim();
@@ -18850,6 +18853,7 @@ function publicBeforeMergeItems(options: {
 // downstream consumers of the checklist see command/path text unaltered.
 function publicChecklistText(value: string): string {
   return value
+    .replace(/<(?=[a-z/!])/gi, "&lt;")
     .replace(/\r?\n|\r/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -19109,7 +19113,10 @@ function neutralizeOwnedSectionSpoofing(value: string): string {
     .map((line) => {
       // Strip blockquote/list container prefixes so nested heading constructs are
       // neutralized too.
-      const containerPrefix = line.match(/^[ \t]*(?:(?:>|[-*+]|\d+\.)[ \t]+)*/)?.[0] ?? "";
+      // CommonMark accepts blockquotes without a following space and ordered lists
+      // with either "1." or "1)".
+      const containerPrefix =
+        line.match(/^[ \t]*(?:(?:>|(?:[-*+]|\d+[.)])[ \t])[ \t]*)*/)?.[0] ?? "";
       // Escape every raw HTML delimiter (renderer-emitted <br> excepted) so inline
       // tags and comment openers cannot restructure or hide trusted sections;
       // &lt; renders identically to a literal <.
