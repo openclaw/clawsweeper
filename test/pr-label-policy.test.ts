@@ -887,6 +887,29 @@ test("ClawSweeper issue advisory labels expose work-lane routing state", () => {
   );
 });
 
+test("bulk-filed issues never enter automated fix dispatch", () => {
+  const labels = issueAdvisoryLabelsForTest(["bug", "clawsweeper:bulk-filed"], {
+    type: "issue",
+    itemCategory: "bug",
+    reproductionStatus: "reproduced",
+    reproductionConfidence: "high",
+    implementationComplexity: "small",
+    autoImplementationCandidate: "strict_bug",
+    workCandidate: "queue_fix_pr",
+    workStatus: "candidate",
+    workConfidence: "high",
+    hasWorkShape: true,
+    hasWorkPrompt: true,
+    hasWorkValidation: true,
+  });
+
+  assert.equal(labels.includes("clawsweeper:bulk-filed"), true);
+  assert.equal(labels.includes("clawsweeper:no-new-fix-pr"), true);
+  assert.equal(labels.includes("clawsweeper:queueable-fix"), false);
+  assert.equal(labels.includes("good first issue"), false);
+  assert.equal(labels.includes("no-stale"), false);
+});
+
 test("ClawSweeper labels only small verified strict bugs as good first issues", () => {
   const eligibleState = {
     type: "issue",

@@ -1,0 +1,97 @@
+name: Compact state repository history
+
+on:
+  schedule:
+    - cron: "17 9 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+  STATE_REPOSITORY: openclaw/clawsweeper-state
+  STATE_REPO_SIZE_WARN_GB: ${{ vars.STATE_REPO_SIZE_WARN_GB || '5' }}
+
+concurrency:
+  group: clawsweeper-state-compaction
+  cancel-in-progress: false
+
+jobs:
+  compact:
+    name: Replace state main with a single-root commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          filter: blob:none
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Create state token
+        id: state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:repair
+
+      - name: Check whether compaction is needed
+        id: preflight
+        env:
+          CLAWSWEEPER_STATE_REPO_TOKEN: ${{ steps.state-token.outputs.token }}
+        run: node dist/repair/state-compaction.js preflight
+
+      - name: Shallow-clone state main
+        if: ${{ steps.preflight.outputs.compact == 'true' }}
+        uses: actions/checkout@v7
+        with:
+          repository: openclaw/clawsweeper-state
+          ref: main
+          path: clawsweeper-state
+          token: ${{ steps.state-token.outputs.token }}
+          fetch-depth: 1
+          sparse-checkout: .github
+
+      - name: Create and verify backup ref
+        if: ${{ steps.preflight.outputs.compact == 'true' }}
+        id: backup
+        env:
+          CLAWSWEEPER_STATE_REPO_TOKEN: ${{ steps.state-token.outputs.token }}
+        run: |
+          expected_head="$(git -C clawsweeper-state rev-parse HEAD)"
+          STATE_COMPACTION_EXPECTED_HEAD="$expected_head" \
+            node dist/repair/state-compaction.js prepare-backup
+
+      - name: Replace state main history
+        if: ${{ steps.preflight.outputs.compact == 'true' }}
+        env:
+          BACKUP_REF: ${{ steps.backup.outputs.backup_ref }}
+          EXPECTED_HEAD: ${{ steps.backup.outputs.expected_head }}
+        run: |
+          set -euo pipefail
+          state_dir="clawsweeper-state"
+          test -n "$BACKUP_REF"
+          test -n "$EXPECTED_HEAD"
+          test "$(git -C "$state_dir" rev-parse HEAD)" = "$EXPECTED_HEAD"
+          tree="$(git -C "$state_dir" rev-parse "$EXPECTED_HEAD^{tree}")"
+          git -C "$state_dir" config user.name "ClawSweeper"
+          git -C "$state_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          message="chore: compact state history (backup: $BACKUP_REF)"
+          new_head="$(printf '%s\n' "$message" | git -C "$state_dir" commit-tree "$tree")"
+          test "$(git -C "$state_dir" rev-list --parents -n 1 "$new_head" | wc -w | tr -d ' ')" = "1"
+          git -C "$state_dir" push --atomic \
+            --force-with-lease="refs/heads/main:$EXPECTED_HEAD" \
+            --force-with-lease="refs/heads/$BACKUP_REF:$EXPECTED_HEAD" \
+            origin \
+            "$new_head:refs/heads/main" \
+            ":refs/heads/$BACKUP_REF"
+          verified_refs="$(git -C "$state_dir" ls-remote --refs \
+            origin refs/heads/main "refs/heads/$BACKUP_REF")"
+          test "$(printf '%s\n' "$verified_refs" | awk '$2 == "refs/heads/main" {print $1}')" = "$new_head"
+          test -z "$(printf '%s\n' "$verified_refs" | awk -v ref="refs/heads/$BACKUP_REF" '$2 == ref {print $1}')"
+          echo "state compaction: replaced $EXPECTED_HEAD with orphan $new_head; transactional backup removed"

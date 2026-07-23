@@ -64,10 +64,17 @@ Manual exact-item `workflow_dispatch` reviews use an exact-item concurrency
 group with the same single-pending policy, so newer revisions replace stale
 pending work instead of building a duplicate queue. Durable exact-review leases
 use lease-scoped workflow groups and remain owned by the Worker admission lane.
-Review publication and apply/comment sync use separate non-dropping per-target
-job queues. Each lane stays serialized, while tuple-aware state reconciliation
-allows one review publisher and one apply runner to make progress concurrently
-without stale review snapshots reviving closed records.
+Review publication and apply/comment sync use separate non-dropping queues.
+Exact-review publication starts at 24 concurrent publishers in the Durable
+Object and scales admission by ready backlog: every 250 ready publications adds
+8 slots, up to 48. Backoff work does not trigger expansion, and scaling down
+does not cancel publishers that already started. A GitHub 403/429 or explicit
+rate-limit failure halves the admission ceiling for 15 minutes; GitHub 5xx
+failures lower it by 8 for 5 minutes. Repeated pressure can reduce admission to
+4. After cooldown, every 50 successful
+publications restores 8 slots. Apply/comment sync remains per-target serialized.
+Tuple-aware state reconciliation prevents stale review snapshots from reviving
+closed records.
 
 ## Schedules
 

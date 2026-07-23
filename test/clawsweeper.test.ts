@@ -1469,7 +1469,7 @@ if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
     base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
     user: { login: "reporter" }
   }));
-} else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|reviews|comments)(?:\\?|$)/.test(path)) {
+} else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|comments|reviews)(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/321\\/timeline/.test(path)) {
   console.log(JSON.stringify([]));
@@ -1622,7 +1622,7 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments$/.test(path) && args.includ
     base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
     user: { login: "reporter" }
   }));
-} else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|reviews|comments)(?:\\?|$)/.test(path)) {
+} else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|comments|reviews)(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/321\\/timeline/.test(path)) {
   console.log(JSON.stringify([]));
@@ -1774,7 +1774,7 @@ if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
     base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
     user: { login: "reporter" }
   }));
-} else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|reviews|comments)(?:\\?|$)/.test(path)) {
+} else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|comments|reviews)(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/321\\/timeline/.test(path)) {
   console.log(JSON.stringify([]));
@@ -2032,7 +2032,7 @@ test("runtime yield keeps the unfinished item out of the apply cursor trace", ()
   assert.deepEqual(examined, [10]);
 });
 
-test("spam comment intake serializes duplicate deliveries without cancelling publication", () => {
+test("spam comment intake coalesces duplicate comment deliveries", () => {
   const workflow = readText(".github/workflows/spam-comment-intake.yml");
 
   assert.match(workflow, /types: \[clawsweeper_spam_comment_intake\]/);
@@ -2047,7 +2047,7 @@ test("spam comment intake serializes duplicate deliveries without cancelling pub
   assert.match(workflow, /Check core API budget/);
   assert.match(workflow, /CLAWSWEEPER_MIN_CORE_REMAINING/);
   assert.match(workflow, /github\.run_id/);
-  assert.match(workflow, /cancel-in-progress: false/);
+  assert.match(workflow, /cancel-in-progress: true/);
 });
 
 test("spam scanner exact dispatches publish only per-comment audit records", () => {
@@ -2110,8 +2110,7 @@ test("repair workers hydrate only durable jobs from generated state", () => {
   assert.match(workflow, /clawsweeper-repair-requeue-\{0\}-\{1\}.*clawsweeper-repair-\{0\}/);
   assert.match(workflow, /cancel-in-progress: false/);
   assert.match(workflow, /requeue:\n\s+description:/);
-  assert.match(requeue, /requeue: true/);
-  assert.match(requeue, /`requeue=\$\{dispatchInput\.requeue\}`/);
+  assert.match(requeue, /"requeue=true"/);
   assert.equal(workflow.match(/uses: \.\/\.github\/actions\/setup-state/g)?.length, 2);
   assert.match(workflow, /sparse-checkout: jobs/);
   assert.match(workflow, /sparse-checkout: \|\n\s+jobs\n\s+ledger/);
@@ -2158,7 +2157,7 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   );
   const eventReviewBlock = workflow.slice(
     workflow.indexOf("\n  event-review-apply:"),
-    workflow.indexOf("\n  plan:"),
+    workflow.indexOf("\n  event-review-publish:"),
   );
   const claimIndex = eventReviewBlock.indexOf("- name: Claim exact-review queue lease");
   const setupPnpmIndex = eventReviewBlock.indexOf("- uses: ./.github/actions/setup-pnpm");
@@ -2167,10 +2166,14 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   );
   const setupCodexIndex = eventReviewBlock.indexOf("- uses: ./.github/actions/setup-codex");
   const exactReviewIndex = eventReviewBlock.indexOf("- name: Review exact event item");
-  const primaryResultIndex = eventReviewBlock.indexOf("- name: Export exact review primary result");
-  const failReviewIndex = eventReviewBlock.indexOf("- name: Fail unsuccessful exact review");
+  const primaryResultIndex = eventReviewBlock.indexOf(
+    "- name: Export exact review generation result",
+  );
+  const failReviewIndex = eventReviewBlock.indexOf(
+    "- name: Fail unsuccessful exact review generation",
+  );
   const completeLeaseIndex = eventReviewBlock.indexOf("- name: Complete exact-review queue lease");
-  const publishLedgerIndex = eventReviewBlock.indexOf("- name: Publish exact event action ledger");
+  const uploadBundleIndex = eventReviewBlock.indexOf("- name: Upload exact review artifact bundle");
   const claimStep = eventReviewBlock.slice(
     claimIndex,
     eventReviewBlock.indexOf("\n      - ", claimIndex + 1),
@@ -2180,10 +2183,10 @@ test("sweep workflow executes only durable queue leases without runner-side admi
     eventReviewBlock.indexOf("\n      - ", completeLeaseIndex + 1),
   );
   const primaryResultStep = eventReviewBlock.slice(primaryResultIndex, completeLeaseIndex);
-  const failReviewStep = eventReviewBlock.slice(failReviewIndex, publishLedgerIndex);
+  const failReviewStep = eventReviewBlock.slice(failReviewIndex);
   const exactReviewStep = eventReviewBlock.slice(
     exactReviewIndex,
-    eventReviewBlock.indexOf("- name: Create state token", exactReviewIndex),
+    eventReviewBlock.indexOf("- name: Create exact review artifact bundle", exactReviewIndex),
   );
 
   assert.match(
@@ -2195,20 +2198,31 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   assert.match(legacyIntakeBlock, /\/internal\/exact-review\/enqueue/);
   assert.match(legacyIntakeBlock, /x-clawsweeper-exact-review-signature/);
   assert.match(legacyIntakeBlock, /CLAWSWEEPER_WEBHOOK_SECRET/);
+  assert.match(legacyIntakeBlock, /gh api "repos\/\$target_repo" --jq \.default_branch/);
+  assert.match(legacyIntakeBlock, /targetBranch: process\.env\.TARGET_BRANCH/);
+  assert.doesNotMatch(legacyIntakeBlock, /targetBranch: payload\.target_branch \|\| "main"/);
   assert.match(legacyIntakeBlock, /commandStatusMarker: payload\.command_status_marker/);
   assert.match(legacyIntakeBlock, /statusCommentId: payload\.status_comment_id/);
   assert.match(legacyIntakeBlock, /additionalPrompt: payload\.additional_prompt/);
   assert.match(eventReviewBlock, /cancel-in-progress: false/);
+  assert.match(exactReviewStep, /GH_TOKEN: \$\{\{ steps\.target-read-token\.outputs\.token \}\}/);
+  assert.match(exactReviewStep, /--readonly-openclaw/);
+  assert.match(exactReviewStep, /--skip-start-comment/);
   assert.ok(claimIndex >= 0);
   assert.ok(setupPnpmIndex > claimIndex);
   assert.ok(inProgressStatusIndex > setupPnpmIndex);
   assert.ok(setupCodexIndex > inProgressStatusIndex);
   assert.ok(exactReviewIndex > setupCodexIndex);
   assert.ok(primaryResultIndex > exactReviewIndex);
-  assert.equal(eventReviewBlock.match(/- name: Fail unsuccessful exact review/g)?.length, 1);
+  assert.equal(
+    eventReviewBlock.match(/- name: Fail unsuccessful exact review generation/g)?.length,
+    1,
+  );
+  assert.ok(uploadBundleIndex > exactReviewIndex);
+  assert.ok(primaryResultIndex > uploadBundleIndex);
   assert.ok(completeLeaseIndex > primaryResultIndex);
   assert.ok(failReviewIndex > completeLeaseIndex);
-  assert.ok(publishLedgerIndex > failReviewIndex);
+  assert.doesNotMatch(eventReviewBlock, /\.github\/actions\/setup-state/);
   assert.match(eventReviewBlock, /\/internal\/exact-review\/claim/);
   assert.match(eventReviewBlock, /\/internal\/exact-review\/complete/);
   assert.match(claimStep, /RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
@@ -2219,19 +2233,19 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   assert.match(claimStep, /response\.protocol_version \|\| 1/);
   assert.match(claimStep, /const legacyDecision = \{/);
   assert.match(claimStep, /run_attempt: runAttempt/);
-  assert.match(failReviewStep, /steps\.review-exact-event-item\.outcome != 'success'/);
-  assert.match(failReviewStep, /steps\.publish-event-result\.outcome != 'success'/);
-  assert.match(failReviewStep, /steps\.route-synced-verdict\.outcome != 'success'/);
-  assert.match(primaryResultStep, /PRIMARY_JOB_STATUS: \$\{\{ job\.status \}\}/);
-  assert.doesNotMatch(primaryResultStep, /JOB_CANCELLED|\$\{\{ cancelled\(\) \}\}/);
-  assert.match(primaryResultStep, /PRIMARY_JOB_STATUS" = "cancelled"/);
+  assert.match(failReviewStep, /exact-review-generation-result\.outputs\.outcome != 'success'/);
+  assert.match(failReviewStep, /complete-exact-review-queue\.outcome != 'success'/);
+  assert.match(primaryResultStep, /REVIEW_OUTCOME:/);
+  assert.match(primaryResultStep, /PUBLICATION_QUEUE_OUTCOME:/);
+  assert.match(primaryResultStep, /REVIEW_OUTCOME" = "cancelled"/);
   assert.match(primaryResultStep, /echo "outcome=\$outcome" >> "\$GITHUB_OUTPUT"/);
   assert.match(
     completeLeaseStep,
-    /PRIMARY_OUTCOME: \$\{\{ steps\.exact-review-primary-result\.outputs\.outcome \|\| 'failure' \}\}/,
+    /PRIMARY_OUTCOME: \$\{\{ steps\.exact-review-generation-result\.outputs\.outcome \|\| 'failure' \}\}/,
   );
   assert.doesNotMatch(completeLeaseStep, /JOB_STATUS:/);
-  assert.match(completeLeaseStep, /if: \$\{\{ always\(\) \}\}/);
+  assert.match(completeLeaseStep, /if: \$\{\{[^\n]*always\(\)[^\n]*\}\}/);
+  assert.match(completeLeaseStep, /steps\.claim-exact-review-queue\.outputs\.claimed == 'true'/);
   assert.match(completeLeaseStep, /continue-on-error: true/);
   assert.match(completeLeaseStep, /RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
   assert.match(
@@ -2388,7 +2402,8 @@ test("repair workflows preserve existing dispatch while scheduled cluster intake
   ].join("\n");
 
   assert.doesNotMatch(existingRepairWorkflows, /CLAWSWEEPER_FEATURE_REPAIR_ENABLED/);
-  assert.match(sweep, /pnpm run repair:comment-router -- \\\n[\s\S]*--execute/);
+  assert.match(sweep, /gh workflow run repair-comment-router\.yml/);
+  assert.doesNotMatch(sweep, /pnpm run repair:comment-router -- \\\n[\s\S]*--execute/);
   assert.match(router, /\{ \[ "\$\{\{ github\.event_name \}\}" = "repository_dispatch" \]; \}/);
   assert.match(issueImplementation, /ENABLED: \$\{\{ github\.event\.inputs\.enabled/);
   assert.match(commitFinding, /ENABLED: \$\{\{ github\.event\.inputs\.enabled/);
@@ -2516,8 +2531,12 @@ test("sweep target write tokens can merge pull requests", () => {
     .slice(1)
     .map((block) => block.split("\n      - ")[0]);
 
-  assert.equal(targetWriteTokenBlocks.length, 3);
+  assert.equal(targetWriteTokenBlocks.length, 4);
+  const compositeAction = readText(".github/actions/create-target-write-token/action.yml");
+  assert.match(compositeAction, /permission-contents: write/);
+  assert.match(compositeAction, /permission-pull-requests: write/);
   for (const block of targetWriteTokenBlocks) {
+    if (block.includes("uses: ./.github/actions/create-target-write-token")) continue;
     assert.match(block, /permission-contents: write/);
     assert.match(block, /permission-pull-requests: write/);
   }
@@ -2562,9 +2581,10 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
   assert.match(recoveryJob, /\/internal\/exact-review\/enqueue/);
   assert.match(
     recoveryJob,
-    /\.ok == true and \(\.queued == true or \.deduped == true or \.accepted == false\)/,
+    /\.ok == true and \(\.queued == true or \.deduped == true or \.shed == true or \.accepted == false\)/,
   );
   assert.match(recoveryJob, /Recovery skipped because the target is disabled/);
+  assert.match(recoveryJob, /Recovery shed by exact-review queue backpressure/);
   assert.match(recoveryJob, /for attempt in 1 2 3/);
   assert.match(recoveryJob, /failed_recovery_dispatches/);
   assert.match(
@@ -2576,8 +2596,8 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
   assert.match(recoveryJob, /iconv -f UTF-8 -t UTF-8 -c/);
   assert.doesNotMatch(recoveryJob, /workflow run sweep\.yml/);
   assert.doesNotMatch(recoveryJob, /repos\/\$GITHUB_REPOSITORY\/dispatches/);
-  assert.match(eventReviewJob, /RECOVERY_TARGET_BRANCH:/);
-  assert.match(eventReviewJob, /RECOVERY_TARGET_BRANCH:-\$\(gh api/);
+  assert.match(eventReviewJob, /CLAIM_TARGET_BRANCH:/);
+  assert.match(eventReviewJob, /target_branch="\$CLAIM_TARGET_BRANCH"/);
   assert.match(eventReviewJob, /REVIEW_ONLY:/);
   assert.match(
     eventReviewJob,
@@ -2585,25 +2605,15 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
   );
   assert.match(
     eventReviewJob,
-    /Route synced ClawSweeper verdict[\s\S]*sourceAction != 'failed_review_shard_recovery'/,
-  );
-  assert.match(
-    eventReviewJob,
     /Queue deferred exact verdict router[\s\S]*sourceAction != 'failed_review_shard_recovery'/,
   );
-  assert.match(
-    eventReviewJob,
-    /Fail unsuccessful exact review[\s\S]*sourceAction != 'failed_review_shard_recovery'/,
-  );
+  assert.match(eventReviewJob, /Export exact review publication result[\s\S]*REVIEW_ONLY:/);
   assert.match(
     eventReviewJob,
     /React to target item completion[\s\S]*sourceAction == 'failed_review_shard_recovery'/,
   );
   assert.match(eventReviewJob, /\[ "\$REVIEW_ONLY" != "true" \]/);
-  assert.match(
-    eventReviewJob,
-    /Export exact review primary result[\s\S]*REVIEW_ONLY:[\s\S]*\[ "\$REVIEW_ONLY" = "true" \]/,
-  );
+  assert.match(eventReviewJob, /\[ "\$REVIEW_ONLY" = "true" \]/);
   assert.match(publishEventResult, /reviewOnly: process\.env\.REVIEW_ONLY === "true"/);
   assert.match(
     publishEventResult,

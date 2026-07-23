@@ -1,10 +1,5 @@
 #!/usr/bin/env node
 import type { JsonValue, LooseRecord } from "./json-types.js";
-import {
-  isFixFirstBlockedCloseAction,
-  planRepairClosureResult,
-  resolveRepairClosureRelationship,
-} from "./closure-result-plan.js";
 import { validateRepairContractShape } from "./repair-contract.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -198,9 +193,10 @@ function reviewResult(resultPath: string): JsonValue {
       if (action.status !== "planned" && !isFixFirstBlockedCloseAction(action, hasFixPath)) {
         failures.push(`${target} close action status must be planned or fix-first blocked`);
       }
-      const relationship = resolveRepairClosureRelationship(action);
-      const canonicalRef = relationship.canonical;
-      const candidateRef = relationship.candidateFix;
+      const canonicalRef = normalizeRef(action.canonical ?? action.duplicate_of);
+      const candidateRef = normalizeRef(
+        action.candidate_fix ?? action.fixed_by ?? action.fix_candidate,
+      );
       if (name === "close_low_signal") {
         if (action.classification !== "low_signal") {
           failures.push(`${target} low-signal close action must use low_signal classification`);
@@ -282,12 +278,6 @@ function reviewResult(resultPath: string): JsonValue {
     mergeActions,
     failures,
   });
-  const closurePlan = planRepairClosureResult(result);
-  if (closurePlan.status === "needs_human") {
-    for (const diagnostic of closurePlan.diagnostics) {
-      failures.push(`closure dependency plan ${diagnostic.code}: ${diagnostic.message}`);
-    }
-  }
 
   if (result.canonical) {
     const canonicalRef = normalizeRef(result.canonical);
@@ -295,9 +285,10 @@ function reviewResult(resultPath: string): JsonValue {
     if (!canonical) warnings.push(`canonical ${result.canonical} was not in preflight`);
     if (canonical && canonical.state !== "open") {
       const usedByUnsafeCloseAction = closeActions.some((action: JsonValue) => {
-        const relationship = resolveRepairClosureRelationship(action);
-        const actionCanonical = relationship.canonical;
-        const actionCandidate = relationship.candidateFix;
+        const actionCanonical = normalizeRef(action.canonical ?? action.duplicate_of);
+        const actionCandidate = normalizeRef(
+          action.candidate_fix ?? action.fixed_by ?? action.fix_candidate,
+        );
         if (actionCanonical !== canonicalRef && actionCandidate !== canonicalRef) return false;
         return !allowsHistoricalCanonicalForCloseout(action);
       });
@@ -322,7 +313,6 @@ function reviewResult(resultPath: string): JsonValue {
     result_status: result.status,
     actions: actions.length,
     action_counts: actionCounts,
-    closure_plan: closurePlan,
     failures,
     warnings,
   };
@@ -376,6 +366,21 @@ function isUnavailableNeedsHumanAction(action: LooseRecord) {
   return /\b(404|not found|unavailable|could not hydrate|missing live|refreshed hydration)\b/i.test(
     text,
   );
+}
+
+function isFixFirstBlockedCloseAction(action: LooseRecord, hasClusterFixPath: JsonValue) {
+  if (action.status !== "blocked") return false;
+  const text = [
+    action.reason,
+    action.comment,
+    action.idempotency_key,
+    ...(action.evidence ?? []),
+  ].join("\n");
+  const hasFixFirstText =
+    /fix[- ]first|blocked-by-fix-first|requires? a fix|requires? ClawSweeper Repair fix|fix PR|fix path|canonical fix (?:path|landing|lands?)|canonical repair (?:path|landing|lands?)|merged canonical fix|hydrated merged fix PR|replacement PR|replacement fix|pending .*fix|after .*fix .*lands?|open_fix_pr|build_fix_artifact/i.test(
+      text,
+    );
+  return hasFixFirstText || (hasClusterFixPath && /blocked|wait|pending/i.test(text));
 }
 
 function allowsSelfCanonicalCurrentMainCloseout(action: LooseRecord) {

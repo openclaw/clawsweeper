@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -17,19 +16,6 @@ import {
 import { ghErrorText, ghJson, ghText } from "./github-cli.js";
 import { sleepMs } from "./timing.js";
 import { REPAIR_CLUSTER_WORKFLOW } from "./constants.js";
-import {
-  boundedRecoveryTimeoutMs,
-  isRepairWorkflowArtifactUnavailable,
-  readNewestRepairWorkflowRecoveryInputs,
-  resolveRepairWorkflowRetryMode,
-  type RepairWorkflowRecoveryInputs,
-} from "./workflow-recovery-inputs.js";
-import {
-  dispatchProcessOutcome,
-  flushDispatchActionEvents,
-  prepareDispatchActionReceiptContext,
-  runDispatchWithReceiptSync,
-} from "./dispatch-action-receipts.js";
 
 const DEFAULT_REPO = currentProjectRepo();
 const DEFAULT_WORKFLOW = REPAIR_CLUSTER_WORKFLOW;
@@ -38,33 +24,6 @@ const DEFAULT_EXECUTION_RUNNER =
   process.env.CLAWSWEEPER_EXECUTION_RUNNER ?? "blacksmith-16vcpu-ubuntu-2404";
 const QUEUED_STATUSES = new Set(["queued", "requested", "waiting", "pending"]);
 const ACTIVE_STATUSES = new Set([...QUEUED_STATUSES, "in_progress"]);
-const WORKFLOW_INPUT_DOWNLOAD_TIMEOUT_MS = 60_000;
-const RECOVERY_SCAN_BUDGET_MS = 3 * 60_000;
-const MAX_RECOVERY_CANDIDATE_SCANS = 200;
-const SPAWN_SYNC_NO_START_CODES = new Set([
-  "E2BIG",
-  "EACCES",
-  "EAGAIN",
-  "EMFILE",
-  "ENFILE",
-  "ENOENT",
-  "ENOEXEC",
-  "ENOMEM",
-  "ENOTDIR",
-  "EPERM",
-]);
-
-class SelfHealDispatchNotStartedError extends Error {
-  readonly dispatchError: unknown;
-
-  constructor(dispatchError: unknown) {
-    super(dispatchError instanceof Error ? dispatchError.message : String(dispatchError), {
-      cause: dispatchError,
-    });
-    this.name = "SelfHealDispatchNotStartedError";
-    this.dispatchError = dispatchError;
-  }
-}
 
 const args = parseArgs(process.argv.slice(2));
 const repo = String(args.repo ?? DEFAULT_REPO);
@@ -100,7 +59,7 @@ if (!Number.isInteger(maxAttemptsPerJob) || maxAttemptsPerJob < 1) {
   throw new Error("CLAWSWEEPER_SELF_HEAL_MAX_ATTEMPTS_PER_JOB must be a positive integer");
 }
 
-const candidates = selectCandidates();
+const candidates = selectCandidates().slice(0, maxJobs);
 const summary: LooseRecord = {
   status: execute ? "dispatching" : "dry_run",
   repo,
@@ -127,9 +86,6 @@ if (!execute) {
   process.exit(0);
 }
 
-const dispatchReceiptContext = prepareDispatchActionReceiptContext({
-  component: "repair_self_heal",
-});
 const gateRestores: JsonValue[] = [];
 const dispatchStartedAt = new Date(Date.now() - 5000).toISOString();
 const headSha = currentHeadSha();
@@ -140,15 +96,10 @@ const attempts: LooseRecord[] = candidates.map((candidate: JsonValue) => ({
   source_run_id: candidate.run_id,
   cluster_id: candidate.cluster_id,
   source_job: candidate.source_job,
-  source_dispatch_key: candidate.source_dispatch_key,
   mode: candidate.mode,
-  runner: candidate.runner,
-  execution_runner: candidate.execution_runner,
-  planner_sandbox: candidate.planner_sandbox,
-  model: candidate.model,
-  dry_run: candidate.dry_run,
-  requeue: candidate.requeue,
-  requeue_depth: candidate.requeue_depth,
+  runner,
+  execution_runner: executionRunner,
+  model,
   workflow,
   repo,
   dispatched_at: new Date().toISOString(),
@@ -156,7 +107,6 @@ const attempts: LooseRecord[] = candidates.map((candidate: JsonValue) => ({
   status: "pending",
 }));
 
-let selfHealError: unknown = null;
 try {
   if (openExecuteWindow) {
     openGate("CLAWSWEEPER_ALLOW_EXECUTE");
@@ -170,28 +120,8 @@ try {
     : assertLiveWorkerCapacity({ repo, workflow, requested: candidates.length, maxLiveWorkers });
 
   for (let i = 0; i < candidates.length; i += 1) {
-    const attempt = attempts[i];
-    appendAttempts(ledger, [attempt]);
-    writeSelfHealLedger(ledger);
-    try {
-      dispatchCandidate(candidates[i]);
-    } catch (error) {
-      if (error instanceof SelfHealDispatchNotStartedError) {
-        removeAttempt(ledger, attempt);
-        try {
-          writeSelfHealLedger(ledger);
-        } catch (rollbackError) {
-          throw new AggregateError(
-            [error.dispatchError, rollbackError],
-            "self-heal dispatch did not start and its pending checkpoint could not be removed",
-          );
-        }
-        throw error.dispatchError;
-      }
-      throw error;
-    }
-    attempt.status = "dispatched";
-    writeSelfHealLedger(ledger);
+    dispatchCandidate(candidates[i]);
+    attempts[i].status = "dispatched";
   }
 
   const observedRuns = openExecuteWindow
@@ -213,44 +143,18 @@ try {
     }));
   }
 
+  appendAttempts(ledger, attempts);
   writeSelfHealLedger(ledger);
 
   summary.status = "dispatched";
   summary.batch_id = batchId;
   summary.observed_runs = attempts[0]?.observed_runs ?? [];
   console.log(JSON.stringify(summary, null, 2));
-} catch (error) {
-  selfHealError = error;
 } finally {
   for (const gate of gateRestores.reverse()) {
-    try {
-      setGate(gate.name, gate.previous || "1");
-    } catch (error) {
-      if (!selfHealError) selfHealError = error;
-      else
-        console.error(
-          `self-heal: failed to restore ${gate.name}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-    }
-  }
-  try {
-    await flushDispatchActionEvents(dispatchReceiptContext.root, {
-      env: dispatchReceiptContext.env,
-      outputRoot: dispatchReceiptContext.outputRoot,
-    });
-  } catch (error) {
-    if (!selfHealError) selfHealError = error;
-    else
-      console.error(
-        `[action-ledger] failed to finalize self-heal dispatch receipts: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+    setGate(gate.name, gate.previous || "1");
   }
 }
-if (selfHealError) throw selfHealError;
 
 function selectCandidates() {
   const records = readRunRecords();
@@ -274,18 +178,12 @@ function selectCandidates() {
       continue;
     }
     const current = latestByJob.get(sourceJob);
-    const recordSortKey = runSortKey(record);
-    const currentSortKey = current ? runSortKey(current) : Number.NEGATIVE_INFINITY;
-    if (
-      !current ||
-      recordSortKey > currentSortKey ||
-      (recordSortKey === currentSortKey && record.live_run_record === true)
-    ) {
+    if (!current || runSortKey(record) > runSortKey(current)) {
       latestByJob.set(sourceJob, record);
     }
   }
 
-  const eligible = [...latestByJob.values()]
+  return [...latestByJob.values()]
     .filter((record: JsonValue) => record.workflow_conclusion === "failure")
     .filter((record: JsonValue) => {
       const timestamp = recordTimestampMs(record);
@@ -326,80 +224,33 @@ function selectCandidates() {
       });
       return false;
     })
+    .map((record: JsonValue) => {
+      const sourceJob = String(record.source_job ?? "");
+      const jobPath = sourceJobPath(sourceJob);
+      if (!fs.existsSync(jobPath)) {
+        skippedCandidates.push({
+          reason: "missing_job_file",
+          run_id: record.run_id ?? null,
+          source_job: sourceJob,
+        });
+        return null;
+      }
+      const job = parseJob(jobPath);
+      const errors = validateJob(job);
+      if (errors.length > 0) {
+        throw new Error(`invalid job ${record.source_job}: ${errors.join("; ")}`);
+      }
+      return {
+        ...record,
+        mode:
+          requestedMode ??
+          (["plan", "execute", "autonomous"].includes(String(record.effective_mode ?? ""))
+            ? String(record.effective_mode)
+            : "plan"),
+      };
+    })
+    .filter(Boolean)
     .sort((left: JsonValue, right: JsonValue) => runSortKey(right) - runSortKey(left));
-  const boundedEligible = eligible.slice(0, MAX_RECOVERY_CANDIDATE_SCANS);
-  const recoveryDeadlineMs = Date.now() + RECOVERY_SCAN_BUDGET_MS;
-  const selected: LooseRecord[] = [];
-  for (const record of boundedEligible) {
-    if (selected.length >= maxJobs) break;
-    const sourceJob = String(record.source_job ?? "");
-    const jobPath = sourceJobPath(sourceJob);
-    if (!fs.existsSync(jobPath)) {
-      skippedCandidates.push({
-        reason: "missing_job_file",
-        run_id: record.run_id ?? null,
-        source_job: sourceJob,
-      });
-      continue;
-    }
-    const job = parseJob(jobPath);
-    const errors = validateJob(job);
-    if (errors.length > 0) {
-      throw new Error(`invalid job ${record.source_job}: ${errors.join("; ")}`);
-    }
-    let recoveredInputs: RepairWorkflowRecoveryInputs | null = null;
-    const recoveryTimeoutMs = boundedRecoveryTimeoutMs({
-      deadlineMs: recoveryDeadlineMs,
-      nowMs: Date.now(),
-      maxTimeoutMs: WORKFLOW_INPUT_DOWNLOAD_TIMEOUT_MS,
-    });
-    if (recoveryTimeoutMs === 0) {
-      skippedCandidates.push({
-        reason: "recovery_budget_exhausted",
-        run_id: record.run_id ?? null,
-        source_job: sourceJob,
-      });
-      break;
-    }
-    try {
-      recoveredInputs = recoverWorkflowInputs(record, recoveryTimeoutMs);
-    } catch (error) {
-      skippedCandidates.push({
-        reason: "immutable_inputs_invalid",
-        run_id: record.run_id ?? null,
-        source_job: sourceJob,
-        detail: error instanceof Error ? error.message : String(error),
-      });
-      continue;
-    }
-    selected.push({
-      ...record,
-      mode: resolveRepairWorkflowRetryMode({
-        requestedMode,
-        recoveredMode: recoveredInputs?.effective_mode ?? "plan",
-        fallbackMode: record.mode ?? job.frontmatter.mode,
-      }),
-      runner: String(args.runner ?? recoveredInputs?.runner ?? runner),
-      execution_runner: String(
-        args["execution-runner"] ??
-          args.execution_runner ??
-          recoveredInputs?.execution_runner ??
-          executionRunner,
-      ),
-      planner_sandbox: String(
-        args["planner-sandbox"] ??
-          args.planner_sandbox ??
-          recoveredInputs?.planner_sandbox ??
-          "read-only",
-      ),
-      model: String(args.model ?? recoveredInputs?.model ?? model),
-      dry_run: booleanArg(args["dry-run"] ?? args.dry_run, recoveredInputs?.dry_run ?? true),
-      requeue: recoveredInputs?.requeue ?? false,
-      requeue_depth: recoveredInputs?.requeue_depth ?? 0,
-      source_dispatch_key: recoveredInputs?.source_dispatch_key ?? null,
-    });
-  }
-  return selected;
 }
 
 function sourceJobPath(sourceJob: string) {
@@ -429,96 +280,37 @@ function activeRepairSourceJobs() {
 function sourceJobFromRunTitle(title: string) {
   const index = title.indexOf("jobs/");
   if (index < 0) return null;
-  return title.slice(index).match(/^jobs\/[A-Za-z0-9_./-]+\.md\b/)?.[0] ?? null;
+  return title.slice(index).trim();
 }
 
 function dispatchCandidate(candidate: LooseRecord) {
-  let operationInvoked = false;
-  let result;
-  try {
-    result = runDispatchWithReceiptSync({
-      root: dispatchReceiptContext.root,
-      env: dispatchReceiptContext.env,
-      component: "repair_self_heal",
-      operationKey: `self-heal:${candidate.run_id}:${candidate.source_job}`,
-      dispatchKind: "workflow",
-      repository: repo,
-      dispatchTarget: workflow,
-      dispatchInput: {
-        workflow,
-        job: String(candidate.source_job ?? ""),
-        mode: String(candidate.mode ?? ""),
-        runner: String(candidate.runner ?? ""),
-        execution_runner: String(candidate.execution_runner ?? ""),
-        planner_sandbox: String(candidate.planner_sandbox ?? ""),
-        model: String(candidate.model ?? ""),
-        dry_run: Boolean(candidate.dry_run),
-        requeue: Boolean(candidate.requeue),
-        requeue_depth: Number(candidate.requeue_depth ?? 0),
-      },
-      operation: () => {
-        operationInvoked = true;
-        const dispatch = spawnSync(
-          "gh",
-          [
-            "workflow",
-            "run",
-            workflow,
-            "--repo",
-            repo,
-            "-f",
-            `job=${candidate.source_job}`,
-            "-f",
-            `mode=${candidate.mode}`,
-            "-f",
-            `runner=${candidate.runner}`,
-            "-f",
-            `execution_runner=${candidate.execution_runner}`,
-            "-f",
-            `planner_sandbox=${candidate.planner_sandbox}`,
-            "-f",
-            `model=${candidate.model}`,
-            "-f",
-            `dry_run=${candidate.dry_run}`,
-            "-f",
-            `requeue=${candidate.requeue}`,
-            "-f",
-            `requeue_depth=${candidate.requeue_depth}`,
-          ],
-          { cwd: repoRoot(), encoding: "utf8", stdio: "pipe" },
-        );
-        if (spawnSyncDidNotStart(dispatch)) {
-          throw new SelfHealDispatchNotStartedError(dispatch.error);
-        }
-        return dispatch;
-      },
-      outcome: dispatchProcessOutcome,
-    });
-  } catch (error) {
-    if (error instanceof SelfHealDispatchNotStartedError) throw error;
-    if (!operationInvoked) throw new SelfHealDispatchNotStartedError(error);
-    throw error;
-  }
+  const result = spawnSync(
+    "gh",
+    [
+      "workflow",
+      "run",
+      workflow,
+      "--repo",
+      repo,
+      "-f",
+      `job=${candidate.source_job}`,
+      "-f",
+      `mode=${candidate.mode}`,
+      "-f",
+      `runner=${runner}`,
+      "-f",
+      `execution_runner=${executionRunner}`,
+      "-f",
+      `model=${model}`,
+    ],
+    { cwd: repoRoot(), encoding: "utf8", stdio: "pipe" },
+  );
   if (result.status !== 0) {
     throw new Error(
       `failed to dispatch ${candidate.source_job}: ${result.stderr || result.stdout}`,
     );
   }
   console.log(`dispatched ${candidate.source_job} from failed run ${candidate.run_id}`);
-}
-
-function spawnSyncDidNotStart(result: {
-  status: number | null;
-  signal: NodeJS.Signals | null;
-  error?: Error;
-}) {
-  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
-  return (
-    result.status === null &&
-    result.signal === null &&
-    typeof code === "string" &&
-    SPAWN_SYNC_NO_START_CODES.has(code)
-  );
 }
 
 function waitForStartedRuns({ expectedCount, headSha, since }: LooseRecord) {
@@ -545,10 +337,7 @@ function waitForStartedRuns({ expectedCount, headSha, since }: LooseRecord) {
 
 function assertExecuteGateOpenIfNeeded(candidates: LooseRecord[]) {
   if (
-    !candidates.some(
-      (candidate: JsonValue) =>
-        candidate.dry_run !== true && ["execute", "autonomous"].includes(candidate.mode),
-    )
+    !candidates.some((candidate: JsonValue) => ["execute", "autonomous"].includes(candidate.mode))
   )
     return;
   const current = readExecuteGate();
@@ -589,7 +378,6 @@ function liveRunRecords() {
           workflow_created_at: run.createdAt ?? null,
           workflow_updated_at: run.updatedAt ?? null,
           run_url: run.url ?? null,
-          live_run_record: true,
         };
       })
       .filter(Boolean);
@@ -610,13 +398,6 @@ function readSelfHealLedger() {
 function appendAttempts(ledger: LooseRecord, attempts: LooseRecord[]) {
   ledger.updated_at = new Date().toISOString();
   ledger.attempts = [...(ledger.attempts ?? []), ...attempts];
-}
-
-function removeAttempt(ledger: LooseRecord, attempt: LooseRecord) {
-  ledger.updated_at = new Date().toISOString();
-  ledger.attempts = (ledger.attempts ?? []).filter(
-    (candidate: LooseRecord) => candidate !== attempt,
-  );
 }
 
 function writeSelfHealLedger(ledger: LooseRecord) {
@@ -719,73 +500,7 @@ function summarizeCandidate(candidate: LooseRecord) {
     cluster_id: candidate.cluster_id,
     source_job: candidate.source_job,
     mode: candidate.mode,
-    runner: candidate.runner,
-    execution_runner: candidate.execution_runner,
-    planner_sandbox: candidate.planner_sandbox,
-    model: candidate.model,
-    dry_run: candidate.dry_run,
-    requeue: candidate.requeue,
-    requeue_depth: candidate.requeue_depth,
     result_status: candidate.result_status,
     run_url: candidate.run_url,
   };
-}
-
-function recoverWorkflowInputs(
-  record: LooseRecord,
-  timeoutMs: number,
-): RepairWorkflowRecoveryInputs | null {
-  const runId = String(record.run_id ?? "").trim();
-  if (!/^[1-9][0-9]*$/.test(runId)) return null;
-  const artifactDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), `clawsweeper-self-heal-inputs-${runId}-`),
-  );
-  try {
-    const downloaded = spawnSync(
-      "gh",
-      [
-        "run",
-        "download",
-        runId,
-        "--repo",
-        repo,
-        "--dir",
-        artifactDir,
-        "--pattern",
-        `clawsweeper-repair-inputs-${runId}-*`,
-      ],
-      {
-        cwd: repoRoot(),
-        encoding: "utf8",
-        stdio: "pipe",
-        timeout: timeoutMs,
-        maxBuffer: 1024 * 1024,
-      },
-    );
-    if (downloaded.status !== 0) {
-      if (isRepairWorkflowArtifactUnavailable(downloaded.stderr, downloaded.stdout)) return null;
-      throw new Error(
-        `could not recover run ${runId} inputs: ${
-          downloaded.stderr ||
-          downloaded.stdout ||
-          downloaded.error?.message ||
-          "artifact unavailable"
-        }`,
-      );
-    }
-    const recovered = readNewestRepairWorkflowRecoveryInputs(artifactDir, runId);
-    if (recovered && recovered.source_job !== String(record.source_job ?? "")) {
-      throw new Error(`run ${runId} immutable inputs conflict with the selected source job`);
-    }
-    return recovered;
-  } finally {
-    fs.rmSync(artifactDir, { recursive: true, force: true });
-  }
-}
-
-function booleanArg(value: JsonValue, fallback: boolean): boolean {
-  if (value === undefined || value === null || value === "") return fallback;
-  if (value === true || value === "true") return true;
-  if (value === false || value === "false") return false;
-  throw new Error("boolean arguments must be true or false");
 }

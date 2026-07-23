@@ -9,6 +9,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Added
 
+- Added review-time bulk-filer detection, transparent labeling, duplicate scrutiny, fix-lane suppression, and within-bucket scheduling de-prioritization for high-volume issue authors.
 - Added end-to-end exact-review handoff health with phase ages, delayed/stalled claim classification, and a phase-aware operator rail on the live dashboard.
 - Added a maintainer-only two-runner workflow that builds a hash-bound
   crawl-remote release artifact without production credentials, then requires
@@ -52,37 +53,19 @@ checkpoint, and status-only commits are intentionally omitted.
 - Added the PR-only `stalled_unproven_pr` close reason: external D/F-rated pull requests whose requested real-behavior proof stayed missing, mock-only, or insufficient can close after 14 idle days, guarded by live checks that the proof request itself was visible for 14 days plus proof-label, draft, head-commit, and human-engagement gates.
 - Added the PR-only `abandoned_pr` close reason: external pull requests idle for 30 days that are still drafts, waiting on their author, or failing checks on the live head can close, while high-quality proven work stays open for repair/adopt paths. See `docs/stalled-pr-close-policies.md`.
 - Added the default-off, issue-only `unsponsored_feature_request` close reason for 90-day-old feature requests awaiting product direction, with live sponsorship, activity, popularity, linked-PR, and security gates.
+- Added the default-off, PR-only `author_pr_budget_exceeded` close reason to gradually trim external authors' oldest lowest-signal PRs after live count, inactivity, proof/rating, protected-label, maintainer-engagement, and per-run-cap checks.
+- Added default-off `stale_version_bug` and `obsolete_fix_pr` close reasons for genuinely obsolete issues and small fix PRs, with fail-closed live age, activity, engagement, security, popularity, and per-path main-branch verification gates.
+- Exposed the oldest pending exact-review item key per lane so operators can identify stuck review and publication work from the public queue status API.
 - Added apply-health telemetry and a quiet-by-default dashboard alert for stalled, cursorless, or fully blocked pruning windows. Thanks @brokemac79.
 - Added author-wide PR repair intake across configured public repositories, with private and unsupported repositories excluded before job generation. Thanks @Jhacarreiro.
 - Added a system, light, and dark theme switcher to the generated documentation site. Thanks @joshka.
 
 ### Changed
 
-- Bounded immutable action-ledger publishers' priority yield to exclusive state
-  leases and expanded their retry budget for 64-worker bursts; exclusive
-  publishers still rebuild around branch races.
-- Kept immutable action-ledger publication available in repair-only workflow
-  jobs by moving shard import and path-manifest admission behind repair-native
-  CLIs, while retaining the root commands as compatibility entrypoints.
-- Added a priority-aware optimistic publisher for immutable action ledgers that
-  yields to exclusive state mutations, accepts replay-equivalent event shards,
-  rejects content collisions, and converges disjoint branch races without the
-  global state lease. GitHub activity publication and receipt replay remain on
-  exclusive publication after the live immutable canary could not converge
-  under saturated state writes; every action, review, and repair ledger still
-  enters through the same validated path-manifest boundary.
-- Serialized generated-state publishers through lightweight detached,
-  versioned, protocol-bounded remote leases with composable workflow
-  deadlines, bounded stale-owner recovery, deadline-bounded multi-race
-  convergence, and remote blob verification.
-- Preserved finalized GitHub activity dispatch receipts as a replayable artifact
-  before state publication, while keeping direct publication independent of the
-  recovery-copy upload and automatically replaying failed, cancelled, or
-  timed-out producers without redispatch.
-- Included action-ledger source dependencies in the spam scanner's sparse
-  checkout so its repair build matches the full repository build.
-- Preserved crawl-remote's reviewed `limits.cpu_ms` value through immutable
-  release packaging and post-transfer deployment verification.
+- Restored the state materializer to GitHub-hosted runners after the dedicated
+  runner label left the sole publication drain queued without an eligible
+  runner.
+- Split exact-item review from Git-backed publication: read-only reviewers now upload hash-bound, 90-day artifacts and enqueue separate durable publication leases before one globally serialized publisher validates, comments, routes, and commits state without rerunning Codex after ordinary publisher failure; handoffs still blocked after 80 days safely fall back to one fresh exact review.
 - Reverted the action-lifecycle expansion from PR #521, restoring the pre-merge ClawSweeper paths while retaining later exact-review throughput fixes and retrying coalesced reconciliations after any partial lookup failure.
 - Raised exact-review capacity from 48/44 global/per-target workers to 64/60, shortened unclaimed dispatch recovery from ten to six minutes, and coalesced terminal-run reconciliation bursts into one bounded aggregate claim scan.
 - Expanded exact-review backlog capacity while making background review yield, released exact-review leases before ledger publication, and aggregated healthy retry scans into one bounded ledger summary.
@@ -130,26 +113,9 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
-- Kept dispatch receipts durable across superseding spam edits, notifier
-  failures, concurrent outcome completion, unavailable comment dispatch, and
-  idle receipt expiry scheduling.
-- Published crash-safe `workflow.attempt` and `repair.execute` receipts around
-  repair-cluster execution, terminalizing dangling child mutations before their
-  parent, terminating the complete credentialed execute process group before
-  timeout finalization, and allowing later observed outcomes to supersede stale
-  unknown state.
-- Preserved the repair worker's original replay-safe Action inputs in an early,
-  attempt-scoped artifact so bounded requeues and failed-run self-heal retries
-  reuse the actual effective mode, runners, sandbox, model, and dry-run state
-  instead of mutable workflow defaults.
-- Revalidated the exact pull request head and bounded review, thread, and
-  conversation activity before every proof comment or label request, including
-  a post-hydration head read, fresh contributor activity, and bound live
-  policy/label state, with privacy-bounded immutable request receipts,
-  conservative unknown outcomes, exact comment/label crash reconciliation,
-  replay-safe bot-proof POST/PATCH recovery, and best-effort recovery-state
-  publication before cursor progress.
-- Bound pull-request review reuse, apply, and automerge actions to a size-capped digest of reviews, inline comments, and review-thread resolution state, so legacy reports, late activity, or resolved-thread drift force a fresh verdict before mutation.
+- Coalesced retried exact-review publication deliveries after provenance refresh without breaking same-producer revision handoff. Reported by @snowzlmbot automation.
+- Synchronized review-derived labels on high-activity pull requests when complete hydration proves omitted activity is automation-only, while continuing to fail closed on hidden human activity or incomplete hydration. Thanks @veteranbv.
+- Stopped stale "review started" placeholder comments from accumulating on reviewed items: publishing the durable review comment now sweeps superseded placeholders.
 - Stopped narrow OpenClaw automerge repairs from chasing unrelated full-repository lint and typecheck failures.
 - Removed the synthetic Codex write preflight that could block repair before Codex saw the real task.
 - Kept exact-review handoff health live when the dashboard serves a stale fleet snapshot, so recovered claims no longer leave the operator rail stuck in a delayed or stalled state.

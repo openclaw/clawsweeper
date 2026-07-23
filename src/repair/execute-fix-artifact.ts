@@ -48,7 +48,10 @@ import {
   automergeShepherdWaitConfig,
   canUseAutomergeFastRebase,
 } from "./automerge-shepherd.js";
-import { automergeOutcomeReviewedShaFromResult } from "./automerge-outcome.js";
+import {
+  automergeOutcomeReviewedShaFromResult,
+  automergePlanningHeadBlock,
+} from "./automerge-outcome.js";
 import { isCanonicalLandingNeedsHumanText } from "./comment-router-core.js";
 import { parsePullRequestUrl, pullRequestNumberFromUrl } from "./github-ref.js";
 import {
@@ -429,6 +432,7 @@ const report: LooseRecord = {
   dry_run: dryRun,
   result_path: path.relative(repoRoot(), resultPath),
   executed_at: new Date().toISOString(),
+  automerge_session_id: process.env.CLAWSWEEPER_AUTOMERGE_SESSION_ID || null,
   policy_override: promotedReplacement
     ? "promoted needs_human uneditable-source fix artifact to replace_uneditable_branch"
     : null,
@@ -528,7 +532,23 @@ if (scopeBlock) {
 }
 
 const sourceBranchPreflight = preflightRepairSourceBranchWrite(fixArtifact);
-if (sourceBranchPreflight.status === "replace_uneditable_branch") {
+if (sourceBranchPreflight.status === "stale_planning_head") {
+  report.status = "blocked";
+  report.reason = sourceBranchPreflight.reason;
+  report.source_branch_preflight = sourceBranchPreflight;
+  report.actions.push({
+    action: "repair_contributor_branch",
+    status: "blocked",
+    target: sourceBranchPreflight.source_pr,
+    repair_strategy: fixArtifact.repair_strategy,
+    reason: sourceBranchPreflight.reason,
+    expected_head_sha: sourceBranchPreflight.expected_head_sha,
+    current_head_sha: sourceBranchPreflight.current_head_sha,
+    requeue_required: true,
+  });
+  writeReport(report, resultPath);
+  process.exit(1);
+} else if (sourceBranchPreflight.status === "replace_uneditable_branch") {
   report.source_branch_preflight = sourceBranchPreflight;
   report.actions.push({
     action: "repair_contributor_branch",
@@ -806,6 +826,21 @@ function preflightRepairSourceBranchWrite(fixArtifact: LooseRecord) {
       reason: `source PR #${sourcePr.number} is ${pull.state}`,
     };
   }
+  if (isAutomergeRepairJob()) {
+    const planningHeadBlock = automergePlanningHeadBlock({
+      expectedHeadSha: automergeOutcomeReviewedSha(),
+      currentHeadSha: pull.head?.sha,
+    });
+    if (planningHeadBlock) {
+      return {
+        status: "stale_planning_head",
+        source_pr: sourcePr.url,
+        expected_head_sha: planningHeadBlock.expectedHeadSha,
+        current_head_sha: planningHeadBlock.currentHeadSha,
+        reason: planningHeadBlock.reason,
+      };
+    }
+  }
   const pauseBlock = liveRepairPauseBlock({
     pull,
     number: sourcePr.number,
@@ -845,6 +880,27 @@ function executeRepairBranch({ fixArtifact, targetDir }: LooseRecord) {
   logProgress("repairing contributor branch", { source_pr: sourcePr.url, base_branch: baseBranch });
   const pull = fetchPullRequest(result.repo, sourcePr.number);
   if (pull.state !== "open") throw new Error(`source PR #${sourcePr.number} is ${pull.state}`);
+  // The earlier writability preflight cannot bind this later network read. Recheck
+  // the same PR object passed to checkout so a contributor update cannot cross the
+  // planning/execution trust boundary between those two reads.
+  if (isAutomergeRepairJob()) {
+    const planningHeadBlock = automergePlanningHeadBlock({
+      expectedHeadSha: automergeOutcomeReviewedSha(),
+      currentHeadSha: pull.head?.sha,
+    });
+    if (planningHeadBlock) {
+      return {
+        action: "repair_contributor_branch",
+        status: "blocked",
+        target: sourcePr.url,
+        repair_strategy: fixArtifact.repair_strategy,
+        reason: planningHeadBlock.reason,
+        expected_head_sha: planningHeadBlock.expectedHeadSha,
+        current_head_sha: planningHeadBlock.currentHeadSha,
+        requeue_required: true,
+      };
+    }
+  }
   const initialPauseBlock = liveRepairPauseBlock({
     pull,
     number: sourcePr.number,

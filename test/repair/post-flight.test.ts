@@ -244,7 +244,7 @@ test("issue implementation post-flight waits for checks to be created", () => {
   }
 });
 
-test("merge post-flight leaves dependency-gated closeouts to the second apply pass", () => {
+test("merge post-flight waits when only ignored checks exist", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-post-flight-"));
   const fakeBin = path.join(tmp, "bin");
   const jobPath = path.join(tmp, "job.md");
@@ -307,22 +307,7 @@ test("merge post-flight leaves dependency-gated closeouts to the second apply pa
   );
 
   writeMergeJob(jobPath);
-  writeMergeReports(runDir, resultPath, [
-    {
-      action: "post_merge_close",
-      status: "planned",
-      target: "#102",
-      candidate_fix: "#123",
-      depends_on: ["#101"],
-    },
-    {
-      action: "post_merge_close",
-      status: "planned",
-      target: "#101",
-      candidate_fix: "#123",
-      depends_on: null,
-    },
-  ]);
+  writeMergeReports(runDir, resultPath);
 
   try {
     execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
@@ -343,7 +328,6 @@ test("merge post-flight leaves dependency-gated closeouts to the second apply pa
     });
 
     const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
-    assert.equal(report.actions.length, 1);
     assert.equal(report.actions[0]?.status, "executed");
     assert.equal(report.actions[0]?.merge_commit_sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     assert.deepEqual(report.closure_authorization, {
@@ -360,6 +344,14 @@ test("merge post-flight leaves dependency-gated closeouts to the second apply pa
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("post-flight records authorization and never closes related items directly", () => {
+  const source = fs.readFileSync("src/repair/post-flight.ts", "utf8");
+
+  assert.match(source, /closure_authorization = buildClosureAuthorization/);
+  assert.doesNotMatch(source, /finalizePostMergeCloseout/);
+  assert.doesNotMatch(source, /postMergeCloseoutComment/);
 });
 
 test("post-flight keeps no-timestamp pending duplicate checks visible", () => {
@@ -539,11 +531,7 @@ function writeIssueImplementationReports(runDir: string, resultPath: string) {
   );
 }
 
-function writeMergeReports(
-  runDir: string,
-  resultPath: string,
-  actions: Record<string, unknown>[] = [],
-) {
+function writeMergeReports(runDir: string, resultPath: string) {
   fs.writeFileSync(
     resultPath,
     JSON.stringify(
@@ -551,7 +539,7 @@ function writeMergeReports(
         repo: "openclaw/openclaw",
         cluster_id: "automerge-openclaw-openclaw-123",
         mode: "autonomous",
-        actions,
+        actions: [],
       },
       null,
       2,

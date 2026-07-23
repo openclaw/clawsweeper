@@ -1,207 +1,117 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
 
 import {
   captureStatePublishBaseline,
   commitMessageForPublishedPaths,
+  GitCommandTimeoutError,
   hardResetToRemoteMain,
   publishMainCommit,
+  pushSingleRecordTupleCommit,
   refreshSourceAfterStatePublish,
+  runGit,
   setTokenOrigin,
-  STATE_PUBLISH_TIMING_DEFAULTS,
+  spawnGit,
   stagePaths,
   uniqueNonEmpty,
+  withStatePublishLease,
 } from "../../dist/repair/git-publish.js";
-import {
-  ACTION_EVENT_TYPES,
-  actionAttemptId,
-  actionEventKey,
-  actionEventShardRelativePath,
-  actionIdempotencyKey,
-  actionLedgerJson,
-  actionOperationId,
-  createActionEvent,
-  type ActionEventInput,
-} from "../../dist/action-ledger.js";
 
 for (const key of [
   "CLAWSWEEPER_STATE_DIR",
   "CLAWSWEEPER_PUBLISH_ROOT",
   "CLAWSWEEPER_PUBLISH_BRANCH",
-  "CLAWSWEEPER_PUBLISH_LEASE",
-  "CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS",
-  "CLAWSWEEPER_PUBLISH_DEADLINE_MS",
-  "CLAWSWEEPER_IMMUTABLE_PUBLISH_DEADLINE_MS",
-  "CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS",
-  "CLAWSWEEPER_PUBLISH_LEASE_TTL_MS",
-  "CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS",
-  "CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS",
-  "CLAWSWEEPER_PUBLISH_STALE_RECOVERY_ATTEMPTS",
+  "CLAWSWEEPER_STATE_REPOSITORY",
+  "CLAWSWEEPER_STATE_LEASE_PRIORITY",
 ]) {
   delete process.env[key];
 }
-process.env.CLAWSWEEPER_PUBLISH_LEASE = "false";
-
-function replayEquivalentActionShards() {
-  const repository = "openclaw/clawsweeper";
-  const sourceRevision = "a".repeat(40);
-  const operationId = actionOperationId(repository, "review", {
-    number: 1,
-    sourceRevision,
-  });
-  const attemptId = actionAttemptId(operationId, { runId: "1", runAttempt: 1 });
-  const input: ActionEventInput = {
-    eventKey: actionEventKey("review.completed", {
-      repository,
-      number: 1,
-      sourceRevision,
-    }),
-    operationId,
-    attemptId,
-    parentEventId: null,
-    phaseSeq: 1,
-    idempotencyKeySha256: actionIdempotencyKey({
-      repository,
-      number: 1,
-      sourceRevision,
-      action: "review",
-    }),
-    type: ACTION_EVENT_TYPES.reviewCompleted,
-    producer: {
-      repository,
-      sha: sourceRevision,
-      workflow: "sweep.yml",
-      job: "review",
-      runId: "1",
-      runAttempt: 1,
-      component: "review.test",
-    },
-    subject: {
-      repository,
-      kind: "pull_request",
-      number: 1,
-      sourceRevision,
-    },
-    action: {
-      name: "review",
-      status: "completed",
-      reasonCode: "completed",
-      retryable: false,
-      mutation: false,
-    },
-    evidence: [],
-  };
-  const first = createActionEvent(input, {
-    now: () => new Date("2026-07-14T20:00:00.000Z"),
-  });
-  const second = createActionEvent(input, {
-    now: () => new Date("2026-07-14T20:00:01.000Z"),
-  });
-  const publishPath = actionEventShardRelativePath(
-    {
-      repository,
-      sha: sourceRevision,
-      producer: "review.test",
-      workflow: "sweep.yml",
-      job: "review",
-      runId: "1",
-      runAttempt: 1,
-      partitionDate: "2026-07-14",
-    },
-    [first],
-  ).replaceAll(path.sep, "/");
-  return {
-    publishPath,
-    first: `${actionLedgerJson(first)}\n`,
-    second: `${actionLedgerJson(second)}\n`,
-  };
-}
-
-const STATE_PUBLISH_LEASE_REF = "refs/heads/clawsweeper-publish-lease/state";
-
-test("default lease timing can recover a crashed owner within the workflow budget", () => {
-  const timing = STATE_PUBLISH_TIMING_DEFAULTS;
-  assert.ok(timing.leaseTtlMs <= timing.leaseProtocolMaxTtlMs);
-  assert.ok(
-    timing.acquisitionDeadlineMs >
-      timing.leaseProtocolMaxTtlMs + timing.leaseMaxWaitMs + timing.commandTimeoutMs,
-  );
-  assert.ok(timing.operationDeadlineMs < timing.leaseTtlMs);
-  assert.ok(timing.immutableLeasePriorityMaxMs < timing.operationDeadlineMs);
-  assert.ok(
-    timing.acquisitionDeadlineMs +
-      timing.operationDeadlineMs +
-      timing.commandTimeoutMs +
-      timing.workflowMarginMs <=
-      timing.workflowTimeoutMs,
-  );
-  assert.ok(
-    timing.immutableOperationDeadlineMs + timing.commandTimeoutMs + timing.workflowMarginMs <=
-      timing.workflowTimeoutMs,
-  );
-});
-
-test("immutable coordination accepts only exact action ledger paths", () => {
-  assert.throws(
-    () =>
-      publishMainCommit({
-        message: "chore: reject mutable optimistic state",
-        paths: ["results/latest.json"],
-        coordination: "immutable",
-      }),
-    /only exact action ledger event and import-binding paths/,
-  );
-  assert.throws(
-    () =>
-      publishMainCommit({
-        message: "chore: reject mutable optimistic strategy",
-        paths: ["ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-1-review-a.jsonl"],
-        coordination: "immutable",
-        rebaseStrategy: "theirs",
-      }),
-    /requires the normal rebase strategy/,
-  );
-});
-
-test("state publisher rejects a lease TTL above the protocol maximum", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-lease-protocol-"));
-  const state = path.join(root, "state");
-  const source = path.join(root, "source");
-  fs.mkdirSync(state);
-  fs.mkdirSync(source);
-
-  assert.throws(
-    () =>
-      withEnv(
-        leasedPublishEnv({
-          CLAWSWEEPER_STATE_DIR: state,
-          CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: String(
-            STATE_PUBLISH_TIMING_DEFAULTS.leaseProtocolMaxTtlMs + 1,
-          ),
-        }),
-        () =>
-          withCwd(source, () =>
-            publishMainCommit({
-              message: "chore: reject oversized lease",
-              paths: ["results/protocol.txt"],
-            }),
-          ),
-      ),
-    /exceeds protocol maximum/,
-  );
-});
 
 test("uniqueNonEmpty trims, drops blanks, and deduplicates paths", () => {
   assert.deepEqual(uniqueNonEmpty([" jobs ", "", "results", "jobs", "results "]), [
     "jobs",
     "results",
   ]);
+});
+
+test("runGit reports a stalled fetch transport timeout", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-git-timeout-"));
+  run("git", ["init"], root);
+  // The ext transport stalls during fetch protocol negotiation without depending on
+  // GitHub or wall-clock races, matching the production failure before any tuple work.
+  const stalledFetch = ["fetch", "ext::node -e setTimeout(()=>{},5000)", "main"];
+  const result = withEnv({ GIT_ALLOW_PROTOCOL: "ext" }, () =>
+    withCwd(root, () => spawnGit(stalledFetch, { quiet: true, timeout: 100 })),
+  );
+
+  assert.equal(result.timedOut, true);
+  assert.throws(
+    () =>
+      withEnv({ GIT_ALLOW_PROTOCOL: "ext" }, () =>
+        withCwd(root, () =>
+          runGit(stalledFetch, { allowFailure: true, quiet: true, timeout: 100 }),
+        ),
+      ),
+    GitCommandTimeoutError,
+  );
+  assert.equal(
+    new GitCommandTimeoutError(["fetch"], 60_000).message,
+    "git fetch timed out after 60000ms",
+  );
+});
+
+test("publisher reset applies the production fetch timeout before touching state", () => {
+  const script = String.raw`
+    import childProcess from "node:child_process";
+    import { syncBuiltinESMExports } from "node:module";
+
+    const calls = [];
+    childProcess.spawnSync = (command, args, options) => {
+      calls.push({ command, args, timeout: options.timeout ?? null });
+      const stdout = args[0] === "rev-parse" ? "true\n" : "";
+      return { status: 0, stdout, stderr: "" };
+    };
+    syncBuiltinESMExports();
+    console.log = () => {};
+
+    const { hardResetToRemoteMain } = await import("./dist/repair/git-publish.js");
+    hardResetToRemoteMain("origin", "state");
+    process.stdout.write(JSON.stringify(calls));
+  `;
+
+  assert.deepEqual(JSON.parse(run("node", ["--input-type=module", "-e", script], process.cwd())), [
+    {
+      command: "git",
+      args: ["rev-parse", "--is-shallow-repository"],
+      timeout: null,
+    },
+    {
+      command: "git",
+      args: ["fetch", "--depth=1", "origin", "state"],
+      timeout: 60_000,
+    },
+    {
+      command: "git",
+      args: ["reset", "--hard", "origin/state"],
+      timeout: null,
+    },
+  ]);
+});
+
+test("publisher fetches share the bounded fetch helper", () => {
+  const source = fs.readFileSync(path.resolve("src/repair/git-publish.ts"), "utf8");
+
+  assert.match(source, /const PUBLISH_FETCH_TIMEOUT_MS = 60_000/);
+  assert.match(
+    source,
+    /function fetchPublishRemote\([\s\S]*const shallow = isShallowRepository\(\)[\s\S]*runGit\(\["fetch", \.\.\.depthArgs, remote, branch\], \{/,
+  );
+  assert.equal(source.match(/runGit\(\["fetch"/g)?.length, 1);
 });
 
 test("commitMessageForPublishedPaths skips CI for generated-only publishes", () => {
@@ -219,12 +129,6 @@ test("commitMessageForPublishedPaths skips CI for generated-only publishes", () 
   assert.equal(
     commitMessageForPublishedPaths("fix: update scheduler", ["src/repair/git-publish.ts"]),
     "fix: update scheduler",
-  );
-  assert.equal(
-    commitMessageForPublishedPaths("chore: append action ledger", [
-      "ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-1-review-a.jsonl",
-    ]),
-    "chore: append action ledger\n\n[skip ci]",
   );
 });
 
@@ -533,6 +437,127 @@ test("publishMainCommit preserves latest health when a second race forces commit
   assert.equal(merged.state, "Local event");
   assert.deepEqual(merged.apply_health, secondCloseHealth);
   assert.deepEqual(merged.last_close_apply_health, secondCloseHealth);
+});
+
+test("publishMainCommit survives a shallow-checkout push race without a common Git base", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  write(path.join(seed, "results/spam-scanner.json"), '{"scans":0}\n');
+  write(path.join(seed, "results/other.txt"), "remote\n");
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial"], seed);
+  run("git", ["push", "origin", "HEAD:main"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+
+  // Production state checkouts are shallow, so the racing writer's commits
+  // arrive through a --depth=1 fetch that shares no ancestry with local HEAD.
+  run("git", ["clone", "--depth", "1", `file://${origin}`, work], root);
+  configureUser(work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  write(path.join(other, "results/other.txt"), "remote update one\n");
+  run("git", ["commit", "-am", "remote update one"], other);
+  write(path.join(other, "results/other.txt"), "remote update two\n");
+  run("git", ["commit", "-am", "remote update two"], other);
+  run("git", ["push", "origin", "HEAD:main"], other);
+
+  write(path.join(work, "results/spam-scanner.json"), '{"scans":1}\n');
+  const result = withCwd(work, () =>
+    publishMainCommit({
+      message: "chore: record ClawSweeper spam scan",
+      paths: ["results/spam-scanner.json"],
+      maxAttempts: 1,
+      pushAttempts: 1,
+      rebaseStrategy: "theirs",
+    }),
+  );
+
+  assert.equal(result, "committed");
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:results/spam-scanner.json"], root),
+    '{"scans":1}\n',
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:results/other.txt"], root),
+    "remote update two\n",
+  );
+});
+
+test("publishMainCommit rebases a stale state base onto a force-updated remote head", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const state = path.join(root, "state");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  write(path.join(seed, "results/other.txt"), "remote\n");
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial"], seed);
+  run("git", ["push", "origin", "HEAD:state"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["clone", origin, work], root);
+  run("git", ["clone", "--depth", "1", `file://${origin}`, state], root);
+  configureUser(state);
+
+  // The compaction cron rewrites the state branch: a force-pushed orphan head
+  // shares no ancestry with the stale checkout and carries newer content.
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  run("git", ["checkout", "--orphan", "compacted"], other);
+  write(path.join(other, "results/other.txt"), "compacted\n");
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "compacted"], other);
+  run("git", ["push", "--force", "origin", "HEAD:state"], other);
+  const compactedHead = run("git", ["rev-parse", "HEAD"], other).trim();
+
+  write(path.join(work, "results/spam-scanner.json"), '{"scans":9}\n');
+  const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: record ClawSweeper spam scan",
+          paths: ["results/spam-scanner.json"],
+          maxAttempts: 1,
+          pushAttempts: 1,
+          rebaseStrategy: "theirs",
+        }),
+      ),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  assert.equal(
+    lines.some((line) =>
+      line.includes("Rebasing the state publish base onto the live origin/state head"),
+    ),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "state:results/spam-scanner.json"], root),
+    '{"scans":9}\n',
+  );
+  // The stale checkout-era copy outside the publish paths must not shadow the
+  // newer remote content, and the publish lands directly on the rewritten head.
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "state:results/other.txt"], root),
+    "compacted\n",
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "rev-parse", "state^"], root).trim(),
+    compactedHead,
+  );
 });
 
 test("publishMainCommit fails closed when a racing sweep status is malformed", () => {
@@ -1277,7 +1302,7 @@ test("reconcile-records fails closed on a concurrent tuple filename alias", () =
   );
 });
 
-test("reconcile-records fails closed when state and remote have no common base", () => {
+test("reconcile-records preserves a newer remote tuple after resetting unrelated state", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-unrelated-"));
   const origin = path.join(root, "origin.git");
   const state = path.join(root, "state");
@@ -1286,11 +1311,11 @@ test("reconcile-records fails closed when state and remote have no common base",
   run("git", ["init", "--bare", origin], root);
   run("git", ["clone", origin, state], root);
   configureUser(state);
-  const baseTuple = writeRecordTuple(state, {
+  const remoteTuple = writeRecordTuple(state, {
     number: 42,
-    marker: "remote base",
-    reviewedAt: "2026-07-09T23:00:00.000Z",
-    itemUpdatedAt: "2026-07-09T22:59:00Z",
+    marker: "newer remote tuple",
+    reviewedAt: "2026-07-09T23:03:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:02:00Z",
   });
   run("git", ["add", "."], state);
   run("git", ["commit", "-m", "remote base"], state);
@@ -1313,32 +1338,1540 @@ test("reconcile-records fails closed when state and remote have no common base",
   run("git", ["commit", "-m", "unrelated local history"], state);
 
   const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: publish from unrelated state",
+          paths: [recordsRoot],
+          maxAttempts: 1,
+          pushAttempts: 1,
+          rebaseStrategy: "reconcile-records",
+        }),
+      ),
+    );
+  }, lines);
+
+  assert.equal(result, "unchanged");
+  assert.equal(
+    lines.some((line) =>
+      line.includes(
+        "No common Git base with origin/state; resetting the unpublished reconciliation checkpoint to the remote head",
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/42.md`], root),
+    remoteTuple.primary,
+  );
+  assert.throws(() => run("git", ["--git-dir", origin, "show", "state:unrelated.txt"], root));
+});
+
+test("reconcile-records resets shallow state to a truly unrelated remote head", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-shallow-unrelated-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const state = path.join(root, "state");
+  const work = path.join(root, "work");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  writeRecordTuple(seed, {
+    number: 42,
+    marker: "remote base",
+    reviewedAt: "2026-07-19T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-19T22:59:00Z",
+  });
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial state"], seed);
+  run("git", ["push", "origin", "HEAD:state"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["clone", "--depth", "1", `file://${origin}`, state], root);
+  configureUser(state);
+
+  fs.mkdirSync(work);
+  fs.cpSync(path.join(state, "records"), path.join(work, "records"), { recursive: true });
+  const candidateTuple = writeRecordTuple(work, {
+    number: 42,
+    marker: "candidate update",
+    reviewedAt: "2026-07-19T23:02:00.000Z",
+    itemUpdatedAt: "2026-07-19T23:01:00Z",
+  });
+
+  run("git", ["checkout", "--orphan", "replacement"], seed);
+  run("git", ["read-tree", "--empty"], seed);
+  fs.rmSync(path.join(seed, "records"), { force: true, recursive: true });
+  write(path.join(seed, "replacement.txt"), "replacement history\n");
+  run("git", ["add", "-A"], seed);
+  run("git", ["commit", "-m", "replace state history"], seed);
+  run("git", ["push", "--force", "origin", "HEAD:state"], seed);
+
+  const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: publish from unrelated shallow state",
+          paths: [recordsRoot],
+          maxAttempts: 1,
+          pushAttempts: 1,
+          rebaseStrategy: "reconcile-records",
+        }),
+      ),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  assert.equal(
+    lines.some((line) =>
+      line.includes(
+        "No common Git base with origin/state; resetting the unpublished reconciliation checkpoint to the remote head",
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "state:replacement.txt"], root),
+    "replacement history\n",
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/42.md`], root),
+    candidateTuple.primary,
+  );
+  assert.equal(run("git", ["rev-parse", "--is-shallow-repository"], state).trim(), "false");
+});
+
+test("reconcile-records prepares a shallow state checkout from the remote head", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-shallow-prepare-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const state = path.join(root, "state");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  writeRecordTuple(seed, {
+    number: 42,
+    marker: "remote base",
+    reviewedAt: "2026-07-19T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-19T22:59:00Z",
+  });
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial state"], seed);
+  run("git", ["push", "origin", "HEAD:state"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["clone", "--depth", "1", `file://${origin}`, state], root);
+  configureUser(state);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  write(path.join(other, "remote.txt"), "remote update one\n");
+  const remoteTuple = writeRecordTuple(other, {
+    number: 42,
+    marker: "remote winner",
+    reviewedAt: "2026-07-19T23:05:00.000Z",
+    itemUpdatedAt: "2026-07-19T23:04:00Z",
+  });
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "remote update one"], other);
+  write(path.join(other, "remote.txt"), "remote update two\n");
+  run("git", ["commit", "-am", "remote update two"], other);
+  run("git", ["push", "origin", "HEAD:state"], other);
+
+  fs.mkdirSync(work);
+  fs.cpSync(path.join(state, "records"), path.join(work, "records"), { recursive: true });
+  writeRecordTuple(work, {
+    number: 42,
+    marker: "candidate close",
+    reviewedAt: "2026-07-19T23:03:00.000Z",
+    itemUpdatedAt: "2026-07-19T23:02:00Z",
+    location: "closed",
+    packet: false,
+    plan: false,
+  });
+  const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: prepare shallow state",
+          paths: [recordsRoot],
+          maxAttempts: 1,
+          pushAttempts: 1,
+          rebaseStrategy: "reconcile-records",
+        }),
+      ),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  assert.equal(
+    lines.some((line) =>
+      line.includes(
+        "Recovered the common Git base with origin/state after hydrating the shallow state checkout",
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/42.md`], root),
+    remoteTuple.primary,
+  );
+  assert.throws(() =>
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/closed/42.md`], root),
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "state:remote.txt"], root),
+    "remote update two\n",
+  );
+});
+
+test("reconcile-records rebuilds on a shallow remote head without local ancestry", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-shallow-reconcile-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  writeRecordTuple(seed, {
+    number: 42,
+    marker: "local base",
+    reviewedAt: "2026-07-19T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-19T22:59:00Z",
+  });
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial state"], seed);
+  run("git", ["push", "origin", "HEAD:main"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["clone", "--depth", "1", `file://${origin}`, work], root);
+  configureUser(work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  const remoteTuple = writeRecordTuple(other, {
+    number: 43,
+    marker: "remote update one",
+    reviewedAt: "2026-07-19T23:01:00.000Z",
+    itemUpdatedAt: "2026-07-19T23:00:00Z",
+  });
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "remote update one"], other);
+  write(path.join(other, "remote.txt"), "remote update two\n");
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "remote update two"], other);
+  run("git", ["push", "origin", "HEAD:main"], other);
+
+  const localTuple = writeRecordTuple(work, {
+    number: 42,
+    marker: "local close",
+    reviewedAt: "2026-07-19T23:03:00.000Z",
+    itemUpdatedAt: "2026-07-19T23:02:00Z",
+    location: "closed",
+    packet: false,
+    plan: false,
+  });
+  const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: reconcile shallow state",
+        paths: [recordsRoot],
+        maxAttempts: 1,
+        pushAttempts: 2,
+        rebaseStrategy: "reconcile-records",
+      }),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  assert.equal(
+    lines.some((line) => line.includes("deferring overlap detection to a remote-head rebuild")),
+    true,
+  );
+  assert.equal(
+    lines.some(
+      (line) => line === "Rebuilding reconciliation directly on origin/main after a shallow fetch",
+    ),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/closed/42.md`], root),
+    localTuple.primary,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/items/43.md`], root),
+    remoteTuple.primary,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:remote.txt"], root),
+    "remote update two\n",
+  );
+});
+
+test("single-record publisher rebuilds a shallow losing writer without hydrating history", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-single-record-race-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const publisher = path.join(root, "publisher");
+  const other = path.join(root, "other");
+  const fakeBin = path.join(root, "bin");
+  const recordsRoot = "records/openclaw-openclaw";
+  const publisherPaths = [
+    `${recordsRoot}/items/42.md`,
+    `${recordsRoot}/closed/42.md`,
+    `${recordsRoot}/plans/42.md`,
+    `${recordsRoot}/decision-packets/42.json`,
+  ];
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  writeRecordTuple(seed, {
+    number: 42,
+    marker: "shared base",
+    reviewedAt: "2026-07-20T11:00:00.000Z",
+    itemUpdatedAt: "2026-07-20T10:59:00Z",
+  });
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial state"], seed);
+  run("git", ["push", "origin", "HEAD:state"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["clone", "--depth", "1", `file://${origin}`, publisher], root);
+  configureUser(publisher);
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+
+  const localTuple = writeRecordTuple(publisher, {
+    number: 42,
+    marker: "publisher update",
+    reviewedAt: "2026-07-20T11:02:00.000Z",
+    itemUpdatedAt: "2026-07-20T11:01:00Z",
+  });
+  run("git", ["add", "."], publisher);
+  run("git", ["commit", "-m", "publisher update"], publisher);
+
+  const remoteTuple = writeRecordTuple(other, {
+    number: 43,
+    marker: "concurrent remote update",
+    reviewedAt: "2026-07-20T11:03:00.000Z",
+    itemUpdatedAt: "2026-07-20T11:02:00Z",
+  });
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "concurrent remote update"], other);
+  run("git", ["push", "origin", "HEAD:state"], other);
+  installDeepenFetchFailureShim(fakeBin);
+
+  const lines = [];
+  let published;
+  captureConsoleLog(() => {
+    published = withEnv({ PATH: `${fakeBin}:${process.env.PATH}` }, () =>
+      withCwd(publisher, () =>
+        pushSingleRecordTupleCommit({
+          paths: publisherPaths,
+          branch: "state",
+          pushAttempts: 2,
+        }),
+      ),
+    );
+  }, lines);
+
+  assert.equal(published, true);
+  assert.equal(
+    lines.some(
+      (line) =>
+        line ===
+        "No common Git base with origin/state; rebuilding reconciliation on the remote head",
+    ),
+    true,
+  );
+  assert.equal(run("git", ["rev-parse", "--is-shallow-repository"], publisher).trim(), "true");
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/42.md`], root),
+    localTuple.primary,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/43.md`], root),
+    remoteTuple.primary,
+  );
+});
+
+test(
+  "state publish lease serializes concurrent exact record tuple writers",
+  { timeout: 180_000 },
+  async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-lease-race-"));
+    const origin = path.join(root, "origin.git");
+    const seed = path.join(root, "seed");
+    const barrier = path.join(root, "barrier");
+    const writerCount = 8;
+    run("git", ["init", "--bare", origin], root);
+    run("git", ["clone", origin, seed], root);
+    configureUser(seed);
+    write(path.join(seed, "README.md"), "state\n");
+    run("git", ["add", "."], seed);
+    run("git", ["commit", "-m", "initial state"], seed);
+    run("git", ["push", "origin", "HEAD:state"], seed);
+    run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+    fs.mkdirSync(barrier);
+
+    const writers = Array.from({ length: writerCount }, (_, index) => {
+      const number = 10_000 + index;
+      const work = path.join(root, `writer-${index}`);
+      const candidate = path.join(root, `candidate-${index}`);
+      run("git", ["clone", "--depth", "1", `file://${origin}`, work], root);
+      configureUser(work);
+      const tuple = writeRecordTuple(candidate, {
+        number,
+        marker: `leased writer ${index}`,
+        reviewedAt: `2026-07-20T14:${String(index).padStart(2, "0")}:00.000Z`,
+        itemUpdatedAt: `2026-07-20T14:${String(index).padStart(2, "0")}:00Z`,
+      });
+      return { index, number, work, candidate, tuple };
+    });
+
+    const childScript = String.raw`
+      import fs from "node:fs";
+      import path from "node:path";
+      const [work, candidate, barrier, writerCountRaw, indexRaw, numberRaw] = process.argv.slice(1);
+      const writerCount = Number(writerCountRaw);
+      const index = Number(indexRaw);
+      const number = Number(numberRaw);
+      const recordRoot = "records/openclaw-openclaw";
+      const paths = [
+        recordRoot + "/items/" + number + ".md",
+        recordRoot + "/closed/" + number + ".md",
+        recordRoot + "/plans/" + number + ".md",
+        recordRoot + "/decision-packets/" + number + ".json",
+      ];
+      fs.writeFileSync(path.join(barrier, String(index)), "ready\n");
+      const wait = new Int32Array(new SharedArrayBuffer(4));
+      while (fs.readdirSync(barrier).length < writerCount) Atomics.wait(wait, 0, 0, 10);
+
+      const {
+        commitMessageForPublishedPaths,
+        hardResetToRemoteMain,
+        pushSingleRecordTupleCommit,
+        runGit,
+        stagePaths,
+        withStatePublishLease,
+      } = await import("./dist/repair/git-publish.js");
+      withStatePublishLease(
+        () => {
+          hardResetToRemoteMain("origin", "state");
+          fs.cpSync(path.join(candidate, "records"), path.join(work, "records"), { recursive: true });
+          stagePaths(paths);
+          runGit([
+            "commit",
+            "-m",
+            commitMessageForPublishedPaths("chore: leased exact tuple " + number, paths),
+          ]);
+          if (!pushSingleRecordTupleCommit({ paths, branch: "state", pushAttempts: 1 })) {
+            throw new Error("leased exact tuple push lost the state race");
+          }
+        },
+        { branch: "state", acquireTimeoutMs: 120_000, ttlMs: 30_000, waitMs: 25 },
+      );
+    `;
+
+    const results = await Promise.all(
+      writers.map((writer) =>
+        runAsync(
+          "node",
+          [
+            "--input-type=module",
+            "-e",
+            childScript,
+            writer.work,
+            writer.candidate,
+            barrier,
+            String(writerCount),
+            String(writer.index),
+            String(writer.number),
+          ],
+          process.cwd(),
+          {
+            CLAWSWEEPER_PUBLISH_ROOT: writer.work,
+            CLAWSWEEPER_PUBLISH_BRANCH: "state",
+          },
+          180_000,
+        ),
+      ),
+    );
+
+    for (const output of results) {
+      assert.match(output, /Acquired state publish lease/);
+      assert.match(output, /Released state publish lease/);
+      assert.doesNotMatch(output, /lost the state race/);
+    }
+    for (const writer of writers) {
+      assert.equal(
+        run(
+          "git",
+          [
+            "--git-dir",
+            origin,
+            "show",
+            `state:records/openclaw-openclaw/items/${writer.number}.md`,
+          ],
+          root,
+        ),
+        writer.tuple.primary,
+      );
+    }
+    assert.equal(
+      run("git", ["--git-dir", origin, "log", "--format=%s", "state"], root).trim().split("\n")
+        .length,
+      writerCount + 1,
+    );
+    assert.equal(
+      run(
+        "git",
+        [
+          "--git-dir",
+          origin,
+          "for-each-ref",
+          "--format=%(refname)",
+          "refs/heads/clawsweeper-publish-lease",
+        ],
+        root,
+      ),
+      "",
+    );
+  },
+);
+
+test(
+  "state publish lease also serializes ordinary state branch writers",
+  { timeout: 60_000 },
+  async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-global-lease-"));
+    const origin = path.join(root, "origin.git");
+    const seed = path.join(root, "seed");
+    const exact = path.join(root, "exact");
+    const ordinary = path.join(root, "ordinary");
+    const ordinarySource = path.join(root, "ordinary-source");
+    const candidate = path.join(root, "candidate");
+    const exactReady = path.join(root, "exact-ready");
+    const releaseExact = path.join(root, "release-exact");
+    run("git", ["init", "--bare", origin], root);
+    run("git", ["clone", origin, seed], root);
+    configureUser(seed);
+    write(path.join(seed, "README.md"), "state\n");
+    run("git", ["add", "."], seed);
+    run("git", ["commit", "-m", "initial state"], seed);
+    run("git", ["push", "origin", "HEAD:state"], seed);
+    run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+    run("git", ["clone", "--depth", "1", `file://${origin}`, exact], root);
+    run("git", ["clone", "--depth", "1", `file://${origin}`, ordinary], root);
+    configureUser(exact);
+    configureUser(ordinary);
+
+    const number = 10_050;
+    const tuple = writeRecordTuple(candidate, {
+      number,
+      marker: "exact writer",
+      reviewedAt: "2026-07-20T19:00:00.000Z",
+      itemUpdatedAt: "2026-07-20T19:00:00Z",
+    });
+    const recordRoot = "records/openclaw-openclaw";
+    const ordinaryPath = "results/ordinary-writer.json";
+
+    const exactScript = String.raw`
+      import fs from "node:fs";
+      import path from "node:path";
+      const [work, candidate, ready, release, numberRaw] = process.argv.slice(1);
+      const number = Number(numberRaw);
+      const recordRoot = "records/openclaw-openclaw";
+      const paths = [
+        recordRoot + "/items/" + number + ".md",
+        recordRoot + "/closed/" + number + ".md",
+        recordRoot + "/plans/" + number + ".md",
+        recordRoot + "/decision-packets/" + number + ".json",
+      ];
+      const wait = new Int32Array(new SharedArrayBuffer(4));
+      const {
+        commitMessageForPublishedPaths,
+        hardResetToRemoteMain,
+        pushSingleRecordTupleCommit,
+        runGit,
+        stagePaths,
+        withStatePublishLease,
+      } = await import("./dist/repair/git-publish.js");
+      withStatePublishLease(
+        () => {
+          fs.writeFileSync(ready, "ready\n");
+          while (!fs.existsSync(release)) Atomics.wait(wait, 0, 0, 10);
+          hardResetToRemoteMain("origin", "state");
+          fs.cpSync(path.join(candidate, "records"), path.join(work, "records"), { recursive: true });
+          stagePaths(paths);
+          runGit([
+            "commit",
+            "-m",
+            commitMessageForPublishedPaths("chore: publish exact tuple " + number, paths),
+          ]);
+          if (!pushSingleRecordTupleCommit({ paths, branch: "state", pushAttempts: 1 })) {
+            throw new Error("exact tuple push lost the state race");
+          }
+        },
+        { branch: "state", acquireTimeoutMs: 10_000, ttlMs: 30_000, waitMs: 25 },
+      );
+    `;
+    const ordinaryScript = String.raw`
+      import fs from "node:fs";
+      import path from "node:path";
+      const [sourceRoot] = process.argv.slice(1);
+      const publishPath = "results/ordinary-writer.json";
+      const { publishMainCommit } = await import("./dist/repair/git-publish.js");
+      fs.mkdirSync(path.join(sourceRoot, "results"), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, publishPath), '{"writer":"ordinary"}\n');
+      process.chdir(sourceRoot);
+      publishMainCommit({
+        message: "chore: publish ordinary state update",
+        paths: [publishPath],
+        branch: "state",
+        maxAttempts: 2,
+        pushAttempts: 1,
+      });
+    `;
+
+    const exactResult = runAsync(
+      "node",
+      [
+        "--input-type=module",
+        "-e",
+        exactScript,
+        exact,
+        candidate,
+        exactReady,
+        releaseExact,
+        String(number),
+      ],
+      process.cwd(),
+      { CLAWSWEEPER_PUBLISH_ROOT: exact, CLAWSWEEPER_PUBLISH_BRANCH: "state" },
+    );
+    const wait = new Int32Array(new SharedArrayBuffer(4));
+    const readyDeadline = Date.now() + 10_000;
+    while (!fs.existsSync(exactReady) && Date.now() < readyDeadline) {
+      Atomics.wait(wait, 0, 0, 10);
+    }
+    assert.equal(fs.existsSync(exactReady), true, "exact writer did not acquire its lease");
+
+    const ordinaryRun = startAsync(
+      "node",
+      ["--input-type=module", "-e", ordinaryScript, ordinarySource],
+      process.cwd(),
+      { CLAWSWEEPER_PUBLISH_ROOT: ordinary, CLAWSWEEPER_PUBLISH_BRANCH: "state" },
+    );
+    const ordinaryDeadline = Date.now() + 10_000;
+    while (
+      !ordinaryRun.output().includes("State publish lease busy") &&
+      !ordinaryRun.settled() &&
+      Date.now() < ordinaryDeadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const ordinaryWaitedOnLease = ordinaryRun.output().includes("State publish lease busy");
+    fs.writeFileSync(releaseExact, "release\n");
+    const [exactOutput, ordinaryOutput] = await Promise.all([exactResult, ordinaryRun.result]);
+
+    assert.equal(
+      ordinaryWaitedOnLease,
+      true,
+      "ordinary state writer did not reach and wait on the exact owner's lease",
+    );
+    assert.match(exactOutput, /Acquired state publish lease/);
+    assert.match(ordinaryOutput, /Acquired state publish lease/);
+    assert.match(ordinaryOutput, /Released state publish lease/);
+    assert.equal(
+      run("git", ["--git-dir", origin, "show", `state:${recordRoot}/items/${number}.md`], root),
+      tuple.primary,
+    );
+    assert.equal(
+      run("git", ["--git-dir", origin, "show", `state:${ordinaryPath}`], root),
+      '{"writer":"ordinary"}\n',
+    );
+  },
+);
+
+test(
+  "state publish watchdog releases an owner terminated during a synchronous mutation",
+  {
+    timeout: 15_000,
+    skip:
+      process.platform === "win32" ? "POSIX signal cleanup runs in hosted Linux workflows" : false,
+  },
+  async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-lease-watchdog-"));
+    const origin = path.join(root, "origin.git");
+    const work = path.join(root, "work");
+    run("git", ["init", "--bare", origin], root);
+    run("git", ["clone", origin, work], root);
+    configureUser(work);
+    write(path.join(work, "README.md"), "state\n");
+    run("git", ["add", "."], work);
+    run("git", ["commit", "-m", "initial state"], work);
+    run("git", ["push", "origin", "HEAD:state"], work);
+    run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+
+    const childScript = String.raw`
+      import { spawnSync } from "node:child_process";
+      const { withStatePublishLease } = await import("./dist/repair/git-publish.js");
+      withStatePublishLease(
+        () => {
+          process.stdout.write("lease-held\n");
+          spawnSync(process.execPath, ["-e", "setTimeout(() => {}, 5000)"]);
+        },
+        { branch: "state", acquireTimeoutMs: 5_000, ttlMs: 30_000, waitMs: 10 },
+      );
+    `;
+    const childRun = startAsync("node", ["--input-type=module", "-e", childScript], process.cwd(), {
+      CLAWSWEEPER_PUBLISH_ROOT: work,
+      CLAWSWEEPER_PUBLISH_BRANCH: "state",
+    });
+    const readyDeadline = Date.now() + 5_000;
+    while (!childRun.output().includes("lease-held") && Date.now() < readyDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.match(childRun.output(), /lease-held/);
+    assert.match(
+      run(
+        "git",
+        [
+          "--git-dir",
+          origin,
+          "for-each-ref",
+          "--format=%(refname)",
+          "refs/heads/clawsweeper-publish-lease",
+        ],
+        root,
+      ),
+      /refs\/heads\/clawsweeper-publish-lease\/state/,
+    );
+
+    childRun.child.kill("SIGTERM");
+    await assert.rejects(childRun.result, /Process exited SIGTERM/);
+    const cleanupDeadline = Date.now() + 5_000;
+    let leaseRefs = "";
+    do {
+      leaseRefs = run(
+        "git",
+        [
+          "--git-dir",
+          origin,
+          "for-each-ref",
+          "--format=%(refname)",
+          "refs/heads/clawsweeper-publish-lease",
+        ],
+        root,
+      );
+      if (!leaseRefs) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    } while (Date.now() < cleanupDeadline);
+    assert.equal(leaseRefs, "");
+  },
+);
+
+test("state publish lease recovers an abandoned owner after its bounded TTL", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-lease-stale-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, "README.md"), "state\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial state"], work);
+  run("git", ["push", "origin", "HEAD:state"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+
+  const staleEnv = {
+    ...process.env,
+    GIT_AUTHOR_DATE: "2026-07-20T12:00:00Z",
+    GIT_COMMITTER_DATE: "2026-07-20T12:00:00Z",
+  };
+  const tree = execFileSync("git", ["mktree"], {
+    cwd: work,
+    env: staleEnv,
+    input: "",
+    encoding: "utf8",
+  }).trim();
+  const staleCommit = execFileSync("git", ["commit-tree", tree], {
+    cwd: work,
+    env: staleEnv,
+    input: "ClawSweeper state publish lease\n\nowner: abandoned\nbranch: state\nttl_ms: 30000\n",
+    encoding: "utf8",
+  }).trim();
+  run("git", ["push", "origin", `${staleCommit}:refs/heads/clawsweeper-publish-lease/state`], work);
+
+  let operated = false;
+  const lines = captureConsoleLog(() => {
+    withEnv(
+      {
+        CLAWSWEEPER_PUBLISH_ROOT: work,
+        CLAWSWEEPER_PUBLISH_BRANCH: "state",
+      },
+      () =>
+        withStatePublishLease(
+          () => {
+            operated = true;
+          },
+          { branch: "state", acquireTimeoutMs: 1_000, ttlMs: 30_000, waitMs: 10 },
+        ),
+    );
+  });
+
+  assert.equal(operated, true);
+  assert.equal(
+    lines.some((line) => line.includes("stale_recovery=true")),
+    true,
+  );
+  assert.equal(
+    run(
+      "git",
+      [
+        "--git-dir",
+        origin,
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/heads/clawsweeper-publish-lease",
+      ],
+      root,
+    ),
+    "",
+  );
+});
+
+test("ordinary state publisher yields to a live priority intent until it expires", () => {
+  const { origin, root, work } = createStateLeaseTestRepo("clawsweeper-priority-yield-");
+  const priorityRef = "refs/heads/clawsweeper-publish-priority/state";
+  const priorityOwner = randomUUID();
+  pushStateLeaseMetadata(work, priorityRef, {
+    owner: priorityOwner,
+    expiresAtMs: Date.now() + 10_000,
+    subject: "ClawSweeper state publish priority intent",
+  });
+
+  let operated = false;
+  const lines = captureConsoleLog(() => {
+    withEnv(
+      {
+        CLAWSWEEPER_PUBLISH_ROOT: work,
+        CLAWSWEEPER_PUBLISH_BRANCH: "state",
+      },
+      () =>
+        withStatePublishLease(
+          () => {
+            operated = true;
+          },
+          { branch: "state", acquireTimeoutMs: 60_000, ttlMs: 30_000, waitMs: 10 },
+        ),
+    );
+  });
+
+  assert.equal(operated, true);
+  assert.equal(
+    lines.some((line) =>
+      line.includes(`State publish lease yielding to priority intent owner=${priorityOwner}`),
+    ),
+    true,
+    lines.join("\n"),
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "for-each-ref", "--format=%(refname)", priorityRef], root),
+    "",
+  );
+});
+
+test(
+  "priority state publisher claims the next free lease slot ahead of an ordinary contender",
+  { timeout: 90_000 },
+  async () => {
+    const { origin, root, work: holder } = createStateLeaseTestRepo("clawsweeper-priority-order-");
+    const priority = path.join(root, "priority");
+    const ordinary = path.join(root, "ordinary");
+    run("git", ["clone", origin, priority], root);
+    run("git", ["clone", origin, ordinary], root);
+    configureUser(priority);
+    configureUser(ordinary);
+    const priorityHook = path.join(priority, ".git", "hooks", "pre-push");
+    write(
+      priorityHook,
+      `#!/bin/sh
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if test "$remote_ref" = "refs/heads/clawsweeper-publish-lease/state"; then sleep 1; fi
+done
+`,
+    );
+    fs.chmodSync(priorityHook, 0o755);
+
+    const holderReady = path.join(root, "holder-ready");
+    const releaseHolder = path.join(root, "release-holder");
+    const priorityReady = path.join(root, "priority-ready");
+    const releasePriority = path.join(root, "release-priority");
+    const ordinaryReady = path.join(root, "ordinary-ready");
+    const holdingWriter = String.raw`
+      import fs from "node:fs";
+      const [ready, release] = process.argv.slice(1);
+      const wait = new Int32Array(new SharedArrayBuffer(4));
+      const { withStatePublishLease } = await import("./dist/repair/git-publish.js");
+      withStatePublishLease(
+        () => {
+          fs.writeFileSync(ready, "ready\n");
+          while (!fs.existsSync(release)) Atomics.wait(wait, 0, 0, 10);
+        },
+        { branch: "state", acquireTimeoutMs: 60_000, ttlMs: 120_000, waitMs: 20 },
+      );
+    `;
+    const ordinaryWriter = String.raw`
+      import fs from "node:fs";
+      const [ready] = process.argv.slice(1);
+      const { withStatePublishLease } = await import("./dist/repair/git-publish.js");
+      withStatePublishLease(
+        () => fs.writeFileSync(ready, "ready\n"),
+        { branch: "state", acquireTimeoutMs: 60_000, ttlMs: 120_000, waitMs: 20 },
+      );
+    `;
+    const holderRun = startAsync(
+      "node",
+      ["--input-type=module", "-e", holdingWriter, holderReady, releaseHolder],
+      process.cwd(),
+      { CLAWSWEEPER_PUBLISH_ROOT: holder, CLAWSWEEPER_PUBLISH_BRANCH: "state" },
+    );
+    await waitForFile(holderReady, 30_000, "holder did not acquire the state publish lease");
+
+    const priorityRun = startAsync(
+      "node",
+      ["--input-type=module", "-e", holdingWriter, priorityReady, releasePriority],
+      process.cwd(),
+      {
+        CLAWSWEEPER_PUBLISH_ROOT: priority,
+        CLAWSWEEPER_PUBLISH_BRANCH: "state",
+        CLAWSWEEPER_STATE_LEASE_PRIORITY: "1",
+      },
+    );
+    const priorityRef = "refs/heads/clawsweeper-publish-priority/state";
+    await waitFor(
+      () =>
+        run(
+          "git",
+          ["--git-dir", origin, "for-each-ref", "--format=%(refname)", priorityRef],
+          root,
+        ).trim() === priorityRef,
+      30_000,
+      "priority publisher did not advertise its intent",
+    );
+
+    const ordinaryRun = startAsync(
+      "node",
+      ["--input-type=module", "-e", ordinaryWriter, ordinaryReady],
+      process.cwd(),
+      { CLAWSWEEPER_PUBLISH_ROOT: ordinary, CLAWSWEEPER_PUBLISH_BRANCH: "state" },
+    );
+    await waitFor(
+      () => ordinaryRun.output().includes("State publish lease busy"),
+      30_000,
+      "ordinary publisher did not enter lease contention",
+    );
+    fs.writeFileSync(releaseHolder, "release\n");
+    await waitForFile(priorityReady, 30_000, "priority publisher did not acquire the freed slot");
+    assert.equal(fs.existsSync(ordinaryReady), false);
+    fs.writeFileSync(releasePriority, "release\n");
+
+    const [holderOutput, priorityOutput, ordinaryOutput] = await Promise.all([
+      holderRun.result,
+      priorityRun.result,
+      ordinaryRun.result,
+    ]);
+    assert.match(holderOutput, /Released state publish lease/);
+    assert.match(priorityOutput, /Published state publish priority intent/);
+    assert.match(priorityOutput, /Cleared state publish priority intent/);
+    assert.match(ordinaryOutput, /State publish lease yielding to priority intent owner=/);
+    assert.equal(fs.existsSync(ordinaryReady), true);
+  },
+);
+
+test("state publish priority intent read and write failures fail open", () => {
+  for (const failureMode of ["read", "write"]) {
+    const { root, work } = createStateLeaseTestRepo(`clawsweeper-priority-${failureMode}-`);
+    const wrapperDir = path.join(root, "bin");
+    const wrapper = path.join(wrapperDir, "git");
+    const counter = path.join(root, "lease-push-count");
+    const realGit = run("which", ["git"], process.cwd()).trim();
+    write(
+      wrapper,
+      `#!/bin/sh
+case "$*" in
+  *clawsweeper-publish-priority/state*)
+    if test "${failureMode}" = "read" && { test "$1" = "ls-remote" || test "$1" = "fetch"; }; then exit 1; fi
+    if test "${failureMode}" = "write" && test "$1" = "push"; then exit 1; fi
+    ;;
+  *clawsweeper-publish-lease/state*)
+    if test "${failureMode}" = "write" && test "$1" = "push"; then
+      count=0
+      if test -f "${counter}"; then count=$(cat "${counter}"); fi
+      count=$((count + 1))
+      printf '%s\n' "$count" > "${counter}"
+      if test "$count" -le 2; then exit 1; fi
+    fi
+    ;;
+esac
+exec "${realGit}" "$@"
+`,
+    );
+    fs.chmodSync(wrapper, 0o755);
+
+    let operated = false;
+    const lines = captureConsoleLog(() => {
+      withEnv(
+        {
+          CLAWSWEEPER_PUBLISH_ROOT: work,
+          CLAWSWEEPER_PUBLISH_BRANCH: "state",
+          CLAWSWEEPER_STATE_LEASE_PRIORITY: failureMode === "write" ? "1" : "0",
+          PATH: `${wrapperDir}${path.delimiter}${process.env.PATH}`,
+        },
+        () =>
+          withStatePublishLease(
+            () => {
+              operated = true;
+            },
+            { branch: "state", acquireTimeoutMs: 30_000, ttlMs: 30_000, waitMs: 10 },
+          ),
+      );
+    });
+
+    assert.equal(operated, true, `${failureMode} failure blocked lease acquisition`);
+    assert.equal(
+      lines.some((line) =>
+        line.includes(`State publish priority intent ${failureMode} failed; proceeding`),
+      ),
+      true,
+    );
+  }
+});
+
+test("stale state publish priority intent is ignored and pruned", () => {
+  const { origin, root, work } = createStateLeaseTestRepo("clawsweeper-priority-stale-");
+  const priorityRef = "refs/heads/clawsweeper-publish-priority/state";
+  pushStateLeaseMetadata(work, priorityRef, {
+    owner: randomUUID(),
+    expiresAtMs: Date.now() - 60_000,
+    subject: "ClawSweeper state publish priority intent",
+  });
+
+  let operated = false;
+  const lines = captureConsoleLog(() => {
+    withEnv(
+      {
+        CLAWSWEEPER_PUBLISH_ROOT: work,
+        CLAWSWEEPER_PUBLISH_BRANCH: "state",
+      },
+      () =>
+        withStatePublishLease(
+          () => {
+            operated = true;
+          },
+          { branch: "state", acquireTimeoutMs: 1_000, ttlMs: 30_000, waitMs: 10 },
+        ),
+    );
+  });
+
+  assert.equal(operated, true);
+  assert.equal(
+    lines.some((line) => line.includes("yielding to priority intent")),
+    false,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "for-each-ref", "--format=%(refname)", priorityRef], root),
+    "",
+  );
+});
+
+test("state publish lease renews and fences a push after the original TTL", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-lease-renew-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const candidate = path.join(root, "candidate");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, "README.md"), "state\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial state"], work);
+  run("git", ["push", "origin", "HEAD:state"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  const number = 10_100;
+  const tuple = writeRecordTuple(candidate, {
+    number,
+    marker: "renewed writer",
+    reviewedAt: "2026-07-20T15:00:00.000Z",
+    itemUpdatedAt: "2026-07-20T15:00:00Z",
+  });
+  const recordRoot = "records/openclaw-openclaw";
+  const paths = [
+    `${recordRoot}/items/${number}.md`,
+    `${recordRoot}/closed/${number}.md`,
+    `${recordRoot}/plans/${number}.md`,
+    `${recordRoot}/decision-packets/${number}.json`,
+  ];
+
+  let published = false;
+  const lines = captureConsoleLog(() => {
+    withEnv(
+      {
+        CLAWSWEEPER_PUBLISH_ROOT: work,
+        CLAWSWEEPER_PUBLISH_BRANCH: "state",
+      },
+      () =>
+        withStatePublishLease(
+          () => {
+            hardResetToRemoteMain("origin", "state");
+            fs.cpSync(path.join(candidate, "records"), path.join(work, "records"), {
+              recursive: true,
+            });
+            stagePaths(paths);
+            runGit([
+              "commit",
+              "-m",
+              commitMessageForPublishedPaths("chore: renewed exact tuple", paths),
+            ]);
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_100);
+            published = pushSingleRecordTupleCommit({
+              paths,
+              branch: "state",
+              pushAttempts: 1,
+            });
+          },
+          { branch: "state", acquireTimeoutMs: 5_000, ttlMs: 2_000, waitMs: 10 },
+        ),
+    );
+  });
+
+  assert.equal(published, true);
+  assert.equal(
+    lines.some((line) => line.includes("Renewed state publish lease")),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordRoot}/items/${number}.md`], root),
+    tuple.primary,
+  );
+});
+
+test("state publish lease survives a lost race without resetting the state worktree", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-lease-rebuild-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const candidate = path.join(root, "candidate");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  write(path.join(seed, "README.md"), "state\n");
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial state"], seed);
+  run("git", ["push", "origin", "HEAD:state"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["clone", "--depth", "1", `file://${origin}`, work], root);
+  configureUser(work);
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+
+  const localNumber = 10_101;
+  const remoteNumber = 10_102;
+  const localTuple = writeRecordTuple(candidate, {
+    number: localNumber,
+    marker: "leased local result",
+    reviewedAt: "2026-07-20T16:00:00.000Z",
+    itemUpdatedAt: "2026-07-20T15:59:00Z",
+  });
+  const remoteTuple = writeRecordTuple(other, {
+    number: remoteNumber,
+    marker: "unleased concurrent state writer",
+    reviewedAt: "2026-07-20T16:01:00.000Z",
+    itemUpdatedAt: "2026-07-20T16:00:00Z",
+  });
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "concurrent state update"], other);
+  const recordRoot = "records/openclaw-openclaw";
+  const paths = [
+    `${recordRoot}/items/${localNumber}.md`,
+    `${recordRoot}/closed/${localNumber}.md`,
+    `${recordRoot}/plans/${localNumber}.md`,
+    `${recordRoot}/decision-packets/${localNumber}.json`,
+  ];
+
+  let published = false;
+  let advertisedLease = "";
+  const lines = captureConsoleLog(() => {
+    withEnv(
+      {
+        CLAWSWEEPER_PUBLISH_ROOT: work,
+        CLAWSWEEPER_PUBLISH_BRANCH: "state",
+      },
+      () =>
+        withStatePublishLease(
+          () => {
+            advertisedLease = run(
+              "git",
+              [
+                "--git-dir",
+                origin,
+                "show",
+                "-s",
+                "--format=%B",
+                "refs/heads/clawsweeper-publish-lease/state",
+              ],
+              root,
+            );
+            hardResetToRemoteMain("origin", "state");
+            fs.cpSync(path.join(candidate, "records"), path.join(work, "records"), {
+              recursive: true,
+            });
+            stagePaths(paths);
+            runGit([
+              "commit",
+              "-m",
+              commitMessageForPublishedPaths("chore: publish leased tuple", paths),
+            ]);
+            run("git", ["push", "origin", "HEAD:state"], other);
+            published = pushSingleRecordTupleCommit({
+              paths,
+              branch: "state",
+              pushAttempts: 2,
+            });
+          },
+          { branch: "state", acquireTimeoutMs: 5_000, waitMs: 10 },
+        ),
+    );
+  });
+
+  assert.equal(published, true);
+  assert.match(advertisedLease, /ttl_ms: 120000/);
+  assert.equal(
+    lines.some(
+      (line) =>
+        line.includes("Renewed state publish lease") && line.includes("before state race recovery"),
+    ),
+    true,
+  );
+  assert.equal(
+    lines.some((line) => line === "Rebuilt reconciliation as a bounded record-tuple tree patch"),
+    true,
+  );
+  const recoveryStart = lines.findIndex((line) =>
+    line.includes("Push attempt 1 lost the state race"),
+  );
+  assert.notEqual(recoveryStart, -1);
+  assert.equal(
+    lines.slice(recoveryStart).some((line) => line.startsWith("$ git reset")),
+    false,
+  );
+  assert.equal(
+    lines.slice(recoveryStart).some((line) => line.startsWith("$ git read-tree")),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordRoot}/items/${localNumber}.md`], root),
+    localTuple.primary,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordRoot}/items/${remoteNumber}.md`], root),
+    remoteTuple.primary,
+  );
+  assert.equal(fs.readFileSync(path.join(work, paths[0]), "utf8"), localTuple.primary);
+  assert.equal(
+    fs.readFileSync(path.join(work, `${recordRoot}/items/${remoteNumber}.md`), "utf8"),
+    remoteTuple.primary,
+  );
+});
+
+test("checkpoint publish rebuilds on the remote head when histories are unrelated", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-checkpoint-unrelated-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const recordsRoot = "records/openclaw-openclaw";
+  const numbers = Array.from({ length: 129 }, (_, index) => 120_000 + index);
+  const overlapNumber = numbers[0];
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  for (const number of numbers) {
+    writeRecordTuple(work, {
+      number,
+      marker: `base ${number}`,
+      reviewedAt: "2026-07-20T06:00:00.000Z",
+      itemUpdatedAt: "2026-07-20T05:59:00Z",
+      packet: false,
+      plan: false,
+    });
+  }
+  write(path.join(work, "old-history-only.txt"), "must not be resurrected\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial state"], work);
+  run("git", ["push", "origin", "HEAD:state"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  run("git", ["checkout", "-B", "state", "origin/state"], work);
+  for (const number of numbers) {
+    writeRecordTuple(work, {
+      number,
+      marker: `closed ${number}`,
+      reviewedAt: "2026-07-20T06:02:00.000Z",
+      itemUpdatedAt: "2026-07-20T06:01:00Z",
+      location: "closed",
+      packet: false,
+      plan: false,
+    });
+  }
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  run("git", ["checkout", "--orphan", "replacement"], other);
+  run("git", ["read-tree", "--empty"], other);
+  fs.rmSync(path.join(other, "records"), { force: true, recursive: true });
+  fs.rmSync(path.join(other, "old-history-only.txt"));
+  let remoteOverlapTuple;
+  for (const number of numbers) {
+    const tuple = writeRecordTuple(other, {
+      number,
+      marker: number === overlapNumber ? `newer remote ${number}` : `base ${number}`,
+      reviewedAt:
+        number === overlapNumber ? "2026-07-20T06:04:00.000Z" : "2026-07-20T06:00:00.000Z",
+      itemUpdatedAt: number === overlapNumber ? "2026-07-20T06:03:00Z" : "2026-07-20T05:59:00Z",
+      packet: false,
+      plan: false,
+    });
+    if (number === overlapNumber) remoteOverlapTuple = tuple;
+  }
+  const remoteTuple = writeRecordTuple(other, {
+    number: 130_000,
+    marker: "replacement-history remote tuple",
+    reviewedAt: "2026-07-20T06:03:00.000Z",
+    itemUpdatedAt: "2026-07-20T06:02:00Z",
+    packet: false,
+    plan: false,
+  });
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "replacement state history"], other);
+  run("git", ["push", "--force", "origin", "HEAD:state"], other);
+
+  const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: publish checkpoint records",
+        paths: [recordsRoot],
+        branch: "state",
+        maxAttempts: 1,
+        pushAttempts: 2,
+        rebaseStrategy: "reconcile-records",
+      }),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  assert.equal(
+    lines.some(
+      (line) =>
+        line ===
+        "No common Git base with origin/state; rebuilding reconciliation on the remote head",
+    ),
+    true,
+  );
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", origin, "show", `state:${recordsRoot}/closed/${numbers[1]}.md`],
+      root,
+    ).includes(`# closed ${numbers[1]}`),
+    true,
+  );
+  assert.equal(
+    run(
+      "git",
+      ["--git-dir", origin, "show", `state:${recordsRoot}/items/${overlapNumber}.md`],
+      root,
+    ),
+    remoteOverlapTuple.primary,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/130000.md`], root),
+    remoteTuple.primary,
+  );
+  assert.throws(() =>
+    run("git", ["--git-dir", origin, "show", "state:old-history-only.txt"], root),
+  );
+});
+
+test("reconcile-records keeps non-1 merge-base failures fatal", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-merge-base-error-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const fakeBin = path.join(root, "bin");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  writeRecordTuple(work, {
+    number: 42,
+    marker: "local base",
+    reviewedAt: "2026-07-20T06:00:00.000Z",
+    itemUpdatedAt: "2026-07-20T05:59:00Z",
+    packet: false,
+    plan: false,
+  });
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial state"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  writeRecordTuple(work, {
+    number: 42,
+    marker: "local close",
+    reviewedAt: "2026-07-20T06:02:00.000Z",
+    itemUpdatedAt: "2026-07-20T06:01:00Z",
+    location: "closed",
+    packet: false,
+    plan: false,
+  });
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  run("git", ["checkout", "--orphan", "replacement"], other);
+  run("git", ["read-tree", "--empty"], other);
+  fs.rmSync(path.join(other, "records"), { force: true, recursive: true });
+  const remoteTuple = writeRecordTuple(other, {
+    number: 43,
+    marker: "replacement remote tuple",
+    reviewedAt: "2026-07-20T06:03:00.000Z",
+    itemUpdatedAt: "2026-07-20T06:02:00Z",
+    packet: false,
+    plan: false,
+  });
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "replacement state history"], other);
+  run("git", ["push", "--force", "origin", "HEAD:main"], other);
+  installSecondMergeBaseFailureShim(fakeBin, work);
+
+  const lines = [];
   assert.throws(
     () =>
       captureConsoleLog(
         () =>
-          withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+          withEnv({ PATH: `${fakeBin}:${process.env.PATH}` }, () =>
             withCwd(work, () =>
               publishMainCommit({
-                message: "chore: reject unrelated state",
+                message: "chore: reject broken merge-base",
                 paths: [recordsRoot],
                 maxAttempts: 1,
-                pushAttempts: 1,
+                pushAttempts: 2,
                 rebaseStrategy: "reconcile-records",
               }),
             ),
           ),
         lines,
       ),
-    /git command <redacted-args> exited 1/,
+    /fatal: synthetic merge-base failure/,
   );
   assert.equal(
-    lines.some((line) => line.includes("Git publish failure: phase=prepare")),
+    lines.some((line) => line.includes("Git publish failure: phase=push")),
     true,
   );
   assert.equal(
-    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/42.md`], root),
-    baseTuple.primary,
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/items/43.md`], root),
+    remoteTuple.primary,
+  );
+});
+
+test("reconcile-records keeps shallow hydration failures fatal", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-shallow-hydration-error-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const work = path.join(root, "work");
+  const fakeBin = path.join(root, "bin");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  writeRecordTuple(seed, {
+    number: 42,
+    marker: "local base",
+    reviewedAt: "2026-07-20T06:00:00.000Z",
+    itemUpdatedAt: "2026-07-20T05:59:00Z",
+    packet: false,
+    plan: false,
+  });
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial state"], seed);
+  run("git", ["push", "origin", "HEAD:main"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["clone", "--depth", "1", `file://${origin}`, work], root);
+  configureUser(work);
+  writeRecordTuple(work, {
+    number: 42,
+    marker: "local close",
+    reviewedAt: "2026-07-20T06:02:00.000Z",
+    itemUpdatedAt: "2026-07-20T06:01:00Z",
+    location: "closed",
+    packet: false,
+    plan: false,
+  });
+
+  run("git", ["checkout", "--orphan", "replacement"], seed);
+  run("git", ["read-tree", "--empty"], seed);
+  fs.rmSync(path.join(seed, "records"), { force: true, recursive: true });
+  const remoteTuple = writeRecordTuple(seed, {
+    number: 43,
+    marker: "replacement remote tuple",
+    reviewedAt: "2026-07-20T06:03:00.000Z",
+    itemUpdatedAt: "2026-07-20T06:02:00Z",
+    packet: false,
+    plan: false,
+  });
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "replacement state history"], seed);
+  run("git", ["push", "--force", "origin", "HEAD:main"], seed);
+  installDeepenFetchFailureShim(fakeBin);
+
+  const lines = [];
+  assert.throws(
+    () =>
+      captureConsoleLog(
+        () =>
+          withEnv({ PATH: `${fakeBin}:${process.env.PATH}` }, () =>
+            withCwd(work, () =>
+              publishMainCommit({
+                message: "chore: reject failed shallow hydration",
+                paths: [recordsRoot],
+                maxAttempts: 1,
+                pushAttempts: 2,
+                rebaseStrategy: "reconcile-records",
+              }),
+            ),
+          ),
+        lines,
+      ),
+    /fatal: synthetic deepen failure/,
+  );
+  assert.equal(
+    lines.some((line) => line.includes("Git publish failure: phase=push")),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/items/43.md`], root),
+    remoteTuple.primary,
   );
 });
 
@@ -1648,1110 +3181,539 @@ test("publishMainCommit rebuilds generated state commits without deleting concur
   assert.equal(run("git", ["--git-dir", origin, "show", "main:keep.txt"], root), "keep remote\n");
 });
 
-test("state publisher uses a detached empty-tree lease commit", async () => {
-  const fixture = createStatePublishRemote("detached-lease");
-  const state = path.join(fixture.root, "state");
-  const source = path.join(fixture.root, "source");
-  const releaseSignal = path.join(fixture.root, "release-publisher");
-  const releaseObserved = path.join(fixture.root, "publisher-released");
-  cloneState(fixture.origin, state);
-  fs.mkdirSync(source);
-  write(path.join(source, "results/detached-lease.txt"), "published\n");
-  installStatePushReleaseHook(state, releaseSignal, releaseObserved);
-
-  const child = startPublishCli(
-    source,
-    state,
-    "chore: publish through detached lease",
-    leasedPublishEnv({
-      CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "5000",
-      CLAWSWEEPER_PUBLISH_DEADLINE_MS: "2000",
-      CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
-      CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "3000",
-      CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
-    }),
+test("publishMainCommit rebuilds immutable ledger batches within the router process budget", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const ledgerPaths = Array.from(
+    { length: 257 },
+    (_, index) => `ledger/v1/import-bindings/events/${index.toString(16).padStart(64, "0")}.json`,
   );
-  const childResult = waitForChild(child);
-  let inspectionError;
-  try {
-    await waitForRemoteRef(fixture.origin, STATE_PUBLISH_LEASE_REF);
-    const commitAndParents = run(
-      "git",
-      ["--git-dir", fixture.origin, "rev-list", "--parents", "-n", "1", STATE_PUBLISH_LEASE_REF],
-      fixture.root,
-    )
-      .trim()
-      .split(/\s+/);
-    assert.equal(commitAndParents.length, 1);
-    assert.equal(
-      run(
-        "git",
-        ["--git-dir", fixture.origin, "ls-tree", "-r", STATE_PUBLISH_LEASE_REF],
-        fixture.root,
-      ),
-      "",
-    );
-  } catch (error) {
-    inspectionError = error;
-  } finally {
-    write(releaseSignal, "release\n");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, "keep.txt"), "base\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  write(path.join(other, "remote.txt"), "concurrent\n");
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "concurrent state update"], other);
+  for (const ledgerPath of ledgerPaths) {
+    write(path.join(work, ledgerPath), `{"path":"${ledgerPath}"}\n`);
   }
+  installFirstTwoPushRaceHook(work, other);
 
-  const completed = await childResult;
-  if (inspectionError) throw inspectionError;
-  assert.equal(completed.status, 0, completed.stderr);
-  assert.equal(fs.existsSync(releaseObserved), true);
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-});
-
-test("state publishers serialize concurrent workflow commits through the remote lease", async () => {
-  const fixture = createStatePublishRemote("concurrent");
-  const firstState = path.join(fixture.root, "state-first");
-  const secondState = path.join(fixture.root, "state-second");
-  const firstSource = path.join(fixture.root, "source-first");
-  const secondSource = path.join(fixture.root, "source-second");
-  cloneState(fixture.origin, firstState);
-  cloneState(fixture.origin, secondState);
-  fs.mkdirSync(firstSource);
-  fs.mkdirSync(secondSource);
-  write(path.join(firstSource, "results/first.txt"), "first\n");
-  write(path.join(secondSource, "results/second.txt"), "second\n");
-  installStatePushSleepHook(firstState, 0.3);
-
-  const env = leasedPublishEnv({
-    CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "5000",
-    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "2000",
-    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
-    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "3000",
-    CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "80",
-    CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
-  });
-  const startedAt = Date.now();
-  const first = startPublishCli(firstSource, firstState, "chore: publish first", env);
-  const firstResult = waitForChild(first);
-  await waitForRemoteRef(fixture.origin, STATE_PUBLISH_LEASE_REF);
-  const second = startPublishCli(secondSource, secondState, "chore: publish second", env);
-  const [firstCompleted, secondCompleted] = await Promise.all([firstResult, waitForChild(second)]);
-  const elapsedMs = Date.now() - startedAt;
-
-  assert.equal(firstCompleted.status, 0, firstCompleted.stderr);
-  assert.equal(secondCompleted.status, 0, secondCompleted.stderr);
-  assert.ok(
-    elapsedMs >= 250 && elapsedMs < 3000,
-    `leased concurrent publish completed in ${elapsedMs}ms`,
-  );
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", "state:results/first.txt"], fixture.root),
-    "first\n",
-  );
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", "state:results/second.txt"], fixture.root),
-    "second\n",
-  );
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-  for (const output of [firstCompleted.stdout, secondCompleted.stdout]) {
-    const metrics = /Git publish metrics:[^\n]+/.exec(output)?.[0] ?? "";
-    const processCount = Number(/processes=(\d+)/.exec(metrics)?.[1]);
-    assert.ok(
-      Number.isInteger(processCount) && processCount <= 40,
-      `leased concurrent publish used ${processCount} git subprocesses`,
-    );
-    const remoteProbeCount = Number(/\bls-remote:(\d+)/.exec(metrics)?.[1]);
-    assert.ok(
-      Number.isInteger(remoteProbeCount) && remoteProbeCount <= 8,
-      `leased concurrent publish used ${remoteProbeCount} remote lease probes`,
-    );
-  }
-});
-
-test("lease backoff outlives the former fixed retry window", async () => {
-  const fixture = createStatePublishRemote("backoff-window");
-  const firstState = path.join(fixture.root, "state-first");
-  const secondState = path.join(fixture.root, "state-second");
-  const firstSource = path.join(fixture.root, "source-first");
-  const secondSource = path.join(fixture.root, "source-second");
-  const releaseSignal = path.join(fixture.root, "release-first-publisher");
-  const releaseObserved = path.join(fixture.root, "first-publisher-released");
-  cloneState(fixture.origin, firstState);
-  cloneState(fixture.origin, secondState);
-  fs.mkdirSync(firstSource);
-  fs.mkdirSync(secondSource);
-  write(path.join(firstSource, "results/first.txt"), "first\n");
-  write(path.join(secondSource, "results/second.txt"), "second\n");
-  installStatePushReleaseHook(firstState, releaseSignal, releaseObserved);
-
-  const waitMs = 100;
-  const formerRetryWindowMs = waitMs * 4;
-  const releaseDelayMs = formerRetryWindowMs + 150;
-  const env = leasedPublishEnv({
-    CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "3000",
-    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "1000",
-    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "500",
-    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "2000",
-    CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "5",
-    CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: String(waitMs),
-  });
-  const first = startPublishCli(firstSource, firstState, "chore: publish first", env);
-  const firstResult = waitForChild(first);
-  await waitForRemoteRef(fixture.origin, STATE_PUBLISH_LEASE_REF);
-  const startedAt = Date.now();
-  const second = startPublishCli(secondSource, secondState, "chore: publish second", env);
-  const secondResult = waitForChild(second);
-  const observationError = await waitForChildOutput(second, "State publish lease busy owner=").then(
-    () => null,
-    (error) => error,
-  );
-  let survivalError = null;
-  if (!observationError) {
-    await delay(releaseDelayMs);
-    try {
-      assert.equal(second.exitCode, null, "publisher exhausted the former fixed retry window");
-    } catch (error) {
-      survivalError = error;
-    }
-  }
-  write(releaseSignal, "release\n");
-  let removalError = null;
-  if (!observationError) {
-    try {
-      await waitForRemoteRefRemoval(fixture.origin, STATE_PUBLISH_LEASE_REF);
-    } catch (error) {
-      removalError = error;
-    }
-  }
-  const [firstCompleted, secondCompleted] = await Promise.all([firstResult, secondResult]);
-  const elapsedMs = Date.now() - startedAt;
-  if (observationError) throw observationError;
-  if (survivalError) throw survivalError;
-  if (removalError) throw removalError;
-
-  assert.equal(firstCompleted.status, 0, firstCompleted.stderr);
-  assert.equal(secondCompleted.status, 0, secondCompleted.stderr);
-  assert.match(secondCompleted.stdout, /State publish lease busy/);
-  assert.match(secondCompleted.stdout, /Acquired state publish lease/);
-  assert.equal(fs.existsSync(releaseObserved), true);
-  assert.ok(
-    elapsedMs >= releaseDelayMs && elapsedMs < 2500,
-    `scaled lease backoff completed in ${elapsedMs}ms`,
-  );
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", "state:results/first.txt"], fixture.root),
-    "first\n",
-  );
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", "state:results/second.txt"], fixture.root),
-    "second\n",
-  );
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-  const metrics = /Git publish metrics:[^\n]+/.exec(secondCompleted.stdout)?.[0] ?? "";
-  const processCount = Number(/processes=(\d+)/.exec(metrics)?.[1]);
-  assert.ok(
-    Number.isInteger(processCount) && processCount <= 40,
-    `scaled lease backoff used ${processCount} git subprocesses`,
-  );
-  const remoteProbeCount = Number(/\bls-remote:(\d+)/.exec(metrics)?.[1]);
-  assert.ok(
-    Number.isInteger(remoteProbeCount) && remoteProbeCount <= 6,
-    `scaled lease backoff used ${remoteProbeCount} remote lease probes`,
-  );
-});
-
-test("state publisher atomically recovers an expired remote lease", () => {
-  const fixture = createStatePublishRemote("stale");
-  const state = path.join(fixture.root, "state");
-  const source = path.join(fixture.root, "source");
-  cloneState(fixture.origin, state);
-  fs.mkdirSync(source);
-  write(path.join(source, "results/stale-recovery.txt"), "recovered\n");
-  createRemoteLease(state, {
-    owner: "00000000-0000-4000-8000-000000000001",
-    issuedAt: "2025-12-31T23:59:59.000Z",
-    expiresAt: "2026-01-01T00:00:00.000Z",
-    ttlMs: 1000,
-  });
-
-  const lines = captureConsoleLog(() =>
-    withEnv(
-      leasedPublishEnv({
-        CLAWSWEEPER_STATE_DIR: state,
-        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
-        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
-        CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
-      }),
-      () =>
-        withCwd(source, () =>
-          publishMainCommit({
-            message: "chore: recover stale lease",
-            paths: ["results/stale-recovery.txt"],
-          }),
-        ),
-    ),
-  );
-
-  assert.equal(
-    run(
-      "git",
-      ["--git-dir", fixture.origin, "show", "state:results/stale-recovery.txt"],
-      fixture.root,
-    ),
-    "recovered\n",
-  );
-  assert.equal(
-    lines.some((line) => line.includes("stale_recovery=true")),
-    true,
-  );
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-});
-
-test("state publisher caps far-future remote lease expiry to the owner protocol TTL", () => {
-  const fixture = createStatePublishRemote("far-future");
-  const state = path.join(fixture.root, "state");
-  const source = path.join(fixture.root, "source");
-  cloneState(fixture.origin, state);
-  fs.mkdirSync(source);
-  write(path.join(source, "results/far-future-recovery.txt"), "recovered\n");
-  const issuedAtMs = Date.now();
-  const ownerTtlMs = 800;
-  createRemoteLease(state, {
-    owner: "00000000-0000-4000-8000-000000000002",
-    issuedAt: new Date(issuedAtMs).toISOString(),
-    expiresAt: "9999-12-31T23:59:59.999Z",
-    ttlMs: ownerTtlMs,
-  });
-
+  const lines = [];
   let result;
-  const startedAtMs = Date.now();
-  const lines = captureConsoleLog(() => {
-    result = withEnv(
-      leasedPublishEnv({
-        CLAWSWEEPER_STATE_DIR: state,
-        CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "2000",
-        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "600",
-        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "250",
-        CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: String(ownerTtlMs),
-        CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "10",
-        CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
-      }),
-      () =>
-        withCwd(source, () =>
-          publishMainCommit({
-            message: "chore: recover far-future lease",
-            paths: ["results/far-future-recovery.txt"],
-          }),
-        ),
-    );
-  });
-  const elapsedMs = Date.now() - startedAtMs;
-  assert.equal(result, "committed");
-  assert.ok(
-    elapsedMs >= ownerTtlMs / 2 && elapsedMs < 2000,
-    `far-future lease recovered in ${elapsedMs}ms`,
-  );
-  assert.equal(
-    lines.some((line) => line.includes("State publish lease busy")),
-    true,
-  );
-  assert.equal(
-    lines.some((line) => line.includes("stale_recovery=true")),
-    true,
-  );
-  assert.equal(
-    run(
-      "git",
-      ["--git-dir", fixture.origin, "show", "state:results/far-future-recovery.txt"],
-      fixture.root,
-    ),
-    "recovered\n",
-  );
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-});
-
-test("shorter-TTL contender cannot replace a live longer-TTL owner", () => {
-  const fixture = createStatePublishRemote("mixed-ttl");
-  const state = path.join(fixture.root, "state");
-  const source = path.join(fixture.root, "source");
-  cloneState(fixture.origin, state);
-  fs.mkdirSync(source);
-  write(path.join(source, "results/mixed-ttl.txt"), "must not publish\n");
-  const issuedAtMs = Date.now();
-  const ownerTtlMs = 1500;
-  const ownerExpiresAtMs = issuedAtMs + ownerTtlMs;
-  const ownerLeaseOid = createRemoteLease(state, {
-    owner: "00000000-0000-4000-8000-000000000004",
-    issuedAt: new Date(issuedAtMs).toISOString(),
-    expiresAt: new Date(ownerExpiresAtMs).toISOString(),
-    ttlMs: ownerTtlMs,
-  });
-  const lines = [];
-  const startedAtMs = Date.now();
-
-  assert.throws(
-    () =>
-      captureConsoleLog(
-        () =>
-          withEnv(
-            leasedPublishEnv({
-              CLAWSWEEPER_STATE_DIR: state,
-              CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "500",
-              CLAWSWEEPER_PUBLISH_DEADLINE_MS: "100",
-              CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "100",
-              CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "200",
-              CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "100",
-              CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
-            }),
-            () =>
-              withCwd(source, () =>
-                publishMainCommit({
-                  message: "chore: reject mixed TTL lease theft",
-                  paths: ["results/mixed-ttl.txt"],
-                }),
-              ),
-          ),
-        lines,
-      ),
-    /deadline exceeded|timed out/,
-  );
-  const elapsedMs = Date.now() - startedAtMs;
-
-  assert.ok(elapsedMs >= 400 && elapsedMs < 1200, `mixed-TTL wait completed in ${elapsedMs}ms`);
-  assert.ok(Date.now() < ownerExpiresAtMs, "owner lease must still be live");
-  assert.match(lines.join("\n"), /State publish lease busy/);
-  assert.equal(
-    run(
-      "git",
-      ["--git-dir", fixture.origin, "rev-parse", STATE_PUBLISH_LEASE_REF],
-      fixture.root,
-    ).trim(),
-    ownerLeaseOid,
-  );
-  assert.throws(() =>
-    run("git", ["--git-dir", fixture.origin, "show", "state:results/mixed-ttl.txt"], fixture.root),
-  );
-});
-
-test("state publisher retries when the observed lease disappears before fetch", () => {
-  const fixture = createStatePublishRemote("vanished-lease");
-  const state = path.join(fixture.root, "state");
-  const source = path.join(fixture.root, "source");
-  cloneState(fixture.origin, state);
-  fs.mkdirSync(source);
-  write(path.join(source, "results/vanished-lease.txt"), "published\n");
-  createRemoteLease(state, {
-    owner: "00000000-0000-4000-8000-000000000003",
-    issuedAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    ttlMs: 60_000,
-  });
-  const wrapper = installVanishingLeaseGitWrapper(fixture.root);
-
-  const result = withEnv(
-    leasedPublishEnv({
-      CLAWSWEEPER_STATE_DIR: state,
-      PATH: `${wrapper.bin}:${process.env.PATH ?? ""}`,
-      REAL_GIT: wrapper.realGit,
-      VANISHING_LEASE_MARKER: wrapper.marker,
-      VANISHING_LEASE_ORIGIN: fixture.origin,
-    }),
-    () =>
-      withCwd(source, () =>
-        publishMainCommit({
-          message: "chore: publish after lease release",
-          paths: ["results/vanished-lease.txt"],
-        }),
-      ),
-  );
-
-  assert.equal(result, "committed");
-  assert.equal(fs.existsSync(wrapper.marker), true);
-  assert.equal(
-    run(
-      "git",
-      ["--git-dir", fixture.origin, "show", "state:results/vanished-lease.txt"],
-      fixture.root,
-    ),
-    "published\n",
-  );
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-});
-
-test("crashed publisher leaves an expiring lease that a later workflow recovers", async () => {
-  const fixture = createStatePublishRemote("crash");
-  const crashedState = path.join(fixture.root, "state-crashed");
-  const recoveredState = path.join(fixture.root, "state-recovered");
-  const crashedSource = path.join(fixture.root, "source-crashed");
-  const recoveredSource = path.join(fixture.root, "source-recovered");
-  cloneState(fixture.origin, crashedState);
-  cloneState(fixture.origin, recoveredState);
-  fs.mkdirSync(crashedSource);
-  fs.mkdirSync(recoveredSource);
-  write(path.join(crashedSource, "results/crashed.txt"), "must not publish\n");
-  write(path.join(recoveredSource, "results/recovered.txt"), "recovered\n");
-  installStatePushSleepHook(crashedState, 30);
-  const ttlMs = 800;
-  const env = leasedPublishEnv({
-    CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "2000",
-    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "500",
-    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "250",
-    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: String(ttlMs),
-    CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "12",
-    CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
-  });
-
-  const crashed = startPublishCli(
-    crashedSource,
-    crashedState,
-    "chore: crash while publishing",
-    env,
-  );
-  const crashedResult = waitForChild(crashed);
-  await waitForRemoteRef(fixture.origin, STATE_PUBLISH_LEASE_REF);
-  const remoteLeaseMessage = readRemoteLeaseMessage(fixture.origin);
-  assert.match(
-    remoteLeaseMessage,
-    new RegExp(`^lease_protocol: ${STATE_PUBLISH_TIMING_DEFAULTS.leaseProtocolVersion}$`, "m"),
-  );
-  assert.match(remoteLeaseMessage, /^issued_at: .+$/m);
-  assert.match(remoteLeaseMessage, new RegExp(`^ttl_ms: ${ttlMs}$`, "m"));
-  const expiresAtMs = remoteLeaseExpiryMs(fixture.origin);
-  process.kill(-crashed.pid, "SIGKILL");
-  const crashedCompleted = await crashedResult;
-  assert.equal(crashedCompleted.signal, "SIGKILL");
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), true);
-
-  const recoveryStartedAtMs = Date.now();
-  assert.ok(
-    recoveryStartedAtMs < expiresAtMs,
-    "recovery must start while the crashed lease is live",
-  );
-  const recovered = await waitForChild(
-    startPublishCli(recoveredSource, recoveredState, "chore: recover crashed publisher", env),
-  );
-  const recoveryCompletedAtMs = Date.now();
-  assert.equal(recovered.status, 0, recovered.stderr);
-  assert.ok(
-    recoveryCompletedAtMs >= expiresAtMs,
-    "recovery must wait until the crashed lease expires",
-  );
-  assert.ok(
-    recoveryCompletedAtMs - recoveryStartedAtMs < 2500,
-    `crashed lease recovered in ${recoveryCompletedAtMs - recoveryStartedAtMs}ms`,
-  );
-  assert.match(recovered.stdout, /State publish lease busy/);
-  assert.match(recovered.stdout, /stale_recovery=true/);
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", "state:results/recovered.txt"], fixture.root),
-    "recovered\n",
-  );
-  assert.throws(() =>
-    run("git", ["--git-dir", fixture.origin, "show", "state:results/crashed.txt"], fixture.root),
-  );
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-});
-
-test("lease contention deadline bounds the waiting git process budget", () => {
-  const fixture = createStatePublishRemote("deadline");
-  const state = path.join(fixture.root, "state");
-  const source = path.join(fixture.root, "source");
-  cloneState(fixture.origin, state);
-  fs.mkdirSync(source);
-  write(path.join(source, "results/deadline.txt"), "deadline\n");
-  createRemoteLease(state, {
-    owner: "00000000-0000-4000-8000-000000000002",
-    issuedAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    ttlMs: 60_000,
-  });
-  const lines = [];
-  const startedAt = Date.now();
-
-  assert.throws(
-    () =>
-      captureConsoleLog(
-        () =>
-          withEnv(
-            leasedPublishEnv({
-              CLAWSWEEPER_STATE_DIR: state,
-              CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "100",
-              CLAWSWEEPER_PUBLISH_DEADLINE_MS: "100",
-              CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
-              CLAWSWEEPER_PUBLISH_LEASE_ATTEMPTS: "100",
-              CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "20",
-            }),
-            () =>
-              withCwd(source, () =>
-                publishMainCommit({
-                  message: "chore: hit lease deadline",
-                  paths: ["results/deadline.txt"],
-                }),
-              ),
-          ),
-        lines,
-      ),
-    /deadline exceeded|timed out/,
-  );
-  const elapsedMs = Date.now() - startedAt;
-  assert.ok(elapsedMs >= 80 && elapsedMs < 1000, `lease deadline completed in ${elapsedMs}ms`);
-  const metrics = lines.find((line) => line.startsWith("Git publish metrics:"));
-  const processCount = Number(/processes=(\d+)/.exec(metrics)?.[1]);
-  assert.ok(
-    Number.isInteger(processCount) && processCount <= 12,
-    `deadline path used ${processCount} git subprocesses`,
-  );
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), true);
-});
-
-test("state publisher bounds repeated unaccepted lease push timeouts", () => {
-  const fixture = createStatePublishRemote("command-timeout");
-  const state = path.join(fixture.root, "state");
-  const source = path.join(fixture.root, "source");
-  cloneState(fixture.origin, state);
-  fs.mkdirSync(source);
-  write(path.join(source, "results/timeout.txt"), "timeout\n");
-  installLeasePushSleepHook(state, 1);
-  const startedAt = Date.now();
-
-  assert.throws(
-    () =>
-      withEnv(
-        leasedPublishEnv({
-          CLAWSWEEPER_STATE_DIR: state,
-          CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "300",
-          CLAWSWEEPER_PUBLISH_DEADLINE_MS: "300",
-          CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "50",
-          CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
-        }),
-        () =>
-          withCwd(source, () =>
-            publishMainCommit({
-              message: "chore: hit command timeout",
-              paths: ["results/timeout.txt"],
-            }),
-          ),
-      ),
-    /deadline exceeded|timed out after \d+ms/,
-  );
-  assert.ok(Date.now() - startedAt < 1000);
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-});
-
-test("state publisher recovers an accepted lease acquisition after client timeout", () => {
-  const fixture = createStatePublishRemote("accepted-lease-timeout");
-  const state = path.join(fixture.root, "state");
-  const source = path.join(fixture.root, "source");
-  cloneState(fixture.origin, state);
-  fs.mkdirSync(source);
-  write(path.join(source, "results/accepted-lease-timeout.txt"), "accepted\n");
-  const hookMarker = installAcceptedLeasePushTimeoutHook(fixture.origin, 3);
-
-  const lines = captureConsoleLog(() =>
-    withEnv(
-      leasedPublishEnv({
-        CLAWSWEEPER_STATE_DIR: state,
-        CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "5000",
-        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
-        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1200",
-      }),
-      () =>
-        withCwd(source, () =>
-          publishMainCommit({
-            message: "chore: recover accepted lease timeout",
-            paths: ["results/accepted-lease-timeout.txt"],
-          }),
-        ),
-    ),
-  );
-
-  assert.equal(fs.existsSync(hookMarker), true);
-  assert.equal(
-    lines.some((line) => line.includes("lease push timed out") && line.includes("verifying")),
-    true,
-  );
-  assert.equal(
-    lines.some(
-      (line) =>
-        line.includes("Acquired state publish lease") && line.includes("timeout_recovered=true"),
-    ),
-    true,
-  );
-  assert.equal(
-    run(
-      "git",
-      ["--git-dir", fixture.origin, "show", "state:results/accepted-lease-timeout.txt"],
-      fixture.root,
-    ),
-    "accepted\n",
-  );
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-});
-
-test("state publisher retries a lease acquisition timeout not accepted remotely", () => {
-  const fixture = createStatePublishRemote("unaccepted-lease-timeout");
-  const state = path.join(fixture.root, "state");
-  const source = path.join(fixture.root, "source");
-  cloneState(fixture.origin, state);
-  fs.mkdirSync(source);
-  write(path.join(source, "results/unaccepted-lease-timeout.txt"), "retried\n");
-  const hookMarker = installUnacceptedLeasePushTimeoutHook(state, 3);
-
-  const lines = captureConsoleLog(() =>
-    withEnv(
-      leasedPublishEnv({
-        CLAWSWEEPER_STATE_DIR: state,
-        CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "5000",
-        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
-        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1200",
-        CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
-      }),
-      () =>
-        withCwd(source, () =>
-          publishMainCommit({
-            message: "chore: retry unaccepted lease timeout",
-            paths: ["results/unaccepted-lease-timeout.txt"],
-          }),
-        ),
-    ),
-  );
-
-  assert.equal(fs.existsSync(hookMarker), true);
-  assert.equal(
-    lines.some((line) => line.includes("lease push timeout was not accepted")),
-    true,
-  );
-  assert.equal(
-    lines.some(
-      (line) =>
-        line.includes("Acquired state publish lease") && line.includes("timeout_recovered=false"),
-    ),
-    true,
-  );
-  assert.equal(
-    run(
-      "git",
-      ["--git-dir", fixture.origin, "show", "state:results/unaccepted-lease-timeout.txt"],
-      fixture.root,
-    ),
-    "retried\n",
-  );
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-});
-
-test("leased publisher verifies an accepted branch push after the client times out", () => {
-  const fixture = createStatePublishRemote("accepted-timeout");
-  const state = path.join(fixture.root, "state");
-  const source = path.join(fixture.root, "source");
-  cloneState(fixture.origin, state);
-  fs.mkdirSync(source);
-  write(path.join(source, "results/accepted-timeout.txt"), "accepted\n");
-  const hookMarker = installAcceptedStatePushTimeoutHook(fixture.origin, 3);
-
-  const lines = captureConsoleLog(() =>
-    withEnv(
-      leasedPublishEnv({
-        CLAWSWEEPER_STATE_DIR: state,
-        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
-        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1200",
-      }),
-      () =>
-        withCwd(source, () =>
-          publishMainCommit({
-            message: "chore: verify accepted timed out push",
-            paths: ["results/accepted-timeout.txt"],
-          }),
-        ),
-    ),
-  );
-
-  assert.equal(fs.existsSync(hookMarker), true);
-  assert.equal(
-    lines.some((line) => line.includes("push timed out; verifying the expected remote state")),
-    true,
-  );
-  assert.equal(
-    run(
-      "git",
-      ["--git-dir", fixture.origin, "show", "state:results/accepted-timeout.txt"],
-      fixture.root,
-    ),
-    "accepted\n",
-  );
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-});
-
-test("leased publisher adopts a path-equivalent remote race before source refresh", () => {
-  const fixture = createStatePublishRemote("path-equivalent-race");
-  const state = path.join(fixture.root, "state");
-  const other = path.join(fixture.root, "other");
-  const source = path.join(fixture.root, "source");
-  const selectedPath = "results/shared.txt";
-  const remoteOnlyPath = "results/remote-only.txt";
-  cloneState(fixture.origin, state);
-  cloneState(fixture.origin, other);
-  fs.mkdirSync(source);
-  write(path.join(source, selectedPath), "same selected blob\n");
-  write(path.join(other, selectedPath), "same selected blob\n");
-  write(path.join(other, remoteOnlyPath), "unrelated remote state\n");
-  run("git", ["add", "."], other);
-  run("git", ["commit", "-m", "publish matching blob and unrelated state"], other);
-  installStateRaceHook(state, other);
-
-  const lines = captureConsoleLog(() =>
-    withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
-      withCwd(source, () =>
-        publishMainCommit({
-          message: "chore: publish path-equivalent state",
-          paths: [selectedPath],
-        }),
-      ),
-    ),
-  );
-
-  assert.equal(
-    lines.some((line) => line.includes("expected blobs are remote")),
-    true,
-  );
-  assert.equal(
-    run("git", ["rev-parse", "HEAD"], state),
-    run("git", ["--git-dir", fixture.origin, "rev-parse", "state"], fixture.root),
-  );
-  assert.equal(
-    fs.readFileSync(path.join(source, remoteOnlyPath), "utf8"),
-    "unrelated remote state\n",
-  );
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${selectedPath}`], fixture.root),
-    "same selected blob\n",
-  );
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${remoteOnlyPath}`], fixture.root),
-    "unrelated remote state\n",
-  );
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-});
-
-test("leased publisher rebuilds after an unexpected state race", () => {
-  const fixture = createStatePublishRemote("single-rebuild");
-  const state = path.join(fixture.root, "state");
-  const other = path.join(fixture.root, "other");
-  const source = path.join(fixture.root, "source");
-  cloneState(fixture.origin, state);
-  cloneState(fixture.origin, other);
-  fs.mkdirSync(source);
-  write(path.join(other, "results/concurrent.txt"), "concurrent\n");
-  run("git", ["add", "."], other);
-  run("git", ["commit", "-m", "concurrent state"], other);
-  write(path.join(source, "results/local.txt"), "local\n");
-  installStateRaceHook(state, other);
-
-  const lines = captureConsoleLog(() =>
-    withEnv(
-      leasedPublishEnv({
-        CLAWSWEEPER_STATE_DIR: state,
-        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
-        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
-      }),
-      () =>
-        withCwd(source, () =>
-          publishMainCommit({
-            message: "chore: rebuild leased publish",
-            paths: ["results/local.txt"],
-          }),
-        ),
-    ),
-  );
-
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", "state:results/local.txt"], fixture.root),
-    "local\n",
-  );
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", "state:results/concurrent.txt"], fixture.root),
-    "concurrent\n",
-  );
-  assert.equal(
-    Number(fs.readFileSync(path.join(state, ".git/hooks/state-push-count"), "utf8").trim()),
-    2,
-  );
-  assert.equal(lines.filter((line) => line.includes("rebuilding attempt=1")).length, 1);
-});
-
-test("leased publisher converges after repeated unexpected state races", () => {
-  const fixture = createStatePublishRemote("repeated-races");
-  const state = path.join(fixture.root, "state");
-  const other = path.join(fixture.root, "other");
-  const source = path.join(fixture.root, "source");
-  cloneState(fixture.origin, state);
-  cloneState(fixture.origin, other);
-  fs.mkdirSync(source);
-  write(path.join(source, "results/local.txt"), "local\n");
-  installRepeatedStateRaceHook(state, other, 4);
-
-  const lines = captureConsoleLog(() =>
-    withEnv(
-      leasedPublishEnv({
-        CLAWSWEEPER_STATE_DIR: state,
-        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
-        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
-      }),
-      () =>
-        withCwd(source, () =>
-          publishMainCommit({
-            message: "chore: converge leased publish",
-            paths: ["results/local.txt"],
-          }),
-        ),
-    ),
-  );
-
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", "state:results/local.txt"], fixture.root),
-    "local\n",
-  );
-  for (let race = 1; race <= 4; race += 1) {
-    assert.equal(
-      run(
-        "git",
-        ["--git-dir", fixture.origin, "show", `state:results/remote-race-${race}.txt`],
-        fixture.root,
-      ),
-      `remote race ${race}\n`,
-    );
-  }
-  assert.equal(
-    Number(fs.readFileSync(path.join(state, ".git/hooks/state-push-count"), "utf8").trim()),
-    5,
-  );
-  assert.equal(lines.filter((line) => line.includes("rebuilding attempt=")).length, 4);
-});
-
-test("leased reconciliation converges after repeated unexpected state races", () => {
-  const fixture = createStatePublishRemote("repeated-reconciliation-races");
-  const state = path.join(fixture.root, "state");
-  const other = path.join(fixture.root, "other");
-  const source = path.join(fixture.root, "source");
-  const recordsRoot = "records/openclaw-openclaw";
-  const tuplePaths = [
-    `${recordsRoot}/items/1.md`,
-    `${recordsRoot}/plans/1.md`,
-    `${recordsRoot}/decision-packets/1.json`,
-  ];
-  cloneState(fixture.origin, state);
-  cloneState(fixture.origin, other);
-  fs.mkdirSync(source);
-  const localTuple = writeRecordTuple(source, {
-    number: 1,
-    marker: "local reconciliation",
-    reviewedAt: "2026-07-14T20:00:00.000Z",
-    itemUpdatedAt: "2026-07-14T19:59:00Z",
-  });
-  installRepeatedStateRaceHook(state, other, 2);
-
-  const lines = captureConsoleLog(() =>
-    withEnv(
-      leasedPublishEnv({
-        CLAWSWEEPER_STATE_DIR: state,
-        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
-        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
-      }),
-      () =>
-        withCwd(source, () =>
-          publishMainCommit({
-            message: "chore: converge leased reconciliation",
-            paths: tuplePaths,
-            rebaseStrategy: "reconcile-records",
-          }),
-        ),
-    ),
-  );
-
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${tuplePaths[0]}`], fixture.root),
-    localTuple.primary,
-  );
-  for (let race = 1; race <= 2; race += 1) {
-    assert.equal(
-      run(
-        "git",
-        ["--git-dir", fixture.origin, "show", `state:results/remote-race-${race}.txt`],
-        fixture.root,
-      ),
-      `remote race ${race}\n`,
-    );
-  }
-  assert.equal(lines.filter((line) => line.includes("rebuilding attempt=")).length, 2);
-});
-
-test("leased apply-records rebuild preserves a concurrent remote close", () => {
-  const fixture = createStatePublishRemote("apply-rebuild");
-  const state = path.join(fixture.root, "state");
-  const other = path.join(fixture.root, "other");
-  const source = path.join(fixture.root, "source");
-  const recordsRoot = "records/openclaw-openclaw";
-  cloneState(fixture.origin, state);
-  write(path.join(state, `${recordsRoot}/items/1.md`), "record one open\n");
-  write(path.join(state, `${recordsRoot}/items/2.md`), "record two base\n");
-  write(path.join(state, "apply-report.json"), "[]\n");
-  run("git", ["add", "."], state);
-  run("git", ["commit", "-m", "seed apply records"], state);
-  run("git", ["push", "origin", "HEAD:state"], state);
-
-  cloneState(fixture.origin, other);
-  fs.rmSync(path.join(other, `${recordsRoot}/items/1.md`));
-  write(path.join(other, `${recordsRoot}/closed/1.md`), "record one closed remotely\n");
-  run("git", ["add", "-A"], other);
-  run("git", ["commit", "-m", "close record one remotely"], other);
-
-  fs.mkdirSync(source);
-  fs.cpSync(path.join(state, "records"), path.join(source, "records"), { recursive: true });
-  fs.copyFileSync(path.join(state, "apply-report.json"), path.join(source, "apply-report.json"));
-  write(path.join(source, `${recordsRoot}/items/2.md`), "record two local\n");
-  write(path.join(source, "apply-report.json"), '[{"action":"updated"}]\n');
-  installStateRaceHook(state, other);
-
-  const result = withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
-    withCwd(source, () =>
+  captureConsoleLog(() => {
+    result = withCwd(work, () =>
       publishMainCommit({
-        message: "chore: apply records through leased rebuild",
-        paths: ["records", "apply-report.json"],
-        rebaseStrategy: "apply-records",
+        message: "chore: append command action ledger",
+        paths: ledgerPaths,
+        maxAttempts: 1,
+        pushAttempts: 1,
+      }),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  const metrics = lines.find((line) => line.startsWith("Git publish metrics:"));
+  assert.ok(metrics, "ledger race publish emits metrics");
+  const processCount = Number(/processes=(\d+)/.exec(metrics)?.[1]);
+  assert.ok(
+    Number.isInteger(processCount) && processCount <= 50,
+    `ledger race rebuild used ${processCount} git subprocesses; expected at most 50`,
+  );
+  for (const ledgerPath of ledgerPaths) {
+    assert.equal(
+      run("git", ["--git-dir", origin, "show", `main:${ledgerPath}`], root),
+      `{"path":"${ledgerPath}"}\n`,
+    );
+  }
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:remote.txt"], root),
+    "concurrent\nsecond race\n",
+  );
+});
+
+test("publishMainCommit converges after production-sized immutable ledger races", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const ledgerPaths = Array.from(
+    { length: 25 },
+    (_, index) => `ledger/v1/import-bindings/events/${index.toString(16).padStart(64, "0")}.json`,
+  );
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, "keep.txt"), "base\n");
+  for (let index = 0; index < 1024; index += 1) {
+    write(path.join(work, `unrelated/${index.toString().padStart(4, "0")}.txt`), "base\n");
+  }
+  write(path.join(work, "scratch/dirty.txt"), "base\n");
+  write(path.join(work, ".gitignore"), "ignored/\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  for (const ledgerPath of ledgerPaths) {
+    write(path.join(work, ledgerPath), `{"path":"${ledgerPath}"}\n`);
+  }
+  write(path.join(work, "unrelated/0000.txt"), "local scratch remains\n");
+  write(path.join(work, "scratch/dirty.txt"), "nested local scratch remains\n");
+  write(path.join(work, "ignored/secret.txt"), "ignored local scratch remains\n");
+  installPushRaceHook(work, other, 20);
+
+  const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: append command action ledger",
+        paths: ledgerPaths,
+        maxAttempts: 8,
+        pushAttempts: 3,
+      }),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  const metrics = lines.find((line) => line.startsWith("Git publish metrics:"));
+  assert.ok(metrics, "sustained ledger race publish emits metrics");
+  const processCount = Number(/processes=(\d+)/.exec(metrics)?.[1]);
+  assert.ok(
+    Number.isInteger(processCount) && processCount <= 280,
+    `sustained ledger races used ${processCount} git subprocesses; expected at most 280`,
+  );
+  assert.match(metrics, /actions=.*push:21(?:,|$)/, "the publish survives twenty lost pushes");
+  assert.doesNotMatch(metrics, /actions=.*rebase:/, "immutable ledger retries never nest rebases");
+  assert.doesNotMatch(
+    metrics,
+    /actions=.*reset:/,
+    "immutable ledger retries never reset the worktree",
+  );
+  assert.match(
+    metrics,
+    /actions=.*read-tree:1(?:,|$)/,
+    "the full index refresh happens only after push",
+  );
+  assert.match(metrics, /actions=.*restore:1(?:,|$)/, "worktree paths refresh only after push");
+  assert.equal(
+    fs.readFileSync(path.join(work, "unrelated/0000.txt"), "utf8"),
+    "local scratch remains\n",
+  );
+  assert.equal(
+    fs.readFileSync(path.join(work, "scratch/dirty.txt"), "utf8"),
+    "nested local scratch remains\n",
+    "a remote directory-to-file transition preserves a dirty descendant",
+  );
+  assert.equal(
+    fs.readFileSync(path.join(work, "ignored/secret.txt"), "utf8"),
+    "ignored local scratch remains\n",
+    "a remote directory-to-file transition preserves an ignored descendant",
+  );
+  assert.equal(
+    fs.readFileSync(path.join(work, "remote.txt"), "utf8"),
+    Array.from({ length: 20 }, (_, index) => `race ${index + 1}\n`).join(""),
+    "clean worktree paths follow every fetched remote parent",
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:remote.txt"], root),
+    Array.from({ length: 20 }, (_, index) => `race ${index + 1}\n`).join(""),
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:unrelated/0000.txt"], root),
+    "remote scratch 20\n",
+    "the rebuilt commit keeps the remote version of a locally dirty path",
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:scratch"], root),
+    "remote parent 20\n",
+    "the rebuilt commit keeps a remote file that replaced a dirty local directory",
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:ignored"], root),
+    "remote ignored parent 20\n",
+    "the rebuilt commit keeps a remote file that replaced an ignored local directory",
+  );
+  for (const ledgerPath of ledgerPaths) {
+    assert.equal(
+      run("git", ["--git-dir", origin, "show", `main:${ledgerPath}`], root),
+      `{"path":"${ledgerPath}"}\n`,
+    );
+  }
+});
+
+test("publishMainCommit rebuilds with unavailable unchanged remote ledger objects", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-missing-object-"));
+  const origin = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const fakeBin = path.join(root, "bin");
+  const localPath =
+    "ledger/v1/import-bindings/events/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff.json";
+  const remotePaths = [
+    "ledger/v1/import-bindings/events/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+    "ledger/v1/import-bindings/events/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json",
+  ];
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, seed], root);
+  configureUser(seed);
+  write(path.join(seed, "base.txt"), "base\n");
+  run("git", ["add", "."], seed);
+  run("git", ["commit", "-m", "initial"], seed);
+  run("git", ["push", "origin", "HEAD:main"], seed);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["clone", "--depth", "1", `file://${origin}`, work], root);
+  configureUser(work);
+  run("git", ["config", "fetch.unpackLimit", "9999"], work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  for (const [index, remotePath] of remotePaths.entries()) {
+    write(path.join(other, remotePath), `{"remote":${index + 1}}\n`);
+  }
+  run("git", ["add", "."], other);
+  run("git", ["commit", "-m", "concurrent ledger event"], other);
+  const missingObjects = remotePaths.map((remotePath) =>
+    run("git", ["rev-parse", `HEAD:${remotePath}`], other).trim(),
+  );
+  installFirstPushRaceHook(work, other);
+  installMissingObjectFetchShim(fakeBin, work, missingObjects);
+  write(path.join(work, localPath), '{"local":true}\n');
+
+  const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withEnv({ PATH: `${fakeBin}:${process.env.PATH}` }, () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: append command action ledger",
+          paths: [localPath],
+          maxAttempts: 1,
+          pushAttempts: 1,
+        }),
+      ),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  assert.equal(
+    lines.some((line) => line === "Recovering 1 unavailable Git object(s) from origin"),
+    false,
+  );
+  assert.equal(fs.existsSync(path.join(work, ".git", "missing-object-removed")), true);
+  for (const [index, remotePath] of remotePaths.entries()) {
+    assert.throws(() => run("git", ["cat-file", "-e", missingObjects[index]], work));
+    assert.equal(
+      run("git", ["--git-dir", origin, "show", `main:${remotePath}`], root),
+      `{"remote":${index + 1}}\n`,
+    );
+  }
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${localPath}`], root),
+    '{"local":true}\n',
+  );
+});
+
+test("publishMainCommit fails closed when a written ledger object is unavailable locally", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-missing-written-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const fakeBin = path.join(root, "bin");
+  const localPath =
+    "ledger/v1/import-bindings/events/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff.json";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, "remote.txt"), "base\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  write(path.join(other, "remote.txt"), "concurrent\n");
+  run("git", ["add", "remote.txt"], other);
+  run("git", ["commit", "-m", "concurrent state update"], other);
+  installFirstPushRaceHook(work, other);
+  installMissingWrittenObjectFetchShim(fakeBin, work, localPath);
+  write(path.join(work, localPath), '{"local":true}\n');
+
+  assert.throws(
+    () =>
+      withEnv({ PATH: `${fakeBin}:${process.env.PATH}` }, () =>
+        withCwd(work, () =>
+          publishMainCommit({
+            message: "chore: append command action ledger",
+            paths: [localPath],
+            maxAttempts: 1,
+            pushAttempts: 1,
+          }),
+        ),
+      ),
+    /Immutable action-ledger source object is unavailable locally/,
+  );
+  assert.equal(run("git", ["--git-dir", origin, "show", "main:remote.txt"], root), "concurrent\n");
+  assert.throws(() => run("git", ["--git-dir", origin, "show", `main:${localPath}`], root));
+});
+
+test("publishMainCommit continues after a bounded fetch restores an unavailable object", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-missing-recovered-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const fakeBin = path.join(root, "bin");
+  const objectFile = path.join(root, "missing-object.json");
+  const localPath =
+    "ledger/v1/import-bindings/events/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff.json";
+  write(objectFile, '{"recovered":true}\n');
+  const missingObject = run("git", ["hash-object", objectFile], root).trim();
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, "base.txt"), "base\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+  installRecoverableUnavailablePushShim(fakeBin, work, missingObject, objectFile);
+  write(path.join(work, localPath), '{"local":true}\n');
+
+  const result = withEnv({ PATH: `${fakeBin}:${process.env.PATH}` }, () =>
+    withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: append command action ledger",
+        paths: [localPath],
+        maxAttempts: 1,
+        pushAttempts: 1,
       }),
     ),
   );
 
   assert.equal(result, "committed");
-  assert.throws(() =>
-    run(
-      "git",
-      ["--git-dir", fixture.origin, "show", `state:${recordsRoot}/items/1.md`],
-      fixture.root,
-    ),
-  );
+  assert.equal(fs.readFileSync(path.join(work, ".git", "unavailable-push-count"), "utf8"), "2\n");
   assert.equal(
-    run(
-      "git",
-      ["--git-dir", fixture.origin, "show", `state:${recordsRoot}/closed/1.md`],
-      fixture.root,
-    ),
-    "record one closed remotely\n",
-  );
-  assert.equal(
-    run(
-      "git",
-      ["--git-dir", fixture.origin, "show", `state:${recordsRoot}/items/2.md`],
-      fixture.root,
-    ),
-    "record two local\n",
-  );
-  assert.equal(
-    Number(fs.readFileSync(path.join(state, ".git/hooks/state-push-count"), "utf8").trim()),
-    2,
+    run("git", ["--git-dir", origin, "show", `main:${localPath}`], root),
+    '{"local":true}\n',
   );
 });
 
-test("leased publisher rebuilds when an accepted push is overwritten before verification", () => {
-  const fixture = createStatePublishRemote("verify");
-  const state = path.join(fixture.root, "state");
-  const poison = path.join(fixture.root, "poison");
-  const source = path.join(fixture.root, "source");
-  cloneState(fixture.origin, state);
-  cloneState(fixture.origin, poison);
-  fs.mkdirSync(source);
-  write(path.join(poison, "results/verified.txt"), "poison\n");
-  run("git", ["add", "."], poison);
-  run("git", ["commit", "-m", "poison state"], poison);
-  run("git", ["push", "origin", "HEAD:poison"], poison);
-  installStatePoisonHook(fixture.origin);
-  write(path.join(source, "results/verified.txt"), "expected\n");
+test("publishMainCommit fails fast when unavailable ledger objects remain missing after recovery", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-missing-persistent-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const fakeBin = path.join(root, "bin");
+  const missingObject = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const localPath =
+    "ledger/v1/import-bindings/events/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff.json";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, "base.txt"), "base\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+  installUnavailablePushShim(fakeBin, work, missingObject);
+  write(path.join(work, localPath), '{"local":true}\n');
 
-  const lines = captureConsoleLog(() =>
-    withEnv(
-      leasedPublishEnv({
-        CLAWSWEEPER_STATE_DIR: state,
-        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "5000",
-        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
-      }),
+  assert.throws(
+    () =>
+      withEnv({ PATH: `${fakeBin}:${process.env.PATH}` }, () =>
+        withCwd(work, () =>
+          publishMainCommit({
+            message: "chore: append command action ledger",
+            paths: [localPath],
+            maxAttempts: 1,
+            pushAttempts: 1,
+          }),
+        ),
+      ),
+    new RegExp(`object ${missingObject} is unavailable after recovery`),
+  );
+  assert.equal(fs.readFileSync(path.join(work, ".git", "unavailable-push-count"), "utf8"), "1\n");
+  assert.throws(() => run("git", ["--git-dir", origin, "show", `main:${localPath}`], root));
+});
+
+test("publishMainCommit escapes sustained immutable ledger races through a server merge", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-server-merge-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const source = path.join(root, "source");
+  const other = path.join(root, "other");
+  const fakeBin = path.join(root, "bin");
+  const ledgerPath =
+    "ledger/v1/import-bindings/events/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff.json";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, "remote.txt"), "base\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+  installCheckoutHeader(work);
+
+  run("git", ["clone", origin, other], root);
+  configureUser(other);
+  write(path.join(source, ledgerPath), '{"local":true}\n');
+  installSimplePushRaceHook(work, other, 65);
+  installFakeGitHubMerge(fakeBin, origin);
+
+  const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withEnv(
+      {
+        CLAWSWEEPER_STATE_REPOSITORY: "openclaw/clawsweeper-state",
+        CLAWSWEEPER_PUBLISH_ROOT: work,
+        CLAWSWEEPER_PUBLISH_BRANCH: "main",
+        GITHUB_RUN_ID: "12345",
+        GITHUB_RUN_ATTEMPT: "1",
+        PATH: `${fakeBin}:${process.env.PATH}`,
+      },
       () =>
         withCwd(source, () =>
           publishMainCommit({
-            message: "chore: verify remote blobs",
-            paths: ["results/verified.txt"],
+            message: "chore: append command action ledger",
+            paths: [ledgerPath],
+            maxAttempts: 8,
+            pushAttempts: 3,
           }),
         ),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${ledgerPath}`], root),
+    '{"local":true}\n',
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "main:remote.txt"], root),
+    "base\nrace 1\n",
+    "the server merge preserves the state write that beat the client push",
+  );
+  const metrics = lines.find((line) => line.startsWith("Git publish metrics:"));
+  assert.match(metrics, /actions=.*gh-api:2(?:,|$)/, "merge and cleanup use the GitHub API");
+  assert.equal(
+    lines.filter((line) => line.includes("Acquired state publish lease")).length,
+    2,
+    "the direct push and server merge each coordinate their state mutation",
+  );
+  assert.equal(
+    run(
+      "git",
+      [
+        "--git-dir",
+        origin,
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/heads/clawsweeper-publish-lease",
+      ],
+      root,
     ),
+    "",
   );
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", "state:results/verified.txt"], fixture.root),
-    "expected\n",
-  );
-  assert.equal(
-    lines.some((line) => line.includes("superseded after an accepted push")),
-    true,
-  );
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
 });
 
-test("failed leased publish refreshes advanced remote state before a later broad publish", () => {
-  const fixture = createStatePublishRemote("failure-refresh");
-  const state = path.join(fixture.root, "state");
-  const other = path.join(fixture.root, "other");
-  const source = path.join(fixture.root, "source");
-  const remoteJob = "jobs/openclaw/closed/123.md";
-  cloneState(fixture.origin, state);
-  cloneState(fixture.origin, other);
-  fs.mkdirSync(source);
-  write(path.join(other, remoteJob), "remote job\n");
-  run("git", ["add", "."], other);
-  run("git", ["commit", "-m", "publish remote job"], other);
-  run("git", ["push", "origin", "HEAD:state"], other);
-  write(path.join(source, "results/local-checkpoint.txt"), "local\n");
-  const rejectingHook = installStatePushRejectHook(fixture.origin);
+test("publishMainCommit rebuilds a production-sized flat immutable ledger tree", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-large-tree-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const localPath =
+    "ledger/v1/import-bindings/events/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff.json";
+  run("git", ["init", "--bare", origin], root);
+  configureUser(origin);
 
-  const startedAt = Date.now();
-  const lines = captureConsoleLog(() =>
-    assert.throws(
-      () =>
-        withEnv(
-          leasedPublishEnv({
-            CLAWSWEEPER_STATE_DIR: state,
-            CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "3000",
-            CLAWSWEEPER_PUBLISH_DEADLINE_MS: "300",
-            CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "500",
-            CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "1000",
-          }),
-          () =>
-            withCwd(source, () =>
-              publishMainCommit({
-                message: "chore: fail narrow checkpoint",
-                paths: ["results/local-checkpoint.txt"],
-              }),
-            ),
-        ),
-      /State publication deadline exceeded/,
-    ),
-  );
-  assert.ok(Date.now() - startedAt < 3000);
-  const metrics = lines.find((line) => line.includes("Git publish metrics:")) ?? "";
-  const processCount = Number(/processes=(\d+)/.exec(metrics)?.[1]);
-  assert.ok(Number.isInteger(processCount) && processCount < 256, metrics);
-  fs.rmSync(rejectingHook);
+  const blob = runWithInput(
+    "git",
+    ["--git-dir", origin, "hash-object", "-w", "--stdin"],
+    root,
+    "{}\n",
+  ).trim();
+  const flatTree = runWithInput(
+    "git",
+    ["--git-dir", origin, "mktree", "-z"],
+    root,
+    Array.from(
+      { length: 150_000 },
+      (_, index) => `100644 blob ${blob}\t${index.toString(16).padStart(64, "0")}.json\0`,
+    ).join(""),
+  ).trim();
+  const importBindingsTree = singleEntryTree(origin, "events", flatTree, root);
+  const v1Tree = singleEntryTree(origin, "import-bindings", importBindingsTree, root);
+  const ledgerTree = singleEntryTree(origin, "v1", v1Tree, root);
+  const remoteBlob = runWithInput(
+    "git",
+    ["--git-dir", origin, "hash-object", "-w", "--stdin"],
+    root,
+    "base\n",
+  ).trim();
+  const rootTree = runWithInput(
+    "git",
+    ["--git-dir", origin, "mktree", "-z"],
+    root,
+    `040000 tree ${ledgerTree}\tledger\0` + `100644 blob ${remoteBlob}\tremote.txt\0`,
+  ).trim();
+  const initialCommit = runWithInput(
+    "git",
+    ["--git-dir", origin, "commit-tree", rootTree, "-m", "initial large ledger"],
+    root,
+    "",
+  ).trim();
+  run("git", ["--git-dir", origin, "update-ref", "refs/heads/main", initialCommit], root);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
 
-  assert.equal(fs.readFileSync(path.join(source, remoteJob), "utf8"), "remote job\n");
-  assert.equal(fs.existsSync(path.join(source, "results/local-checkpoint.txt")), false);
-  assert.equal(
-    withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
-      withCwd(source, () =>
-        publishMainCommit({
-          message: "chore: publish broad jobs after recovery",
-          paths: ["jobs"],
-        }),
-      ),
-    ),
-    "unchanged",
+  for (const checkout of [work, other]) {
+    run("git", ["clone", "--no-checkout", origin, checkout], root);
+    configureUser(checkout);
+    run("git", ["sparse-checkout", "init", "--no-cone"], checkout);
+    run("git", ["sparse-checkout", "set", "--no-cone", "remote.txt", localPath], checkout);
+    run("git", ["checkout", "-B", "main", "origin/main"], checkout);
+  }
+  write(path.join(other, "remote.txt"), "concurrent\n");
+  run("git", ["add", "remote.txt"], other);
+  run("git", ["commit", "-m", "concurrent state update"], other);
+  installFirstPushRaceHook(work, other);
+  write(path.join(work, localPath), '{"local":true}\n');
+
+  const result = withCwd(work, () =>
+    publishMainCommit({
+      message: "chore: append command action ledger",
+      paths: [localPath],
+      maxAttempts: 1,
+      pushAttempts: 1,
+    }),
   );
+
+  assert.equal(result, "committed");
   assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${remoteJob}`], fixture.root),
-    "remote job\n",
+    run("git", ["--git-dir", origin, "show", `main:${localPath}`], root),
+    '{"local":true}\n',
   );
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
+  assert.equal(run("git", ["--git-dir", origin, "show", "main:remote.txt"], root), "concurrent\n");
 });
 
 test("publishMainCommit publishes generated paths to state branch when state root is configured", () => {
@@ -2791,79 +3753,64 @@ test("publishMainCommit publishes generated paths to state branch when state roo
   assert.throws(() => run("git", ["--git-dir", origin, "show", "main:results/ledger.txt"], root));
 });
 
-test("leased normal publish refreshes remote generated state before a broad publish", () => {
+test("publishMainCommit preserves concurrent comment router ledger commands", () => {
+  for (const rebaseStrategy of ["normal", "theirs"]) {
+    assertConcurrentCommentRouterLedgerPublish(rebaseStrategy);
+  }
+});
+
+function assertConcurrentCommentRouterLedgerPublish(rebaseStrategy) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");
   const work = path.join(root, "work");
-  const state = path.join(root, "state");
   const other = path.join(root, "other");
-  const checkpoint = "results/checkpoint.txt";
-  const concurrentCursor = "results/apply-cursors/openclaw-openclaw.json";
-  const concurrentJob = "jobs/openclaw/closed/123.md";
-  const report = "apply-report.json";
-
+  const ledgerFile = "results/comment-router.json";
   run("git", ["init", "--bare", origin], root);
-  run("git", ["clone", origin, state], root);
-  configureUser(state);
-  write(path.join(state, checkpoint), "base\n");
-  run("git", ["add", "."], state);
-  run("git", ["commit", "-m", "initial state"], state);
-  run("git", ["push", "origin", "HEAD:state"], state);
-  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
-  run("git", ["checkout", "-B", "state", "origin/state"], state);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  writeJson(path.join(work, ledgerFile), commentRouterLedger([commentRouterCommand("base", 1)]));
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
 
-  fs.mkdirSync(work);
-  fs.cpSync(path.join(state, "results"), path.join(work, "results"), { recursive: true });
   run("git", ["clone", origin, other], root);
   configureUser(other);
-  write(path.join(other, concurrentCursor), '{"cursor":"remote"}\n');
-  write(path.join(other, concurrentJob), "remote job\n");
-  write(path.join(other, report), '[{"report":"remote"}]\n');
-  run("git", ["add", "."], other);
-  run("git", ["commit", "-m", "concurrent generated state"], other);
-  run("git", ["push", "origin", "HEAD:state"], other);
+  writeJson(
+    path.join(other, ledgerFile),
+    commentRouterLedger([
+      commentRouterCommand("base", 1),
+      commentRouterCommand("remote-resume", 2),
+    ]),
+  );
+  run("git", ["commit", "-am", "remote router command"], other);
 
-  write(path.join(work, checkpoint), "local\n");
-  const results = withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
-    withCwd(work, () => {
-      const first = publishMainCommit({
-        message: "chore: publish narrow checkpoint",
-        paths: [checkpoint],
-        rebaseStrategy: "normal",
-      });
-      assert.equal(
-        fs.readFileSync(path.join(work, concurrentCursor), "utf8"),
-        '{"cursor":"remote"}\n',
-      );
-      assert.equal(fs.readFileSync(path.join(work, concurrentJob), "utf8"), "remote job\n");
-      assert.equal(fs.readFileSync(path.join(work, report), "utf8"), '[{"report":"remote"}]\n');
+  writeJson(
+    path.join(work, ledgerFile),
+    commentRouterLedger([commentRouterCommand("base", 1), commentRouterCommand("local-resume", 3)]),
+  );
+  installFirstPushRaceHook(work, other);
 
-      const second = publishMainCommit({
-        message: "chore: publish broad generated state",
-        paths: ["jobs", "results/apply-cursors", report],
-        rebaseStrategy: "normal",
-      });
-      return [first, second];
+  const result = withCwd(work, () =>
+    publishMainCommit({
+      message: "chore: publish router command",
+      paths: ["."],
+      maxAttempts: 1,
+      pushAttempts: 2,
+      rebaseStrategy,
     }),
   );
 
-  assert.deepEqual(results, ["committed", "unchanged"]);
-  assert.equal(
-    run("git", ["--git-dir", origin, "show", `state:${concurrentCursor}`], root),
-    '{"cursor":"remote"}\n',
+  assert.equal(result, "committed");
+  const published = readOriginJson(origin, `main:${ledgerFile}`, root);
+  assert.deepEqual(
+    published.commands.map((entry) => entry.comment_version_key),
+    ["base", "remote-resume", "local-resume"],
   );
-  assert.equal(
-    run("git", ["--git-dir", origin, "show", `state:${concurrentJob}`], root),
-    "remote job\n",
-  );
-  assert.equal(
-    run("git", ["--git-dir", origin, "show", `state:${report}`], root),
-    '[{"report":"remote"}]\n',
-  );
-  assert.equal(remoteRefExists(origin, STATE_PUBLISH_LEASE_REF), false);
-});
+}
 
-test("leased theirs publish refreshes merged health before the next status publish", () => {
+test("publishMainCommit refreshes merged health before the next state-root status publish", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");
   const work = path.join(root, "work");
@@ -2901,7 +3848,7 @@ test("leased theirs publish refreshes merged health before the next status publi
     path.join(work, statusFile),
     sweepStatus("2026-07-09T20:03:00Z", "Local checkpoint", initialHealth, initialHealth),
   );
-  const results = withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
+  const results = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
     withCwd(work, () => {
       const first = publishMainCommit({
         message: "chore: publish checkpoint status",
@@ -2937,107 +3884,6 @@ test("leased theirs publish refreshes merged health before the next status publi
   assert.equal(published.state, "Local final");
   assert.deepEqual(published.apply_health, closeHealth);
   assert.deepEqual(published.last_close_apply_health, closeHealth);
-});
-
-test("leased reconcile-records publish preserves a remote close before a broad publish", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
-  const origin = path.join(root, "origin.git");
-  const work = path.join(root, "work");
-  const state = path.join(root, "state");
-  const other = path.join(root, "other");
-  const recordsRoot = "records/openclaw-openclaw";
-  const itemTwo = `${recordsRoot}/items/2.md`;
-  const closedTwo = `${recordsRoot}/closed/2.md`;
-  const planTwo = `${recordsRoot}/plans/2.md`;
-  const packetTwo = `${recordsRoot}/decision-packets/2.json`;
-  const tupleOnePaths = [
-    `${recordsRoot}/items/1.md`,
-    `${recordsRoot}/plans/1.md`,
-    `${recordsRoot}/decision-packets/1.json`,
-  ];
-
-  run("git", ["init", "--bare", origin], root);
-  run("git", ["clone", origin, state], root);
-  configureUser(state);
-  writeRecordTuple(state, {
-    number: 1,
-    marker: "record one base",
-    reviewedAt: "2026-07-09T20:00:00.000Z",
-    itemUpdatedAt: "2026-07-09T19:59:00Z",
-  });
-  writeRecordTuple(state, {
-    number: 2,
-    marker: "record two base",
-    reviewedAt: "2026-07-09T20:00:00.000Z",
-    itemUpdatedAt: "2026-07-09T19:59:00Z",
-  });
-  run("git", ["add", "."], state);
-  run("git", ["commit", "-m", "initial state"], state);
-  run("git", ["push", "origin", "HEAD:state"], state);
-  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
-  run("git", ["checkout", "-B", "state", "origin/state"], state);
-
-  fs.mkdirSync(work);
-  fs.cpSync(path.join(state, "records"), path.join(work, "records"), { recursive: true });
-  run("git", ["clone", origin, other], root);
-  configureUser(other);
-  const remoteClose = writeRecordTuple(other, {
-    number: 2,
-    marker: "record two closed remotely",
-    reviewedAt: "2026-07-09T20:02:00.000Z",
-    itemUpdatedAt: "2026-07-09T20:01:00Z",
-    location: "closed",
-    packet: false,
-    plan: false,
-  });
-  run("git", ["add", "-A"], other);
-  run("git", ["commit", "-m", "close record two remotely"], other);
-  run("git", ["push", "origin", "HEAD:state"], other);
-
-  writeRecordTuple(work, {
-    number: 1,
-    marker: "record one checkpoint",
-    reviewedAt: "2026-07-09T20:03:00.000Z",
-    itemUpdatedAt: "2026-07-09T20:02:00Z",
-  });
-  const result = withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
-    withCwd(work, () => {
-      const first = publishMainCommit({
-        message: "chore: publish one record tuple",
-        paths: tupleOnePaths,
-        rebaseStrategy: "reconcile-records",
-      });
-      assert.equal(fs.existsSync(path.join(work, itemTwo)), false);
-      assert.equal(fs.existsSync(path.join(work, planTwo)), false);
-      assert.equal(fs.existsSync(path.join(work, packetTwo)), false);
-      assert.equal(fs.readFileSync(path.join(work, closedTwo), "utf8"), remoteClose.primary);
-
-      const localFinal = writeRecordTuple(work, {
-        number: 1,
-        marker: "record one final",
-        reviewedAt: "2026-07-09T20:04:00.000Z",
-        itemUpdatedAt: "2026-07-09T20:03:00Z",
-      });
-      const second = publishMainCommit({
-        message: "chore: publish broad record snapshot",
-        paths: [recordsRoot],
-        rebaseStrategy: "reconcile-records",
-      });
-      return { localFinal, results: [first, second] };
-    }),
-  );
-
-  assert.deepEqual(result.results, ["committed", "committed"]);
-  assert.equal(
-    run("git", ["--git-dir", origin, "show", `state:${closedTwo}`], root),
-    remoteClose.primary,
-  );
-  assert.throws(() => run("git", ["--git-dir", origin, "show", `state:${itemTwo}`], root));
-  assert.equal(
-    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/1.md`], root),
-    result.localFinal.primary,
-  );
-  assert.equal(remoteRefExists(origin, STATE_PUBLISH_LEASE_REF), false);
 });
 
 test("state refresh reconciles retried direct publisher resets before broad publishes", () => {
@@ -3100,7 +3946,7 @@ test("state refresh reconciles retried direct publisher resets before broad publ
   );
 });
 
-test("leased apply-records publish refreshes source paths before broad publishes", () => {
+test("publishMainCommit refreshes published source paths after a state rebase", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");
   const work = path.join(root, "work");
@@ -3182,7 +4028,7 @@ test("leased apply-records publish refreshes source paths before broad publishes
     path.join(work, sweepStatusPath),
     sweepStatus("2026-07-09T20:01:00Z", "Checkpoint", refreshHealth, refreshHealth),
   );
-  const results = withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
+  const results = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
     withCwd(work, () => {
       const first = publishMainCommit({
         message: "chore: update checkpoint status",
@@ -3606,617 +4452,6 @@ test("publish-main CLI accepts package-manager double dash separators", () => {
   );
 });
 
-test("immutable publisher treats identical paths as idempotent and rejects collisions", () => {
-  const fixture = createStatePublishRemote("immutable-collision");
-  const state = path.join(fixture.root, "state");
-  const source = path.join(fixture.root, "source");
-  const shard = replayEquivalentActionShards();
-  const publishPath = shard.publishPath;
-  cloneState(fixture.origin, state);
-  write(path.join(state, publishPath), shard.first);
-  run("git", ["add", publishPath], state);
-  run("git", ["commit", "-m", "seed immutable event"], state);
-  run("git", ["push", "origin", "HEAD:state"], state);
-  fs.mkdirSync(source);
-  write(path.join(source, publishPath), shard.first);
-
-  const replay = withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
-    withCwd(source, () =>
-      publishMainCommit({
-        message: "chore: replay immutable event",
-        paths: [publishPath],
-        coordination: "immutable",
-      }),
-    ),
-  );
-  assert.equal(replay, "unchanged");
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-
-  write(path.join(source, publishPath), shard.second);
-  const equivalentReplay = withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
-    withCwd(source, () =>
-      publishMainCommit({
-        message: "chore: replay equivalent immutable event",
-        paths: [publishPath],
-        coordination: "immutable",
-      }),
-    ),
-  );
-  assert.equal(equivalentReplay, "unchanged");
-
-  write(path.join(source, publishPath), "conflicting event\n");
-  assert.throws(
-    () =>
-      withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
-        withCwd(source, () =>
-          publishMainCommit({
-            message: "chore: reject immutable collision",
-            paths: [publishPath],
-            coordination: "immutable",
-          }),
-        ),
-      ),
-    /Immutable action ledger path conflict/,
-  );
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${publishPath}`], fixture.root),
-    shard.first,
-  );
-});
-
-test("immutable publisher adds only missing paths during a partial replay", () => {
-  const fixture = createStatePublishRemote("immutable-partial-replay");
-  const state = path.join(fixture.root, "state");
-  const source = path.join(fixture.root, "source");
-  const existingPath = `ledger/v1/import-bindings/events/${"a".repeat(64)}.json`;
-  const missingPath = `ledger/v1/import-bindings/events/${"b".repeat(64)}.json`;
-  cloneState(fixture.origin, state);
-  write(path.join(state, existingPath), '{"event":"existing"}\n');
-  run("git", ["add", existingPath], state);
-  run("git", ["commit", "-m", "seed immutable binding"], state);
-  run("git", ["push", "origin", "HEAD:state"], state);
-  fs.mkdirSync(source);
-  write(path.join(source, existingPath), '{"event":"existing"}\n');
-  write(path.join(source, missingPath), '{"event":"missing"}\n');
-
-  const result = withEnv(leasedPublishEnv({ CLAWSWEEPER_STATE_DIR: state }), () =>
-    withCwd(source, () =>
-      publishMainCommit({
-        message: "chore: partially replay immutable bindings",
-        paths: [existingPath, missingPath],
-        coordination: "immutable",
-      }),
-    ),
-  );
-
-  assert.equal(result, "committed");
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${existingPath}`], fixture.root),
-    '{"event":"existing"}\n',
-  );
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${missingPath}`], fixture.root),
-    '{"event":"missing"}\n',
-  );
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-});
-
-test("immutable publisher verifies an accepted branch push after client timeout", () => {
-  const fixture = createStatePublishRemote("immutable-accepted-timeout");
-  const state = path.join(fixture.root, "state");
-  const source = path.join(fixture.root, "source");
-  const publishPath = `ledger/v1/import-bindings/events/${"c".repeat(64)}.json`;
-  cloneState(fixture.origin, state);
-  fs.mkdirSync(source);
-  write(path.join(source, publishPath), '{"event":"accepted"}\n');
-  installAcceptedStatePushTimeoutHook(fixture.origin, 0.3);
-
-  const result = withEnv(
-    leasedPublishEnv({
-      CLAWSWEEPER_STATE_DIR: state,
-      CLAWSWEEPER_IMMUTABLE_PUBLISH_DEADLINE_MS: "3000",
-      CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "100",
-    }),
-    () =>
-      withCwd(source, () =>
-        publishMainCommit({
-          message: "chore: verify immutable accepted timeout",
-          paths: [publishPath],
-          coordination: "immutable",
-        }),
-      ),
-  );
-
-  assert.equal(result, "committed");
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${publishPath}`], fixture.root),
-    '{"event":"accepted"}\n',
-  );
-});
-
-test("64 bursty immutable publishers converge in production-shaped cohorts", async () => {
-  const fixture = createStatePublishRemote("immutable-concurrency");
-  const publisherCount = 64;
-  const cohortSize = 16;
-  const env = leasedPublishEnv({
-    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "10000",
-  });
-  const preparedPublishers = Array.from({ length: publisherCount }, (_, index) => {
-    const state = path.join(fixture.root, `state-${index}`);
-    const source = path.join(fixture.root, `source-${index}`);
-    const publishPath = `ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-${index + 1}-review-${String(index).padStart(2, "0")}.jsonl`;
-    cloneState(fixture.origin, state);
-    fs.mkdirSync(source);
-    write(path.join(source, publishPath), `event ${index}\n`);
-    return { index, state, source, publishPath };
-  });
-  const publishers = [];
-  for (let cohortStart = 0; cohortStart < publisherCount; cohortStart += cohortSize) {
-    const cohort = preparedPublishers
-      .slice(cohortStart, cohortStart + cohortSize)
-      .map(({ index, state, source, publishPath }) => ({
-        publishPath,
-        child: startImmutablePublishProcess(
-          source,
-          state,
-          `chore: append immutable event ${index}`,
-          publishPath,
-          env,
-        ),
-      }));
-    publishers.push(...cohort);
-    const completed = await Promise.all(cohort.map(({ child }) => waitForChild(child)));
-    for (const result of completed) {
-      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    }
-  }
-  for (const [index, { publishPath }] of publishers.entries()) {
-    assert.equal(
-      run("git", ["--git-dir", fixture.origin, "show", `state:${publishPath}`], fixture.root),
-      `event ${index}\n`,
-    );
-  }
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-});
-
-test("immutable publisher survives more than the former 32-attempt race ceiling", () => {
-  const fixture = createStatePublishRemote("immutable-mutable-storm");
-  const state = path.join(fixture.root, "state");
-  const other = path.join(fixture.root, "other");
-  const source = path.join(fixture.root, "source");
-  const publishPath = `ledger/v1/import-bindings/events/${"d".repeat(64)}.json`;
-  cloneState(fixture.origin, state);
-  cloneState(fixture.origin, other);
-  fs.mkdirSync(source);
-  write(path.join(source, publishPath), '{"event":"storm"}\n');
-  const raceCount = 33;
-  installRepeatedStateRaceHook(state, other, raceCount);
-
-  const result = withEnv(
-    leasedPublishEnv({
-      CLAWSWEEPER_STATE_DIR: state,
-      CLAWSWEEPER_IMMUTABLE_PUBLISH_DEADLINE_MS: "60000",
-      CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "5000",
-    }),
-    () =>
-      withCwd(source, () =>
-        publishMainCommit({
-          message: "chore: append immutable event through mutable storm",
-          paths: [publishPath],
-          coordination: "immutable",
-        }),
-      ),
-  );
-
-  assert.equal(result, "committed");
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${publishPath}`], fixture.root),
-    '{"event":"storm"}\n',
-  );
-  for (let race = 1; race <= raceCount; race += 1) {
-    assert.equal(
-      run(
-        "git",
-        ["--git-dir", fixture.origin, "show", `state:results/remote-race-${race}.txt`],
-        fixture.root,
-      ),
-      `remote race ${race}\n`,
-    );
-  }
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-});
-
-test("immutable publishers yield to an active exclusive state mutation", async () => {
-  const fixture = createStatePublishRemote("immutable-exclusive-priority");
-  const exclusiveState = path.join(fixture.root, "state-exclusive");
-  const immutableState = path.join(fixture.root, "state-immutable");
-  const exclusiveSource = path.join(fixture.root, "source-exclusive");
-  const immutableSource = path.join(fixture.root, "source-immutable");
-  const releaseSignal = path.join(fixture.root, "release-exclusive");
-  const releaseObserved = path.join(fixture.root, "exclusive-released");
-  const immutablePath =
-    "ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-priority-review-a.jsonl";
-  cloneState(fixture.origin, exclusiveState);
-  cloneState(fixture.origin, immutableState);
-  fs.mkdirSync(exclusiveSource);
-  fs.mkdirSync(immutableSource);
-  write(path.join(exclusiveSource, "results/exclusive.txt"), "exclusive\n");
-  write(path.join(immutableSource, immutablePath), "immutable\n");
-  installStatePushReleaseHook(exclusiveState, releaseSignal, releaseObserved);
-  const env = leasedPublishEnv({
-    CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "5000",
-    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
-    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
-    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "4000",
-    CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
-  });
-
-  const exclusive = startPublishCli(
-    exclusiveSource,
-    exclusiveState,
-    "chore: publish exclusive mutation",
-    env,
-  );
-  const exclusiveResult = waitForChild(exclusive);
-  await waitForRemoteRef(fixture.origin, STATE_PUBLISH_LEASE_REF);
-  const immutable = startImmutablePublishProcess(
-    immutableSource,
-    immutableState,
-    "chore: append priority event",
-    immutablePath,
-    env,
-  );
-  const immutableResult = waitForChild(immutable);
-  await waitForChildOutput(immutable, "Immutable publish yielding to exclusive state lease");
-  assert.throws(() =>
-    run("git", ["--git-dir", fixture.origin, "show", `state:${immutablePath}`], fixture.root),
-  );
-  write(releaseSignal, "release\n");
-
-  const [exclusiveCompleted, immutableCompleted] = await Promise.all([
-    exclusiveResult,
-    immutableResult,
-  ]);
-  assert.equal(exclusiveCompleted.status, 0, exclusiveCompleted.stderr);
-  assert.equal(immutableCompleted.status, 0, immutableCompleted.stderr);
-  assert.equal(fs.existsSync(releaseObserved), true);
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${immutablePath}`], fixture.root),
-    "immutable\n",
-  );
-  const subjects = run(
-    "git",
-    ["--git-dir", fixture.origin, "log", "--reverse", "--format=%s", "state"],
-    fixture.root,
-  );
-  assert.ok(
-    subjects.indexOf("chore: publish exclusive mutation") <
-      subjects.indexOf("chore: append priority event"),
-  );
-});
-
-test("immutable publishers make progress after the exclusive priority budget", async () => {
-  const fixture = createStatePublishRemote("immutable-exclusive-bounded-priority");
-  const exclusiveState = path.join(fixture.root, "state-exclusive");
-  const immutableState = path.join(fixture.root, "state-immutable");
-  const exclusiveSource = path.join(fixture.root, "source-exclusive");
-  const immutableSource = path.join(fixture.root, "source-immutable");
-  const releaseSignal = path.join(fixture.root, "release-exclusive");
-  const releaseObserved = path.join(fixture.root, "exclusive-released");
-  const exclusivePath = "results/exclusive-bounded-priority.txt";
-  const immutablePath =
-    "ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-bounded-priority-review-a.jsonl";
-  cloneState(fixture.origin, exclusiveState);
-  cloneState(fixture.origin, immutableState);
-  fs.mkdirSync(exclusiveSource);
-  fs.mkdirSync(immutableSource);
-  write(path.join(exclusiveSource, exclusivePath), "exclusive\n");
-  write(path.join(immutableSource, immutablePath), "immutable\n");
-  installStatePushReleaseHook(exclusiveState, releaseSignal, releaseObserved);
-  const env = leasedPublishEnv({
-    CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "5000",
-    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
-    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
-    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "4000",
-    CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
-  });
-
-  const exclusive = startPublishCli(
-    exclusiveSource,
-    exclusiveState,
-    "chore: publish bounded-priority exclusive mutation",
-    env,
-  );
-  const exclusiveResult = waitForChild(exclusive);
-  await waitForRemoteRef(fixture.origin, STATE_PUBLISH_LEASE_REF);
-  const immutable = startImmutablePublishProcess(
-    immutableSource,
-    immutableState,
-    "chore: append bounded-priority event",
-    immutablePath,
-    env,
-  );
-  const immutableResult = waitForChild(immutable);
-  await waitForChildOutput(
-    immutable,
-    "Immutable publish priority yield exhausted",
-    "proceeding alongside active exclusive state lease",
-  );
-  const immutableCompleted = await immutableResult;
-  assert.equal(immutableCompleted.status, 0, immutableCompleted.stderr);
-  assert.equal(fs.existsSync(releaseObserved), false);
-
-  write(releaseSignal, "release\n");
-  const exclusiveCompleted = await exclusiveResult;
-  assert.equal(exclusiveCompleted.status, 0, exclusiveCompleted.stderr);
-  assert.equal(fs.existsSync(releaseObserved), true);
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${exclusivePath}`], fixture.root),
-    "exclusive\n",
-  );
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${immutablePath}`], fixture.root),
-    "immutable\n",
-  );
-});
-
-test("replacement exclusive leases share one immutable priority budget", async () => {
-  const fixture = createStatePublishRemote("immutable-replacement-lease-priority");
-  const leaseState = path.join(fixture.root, "state-lease");
-  const immutableState = path.join(fixture.root, "state-immutable");
-  const immutableSource = path.join(fixture.root, "source-immutable");
-  const immutablePath =
-    "ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-replacement-priority-review-a.jsonl";
-  const firstOwner = "11111111-1111-4111-8111-111111111111";
-  const secondOwner = "22222222-2222-4222-8222-222222222222";
-  const ttlMs = 12_000;
-  cloneState(fixture.origin, leaseState);
-  cloneState(fixture.origin, immutableState);
-  fs.mkdirSync(immutableSource);
-  write(path.join(immutableSource, immutablePath), "immutable\n");
-  const firstIssuedAt = new Date();
-  const firstLeaseOid = createRemoteLease(leaseState, {
-    owner: firstOwner,
-    issuedAt: firstIssuedAt.toISOString(),
-    expiresAt: new Date(firstIssuedAt.getTime() + ttlMs).toISOString(),
-    ttlMs,
-  });
-  const env = leasedPublishEnv({
-    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "9000",
-    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
-    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: String(ttlMs),
-  });
-
-  const immutable = startImmutablePublishProcess(
-    immutableSource,
-    immutableState,
-    "chore: append replacement-priority event",
-    immutablePath,
-    env,
-  );
-  const immutableResult = waitForChild(immutable);
-  await waitForChildOutput(immutable, `owner=${firstOwner}`);
-  const secondIssuedAt = new Date();
-  createRemoteLease(leaseState, {
-    owner: secondOwner,
-    issuedAt: secondIssuedAt.toISOString(),
-    expiresAt: new Date(secondIssuedAt.getTime() + ttlMs).toISOString(),
-    ttlMs,
-    expectedOid: firstLeaseOid,
-  });
-  await waitForChildOutput(immutable, `owner=${secondOwner}`);
-
-  const immutableCompleted = await immutableResult;
-  assert.equal(immutableCompleted.status, 0, immutableCompleted.stderr);
-  const firstWaitMs = Number(
-    new RegExp(`owner=${firstOwner} wait_ms=(\\d+)`).exec(immutableCompleted.stdout)?.[1],
-  );
-  const secondWaitMs = Number(
-    new RegExp(`owner=${secondOwner} wait_ms=(\\d+)`).exec(immutableCompleted.stdout)?.[1],
-  );
-  assert.ok(firstWaitMs > 0);
-  assert.ok(secondWaitMs > 0 && secondWaitMs < firstWaitMs);
-  assert.match(immutableCompleted.stdout, /Immutable publish priority yield exhausted/);
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), true);
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${immutablePath}`], fixture.root),
-    "immutable\n",
-  );
-});
-
-test("slow lease observation cannot consume the immutable CAS reserve", async () => {
-  const fixture = createStatePublishRemote("immutable-slow-lease-observation");
-  const leaseState = path.join(fixture.root, "state-lease");
-  const immutableState = path.join(fixture.root, "state-immutable");
-  const immutableSource = path.join(fixture.root, "source-immutable");
-  const immutablePath =
-    "ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-slow-observation-review-a.jsonl";
-  const ttlMs = 10_000;
-  cloneState(fixture.origin, leaseState);
-  cloneState(fixture.origin, immutableState);
-  fs.mkdirSync(immutableSource);
-  write(path.join(immutableSource, immutablePath), "immutable\n");
-  const issuedAt = new Date();
-  createRemoteLease(leaseState, {
-    owner: "33333333-3333-4333-8333-333333333333",
-    issuedAt: issuedAt.toISOString(),
-    expiresAt: new Date(issuedAt.getTime() + ttlMs).toISOString(),
-    ttlMs,
-  });
-  const wrapper = installSlowLeaseObservationGitWrapper(fixture.root, 2);
-  const env = leasedPublishEnv({
-    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
-    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
-    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: String(ttlMs),
-    PATH: `${wrapper.bin}:${process.env.PATH ?? ""}`,
-    REAL_GIT: wrapper.realGit,
-  });
-
-  const immutable = startImmutablePublishProcess(
-    immutableSource,
-    immutableState,
-    "chore: append after slow lease observation",
-    immutablePath,
-    env,
-  );
-  const immutableCompleted = await waitForChild(immutable);
-
-  assert.equal(immutableCompleted.status, 0, immutableCompleted.stderr);
-  assert.equal(fs.existsSync(wrapper.marker), true);
-  assert.match(
-    immutableCompleted.stdout,
-    /priority yield exhausted during lease observation; proceeding without further exclusive lease preference/,
-  );
-  assert.doesNotMatch(immutableCompleted.stdout, /State publication deadline exceeded/);
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), true);
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${immutablePath}`], fixture.root),
-    "immutable\n",
-  );
-});
-
-test("pre-convergence work consumes the shared immutable priority budget", async () => {
-  const fixture = createStatePublishRemote("immutable-pre-convergence-priority");
-  const leaseState = path.join(fixture.root, "state-lease");
-  const immutableState = path.join(fixture.root, "state-immutable");
-  const immutableSource = path.join(fixture.root, "source-immutable");
-  const immutablePath =
-    "ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-pre-convergence-review-a.jsonl";
-  const ttlMs = 10_000;
-  cloneState(fixture.origin, leaseState);
-  cloneState(fixture.origin, immutableState);
-  fs.mkdirSync(immutableSource);
-  write(path.join(immutableSource, immutablePath), "immutable\n");
-  const issuedAt = new Date();
-  createRemoteLease(leaseState, {
-    owner: "44444444-4444-4444-8444-444444444444",
-    issuedAt: issuedAt.toISOString(),
-    expiresAt: new Date(issuedAt.getTime() + ttlMs).toISOString(),
-    ttlMs,
-  });
-  const wrapper = installDelayedPreConvergenceGitWrapper(fixture.root, 1);
-  const env = leasedPublishEnv({
-    CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
-    CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "2000",
-    CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: String(ttlMs),
-    PATH: `${wrapper.bin}:${process.env.PATH ?? ""}`,
-    REAL_GIT: wrapper.realGit,
-  });
-
-  const immutable = startImmutablePublishProcess(
-    immutableSource,
-    immutableState,
-    "chore: append after delayed pre-convergence work",
-    immutablePath,
-    env,
-  );
-  const immutableCompleted = await waitForChild(immutable);
-
-  assert.equal(immutableCompleted.status, 0, immutableCompleted.stderr);
-  assert.equal(fs.existsSync(wrapper.delayMarker), true);
-  assert.equal(fs.existsSync(wrapper.leaseProbeMarker), false);
-  assert.doesNotMatch(immutableCompleted.stdout, /State publication deadline exceeded/);
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), true);
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${immutablePath}`], fixture.root),
-    "immutable\n",
-  );
-});
-
-test("immutable publisher converges when an exclusive lease appears before its push", () => {
-  const fixture = createStatePublishRemote("immutable-exclusive-acquisition-race");
-  const immutableState = path.join(fixture.root, "state-immutable");
-  const exclusiveState = path.join(fixture.root, "state-exclusive");
-  const immutableSource = path.join(fixture.root, "source-immutable");
-  const exclusiveSource = path.join(fixture.root, "source-exclusive");
-  const immutablePath = `ledger/v1/import-bindings/events/${"e".repeat(64)}.json`;
-  const exclusivePath = "results/exclusive-after-check.txt";
-  cloneState(fixture.origin, immutableState);
-  cloneState(fixture.origin, exclusiveState);
-  fs.mkdirSync(immutableSource);
-  fs.mkdirSync(exclusiveSource);
-  write(path.join(immutableSource, immutablePath), '{"event":"immutable"}\n');
-  write(path.join(exclusiveSource, exclusivePath), "exclusive\n");
-  const marker = installExclusivePublishDuringStatePushHook(
-    immutableState,
-    exclusiveSource,
-    exclusiveState,
-  );
-  const lines = captureConsoleLog(() =>
-    withEnv(
-      leasedPublishEnv({
-        CLAWSWEEPER_STATE_DIR: immutableState,
-        CLAWSWEEPER_PUBLISH_ACQUIRE_DEADLINE_MS: "5000",
-        CLAWSWEEPER_PUBLISH_DEADLINE_MS: "3000",
-        CLAWSWEEPER_IMMUTABLE_PUBLISH_DEADLINE_MS: "3000",
-        CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "1000",
-        CLAWSWEEPER_PUBLISH_LEASE_TTL_MS: "4000",
-        CLAWSWEEPER_PUBLISH_LEASE_WAIT_MS: "10",
-      }),
-      () =>
-        withCwd(immutableSource, () =>
-          publishMainCommit({
-            message: "chore: append immutable event after exclusive acquisition",
-            paths: [immutablePath],
-            coordination: "immutable",
-          }),
-        ),
-    ),
-  );
-
-  assert.equal(fs.existsSync(marker), true);
-  assert.equal(
-    lines.some((line) => line.includes("Immutable publish lost state race attempt=1/128")),
-    true,
-  );
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${immutablePath}`], fixture.root),
-    '{"event":"immutable"}\n',
-  );
-  assert.equal(
-    run("git", ["--git-dir", fixture.origin, "show", `state:${exclusivePath}`], fixture.root),
-    "exclusive\n",
-  );
-  assert.equal(remoteRefExists(fixture.origin, STATE_PUBLISH_LEASE_REF), false);
-});
-
-test("immutable publication deadline bounds continuous rejected branch pushes", () => {
-  const fixture = createStatePublishRemote("immutable-deadline");
-  const state = path.join(fixture.root, "state");
-  const source = path.join(fixture.root, "source");
-  const publishPath =
-    "ledger/v1/events/2026/07/14/openclaw-clawsweeper/review/run-deadline-review-a.jsonl";
-  cloneState(fixture.origin, state);
-  fs.mkdirSync(source);
-  write(path.join(source, publishPath), "deadline event\n");
-  installStatePushRejectHook(fixture.origin);
-  const startedAt = Date.now();
-
-  assert.throws(
-    () =>
-      withEnv(
-        leasedPublishEnv({
-          CLAWSWEEPER_STATE_DIR: state,
-          CLAWSWEEPER_IMMUTABLE_PUBLISH_DEADLINE_MS: "120",
-          CLAWSWEEPER_PUBLISH_COMMAND_TIMEOUT_MS: "100",
-        }),
-        () =>
-          withCwd(source, () =>
-            publishMainCommit({
-              message: "chore: bound immutable retries",
-              paths: [publishPath],
-              coordination: "immutable",
-              maxAttempts: 100,
-            }),
-          ),
-      ),
-    /State publication deadline exceeded|git \S+ timed out after \d+ms during state publication/,
-  );
-  assert.ok(Date.now() - startedAt < 1500);
-});
-
 test("setTokenOrigin redacts tokens from command logs", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   run("git", ["init"], root);
@@ -4234,517 +4469,6 @@ test("setTokenOrigin redacts tokens from command logs", () => {
     true,
   );
 });
-
-function createStatePublishRemote(label) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), `clawsweeper-lease-${label}-`));
-  const origin = path.join(root, "origin.git");
-  const seed = path.join(root, "seed");
-  run("git", ["init", "--bare", origin], root);
-  run("git", ["clone", origin, seed], root);
-  configureUser(seed);
-  write(path.join(seed, "results/initial.txt"), "initial\n");
-  run("git", ["add", "."], seed);
-  run("git", ["commit", "-m", "initial state"], seed);
-  run("git", ["push", "origin", "HEAD:state"], seed);
-  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
-  return { root, origin };
-}
-
-function cloneState(origin, destination) {
-  run("git", ["clone", origin, destination], path.dirname(destination));
-  configureUser(destination);
-}
-
-function leasedPublishEnv(overrides = {}) {
-  return {
-    CLAWSWEEPER_PUBLISH_LEASE: "true",
-    CLAWSWEEPER_PUBLISH_BRANCH: "state",
-    ...overrides,
-  };
-}
-
-function startPublishCli(cwd, stateDir, message, env) {
-  const publishPath = path.relative(cwd, listFixtureFiles(cwd)[0]).split(path.sep).join("/");
-  return spawn(
-    process.execPath,
-    [path.resolve("dist/repair/publish-main.js"), "--message", message, "--path", publishPath],
-    {
-      cwd,
-      detached: true,
-      env: {
-        ...process.env,
-        ...env,
-        CLAWSWEEPER_STATE_DIR: stateDir,
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-}
-
-function startImmutablePublishProcess(cwd, stateDir, message, publishPath, env) {
-  const moduleUrl = pathToFileURL(path.resolve("dist/repair/git-publish.js")).href;
-  const script = `const { publishMainCommit } = await import(${JSON.stringify(moduleUrl)});
-publishMainCommit({
-  message: process.argv[1],
-  paths: [process.argv[2]],
-  coordination: "immutable",
-});`;
-  return spawn(process.execPath, ["--input-type=module", "--eval", script, message, publishPath], {
-    cwd,
-    detached: true,
-    env: {
-      ...process.env,
-      ...env,
-      CLAWSWEEPER_STATE_DIR: stateDir,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
-
-function listFixtureFiles(root) {
-  return fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
-    const target = path.join(root, entry.name);
-    return entry.isDirectory() ? listFixtureFiles(target) : [target];
-  });
-}
-
-function waitForChild(child) {
-  let stdout = "";
-  let stderr = "";
-  child.stdout.on("data", (chunk) => {
-    stdout += chunk;
-  });
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk;
-  });
-  return new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (status, signal) => resolve({ status, signal, stdout, stderr }));
-  });
-}
-
-function waitForChildOutput(child, ...needles) {
-  return new Promise((resolve, reject) => {
-    let stdout = "";
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error(`timed out waiting for child output: ${needles.join(" ... ")}`));
-    }, 5000);
-    const onData = (chunk) => {
-      stdout += chunk;
-      if (needles.every((needle) => stdout.includes(needle))) {
-        cleanup();
-        resolve(stdout);
-      }
-    };
-    const onClose = (status) => {
-      cleanup();
-      reject(
-        new Error(
-          `child exited with status ${status} before output appeared: ${needles.join(" ... ")}`,
-        ),
-      );
-    };
-    const cleanup = () => {
-      clearTimeout(timeout);
-      child.stdout.off("data", onData);
-      child.off("close", onClose);
-    };
-    child.stdout.on("data", onData);
-    child.once("close", onClose);
-  });
-}
-
-async function waitForRemoteRef(origin, ref) {
-  const deadline = Date.now() + 3000;
-  while (Date.now() < deadline) {
-    if (remoteRefExists(origin, ref)) return;
-    await delay(10);
-  }
-  throw new Error(`timed out waiting for ${ref}`);
-}
-
-async function waitForRemoteRefRemoval(origin, ref) {
-  const deadline = Date.now() + 3000;
-  while (Date.now() < deadline) {
-    if (!remoteRefExists(origin, ref)) return;
-    await delay(10);
-  }
-  throw new Error(`timed out waiting for ${ref} removal`);
-}
-
-function remoteRefExists(origin, ref) {
-  try {
-    run("git", ["--git-dir", origin, "show-ref", "--verify", "--quiet", ref], path.dirname(origin));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function remoteLeaseExpiryMs(origin) {
-  const message = readRemoteLeaseMessage(origin);
-  const expiresAt = /^expires_at: (.+)$/m.exec(message)?.[1];
-  const expiresAtMs = Date.parse(expiresAt ?? "");
-  assert.ok(Number.isFinite(expiresAtMs), "remote lease must have a valid expiry");
-  return expiresAtMs;
-}
-
-function readRemoteLeaseMessage(origin) {
-  return run(
-    "git",
-    ["--git-dir", origin, "show", "-s", "--format=%B", STATE_PUBLISH_LEASE_REF],
-    path.dirname(origin),
-  );
-}
-
-function createRemoteLease(state, { owner, issuedAt, expiresAt, ttlMs, expectedOid = "" }) {
-  const tree = run("git", ["rev-parse", "HEAD^{tree}"], state).trim();
-  const parent = run("git", ["rev-parse", "HEAD"], state).trim();
-  const lease = execFileSync(
-    "git",
-    [
-      "commit-tree",
-      tree,
-      "-p",
-      parent,
-      "-m",
-      [
-        "ClawSweeper state publish lease",
-        "",
-        `owner: ${owner}`,
-        "branch: state",
-        `lease_protocol: ${STATE_PUBLISH_TIMING_DEFAULTS.leaseProtocolVersion}`,
-        `issued_at: ${issuedAt}`,
-        `ttl_ms: ${ttlMs}`,
-        `expires_at: ${expiresAt}`,
-      ].join("\n"),
-    ],
-    {
-      cwd: state,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        GIT_AUTHOR_DATE: issuedAt,
-        GIT_COMMITTER_DATE: issuedAt,
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  ).trim();
-  run(
-    "git",
-    [
-      "push",
-      `--force-with-lease=${STATE_PUBLISH_LEASE_REF}:${expectedOid}`,
-      "origin",
-      `${lease}:${STATE_PUBLISH_LEASE_REF}`,
-    ],
-    state,
-  );
-  return lease;
-}
-
-function installVanishingLeaseGitWrapper(root) {
-  const bin = path.join(root, "git-wrapper");
-  const marker = path.join(root, "lease-vanished");
-  const realGit = run("sh", ["-c", "command -v git"], root).trim();
-  fs.mkdirSync(bin);
-  const wrapper = path.join(bin, "git");
-  fs.writeFileSync(
-    wrapper,
-    `#!/bin/sh
-: "\${REAL_GIT:?real git path is required}"
-if test "$1" = "fetch" &&
-   test "$2" = "--no-tags" &&
-   test "$3" = "--quiet" &&
-   test "$5" = "${STATE_PUBLISH_LEASE_REF}" &&
-   test ! -f "\${VANISHING_LEASE_MARKER}"; then
-  touch "\${VANISHING_LEASE_MARKER}"
-  "$REAL_GIT" --git-dir="\${VANISHING_LEASE_ORIGIN}" update-ref -d "${STATE_PUBLISH_LEASE_REF}"
-fi
-exec "$REAL_GIT" "$@"
-`,
-  );
-  fs.chmodSync(wrapper, 0o755);
-  return { bin, marker, realGit };
-}
-
-function installSlowLeaseObservationGitWrapper(root, seconds) {
-  const bin = path.join(root, "git-wrapper-slow-lease");
-  const marker = path.join(root, "slow-lease-observation");
-  const realGit = run("sh", ["-c", "command -v git"], root).trim();
-  fs.mkdirSync(bin);
-  const wrapper = path.join(bin, "git");
-  fs.writeFileSync(
-    wrapper,
-    `#!/bin/sh
-: "\${REAL_GIT:?real git path is required}"
-if test "$1" = "ls-remote" &&
-   test "$2" = "--refs" &&
-   test "$4" = "${STATE_PUBLISH_LEASE_REF}" &&
-   test ! -f "${marker}"; then
-  touch "${marker}"
-  sleep "${seconds}"
-fi
-exec "$REAL_GIT" "$@"
-`,
-  );
-  fs.chmodSync(wrapper, 0o755);
-  return { bin, marker, realGit };
-}
-
-function installDelayedPreConvergenceGitWrapper(root, seconds) {
-  const bin = path.join(root, "git-wrapper-delayed-pre-convergence");
-  const delayMarker = path.join(root, "pre-convergence-delay");
-  const leaseProbeMarker = path.join(root, "pre-convergence-lease-probe");
-  const realGit = run("sh", ["-c", "command -v git"], root).trim();
-  fs.mkdirSync(bin);
-  const wrapper = path.join(bin, "git");
-  fs.writeFileSync(
-    wrapper,
-    `#!/bin/sh
-: "\${REAL_GIT:?real git path is required}"
-if test "$1" = "fetch" &&
-   test "$2" = "origin" &&
-   test "$3" = "state" &&
-   test ! -f "${delayMarker}"; then
-  touch "${delayMarker}"
-  sleep "${seconds}"
-fi
-if test "$1" = "ls-remote" &&
-   test "$2" = "--refs" &&
-   test "$4" = "${STATE_PUBLISH_LEASE_REF}"; then
-  touch "${leaseProbeMarker}"
-fi
-exec "$REAL_GIT" "$@"
-`,
-  );
-  fs.chmodSync(wrapper, 0o755);
-  return { bin, delayMarker, leaseProbeMarker, realGit };
-}
-
-function installAcceptedStatePushTimeoutHook(origin, seconds) {
-  const hook = path.join(origin, "hooks/post-receive");
-  const marker = path.join(origin, "accepted-state-push-timeout");
-  fs.writeFileSync(
-    hook,
-    `#!/bin/sh
-while read -r old_oid new_oid ref; do
-  if test "$ref" = "refs/heads/state" && test ! -f "${marker}"; then
-    touch "${marker}"
-    sleep "${seconds}"
-  fi
-done
-`,
-  );
-  fs.chmodSync(hook, 0o755);
-  return marker;
-}
-
-function installAcceptedLeasePushTimeoutHook(origin, seconds) {
-  const hook = path.join(origin, "hooks/post-receive");
-  const marker = path.join(origin, "accepted-lease-push-timeout");
-  fs.writeFileSync(
-    hook,
-    `#!/bin/sh
-while read -r old_oid new_oid ref; do
-  if test "$ref" = "${STATE_PUBLISH_LEASE_REF}" && test ! -f "${marker}"; then
-    touch "${marker}"
-    sleep "${seconds}"
-  fi
-done
-`,
-  );
-  fs.chmodSync(hook, 0o755);
-  return marker;
-}
-
-function installUnacceptedLeasePushTimeoutHook(state, seconds) {
-  const hook = path.join(state, ".git/hooks/pre-push");
-  const marker = path.join(state, ".git/hooks/unaccepted-lease-push-timeout");
-  fs.writeFileSync(
-    hook,
-    `#!/bin/sh
-if test ! -f "${marker}"; then
-  while read -r local_ref local_oid remote_ref remote_oid; do
-    if test "$remote_ref" = "${STATE_PUBLISH_LEASE_REF}"; then
-      touch "${marker}"
-      sleep "${seconds}"
-    fi
-  done
-fi
-`,
-  );
-  fs.chmodSync(hook, 0o755);
-  return marker;
-}
-
-function installStatePushRejectHook(origin) {
-  const hook = path.join(origin, "hooks/pre-receive");
-  fs.writeFileSync(
-    hook,
-    `#!/bin/sh
-while read -r old_oid new_oid ref; do
-  if test "$ref" = "refs/heads/state"; then
-    echo "rejecting state push for recovery test" >&2
-    exit 1
-  fi
-done
-`,
-  );
-  fs.chmodSync(hook, 0o755);
-  return hook;
-}
-
-function installStatePushSleepHook(state, seconds) {
-  const hook = path.join(state, ".git/hooks/pre-push");
-  fs.writeFileSync(
-    hook,
-    `#!/bin/sh
-while read -r local_ref local_oid remote_ref remote_oid; do
-  if test "$remote_ref" = "refs/heads/state"; then
-    sleep "${seconds}"
-  fi
-done
-`,
-  );
-  fs.chmodSync(hook, 0o755);
-}
-
-function installStatePushReleaseHook(state, releaseSignal, releaseObserved) {
-  const hook = path.join(state, ".git/hooks/pre-push");
-  fs.writeFileSync(
-    hook,
-    `#!/bin/sh
-while read -r local_ref local_oid remote_ref remote_oid; do
-  if test "$remote_ref" = "refs/heads/state"; then
-    attempts=0
-    while test ! -f "${releaseSignal}"; do
-      attempts=$((attempts + 1))
-      if test "$attempts" -ge 500; then
-        echo "timed out waiting for publisher release signal" >&2
-        exit 1
-      fi
-      sleep 0.01
-    done
-    printf 'released\\n' > "${releaseObserved}"
-  fi
-done
-`,
-  );
-  fs.chmodSync(hook, 0o755);
-}
-
-function installExclusivePublishDuringStatePushHook(state, source, exclusiveState) {
-  const hook = path.join(state, ".git/hooks/pre-push");
-  const marker = path.join(state, ".git/hooks/exclusive-publish-completed");
-  const publishCli = path.resolve("dist/repair/publish-main.js");
-  fs.writeFileSync(
-    hook,
-    `#!/bin/sh
-while read -r local_ref local_oid remote_ref remote_oid; do
-  if test "$remote_ref" = "refs/heads/state" && test ! -f "${marker}"; then
-    (
-      cd "${source}"
-      CLAWSWEEPER_STATE_DIR="${exclusiveState}" \
-      "${process.execPath}" "${publishCli}" \
-        --message "chore: publish exclusive mutation during immutable push" \
-        --path "results/exclusive-after-check.txt"
-    )
-    touch "${marker}"
-  fi
-done
-`,
-  );
-  fs.chmodSync(hook, 0o755);
-  return marker;
-}
-
-function installLeasePushSleepHook(state, seconds) {
-  const hook = path.join(state, ".git/hooks/pre-push");
-  fs.writeFileSync(
-    hook,
-    `#!/bin/sh
-while read -r local_ref local_oid remote_ref remote_oid; do
-  if test "$remote_ref" = "${STATE_PUBLISH_LEASE_REF}"; then
-    sleep "${seconds}"
-  fi
-done
-`,
-  );
-  fs.chmodSync(hook, 0o755);
-}
-
-function installStateRaceHook(state, other) {
-  const hook = path.join(state, ".git/hooks/pre-push");
-  const counter = path.join(state, ".git/hooks/state-push-count");
-  fs.writeFileSync(
-    hook,
-    `#!/bin/sh
-while read -r local_ref local_oid remote_ref remote_oid; do
-  if test "$remote_ref" != "refs/heads/state"; then
-    continue
-  fi
-  count=0
-  if test -f "${counter}"; then count=$(cat "${counter}"); fi
-  count=$((count + 1))
-  printf '%s\\n' "$count" > "${counter}"
-  if test "$count" -eq 1; then
-    git -C "${other}" push origin HEAD:state
-  fi
-done
-`,
-  );
-  fs.chmodSync(hook, 0o755);
-}
-
-function installRepeatedStateRaceHook(state, other, races) {
-  const hook = path.join(state, ".git/hooks/pre-push");
-  const counter = path.join(state, ".git/hooks/state-push-count");
-  fs.writeFileSync(
-    hook,
-    `#!/bin/sh
-while read -r local_ref local_oid remote_ref remote_oid; do
-  if test "$remote_ref" != "refs/heads/state"; then
-    continue
-  fi
-  count=0
-  if test -f "${counter}"; then count=$(cat "${counter}"); fi
-  count=$((count + 1))
-  printf '%s\\n' "$count" > "${counter}"
-  if test "$count" -le "${races}"; then
-    printf 'remote race %s\\n' "$count" > "${other}/results/remote-race-$count.txt"
-    git -C "${other}" add "results/remote-race-$count.txt"
-    git -C "${other}" commit -m "remote state race $count"
-    git -C "${other}" push origin HEAD:state
-  fi
-done
-`,
-  );
-  fs.chmodSync(hook, 0o755);
-}
-
-function installStatePoisonHook(origin) {
-  const hook = path.join(origin, "hooks/post-receive");
-  const marker = path.join(origin, "state-poisoned");
-  fs.writeFileSync(
-    hook,
-    `#!/bin/sh
-while read -r old_oid new_oid ref; do
-  if test "$ref" = "refs/heads/state" && test ! -f "${marker}"; then
-    touch "${marker}"
-    poison=$(git --git-dir="${origin}" rev-parse refs/heads/poison)
-    git --git-dir="${origin}" update-ref refs/heads/state "$poison"
-  fi
-done
-`,
-  );
-  fs.chmodSync(hook, 0o755);
-}
-
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
 
 function withCwd(cwd, callback) {
   const previous = process.cwd();
@@ -4780,11 +4504,72 @@ function run(command, args, cwd) {
   });
 }
 
+function runWithInput(command, args, cwd, input) {
+  return execFileSync(command, args, {
+    cwd,
+    encoding: "utf8",
+    input,
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+}
+
+function singleEntryTree(gitDir, name, oid, cwd) {
+  return runWithInput(
+    "git",
+    ["--git-dir", gitDir, "mktree", "-z"],
+    cwd,
+    `040000 tree ${oid}\t${name}\0`,
+  ).trim();
+}
+
 function configureUser(cwd) {
   run("git", ["config", "core.autocrlf", "false"], cwd);
   run("git", ["config", "core.eol", "lf"], cwd);
   run("git", ["config", "user.name", "Tester"], cwd);
   run("git", ["config", "user.email", "tester@example.com"], cwd);
+}
+
+function createStateLeaseTestRepo(prefix) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  write(path.join(work, "README.md"), "state\n");
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial state"], work);
+  run("git", ["push", "origin", "HEAD:state"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/state"], root);
+  return { origin, root, work };
+}
+
+function pushStateLeaseMetadata(
+  work,
+  ref,
+  { owner, expiresAtMs, subject = "ClawSweeper state publish lease", ttlMs = 30_000 },
+) {
+  const tree = execFileSync("git", ["mktree"], {
+    cwd: work,
+    input: "",
+    encoding: "utf8",
+  }).trim();
+  const commit = execFileSync("git", ["commit-tree", tree], {
+    cwd: work,
+    input: [
+      subject,
+      "",
+      `owner: ${owner}`,
+      "branch: state",
+      `ttl_ms: ${ttlMs}`,
+      `expires_at: ${new Date(expiresAtMs).toISOString()}`,
+      "",
+    ].join("\n"),
+    encoding: "utf8",
+  }).trim();
+  run("git", ["push", "origin", `${commit}:${ref}`], work);
+  return commit;
 }
 
 function write(file, content) {
@@ -4918,6 +4703,21 @@ if test "$count" -eq 2; then git -C "${other}" push origin HEAD:main; fi
   fs.chmodSync(hook, 0o755);
 }
 
+function commentRouterLedger(commands) {
+  return { updated_at: "2026-07-18T22:10:32Z", commands };
+}
+
+function commentRouterCommand(key, second) {
+  const timestamp = `2026-07-18T22:10:${String(second).padStart(2, "0")}Z`;
+  return {
+    comment_version_key: key,
+    comment_id: key,
+    comment_updated_at: timestamp,
+    status: "executed",
+    processed_at: timestamp,
+  };
+}
+
 function installFirstPushRaceHook(work, other, branch = "main") {
   const hook = path.join(work, ".git/hooks/pre-push");
   const counter = path.join(work, ".git/hooks/pre-push-count");
@@ -4934,12 +4734,316 @@ if test "$count" -eq 1; then git -C "${other}" push origin HEAD:${branch}; fi
   fs.chmodSync(hook, 0o755);
 }
 
+function installMissingObjectFetchShim(fakeBin, work, objectIds) {
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const git = path.join(fakeBin, "git");
+  const marker = path.join(work, ".git", "missing-object-removed");
+  const objectPaths = objectIds.map((objectId) =>
+    path.join(work, ".git", "objects", objectId.slice(0, 2), objectId.slice(2)),
+  );
+  const realGit = run("/usr/bin/env", ["which", "git"], process.cwd()).trim();
+  fs.writeFileSync(
+    git,
+    `#!/bin/sh
+set -eu
+if test "$1" = fetch && test "$3" = "${objectIds[0]}"; then
+  printf '%s\n' 'fatal: remote rejected direct object want' >&2
+  exit 128
+fi
+"${realGit}" "$@"
+result=$?
+if test "$result" -eq 0 && test "$1" = fetch && test ! -e "${marker}"; then
+${objectPaths.map((objectPath) => `  test -f "${objectPath}"\n  rm "${objectPath}"`).join("\n")}
+  : > "${marker}"
+fi
+exit "$result"
+`,
+  );
+  fs.chmodSync(git, 0o755);
+}
+
+function installMissingWrittenObjectFetchShim(fakeBin, work, localPath) {
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const git = path.join(fakeBin, "git");
+  const marker = path.join(work, ".git", "missing-written-object-removed");
+  const pushCounter = path.join(work, ".git", "hooks", "pre-push-count");
+  const realGit = run("/usr/bin/env", ["which", "git"], process.cwd()).trim();
+  fs.writeFileSync(
+    git,
+    `#!/bin/sh
+set -u
+"${realGit}" "$@"
+result=$?
+if test "$result" -eq 0 && test "$1" = fetch && test -e "${pushCounter}" && test ! -e "${marker}"; then
+  object_id=$("${realGit}" -C "${work}" rev-parse "HEAD:${localPath}")
+  object_path="${path.join(work, ".git", "objects")}/$(printf '%s' "$object_id" | cut -c1-2)/$(printf '%s' "$object_id" | cut -c3-)"
+  test -f "$object_path"
+  rm "$object_path"
+  printf '%s\n' "$object_id" > "${marker}"
+fi
+exit "$result"
+`,
+  );
+  fs.chmodSync(git, 0o755);
+}
+
+function installRecoverableUnavailablePushShim(fakeBin, work, objectId, objectFile) {
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const git = path.join(fakeBin, "git");
+  const counter = path.join(work, ".git", "unavailable-push-count");
+  const realGit = run("/usr/bin/env", ["which", "git"], process.cwd()).trim();
+  fs.writeFileSync(
+    git,
+    `#!/bin/sh
+set -eu
+if test "$1" = push; then
+  count=0
+  if test -f "${counter}"; then count=$(cat "${counter}"); fi
+  count=$((count + 1))
+  printf '%s\n' "$count" > "${counter}"
+  if test "$count" -eq 1; then
+    printf '%s\n' "fatal: entry 'missing.json' object ${objectId} is unavailable" >&2
+    exit 128
+  fi
+fi
+if test "$1" = fetch && test "$3" = "${objectId}"; then
+  recovered=$("${realGit}" -C "${work}" hash-object -w "${objectFile}")
+  test "$recovered" = "${objectId}"
+  exit 0
+fi
+exec "${realGit}" "$@"
+`,
+  );
+  fs.chmodSync(git, 0o755);
+}
+
+function installUnavailablePushShim(fakeBin, work, objectId) {
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const git = path.join(fakeBin, "git");
+  const counter = path.join(work, ".git", "unavailable-push-count");
+  const realGit = run("/usr/bin/env", ["which", "git"], process.cwd()).trim();
+  fs.writeFileSync(
+    git,
+    `#!/bin/sh
+set -eu
+if test "$1" = push; then
+  count=0
+  if test -f "${counter}"; then count=$(cat "${counter}"); fi
+  count=$((count + 1))
+  printf '%s\n' "$count" > "${counter}"
+  if test "$count" -eq 1; then
+    printf '%s\n' "fatal: entry 'missing.json' object ${objectId} is unavailable" >&2
+    exit 128
+  fi
+fi
+if test "$1" = fetch && test "$3" = "${objectId}"; then
+  printf '%s\n' 'fatal: remote rejected direct object want' >&2
+  exit 128
+fi
+exec "${realGit}" "$@"
+`,
+  );
+  fs.chmodSync(git, 0o755);
+}
+
+function installSecondMergeBaseFailureShim(fakeBin, work) {
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const git = path.join(fakeBin, "git");
+  const counter = path.join(work, ".git", "merge-base-count");
+  const realGit = run("/usr/bin/env", ["which", "git"], process.cwd()).trim();
+  fs.writeFileSync(
+    git,
+    `#!/bin/sh
+set -u
+if test "$1" = merge-base; then
+  count=0
+  if test -f "${counter}"; then count=$(cat "${counter}"); fi
+  count=$((count + 1))
+  printf '%s\n' "$count" > "${counter}"
+  if test "$count" -eq 2; then
+    printf '%s\n' 'fatal: synthetic merge-base failure' >&2
+    exit 2
+  fi
+fi
+exec "${realGit}" "$@"
+`,
+  );
+  fs.chmodSync(git, 0o755);
+}
+
+function installDeepenFetchFailureShim(fakeBin) {
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const git = path.join(fakeBin, "git");
+  const realGit = run("/usr/bin/env", ["which", "git"], process.cwd()).trim();
+  fs.writeFileSync(
+    git,
+    `#!/bin/sh
+set -u
+if test "$1" = fetch && test "$2" = --deepen=32; then
+  printf '%s\n' 'fatal: synthetic deepen failure' >&2
+  exit 2
+fi
+exec "${realGit}" "$@"
+`,
+  );
+  fs.chmodSync(git, 0o755);
+}
+
+function installFirstTwoPushRaceHook(work, other, branch = "main") {
+  const hook = path.join(work, ".git/hooks/pre-push");
+  const counter = path.join(work, ".git/hooks/pre-push-count");
+  fs.writeFileSync(
+    hook,
+    `#!/bin/sh
+count=0
+if test -f "${counter}"; then count=$(cat "${counter}"); fi
+count=$((count + 1))
+printf '%s\\n' "$count" > "${counter}"
+if test "$count" -eq 1; then
+  git -C "${other}" push origin HEAD:${branch}
+elif test "$count" -eq 2; then
+  printf 'second race\\n' >> "${path.join(other, "remote.txt")}"
+  git -C "${other}" add remote.txt
+  git -C "${other}" commit -m 'second concurrent state update'
+  git -C "${other}" push origin HEAD:${branch}
+fi
+`,
+  );
+  fs.chmodSync(hook, 0o755);
+}
+
+function installPushRaceHook(work, other, raceCount, branch = "main") {
+  const hook = path.join(work, ".git/hooks/pre-push");
+  const counter = path.join(work, ".git/hooks/pre-push-count");
+  fs.writeFileSync(
+    hook,
+    `#!/bin/sh
+count=0
+if test -f "${counter}"; then count=$(cat "${counter}"); fi
+count=$((count + 1))
+printf '%s\\n' "$count" > "${counter}"
+if test "$count" -le ${raceCount}; then
+  printf 'race %s\\n' "$count" >> "${path.join(other, "remote.txt")}"
+  printf 'remote scratch %s\\n' "$count" > "${path.join(other, "unrelated/0000.txt")}"
+  if test "$count" -eq 1; then git -C "${other}" rm scratch/dirty.txt; fi
+  printf 'remote parent %s\\n' "$count" > "${path.join(other, "scratch")}"
+  printf 'remote ignored parent %s\\n' "$count" > "${path.join(other, "ignored")}"
+  git -C "${other}" add remote.txt unrelated/0000.txt scratch ignored
+  git -C "${other}" commit -m "concurrent state update $count"
+  git -C "${other}" push origin HEAD:${branch}
+fi
+`,
+  );
+  fs.chmodSync(hook, 0o755);
+}
+
+function installSimplePushRaceHook(work, other, raceCount, branch = "main") {
+  const hook = path.join(work, ".git/hooks/pre-push");
+  const counter = path.join(work, ".git/hooks/pre-push-count");
+  fs.writeFileSync(
+    hook,
+    `#!/bin/sh
+set -e
+target_ref="refs/heads/${branch}"
+targets_branch=false
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if test "$remote_ref" = "$target_ref"; then targets_branch=true; fi
+done
+if test "$targets_branch" != true; then exit 0; fi
+count=0
+if test -f "${counter}"; then count=$(cat "${counter}"); fi
+count=$((count + 1))
+printf '%s\n' "$count" > "${counter}"
+if test "$count" -le ${raceCount}; then
+  printf 'race %s\n' "$count" >> "${path.join(other, "remote.txt")}"
+  git -C "${other}" add remote.txt
+  git -C "${other}" commit -m "concurrent state update $count"
+  git -C "${other}" push origin HEAD:${branch}
+fi
+`,
+  );
+  fs.chmodSync(hook, 0o755);
+}
+
+function installFakeGitHubMerge(fakeBin, origin) {
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const gh = path.join(fakeBin, "gh");
+  fs.writeFileSync(
+    gh,
+    `#!/bin/sh
+set -eu
+method=GET
+endpoint=
+base=
+head=
+while test "$#" -gt 0; do
+  case "$1" in
+    api) shift; endpoint="$1" ;;
+    --method) shift; method="$1" ;;
+    -f)
+      shift
+      case "$1" in
+        base=*) base=\${1#base=} ;;
+        head=*) head=\${1#head=} ;;
+      esac
+      ;;
+  esac
+  shift
+done
+case "$method:$endpoint" in
+  POST:repos/openclaw/clawsweeper-state/merges)
+    base_sha=$(git --git-dir "${origin}" rev-parse "refs/heads/$base")
+    head_sha=$(git --git-dir "${origin}" rev-parse "refs/heads/$head")
+    tree=$(git --git-dir "${origin}" merge-tree --write-tree "$base_sha" "$head_sha")
+    commit=$(printf '%s\n' 'server merge' | GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com git --git-dir "${origin}" commit-tree "$tree" -p "$base_sha" -p "$head_sha")
+    git --git-dir "${origin}" update-ref "refs/heads/$base" "$commit" "$base_sha"
+    printf '{"sha":"%s"}\n' "$commit"
+    ;;
+  DELETE:repos/openclaw/clawsweeper-state/git/refs/heads/*)
+    ref=\${endpoint#repos/openclaw/clawsweeper-state/git/refs/heads/}
+    git --git-dir "${origin}" update-ref -d "refs/heads/$ref"
+    ;;
+  *)
+    printf '%s\n' "unexpected fake gh call: $method $endpoint" >&2
+    exit 2
+    ;;
+esac
+`,
+  );
+  fs.chmodSync(gh, 0o755);
+}
+
+function installCheckoutHeader(work) {
+  const encoded = Buffer.from(
+    ["fixture-user", "fixture"].join(String.fromCharCode(58)),
+    "utf8",
+  ).toString("base64");
+  const header = [`${"AUTH"}ORIZATION:`, `${"bas"}ic`, encoded].join(" ");
+  const credentialsConfig = path.join(path.dirname(work), "checkout-credentials.config");
+  run(
+    "git",
+    ["config", "--file", credentialsConfig, "http.https://github.com/.extraheader", header],
+    work,
+  );
+  run(
+    "git",
+    ["config", "--local", `includeIf.gitdir:${path.join(work, ".git")}.path`, credentialsConfig],
+    work,
+  );
+}
+
 function installCheckpointFailureHook(work, other, branch) {
   const hook = path.join(work, ".git/hooks/pre-push");
   const counter = path.join(work, ".git/hooks/pre-push-count");
   fs.writeFileSync(
     hook,
     `#!/bin/sh
+target_ref="refs/heads/${branch}"
+targets_branch=false
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if test "$remote_ref" = "$target_ref"; then targets_branch=true; fi
+done
+if test "$targets_branch" != true; then exit 0; fi
 count=0
 if test -f "${counter}"; then count=$(cat "${counter}"); fi
 count=$((count + 1))
@@ -4951,6 +5055,74 @@ esac
 `,
   );
   fs.chmodSync(hook, 0o755);
+}
+
+function runAsync(command, args, cwd, env = {}, timeout = 55_000) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      command,
+      args,
+      {
+        cwd,
+        env: { ...process.env, ...env },
+        encoding: "utf8",
+        maxBuffer: 16 * 1024 * 1024,
+        timeout,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(`${error.message}\n${stdout}\n${stderr}`));
+          return;
+        }
+        resolve(`${stdout}${stderr}`);
+      },
+    );
+  });
+}
+
+function startAsync(command, args, cwd, env = {}) {
+  let output = "";
+  let settled = false;
+  const child = execFile(command, args, {
+    cwd,
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: 55_000,
+  });
+  const result = new Promise((resolve, reject) => {
+    child.stdout?.on("data", (chunk) => {
+      output += String(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      output += String(chunk);
+    });
+    child.on("error", (error) => {
+      settled = true;
+      reject(new Error(`${error.message}\n${output}`));
+    });
+    child.on("close", (code, signal) => {
+      settled = true;
+      if (code !== 0) {
+        reject(new Error(`Process exited ${code ?? signal}\n${output}`));
+        return;
+      }
+      resolve(output);
+    });
+  });
+  return { child, result, output: () => output, settled: () => settled };
+}
+
+async function waitFor(predicate, timeoutMs, message) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(predicate(), true, message);
+}
+
+async function waitForFile(file, timeoutMs, message) {
+  await waitFor(() => fs.existsSync(file), timeoutMs, message);
 }
 
 function captureConsoleLog(callback, lines = []) {

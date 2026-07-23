@@ -11,8 +11,6 @@ import {
   recordCommandFailure,
   recordCommandOutcome,
   recordCommandReceived,
-  recordCommandRequeue,
-  runCommandLifecycleMutation,
   runCommandMutation,
   runCommandMutationWithRetry,
 } from "../../dist/repair/command-action-ledger.js";
@@ -340,82 +338,6 @@ test("retried mutations emit one receipt pair per actual request", async () => {
       mutations.map((event) => event.phase_seq),
       [1, 2, 3, 4],
     );
-  } finally {
-    for (const key of Object.keys(process.env)) {
-      if (!(key in previous)) delete process.env[key];
-    }
-    Object.assign(process.env, previous);
-    fs.rmSync(root, { force: true, recursive: true });
-  }
-});
-
-test("repair requeue terminal receipts retain the exact dispatch input digest", async () => {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "requeue-input-ledger-")));
-  const outputRoot = path.join(root, "output");
-  fs.mkdirSync(outputRoot);
-  const previous = { ...process.env };
-  Object.assign(process.env, {
-    CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
-    CLAWSWEEPER_ACTION_LEDGER_ROOT: root,
-    CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: outputRoot,
-    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "requeue-input",
-    GITHUB_REPOSITORY: "openclaw/clawsweeper",
-    GITHUB_SHA: "9".repeat(40),
-    GITHUB_WORKFLOW: "repair cluster worker",
-    GITHUB_WORKFLOW_REF:
-      "openclaw/clawsweeper/.github/workflows/repair-cluster-worker.yml@refs/heads/main",
-    GITHUB_JOB: "execute",
-    GITHUB_RUN_ID: "42345",
-    GITHUB_RUN_ATTEMPT: "1",
-    GITHUB_ACTION: "repair_requeue",
-    GITHUB_RUN_STARTED_AT: "2026-07-14T12:00:00Z",
-    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "",
-    CLAWSWEEPER_CRABFLEET_SESSION_ID: "",
-  });
-
-  try {
-    const lifecycle = {
-      repository: "openclaw/clawsweeper",
-      operationKey: "repair-requeue:jobs/openclaw/pr-42.md",
-      sourceRevision: "a".repeat(64),
-      attemptId: "requeue-1-example",
-    };
-    runCommandLifecycleMutation(lifecycle, {
-      kind: "requeue_dispatch",
-      identity: {
-        repository: "openclaw/clawsweeper",
-        workflow: "repair-cluster-worker.yml",
-        job: "jobs/openclaw/pr-42.md",
-        dispatch_key: "requeue-1-example",
-        mode: "plan",
-        runner: "blacksmith-4vcpu-ubuntu-2404",
-        execution_runner: "blacksmith-16vcpu-ubuntu-2404",
-        planner_sandbox: "read-only",
-        model: "internal",
-        dry_run: true,
-        requeue: true,
-        requeue_depth: 1,
-      },
-      operation: () => "accepted",
-    });
-    recordCommandRequeue(lifecycle, {
-      dispatchKey: "requeue-1-example",
-      sourceJobPath: "jobs/openclaw/pr-42.md",
-      sourceJobSha256: "a".repeat(64),
-      depth: 1,
-    });
-    await flushCommandActionEvents();
-
-    const events = readEvents(outputRoot);
-    const mutations = events.filter((event) => event.event_type === "command.mutation");
-    const requeue = events.find((event) => event.event_type === "command.requeue");
-    assert.equal(mutations.length, 2);
-    assert.ok(requeue);
-    const requestSha256 = mutations[0]?.evidence[0]?.sha256;
-    assert.match(requestSha256, /^[a-f0-9]{64}$/);
-    assert.equal(mutations[1]?.evidence[0]?.sha256, requestSha256);
-    assert.equal(requeue?.evidence[0]?.sha256, requestSha256);
-    assert.doesNotMatch(JSON.stringify(events), /jobs\/openclaw\/pr-42\.md/);
   } finally {
     for (const key of Object.keys(process.env)) {
       if (!(key in previous)) delete process.env[key];

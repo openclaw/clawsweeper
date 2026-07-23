@@ -1,17 +1,9 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  writeFileSync,
-} from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
 
 import {
   defaultLimit,
@@ -96,7 +88,6 @@ process.exit(2);
       env: {
         ...process.env,
         GITHUB_ACTIONS: "true",
-        ...actionLedgerEnv(dir, "missing-owner"),
         ...mockGhBinEnv(ghPath),
         GH_TOKEN: "workflow-token",
         CLAWSWEEPER_DISPATCH_TOKEN: "dispatch-token",
@@ -163,7 +154,6 @@ process.exit(2);
       env: {
         ...process.env,
         GITHUB_ACTIONS: "true",
-        ...actionLedgerEnv(dir, "public-inventory"),
         ...mockGhBinEnv(ghPath),
         CLAWSWEEPER_DISPATCH_TOKEN: "dispatch-token",
         CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: "inventory-openclaw",
@@ -260,7 +250,6 @@ process.exit(2);
       encoding: "utf8",
       env: {
         ...process.env,
-        ...actionLedgerEnv(dir, "workflow-dispatch"),
         ...mockGhBinEnv(ghPath),
         GH_TOKEN: "workflow-token",
         CLAWSWEEPER_DISPATCH_TOKEN: "dispatch-token",
@@ -360,164 +349,6 @@ process.exit(2);
   assert.equal(calls.filter((call) => call[0] === "api").length, 0);
 });
 
-test("target fanout checkpoints successful dispatches before receipt flush failure", () => {
-  const dir = mkdtempSync(join(tmpdir(), "clawsweeper-fanout-checkpoint-"));
-  const logPath = join(dir, "gh.log");
-  const cursorPath = join(dir, "cursor.json");
-  const ghPath = join(dir, "gh.js");
-  const ledgerEnv = actionLedgerEnv(dir, "checkpoint-before-flush");
-  writeFileSync(
-    ghPath,
-    `#!/usr/bin/env node
-const fs = require("node:fs");
-const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + "\\n");
-if (args[0] === "repo" && args[1] === "list") {
-  process.stdout.write(JSON.stringify([
-    {nameWithOwner:"openclaw/A",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}},
-    {nameWithOwner:"openclaw/B",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}
-  ]));
-  process.exit(0);
-}
-if (args[0] === "api" && args[1].endsWith("/dispatches")) {
-  fs.rmSync(process.env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT, {recursive:true, force:true});
-  fs.writeFileSync(process.env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT, "blocked");
-  process.exit(0);
-}
-process.exit(2);
-`,
-  );
-  chmodSync(ghPath, 0o755);
-
-  const result = spawnSync(
-    process.execPath,
-    [
-      "dist/repair/target-fanout.js",
-      "--mode",
-      "hot-intake",
-      "--limit",
-      "1",
-      "--cursor-path",
-      cursorPath,
-      "--owners",
-      "openclaw",
-    ],
-    {
-      cwd: process.cwd(),
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        ...ledgerEnv,
-        ...mockGhBinEnv(ghPath),
-        CLAWSWEEPER_DISPATCH_TOKEN: "dispatch-token",
-        CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: "inventory-openclaw",
-      },
-    },
-  );
-
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /action event shard output|not a directory|ENOTDIR/i);
-  assert.match(readFileSync(cursorPath, "utf8"), /"next_cursor": 1/);
-  const calls = readFileSync(logPath, "utf8")
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line) as string[]);
-  assert.equal(calls.filter((call) => call[0] === "api").length, 1);
-});
-
-test("target fanout does not replay a cursor after accepted outcome persistence fails", () => {
-  const dir = mkdtempSync(join(tmpdir(), "clawsweeper-fanout-outcome-failure-"));
-  const logPath = join(dir, "gh.log");
-  const cursorPath = join(dir, "cursor.json");
-  const ghPath = join(dir, "gh.js");
-  const failureHookPath = join(dir, "fail-accepted-outcome.mjs");
-  const ledgerEnv = actionLedgerEnv(dir, "accepted-outcome-failure");
-  writeFileSync(
-    failureHookPath,
-    `import fs from "node:fs";
-const originalWriteFileSync = fs.writeFileSync;
-let failed = false;
-fs.writeFileSync = function (file, data, ...args) {
-  if (!failed && String(data).includes('"completion_reason":"dispatch_accepted"')) {
-    failed = true;
-    throw new Error("injected accepted outcome persistence failure");
-  }
-  return Reflect.apply(originalWriteFileSync, fs, [file, data, ...args]);
-};
-`,
-  );
-  writeFileSync(
-    ghPath,
-    `#!/usr/bin/env node
-const fs = require("node:fs");
-const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + "\\n");
-if (args[0] === "repo" && args[1] === "list") {
-  process.stdout.write(JSON.stringify([
-    {nameWithOwner:"openclaw/A",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}},
-    {nameWithOwner:"openclaw/B",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}
-  ]));
-  process.exit(0);
-}
-if (args[0] === "api" && args[1].endsWith("/dispatches")) process.exit(0);
-process.exit(2);
-`,
-  );
-  chmodSync(ghPath, 0o755);
-  const firstEnv = {
-    ...process.env,
-    ...ledgerEnv,
-    ...mockGhBinEnv(ghPath),
-    CLAWSWEEPER_DISPATCH_TOKEN: "dispatch-token",
-    CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: "inventory-openclaw",
-    NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(failureHookPath).href}`]
-      .filter(Boolean)
-      .join(" "),
-  };
-  const args = [
-    "dist/repair/target-fanout.js",
-    "--mode",
-    "hot-intake",
-    "--limit",
-    "1",
-    "--cursor-path",
-    cursorPath,
-    "--owners",
-    "openclaw",
-  ];
-
-  const first = spawnSync(process.execPath, args, {
-    cwd: process.cwd(),
-    encoding: "utf8",
-    env: firstEnv,
-  });
-  assert.equal(first.status, 0, first.stderr);
-  assert.match(first.stderr, /dispatch accepted but failed to record outcome/);
-  assert.match(readFileSync(cursorPath, "utf8"), /"next_cursor": 1/);
-
-  const second = spawnSync(process.execPath, args, {
-    cwd: process.cwd(),
-    encoding: "utf8",
-    env: {
-      ...firstEnv,
-      CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "accepted-outcome-failure-rerun",
-      GITHUB_RUN_ID: "12346",
-    },
-  });
-  assert.equal(second.status, 0, second.stderr);
-  assert.match(second.stderr, /dispatch accepted but failed to record outcome/);
-  assert.match(readFileSync(cursorPath, "utf8"), /"next_cursor": 0/);
-
-  const dispatchCalls = readFileSync(logPath, "utf8")
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line) as string[])
-    .filter((call) => call[0] === "api");
-  assert.equal(dispatchCalls.length, 2);
-  assert.match(dispatchCalls[0]?.join(" ") ?? "", /client_payload\[target_repo\]=openclaw\/a/);
-  assert.match(dispatchCalls[1]?.join(" ") ?? "", /client_payload\[target_repo\]=openclaw\/b/);
-});
-
 function repo(nameWithOwner: string, overrides: Partial<ListedRepository> = {}): ListedRepository {
   return {
     nameWithOwner,
@@ -528,28 +359,5 @@ function repo(nameWithOwner: string, overrides: Partial<ListedRepository> = {}):
     visibility: "PUBLIC",
     defaultBranch: "main",
     ...overrides,
-  };
-}
-
-function actionLedgerEnv(root: string, invocation: string) {
-  const canonicalRoot = realpathSync(root);
-  const outputRoot = join(canonicalRoot, "action-ledger-output");
-  mkdirSync(outputRoot);
-  return {
-    CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
-    CLAWSWEEPER_ACTION_LEDGER_ROOT: canonicalRoot,
-    CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: outputRoot,
-    CLAWSWEEPER_ACTION_LEDGER_INVOCATION: invocation,
-    GITHUB_REPOSITORY: "openclaw/clawsweeper",
-    GITHUB_SHA: "a".repeat(40),
-    GITHUB_WORKFLOW: "sweep",
-    GITHUB_WORKFLOW_REF: "openclaw/clawsweeper/.github/workflows/sweep.yml@refs/heads/main",
-    GITHUB_JOB: "target-fanout",
-    GITHUB_RUN_ID: "12345",
-    GITHUB_RUN_ATTEMPT: "1",
-    GITHUB_ACTION: "dispatch-selected-targets",
-    GITHUB_RUN_STARTED_AT: "2026-07-14T12:00:00Z",
-    CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "",
-    CLAWSWEEPER_CRABFLEET_SESSION_ID: "",
   };
 }

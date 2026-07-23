@@ -91,6 +91,29 @@ test("automerge shepherd waits for an exact-head trusted pass", () => {
   );
 });
 
+test("automerge shepherd accepts a behind head after exact-head review and checks pass", () => {
+  const headSha = "abc123";
+  assert.deepEqual(
+    automergeShepherdReadiness({
+      view: {
+        state: "OPEN",
+        headRefOid: headSha,
+        mergeable: "MERGEABLE",
+        mergeStateStatus: "BEHIND",
+        statusCheckRollup: [{ name: "check", status: "COMPLETED", conclusion: "SUCCESS" }],
+      },
+      comments: [
+        {
+          user: { login: "clawsweeper[bot]" },
+          body: "passed\n<!-- clawsweeper-verdict:pass sha=abc123 -->",
+        },
+      ],
+      headSha,
+    }),
+    { status: "ready", reason: "checks and exact-head review are ready" },
+  );
+});
+
 test("automerge shepherd treats head movement as terminal for the current repair", () => {
   assert.deepEqual(
     automergeShepherdReadiness({

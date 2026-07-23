@@ -1,6 +1,7 @@
 export type ExactReviewPhase = "pending" | "dispatching" | "leased";
 
 export type ExactReviewHealthItem = {
+  key?: string;
   state: ExactReviewPhase;
   createdAt: number;
   updatedAt: number;
@@ -17,6 +18,7 @@ export type ExactReviewPhaseSummary = {
   count: number;
   oldest_at: string | null;
   oldest_age_seconds: number | null;
+  oldest_key: string | null;
 };
 
 export type ExactReviewHandoffHealth = {
@@ -35,6 +37,8 @@ export type ExactReviewHandoffHealth = {
   capacity: number;
   active: number;
   available_slots: number;
+  pending_depth: number;
+  shed_since_reset: number;
   phases: Record<ExactReviewPhase, ExactReviewPhaseSummary>;
 };
 
@@ -66,6 +70,7 @@ export function summarizeExactReviewHandoff({
   capacity,
   dispatchLeaseMs,
   executionLeaseMs,
+  shedSinceReset = 0,
 }: {
   items: ExactReviewHealthItem[];
   dispatcher?: ExactReviewHealthDispatcher;
@@ -73,9 +78,11 @@ export function summarizeExactReviewHandoff({
   capacity: number;
   dispatchLeaseMs: number;
   executionLeaseMs: number;
+  shedSinceReset?: number;
 }): ExactReviewHandoffHealth {
   const safeNow = finiteTimestamp(now, Date.now());
   const safeCapacity = Math.max(0, Math.floor(finiteNumber(capacity, 0)));
+  const safeShedSinceReset = Math.max(0, Math.floor(finiteNumber(shedSinceReset, 0)));
   const safeLeaseMs = Math.max(1_000, finiteNumber(dispatchLeaseMs, 10 * 60_000));
   const safeExecutionLeaseMs = Math.max(1_000, finiteNumber(executionLeaseMs, 130 * 60_000));
   const warningMs = Math.min(2 * 60_000, Math.max(30_000, Math.floor(safeLeaseMs / 3)));
@@ -83,10 +90,13 @@ export function summarizeExactReviewHandoff({
     5 * 60_000,
     Math.max(warningMs + 1_000, Math.floor((safeLeaseMs * 2) / 3)),
   );
-  const phaseValues: Record<ExactReviewPhase, { count: number; oldestAt: number | null }> = {
-    pending: { count: 0, oldestAt: null },
-    dispatching: { count: 0, oldestAt: null },
-    leased: { count: 0, oldestAt: null },
+  const phaseValues: Record<
+    ExactReviewPhase,
+    { count: number; oldestAt: number | null; oldestKey: string | null }
+  > = {
+    pending: { count: 0, oldestAt: null, oldestKey: null },
+    dispatching: { count: 0, oldestAt: null, oldestKey: null },
+    leased: { count: 0, oldestAt: null, oldestKey: null },
   };
 
   for (const item of items) {
@@ -94,12 +104,22 @@ export function summarizeExactReviewHandoff({
     const phase = phaseValues[item.state];
     if (!phase) continue;
     phase.count += 1;
-    phase.oldestAt = phase.oldestAt === null ? startedAt : Math.min(phase.oldestAt, startedAt);
+    const key = item.key?.trim() || null;
+    if (
+      phase.oldestAt === null ||
+      startedAt < phase.oldestAt ||
+      (startedAt === phase.oldestAt &&
+        key !== null &&
+        (phase.oldestKey === null || key < phase.oldestKey))
+    ) {
+      phase.oldestAt = startedAt;
+      phase.oldestKey = key;
+    }
   }
 
   const phases = Object.fromEntries(
     PHASES.map((phase) => {
-      const { count, oldestAt } = phaseValues[phase];
+      const { count, oldestAt, oldestKey } = phaseValues[phase];
       return [
         phase,
         {
@@ -107,6 +127,7 @@ export function summarizeExactReviewHandoff({
           oldest_at: oldestAt === null ? null : new Date(oldestAt).toISOString(),
           oldest_age_seconds:
             oldestAt === null ? null : Math.max(0, Math.floor((safeNow - oldestAt) / 1_000)),
+          oldest_key: oldestKey,
         },
       ];
     }),
@@ -120,6 +141,8 @@ export function summarizeExactReviewHandoff({
     capacity: safeCapacity,
     active,
     available_slots: Math.max(0, safeCapacity - active),
+    pending_depth: phases.pending.count,
+    shed_since_reset: safeShedSinceReset,
     phases,
   };
   if (items.length === 0) {
@@ -233,7 +256,7 @@ function exactReviewPhaseStartedAt(
     const dispatchedAt = validTimestamp(item.dispatchedAt);
     const leaseExpiresAt = validTimestamp(item.leaseExpiresAt);
     const leaseStartedAt =
-      leaseExpiresAt === null ? null : validTimestamp(leaseExpiresAt - dispatchLeaseMs);
+      leaseExpiresAt === null ? null : timestampAtOrBefore(leaseExpiresAt - dispatchLeaseMs, now);
     // Rolling deploys can expose rows created before dispatchedAt existed, while a rollback can
     // leave an old dispatchedAt behind. The current lease start is the reliable compatibility
     // marker; prefer the newest plausible transition and keep an unknown age non-alarming.
@@ -262,6 +285,11 @@ function validTimestamp(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) && number > 0 && number <= 8_640_000_000_000_000 ? number : null;
+}
+
+function timestampAtOrBefore(value: unknown, maximum: number): number | null {
+  const timestamp = validTimestamp(value);
+  return timestamp !== null && timestamp <= maximum ? timestamp : null;
 }
 
 function finiteTimestamp(value: unknown, fallback: number) {

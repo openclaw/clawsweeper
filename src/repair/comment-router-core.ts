@@ -629,15 +629,18 @@ export function automergeRebaseRepairReason(target: LooseRecord = {}): string | 
     .trim()
     .toUpperCase();
   if (mergeStateStatus === "DIRTY")
-    return "PR is behind or has merge conflicts and needs a cloud rebase repair before automerge";
-  if (mergeStateStatus === "BEHIND")
-    return "PR is behind the base branch and needs a cloud rebase repair before automerge";
+    return "PR has merge conflicts and needs a cloud rebase repair before automerge";
 
   const mergeable = String(target.mergeable ?? "")
     .trim()
     .toUpperCase();
   if (mergeable === "CONFLICTING")
     return "PR has merge conflicts and needs a cloud rebase repair before automerge";
+
+  // GitHub can safely merge an otherwise-ready BEHIND head with a three-way
+  // merge. Let the exact-head merge call enforce repository policy instead of
+  // rewriting a contributor branch solely because main advanced.
+  if (mergeStateStatus === "BEHIND") return null;
   return null;
 }
 
@@ -664,6 +667,13 @@ export function automergeMergeFailureRepairReason(reason: JsonValue): string | n
     .trim()
     .toLowerCase();
   if (!text) return null;
+  // A BEHIND head is mergeable in repositories that allow GitHub to create a
+  // merge commit, but protected linear-history targets reject it at the final
+  // merge command. Hand that concrete policy failure to the existing rebase
+  // repair lane instead of leaving an armed PR permanently blocked.
+  if (text.includes("head branch is not up to date with the base branch")) {
+    return "PR head is behind base and needs a cloud rebase repair before automerge";
+  }
   if (text.includes("mergepullrequest") && text.includes("merge conflict")) {
     return "PR has merge conflicts and needs a cloud rebase repair before automerge";
   }
@@ -685,18 +695,40 @@ export function automergeReadinessRepairReason(reason: JsonValue): string | null
     return "PR has merge conflicts and needs a cloud rebase repair before automerge";
   }
   if (text === "merge state status is dirty") {
-    return "PR is behind or has merge conflicts and needs a cloud rebase repair before automerge";
-  }
-  if (text === "merge state status is behind") {
-    return "PR is behind the base branch and needs a cloud rebase repair before automerge";
+    return "PR has merge conflicts and needs a cloud rebase repair before automerge";
   }
   return null;
+}
+
+export function isAutomergeMergeStateReady(value: JsonValue): boolean {
+  return ["BEHIND", "CLEAN", "HAS_HOOKS"].includes(
+    String(value ?? "")
+      .trim()
+      .toUpperCase(),
+  );
+}
+
+export function existingRepairLoopModeOutcome({ intent, trustedBot }: LooseRecord) {
+  const mode = intent === "autofix" ? "autofix" : "automerge";
+  // Only an authorized human command renews landing intent. A label sweep must
+  // not manufacture the maintainer signal consumed by needs-human approval.
+  if (trustedBot) {
+    return { status: "skipped", reason: `${mode} already enabled for this PR` };
+  }
+  return {
+    status: "executed",
+    reason: `${mode} already enabled for this PR; maintainer resume intent recorded`,
+  };
 }
 
 export function isCanonicalLandingNeedsHumanText(value: JsonValue) {
   const text = String(value ?? "");
   if (!text) return false;
-  if (/security-sensitive|needs attention|review finding|\[P[0-3]\]/i.test(text)) return false;
+  if (/security-sensitive|needs attention|review finding/i.test(text)) return false;
+  // Review prose sometimes prefixes its non-finding landing conclusion with a
+  // priority token. Keep rejecting actual prioritized findings while allowing
+  // the canonical "No repair lane" conclusion to reach the exact-head gate.
+  if (/\[P[0-3]\](?!\s*No repair lane is needed\b)/i.test(text)) return false;
   return (
     /no repair lane is needed|maintainer action is to land|land .*canonical|canonical .*fix/i.test(
       text,
@@ -728,8 +760,20 @@ export function latestRepairLoopResumeTime(entries: JsonValue, command: LooseRec
     if (!entry || typeof entry !== "object") continue;
     if (entry.repo !== command.repo) continue;
     if (Number(entry.issue_number) !== Number(command.issue_number)) continue;
-    if (!["autofix", "automerge"].includes(String(entry.intent ?? ""))) continue;
+    const intent = String(entry.intent ?? "");
+    if (!["autofix", "automerge", "maintainer_approve_automerge"].includes(intent)) continue;
     if (!["executed", "waiting"].includes(String(entry.status ?? ""))) continue;
+    if (intent === "maintainer_approve_automerge") {
+      const approvedHead = String(entry.expected_head_sha ?? entry.target?.head_sha ?? "")
+        .trim()
+        .toLowerCase();
+      const reviewedHead = String(command.expected_head_sha ?? command.target?.head_sha ?? "")
+        .trim()
+        .toLowerCase();
+      // An approval is stronger than a mode opt-in, so preserve it only for the
+      // exact reviewed head it authorized. A later contributor push must reopen the gate.
+      if (!approvedHead || approvedHead !== reviewedHead) continue;
+    }
     latest = Math.max(latest, Date.parse(String(entry.comment_updated_at ?? "")) || 0);
   }
   return latest;
@@ -1142,6 +1186,13 @@ export function trustedCloseBlockReason({
   ) {
     return "unsponsored feature-request apply policy is disabled";
   }
+  if (
+    closeKind === "pull_request" &&
+    reason === "author_pr_budget_exceeded" &&
+    !authorPrBudgetTrustedCloseEnabled()
+  ) {
+    return "author PR-budget apply policy is disabled";
+  }
   const reasonSpecificBlock = trustedCloseReasonSpecificBlockReason({
     reason,
     closeKind,
@@ -1207,6 +1258,10 @@ function unsponsoredFeatureTrustedCloseEnabled(env: LooseRecord = process.env): 
   return envFlagEnabled(env.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED);
 }
 
+function authorPrBudgetTrustedCloseEnabled(env: LooseRecord = process.env): boolean {
+  return envFlagEnabled(env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED);
+}
+
 function trustedCloseReasonSpecificBlockReason({
   reason,
   closeKind,
@@ -1252,6 +1307,9 @@ function trustedCloseReasonSpecificBlockReason({
     return null;
   }
   if (closeKind !== "pull_request") return null;
+  if (reason === "author_pr_budget_exceeded") {
+    return "author_pr_budget_exceeded closes require apply-decisions live author count, inactivity, and per-run-cap proof";
+  }
   if (reason === "unconfirmed_product_direction") {
     const ageBlock = unconfirmedProductDirectionTrustedCloseAgeBlock({
       createdAt,
@@ -1944,20 +2002,29 @@ export function trustedExactHeadReviewCompletionSince({
   headSha: string;
   trustedAuthors?: ReadonlySet<string>;
   sinceMs: number;
-}): { reviewedAt: string | null; publishedAt: string | null } | null {
+}): {
+  commentId: number;
+  reviewedAt: string | null;
+  publishedAt: string | null;
+  sourceRevision: string | null;
+} | null {
   const normalizedHead = String(headSha ?? "")
     .trim()
     .toLowerCase();
   if (!normalizedHead || !Number.isFinite(sinceMs)) return null;
 
   let newest: {
+    commentId: number;
     observedAtMs: number;
     reviewedAt: string | null;
     publishedAt: string | null;
+    sourceRevision: string | null;
   } | null = null;
   for (const comment of comments) {
     const completed = parseTrustedAutomation(comment, { trustedAuthors });
     if (!completed) continue;
+    const commentId = Number(comment?.id);
+    if (!Number.isInteger(commentId) || commentId <= 0) continue;
     if (
       String(completed.expected_head_sha ?? "")
         .trim()
@@ -1976,6 +2043,7 @@ export function trustedExactHeadReviewCompletionSince({
           .toLowerCase() === normalizedHead,
     );
     const reviewedAt = String(reviewMarker?.attrs?.reviewed_at ?? "").trim() || null;
+    const sourceRevision = String(reviewMarker?.attrs?.source_revision ?? "").trim() || null;
     const publishedAt = String(comment?.updated_at ?? comment?.created_at ?? "").trim() || null;
     const observedAtMs = Math.max(
       Number.isFinite(Date.parse(reviewedAt ?? "")) ? Date.parse(reviewedAt ?? "") : 0,
@@ -1983,10 +2051,17 @@ export function trustedExactHeadReviewCompletionSince({
     );
     if (observedAtMs < sinceMs || observedAtMs <= 0) continue;
     if (!newest || observedAtMs > newest.observedAtMs) {
-      newest = { observedAtMs, reviewedAt, publishedAt };
+      newest = { commentId, observedAtMs, reviewedAt, publishedAt, sourceRevision };
     }
   }
-  return newest && { reviewedAt: newest.reviewedAt, publishedAt: newest.publishedAt };
+  return (
+    newest && {
+      commentId: newest.commentId,
+      reviewedAt: newest.reviewedAt,
+      publishedAt: newest.publishedAt,
+      sourceRevision: newest.sourceRevision,
+    }
+  );
 }
 
 export function parseRoutedCommentCommand(
@@ -2397,6 +2472,15 @@ function repairDispatchLine(dispatched: LooseRecord, label: string): string {
 }
 
 function reviewDispatchLine(dispatched: LooseRecord, label: string, action: string): string {
+  if (dispatched.coordination_action === "wait_for_active_review") {
+    return `${label}: an exact-head review is already active; no duplicate review was queued.`;
+  }
+  if (dispatched.coordination_action === "reuse_completed_review") {
+    return `${label}: the existing exact-head review result is being reused.`;
+  }
+  if (dispatched.coordination_action === "retry") {
+    return `${label}: exact-head review dispatch deferred while the durable router retries.`;
+  }
   const runUrl = typeof dispatched.run_url === "string" ? dispatched.run_url : "";
   const workflow = String(dispatched.workflow ?? "").trim();
   const event = String(dispatched.event ?? "").trim();
@@ -2787,7 +2871,6 @@ function trustedRepair({ author, reason, marker = null }: LooseRecord) {
     review_lease_owner: marker?.attrs?.lease_owner ?? null,
     review_lease_comment_id: marker?.attrs?.lease_comment_id ?? null,
     expected_source_revision: marker?.attrs?.source_revision ?? null,
-    expected_review_activity_cursor: marker?.attrs?.review_activity_cursor ?? null,
     finding_id: marker?.attrs?.finding ?? null,
   };
 }
@@ -2806,7 +2889,6 @@ function trustedMerge({ author, reason, marker = null }: LooseRecord) {
     review_lease_owner: marker?.attrs?.lease_owner ?? null,
     review_lease_comment_id: marker?.attrs?.lease_comment_id ?? null,
     expected_source_revision: marker?.attrs?.source_revision ?? null,
-    expected_review_activity_cursor: marker?.attrs?.review_activity_cursor ?? null,
     finding_id: marker?.attrs?.finding ?? null,
   };
 }
@@ -2830,7 +2912,6 @@ function trustedClose({ author, reason, marker = null }: LooseRecord) {
     review_lease_comment_id: marker?.attrs?.lease_comment_id ?? null,
     expected_item_updated_at: marker?.attrs?.updated_at ?? null,
     expected_source_revision: marker?.attrs?.source_revision ?? null,
-    expected_review_activity_cursor: marker?.attrs?.review_activity_cursor ?? null,
     finding_id: marker?.attrs?.finding ?? null,
   };
 }
@@ -2849,7 +2930,6 @@ function trustedHumanReview({ author, reason, marker = null }: LooseRecord) {
     review_lease_owner: marker?.attrs?.lease_owner ?? null,
     review_lease_comment_id: marker?.attrs?.lease_comment_id ?? null,
     expected_source_revision: marker?.attrs?.source_revision ?? null,
-    expected_review_activity_cursor: marker?.attrs?.review_activity_cursor ?? null,
     finding_id: marker?.attrs?.finding ?? null,
   };
 }

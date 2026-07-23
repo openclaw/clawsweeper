@@ -94,26 +94,6 @@ confidential-identifier checks as every other durable machine-text field.
   idempotency identity but receive separate causal receipt pairs; best-effort
   metadata writes remain one-shot. A later command failure inherits accepted or
   uncertain mutation state instead of being finalized as `mutation: false`.
-- Proof-nudge and bot-proof comment and label writes use the same receipt
-  boundary after revalidating the exact head before and after bounded review,
-  inline-comment, review-thread, and conversation activity hydration. Live
-  open, locked, draft, proof-policy, and protected-label state is enforced at
-  that same request boundary. Contributor activity used by nudge eligibility is
-  hydrated there as well. Bot-proof label plans are bound to the live label
-  cursor, which advances only for accepted owned label requests.
-  Outcome-unknown requests stop automatic retry. Same-head comment markers and
-  exact label-operation postconditions reconcile response loss or crash-open
-  attempts under the original hashed business idempotency key without storing
-  raw prompts, logs, review bodies, or comment bodies and without claiming a
-  second mutation. Contributor nudges persist the original marker timestamp
-  before the request. Bot-proof comments persist the desired body digest before
-  either a POST or PATCH. An unresolved same-head cycle blocks another comment
-  request while a later workflow run records a non-mutating
-  pending-reconciliation event under that same business idempotency key.
-  Same-run recovery follows and parents the request outcome. The proof workflow
-  publishes bounded per-PR recovery state best-effort even if finalized shard
-  upload or publication fails, while cursor progress remains gated on all three
-  durable publications.
 - Explicit command replays require a durable command `attempt_id` derived from
   or forwarded through the production workflow. It scopes command operation,
   attempt, mutation idempotency, dispatch claims, and worker receipt keys to that

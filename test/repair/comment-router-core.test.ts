@@ -1102,6 +1102,17 @@ test("automerge activation does not send missing changelog to repair", () => {
     }),
     null,
   );
+
+  assert.equal(
+    automergeActivationRepairReason({
+      intent: "automerge",
+      repo: "openclaw/openclaw",
+      title: "fix(memory): preserve session corpus labels",
+      files: [{ path: "extensions/memory-core/src/tools.ts" }],
+      target: { checks: { blockers: [] }, merge_state_status: "BEHIND", mergeable: "MERGEABLE" },
+    }),
+    null,
+  );
 });
 
 test("renderAutomergeJob documents autofix as repair-only", () => {
@@ -1285,7 +1296,7 @@ test("parseTrustedAutomation accepts only trusted ClawSweeper repair signals", (
   const trustedAuthors = new Set(["clawsweeper[bot]"]);
   const comment = {
     user: { login: "clawsweeper[bot]" },
-    body: "Codex review:\n<!-- clawsweeper-action: fix-required review_activity_cursor=v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->\nPlease fix this before merge.",
+    body: "Codex review:\n<!-- clawsweeper-action: fix-required reviewed_at=2026-07-09T21:00:00.000Z -->\nPlease fix this before merge.",
   };
 
   const parsed = parseTrustedAutomation(comment, { trustedAuthors });
@@ -1293,10 +1304,6 @@ test("parseTrustedAutomation accepts only trusted ClawSweeper repair signals", (
   assert.equal(parsed.trusted_bot, true);
   assert.equal(parsed.trusted_bot_author, "clawsweeper[bot]");
   assert.equal(parsed.reviewed_at, "2026-07-09T21:00:00.000Z");
-  assert.equal(
-    parsed.expected_review_activity_cursor,
-    "v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  );
   assert.match(parsed.repair_reason, /structured ClawSweeper/);
 
   assert.equal(
@@ -1390,7 +1397,7 @@ test("parseTrustedAutomation accepts trusted ClawSweeper pass verdicts for autom
   const parsed = parseTrustedAutomation(
     {
       user: { login: "clawsweeper[bot]" },
-      body: "ClawSweeper review passed.\n<!-- clawsweeper-verdict:pass sha=abc123 source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef review_activity_cursor=v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->",
+      body: "ClawSweeper review passed.\n<!-- clawsweeper-verdict:pass sha=abc123 source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->",
     },
     { trustedAuthors },
   );
@@ -1402,10 +1409,6 @@ test("parseTrustedAutomation accepts trusted ClawSweeper pass verdicts for autom
     parsed.expected_source_revision,
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   );
-  assert.equal(
-    parsed.expected_review_activity_cursor,
-    "v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  );
   assert.match(parsed.repair_reason, /verdict: pass/);
 });
 
@@ -1416,8 +1419,8 @@ test("parseTrustedAutomation accepts trusted ClawSweeper close markers for autoc
       user: { login: "clawsweeper[bot]" },
       body: [
         "ClawSweeper proposed closing this PR.",
-        "<!-- clawsweeper-verdict:close item=96097 sha=abc123 confidence=high review_activity_cursor=v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reason=duplicate_or_superseded -->",
-        "<!-- clawsweeper-action:close-required item=96097 sha=abc123 confidence=high review_activity_cursor=v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reason=duplicate_or_superseded -->",
+        "<!-- clawsweeper-verdict:close item=96097 sha=abc123 confidence=high reason=duplicate_or_superseded -->",
+        "<!-- clawsweeper-action:close-required item=96097 sha=abc123 confidence=high reason=duplicate_or_superseded -->",
       ].join("\n"),
     },
     { trustedAuthors },
@@ -1427,10 +1430,6 @@ test("parseTrustedAutomation accepts trusted ClawSweeper close markers for autoc
   assert.equal(parsed.trusted_bot, true);
   assert.equal(parsed.expected_head_sha, "abc123");
   assert.equal(parsed.close_reason, "duplicate_or_superseded");
-  assert.equal(
-    parsed.expected_review_activity_cursor,
-    "v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  );
   assert.match(parsed.autoclose_message, /close-required/);
 
   const issueParsed = parseTrustedAutomation(
@@ -1780,11 +1779,13 @@ test("review start leases reject malformed, future, and overlong markers", () =>
 
 test("same-head completion freshness uses durable publication time", () => {
   const headSha = "0123456789abcdef0123456789abcdef01234567";
+  const sourceRevision = "1".repeat(64);
   const comment = {
+    id: 1234,
     user: { login: "clawsweeper[bot]" },
     created_at: "2026-07-09T21:00:00.000Z",
     updated_at: "2026-07-09T21:05:30.000Z",
-    body: `<!-- clawsweeper-verdict:pass item=103109 sha=${headSha} reviewed_at=2026-07-09T21:04:30.000Z -->`,
+    body: `<!-- clawsweeper-verdict:pass item=103109 sha=${headSha} source_revision=${sourceRevision} reviewed_at=2026-07-09T21:04:30.000Z -->`,
   };
 
   assert.deepEqual(
@@ -1795,8 +1796,10 @@ test("same-head completion freshness uses durable publication time", () => {
       sinceMs: Date.parse("2026-07-09T21:05:00.000Z"),
     }),
     {
+      commentId: 1234,
       reviewedAt: "2026-07-09T21:04:30.000Z",
       publishedAt: "2026-07-09T21:05:30.000Z",
+      sourceRevision,
     },
   );
   assert.equal(
@@ -1852,7 +1855,7 @@ test("active review comments cannot replay their previous trusted verdict", () =
   );
 });
 
-test("label-sweep classification checks the exact-head review lease before dispatch planning", () => {
+test("review dispatch coordination guards label sweeps and maintainer mode commands", () => {
   const source = readFileSync("src/repair/comment-router.ts", "utf8");
   const activeLease = source.indexOf("freshExactHeadReviewStartLease({");
   const repairPlanning = source.indexOf("const failedChecksRepairReason", activeLease);
@@ -1885,10 +1888,12 @@ test("label-sweep classification checks the exact-head review lease before dispa
   const trustedVerdictCheck = executeCommand.indexOf(
     "trustedAutomationReviewLeaseBlockReason(command)",
   );
-  const preMutationCheck = executeCommand.indexOf("repairLoopReviewDispatchBlockReason(command)");
+  const preMutationCheck = executeCommand.indexOf(
+    "repairLoopPreMutationReviewDispatchDecision(command)",
+  );
   const firstMutation = executeCommand.indexOf("ensureAutomergeJob(command)", preMutationCheck);
   const dispatchRecheck = executeCommand.indexOf(
-    "repairLoopReviewDispatchBlockReason(command)",
+    "reviewDispatchDecisionForCommand(command)",
     preMutationCheck + 1,
   );
   const dispatch = executeCommand.indexOf("dispatchClawSweeperReview(command)", dispatchRecheck);
@@ -1898,17 +1903,39 @@ test("label-sweep classification checks the exact-head review lease before dispa
   assert.ok(firstMutation > preMutationCheck);
   assert.ok(dispatchRecheck > firstMutation);
   assert.ok(dispatch > dispatchRecheck);
+  const postMutationCoordination = executeCommand.slice(dispatchRecheck, dispatch);
+  assert.match(postMutationCoordination, /markCoordinatedReviewDispatchActions\(\{/);
 
   const dispatchGuard = source.slice(
-    source.indexOf("function repairLoopReviewDispatchBlockReason"),
-    source.indexOf("function trustedAutomationReviewLeaseBlockReason"),
+    source.indexOf("function repairLoopPreMutationReviewDispatchDecision"),
+    source.indexOf("function trustedAutomationSourceRevisionBlockReason"),
+  );
+  assert.match(
+    dispatchGuard,
+    /automation_source !== "repair_loop_label_sweep"[\s\S]*?return \{ action: "dispatch" \}/,
   );
   assert.equal(dispatchGuard.match(/fetchPullRequestView\(number\)/g)?.length, 2);
-  assert.match(dispatchGuard, /issues\/\$\{number\}\/comments\?per_page=100/);
+  assert.equal(dispatchGuard.match(/issues\/\$\{number\}\/comments\?per_page=100/g)?.length, 2);
+  assert.match(
+    dispatchGuard,
+    /sourceRevisionBefore: issueSourceRevisionSha256\(before, commentsBefore\)/,
+  );
+  assert.match(
+    dispatchGuard,
+    /sourceRevisionAfter: issueSourceRevisionSha256\(after, commentsAfter\)/,
+  );
   assert.match(dispatchGuard, /nowMs:\s*Date\.now\(\)/);
   assert.match(dispatchGuard, /trustedExactHeadReviewCompletionSince\(\{/);
-  assert.match(dispatchGuard, /sinceMs:\s*sweepStartedAtMs/);
-  assert.match(dispatchGuard, /next router pass will route it/);
+  assert.match(dispatchGuard, /sinceMs:\s*commandStartedAtMs/);
+  assert.match(dispatchGuard, /decideReviewDispatchCoordination\(\{/);
+  assert.match(dispatchGuard, /completedReviewAt:/);
+  const coordinatedActions = source.slice(
+    source.indexOf("function markCoordinatedReviewDispatchActions"),
+    source.indexOf("function trustedAutomationSourceRevisionBlockReason"),
+  );
+  assert.match(coordinatedActions, /ensure_automerge_job/);
+  assert.match(coordinatedActions, /status:\s*"executed"/);
+  assert.match(coordinatedActions, /coordination_action:\s*decision\.action/);
   const sourceRevisionGuard = source.slice(
     source.indexOf("function trustedAutomationSourceRevisionBlockReason"),
     source.indexOf("function trustedAutomationReviewLeaseBlockReason"),
@@ -2117,8 +2144,6 @@ test("trusted autoclose markers are live close gated before close execution", ()
   assert.match(autocloseClassifier, /fetchPullRequestApi\(command\.issue_number\)/);
   assert.match(autocloseClassifier, /requestedReviewers:\s*pullApi\.requested_reviewers/);
   assert.match(autocloseExecutor, /liveTrustedCloseBlockReason\(command,\s*liveTarget\)/);
-  assert.match(autocloseExecutor, /postIssueComment\(/);
-  assert.match(source, /function postIssueComment[\s\S]*"autoclose_preclose_comment"/);
   assert.match(trustedCloseGate, /reviewedHeadShaBlockReason\(\{/);
   assert.match(trustedCloseGate, /markerName:\s*"close"/);
   assert.match(autocloseClassifier, /status:\s*"skipped"/);
@@ -2350,6 +2375,26 @@ test("trusted close gates block protected labels, source drift, and unsupported 
       process.env.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED = originalUnsponsoredPolicy;
     }
   }
+  const originalAuthorBudgetPolicy = process.env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED;
+  delete process.env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED;
+  try {
+    const authorBudgetBase = { ...base, closeReason: "author_pr_budget_exceeded" };
+    assert.match(
+      trustedCloseBlockReason(authorBudgetBase),
+      /author PR-budget apply policy is disabled/,
+    );
+    process.env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED = "true";
+    assert.match(
+      trustedCloseBlockReason(authorBudgetBase),
+      /require apply-decisions live author count, inactivity, and per-run-cap proof/,
+    );
+  } finally {
+    if (originalAuthorBudgetPolicy === undefined) {
+      delete process.env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED;
+    } else {
+      process.env.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED = originalAuthorBudgetPolicy;
+    }
+  }
   assert.match(
     trustedCloseBlockReason({ ...base, closeReason: "low_signal_unmergeable_pr" }),
     /require apply-decisions live conflict and author-activity proof/,
@@ -2497,7 +2542,7 @@ test("parseTrustedAutomation treats trusted ClawSweeper needs-human as a pause",
   const parsed = parseTrustedAutomation(
     {
       user: { login: "clawsweeper[bot]" },
-      body: "ClawSweeper needs maintainer judgment.\n<!-- clawsweeper-verdict:needs-human sha=abc123 source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef review_activity_cursor=v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->",
+      body: "ClawSweeper needs maintainer judgment.\n<!-- clawsweeper-verdict:needs-human sha=abc123 source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->",
     },
     { trustedAuthors },
   );
@@ -2509,14 +2554,16 @@ test("parseTrustedAutomation treats trusted ClawSweeper needs-human as a pause",
   );
   assert.equal(parsed.expected_head_sha, "abc123");
   assert.equal(parsed.reviewed_at, "2026-07-09T21:00:00.000Z");
-  assert.equal(
-    parsed.expected_review_activity_cursor,
-    "v2:0:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  );
   assert.match(parsed.repair_reason, /needs-human/);
 });
 
 test("canonical landing needs-human text can be approved by active automerge opt-in", () => {
+  assert.equal(
+    isCanonicalLandingNeedsHumanText(
+      "- [P2] No repair lane is needed: the PR already contains the narrow fix and should proceed through normal merge gates.",
+    ),
+    true,
+  );
   assert.equal(
     isCanonicalLandingNeedsHumanText(
       "No repair lane is needed because the PR already contains the narrow fix; maintainer action is to land one canonical fix.",
@@ -2611,6 +2658,43 @@ test("canonical landing needs-human accepts waiting automerge opt-in as active r
       optInTime,
     }),
     true,
+  );
+});
+
+test("canonical landing needs-human keeps an exact-head maintainer approval active", () => {
+  const headSha = "0123456789abcdef0123456789abcdef01234567";
+  const command = {
+    repo: "openclaw/openclaw",
+    issue_number: 104054,
+    expected_head_sha: headSha,
+  };
+  const approvedAt = latestRepairLoopResumeTime(
+    [
+      {
+        ...command,
+        intent: "maintainer_approve_automerge",
+        status: "executed",
+        comment_updated_at: "2026-07-19T04:07:56Z",
+      },
+    ],
+    command,
+  );
+
+  assert.equal(approvedAt, Date.parse("2026-07-19T04:07:56Z"));
+  assert.equal(
+    latestRepairLoopResumeTime(
+      [
+        {
+          ...command,
+          intent: "maintainer_approve_automerge",
+          status: "executed",
+          comment_updated_at: "2026-07-19T04:07:56Z",
+        },
+      ],
+      { ...command, expected_head_sha: "f".repeat(40) },
+    ),
+    0,
+    "a maintainer approval must not survive a contributor head change",
   );
 });
 
@@ -3125,6 +3209,49 @@ test("renderResponse reports autofix repair-only opt-in", () => {
   assert.doesNotMatch(body, /will merge/);
 });
 
+test("renderResponse reports reuse of an active exact-head review", () => {
+  const body = renderResponse(
+    {
+      comment_id: "460",
+      intent: "automerge",
+      repo: "openclaw/clawsweeper",
+      target: { head_sha: "a".repeat(40) },
+      actions: [{ action: "label", label: "clawsweeper:automerge", status: "executed" }],
+    },
+    {
+      clawsweeper: {
+        coordination_action: "wait_for_active_review",
+        status: "waiting",
+      },
+    },
+  );
+
+  assert.match(body, /ClawSweeper automerge is enabled/);
+  assert.match(body, /exact-head review is already active/);
+  assert.match(body, /no duplicate review was queued/);
+  assert.doesNotMatch(body, /exact-head review queued/);
+});
+
+test("renderResponse reports reuse of a completed exact-head review", () => {
+  const body = renderResponse(
+    {
+      comment_id: "4601",
+      intent: "autofix",
+      repo: "openclaw/clawsweeper",
+      target: { head_sha: "b".repeat(40) },
+    },
+    {
+      clawsweeper: {
+        coordination_action: "reuse_completed_review",
+        status: "skipped",
+      },
+    },
+  );
+
+  assert.match(body, /ClawSweeper autofix is enabled/);
+  assert.match(body, /existing exact-head review result is being reused/);
+});
+
 test("renderResponse reports terminal autofix success without merge", () => {
   const body = renderResponse(
     {
@@ -3629,12 +3756,9 @@ test("automerge live readiness blocks become repair reasons", () => {
   );
   assert.equal(
     automergeReadinessRepairReason("merge state status is DIRTY"),
-    "PR is behind or has merge conflicts and needs a cloud rebase repair before automerge",
+    "PR has merge conflicts and needs a cloud rebase repair before automerge",
   );
-  assert.equal(
-    automergeReadinessRepairReason("merge state status is BEHIND"),
-    "PR is behind the base branch and needs a cloud rebase repair before automerge",
-  );
+  assert.equal(automergeReadinessRepairReason("merge state status is BEHIND"), null);
   assert.equal(automergeReadinessRepairReason("pull request is draft"), null);
 });
 

@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { stableJson } from "./stable-json.js";
+
+import { stableJsonCodeUnit } from "./stable-json.js";
 
 export const MAX_REVIEWED_PR_ACTIVITY = 1_000;
 export const MAX_REVIEWED_PR_ACTIVITY_CURSOR_BYTES = 1024 * 1024;
 
-const CURSOR_PATTERN = /^v2:([0-9]+):([0-9a-f]{64})$/;
+const CURSOR_PATTERN = /^v1:([0-9]+):([0-9a-f]{64})$/;
 
 export const REVIEWED_PR_ACTIVITY_THREADS_QUERY = `
   query ReviewedPrActivityThreads(
@@ -36,49 +37,12 @@ export interface ReviewedPrActivityThreadsPage {
   endCursor: string | null;
 }
 
-export interface ReviewedPrActivityBlock {
-  reason: string;
-  retryable: boolean;
-}
-
 export class ReviewedPrActivityChangedDuringReadError extends Error {
   constructor() {
     super("pull request review activity changed while refreshing the bounded cursor");
     this.name = "ReviewedPrActivityChangedDuringReadError";
   }
 }
-
-export class ReviewedPrActivityGuardError extends Error {
-  readonly block: ReviewedPrActivityBlock;
-  readonly mutationKind: string;
-
-  constructor(mutationKind: string, block: ReviewedPrActivityBlock) {
-    super(`${block.reason} before ${mutationKind}`);
-    this.name = "ReviewedPrActivityGuardError";
-    this.block = block;
-    this.mutationKind = mutationKind;
-  }
-}
-
-const REVIEW_ACTIVITY_AUTHORIZED_MUTATIONS = new Set([
-  "autoclose_preclose_comment",
-  "description_update",
-  "issue_close",
-  "label_add",
-  "label_create",
-  "label_remove",
-  "pull_request_close",
-  "pull_request_merge",
-  "repair_dispatch",
-  "review_dispatch",
-]);
-
-const REVIEW_ACTIVITY_AUTHORIZED_INTENTS = new Set([
-  "autoclose",
-  "clawsweeper_auto_merge",
-  "clawsweeper_auto_repair",
-  "clawsweeper_needs_human",
-]);
 
 export function createReviewedPrActivityCursor(options: {
   reviews: unknown[];
@@ -95,37 +59,18 @@ export function createReviewedPrActivityCursor(options: {
     ...options.reviews.map((review) => compactReviewActivity("review", review)),
     ...options.inlineComments.map((comment) => compactReviewActivity("inline_comment", comment)),
     ...options.reviewThreads.map(compactReviewThread),
-  ].map((entry) => stableJson(entry));
-  entries.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+  ].map((entry) => stableJsonCodeUnit(entry));
+  entries.sort(compareCodeUnits);
   const canonical = `[${entries.join(",")}]`;
   if (Buffer.byteLength(canonical, "utf8") > MAX_REVIEWED_PR_ACTIVITY_CURSOR_BYTES) return null;
-  const digest = createHash("sha256").update(canonical).digest("hex");
-  return `v2:${entries.length}:${digest}`;
+  return `v1:${entries.length}:${createHash("sha256").update(canonical).digest("hex")}`;
 }
 
 export function readStableReviewedPrActivityCursor(readCursor: () => string | null): string | null {
   const first = readCursor();
   const second = readCursor();
-  if (first !== second) {
-    throw new ReviewedPrActivityChangedDuringReadError();
-  }
+  if (first !== second) throw new ReviewedPrActivityChangedDuringReadError();
   return second;
-}
-
-export function runReviewedPrActivityGuardedMutation<T>(options: {
-  intent: string;
-  mutationKind: string;
-  refresh: () => ReviewedPrActivityBlock | null;
-  operation: () => T;
-}): T {
-  if (
-    REVIEW_ACTIVITY_AUTHORIZED_INTENTS.has(options.intent) &&
-    REVIEW_ACTIVITY_AUTHORIZED_MUTATIONS.has(options.mutationKind)
-  ) {
-    const block = options.refresh();
-    if (block) throw new ReviewedPrActivityGuardError(options.mutationKind, block);
-  }
-  return options.operation();
 }
 
 export function isReviewedPrActivityCursor(value: unknown): value is string {
@@ -141,15 +86,12 @@ export function reviewedPrActivityThreadsPageFromGraphql(
 ): ReviewedPrActivityThreadsPage | null {
   const response = record(value);
   if (Array.isArray(response.errors) && response.errors.length > 0) return null;
-  const data = record(response.data);
-  const repository = record(data.repository);
-  const pullRequest = record(repository.pullRequest);
-  const connection = record(pullRequest.reviewThreads);
-  const nodes = connection.nodes;
-  const pageInfo = record(connection.pageInfo);
-  if (!Array.isArray(nodes) || typeof pageInfo.hasNextPage !== "boolean") return null;
+  const connection = record(record(record(response.data).repository).pullRequest).reviewThreads;
+  const page = record(connection);
+  const pageInfo = record(page.pageInfo);
+  if (!Array.isArray(page.nodes) || typeof pageInfo.hasNextPage !== "boolean") return null;
   const threads: ReviewedPrActivityThreadsPage["threads"] = [];
-  for (const node of nodes) {
+  for (const node of page.nodes) {
     const thread = record(node);
     if (
       typeof thread.id !== "string" ||
@@ -162,11 +104,7 @@ export function reviewedPrActivityThreadsPageFromGraphql(
   }
   const endCursor = typeof pageInfo.endCursor === "string" ? pageInfo.endCursor : null;
   if (pageInfo.hasNextPage && !endCursor) return null;
-  return {
-    threads,
-    hasNextPage: pageInfo.hasNextPage,
-    endCursor,
-  };
+  return { threads, hasNextPage: pageInfo.hasNextPage, endCursor };
 }
 
 function compactReviewActivity(kind: "review" | "inline_comment", value: unknown) {
@@ -222,9 +160,13 @@ function scalar(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return stableJson(value);
+  return stableJsonCodeUnit(value);
 }
 
 function digestScalar(value: unknown): string {
   return createHash("sha256").update(scalar(value)).digest("hex");
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }

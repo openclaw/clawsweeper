@@ -249,55 +249,25 @@ test("worker scheduler keeps 104 slots available for steady background work", ()
   assert.ok(quietBackgroundCapacity >= Math.floor(WORKER_CONFIG.workers.max * 0.8));
 });
 
-test("exact-review pressure caps only background review lanes", () => {
-  assert.equal(
-    workerLimit("normal_review", { exactReviewPressure: "congested" }),
-    AUTOMATION_LIMITS.exact_review.background_congested_max_workers,
-  );
-  assert.equal(
-    workerLimit("hot_intake", { exactReviewPressure: "saturated" }),
-    AUTOMATION_LIMITS.exact_review.background_saturated_max_workers,
-  );
-  assert.equal(
-    workerLimit("commit_review", { exactReviewPressure: "saturated" }),
-    AUTOMATION_LIMITS.exact_review.background_saturated_max_workers,
-  );
-  assert.equal(
-    workerLimit("commit_review", {
-      activeBackground: AUTOMATION_LIMITS.exact_review.background_saturated_max_workers - 1,
-      exactReviewPressure: "saturated",
-    }),
-    1,
-  );
-  assert.equal(
-    workerLimit("normal_review", {
-      activeBackground: AUTOMATION_LIMITS.exact_review.background_saturated_max_workers,
-      exactReviewPressure: "saturated",
-    }),
-    0,
-  );
-  assert.equal(
-    workerLimit("repair", { exactReviewPressure: "saturated" }),
-    AUTOMATION_LIMITS.repair_live_runs.default,
-  );
-});
-
-test("workflow utility CLI rejects pressure states outside the dashboard contract", () => {
-  assert.throws(
-    () =>
-      execFileSync(
-        process.execPath,
-        [
-          path.resolve("dist/repair/workflow-utils.js"),
-          "worker-limit",
-          "normal_review",
-          "--exact-review-pressure",
-          "unknown",
-        ],
-        { cwd: process.cwd(), encoding: "utf8", stdio: "pipe" },
-      ),
-    /Command failed/,
-  );
+test("workflow worker scheduler applies queue pressure only to background lanes", () => {
+  for (const lane of ["normal_review", "hot_intake", "commit_review"] as const) {
+    const normalBudget = workerLimit(lane);
+    assert.equal(workerLimit(lane, { pressureLevel: "soft" }), Math.ceil(normalBudget * 0.5));
+    assert.equal(
+      workerLimit(lane, { pressureLevel: "hard" }),
+      Math.max(1, Math.floor(normalBudget * 0.1)),
+    );
+  }
+  for (const lane of [
+    "repair",
+    "automerge_repair",
+    "issue_implementation",
+    "cluster_repair",
+    "exact_item",
+    "assist",
+  ] as const) {
+    assert.equal(workerLimit(lane, { pressureLevel: "hard" }), workerLimit(lane));
+  }
 });
 
 test("worker config defaults imported cluster repair capacity for older configs", () => {
@@ -983,33 +953,6 @@ test("workflow utilities expose review capacity telemetry from plans", () => {
   );
 });
 
-test("workflow utilities preserve a zero-capacity deferred review plan", () => {
-  assert.deepEqual(
-    planOutputFields(
-      {
-        capacity: 0,
-        candidates: [],
-        matrix: [],
-        activeCodexTarget: 0,
-        dueBacklog: 0,
-        capacityReason: "deferred: exact-review background cap occupied",
-      },
-      { batchSize: 3, shardCount: 1 },
-    ),
-    {
-      matrix: "[]",
-      planned_count: "0",
-      planned_capacity: "0",
-      planned_item_numbers: "",
-      planned_shards: "0",
-      active_codex_target: "0",
-      due_backlog: "0",
-      oldest_unreviewed_at: "",
-      capacity_reason: "deferred: exact-review background cap occupied",
-    },
-  );
-});
-
 test("workflow utilities expand automatic apply scan after a skip-heavy zero-close window", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
   const statusPath = path.join(root, "results/sweep-status/openclaw-openclaw.json");
@@ -1588,7 +1531,10 @@ test("workflow utilities select eligible proposed close records", () => {
     }),
   );
 
-  assert.deepEqual(selected, [5, 12, 15, 17, 18, 21, 22, 24, 25, 26, 27, 30, 31, 32, 35, 36]);
+  assert.deepEqual(
+    selected,
+    [5, 12, 15, 17, 18, 21, 22, 24, 25, 26, 27, 30, 31, 32, 33, 34, 35, 36],
+  );
   assert.deepEqual(
     withCwd(root, () =>
       proposedItemNumbers({
@@ -1947,6 +1893,41 @@ test("workflow utilities select gated product-direction PR close proposals", () 
     ),
     [],
   );
+});
+
+test("workflow utilities select apply-side author-budget promotion probes", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  write(
+    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-15.md"),
+    [
+      "---",
+      "repository: openclaw/openclaw",
+      "type: pull_request",
+      "decision: keep_open",
+      "review_status: complete",
+      "local_checkout_access: verified",
+      "action_taken: kept_open",
+      "close_reason: none",
+      "item_created_at: 2026-01-01T00:00:00Z",
+      "pr_rating_overall: D",
+      "real_behavior_proof_status: missing",
+      "---",
+      "",
+    ].join("\n"),
+  );
+
+  const selected = withCwd(root, () =>
+    proposedItemNumbers({
+      targetRepo: "openclaw/openclaw",
+      applyKind: "pull_request",
+      applyCloseReasons: "author_pr_budget_exceeded",
+      staleMinAgeDays: 60,
+      minAgeDays: 0,
+      minAgeMinutes: null,
+    }),
+  );
+
+  assert.deepEqual(selected, [15]);
 });
 
 test("workflow utilities rotate bounded apply candidate batches by apply cursor", () => {

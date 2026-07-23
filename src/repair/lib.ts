@@ -460,10 +460,26 @@ export function parseArgs(argv: string[]): CliArgs {
   return args;
 }
 
+// CLAWSWEEPER_ALLOWED_OWNER is the one authoritative repair owner policy
+// (issue #604): a comma- or whitespace-separated owner list shared by intake
+// and every execution gate, so eligibility cannot diverge between them.
+export function allowedRepairOwners(allowedOwner?: string): string[] {
+  return String(allowedOwner ?? "")
+    .split(/[\s,]+/)
+    .map((owner) => owner.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+export function isAllowedRepairOwner(repo: string, allowedOwner?: string): boolean {
+  const owners = allowedRepairOwners(allowedOwner);
+  if (owners.length === 0) return true;
+  return owners.includes(String(repo.split("/")[0] ?? "").toLowerCase());
+}
+
 export function assertAllowedOwner(repo: string, allowedOwner?: string) {
   if (!allowedOwner) return;
-  const owner = repo.split("/")[0];
-  if (owner !== allowedOwner) {
+  if (!isAllowedRepairOwner(repo, allowedOwner)) {
+    const owner = repo.split("/")[0];
     throw new Error(`repo owner ${owner} does not match CLAWSWEEPER_ALLOWED_OWNER=${allowedOwner}`);
   }
 }

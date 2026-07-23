@@ -446,7 +446,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/322\\/timeline(?:\\?|$
   const files = [{ filename: "src/runtime.ts" }];
   if (args.includes("--jq")) console.log(JSON.stringify(files.map((file) => file.filename)));
   else console.log(JSON.stringify([files]));
-} else if (args[0] === "api" && /\\/pulls\\/322\\/(files|commits|reviews|comments)(?:\\?|$)/.test(path)) {
+} else if (args[0] === "api" && /\\/pulls\\/322\\/(files|commits|comments|reviews)(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "label" || args[0] === "issue") {
   console.log("");

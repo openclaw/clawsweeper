@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -21,6 +22,19 @@ import {
   withMockCodexProof,
   withMockGh,
 } from "./helpers.ts";
+
+function sourceRevisionForTest(title: string): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        title,
+        body: "Stale PR body.",
+        labels: [],
+        comments: [],
+      }),
+    )
+    .digest("hex");
+}
 
 test("apply-decisions skips stale close reports before duplicate PR coverage proof", () => {
   const root = mkdtempSync(tmpPrefix);
@@ -298,6 +312,235 @@ test("apply-decisions closes existing duplicate PR close proposals when coverage
       report.find((entry) => entry.action === "closed")?.reason ?? "",
       /duplicate or superseded/,
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions permits a trusted deferred close-proof command status through post-proof freshness", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const synced = reportWithSyncedReviewComment(
+      lowSignalCloseReport({
+        number: 363,
+        title: "Provider route fallback",
+        action_taken: "retry_pr_close_coverage_proof",
+        item_source_revision: sourceRevisionForTest("Provider route fallback"),
+        close_reason: "duplicate_or_superseded",
+        work_cluster_refs: JSON.stringify([
+          "Superseded by https://github.com/openclaw/openclaw/pull/400",
+        ]),
+      }).replace(
+        "Closing this PR because the branch is not a useful landing base.",
+        "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
+      ),
+      363,
+      "duplicate_or_superseded",
+    );
+    writeFileSync(join(itemsDir, "363.md"), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 363,
+        title: "Provider route fallback",
+        itemUpdatedAt: "2026-05-01T02:00:00Z",
+        comment: synced.comment,
+        comments: [
+          {
+            id: 9363,
+            html_url: "https://github.com/openclaw/openclaw/pull/363#issuecomment-9363",
+            created_at: "2026-05-01T01:00:00Z",
+            updated_at: "2026-05-01T01:00:00Z",
+            user: { login: "clawsweeper" },
+            body: synced.comment,
+          },
+          {
+            id: 9364,
+            html_url: "https://github.com/openclaw/openclaw/pull/363#issuecomment-9364",
+            created_at: "2026-05-01T01:30:00Z",
+            updated_at: "2026-05-01T02:00:00Z",
+            user: { login: "clawsweeper" },
+            body: "<!-- clawsweeper-command-status: close-coverage-proof-pending -->",
+          },
+        ],
+        timeline: [
+          {
+            event: "commented",
+            created_at: "2026-05-01T01:30:00Z",
+            actor: { login: "clawsweeper" },
+          },
+        ],
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Provider cleanup",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "closed",
+            merged_at: "2026-05-02T00:00:00Z",
+            body: "Includes the fallback route behavior from PR 363.",
+            comments: [],
+            labels: [],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          {
+            type: "decision",
+            decision: "covered",
+            reason: "PR B carries forward PR A's fallback route behavior.",
+          },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--dry-run",
+                "--apply-kind",
+                "all",
+                "--processed-limit",
+                "3",
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+      reason: string;
+    }>;
+    assert.equal(
+      report.some((entry) => entry.action === "closed"),
+      true,
+    );
+    assert.match(
+      report.find((entry) => entry.action === "closed")?.reason ?? "",
+      /duplicate or superseded/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions rejects a source edit masked by a deferred close-proof status", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const proofLogPath = join(root, "proof.log");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const reviewedTitle = "Provider route fallback";
+    const synced = reportWithSyncedReviewComment(
+      lowSignalCloseReport({
+        number: 364,
+        title: reviewedTitle,
+        action_taken: "retry_pr_close_coverage_proof",
+        item_source_revision: sourceRevisionForTest(reviewedTitle),
+        close_reason: "duplicate_or_superseded",
+        work_cluster_refs: JSON.stringify([
+          "Superseded by https://github.com/openclaw/openclaw/pull/400",
+        ]),
+      }).replace(
+        "Closing this PR because the branch is not a useful landing base.",
+        "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
+      ),
+      364,
+      "duplicate_or_superseded",
+    );
+    writeFileSync(join(itemsDir, "364.md"), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 364,
+        title: "Edited provider route fallback",
+        itemUpdatedAt: "2026-05-01T02:00:00Z",
+        comment: synced.comment,
+        comments: [
+          {
+            id: 9365,
+            html_url: "https://github.com/openclaw/openclaw/pull/364#issuecomment-9365",
+            created_at: "2026-05-01T01:00:00Z",
+            updated_at: "2026-05-01T01:00:00Z",
+            user: { login: "clawsweeper[bot]" },
+            body: synced.comment,
+          },
+          {
+            id: 9366,
+            html_url: "https://github.com/openclaw/openclaw/pull/364#issuecomment-9366",
+            created_at: "2026-05-01T02:00:00Z",
+            updated_at: "2026-05-01T02:00:00Z",
+            user: { login: "clawsweeper[bot]" },
+            body: "<!-- clawsweeper-command-status: close-coverage-proof-pending -->",
+          },
+        ],
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Provider cleanup",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "closed",
+            merged_at: "2026-05-02T00:00:00Z",
+            body: "Includes the fallback route behavior from PR 364.",
+            comments: [],
+            labels: [],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          {
+            type: "decision",
+            decision: "covered",
+            reason: "PR B carries forward PR A's fallback route behavior.",
+            invocationLogPath: proofLogPath,
+          },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--dry-run",
+                "--apply-kind",
+                "all",
+                "--processed-limit",
+                "3",
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+      reason: string;
+    }>;
+    assert.equal(report[0]?.action, "skipped_changed_since_review");
+    assert.match(report[0]?.reason ?? "", /updated_at changed/);
+    assert.equal(existsSync(proofLogPath), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

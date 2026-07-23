@@ -1,1 +1,183 @@
-{"schema_version":1,"generated_at":"2026-07-11T18:00:00.000Z","fleet":{"active_workflow_runs":4,"active_codex_jobs":4},"pipeline":[],"workers":[{"id":"worker-main","repository":"openclaw/openclaw","item_number":97722,"item_numbers":[97722],"target_items":[{"repository":"openclaw/openclaw","number":97722,"title":"Synthetic proof item 97722","url":"https://github.com/openclaw/openclaw/issues/97722"}],"name":"Synthetic ClawSweeper proof run","workflow_title":"Synthetic proof item 97722","current_step":"Validate repair","status":"in_progress","run_id":1001,"run_url":"https://github.com/openclaw/openclaw/actions/runs/1001","job_url":"https://github.com/openclaw/openclaw/actions/runs/1001/job/2001","started_at":"2026-07-11T17:41:00.000Z","work_kind":"repair","mode":"exact","progress":{"completed":2,"total":5},"steps":[{"name":"Set up job","status":"completed","conclusion":"success"},{"name":"Review exact event item","status":"in_progress","conclusion":null}]},{"id":"worker-clawhub","repository":"openclaw/clawhub","item_number":3058,"item_numbers":[3058],"target_items":[{"repository":"openclaw/clawhub","number":3058,"title":"Synthetic proof item 3058","url":"https://github.com/openclaw/clawhub/issues/3058"}],"name":"Synthetic ClawSweeper proof run","workflow_title":"Synthetic proof item 3058","current_step":"Set up job","status":"in_progress","run_id":2001,"run_url":"https://github.com/openclaw/clawhub/actions/runs/2001","job_url":"https://github.com/openclaw/clawhub/actions/runs/2001/job/3001","started_at":"2026-07-11T17:48:00.000Z","work_kind":"review","mode":"exact","progress":{"completed":2,"total":5},"steps":[{"name":"Set up job","status":"completed","conclusion":"success"},{"name":"Set up job","status":"in_progress","conclusion":null}]},{"id":"worker-sweeper","repository":"openclaw/clawsweeper","item_number":485,"item_numbers":[485],"target_items":[{"repository":"openclaw/clawsweeper","number":485,"title":"Synthetic proof item 485","url":"https://github.com/openclaw/clawsweeper/issues/485"}],"name":"Synthetic ClawSweeper proof run","workflow_title":"Synthetic proof item 485","current_step":"Validate repair","status":"in_progress","run_id":3001,"run_url":"https://github.com/openclaw/clawsweeper/actions/runs/3001","job_url":"https://github.com/openclaw/clawsweeper/actions/runs/3001/job/4001","started_at":"2026-07-11T17:52:00.000Z","work_kind":"repair","mode":"exact","progress":{"completed":2,"total":5},"steps":[{"name":"Set up job","status":"completed","conclusion":"success"},{"name":"Validate repair","status":"in_progress","conclusion":null}]},{"id":"worker-arriving","repository":"openclaw/openclaw","item_number":103981,"item_numbers":[103981],"target_items":[{"repository":"openclaw/openclaw","number":103981,"title":"Synthetic proof item 103981","url":"https://github.com/openclaw/openclaw/issues/103981"}],"name":"Synthetic ClawSweeper proof run","workflow_title":"Synthetic proof item 103981","current_step":"Waiting for exact-review lease","status":"in_progress","run_id":4001,"run_url":"https://github.com/openclaw/openclaw/actions/runs/4001","job_url":"https://github.com/openclaw/openclaw/actions/runs/4001/job/5001","started_at":"2026-07-11T17:55:00.000Z","work_kind":"review","mode":"exact","progress":{"completed":2,"total":5},"steps":[{"name":"Set up job","status":"completed","conclusion":"success"},{"name":"Waiting for exact-review lease","status":"in_progress","conclusion":null}]}],"health":{"sampled_runs":4},"recent":{"closed_items":[],"failed_runs":[]},"diagnostics":{"errors":["Synthetic proof fixture: optional telemetry unavailable [REDACTED]"]},"bay":{"terminal_buffer":[{"event_id":"synthetic:openclaw/openclaw#97001:success","item_key":"openclaw/openclaw#97001","repository":"openclaw/openclaw","number":97001,"title":"Synthetic success proof item 97001","item_url":"https://github.com/openclaw/openclaw/issues/97001","outcome":"success","completed_at":"2026-07-11T17:58:00.000Z","job_url":"https://github.com/openclaw/openclaw/actions/runs/5001/job/6001","run_id":5001,"current_step":"Workflow concluded successfully"},{"event_id":"synthetic:openclaw/clawhub#97002:failure","item_key":"openclaw/clawhub#97002","repository":"openclaw/clawhub","number":97002,"title":"Synthetic failure proof item 97002","item_url":"https://github.com/openclaw/clawhub/issues/97002","outcome":"failure","completed_at":"2026-07-11T17:58:00.000Z","job_url":"https://github.com/openclaw/clawhub/actions/runs/5002/job/6002","run_id":5002,"current_step":"Workflow concluded with failure"},{"event_id":"synthetic:openclaw/clawsweeper#97003:cancelled","item_key":"openclaw/clawsweeper#97003","repository":"openclaw/clawsweeper","number":97003,"title":"Synthetic cancelled proof item 97003","item_url":"https://github.com/openclaw/clawsweeper/issues/97003","outcome":"cancelled","completed_at":"2026-07-11T17:58:00.000Z","job_url":"https://github.com/openclaw/clawsweeper/actions/runs/5003/job/6003","run_id":5003,"current_step":"Workflow was explicitly cancelled"}],"recently_washed":[],"terminal_count":3,"tide_threshold":20,"tide_generation":0,"last_tide_at":null,"washed_at":null,"timings":{"sample_kind":"completed_review_journeys","window_minutes":60,"overall":{"samples":4,"average_ms":742000}}}}
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-11T18:00:00.000Z",
+  "fleet": { "active_workflow_runs": 4, "active_codex_jobs": 4 },
+  "pipeline": [],
+  "workers": [
+    {
+      "id": "worker-main",
+      "repository": "openclaw/openclaw",
+      "item_number": 97722,
+      "item_numbers": [97722],
+      "target_items": [
+        {
+          "repository": "openclaw/openclaw",
+          "number": 97722,
+          "title": "Synthetic proof item 97722",
+          "url": "https://github.com/openclaw/openclaw/issues/97722"
+        }
+      ],
+      "name": "Synthetic ClawSweeper proof run",
+      "workflow_title": "Synthetic proof item 97722",
+      "current_step": "Publish review artifacts",
+      "status": "in_progress",
+      "run_id": 1001,
+      "run_url": "https://github.com/openclaw/openclaw/actions/runs/1001",
+      "job_url": "https://github.com/openclaw/openclaw/actions/runs/1001/job/2001",
+      "started_at": "2026-07-11T17:41:00.000Z",
+      "work_kind": "repair",
+      "mode": "exact",
+      "progress": { "completed": 2, "total": 5 },
+      "steps": [
+        { "name": "Set up job", "status": "completed", "conclusion": "success" },
+        { "name": "Review exact event item", "status": "in_progress", "conclusion": null }
+      ]
+    },
+    {
+      "id": "worker-clawhub",
+      "repository": "openclaw/clawhub",
+      "item_number": 3058,
+      "item_numbers": [3058],
+      "target_items": [
+        {
+          "repository": "openclaw/clawhub",
+          "number": 3058,
+          "title": "Synthetic proof item 3058",
+          "url": "https://github.com/openclaw/clawhub/issues/3058"
+        }
+      ],
+      "name": "Synthetic ClawSweeper proof run",
+      "workflow_title": "Synthetic proof item 3058",
+      "current_step": "Set up job",
+      "status": "in_progress",
+      "run_id": 2001,
+      "run_url": "https://github.com/openclaw/clawhub/actions/runs/2001",
+      "job_url": "https://github.com/openclaw/clawhub/actions/runs/2001/job/3001",
+      "started_at": "2026-07-11T17:48:00.000Z",
+      "work_kind": "review",
+      "mode": "exact",
+      "progress": { "completed": 2, "total": 5 },
+      "steps": [
+        { "name": "Set up job", "status": "completed", "conclusion": "success" },
+        { "name": "Set up job", "status": "in_progress", "conclusion": null }
+      ]
+    },
+    {
+      "id": "worker-sweeper",
+      "repository": "openclaw/clawsweeper",
+      "item_number": 485,
+      "item_numbers": [485],
+      "target_items": [
+        {
+          "repository": "openclaw/clawsweeper",
+          "number": 485,
+          "title": "Synthetic proof item 485",
+          "url": "https://github.com/openclaw/clawsweeper/issues/485"
+        }
+      ],
+      "name": "Synthetic ClawSweeper proof run",
+      "workflow_title": "Synthetic proof item 485",
+      "current_step": "Validate repair",
+      "status": "in_progress",
+      "run_id": 3001,
+      "run_url": "https://github.com/openclaw/clawsweeper/actions/runs/3001",
+      "job_url": "https://github.com/openclaw/clawsweeper/actions/runs/3001/job/4001",
+      "started_at": "2026-07-11T17:52:00.000Z",
+      "work_kind": "repair",
+      "mode": "exact",
+      "progress": { "completed": 2, "total": 5 },
+      "steps": [
+        { "name": "Set up job", "status": "completed", "conclusion": "success" },
+        { "name": "Validate repair", "status": "in_progress", "conclusion": null }
+      ]
+    },
+    {
+      "id": "worker-arriving",
+      "repository": "openclaw/openclaw",
+      "item_number": 103981,
+      "item_numbers": [103981],
+      "target_items": [
+        {
+          "repository": "openclaw/openclaw",
+          "number": 103981,
+          "title": "Synthetic proof item 103981",
+          "url": "https://github.com/openclaw/openclaw/issues/103981"
+        }
+      ],
+      "name": "Synthetic ClawSweeper proof run",
+      "workflow_title": "Synthetic proof item 103981",
+      "current_step": "Waiting for exact-review lease",
+      "status": "in_progress",
+      "run_id": 4001,
+      "run_url": "https://github.com/openclaw/openclaw/actions/runs/4001",
+      "job_url": "https://github.com/openclaw/openclaw/actions/runs/4001/job/5001",
+      "started_at": "2026-07-11T17:55:00.000Z",
+      "work_kind": "review",
+      "mode": "exact",
+      "progress": { "completed": 2, "total": 5 },
+      "steps": [
+        { "name": "Set up job", "status": "completed", "conclusion": "success" },
+        { "name": "Waiting for exact-review lease", "status": "in_progress", "conclusion": null }
+      ]
+    }
+  ],
+  "health": { "sampled_runs": 4 },
+  "recent": { "closed_items": [], "failed_runs": [] },
+  "diagnostics": {
+    "errors": ["Synthetic proof fixture: optional telemetry unavailable [REDACTED]"]
+  },
+  "bay": {
+    "terminal_buffer": [
+      {
+        "event_id": "synthetic:openclaw/openclaw#97001:success",
+        "item_key": "openclaw/openclaw#97001",
+        "repository": "openclaw/openclaw",
+        "number": 97001,
+        "title": "Synthetic success proof item 97001",
+        "item_url": "https://github.com/openclaw/openclaw/issues/97001",
+        "outcome": "success",
+        "completed_at": "2026-07-11T17:58:00.000Z",
+        "job_url": "https://github.com/openclaw/openclaw/actions/runs/5001/job/6001",
+        "run_id": 5001,
+        "current_step": "Workflow concluded successfully"
+      },
+      {
+        "event_id": "synthetic:openclaw/clawhub#97002:failure",
+        "item_key": "openclaw/clawhub#97002",
+        "repository": "openclaw/clawhub",
+        "number": 97002,
+        "title": "Synthetic failure proof item 97002",
+        "item_url": "https://github.com/openclaw/clawhub/issues/97002",
+        "outcome": "failure",
+        "completed_at": "2026-07-11T17:58:00.000Z",
+        "job_url": "https://github.com/openclaw/clawhub/actions/runs/5002/job/6002",
+        "run_id": 5002,
+        "current_step": "Workflow concluded with failure"
+      },
+      {
+        "event_id": "synthetic:openclaw/clawsweeper#97003:cancelled",
+        "item_key": "openclaw/clawsweeper#97003",
+        "repository": "openclaw/clawsweeper",
+        "number": 97003,
+        "title": "Synthetic cancelled proof item 97003",
+        "item_url": "https://github.com/openclaw/clawsweeper/issues/97003",
+        "outcome": "cancelled",
+        "completed_at": "2026-07-11T17:58:00.000Z",
+        "job_url": "https://github.com/openclaw/clawsweeper/actions/runs/5003/job/6003",
+        "run_id": 5003,
+        "current_step": "Workflow was explicitly cancelled"
+      }
+    ],
+    "recently_washed": [],
+    "terminal_count": 3,
+    "tide_threshold": 20,
+    "tide_generation": 0,
+    "last_tide_at": null,
+    "washed_at": null,
+    "timings": {
+      "sample_kind": "completed_review_journeys",
+      "window_minutes": 60,
+      "overall": { "samples": 4, "average_ms": 742000 }
+    }
+  }
+}

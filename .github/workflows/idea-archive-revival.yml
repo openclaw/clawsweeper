@@ -1,0 +1,79 @@
+name: Revive idea archive
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Target repository"
+        required: true
+        default: "openclaw/openclaw"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: idea-archive-revival-${{ github.event.inputs.target_repo || 'openclaw/openclaw' }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+
+jobs:
+  revive:
+    name: Revive sponsored or popular ideas
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build
+
+      - name: Resolve target repository
+        id: target
+        env:
+          TARGET_REPO: ${{ github.event.inputs.target_repo || 'openclaw/openclaw' }}
+        run: |
+          set -euo pipefail
+          case "$TARGET_REPO" in
+            */*) ;;
+            *) exit 1 ;;
+          esac
+          target_owner="${TARGET_REPO%%/*}"
+          target_name="${TARGET_REPO#*/}"
+          if ! printf '%s' "$target_owner" | grep -Eq '^[A-Za-z0-9_.-]+$' ||
+             ! printf '%s' "$target_name" | grep -Eq '^[A-Za-z0-9_.-]+$'; then
+            exit 1
+          fi
+          {
+            echo "target_owner=$target_owner"
+            echo "target_name=$target_name"
+            echo "target_repo=$TARGET_REPO"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create target issue token
+        id: target-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.target_owner }}
+          repositories: ${{ steps.target.outputs.target_name }}
+          permission-issues: write
+
+      - name: Revive eligible archived ideas
+        env:
+          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          CLAWSWEEPER_IDEA_REVIVAL_REACTIONS: ${{ vars.CLAWSWEEPER_IDEA_REVIVAL_REACTIONS || '5' }}
+          CLAWSWEEPER_IDEA_REVIVAL_MAX_PER_RUN: ${{ vars.CLAWSWEEPER_IDEA_REVIVAL_MAX_PER_RUN || '10' }}
+          CLAWSWEEPER_IDEA_ARCHIVE_SCAN_PAGES: ${{ vars.CLAWSWEEPER_IDEA_ARCHIVE_SCAN_PAGES || '5' }}
+          # Org owners can appear as CONTRIBUTOR on app-operated repos; the allowlist
+          # ensures their sponsorship comments still revive parked ideas.
+          CLAWSWEEPER_MAINTAINER_LOGINS: ${{ vars.CLAWSWEEPER_MAINTAINER_LOGINS || '' }}
+        run: node dist/idea-archive-revival.js

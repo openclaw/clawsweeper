@@ -84,6 +84,9 @@ export function deterministicAutomergeResult({
   return {
     status: "planned",
     repo,
+    // Execution must bind to the exact PR revision hydrated by this planning
+    // pass. The job file can outlive a source-head race and is not sufficient.
+    reviewed_sha: canonical.pull_request?.head_sha ?? null,
     cluster_id: String(clusterPlan?.cluster_id ?? job?.frontmatter?.cluster_id ?? ""),
     mode,
     summary,
@@ -92,7 +95,6 @@ export function deterministicAutomergeResult({
         target: ref,
         action: "build_fix_artifact",
         status: "planned",
-        blocked_by: null,
         idempotency_key: `${clusterPlan?.cluster_id ?? "automerge"}:${number}:direct-repair`,
         classification: "canonical",
         target_kind: "pull_request",
@@ -100,7 +102,6 @@ export function deterministicAutomergeResult({
         canonical: ref,
         duplicate_of: null,
         candidate_fix: ref,
-        depends_on: null,
         comment: null,
         evidence,
         reason,

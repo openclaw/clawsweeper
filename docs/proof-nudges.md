@@ -52,69 +52,6 @@ requests use `bot_proof_mantis_request_planned` or
 `bot_proof_mantis_request_posted`. Hosted dashboard events with those tokens are
 counted in the proof operation counters.
 
-## Mutation Freshness And Receipts
-
-Execute mode establishes one exact-head baseline before proof eligibility reads.
-Immediately before every proof comment, label creation, label addition, and
-label removal request, ClawSweeper reads two consecutive live snapshots and
-requires both to match the baseline:
-
-- the exact pull request head SHA, read before and after activity hydration;
-- at most 1,000 combined reviews, inline comments, and review threads,
-  including thread resolution state;
-- at most 1,000 pull request conversation comments.
-
-The activity snapshots are SHA-256 cursors. Raw comment and review bodies are
-never written to reports or receipts. Activity beyond either bound, an
-incomplete read, or any head, review, thread, or conversation drift blocks the
-request. The same boundary also revalidates open, unlocked, non-draft, and
-non-protected proof eligibility from live state. Nudge author comments, PR body
-edits, and review activity are hydrated inside that boundary instead of reused
-from the earlier planning read. Bot-proof label plans start from the bound live
-label set, and the expected label cursor advances only after an accepted owned
-label operation. A successful earlier label request does not authorize the next
-one; each request gets its own freshness check.
-
-The production proof workflow enables the action ledger before either command.
-Every request writes an immutable pre-request receipt and then one accepted,
-rejected-before-write, or outcome-unknown receipt. Retries retain one business
-idempotency key while each request attempt has a distinct receipt pair. An
-outcome-unknown response is not automatically retried, even when it resembles a
-transient GitHub error. The workflow finalizes, imports, and publishes the exact
-proof-job shards to the state repository before completing.
-
-Proof comments contain same-head markers, and bot-proof comments use a stable
-body plus the desired label state. After a response loss or process crash, a
-later run checks those public facts before another write. A match records
-`proof_nudge_reconciled` or `bot_proof_decision_reconciled` without claiming a
-new mutation. An open pre-request receipt and its later reconciliation share
-the same hashed business idempotency key. Label recovery uses the exact
-`label_create`, `issue_label_add`, or `issue_label_remove` request identity that
-the public postcondition satisfies. Existing same-head nudge markers are
-reconciled even after their cooldown expires, before a new reminder is posted.
-
-Both lanes write one bounded per-PR recovery record before the comment request.
-Contributor records contain repository, PR number, head SHA, and the original
-marker timestamp. Bot-proof records replace the timestamp with the desired
-comment-body digest, so the same fence covers both POST and PATCH attempts
-without storing comment text. If an unknown outcome is not yet visible, later
-runs report `proof_nudge_reconciliation_pending` or
-`bot_proof_reconciliation_pending`, reuse the same hashed business identity,
-and do not send another request. Records clear only after rejection, confirmed
-publication, reconciliation, or a head change. Recovery-state publication is
-best-effort even when receipt artifact or state publication fails, and it does
-not advance the proof scan cursor.
-
-Reports expose only bounded status and reason strings:
-
-- `skipped_changed_before_mutation` when head or bounded activity changed;
-- `proof_nudge_outcome_unknown` or `bot_proof_mutation_outcome_unknown` when
-  GitHub may have accepted a request but public state cannot confirm it;
-- the reconciliation actions above when public state confirms completion.
-
-Receipts and reports do not contain raw prompts, command logs, comment bodies,
-or review bodies.
-
 ## Marker
 
 Cooldown state lives in the reminder comment body:
@@ -179,8 +116,6 @@ The workflow publishes only the exact target cursor files, for example
 `results/proof-nudge-cursors/openclaw-openclaw.json`, and only after the
 corresponding lane executed and wrote that file. Dry-runs do not publish cursor
 paths, and one target repo run does not replace another target's cursor file.
-Cursor publication also requires finalized receipt upload, immutable receipt
-publication, and successful recovery-state publication.
 
 Suggested rollout:
 

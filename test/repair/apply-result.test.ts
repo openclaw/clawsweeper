@@ -437,7 +437,7 @@ for (const scenario of [
   });
 }
 
-test("repair apply rejects conflicting relationship roots before GitHub reads", () => {
+test("repair apply checks superseded candidate PR coverage before canonical issue", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
   try {
     const paths = writeApplyFixture(tmp, {
@@ -446,12 +446,39 @@ test("repair apply rejects conflicting relationship roots before GitHub reads", 
       canonical: "#303",
       candidate_fix: "#202",
     });
+    writeFakeGh(paths.binDir, {
+      issues: {
+        101: issue({ number: 101, title: "Add config validation", pullRequest: true }),
+        202: issue({
+          number: 202,
+          title: "Rewrite config validation",
+          pullRequest: true,
+          labels: ["proof: sufficient"],
+        }),
+        303: issue({ number: 303, title: "Tracking issue", pullRequest: false }),
+      },
+      pulls: {
+        101: pull({ number: 101, title: "Add config validation" }),
+        202: pull({ number: 202, title: "Rewrite config validation" }),
+      },
+      comments: {
+        101: [comment("alice", "PR A keeps legacy config behavior intact.")],
+        202: [comment("bob", "PR B only rewrites parser setup.")],
+        303: [comment("carol", "Tracking the canonical cleanup.")],
+      },
+      logPath: paths.ghLogPath,
+    });
+    writeFakeCodex(paths.binDir);
 
-    assert.throws(
-      () => runApplyResult(paths, { proofDecision: "keep_open" }),
-      /conflicting_relationship_roots/,
+    runApplyResult(paths, { proofDecision: "keep_open" });
+
+    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+    assert.equal(report.actions[0].status, "blocked");
+    assert.equal(
+      report.actions[0].reason,
+      "PR close coverage proof kept the source pull request open: PR B does not carry forward the legacy behavior.",
     );
-    assert.equal(fs.existsSync(paths.ghLogPath), false);
+    assert.equal(hasPrCloseCall(paths.ghLogPath), false);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -949,7 +976,6 @@ test("repair apply skips target closed after proof when updated_at is missing", 
           title: "Add config validation",
           pullRequest: true,
           state: "closed",
-          updatedAt: "2026-05-25T00:05:00Z",
         }),
       },
       logPath: paths.ghLogPath,
@@ -986,7 +1012,6 @@ test("repair apply treats already-closed PR duplicate close as idempotent before
           title: "Add config validation",
           pullRequest: true,
           state: "closed",
-          updatedAt: "2026-05-25T00:05:00Z",
         }),
         202: issue({ number: 202, title: "Rewrite config validation", pullRequest: true }),
       },
@@ -1020,51 +1045,6 @@ test("repair apply treats already-closed PR duplicate close as idempotent before
       "already closed with matching clawsweeper-repair comment",
     );
     assert.equal(hasPrCloseCall(paths.ghLogPath), false);
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("repair apply does not trust a human-authored close marker", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
-  try {
-    const paths = writeApplyFixture(tmp, {
-      action: "close_duplicate",
-      classification: "duplicate",
-      canonical: "#202",
-    });
-    writeFakeGh(paths.binDir, {
-      issues: {
-        101: issue({
-          number: 101,
-          title: "Add config validation",
-          pullRequest: true,
-          state: "closed",
-          updatedAt: "2026-05-25T00:05:00Z",
-        }),
-        202: issue({ number: 202, title: "Rewrite config validation", pullRequest: true }),
-      },
-      pulls: {
-        101: pull({ number: 101, title: "Add config validation" }),
-        202: pull({ number: 202, title: "Rewrite config validation" }),
-      },
-      comments: {
-        101: [
-          comment(
-            "alice",
-            "<!-- clawsweeper-repair:close:repair-pr-close-proof:#101:proof-gated-close -->",
-          ),
-        ],
-        202: [],
-      },
-      logPath: paths.ghLogPath,
-    });
-
-    runApplyResult(paths, { proofDecision: "keep_open", failIfProofRuns: true });
-
-    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
-    assert.equal(report.actions[0].status, "skipped");
-    assert.equal(report.actions[0].reason, "already closed");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -1140,308 +1120,17 @@ test("repair apply leaves current-main fixed closeout outside coverage proof", (
   }
 });
 
-test("repair apply executes dependent-first input in reviewed dependency order", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
-  try {
-    const paths = writeApplyFixture(tmp, [
-      dependencyClose("#102", ["#101"]),
-      dependencyClose("#101"),
-    ]);
-    writeFakeGh(paths.binDir, {
-      issues: {
-        101: issue({ number: 101, title: "Prerequisite", pullRequest: false }),
-        102: issue({ number: 102, title: "Dependent", pullRequest: false }),
-      },
-      pulls: {},
-      comments: { 101: [], 102: [] },
-      logPath: paths.ghLogPath,
-    });
+test("post-flight authorization promotes only candidate-bound closeouts into guarded apply", () => {
+  const source = fs.readFileSync("src/repair/apply-result.ts", "utf8");
 
-    runApplyResult(paths, { proofDecision: "covered" });
-
-    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
-    assert.deepEqual(
-      report.actions.map((action: Record<string, unknown>) => [action.target, action.status]),
-      [
-        ["#101", "executed"],
-        ["#102", "executed"],
-      ],
-    );
-    assert.deepEqual(issueCloseTargets(paths.ghLogPath), ["101", "102"]);
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
+  assert.match(source, /closure_authorization\?\.status !== "authorized"/);
+  assert.match(source, /mergedFixes\.has\(candidateFix\)/);
+  assert.match(source, /normalizeIssueRef\(entry\.target, result\.repo\) === candidateFix/);
+  assert.doesNotMatch(
+    source,
+    /MERGE_ACTIONS\.has\(entry\.action\) && entry\.status === "executed"\s*\)/,
+  );
 });
-
-test("repair apply does not let an unrelated merge authorize a fix-first close", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
-  try {
-    const paths = writeApplyFixture(tmp, [
-      {
-        action: "close_fixed_by_candidate",
-        classification: "fixed_by_candidate",
-        target: "#101",
-        target_kind: "issue",
-        candidate_fix: "#202",
-      },
-      {
-        action: "merge_candidate",
-        classification: "canonical",
-        target: "#303",
-        target_kind: "pull_request",
-      },
-    ]);
-    enableFixFirstMerges(paths.jobPath);
-    writeFakeGh(paths.binDir, {
-      issues: {
-        101: issue({ number: 101, title: "Fixed issue", pullRequest: false }),
-        202: issue({ number: 202, title: "Candidate fix", pullRequest: true }),
-        303: issue({ number: 303, title: "Unrelated fix", pullRequest: true, state: "closed" }),
-      },
-      pulls: {
-        202: pull({ number: 202, title: "Candidate fix" }),
-        303: pull({
-          number: 303,
-          title: "Unrelated fix",
-          mergedAt: "2026-05-25T00:01:00Z",
-        }),
-      },
-      comments: { 101: [], 202: [], 303: [] },
-      logPath: paths.ghLogPath,
-    });
-
-    runApplyResult(paths, { proofDecision: "covered", failIfProofRuns: true });
-
-    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
-    assert.deepEqual(
-      report.actions.map((action: Record<string, unknown>) => [
-        action.target,
-        action.status,
-        action.reason,
-      ]),
-      [
-        ["#303", "executed", "already merged"],
-        [
-          "#101",
-          "blocked",
-          "close requires ClawSweeper fix PR opened/pushed, merged candidate fix, or candidate merge executed first",
-        ],
-      ],
-    );
-    assert.deepEqual(issueCloseTargets(paths.ghLogPath), []);
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("repair second apply reuses a trusted first-pass close for dependent closure", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
-  try {
-    const paths = writeApplyFixture(tmp, [
-      dependencyClose("#102", ["#101"]),
-      dependencyClose("#101"),
-    ]);
-    writeFakeGh(paths.binDir, {
-      issues: {
-        101: issue({
-          number: 101,
-          title: "Prerequisite",
-          pullRequest: false,
-          state: "closed",
-          updatedAt: "2026-05-25T00:05:00Z",
-        }),
-        102: issue({ number: 102, title: "Dependent", pullRequest: false }),
-      },
-      pulls: {},
-      comments: {
-        101: [
-          comment(
-            "clawsweeper[bot]",
-            "<!-- clawsweeper-repair:close:repair-pr-close-proof:#101:proof-gated-close -->",
-          ),
-        ],
-        102: [],
-      },
-      logPath: paths.ghLogPath,
-    });
-
-    runApplyResult(paths, { proofDecision: "covered" });
-
-    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
-    assert.deepEqual(
-      report.actions.map((action: Record<string, unknown>) => [action.target, action.status]),
-      [
-        ["#101", "executed"],
-        ["#102", "executed"],
-      ],
-    );
-    assert.deepEqual(issueCloseTargets(paths.ghLogPath), ["102"]);
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("repair second apply promotes a fix-first close after post-flight merge authorization", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
-  try {
-    const paths = writeApplyFixture(tmp, {
-      action: "close_fixed_by_candidate",
-      classification: "fixed_by_candidate",
-      target_kind: "issue",
-      status: "blocked",
-      blocked_by: "fix_first",
-      candidate_fix: "#202",
-      reason: "blocked-by-fix-first until the canonical fix PR lands",
-    });
-    fs.writeFileSync(
-      path.join(path.dirname(paths.resultPath), "post-flight-report.json"),
-      JSON.stringify(
-        {
-          repo: "openclaw/openclaw",
-          cluster_id: "repair-pr-close-proof",
-          closure_authorization: {
-            version: 1,
-            status: "authorized",
-            merged_fixes: [
-              {
-                fix_ref: "#202",
-                merge_commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-              },
-            ],
-          },
-        },
-        null,
-        2,
-      ),
-    );
-    writeFakeGh(paths.binDir, {
-      issues: {
-        101: issue({ number: 101, title: "Fixed issue", pullRequest: false }),
-      },
-      pulls: {},
-      comments: { 101: [] },
-      logPath: paths.ghLogPath,
-    });
-
-    runApplyResult(paths, { proofDecision: "covered" });
-
-    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
-    assert.deepEqual(report.closure_promotions, [
-      {
-        target: "#101",
-        action: "close_fixed_by_candidate",
-        source_status: "blocked",
-        effective_status: "planned",
-        candidate_fix: "#202",
-        reason: "authorized by merged ClawSweeper Repair fix",
-      },
-    ]);
-    assert.equal(report.actions[0].status, "executed");
-    assert.deepEqual(issueCloseTargets(paths.ghLogPath), ["101"]);
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("repair second apply does not infer fix-first authorization from prose", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
-  try {
-    const paths = writeApplyFixture(tmp, {
-      action: "close_fixed_by_candidate",
-      classification: "fixed_by_candidate",
-      target_kind: "issue",
-      status: "blocked",
-      candidate_fix: "#202",
-      reason: "blocked pending maintainer approval after fix PR #202 lands",
-    });
-    fs.writeFileSync(
-      path.join(path.dirname(paths.resultPath), "post-flight-report.json"),
-      JSON.stringify(
-        {
-          repo: "openclaw/openclaw",
-          cluster_id: "repair-pr-close-proof",
-          closure_authorization: {
-            version: 1,
-            status: "authorized",
-            merged_fixes: [
-              {
-                fix_ref: "#202",
-                merge_commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-              },
-            ],
-          },
-        },
-        null,
-        2,
-      ),
-    );
-    writeFakeGh(paths.binDir, {
-      issues: {
-        101: issue({ number: 101, title: "Approval-gated issue", pullRequest: false }),
-      },
-      pulls: {},
-      comments: { 101: [] },
-      logPath: paths.ghLogPath,
-    });
-
-    runApplyResult(paths, { proofDecision: "covered" });
-
-    const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
-    assert.equal(report.closure_promotions, undefined);
-    assert.equal(report.actions[0].status, "skipped");
-    assert.equal(report.actions[0].source_status, "blocked");
-    assert.equal(fs.existsSync(paths.ghLogPath), false);
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-for (const prerequisite of [
-  { name: "blocked", omitTargetUpdatedAt: true, state: "open", expectedStatus: "blocked" },
-  { name: "skipped", omitTargetUpdatedAt: false, state: "closed", expectedStatus: "skipped" },
-]) {
-  test(`repair apply blocks dependents when a prerequisite is ${prerequisite.name}`, () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
-    try {
-      const paths = writeApplyFixture(tmp, [
-        dependencyClose("#102", ["#101"]),
-        dependencyClose("#101", undefined, prerequisite.omitTargetUpdatedAt),
-      ]);
-      writeFakeGh(paths.binDir, {
-        issues: {
-          101: issue({
-            number: 101,
-            title: "Prerequisite",
-            pullRequest: false,
-            state: prerequisite.state,
-          }),
-          102: issue({ number: 102, title: "Dependent", pullRequest: false }),
-        },
-        pulls: {},
-        comments: { 101: [], 102: [] },
-        logPath: paths.ghLogPath,
-      });
-
-      runApplyResult(paths, { proofDecision: "covered" });
-
-      const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
-      assert.equal(report.actions[0].target, "#101");
-      assert.equal(report.actions[0].status, prerequisite.expectedStatus);
-      assert.equal(report.actions[1].target, "#102");
-      assert.equal(report.actions[1].status, "blocked");
-      assert.equal(
-        report.actions[1].reason,
-        `closure prerequisites did not close successfully: #101 (${prerequisite.expectedStatus})`,
-      );
-      assert.deepEqual(report.actions[1].dependency_outcomes, [
-        { target: "#101", status: prerequisite.expectedStatus },
-      ]);
-      assert.deepEqual(issueCloseTargets(paths.ghLogPath), []);
-    } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-}
 
 type ApplyFixturePaths = {
   binDir: string;
@@ -1454,17 +1143,11 @@ type ApplyFixturePaths = {
 type ApplyFixtureAction = {
   action: string;
   classification: string;
-  target?: string;
-  target_kind?: "issue" | "pull_request";
-  status?: string;
-  blocked_by?: "fix_first";
   canonical?: string;
   duplicate_of?: string;
   candidate_fix?: string;
   fixed_by?: string;
   fix_candidate?: string;
-  depends_on?: string[] | null;
-  idempotency_key?: string;
   reason?: string;
   omitTargetUpdatedAt?: boolean;
 };
@@ -1483,10 +1166,7 @@ type FakeGhData = {
   logPath: string;
 };
 
-function writeApplyFixture(
-  tmp: string,
-  actionInput: ApplyFixtureAction | ApplyFixtureAction[],
-): ApplyFixturePaths {
+function writeApplyFixture(tmp: string, action: ApplyFixtureAction): ApplyFixturePaths {
   const binDir = path.join(tmp, "bin");
   const runDir = path.join(tmp, "run");
   const jobPath = path.join(tmp, "job.md");
@@ -1495,8 +1175,6 @@ function writeApplyFixture(
   const ghLogPath = path.join(tmp, "gh.log");
   fs.mkdirSync(binDir, { recursive: true });
   fs.mkdirSync(runDir, { recursive: true });
-  const actions = Array.isArray(actionInput) ? actionInput : [actionInput];
-  const candidateRefs = [...new Set(["#101", ...actions.map((action) => action.target ?? "#101")])];
   fs.writeFileSync(
     jobPath,
     [
@@ -1508,16 +1186,14 @@ function writeApplyFixture(
       "  - comment",
       "  - close",
       "canonical:",
-      "  - '#100'",
       "  - '#202'",
       "  - '#303'",
       "candidates:",
-      ...candidateRefs.map((ref) => `  - '${ref}'`),
+      "  - '#101'",
       "maintainer_close_refs:",
-      ...candidateRefs.map((ref) => `  - '${ref}'`),
+      "  - '#101'",
       "cluster_refs:",
-      ...candidateRefs.map((ref) => `  - '${ref}'`),
-      "  - '#100'",
+      "  - '#101'",
       "  - '#202'",
       "  - '#303'",
       "allow_instant_close: true",
@@ -1529,25 +1205,9 @@ function writeApplyFixture(
       "",
     ].join("\n"),
   );
-  const resultActions = actions.map((action) => {
-    const resultAction = { ...action };
-    const omitTargetUpdatedAt = resultAction.omitTargetUpdatedAt === true;
-    delete resultAction.omitTargetUpdatedAt;
-    return {
-      ...resultAction,
-      target: resultAction.target ?? "#101",
-      target_kind: resultAction.target_kind ?? "pull_request",
-      ...(omitTargetUpdatedAt ? {} : { target_updated_at: "2026-05-25T00:00:00Z" }),
-      status: resultAction.status ?? "planned",
-      evidence: ["PR B is referenced as the canonical replacement for PR A."],
-      idempotency_key:
-        resultAction.idempotency_key ??
-        ((resultAction.target ?? "#101") === "#101"
-          ? "proof-gated-close"
-          : `proof-gated-close:${resultAction.target}`),
-      comment: "Thanks for the work here. PR B is the canonical repair path.",
-    };
-  });
+  const resultAction = { ...action };
+  const omitTargetUpdatedAt = resultAction.omitTargetUpdatedAt === true;
+  delete resultAction.omitTargetUpdatedAt;
   fs.writeFileSync(
     resultPath,
     JSON.stringify(
@@ -1555,38 +1215,24 @@ function writeApplyFixture(
         repo: "openclaw/openclaw",
         cluster_id: "repair-pr-close-proof",
         mode: "autonomous",
-        actions: resultActions,
+        actions: [
+          {
+            ...resultAction,
+            target: "#101",
+            target_kind: "pull_request",
+            ...(omitTargetUpdatedAt ? {} : { target_updated_at: "2026-05-25T00:00:00Z" }),
+            status: "planned",
+            evidence: ["PR B is referenced as the canonical replacement for PR A."],
+            idempotency_key: "proof-gated-close",
+            comment: "Thanks for the work here. PR B is the canonical repair path.",
+          },
+        ],
       },
       null,
       2,
     ),
   );
   return { binDir, jobPath, resultPath, reportPath, ghLogPath };
-}
-
-function dependencyClose(
-  target: string,
-  dependsOn?: string[],
-  omitTargetUpdatedAt = false,
-): ApplyFixtureAction {
-  return {
-    action: "close_duplicate",
-    classification: "duplicate",
-    target,
-    target_kind: "issue",
-    canonical: "#100",
-    depends_on: dependsOn ?? null,
-    omitTargetUpdatedAt,
-  };
-}
-
-function enableFixFirstMerges(jobPath: string): void {
-  const job = fs
-    .readFileSync(jobPath, "utf8")
-    .replace("  - close\n", "  - close\n  - merge\n")
-    .replace("allow_instant_close: true", "allow_instant_close: true\nallow_merge: true")
-    .replace("require_fix_before_close: false", "require_fix_before_close: true");
-  fs.writeFileSync(jobPath, job);
 }
 
 function runApplyResult(
@@ -1845,7 +1491,6 @@ function issue(options: {
   title: string;
   pullRequest: boolean;
   state?: string;
-  updatedAt?: string;
   labels?: string[];
 }) {
   return {
@@ -1853,7 +1498,7 @@ function issue(options: {
     title: options.title,
     html_url: `https://github.com/openclaw/openclaw/pull/${options.number}`,
     state: options.state ?? "open",
-    updated_at: options.updatedAt ?? "2026-05-25T00:00:00Z",
+    updated_at: "2026-05-25T00:00:00Z",
     author_association: "CONTRIBUTOR",
     user: { login: "contributor" },
     labels: (options.labels ?? []).map((name) => ({ name })),
@@ -1895,15 +1540,4 @@ function ghCalls(logPath: string): { args: string[] }[] {
 
 function hasPrCloseCall(logPath: string): boolean {
   return ghCalls(logPath).some((call) => call.args[0] === "pr" && call.args[1] === "close");
-}
-
-function issueCloseTargets(logPath: string): string[] {
-  return ghCalls(logPath)
-    .filter(
-      (call) =>
-        call.args[0] === "api" &&
-        call.args.includes("PATCH") &&
-        /\/issues\/\d+$/.test(call.args[1] ?? ""),
-    )
-    .map((call) => call.args[1]?.match(/\/issues\/(\d+)$/)?.[1] ?? "");
 }

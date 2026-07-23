@@ -25,15 +25,7 @@ test("repair workflow and executor share coherent production timeout defaults", 
     workflow,
     /CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS: \$\{\{ vars\.CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS \|\| '1800000' \}\}/,
   );
-  assert.match(
-    workflow,
-    /name: Record execute recovery deadline[\s\S]*CLAWSWEEPER_EXECUTE_DEADLINE_EPOCH/,
-  );
-  assert.match(
-    workflow,
-    /name: Execute credited fix artifact[\s\S]*timeout --signal=TERM --kill-after=30s "\$\{execute_timeout_seconds\}s"[\s\S]*node dist\/repair\/execute-fix-attempt\.js/,
-  );
-  assert.doesNotMatch(workflow, /timeout --foreground/);
+  assert.match(workflow, /name: Execute credited fix artifact[\s\S]*timeout-minutes: 70/);
 });
 
 test("no-op automerge repair updates outcome and re-enters router before exit", () => {
@@ -78,6 +70,30 @@ test("repair source branch writability preflight runs before target repair", () 
       validationIndex < repairIndex,
     "live source-branch writability must be resolved before checkout, validation planning, and repair",
   );
+});
+
+test("repair branch rechecks the planned head on the PR object used for checkout", () => {
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  const repairStart = source.indexOf("function executeRepairBranch(");
+  const checkoutEnd = source.indexOf("prepareTargetToolchain(", repairStart);
+  assert.notEqual(repairStart, -1);
+  assert.notEqual(checkoutEnd, -1);
+  const checkoutWindow = source.slice(repairStart, checkoutEnd);
+
+  const pullFetchIndex = checkoutWindow.indexOf("const pull = fetchPullRequest(");
+  const plannedHeadIndex = checkoutWindow.indexOf("automergePlanningHeadBlock({");
+  const checkoutIndex = checkoutWindow.indexOf("checkoutSourcePullRequestHead({");
+  assert.notEqual(pullFetchIndex, -1);
+  assert.notEqual(plannedHeadIndex, -1);
+  assert.notEqual(checkoutIndex, -1);
+  assert.ok(
+    pullFetchIndex < plannedHeadIndex && plannedHeadIndex < checkoutIndex,
+    "the live PR head must be bound to the planned revision before that PR object reaches checkout",
+  );
+  assert.match(checkoutWindow, /currentHeadSha: pull\.head\?\.sha/);
+  assert.match(checkoutWindow, /expected_head_sha: planningHeadBlock\.expectedHeadSha/);
+  assert.match(checkoutWindow, /current_head_sha: planningHeadBlock\.currentHeadSha/);
+  assert.match(checkoutWindow, /requeue_required: true/);
 });
 
 test("repair branch pushes settle and re-check the exact source head", () => {
