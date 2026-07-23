@@ -292,6 +292,15 @@ jobs:
             echo "Exact terminal comment version already recorded; skipping state publication."
             exit 0
           fi
+          jobs_changed=0
+          if ! git diff --no-index --quiet -- "$CLAWSWEEPER_STATE_DIR/jobs" jobs; then
+            jobs_changed=1
+          fi
+          if [ "$jobs_changed" = "0" ] &&
+             jq -e '((.ledger_claimed // 0) + (.ledger_changed // 0)) == 0' results/comment-router-latest.json >/dev/null 2>&1; then
+            echo "No durable router state changed; skipping state publication."
+            exit 0
+          fi
           publish_args=(
             --message "chore: record ClawSweeper comment routing" \
             --path results/comment-router.json \
@@ -299,7 +308,7 @@ jobs:
           )
           # The latest scan report is run-local. Only commands that actually
           # changed repair jobs need the serialized Git state writer.
-          if [ -n "$(git status --porcelain=v1 --untracked-files=all -- jobs)" ]; then
+          if [ "$jobs_changed" = "1" ]; then
             publish_args+=(--path jobs)
           fi
           pnpm run repair:publish-main -- "${publish_args[@]}"
@@ -429,13 +438,24 @@ jobs:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
+          # The initial publish copies every published path back into the state
+          # checkout, making it the baseline for retry-only job mutations.
+          jobs_changed=0
+          if ! git diff --no-index --quiet -- "$CLAWSWEEPER_STATE_DIR/jobs" jobs; then
+            jobs_changed=1
+          fi
+          if [ "$jobs_changed" = "0" ] &&
+             jq -e '((.ledger_claimed // 0) + (.ledger_changed // 0)) == 0' results/comment-router-latest.json >/dev/null 2>&1; then
+            echo "No durable router retry state changed; skipping state publication."
+            exit 0
+          fi
           publish_args=(
             --message "chore: record ClawSweeper repair dispatch retry" \
             --path results/comment-router.json \
             --rebase-strategy theirs
           )
           # Retry receipts are append-only unless the retry changed a repair job.
-          if [ -n "$(git status --porcelain=v1 --untracked-files=all -- jobs)" ]; then
+          if [ "$jobs_changed" = "1" ]; then
             publish_args+=(--path jobs)
           fi
           pnpm run repair:publish-main -- "${publish_args[@]}"

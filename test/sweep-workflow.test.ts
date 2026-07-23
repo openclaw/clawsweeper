@@ -2034,7 +2034,7 @@ test("trusted comment router owns command ledger capacity retries", () => {
   assert.match(routerWorkflow, /--wait-for-capacity/);
 });
 
-test("comment router keeps scan reports out of durable state and Git-publishes only changed jobs", () => {
+test("comment router publishes only durable ledger mutations and changed jobs", () => {
   const workflow = readText(".github/workflows/repair-comment-router.yml");
   const initialStart = workflow.indexOf("- name: Commit comment router ledger");
   const initialEnd = workflow.indexOf("- name: Detect waiting repair dispatches", initialStart);
@@ -2046,9 +2046,13 @@ test("comment router keeps scan reports out of durable state and Git-publishes o
   ];
 
   for (const step of publishSteps) {
+    assert.match(step, /git diff --no-index --quiet -- "\$CLAWSWEEPER_STATE_DIR\/jobs" jobs/);
+    assert.match(step, /\[ "\$jobs_changed" = "0" \] &&/);
+    assert.match(step, /\(\(\.ledger_claimed \/\/ 0\) \+ \(\.ledger_changed \/\/ 0\)\) == 0/);
+    assert.match(step, /No durable router(?: retry)? state changed; skipping state publication\./);
     assert.match(step, /--path results\/comment-router\.json/);
     assert.doesNotMatch(step, /--path results\/comment-router-latest\.json/);
-    assert.match(step, /git status --porcelain=v1 --untracked-files=all -- jobs/);
+    assert.match(step, /\[ "\$jobs_changed" = "1" \]/);
     assert.match(step, /publish_args\+=\(--path jobs\)/);
     assert.doesNotMatch(step, /--path jobs \\/);
   }
