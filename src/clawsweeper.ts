@@ -5587,18 +5587,56 @@ function filterReviewContextComments(
   return { included, filtered: comments.length - included.length };
 }
 
+function markdownFenceDelimiter(line: string): string | null {
+  return line.trimStart().match(/^(?:`{3,}|~{3,})/)?.[0] ?? null;
+}
+
+function markdownFenceStateAfterLine(fence: string | null, delimiter: string): string | null {
+  if (!fence) return delimiter;
+  if (delimiter[0] === fence[0] && delimiter.length >= fence.length) return null;
+  return fence;
+}
+
+// Fence-aware so heading-shaped lines inside fenced blocks (for example the Mermaid
+// architecture diagram) can never open or terminate a section.
 function markdownSection(body: string, heading: string): string {
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const start = body.match(
-    new RegExp(`(?:^|\\n)(?:\\*\\*${escaped}\\*\\*|#{1,6}\\s+${escaped})\\s*\\r?\\n`, "i"),
+  const headingPattern = new RegExp(
+    `^(?:\\*\\*${escaped}\\*\\*|#{1,6}[ \\t]+${escaped})[ \\t]*$`,
+    "i",
   );
-  if (start?.index === undefined) return "";
-  const contentStart = start.index + start[0].length;
-  const relative = body.slice(contentStart);
-  const end = relative.search(
-    /\n(?:(?:\*\*[^*\n]+\*\*[ \t]*|#{1,6}[ \t]+\S[^\n]*)\r?\n|<details>|<\/details>|<!--)/,
-  );
-  return (end < 0 ? relative : relative.slice(0, end)).trim();
+  const boundaryPattern =
+    /^(?:\*\*[^*\n]+\*\*[ \t]*$|#{1,6}[ \t]+\S.*$|<details>|<\/details>|<!--)/;
+  const lines = body.split("\n").map((line) => line.replace(/\r$/, ""));
+  let fence: string | null = null;
+  let contentStart = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const delimiter = markdownFenceDelimiter(line);
+    if (delimiter) {
+      fence = markdownFenceStateAfterLine(fence, delimiter);
+      continue;
+    }
+    if (!fence && headingPattern.test(line)) {
+      contentStart = index + 1;
+      break;
+    }
+  }
+  if (contentStart < 0) return "";
+  const section: string[] = [];
+  fence = null;
+  for (let index = contentStart; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const delimiter = markdownFenceDelimiter(line);
+    if (delimiter) {
+      fence = markdownFenceStateAfterLine(fence, delimiter);
+      section.push(line);
+      continue;
+    }
+    if (!fence && boundaryPattern.test(line)) break;
+    section.push(line);
+  }
+  return section.join("\n").trim();
 }
 
 function firstLineAfterPrefix(body: string, prefix: string): string {
@@ -5733,23 +5771,26 @@ function firstMergeReadinessLine(body: string, prefix: string): string {
 }
 
 function previousReviewRating(body: string): string {
+  // Prefer the renderer-owned score table; the free-form legacy blocks can contain
+  // model text that merely starts with the legacy label.
   return (
+    sectionLabeledValue(body, "Review scores", "Overall readiness:") ||
     firstNonEmptyLine(markdownSection(body, "PR rating")) ||
-    firstMergeReadinessLine(body, "Overall:") ||
-    sectionLabeledValue(body, "Review scores", "Overall readiness:")
+    firstMergeReadinessLine(body, "Overall:")
   );
 }
 
 function previousReviewProofStatus(body: string): string {
+  // Prefer the renderer-owned tables; the free-form legacy blocks can contain model
+  // text that merely starts with the legacy label.
+  const fromNewSections =
+    sectionLabeledValue(body, "Review scores", "Proof confidence:") ||
+    sectionLabeledValue(body, "Verification", "Real behavior:");
+  if (fromNewSections) return fromNewSections;
   const oldProofStatus = firstNonEmptyLine(markdownSection(body, "Real behavior proof"));
   if (oldProofStatus) return oldProofStatus;
   const readiness = markdownSection(body, "Merge readiness");
-  if (!readiness) {
-    return (
-      sectionLabeledValue(body, "Review scores", "Proof confidence:") ||
-      sectionLabeledValue(body, "Verification", "Real behavior:")
-    );
-  }
+  if (!readiness) return "";
   const lines = readiness.split(/\r?\n/);
   const proofGuidanceIndex = lines.findIndex(
     (line) => line.trim().toLowerCase() === "proof guidance:",
@@ -5761,11 +5802,7 @@ function previousReviewProofStatus(body: string): string {
       .find(Boolean);
     if (guidance) return guidance;
   }
-  return (
-    firstMergeReadinessLine(body, "Proof:") ||
-    sectionLabeledValue(body, "Review scores", "Proof confidence:") ||
-    sectionLabeledValue(body, "Verification", "Real behavior:")
-  );
+  return firstMergeReadinessLine(body, "Proof:");
 }
 
 function reviewHistoryFindings(
@@ -19005,6 +19042,8 @@ function neutralizeOwnedSectionSpoofing(value: string): string {
       const trimmed = line.trim();
       if (/^#{1,6}\s+\S/.test(trimmed)) return line.replace("#", "\\#");
       if (/^\*\*[^*\n]+\*\*:?\s*$/.test(trimmed)) return line.replace("**", "\\*\\*");
+      if (/^(?:```|~~~)/.test(trimmed)) return line.replace(/[`~]/, "\\$&");
+      if (trimmed.startsWith("<")) return line.replace("<", "&lt;");
       if (
         trimmed.endsWith(":") &&
         OWNED_REVIEW_SECTION_HEADINGS.has(trimmed.slice(0, -1).trim().toLowerCase())
@@ -19026,7 +19065,7 @@ function sanitizeArchitectureDiagram(value: string): string {
   if (!/^flowchart\b/i.test(diagram)) return "";
   // No fence-breaking backticks, node metadata (image/icon nodes), HTML tags, init
   // directives, or URLs of any form, including scheme-relative and data: URLs.
-  if (diagram.includes("`") || diagram.includes("@{")) return "";
+  if (diagram.includes("`") || diagram.includes("~~~") || diagram.includes("@{")) return "";
   if (/<[a-z!/]/i.test(diagram)) return "";
   if (/%%\{/.test(diagram)) return "";
   if (diagram.includes("//")) return "";

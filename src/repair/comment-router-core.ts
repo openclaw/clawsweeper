@@ -2093,8 +2093,16 @@ function isMarkdownSectionBoundary(line: string): boolean {
   );
 }
 
-function isCodeFenceLine(line: string): boolean {
-  return line.startsWith("```") || line.startsWith("~~~");
+function codeFenceDelimiter(line: string): string | null {
+  return line.match(/^(?:`{3,}|~{3,})/)?.[0] ?? null;
+}
+
+function codeFenceStateAfterLine(fence: string | null, delimiter: string): string | null {
+  if (!fence) return delimiter;
+  // Only a matching delimiter (same character, at least the opening length) closes
+  // the fence; an inner alternate marker like `~~~` inside a backtick fence is content.
+  if (delimiter[0] === fence[0] && delimiter.length >= fence.length) return null;
+  return fence;
 }
 
 export function extractMarkdownSection(body: JsonValue, heading: string): string | null {
@@ -2106,15 +2114,16 @@ export function extractMarkdownSection(body: JsonValue, heading: string): string
   const lines = String(body ?? "").split(/\r?\n/);
   // Track fenced code blocks so model-generated fenced content (for example the
   // Mermaid diagram) can never introduce or terminate a trusted section.
-  let inFence = false;
+  let fence: string | null = null;
   let headingIndex = -1;
   for (let index = 0; index < lines.length; index += 1) {
     const trimmed = (lines[index] ?? "").trim();
-    if (isCodeFenceLine(trimmed)) {
-      inFence = !inFence;
+    const delimiter = codeFenceDelimiter(trimmed);
+    if (delimiter) {
+      fence = codeFenceStateAfterLine(fence, delimiter);
       continue;
     }
-    if (!inFence && headingPattern.test(trimmed)) {
+    if (!fence && headingPattern.test(trimmed)) {
       headingIndex = index;
       break;
     }
@@ -2122,15 +2131,16 @@ export function extractMarkdownSection(body: JsonValue, heading: string): string
   if (headingIndex < 0) return null;
 
   const section: string[] = [];
-  inFence = false;
+  fence = null;
   for (const line of lines.slice(headingIndex + 1)) {
     const trimmed = line.trim();
-    if (isCodeFenceLine(trimmed)) {
-      inFence = !inFence;
+    const delimiter = codeFenceDelimiter(trimmed);
+    if (delimiter) {
+      fence = codeFenceStateAfterLine(fence, delimiter);
       section.push(line);
       continue;
     }
-    if (!inFence && isMarkdownSectionBoundary(trimmed)) break;
+    if (!fence && isMarkdownSectionBoundary(trimmed)) break;
     section.push(line);
   }
   return section.join("\n").trim() || null;
