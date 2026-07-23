@@ -22,7 +22,11 @@ env:
 jobs:
   materialize:
     name: Drain queued state into one commit
-    runs-on: ubuntu-latest
+    # Dedicated larger runner (own concurrency pool): the shared ubuntu-latest
+    # queue is saturated by review traffic and starved the single state writer
+    # for hours (2026-07-22/23). Revisit: if shared-pool queue-wait stays <5 min
+    # for a week after the migration completes, drop this back to ubuntu-latest.
+    runs-on: clawsweeper-heavy
     timeout-minutes: 60
     env:
       CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "1"
