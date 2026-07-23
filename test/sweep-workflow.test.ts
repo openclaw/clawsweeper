@@ -870,9 +870,11 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
   assert.match(workflow, /permissions: \{\}/);
   assert.match(
     workflow,
-    /group: exact-review-reconcile-\$\{\{ \(github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch'\) && 'sweep'/,
+    /group: exact-review-reconcile-\$\{\{ github\.event_name == 'workflow_run' && format\('\{0\}-\{1\}', github\.event\.workflow_run\.id, github\.event\.workflow_run\.run_attempt\) \|\| 'sweep' \}\}/,
   );
   assert.match(workflow, /cancel-in-progress: false/);
+  assert.match(eventJob, /if: \$\{\{ github\.event_name == 'workflow_run' \}\}/);
+  assert.match(eventJob, /permissions:\s+actions: read\s+contents: read/);
   assert.match(eventJob, /github\.event\.workflow_run\.event == 'repository_dispatch'/);
   assert.match(
     eventJob,
@@ -891,8 +893,11 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
   assert.match(eventJob, /--max-time 120/);
   assert.match(eventJob, /--data-binary "\$payload"/);
   assert.match(eventJob, /\/internal\/exact-review\/reconcile/);
-  assert.doesNotMatch(eventJob, /actions\/checkout/);
-  assert.doesNotMatch(eventJob, /(?:GH_TOKEN|GITHUB_TOKEN|github\.token)/);
+  assert.match(eventJob, /actions\/checkout@v7/);
+  assert.match(eventJob, /ref: \$\{\{ github\.event\.repository\.default_branch \}\}/);
+  assert.match(eventJob, /persist-credentials: false/);
+  assert.match(eventJob, /node scripts\/review-run-observer\.mjs --event-file/);
+  assert.match(eventJob, /GH_TOKEN: \$\{\{ github\.token \}\}/);
 
   const sweepJob = workflow.slice(workflow.indexOf("\n  sweep:"));
   assert.match(sweepJob, /timeout-minutes: 10/);
