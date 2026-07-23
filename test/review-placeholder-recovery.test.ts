@@ -158,7 +158,7 @@ test("review placeholder runner fails open and sends a signed exact-review decis
     now,
   });
 
-  assert.deepEqual(summary, { checked: 3, orphaned: 1, enqueued: 1, errors: 1 });
+  assert.deepEqual(summary, { checked: 3, orphaned: 1, enqueued: 1, escalated: 0, errors: 1 });
   assert.ok(logged.includes("review-placeholder recovery: enqueued #103 (pull_request)"));
   assert.deepEqual(commentChecks, [101, 102, 103]);
   assert.equal(enqueueBodies.length, 1);
@@ -176,27 +176,36 @@ test("review placeholder runner fails open and sends a signed exact-review decis
   });
 });
 
-test("review placeholder runner stops at the recovery cap", async () => {
+test("review placeholder runner fills the recovery cap with the oldest orphans first", async () => {
   const commentChecks: number[] = [];
-  let enqueueCalls = 0;
-  const mockFetch = async (input: string | URL | Request): Promise<Response> => {
+  const enqueuedNumbers: number[] = [];
+  const createdAtByNumber: Record<number, string> = {
+    201: "2026-07-17T09:00:00.000Z",
+    202: "2026-07-17T04:00:00.000Z",
+  };
+  const mockFetch = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
     if (url.pathname === "/search/issues") {
       return Response.json({ items: [{ number: 201 }, { number: 202 }] });
     }
     const commentMatch = url.pathname.match(/\/issues\/(\d+)\/comments$/);
     if (commentMatch) {
-      commentChecks.push(Number(commentMatch[1]));
+      const number = Number(commentMatch[1]);
+      commentChecks.push(number);
       return Response.json([
         {
           body: REVIEW_PLACEHOLDER_MARKER,
-          created_at: "2026-07-17T08:00:00.000Z",
+          created_at: createdAtByNumber[number],
           user: bot,
         },
       ]);
     }
     if (url.pathname === "/internal/exact-review/enqueue") {
-      enqueueCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as { decision: { itemNumber: number } };
+      enqueuedNumbers.push(body.decision.itemNumber);
       return Response.json({ ok: true, queued: true }, { status: 202 });
     }
     throw new Error(`unexpected request: ${url.pathname}`);
@@ -214,9 +223,70 @@ test("review placeholder runner stops at the recovery cap", async () => {
     now,
   });
 
-  assert.deepEqual(summary, { checked: 1, orphaned: 1, enqueued: 1, errors: 0 });
-  assert.deepEqual(commentChecks, [201]);
-  assert.equal(enqueueCalls, 1);
+  assert.deepEqual(summary, { checked: 2, orphaned: 2, enqueued: 1, escalated: 0, errors: 0 });
+  assert.deepEqual(commentChecks, [201, 202]);
+  assert.deepEqual(enqueuedNumbers, [202]);
+});
+
+test("review placeholder runner escalates orphans stuck well beyond the minimum age", async () => {
+  const escalatedLabels: { number: number; body: unknown }[] = [];
+  const mockFetch = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    if (url.pathname === "/search/issues") {
+      return Response.json({
+        items: [{ number: 301 }, { number: 302, labels: [{ name: "clawsweeper-recovery-stuck" }] }],
+      });
+    }
+    if (url.pathname === "/repos/openclaw/openclaw/issues/301/comments") {
+      return Response.json([
+        {
+          body: REVIEW_PLACEHOLDER_MARKER,
+          created_at: "2026-07-16T00:00:00.000Z",
+          user: bot,
+        },
+      ]);
+    }
+    if (url.pathname === "/repos/openclaw/openclaw/issues/302/comments") {
+      return Response.json([
+        {
+          body: REVIEW_PLACEHOLDER_MARKER,
+          created_at: "2026-07-16T00:00:00.000Z",
+          user: bot,
+        },
+      ]);
+    }
+    if (url.pathname === "/repos/openclaw/openclaw/issues/301/labels") {
+      assert.equal(init?.method, "POST");
+      escalatedLabels.push({ number: 301, body: JSON.parse(String(init?.body ?? "{}")) });
+      return Response.json([], { status: 200 });
+    }
+    if (url.pathname === "/internal/exact-review/enqueue") {
+      return Response.json({ ok: true, queued: true }, { status: 202 });
+    }
+    throw new Error(`unexpected request: ${url.pathname}`);
+  };
+
+  const summary = await runReviewPlaceholderRecovery({
+    env: {
+      GH_TOKEN: "test-token-placeholder",
+      CLAWSWEEPER_WEBHOOK_SECRET: "test-token-placeholder",
+      GITHUB_API_URL: "https://api.github.test",
+      QUEUE_URL: "https://queue.test",
+      TARGET_REPO: "openclaw/openclaw",
+      REVIEW_PLACEHOLDER_STUCK_HOURS: "12",
+      REVIEW_PLACEHOLDER_MAX_RECOVERIES: "2",
+    },
+    fetchImpl: mockFetch as typeof fetch,
+    now,
+  });
+
+  assert.deepEqual(summary, { checked: 2, orphaned: 2, enqueued: 2, escalated: 1, errors: 0 });
+  assert.deepEqual(escalatedLabels, [
+    { number: 301, body: { labels: ["clawsweeper-recovery-stuck"] } },
+  ]);
 });
 
 test("placeholder refreshed recently by an active recovery is not orphaned", () => {

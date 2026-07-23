@@ -7,6 +7,8 @@ export const REVIEW_PLACEHOLDER_MARKER = "ClawSweeper status: review started.";
 export const DEFAULT_REVIEW_PLACEHOLDER_MAX_CHECKS = 20;
 export const DEFAULT_REVIEW_PLACEHOLDER_MIN_AGE_HOURS = 2;
 export const DEFAULT_REVIEW_PLACEHOLDER_MAX_RECOVERIES = 5;
+export const DEFAULT_REVIEW_PLACEHOLDER_STUCK_HOURS = 12;
+export const REVIEW_PLACEHOLDER_STUCK_LABEL = "clawsweeper-recovery-stuck";
 export const REVIEW_PLACEHOLDER_LOOKBACK_HOURS = 48;
 
 const SEARCH_PAGE_SIZE = 100;
@@ -26,12 +28,14 @@ export type ReviewPlaceholderComment = {
 export type ReviewPlaceholderCandidate = {
   number?: unknown;
   pull_request?: unknown;
+  labels?: unknown;
 };
 
 export type ReviewPlaceholderRecoverySummary = {
   checked: number;
   orphaned: number;
   enqueued: number;
+  escalated: number;
   errors: number;
 };
 
@@ -85,6 +89,22 @@ export function latestClawSweeperBotComment(
   return latest?.comment ?? null;
 }
 
+function candidateLabelNames(candidate: ReviewPlaceholderCandidate): string[] {
+  if (!Array.isArray(candidate.labels)) return [];
+  const names: string[] = [];
+  for (const label of candidate.labels) {
+    if (typeof label === "string") names.push(label);
+    else if (
+      label &&
+      typeof label === "object" &&
+      typeof (label as { name?: unknown }).name === "string"
+    ) {
+      names.push((label as { name: string }).name);
+    }
+  }
+  return names;
+}
+
 export function isOrphanedReviewPlaceholder(
   comment: ReviewPlaceholderComment | null,
   now: Date = new Date(),
@@ -131,16 +151,26 @@ export async function runReviewPlaceholderRecovery(
     DEFAULT_REVIEW_PLACEHOLDER_MAX_RECOVERIES,
     100,
   );
+  const stuckAgeMs =
+    boundedPositiveInteger(
+      env.REVIEW_PLACEHOLDER_STUCK_HOURS,
+      DEFAULT_REVIEW_PLACEHOLDER_STUCK_HOURS,
+      24 * 30,
+    ) *
+    60 *
+    60 *
+    1_000;
   let checked = 0;
   let orphaned = 0;
   let enqueued = 0;
+  let escalated = 0;
   let errors = 0;
 
   const summary = (): ReviewPlaceholderRecoverySummary => {
     console.log(
-      `review-placeholder recovery: checked=${checked} orphaned=${orphaned} enqueued=${enqueued} errors=${errors}`,
+      `review-placeholder recovery: checked=${checked} orphaned=${orphaned} enqueued=${enqueued} escalated=${escalated} errors=${errors}`,
     );
-    return { checked, orphaned, enqueued, errors };
+    return { checked, orphaned, enqueued, escalated, errors };
   };
   if (
     !token ||
@@ -200,6 +230,21 @@ export async function runReviewPlaceholderRecovery(
       throw new Error("POST /internal/exact-review/enqueue was not admitted");
     }
   };
+  const addLabel = async (number: number, label: string): Promise<void> => {
+    const response = await fetchImpl(`${apiUrl}/repos/${repo}/issues/${number}/labels`, {
+      method: "POST",
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-github-api-version": "2022-11-28",
+      },
+      body: JSON.stringify({ labels: [label] }),
+    });
+    if (!response.ok) {
+      throw new Error(`POST /repos/${repo}/issues/${number}/labels returned ${response.status}`);
+    }
+  };
   const fetchLatestBotComment = async (
     number: number,
   ): Promise<ReviewPlaceholderComment | null> => {
@@ -243,21 +288,58 @@ export async function runReviewPlaceholderRecovery(
     }
   }
 
+  const orphanedCandidates: {
+    number: number;
+    itemKind: "issue" | "pull_request";
+    createdAtMs: number;
+  }[] = [];
   for (const [number, candidate] of candidates) {
-    if (enqueued >= maximumRecoveries) break;
     checked += 1;
     try {
       const comment = await fetchLatestBotComment(number);
       if (!isOrphanedReviewPlaceholder(comment, now, minimumAgeHours)) continue;
       orphaned += 1;
       const itemKind = candidate.pull_request ? "pull_request" : "issue";
-      await enqueue(number, itemKind);
-      enqueued += 1;
-      console.log(`review-placeholder recovery: enqueued #${number} (${itemKind})`);
+      const createdAtMs = (comment && commentCreatedAtMs(comment)) ?? now.getTime();
+      orphanedCandidates.push({ number, itemKind, createdAtMs });
+      if (
+        now.getTime() - createdAtMs >= stuckAgeMs &&
+        !candidateLabelNames(candidate).includes(REVIEW_PLACEHOLDER_STUCK_LABEL)
+      ) {
+        try {
+          await addLabel(number, REVIEW_PLACEHOLDER_STUCK_LABEL);
+          escalated += 1;
+          console.error(
+            `review-placeholder recovery: escalated #${number} as stuck after repeated orphan cycles`,
+          );
+        } catch (labelError) {
+          errors += 1;
+          console.warn(
+            `#${number} review-placeholder stuck-label escalation failed: ${labelError instanceof Error ? labelError.message : String(labelError)}`,
+          );
+        }
+      }
     } catch (error) {
       errors += 1;
       console.warn(
         `#${number} review-placeholder recovery skipped: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  orphanedCandidates.sort((a, b) => a.createdAtMs - b.createdAtMs);
+  for (const candidate of orphanedCandidates) {
+    if (enqueued >= maximumRecoveries) break;
+    try {
+      await enqueue(candidate.number, candidate.itemKind);
+      enqueued += 1;
+      console.log(
+        `review-placeholder recovery: enqueued #${candidate.number} (${candidate.itemKind})`,
+      );
+    } catch (error) {
+      errors += 1;
+      console.warn(
+        `#${candidate.number} review-placeholder recovery skipped: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }

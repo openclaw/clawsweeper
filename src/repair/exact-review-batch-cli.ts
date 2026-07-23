@@ -11,7 +11,10 @@ import {
 import { StatePublishContentionError } from "./git-publish.js";
 import { setStatePublishTelemetryObserver } from "./git-publish.js";
 import { exactReviewBatchStateWriterProgressReporter } from "./exact-review-batch-state-writer-progress.js";
-import { commitPreparedStateBatch } from "./state-publication-batch.js";
+import {
+  commitPreparedStateBatch,
+  type StateBatchQuarantinedItem,
+} from "./state-publication-batch.js";
 import { StateWriterTelemetryRecorder } from "./state-writer-telemetry-recorder.js";
 import type { StateWriterOperation } from "../state-writer-telemetry.js";
 import {
@@ -145,6 +148,7 @@ async function commit() {
 
   let stateCommitSha: string | undefined;
   let stateWriter: StateWriterOperation | undefined;
+  let quarantined: readonly StateBatchQuarantinedItem[] = [];
   const progressObserver = exactReviewBatchStateWriterProgressReporter({
     queueUrl: env("EXACT_REVIEW_QUEUE_URL"),
     webhookSecret: env("CLAWSWEEPER_WEBHOOK_SECRET"),
@@ -170,9 +174,10 @@ async function commit() {
         plans,
       });
       stateCommitSha = committed.commitSha;
-      if (committed.outcome === "committed") recorder?.recordMaterializedCommit(plans.length);
+      if (committed.outcome === "committed") recorder?.recordMaterializedCommit(committed.itemCount);
       recorder?.finalize(committed.outcome === "committed" ? "materialized" : "unchanged");
       stateWriter = recorder?.toTerminalObject() ?? undefined;
+      quarantined = committed.quarantinedItems;
     }
   } catch (error) {
     recorder?.finalize(
@@ -205,6 +210,26 @@ async function commit() {
   } finally {
     resetTelemetry();
   }
+  if (quarantined.length) {
+    const quarantineReasons = new Map(quarantined.map((item) => [item.itemKey, item.reason]));
+    const quarantinedCompletions = commitMembers
+      .filter((member) => quarantineReasons.has(member.itemKey))
+      .map((member) =>
+        retryableCompletion(
+          member,
+          "state_conflict_quarantined",
+          failureFingerprint(new Error(quarantineReasons.get(member.itemKey))),
+        ),
+      );
+    try {
+      await acknowledge(manifest, quarantinedCompletions);
+    } catch (releaseError) {
+      console.error(
+        `Failed to acknowledge quarantined batch items: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}`,
+      );
+    }
+  }
+  const quarantinedItemKeys = new Set(quarantined.map((item) => item.itemKey));
   const receiptPath = batchReceiptPath();
   mkdirSync(dirname(receiptPath), { recursive: true });
   writeFileSync(
@@ -213,7 +238,9 @@ async function commit() {
       {
         batchId: manifest.batchId,
         stateCommitSha: stateCommitSha ?? null,
-        publishedItemKeys: plans.map((plan) => plan.identity.itemKey),
+        publishedItemKeys: plans
+          .map((plan) => plan.identity.itemKey)
+          .filter((itemKey) => !quarantinedItemKeys.has(itemKey)),
         stateWriter: stateWriter ?? null,
       },
       null,
@@ -226,7 +253,8 @@ async function commit() {
       ok: true,
       batch_id: manifest.batchId,
       state_commit_sha: stateCommitSha ?? null,
-      materialized: plans.length,
+      materialized: plans.length - quarantined.length,
+      quarantined: quarantined.length,
       superseded: superseded.length,
     }),
   );
