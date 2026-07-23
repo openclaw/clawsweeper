@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 const workflow = fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8");
@@ -23,6 +26,39 @@ test("repair target containment preflight runs the enforced worker only for fix 
   assert.match(preflight, /run: pnpm run repair:containment-smoke/);
   assert.doesNotMatch(preflight, /node --input-type=module|spawnSync|CONTAINMENT_PROBE_ROOT/);
   assert.doesNotMatch(preflight, /continue-on-error/);
+});
+
+test("repair target containment worker loads from the isolated work directory", () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-containment-entry-"));
+  const workerPath = path.resolve("dist/repair/contained-command-worker.js");
+
+  try {
+    const worker = spawnSync(process.execPath, [workerPath], {
+      cwd: work,
+      env: { ...process.env, NODE_TEST_CONTEXT: "child-v8" },
+      input: JSON.stringify({
+        args: ["-e", 'process.stdout.write("loaded")'],
+        command: process.execPath,
+        cwd: work,
+        isolateNetwork: true,
+        maxBuffer: 1024,
+        writableRoots: [work],
+        windowsVerbatimArguments: false,
+      }),
+      encoding: "utf8",
+    });
+
+    assert.equal(worker.status, 0, worker.stderr);
+    assert.deepEqual(JSON.parse(worker.stdout), {
+      backgroundProcesses: 0,
+      signal: null,
+      status: 0,
+      stderr: "",
+      stdout: "loaded",
+    });
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+  }
 });
 
 test("closure-only apply does not depend on target containment or target tool setup", () => {

@@ -1010,12 +1010,69 @@ async function githubWebhook(request, env, ctx) {
 
   if ("type" in decision && decision.type === "item") {
     const deliveryId = request.headers.get("x-github-delivery") || "";
+    const itemDecision = decision as ExactReviewDecision & { installationId?: number };
+    const sourceAuthority =
+      itemDecision.itemKind === "pull_request"
+        ? await reserveExactReviewSourceAuthority(env, {
+            deliveryId,
+            decision: itemDecision,
+          })
+        : null;
+    if (itemDecision.itemKind === "pull_request" && sourceAuthority === null) {
+      return json({ error: "exact_review_queue_not_configured" }, 503);
+    }
+    if (sourceAuthority && "deduped" in sourceAuthority) {
+      return json({
+        ok: true,
+        deduped: true,
+        item_key: `${itemDecision.targetRepo}#${itemDecision.itemNumber}`,
+      });
+    }
+    const sourceAuthoritySeq =
+      sourceAuthority && "sourceAuthoritySeq" in sourceAuthority
+        ? sourceAuthority.sourceAuthoritySeq
+        : null;
+    let exactReviewDecision: ExactReviewDecision | null;
+    try {
+      exactReviewDecision = await bindLivePullRequestHeadAuthority({
+        env,
+        decision: itemDecision,
+        sourceAuthoritySeq,
+      });
+    } catch {
+      return json(
+        {
+          ok: true,
+          accepted: true,
+          deferred: true,
+          reason: "pull request head verification deferred",
+        },
+        202,
+      );
+    }
+    if (!exactReviewDecision) {
+      await completeExactReviewSourceAuthority(
+        env,
+        deliveryId,
+        Number(sourceAuthoritySeq),
+        "mismatch",
+      ).catch(() => undefined);
+      return json({ ok: true, accepted: false, reason: "stale pull request head" }, 202);
+    }
     const queued = await enqueueExactReview({
       env,
       deliveryId,
-      decision: decision as ExactReviewDecision,
+      decision: exactReviewDecision,
     });
     if (!queued) return json({ error: "exact_review_queue_not_configured" }, 503);
+    if (sourceAuthoritySeq !== null) {
+      await completeExactReviewSourceAuthority(
+        env,
+        deliveryId,
+        sourceAuthoritySeq,
+        "enqueued",
+      ).catch(() => undefined);
+    }
     return json({ ok: true, ...queued }, 202);
   }
 
@@ -1261,10 +1318,15 @@ function classifyGithubItemWebhook({ event, payload }) {
     if (action === "unlabeled" && !isCloseGuardLabel(payload.label)) {
       return { accepted: false, reason: "unsupported action" };
     }
-    const itemNumber = Number(objectValue(payload.pull_request).number);
+    const pullRequest = objectValue(payload.pull_request);
+    const itemNumber = Number(pullRequest.number);
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
       return { accepted: false, reason: "missing pull request number" };
     }
+    const sourceHeadSha = String(objectValue(pullRequest.head).sha || "")
+      .trim()
+      .toLowerCase();
+    const sourceUpdatedAt = exactWebhookTimestamp(pullRequest.updated_at);
     return {
       accepted: true,
       type: "item",
@@ -1275,6 +1337,8 @@ function classifyGithubItemWebhook({ event, payload }) {
       installationId,
       sourceEvent: "pull_request",
       sourceAction: action,
+      ...(/^[0-9a-f]{40}$/.test(sourceHeadSha) ? { sourceHeadSha } : {}),
+      ...(sourceUpdatedAt ? { sourceUpdatedAt } : {}),
       supersedesInProgress: [
         "edited",
         "synchronize",
@@ -1286,6 +1350,55 @@ function classifyGithubItemWebhook({ event, payload }) {
   }
 
   return { accepted: false, reason: "unsupported event" };
+}
+
+async function bindLivePullRequestHeadAuthority({
+  env,
+  decision,
+  sourceAuthoritySeq,
+}: {
+  env: DashboardEnv;
+  decision: ExactReviewDecision & { installationId?: number };
+  sourceAuthoritySeq: number | null;
+}): Promise<ExactReviewDecision | null> {
+  if (decision.itemKind !== "pull_request") return decision;
+  if (!Number.isSafeInteger(sourceAuthoritySeq) || Number(sourceAuthoritySeq) <= 0) {
+    throw new Error("exact-review source authority unavailable");
+  }
+  const sourceHeadSha = String(decision.sourceHeadSha || "").toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(sourceHeadSha)) return null;
+
+  let token = stringEnv(env.GITHUB_TOKEN);
+  if (!token) {
+    const credentials = githubAppCredentials(env);
+    if (
+      !credentials ||
+      !Number.isInteger(decision.installationId) ||
+      decision.installationId! <= 0
+    ) {
+      throw new Error("GitHub App credentials are required to verify a pull request head");
+    }
+    const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
+    token = await createGithubAppTokenFor({
+      appJwt,
+      installationId: decision.installationId!,
+      label: decision.targetRepo,
+      repositories: [repoName(decision.targetRepo)],
+      permissions: { pull_requests: "read" },
+    });
+  }
+  const pull = await githubTokenJson({
+    token,
+    path: `/repos/${decision.targetRepo}/pulls/${decision.itemNumber}`,
+    body: undefined,
+    errorLabel: "live pull request head",
+  });
+  const liveHeadSha = String(objectValue(objectValue(pull).head).sha || "")
+    .trim()
+    .toLowerCase();
+  return liveHeadSha === sourceHeadSha
+    ? { ...decision, sourceHeadVerified: true, sourceAuthoritySeq: Number(sourceAuthoritySeq) }
+    : null;
 }
 
 function isCloseGuardLabel(value) {
@@ -1337,6 +1450,66 @@ function exactReviewQueueNamespace(env): DurableObjectNamespace | null {
 function exactReviewQueueStub(env): DurableObjectStub | null {
   const namespace = exactReviewQueueNamespace(env);
   return namespace ? namespace.get(namespace.idFromName(EXACT_REVIEW_QUEUE_NAME)) : null;
+}
+
+async function reserveExactReviewSourceAuthority(
+  env,
+  {
+    deliveryId,
+    decision,
+  }: {
+    deliveryId: string;
+    decision: ExactReviewDecision & { installationId?: number };
+  },
+): Promise<{ deduped: true } | { sourceAuthoritySeq: number } | null> {
+  const queue = exactReviewQueueStub(env);
+  if (!queue) return null;
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/source-authority", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        delivery_id: deliveryId,
+        decision,
+        installation_id: decision.installationId,
+      }),
+    }),
+  );
+  const body = objectValue(await response.json().catch(() => null));
+  if (!response.ok) {
+    throw new Error(String(body.error || "exact-review source authority unavailable"));
+  }
+  if (body.deduped === true) return { deduped: true as const };
+  const sourceAuthoritySeq = Number(body.source_authority_seq);
+  if (!Number.isSafeInteger(sourceAuthoritySeq) || sourceAuthoritySeq <= 0) {
+    throw new Error("exact-review source authority unavailable");
+  }
+  return { sourceAuthoritySeq };
+}
+
+async function completeExactReviewSourceAuthority(
+  env,
+  deliveryId: string,
+  sourceAuthoritySeq: number,
+  disposition: "enqueued" | "mismatch",
+) {
+  const queue = exactReviewQueueStub(env);
+  if (!queue) throw new Error("exact-review queue not configured");
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/source-authority/complete", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        delivery_id: deliveryId,
+        source_authority_seq: sourceAuthoritySeq,
+        disposition,
+      }),
+    }),
+  );
+  if (!response.ok) {
+    const body = objectValue(await response.json().catch(() => null));
+    throw new Error(String(body.error || "exact-review source authority completion failed"));
+  }
 }
 
 async function exactReviewQueueRequest(env, path, request?: Request) {
@@ -9082,6 +9255,11 @@ function renderExactReviewHandoff(queue) {
   const pressureStatus = ["idle", "congested", "saturated", "unknown"].includes(pressure?.status)
     ? pressure.status
     : "unknown";
+  const pressureLabel = pressure?.reason === "publication_critical"
+    ? "publication critical"
+    : pressure?.reason === "publication_degraded"
+      ? "publication degraded"
+      : "pressure " + pressureStatus;
   const labels = {
     pending: ["Pending", "waiting for admission"],
     dispatching: ["Dispatching", "waiting for run claim"],
@@ -9097,7 +9275,7 @@ function renderExactReviewHandoff(queue) {
   const slots = fmt.format(health.available_slots || 0) + " of " + fmt.format(health.capacity || 0) + " exact-review slots open";
   const backlog = fmt.format(queue?.pending || 0) + " total · " + fmt.format(queue?.ready_pending || 0) + " ready · " + fmt.format(queue?.admissible_pending || 0) + " admissible";
   const threshold = "stalled after " + elapsed((health.stalled_after_seconds || 0) * 1000);
-  target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Queue handoff health</strong><span>' + esc(health.message || "Queue phase telemetry") + '</span></div><div class="exact-handoff-badges"><span class="health-badge ' + esc(status) + '">' + esc(status) + '</span><span class="health-badge ' + esc(pressureStatus) + '">pressure ' + esc(pressureStatus) + '</span></div></div><div class="handoff-phases">' + phases + '</div><div class="handoff-foot"><span>' + esc(slots) + '</span><span>' + esc(backlog) + '</span><span>' + esc(threshold) + '</span></div></div>';
+  target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Queue handoff health</strong><span>' + esc(health.message || "Queue phase telemetry") + '</span></div><div class="exact-handoff-badges"><span class="health-badge ' + esc(status) + '">' + esc(status) + '</span><span class="health-badge ' + esc(pressureStatus) + '">' + esc(pressureLabel) + '</span></div></div><div class="handoff-phases">' + phases + '</div><div class="handoff-foot"><span>' + esc(slots) + '</span><span>' + esc(backlog) + '</span><span>' + esc(threshold) + '</span></div></div>';
 }
 function renderWorkers(rows) {
   workerIndex = new Map(rows.map(worker => [String(worker.id), worker]));

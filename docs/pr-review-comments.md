@@ -32,11 +32,27 @@ shard posts a short status placeholder with the same durable identity marker.
 The placeholder is intentionally light and crustacean-friendly, then the final
 review sync edits that exact comment in place.
 
+After a newer source revision wins its lease, ClawSweeper may delete dedicated
+review-start placeholders for older revisions. The candidate comment snapshot
+is captured first, then the worker must still own the exact queue
+item/lease/revision/generation/run tuple and the live item revision must match
+its lease. For pull requests, the claimed queue source head must also match the
+live head. A stale worker therefore cannot treat a newer lease as superseded
+just because the SHAs differ. Same-revision contenders still use the
+server-assigned comment-id election, and expired leftovers retain the existing
+conservative cleanup path.
+
 For a PR that needs work, the visible comment starts with:
 
 ```text
 Codex review: needs changes before merge.
 ```
+
+The visible `Summary` also includes `Reviewed head: <full-sha>`. This makes the
+human-facing verdict self-identifying without requiring maintainers to inspect
+hidden markers. Publication still verifies the durable tuple against live state;
+the visible SHA is evidence of the captured review revision, not a substitute
+for that guard.
 
 For an external PR that lacks after-fix real behavior proof, the visible comment
 starts with:

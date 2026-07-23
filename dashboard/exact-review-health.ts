@@ -53,12 +53,18 @@ export type ExactReviewPressureSummary = {
     | "no_admissible_backlog"
     | "dispatcher_inactive"
     | "handoff_unknown"
-    | "capacity_full_with_backlog";
+    | "capacity_full_with_backlog"
+    | "publication_degraded"
+    | "publication_critical";
   capacity: number;
   active: number;
   pending: number;
   ready_pending: number;
   admissible_pending: number;
+};
+
+export type ExactReviewPublicationHealth = {
+  status?: "idle" | "healthy" | "degraded" | "critical";
 };
 
 const PHASES: ExactReviewPhase[] = ["pending", "dispatching", "leased"];
@@ -244,6 +250,19 @@ export function summarizeExactReviewPressure({
     reason: "capacity_full_with_backlog",
     ...common,
   };
+}
+
+export function elevateExactReviewPressureForPublication(
+  pressure: ExactReviewPressureSummary,
+  publication: ExactReviewPublicationHealth,
+): ExactReviewPressureSummary {
+  if (publication.status === "critical" && pressure.status !== "saturated") {
+    return { ...pressure, status: "saturated", reason: "publication_critical" };
+  }
+  if (publication.status === "degraded" && pressure.status === "idle") {
+    return { ...pressure, status: "congested", reason: "publication_degraded" };
+  }
+  return pressure;
 }
 
 function exactReviewPhaseStartedAt(

@@ -46,6 +46,14 @@ const MAX_TARGET_INSTALL_GIT_PATHS = 250_000;
 const MAX_VALIDATION_IGNORED_PATH_BYTES = 16 * 1024 * 1024;
 const MAX_VALIDATION_IGNORED_PATHS = 250_000;
 const MIN_VALIDATION_RETRY_BUDGET_MS = 1_000;
+// Checkout-identity capture and post-command mutation proof run trusted git
+// subprocesses only. On a loaded machine they can starve tiny per-command
+// budgets, so they get at least this much room instead of surfacing raw
+// near-zero subprocess timeouts. Healthy (default) budgets already exceed it.
+const MIN_VALIDATION_IDENTITY_WINDOW_MS = 10_000;
+// Never spawn a validation command with a near-zero timeout; classify the
+// starved budget instead so callers see the runtime-budget error family.
+const MIN_VALIDATION_COMMAND_BUDGET_MS = 25;
 const verifiedRustupToolchainBins = new Map<string, VerifiedRustupToolchain>();
 const preparedTargetPnpmRuntimes = new Map<string, PreparedTargetPnpmRuntime>();
 let preparedTargetPnpmRuntimeCleanupRegistered = false;
@@ -1137,15 +1145,33 @@ export function runAllowedValidationCommandsWithBinding(
       options.validationTimeoutMs ?? DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
       options.validationTimeoutMs,
     );
-    const ignoredValidationInputs = ignoredValidationRuntimePaths(
-      cwd,
-      Date.now() + validationTimeoutMs,
+    // Match the pre-change shape: each capture stage gets its own fresh window
+    // so ignored-path enumeration cannot starve the checkout identity capture.
+    const identityCaptureWindowMs = Math.max(
+      validationTimeoutMs,
+      MIN_VALIDATION_IDENTITY_WINDOW_MS,
     );
-    const checkoutIdentity = validationCheckoutIdentity(
-      cwd,
-      baseRef,
-      Date.now() + validationTimeoutMs,
-    );
+    let ignoredValidationInputs: string[];
+    let checkoutIdentity: ValidationCheckoutIdentity;
+    try {
+      ignoredValidationInputs = ignoredValidationRuntimePaths(
+        cwd,
+        Date.now() + identityCaptureWindowMs,
+      );
+      checkoutIdentity = validationCheckoutIdentity(
+        cwd,
+        baseRef,
+        Date.now() + identityCaptureWindowMs,
+      );
+    } catch (error) {
+      if (isValidationIdentityTimeoutError(error)) {
+        throw new Error(
+          "unsafe validation command checkout identity could not be verified (checkout identity capture)",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
     const currentSourceIdentity = sourceIdentityFromCheckout(checkoutIdentity);
     if (
       preparedPnpmRuntime &&
@@ -1183,7 +1209,9 @@ export function runAllowedValidationCommandsWithBinding(
             }
             const executionParts = validationCommandForExecution(parts);
             const executionBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
-            if (executionBudgetMs <= 0) throw validationCommandBudgetError(rendered);
+            if (executionBudgetMs < MIN_VALIDATION_COMMAND_BUDGET_MS) {
+              throw validationCommandBudgetError(rendered);
+            }
             runContainedCommand(executionParts[0]!, executionParts.slice(1), {
               cwd,
               env: validationEnv,
@@ -1194,7 +1222,11 @@ export function runAllowedValidationCommandsWithBinding(
             executionError = error as Error;
           }
           try {
-            clearNewIgnoredValidationRuntimePaths(cwd, ignoredValidationInputs, deadlineAt);
+            clearNewIgnoredValidationRuntimePaths(
+              cwd,
+              ignoredValidationInputs,
+              validationIdentityProofDeadlineAt(deadlineAt),
+            );
           } catch (error) {
             executionError ??= error as Error;
           }
@@ -1202,7 +1234,7 @@ export function runAllowedValidationCommandsWithBinding(
             cwd,
             baseRef,
             checkoutIdentity,
-            deadlineAt,
+            validationIdentityProofDeadlineAt(deadlineAt),
             rendered,
             executionError,
           );
@@ -1227,7 +1259,7 @@ export function runAllowedValidationCommandsWithBinding(
               try {
                 resetValidationEnvironment(deadlineAt - identityReserveMs);
                 const fallbackBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
-                if (fallbackBudgetMs <= 0) {
+                if (fallbackBudgetMs < MIN_VALIDATION_COMMAND_BUDGET_MS) {
                   throw validationCommandBudgetError(rendered, executionError);
                 }
                 const executionParts = validationCommandForExecution(fallbackParts);
@@ -1241,7 +1273,11 @@ export function runAllowedValidationCommandsWithBinding(
                 fallbackError = error as Error;
               }
               try {
-                clearNewIgnoredValidationRuntimePaths(cwd, ignoredValidationInputs, deadlineAt);
+                clearNewIgnoredValidationRuntimePaths(
+                  cwd,
+                  ignoredValidationInputs,
+                  validationIdentityProofDeadlineAt(deadlineAt),
+                );
               } catch (error) {
                 fallbackError ??= error as Error;
               }
@@ -1249,7 +1285,7 @@ export function runAllowedValidationCommandsWithBinding(
                 cwd,
                 baseRef,
                 checkoutIdentity,
-                deadlineAt,
+                validationIdentityProofDeadlineAt(deadlineAt),
                 rendered,
                 fallbackError ?? executionError,
               );
@@ -1265,7 +1301,9 @@ export function runAllowedValidationCommandsWithBinding(
           ) {
             continue;
           }
-          if (retryBudgetMs <= 0) throw validationCommandBudgetError(rendered, executionError);
+          if (retryBudgetMs < MIN_VALIDATION_COMMAND_BUDGET_MS) {
+            throw validationCommandBudgetError(rendered, executionError);
+          }
           throw new Error(
             `validation command failed (${rendered}): ${compactText(executionError.message, 12000)}`,
             { cause: executionError },
@@ -3520,6 +3558,22 @@ function targetToolchainCommandTimeout(
 
 function validationIdentityReserveMs(timeoutMs: number) {
   return Math.max(1, Math.min(30_000, Math.floor(timeoutMs / 2)));
+}
+
+// The post-command identity proof runs after the command has been reaped, so
+// extending a starved reserve here never grants untrusted code extra runtime.
+// It keeps mutation detection deterministic instead of collapsing into raw
+// near-zero git subprocess timeouts under tiny budgets or machine load.
+function validationIdentityProofDeadlineAt(deadlineAt: number) {
+  return Math.max(deadlineAt, Date.now() + MIN_VALIDATION_IDENTITY_WINDOW_MS);
+}
+
+function isValidationIdentityTimeoutError(error: unknown) {
+  const message = String((error as Error | null)?.message ?? "");
+  return (
+    /command timed out after \d+ms/.test(message) ||
+    message.includes("validation identity deadline exhausted during")
+  );
 }
 
 function remainingCommandBudget(deadlineAt: number, identityReserveMs: number) {

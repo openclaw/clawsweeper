@@ -17,7 +17,7 @@ run-name: >-
       github.event.action == 'clawsweeper_target_sweep') &&
       format('Review target repo {0}', github.event.client_payload.target_repo || 'openclaw/openclaw') ||
     (github.event_name == 'repository_dispatch' && github.event.client_payload.queue_lease_id != '') &&
-      format('Review event item {0}', github.event.client_payload.queue_claim.item_key || github.event.client_payload.item_key || '?') ||
+      format('Review exact item {0} rev {1} head {2}', github.event.client_payload.queue_claim.item_key || github.event.client_payload.item_key || '?', github.event.client_payload.queue_claim.lease_revision || github.event.client_payload.lease_revision || '?', github.event.client_payload.source_head_sha || 'na') ||
     (github.event_name == 'repository_dispatch' && github.event.client_payload.dispatch_key != '') &&
       format('Review event item {0}#{1} [{2}]', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || '?', github.event.client_payload.dispatch_key) ||
     github.event_name == 'repository_dispatch' &&
@@ -278,6 +278,9 @@ jobs:
                 sourceEvent,
                 sourceAction: payload.source_action || "legacy_dispatch",
                 supersedesInProgress: payload.supersedes_in_progress === true,
+                ...(/^[0-9a-f]{40}$/.test(String(payload.source_head_sha || "").trim().toLowerCase())
+                  ? { sourceHeadSha: String(payload.source_head_sha).trim().toLowerCase() }
+                  : {}),
                 ...(Number.isFinite(Number(payload.codex_timeout_ms))
                   ? { codexTimeoutMs: Number(payload.codex_timeout_ms) }
                   : {}),
@@ -413,6 +416,9 @@ jobs:
                   sourceEvent: String(dispatch.source_event || ""),
                   sourceAction: String(dispatch.source_action || "legacy_dispatch"),
                   supersedesInProgress: dispatch.supersedes_in_progress === true,
+                  ...(/^[0-9a-f]{40}$/.test(String(dispatch.source_head_sha || "").trim().toLowerCase())
+                    ? { sourceHeadSha: String(dispatch.source_head_sha).trim().toLowerCase() }
+                    : {}),
                   ...(Number.isFinite(Number(reviewOptions.codex_timeout_ms))
                     ? { codexTimeoutMs: Number(reviewOptions.codex_timeout_ms) }
                     : {}),
@@ -785,6 +791,12 @@ jobs:
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
           CODEX_TIMEOUT_MS: ${{ steps.target.outputs.codex_timeout_ms }}
           MEDIA_PROOF_TIMEOUT_MS: ${{ steps.target.outputs.media_proof_timeout_ms }}
+          EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
+          EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
+          EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
+          EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
+          EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
+          EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
@@ -849,6 +861,8 @@ jobs:
           EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
           EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
           EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
+          EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
+          EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           REVIEW_LEASE_OWNER: ${{ steps.reserve-exact-review-lease.outputs.owner }}
           REVIEW_LEASE_COMMENT_ID: ${{ steps.reserve-exact-review-lease.outputs.comment_id }}
@@ -856,6 +870,32 @@ jobs:
           set -euo pipefail
           test -n "$GH_TOKEN"
           heartbeat_pid=""
+          review_pid=""
+          review_pgid=""
+          superseded_marker="$RUNNER_TEMP/exact-review-superseded-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -f "$superseded_marker"
+          terminate_review_group() {
+            [ -n "$review_pgid" ] || return 0
+            kill -TERM -- "-$review_pgid" 2>/dev/null || true
+          }
+          wait_for_review_group() {
+            [ -n "$review_pgid" ] || return 0
+            for _ in {1..30}; do
+              if ! kill -0 -- "-$review_pgid" 2>/dev/null; then
+                return 0
+              fi
+              sleep 1
+            done
+            kill -KILL -- "-$review_pgid" 2>/dev/null || true
+            for _ in {1..50}; do
+              if ! kill -0 -- "-$review_pgid" 2>/dev/null; then
+                return 0
+              fi
+              sleep 0.1
+            done
+            echo "::error::Exact-review process group $review_pgid did not terminate."
+            return 1
+          }
           heartbeat_loop() {
             while true; do
               heartbeat_status="$(curl --silent --connect-timeout 5 --max-time 20 \
@@ -867,9 +907,11 @@ jobs:
                 "${QUEUE_URL%/}/internal/exact-review/heartbeat" 2>/dev/null)" || heartbeat_status=""
               if [ "$heartbeat_status" = "409" ]; then
                 echo "::notice::Exact-review heartbeat lost its lease tuple."
+                : > "$superseded_marker"
+                terminate_review_group
                 return
               fi
-              sleep 300
+              sleep 60
             done
           }
           start_heartbeat() {
@@ -877,13 +919,22 @@ jobs:
             # claim/complete), so this Codex-adjacent step never sees the webhook secret.
             heartbeat_payload="$(node -e '
               const leaseRevision = Number(process.env.EXACT_REVIEW_LEASE_REVISION);
+              const claimGeneration = Number(process.env.EXACT_REVIEW_CLAIM_GENERATION);
+              const runAttempt = Number(process.env.GITHUB_RUN_ATTEMPT);
+              const sourceHeadSha = String(process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || "").trim().toLowerCase();
               if (!process.env.EXACT_REVIEW_ITEM_KEY || !process.env.EXACT_REVIEW_LEASE_ID) process.exit(1);
               if (!Number.isInteger(leaseRevision) || leaseRevision < 1) process.exit(1);
+              if (!Number.isInteger(claimGeneration) || claimGeneration < 1) process.exit(1);
+              if (!Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
+              if (sourceHeadSha && !/^[0-9a-f]{40}$/.test(sourceHeadSha)) process.exit(1);
               process.stdout.write(JSON.stringify({
                 item_key: process.env.EXACT_REVIEW_ITEM_KEY,
                 lease_id: process.env.EXACT_REVIEW_LEASE_ID,
                 lease_revision: leaseRevision,
+                claim_generation: claimGeneration,
                 run_id: process.env.GITHUB_RUN_ID,
+                run_attempt: runAttempt,
+                ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
               }));
             ')" || return 0
             heartbeat_loop &
@@ -894,7 +945,6 @@ jobs:
             kill "$heartbeat_pid" 2>/dev/null || true
             wait "$heartbeat_pid" 2>/dev/null || true
           }
-          start_heartbeat
           trap cleanup_heartbeat EXIT
           codex_timeout_ms="${{ steps.target.outputs.codex_timeout_ms }}"
           if ! [[ "$codex_timeout_ms" =~ ^[0-9]+$ ]] || [ "$codex_timeout_ms" -lt 1 ]; then
@@ -912,7 +962,7 @@ jobs:
           review_timeout_seconds=$((codex_timeout_seconds + media_preprocessing_reserve_seconds + 180))
           echo "::notice::Exact event review timeout is ${review_timeout_seconds}s for per-item Codex timeout ${codex_timeout_seconds}s, reserved media preprocessing ${media_preprocessing_reserve_seconds}s, and detected media allowance ${media_proof_timeout_seconds}s."
           set +e
-          timeout --kill-after=30s "${review_timeout_seconds}s" pnpm run review -- \
+          setsid timeout --kill-after=30s "${review_timeout_seconds}s" pnpm run review -- \
             --target-repo "${{ steps.target.outputs.target_repo }}" \
             --target-dir "${{ steps.target.outputs.target_checkout_dir }}" \
             --artifact-dir artifacts/event \
@@ -929,8 +979,17 @@ jobs:
             --review-lease-comment-id "$REVIEW_LEASE_COMMENT_ID" \
             --shard-index 0 \
             --shard-count 1 \
-            "${additional_prompt_arg[@]}"
+            "${additional_prompt_arg[@]}" &
+          review_pid=$!
+          review_pgid=$review_pid
+          start_heartbeat
+          wait "$review_pid"
           review_exit_code=$?
+          cleanup_heartbeat
+          if [ -f "$superseded_marker" ]; then
+            wait_for_review_group
+            review_exit_code=143
+          fi
           set -e
           echo "exit_code=$review_exit_code" >> "$GITHUB_OUTPUT"
           if [ "$review_exit_code" -ne 0 ]; then

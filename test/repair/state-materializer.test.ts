@@ -29,6 +29,7 @@ test("materializer preserves canonical apply-proof content supplied as a string"
   const plan = planStateMaterialization([record(1, "apply_proof", proofPath, content)]);
 
   assert.deepEqual(plan, {
+    deletes: [],
     publishPaths: [proofPath],
     writes: [{ path: proofPath, content }],
     selected: 1,
@@ -98,6 +99,7 @@ test("materializer applies every record kind in sequence and keeps the last valu
       schema_version: 1,
     })}\n`,
   );
+  assert.equal(statePathExists(fixture, "results/comment-router-latest.json"), false);
   assert.match(
     run("git", ["--git-dir", fixture.origin, "log", "-1", "--format=%B", "state"], fixture.root),
     /chore: materialize queued state[\s\S]*\[skip ci\]/,
@@ -284,6 +286,10 @@ function createStateFixture(): {
       },
     ],
   });
+  writeJson(path.join(state, "results/comment-router-latest.json"), {
+    generated_at: "2026-07-20T11:59:00.000Z",
+    commands_seen: 1,
+  });
   run("git", ["add", "."], state);
   run("git", ["commit", "-m", "initial state"], state);
   run("git", ["push", "origin", "HEAD:state"], state);
@@ -316,6 +322,15 @@ async function withMaterializerFixture<T>(
 
 function showState(fixture: ReturnType<typeof createStateFixture>, file: string): string {
   return run("git", ["--git-dir", fixture.origin, "show", `state:${file}`], fixture.root);
+}
+
+function statePathExists(fixture: ReturnType<typeof createStateFixture>, file: string): boolean {
+  try {
+    run("git", ["--git-dir", fixture.origin, "cat-file", "-e", `state:${file}`], fixture.root);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function configureUser(cwd: string): void {

@@ -419,7 +419,14 @@ Scripts:
 Durable state:
 
 - `results/comment-router.json`
+
+Run-local diagnostics:
+
 - `results/comment-router-latest.json`
+
+The router ledger uses the state append/materializer lane. The workflow
+publishes `jobs/` through the serialized Git writer only when a command changed
+durable repair work.
 
 Important knobs:
 

@@ -127,6 +127,7 @@ import {
 import {
   expiredReviewStartStatusLeases,
   freshExactHeadReviewStartLease,
+  supersededReviewStartStatusLeases,
 } from "./repair/comment-router-core.js";
 import {
   AUTOMERGE_LABEL,
@@ -515,6 +516,17 @@ type AcquiredReviewStartLease = {
   commentId: number;
   headSha: string;
   comment?: Record<string, unknown>;
+};
+
+type ExactReviewQueueAuthority = {
+  queueUrl: string;
+  itemKey: string;
+  leaseId: string;
+  leaseRevision: number;
+  claimGeneration: number;
+  runId: string;
+  runAttempt: number;
+  sourceHeadSha: string | null;
 };
 
 type ReviewStartStatusCommentResult =
@@ -930,6 +942,7 @@ interface ReviewPromptBuild {
 }
 
 interface PreparedMediaProofArtifact {
+  kind: "image" | "video";
   url: string;
   downloadedPath: string | null;
   metadataPath: string | null;
@@ -9846,7 +9859,9 @@ type MediaProofCommandRunner = (
   error?: Error;
 };
 
+const IMAGE_PROOF_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const VIDEO_PROOF_EXTENSIONS = new Set([".mov", ".mp4", ".m4v", ".webm", ".avi", ".mkv"]);
+const MEDIA_PROOF_EXTENSIONS = new Set([...IMAGE_PROOF_EXTENSIONS, ...VIDEO_PROOF_EXTENSIONS]);
 const MEDIA_PROOF_MANIFEST_FILE = "media-proof-manifest.json";
 const MEDIA_PROOF_SUMMARY_FILE = "media-proof-summary.md";
 const MAX_MEDIA_PROOF_URLS = 4;
@@ -9865,7 +9880,7 @@ function trimTrailingUrlPunctuation(raw: string): string {
   return raw.slice(0, end);
 }
 
-function proofVideoUrlsFromContext(context: ItemContext): string[] {
+function proofMediaUrlsFromContext(context: ItemContext): string[] {
   const { semanticPullFiles: _, pullCommitsRevision: __, ...proofContext } = context;
   const text = JSON.stringify(proofContext);
   const matches = text.match(/https?:\/\/[^\s<>"'\\)]+/g) ?? [];
@@ -9880,8 +9895,8 @@ function proofVideoUrlsFromContext(context: ItemContext): string[] {
       continue;
     }
     const pathname = parsed.pathname.toLowerCase();
-    const isVideo = [...VIDEO_PROOF_EXTENSIONS].some((extension) => pathname.endsWith(extension));
-    if (!isVideo || seen.has(parsed.href)) continue;
+    const isMedia = [...MEDIA_PROOF_EXTENSIONS].some((extension) => pathname.endsWith(extension));
+    if (!isMedia || seen.has(parsed.href)) continue;
     seen.add(parsed.href);
     urls.push(parsed.href);
     if (urls.length >= MAX_MEDIA_PROOF_URLS) break;
@@ -9892,11 +9907,16 @@ function proofVideoUrlsFromContext(context: ItemContext): string[] {
 function mediaProofFileExtension(url: string): string {
   try {
     const pathname = new URL(url).pathname.toLowerCase();
-    const extension = [...VIDEO_PROOF_EXTENSIONS].find((candidate) => pathname.endsWith(candidate));
-    return extension ?? ".video";
+    const extension = [...MEDIA_PROOF_EXTENSIONS].find((candidate) => pathname.endsWith(candidate));
+    return extension ?? ".media";
   } catch {
-    return ".video";
+    return ".media";
   }
+}
+
+function mediaProofKind(url: string): "image" | "video" {
+  const extension = mediaProofFileExtension(url);
+  return IMAGE_PROOF_EXTENSIONS.has(extension) ? "image" : "video";
 }
 
 function mediaProofSpawnDetail(result: ReturnType<MediaProofCommandRunner>): string {
@@ -9913,15 +9933,16 @@ function prepareMediaProofArtifacts(
   proofScratchDir: string,
   runner: MediaProofCommandRunner = mediaProofCommandRunner,
 ): PreparedMediaProof {
-  const urls = proofVideoUrlsFromContext(context);
+  const urls = proofMediaUrlsFromContext(context);
   if (urls.length === 0) return { manifestPath: null, summaryPath: null, artifacts: [] };
   ensureDir(proofScratchDir);
   const artifacts: PreparedMediaProofArtifact[] = [];
   for (const [index, url] of urls.entries()) {
     const ordinal = index + 1;
+    const kind = mediaProofKind(url);
     const downloadedPath = join(
       proofScratchDir,
-      `proof-video-${ordinal}${mediaProofFileExtension(url)}`,
+      `proof-${kind}-${ordinal}${mediaProofFileExtension(url)}`,
     );
     const metadataPath = join(proofScratchDir, `proof-video-${ordinal}.ffprobe.json`);
     const contactSheetPath = join(proofScratchDir, `proof-video-${ordinal}.contact-sheet.jpg`);
@@ -9938,12 +9959,25 @@ function prepareMediaProofArtifacts(
     ]);
     if (download.status !== 0) {
       artifacts.push({
+        kind,
         url,
         downloadedPath: null,
         metadataPath: null,
         contactSheetPath: null,
         status: "failed",
         detail: `download failed: ${mediaProofSpawnDetail(download)}`,
+      });
+      continue;
+    }
+    if (kind === "image") {
+      artifacts.push({
+        kind,
+        url,
+        downloadedPath,
+        metadataPath: null,
+        contactSheetPath: null,
+        status: "prepared",
+        detail: "downloaded image proof for local inspection",
       });
       continue;
     }
@@ -9958,6 +9992,7 @@ function prepareMediaProofArtifacts(
     ]);
     if (metadata.status !== 0) {
       artifacts.push({
+        kind,
         url,
         downloadedPath,
         metadataPath: null,
@@ -9981,6 +10016,7 @@ function prepareMediaProofArtifacts(
     ]);
     if (contactSheet.status !== 0) {
       artifacts.push({
+        kind,
         url,
         downloadedPath,
         metadataPath,
@@ -9991,6 +10027,7 @@ function prepareMediaProofArtifacts(
       continue;
     }
     artifacts.push({
+      kind,
       url,
       downloadedPath,
       metadataPath,
@@ -10023,9 +10060,9 @@ function mediaProofRuntimePrompt(summary: string | undefined, manifestPath: stri
   const trimmed = summary?.trim();
   if (!trimmed || !manifestPath) return "";
   return `
-- ClawSweeper preprocessed linked video proof with ffprobe/ffmpeg before this review. Read \`${manifestPath}\` and inspect any generated contact-sheet image paths before trying browser playback.
-- If browser playback fails but ffprobe metadata and ffmpeg contact sheets are readable, assess the proof from those generated artifacts instead of treating the video as uninspectable.
-- Only fall back to browser playback after checking the prepared ffmpeg artifacts. If both ffmpeg extraction and browser playback fail, report the exact failure from the manifest.
+- ClawSweeper downloaded linked image and video proof before this review. Read \`${manifestPath}\` and inspect downloaded image paths and generated video contact-sheet paths locally before trying browser playback.
+- Assess screenshots directly from their downloaded image paths. If browser video playback fails but ffprobe metadata and ffmpeg contact sheets are readable, assess the video from those generated artifacts instead of treating it as uninspectable.
+- Only fall back to browser playback after checking the prepared local artifacts. If local preparation and browser playback both fail, report the exact failure from the manifest.
 `;
 }
 
@@ -10042,8 +10079,12 @@ function mediaProofRuntimeHints(
   return hints;
 }
 
+export function proofMediaUrlsFromContextForTest(context: ItemContext): string[] {
+  return proofMediaUrlsFromContext(context);
+}
+
 export function proofVideoUrlsFromContextForTest(context: ItemContext): string[] {
-  return proofVideoUrlsFromContext(context);
+  return proofMediaUrlsFromContext(context).filter((url) => mediaProofKind(url) === "video");
 }
 
 export function prepareMediaProofArtifactsForTest(
@@ -12301,6 +12342,7 @@ function publicMergeReadinessBlock(
   bottomLine: string,
   remainingItemCount: number,
   decisionNeeded: boolean,
+  reviewedHeadSha: string,
 ): string {
   const result = publicStatusText(publicMergeReadinessResult(rating, proof)).replace(/\.$/, "");
   const icon = /^blocked\b/i.test(result)
@@ -12319,6 +12361,7 @@ function publicMergeReadinessBlock(
     "",
     `**Priority:** ${priority === "none" ? "None" : priority}`,
   ];
+  if (reviewedHeadSha) lines.push(`**Reviewed head:** \`${reviewedHeadSha}\``);
   if (decisionNeeded) {
     lines.push("**Owner decision:** Required. See [Decision needed](#decision-needed).");
   }
@@ -19459,6 +19502,7 @@ function renderKeepOpenCommentFromReport(
             summaryLine,
             beforeMergeItems.length,
             Boolean(decisionPacketBlock),
+            pullHeadShaFromReport(markdown) ?? "",
           ),
     );
     if (!reviewFailed) {
@@ -21230,6 +21274,101 @@ export function newReviewStartLeaseOwnerForTest(
   return newReviewStartLeaseOwner(env, fallback);
 }
 
+function exactReviewQueueAuthorityFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): ExactReviewQueueAuthority | null {
+  const raw = {
+    queueUrl: String(env.EXACT_REVIEW_QUEUE_URL ?? "")
+      .trim()
+      .replace(/\/$/, ""),
+    itemKey: String(env.EXACT_REVIEW_ITEM_KEY ?? "").trim(),
+    leaseId: String(env.EXACT_REVIEW_LEASE_ID ?? "").trim(),
+    leaseRevision: String(env.EXACT_REVIEW_LEASE_REVISION ?? "").trim(),
+    claimGeneration: String(env.EXACT_REVIEW_CLAIM_GENERATION ?? "").trim(),
+    runId: String(env.GITHUB_RUN_ID ?? "").trim(),
+    runAttempt: String(env.GITHUB_RUN_ATTEMPT ?? "").trim(),
+    sourceHeadSha: String(env.EXACT_REVIEW_SOURCE_HEAD_SHA ?? "")
+      .trim()
+      .toLowerCase(),
+  };
+  if (
+    ![raw.queueUrl, raw.itemKey, raw.leaseId, raw.leaseRevision, raw.claimGeneration].some(Boolean)
+  ) {
+    return null;
+  }
+
+  let queueUrl: URL;
+  try {
+    queueUrl = new URL(raw.queueUrl);
+  } catch {
+    throw new UserFacingCommandError("EXACT_REVIEW_QUEUE_URL must be an HTTP(S) URL.");
+  }
+  const leaseRevision = Number(raw.leaseRevision);
+  const claimGeneration = Number(raw.claimGeneration);
+  const runAttempt = Number(raw.runAttempt);
+  if (
+    !["http:", "https:"].includes(queueUrl.protocol) ||
+    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d*$/.test(raw.itemKey) ||
+    !/^[A-Za-z0-9._:-]{1,200}$/.test(raw.leaseId) ||
+    !Number.isSafeInteger(leaseRevision) ||
+    leaseRevision < 1 ||
+    !Number.isSafeInteger(claimGeneration) ||
+    claimGeneration < 1 ||
+    !/^[1-9]\d{0,29}$/.test(raw.runId) ||
+    !Number.isSafeInteger(runAttempt) ||
+    runAttempt < 1 ||
+    (raw.sourceHeadSha !== "" && !/^[0-9a-f]{40}$/.test(raw.sourceHeadSha))
+  ) {
+    throw new UserFacingCommandError("Exact-review queue authority context is incomplete.");
+  }
+  return {
+    queueUrl: queueUrl.toString().replace(/\/$/, ""),
+    itemKey: raw.itemKey,
+    leaseId: raw.leaseId,
+    leaseRevision,
+    claimGeneration,
+    runId: raw.runId,
+    runAttempt,
+    sourceHeadSha: raw.sourceHeadSha || null,
+  };
+}
+
+function exactReviewQueueAuthorityIsLive(authority: ExactReviewQueueAuthority): boolean {
+  const payload = JSON.stringify({
+    item_key: authority.itemKey,
+    lease_id: authority.leaseId,
+    lease_revision: authority.leaseRevision,
+    claim_generation: authority.claimGeneration,
+    run_id: authority.runId,
+    run_attempt: authority.runAttempt,
+    ...(authority.sourceHeadSha ? { source_head_sha: authority.sourceHeadSha } : {}),
+  });
+  const result = spawnSync(
+    "curl",
+    [
+      "--silent",
+      "--show-error",
+      "--connect-timeout",
+      "5",
+      "--max-time",
+      "20",
+      "--output",
+      "/dev/null",
+      "--write-out",
+      "%{http_code}",
+      "--request",
+      "POST",
+      "--header",
+      "content-type: application/json",
+      "--data-binary",
+      payload,
+      `${authority.queueUrl}/internal/exact-review/heartbeat`,
+    ],
+    { encoding: "utf8" },
+  );
+  return result.status === 0 && result.stdout.trim() === "200";
+}
+
 function freshDedicatedReviewStartLeases(options: {
   comments: Record<string, unknown>[];
   itemNumber: number;
@@ -21287,6 +21426,8 @@ function postReviewStartStatusComment(options: {
   shardIndex: number;
   shardCount: number;
   purpose?: "review" | "apply";
+  queueAuthority?: ExactReviewQueueAuthority | null;
+  allowSupersededLeaseCleanup?: boolean;
 }): ReviewStartStatusCommentResult {
   const startedAtMs = Date.now();
   const leaseOwner = newReviewStartLeaseOwner();
@@ -21356,8 +21497,9 @@ function postReviewStartStatusComment(options: {
     );
   }
   const acquired = { owner: leaseOwner, commentId: createdCommentId, headSha: normalizedHead };
+  const confirmedState = issueReviewCommentState(options.item.number);
   const confirmed = freshDedicatedReviewStartLeases({
-    comments: issueReviewCommentState(options.item.number).leaseComments,
+    comments: confirmedState.leaseComments,
     itemNumber: options.item.number,
     headSha: normalizedHead,
     nowMs: Date.now(),
@@ -21381,6 +21523,38 @@ function postReviewStartStatusComment(options: {
   ) {
     deleteOwnedDedicatedReviewStartLease(options.item.number, acquired);
     return heldReviewStartStatusCommentResult(winner.expiresAt, true);
+  }
+  if (options.queueAuthority) {
+    const authoritativeHead = currentReviewRevision(options.item);
+    if (authoritativeHead !== normalizedHead) {
+      deleteOwnedDedicatedReviewStartLease(options.item.number, acquired);
+      throw new Error(
+        `review revision changed while reserving #${options.item.number}; retry required`,
+      );
+    }
+    if (!exactReviewQueueAuthorityIsLive(options.queueAuthority)) {
+      deleteOwnedDedicatedReviewStartLease(options.item.number, acquired);
+      throw new Error(
+        `exact-review queue authority changed while reserving #${options.item.number}; retry required`,
+      );
+    }
+    // The candidate snapshot predates both authority checks. A newer worker
+    // cannot be selected by a stale caller: if its lease is already present,
+    // the live revision/queue tuple has moved; if it starts later, it is absent
+    // from this immutable snapshot.
+    if (options.allowSupersededLeaseCleanup) {
+      reapSupersededDedicatedReviewStartLeases(
+        options.item.number,
+        confirmedState.dedicatedLeaseComments,
+        normalizedHead,
+        authoritativeHead,
+      );
+    } else if (pullRequestHeadSha(options.item.number) !== normalizedHead) {
+      deleteOwnedDedicatedReviewStartLease(options.item.number, acquired);
+      throw new Error(
+        `review revision changed while reserving #${options.item.number}; retry required`,
+      );
+    }
   }
   return {
     status: "posted",
@@ -21461,6 +21635,46 @@ function reapExpiredDedicatedReviewStartLeases(
   }
 }
 
+function reapSupersededDedicatedReviewStartLeases(
+  itemNumber: number,
+  dedicatedLeaseComments: Record<string, unknown>[],
+  currentHeadSha: string,
+  authoritativeHeadSha: string,
+): void {
+  const superseded = supersededReviewStartStatusLeases({
+    comments: dedicatedLeaseComments,
+    itemNumber,
+    headSha: currentHeadSha,
+    authoritativeHeadSha,
+    trustedAuthors: new Set(
+      [...PATCHABLE_REVIEW_COMMENT_AUTHORS].map((author) => author.toLowerCase()),
+    ),
+  });
+  for (const lease of superseded) {
+    try {
+      ghObservedMutationCommand({
+        identity: `review_lease_supersede:${itemNumber}:${lease.commentId}`,
+        args: [
+          "api",
+          `repos/${targetRepo()}/issues/comments/${lease.commentId}`,
+          "--method",
+          "DELETE",
+        ],
+      });
+      console.error(
+        `[review] deleted superseded review lease comment ${lease.commentId} for #${itemNumber} (reviewed head ${lease.headSha}, current head ${currentHeadSha})`,
+      );
+    } catch (error) {
+      // A failed cleanup must never block the current revision from acquiring its lease.
+      console.error(
+        `[review] could not delete superseded review lease comment ${lease.commentId} for #${itemNumber}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+}
+
 const REVIEW_PLACEHOLDER_BODY_PATTERN = /^ClawSweeper status: review started\./i;
 
 export function supersededReviewPlaceholderCommentIds(options: {
@@ -21530,6 +21744,12 @@ function pullRequestHeadSha(number: number): string {
   const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
   const sha = asRecord(pull.head).sha;
   return typeof sha === "string" ? sha.trim().toLowerCase() : "";
+}
+
+function currentReviewRevision(item: Item): string {
+  if (item.kind === "pull_request") return pullRequestHeadSha(item.number);
+  const revision = collectItemContext(item, { fullTimelineForRelations: true }).sourceRevision;
+  return typeof revision === "string" ? revision : "";
 }
 
 function closeItem(options: { number: number; kind: ItemKind; reason: CloseReason }): void {
@@ -23273,15 +23493,30 @@ function reserveReviewLeaseCommand(args: Args): void {
       `Cannot reserve a review lease for #${itemNumber}: state is ${state}.`,
     );
   }
-  const currentRevision =
-    item.kind === "pull_request"
-      ? pullRequestHeadSha(itemNumber)
-      : collectItemContext(item, { fullTimelineForRelations: true }).sourceRevision;
+  const queueAuthority = exactReviewQueueAuthorityFromEnv();
+  const expectedItemKey = `${targetRepo()}#${itemNumber}`.toLowerCase();
+  if (queueAuthority && queueAuthority.itemKey.toLowerCase() !== expectedItemKey) {
+    throw new UserFacingCommandError("Exact-review queue authority item does not match target.");
+  }
+  const currentRevision = currentReviewRevision(item);
   if (!currentRevision || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(currentRevision)) {
     throw new UserFacingCommandError(
       `Could not resolve the current review revision for #${itemNumber}.`,
     );
   }
+  if (
+    queueAuthority?.sourceHeadSha &&
+    item.kind === "pull_request" &&
+    queueAuthority.sourceHeadSha !== currentRevision
+  ) {
+    throw new UserFacingCommandError(
+      "Exact-review queue authority source head does not match the current pull request.",
+    );
+  }
+  const reservationAuthority =
+    queueAuthority && item.kind === "pull_request" && !queueAuthority.sourceHeadSha
+      ? { ...queueAuthority, sourceHeadSha: currentRevision }
+      : queueAuthority;
   const result = postReviewStartStatusComment({
     item,
     headSha: currentRevision,
@@ -23290,6 +23525,9 @@ function reserveReviewLeaseCommand(args: Args): void {
     total: 1,
     shardIndex: 0,
     shardCount: 1,
+    queueAuthority: reservationAuthority,
+    allowSupersededLeaseCleanup:
+      item.kind !== "pull_request" || Boolean(queueAuthority?.sourceHeadSha),
   });
   if (result.status === "held") {
     console.log(JSON.stringify({ status: "held", retryAt: result.retryAt }));
@@ -24470,9 +24708,9 @@ function reviewCommand(args: Args): void {
       const codexWorkDir = join(artifactDir, "codex");
       const proofScratchDir = join(codexWorkDir, "proof-scratch", String(item.number));
       // --local-range is a pre-PR LOCAL code review — it has no telegram-visible-proof to
-      // capture, and prepareMediaProofArtifacts would host-side `curl` + `ffmpeg` any media URL
-      // in the synthetic body (commit message / --body-file). Skip it entirely for local-range:
-      // no host download, no transcode of body-supplied URLs.
+      // capture, and prepareMediaProofArtifacts would host-side download media URLs and transcode
+      // videos in the synthetic body (commit message / --body-file). Skip it entirely for
+      // local-range: no host download or transcode of body-supplied URLs.
       const preparedMediaProof: PreparedMediaProof = localRangeData
         ? { manifestPath: null, summaryPath: null, artifacts: [] }
         : prepareMediaProofArtifacts(context, proofScratchDir);

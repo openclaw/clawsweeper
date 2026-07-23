@@ -8,6 +8,7 @@ import {
   isGitHubLabelCapacityErrorForTest,
   isMissingGitHubLabelErrorForTest,
   prepareMediaProofArtifactsForTest,
+  proofMediaUrlsFromContextForTest,
   proofVideoUrlsFromContextForTest,
   realBehaviorProofMediaLabelsForTest,
   realBehaviorProofSufficientLabelsForTest,
@@ -253,7 +254,44 @@ test("media proof preparation extracts browser-unplayable ffmpeg-decodeable vide
   }
 });
 
-test("runtime prompt tells Codex to inspect ffmpeg video artifacts before browser fallback", () => {
+test("media proof preparation downloads screenshot proof without video processing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "clawsweeper-media-proof-"));
+  try {
+    const screenshotUrl =
+      "https://github.com/user/repo/releases/download/proof/terminal-output.png";
+    const context = {
+      issue: {},
+      comments: [{ body: `After-fix screenshot: ![terminal output](${screenshotUrl})` }],
+      timeline: [],
+    };
+    const calls: string[] = [];
+    const prepared = prepareMediaProofArtifactsForTest(context, dir, (command, args) => {
+      calls.push(`${command} ${args.join(" ")}`);
+      if (command === "curl") {
+        const outputIndex = args.indexOf("--output");
+        assert.notEqual(outputIndex, -1);
+        writeFileSync(String(args[outputIndex + 1]), "fake png bytes");
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      return { status: 1, stdout: "", stderr: `unexpected command: ${command}` };
+    });
+
+    assert.equal(prepared.artifacts.length, 1);
+    assert.equal(prepared.artifacts[0]?.status, "prepared");
+    assert.equal(prepared.artifacts[0]?.kind, "image");
+    assert.ok(prepared.artifacts[0]?.downloadedPath?.endsWith("proof-image-1.png"));
+    assert.equal(prepared.artifacts[0]?.metadataPath, null);
+    assert.equal(prepared.artifacts[0]?.contactSheetPath, null);
+    assert.equal(existsSync(prepared.artifacts[0]?.downloadedPath ?? ""), true);
+    assert.match(calls.join("\n"), /^curl /m);
+    assert.doesNotMatch(calls.join("\n"), /^ffprobe /m);
+    assert.doesNotMatch(calls.join("\n"), /^ffmpeg /m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runtime prompt tells Codex to inspect local media artifacts before browser fallback", () => {
   const context = {
     issue: {},
     comments: [{ body: "Proof: https://github.com/user/repo/releases/download/proof/demo.mov" }],
@@ -271,19 +309,43 @@ test("runtime prompt tells Codex to inspect ffmpeg video artifacts before browse
     },
   );
 
+  assert.deepEqual(proofMediaUrlsFromContextForTest(context), [
+    "https://github.com/user/repo/releases/download/proof/demo.mov",
+  ]);
+  assert.match(prompt, /downloaded linked image and video proof/);
+  assert.match(prompt, /inspect downloaded image paths and generated video contact-sheet paths/);
+  assert.match(prompt, /Assess screenshots directly from their downloaded image paths/);
+  assert.match(
+    prompt,
+    /Only fall back to browser playback after checking the prepared local artifacts/,
+  );
+  assert.match(
+    prompt,
+    /If browser video playback fails but ffprobe metadata and ffmpeg contact sheets are readable/,
+  );
+});
+
+test("media proof URL discovery includes screenshots and videos", () => {
+  const context = {
+    issue: {},
+    comments: [
+      {
+        body: [
+          "Screenshot: https://github.com/user/repo/releases/download/proof/demo.png",
+          "Video: https://github.com/user/repo/releases/download/proof/demo.mov",
+        ].join("\n"),
+      },
+    ],
+    timeline: [],
+  };
+
+  assert.deepEqual(proofMediaUrlsFromContextForTest(context), [
+    "https://github.com/user/repo/releases/download/proof/demo.png",
+    "https://github.com/user/repo/releases/download/proof/demo.mov",
+  ]);
   assert.deepEqual(proofVideoUrlsFromContextForTest(context), [
     "https://github.com/user/repo/releases/download/proof/demo.mov",
   ]);
-  assert.match(prompt, /preprocessed linked video proof with ffprobe\/ffmpeg/);
-  assert.match(prompt, /generated contact-sheet image paths before trying browser playback/);
-  assert.match(
-    prompt,
-    /Only fall back to browser playback after checking the prepared ffmpeg artifacts/,
-  );
-  assert.match(
-    prompt,
-    /If browser playback fails but ffprobe metadata and ffmpeg contact sheets are readable/,
-  );
 });
 
 test("review prompt keeps draft and protected workflow state out of PR rank", () => {

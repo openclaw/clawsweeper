@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHmac } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +19,7 @@ export const DEFAULT_STATE_MATERIALIZER_MAX_BYTES = 20 * 1024 * 1024;
 export const DEFAULT_STATE_MATERIALIZER_MAX_RUNTIME_MS = 10 * 60 * 1_000;
 
 const COMMENT_ROUTER_LEDGER_PATH = "results/comment-router.json";
+const COMMENT_ROUTER_LATEST_REPORT_PATH = "results/comment-router-latest.json";
 const EMPTY_COMMENT_ROUTER_LEDGER = '{"updated_at":null,"commands":[]}';
 const STATE_MATERIALIZER_COMMIT_MESSAGE = "chore: materialize queued state\n\n[skip ci]";
 const STATE_APPEND_KINDS = new Set<StateAppendKind>([
@@ -47,6 +48,7 @@ export type StateMaterializerSummary = {
 };
 
 export type StateMaterializationPlan = {
+  deletes: string[];
   publishPaths: string[];
   writes: Array<{ path: string; content: string }>;
   selected: number;
@@ -128,6 +130,7 @@ export function planStateMaterialization(
 ): StateMaterializationPlan {
   const selected = selectLatestStateRecords(records);
   const contentByPath = new Map<string, string>();
+  const deletes = new Set<string>();
   const publishPaths: string[] = [];
   const addPublishPath = (path: string): void => {
     if (!publishPaths.includes(path)) publishPaths.push(path);
@@ -163,6 +166,12 @@ export function planStateMaterialization(
         mergeCommentRouterLedgers(payloadText, current),
       );
       addPublishPath(COMMENT_ROUTER_LEDGER_PATH);
+      // This report describes one invocation, not durable command state. Retire
+      // the old tracked copy in the same single-writer commit as the next ledger.
+      if (currentFiles.has(COMMENT_ROUTER_LATEST_REPORT_PATH)) {
+        deletes.add(COMMENT_ROUTER_LATEST_REPORT_PATH);
+        addPublishPath(COMMENT_ROUTER_LATEST_REPORT_PATH);
+      }
       continue;
     }
 
@@ -177,6 +186,7 @@ export function planStateMaterialization(
   }
 
   return {
+    deletes: [...deletes].sort(),
     publishPaths,
     writes: [...contentByPath]
       .filter(([path, content]) => currentFiles.get(path) !== content)
@@ -305,6 +315,13 @@ export async function runStateMaterializer(
 
 export function applyStateMaterializationPlan(plan: StateMaterializationPlan, root: string): void {
   const resolvedRoot = resolve(root);
+  for (const path of plan.deletes) {
+    const target = resolve(resolvedRoot, path);
+    if (target !== resolvedRoot && !target.startsWith(`${resolvedRoot}${sep}`)) {
+      throw new Error(`refusing state deletion outside checkout: ${path}`);
+    }
+    rmSync(target, { force: true });
+  }
   for (const write of plan.writes) {
     const target = resolve(resolvedRoot, write.path);
     if (target !== resolvedRoot && !target.startsWith(`${resolvedRoot}${sep}`)) {
@@ -322,12 +339,15 @@ function materializationPaths(records: readonly StateAppendRecord[]): string[] {
       record.kind === "sweep_status"
         ? sweepStatusPathForStateKey(record.key)
         : record.kind === "comment_router"
-          ? COMMENT_ROUTER_LEDGER_PATH
+          ? [COMMENT_ROUTER_LEDGER_PATH, COMMENT_ROUTER_LATEST_REPORT_PATH]
           : record.key;
-    if (record.kind === "apply_proof" && !isActionEventPublishPath(path)) {
-      throw new Error(`invalid apply proof ledger path: ${path}`);
+    const recordPaths = Array.isArray(path) ? path : [path];
+    if (record.kind === "apply_proof" && !isActionEventPublishPath(recordPaths[0]!)) {
+      throw new Error(`invalid apply proof ledger path: ${recordPaths[0]}`);
     }
-    if (!paths.includes(path)) paths.push(path);
+    for (const recordPath of recordPaths) {
+      if (!paths.includes(recordPath)) paths.push(recordPath);
+    }
   }
   return paths;
 }

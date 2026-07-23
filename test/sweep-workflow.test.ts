@@ -390,6 +390,19 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.equal(reserveLease.env?.GH_TOKEN, "${{ steps.target-write-token.outputs.token }}");
   assert.match(reserveLease.run ?? "", /pnpm run --silent reserve-review-lease/);
   assert.match(reserveLease.run ?? "", /review-timeout-ms/);
+  assert.match(source, /Review exact item \{0\} rev \{1\} head \{2\}/);
+  assert.equal(
+    reserveLease.env?.EXACT_REVIEW_ITEM_KEY,
+    "${{ steps.claim-exact-review-queue.outputs.item_key }}",
+  );
+  assert.equal(
+    reserveLease.env?.EXACT_REVIEW_CLAIM_GENERATION,
+    "${{ steps.claim-exact-review-queue.outputs.claim_generation }}",
+  );
+  assert.equal(
+    reserveLease.env?.EXACT_REVIEW_SOURCE_HEAD_SHA,
+    "${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}",
+  );
   const resolvePayload = step(reviewer, "Resolve event payload");
   assert.match(resolvePayload.run ?? "", /maxExactReviewCodexTimeoutMs = 2_700_000/);
   assert.match(
@@ -406,6 +419,14 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   );
   assert.match(step(reviewer, "Review exact event item").run ?? "", /--review-lease-owner/);
   assert.match(step(reviewer, "Review exact event item").run ?? "", /--review-lease-comment-id/);
+  assert.match(step(reviewer, "Review exact event item").run ?? "", /claim_generation/);
+  assert.match(step(reviewer, "Review exact event item").run ?? "", /run_attempt/);
+  assert.match(step(reviewer, "Review exact event item").run ?? "", /source_head_sha/);
+  assert.match(
+    step(reviewer, "Review exact event item").run ?? "",
+    /kill -TERM -- "-\$review_pgid"/,
+  );
+  assert.match(step(reviewer, "Review exact event item").run ?? "", /sleep 60/);
 
   const create = step(reviewer, "Create exact review artifact bundle");
   const upload = step(reviewer, "Upload exact review artifact bundle");
@@ -747,11 +768,16 @@ test("exact event review heartbeats its queue lease while Codex runs", () => {
   assert.doesNotMatch(review.run ?? "", /x-clawsweeper-exact-review-signature/);
   assert.doesNotMatch(review.run ?? "", /CLAWSWEEPER_WEBHOOK_SECRET/);
   assert.match(review.run ?? "", /internal\/exact-review\/heartbeat/);
-  assert.match(review.run ?? "", /sleep 300/);
+  assert.match(review.run ?? "", /^\s*sleep 60\s*$/m);
   assert.match(review.run ?? "", /heartbeat_payload=.*\|\| return 0/s);
   assert.doesNotMatch(review.run ?? "", /test -n "\$CLAWSWEEPER_WEBHOOK_SECRET"/);
   assert.match(review.run ?? "", /trap cleanup_heartbeat EXIT/);
   assert.match(review.run ?? "", /kill "\$heartbeat_pid" 2>\/dev\/null \|\| true/);
+  assert.match(review.run ?? "", /setsid timeout --kill-after=30s/);
+  assert.match(review.run ?? "", /review_pgid=\$review_pid/);
+  assert.match(review.run ?? "", /kill -TERM -- "-\$review_pgid"/);
+  assert.match(review.run ?? "", /kill -KILL -- "-\$review_pgid"/);
+  assert.match(review.run ?? "", /wait_for_review_group/);
 
   const publisher = workflow.jobs["event-review-publish"]!;
   assert.equal(
@@ -2032,6 +2058,30 @@ test("trusted comment router owns command ledger capacity retries", () => {
   assert.match(routerWorkflow, /Detect waiting repair dispatches/);
   assert.match(routerWorkflow, /--status waiting,active/);
   assert.match(routerWorkflow, /--wait-for-capacity/);
+});
+
+test("comment router publishes only durable ledger mutations and changed jobs", () => {
+  const workflow = readText(".github/workflows/repair-comment-router.yml");
+  const initialStart = workflow.indexOf("- name: Commit comment router ledger");
+  const initialEnd = workflow.indexOf("- name: Detect waiting repair dispatches", initialStart);
+  const retryStart = workflow.indexOf("- name: Commit comment router retry ledger");
+  const retryEnd = workflow.indexOf("- name: Finalize command action ledger", retryStart);
+  const publishSteps = [
+    workflow.slice(initialStart, initialEnd),
+    workflow.slice(retryStart, retryEnd),
+  ];
+
+  for (const step of publishSteps) {
+    assert.match(step, /git diff --no-index --quiet -- "\$CLAWSWEEPER_STATE_DIR\/jobs" jobs/);
+    assert.match(step, /\[ "\$jobs_changed" = "0" \] &&/);
+    assert.match(step, /\(\(\.ledger_claimed \/\/ 0\) \+ \(\.ledger_changed \/\/ 0\)\) == 0/);
+    assert.match(step, /No durable router(?: retry)? state changed; skipping state publication\./);
+    assert.match(step, /--path results\/comment-router\.json/);
+    assert.doesNotMatch(step, /--path results\/comment-router-latest\.json/);
+    assert.match(step, /\[ "\$jobs_changed" = "1" \]/);
+    assert.match(step, /publish_args\+=\(--path jobs\)/);
+    assert.doesNotMatch(step, /--path jobs \\/);
+  }
 });
 
 test("deferred exact verdict routers cannot replace each other's pending runs", () => {

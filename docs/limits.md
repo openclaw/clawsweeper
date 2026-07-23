@@ -25,7 +25,7 @@ budget:
 | `CLAWSWEEPER_BULK_FILER_THRESHOLD`                |      10 | Recent authored-issue count that marks bulk filing.  |
 | `CLAWSWEEPER_BULK_FILER_WINDOW_DAYS`              |       7 | Lookback window for authored issue filing rate.      |
 | `CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED`     | `false` | Enables stale-version bug closes after 120 days.     |
-| `CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED`       | `false` | Enables obsolete small-fix PR closes after 90 days. |
+| `CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED`       | `false` | Enables obsolete small-fix PR closes after 90 days.  |
 
 See [`author-pr-budget-close-policy.md`](author-pr-budget-close-policy.md) for
 the rating, proof, inactivity, engagement, and fail-closed gates.
@@ -176,11 +176,23 @@ backlog drain. Exact capacity is consumed only while queue work is pending. As
 those priority workers start, normal, hot-intake, and commit-review planners
 count them and reduce their next background wave.
 
-Fresh webhook work waits for `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS` (45 seconds by
+Fresh webhook work waits for `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS` (90 seconds by
 default) so rapid edits and pushes coalesce before dispatch. Repeated pending
 revisions extend that delay up to `EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS` (three
-minutes by default) from the item's first enqueue. Explicit command work and
-publication work bypass the delay. When pending depth reaches
+minutes by default) from the item's first enqueue. A superseding source event
+immediately revokes the old queue lease and starts a fresh debounce window for
+the latest revision. The old workflow's tuple heartbeat then returns `409`; its
+review step terminates the local review process instead of using GitHub's
+run-id-only cancellation API, which cannot safely distinguish a later rerun
+attempt. The replacement is durably scheduled before the old worker observes
+the revocation, and
+`review_superseded_total` records the terminalized review generation. Recovery
+events never supersede an existing item; only a fresh source revision can revoke
+an active review. Duplicate workflow deliveries remain non-cancelling and rely
+on the lease claim tuple, so they cannot terminate the sole valid owner. An older
+unclaimed workflow cannot pass the replacement lease tuple and exits before
+review compute. Explicit command work and publication work bypass the delay.
+When pending depth reaches
 `EXACT_REVIEW_PENDING_SOFT_LIMIT` (300 by default), new recovery-only work is
 shed; existing items, webhook events, commands, and publications remain admitted.
 
@@ -200,7 +212,10 @@ Codex and does not deduct these control-plane workflows from `workers.max`.
 
 Each dispatched workflow claims its opaque lease before checkout. Protocol v2
 binds claim and completion to the item key, lease revision, run attempt, claim
-generation, and an immutable decision snapshot. During the rolling-upgrade
+generation, source head (for pull requests), and an immutable decision snapshot.
+For pull requests, the review-start reservation rejects a claimed source head
+that no longer matches the live head, then heartbeats that full queue tuple
+before deleting any different-revision placeholder. During the rolling-upgrade
 window, dispatches nest the strict tuple under `queue_claim`, also carry the immutable v1 snapshot, and the Worker accepts
 lease-id-only finalization only for claims recorded as protocol v1. Duplicate
 dispatches and stale workflows cannot claim the same lease, and a completion
@@ -219,7 +234,7 @@ workflows holding the expired lease cannot claim it.
 Run-attempt binding and a per-claim generation check keep delayed terminal
 decisions from releasing a later rerun; queued and in-progress runs are never
 released. If a workflow never claims or completes, the Durable Object reclaims
-the expired lease. Claimed review workers heartbeat every five minutes; after the first
+the expired lease. Claimed review workers heartbeat every minute; after the first
 heartbeat, `EXACT_REVIEW_HEARTBEAT_GRACE_MS` bounds liveness to 20 minutes by default while
 never extending the original 130-minute execution lease. Leases created before heartbeat
 support was deployed retain their original execution expiry. This keeps capacity waiting and
@@ -287,9 +302,8 @@ hot intake `14`, and commit review `2`. Existing repair lanes keep their
   review-start placeholder must be before recovery; the default is 2 hours and
   the maximum is 720 hours.
 - `REVIEW_PLACEHOLDER_MAX_RECOVERIES` overrides the number of orphaned review
-  placeholders enqueued per recovery pass; the default is 5 and the maximum is
-  100.
-- `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS` overrides the 45,000 ms coalescing delay
+  placeholders enqueued per recovery pass; the default is 5 and the maximum is 100.
+- `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS` overrides the 90,000 ms coalescing delay
   for fresh non-command exact-review events.
 - `EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS` overrides the 180,000 ms maximum
   coalescing window measured from the item's first enqueue.
@@ -297,7 +311,7 @@ hot intake `14`, and commit review `2`. Existing repair lanes keep their
   shedding new recovery-only exact-review work; the default is 300.
 - `EXACT_REVIEW_HEARTBEAT_GRACE_MS` overrides the 1,200,000 ms exact-review worker heartbeat
   grace. It is clamped to at least 420,000 ms so a configured grace can never dip
-  below the five-minute worker heartbeat interval plus request time and jitter.
+  near the one-minute worker heartbeat interval during scheduler or network stalls.
 - `CLAWSWEEPER_COMMIT_REVIEW_PAGE_SIZE` overrides
   `commit_review.page_size_default`.
 - `CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED=1` enables the scheduled

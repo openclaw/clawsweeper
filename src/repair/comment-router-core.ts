@@ -1953,6 +1953,57 @@ export function expiredReviewStartStatusLeases({
   return expired;
 }
 
+export function supersededReviewStartStatusLeases({
+  comments,
+  itemNumber,
+  headSha,
+  authoritativeHeadSha,
+  trustedAuthors = new Set<string>(),
+}: {
+  comments: LooseRecord[];
+  itemNumber: number;
+  headSha: string;
+  authoritativeHeadSha: string;
+  trustedAuthors?: ReadonlySet<string>;
+}): Array<{ commentId: number; headSha: string }> {
+  const normalizedHead = String(headSha ?? "")
+    .trim()
+    .toLowerCase();
+  const normalizedAuthoritativeHead = String(authoritativeHeadSha ?? "")
+    .trim()
+    .toLowerCase();
+  if (
+    !Number.isInteger(itemNumber) ||
+    itemNumber <= 0 ||
+    !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(normalizedHead) ||
+    normalizedAuthoritativeHead !== normalizedHead
+  ) {
+    return [];
+  }
+  const superseded: Array<{ commentId: number; headSha: string }> = [];
+  for (const comment of comments) {
+    const author = String(comment?.user?.login ?? "")
+      .trim()
+      .toLowerCase();
+    if (!author || !trustedAuthors.has(author)) continue;
+    const body = String(comment?.body ?? "");
+    if (!body.includes(`<!-- clawsweeper-review-lease item=${itemNumber} -->`)) continue;
+    const canonical = canonicalReviewStartStatusMarker(body);
+    if (!canonical || canonical.itemNumber !== itemNumber) continue;
+    if (String(canonical.marker.attrs.v ?? "") !== "1") continue;
+    const reviewedHead = String(canonical.marker.attrs.sha ?? "")
+      .trim()
+      .toLowerCase();
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(reviewedHead) || reviewedHead === normalizedHead) {
+      continue;
+    }
+    const rawCommentId = Number(comment?.id);
+    if (!Number.isInteger(rawCommentId) || rawCommentId <= 0) continue;
+    superseded.push({ commentId: rawCommentId, headSha: reviewedHead });
+  }
+  return superseded;
+}
+
 export function trustedAutomationPredatesReviewStartLease({
   command,
   currentHeadSha,

@@ -346,7 +346,7 @@ test("webhook accepts eligible pull request events for generic steipete reposito
         fork: false,
         has_issues: true,
       },
-      pull_request: { number: 42 },
+      pull_request: { number: 42, head: { sha: "a".repeat(40) } },
       installation: { id: 456 },
     },
   });
@@ -361,6 +361,7 @@ test("webhook accepts eligible pull request events for generic steipete reposito
     installationId: 456,
     sourceEvent: "pull_request",
     sourceAction: "synchronize",
+    sourceHeadSha: "a".repeat(40),
     supersedesInProgress: true,
     codexTimeoutMs: 600_000,
     mediaProofTimeoutMs: 0,
@@ -458,6 +459,7 @@ test("pull request webhooks dispatch adaptive Codex timeout payload", async () =
         },
         pull_request: {
           number: 91093,
+          head: { sha: "b".repeat(40) },
           changed_files: 71,
           additions: 4176,
           deletions: 0,
@@ -483,6 +485,10 @@ test("pull request webhooks dispatch adaptive Codex timeout payload", async () =
     assert.equal(
       (dispatchedBody?.client_payload as Record<string, unknown>)?.media_proof_timeout_ms,
       240_000,
+    );
+    assert.equal(
+      (dispatchedBody?.client_payload as Record<string, unknown>)?.source_head_sha,
+      "b".repeat(40),
     );
   } finally {
     globalThis.fetch = previousFetch;

@@ -57,6 +57,7 @@ type AcceptedItemWebhook = {
   sourceEvent: "issues" | "pull_request";
   sourceAction: string;
   supersedesInProgress: boolean;
+  sourceHeadSha?: string;
   codexTimeoutMs?: number;
   mediaProofTimeoutMs?: number;
 };
@@ -302,6 +303,9 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
       return { accepted: false, reason: "missing pull request number" };
     }
+    const sourceHeadSha = String(asRecord(pull.head).sha ?? "")
+      .trim()
+      .toLowerCase();
     const reviewBudget = adaptiveReviewBudgetForPullRequest(pull);
     return {
       accepted: true,
@@ -313,6 +317,7 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
       installationId,
       sourceEvent: "pull_request",
       sourceAction: action,
+      ...(/^[0-9a-f]{40}$/.test(sourceHeadSha) ? { sourceHeadSha } : {}),
       supersedesInProgress: [
         "edited",
         "synchronize",
@@ -725,6 +730,7 @@ async function dispatchItemReview({
         source_event: accepted.sourceEvent,
         source_action: accepted.sourceAction,
         supersedes_in_progress: accepted.supersedesInProgress,
+        ...(accepted.sourceHeadSha ? { source_head_sha: accepted.sourceHeadSha } : {}),
         ...(accepted.codexTimeoutMs ? { codex_timeout_ms: accepted.codexTimeoutMs } : {}),
         ...(accepted.mediaProofTimeoutMs
           ? { media_proof_timeout_ms: accepted.mediaProofTimeoutMs }
