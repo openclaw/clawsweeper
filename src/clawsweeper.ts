@@ -5731,7 +5731,7 @@ function firstBeforeMergeAction(body: string): string {
       sawTask = true;
       continue;
     }
-    const task = line.match(/^- \[ \][ \t]+(?:\*\*[^*\n]+\*\*[ \t]+-[ \t]+)?(\S.*)$/);
+    const task = line.match(/^- \[ \][ \t]+(?:\*\*(?:\\.|[^*\\\n])+\*\*[ \t]+-[ \t]+)?(\S.*)$/);
     if (task?.[1]) return task[1].trim();
     if (line.startsWith("- [")) sawTask = true;
     const cells = markdownTableCells(line);
@@ -18871,12 +18871,21 @@ function publicChecklistText(value: string): string {
     .trim();
 }
 
+// Labels are wrapped in renderer-owned bold markers, so Markdown delimiters inside
+// report-provided titles must be escaped or they would break the bold span and the
+// downstream label-stripping parsers.
+function publicChecklistLabel(value: string): string {
+  return publicChecklistText(value)
+    .replace(/\\/g, "\\\\")
+    .replace(/([*_`[\]])/g, "\\$1");
+}
+
 function publicBeforeMergeBlock(items: readonly PublicBeforeMergeItem[]): string {
   if (items.length === 0) return "None.";
   return items
     .map(
       (item) =>
-        `- [ ] **${publicChecklistText(item.label)}** - ${publicChecklistText(item.detail)}`,
+        `- [ ] **${publicChecklistLabel(item.label)}** - ${publicChecklistText(item.detail)}`,
     )
     .join("\n");
 }
