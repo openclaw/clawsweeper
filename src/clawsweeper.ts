@@ -18747,6 +18747,7 @@ function publicBeforeMergeItems(options: {
   securityReview: SecurityReview;
   risks: string;
   nextStep: string;
+  requiredRatingSteps: readonly string[];
 }): PublicBeforeMergeItem[] {
   const items: PublicBeforeMergeItem[] = [];
   const seen = new Set<string>();
@@ -18808,6 +18809,9 @@ function publicBeforeMergeItems(options: {
     } else {
       add("Complete next step", options.nextStep);
     }
+  }
+  for (const step of options.requiredRatingSteps) {
+    add("Improve patch quality", step);
   }
 
   return items;
@@ -19059,16 +19063,31 @@ function neutralizeOwnedSectionSpoofing(value: string): string {
   return value
     .split("\n")
     .map((line) => {
-      const trimmed = line.trim();
-      if (/^#{1,6}\s+\S/.test(trimmed)) return line.replace("#", "\\#");
-      if (/^\*\*[^*\n]+\*\*:?\s*$/.test(trimmed)) return line.replace("**", "\\*\\*");
-      if (/^(?:```|~~~)/.test(trimmed)) return line.replace(/[`~]/, "\\$&");
-      if (trimmed.startsWith("<")) return line.replace("<", "&lt;");
+      // Strip blockquote/list container prefixes so nested heading constructs are
+      // neutralized too.
+      const containerPrefix = line.match(/^[ \t]*(?:(?:>|[-*+]|\d+\.)[ \t]+)*/)?.[0] ?? "";
+      const content = line.slice(containerPrefix.length);
+      const trimmed = content.trim();
+      if (/^#{1,6}\s+\S/.test(trimmed)) {
+        return `${containerPrefix}${content.replace("#", "\\#")}`;
+      }
+      if (/^\*\*[^*\n]+\*\*:?\s*$/.test(trimmed)) {
+        return `${containerPrefix}${content.replace("**", "\\*\\*")}`;
+      }
+      if (/^(?:```|~~~)/.test(trimmed)) {
+        return `${containerPrefix}${content.replace(/[`~]/, "\\$&")}`;
+      }
+      if (trimmed.startsWith("<")) return `${containerPrefix}${content.replace("<", "&lt;")}`;
+      // A run of = or - alone on a line is a Setext underline that would promote the
+      // previous line to a heading.
+      if (/^(?:=+|-+)[ \t]*$/.test(trimmed)) {
+        return `${containerPrefix}${content.replace(/[=-]/, "\\$&")}`;
+      }
       if (
         trimmed.endsWith(":") &&
         OWNED_REVIEW_SECTION_HEADINGS.has(trimmed.slice(0, -1).trim().toLowerCase())
       ) {
-        return `${line.trimEnd().slice(0, -1)}&#58;`;
+        return `${containerPrefix}${content.trimEnd().slice(0, -1)}&#58;`;
       }
       return line;
     })
@@ -19311,6 +19330,10 @@ function renderKeepOpenCommentFromReport(
   );
 
   if (isPullRequest) {
+    // When patch quality itself blocks readiness, the rating's remediation steps are
+    // required work, not optional rank-up advice.
+    const patchQualityBlocked =
+      !reviewFailed && (prRating.patchTier === "F" || prRating.patchTier === "D");
     const beforeMergeItems = publicBeforeMergeItems({
       reviewFailed,
       proof: realBehaviorProof,
@@ -19319,6 +19342,7 @@ function renderKeepOpenCommentFromReport(
       securityReview,
       risks,
       nextStep: nextStepLine,
+      requiredRatingSteps: patchQualityBlocked ? prRating.nextSteps : [],
     });
     lines.push("# ClawSweeper review", "");
     appendHeadingSection(lines, "What this changes", changeSummaryLine);
@@ -19418,7 +19442,7 @@ function renderKeepOpenCommentFromReport(
     const rankUpMoves = prRating.nextSteps
       .map((step) => sentence(step))
       .filter((step) => step && !isReportNoneList(step) && !/^none[.!]?$/i.test(step));
-    if (!reviewFailed && rankUpMoves.length) {
+    if (!reviewFailed && !patchQualityBlocked && rankUpMoves.length) {
       agentDetails.push(
         "",
         "### Rank-up moves",
