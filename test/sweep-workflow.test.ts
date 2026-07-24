@@ -257,6 +257,14 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
   const telemetryStep = step("publish-apply-observability", "Publish apply telemetry");
   assert.match(telemetryStep.env?.APPLY_OUTCOME ?? "", /needs\.apply-proof\.result == 'failure'/);
   assert.match(telemetryStep.env?.APPLY_OUTCOME ?? "", /needs\.apply-existing\.result == 'success'/);
+  assert.doesNotMatch(
+    telemetryStep.env?.APPLY_OUTCOME ?? "",
+    /publish-apply-proof-action-ledger/,
+  );
+  assert.match(
+    telemetryStep.env?.ACTION_LEDGER_OUTCOME ?? "",
+    /needs\.publish-apply-proof-action-ledger\.result == 'failure'/,
+  );
   assert.match(telemetryStep.env?.TARGET_REPO ?? "", /openclaw\/clawhub/);
   const telemetryContext = step("apply-existing", "Save apply telemetry context");
   assert.equal(telemetryContext["continue-on-error"], true);
@@ -1473,7 +1481,7 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   );
   assert.match(
     workflow,
-    /ACTION_LEDGER_OUTCOME: \$\{\{ needs\.apply-existing\.outputs\.action_ledger_outcome \|\| 'not_started' \}\}/,
+    /ACTION_LEDGER_OUTCOME: \$\{\{ \(needs\.publish-apply-proof-action-ledger\.result == 'failure'/,
   );
   assert.match(applyStep, /timeout-minutes: 70/);
   assert.match(

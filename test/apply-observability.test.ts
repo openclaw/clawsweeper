@@ -173,12 +173,12 @@ test("all-repository queue health stays unknown until every configured target re
   assert.equal(complete.last_60_minutes.applied, 16);
 });
 
-test("apply telemetry producer does not turn successful terminal steps into failures", async (t) => {
-  let payload: Record<string, unknown> | null = null;
+test("apply telemetry producer keeps successful terminal steps distinct from ledger failures", async (t) => {
+  const payloads: Record<string, unknown>[] = [];
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
-    payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    payloads.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
     response.writeHead(204).end();
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -211,14 +211,44 @@ test("apply telemetry producer does not turn successful terminal steps into fail
       TARGET_REPO: "openclaw/openclaw",
     },
   });
-  assert.ok(payload);
-  assert.deepEqual((payload.event as { observed_failure_kinds?: unknown }).observed_failure_kinds, []);
-  assert.deepEqual((payload.event as { failures?: unknown }).failures, []);
-  assert.deepEqual((payload.event as { results?: unknown }).results, {
+  const successfulPayload = payloads[0];
+  assert.ok(successfulPayload);
+  assert.deepEqual(
+    (successfulPayload.event as { observed_failure_kinds?: unknown }).observed_failure_kinds,
+    [],
+  );
+  assert.deepEqual((successfulPayload.event as { failures?: unknown }).failures, []);
+  assert.deepEqual((successfulPayload.event as { results?: unknown }).results, {
     applied: 0,
     closed: 0,
     superseded: null,
     retried: null,
     dead_lettered: null,
   });
+
+  await run(process.execPath, [script], {
+    cwd,
+    env: {
+      ...process.env,
+      ACTION_LEDGER_OUTCOME: "failure",
+      APPLY_OUTCOME: "success",
+      CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+      GITHUB_REPOSITORY: "openclaw/clawsweeper",
+      GITHUB_RUN_ATTEMPT: "1",
+      GITHUB_RUN_ID: "12346",
+      QUEUE_URL: "http://127.0.0.1:" + address.port,
+      STATE_PUBLICATION_OUTCOME: "success",
+      STATE_STATUS_OUTCOME: "success",
+      TARGET_REPO: "openclaw/openclaw",
+    },
+  });
+  const ledgerFailurePayload = payloads[1];
+  assert.ok(ledgerFailurePayload);
+  assert.deepEqual(
+    (ledgerFailurePayload.event as { observed_failure_kinds?: unknown }).observed_failure_kinds,
+    ["action_ledger_failure"],
+  );
+  assert.deepEqual((ledgerFailurePayload.event as { failures?: unknown }).failures, [
+    { kind: "action_ledger_failure", at: (ledgerFailurePayload.event as { occurred_at: string }).occurred_at },
+  ]);
 });

@@ -5207,8 +5207,8 @@ jobs:
         env:
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          APPLY_OUTCOME: ${{ (needs.apply-proof.result == 'failure' || needs.publish-apply-proof-action-ledger.result == 'failure' || needs.apply-existing.result == 'failure') && 'failure' || needs.apply-existing.result == 'cancelled' && 'cancelled' || needs.apply-existing.result == 'success' && 'success' || 'skipped' }}
-          ACTION_LEDGER_OUTCOME: ${{ needs.apply-existing.outputs.action_ledger_outcome || 'not_started' }}
+          APPLY_OUTCOME: ${{ (needs.apply-proof.result == 'failure' || needs.apply-existing.result == 'failure') && 'failure' || needs.apply-existing.result == 'cancelled' && 'cancelled' || needs.apply-existing.result == 'success' && 'success' || 'skipped' }}
+          ACTION_LEDGER_OUTCOME: ${{ (needs.publish-apply-proof-action-ledger.result == 'failure' || needs.apply-existing.outputs.action_ledger_outcome == 'failure') && 'failure' || needs.apply-existing.outputs.action_ledger_outcome || 'not_started' }}
           STATE_STATUS_OUTCOME: ${{ needs.apply-existing.outputs.state_status_outcome || 'not_started' }}
           STATE_PUBLICATION_OUTCOME: ${{ needs.apply-existing.outputs.state_publication_outcome || 'not_started' }}
           TARGET_REPO: ${{ needs.apply-existing.outputs.target_repo || needs.apply-proof.outputs.target_repo || (github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && 'openclaw/clawhub') || github.event.inputs.target_repo || 'openclaw/openclaw' }}
