@@ -1920,7 +1920,11 @@ export class ExactReviewQueue {
       return json({
         ...stats,
         pressure: elevateExactReviewPressureForPublication(stats.pressure, publicationHealth),
-        bay_projection: exactReviewQueueBayProjection(Object.values(state.items), bayPriorityKeys),
+        bay_projection: exactReviewQueueBayProjection(
+          Object.values(state.items),
+          bayPriorityKeys,
+          batchOwnedItemKeys,
+        ),
         lanes: {
           review: {
             ...stats.lanes.review,
@@ -7285,7 +7289,14 @@ type ExactReviewBayProjectionItem = {
   next_attempt_at: string;
 };
 
-function exactReviewQueueBayStage(item: ExactReviewQueueItem): ExactReviewBayStage {
+function exactReviewQueueBayStage(
+  item: ExactReviewQueueItem,
+  batchOwnedItemKeys: ReadonlySet<string> = new Set(),
+): ExactReviewBayStage {
+  // The batch publisher's GitHub job is intentionally targetless. Its durable
+  // batch membership is the authoritative bounded source for the individual
+  // items it is currently applying, without another GitHub lookup.
+  if (batchOwnedItemKeys.has(item.key)) return "applying";
   if (exactReviewQueueIsPublication(item)) return "publishing";
   if (isLowPriorityExactReviewDecision(item.decision)) return "repairing";
   return item.state === "pending" ? "arriving" : "setting-up";
@@ -7309,6 +7320,7 @@ function exactReviewQueueBayPriorityKeys(values: string[]) {
 function exactReviewQueueBayProjection(
   items: ExactReviewQueueItem[],
   priorityItemKeys: string[] = [],
+  batchOwnedItemKeys: ReadonlySet<string> = new Set(),
 ) {
   const projected = new Map<string, ExactReviewBayProjectionItem>();
   for (const item of items) {
@@ -7320,7 +7332,7 @@ function exactReviewQueueBayProjection(
       item_key: `${repository}#${itemNumber}`,
       repository,
       item_number: itemNumber,
-      stage: exactReviewQueueBayStage(item),
+      stage: exactReviewQueueBayStage(item, batchOwnedItemKeys),
       queue_state: item.state,
       created_at: new Date(item.createdAt).toISOString(),
       updated_at: new Date(item.updatedAt).toISOString(),

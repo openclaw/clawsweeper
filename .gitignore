@@ -6,6 +6,7 @@ dist/
 .artifacts/
 artifacts/
 dashboard/.wrangler/
+.wrangler/
 .clawsweeper-repair/
 .claude/
 tmp/

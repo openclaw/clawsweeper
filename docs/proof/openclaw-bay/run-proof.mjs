@@ -247,9 +247,24 @@ let healthHistory = Array.from({ length: 73 }, (_, index) => {
         completed_total: 318 + index * 3,
       },
     },
+    state_writer: {
+      collection_ok: true,
+      mode: "batch",
+      tracked_holding: index % 5 === 0 ? 1 : 0,
+      tracked_waiting: 7 + (index % 4),
+      tracked_releasing: 0,
+      accepted_operations_total: 320 + index,
+      state_commits_total: 120 + index,
+      materialized_items_total: 360 + index * 2,
+      contention_timeouts_total: 0,
+      wait_ms: { p50: 1200, p95: 2800, samples: 4 },
+      hold_ms: { p50: 400, p95: 900, samples: 4 },
+      last_successful_materialization_at: at,
+    },
   };
 });
 let healthHistoryFailure = false;
+let stateWriterTerminalFresh = true;
 
 function queueProjection() {
   const bayStages = [
@@ -289,6 +304,13 @@ function queueProjection() {
         dispatching: { count: 3 },
         leased: { count: 33 },
       },
+    },
+    state_writer: {
+      collection: { status: "fresh" },
+      mode: "batch",
+      live: { tracked_holding: 1, tracked_waiting: 8 },
+      coordinator: { leased: 1, queued: 8 },
+      last_60_minutes: { state_commits: 9, materialized_items: 17 },
     },
     bay_projection: {
       sample_limit: 24,
@@ -420,6 +442,47 @@ const bayRetryLiveSnapshot = {
   },
 };
 proofSnapshots.push(bayRetryTerminalSnapshot, bayRetryLiveSnapshot);
+const batchApplyingProjection = queueProjection();
+const batchApplyingItemKey = "openclaw/openclaw#108003";
+const batchApplyingItems = batchApplyingProjection.bay_projection.items.map((item) =>
+  item.item_key === batchApplyingItemKey
+    ? { ...item, stage: "applying", queue_state: "pending" }
+    : item,
+);
+proofSnapshots.push({
+  ...snapshots[0],
+  exact_review_queue: {
+    ...batchApplyingProjection,
+    bay_projection: {
+      ...batchApplyingProjection.bay_projection,
+      stages: {
+        ...batchApplyingProjection.bay_projection.stages,
+        publishing: batchApplyingProjection.bay_projection.stages.publishing - 1,
+        applying: batchApplyingProjection.bay_projection.stages.applying + 1,
+      },
+      items: batchApplyingItems,
+    },
+  },
+});
+const legacyApplyingProjection = queueProjection();
+const { publishing: legacyPublishingCount, ...legacyStages } =
+  legacyApplyingProjection.bay_projection.stages;
+proofSnapshots.push({
+  ...snapshots[0],
+  exact_review_queue: {
+    ...legacyApplyingProjection,
+    bay_projection: {
+      ...legacyApplyingProjection.bay_projection,
+      stages: {
+        ...legacyStages,
+        applying: legacyPublishingCount,
+      },
+      items: legacyApplyingProjection.bay_projection.items.map((item) =>
+        item.stage === "publishing" ? { ...item, stage: "applying" } : item,
+      ),
+    },
+  },
+});
 
 let fixtureIndex = 0;
 const requests = [];
@@ -536,11 +599,15 @@ await page.route("**/*", async (route) => {
   const request = route.request();
   const url = new URL(request.url());
   if (url.pathname === "/api/status") {
+    const status = structuredClone(proofSnapshots[fixtureIndex]);
+    if (!stateWriterTerminalFresh) {
+      status.exact_review_queue.state_writer.collection.status = "stale";
+    }
     await route.fulfill({
       status: 200,
       contentType: "application/json; charset=utf-8",
       headers: { "cache-control": "no-store", "x-clawsweeper-cache": "synthetic-proof" },
-      body: JSON.stringify(proofSnapshots[fixtureIndex]),
+      body: JSON.stringify(status),
     });
     return;
   }
@@ -679,10 +746,11 @@ try {
     lane_help: await page.locator('[data-stage="arriving"] .lane-help summary').count(),
   };
   assertProof(
-    "Bay mirrors cached exact-review admission, publication, and handoff telemetry",
-    bayControl.cards === 3 &&
+    "Bay mirrors cached exact-review admission, publication, state-writer, and handoff telemetry",
+    bayControl.cards === 4 &&
       /Review admission/i.test(bayControl.review) &&
       /Result publication/i.test(bayControl.review) &&
+      /State writer/i.test(bayControl.review) &&
       /Queue handoff/i.test(bayControl.review) &&
       /waiting/.test(bayControl.waiting_hover_label) &&
       /\/ hour/.test(bayControl.rate_hover_label) &&
@@ -700,6 +768,25 @@ try {
       bayControl.lane_help === 1,
     bayControl,
   );
+
+  stateWriterTerminalFresh = false;
+  await page.evaluate(() => window.__bayProofPoll());
+  await page.waitForFunction(() =>
+    /terminal metrics unavailable/.test(
+      document.querySelector("#bay-control-board")?.textContent || "",
+    ),
+  );
+  const staleStateWriter = await page.locator("#bay-control-board").innerText();
+  assertProof(
+    "Bay does not present stale State writer terminal totals as current",
+    /State writer/i.test(staleStateWriter) &&
+      /unknown items/.test(staleStateWriter) &&
+      /terminal metrics unavailable/.test(staleStateWriter) &&
+      !/17 items/.test(staleStateWriter),
+    { state_writer: staleStateWriter },
+  );
+  stateWriterTerminalFresh = true;
+  await page.evaluate(() => window.__bayProofPoll());
   const terminalPoolCounts = {
     completed: await page.locator('[data-stage="completed"] .critter').count(),
     attention: await page.locator(".pool.attention .critter").count(),
@@ -729,7 +816,7 @@ try {
   await capture(
     "01a-mini-control-board",
     "Mini queue control board",
-    "Bay reuses the dashboard’s cached six-hour review-admission, publication, and handoff telemetry; each sparkline point has an exact hover label.",
+    "Bay reuses the dashboard’s cached six-hour review-admission, publication, state-writer, and handoff telemetry; each sparkline point has an exact hover label.",
   );
 
   await page.locator('[data-stage="arriving"] .overflow-note').click();
@@ -883,7 +970,11 @@ try {
   const failedCollectionAt = originalHistory.at(-2)?.at;
   healthHistory = [
     originalHistory.at(-3),
-    { at: failedCollectionAt, exact_review: { collection_ok: false } },
+    {
+      at: failedCollectionAt,
+      exact_review: { collection_ok: false },
+      state_writer: { collection_ok: false },
+    },
     originalHistory.at(-1),
   ];
   const failedCollectionHistory = page.waitForResponse(
@@ -910,6 +1001,52 @@ try {
     (failedCollectionPath?.match(/M/g) || []).length === 2,
     { review_pending_path: failedCollectionPath },
   );
+  const failedStateWriterPath = await page
+    .locator("#bay-control-board .bay-control-card")
+    .filter({ hasText: "State writer" })
+    .locator(".bay-control-chart svg path")
+    .first()
+    .getAttribute("d");
+  assertProof(
+    "Bay renders failed State writer history collections as a gap",
+    (failedStateWriterPath?.match(/M/g) || []).length === 2,
+    { state_writer_pending_path: failedStateWriterPath },
+  );
+  healthHistory = [
+    originalHistory.at(-3),
+    originalHistory.at(-2),
+    {
+      at: originalHistory.at(-1)?.at,
+      exact_review: originalHistory.at(-1)?.exact_review,
+      state_writer: { collection_ok: false },
+    },
+  ];
+  const currentStateWriterFailure = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/health-history" && response.status() === 200,
+  );
+  await page.evaluate(() => {
+    window.__bayProofSetNow(Date.parse("2026-07-11T18:50:05.000Z"));
+    window.__bayProofPoll();
+  });
+  await currentStateWriterFailure;
+  await page.waitForFunction(() =>
+    /history gap · awaiting current sample/i.test(
+      [...document.querySelectorAll("#bay-control-board .bay-control-card")]
+        .find((card) => /State writer/i.test(card.textContent || ""))
+        ?.textContent || "",
+    ),
+  );
+  const failedStateWriterCopy = await page
+    .locator("#bay-control-board .bay-control-card")
+    .filter({ hasText: "State writer" })
+    .innerText();
+  assertProof(
+    "Bay labels a current failed State writer collection as a history gap",
+    /history gap · awaiting current sample/i.test(failedStateWriterCopy) &&
+      !/history stale/i.test(failedStateWriterCopy),
+    { state_writer: failedStateWriterCopy },
+  );
 
   healthHistory = [
     originalHistory.at(-3),
@@ -928,7 +1065,7 @@ try {
       new URL(response.url()).pathname === "/api/health-history" && response.status() === 200,
   );
   await page.evaluate(() => {
-    window.__bayProofSetNow(Date.parse("2026-07-11T18:49:04.000Z"));
+    window.__bayProofSetNow(Date.parse("2026-07-11T18:51:06.000Z"));
     window.__bayProofPoll();
   });
   await pendingOnlyHistory;
@@ -949,6 +1086,41 @@ try {
   );
   healthHistory = originalHistory;
 
+  await page.setViewportSize({ width: 900, height: 700 });
+  await page.waitForFunction(() =>
+    document.getElementById("stage-grid")?.classList.contains("portrait-stack"),
+  );
+  await page.waitForTimeout(140);
+  const compactLandscapeLayout = await page.evaluate(() => {
+    const stages = Array.from(document.querySelectorAll("#stage-grid .stage")).map((stage) => {
+      const rect = stage.getBoundingClientRect();
+      return {
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        bottom: Math.round(rect.bottom),
+      };
+    });
+    const terminal = document.getElementById("terminal-stack")?.getBoundingClientRect();
+    return {
+      scroll_width: document.documentElement.scrollWidth,
+      viewport_width: window.innerWidth,
+      stages,
+      terminal_top: Math.round(terminal?.top || 0),
+    };
+  });
+  assertProof(
+    "intermediate landscape stacks six Bay lanes before they reach terminal pools",
+    compactLandscapeLayout.scroll_width <= compactLandscapeLayout.viewport_width + 1 &&
+      compactLandscapeLayout.stages.length === 6 &&
+      compactLandscapeLayout.stages.every((stage, index, stages) =>
+        index === 0
+          ? stage.left >= 0
+          : Math.abs(stage.left - stages[0].left) <= 2 && stage.top >= stages[index - 1].bottom,
+      ) &&
+      compactLandscapeLayout.terminal_top >= compactLandscapeLayout.stages.at(-1).bottom,
+    compactLandscapeLayout,
+  );
+
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() =>
     document.getElementById("stage-grid")?.classList.contains("portrait-stack"),
@@ -965,10 +1137,12 @@ try {
     });
     const terminal = document.getElementById("terminal-stack")?.getBoundingClientRect();
     const grid = document.getElementById("stage-grid");
+    const controlBoard = document.getElementById("bay-control-board");
     return {
       scroll_width: document.documentElement.scrollWidth,
       viewport_width: window.innerWidth,
       grid_columns: getComputedStyle(grid).gridTemplateColumns,
+      control_columns: getComputedStyle(controlBoard).gridTemplateColumns,
       stages,
       terminal_top: Math.round(terminal?.top || 0),
     };
@@ -976,7 +1150,8 @@ try {
   assertProof(
     "portrait layout stacks the workflow from sand to waterline without horizontal overflow",
     portraitLayout.scroll_width <= portraitLayout.viewport_width + 1 &&
-      portraitLayout.stages.length === 5 &&
+      portraitLayout.stages.length === 6 &&
+      portraitLayout.control_columns.trim().split(/\s+/).length === 1 &&
       portraitLayout.stages.every((stage, index, stages) =>
         index === 0
           ? stage.left >= 0
@@ -1553,6 +1728,33 @@ try {
     "The stale failed card is absent and the same GitHub reference is visible as queued exact-review work in the earlier lane.",
   );
 
+  fixtureIndex = 9;
+  await page.evaluate(async () => {
+    await window.__bayProofPoll();
+  });
+  const batchPublisherLane = page.locator(`[data-stage="applying"] [data-key="${batchApplyingItemKey}"]`);
+  await batchPublisherLane.waitFor({ state: "visible", timeout: 5_000 });
+  assertProof(
+    "durable batch ownership places known publication items in Applying",
+    (await batchPublisherLane.count()) === 1,
+    { item_key: batchApplyingItemKey, stage: "applying" },
+  );
+
+  fixtureIndex = 10;
+  await page.evaluate(async () => {
+    await window.__bayProofPoll();
+  });
+  const legacyQueuePublisher = page.locator(
+    `[data-stage="publishing"] [data-key="${batchApplyingItemKey}"]`,
+  );
+  await legacyQueuePublisher.waitFor({ state: "visible", timeout: 5_000 });
+  assertProof(
+    "legacy Applying queue records are normalized into Publishing without duplicate Applying cards",
+    (await legacyQueuePublisher.count()) === 1 &&
+      (await page.locator('[data-stage="applying"] [data-item^="queue:"]').count()) === 0,
+    { item_key: batchApplyingItemKey, legacy_stage: "applying", rendered_stage: "publishing" },
+  );
+
   const totalStatusGets = requests.filter((request) => request.path === "/api/status").length;
   const healthHistoryGets = requests.filter(
     (request) => request.path === "/api/health-history",
@@ -1589,7 +1791,7 @@ try {
   });
   assertProof(
     "mini control board caches each selected dashboard history range",
-    healthHistoryGets === 10 &&
+    healthHistoryGets === 11 &&
       healthHistoryRanges.filter((range) => range === "24h").length === 1 &&
       healthHistoryRanges.filter((range) => range === "7d").length === 1,
     { health_history_gets: healthHistoryGets, ranges: healthHistoryRanges },
