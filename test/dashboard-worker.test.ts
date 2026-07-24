@@ -4125,6 +4125,154 @@ test("exact-review queue resolves a closed item before dispatch", async () => {
   }
 });
 
+test("exact-review queue dispatches a closed command item to complete its acknowledgement", async () => {
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "closed" }));
+  const commandStatusMarker =
+    "<!-- clawsweeper-command-status:597:re_review:0123456789abcdef0123456789abcdef01234567 -->";
+  try {
+    assert.equal(
+      (
+        await harness.queue.fetch(
+          buildExactReviewQueueRequest("terminal-command-item", 597, "opened", "issue", undefined, {
+            commandStatusMarker,
+            statusCommentId: 9001,
+          }),
+        )
+      ).status,
+      202,
+    );
+
+    await harness.queue.alarm();
+
+    assert.equal(harness.dispatched.length, 1);
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<
+        string,
+        {
+          state: string;
+          leaseDecision?: { commandStatusMarker?: string; statusCommentId?: number };
+        }
+      >;
+    };
+    assert.equal(state.items["openclaw/gogcli#597"]?.state, "dispatching");
+    assert.equal(
+      state.items["openclaw/gogcli#597"]?.leaseDecision?.commandStatusMarker,
+      commandStatusMarker,
+    );
+    assert.equal(state.items["openclaw/gogcli#597"]?.leaseDecision?.statusCommentId, 9001);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("exact-review queue limits live admission probes to one bounded pass", async () => {
+  const originalNow = Date.now;
+  let now = Date.parse("2026-07-24T23:45:00.000Z");
+  Date.now = () => now;
+  let liveChecks = 0;
+  const harness = createExactReviewAdmissionHarness(
+    () => {
+      liveChecks += 1;
+      return jsonResponse({ state: "closed" });
+    },
+    { maxConcurrent: "16" },
+  );
+  try {
+    for (let index = 0; index < 10; index += 1) {
+      assert.equal(
+        (
+          await harness.queue.fetch(
+            buildExactReviewQueueRequest(
+              `bounded-admission-${index}`,
+              700 + index,
+              "opened",
+              "issue",
+            ),
+          )
+        ).status,
+        202,
+      );
+    }
+
+    await harness.queue.alarm();
+
+    assert.equal(liveChecks, 4);
+    assert.equal(harness.dispatched.length, 0);
+    let stats = await (
+      await harness.queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(stats.pending, 6);
+    assert.equal(stats.lanes.review.completed_total, 4);
+    assert.equal(await harness.storage.getAlarm(), now + 5_000);
+
+    await harness.queue.alarm();
+
+    assert.equal(liveChecks, 4);
+    now += 5_000;
+    await harness.queue.alarm();
+
+    assert.equal(liveChecks, 8);
+    stats = await (
+      await harness.queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(stats.pending, 2);
+    assert.equal(stats.lanes.review.completed_total, 8);
+
+    now += 5_000;
+    await harness.queue.alarm();
+
+    assert.equal(liveChecks, 10);
+    stats = await (
+      await harness.queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(stats.pending, 0);
+    assert.equal(stats.lanes.review.completed_total, 10);
+  } finally {
+    Date.now = originalNow;
+    harness.restore();
+  }
+});
+
+test("exact-review queue throttles partial terminal admission passes", async () => {
+  const originalNow = Date.now;
+  let now = Date.parse("2026-07-24T23:50:00.000Z");
+  Date.now = () => now;
+  let liveChecks = 0;
+  const harness = createExactReviewAdmissionHarness(
+    () => {
+      liveChecks += 1;
+      return jsonResponse({ state: "closed" });
+    },
+    { maxConcurrent: "1" },
+  );
+  try {
+    for (let index = 0; index < 2; index += 1) {
+      assert.equal(
+        (
+          await harness.queue.fetch(
+            buildExactReviewQueueRequest(`partial-admission-${index}`, 800 + index, "opened"),
+          )
+        ).status,
+        202,
+      );
+    }
+
+    await harness.queue.alarm();
+
+    assert.equal(liveChecks, 1);
+    assert.equal(await harness.storage.getAlarm(), now + 5_000);
+    await harness.queue.alarm();
+    assert.equal(liveChecks, 1);
+
+    now += 5_000;
+    await harness.queue.alarm();
+    assert.equal(liveChecks, 2);
+  } finally {
+    Date.now = originalNow;
+    harness.restore();
+  }
+});
+
 test("exact-review queue resolves missing target responses before dispatch", async () => {
   for (const status of [404, 410]) {
     const harness = createExactReviewAdmissionHarness(() => new Response(null, { status }));

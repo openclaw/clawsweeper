@@ -202,6 +202,7 @@ export type ExactReviewQueueState = {
     dispatchFailureAt?: number;
     dispatchFailureFingerprint?: string;
     dispatchConsecutiveFailures?: number;
+    reviewAdmissionNextAt?: number;
     publicationBatchDispatchedAt?: number;
     publicationBatchDispatchSucceeded?: boolean;
     publicationBatchDispatchPendingUntil?: number;
@@ -345,7 +346,9 @@ const EXACT_REVIEW_RETRY_LIMIT = 8;
 const EXACT_REVIEW_RECONCILE_RUN_LIMIT = 128;
 const EXACT_REVIEW_RECONCILE_CLAIM_MATCH_LIMIT = EXACT_REVIEW_RECONCILE_RUN_LIMIT * 2;
 export const EXACT_REVIEW_RECONCILE_CONCURRENCY = 8;
-const EXACT_REVIEW_ADMISSION_LIVE_CHECK_CONCURRENCY = 8;
+const EXACT_REVIEW_ADMISSION_LIVE_CHECK_CONCURRENCY = 4;
+const EXACT_REVIEW_ADMISSION_LIVE_CHECK_MAX_ITEMS = 4;
+const EXACT_REVIEW_ADMISSION_INTERVAL_MS = 5_000;
 const EXACT_REVIEW_RECONCILE_LIST_PAGE_LIMIT = 3;
 const EXACT_REVIEW_PUBLICATION_ENQUEUE_SUPERSEDE_LIMIT = 100;
 const EXACT_REVIEW_PUBLICATION_RECONCILE_LIMIT = 100;
@@ -2092,6 +2095,16 @@ export class ExactReviewQueue {
       await this.scheduleNext(current, Date.now());
       return;
     }
+    const snapshotReviewAdmissionNextAt = Number(snapshot.dispatcher?.reviewAdmissionNextAt || 0);
+    if (
+      snapshotReviewAdmissionNextAt > startedAt &&
+      snapshotAdmission.some((item) => !exactReviewQueueIsPublication(item)) &&
+      !snapshotAdmission.some(exactReviewQueueIsPublication)
+    ) {
+      if (snapshotChanged && !batchDispatchAttempted) await this.writeState(snapshot);
+      await this.scheduleNext(batchDispatchAttempted ? this.readStateSync() : snapshot, startedAt);
+      return;
+    }
 
     let preflight: { ok: true; token: string; workflowState: string } | { ok: false } = {
       ok: false,
@@ -2154,6 +2167,9 @@ export class ExactReviewQueue {
       this.freshPublicationItemKeysSync(state, now),
       exactReviewPublicationFreshLaneMaxItems(this.env),
     );
+    const reviewAdmissionNextAt = Number(state.dispatcher?.reviewAdmissionNextAt || 0);
+    const admission =
+      reviewAdmissionNextAt > now ? admitted.filter(exactReviewQueueIsPublication) : admitted;
     if (!preflight.ok) {
       const retryAt = now + exactReviewWorkflowPausedRetryMs(this.env);
       state.dispatcher = {
@@ -2190,9 +2206,13 @@ export class ExactReviewQueue {
     // A queued review can become terminal before it has a worker. Probe only
     // the bounded admission set, then revalidate the exact pending revision
     // after the external reads release the Durable Object input gate.
-    const liveCandidates = admitted
+    // Keep a short durable admission interval as well as a bounded pass. This
+    // prevents a ready backlog from turning the one-second alarm wake-up into
+    // repeated App-token, item-read, and workflow-dispatch bursts.
+    const reviewCandidates = admission
       .filter((item) => !exactReviewQueueIsPublication(item))
       .map((item) => ({ key: item.key, revision: item.revision, decision: item.decision }));
+    const liveCandidates = reviewCandidates.slice(0, EXACT_REVIEW_ADMISSION_LIVE_CHECK_MAX_ITEMS);
     const targetTokens = new Map<string, Promise<string>>();
     const targetTokenFor = (targetRepo: string) => {
       let token = targetTokens.get(targetRepo);
@@ -2247,7 +2267,7 @@ export class ExactReviewQueue {
       ) {
         continue;
       }
-      if (candidate.state === "terminal") {
+      if (candidate.state === "terminal" && !exactReviewQueueHasCommandContext(item)) {
         delete checkedState.items[item.key];
         terminalCompleted += 1;
         continue;
@@ -2298,17 +2318,39 @@ export class ExactReviewQueue {
       await this.scheduleNext(checkedState, checkedAt);
       return;
     }
-    const dispatchable = admitted.flatMap((candidate) => {
+    const dispatchable = admission.flatMap((candidate) => {
       const item = checkedState.items[candidate.key];
       if (!item || item.revision !== candidate.revision || item.state !== "pending") return [];
+      if (exactReviewQueueIsPublication(item)) return [item];
       const live = liveStateByCandidate.get(candidate.key);
-      return !live || live.state === "open" ? [item] : [];
+      // A command acknowledgement needs the workflow's terminal completion
+      // path even when the target is already closed. Unprobed reviews wait for
+      // a later bounded admission pass instead of bypassing the live check.
+      return live?.state === "open" ||
+        (live?.state === "terminal" && exactReviewQueueHasCommandContext(item))
+        ? [item]
+        : [];
     });
 
+    const hasReadyPendingReview = Object.values(checkedState.items).some(
+      (item) =>
+        !exactReviewQueueIsPublication(item) &&
+        item.state === "pending" &&
+        item.nextAttemptAt <= checkedAt,
+    );
+    const shouldThrottleReviewAdmission =
+      liveCandidates.length === EXACT_REVIEW_ADMISSION_LIVE_CHECK_MAX_ITEMS ||
+      (terminalCompleted > 0 && hasReadyPendingReview);
+    const nextReviewAdmissionAt = shouldThrottleReviewAdmission
+      ? checkedAt + EXACT_REVIEW_ADMISSION_INTERVAL_MS
+      : Number(checkedState.dispatcher?.reviewAdmissionNextAt || 0);
     checkedState.dispatcher = {
       state: "active",
       workflowState: preflight.workflowState,
       checkedAt,
+      ...(nextReviewAdmissionAt > checkedAt
+        ? { reviewAdmissionNextAt: nextReviewAdmissionAt }
+        : {}),
       ...checkedBatchDispatcherFields,
     };
     for (const item of dispatchable) {
@@ -5874,6 +5916,9 @@ export class ExactReviewQueue {
       exactReviewHeartbeatGraceMs(this.env),
       legacyExcludedItemKeys,
       batchOwnership.nextLeaseExpiresAt,
+      Number(state.dispatcher?.reviewAdmissionNextAt || 0) > now
+        ? Number(state.dispatcher?.reviewAdmissionNextAt)
+        : null,
     );
     const reviewNext = this.nextReviewReconcileAtSync(now);
     const batchDeparture = exactReviewPublicationBatchDeparture(
@@ -7051,6 +7096,10 @@ function exactReviewQueueIsPublication(item: Pick<ExactReviewQueueItem, "decisio
   return item.decision.sourceAction === EXACT_REVIEW_ARTIFACT_PUBLISH_SOURCE_ACTION;
 }
 
+function exactReviewQueueHasCommandContext(item: Pick<ExactReviewQueueItem, "decision">) {
+  return Boolean(item.decision.commandStatusMarker || item.decision.statusCommentId);
+}
+
 function exactReviewQueueLane(item: ExactReviewQueueItem) {
   return exactReviewQueueIsPublication(item) ? "publication" : "review";
 }
@@ -7402,6 +7451,9 @@ function exactReviewQueueStats(
     heartbeatGraceMs,
     excludedItemKeys,
     publicationBlockedUntil,
+    Number(state.dispatcher?.reviewAdmissionNextAt || 0) > now
+      ? Number(state.dispatcher?.reviewAdmissionNextAt)
+      : null,
   );
   const lanes = {
     review: exactReviewQueueLaneStats(
@@ -7582,6 +7634,7 @@ export function exactReviewQueueNextWakeAt(
   heartbeatGraceMs = DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS,
   excludedItemKeys: ReadonlySet<string> = new Set(),
   publicationBlockedUntil: number | null = null,
+  reviewAdmissionBlockedUntil: number | null = null,
 ) {
   const items = Object.values(state.items);
   if (!items.length) return null;
@@ -7656,7 +7709,7 @@ export function exactReviewQueueNextWakeAt(
         return [Math.max(item.nextAttemptAt, blockedUntil)];
       }
       const target = item.decision.targetRepo;
-      const blockedUntil = [
+      const capacityBlockedUntil = [
         ...(activeReviews.length >= capacity && activeReviewWakeAt.length
           ? [Math.min(...activeReviewWakeAt)]
           : []),
@@ -7668,7 +7721,8 @@ export function exactReviewQueueNextWakeAt(
       return [
         Math.max(
           item.nextAttemptAt,
-          blockedUntil.length ? Math.min(...blockedUntil) : item.nextAttemptAt,
+          reviewAdmissionBlockedUntil ?? item.nextAttemptAt,
+          capacityBlockedUntil.length ? Math.min(...capacityBlockedUntil) : item.nextAttemptAt,
         ),
       ];
     }
