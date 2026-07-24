@@ -49,6 +49,7 @@ async function main(argv) {
 
   const selected = selectRows(inventory.dead_letters, args.ids);
   if (args.action === "recover-fresh") {
+    // Resolve must remain available for closed or unmapped rows; only recovery needs a live target.
     if (!IDEMPOTENCY_KEY.test(args.idempotencyKey)) {
       throw new Error("--idempotency-key must match [A-Za-z0-9:._-]{1,200}");
     }
@@ -59,6 +60,17 @@ async function main(argv) {
           .map((row) => row.dead_letter_id)
           .join(",")}`,
       );
+    }
+    const recoveryTargets = selected.map((row) => row.fresh_recovery.item_key);
+    if (recoveryTargets.some((target) => !target)) {
+      throw new Error("selected dead letters are missing fresh recovery targets");
+    }
+    if (new Set(recoveryTargets).size !== recoveryTargets.length) {
+      throw new Error("selected dead letters must map to distinct fresh recovery targets");
+    }
+    const canonicalTargetIds = await assertOpenRecoveryTargets(recoveryTargets);
+    if (new Set(canonicalTargetIds).size !== canonicalTargetIds.length) {
+      throw new Error("selected dead letters must resolve to distinct GitHub items");
     }
     if (!args.execute) {
       printResult({ action: args.action, dry_run: true, selected });
@@ -160,21 +172,42 @@ async function loadInventory(options) {
     if (!cursor) break;
   }
 
-  const uniqueItemKeys = new Set(rows.map((row) => row.item_key));
+  const uniquePublicationKeys = new Set(rows.map((row) => row.item_key));
+  const targetKeys = rows
+    .map((row) => row.fresh_recovery.item_key)
+    .filter(Boolean)
+    .map(normalizeRecoveryTargetKey);
+  const eligibleRows = rows.filter((row) => row.fresh_recovery.eligible);
+  const eligibleTargetKeys = eligibleRows
+    .map((row) => row.fresh_recovery.item_key)
+    .filter(Boolean)
+    .map(normalizeRecoveryTargetKey);
+  const uniqueTargetKeys = new Set(targetKeys);
+  const uniqueEligibleTargetKeys = new Set(eligibleTargetKeys);
   const byReason = countBy(rows, (row) => row.reason_code);
   const recoveryReasons = countBy(rows, (row) => row.fresh_recovery.reason);
   return {
     generated_at: new Date().toISOString(),
     summary: {
       rows: rows.length,
-      unique_item_keys: uniqueItemKeys.size,
-      duplicate_revision_rows: rows.length - uniqueItemKeys.size,
-      eligible_fresh_recovery: rows.filter((row) => row.fresh_recovery.eligible).length,
+      unique_publication_keys: uniquePublicationKeys.size,
+      duplicate_publication_rows: rows.length - uniquePublicationKeys.size,
+      unique_target_keys: uniqueTargetKeys.size,
+      duplicate_target_key_rows: targetKeys.length - uniqueTargetKeys.size,
+      unmapped_target_rows: rows.length - targetKeys.length,
+      eligible_fresh_recovery_rows: eligibleRows.length,
+      eligible_fresh_recovery_target_keys: uniqueEligibleTargetKeys.size,
       by_reason: byReason,
       recovery_reasons: recoveryReasons,
     },
     dead_letters: rows,
   };
+}
+
+function normalizeRecoveryTargetKey(target) {
+  const match = /^([^/]+)\/([^#]+)#([1-9]\d*)$/.exec(target);
+  if (!match) return target;
+  return `${match[1].toLowerCase()}/${match[2].toLowerCase()}#${match[3]}`;
 }
 
 function sanitizeRow(row) {
@@ -244,6 +277,45 @@ async function signedPost({ queueUrl, secret, path, payload }) {
   }
   if (!result?.ok) throw new Error(`${path} returned an invalid response`);
   return result;
+}
+
+async function assertOpenRecoveryTargets(targets) {
+  const apiUrl = String(process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
+  const token = String(process.env.GITHUB_TOKEN || "");
+  const canonicalTargetIds = [];
+  for (const target of targets) {
+    const match = /^([^/]+)\/([^#]+)#([1-9]\d*)$/.exec(target);
+    if (!match) throw new Error(`invalid fresh recovery target: ${target}`);
+    const [, owner, repo, number] = match;
+    const response = await fetch(
+      `${apiUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`,
+      {
+        headers: {
+          accept: "application/vnd.github+json",
+          "user-agent": "clawsweeper-dead-letter-operator",
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        signal: AbortSignal.timeout(20_000),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`live target check failed for ${target} (${response.status})`);
+    }
+    let item;
+    try {
+      item = await response.json();
+    } catch {
+      throw new Error(`live target check returned invalid JSON for ${target}`);
+    }
+    if (item?.state !== "open") {
+      throw new Error(`fresh recovery target is not open: ${target}`);
+    }
+    if (typeof item.node_id !== "string" || !item.node_id) {
+      throw new Error(`live target check returned an invalid canonical identity for ${target}`);
+    }
+    canonicalTargetIds.push(item.node_id);
+  }
+  return canonicalTargetIds;
 }
 
 function mutationSummary(action, result) {

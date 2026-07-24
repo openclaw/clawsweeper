@@ -21,7 +21,11 @@ test("dead-letter workflow is manual, serialized, and bounded to safe actions", 
     "resolve",
   ]);
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
-  assert.deepEqual(workflow.permissions, { contents: "read" });
+  assert.deepEqual(workflow.permissions, {
+    contents: "read",
+    issues: "read",
+    "pull-requests": "read",
+  });
   assert.equal(workflow.jobs.operate.environment, "exact-review-operator");
   assert.doesNotMatch(workflowSource, /dead-letters\/replay/);
   assert.match(workflowSource, /actions\/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0/);
@@ -39,6 +43,7 @@ test("dead-letter workflow is manual, serialized, and bounded to safe actions", 
     operatorStep.env.CLAWSWEEPER_WEBHOOK_SECRET,
     "${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}",
   );
+  assert.equal(operatorStep.env.GITHUB_TOKEN, "${{ github.token }}");
   assert.match(operatorStep.run, /operator:\$\{GITHUB_RUN_ID\}/);
   assert.doesNotMatch(operatorStep.run, /GITHUB_RUN_ATTEMPT/);
 });
@@ -56,10 +61,28 @@ test("operator inventories every page, signs requests, and reports unique target
     requests.push({ url: request.url, payload });
     const secondPage = payload.cursor === "dlq-2";
     const deadLetters = secondPage
-      ? [row("dlq-3", "item:2", 1, "retry_exhausted", false, "target_not_enabled")]
+      ? [
+          row(
+            "dlq-3",
+            "publication:3",
+            1,
+            "retry_exhausted",
+            false,
+            "target_not_enabled",
+            "openclaw/repo#2",
+          ),
+        ]
       : [
-          row("dlq-1", "item:1", 1, "state_contention", true, "eligible"),
-          row("dlq-2", "item:1", 2, "state_contention", false, "publication_item_active"),
+          row("dlq-1", "publication:1", 1, "state_contention", true, "eligible", "openclaw/repo#1"),
+          row(
+            "dlq-2",
+            "publication:2",
+            2,
+            "state_contention",
+            false,
+            "publication_item_active",
+            "OpenClaw/Repo#1",
+          ),
         ];
     response.writeHead(200, { "content-type": "application/json" });
     response.end(
@@ -90,9 +113,13 @@ test("operator inventories every page, signs requests, and reports unique target
     const inventory = JSON.parse(await readFile(output, "utf8"));
     assert.deepEqual(inventory.summary, {
       rows: 3,
-      unique_item_keys: 2,
-      duplicate_revision_rows: 1,
-      eligible_fresh_recovery: 1,
+      unique_publication_keys: 3,
+      duplicate_publication_rows: 0,
+      unique_target_keys: 2,
+      duplicate_target_key_rows: 1,
+      unmapped_target_rows: 0,
+      eligible_fresh_recovery_rows: 1,
+      eligible_fresh_recovery_target_keys: 1,
       by_reason: { retry_exhausted: 1, state_contention: 2 },
       recovery_reasons: {
         eligible: 1,
@@ -113,6 +140,18 @@ test("operator previews by default and caps mutations at two audited ids", async
   const server = createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
+    if (request.url?.toLowerCase().startsWith("/repos/openclaw/repo/issues/")) {
+      const number = Number(request.url.split("/").at(-1));
+      assert.equal(request.headers.authorization, "Bearer test-github-token");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          node_id: `ISSUE_${number}`,
+          state: number === 2 ? "closed" : "open",
+        }),
+      );
+      return;
+    }
     if (request.url?.endsWith("/recover-fresh")) {
       mutations += 1;
       const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -138,7 +177,21 @@ test("operator previews by default and caps mutations at two audited ids", async
     response.end(
       JSON.stringify({
         ok: true,
-        dead_letters: [row("dlq-1", "item:1", 1, "state_contention", true, "eligible")],
+        dead_letters: [
+          row("dlq-1", "publication:1", 1, "state_contention", true, "eligible", "openclaw/repo#1"),
+          row("dlq-2", "publication:2", 1, "state_contention", true, "eligible", "openclaw/repo#1"),
+          row("dlq-3", "publication:3", 1, "state_contention", true, "eligible", "openclaw/repo#2"),
+          row("dlq-5", "publication:5", 1, "state_contention", true, "eligible", "OpenClaw/Repo#1"),
+          row(
+            "dlq-4",
+            "publication:4",
+            1,
+            "tuple_protocol_invalid",
+            false,
+            "invalid_dead_letter_item",
+            null,
+          ),
+        ],
         next_cursor: null,
       }),
     );
@@ -216,6 +269,55 @@ test("operator previews by default and caps mutations at two audited ids", async
     assert.match(invalidPreview.stderr, /--idempotency-key must match/);
     assert.equal(mutations, 2);
 
+    const duplicateTargetPreview = await runOperator(
+      [
+        "--action",
+        "recover-fresh",
+        "--ids",
+        "dlq-1,dlq-2",
+        "--idempotency-key",
+        "operator:test:duplicate",
+      ],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(duplicateTargetPreview.code, 1);
+    assert.match(duplicateTargetPreview.stderr, /must map to distinct fresh recovery targets/);
+    assert.equal(mutations, 2);
+
+    const canonicalDuplicatePreview = await runOperator(
+      [
+        "--action",
+        "recover-fresh",
+        "--ids",
+        "dlq-1,dlq-5",
+        "--idempotency-key",
+        "operator:test:canonical-duplicate",
+      ],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(canonicalDuplicatePreview.code, 1);
+    assert.match(canonicalDuplicatePreview.stderr, /must resolve to distinct GitHub items/);
+    assert.equal(mutations, 2);
+
+    const closedTargetPreview = await runOperator(
+      ["--action", "recover-fresh", "--ids", "dlq-3", "--idempotency-key", "operator:test:closed"],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(closedTargetPreview.code, 1);
+    assert.match(closedTargetPreview.stderr, /fresh recovery target is not open: openclaw\/repo#2/);
+    assert.equal(mutations, 2);
+
+    const unmappedResolvePreview = await runOperator(
+      ["--action", "resolve", "--ids", "dlq-4", "--note", "unrecoverable legacy row"],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(unmappedResolvePreview.code, 0, unmappedResolvePreview.stderr);
+    assert.equal(JSON.parse(unmappedResolvePreview.stdout).dry_run, true);
+
     const missingNotePreview = await runOperator(
       ["--action", "resolve", "--ids", "dlq-1"],
       `http://127.0.0.1:${address.port}`,
@@ -247,7 +349,15 @@ test("operator previews by default and caps mutations at two audited ids", async
   }
 });
 
-function row(id, key, revision, reason, eligible, recoveryReason) {
+function row(
+  id,
+  key,
+  revision,
+  reason,
+  eligible,
+  recoveryReason,
+  recoveryItemKey = `${key}:fresh`,
+) {
   return {
     dead_letter_id: id,
     item_key: key,
@@ -264,7 +374,7 @@ function row(id, key, revision, reason, eligible, recoveryReason) {
     fresh_recovery: {
       eligible,
       reason: recoveryReason,
-      item_key: eligible ? `${key}:fresh` : null,
+      item_key: recoveryItemKey,
     },
   };
 }
@@ -279,6 +389,8 @@ function runOperator(args, queueUrl, secret) {
           ...process.env,
           EXACT_REVIEW_QUEUE_URL: queueUrl,
           CLAWSWEEPER_WEBHOOK_SECRET: secret,
+          GITHUB_API_URL: queueUrl,
+          GITHUB_TOKEN: "test-github-token",
         },
         stdio: ["ignore", "pipe", "pipe"],
       },

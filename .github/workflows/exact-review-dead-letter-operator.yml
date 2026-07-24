@@ -36,6 +36,8 @@ concurrency:
 
 permissions:
   contents: read
+  issues: read
+  pull-requests: read
 
 jobs:
   operate:
@@ -64,6 +66,7 @@ jobs:
           IDEMPOTENCY_KEY: ${{ inputs.idempotency_key }}
           NOTE: ${{ inputs.note }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           args=(
