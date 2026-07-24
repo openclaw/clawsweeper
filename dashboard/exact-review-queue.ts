@@ -1055,7 +1055,7 @@ export class ExactReviewQueue {
             key,
             decision,
             state: "pending",
-            revision: 1,
+            revision: this.nextExactReviewItemRevisionSync(key),
             createdAt: now,
             updatedAt: now,
             nextAttemptAt: exactReviewQueueDebouncedAttemptAt(state, decision, now, now, this.env),
@@ -2403,7 +2403,7 @@ export class ExactReviewQueue {
           key: recovery.key,
           decision: recovery.decision,
           state: "pending",
-          revision: 1,
+          revision: this.nextExactReviewItemRevisionSync(recovery.key),
           createdAt: now,
           updatedAt: now,
           nextAttemptAt: exactReviewQueueDebouncedAttemptAt(
@@ -3606,6 +3606,10 @@ export class ExactReviewQueue {
       ),
     )[0] as { source_revision?: number } | undefined;
     return Number(row?.source_revision || 0);
+  }
+
+  private nextExactReviewItemRevisionSync(itemKey: string): number {
+    return this.publicationHeadRevisionSync(itemKey.toLowerCase()) + 1;
   }
 
   private recordPublicationHeadSync(targetKey: string, sourceRevision: number, now: number) {

@@ -6651,6 +6651,154 @@ test("exact-review dead letters expose diagnostics and recover fresh reviews in 
   assert.equal(resolved.dead_letters[0].fresh_recovery.reason, "fresh_review_already_active");
 });
 
+test("a later exact-review cycle still publishes after an earlier cycle raised the publication head", async () => {
+  const storage = new MemoryDurableStorage();
+  const published = leasedExactReviewPublicationItem(864, "8640");
+  published.decision.publication.leaseRevision = 2;
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [published.key]: published },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const completed = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: published.leaseId,
+        item_key: published.key,
+        lease_revision: published.leaseRevision,
+        claim_generation: published.claimGeneration,
+        run_id: published.claimedRunId,
+        run_attempt: published.claimedRunAttempt,
+        outcome: "success",
+        completion_kind: "published",
+        reason_code: "publication_applied",
+      }),
+    }),
+  );
+  assert.deepEqual(await completed.json(), { ok: true, requeued: false });
+  const drained = (await storage.get("exact-review-queue")) as {
+    items: Record<string, unknown>;
+  };
+  assert.deepEqual(Object.keys(drained.items), []);
+
+  assert.equal(
+    (
+      await queue.fetch(
+        buildExactReviewQueueRequest("cycle-b-review", 864, "opened", "issue", "openclaw/openclaw"),
+      )
+    ).status,
+    202,
+  );
+  const reopened = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { revision: number }>;
+  };
+
+  const republished = await (
+    await queue.fetch(
+      buildExactReviewQueueRequest(
+        "cycle-b-publish",
+        864,
+        "exact_review_artifact_publish",
+        "issue",
+        "openclaw/openclaw",
+        exactReviewPublicationOverrides(
+          864,
+          "8641",
+          "opened",
+          reopened.items["openclaw/openclaw#864"].revision,
+          "openclaw/openclaw",
+        ),
+      ),
+    )
+  ).json();
+  assert.equal(republished.queued, true);
+  assert.equal(republished.deduped, undefined);
+  assert.equal(republished.superseded, undefined);
+  assert.equal(republished.item_key, "openclaw/openclaw#864@publish:8641:1");
+  assert.equal(reopened.items["openclaw/openclaw#864"].revision, 3);
+});
+
+test("dead-letter fresh recovery seeds a review revision that can still publish", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(866, "8660");
+  item.decision.publication.leaseRevision = 2;
+  item.attempts = 2;
+  Object.assign(item, { publicationFailureAttempts: 2 });
+  item.firstFailureAt = Date.now() - 6 * 60_000;
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const completed = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "failure",
+        completion_kind: "permanent_failure",
+        reason_code: "invalid_artifact",
+        error_fingerprint: "sha256:recovery-ratchet",
+      }),
+    }),
+  );
+  assert.deepEqual(await completed.json(), { ok: true, requeued: false });
+
+  const listed = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/dead-letters/list", {
+        method: "POST",
+        body: JSON.stringify({ limit: 10 }),
+      }),
+    )
+  ).json();
+  assert.deepEqual(
+    await (
+      await queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/dead-letters/recover-fresh", {
+          method: "POST",
+          body: JSON.stringify({
+            ids: [listed.dead_letters[0].dead_letter_id],
+            idempotency_key: "operator:866:v1",
+          }),
+        }),
+      )
+    ).json(),
+    { ok: true, recovered: 1, deduped: 0, skipped: 0, unparked: 0 },
+  );
+
+  const recovered = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { revision: number }>;
+  };
+  assert.equal(recovered.items["openclaw/openclaw#866"].revision, 3);
+
+  const republished = await (
+    await queue.fetch(
+      buildExactReviewQueueRequest(
+        "recovery-publish",
+        866,
+        "exact_review_artifact_publish",
+        "issue",
+        "openclaw/openclaw",
+        exactReviewPublicationOverrides(
+          866,
+          "8661",
+          "artifact_retention_recovery",
+          recovered.items["openclaw/openclaw#866"].revision,
+          "openclaw/openclaw",
+        ),
+      ),
+    )
+  ).json();
+  assert.equal(republished.queued, true);
+  assert.equal(republished.superseded, undefined);
+});
+
 test("exact-review fresh recovery preserves failed-shard review-only behavior", async () => {
   const storage = new MemoryDurableStorage();
   const item = leasedExactReviewPublicationItem(794, "7940");
@@ -13357,9 +13505,11 @@ function exactReviewPublicationOverrides(
   itemNumber: number,
   producerRunId: string,
   producerSourceAction = "opened",
+  leaseRevision = 1,
+  targetRepo = "openclaw/gogcli",
 ) {
   const producerDecision = {
-    targetRepo: "openclaw/gogcli",
+    targetRepo,
     targetBranch: "main",
     itemNumber,
     itemKind: "issue",
@@ -13373,9 +13523,9 @@ function exactReviewPublicationOverrides(
       producerRunId,
       producerRunAttempt: 1,
       sourceSha: "a".repeat(40),
-      itemKey: `openclaw/gogcli#${itemNumber}`,
+      itemKey: `${targetRepo}#${itemNumber}`,
       protocolVersion: 2,
-      leaseRevision: 1,
+      leaseRevision,
       claimGeneration: 1,
       liveProceeded: true,
       liveTerminalNoop: false,

@@ -1146,8 +1146,12 @@ jobs:
               --header "x-clawsweeper-exact-review-signature: $signature" \
               --data "$payload" \
               "$queue_url/internal/exact-review/enqueue")" &&
-              jq -e '.ok == true and (.queued == true or .deduped == true)' <<< "$response" >/dev/null; then
+              jq -e '.ok == true and (.queued == true or (.deduped == true and .superseded != true))' <<< "$response" >/dev/null; then
               exit 0
+            fi
+            if jq -e '.superseded == true' <<< "${response:-}" >/dev/null 2>&1; then
+              echo "::error::Exact-review publication revision $(jq -r '.publication_revision // "unknown"' <<< "$response") was rejected as superseded by revision $(jq -r '.superseded_by_revision // "unknown"' <<< "$response"); the verdict was not delivered."
+              exit 1
             fi
             if [ "$attempt" -lt 3 ]; then
               sleep "$((attempt * 5))"

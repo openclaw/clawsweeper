@@ -450,7 +450,10 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.equal(upload.uses, "actions/upload-artifact@v7");
   assert.equal(upload.with?.["retention-days"], 90);
   assert.match(queuePublication.run ?? "", /for attempt in 1 2 3/);
-  assert.match(queuePublication.run ?? "", /\.queued == true or \.deduped == true/);
+  assert.match(
+    queuePublication.run ?? "",
+    /\.queued == true or \(\.deduped == true and \.superseded != true\)/,
+  );
   assert.match(complete.env?.PRIMARY_OUTCOME ?? "", /exact-review-generation-result/);
   assert.match(deferHeldReview.if ?? "", /reserve-exact-review-lease\.outputs\.status == 'held'/);
   assert.match(deferHeldReview.run ?? "", /retry deferred/);
@@ -2758,4 +2761,24 @@ test("github activity workflow scopes cancellation to matching item activity", (
     /group: github-activity-\$\{\{ github\.event_name \}\}-\$\{\{ github\.run_id \}\}/,
   );
   assert.doesNotMatch(concurrencyBlock, /workflow-run' \|\| 'activity'/);
+});
+
+test("exact review publication enqueue rejects a superseded acknowledgement", () => {
+  type WorkflowStep = { name?: string; id?: string; run?: string };
+  type WorkflowJob = { steps: WorkflowStep[] };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, WorkflowJob>;
+  };
+  const publicationEnqueue = workflow.jobs["event-review-apply"]?.steps.find(
+    (candidate) => candidate.id === "queue-exact-review-publication",
+  );
+  assert.ok(publicationEnqueue, "missing queue-exact-review-publication step");
+  const run = publicationEnqueue.run ?? "";
+  assert.match(
+    run,
+    /\.ok == true and \(\.queued == true or \(\.deduped == true and \.superseded != true\)\)/,
+  );
+  assert.doesNotMatch(run, /\.ok == true and \(\.queued == true or \.deduped == true\)/);
+  assert.match(run, /jq -e '\.superseded == true'/);
+  assert.match(run, /the verdict was not delivered/);
 });
