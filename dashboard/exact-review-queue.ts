@@ -2213,7 +2213,7 @@ export class ExactReviewQueue {
             state: await exactReviewTargetItemState(token, candidate.decision),
           };
         } catch (error) {
-          const failure = exactReviewDispatchFailure(error);
+          const failure = exactReviewAdmissionFailure(error);
           console.warn(
             `exact-review admission target check failed for ${candidate.key}`,
             error instanceof Error ? error.message : String(error),
@@ -8815,6 +8815,17 @@ function exactReviewDispatchFailure(error: unknown): ExactReviewDispatchFailure 
     ...(status === undefined ? {} : { status }),
     fingerprint: exactReviewDispatchFailureFingerprint(failureClass, status),
   };
+}
+
+function exactReviewAdmissionFailure(error: unknown): ExactReviewDispatchFailure {
+  const failure = exactReviewDispatchFailure(error);
+  // This error arose while checking one specific target. A target installation
+  // may lack issue-read access even though other target installations are
+  // healthy, so a 403 must not hold the whole queue.
+  if (error instanceof GitHubRequestError && error.status === 403) {
+    return { ...failure, scope: "item" };
+  }
+  return failure;
 }
 
 function exactReviewDispatchFailureFingerprint(

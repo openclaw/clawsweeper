@@ -4358,6 +4358,53 @@ test("exact-review queue keeps healthy targets moving when one target App access
   }
 });
 
+test("exact-review queue keeps healthy targets moving when one target item read is forbidden", async () => {
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    maxConcurrent: "2",
+    targetItem: (targetRepo) =>
+      targetRepo === "openclaw/gogcli"
+        ? new Response(JSON.stringify({ message: "forbidden" }), { status: 403 })
+        : jsonResponse({ state: "open" }),
+  });
+  try {
+    assert.equal(
+      (await harness.queue.fetch(buildExactReviewQueueRequest("forbidden-target", 597, "opened")))
+        .status,
+      202,
+    );
+    assert.equal(
+      (
+        await harness.queue.fetch(
+          buildExactReviewQueueRequest(
+            "healthy-target-after-forbidden",
+            598,
+            "opened",
+            "issue",
+            "openclaw/openclaw",
+          ),
+        )
+      ).status,
+      202,
+    );
+
+    await harness.queue.alarm();
+
+    assert.equal(harness.dispatched.length, 1);
+    assert.equal(harness.dispatched[0]?.client_payload?.target_repo, "openclaw/openclaw");
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      dispatcher: { state: string };
+      items: Record<string, { state: string; attempts: number; reviewFailureAttempts?: number }>;
+    };
+    assert.equal(state.dispatcher.state, "active");
+    assert.equal(state.items["openclaw/gogcli#597"]?.state, "pending");
+    assert.equal(state.items["openclaw/gogcli#597"]?.attempts, 1);
+    assert.equal(state.items["openclaw/gogcli#597"]?.reviewFailureAttempts, 1);
+    assert.equal(state.items["openclaw/openclaw#598"]?.state, "dispatching");
+  } finally {
+    harness.restore();
+  }
+});
+
 test("exact-review admission does not restore a publication batch claim reservation", async () => {
   let releaseLookup!: () => void;
   let signalLookupStarted!: () => void;
@@ -14281,6 +14328,7 @@ function createExactReviewAdmissionHarness(
     publicationBatching?: boolean;
     targetInstallation?: (targetRepo: string) => Response | Promise<Response>;
     targetRepository?: (targetRepo: string) => Response | Promise<Response>;
+    targetItem?: (targetRepo: string) => Response | Promise<Response>;
     dispatch?: () => Response | Promise<Response>;
   } = {},
 ) {
@@ -14310,8 +14358,11 @@ function createExactReviewAdmissionHarness(
     if (url.pathname === "/app/installations/999/access_tokens") {
       return jsonResponse({ token: "queue-token" });
     }
-    if (/^\/repos\/openclaw\/(?:gogcli|openclaw)\/issues\/\d+$/.test(url.pathname)) {
-      return liveItem();
+    const targetItem = url.pathname.match(
+      /^\/repos\/(openclaw\/(?:gogcli|openclaw))\/issues\/\d+$/,
+    );
+    if (targetItem) {
+      return options.targetItem?.(targetItem[1]) ?? liveItem();
     }
     if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
       dispatched.push(JSON.parse(String(init?.body)));
