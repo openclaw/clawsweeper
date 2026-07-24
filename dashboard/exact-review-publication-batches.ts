@@ -166,6 +166,7 @@ export class ExactReviewPublicationBatchStore {
     leaseExpiresAt: number;
     now: number;
     maxItems: number;
+    maxConcurrentBatches?: number;
     candidates: PublicationBatchCandidate[];
   }): PublicationBatch | null {
     return this.storage.transactionSync(() => {
@@ -176,15 +177,18 @@ export class ExactReviewPublicationBatchStore {
           ? existing
           : null;
       }
-      const activeBatch = Array.from(
-        this.storage.sql.exec(
-          `SELECT batch_id FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
-            WHERE state = 'leased' LIMIT 1`,
-        ),
-      )[0];
-      // The rollout has one serial publisher. Same-id retries return above; a distinct
-      // claim must wait so racing dispatch requests cannot create parallel publishers.
-      if (activeBatch) return null;
+      const activeBatches = Number(
+        Array.from(
+          this.storage.sql.exec(
+            `SELECT COUNT(*) AS count FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
+              WHERE state = 'leased'`,
+          ),
+        )[0]?.count ?? 0,
+      );
+      const maxConcurrentBatches = Math.max(1, input.maxConcurrentBatches ?? 1);
+      // Batch preparation is isolated per workflow. Bound concurrent owners here
+      // while the state-writer coordinator remains the sole mutation boundary.
+      if (activeBatches >= maxConcurrentBatches) return null;
       this.storage.sql.exec(
         `INSERT INTO ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
            (batch_id, state, lease_owner, lease_expires_at, configured_batch_size,
@@ -457,7 +461,7 @@ export class ExactReviewPublicationBatchStore {
   private activeLeaseSnapshotSync() {
     const rows = Array.from(
       this.storage.sql.exec(
-        `SELECT membership.item_key, batch.lease_expires_at
+        `SELECT membership.item_key, membership.batch_id, batch.lease_expires_at
            FROM ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE} AS membership
            JOIN ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE} AS batch
              ON batch.batch_id = membership.batch_id
@@ -467,6 +471,7 @@ export class ExactReviewPublicationBatchStore {
     );
     return {
       itemKeys: rows.map((row) => String(row.item_key)),
+      activeBatches: new Set(rows.map((row) => String(row.batch_id))).size,
       nextLeaseExpiresAt: rows.length
         ? Math.min(...rows.map((row) => Number(row.lease_expires_at)))
         : null,

@@ -66,6 +66,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Allowed four isolated exact-review batches to prepare concurrently while
+  retaining one fenced state-writer mutation boundary.
 - Snapshot exact-review batch clone credentials once before worker fanout so
   parallel preparation no longer drops members during repeated shared-repo
   bootstrap reads, and report any remaining member-specific setup failure.

@@ -9,10 +9,6 @@ on:
         type: boolean
         default: false
 
-concurrency:
-  group: exact-review-batch-publisher
-  cancel-in-progress: false
-
 permissions:
   actions: write
   contents: read

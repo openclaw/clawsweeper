@@ -101,6 +101,7 @@ const candidates = [
   { itemKey: "openclaw/openclaw#1@publish:10:1", revision: 1 },
   { itemKey: "openclaw/openclaw#2@publish:20:1", revision: 2 },
   { itemKey: "openclaw/openclaw#3@publish:30:1", revision: 3 },
+  { itemKey: "openclaw/openclaw#4@publish:40:1", revision: 4 },
 ];
 
 test("publication batches atomically select ready items without duplicate active ownership", () => {
@@ -133,9 +134,59 @@ test("publication batches atomically select ready items without duplicate active
   assert.equal(first?.configuredBatchSize, 2);
   assert.deepEqual(batches.activeLeaseSnapshot(1_500), {
     itemKeys: candidates.slice(0, 2).map((item) => item.itemKey),
+    activeBatches: 1,
     nextLeaseExpiresAt: 2_000,
   });
   assert.equal(batches.fetch("batch-1", "wrong-worker", 1_500), null);
+});
+
+test("publication batches allow a bounded number of disjoint active owners", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+
+  const first = batches.claim({
+    batchId: "parallel-1",
+    leaseOwner: "worker-1",
+    leaseExpiresAt: 2_000,
+    now: 1_000,
+    maxItems: 2,
+    maxConcurrentBatches: 2,
+    candidates,
+  });
+  const second = batches.claim({
+    batchId: "parallel-2",
+    leaseOwner: "worker-2",
+    leaseExpiresAt: 2_500,
+    now: 1_000,
+    maxItems: 2,
+    maxConcurrentBatches: 2,
+    candidates,
+  });
+  const third = batches.claim({
+    batchId: "parallel-3",
+    leaseOwner: "worker-3",
+    leaseExpiresAt: 3_000,
+    now: 1_000,
+    maxItems: 1,
+    maxConcurrentBatches: 2,
+    candidates,
+  });
+
+  assert.deepEqual(
+    first?.items.map((item) => item.itemKey),
+    candidates.slice(0, 2).map((item) => item.itemKey),
+  );
+  assert.deepEqual(
+    second?.items.map((item) => item.itemKey),
+    candidates.slice(2).map((item) => item.itemKey),
+  );
+  assert.equal(third, null);
+  assert.deepEqual(batches.activeLeaseSnapshot(1_500), {
+    itemKeys: candidates.map((item) => item.itemKey),
+    activeBatches: 2,
+    nextLeaseExpiresAt: 2_000,
+  });
 });
 
 test("batch schema migration derives a safe cap for an active legacy lease", () => {
@@ -633,6 +684,67 @@ test("an active batch blocks the legacy publisher until its lease expires", asyn
     assert.equal(stats.lanes.publication.dispatching, 0);
     assert.equal(stats.admissible_pending, 0);
     assert.equal(storage.scheduledAlarm(), 5_060_000);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("queue claims distinct batches up to the configured concurrent owner cap", async () => {
+  const originalNow = Date.now;
+  Date.now = () => 5_500_000;
+  try {
+    const storage = new TestStorage();
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+        EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT: "2",
+      },
+    );
+    for (let itemNumber = 120; itemNumber < 125; itemNumber += 1) {
+      await queue.fetch(
+        publicationRequest(
+          `delivery-parallel-${itemNumber}`,
+          itemNumber,
+          String(4000 + itemNumber),
+        ),
+      );
+    }
+
+    const claim = async (id: string) =>
+      (
+        await queue.fetch(
+          batchRequest("/publication-batches/claim", {
+            claim_id: id,
+            lease_owner: id,
+            max_items: 2,
+          }),
+        )
+      ).json();
+    const first = await claim("parallel-claim-1");
+    const second = await claim("parallel-claim-2");
+    const third = await claim("parallel-claim-3");
+
+    assert.equal(first.claimed, true, JSON.stringify(first));
+    assert.equal(second.claimed, true, JSON.stringify(second));
+    assert.equal(third.claimed, false, JSON.stringify(third));
+    assert.deepEqual(
+      [
+        ...first.batch.items.map((item: { item_key: string }) => item.item_key),
+        ...second.batch.items.map((item: { item_key: string }) => item.item_key),
+      ],
+      [
+        "openclaw/openclaw#120@publish:4120:1",
+        "openclaw/openclaw#121@publish:4121:1",
+        "openclaw/openclaw#122@publish:4122:1",
+        "openclaw/openclaw#123@publish:4123:1",
+      ],
+    );
+    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.batches.max_concurrent, 2);
+    assert.equal(stats.lanes.publication.batches.leased, 2);
+    assert.equal(stats.lanes.publication.batches.active_items, 4);
   } finally {
     Date.now = originalNow;
   }
@@ -1263,6 +1375,101 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
   } finally {
     Date.now = originalNow;
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("rollout refills concurrent batch owner slots without exceeding the cap", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  let now = 11_000_000;
+  Date.now = () => now;
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const dispatches: unknown[] = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation") {
+      return new Response(JSON.stringify({ id: 999 }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/app/installations/999/access_tokens") {
+      return new Response(JSON.stringify({ token: "test-token" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (
+      url.pathname ===
+      "/repos/openclaw/clawsweeper/actions/workflows/exact-review-batch-publish.yml/dispatches"
+    ) {
+      dispatches.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml") {
+      return new Response(JSON.stringify({ state: "active" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  try {
+    const storage = new TestStorage();
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+        EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT: "2",
+        EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_COOLDOWN_MS: "1000",
+      },
+    );
+    for (let itemNumber = 150; itemNumber < 155; itemNumber += 1) {
+      await queue.fetch(
+        publicationRequest(`delivery-refill-${itemNumber}`, itemNumber, String(5000 + itemNumber)),
+      );
+    }
+
+    await queue.alarm();
+    assert.equal(dispatches.length, 1);
+    const first = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "refill-claim-1",
+          lease_owner: "refill-worker-1",
+          max_items: 2,
+        }),
+      )
+    ).json();
+    assert.equal(first.claimed, true, JSON.stringify(first));
+
+    now += 1_000;
+    await queue.alarm();
+    assert.equal(dispatches.length, 2);
+    const second = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "refill-claim-2",
+          lease_owner: "refill-worker-2",
+          max_items: 2,
+        }),
+      )
+    ).json();
+    assert.equal(second.claimed, true, JSON.stringify(second));
+
+    now += 1_000;
+    await queue.alarm();
+    assert.equal(dispatches.length, 2);
+    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.batches.leased, 2);
+    assert.equal(stats.lanes.publication.batches.active_items, 4);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
   }
 });
 

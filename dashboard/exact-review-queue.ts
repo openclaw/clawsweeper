@@ -1887,6 +1887,7 @@ export class ExactReviewQueue {
             batches: {
               enabled: exactReviewPublicationBatchingEnabled(this.env),
               max_items: exactReviewPublicationBatchSize(this.env),
+              max_concurrent: exactReviewPublicationBatchMaxConcurrent(this.env),
               max_wait_seconds: exactReviewPublicationBatchWaitMs(this.env) / 1_000,
               last_dispatch_at: state.dispatcher?.publicationBatchDispatchedAt
                 ? new Date(state.dispatcher.publicationBatchDispatchedAt).toISOString()
@@ -1982,6 +1983,7 @@ export class ExactReviewQueue {
       snapshot,
       startedAt,
       new Set(snapshotBatchOwnership.itemKeys),
+      snapshotBatchOwnership.activeBatches,
     );
     let batchDispatchAttempted = false;
     let batchDispatchSucceeded = false;
@@ -3251,7 +3253,7 @@ export class ExactReviewQueue {
     });
   }
 
-  private claimPublicationBatch(value: unknown) {
+  private async claimPublicationBatch(value: unknown) {
     // The rollout switch closes only new admission. Fetch and complete stay available so
     // disabling the flag cannot strand ownership that was leased before the config change.
     if (!exactReviewPublicationBatchingEnabled(this.env)) {
@@ -3336,6 +3338,7 @@ export class ExactReviewQueue {
       leaseExpiresAt: now + exactReviewPublicationBatchLeaseMs(this.env),
       now,
       maxItems: leaseSize,
+      maxConcurrentBatches: exactReviewPublicationBatchMaxConcurrent(this.env),
       candidates,
     });
     if (state.dispatcher?.publicationBatchDispatchPendingUntil) {
@@ -3353,6 +3356,7 @@ export class ExactReviewQueue {
         effective_max_items: leaseSize,
       });
     }
+    await this.scheduleNext(state, now);
     const oldestCandidateAt = batch.items.reduce(
       (oldest, membership) =>
         Math.min(oldest, state.items[membership.itemKey]?.createdAt ?? batch.createdAt),
@@ -5567,6 +5571,7 @@ export class ExactReviewQueue {
       state,
       now,
       new Set(batchOwnership.itemKeys),
+      batchOwnership.activeBatches,
     );
     const sourceAuthorityNext = await this.nextSourceAuthorityVerificationAt();
     const next = [
@@ -7675,6 +7680,10 @@ function exactReviewPublicationBatchSize(env) {
   );
 }
 
+function exactReviewPublicationBatchMaxConcurrent(env) {
+  return Math.max(1, Math.min(8, numberFrom(env.EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT, 1)));
+}
+
 function exactReviewPublicationBatchWaitMs(env) {
   return Math.max(
     1_000,
@@ -7719,8 +7728,14 @@ function exactReviewPublicationBatchDeparture(
   state: ExactReviewQueueState,
   now: number,
   ownedItemKeys: ReadonlySet<string>,
+  activeBatchCount: number,
 ) {
-  if (!exactReviewPublicationBatchingEnabled(env) || ownedItemKeys.size > 0) return null;
+  if (
+    !exactReviewPublicationBatchingEnabled(env) ||
+    activeBatchCount >= exactReviewPublicationBatchMaxConcurrent(env)
+  ) {
+    return null;
+  }
   const pending = Object.values(state.items)
     .filter(
       (item) =>

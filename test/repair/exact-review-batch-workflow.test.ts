@@ -15,7 +15,7 @@ const workflow = YAML.parse(source) as {
     workflow_dispatch: { inputs: Record<string, unknown> };
   };
   permissions: Record<string, string>;
-  concurrency: Record<string, unknown>;
+  concurrency?: Record<string, unknown>;
   jobs: Record<
     string,
     {
@@ -26,7 +26,7 @@ const workflow = YAML.parse(source) as {
   >;
 };
 
-test("batch publisher is event-driven with one non-cancelling serial workflow", () => {
+test("batch publisher is event-driven and queue-bounded instead of workflow-serialized", () => {
   assert.equal(workflow.on.schedule, undefined);
   assert.ok(workflow.on.workflow_dispatch);
   assert.match(workflow.jobs.publish!.if, /inputs\.execute/);
@@ -34,7 +34,7 @@ test("batch publisher is event-driven with one non-cancelling serial workflow", 
   assert.equal(workflow.jobs.publish!.env.EXACT_REVIEW_BATCH_MAX_ITEMS, "50");
   assert.equal(workflow.jobs.publish!.env.EXACT_REVIEW_BATCH_PREPARE_CONCURRENCY, "4");
   assert.equal(workflow.jobs.publish!.env.CLAWSWEEPER_APP_CLIENT_ID, "Iv23liOECG0slfuhz093");
-  assert.equal(workflow.concurrency["cancel-in-progress"], false);
+  assert.equal(workflow.concurrency, undefined);
   assert.deepEqual(workflow.permissions, { actions: "write", contents: "read" });
 });
 

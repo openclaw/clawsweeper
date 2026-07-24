@@ -56,13 +56,14 @@ EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = "60000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = "90000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "180000"
 EXACT_REVIEW_PENDING_SOFT_LIMIT = "300"
-# Keep bounded four-worker preparation, but return the live mutation lease to 8:
-# the first size-32 run exceeded the 15-minute operational target during prepare.
+# Keep each mutation lease at 8 while allowing four isolated workflows to prepare
+# concurrently. Final commits still cross the single state-writer coordinator.
 # A full-window publish moves ~2k paths and observed ~40 min; the drain lease
 # must outlive it or the ack lands after expiry and the cycle makes no progress.
 STATE_APPEND_DRAIN_LEASE_MS = "5400000"
 EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED = "1"
 EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "8"
+EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT = "4"
 EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS = "60000"
 EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_COOLDOWN_MS = "30000"
 EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_RESERVATION_MS = "600000"
