@@ -97,6 +97,7 @@ test("batch workflow uses owner-scoped mutation credentials and isolated state c
   for (const flag of ["items", "closed", "plans", "decision-packets"]) {
     assert.match(publisherSource, new RegExp(`"--${flag}-dir"`));
   }
+  assert.match(publisherSource, /"--record-root",\s*options\.workRoot/);
   assert.doesNotMatch(publisherSource, /runStreaming\("pnpm"/);
 });
 

@@ -485,6 +485,8 @@ function runApplyDecisions(options: EventOptions, paths: EventRecordPaths): void
 function eventRecordDirectoryArgs(options: EventOptions, paths: EventRecordPaths): string[] {
   const directories = eventRecordDirectories(paths, options.workRoot);
   return [
+    "--record-root",
+    options.workRoot,
     "--items-dir",
     directories.items,
     "--closed-dir",

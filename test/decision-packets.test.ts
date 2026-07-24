@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -177,6 +178,54 @@ test("decision packet sync writes pointers and removes stale generated state", (
     assert.equal(existsSync(first.packetPath), false);
     assert.match(second.markdown, /^decision_packet_path: none$/m);
     assert.match(second.markdown, /^decision_packet_sha256: none$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-artifacts anchors packet pointers to an explicit record root", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const artifactDir = join(root, "artifacts");
+    const recordRoot = join(root, "worker");
+    const recordDir = join(recordRoot, "records", "openclaw-clawsweeper");
+    const itemsDir = join(recordDir, "items");
+    const closedDir = join(recordDir, "closed");
+    const plansDir = join(recordDir, "plans");
+    const packetsDir = join(recordDir, "decision-packets");
+    mkdirSync(artifactDir, { recursive: true });
+    writeFileSync(
+      join(artifactDir, "321.md"),
+      decisionReport({ maintainer_decision: JSON.stringify(productDecision) }),
+      "utf8",
+    );
+
+    execFileSync(process.execPath, [
+      "dist/clawsweeper.js",
+      "apply-artifacts",
+      "--target-repo",
+      "openclaw/clawsweeper",
+      "--artifact-dir",
+      artifactDir,
+      "--record-root",
+      recordRoot,
+      "--items-dir",
+      itemsDir,
+      "--closed-dir",
+      closedDir,
+      "--plans-dir",
+      plansDir,
+      "--decision-packets-dir",
+      packetsDir,
+      "--replay-closed-artifacts",
+      "--skip-reconcile",
+    ]);
+
+    assert.match(
+      readFileSync(join(itemsDir, "321.md"), "utf8"),
+      /^decision_packet_path: records\/openclaw-clawsweeper\/decision-packets\/321\.json$/m,
+    );
+    assert.ok(existsSync(join(packetsDir, "321.json")));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

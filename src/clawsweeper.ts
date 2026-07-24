@@ -27336,6 +27336,7 @@ function applyDecisionsCommand(args: Args): void {
 
 function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudget): void {
   repoFromArgs(args);
+  const recordRoot = resolve(stringArg(args.record_root, ROOT));
   const itemsDir = resolve(stringArg(args.items_dir, defaultItemsDir()));
   const closedDir = resolve(stringArg(args.closed_dir, defaultClosedDir()));
   const plansDir = resolve(stringArg(args.plans_dir, defaultPlansDir()));
@@ -27444,7 +27445,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       markdown: nextMarkdown,
       reportPath,
       packetsDir: decisionPacketsDir,
-      repoRoot: ROOT,
+      repoRoot: recordRoot,
       subjectState,
     }).markdown;
   const writeReportMarkdown = (
@@ -31128,6 +31129,7 @@ function botProofCommand(args: Args): void {
 function applyArtifactsCommand(args: Args): void {
   repoFromArgs(args);
   const artifactDir = resolve(stringArg(args.artifact_dir, "artifacts"));
+  const recordRoot = resolve(stringArg(args.record_root, ROOT));
   const itemsDir = resolve(stringArg(args.items_dir, defaultItemsDir()));
   const closedDir = resolve(stringArg(args.closed_dir, defaultClosedDir()));
   const plansDir = resolve(stringArg(args.plans_dir, defaultPlansDir()));
@@ -31342,7 +31344,7 @@ function applyArtifactsCommand(args: Args): void {
           markdown,
           reportPath,
           packetsDir: decisionPacketsDir,
-          repoRoot: ROOT,
+          repoRoot: recordRoot,
           subjectState: destination === "closed" ? "closed" : "open",
         }).markdown;
         activePublication.markdown = syncedMarkdown;
