@@ -532,16 +532,16 @@ export default {
     if (url.pathname === "/internal/exact-review/claimed-runs" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/claimed-runs");
     if (url.pathname === "/internal/exact-review/dead-letters/list" && request.method === "POST")
-      return authenticatedExactReviewQueueRequest(request, env, "/dead-letters/list");
+      return authenticatedExactReviewOperatorRequest(request, env, "/dead-letters/list");
     if (url.pathname === "/internal/exact-review/dead-letters/replay" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/dead-letters/replay");
     if (
       url.pathname === "/internal/exact-review/dead-letters/recover-fresh" &&
       request.method === "POST"
     )
-      return authenticatedExactReviewQueueRequest(request, env, "/dead-letters/recover-fresh");
+      return authenticatedExactReviewOperatorRequest(request, env, "/dead-letters/recover-fresh");
     if (url.pathname === "/internal/exact-review/dead-letters/resolve" && request.method === "POST")
-      return authenticatedExactReviewQueueRequest(request, env, "/dead-letters/resolve");
+      return authenticatedExactReviewOperatorRequest(request, env, "/dead-letters/resolve");
     if (url.pathname === "/internal/exact-review/publications/list" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/publications/list");
     if (
@@ -1572,6 +1572,25 @@ async function authenticatedExactReviewEnqueue(request, env) {
 async function authenticatedExactReviewQueueRequest(request, env, path: string) {
   const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
   if (!secret) return json({ error: "webhook_not_configured" }, 503);
+  const body = await request.text();
+  const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
+  if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText: body }))) {
+    return json({ error: "invalid_signature" }, 401);
+  }
+  return exactReviewQueueRequest(
+    env,
+    path,
+    new Request(`https://clawsweeper-exact-review-queue${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    }),
+  );
+}
+
+async function authenticatedExactReviewOperatorRequest(request, env, path: string) {
+  const secret = stringEnv(env.EXACT_REVIEW_OPERATOR_SECRET);
+  if (!secret) return json({ error: "operator_not_configured" }, 503);
   const body = await request.text();
   const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
   if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText: body }))) {

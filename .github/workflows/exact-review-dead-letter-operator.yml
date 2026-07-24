@@ -1,0 +1,99 @@
+name: Operate exact review dead letters
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Inventory, recover a fresh review, or resolve audited rows"
+        required: true
+        type: choice
+        options:
+          - inventory
+          - recover-fresh
+          - resolve
+        default: inventory
+      execute:
+        description: "Apply the selected mutation; false is read-only"
+        required: true
+        type: boolean
+        default: false
+      ids:
+        description: "One or two comma-separated dead-letter ids"
+        required: false
+        type: string
+      idempotency_key:
+        description: "Optional recovery key; defaults to this workflow run"
+        required: false
+        type: string
+      note:
+        description: "Resolution note required for resolve"
+        required: false
+        type: string
+
+concurrency:
+  group: exact-review-dead-letter-operator
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  operate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: exact-review-operator
+    env:
+      EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: main
+          filter: blob:none
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+
+      - name: Inventory or operate dead letters
+        env:
+          ACTION: ${{ inputs.action }}
+          EXECUTE: ${{ inputs.execute }}
+          IDS: ${{ inputs.ids }}
+          IDEMPOTENCY_KEY: ${{ inputs.idempotency_key }}
+          NOTE: ${{ inputs.note }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}
+        run: |
+          set -euo pipefail
+          args=(
+            --action "$ACTION"
+            --output ".artifacts/exact-review-dlq/inventory.json"
+          )
+          if [[ "$ACTION" != "inventory" ]]; then
+            args+=(--ids "$IDS")
+          fi
+          if [[ "$ACTION" == "recover-fresh" ]]; then
+            recovery_key="$IDEMPOTENCY_KEY"
+            if [[ -z "$recovery_key" ]]; then
+              recovery_key="operator:${GITHUB_RUN_ID}"
+            fi
+            args+=(--idempotency-key "$recovery_key")
+          fi
+          if [[ "$ACTION" == "resolve" ]]; then
+            args+=(--note "$NOTE")
+          fi
+          if [[ "$EXECUTE" == "true" ]]; then
+            args+=(--execute)
+          fi
+          node scripts/exact-review-dead-letter-operator.mjs "${args[@]}"
+
+      - name: Upload sanitized inventory
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: exact-review-dlq-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/exact-review-dlq/inventory.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30

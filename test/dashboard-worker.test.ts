@@ -1659,6 +1659,7 @@ test("fresh dead-letter recovery is available only through the signed internal r
   const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
   const env = {
     CLAWSWEEPER_WEBHOOK_SECRET: "test-token-placeholder",
+    EXACT_REVIEW_OPERATOR_SECRET: "operator-token-placeholder",
     EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
   };
   const body = JSON.stringify({ ids: ["missing-dead-letter"], idempotency_key: "operator:test" });
@@ -1674,7 +1675,21 @@ test("fresh dead-letter recovery is available only through the signed internal r
   );
   assert.equal(unsigned.status, 401);
 
-  const signature = `sha256=${createHmac("sha256", "test-token-placeholder").update(body).digest("hex")}`;
+  const sharedSignature = `sha256=${createHmac("sha256", "test-token-placeholder").update(body).digest("hex")}`;
+  const sharedSigned = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/dead-letters/recover-fresh",
+      {
+        method: "POST",
+        headers: { "x-clawsweeper-exact-review-signature": sharedSignature },
+        body,
+      },
+    ),
+    env,
+  );
+  assert.equal(sharedSigned.status, 401);
+
+  const signature = `sha256=${createHmac("sha256", "operator-token-placeholder").update(body).digest("hex")}`;
   const signed = await worker.fetch(
     new Request(
       "https://clawsweeper.openclaw.ai/internal/exact-review/dead-letters/recover-fresh",
