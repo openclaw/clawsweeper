@@ -117,7 +117,13 @@ test("proof-only failures retain their alert without blanking completed apply th
       lifecycle_started: false,
       outcome: "failure",
       arrivals: null,
-      results: { applied: null, closed: null, superseded: null, retried: null, dead_lettered: null },
+      results: {
+        applied: null,
+        closed: null,
+        superseded: null,
+        retried: null,
+        dead_lettered: null,
+      },
       observed_failure_kinds: ["workflow_failure"],
       failures: [{ kind: "workflow_failure", at: "2026-07-21T11:55:00Z" }],
     }),
@@ -507,7 +513,10 @@ test("apply telemetry producer keeps successful terminal steps distinct from led
     ["action_ledger_failure"],
   );
   assert.deepEqual((ledgerFailurePayload.event as { failures?: unknown }).failures, [
-    { kind: "action_ledger_failure", at: (ledgerFailurePayload.event as { occurred_at: string }).occurred_at },
+    {
+      kind: "action_ledger_failure",
+      at: (ledgerFailurePayload.event as { occurred_at: string }).occurred_at,
+    },
   ]);
 });
 

@@ -74,8 +74,7 @@ export function normalizeApplyObservabilityEvent(
   // v1 terminal records already retained in the status store predate the
   // lifecycle marker. They cannot represent an explicit in-progress start, so
   // retain them as terminal-only evidence instead of dropping the history.
-  const lifecycleStarted =
-    input.lifecycle_started === undefined ? false : input.lifecycle_started;
+  const lifecycleStarted = input.lifecycle_started === undefined ? false : input.lifecycle_started;
   const outcome = String(input.outcome || "");
   const runUrl = String(input.run_url || "").trim();
   if (
@@ -209,10 +208,7 @@ export function summarizeApplyObservability(options: {
   };
 }
 
-export function isCurrentApplyObservabilityEvent(
-  event: ApplyObservabilityEvent,
-  now = Date.now(),
-) {
+export function isCurrentApplyObservabilityEvent(event: ApplyObservabilityEvent, now = Date.now()) {
   const maxSilence =
     event.outcome === "in_progress"
       ? APPLY_OBSERVABILITY_IN_PROGRESS_MAX_SILENCE_MS
@@ -226,10 +222,7 @@ function isCompletedApplyResultEvent(event: ApplyObservabilityEvent) {
   // Pre-marker v1 terminal records are retained as lifecycle_started=false.
   // Include the ones with a real result ledger, while keeping proof-only
   // failures (which carry only null result fields) out of throughput totals.
-  return (
-    event.arrivals !== null ||
-    Object.values(event.results).some((value) => value !== null)
-  );
+  return event.arrivals !== null || Object.values(event.results).some((value) => value !== null);
 }
 
 function latestApplyObservations(events: readonly ApplyObservabilityEvent[]) {

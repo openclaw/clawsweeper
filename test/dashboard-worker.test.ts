@@ -3535,13 +3535,18 @@ test("apply observability accepts signed durable events and exposes the API summ
   assert.equal(summary.queue.ready, 2);
   assert.equal(summary.last_60_minutes.closed, 1);
   assert.equal(summary.failures.safe_close_blocked, 1);
-  assert.deepEqual(summary.repositories.map((entry) => entry.repo), ["openclaw/openclaw"]);
+  assert.deepEqual(
+    summary.repositories.map((entry) => entry.repo),
+    ["openclaw/openclaw"],
+  );
 
   const staleClawhubPayload = JSON.parse(body);
   staleClawhubPayload.event.repo = "openclaw/clawhub";
   staleClawhubPayload.event.run_id = "98766";
   staleClawhubPayload.event.occurred_at = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString();
-  staleClawhubPayload.event.started_at = new Date(Date.now() - 7 * 60 * 60 * 1000 - 60_000).toISOString();
+  staleClawhubPayload.event.started_at = new Date(
+    Date.now() - 7 * 60 * 60 * 1000 - 60_000,
+  ).toISOString();
   const staleClawhubBody = JSON.stringify(staleClawhubPayload);
   const staleClawhubSignature = `sha256=${createHmac("sha256", secret).update(staleClawhubBody).digest("hex")}`;
   const staleClawhubAccepted = await worker.fetch(
@@ -3562,16 +3567,19 @@ test("apply observability accepts signed durable events and exposes the API summ
       env,
     )
   ).json();
-  assert.deepEqual(withoutStaleClawhub.repositories.map((entry) => entry.repo), [
-    "openclaw/openclaw",
-  ]);
+  assert.deepEqual(
+    withoutStaleClawhub.repositories.map((entry) => entry.repo),
+    ["openclaw/openclaw"],
+  );
 
   const runningClawhubPayload = JSON.parse(body);
   runningClawhubPayload.event.repo = "openclaw/clawhub";
   runningClawhubPayload.event.run_id = "987661";
   runningClawhubPayload.event.outcome = "in_progress";
   runningClawhubPayload.event.lifecycle_started = true;
-  runningClawhubPayload.event.occurred_at = new Date(Date.now() - 6.5 * 60 * 60 * 1000).toISOString();
+  runningClawhubPayload.event.occurred_at = new Date(
+    Date.now() - 6.5 * 60 * 60 * 1000,
+  ).toISOString();
   runningClawhubPayload.event.started_at = runningClawhubPayload.event.occurred_at;
   const runningClawhubBody = JSON.stringify(runningClawhubPayload);
   const runningClawhubSignature = `sha256=${createHmac("sha256", secret).update(runningClawhubBody).digest("hex")}`;
@@ -3593,10 +3601,10 @@ test("apply observability accepts signed durable events and exposes the API summ
       env,
     )
   ).json();
-  assert.deepEqual(withRunningClawhub.repositories.map((entry) => entry.repo), [
-    "openclaw/openclaw",
-    "openclaw/clawhub",
-  ]);
+  assert.deepEqual(
+    withRunningClawhub.repositories.map((entry) => entry.repo),
+    ["openclaw/openclaw", "openclaw/clawhub"],
+  );
   assert.equal(withRunningClawhub.telemetry_complete, true);
 
   const currentClawhubPayload = JSON.parse(body);
@@ -3622,10 +3630,10 @@ test("apply observability accepts signed durable events and exposes the API summ
       env,
     )
   ).json();
-  assert.deepEqual(withClawhub.repositories.map((entry) => entry.repo), [
-    "openclaw/openclaw",
-    "openclaw/clawhub",
-  ]);
+  assert.deepEqual(
+    withClawhub.repositories.map((entry) => entry.repo),
+    ["openclaw/openclaw", "openclaw/clawhub"],
+  );
   assert.equal(withClawhub.telemetry_complete, true);
 });
 

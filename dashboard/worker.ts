@@ -1691,7 +1691,9 @@ async function applyObservabilityJson(request: Request, env: DashboardEnv) {
     .filter(Boolean);
   const now = Date.now();
   const observedRepositories = new Set(
-    events.filter((event) => isCurrentApplyObservabilityEvent(event, now)).map((event) => event.repo),
+    events
+      .filter((event) => isCurrentApplyObservabilityEvent(event, now))
+      .map((event) => event.repo),
   );
   const optionalRepositories = String(env.APPLY_OPTIONAL_TARGET_REPOS || "")
     .split(",")

@@ -2,10 +2,7 @@ import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { createHmac } from "node:crypto";
 
 const healthFile = optional("--health-file");
-const healthPath =
-  healthFile && existsSync(healthFile)
-    ? healthFile
-    : fallbackHealthPath();
+const healthPath = healthFile && existsSync(healthFile) ? healthFile : fallbackHealthPath();
 const health = healthPath ? JSON.parse(readFileSync(healthPath, "utf8")) : {};
 const telemetryContextPath = ".artifacts/apply-observability-context.json";
 const telemetryContext = existsSync(telemetryContextPath)
@@ -15,7 +12,9 @@ const now = new Date().toISOString();
 const lifecycleStart = process.env.APPLY_STARTED_AT || telemetryContext?.started_at;
 const startedAt = contextTimestamp(lifecycleStart, now);
 const lifecycleStarted = hasTimestamp(lifecycleStart, now);
-const outcome = ["in_progress", "success", "failure", "cancelled", "skipped"].includes(process.env.APPLY_OUTCOME)
+const outcome = ["in_progress", "success", "failure", "cancelled", "skipped"].includes(
+  process.env.APPLY_OUTCOME,
+)
   ? process.env.APPLY_OUTCOME
   : "failure";
 const inProgress = outcome === "in_progress";
@@ -50,9 +49,7 @@ const observedFailureKinds = [
 const failures = [
   ...(outcome === "failure" ? [{ kind: "workflow_failure", at: now }] : []),
   ...(safeCloseBlocked ? [{ kind: "safe_close_blocked", at: now }] : []),
-  ...(actionLedgerFailed
-    ? [{ kind: "action_ledger_failure", at: now }]
-    : []),
+  ...(actionLedgerFailed ? [{ kind: "action_ledger_failure", at: now }] : []),
   ...(statePublicationFailed ? [{ kind: "state_publication_failure", at: now }] : []),
 ];
 
@@ -143,7 +140,9 @@ function latestCheckpointHealthPath() {
 }
 
 function contextTimestamp(value, fallback) {
-  return hasTimestamp(value, fallback) ? new Date(Date.parse(String(value))).toISOString() : fallback;
+  return hasTimestamp(value, fallback)
+    ? new Date(Date.parse(String(value))).toISOString()
+    : fallback;
 }
 
 function hasTimestamp(value, now) {
