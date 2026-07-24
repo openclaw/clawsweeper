@@ -5049,6 +5049,246 @@ test("exact-review queue admits at most one active item per target repository", 
   }
 });
 
+test("exact-review review retries stop at the attempt ceiling and park the item", async () => {
+  const originalFetch = globalThis.fetch;
+  const storage = new MemoryDurableStorage();
+  const dispatched: Record<string, unknown>[] = [];
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml") {
+      return jsonResponse({ state: "active" });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation")
+      return jsonResponse({ id: 999 });
+    if (url.pathname === "/app/installations/999/access_tokens") {
+      return jsonResponse({ token: "dispatch-token" });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
+      dispatched.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  const itemKey = "openclaw/openclaw#113341";
+  try {
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
+      },
+    );
+    assert.equal(
+      (
+        await queue.fetch(
+          buildExactReviewQueueRequest(
+            "ceiling-1",
+            113_341,
+            "synchronize",
+            "pull_request",
+            "openclaw/openclaw",
+            {
+              sourceHeadSha: `956eaead7f${"0".repeat(30)}`,
+              sourceHeadVerified: true,
+              sourceAuthoritySeq: 1,
+              sourceUpdatedAt: new Date().toISOString(),
+            },
+          ),
+        )
+      ).status,
+      202,
+    );
+
+    const failOnce = async (cycle: number) => {
+      const ready = (await storage.get("exact-review-queue")) as {
+        items: Record<string, { state: string; nextAttemptAt: number }>;
+      };
+      if (ready.items[itemKey]?.state === "pending") {
+        ready.items[itemKey].nextAttemptAt = Date.now() - 1;
+        await storage.put("exact-review-queue", ready);
+      }
+      const before = dispatched.length;
+      await queue.alarm();
+      if (dispatched.length === before) return false;
+      const payload = dispatched.at(-1)?.client_payload as {
+        queue_lease_id: string;
+        queue_claim: { item_key: string; lease_revision: number };
+      };
+      const claim = await queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/claim", {
+          method: "POST",
+          body: JSON.stringify({
+            lease_id: payload.queue_lease_id,
+            item_key: payload.queue_claim.item_key,
+            lease_revision: payload.queue_claim.lease_revision,
+            run_id: `90000${cycle}`,
+            run_attempt: 1,
+          }),
+        }),
+      );
+      assert.equal(claim.status, 200);
+      const claimed = (await claim.json()) as { claim_generation: number };
+      const completed = await queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/complete", {
+          method: "POST",
+          body: JSON.stringify({
+            lease_id: payload.queue_lease_id,
+            item_key: payload.queue_claim.item_key,
+            lease_revision: payload.queue_claim.lease_revision,
+            claim_generation: claimed.claim_generation,
+            run_id: `90000${cycle}`,
+            run_attempt: 1,
+            outcome: "failure",
+          }),
+        }),
+      );
+      assert.equal(completed.status, 200);
+      return true;
+    };
+
+    const readItem = async () => {
+      const state = (await storage.get("exact-review-queue")) as {
+        items: Record<
+          string,
+          { state: string; attempts: number; nextAttemptAt: number; parkedReason?: string }
+        >;
+      };
+      return state.items[itemKey];
+    };
+
+    for (let cycle = 1; cycle <= 7; cycle += 1) {
+      assert.equal(await failOnce(cycle), true);
+      const item = await readItem();
+      assert.equal(item.state, "pending");
+      assert.equal(item.attempts, cycle);
+      assert.equal(item.parkedReason, undefined);
+      assert.ok(item.nextAttemptAt > Date.now());
+    }
+
+    assert.equal(await failOnce(8), true);
+    const parked = await readItem();
+    assert.equal(parked.state, "parked");
+    assert.equal(parked.attempts, 8);
+    assert.equal(parked.parkedReason, "review_retry_exhausted");
+    assert.equal(dispatched.length, 8);
+
+    for (let cycle = 9; cycle <= 11; cycle += 1) {
+      assert.equal(await failOnce(cycle), false);
+    }
+    assert.equal(dispatched.length, 8);
+    assert.equal((await readItem()).state, "parked");
+
+    const stats = (await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json()) as { lanes: { review: { parked: number; pending: number } } };
+    assert.equal(stats.lanes.review.parked, 1);
+    assert.equal(stats.lanes.review.pending, 0);
+
+    const status = (await (
+      await queue.fetch(
+        new Request(
+          "https://clawsweeper-exact-review-queue/item-status?target_repo=openclaw%2Fopenclaw&item_number=113341",
+        ),
+      )
+    ).json()) as { items: Array<{ state: string; parked_reason: string | null }> };
+    assert.deepEqual(
+      status.items.map((entry) => [entry.state, entry.parked_reason]),
+      [["parked", "review_retry_exhausted"]],
+    );
+
+    assert.equal(
+      (
+        await queue.fetch(
+          buildExactReviewQueueRequest(
+            "ceiling-rescue",
+            113_341,
+            "synchronize",
+            "pull_request",
+            "openclaw/openclaw",
+            {
+              sourceHeadSha: `1234abcd56${"0".repeat(30)}`,
+              sourceHeadVerified: true,
+              sourceAuthoritySeq: 2,
+              sourceUpdatedAt: new Date(Date.now() + 60_000).toISOString(),
+            },
+          ),
+        )
+      ).status,
+      202,
+    );
+    const rescued = await readItem();
+    assert.equal(rescued.state, "pending");
+    assert.equal(rescued.attempts, 0);
+    assert.equal(rescued.parkedReason, undefined);
+    assert.equal(await failOnce(12), true);
+    assert.equal(dispatched.length, 9);
+    const afterRescue = await readItem();
+    assert.equal(afterRescue.state, "pending");
+    assert.equal(afterRescue.attempts, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("exact-review requeue_latest and publication completions ignore the review ceiling", async () => {
+  const storage = new MemoryDurableStorage();
+  const review = leasedExactReviewQueueItem(113_342, "9130");
+  const publication = leasedExactReviewPublicationItem(113_343, "9131");
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: {
+      [review.key]: { ...review, attempts: 7, reviewFailureAttempts: 7 },
+      [publication.key]: { ...publication, attempts: 40, reviewFailureAttempts: 40 },
+    },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const completion = (item: { key: string }, runId: string, extra: Record<string, unknown>) =>
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: `lease-${item.key.split("#")[1].split("@")[0]}`,
+        item_key: item.key,
+        lease_revision: 1,
+        claim_generation: 1,
+        run_id: runId,
+        run_attempt: 1,
+        ...extra,
+      }),
+    });
+
+  assert.equal(
+    (await queue.fetch(completion(review, "9130", { outcome: "success", requeue_latest: true })))
+      .status,
+    200,
+  );
+  assert.equal(
+    (await queue.fetch(completion(publication, "9131", { outcome: "failure" }))).status,
+    200,
+  );
+
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<
+      string,
+      { state: string; attempts: number; reviewFailureAttempts?: number; parkedReason?: string }
+    >;
+  };
+  assert.equal(state.items[review.key].state, "pending");
+  assert.equal(state.items[review.key].attempts, 0);
+  assert.equal(state.items[review.key].reviewFailureAttempts, 0);
+  assert.equal(state.items[review.key].parkedReason, undefined);
+  assert.equal(state.items[publication.key].state, "pending");
+  assert.equal(state.items[publication.key].attempts, 41);
+  assert.equal(state.items[publication.key].parkedReason, undefined);
+});
+
 test("exact-review queue can use the global capacity for one target", async () => {
   const originalFetch = globalThis.fetch;
   const storage = new MemoryDurableStorage();

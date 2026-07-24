@@ -104,7 +104,7 @@ export type ExactReviewQueueItem = {
   claimProtocolVersion?: 1 | 2;
   dispatchedAt?: number;
   claimedAt?: number;
-  parkedReason?: "dead_letter_capacity" | "dispatch_rejected";
+  parkedReason?: "dead_letter_capacity" | "dispatch_rejected" | "review_retry_exhausted";
   dispatchFailureStatus?: number;
   dispatchFailureClass?: ExactReviewDispatchFailureClass;
   dispatchFailureAt?: number;
@@ -112,6 +112,7 @@ export type ExactReviewQueueItem = {
   lastFailureReason?: ExactReviewPublicationReasonCode;
   firstFailureAt?: number;
   publicationFailureAttempts?: number;
+  reviewFailureAttempts?: number;
 };
 export type ExactReviewCompletionOutcome = "success" | "failure" | "cancelled";
 type ExactReviewPublicationFailureKind = "github_rate_limit" | "github_transient";
@@ -340,6 +341,7 @@ const EXACT_REVIEW_PUBLICATION_TRANSIENT_RETRY_LIMIT = 12;
 const EXACT_REVIEW_PUBLICATION_PERMANENT_RETRY_LIMIT = 3;
 const EXACT_REVIEW_PUBLICATION_UNKNOWN_RETRY_LIMIT = 5;
 const EXACT_REVIEW_PUBLICATION_ARTIFACT_RETRY_LIMIT = 3;
+const EXACT_REVIEW_RETRY_LIMIT = 8;
 const EXACT_REVIEW_RECONCILE_RUN_LIMIT = 128;
 const EXACT_REVIEW_RECONCILE_CLAIM_MATCH_LIMIT = EXACT_REVIEW_RECONCILE_RUN_LIMIT * 2;
 export const EXACT_REVIEW_RECONCILE_CONCURRENCY = 8;
@@ -1060,6 +1062,7 @@ export class ExactReviewQueue {
               clearExactReviewDispatchFailure(current);
               current.attempts = 0;
               current.publicationFailureAttempts = 0;
+              current.reviewFailureAttempts = 0;
               current.firstFailureAt = undefined;
               current.lastFailureReason = undefined;
             }
@@ -1496,7 +1499,7 @@ export class ExactReviewQueue {
               env: this.env,
             })
           : {
-              requeued: finishExactReviewQueueItem(
+              ...finishExactReviewQueueItem(
                 state,
                 item,
                 now,
@@ -1506,7 +1509,6 @@ export class ExactReviewQueue {
               ),
               retried: outcome !== "success",
               refreshed: false,
-              parked: false,
               deadLetter: undefined,
             };
       const { requeued } = completionResult;
@@ -1710,9 +1712,9 @@ export class ExactReviewQueue {
       const items = matches.map((item) => ({
         lane: exactReviewQueueLane(item),
         state: item.state,
+        parked_reason: item.parkedReason ?? null,
         revision: item.revision,
         attempts: item.attempts,
-        parked_reason: item.parkedReason || null,
         dispatch_failure_status: item.dispatchFailureStatus ?? null,
         dispatch_failure_class: item.dispatchFailureClass || null,
         dispatch_failure_at: item.dispatchFailureAt
@@ -1774,8 +1776,14 @@ export class ExactReviewQueue {
         );
         if (matches.length !== 1) continue;
         const item = matches[0];
-        const didRequeue = finishExactReviewQueueItem(state, item, now, run.outcome);
+        const { requeued: didRequeue, parked } = finishExactReviewQueueItem(
+          state,
+          item,
+          now,
+          run.outcome,
+        );
         reconciled += 1;
+        if (parked) continue;
         if (didRequeue) {
           requeued += 1;
           if (!exactReviewQueueIsPublication(item) && run.outcome !== "success") {
@@ -6544,25 +6552,37 @@ function finishExactReviewQueueItem(
   const oneShotRecovery =
     item.leaseDecision?.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION;
   const requeued = (!oneShotRecovery && retryingFailure) || hasNewerRevision || requeueLatest;
-  if (requeued) {
-    clearExactReviewLease(item);
-    item.state = "pending";
-    if (retryingFailure && !hasNewerRevision && !requeueLatest) {
-      item.attempts += 1;
-      item.nextAttemptAt = Math.max(
-        exactReviewQueueEnqueueAttemptAt(state, now),
-        now + exactReviewRetryDelayMs(item.attempts),
-        hasNewerRevision ? 0 : requestedRetryAt,
-      );
-    } else {
-      item.nextAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
-      item.attempts = 0;
-    }
-    item.updatedAt = now;
-  } else {
+  if (!requeued) {
     delete state.items[item.key];
+    return { requeued: false, parked: false };
   }
-  return requeued;
+  clearExactReviewLease(item);
+  item.state = "pending";
+  if (retryingFailure && !hasNewerRevision && !requeueLatest) {
+    item.attempts += 1;
+    if (!exactReviewQueueIsPublication(item)) {
+      const failureAttempts = Number(item.reviewFailureAttempts || 0) + 1;
+      item.reviewFailureAttempts = failureAttempts;
+      if (failureAttempts >= EXACT_REVIEW_RETRY_LIMIT) {
+        item.state = "parked";
+        item.parkedReason = "review_retry_exhausted";
+        item.updatedAt = now;
+        return { requeued: false, parked: true };
+      }
+    }
+    item.nextAttemptAt = Math.max(
+      exactReviewQueueEnqueueAttemptAt(state, now),
+      now + exactReviewRetryDelayMs(item.attempts),
+      hasNewerRevision ? 0 : requestedRetryAt,
+    );
+  } else {
+    item.nextAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
+    item.attempts = 0;
+    item.reviewFailureAttempts = 0;
+    item.parkedReason = undefined;
+  }
+  item.updatedAt = now;
+  return { requeued: true, parked: false };
 }
 
 function exactReviewCompletionRetryAt(value, now: number): number | null {
@@ -6680,6 +6700,7 @@ function reclaimExpiredExactReviewLease(
   if (hasNewerRevision) {
     item.attempts = 0;
     item.publicationFailureAttempts = 0;
+    item.reviewFailureAttempts = 0;
     item.firstFailureAt = undefined;
     item.lastFailureReason = undefined;
   }
@@ -6742,6 +6763,7 @@ function refreshExactReviewPublicationItem(
     );
     current.attempts = 0;
     current.publicationFailureAttempts = 0;
+    current.reviewFailureAttempts = 0;
     current.firstFailureAt = undefined;
     current.lastFailureReason = undefined;
     return;
