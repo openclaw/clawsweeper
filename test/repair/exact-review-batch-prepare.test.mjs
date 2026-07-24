@@ -6,11 +6,48 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  createSerialTaskQueue,
   createIsolatedStateClone,
   importPreparedMutationObjects,
   run,
   runBoundedPool,
 } from "../../scripts/prepare-exact-review-batch.mjs";
+
+test("shared Git object mutations run serially and recover after a failed task", async () => {
+  const runSerial = createSerialTaskQueue();
+  let active = 0;
+  let peak = 0;
+  const order = [];
+  const tasks = [0, 1, 2, 3].map((index) =>
+    runSerial(async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      order.push(`start-${index}`);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      order.push(`end-${index}`);
+      if (index === 1) throw new Error("expected failure");
+      return index;
+    }),
+  );
+  const results = await Promise.allSettled(tasks);
+
+  assert.equal(peak, 1);
+  assert.deepEqual(order, [
+    "start-0",
+    "end-0",
+    "start-1",
+    "end-1",
+    "start-2",
+    "end-2",
+    "start-3",
+    "end-3",
+  ]);
+  assert.deepEqual(
+    results.map(({ status }) => status),
+    ["fulfilled", "rejected", "fulfilled", "fulfilled"],
+  );
+});
 
 test("bounded preparation never exceeds four workers and preserves manifest order", async () => {
   const completionOrder = [];

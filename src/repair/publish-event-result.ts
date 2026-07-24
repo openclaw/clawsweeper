@@ -58,6 +58,8 @@ import {
 } from "./state-publication-mutation.js";
 
 type EventOptions = {
+  codeRoot: string;
+  workRoot: string;
   targetRepo: string;
   itemNumber: string;
   closeReasons: string;
@@ -148,10 +150,8 @@ async function publishEventResult(options: EventOptions): Promise<void> {
   captureEventBaseSnapshot(recordStore);
   fs.rmSync(options.reportPath, { force: true });
 
-  runStreaming("pnpm", [
-    "run",
+  runClawsweeper(options, [
     "apply-artifacts",
-    "--",
     "--target-repo",
     options.targetRepo,
     "--artifact-dir",
@@ -446,9 +446,7 @@ function prepareBatchMutation({
 
 function runApplyDecisions(options: EventOptions): void {
   const args = [
-    "run",
     "apply-decisions",
-    "--",
     "--target-repo",
     options.targetRepo,
     "--item-numbers",
@@ -478,7 +476,7 @@ function runApplyDecisions(options: EventOptions): void {
     "--report-path",
     options.reportPath,
   ];
-  runStreaming("pnpm", args);
+  runClawsweeper(options, args);
 }
 
 function publishSnapshot({
@@ -720,6 +718,8 @@ function candidateEventTupleState(paths: EventRecordPaths): "closed" | "open" | 
 function eventOptionsFromEnv(): EventOptions {
   const workRoot = resolve(process.env.EXACT_REVIEW_WORK_ROOT || ".");
   return {
+    codeRoot: resolve(process.env.CLAWSWEEPER_CODE_ROOT || process.env.GITHUB_WORKSPACE || "."),
+    workRoot,
     targetRepo: envValue("TARGET_REPO"),
     itemNumber: envValue("ITEM_NUMBER"),
     closeReasons:
@@ -918,9 +918,16 @@ function envValue(name: string): string {
   return value;
 }
 
-function runStreaming(command: string, args: readonly string[]): void {
-  const child = spawnSync(command, [...args], { stdio: "inherit", env: process.env });
-  if (child.status !== 0) throw new Error(`${command} ${args.join(" ")} exited ${child.status}`);
+function runClawsweeper(options: EventOptions, args: readonly string[]): void {
+  const cli = join(options.codeRoot, "dist/clawsweeper.js");
+  const child = spawnSync(process.execPath, [cli, ...args], {
+    cwd: options.workRoot,
+    stdio: "inherit",
+    env: process.env,
+  });
+  if (child.status !== 0) {
+    throw new Error(`${process.execPath} ${cli} ${args.join(" ")} exited ${child.status}`);
+  }
 }
 
 function sleep(milliseconds: number): Promise<void> {

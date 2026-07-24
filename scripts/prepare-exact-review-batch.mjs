@@ -51,6 +51,15 @@ export async function runBoundedPool(items, concurrency, worker) {
   return { results, peak };
 }
 
+export function createSerialTaskQueue() {
+  let tail = Promise.resolve();
+  return (task) => {
+    const current = tail.then(task);
+    tail = current.catch(() => {});
+    return current;
+  };
+}
+
 export async function createIsolatedStateClone({ stateRoot, destination, baselineSha, timeoutMs }) {
   const remoteUrl = (await capture("git", ["-C", stateRoot, "remote", "get-url", "origin"])).trim();
   if (!remoteUrl) throw new Error("state origin URL is required");
@@ -196,6 +205,9 @@ async function controller() {
   const durations = [];
   let timeouts = 0;
   let admitted = 0;
+  // Worker preparation is parallel, but every imported object lands in the
+  // same state repository. Keep that shared Git mutation boundary serial.
+  const importObjects = createSerialTaskQueue();
 
   const { peak } = await runBoundedPool(items, concurrency, async (item, index) => {
     const outcomePath = checkedOutcomePath(workspace, item.outcomePath);
@@ -232,12 +244,14 @@ async function controller() {
       if (timedOut) timeouts += 1;
       if (existsSync(outcomePath)) {
         try {
-          await importPreparedMutationObjects({
-            stateRoot,
-            stateClone,
-            outcomePath,
-            timeoutMs: importTimeout(itemDeadline),
-          });
+          await importObjects(() =>
+            importPreparedMutationObjects({
+              stateRoot,
+              stateClone,
+              outcomePath,
+              timeoutMs: importTimeout(itemDeadline),
+            }),
+          );
         } catch (error) {
           writeFailure(outcomePath, "retryable_failure", "unknown_failure");
           console.error(
@@ -372,9 +386,10 @@ async function worker(itemPath, root, stateClone, workspace) {
   if (existsSync(report)) cpSync(report, join(eventArtifacts, `${itemNumber}.md`));
 
   result = await run(process.execPath, [join(workspace, "dist/repair/publish-event-result.js")], {
-    cwd: workspace,
+    cwd: root,
     env: {
       ...process.env,
+      CLAWSWEEPER_CODE_ROOT: workspace,
       CLAWSWEEPER_STATE_DIR: stateClone,
       EXACT_REVIEW_WORK_ROOT: root,
       TARGET_REPO: targetRepo,

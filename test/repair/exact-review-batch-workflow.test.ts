@@ -8,6 +8,7 @@ const path = ".github/workflows/exact-review-batch-publish.yml";
 const source = readFileSync(path, "utf8");
 const cliSource = readFileSync("src/repair/exact-review-batch-cli.ts", "utf8");
 const prepareSource = readFileSync("scripts/prepare-exact-review-batch.mjs", "utf8");
+const publisherSource = readFileSync("src/repair/publish-event-result.ts", "utf8");
 const workflow = YAML.parse(source) as {
   on: {
     schedule?: unknown;
@@ -75,11 +76,20 @@ test("batch workflow uses owner-scoped mutation credentials and isolated state c
   assert.match(prepareSource, /"clone",[\s\S]*?"--shared",[\s\S]*?"--no-checkout"/);
   assert.match(prepareSource, /http\\\.\.\*\\\.extraheader/);
   assert.match(prepareSource, /CLAWSWEEPER_STATE_DIR: stateClone/);
+  assert.match(prepareSource, /CLAWSWEEPER_CODE_ROOT: workspace/);
   assert.match(prepareSource, /EXACT_REVIEW_WORK_ROOT: root/);
+  assert.match(prepareSource, /publish-event-result\.js"\)\], \{\s*cwd: root,\s*env:/);
   assert.match(
     prepareSource,
-    /await importPreparedMutationObjects\(\{[\s\S]*?stateRoot,[\s\S]*?stateClone,[\s\S]*?outcomePath,/,
+    /await importObjects\(\(\) =>\s*importPreparedMutationObjects\(\{[\s\S]*?stateRoot,[\s\S]*?stateClone,[\s\S]*?outcomePath,/,
   );
+  assert.match(publisherSource, /codeRoot: resolve\(process\.env\.CLAWSWEEPER_CODE_ROOT/);
+  assert.match(publisherSource, /const cli = join\(options\.codeRoot, "dist\/clawsweeper\.js"\)/);
+  assert.match(
+    publisherSource,
+    /spawnSync\(process\.execPath, \[cli, \.\.\.args\], \{\s*cwd: options\.workRoot,/,
+  );
+  assert.doesNotMatch(publisherSource, /runStreaming\("pnpm"/);
 });
 
 test("batch preparation is bounded, heartbeat-fenced, and deterministically aggregated", () => {
@@ -92,6 +102,8 @@ test("batch preparation is bounded, heartbeat-fenced, and deterministically aggr
   assert.match(prepareSource, /const MAX_OUTCOME_BYTES = 2 \* 1024 \* 1024/);
   assert.match(prepareSource, /Math\.min\(itemTimeoutMs, remainingTimeout\(deadline\)\)/);
   assert.match(prepareSource, /timeoutMs: importTimeout\(deadline\)/);
+  assert.match(prepareSource, /const importObjects = createSerialTaskQueue\(\)/);
+  assert.match(prepareSource, /await importObjects\(\(\) =>\s*importPreparedMutationObjects\(/);
   assert.match(prepareSource, /"pack-objects", "--stdout", "--revs", "--no-reuse-object"/);
   assert.match(
     prepareSource,
