@@ -1342,3 +1342,17 @@ test("publishing the durable review comment sweeps superseded placeholders", () 
   const applyWindow = source.slice(applyStart, applyStart + 1200);
   assert.match(applyWindow, /cleanupSupersededReviewPlaceholderComments\(\{/);
 });
+
+test("placeholder sweep retries on every apply pass independent of comment body sync", () => {
+  const source = readFileSync("src/clawsweeper.ts", "utf8");
+  const earlyLeaseStart = source.indexOf("const earlyLeaseState = refreshReviewStartLeaseState();");
+  assert.ok(earlyLeaseStart >= 0);
+  const needsReviewCommentSyncStart = source.indexOf(
+    "let needsReviewCommentSync = shouldSyncReviewComment({",
+    earlyLeaseStart,
+  );
+  assert.ok(needsReviewCommentSyncStart > earlyLeaseStart);
+  const earlyWindow = source.slice(earlyLeaseStart, needsReviewCommentSyncStart);
+  assert.match(earlyWindow, /cleanupSupersededReviewPlaceholderComments\(\{/);
+  assert.match(earlyWindow, /comments:\s*earlyLeaseState\.comments/);
+});
