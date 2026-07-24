@@ -149,7 +149,10 @@ test("batch failure cleanup completes manifest fences without a queue fetch", ()
 
 test("batch commit rewrites quarantined outcome files before the receipt is written", () => {
   const commitSource = /async function commit\(\) \{([\s\S]*?)\n\}/.exec(cliSource)?.[1] ?? "";
-  assert.match(commitSource, /outcomePathByItemKey\.set\(current\.itemKey, manifestItem\.outcomePath\)/);
+  assert.match(
+    commitSource,
+    /outcomePathByItemKey\.set\(current\.itemKey, manifestItem\.outcomePath\)/,
+  );
   const quarantineRewrite = commitSource.indexOf("for (const itemKey of quarantinedItemKeys)");
   const receiptWrite = commitSource.indexOf("const receiptPath = batchReceiptPath();");
   assert.ok(quarantineRewrite >= 0 && receiptWrite >= 0 && quarantineRewrite < receiptWrite);

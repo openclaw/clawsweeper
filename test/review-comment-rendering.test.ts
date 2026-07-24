@@ -1345,9 +1345,7 @@ test("publishing the durable review comment sweeps superseded placeholders", () 
 
 test("placeholder sweep retries on every apply pass independent of comment body sync", () => {
   const source = readFileSync("src/clawsweeper.ts", "utf8");
-  const earlyLeaseStart = source.indexOf(
-    "const earlyLeaseState = refreshReviewStartLeaseState();",
-  );
+  const earlyLeaseStart = source.indexOf("const earlyLeaseState = refreshReviewStartLeaseState();");
   assert.ok(earlyLeaseStart >= 0);
   const needsReviewCommentSyncStart = source.indexOf(
     "let needsReviewCommentSync = shouldSyncReviewComment({",

@@ -260,7 +260,56 @@ test("review placeholder runner escalates orphans stuck well beyond the minimum 
     }
     if (url.pathname === "/repos/openclaw/openclaw/issues/301/labels") {
       assert.equal(init?.method, "POST");
+      const headers = new Headers(init?.headers);
+      assert.equal(headers.get("authorization"), "Bearer test-target-write-token");
       escalatedLabels.push({ number: 301, body: JSON.parse(String(init?.body ?? "{}")) });
+      return Response.json([], { status: 200 });
+    }
+    if (url.pathname === "/internal/exact-review/enqueue") {
+      return Response.json({ ok: true, queued: true }, { status: 202 });
+    }
+    throw new Error(`unexpected request: ${url.pathname}`);
+  };
+
+  const summary = await runReviewPlaceholderRecovery({
+    env: {
+      GH_TOKEN: "test-token-placeholder",
+      TARGET_WRITE_TOKEN: "test-target-write-token",
+      CLAWSWEEPER_WEBHOOK_SECRET: "test-token-placeholder",
+      GITHUB_API_URL: "https://api.github.test",
+      QUEUE_URL: "https://queue.test",
+      TARGET_REPO: "openclaw/openclaw",
+      REVIEW_PLACEHOLDER_STUCK_HOURS: "12",
+      REVIEW_PLACEHOLDER_MAX_RECOVERIES: "2",
+    },
+    fetchImpl: mockFetch as typeof fetch,
+    now,
+  });
+
+  assert.deepEqual(summary, { checked: 2, orphaned: 2, enqueued: 2, escalated: 1, errors: 0 });
+  assert.deepEqual(escalatedLabels, [
+    { number: 301, body: { labels: ["clawsweeper-recovery-stuck"] } },
+  ]);
+});
+
+test("stuck escalation without a target write token is a visible error, not a wrong-identity write", async () => {
+  let labelRequests = 0;
+  const mockFetch = async (input: string | URL | Request): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    if (url.pathname === "/search/issues") {
+      return Response.json({ items: [{ number: 311 }] });
+    }
+    if (url.pathname === "/repos/openclaw/openclaw/issues/311/comments") {
+      return Response.json([
+        {
+          body: REVIEW_PLACEHOLDER_MARKER,
+          created_at: "2026-07-16T00:00:00.000Z",
+          user: bot,
+        },
+      ]);
+    }
+    if (url.pathname.endsWith("/labels")) {
+      labelRequests += 1;
       return Response.json([], { status: 200 });
     }
     if (url.pathname === "/internal/exact-review/enqueue") {
@@ -277,16 +326,13 @@ test("review placeholder runner escalates orphans stuck well beyond the minimum 
       QUEUE_URL: "https://queue.test",
       TARGET_REPO: "openclaw/openclaw",
       REVIEW_PLACEHOLDER_STUCK_HOURS: "12",
-      REVIEW_PLACEHOLDER_MAX_RECOVERIES: "2",
     },
     fetchImpl: mockFetch as typeof fetch,
     now,
   });
 
-  assert.deepEqual(summary, { checked: 2, orphaned: 2, enqueued: 2, escalated: 1, errors: 0 });
-  assert.deepEqual(escalatedLabels, [
-    { number: 301, body: { labels: ["clawsweeper-recovery-stuck"] } },
-  ]);
+  assert.deepEqual(summary, { checked: 1, orphaned: 1, enqueued: 1, escalated: 0, errors: 1 });
+  assert.equal(labelRequests, 0);
 });
 
 test("placeholder refreshed recently by an active recovery is not orphaned", () => {

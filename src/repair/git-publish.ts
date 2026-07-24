@@ -2467,7 +2467,10 @@ function isCommitRefsTransactionFailure(result: GitRunResult): boolean {
 }
 
 function commitRefsRetryDelayMs(attempt: number): number {
-  return Math.min(STATE_PUBLISH_LEASE_WAIT_MS * 2 ** (attempt - 1), STATE_PUBLISH_LEASE_MAX_WAIT_MS);
+  return Math.min(
+    STATE_PUBLISH_LEASE_WAIT_MS * 2 ** (attempt - 1),
+    STATE_PUBLISH_LEASE_MAX_WAIT_MS,
+  );
 }
 
 function pushStateAndReceiptAfterCommitRefsFailure(

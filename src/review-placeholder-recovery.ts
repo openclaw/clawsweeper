@@ -131,6 +131,9 @@ export async function runReviewPlaceholderRecovery(
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? new Date();
   const token = env.GH_TOKEN ?? env.GITHUB_TOKEN ?? "";
+  // Label mutations target the review repository, which the workflow-scoped
+  // GITHUB_TOKEN cannot write to; escalation needs the app installation token.
+  const targetWriteToken = env.TARGET_WRITE_TOKEN ?? "";
   const { CLAWSWEEPER_WEBHOOK_SECRET: webhookSecret = "" } = env;
   const repo = env.TARGET_REPO ?? "openclaw/openclaw";
   const targetBranch = env.TARGET_BRANCH ?? "main";
@@ -231,11 +234,14 @@ export async function runReviewPlaceholderRecovery(
     }
   };
   const addLabel = async (number: number, label: string): Promise<void> => {
+    if (!targetWriteToken) {
+      throw new Error("TARGET_WRITE_TOKEN is missing; cannot write labels on the target repo");
+    }
     const response = await fetchImpl(`${apiUrl}/repos/${repo}/issues/${number}/labels`, {
       method: "POST",
       headers: {
         accept: "application/vnd.github+json",
-        authorization: `Bearer ${token}`,
+        authorization: `Bearer ${targetWriteToken}`,
         "content-type": "application/json",
         "x-github-api-version": "2022-11-28",
       },

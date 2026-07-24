@@ -176,7 +176,8 @@ async function commit() {
         plans,
       });
       stateCommitSha = committed.commitSha ?? undefined;
-      if (committed.outcome === "committed") recorder?.recordMaterializedCommit(committed.itemCount);
+      if (committed.outcome === "committed")
+        recorder?.recordMaterializedCommit(committed.itemCount);
       recorder?.finalize(committed.outcome === "committed" ? "materialized" : "unchanged");
       stateWriter = recorder?.toTerminalObject() ?? undefined;
       quarantined = committed.quarantinedItems;
