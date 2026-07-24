@@ -4,10 +4,10 @@ import test from "node:test";
 
 import {
   isOrphanedReviewPlaceholder,
-  latestClawSweeperBotComment,
   REVIEW_PLACEHOLDER_MARKER,
   reviewPlaceholderRecoveryFailureReason,
   runReviewPlaceholderRecovery,
+  selectReviewPlaceholderComment,
 } from "../dist/review-placeholder-recovery.js";
 
 const now = new Date("2026-07-17T12:00:00.000Z");
@@ -53,26 +53,38 @@ test("review placeholder orphan detection requires the bot marker and minimum ag
   );
 });
 
-test("review placeholder detection considers only the latest ClawSweeper bot comment", () => {
-  const latest = latestClawSweeperBotComment([
-    {
-      body: REVIEW_PLACEHOLDER_MARKER,
-      created_at: "2026-07-17T08:00:00.000Z",
-      user: bot,
-    },
-    {
-      body: "ClawSweeper review: keep open.",
-      created_at: "2026-07-17T09:00:00.000Z",
-      user: bot,
-    },
-    {
-      body: REVIEW_PLACEHOLDER_MARKER,
-      created_at: "2026-07-17T11:00:00.000Z",
-      user: { login: "someone-else", type: "User" },
-    },
-  ]);
-  assert.equal(latest?.body, "ClawSweeper review: keep open.");
-  assert.equal(isOrphanedReviewPlaceholder(latest, now, 2), false);
+test("review placeholder selection matches the status marker, not the newest bot comment", () => {
+  const placeholder = {
+    id: 11,
+    body: `${REVIEW_PLACEHOLDER_MARKER}\n\n<!-- clawsweeper-review-status:started item=42 sha=abc v=1 -->`,
+    created_at: "2026-07-17T06:00:00.000Z",
+    updated_at: "2026-07-17T06:00:00.000Z",
+    user: bot,
+  };
+  const editedVerdict = {
+    id: 12,
+    body: "ClawSweeper review: keep open.\n\n<!-- clawsweeper-review item=42 v=1 -->",
+    created_at: "2026-07-16T16:00:00.000Z",
+    updated_at: "2026-07-17T11:50:00.000Z",
+    user: bot,
+  };
+  const selected = selectReviewPlaceholderComment(42, [editedVerdict, placeholder]);
+  assert.equal(selected?.id, 11);
+  assert.equal(isOrphanedReviewPlaceholder(selected, now, 2), true);
+  assert.equal(
+    selectReviewPlaceholderComment(42, [
+      editedVerdict,
+      { ...placeholder, id: 13, body: REVIEW_PLACEHOLDER_MARKER },
+    ])?.id,
+    13,
+  );
+  assert.equal(selectReviewPlaceholderComment(42, [editedVerdict]), null);
+  assert.equal(
+    selectReviewPlaceholderComment(42, [
+      { ...placeholder, id: 14, user: { login: "someone-else", type: "User" } },
+    ]),
+    null,
+  );
 });
 
 test("review placeholder runner fails open and sends a signed exact-review decision", async (t) => {
@@ -167,6 +179,8 @@ test("review placeholder runner fails open and sends a signed exact-review decis
     cleaned: 0,
     escalated: 0,
     errors: 1,
+    matched: 4,
+    remaining: 1,
   });
   assert.ok(logged.includes("review-placeholder recovery: enqueued #103 (pull_request)"));
   assert.deepEqual(commentChecks, [101, 102, 103]);
@@ -239,6 +253,8 @@ test("review placeholder runner fills the recovery cap with the oldest orphans f
     cleaned: 0,
     escalated: 0,
     errors: 0,
+    matched: 4,
+    remaining: 2,
   });
   assert.deepEqual(commentChecks, [201, 202]);
   assert.deepEqual(enqueuedNumbers, [202]);
@@ -309,6 +325,8 @@ test("review placeholder runner escalates orphans stuck well beyond the minimum 
     cleaned: 0,
     escalated: 1,
     errors: 0,
+    matched: 4,
+    remaining: 2,
   });
   assert.deepEqual(escalatedLabels, [
     { number: 301, body: { labels: ["clawsweeper-recovery-stuck"] } },
@@ -361,6 +379,8 @@ test("stuck escalation without a target write token is a visible error, not a wr
     cleaned: 0,
     escalated: 0,
     errors: 1,
+    matched: 2,
+    remaining: 1,
   });
   assert.equal(labelRequests, 0);
 });
@@ -432,6 +452,8 @@ test("orphaned placeholders on closed items are deleted instead of re-enqueued",
     cleaned: 1,
     escalated: 0,
     errors: 0,
+    matched: 1,
+    remaining: 0,
   });
   assert.deepEqual(deletedComments, ["/repos/openclaw/openclaw/issues/comments/9001"]);
 });
@@ -481,6 +503,8 @@ test("closed-item cleanup without a target write token is a visible error", asyn
     cleaned: 0,
     escalated: 0,
     errors: 1,
+    matched: 1,
+    remaining: 0,
   });
   assert.equal(deleteRequests, 0);
 });
@@ -546,6 +570,8 @@ test("closed-item cleanup revalidates and skips a placeholder that became a real
     cleaned: 0,
     escalated: 0,
     errors: 0,
+    matched: 1,
+    remaining: 0,
   });
   assert.equal(deleteRequests, 0);
 });
@@ -610,6 +636,8 @@ test("locked closed items are terminal skips, not retrying cleanup errors", asyn
     cleaned: 0,
     escalated: 0,
     errors: 0,
+    matched: 1,
+    remaining: 0,
   });
   assert.equal(deleteRequests, 1);
 });
@@ -684,11 +712,13 @@ test("closed cleanup keeps its own check budget when open placeholders fill the 
     cleaned: 1,
     escalated: 0,
     errors: 0,
+    matched: 2,
+    remaining: 0,
   });
   assert.deepEqual(deletedComments, ["/repos/openclaw/openclaw/issues/comments/9502"]);
 });
 
-test("recovery failure reason fires only on total action failure", () => {
+test("recovery failure reason fires on total action failure and on an undrainable backlog", () => {
   assert.equal(
     reviewPlaceholderRecoveryFailureReason({
       checked: 5,
@@ -697,6 +727,8 @@ test("recovery failure reason fires only on total action failure", () => {
       cleaned: 0,
       escalated: 0,
       errors: 2,
+      matched: 5,
+      remaining: 0,
     }),
     "orphaned placeholders remain and every recovery action failed",
   );
@@ -708,6 +740,8 @@ test("recovery failure reason fires only on total action failure", () => {
       cleaned: 0,
       escalated: 0,
       errors: 1,
+      matched: 5,
+      remaining: 0,
     }),
     null,
   );
@@ -719,6 +753,8 @@ test("recovery failure reason fires only on total action failure", () => {
       cleaned: 0,
       escalated: 0,
       errors: 1,
+      matched: 5,
+      remaining: 0,
     }),
     null,
   );
@@ -730,8 +766,245 @@ test("recovery failure reason fires only on total action failure", () => {
       cleaned: 0,
       escalated: 1,
       errors: 2,
+      matched: 5,
+      remaining: 0,
     }),
     "orphaned placeholders remain and every recovery action failed",
+  );
+  const backlogged = {
+    checked: 40,
+    orphaned: 1,
+    enqueued: 1,
+    cleaned: 0,
+    escalated: 0,
+    errors: 0,
+    matched: 1_240,
+    remaining: 1_200,
+  };
+  assert.equal(
+    reviewPlaceholderRecoveryFailureReason(backlogged),
+    "1200 matching placeholders were left unexamined (backlog alert threshold 480)",
+  );
+  assert.equal(reviewPlaceholderRecoveryFailureReason(backlogged, 1_201), null);
+  assert.equal(
+    reviewPlaceholderRecoveryFailureReason({ ...backlogged, matched: 60, remaining: 20 }),
+    null,
+  );
+});
+
+test("discovery ranks the whole search page before it applies the check budget", async () => {
+  const commentChecks: number[] = [];
+  const searchOrders: string[] = [];
+  const enqueuedNumbers: number[] = [];
+  const createdAtByNumber: Record<number, string> = {
+    603: "2026-07-16T02:00:00.000Z",
+    604: "2026-07-15T22:00:00.000Z",
+  };
+  const mockFetch = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    if (url.pathname === "/search/issues") {
+      const query = url.searchParams.get("q") ?? "";
+      searchOrders.push(url.searchParams.get("order") ?? "");
+      assert.match(query, /updated:>=2026-07-14T12:00:00\.000Z/);
+      if (query.includes("is:closed")) return Response.json({ total_count: 0, items: [] });
+      return Response.json({
+        total_count: 4,
+        items: [
+          { number: 601, updated_at: "2026-07-17T11:40:00.000Z" },
+          { number: 602, updated_at: "2026-07-17T11:20:00.000Z" },
+          { number: 603, updated_at: "2026-07-16T02:00:00.000Z" },
+          { number: 604, updated_at: "2026-07-15T22:00:00.000Z" },
+        ],
+      });
+    }
+    const commentMatch = url.pathname.match(/\/issues\/(\d+)\/comments$/);
+    if (commentMatch) {
+      const number = Number(commentMatch[1]);
+      commentChecks.push(number);
+      const createdAt = createdAtByNumber[number];
+      assert.ok(createdAt, `unexpected comment fetch for #${number}`);
+      return Response.json([
+        {
+          id: 7000 + number,
+          body: `${REVIEW_PLACEHOLDER_MARKER}\n\n<!-- clawsweeper-review-status:started item=${number} sha=abc v=1 -->`,
+          created_at: createdAt,
+          updated_at: createdAt,
+          user: bot,
+        },
+      ]);
+    }
+    if (url.pathname === "/internal/exact-review/enqueue") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { decision: { itemNumber: number } };
+      enqueuedNumbers.push(body.decision.itemNumber);
+      return Response.json({ ok: true, queued: true }, { status: 202 });
+    }
+    throw new Error(`unexpected request: ${url.pathname}`);
+  };
+
+  const summary = await runReviewPlaceholderRecovery({
+    env: {
+      GH_TOKEN: "test-token-placeholder",
+      CLAWSWEEPER_WEBHOOK_SECRET: "test-token-placeholder",
+      GITHUB_API_URL: "https://api.github.test",
+      QUEUE_URL: "https://queue.test",
+      TARGET_REPO: "openclaw/openclaw",
+      REVIEW_PLACEHOLDER_MAX_CHECKS: "2",
+      REVIEW_PLACEHOLDER_LOOKBACK_HOURS: "72",
+      REVIEW_PLACEHOLDER_STUCK_HOURS: "720",
+    },
+    fetchImpl: mockFetch as typeof fetch,
+    now,
+  });
+
+  assert.deepEqual(summary, {
+    checked: 2,
+    orphaned: 2,
+    enqueued: 2,
+    cleaned: 0,
+    escalated: 0,
+    errors: 0,
+    matched: 4,
+    remaining: 2,
+  });
+  assert.deepEqual(searchOrders, ["asc", "asc"]);
+  assert.deepEqual(commentChecks, [604, 603]);
+  assert.deepEqual(enqueuedNumbers, [604, 603]);
+});
+
+test("an edited durable verdict no longer masks the marker-tagged placeholder", async () => {
+  const enqueuedNumbers: number[] = [];
+  const mockFetch = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    if (url.pathname === "/search/issues") {
+      const query = url.searchParams.get("q") ?? "";
+      if (query.includes("is:closed")) return Response.json({ total_count: 0, items: [] });
+      return Response.json({
+        total_count: 1,
+        items: [{ number: 611, updated_at: "2026-07-17T11:50:00.000Z" }],
+      });
+    }
+    if (url.pathname === "/repos/openclaw/openclaw/issues/611/comments") {
+      return Response.json([
+        {
+          id: 6111,
+          body: `${REVIEW_PLACEHOLDER_MARKER}\n\n<!-- clawsweeper-review-status:started item=611 sha=abc v=1 -->`,
+          created_at: "2026-07-17T06:00:00.000Z",
+          updated_at: "2026-07-17T06:00:00.000Z",
+          user: bot,
+        },
+        {
+          id: 6112,
+          body: "ClawSweeper review: keep open.\n\n<!-- clawsweeper-review item=611 v=1 -->",
+          created_at: "2026-07-16T16:00:00.000Z",
+          updated_at: "2026-07-17T11:50:00.000Z",
+          user: bot,
+        },
+      ]);
+    }
+    if (url.pathname === "/internal/exact-review/enqueue") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { decision: { itemNumber: number } };
+      enqueuedNumbers.push(body.decision.itemNumber);
+      return Response.json({ ok: true, queued: true }, { status: 202 });
+    }
+    throw new Error(`unexpected request: ${url.pathname}`);
+  };
+
+  const summary = await runReviewPlaceholderRecovery({
+    env: {
+      GH_TOKEN: "test-token-placeholder",
+      CLAWSWEEPER_WEBHOOK_SECRET: "test-token-placeholder",
+      GITHUB_API_URL: "https://api.github.test",
+      QUEUE_URL: "https://queue.test",
+      TARGET_REPO: "openclaw/openclaw",
+    },
+    fetchImpl: mockFetch as typeof fetch,
+    now,
+  });
+
+  assert.deepEqual(summary, {
+    checked: 1,
+    orphaned: 1,
+    enqueued: 1,
+    cleaned: 0,
+    escalated: 0,
+    errors: 0,
+    matched: 1,
+    remaining: 0,
+  });
+  assert.deepEqual(enqueuedNumbers, [611]);
+});
+
+test("a backlog the sweep cannot examine is reported and fails the run", async (t) => {
+  const logged: string[] = [];
+  t.mock.method(console, "log", (...parts: unknown[]) => {
+    logged.push(parts.join(" "));
+  });
+  const mockFetch = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    if (url.pathname === "/search/issues") {
+      const query = url.searchParams.get("q") ?? "";
+      if (query.includes("is:closed")) return Response.json({ total_count: 0, items: [] });
+      return Response.json({
+        total_count: 900,
+        items: [{ number: 621, updated_at: "2026-07-17T05:00:00.000Z" }],
+      });
+    }
+    if (url.pathname === "/repos/openclaw/openclaw/issues/621/comments") {
+      return Response.json([
+        {
+          id: 6211,
+          body: `${REVIEW_PLACEHOLDER_MARKER}\n\n<!-- clawsweeper-review-status:started item=621 sha=abc v=1 -->`,
+          created_at: "2026-07-17T05:00:00.000Z",
+          updated_at: "2026-07-17T05:00:00.000Z",
+          user: bot,
+        },
+      ]);
+    }
+    if (url.pathname === "/internal/exact-review/enqueue") {
+      return Response.json({ ok: true, queued: true }, { status: 202 });
+    }
+    throw new Error(`unexpected request: ${init?.method ?? "GET"} ${url.pathname}`);
+  };
+
+  const summary = await runReviewPlaceholderRecovery({
+    env: {
+      GH_TOKEN: "test-token-placeholder",
+      CLAWSWEEPER_WEBHOOK_SECRET: "test-token-placeholder",
+      GITHUB_API_URL: "https://api.github.test",
+      QUEUE_URL: "https://queue.test",
+      TARGET_REPO: "openclaw/openclaw",
+      REVIEW_PLACEHOLDER_MAX_CHECKS: "1",
+    },
+    fetchImpl: mockFetch as typeof fetch,
+    now,
+  });
+
+  assert.deepEqual(summary, {
+    checked: 1,
+    orphaned: 1,
+    enqueued: 1,
+    cleaned: 0,
+    escalated: 0,
+    errors: 0,
+    matched: 900,
+    remaining: 899,
+  });
+  assert.ok(
+    logged.some((line) => line.includes("matched=900 remaining=899")),
+    "summary line reports the discovery backlog",
+  );
+  assert.equal(
+    reviewPlaceholderRecoveryFailureReason(summary),
+    "899 matching placeholders were left unexamined (backlog alert threshold 480)",
   );
 });
 

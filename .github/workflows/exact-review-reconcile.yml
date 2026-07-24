@@ -211,6 +211,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TARGET_WRITE_TOKEN: ${{ steps.target-write-token.outputs.token }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          REVIEW_PLACEHOLDER_BACKLOG_ALERT: ${{ vars.REVIEW_PLACEHOLDER_BACKLOG_ALERT || '480' }}
+          REVIEW_PLACEHOLDER_LOOKBACK_HOURS: ${{ vars.REVIEW_PLACEHOLDER_LOOKBACK_HOURS || '48' }}
           REVIEW_PLACEHOLDER_MAX_CHECKS: ${{ vars.REVIEW_PLACEHOLDER_MAX_CHECKS || '20' }}
           REVIEW_PLACEHOLDER_MAX_RECOVERIES: ${{ vars.REVIEW_PLACEHOLDER_MAX_RECOVERIES || '5' }}
           REVIEW_PLACEHOLDER_MIN_AGE_HOURS: ${{ vars.REVIEW_PLACEHOLDER_MIN_AGE_HOURS || '2' }}

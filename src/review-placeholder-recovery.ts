@@ -9,12 +9,13 @@ export const DEFAULT_REVIEW_PLACEHOLDER_MIN_AGE_HOURS = 2;
 export const DEFAULT_REVIEW_PLACEHOLDER_MAX_RECOVERIES = 5;
 export const DEFAULT_REVIEW_PLACEHOLDER_STUCK_HOURS = 12;
 export const REVIEW_PLACEHOLDER_STUCK_LABEL = "clawsweeper-recovery-stuck";
-export const REVIEW_PLACEHOLDER_LOOKBACK_HOURS = 48;
+export const DEFAULT_REVIEW_PLACEHOLDER_LOOKBACK_HOURS = 48;
+export const DEFAULT_REVIEW_PLACEHOLDER_BACKLOG_ALERT = 480;
 
 const SEARCH_PAGE_SIZE = 100;
 const SEARCH_MAX_PAGES = 2;
 const COMMENT_PAGE_SIZE = 100;
-const COMMENT_MAX_PAGES = 2;
+const COMMENT_MAX_PAGES = 5;
 const CLAWSWEEPER_BOT_LOGINS = new Set(["clawsweeper[bot]", "openclaw-clawsweeper[bot]"]);
 
 export type ReviewPlaceholderComment = {
@@ -29,6 +30,7 @@ export type ReviewPlaceholderCandidate = {
   number?: unknown;
   pull_request?: unknown;
   labels?: unknown;
+  updated_at?: unknown;
 };
 
 export type ReviewPlaceholderRecoverySummary = {
@@ -38,6 +40,8 @@ export type ReviewPlaceholderRecoverySummary = {
   cleaned: number;
   escalated: number;
   errors: number;
+  matched: number;
+  remaining: number;
 };
 
 // The scheduled sweep should go red only when placeholders needed resolution
@@ -46,10 +50,14 @@ export type ReviewPlaceholderRecoverySummary = {
 // Escalation labels are visibility, not resolution, so they never count.
 export function reviewPlaceholderRecoveryFailureReason(
   summary: ReviewPlaceholderRecoverySummary,
+  backlogAlert: number = DEFAULT_REVIEW_PLACEHOLDER_BACKLOG_ALERT,
 ): string | null {
   const resolved = summary.enqueued + summary.cleaned;
   if (summary.orphaned > 0 && summary.errors > 0 && resolved === 0) {
     return "orphaned placeholders remain and every recovery action failed";
+  }
+  if (backlogAlert > 0 && summary.remaining >= backlogAlert) {
+    return `${summary.remaining} matching placeholders were left unexamined (backlog alert threshold ${backlogAlert})`;
   }
   return null;
 }
@@ -91,17 +99,36 @@ export function isClawSweeperBotComment(comment: ReviewPlaceholderComment): bool
   return type === "bot" && CLAWSWEEPER_BOT_LOGINS.has(login);
 }
 
-export function latestClawSweeperBotComment(
+export function reviewStartStatusMarker(number: number): string {
+  return `<!-- clawsweeper-review-status:started item=${number} `;
+}
+
+export function selectReviewPlaceholderComment(
+  number: number,
   comments: readonly ReviewPlaceholderComment[],
 ): ReviewPlaceholderComment | null {
+  const marker = reviewStartStatusMarker(number);
+  const botComments = comments.filter(
+    (comment) => isClawSweeperBotComment(comment) && typeof comment.body === "string",
+  );
+  const markerMatches = botComments.filter((comment) => String(comment.body).includes(marker));
+  const pool =
+    markerMatches.length > 0
+      ? markerMatches
+      : botComments.filter((comment) => String(comment.body).includes(REVIEW_PLACEHOLDER_MARKER));
   let latest: { comment: ReviewPlaceholderComment; createdAtMs: number } | null = null;
-  for (const comment of comments) {
-    if (!isClawSweeperBotComment(comment)) continue;
+  for (const comment of pool) {
     const createdAtMs = commentCreatedAtMs(comment);
     if (createdAtMs === null) continue;
     if (!latest || createdAtMs > latest.createdAtMs) latest = { comment, createdAtMs };
   }
   return latest?.comment ?? null;
+}
+
+function candidateUpdatedAtMs(candidate: ReviewPlaceholderCandidate): number {
+  const parsed =
+    typeof candidate.updated_at === "string" ? Date.parse(candidate.updated_at) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
 }
 
 function candidateLabelNames(candidate: ReviewPlaceholderCandidate): string[] {
@@ -178,18 +205,25 @@ export async function runReviewPlaceholderRecovery(
     60 *
     60 *
     1_000;
+  const lookbackHours = boundedPositiveInteger(
+    env.REVIEW_PLACEHOLDER_LOOKBACK_HOURS,
+    DEFAULT_REVIEW_PLACEHOLDER_LOOKBACK_HOURS,
+    24 * 365,
+  );
   let checked = 0;
   let orphaned = 0;
   let enqueued = 0;
   let cleaned = 0;
   let escalated = 0;
   let errors = 0;
+  let matched = 0;
 
   const summary = (): ReviewPlaceholderRecoverySummary => {
+    const remaining = Math.max(0, matched - checked);
     console.log(
-      `review-placeholder recovery: checked=${checked} orphaned=${orphaned} enqueued=${enqueued} cleaned=${cleaned} escalated=${escalated} errors=${errors}`,
+      `review-placeholder recovery: checked=${checked} orphaned=${orphaned} enqueued=${enqueued} cleaned=${cleaned} escalated=${escalated} errors=${errors} matched=${matched} remaining=${remaining}`,
     );
-    return { checked, orphaned, enqueued, cleaned, escalated, errors };
+    return { checked, orphaned, enqueued, cleaned, escalated, errors, matched, remaining };
   };
   if (
     !token ||
@@ -297,7 +331,7 @@ export async function runReviewPlaceholderRecovery(
     if (
       !isClawSweeperBotComment(current) ||
       typeof current.body !== "string" ||
-      !current.body.includes(`<!-- clawsweeper-review-status:started item=${number} `) ||
+      !current.body.includes(reviewStartStatusMarker(number)) ||
       // A refresh bumps updated_at, so a placeholder re-claimed by an active
       // run drops back under the orphan age and must not be deleted.
       !isOrphanedReviewPlaceholder(current, now, minimumAgeHours)
@@ -324,9 +358,10 @@ export async function runReviewPlaceholderRecovery(
     }
     return "deleted";
   };
-  const fetchLatestBotComment = async (
+  const fetchPlaceholderComment = async (
     number: number,
   ): Promise<ReviewPlaceholderComment | null> => {
+    const marker = reviewStartStatusMarker(number);
     const comments: ReviewPlaceholderComment[] = [];
     for (let page = 1; page <= COMMENT_MAX_PAGES; page += 1) {
       const pageComments = await github<ReviewPlaceholderComment[]>(
@@ -334,34 +369,60 @@ export async function runReviewPlaceholderRecovery(
       );
       comments.push(...pageComments);
       if (pageComments.length < COMMENT_PAGE_SIZE) break;
+      if (
+        pageComments.some(
+          (comment) => typeof comment.body === "string" && comment.body.includes(marker),
+        )
+      ) {
+        break;
+      }
     }
-    return latestClawSweeperBotComment(comments);
+    return selectReviewPlaceholderComment(number, comments);
   };
 
   const candidates = new Map<number, { candidate: ReviewPlaceholderCandidate; closed: boolean }>();
-  const updatedSince = new Date(
-    now.getTime() - REVIEW_PLACEHOLDER_LOOKBACK_HOURS * 60 * 60 * 1_000,
-  ).toISOString();
+  const updatedSince = new Date(now.getTime() - lookbackHours * 60 * 60 * 1_000).toISOString();
   // Each state class gets its own check budget; sharing one would let a
   // backlog of open placeholders permanently starve closed-item cleanup.
   const searchCandidates = async (stateQualifier: "is:open" | "is:closed"): Promise<void> => {
     const query = `repo:${repo} "${REVIEW_PLACEHOLDER_MARKER}" in:comments updated:>=${updatedSince} ${stateQualifier}`;
-    let added = 0;
-    for (let page = 1; page <= SEARCH_MAX_PAGES && added < maximumChecks; page += 1) {
-      const result = await github<{ items?: unknown }>(
-        `/search/issues?q=${encodeURIComponent(query)}&sort=updated&order=desc&per_page=${SEARCH_PAGE_SIZE}&page=${page}`,
+    const found: ReviewPlaceholderCandidate[] = [];
+    let total = 0;
+    for (let page = 1; page <= SEARCH_MAX_PAGES && found.length < maximumChecks; page += 1) {
+      const result = await github<{ items?: unknown; total_count?: unknown }>(
+        `/search/issues?q=${encodeURIComponent(query)}&sort=updated&order=asc&per_page=${SEARCH_PAGE_SIZE}&page=${page}`,
       );
       const items = Array.isArray(result.items) ? result.items : [];
+      if (page === 1 && typeof result.total_count === "number") {
+        total = Number.isFinite(result.total_count)
+          ? Math.max(0, Math.trunc(result.total_count))
+          : 0;
+      }
       for (const value of items) {
         if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-        const candidate = value as ReviewPlaceholderCandidate;
-        const number = Number(candidate.number);
-        if (!Number.isInteger(number) || number <= 0 || candidates.has(number)) continue;
-        candidates.set(number, { candidate, closed: stateQualifier === "is:closed" });
-        added += 1;
-        if (added >= maximumChecks) break;
+        found.push(value as ReviewPlaceholderCandidate);
       }
       if (items.length < SEARCH_PAGE_SIZE) break;
+    }
+    matched += Math.max(total, found.length);
+    const ranked = found.map((candidate, index) => ({
+      candidate,
+      index,
+      updatedAtMs: candidateUpdatedAtMs(candidate),
+    }));
+    ranked.sort((a, b) =>
+      a.updatedAtMs === b.updatedAtMs ? a.index - b.index : a.updatedAtMs - b.updatedAtMs,
+    );
+    let added = 0;
+    for (const entry of ranked) {
+      if (added >= maximumChecks) break;
+      const number = Number(entry.candidate.number);
+      if (!Number.isInteger(number) || number <= 0 || candidates.has(number)) continue;
+      candidates.set(number, {
+        candidate: entry.candidate,
+        closed: stateQualifier === "is:closed",
+      });
+      added += 1;
     }
   };
   for (const stateQualifier of ["is:open", "is:closed"] as const) {
@@ -383,7 +444,7 @@ export async function runReviewPlaceholderRecovery(
   for (const [number, { candidate, closed }] of candidates) {
     checked += 1;
     try {
-      const comment = await fetchLatestBotComment(number);
+      const comment = await fetchPlaceholderComment(number);
       if (!comment || !isOrphanedReviewPlaceholder(comment, now, minimumAgeHours)) continue;
       orphaned += 1;
       if (closed) {
@@ -461,7 +522,14 @@ const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
 if (invokedPath && invokedPath === fileURLToPath(import.meta.url)) {
   try {
     const summary = await runReviewPlaceholderRecovery();
-    const failureReason = reviewPlaceholderRecoveryFailureReason(summary);
+    const failureReason = reviewPlaceholderRecoveryFailureReason(
+      summary,
+      boundedPositiveInteger(
+        process.env.REVIEW_PLACEHOLDER_BACKLOG_ALERT,
+        DEFAULT_REVIEW_PLACEHOLDER_BACKLOG_ALERT,
+        1_000_000,
+      ),
+    );
     if (failureReason) {
       console.error(`review-placeholder recovery failed: ${failureReason}`);
       process.exitCode = 1;
