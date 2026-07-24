@@ -243,21 +243,45 @@ export async function runReviewPlaceholderRecovery(
     }
   }
 
+  // The GitHub search feeding `candidates` is sorted newest-updated-first, so
+  // admitting recoveries in discovery order starves the oldest, most-stuck
+  // placeholders whenever the backlog exceeds the per-run budget. Collect all
+  // orphans first, then spend the budget oldest-first.
+  const orphanedCandidates: {
+    number: number;
+    itemKind: "issue" | "pull_request";
+    createdAtMs: number;
+  }[] = [];
   for (const [number, candidate] of candidates) {
-    if (enqueued >= maximumRecoveries) break;
     checked += 1;
     try {
       const comment = await fetchLatestBotComment(number);
       if (!isOrphanedReviewPlaceholder(comment, now, minimumAgeHours)) continue;
       orphaned += 1;
       const itemKind = candidate.pull_request ? "pull_request" : "issue";
-      await enqueue(number, itemKind);
-      enqueued += 1;
-      console.log(`review-placeholder recovery: enqueued #${number} (${itemKind})`);
+      const createdAtMs = (comment && commentCreatedAtMs(comment)) ?? now.getTime();
+      orphanedCandidates.push({ number, itemKind, createdAtMs });
     } catch (error) {
       errors += 1;
       console.warn(
         `#${number} review-placeholder recovery skipped: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  orphanedCandidates.sort((a, b) => a.createdAtMs - b.createdAtMs);
+  for (const candidate of orphanedCandidates) {
+    if (enqueued >= maximumRecoveries) break;
+    try {
+      await enqueue(candidate.number, candidate.itemKind);
+      enqueued += 1;
+      console.log(
+        `review-placeholder recovery: enqueued #${candidate.number} (${candidate.itemKind})`,
+      );
+    } catch (error) {
+      errors += 1;
+      console.warn(
+        `#${candidate.number} review-placeholder recovery skipped: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }

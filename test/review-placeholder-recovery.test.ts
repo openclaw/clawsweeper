@@ -176,27 +176,36 @@ test("review placeholder runner fails open and sends a signed exact-review decis
   });
 });
 
-test("review placeholder runner stops at the recovery cap", async () => {
+test("review placeholder runner fills the recovery cap with the oldest orphans first", async () => {
   const commentChecks: number[] = [];
-  let enqueueCalls = 0;
-  const mockFetch = async (input: string | URL | Request): Promise<Response> => {
+  const enqueuedNumbers: number[] = [];
+  const createdAtByNumber: Record<number, string> = {
+    201: "2026-07-17T09:00:00.000Z",
+    202: "2026-07-17T04:00:00.000Z",
+  };
+  const mockFetch = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
     if (url.pathname === "/search/issues") {
       return Response.json({ items: [{ number: 201 }, { number: 202 }] });
     }
     const commentMatch = url.pathname.match(/\/issues\/(\d+)\/comments$/);
     if (commentMatch) {
-      commentChecks.push(Number(commentMatch[1]));
+      const number = Number(commentMatch[1]);
+      commentChecks.push(number);
       return Response.json([
         {
           body: REVIEW_PLACEHOLDER_MARKER,
-          created_at: "2026-07-17T08:00:00.000Z",
+          created_at: createdAtByNumber[number],
           user: bot,
         },
       ]);
     }
     if (url.pathname === "/internal/exact-review/enqueue") {
-      enqueueCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as { decision: { itemNumber: number } };
+      enqueuedNumbers.push(body.decision.itemNumber);
       return Response.json({ ok: true, queued: true }, { status: 202 });
     }
     throw new Error(`unexpected request: ${url.pathname}`);
@@ -214,9 +223,9 @@ test("review placeholder runner stops at the recovery cap", async () => {
     now,
   });
 
-  assert.deepEqual(summary, { checked: 1, orphaned: 1, enqueued: 1, errors: 0 });
-  assert.deepEqual(commentChecks, [201]);
-  assert.equal(enqueueCalls, 1);
+  assert.deepEqual(summary, { checked: 2, orphaned: 2, enqueued: 1, errors: 0 });
+  assert.deepEqual(commentChecks, [201, 202]);
+  assert.deepEqual(enqueuedNumbers, [202]);
 });
 
 test("placeholder refreshed recently by an active recovery is not orphaned", () => {
