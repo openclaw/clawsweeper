@@ -115,6 +115,7 @@ try {
 } catch (error) {
   const retryableFailure =
     error instanceof GitCommandTimeoutError || error instanceof StatePublishContentionError;
+  const completionKind = retryableFailure ? "retryable_failure" : "permanent_failure";
   const reasonCode =
     error instanceof GitCommandTimeoutError
       ? "github_transient"
@@ -125,11 +126,15 @@ try {
           : error instanceof RecordTupleError
             ? "tuple_protocol_invalid"
             : "unknown_failure";
-  writePublicationCompletionOutputs(
-    retryableFailure ? "retryable_failure" : "permanent_failure",
-    reasonCode,
-    errorFingerprint(error),
-  );
+  const fingerprint = errorFingerprint(error);
+  if (options.batchMutationOutput) {
+    writeBatchMutationResult(options.batchMutationOutput, {
+      kind: completionKind,
+      reasonCode,
+      errorFingerprint: fingerprint,
+    });
+  }
+  writePublicationCompletionOutputs(completionKind, reasonCode, fingerprint);
   throw error;
 }
 
