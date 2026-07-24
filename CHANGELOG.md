@@ -66,6 +66,9 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Snapshot exact-review batch clone credentials once before worker fanout so
+  parallel preparation no longer drops members during repeated shared-repo
+  bootstrap reads, and report any remaining member-specific setup failure.
 - Completed tuple-missing stale publication artifacts as superseded in batch
   mode instead of retrying them forever without a mutation outcome.
 - Isolated each exact-review batch member's records, action ledger, snapshots,

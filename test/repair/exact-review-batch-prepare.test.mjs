@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  captureIsolatedStateCloneSource,
   createSerialTaskQueue,
   createIsolatedStateClone,
   importPreparedMutationObjects,
@@ -120,6 +121,11 @@ test("parallel preparers use independent shallow state repositories", async (t) 
     "AUTHORIZATION: basic fixture",
   );
   const baselineSha = git(stateRoot, "rev-parse", "HEAD");
+  const cloneSource = await captureIsolatedStateCloneSource(stateRoot);
+  git(stateRoot, "remote", "remove", "origin");
+  git(stateRoot, "config", "--local", "--unset-all", "user.name");
+  git(stateRoot, "config", "--local", "--unset-all", "user.email");
+  git(stateRoot, "config", "--local", "--unset-all", "http.https://github.invalid/.extraheader");
   const left = join(root, "left");
   const right = join(root, "right");
 
@@ -129,12 +135,14 @@ test("parallel preparers use independent shallow state repositories", async (t) 
       destination: left,
       baselineSha,
       timeoutMs: 5_000,
+      source: cloneSource,
     }),
     createIsolatedStateClone({
       stateRoot,
       destination: right,
       baselineSha,
       timeoutMs: 5_000,
+      source: cloneSource,
     }),
   ]);
 
@@ -192,11 +200,13 @@ test("prepared mutation blobs survive isolated worker cleanup", async (t) => {
   git(source, "push", "origin", "state");
   git(root, "clone", "--depth", "1", "--branch", "state", `file://${origin}`, stateRoot);
   const baselineSha = git(stateRoot, "rev-parse", "HEAD");
+  const cloneSource = await captureIsolatedStateCloneSource(stateRoot);
   await createIsolatedStateClone({
     stateRoot,
     destination: worker,
     baselineSha,
     timeoutMs: 5_000,
+    source: cloneSource,
   });
 
   const content = "prepared in an isolated worker\n";

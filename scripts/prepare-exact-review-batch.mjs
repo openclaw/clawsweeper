@@ -60,17 +60,27 @@ export function createSerialTaskQueue() {
   };
 }
 
-export async function createIsolatedStateClone({ stateRoot, destination, baselineSha, timeoutMs }) {
+export async function captureIsolatedStateCloneSource(stateRoot) {
   const remoteUrl = (await capture("git", ["-C", stateRoot, "remote", "get-url", "origin"])).trim();
   if (!remoteUrl) throw new Error("state origin URL is required");
+  const config = await capture("git", ["-C", stateRoot, "config", "--local", "--null", "--list"]);
+  return { remoteUrl, configEntries: workerGitConfigEntries(config) };
+}
+
+export async function createIsolatedStateClone({
+  stateRoot,
+  destination,
+  baselineSha,
+  timeoutMs,
+  source,
+}) {
   await runChecked("git", ["clone", "--shared", "--no-checkout", stateRoot, destination], {
     timeoutMs,
   });
-  await runChecked("git", ["-C", destination, "remote", "set-url", "origin", remoteUrl], {
+  await runChecked("git", ["-C", destination, "remote", "set-url", "origin", source.remoteUrl], {
     timeoutMs,
   });
-  const config = await capture("git", ["-C", stateRoot, "config", "--local", "--null", "--list"]);
-  for (const entry of workerGitConfigEntries(config)) {
+  for (const entry of source.configEntries) {
     await runChecked(
       "git",
       ["-C", destination, "config", "--local", "--add", entry.key, entry.value],
@@ -193,6 +203,9 @@ async function controller() {
   const deadline = startedAt + totalTimeoutMs;
   const stateRoot = resolve(env("CLAWSWEEPER_STATE_DIR"));
   const baselineSha = (await capture("git", ["-C", stateRoot, "rev-parse", "HEAD"])).trim();
+  // The source remote and auth config are process-stable for the batch. Capture
+  // them once so worker fanout never races repeated reads of the shared clone.
+  const cloneSource = await captureIsolatedStateCloneSource(stateRoot);
   const workersRoot = resolve(workspace, ".artifacts/exact-review-batch/workers");
   const heartbeatFailurePath = resolve(
     workspace,
@@ -228,13 +241,16 @@ async function controller() {
     const workerStartedAt = Date.now();
     const itemDeadline = Math.min(deadline, workerStartedAt + itemTimeoutMs);
     let timedOut = false;
+    let failureStage = "isolated state clone";
     try {
       await createIsolatedStateClone({
         stateRoot,
         destination: stateClone,
         baselineSha,
         timeoutMs: remainingTimeout(deadline),
+        source: cloneSource,
       });
+      failureStage = "worker execution";
       const status = await run(
         process.execPath,
         [process.argv[1], "worker", itemPath, root, stateClone, workspace],
@@ -243,6 +259,7 @@ async function controller() {
       timedOut = status.timedOut;
       if (timedOut) timeouts += 1;
       if (existsSync(outcomePath)) {
+        failureStage = "prepared object import";
         try {
           await importObjects(() =>
             importPreparedMutationObjects({
@@ -266,6 +283,7 @@ async function controller() {
       if (!existsSync(outcomePath)) {
         writeFailure(outcomePath, "retryable_failure", "unknown_failure");
       }
+      console.error(`Failed to prepare batch member ${item.itemKey} during ${failureStage}`);
     } finally {
       durations.push(Date.now() - workerStartedAt);
       try {
