@@ -291,6 +291,33 @@ test("media proof preparation downloads screenshot proof without video processin
   }
 });
 
+test("media proof preparation surfaces a failed screenshot download as a failed artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "clawsweeper-media-proof-"));
+  try {
+    const screenshotUrl =
+      "https://github.com/user/repo/releases/download/proof/terminal-output.png";
+    const context = {
+      issue: {},
+      comments: [{ body: `After-fix screenshot: ![terminal output](${screenshotUrl})` }],
+      timeline: [],
+    };
+    const prepared = prepareMediaProofArtifactsForTest(context, dir, (command) => {
+      if (command === "curl") {
+        return { status: 22, stdout: "", stderr: "HTTP 404" };
+      }
+      return { status: 1, stdout: "", stderr: `unexpected command: ${command}` };
+    });
+
+    assert.equal(prepared.artifacts.length, 1);
+    assert.equal(prepared.artifacts[0]?.kind, "image");
+    assert.equal(prepared.artifacts[0]?.status, "failed");
+    assert.equal(prepared.artifacts[0]?.downloadedPath, null);
+    assert.match(prepared.artifacts[0]?.detail ?? "", /download failed/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("runtime prompt tells Codex to inspect local media artifacts before browser fallback", () => {
   const context = {
     issue: {},

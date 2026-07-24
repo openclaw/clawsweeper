@@ -9103,6 +9103,7 @@ function renderStateWriter(queue) {
   const live = writer.live || {};
   const lease = writer.global_lease || {};
   const hour = writer.last_60_minutes || {};
+  const publicationFlow = queue?.lanes?.publication?.flow?.last_15_minutes || {};
   const history = stateWriterHistorySamples();
   const coordinatorHistory = stateWriterCoordinatorHistorySamples();
   const latestCoordinatorHistory = coordinatorHistory.at(-1);
@@ -9114,6 +9115,29 @@ function renderStateWriter(queue) {
   const commitsPerHour = historyFresh ? stateWriterRateFromHistory(history, "commits") : null;
   const commitSegment = historyFresh ? stateWriterHistorySegment(history, "commits") : null;
   const terminalFresh = collection.status === "fresh";
+  const recentPublicationCounts = ["resolved", "published", "superseded", "retried", "dead_lettered"]
+    .map(field => Number(publicationFlow[field]));
+  const recentPublicationNeedsTelemetry =
+    recentPublicationCounts.some(count => !Number.isInteger(count) || count < 0) ||
+    Number(publicationFlow.published) > 0 ||
+    Number(publicationFlow.retried) > 0 ||
+    Number(publicationFlow.dead_lettered) > 0 ||
+    Number(publicationFlow.superseded) !== Number(publicationFlow.resolved);
+  // The coordinator also serializes unrelated state writers. Exact publication
+  // ownership is the signal that this panel still expects a terminal sample.
+  const exactPublicationActive =
+    [batches.leased, queue?.lanes?.publication?.active, queue?.lanes?.publication?.leased, queue?.lanes?.publication?.dispatching]
+      .some(count => Number.isInteger(Number(count)) && Number(count) > 0);
+  const terminalPending =
+    !terminalFresh &&
+    coordinatorLive &&
+    !recentPublicationNeedsTelemetry &&
+    exactPublicationActive;
+  const terminalIdle =
+    !terminalFresh &&
+    coordinatorLive &&
+    !recentPublicationNeedsTelemetry &&
+    !exactPublicationActive;
   const itemsPerCommit =
     commitSegment &&
     commitSegment.length >= 2 &&
@@ -9166,6 +9190,10 @@ function renderStateWriter(queue) {
     : "unknown";
   const terminalStatus = terminalFresh
     ? "terminal telemetry fresh"
+    : terminalPending
+      ? "awaiting exact-review writer result"
+    : terminalIdle
+      ? "idle · no exact-review materialization required in the last 15m"
     : collection.last_observed_at
       ? "terminal telemetry stale · last observed " + since(collection.last_observed_at)
       : "terminal telemetry unavailable";
@@ -9197,7 +9225,7 @@ function renderStateWriter(queue) {
     "<div><dt>Latest queue sample</dt><dd>" + esc(latestCoordinatorSummary) + "</dd></div>" +
     terminalMetrics +
     "</dl>" +
-    '<p class="state-writer-note">The chart uses five-minute coordinator queue samples from the selected ' + esc(rangeLabel) + " range. Exact-review throughput appears only while its separate terminal telemetry is fresh.</p>" +
+    '<p class="state-writer-note">The chart uses five-minute coordinator queue samples from the selected ' + esc(rangeLabel) + " range. Exact-review throughput appears only while its separate terminal telemetry is fresh; all-superseded and no-work windows are idle.</p>" +
     '<p class="state-writer-note">The durable coordinator is authoritative for active and queued writers. The Git ref remains only a crash-recovery fence.</p>';
 }
 

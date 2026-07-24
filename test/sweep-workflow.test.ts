@@ -940,8 +940,14 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
   assert.match(sweepJob, /x-clawsweeper-exact-review-signature/);
   assert.match(sweepJob, /actions\/checkout@v7/);
   assert.match(sweepJob, /build-script: build/);
+  assert.match(sweepJob, /name: Create target write token/);
+  assert.match(sweepJob, /owner: openclaw\s+repositories: openclaw\s+permission-issues: write/);
   assert.match(sweepJob, /name: Recover orphaned review placeholders/);
   assert.match(sweepJob, /run: node dist\/review-placeholder-recovery\.js/);
+  assert.match(
+    sweepJob,
+    /TARGET_WRITE_TOKEN: \$\{\{ steps\.target-write-token\.outputs\.token \}\}/,
+  );
   assert.match(
     sweepJob,
     /REVIEW_PLACEHOLDER_MAX_CHECKS: \$\{\{ vars\.REVIEW_PLACEHOLDER_MAX_CHECKS \|\| '20' \}\}/,

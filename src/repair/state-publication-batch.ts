@@ -40,9 +40,14 @@ export class StateMutationConflictError extends Error {
   }
 }
 
+export type StateBatchQuarantinedItem = {
+  itemKey: string;
+  reason: string;
+};
+
 export type StateBatchCommitResult = {
-  outcome: "committed" | "already_committed";
-  commitSha: string;
+  outcome: "committed" | "already_committed" | "quarantined";
+  commitSha: string | null;
   batchId: string;
   fingerprint: string;
   itemCount: number;
@@ -50,6 +55,7 @@ export type StateBatchCommitResult = {
   totalBytes: number;
   leaseHoldMs: number;
   git: GitProcessMeasurement;
+  quarantinedItems: readonly StateBatchQuarantinedItem[];
 };
 
 export type StateBatchCommitHooks = {
@@ -73,7 +79,6 @@ export function commitPreparedStateBatch(options: {
   const message = validateCommitSubject(options.message);
   const validated = validatePreparedStateMutationPlans(options.plans);
   const operations = validateAndCombinePlans(validated.plans, validated.totalBytes);
-  const fingerprint = batchFingerprint(validated.plans);
   const remote = options.remote ?? "origin";
   const branch = options.branch ?? process.env.CLAWSWEEPER_PUBLISH_BRANCH ?? "state";
   const measured = measureGitProcesses(() => {
@@ -83,13 +88,13 @@ export function commitPreparedStateBatch(options: {
         const leaseStartedAt = Date.now();
         try {
           return commitUnderLease({
-            ...options,
+            batchId: options.batchId,
             plans: validated.plans,
+            operations,
             message,
             remote,
             branch,
-            operations,
-            fingerprint,
+            ...(options.hooks ? { hooks: options.hooks } : {}),
           });
         } finally {
           leaseHoldMs = Date.now() - leaseStartedAt;
@@ -103,10 +108,6 @@ export function commitPreparedStateBatch(options: {
   return {
     ...measured.result.publication,
     batchId: options.batchId,
-    fingerprint,
-    itemCount: validated.plans.length,
-    pathCount: operations.length,
-    totalBytes: validated.totalBytes,
     leaseHoldMs: measured.result.leaseHoldMs,
     git: measured.measurement,
   };
@@ -116,18 +117,82 @@ function commitUnderLease(options: {
   batchId: string;
   plans: readonly PreparedStateMutationPlan[];
   operations: readonly PreparedStateMutationOperation[];
-  fingerprint: string;
   remote: string;
   branch: string;
   message: string;
   hooks?: StateBatchCommitHooks;
-}): Pick<StateBatchCommitResult, "outcome" | "commitSha"> {
-  const receiptRef = batchReceiptRef(options.batchId);
+}): Pick<
+  StateBatchCommitResult,
+  | "outcome"
+  | "commitSha"
+  | "fingerprint"
+  | "itemCount"
+  | "pathCount"
+  | "totalBytes"
+  | "quarantinedItems"
+> {
   const remoteRef = fetchLatestState(options.remote, options.branch);
   const remoteCommit = runGit(["rev-parse", remoteRef], { quiet: true }).trim();
+  const remoteEntries = readRemoteEntries(
+    remoteCommit,
+    options.operations.map(({ path }) => path),
+  );
+
+  // A single item whose remote path drifted (or a missing/poisoned record) is
+  // fenced out of the batch here instead of throwing and aborting every other
+  // item's already-delivered work. Fencing runs before the receipt lookup so a
+  // batch id stays bound to exactly one payload across retries.
+  const quarantinedItems: StateBatchQuarantinedItem[] = [];
+  const survivingPlans = options.plans.filter((plan) => {
+    for (const operation of plan.operations) {
+      const remoteEntry = remoteEntries.get(operation.path) ?? null;
+      const remoteOid = remoteEntry?.oid ?? null;
+      const alreadyApplied =
+        remoteOid === operation.targetOid &&
+        (operation.targetOid === null || remoteEntry?.mode === operation.mode);
+      if (alreadyApplied) continue;
+      if (remoteOid !== operation.expectedOid) {
+        quarantinedItems.push({
+          itemKey: plan.identity.itemKey,
+          reason: `Remote state path ${operation.path} changed after mutation preparation`,
+        });
+        return false;
+      }
+    }
+    return true;
+  });
+  if (survivingPlans.length === 0) {
+    return {
+      outcome: "quarantined",
+      commitSha: null,
+      fingerprint: "",
+      itemCount: 0,
+      pathCount: 0,
+      totalBytes: 0,
+      quarantinedItems,
+    };
+  }
+
+  const operations =
+    survivingPlans.length === options.plans.length
+      ? options.operations
+      : validateAndCombinePlans(
+          survivingPlans,
+          survivingPlans.reduce((total, plan) => total + plan.totalBytes, 0),
+        );
+  const fingerprint = batchFingerprint(survivingPlans);
+  const receiptRef = batchReceiptRef(options.batchId);
+  const outcomeMeta = () => ({
+    fingerprint,
+    itemCount: survivingPlans.length,
+    pathCount: operations.length,
+    totalBytes: survivingPlans.reduce((total, plan) => total + plan.totalBytes, 0),
+    quarantinedItems,
+  });
+
   const recovered = findBatchReceipt(options.remote, receiptRef, options.batchId);
   if (recovered) {
-    if (recovered.fingerprint !== options.fingerprint) {
+    if (recovered.fingerprint !== fingerprint) {
       throw new StateMutationConflictError(
         `Batch id ${options.batchId} is already bound to a different mutation fingerprint`,
       );
@@ -140,39 +205,27 @@ function commitUnderLease(options: {
       (remoteCommit !== recoveredParent &&
         stateContainsCommit(options.remote, options.branch, remoteCommit, recovered.commit))
     ) {
-      return { outcome: "already_committed", commitSha: recovered.commit };
+      return { outcome: "already_committed", commitSha: recovered.commit, ...outcomeMeta() };
     }
     if (remoteCommit === recoveredParent) {
       options.hooks?.beforePush?.(recovered.commit);
       pushStateCommitUnderLease(recovered.commit, options.remote, options.branch, receiptRef);
       verifyRemoteCommit(options.remote, options.branch, receiptRef, recovered.commit);
       options.hooks?.afterPush?.(recovered.commit);
-      return { outcome: "committed", commitSha: recovered.commit };
+      return { outcome: "committed", commitSha: recovered.commit, ...outcomeMeta() };
     }
     throw new StateMutationConflictError(
       `Batch id ${options.batchId} has a prepared receipt but state advanced before retry`,
     );
   }
 
-  const remoteEntries = readRemoteEntries(
-    remoteCommit,
-    options.operations.map(({ path }) => path),
-  );
-  const pending = options.operations.filter((operation) => {
+  const pending = operations.filter((operation) => {
     const remoteEntry = remoteEntries.get(operation.path) ?? null;
     const remoteOid = remoteEntry?.oid ?? null;
-    if (
+    return !(
       remoteOid === operation.targetOid &&
       (operation.targetOid === null || remoteEntry?.mode === operation.mode)
-    ) {
-      return false;
-    }
-    if (remoteOid !== operation.expectedOid) {
-      throw new StateMutationConflictError(
-        `Remote state path ${operation.path} changed after mutation preparation`,
-      );
-    }
-    return true;
+    );
   });
   const remoteTree = runGit(["rev-parse", `${remoteCommit}^{tree}`], { quiet: true }).trim();
   // Even a content no-op needs a durable batch-id/fingerprint binding. A same-tree
@@ -180,14 +233,19 @@ function commitUnderLease(options: {
   const tree = pending.length === 0 ? remoteTree : applyOperationsToTree(remoteTree, pending);
   const commitSha = runGit(["commit-tree", tree, "-p", remoteCommit], {
     env: { ...process.env, ...clawsweeperGitIdentityEnv() },
-    input: batchCommitMessage(options),
+    input: batchCommitMessage({
+      batchId: options.batchId,
+      fingerprint,
+      plans: survivingPlans,
+      message: options.message,
+    }),
     quiet: true,
   }).trim();
   options.hooks?.beforePush?.(commitSha);
   pushStateCommitUnderLease(commitSha, options.remote, options.branch, receiptRef);
   verifyRemoteCommit(options.remote, options.branch, receiptRef, commitSha);
   options.hooks?.afterPush?.(commitSha);
-  return { outcome: "committed", commitSha };
+  return { outcome: "committed", commitSha, ...outcomeMeta() };
 }
 
 function validateAndCombinePlans(

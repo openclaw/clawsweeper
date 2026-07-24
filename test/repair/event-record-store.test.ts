@@ -10,11 +10,28 @@ import {
   applyEventSnapshotIfCurrent,
   captureEventBaseSnapshot,
   captureEventSnapshot,
+  eventRecordDirectories,
   eventRecordPaths,
   eventSnapshotMatchesCurrent,
   resetEventSnapshot,
 } from "../../dist/repair/event-record-store.js";
 import { refreshSourceAfterStatePublish } from "../../dist/repair/git-publish.js";
+
+test("event record directories stay inside the isolated worker root", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-event-record-dirs-"));
+  const paths = eventRecordPaths({
+    targetRepo: "openclaw/clawsweeper",
+    itemNumber: "828",
+    snapshotDir: path.join(root, "snapshot"),
+  });
+
+  assert.deepEqual(eventRecordDirectories(paths, root), {
+    items: path.join(root, "records", "openclaw-clawsweeper", "items"),
+    closed: path.join(root, "records", "openclaw-clawsweeper", "closed"),
+    plans: path.join(root, "records", "openclaw-clawsweeper", "plans"),
+    decisionPackets: path.join(root, "records", "openclaw-clawsweeper", "decision-packets"),
+  });
+});
 
 test("event snapshot match follows the final tuple winner, not only its action", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-event-records-"));

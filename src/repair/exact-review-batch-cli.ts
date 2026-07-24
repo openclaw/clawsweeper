@@ -11,7 +11,10 @@ import {
 import { StatePublishContentionError } from "./git-publish.js";
 import { setStatePublishTelemetryObserver } from "./git-publish.js";
 import { exactReviewBatchStateWriterProgressReporter } from "./exact-review-batch-state-writer-progress.js";
-import { commitPreparedStateBatch } from "./state-publication-batch.js";
+import {
+  commitPreparedStateBatch,
+  type StateBatchQuarantinedItem,
+} from "./state-publication-batch.js";
 import { StateWriterTelemetryRecorder } from "./state-writer-telemetry-recorder.js";
 import type { StateWriterOperation } from "../state-writer-telemetry.js";
 import {
@@ -117,6 +120,7 @@ async function commit() {
   const superseded: ExactReviewBatchCompletion[] = [];
   const commitMembers: ExactReviewBatchQueueItem[] = [];
   const plans: PreparedStateMutationPlan[] = [];
+  const outcomePathByItemKey = new Map<string, string>();
   for (const manifestItem of manifest.items) {
     const current = active.get(manifestItem.itemKey);
     if (!current || !existsSync(manifestItem.outcomePath)) continue;
@@ -141,10 +145,12 @@ async function commit() {
     }
     commitMembers.push(current);
     plans.push(plan);
+    outcomePathByItemKey.set(current.itemKey, manifestItem.outcomePath);
   }
 
   let stateCommitSha: string | undefined;
   let stateWriter: StateWriterOperation | undefined;
+  let quarantined: readonly StateBatchQuarantinedItem[] = [];
   const progressObserver = exactReviewBatchStateWriterProgressReporter({
     queueUrl: env("EXACT_REVIEW_QUEUE_URL"),
     webhookSecret: env("CLAWSWEEPER_WEBHOOK_SECRET"),
@@ -169,10 +175,12 @@ async function commit() {
         batchId: manifest.batchId,
         plans,
       });
-      stateCommitSha = committed.commitSha;
-      if (committed.outcome === "committed") recorder?.recordMaterializedCommit(plans.length);
+      stateCommitSha = committed.commitSha ?? undefined;
+      if (committed.outcome === "committed")
+        recorder?.recordMaterializedCommit(committed.itemCount);
       recorder?.finalize(committed.outcome === "committed" ? "materialized" : "unchanged");
       stateWriter = recorder?.toTerminalObject() ?? undefined;
+      quarantined = committed.quarantinedItems;
     }
   } catch (error) {
     recorder?.finalize(
@@ -205,6 +213,45 @@ async function commit() {
   } finally {
     resetTelemetry();
   }
+  if (quarantined.length) {
+    const quarantineReasons = new Map(quarantined.map((item) => [item.itemKey, item.reason]));
+    const quarantinedCompletions = commitMembers
+      .filter((member) => quarantineReasons.has(member.itemKey))
+      .map((member) =>
+        retryableCompletion(
+          member,
+          "state_conflict_quarantined",
+          failureFingerprint(new Error(quarantineReasons.get(member.itemKey))),
+        ),
+      );
+    try {
+      await acknowledge(manifest, quarantinedCompletions);
+    } catch (releaseError) {
+      console.error(
+        `Failed to acknowledge quarantined batch items: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}`,
+      );
+    }
+  }
+  const quarantinedItemKeys = new Set(quarantined.map((item) => item.itemKey));
+  for (const itemKey of quarantinedItemKeys) {
+    const outcomePath = outcomePathByItemKey.get(itemKey);
+    if (!outcomePath || !existsSync(outcomePath)) continue;
+    const outcome = objectValue(JSON.parse(readFileSync(outcomePath, "utf8")));
+    // A quarantined item's local outcome file still says kind: "eligible"; the
+    // workflow's post-commit loop reads that file directly (not this receipt) to
+    // decide whether to dispatch comment-router or requeue effects, so it must be
+    // corrected here or the loop will run post-effects for state that was never
+    // committed.
+    writeFileSync(
+      outcomePath,
+      `${JSON.stringify(
+        { ...outcome, kind: "retryable_failure", reasonCode: "state_conflict_quarantined" },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+  }
   const receiptPath = batchReceiptPath();
   mkdirSync(dirname(receiptPath), { recursive: true });
   writeFileSync(
@@ -213,7 +260,9 @@ async function commit() {
       {
         batchId: manifest.batchId,
         stateCommitSha: stateCommitSha ?? null,
-        publishedItemKeys: plans.map((plan) => plan.identity.itemKey),
+        publishedItemKeys: plans
+          .map((plan) => plan.identity.itemKey)
+          .filter((itemKey) => !quarantinedItemKeys.has(itemKey)),
         stateWriter: stateWriter ?? null,
       },
       null,
@@ -226,7 +275,8 @@ async function commit() {
       ok: true,
       batch_id: manifest.batchId,
       state_commit_sha: stateCommitSha ?? null,
-      materialized: plans.length,
+      materialized: plans.length - quarantined.length,
+      quarantined: quarantined.length,
       superseded: superseded.length,
     }),
   );
