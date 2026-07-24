@@ -268,12 +268,27 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
     /needs\.publish-apply-proof-action-ledger\.result == 'failure'/,
   );
   assert.match(telemetryStep.env?.TARGET_REPO ?? "", /openclaw\/clawhub/);
+  assert.match(
+    telemetryStep.env?.APPLY_STARTED_AT ?? "",
+    /needs\.apply-existing\.outputs\.observability_started_at/,
+  );
+  const applyExisting = job("apply-existing");
+  assert.match(
+    applyExisting.outputs?.observability_started_at ?? "",
+    /steps\.apply-telemetry-start\.outputs\.started_at/,
+  );
   const telemetryContext = step("apply-existing", "Save apply telemetry context");
   assert.equal(telemetryContext["continue-on-error"], true);
   assert.match(telemetryContext.run ?? "", /apply-observability-context\.json/);
   const telemetryArtifact = step("apply-existing", "Upload apply telemetry health");
   assert.equal(telemetryArtifact["continue-on-error"], true);
   assert.equal(telemetryArtifact.with?.["include-hidden-files"], true);
+  const telemetryStart = step("apply-existing", "Publish apply telemetry start");
+  assert.equal(telemetryStart["continue-on-error"], true);
+  assert.equal(telemetryStart.env?.APPLY_OUTCOME, "in_progress");
+  assert.match(telemetryStart.run ?? "", /publish-apply-observability\.mjs/);
+  assert.match(telemetryStart.run ?? "", /apply-observability-context\.json/);
+  assert.match(telemetryContext.run ?? "", /apply-telemetry-start\.outputs\.started_at/);
 });
 
 test("review workflow gives Codex a read-only inspection token", () => {

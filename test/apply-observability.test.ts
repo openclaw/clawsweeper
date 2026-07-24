@@ -24,6 +24,7 @@ function event(overrides: Record<string, unknown> = {}) {
     run_attempt: 1,
     occurred_at: "2026-07-21T11:55:00Z",
     started_at: "2026-07-21T11:40:00Z",
+    lifecycle_started: true,
     outcome: "success",
     run_url: "https://github.com/openclaw/clawsweeper/actions/runs/12345",
     queue: {
@@ -108,6 +109,32 @@ test("apply observability reports disjoint result and failure accounting in sele
   assert.equal(summary.retry_amplification, 0.3);
 });
 
+test("proof-only failures retain their alert without blanking completed apply throughput", () => {
+  const completed = normalizeApplyObservabilityEvent(event(), NOW)!;
+  const proofOnlyFailure = normalizeApplyObservabilityEvent(
+    event({
+      run_id: "12347",
+      lifecycle_started: false,
+      outcome: "failure",
+      arrivals: null,
+      results: { applied: null, closed: null, superseded: null, retried: null, dead_lettered: null },
+      observed_failure_kinds: ["workflow_failure"],
+      failures: [{ kind: "workflow_failure", at: "2026-07-21T11:55:00Z" }],
+    }),
+    NOW,
+  )!;
+  const summary = summarizeApplyObservability({
+    events: [completed, proofOnlyFailure],
+    range: "24h",
+    repo: null,
+    now: NOW,
+  });
+
+  assert.equal(summary.totals.arrivals, 5);
+  assert.equal(summary.totals.applied, 8);
+  assert.equal(summary.failures.last_failure_kind, "workflow_failure");
+});
+
 test("apply observability rejects malformed producer payloads", () => {
   assert.equal(normalizeApplyObservabilityEvent(event({ repo: "not-a-repo" }), NOW), null);
   assert.equal(
@@ -173,7 +200,7 @@ test("all-repository queue health stays unknown until every configured target re
   assert.equal(complete.last_60_minutes.applied, 16);
 });
 
-test("apply observability becomes unavailable after the expected producer cadence", () => {
+test("terminal apply telemetry becomes unavailable after the expected producer cadence", () => {
   const stale = normalizeApplyObservabilityEvent(
     event({
       occurred_at: "2026-07-21T11:10:00Z",
@@ -190,6 +217,182 @@ test("apply observability becomes unavailable after the expected producer cadenc
   });
   assert.equal(summary.telemetry_complete, false);
   assert.equal(summary.queue.ready, null);
+});
+
+test("the 6h view retains a current apply observation through its apply budget", () => {
+  const running = normalizeApplyObservabilityEvent(
+    event({
+      occurred_at: "2026-07-21T05:30:00Z",
+      started_at: "2026-07-21T05:30:00Z",
+      outcome: "in_progress",
+      queue: {
+        active: 1,
+        capacity: 1,
+        ready: null,
+        backoff: null,
+        dispatching: null,
+        leased: null,
+        oldest_ready_age_seconds: null,
+        oldest_backoff_age_seconds: null,
+        oldest_lease_age_seconds: null,
+      },
+    }),
+    NOW,
+  )!;
+  const summary = summarizeApplyObservability({
+    events: [running],
+    range: "6h",
+    repo: null,
+    repositories: ["openclaw/openclaw"],
+    now: NOW,
+  });
+  assert.equal(summary.telemetry_complete, true);
+  assert.equal(summary.queue.active, 1);
+});
+
+test("a timed-out apply stops looking current after its terminal-publication margin", () => {
+  const running = normalizeApplyObservabilityEvent(
+    event({
+      occurred_at: "2026-07-21T05:00:00Z",
+      started_at: "2026-07-21T05:00:00Z",
+      outcome: "in_progress",
+    }),
+    Date.parse("2026-07-21T12:00:00Z"),
+  );
+  assert.ok(running);
+
+  const summary = summarizeApplyObservability({
+    events: [running],
+    range: "24h",
+    repo: "openclaw/openclaw",
+    now: Date.parse("2026-07-21T11:46:00Z"),
+  });
+
+  assert.equal(summary.telemetry_complete, false);
+  assert.equal(summary.queue.active, null);
+});
+
+test("legacy v1 terminal telemetry remains readable without a lifecycle marker", () => {
+  const legacy = event();
+  delete (legacy as { lifecycle_started?: boolean }).lifecycle_started;
+
+  const normalized = normalizeApplyObservabilityEvent(legacy, Date.parse("2026-07-21T12:00:00Z"));
+
+  assert.ok(normalized);
+  assert.equal(normalized.lifecycle_started, false);
+  const summary = summarizeApplyObservability({
+    events: [normalized],
+    range: "24h",
+    repo: "openclaw/openclaw",
+    now: NOW,
+  });
+  assert.equal(summary.totals.arrivals, 5);
+  assert.equal(summary.totals.applied, 8);
+});
+
+test("a newer running apply wins over a terminal event published late by an older lifecycle", () => {
+  const olderTerminal = normalizeApplyObservabilityEvent(
+    event({
+      occurred_at: "2026-07-21T11:59:00Z",
+      started_at: "2026-07-21T11:40:00Z",
+      outcome: "success",
+      queue: {
+        active: null,
+        capacity: null,
+        ready: null,
+        backoff: null,
+        dispatching: null,
+        leased: null,
+        oldest_ready_age_seconds: null,
+        oldest_backoff_age_seconds: null,
+        oldest_lease_age_seconds: null,
+      },
+    }),
+    NOW,
+  )!;
+  const newerRunning = normalizeApplyObservabilityEvent(
+    event({
+      run_id: "12346",
+      occurred_at: "2026-07-21T11:55:00Z",
+      started_at: "2026-07-21T11:55:00Z",
+      outcome: "in_progress",
+      queue: {
+        active: 1,
+        capacity: 1,
+        ready: null,
+        backoff: null,
+        dispatching: null,
+        leased: null,
+        oldest_ready_age_seconds: null,
+        oldest_backoff_age_seconds: null,
+        oldest_lease_age_seconds: null,
+      },
+    }),
+    NOW,
+  )!;
+  const summary = summarizeApplyObservability({
+    events: [olderTerminal, newerRunning],
+    range: "6h",
+    repo: null,
+    repositories: ["openclaw/openclaw"],
+    now: NOW,
+  });
+  assert.equal(summary.telemetry_complete, true);
+  assert.equal(summary.queue.active, 1);
+  assert.equal(summary.queue.capacity, 1);
+});
+
+test("a proof-only terminal event cannot displace an active apply lifecycle", () => {
+  const running = normalizeApplyObservabilityEvent(
+    event({
+      run_id: "12346",
+      occurred_at: "2026-07-21T11:55:00Z",
+      started_at: "2026-07-21T11:55:00Z",
+      outcome: "in_progress",
+      queue: {
+        active: 1,
+        capacity: 1,
+        ready: null,
+        backoff: null,
+        dispatching: null,
+        leased: null,
+        oldest_ready_age_seconds: null,
+        oldest_backoff_age_seconds: null,
+        oldest_lease_age_seconds: null,
+      },
+    }),
+    NOW,
+  )!;
+  const proofFailure = normalizeApplyObservabilityEvent(
+    event({
+      run_id: "12347",
+      occurred_at: "2026-07-21T11:59:00Z",
+      started_at: "2026-07-21T11:59:00Z",
+      lifecycle_started: false,
+      outcome: "failure",
+      queue: {
+        active: null,
+        capacity: null,
+        ready: null,
+        backoff: null,
+        dispatching: null,
+        leased: null,
+        oldest_ready_age_seconds: null,
+        oldest_backoff_age_seconds: null,
+        oldest_lease_age_seconds: null,
+      },
+    }),
+    NOW,
+  )!;
+  const summary = summarizeApplyObservability({
+    events: [running, proofFailure],
+    range: "6h",
+    repo: null,
+    repositories: ["openclaw/openclaw"],
+    now: NOW,
+  });
+  assert.equal(summary.telemetry_complete, true);
+  assert.equal(summary.queue.active, 1);
 });
 
 test("apply telemetry producer keeps successful terminal steps distinct from ledger failures", async (t) => {
@@ -210,6 +413,40 @@ test("apply telemetry producer keeps successful terminal steps distinct from led
   const cwd = mkdtempSync(join(tmpdir(), "clawsweeper-apply-observability-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   mkdirSync(join(cwd, ".artifacts"));
+  await run(process.execPath, [script], {
+    cwd,
+    env: {
+      ...process.env,
+      APPLY_OUTCOME: "in_progress",
+      APPLY_STARTED_AT: "2026-07-21T11:55:00.000Z",
+      CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+      GITHUB_REPOSITORY: "openclaw/clawsweeper",
+      GITHUB_RUN_ATTEMPT: "1",
+      GITHUB_RUN_ID: "12344",
+      QUEUE_URL: "http://127.0.0.1:" + address.port,
+      TARGET_REPO: "openclaw/openclaw",
+    },
+  });
+  const inProgressPayload = payloads[0];
+  assert.ok(inProgressPayload);
+  assert.deepEqual((inProgressPayload.event as { queue?: unknown }).queue, {
+    active: 1,
+    capacity: 1,
+    ready: null,
+    backoff: null,
+    dispatching: null,
+    leased: null,
+    oldest_ready_age_seconds: null,
+    oldest_backoff_age_seconds: null,
+    oldest_lease_age_seconds: null,
+  });
+  assert.deepEqual((inProgressPayload.event as { results?: unknown }).results, {
+    applied: null,
+    closed: null,
+    superseded: null,
+    retried: null,
+    dead_lettered: null,
+  });
   writeFileSync(
     join(cwd, ".artifacts", "apply-observability-context.json"),
     JSON.stringify({ noop: true }),
@@ -220,6 +457,7 @@ test("apply telemetry producer keeps successful terminal steps distinct from led
       ...process.env,
       ACTION_LEDGER_OUTCOME: "success",
       APPLY_OUTCOME: "success",
+      APPLY_STARTED_AT: "2026-07-21T11:55:00.000Z",
       CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
       GITHUB_REPOSITORY: "openclaw/clawsweeper",
       GITHUB_RUN_ATTEMPT: "1",
@@ -230,7 +468,7 @@ test("apply telemetry producer keeps successful terminal steps distinct from led
       TARGET_REPO: "openclaw/openclaw",
     },
   });
-  const successfulPayload = payloads[0];
+  const successfulPayload = payloads[1];
   assert.ok(successfulPayload);
   assert.deepEqual(
     (successfulPayload.event as { observed_failure_kinds?: unknown }).observed_failure_kinds,
@@ -251,6 +489,7 @@ test("apply telemetry producer keeps successful terminal steps distinct from led
       ...process.env,
       ACTION_LEDGER_OUTCOME: "failure",
       APPLY_OUTCOME: "success",
+      APPLY_STARTED_AT: "2026-07-21T11:55:00.000Z",
       CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
       GITHUB_REPOSITORY: "openclaw/clawsweeper",
       GITHUB_RUN_ATTEMPT: "1",
@@ -261,7 +500,7 @@ test("apply telemetry producer keeps successful terminal steps distinct from led
       TARGET_REPO: "openclaw/openclaw",
     },
   });
-  const ledgerFailurePayload = payloads[1];
+  const ledgerFailurePayload = payloads[2];
   assert.ok(ledgerFailurePayload);
   assert.deepEqual(
     (ledgerFailurePayload.event as { observed_failure_kinds?: unknown }).observed_failure_kinds,
@@ -305,6 +544,7 @@ test("apply telemetry producer preserves the newest checkpoint health after a fa
       ...process.env,
       ACTION_LEDGER_OUTCOME: "success",
       APPLY_OUTCOME: "failure",
+      APPLY_STARTED_AT: "2026-07-21T11:00:00.000Z",
       CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
       GITHUB_REPOSITORY: "openclaw/clawsweeper",
       GITHUB_RUN_ATTEMPT: "1",
@@ -317,12 +557,13 @@ test("apply telemetry producer preserves the newest checkpoint health after a fa
   });
   const payload = payloads[0];
   assert.ok(payload);
+  assert.equal((payload.event as { started_at?: unknown }).started_at, "2026-07-21T11:00:00.000Z");
   assert.deepEqual((payload.event as { queue?: unknown }).queue, {
-    active: 0,
-    capacity: 1,
-    ready: 7,
+    active: null,
+    capacity: null,
+    ready: null,
     backoff: null,
-    dispatching: 0,
+    dispatching: null,
     leased: null,
     oldest_ready_age_seconds: null,
     oldest_backoff_age_seconds: null,

@@ -12,9 +12,13 @@ const telemetryContext = existsSync(telemetryContextPath)
   ? JSON.parse(readFileSync(telemetryContextPath, "utf8"))
   : {};
 const now = new Date().toISOString();
-const outcome = ["success", "failure", "cancelled", "skipped"].includes(process.env.APPLY_OUTCOME)
+const lifecycleStart = process.env.APPLY_STARTED_AT || telemetryContext?.started_at;
+const startedAt = contextTimestamp(lifecycleStart, now);
+const lifecycleStarted = hasTimestamp(lifecycleStart, now);
+const outcome = ["in_progress", "success", "failure", "cancelled", "skipped"].includes(process.env.APPLY_OUTCOME)
   ? process.env.APPLY_OUTCOME
   : "failure";
+const inProgress = outcome === "in_progress";
 const idle =
   String(process.env.APPLY_NOOP || "").toLowerCase() === "true" ||
   telemetryContext?.noop === true ||
@@ -59,15 +63,18 @@ const payload = JSON.stringify({
     run_id: requiredEnv("GITHUB_RUN_ID"),
     run_attempt: Number(requiredEnv("GITHUB_RUN_ATTEMPT")),
     occurred_at: now,
-    started_at: now,
+    started_at: startedAt,
+    lifecycle_started: lifecycleStarted,
     outcome,
     run_url: `https://github.com/${requiredEnv("GITHUB_REPOSITORY")}/actions/runs/${requiredEnv("GITHUB_RUN_ID")}`,
     queue: {
-      active: 0,
-      capacity: 1,
-      ready: idle ? 0 : count(health?.cycle?.apply_ready_count),
+      // Terminal health files do not observe the live GitHub Actions queue.
+      // Only the start observation can truthfully say that this apply job is active.
+      active: inProgress ? 1 : null,
+      capacity: inProgress ? 1 : null,
+      ready: null,
       backoff: null,
-      dispatching: 0,
+      dispatching: null,
       leased: null,
       oldest_ready_age_seconds: null,
       oldest_backoff_age_seconds: null,
@@ -133,6 +140,15 @@ function latestCheckpointHealthPath() {
   } catch {
     return "";
   }
+}
+
+function contextTimestamp(value, fallback) {
+  return hasTimestamp(value, fallback) ? new Date(Date.parse(String(value))).toISOString() : fallback;
+}
+
+function hasTimestamp(value, now) {
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) && parsed <= Date.parse(now);
 }
 
 function requiredEnv(name) {

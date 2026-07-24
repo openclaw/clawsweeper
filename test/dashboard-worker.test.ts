@@ -3485,6 +3485,7 @@ test("apply observability accepts signed durable events and exposes the API summ
       run_attempt: 1,
       occurred_at: now,
       started_at: now,
+      lifecycle_started: true,
       outcome: "success",
       run_url: "https://github.com/openclaw/clawsweeper/actions/runs/98765",
       queue: {
@@ -3564,6 +3565,39 @@ test("apply observability accepts signed durable events and exposes the API summ
   assert.deepEqual(withoutStaleClawhub.repositories.map((entry) => entry.repo), [
     "openclaw/openclaw",
   ]);
+
+  const runningClawhubPayload = JSON.parse(body);
+  runningClawhubPayload.event.repo = "openclaw/clawhub";
+  runningClawhubPayload.event.run_id = "987661";
+  runningClawhubPayload.event.outcome = "in_progress";
+  runningClawhubPayload.event.lifecycle_started = true;
+  runningClawhubPayload.event.occurred_at = new Date(Date.now() - 6.5 * 60 * 60 * 1000).toISOString();
+  runningClawhubPayload.event.started_at = runningClawhubPayload.event.occurred_at;
+  const runningClawhubBody = JSON.stringify(runningClawhubPayload);
+  const runningClawhubSignature = `sha256=${createHmac("sha256", secret).update(runningClawhubBody).digest("hex")}`;
+  const runningClawhubAccepted = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/apply-observability", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-clawsweeper-exact-review-signature": runningClawhubSignature,
+      },
+      body: runningClawhubBody,
+    }),
+    env,
+  );
+  assert.equal(runningClawhubAccepted.status, 200);
+  const withRunningClawhub = await (
+    await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/apply-observability?range=6h"),
+      env,
+    )
+  ).json();
+  assert.deepEqual(withRunningClawhub.repositories.map((entry) => entry.repo), [
+    "openclaw/openclaw",
+    "openclaw/clawhub",
+  ]);
+  assert.equal(withRunningClawhub.telemetry_complete, true);
 
   const currentClawhubPayload = JSON.parse(body);
   currentClawhubPayload.event.repo = "openclaw/clawhub";

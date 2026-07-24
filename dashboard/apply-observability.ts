@@ -4,12 +4,16 @@ export const APPLY_OBSERVABILITY_RANGES = {
   "24h": 24 * 60 * 60 * 1000,
   "7d": APPLY_OBSERVABILITY_RETENTION_MS,
 } as const;
-// Apply producers run every 15 minutes. Two missed intervals are enough to
-// make the dashboard's "Observed" state unsafe, while allowing scheduler and
-// publication retries to settle before declaring the telemetry unavailable.
-export const APPLY_OBSERVABILITY_MAX_SILENCE_MS = 45 * 60 * 1000;
+// Terminal observations should arrive every 15 minutes; allow two missed
+// intervals before treating their health as unavailable.
+export const APPLY_OBSERVABILITY_TERMINAL_MAX_SILENCE_MS = 45 * 60 * 1000;
+// The observation is emitted after proof, at the start of `apply-existing`,
+// whose 360-minute job budget is the longest remaining lifecycle. Keep only a
+// small terminal-publication margin beyond that; a missing terminal must not
+// leave a timed-out apply looking current for hours.
+export const APPLY_OBSERVABILITY_IN_PROGRESS_MAX_SILENCE_MS = (6 * 60 + 45) * 60 * 1000;
 
-const OUTCOMES = new Set(["success", "failure", "cancelled", "skipped"]);
+const OUTCOMES = new Set(["in_progress", "success", "failure", "cancelled", "skipped"]);
 const FAILURE_KINDS = [
   "state_lease_timeout",
   "state_lease_contention",
@@ -30,7 +34,8 @@ export type ApplyObservabilityEvent = {
   run_attempt: number;
   occurred_at: string;
   started_at: string;
-  outcome: "success" | "failure" | "cancelled" | "skipped";
+  lifecycle_started: boolean;
+  outcome: "in_progress" | "success" | "failure" | "cancelled" | "skipped";
   run_url: string;
   queue: {
     active: Count;
@@ -66,6 +71,11 @@ export function normalizeApplyObservabilityEvent(
   const runAttempt = Number(input.run_attempt);
   const occurredAt = timestamp(input.occurred_at);
   const startedAt = timestamp(input.started_at);
+  // v1 terminal records already retained in the status store predate the
+  // lifecycle marker. They cannot represent an explicit in-progress start, so
+  // retain them as terminal-only evidence instead of dropping the history.
+  const lifecycleStarted =
+    input.lifecycle_started === undefined ? false : input.lifecycle_started;
   const outcome = String(input.outcome || "");
   const runUrl = String(input.run_url || "").trim();
   if (
@@ -76,9 +86,11 @@ export function normalizeApplyObservabilityEvent(
     runAttempt < 1 ||
     !occurredAt ||
     !startedAt ||
+    typeof lifecycleStarted !== "boolean" ||
     Date.parse(occurredAt) < Date.parse(startedAt) ||
     Date.parse(occurredAt) > now + 5 * 60_000 ||
     !OUTCOMES.has(outcome) ||
+    (outcome === "in_progress" && !lifecycleStarted) ||
     !/^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/\d+$/.test(runUrl)
   )
     return null;
@@ -114,6 +126,7 @@ export function normalizeApplyObservabilityEvent(
     run_attempt: runAttempt,
     occurred_at: occurredAt,
     started_at: startedAt,
+    lifecycle_started: lifecycleStarted,
     outcome: outcome as ApplyObservabilityEvent["outcome"],
     run_url: runUrl,
     queue: queue as ApplyObservabilityEvent["queue"],
@@ -139,31 +152,28 @@ export function summarizeApplyObservability(options: {
     : options.repositories?.length
       ? [...new Set(options.repositories)]
       : null;
-  const events = options.events.filter(
-    (event) =>
-      Date.parse(event.occurred_at) >= from &&
-      (!expectedRepositories || expectedRepositories.includes(event.repo)),
+  const observedEvents = options.events.filter(
+    (event) => !expectedRepositories || expectedRepositories.includes(event.repo),
   );
+  const events = observedEvents.filter((event) => Date.parse(event.occurred_at) >= from);
   const observedRepositories = expectedRepositories ?? [
     ...new Set(events.map((event) => event.repo)),
   ];
-  const latestByRepository = new Map<string, ApplyObservabilityEvent>();
-  for (const event of [...events].sort(
-    (left, right) => Date.parse(right.occurred_at) - Date.parse(left.occurred_at),
-  )) {
-    if (!latestByRepository.has(event.repo)) latestByRepository.set(event.repo, event);
-  }
+  const latestByRepository = latestApplyObservations(
+    observedEvents.filter((event) => isCurrentApplyObservabilityEvent(event, now)),
+  );
   const latest = observedRepositories.map((repo) => latestByRepository.get(repo) ?? null);
-  const telemetryComplete =
-    observedRepositories.length > 0 &&
-    latest.every(
-      (event) =>
-        event && Date.parse(event.occurred_at) >= now - APPLY_OBSERVABILITY_MAX_SILENCE_MS,
-    );
+  const telemetryComplete = observedRepositories.length > 0 && latest.every(Boolean);
   const current = telemetryComplete ? latest : latest.map(() => null);
+  // A proof-only failure and a current apply have no terminal result ledger.
+  // Keep those records for health/failure visibility, but do not let their
+  // intentionally null result counts erase measured completed throughput.
+  const completedLifecycleEvents = events.filter(isCompletedApplyResultEvent);
   const window = (ms: number) =>
-    aggregate(events.filter((event) => Date.parse(event.occurred_at) >= now - ms));
-  const aggregateRange = aggregate(events);
+    aggregate(
+      completedLifecycleEvents.filter((event) => Date.parse(event.occurred_at) >= now - ms),
+    );
+  const aggregateRange = aggregate(completedLifecycleEvents);
   const failures = events.flatMap((event) =>
     event.failures.map((failure) => ({ ...failure, repo: event.repo, run_url: event.run_url })),
   );
@@ -197,6 +207,53 @@ export function summarizeApplyObservability(options: {
       last_failure_run_url: lastFailure?.run_url ?? null,
     },
   };
+}
+
+export function isCurrentApplyObservabilityEvent(
+  event: ApplyObservabilityEvent,
+  now = Date.now(),
+) {
+  const maxSilence =
+    event.outcome === "in_progress"
+      ? APPLY_OBSERVABILITY_IN_PROGRESS_MAX_SILENCE_MS
+      : APPLY_OBSERVABILITY_TERMINAL_MAX_SILENCE_MS;
+  return Date.parse(event.occurred_at) >= now - maxSilence;
+}
+
+function isCompletedApplyResultEvent(event: ApplyObservabilityEvent) {
+  if (event.outcome === "in_progress") return false;
+  if (event.lifecycle_started) return true;
+  // Pre-marker v1 terminal records are retained as lifecycle_started=false.
+  // Include the ones with a real result ledger, while keeping proof-only
+  // failures (which carry only null result fields) out of throughput totals.
+  return (
+    event.arrivals !== null ||
+    Object.values(event.results).some((value) => value !== null)
+  );
+}
+
+function latestApplyObservations(events: readonly ApplyObservabilityEvent[]) {
+  const latest = new Map<string, ApplyObservabilityEvent>();
+  for (const event of events) {
+    const current = latest.get(event.repo);
+    if (!current || isNewerApplyObservation(event, current)) latest.set(event.repo, event);
+  }
+  return latest;
+}
+
+function isNewerApplyObservation(
+  candidate: ApplyObservabilityEvent,
+  current: ApplyObservabilityEvent,
+) {
+  if (candidate.outcome === "in_progress" && current.outcome !== "in_progress") {
+    if (!current.lifecycle_started) return true;
+  }
+  if (candidate.outcome !== "in_progress" && current.outcome === "in_progress") {
+    if (!candidate.lifecycle_started) return false;
+  }
+  const startedAtDelta = Date.parse(candidate.started_at) - Date.parse(current.started_at);
+  if (startedAtDelta !== 0) return startedAtDelta > 0;
+  return Date.parse(candidate.occurred_at) > Date.parse(current.occurred_at);
 }
 
 function failureCount(

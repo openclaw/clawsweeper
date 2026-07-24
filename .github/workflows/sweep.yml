@@ -4406,6 +4406,7 @@ jobs:
       action_ledger_outcome: ${{ steps.finalize-apply.outcome || 'not_started' }}
       state_status_outcome: ${{ steps.retry-final-apply-status-publication.outcome || 'not_started' }}
       state_publication_outcome: ${{ steps.publish-apply-action-events.outcome || 'not_started' }}
+      observability_started_at: ${{ steps.apply-telemetry-start.outputs.started_at || '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     concurrency:
@@ -4460,6 +4461,23 @@ jobs:
             echo "target_repo_owner=$target_owner"
             echo "target_repo_name=$target_name"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Publish apply telemetry start
+        id: apply-telemetry-start
+        continue-on-error: true
+        env:
+          APPLY_OUTCOME: in_progress
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+        run: |
+          set -euo pipefail
+          test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
+          started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p .artifacts
+          printf '{"started_at":"%s"}\n' "$started_at" > .artifacts/apply-observability-context.json
+          echo "started_at=$started_at" >> "$GITHUB_OUTPUT"
+          node scripts/publish-apply-observability.mjs
 
       - name: Create target write token
         id: target-write-token
@@ -5085,10 +5103,15 @@ jobs:
         run: |
           mkdir -p .artifacts
           noop=false
+          started_at="${{ steps.apply-telemetry-start.outputs.started_at || '' }}"
           if [ "${APPLY_NOOP:-false}" = "true" ]; then
             noop=true
           fi
-          printf '{"noop":%s}\n' "$noop" > .artifacts/apply-observability-context.json
+          if [ -n "$started_at" ]; then
+            printf '{"noop":%s,"started_at":"%s"}\n' "$noop" "$started_at" > .artifacts/apply-observability-context.json
+          else
+            printf '{"noop":%s}\n' "$noop" > .artifacts/apply-observability-context.json
+          fi
 
       - name: Upload apply telemetry health
         if: ${{ always() }}
@@ -5211,6 +5234,7 @@ jobs:
           ACTION_LEDGER_OUTCOME: ${{ (needs.publish-apply-proof-action-ledger.result == 'failure' || needs.apply-existing.outputs.action_ledger_outcome == 'failure') && 'failure' || needs.apply-existing.outputs.action_ledger_outcome || 'not_started' }}
           STATE_STATUS_OUTCOME: ${{ needs.apply-existing.outputs.state_status_outcome || 'not_started' }}
           STATE_PUBLICATION_OUTCOME: ${{ needs.apply-existing.outputs.state_publication_outcome || 'not_started' }}
+          APPLY_STARTED_AT: ${{ needs.apply-existing.outputs.observability_started_at || '' }}
           TARGET_REPO: ${{ needs.apply-existing.outputs.target_repo || needs.apply-proof.outputs.target_repo || (github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && 'openclaw/clawhub') || github.event.inputs.target_repo || 'openclaw/openclaw' }}
         run: |
           set -euo pipefail
