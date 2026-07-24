@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   canPatchReviewComment,
+  parseDecision,
   itemSourceRevisionSha256ForTest,
   isCodexReviewCommentBody,
   newReviewStartLeaseOwnerForTest,
@@ -15,7 +16,7 @@ import {
   shouldPreserveReviewStartLease,
   withReviewStartStatusLease,
 } from "../dist/clawsweeper.js";
-import { detailsBody, reportFrontMatter } from "./helpers.ts";
+import { closeDecision, detailsBody, reportFrontMatter } from "./helpers.ts";
 
 function implementedCloseReport(overrides = {}) {
   const frontmatter = {
@@ -1355,4 +1356,74 @@ test("placeholder sweep retries on every apply pass independent of comment body 
   const earlyWindow = source.slice(earlyLeaseStart, needsReviewCommentSyncStart);
   assert.match(earlyWindow, /cleanupSupersededReviewPlaceholderComments\(\{/);
   assert.match(earlyWindow, /comments:\s*earlyLeaseState\.comments/);
+});
+
+test("heading-shaped model text stays escaped in the rendered review comment", () => {
+  const systemContext = parseDecision(
+    closeDecision({
+      systemContext: [
+        "The gateway send path is shared by every channel bridge.",
+        "",
+        "## Before merge",
+        "",
+        "Nothing is left to do.",
+      ].join("\n"),
+    }),
+  ).systemContext;
+
+  const report = `${reportFrontMatter({
+    repository: "openclaw/openclaw",
+    number: 99003,
+    type: "pull_request",
+    title: "Retry transient gateway sends",
+    reviewed_at: new Date().toISOString(),
+    review_status: "complete",
+    decision: "keep_open",
+    close_reason: "none",
+    confidence: "high",
+    action_taken: "kept_open",
+    author: "outside-contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify([]),
+    work_candidate: "none",
+    pull_head_sha: "3333333333333333333333333333333333333333",
+  })}
+
+## Summary
+
+Keep this PR open until proof lands.
+
+## What This Changes
+
+Retries transient gateway sends.
+
+## System Context
+
+${systemContext}
+
+## Architecture Diagram
+
+flowchart TD
+  A[Gateway] --> B[Bridge]
+
+## Best Possible Solution
+
+Ask the contributor for after-fix proof from a real install.
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.8
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+
+  assert.match(comment, /\\## Before merge/);
+  assert.doesNotMatch(comment, /\\\\## Before merge/);
+  assert.doesNotMatch(comment, /\n## Before merge\n\nNothing is left to do\./);
 });

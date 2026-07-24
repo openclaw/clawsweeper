@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, relative } from "node:path";
+import { neutralizeOwnedSectionSpoofing } from "./clawsweeper-text.js";
 
 export type MaintainerDecisionKind =
   | "none"
@@ -119,8 +120,12 @@ export function parseMaintainerDecision(
   rejectUnexpectedKeys(record, DECISION_KEYS, path);
   const required = booleanValue(record.required, `${path}.required`);
   const kind = enumValue(record.kind, MAINTAINER_DECISION_KINDS, `${path}.kind`);
-  const question = stringValue(record.question, `${path}.question`).trim();
-  const rationale = stringValue(record.rationale, `${path}.rationale`).trim();
+  const question = neutralizeOwnedSectionSpoofing(
+    stringValue(record.question, `${path}.question`),
+  ).trim();
+  const rationale = neutralizeOwnedSectionSpoofing(
+    stringValue(record.rationale, `${path}.rationale`),
+  ).trim();
   if (!Array.isArray(record.options)) throw new Error(`${path}.options must be an array`);
   const options = record.options.map((entry, index) =>
     parseMaintainerDecisionOption(entry, `${path}.options[${index}]`),
@@ -323,8 +328,8 @@ export function syncDecisionPacketRecord(
 function parseMaintainerDecisionOption(value: unknown, path: string): MaintainerDecisionOption {
   const record = objectValue(value, path);
   rejectUnexpectedKeys(record, OPTION_KEYS, path);
-  const title = stringValue(record.title, `${path}.title`).trim();
-  const body = stringValue(record.body, `${path}.body`).trim();
+  const title = neutralizeOwnedSectionSpoofing(stringValue(record.title, `${path}.title`)).trim();
+  const body = neutralizeOwnedSectionSpoofing(stringValue(record.body, `${path}.body`)).trim();
   if (!title) throw new Error(`${path}.title must not be empty`);
   if (!body) throw new Error(`${path}.body must not be empty`);
   return { title, body, recommended: booleanValue(record.recommended, `${path}.recommended`) };
@@ -334,8 +339,8 @@ function parseMaintainerDecisionOwner(value: unknown, path: string): MaintainerD
   const record = objectValue(value, path);
   rejectUnexpectedKeys(record, OWNER_KEYS, path);
   return {
-    person: stringValue(record.person, `${path}.person`).trim(),
-    reason: stringValue(record.reason, `${path}.reason`).trim(),
+    person: neutralizeOwnedSectionSpoofing(stringValue(record.person, `${path}.person`)).trim(),
+    reason: neutralizeOwnedSectionSpoofing(stringValue(record.reason, `${path}.reason`)).trim(),
     confidence: enumValue(record.confidence, CONFIDENCES, `${path}.confidence`),
   };
 }

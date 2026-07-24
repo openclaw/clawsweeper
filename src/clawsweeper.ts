@@ -168,7 +168,13 @@ import {
   stringArg,
   type Args,
 } from "./clawsweeper-args.js";
-import { escapeRegExp, safeOutputTail, trimMiddle, truncateText } from "./clawsweeper-text.js";
+import {
+  escapeRegExp,
+  neutralizeOwnedSectionSpoofing,
+  safeOutputTail,
+  trimMiddle,
+  truncateText,
+} from "./clawsweeper-text.js";
 import {
   emptyMaintainerDecision,
   maintainerDecisionBlocksClose,
@@ -3422,6 +3428,14 @@ function requireStringArray(value: unknown, path: string): string[] {
   return value.map((entry, index) => requireString(entry, `${path}[${index}]`));
 }
 
+function requireReportText(value: unknown, path: string): string {
+  return neutralizeOwnedSectionSpoofing(requireString(value, path));
+}
+
+function requireReportTextArray(value: unknown, path: string): string[] {
+  return requireStringArray(value, path).map(neutralizeOwnedSectionSpoofing);
+}
+
 function requireEnumArray<T extends string>(value: unknown, allowed: Set<T>, path: string): T[] {
   return requireStringArray(value, path).map((entry, index) =>
     requireEnum(entry, allowed, `${path}[${index}]`),
@@ -3604,8 +3618,8 @@ function parseEvidence(value: unknown, path: string): Evidence {
   const record = requireRecord(value, path);
   rejectUnexpectedKeys(record, EVIDENCE_SCHEMA_KEYS, path);
   return {
-    label: requireString(record.label, `${path}.label`),
-    detail: requireString(record.detail, `${path}.detail`),
+    label: requireReportText(record.label, `${path}.label`),
+    detail: requireReportText(record.detail, `${path}.detail`),
     file: requireNullableString(record.file, `${path}.file`),
     line: requireNullableInteger(record.line, `${path}.line`),
     command: requireNullableString(record.command, `${path}.command`),
@@ -3617,9 +3631,9 @@ function parseLikelyOwner(value: unknown, path: string): LikelyOwner {
   const record = requireRecord(value, path);
   rejectUnexpectedKeys(record, LIKELY_OWNER_SCHEMA_KEYS, path);
   return {
-    person: requireString(record.person, `${path}.person`),
+    person: requireReportText(record.person, `${path}.person`),
     role: requireString(record.role, `${path}.role`),
-    reason: requireString(record.reason, `${path}.reason`),
+    reason: requireReportText(record.reason, `${path}.reason`),
     commits: requireStringArray(record.commits, `${path}.commits`),
     files: requireStringArray(record.files, `${path}.files`),
     confidence: requireEnum(record.confidence, CONFIDENCES, `${path}.confidence`),
@@ -3634,8 +3648,8 @@ function parseReviewFinding(value: unknown, path: string): ReviewFinding {
   if (lineStart <= 0) throw new Error(`${path}.lineStart must be positive`);
   if (lineEnd < lineStart) throw new Error(`${path}.lineEnd must be >= lineStart`);
   const finding: ReviewFinding = {
-    title: requireString(record.title, `${path}.title`),
-    body: requireString(record.body, `${path}.body`),
+    title: requireReportText(record.title, `${path}.title`),
+    body: requireReportText(record.body, `${path}.body`),
     priority: requirePriority(record.priority, `${path}.priority`),
     confidenceScore: requireConfidenceScore(record.confidenceScore, `${path}.confidenceScore`),
     file: requireString(record.file, `${path}.file`),
@@ -3739,8 +3753,8 @@ function parseSecurityConcern(value: unknown, path: string): SecurityConcern {
   const line = requireNullableInteger(record.line, `${path}.line`);
   if (line !== null && line <= 0) throw new Error(`${path}.line must be positive`);
   return {
-    title: requireString(record.title, `${path}.title`),
-    body: requireString(record.body, `${path}.body`),
+    title: requireReportText(record.title, `${path}.title`),
+    body: requireReportText(record.body, `${path}.body`),
     severity: requireEnum(record.severity, SECURITY_CONCERN_SEVERITIES, `${path}.severity`),
     confidenceScore: requireConfidenceScore(record.confidenceScore, `${path}.confidenceScore`),
     file: requireNullableString(record.file, `${path}.file`),
@@ -3760,7 +3774,7 @@ function parseSecurityReview(value: unknown, path: string): SecurityReview {
       })();
   return {
     status: requireEnum(record.status, SECURITY_REVIEW_STATUSES, `${path}.status`),
-    summary: requireString(record.summary, `${path}.summary`),
+    summary: requireReportText(record.summary, `${path}.summary`),
     concerns,
   };
 }
@@ -3770,7 +3784,7 @@ function parseRealBehaviorProof(value: unknown, path: string): RealBehaviorProof
   rejectUnexpectedKeys(record, REAL_BEHAVIOR_PROOF_SCHEMA_KEYS, path);
   return {
     status: requireEnum(record.status, REAL_BEHAVIOR_PROOF_STATUSES, `${path}.status`),
-    summary: requireString(record.summary, `${path}.summary`),
+    summary: requireReportText(record.summary, `${path}.summary`),
     evidenceKind: requireEnum(
       record.evidenceKind,
       REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS,
@@ -3790,8 +3804,8 @@ function parsePrRating(value: unknown, path: string): PrRating {
     proofTier: requireEnum(record.proofTier, PR_RATING_TIERS, `${path}.proofTier`),
     patchTier: requireEnum(record.patchTier, PR_RATING_TIERS, `${path}.patchTier`),
     overallTier: requireEnum(record.overallTier, PR_RATING_TIERS, `${path}.overallTier`),
-    summary: requireString(record.summary, `${path}.summary`),
-    nextSteps: requireStringArray(record.nextSteps, `${path}.nextSteps`).slice(0, 3),
+    summary: requireReportText(record.summary, `${path}.summary`),
+    nextSteps: requireReportTextArray(record.nextSteps, `${path}.nextSteps`).slice(0, 3),
   });
 }
 
@@ -3800,7 +3814,7 @@ function parseTelegramVisibleProof(value: unknown, path: string): TelegramVisibl
   rejectUnexpectedKeys(record, TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS, path);
   return {
     status: requireEnum(record.status, TELEGRAM_VISIBLE_PROOF_STATUSES, `${path}.status`),
-    summary: requireString(record.summary, `${path}.summary`),
+    summary: requireReportText(record.summary, `${path}.summary`),
   };
 }
 
@@ -3810,7 +3824,7 @@ function parseMantisRecommendation(value: unknown, path: string): MantisRecommen
   return {
     status: requireEnum(record.status, MANTIS_RECOMMENDATION_STATUSES, `${path}.status`),
     scenario: requireEnum(record.scenario, MANTIS_RECOMMENDATION_SCENARIOS, `${path}.scenario`),
-    reason: requireString(record.reason, `${path}.reason`),
+    reason: requireReportText(record.reason, `${path}.reason`),
     maintainerComment: requireString(record.maintainerComment, `${path}.maintainerComment`),
   };
 }
@@ -3820,7 +3834,7 @@ function parseFeatureShowcase(value: unknown, path: string): FeatureShowcase {
   rejectUnexpectedKeys(record, FEATURE_SHOWCASE_SCHEMA_KEYS, path);
   return {
     status: requireEnum(record.status, FEATURE_SHOWCASE_STATUSES, `${path}.status`),
-    reason: requireString(record.reason, `${path}.reason`),
+    reason: requireReportText(record.reason, `${path}.reason`),
   };
 }
 
@@ -3866,7 +3880,7 @@ function parseRootCauseClusterMember(value: unknown, path: string): RootCauseClu
       ROOT_CAUSE_RELATIONSHIPS,
       `${path}.relationship`,
     ),
-    reason,
+    reason: neutralizeOwnedSectionSpoofing(reason),
   };
 }
 
@@ -3976,7 +3990,7 @@ function parseRootCauseCluster(
     confidence: requireEnum(record.confidence, CONFIDENCES, `${path}.confidence`),
     canonicalRef,
     currentItemRelationship,
-    summary,
+    summary: neutralizeOwnedSectionSpoofing(summary),
     members,
   };
 }
@@ -4001,7 +4015,7 @@ function parseAgentsPolicyStatus(value: unknown, path: string): AgentsPolicyStat
     readFully: requireBoolean(record.readFully, `${path}.readFully`),
     applied: requireBoolean(record.applied, `${path}.applied`),
     status: requireEnum(record.status, AGENTS_POLICY_STATUSES, `${path}.status`),
-    summary: requireString(record.summary, `${path}.summary`),
+    summary: requireReportText(record.summary, `${path}.summary`),
   };
 }
 
@@ -4037,20 +4051,18 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
     decision: requireEnum(record.decision, DECISIONS, "decision.decision"),
     closeReason: requireEnum(record.closeReason, ALL_REASONS, "decision.closeReason"),
     confidence: requireEnum(record.confidence, CONFIDENCES, "decision.confidence"),
-    summary: requireString(record.summary, "decision.summary"),
-    changeSummary: requireString(record.changeSummary, "decision.changeSummary"),
-    systemContext: neutralizeOwnedSectionSpoofing(
-      requireString(record.systemContext, "decision.systemContext"),
-    ),
+    summary: requireReportText(record.summary, "decision.summary"),
+    changeSummary: requireReportText(record.changeSummary, "decision.changeSummary"),
+    systemContext: requireReportText(record.systemContext, "decision.systemContext"),
     architectureDiagram: sanitizeArchitectureDiagram(
       requireString(record.architectureDiagram, "decision.architectureDiagram"),
     ),
     evidence,
     likelyOwners,
-    risks: requireStringArray(record.risks, "decision.risks").filter(
+    risks: requireReportTextArray(record.risks, "decision.risks").filter(
       (risk) => !isEnvironmentAccessCaveat(risk),
     ),
-    bestSolution: requireString(record.bestSolution, "decision.bestSolution"),
+    bestSolution: requireReportText(record.bestSolution, "decision.bestSolution"),
     maintainerDecision: parseMaintainerDecision(
       record.maintainerDecision,
       "decision.maintainerDecision",
@@ -4086,14 +4098,17 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
       record.requiresProductDecision,
       "decision.requiresProductDecision",
     ),
-    reproductionAssessment: requireString(
+    reproductionAssessment: requireReportText(
       record.reproductionAssessment,
       "decision.reproductionAssessment",
     ),
-    solutionAssessment: requireString(record.solutionAssessment, "decision.solutionAssessment"),
+    solutionAssessment: requireReportText(record.solutionAssessment, "decision.solutionAssessment"),
     visionFit: requireEnum(record.visionFit, VISION_FIT_STATUSES, "decision.visionFit"),
-    visionFitReason: requireString(record.visionFitReason, "decision.visionFitReason"),
-    visionFitEvidence: requireStringArray(record.visionFitEvidence, "decision.visionFitEvidence"),
+    visionFitReason: requireReportText(record.visionFitReason, "decision.visionFitReason"),
+    visionFitEvidence: requireReportTextArray(
+      record.visionFitEvidence,
+      "decision.visionFitEvidence",
+    ),
     implementationComplexity: requireEnum(
       record.implementationComplexity,
       IMPLEMENTATION_COMPLEXITIES,
@@ -4141,12 +4156,12 @@ export function parseDecision(value: unknown, item?: DecisionNormalizationItem):
     fixedRelease: requireNullableString(record.fixedRelease, "decision.fixedRelease"),
     fixedSha: requireNullableString(record.fixedSha, "decision.fixedSha"),
     fixedAt: requireNullableString(record.fixedAt, "decision.fixedAt"),
-    closeComment: requireString(record.closeComment, "decision.closeComment"),
+    closeComment: requireReportText(record.closeComment, "decision.closeComment"),
     workCandidate: requireEnum(record.workCandidate, WORK_CANDIDATES, "decision.workCandidate"),
     workConfidence: requireEnum(record.workConfidence, CONFIDENCES, "decision.workConfidence"),
     workPriority: requireEnum(record.workPriority, CONFIDENCES, "decision.workPriority"),
-    workReason: requireString(record.workReason, "decision.workReason"),
-    workPrompt: requireString(record.workPrompt, "decision.workPrompt"),
+    workReason: requireReportText(record.workReason, "decision.workReason"),
+    workPrompt: requireReportText(record.workPrompt, "decision.workPrompt"),
     workClusterRefs: requireStringArray(record.workClusterRefs, "decision.workClusterRefs"),
     workValidation: requireStringArray(record.workValidation, "decision.workValidation"),
     workLikelyFiles: requireStringArray(record.workLikelyFiles, "decision.workLikelyFiles"),
@@ -13010,10 +13025,15 @@ function reportRealBehaviorProof(markdown: string): RealBehaviorProof {
     }
     return defaultProof;
   }
-  const statusValue = sectionLineValue(section, "Status");
-  const evidenceKindValue = sectionLineValue(section, "Evidence kind");
+  const statusValue =
+    frontMatterValue(markdown, "real_behavior_proof_status") ?? sectionLineValue(section, "Status");
+  const evidenceKindValue =
+    frontMatterValue(markdown, "real_behavior_proof_evidence_kind") ??
+    sectionLineValue(section, "Evidence kind");
   const summary = sectionLineValue(section, "Summary");
-  const needsContributorActionValue = sectionLineValue(section, "Needs contributor action");
+  const needsContributorActionValue =
+    frontMatterValue(markdown, "real_behavior_proof_needs_contributor_action") ??
+    sectionLineValue(section, "Needs contributor action");
   const status = REAL_BEHAVIOR_PROOF_STATUSES.has(statusValue as RealBehaviorProofStatus)
     ? (statusValue as RealBehaviorProofStatus)
     : undefined;
@@ -13048,11 +13068,11 @@ function reportTelegramVisibleProof(markdown: string): TelegramVisibleProof {
 function reportPrRating(markdown: string): PrRating {
   const section = reviewSectionValue(markdown, "prRating");
   const proofTierValue =
-    sectionLineValue(section, "Proof tier") ?? frontMatterValue(markdown, "pr_rating_proof");
+    frontMatterValue(markdown, "pr_rating_proof") ?? sectionLineValue(section, "Proof tier");
   const patchTierValue =
-    sectionLineValue(section, "Patch tier") ?? frontMatterValue(markdown, "pr_rating_patch");
+    frontMatterValue(markdown, "pr_rating_patch") ?? sectionLineValue(section, "Patch tier");
   const overallTierValue =
-    sectionLineValue(section, "Overall tier") ?? frontMatterValue(markdown, "pr_rating_overall");
+    frontMatterValue(markdown, "pr_rating_overall") ?? sectionLineValue(section, "Overall tier");
   const summary = sectionLineValue(section, "Summary");
   const nextSteps = sectionList(section, "Next rank-up steps").slice(0, 3);
   if (
@@ -19181,72 +19201,6 @@ function reviewFreshnessText(markdown: string): string {
 }
 
 const REVIEW_HISTORY_RENDER_SLOT = "CLAWSWEEPER_REVIEW_HISTORY_RENDER_SLOT";
-
-const OWNED_REVIEW_SECTION_HEADINGS = new Set([
-  "summary",
-  "what this changes",
-  "merge readiness",
-  "review scores",
-  "verification",
-  "how this fits together",
-  "decision needed",
-  "before merge",
-  "next step",
-  "next step before merge",
-  "automerge follow-up",
-  "autofix follow-up",
-  "findings",
-  "review findings",
-  "security",
-  "label changes",
-]);
-
-// Model-generated text is rendered above renderer-owned sections such as
-// "## Before merge", and downstream routing extracts those sections from the first
-// matching Markdown heading. Escape heading-shaped lines in model text so injected
-// content can never spoof a renderer-owned section boundary.
-function neutralizeOwnedSectionSpoofing(value: string): string {
-  // GitHub normalizes CRLF and bare CR to line endings, so normalize first or a
-  // bare-CR line break could smuggle a heading past the per-line checks.
-  return value
-    .replace(/\r\n?/g, "\n")
-    .split("\n")
-    .map((line) => {
-      // Strip blockquote/list container prefixes so nested heading constructs are
-      // neutralized too.
-      // CommonMark accepts blockquotes without a following space and ordered lists
-      // with either "1." or "1)".
-      const containerPrefix =
-        line.match(/^[ \t]*(?:(?:>|(?:[-*+]|\d+[.)])[ \t])[ \t]*)*/)?.[0] ?? "";
-      // Escape every raw HTML delimiter (renderer-emitted <br> excepted) so inline
-      // tags and comment openers cannot restructure or hide trusted sections;
-      // &lt; renders identically to a literal <.
-      const content = line.slice(containerPrefix.length).replace(/<(?!br\s*\/?>)/gi, "&lt;");
-      const trimmed = content.trim();
-      if (/^#{1,6}\s+\S/.test(trimmed)) {
-        return `${containerPrefix}${content.replace("#", "\\#")}`;
-      }
-      if (/^\*\*[^*\n]+\*\*:?\s*$/.test(trimmed)) {
-        return `${containerPrefix}${content.replace("**", "\\*\\*")}`;
-      }
-      if (/^(?:```|~~~)/.test(trimmed)) {
-        return `${containerPrefix}${content.replace(/[`~]/, "\\$&")}`;
-      }
-      // A run of = or - alone on a line is a Setext underline that would promote the
-      // previous line to a heading.
-      if (/^(?:=+|-+)[ \t]*$/.test(trimmed)) {
-        return `${containerPrefix}${content.replace(/[=-]/, "\\$&")}`;
-      }
-      if (
-        trimmed.endsWith(":") &&
-        OWNED_REVIEW_SECTION_HEADINGS.has(trimmed.slice(0, -1).trim().toLowerCase())
-      ) {
-        return `${containerPrefix}${content.trimEnd().slice(0, -1)}&#58;`;
-      }
-      return `${containerPrefix}${content}`;
-    })
-    .join("\n");
-}
 
 // The review prompt and schema require Mermaid flowchart source with no code fences,
 // click directives, URLs, HTML, or initialization/styling directives. The diagram is
