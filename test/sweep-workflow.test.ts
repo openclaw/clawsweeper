@@ -77,10 +77,13 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
     if?: string;
     run?: string;
     env?: Record<string, string>;
+    with?: Record<string, string | boolean>;
     "continue-on-error"?: boolean;
   };
   type WorkflowJob = {
     if?: string;
+    needs?: string | string[];
+    outputs?: Record<string, string>;
     steps: WorkflowStep[];
   };
 
@@ -240,6 +243,27 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
     assert.match(condition, /primary-apply-result\.outputs\.succeeded == 'true'/, name);
     assert.doesNotMatch(condition, /success\(\)|action-ledger/, name);
   }
+
+  const telemetryJob = job("publish-apply-observability");
+  assert.deepEqual(telemetryJob.needs, [
+    "apply-proof",
+    "publish-apply-proof-action-ledger",
+    "apply-existing",
+  ]);
+  assert.match(telemetryJob.if ?? "", /always\(\) && !cancelled\(\)/);
+  assert.match(telemetryJob.if ?? "", /needs\.apply-proof\.result == 'failure'/);
+  assert.match(telemetryJob.if ?? "", /needs\.publish-apply-proof-action-ledger\.result == 'failure'/);
+  assert.match(telemetryJob.if ?? "", /needs\.apply-existing\.result == 'failure'/);
+  const telemetryStep = step("publish-apply-observability", "Publish apply telemetry");
+  assert.match(telemetryStep.env?.APPLY_OUTCOME ?? "", /needs\.apply-proof\.result == 'failure'/);
+  assert.match(telemetryStep.env?.APPLY_OUTCOME ?? "", /needs\.apply-existing\.result == 'success'/);
+  assert.match(telemetryStep.env?.TARGET_REPO ?? "", /openclaw\/clawhub/);
+  const telemetryContext = step("apply-existing", "Save apply telemetry context");
+  assert.equal(telemetryContext["continue-on-error"], true);
+  assert.match(telemetryContext.run ?? "", /apply-observability-context\.json/);
+  const telemetryArtifact = step("apply-existing", "Upload apply telemetry health");
+  assert.equal(telemetryArtifact["continue-on-error"], true);
+  assert.equal(telemetryArtifact.with?.["include-hidden-files"], true);
 });
 
 test("review workflow gives Codex a read-only inspection token", () => {
@@ -1443,7 +1467,14 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(applyHelper, /max_close_processed_limit=900/);
   assert.match(applyStep, /close_processed_limit="\$base_close_processed_limit"/);
   assert.match(applyStep, /source scripts\/apply-workflow-helpers\.sh/);
-  assert.match(workflow, /id: finalize-apply\n[\s\S]*ACTION_LEDGER_OUTCOME: \$\{\{ steps\.finalize-apply\.outcome/);
+  assert.match(
+    workflow,
+    /action_ledger_outcome: \$\{\{ steps\.finalize-apply\.outcome \|\| 'not_started' \}\}/,
+  );
+  assert.match(
+    workflow,
+    /ACTION_LEDGER_OUTCOME: \$\{\{ needs\.apply-existing\.outputs\.action_ledger_outcome \|\| 'not_started' \}\}/,
+  );
   assert.match(applyStep, /timeout-minutes: 70/);
   assert.match(
     applyStep,

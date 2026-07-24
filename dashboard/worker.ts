@@ -1684,10 +1684,16 @@ async function applyObservabilityJson(request: Request, env: DashboardEnv) {
   const events = Array.isArray(body.events)
     ? body.events.map((event) => normalizeApplyObservabilityEvent(event)).filter(Boolean)
     : [];
-  const repositories = String(env.APPLY_TARGET_REPOS || "openclaw/openclaw")
+  const requiredRepositories = String(env.APPLY_TARGET_REPOS || "openclaw/openclaw")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
+  const observedRepositories = new Set(events.map((event) => event.repo));
+  const optionalRepositories = String(env.APPLY_OPTIONAL_TARGET_REPOS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value && observedRepositories.has(value));
+  const repositories = [...new Set([...requiredRepositories, ...optionalRepositories])];
   return json(summarizeApplyObservability({ events, range, repo, repositories }));
 }
 

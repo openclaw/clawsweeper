@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -185,11 +188,18 @@ test("apply telemetry producer does not turn successful terminal steps into fail
   const script = fileURLToPath(
     new URL("../scripts/publish-apply-observability.mjs", import.meta.url),
   );
+  const cwd = mkdtempSync(join(tmpdir(), "clawsweeper-apply-observability-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  mkdirSync(join(cwd, ".artifacts"));
+  writeFileSync(
+    join(cwd, ".artifacts", "apply-observability-context.json"),
+    JSON.stringify({ noop: true }),
+  );
   await run(process.execPath, [script], {
+    cwd,
     env: {
       ...process.env,
       ACTION_LEDGER_OUTCOME: "success",
-      APPLY_NOOP: "true",
       APPLY_OUTCOME: "success",
       CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
       GITHUB_REPOSITORY: "openclaw/clawsweeper",
@@ -204,4 +214,11 @@ test("apply telemetry producer does not turn successful terminal steps into fail
   assert.ok(payload);
   assert.deepEqual((payload.event as { observed_failure_kinds?: unknown }).observed_failure_kinds, []);
   assert.deepEqual((payload.event as { failures?: unknown }).failures, []);
+  assert.deepEqual((payload.event as { results?: unknown }).results, {
+    applied: 0,
+    closed: 0,
+    superseded: null,
+    retried: null,
+    dead_lettered: null,
+  });
 });

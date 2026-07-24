@@ -4401,6 +4401,11 @@ jobs:
     name: Apply close proposals
     needs: [apply-proof, publish-apply-proof-action-ledger]
     if: ${{ always() && !cancelled() && needs.apply-proof.outputs.proof_ready == 'true' && ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
+    outputs:
+      target_repo: ${{ steps.target.outputs.target_repo }}
+      action_ledger_outcome: ${{ steps.finalize-apply.outcome || 'not_started' }}
+      state_status_outcome: ${{ steps.retry-final-apply-status-publication.outcome || 'not_started' }}
+      state_publication_outcome: ${{ steps.publish-apply-action-events.outcome || 'not_started' }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     concurrency:
@@ -5074,22 +5079,29 @@ jobs:
             -f apply_close_delay_ms="$APPLY_CLOSE_DELAY_MS" \
             -f apply_checkpoint_size="$APPLY_CHECKPOINT_SIZE"
 
-      - name: Publish apply telemetry
+      - name: Save apply telemetry context
         if: ${{ always() }}
         continue-on-error: true
-        env:
-          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          APPLY_OUTCOME: ${{ steps.apply-existing-run.outcome || ((needs.apply-proof.result == 'failure' || needs.publish-apply-proof-action-ledger.result == 'failure') && 'failure') || 'skipped' }}
-          ACTION_LEDGER_OUTCOME: ${{ steps.finalize-apply.outcome || 'not_started' }}
-          STATE_STATUS_OUTCOME: ${{ steps.retry-final-apply-status-publication.outcome || 'not_started' }}
-          STATE_PUBLICATION_OUTCOME: ${{ steps.publish-apply-action-events.outcome || 'not_started' }}
-          TARGET_REPO: ${{ steps.target.outputs.target_repo || needs.apply-proof.outputs.target_repo }}
         run: |
-          set -euo pipefail
-          test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
-          node scripts/publish-apply-observability.mjs \
-            --health-file ".artifacts/apply-health-final.json"
+          mkdir -p .artifacts
+          noop=false
+          if [ "${APPLY_NOOP:-false}" = "true" ]; then
+            noop=true
+          fi
+          printf '{"noop":%s}\n' "$noop" > .artifacts/apply-observability-context.json
+
+      - name: Upload apply telemetry health
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: apply-observability-health-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/apply-health-*.json
+            .artifacts/apply-observability-context.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 1
 
       - name: Queue review backstops
         if: ${{ always() && !cancelled() && steps.primary-apply-result.outputs.succeeded == 'true' && steps.target.outputs.target_repo == 'openclaw/openclaw' }}
@@ -5168,3 +5180,40 @@ jobs:
               -f shard_count="$normal_shards" \
               -f codex_timeout_ms=1200000
           fi
+
+  publish-apply-observability:
+    name: Publish apply telemetry
+    needs: [apply-proof, publish-apply-proof-action-ledger, apply-existing]
+    if: ${{ always() && !cancelled() && (needs.apply-proof.result == 'failure' || needs.publish-apply-proof-action-ledger.result == 'failure' || needs.apply-existing.result == 'failure' || needs.apply-existing.result == 'success') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download apply telemetry health
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: apply-observability-health-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts
+
+      - name: Publish apply telemetry
+        if: ${{ always() }}
+        continue-on-error: true
+        env:
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          APPLY_OUTCOME: ${{ (needs.apply-proof.result == 'failure' || needs.publish-apply-proof-action-ledger.result == 'failure' || needs.apply-existing.result == 'failure') && 'failure' || needs.apply-existing.result == 'cancelled' && 'cancelled' || needs.apply-existing.result == 'success' && 'success' || 'skipped' }}
+          ACTION_LEDGER_OUTCOME: ${{ needs.apply-existing.outputs.action_ledger_outcome || 'not_started' }}
+          STATE_STATUS_OUTCOME: ${{ needs.apply-existing.outputs.state_status_outcome || 'not_started' }}
+          STATE_PUBLICATION_OUTCOME: ${{ needs.apply-existing.outputs.state_publication_outcome || 'not_started' }}
+          TARGET_REPO: ${{ needs.apply-existing.outputs.target_repo || needs.apply-proof.outputs.target_repo || (github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && 'openclaw/clawhub') || github.event.inputs.target_repo || 'openclaw/openclaw' }}
+        run: |
+          set -euo pipefail
+          test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
+          node scripts/publish-apply-observability.mjs \
+            --health-file ".artifacts/apply-health-final.json"

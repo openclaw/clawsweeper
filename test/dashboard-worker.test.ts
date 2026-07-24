@@ -3510,6 +3510,7 @@ test("apply observability accepts signed durable events and exposes the API summ
     STATUS_STORE: namespace,
     CLAWSWEEPER_WEBHOOK_SECRET: secret,
     APPLY_TARGET_REPOS: "openclaw/openclaw",
+    APPLY_OPTIONAL_TARGET_REPOS: "openclaw/clawhub",
   };
   const accepted = await worker.fetch(
     new Request("https://clawsweeper.openclaw.ai/internal/apply-observability", {
@@ -3533,6 +3534,36 @@ test("apply observability accepts signed durable events and exposes the API summ
   assert.equal(summary.queue.ready, 2);
   assert.equal(summary.last_60_minutes.closed, 1);
   assert.equal(summary.failures.safe_close_blocked, 1);
+  assert.deepEqual(summary.repositories.map((entry) => entry.repo), ["openclaw/openclaw"]);
+
+  const clawhubPayload = JSON.parse(body);
+  clawhubPayload.event.repo = "openclaw/clawhub";
+  clawhubPayload.event.run_id = "98766";
+  const clawhubBody = JSON.stringify(clawhubPayload);
+  const clawhubSignature = `sha256=${createHmac("sha256", secret).update(clawhubBody).digest("hex")}`;
+  const clawhubAccepted = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/apply-observability", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-clawsweeper-exact-review-signature": clawhubSignature,
+      },
+      body: clawhubBody,
+    }),
+    env,
+  );
+  assert.equal(clawhubAccepted.status, 200);
+  const withClawhub = await (
+    await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/apply-observability?range=24h"),
+      env,
+    )
+  ).json();
+  assert.deepEqual(withClawhub.repositories.map((entry) => entry.repo), [
+    "openclaw/openclaw",
+    "openclaw/clawhub",
+  ]);
+  assert.equal(withClawhub.telemetry_complete, true);
 });
 
 test("dashboard durable status store persists, expires, and prepends events", async () => {

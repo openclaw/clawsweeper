@@ -9,11 +9,19 @@ const healthPath =
       ? ".artifacts/apply-health-idle.json"
       : "";
 const health = healthPath ? JSON.parse(readFileSync(healthPath, "utf8")) : {};
+const telemetryContextPath = ".artifacts/apply-observability-context.json";
+const telemetryContext = existsSync(telemetryContextPath)
+  ? JSON.parse(readFileSync(telemetryContextPath, "utf8"))
+  : {};
 const now = new Date().toISOString();
 const outcome = ["success", "failure", "cancelled", "skipped"].includes(process.env.APPLY_OUTCOME)
   ? process.env.APPLY_OUTCOME
   : "failure";
-const idle = String(process.env.APPLY_NOOP || "").toLowerCase() === "true";
+const idle =
+  String(process.env.APPLY_NOOP || "").toLowerCase() === "true" ||
+  telemetryContext?.noop === true ||
+  healthPath.endsWith("/apply-health-idle.json") ||
+  healthPath.endsWith("\\apply-health-idle.json");
 const nextActions = Array.isArray(health.next_actions) ? health.next_actions : [];
 const safeCloseBlocked = nextActions.some((action) =>
   ["close_coverage_proof", "conversation_unlock", "maintainer_review"].includes(
