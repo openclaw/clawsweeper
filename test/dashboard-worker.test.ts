@@ -8611,7 +8611,23 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
     /<div class="exact-lane-head"><strong>State writer<\/strong><span>Unavailable<\/span><\/div>/,
   );
   context.renderStateWriter({
-    lanes: { publication: { batches: { enabled: true, max_items: 2 } } },
+    lanes: {
+      publication: {
+        batches: { enabled: true, max_items: 2 },
+        active: 0,
+        leased: 0,
+        dispatching: 0,
+        flow: {
+          last_15_minutes: {
+            resolved: 16,
+            published: 0,
+            superseded: 16,
+            retried: 0,
+            dead_lettered: 0,
+          },
+        },
+      },
+    },
     state_writer: {
       collection: { status: "stale", last_observed_at: "2026-07-21T12:12:42.397Z" },
       coordinator: {
@@ -8647,9 +8663,90 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(stateWriterHtml, /Coordinator turns<\/dt><dd>16 completed · 16 admitted/);
   assert.match(stateWriterHtml, /Coordinator wait<\/dt><dd>last 0s · max 5m/);
   assert.match(stateWriterHtml, /Queue history<\/dt><dd>collecting samples/);
-  assert.match(stateWriterHtml, /Terminal telemetry<\/dt><dd>terminal telemetry stale/);
-  assert.match(stateWriterHtml, /terminal telemetry stale/);
+  assert.match(
+    stateWriterHtml,
+    /Terminal telemetry<\/dt><dd>idle · no exact-review materialization required in the last 15m/,
+  );
+  assert.doesNotMatch(stateWriterHtml, /terminal telemetry stale/);
   assert.doesNotMatch(stateWriterHtml, /Exact-review materialized/);
+
+  context.renderStateWriter({
+    lanes: {
+      publication: {
+        batches: { enabled: true, max_items: 2, leased: 1 },
+        active: 0,
+        leased: 0,
+        dispatching: 0,
+        flow: {
+          last_15_minutes: {
+            resolved: 16,
+            published: 0,
+            superseded: 16,
+            retried: 0,
+            dead_lettered: 0,
+          },
+        },
+      },
+    },
+    state_writer: {
+      collection: { status: "stale", last_observed_at: "2026-07-21T12:12:42.397Z" },
+      coordinator: {
+        queued: 2,
+        leased: 1,
+        admitted: 16,
+        completed: 16,
+        expired: 0,
+        recovered: 0,
+        last_wait_ms: 0,
+        max_wait_ms: 300_309,
+      },
+      global_lease: { status: "free" },
+      last_60_minutes: { materialized_items: 0, state_commits: 0 },
+      mode: "batch",
+    },
+  });
+  assert.match(
+    elementFor("state-writer-health").innerHTML,
+    /Terminal telemetry<\/dt><dd>awaiting exact-review writer result/,
+  );
+  assert.doesNotMatch(elementFor("state-writer-health").innerHTML, /terminal telemetry stale/);
+
+  context.renderStateWriter({
+    lanes: {
+      publication: {
+        batches: { enabled: true, max_items: 2 },
+        flow: {
+          last_15_minutes: {
+            resolved: 1,
+            published: 1,
+            superseded: 0,
+            retried: 0,
+            dead_lettered: 0,
+          },
+        },
+      },
+    },
+    state_writer: {
+      collection: { status: "stale", last_observed_at: "2026-07-21T12:12:42.397Z" },
+      coordinator: {
+        queued: 0,
+        leased: 0,
+        admitted: 16,
+        completed: 16,
+        expired: 0,
+        recovered: 0,
+        last_wait_ms: 0,
+        max_wait_ms: 300_309,
+      },
+      global_lease: { status: "free" },
+      last_60_minutes: { materialized_items: 0, state_commits: 0 },
+      mode: "batch",
+    },
+  });
+  assert.match(
+    elementFor("state-writer-health").innerHTML,
+    /Terminal telemetry<\/dt><dd>terminal telemetry stale/,
+  );
 
   const coordinatorSamples = [
     {
