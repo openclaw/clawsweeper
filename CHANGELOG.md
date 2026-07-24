@@ -66,6 +66,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Completed tuple-missing stale publication artifacts as superseded in batch
+  mode instead of retrying them forever without a mutation outcome.
 - Isolated each exact-review batch member's records, action ledger, snapshots,
   and apply reports under its private work root while serializing imports into
   the shared Git object database, preventing parallel publishers from moving

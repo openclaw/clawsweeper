@@ -49,5 +49,10 @@ test("publish-event-result exits terminally on a stale preflight instead of thro
     source.indexOf("const actions = readApplyActions"),
   );
   assert.ok(preflightBlock.includes("writeStaleEventDispositionOutputs"));
+  assert.match(preflightBlock, /if \(options\.batchMutationOutput\)\s+writeBatchMutationResult/);
+  assert.doesNotMatch(
+    preflightBlock,
+    /options\.batchMutationOutput && preflightResult !== "missing"/,
+  );
   assert.ok(!preflightBlock.includes("throw new Error"));
 });

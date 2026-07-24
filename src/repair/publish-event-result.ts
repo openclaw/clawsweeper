@@ -205,7 +205,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     // `requeue_latest` hands remote-newer to the source-drift requeue step,
     // which reviews the LATEST revision.
     writeStaleEventDispositionOutputs(disposition);
-    if (options.batchMutationOutput && preflightResult !== "missing")
+    if (options.batchMutationOutput)
       writeBatchMutationResult(options.batchMutationOutput, {
         kind: "superseded",
         disposition: { requeueLatestExpected: disposition.requeueLatest },
