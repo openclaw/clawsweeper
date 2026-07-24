@@ -2152,6 +2152,51 @@ test("Bay queue projection maps durable batch-owned publication items to Applyin
   );
 });
 
+test("Bay queue projection sends parked review and publication work to Repair Cove", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" });
+  await queue.fetch(buildExactReviewQueueRequest("bay-parked-review", 603, "opened"));
+  await queue.fetch(
+    buildExactReviewQueueRequest(
+      "bay-parked-publication",
+      604,
+      "exact_review_artifact_publish",
+      "issue",
+      undefined,
+      exactReviewPublicationOverrides(604, "6040"),
+    ),
+  );
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { state: string; parkedReason?: string }>;
+  };
+  state.items["openclaw/gogcli#603"].state = "parked";
+  state.items["openclaw/gogcli#603"].parkedReason = "review_retry_exhausted";
+  state.items["openclaw/gogcli#604@publish:6040:1"].state = "parked";
+  state.items["openclaw/gogcli#604@publish:6040:1"].parkedReason = "dead_letter_capacity";
+  await storage.put("exact-review-queue", state);
+
+  const status = await exactReviewQueueStatusSnapshot({
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  });
+
+  assert.ok(status);
+  assert.deepEqual(status.bay_projection.stages, {
+    arriving: 0,
+    "setting-up": 0,
+    reviewing: 0,
+    publishing: 0,
+    applying: 0,
+    repairing: 2,
+  });
+  assert.deepEqual(
+    status.bay_projection.items.map((item) => ({ item_key: item.item_key, stage: item.stage })),
+    [
+      { item_key: "openclaw/gogcli#603", stage: "repairing" },
+      { item_key: "openclaw/gogcli#604", stage: "repairing" },
+    ],
+  );
+});
+
 test("Bay queue projection applies its public sample cap across all stages", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" });

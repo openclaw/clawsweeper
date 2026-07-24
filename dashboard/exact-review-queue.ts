@@ -7293,6 +7293,11 @@ function exactReviewQueueBayStage(
   item: ExactReviewQueueItem,
   batchOwnedItemKeys: ReadonlySet<string> = new Set(),
 ): ExactReviewBayStage {
+  // A parked item is deliberately no longer making normal queue progress. This
+  // includes bounded review-retry exhaustion, permanent dispatch rejection,
+  // and a publication that needs its dead-letter/recovery path. Keep it in the
+  // exception cove instead of making it look like an active setup or publisher.
+  if (item.state === "parked") return "repairing";
   // The batch publisher's GitHub job is intentionally targetless. Its durable
   // batch membership is the authoritative bounded source for the individual
   // items it is currently applying, without another GitHub lookup.
@@ -7324,7 +7329,9 @@ function exactReviewQueueBayProjection(
 ) {
   const projected = new Map<string, ExactReviewBayProjectionItem>();
   for (const item of items) {
-    if (item.state === "parked") continue;
+    // Parked records are not terminal outcomes: they remain bounded durable
+    // queue work that needs recovery. Keep their already-scrubbed identity in
+    // the projection so Bay shows the exception rather than a false empty lane.
     const repository = String(item.decision.targetRepo || "").trim();
     const itemNumber = Number(item.decision.itemNumber);
     if (!repository || !Number.isSafeInteger(itemNumber) || itemNumber <= 0) continue;
