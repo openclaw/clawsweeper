@@ -35,9 +35,24 @@ export type ReviewPlaceholderRecoverySummary = {
   checked: number;
   orphaned: number;
   enqueued: number;
+  cleaned: number;
   escalated: number;
   errors: number;
 };
+
+// The scheduled sweep should go red only when placeholders needed resolution
+// and the run resolved none of them; routine transient noise with nothing to
+// do must stay green or the 15-minute cadence turns into a standing alarm.
+// Escalation labels are visibility, not resolution, so they never count.
+export function reviewPlaceholderRecoveryFailureReason(
+  summary: ReviewPlaceholderRecoverySummary,
+): string | null {
+  const resolved = summary.enqueued + summary.cleaned;
+  if (summary.orphaned > 0 && summary.errors > 0 && resolved === 0) {
+    return "orphaned placeholders remain and every recovery action failed";
+  }
+  return null;
+}
 
 type ReviewPlaceholderRecoveryRunOptions = {
   env?: NodeJS.ProcessEnv;
@@ -166,14 +181,15 @@ export async function runReviewPlaceholderRecovery(
   let checked = 0;
   let orphaned = 0;
   let enqueued = 0;
+  let cleaned = 0;
   let escalated = 0;
   let errors = 0;
 
   const summary = (): ReviewPlaceholderRecoverySummary => {
     console.log(
-      `review-placeholder recovery: checked=${checked} orphaned=${orphaned} enqueued=${enqueued} escalated=${escalated} errors=${errors}`,
+      `review-placeholder recovery: checked=${checked} orphaned=${orphaned} enqueued=${enqueued} cleaned=${cleaned} escalated=${escalated} errors=${errors}`,
     );
-    return { checked, orphaned, enqueued, escalated, errors };
+    return { checked, orphaned, enqueued, cleaned, escalated, errors };
   };
   if (
     !token ||
@@ -182,8 +198,12 @@ export async function runReviewPlaceholderRecovery(
     !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) ||
     !/^[A-Za-z0-9_./-]+$/.test(targetBranch)
   ) {
-    console.warn("review-placeholder recovery skipped: missing or invalid configuration");
-    return summary();
+    // Silent no-op here means orphaned placeholders stay invisible forever;
+    // in production every value comes from repo secrets/vars, so loss of one
+    // is an operator problem the run must surface.
+    throw new Error(
+      "review-placeholder recovery is misconfigured: missing token, secret, or target",
+    );
   }
 
   const github = async <T>(path: string): Promise<T> => {
@@ -251,6 +271,52 @@ export async function runReviewPlaceholderRecovery(
       throw new Error(`POST /repos/${repo}/issues/${number}/labels returned ${response.status}`);
     }
   };
+  const deletePlaceholderComment = async (
+    number: number,
+    commentId: number,
+  ): Promise<"deleted" | "skipped"> => {
+    if (!targetWriteToken) {
+      throw new Error("TARGET_WRITE_TOKEN is missing; cannot delete placeholder comments");
+    }
+    // The closed state and placeholder body come from earlier snapshots; reread
+    // both right before the destructive call so a reopened item or an in-flight
+    // publish that edited the placeholder into a real review is not deleted.
+    // The gate requires the machine status marker with this item's number, not
+    // the human sentence, because a published review can quote the sentence.
+    // GitHub has no conditional delete, so the one-RTT window between this
+    // reread and the DELETE is an accepted residual race on a >=2h-orphaned
+    // closed item; the durable review tuple in the state repo survives either
+    // way and the 15-minute sweep converges.
+    const item = await github<{ state?: unknown }>(`/repos/${repo}/issues/${number}`);
+    if (item.state !== "closed") return "skipped";
+    const current = await github<ReviewPlaceholderComment>(
+      `/repos/${repo}/issues/comments/${commentId}`,
+    );
+    if (
+      !isClawSweeperBotComment(current) ||
+      typeof current.body !== "string" ||
+      !current.body.includes(`<!-- clawsweeper-review-status:started item=${number} `) ||
+      // A refresh bumps updated_at, so a placeholder re-claimed by an active
+      // run drops back under the orphan age and must not be deleted.
+      !isOrphanedReviewPlaceholder(current, now, minimumAgeHours)
+    ) {
+      return "skipped";
+    }
+    const response = await fetchImpl(`${apiUrl}/repos/${repo}/issues/comments/${commentId}`, {
+      method: "DELETE",
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${targetWriteToken}`,
+        "x-github-api-version": "2022-11-28",
+      },
+    });
+    if (!response.ok) {
+      throw new Error(
+        `DELETE /repos/${repo}/issues/comments/${commentId} returned ${response.status}`,
+      );
+    }
+    return "deleted";
+  };
   const fetchLatestBotComment = async (
     number: number,
   ): Promise<ReviewPlaceholderComment | null> => {
@@ -265,13 +331,16 @@ export async function runReviewPlaceholderRecovery(
     return latestClawSweeperBotComment(comments);
   };
 
-  const candidates = new Map<number, ReviewPlaceholderCandidate>();
+  const candidates = new Map<number, { candidate: ReviewPlaceholderCandidate; closed: boolean }>();
   const updatedSince = new Date(
     now.getTime() - REVIEW_PLACEHOLDER_LOOKBACK_HOURS * 60 * 60 * 1_000,
   ).toISOString();
-  const query = `repo:${repo} "${REVIEW_PLACEHOLDER_MARKER}" in:comments updated:>=${updatedSince} is:open`;
-  for (let page = 1; page <= SEARCH_MAX_PAGES && candidates.size < maximumChecks; page += 1) {
-    try {
+  // Each state class gets its own check budget; sharing one would let a
+  // backlog of open placeholders permanently starve closed-item cleanup.
+  const searchCandidates = async (stateQualifier: "is:open" | "is:closed"): Promise<void> => {
+    const query = `repo:${repo} "${REVIEW_PLACEHOLDER_MARKER}" in:comments updated:>=${updatedSince} ${stateQualifier}`;
+    let added = 0;
+    for (let page = 1; page <= SEARCH_MAX_PAGES && added < maximumChecks; page += 1) {
       const result = await github<{ items?: unknown }>(
         `/search/issues?q=${encodeURIComponent(query)}&sort=updated&order=desc&per_page=${SEARCH_PAGE_SIZE}&page=${page}`,
       );
@@ -281,16 +350,21 @@ export async function runReviewPlaceholderRecovery(
         const candidate = value as ReviewPlaceholderCandidate;
         const number = Number(candidate.number);
         if (!Number.isInteger(number) || number <= 0 || candidates.has(number)) continue;
-        candidates.set(number, candidate);
-        if (candidates.size >= maximumChecks) break;
+        candidates.set(number, { candidate, closed: stateQualifier === "is:closed" });
+        added += 1;
+        if (added >= maximumChecks) break;
       }
       if (items.length < SEARCH_PAGE_SIZE) break;
+    }
+  };
+  for (const stateQualifier of ["is:open", "is:closed"] as const) {
+    try {
+      await searchCandidates(stateQualifier);
     } catch (error) {
       errors += 1;
       console.warn(
-        `review-placeholder discovery page ${page} skipped: ${error instanceof Error ? error.message : String(error)}`,
+        `review-placeholder discovery (${stateQualifier}) skipped: ${error instanceof Error ? error.message : String(error)}`,
       );
-      break;
     }
   }
 
@@ -299,14 +373,38 @@ export async function runReviewPlaceholderRecovery(
     itemKind: "issue" | "pull_request";
     createdAtMs: number;
   }[] = [];
-  for (const [number, candidate] of candidates) {
+  for (const [number, { candidate, closed }] of candidates) {
     checked += 1;
     try {
       const comment = await fetchLatestBotComment(number);
-      if (!isOrphanedReviewPlaceholder(comment, now, minimumAgeHours)) continue;
+      if (!comment || !isOrphanedReviewPlaceholder(comment, now, minimumAgeHours)) continue;
       orphaned += 1;
+      if (closed) {
+        // A closed item can never be recovered by re-enqueueing a review; the
+        // only useful terminal action is removing the stale placeholder so the
+        // thread stops claiming a review is in flight.
+        const placeholderCommentId = Number(comment.id);
+        try {
+          if (!Number.isInteger(placeholderCommentId) || placeholderCommentId <= 0) {
+            throw new Error("placeholder comment id is unavailable");
+          }
+          const outcome = await deletePlaceholderComment(number, placeholderCommentId);
+          if (outcome === "deleted") {
+            cleaned += 1;
+            console.log(`review-placeholder recovery: cleaned closed #${number}`);
+          } else {
+            console.log(`review-placeholder recovery: skipped changed closed #${number}`);
+          }
+        } catch (cleanupError) {
+          errors += 1;
+          console.warn(
+            `#${number} closed-item placeholder cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+          );
+        }
+        continue;
+      }
       const itemKind = candidate.pull_request ? "pull_request" : "issue";
-      const createdAtMs = (comment && commentCreatedAtMs(comment)) ?? now.getTime();
+      const createdAtMs = commentCreatedAtMs(comment) ?? now.getTime();
       orphanedCandidates.push({ number, itemKind, createdAtMs });
       if (
         now.getTime() - createdAtMs >= stuckAgeMs &&
@@ -354,9 +452,17 @@ export async function runReviewPlaceholderRecovery(
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
 if (invokedPath && invokedPath === fileURLToPath(import.meta.url)) {
-  await runReviewPlaceholderRecovery().catch((error) => {
-    console.warn(
-      `review-placeholder recovery skipped after unexpected error: ${error instanceof Error ? error.message : String(error)}`,
+  try {
+    const summary = await runReviewPlaceholderRecovery();
+    const failureReason = reviewPlaceholderRecoveryFailureReason(summary);
+    if (failureReason) {
+      console.error(`review-placeholder recovery failed: ${failureReason}`);
+      process.exitCode = 1;
+    }
+  } catch (error) {
+    console.error(
+      `review-placeholder recovery failed: ${error instanceof Error ? error.message : String(error)}`,
     );
-  });
+    process.exitCode = 1;
+  }
 }
