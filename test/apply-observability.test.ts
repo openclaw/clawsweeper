@@ -173,6 +173,25 @@ test("all-repository queue health stays unknown until every configured target re
   assert.equal(complete.last_60_minutes.applied, 16);
 });
 
+test("apply observability becomes unavailable after the expected producer cadence", () => {
+  const stale = normalizeApplyObservabilityEvent(
+    event({
+      occurred_at: "2026-07-21T11:10:00Z",
+      started_at: "2026-07-21T11:00:00Z",
+    }),
+    NOW,
+  )!;
+  const summary = summarizeApplyObservability({
+    events: [stale],
+    range: "24h",
+    repo: null,
+    repositories: ["openclaw/openclaw"],
+    now: NOW,
+  });
+  assert.equal(summary.telemetry_complete, false);
+  assert.equal(summary.queue.ready, null);
+});
+
 test("apply telemetry producer keeps successful terminal steps distinct from ledger failures", async (t) => {
   const payloads: Record<string, unknown>[] = [];
   const server = createServer(async (request, response) => {
@@ -250,5 +269,74 @@ test("apply telemetry producer keeps successful terminal steps distinct from led
   );
   assert.deepEqual((ledgerFailurePayload.event as { failures?: unknown }).failures, [
     { kind: "action_ledger_failure", at: (ledgerFailurePayload.event as { occurred_at: string }).occurred_at },
+  ]);
+});
+
+test("apply telemetry producer preserves the newest checkpoint health after a failed apply", async (t) => {
+  const payloads: Record<string, unknown>[] = [];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    payloads.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    response.writeHead(204).end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const script = fileURLToPath(
+    new URL("../scripts/publish-apply-observability.mjs", import.meta.url),
+  );
+  const cwd = mkdtempSync(join(tmpdir(), "clawsweeper-apply-observability-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  mkdirSync(join(cwd, ".artifacts"));
+  writeFileSync(
+    join(cwd, ".artifacts", "apply-health-3.json"),
+    JSON.stringify({
+      closed: 2,
+      comment_synced: 3,
+      cycle: { apply_ready_count: 7 },
+      next_actions: [{ bucket: "maintainer_review" }],
+    }),
+  );
+  await run(process.execPath, [script, "--health-file", ".artifacts/apply-health-final.json"], {
+    cwd,
+    env: {
+      ...process.env,
+      ACTION_LEDGER_OUTCOME: "success",
+      APPLY_OUTCOME: "failure",
+      CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+      GITHUB_REPOSITORY: "openclaw/clawsweeper",
+      GITHUB_RUN_ATTEMPT: "1",
+      GITHUB_RUN_ID: "12347",
+      QUEUE_URL: "http://127.0.0.1:" + address.port,
+      STATE_PUBLICATION_OUTCOME: "success",
+      STATE_STATUS_OUTCOME: "success",
+      TARGET_REPO: "openclaw/openclaw",
+    },
+  });
+  const payload = payloads[0];
+  assert.ok(payload);
+  assert.deepEqual((payload.event as { queue?: unknown }).queue, {
+    active: 0,
+    capacity: 1,
+    ready: 7,
+    backoff: null,
+    dispatching: 0,
+    leased: null,
+    oldest_ready_age_seconds: null,
+    oldest_backoff_age_seconds: null,
+    oldest_lease_age_seconds: null,
+  });
+  assert.deepEqual((payload.event as { results?: unknown }).results, {
+    applied: 5,
+    closed: 2,
+    superseded: null,
+    retried: null,
+    dead_lettered: null,
+  });
+  assert.deepEqual((payload.event as { observed_failure_kinds?: unknown }).observed_failure_kinds, [
+    "safe_close_blocked",
+    "workflow_failure",
   ]);
 });

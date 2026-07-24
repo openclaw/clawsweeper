@@ -1,13 +1,11 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { createHmac } from "node:crypto";
 
 const healthFile = optional("--health-file");
 const healthPath =
   healthFile && existsSync(healthFile)
     ? healthFile
-    : existsSync(".artifacts/apply-health-idle.json")
-      ? ".artifacts/apply-health-idle.json"
-      : "";
+    : fallbackHealthPath();
 const health = healthPath ? JSON.parse(readFileSync(healthPath, "utf8")) : {};
 const telemetryContextPath = ".artifacts/apply-observability-context.json";
 const telemetryContext = existsSync(telemetryContextPath)
@@ -111,6 +109,30 @@ function count(value) {
 function optional(flag) {
   const index = process.argv.indexOf(flag);
   return index === -1 ? "" : process.argv[index + 1] || "";
+}
+
+function fallbackHealthPath() {
+  const final = ".artifacts/apply-health-final.json";
+  if (existsSync(final)) return final;
+  const checkpoint = latestCheckpointHealthPath();
+  if (checkpoint) return checkpoint;
+  const idle = ".artifacts/apply-health-idle.json";
+  return existsSync(idle) ? idle : "";
+}
+
+function latestCheckpointHealthPath() {
+  try {
+    const checkpoints = readdirSync(".artifacts")
+      .map((name) => {
+        const match = /^apply-health-(\d+)\.json$/.exec(name);
+        return match ? { name, checkpoint: Number(match[1]) } : null;
+      })
+      .filter(Boolean);
+    const latest = checkpoints.sort((left, right) => right.checkpoint - left.checkpoint)[0];
+    return latest ? `.artifacts/${latest.name}` : "";
+  } catch {
+    return "";
+  }
 }
 
 function requiredEnv(name) {

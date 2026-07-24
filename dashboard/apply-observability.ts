@@ -4,6 +4,10 @@ export const APPLY_OBSERVABILITY_RANGES = {
   "24h": 24 * 60 * 60 * 1000,
   "7d": APPLY_OBSERVABILITY_RETENTION_MS,
 } as const;
+// Apply producers run every 15 minutes. Two missed intervals are enough to
+// make the dashboard's "Observed" state unsafe, while allowing scheduler and
+// publication retries to settle before declaring the telemetry unavailable.
+export const APPLY_OBSERVABILITY_MAX_SILENCE_MS = 45 * 60 * 1000;
 
 const OUTCOMES = new Set(["success", "failure", "cancelled", "skipped"]);
 const FAILURE_KINDS = [
@@ -150,6 +154,13 @@ export function summarizeApplyObservability(options: {
     if (!latestByRepository.has(event.repo)) latestByRepository.set(event.repo, event);
   }
   const latest = observedRepositories.map((repo) => latestByRepository.get(repo) ?? null);
+  const telemetryComplete =
+    observedRepositories.length > 0 &&
+    latest.every(
+      (event) =>
+        event && Date.parse(event.occurred_at) >= now - APPLY_OBSERVABILITY_MAX_SILENCE_MS,
+    );
+  const current = telemetryComplete ? latest : latest.map(() => null);
   const window = (ms: number) =>
     aggregate(events.filter((event) => Date.parse(event.occurred_at) >= now - ms));
   const aggregateRange = aggregate(events);
@@ -162,18 +173,18 @@ export function summarizeApplyObservability(options: {
     range: options.range,
     repo: options.repo ?? "all",
     generated_at: new Date(now).toISOString(),
-    telemetry_complete: observedRepositories.length > 0 && latest.every(Boolean),
+    telemetry_complete: telemetryComplete,
     event_count: events.length,
     repositories: observedRepositories.map((repo) => ({
       repo,
       observed_at: latestByRepository.get(repo)?.occurred_at ?? null,
     })),
-    queue: aggregateQueue(latest),
+    queue: aggregateQueue(current),
     last_15_minutes: window(15 * 60_000),
     last_60_minutes: window(60 * 60_000),
     totals: aggregateRange,
     retry_amplification: retryAmplification(aggregateRange),
-    lease: aggregateLease(latest),
+    lease: aggregateLease(current),
     failures: {
       state_lease_timeout: failureCount(events, failures, "state_lease_timeout"),
       state_lease_contention: failureCount(events, failures, "state_lease_contention"),
