@@ -161,6 +161,7 @@ const leasePath = ${JSON.stringify(leasePath)};
 const deleteLogPath = ${JSON.stringify(deleteLogPath)};
 const headSha = ${JSON.stringify(headSha)};
 const oldHeadSha = ${JSON.stringify(oldHeadSha)};
+const leaseExpiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
 const args = process.argv.slice(2);
 const path = args[1] || "";
 const oldLease = {
@@ -171,7 +172,7 @@ const oldLease = {
   user: { login: "clawsweeper[bot]" },
   body: [
     "ClawSweeper status: review started.",
-    \`<!-- clawsweeper-review-status:started item=357 sha=\${oldHeadSha} started_at=2026-07-15T00:00:00.000Z lease_expires_at=2026-07-24T00:00:00.000Z owner=github-run-998-1 v=1 -->\`,
+    \`<!-- clawsweeper-review-status:started item=357 sha=\${oldHeadSha} started_at=2026-07-15T00:00:00.000Z lease_expires_at=\${leaseExpiresAt} owner=github-run-998-1 v=1 -->\`,
     "<!-- clawsweeper-review-lease item=357 -->",
   ].join("\\n"),
 };
@@ -297,6 +298,7 @@ const pullCountPath = ${JSON.stringify(pullCountPath)};
 const deleteLogPath = ${JSON.stringify(deleteLogPath)};
 const staleHead = ${JSON.stringify(staleHead)};
 const newerHead = ${JSON.stringify(newerHead)};
+const leaseExpiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
 const args = process.argv.slice(2);
 const path = args[1] || "";
 const newerLease = {
@@ -307,7 +309,7 @@ const newerLease = {
   user: { login: "clawsweeper[bot]" },
   body: [
     "ClawSweeper status: review started.",
-    \`<!-- clawsweeper-review-status:started item=357 sha=\${newerHead} started_at=2026-07-23T13:00:02.000Z lease_expires_at=2026-07-24T14:00:02.000Z owner=github-run-222-1 v=1 -->\`,
+    \`<!-- clawsweeper-review-status:started item=357 sha=\${newerHead} started_at=2026-07-23T13:00:02.000Z lease_expires_at=\${leaseExpiresAt} owner=github-run-222-1 v=1 -->\`,
     "<!-- clawsweeper-review-lease item=357 -->",
   ].join("\\n"),
 };
