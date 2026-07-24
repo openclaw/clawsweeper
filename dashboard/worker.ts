@@ -42,6 +42,7 @@ import {
 } from "./automerge-metrics.ts";
 import {
   APPLY_OBSERVABILITY_RETENTION_MS,
+  APPLY_OBSERVABILITY_RANGES,
   normalizeApplyObservabilityEvent,
   summarizeApplyObservability,
 } from "./apply-observability.ts";
@@ -1688,7 +1689,13 @@ async function applyObservabilityJson(request: Request, env: DashboardEnv) {
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
-  const observedRepositories = new Set(events.map((event) => event.repo));
+  const observedRepositories = new Set(
+    events
+      .filter(
+        (event) => Date.parse(event.occurred_at) >= Date.now() - APPLY_OBSERVABILITY_RANGES[range],
+      )
+      .map((event) => event.repo),
+  );
   const optionalRepositories = String(env.APPLY_OPTIONAL_TARGET_REPOS || "")
     .split(",")
     .map((value) => value.trim())

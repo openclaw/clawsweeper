@@ -3536,10 +3536,39 @@ test("apply observability accepts signed durable events and exposes the API summ
   assert.equal(summary.failures.safe_close_blocked, 1);
   assert.deepEqual(summary.repositories.map((entry) => entry.repo), ["openclaw/openclaw"]);
 
-  const clawhubPayload = JSON.parse(body);
-  clawhubPayload.event.repo = "openclaw/clawhub";
-  clawhubPayload.event.run_id = "98766";
-  const clawhubBody = JSON.stringify(clawhubPayload);
+  const staleClawhubPayload = JSON.parse(body);
+  staleClawhubPayload.event.repo = "openclaw/clawhub";
+  staleClawhubPayload.event.run_id = "98766";
+  staleClawhubPayload.event.occurred_at = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString();
+  staleClawhubPayload.event.started_at = new Date(Date.now() - 7 * 60 * 60 * 1000 - 60_000).toISOString();
+  const staleClawhubBody = JSON.stringify(staleClawhubPayload);
+  const staleClawhubSignature = `sha256=${createHmac("sha256", secret).update(staleClawhubBody).digest("hex")}`;
+  const staleClawhubAccepted = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/apply-observability", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-clawsweeper-exact-review-signature": staleClawhubSignature,
+      },
+      body: staleClawhubBody,
+    }),
+    env,
+  );
+  assert.equal(staleClawhubAccepted.status, 200);
+  const withoutStaleClawhub = await (
+    await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/apply-observability?range=6h"),
+      env,
+    )
+  ).json();
+  assert.deepEqual(withoutStaleClawhub.repositories.map((entry) => entry.repo), [
+    "openclaw/openclaw",
+  ]);
+
+  const currentClawhubPayload = JSON.parse(body);
+  currentClawhubPayload.event.repo = "openclaw/clawhub";
+  currentClawhubPayload.event.run_id = "98767";
+  const clawhubBody = JSON.stringify(currentClawhubPayload);
   const clawhubSignature = `sha256=${createHmac("sha256", secret).update(clawhubBody).digest("hex")}`;
   const clawhubAccepted = await worker.fetch(
     new Request("https://clawsweeper.openclaw.ai/internal/apply-observability", {
