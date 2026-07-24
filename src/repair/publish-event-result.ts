@@ -8,6 +8,7 @@ import {
   applyEventSnapshotIfCurrent,
   captureEventBaseSnapshot,
   captureEventSnapshot,
+  eventRecordDirectories,
   eventSnapshotMatchesCurrent,
   type EventRecordPaths,
   resetEventSnapshot,
@@ -147,7 +148,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
   };
 
   resetEventSnapshot(recordStore);
-  captureEventBaseSnapshot(recordStore);
+  const recordPaths = captureEventBaseSnapshot(recordStore);
   fs.rmSync(options.reportPath, { force: true });
 
   runClawsweeper(options, [
@@ -159,19 +160,20 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     "--skip-reconcile",
     "--skip-dashboard",
     "--replay-closed-artifacts",
+    ...eventRecordDirectoryArgs(options, recordPaths),
   ]);
 
   // Preserve the exact artifact candidate before refreshing the state checkout.
   // A stale event must be rejected before apply-decisions can comment, label,
   // or close anything on GitHub.
-  const recordPaths = captureEventSnapshot(recordStore);
+  captureEventSnapshot(recordStore);
   hardResetToRemoteMain();
   const stateBaseCommit = captureStatePublishBaseline();
   const stateRoot = publishRoot();
   const preflightResult = applyEventSnapshotIfCurrent(
     recordPaths,
     stateRoot ? { remoteRoot: stateRoot } : {},
-    () => runApplyDecisions(options),
+    () => runApplyDecisions(options, recordPaths),
   );
   if (
     preflightResult === "remote-closed" ||
@@ -444,7 +446,7 @@ function prepareBatchMutation({
   };
 }
 
-function runApplyDecisions(options: EventOptions): void {
+function runApplyDecisions(options: EventOptions, paths: EventRecordPaths): void {
   const args = [
     "apply-decisions",
     "--target-repo",
@@ -475,8 +477,23 @@ function runApplyDecisions(options: EventOptions): void {
     "--skip-dashboard",
     "--report-path",
     options.reportPath,
+    ...eventRecordDirectoryArgs(options, paths),
   ];
   runClawsweeper(options, args);
+}
+
+function eventRecordDirectoryArgs(options: EventOptions, paths: EventRecordPaths): string[] {
+  const directories = eventRecordDirectories(paths, options.workRoot);
+  return [
+    "--items-dir",
+    directories.items,
+    "--closed-dir",
+    directories.closed,
+    "--plans-dir",
+    directories.plans,
+    "--decision-packets-dir",
+    directories.decisionPackets,
+  ];
 }
 
 function publishSnapshot({

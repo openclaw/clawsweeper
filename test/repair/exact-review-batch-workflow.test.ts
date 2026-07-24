@@ -89,6 +89,14 @@ test("batch workflow uses owner-scoped mutation credentials and isolated state c
     publisherSource,
     /spawnSync\(process\.execPath, \[cli, \.\.\.args\], \{\s*cwd: options\.workRoot,/,
   );
+  assert.equal(
+    publisherSource.match(/\.\.\.eventRecordDirectoryArgs\(options, (?:recordPaths|paths)\)/g)
+      ?.length,
+    2,
+  );
+  for (const flag of ["items", "closed", "plans", "decision-packets"]) {
+    assert.match(publisherSource, new RegExp(`"--${flag}-dir"`));
+  }
   assert.doesNotMatch(publisherSource, /runStreaming\("pnpm"/);
 });
 

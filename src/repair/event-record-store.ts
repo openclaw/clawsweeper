@@ -32,6 +32,13 @@ export type EventRecordPaths = {
   snapshotDecisionPacket: string;
 };
 
+export type EventRecordDirectories = {
+  items: string;
+  closed: string;
+  plans: string;
+  decisionPackets: string;
+};
+
 export type EventSnapshotApplyResult =
   | "closed"
   | "open"
@@ -69,6 +76,18 @@ export function eventRecordPaths(store: EventRecordStore): EventRecordPaths {
       "decision-packets",
       `${store.itemNumber}.json`,
     ),
+  };
+}
+
+export function eventRecordDirectories(
+  paths: EventRecordPaths,
+  root: string,
+): EventRecordDirectories {
+  return {
+    items: path.resolve(root, path.dirname(paths.itemRecord)),
+    closed: path.resolve(root, path.dirname(paths.closedRecord)),
+    plans: path.resolve(root, path.dirname(paths.planRecord)),
+    decisionPackets: path.resolve(root, path.dirname(paths.decisionPacket)),
   };
 }
 
