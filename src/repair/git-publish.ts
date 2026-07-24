@@ -2323,7 +2323,7 @@ function renewStatePublishLease(
           console.log(
             `State publish lease renewal hit GitHub commit_refs ${reason}; retrying attempt=${attempt + 1}/${attempts}`,
           );
-          sleep(Math.min(STATE_PUBLISH_LEASE_WAIT_MS * attempt, STATE_PUBLISH_LEASE_MAX_WAIT_MS));
+          sleep(commitRefsRetryDelayMs(attempt));
           continue;
         }
         throw new StatePublishContentionError(`Failed to renew state publish lease ${reason}`);
@@ -2466,6 +2466,13 @@ function isCommitRefsTransactionFailure(result: GitRunResult): boolean {
   return /fatal error in commit_refs/i.test(`${result.stderr}\n${result.stdout}`);
 }
 
+function commitRefsRetryDelayMs(attempt: number): number {
+  return Math.min(
+    STATE_PUBLISH_LEASE_WAIT_MS * 2 ** (attempt - 1),
+    STATE_PUBLISH_LEASE_MAX_WAIT_MS,
+  );
+}
+
 function pushStateAndReceiptAfterCommitRefsFailure(
   source: string,
   remote: string,
@@ -2534,7 +2541,7 @@ function pushStateAndReceiptAfterCommitRefsFailure(
         console.log(
           `State batch receipt push hit GitHub commit_refs; retrying attempt=${attempt + 1}/${STATE_PUBLISH_COMMIT_REFS_SINGLE_REF_ATTEMPTS}`,
         );
-        sleep(Math.min(STATE_PUBLISH_LEASE_WAIT_MS * attempt, STATE_PUBLISH_LEASE_MAX_WAIT_MS));
+        sleep(commitRefsRetryDelayMs(attempt));
         continue;
       }
       return receiptPush;
@@ -2568,15 +2575,41 @@ function pushStateAndReceiptAfterCommitRefsFailure(
     );
   }
 
-  const statePush = spawnGit(
-    ["push", `--force-with-lease=${branchRef}:${sourceParent}`, remote, `${source}:${branchRef}`],
-    { allowFailure: true },
-  );
-  if (statePush.status !== 0 && remoteRefOid(remote, branchRef) !== sourceCommit) {
+  for (let attempt = 1; attempt <= STATE_PUBLISH_COMMIT_REFS_SINGLE_REF_ATTEMPTS; attempt += 1) {
+    lease.coordinator?.assertActive();
+    const statePush = spawnGit(
+      ["push", `--force-with-lease=${branchRef}:${sourceParent}`, remote, `${source}:${branchRef}`],
+      { allowFailure: true },
+    );
+    if (statePush.status === 0) {
+      console.log(`Recovered GitHub commit_refs failure for ${remote}/${branch}`);
+      return { ...statePush, status: 0 };
+    }
+    const currentBranchOid = remoteRefOid(remote, branchRef);
+    if (currentBranchOid === sourceCommit) {
+      console.log(`Recovered GitHub commit_refs failure for ${remote}/${branch}`);
+      return { ...statePush, status: 0 };
+    }
+    if (currentBranchOid !== sourceParent) {
+      throw new StatePublishContentionError(
+        `State branch ${branchRef} changed during commit_refs recovery`,
+      );
+    }
+    if (
+      attempt < STATE_PUBLISH_COMMIT_REFS_SINGLE_REF_ATTEMPTS &&
+      isCommitRefsTransactionFailure(statePush)
+    ) {
+      console.log(
+        `State branch push hit GitHub commit_refs; retrying attempt=${attempt + 1}/${STATE_PUBLISH_COMMIT_REFS_SINGLE_REF_ATTEMPTS}`,
+      );
+      sleep(commitRefsRetryDelayMs(attempt));
+      continue;
+    }
     return statePush;
   }
-  console.log(`Recovered GitHub commit_refs failure for ${remote}/${branch}`);
-  return { ...statePush, status: 0 };
+  throw new StatePublishContentionError(
+    `Failed to publish state branch ${branchRef} after commit_refs recovery`,
+  );
 }
 
 export function pushStateCommitUnderLease(

@@ -213,6 +213,34 @@ test("commit_refs recovery retries transient receipt and lease renewal rejection
   );
 });
 
+test("commit_refs recovery retries a transient state branch push rejection", () => {
+  const fixture = createRepositoryFixture();
+  const plan = newItemPlan(fixture, 31);
+  const batchId = "github-state-branch-single-ref-retry";
+  const rejected = installMultiRefAndStateBranchCommitRefsFailure(fixture.origin);
+
+  const result = withStateEnvironment(fixture.work, () =>
+    commitPreparedStateBatch({
+      batchId,
+      plans: [plan],
+    }),
+  );
+
+  assert.equal(result.outcome, "committed");
+  assert.equal(fs.existsSync(rejected.statePush), true);
+  assert.equal(
+    git(fixture.origin, "show", "state:records/openclaw-openclaw/items/31.md"),
+    "item 31\n",
+  );
+  const receiptRef = `refs/heads/clawsweeper-state-batches/${createHash("sha256")
+    .update(batchId)
+    .digest("hex")}`;
+  assert.equal(
+    git(fixture.origin, "rev-parse", "state").trim(),
+    git(fixture.origin, "rev-parse", receiptRef).trim(),
+  );
+});
+
 test("a receipt created after lookup cannot be overwritten", () => {
   const fixture = createRepositoryFixture();
   const plan = newItemPlan(fixture, 29);
@@ -958,6 +986,36 @@ function installMultiRefAndFirstStateFailure(origin: string): void {
     ].join("\n"),
   );
   fs.chmodSync(hook, 0o755);
+}
+
+function installMultiRefAndStateBranchCommitRefsFailure(origin: string): { statePush: string } {
+  const hook = path.join(origin, "hooks", "pre-receive");
+  const rejectedStateMarker = path.join(origin, "hooks", "rejected-state-branch-commit-refs-once");
+  fs.writeFileSync(
+    hook,
+    [
+      "#!/bin/sh",
+      "count=0",
+      'only_ref=""',
+      "while read -r old_oid new_oid ref_name; do",
+      "  count=$((count + 1))",
+      '  only_ref="$ref_name"',
+      "done",
+      'if [ "$count" -ge 2 ]; then',
+      '  echo "fatal error in commit_refs" >&2',
+      "  exit 1",
+      "fi",
+      `if [ "$only_ref" = "refs/heads/state" ] && [ ! -f '${rejectedStateMarker}' ]; then`,
+      `  touch '${rejectedStateMarker}'`,
+      '  echo "fatal error in commit_refs" >&2',
+      "  exit 1",
+      "fi",
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
+  fs.chmodSync(hook, 0o755);
+  return { statePush: rejectedStateMarker };
 }
 
 function configureUser(root: string): void {
