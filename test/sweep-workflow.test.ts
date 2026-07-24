@@ -250,10 +250,12 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
     "publish-apply-proof-action-ledger",
     "apply-existing",
   ]);
-  assert.match(telemetryJob.if ?? "", /always\(\) && !cancelled\(\)/);
+  assert.match(telemetryJob.if ?? "", /always\(\)/);
+  assert.doesNotMatch(telemetryJob.if ?? "", /!cancelled\(\)/);
   assert.match(telemetryJob.if ?? "", /needs\.apply-proof\.result == 'failure'/);
   assert.match(telemetryJob.if ?? "", /needs\.publish-apply-proof-action-ledger\.result == 'failure'/);
   assert.match(telemetryJob.if ?? "", /needs\.apply-existing\.result == 'failure'/);
+  assert.match(telemetryJob.if ?? "", /needs\.apply-existing\.result == 'cancelled'/);
   const telemetryStep = step("publish-apply-observability", "Publish apply telemetry");
   assert.match(telemetryStep.env?.APPLY_OUTCOME ?? "", /needs\.apply-proof\.result == 'failure'/);
   assert.match(telemetryStep.env?.APPLY_OUTCOME ?? "", /needs\.apply-existing\.result == 'success'/);

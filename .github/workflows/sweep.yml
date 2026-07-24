@@ -5184,7 +5184,7 @@ jobs:
   publish-apply-observability:
     name: Publish apply telemetry
     needs: [apply-proof, publish-apply-proof-action-ledger, apply-existing]
-    if: ${{ always() && !cancelled() && (needs.apply-proof.result == 'failure' || needs.publish-apply-proof-action-ledger.result == 'failure' || needs.apply-existing.result == 'failure' || needs.apply-existing.result == 'success') }}
+    if: ${{ always() && (needs.apply-proof.result == 'failure' || needs.publish-apply-proof-action-ledger.result == 'failure' || needs.apply-existing.result == 'failure' || needs.apply-existing.result == 'cancelled' || needs.apply-existing.result == 'success') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
