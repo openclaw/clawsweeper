@@ -104,13 +104,24 @@ export type ExactReviewQueueItem = {
   claimProtocolVersion?: 1 | 2;
   dispatchedAt?: number;
   claimedAt?: number;
-  parkedReason?: "dead_letter_capacity";
+  parkedReason?: "dead_letter_capacity" | "dispatch_rejected";
+  dispatchFailureStatus?: number;
+  dispatchFailureClass?: ExactReviewDispatchFailureClass;
+  dispatchFailureAt?: number;
+  dispatchFailureFingerprint?: string;
   lastFailureReason?: ExactReviewPublicationReasonCode;
   firstFailureAt?: number;
   publicationFailureAttempts?: number;
 };
 export type ExactReviewCompletionOutcome = "success" | "failure" | "cancelled";
 type ExactReviewPublicationFailureKind = "github_rate_limit" | "github_transient";
+type ExactReviewDispatchFailureClass =
+  | "permanent_rejection"
+  | "authentication"
+  | "rate_limit"
+  | "github_outage"
+  | "timeout"
+  | "network";
 export type ExactReviewPublicationCompletionKind =
   | "published"
   | "superseded"
@@ -174,10 +185,22 @@ export type ExactReviewQueueState = {
   shedSinceReset?: number;
   dispatcher?: {
     state: "active" | "paused" | "blocked" | "unknown";
-    reason?: "workflow_not_active" | "workflow_status_unavailable";
+    reason?:
+      | "workflow_not_active"
+      | "workflow_status_unavailable"
+      | "dispatch_authentication"
+      | "dispatch_rate_limit"
+      | "dispatch_github_outage"
+      | "dispatch_timeout"
+      | "dispatch_network";
     workflowState?: string;
     checkedAt: number;
     retryAt?: number;
+    dispatchFailureStatus?: number;
+    dispatchFailureClass?: ExactReviewDispatchFailureClass;
+    dispatchFailureAt?: number;
+    dispatchFailureFingerprint?: string;
+    dispatchConsecutiveFailures?: number;
     publicationBatchDispatchedAt?: number;
     publicationBatchDispatchSucceeded?: boolean;
     publicationBatchDispatchPendingUntil?: number;
@@ -1034,6 +1057,7 @@ export class ExactReviewQueue {
             if (mergeable) {
               current.state = "pending";
               current.parkedReason = undefined;
+              clearExactReviewDispatchFailure(current);
               current.attempts = 0;
               current.publicationFailureAttempts = 0;
               current.firstFailureAt = undefined;
@@ -1688,6 +1712,13 @@ export class ExactReviewQueue {
         state: item.state,
         revision: item.revision,
         attempts: item.attempts,
+        parked_reason: item.parkedReason || null,
+        dispatch_failure_status: item.dispatchFailureStatus ?? null,
+        dispatch_failure_class: item.dispatchFailureClass || null,
+        dispatch_failure_at: item.dispatchFailureAt
+          ? new Date(item.dispatchFailureAt).toISOString()
+          : null,
+        dispatch_failure_fingerprint: item.dispatchFailureFingerprint || null,
         created_at: new Date(item.createdAt).toISOString(),
         next_attempt_at:
           item.state === "pending" ? new Date(item.nextAttemptAt).toISOString() : null,
@@ -2119,6 +2150,9 @@ export class ExactReviewQueue {
       return;
     }
 
+    const priorDispatchConsecutiveFailures = Number(
+      state.dispatcher?.dispatchConsecutiveFailures || 0,
+    );
     state.dispatcher = {
       state: "active",
       workflowState: preflight.workflowState,
@@ -2148,8 +2182,23 @@ export class ExactReviewQueue {
       return;
     }
 
-    const failures: Array<{ key: string; leaseId: string }> = [];
+    const failures: Array<{
+      key: string;
+      leaseId: string;
+      failure: ExactReviewDispatchFailure;
+      attempted: boolean;
+    }> = [];
+    let globalFailure: ExactReviewDispatchFailure | null = null;
     for (const item of admitted) {
+      if (globalFailure) {
+        failures.push({
+          key: item.key,
+          leaseId: String(item.leaseId || ""),
+          failure: globalFailure,
+          attempted: false,
+        });
+        continue;
+      }
       try {
         await dispatchClawsweeperItem({
           token: preflight.token,
@@ -2158,8 +2207,15 @@ export class ExactReviewQueue {
           leaseId: item.leaseId,
           leaseRevision: item.leaseRevision,
         });
-      } catch {
-        failures.push({ key: item.key, leaseId: String(item.leaseId || "") });
+      } catch (error) {
+        const failure = exactReviewDispatchFailure(error);
+        failures.push({
+          key: item.key,
+          leaseId: String(item.leaseId || ""),
+          failure,
+          attempted: true,
+        });
+        if (failure.scope === "global") globalFailure = failure;
       }
     }
 
@@ -2180,10 +2236,39 @@ export class ExactReviewQueue {
         continue;
       }
       clearExactReviewLease(item);
-      item.state = "pending";
-      item.attempts += 1;
-      item.nextAttemptAt = completedAt + exactReviewRetryDelayMs(item.attempts);
+      if (failure.attempted) {
+        item.dispatchFailureStatus = failure.failure.status;
+        item.dispatchFailureClass = failure.failure.failureClass;
+        item.dispatchFailureAt = completedAt;
+        item.dispatchFailureFingerprint = failure.failure.fingerprint;
+      }
+      if (failure.attempted && failure.failure.scope === "item") {
+        item.state = "parked";
+        item.parkedReason = "dispatch_rejected";
+      } else {
+        item.state = "pending";
+        item.nextAttemptAt = completedAt;
+      }
       item.updatedAt = completedAt;
+      currentChanged = true;
+    }
+    if (globalFailure) {
+      const consecutiveFailures = priorDispatchConsecutiveFailures + 1;
+      const retryAt =
+        completedAt + exactReviewDispatchGlobalRetryDelayMs(consecutiveFailures, globalFailure);
+      current.dispatcher = {
+        state: "blocked",
+        reason: exactReviewDispatchDispatcherReason(globalFailure.failureClass),
+        workflowState: preflight.workflowState,
+        checkedAt: completedAt,
+        retryAt,
+        dispatchFailureStatus: globalFailure.status,
+        dispatchFailureClass: globalFailure.failureClass,
+        dispatchFailureAt: completedAt,
+        dispatchFailureFingerprint: globalFailure.fingerprint,
+        dispatchConsecutiveFailures: consecutiveFailures,
+        ...batchDispatcherFields,
+      };
       currentChanged = true;
     }
     if (currentChanged) await this.writeState(current);
@@ -6502,6 +6587,13 @@ function clearExactReviewLease(item: ExactReviewQueueItem) {
   item.claimedAt = undefined;
 }
 
+function clearExactReviewDispatchFailure(item: ExactReviewQueueItem) {
+  item.dispatchFailureStatus = undefined;
+  item.dispatchFailureClass = undefined;
+  item.dispatchFailureAt = undefined;
+  item.dispatchFailureFingerprint = undefined;
+}
+
 export function exactReviewEffectiveLeaseExpiresAt(
   item: ExactReviewQueueItem,
   publicationDispatchLeaseMs: number,
@@ -7117,6 +7209,13 @@ function exactReviewQueueStats(
         ? new Date(state.dispatcher.checkedAt).toISOString()
         : null,
       retry_at: state.dispatcher?.retryAt ? new Date(state.dispatcher.retryAt).toISOString() : null,
+      dispatch_failure_status: state.dispatcher?.dispatchFailureStatus ?? null,
+      dispatch_failure_class: state.dispatcher?.dispatchFailureClass || null,
+      dispatch_failure_at: state.dispatcher?.dispatchFailureAt
+        ? new Date(state.dispatcher.dispatchFailureAt).toISOString()
+        : null,
+      dispatch_failure_fingerprint: state.dispatcher?.dispatchFailureFingerprint || null,
+      dispatch_consecutive_failures: state.dispatcher?.dispatchConsecutiveFailures || 0,
     },
     target_stats: targetStats,
   };
@@ -8331,6 +8430,78 @@ async function dispatchClawsweeperItem({
   });
 }
 
+type ExactReviewDispatchFailure = {
+  scope: "item" | "global";
+  failureClass: ExactReviewDispatchFailureClass;
+  status?: number;
+  fingerprint: string;
+};
+
+class GitHubRequestError extends Error {
+  readonly status?: number;
+  readonly timedOut: boolean;
+
+  constructor(message: string, status?: number, timedOut = false) {
+    super(message);
+    this.name = "GitHubRequestError";
+    this.status = status;
+    this.timedOut = timedOut;
+  }
+}
+
+function exactReviewDispatchFailure(error: unknown): ExactReviewDispatchFailure {
+  const requestError = error instanceof GitHubRequestError ? error : null;
+  const status = requestError?.status;
+  const failureClass: ExactReviewDispatchFailureClass = requestError?.timedOut
+    ? "timeout"
+    : status === 400 || status === 404 || status === 422
+      ? "permanent_rejection"
+      : status === 401 || status === 403
+        ? "authentication"
+        : status === 429
+          ? "rate_limit"
+          : status !== undefined && status >= 500
+            ? "github_outage"
+            : "network";
+  return {
+    scope: failureClass === "permanent_rejection" ? "item" : "global",
+    failureClass,
+    ...(status === undefined ? {} : { status }),
+    fingerprint: exactReviewDispatchFailureFingerprint(failureClass, status),
+  };
+}
+
+function exactReviewDispatchFailureFingerprint(
+  failureClass: ExactReviewDispatchFailureClass,
+  status?: number,
+) {
+  const value = `${failureClass}:${status ?? "none"}`;
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `dispatch-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function exactReviewDispatchDispatcherReason(
+  failureClass: ExactReviewDispatchFailureClass,
+): NonNullable<ExactReviewQueueState["dispatcher"]>["reason"] {
+  if (failureClass === "authentication") return "dispatch_authentication";
+  if (failureClass === "rate_limit") return "dispatch_rate_limit";
+  if (failureClass === "github_outage") return "dispatch_github_outage";
+  if (failureClass === "timeout") return "dispatch_timeout";
+  return "dispatch_network";
+}
+
+function exactReviewDispatchGlobalRetryDelayMs(
+  consecutiveFailures: number,
+  failure: ExactReviewDispatchFailure,
+) {
+  const base = failure.failureClass === "authentication" ? 5 * 60_000 : 30_000;
+  return Math.min(15 * 60_000, base * 2 ** Math.min(Math.max(0, consecutiveFailures - 1), 5));
+}
+
 async function dispatchExactReviewBatchWorkflow({ token }: { token: string }) {
   await githubTokenJson({
     token,
@@ -8358,13 +8529,26 @@ async function githubTokenJson({ token, path, method = "GET", body, errorLabel }
     },
   };
   if (body !== undefined) init.body = JSON.stringify(body);
-  const response = await fetch(`https://api.github.com${path}`, init).finally(() =>
-    clearTimeout(timeout),
-  );
+  let response: Response;
+  try {
+    response = await fetch(`https://api.github.com${path}`, init);
+  } catch (error) {
+    const timedOut =
+      controller.signal.aborted ||
+      (error instanceof Error && (error.name === "AbortError" || error.message === "timeout"));
+    throw new GitHubRequestError(
+      `${errorLabel || "GitHub"} ${timedOut ? "timed out" : "network failure"}`,
+      undefined,
+      timedOut,
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(
+    throw new GitHubRequestError(
       `${errorLabel || "GitHub"} ${response.status}${text ? `: ${text.slice(0, 240)}` : ""}`,
+      response.status,
     );
   }
   if (response.status === 204) return {};
