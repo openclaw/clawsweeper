@@ -611,6 +611,43 @@ process.stdin.on("end", () => {
   }
 });
 
+test("Claude runtime fails closed on JSON error envelopes", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const outputPath = join(root, "result.json");
+  const claudePath = join(root, process.platform === "win32" ? "claude.cmd" : "claude");
+  const scriptPath = join(root, "fake-claude-error.cjs");
+  writeFileSync(
+    scriptPath,
+    'process.stdin.resume(); process.stdin.on("end", () => process.stdout.write(JSON.stringify({ is_error: true, result: "Not logged in. Please run /login." })));\n',
+  );
+  if (process.platform === "win32") {
+    writeFileSync(claudePath, `@echo off\r\nnode "${scriptPath}" %*\r\n`);
+  } else {
+    writeFileSync(claudePath, `#!/usr/bin/env node\n${readFileSync(scriptPath, "utf8")}`, {
+      mode: 0o755,
+    });
+  }
+
+  try {
+    const result = runCodexProcess({
+      args: ["exec", "--sandbox", "read-only", "--output-last-message", outputPath, "-"],
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_MODEL_RUNTIME: "claude",
+        CLAUDE_BIN: claudePath,
+      },
+      input: "Reply with exactly: ok",
+      timeoutMs: 10_000,
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Not logged in\. Please run \/login\./);
+    assert.equal(existsSync(outputPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Claude runtime omits oversized inline schemas and still extracts JSON from result", () => {
   const root = mkdtempSync(tmpPrefix);
   const argsPath = join(root, "claude-args.json");

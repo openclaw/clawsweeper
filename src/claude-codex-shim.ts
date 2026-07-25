@@ -222,9 +222,17 @@ export function translateCodexArgs(args: readonly string[], initialCwd: string):
 
 function writeClaudeOutput(path: string, stdout: string, structuredOutput: boolean): void {
   const envelope = JSON.parse(stdout.trim()) as {
+    is_error?: boolean;
     result?: unknown;
     structured_output?: unknown;
   };
+  if (envelope.is_error) {
+    throw new Error(
+      typeof envelope.result === "string" && envelope.result.trim()
+        ? envelope.result.trim()
+        : "Claude CLI returned an error response.",
+    );
+  }
   const value =
     structuredOutput && envelope.structured_output !== undefined
       ? envelope.structured_output

@@ -78,6 +78,28 @@ test("Codex terminal detail returns only the final trusted diagnostic line", () 
   assert.equal(codexTerminalErrorDetail(`reviewed patch text\n${terminalError}`), terminalError);
 });
 
+test("Claude authentication and model access errors are terminal", () => {
+  for (const message of [
+    "Not logged in. Please run /login.",
+    "authentication_error: invalid API key",
+    "permission_error: You do not have access to model claude-opus-5",
+    "Model claude-opus-5 is not available in this region",
+  ]) {
+    assert.equal(codexTerminalErrorDetail(`diagnostic\n${message}`), message);
+    assert.equal(isRetryableCodexErrorMessage(message), false);
+  }
+});
+
+test("Claude overload and rate-limit errors are retryable", () => {
+  for (const message of [
+    "overloaded_error: API is temporarily overloaded (529)",
+    "rate_limit_error: request limit reached (429)",
+  ]) {
+    assert.equal(isRetryableCodexTransportError(message), true);
+    assert.equal(isRetryableCodexErrorMessage(message), true);
+  }
+});
+
 test("Codex context-limit errors are blocked automation outcomes", () => {
   assert.equal(
     isCodexContextLimitError("Error: Requested 142470. Please try again with a smaller input."),
