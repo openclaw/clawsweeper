@@ -701,6 +701,25 @@ test("apply failure finalization survives report publication errors", () => {
   );
 });
 
+test("apply report publication uses digest evidence without a durable record path", () => {
+  const source = readText("src/clawsweeper.ts");
+  const evidenceStart = source.indexOf(
+    'const reportEvidence = actionLedgerFileDigestEvidence("apply_report", options.reportPath)',
+  );
+  const publicationStart = source.indexOf('identity: { slot: "apply_report_publication" }');
+  const publicationEnd = source.indexOf("attributes:", publicationStart);
+  const evidence = source.slice(evidenceStart, publicationStart);
+  const publication = source.slice(publicationStart, publicationEnd);
+
+  assert.ok(evidenceStart >= 0);
+  assert.ok(publicationStart >= 0);
+  assert.ok(publicationEnd > publicationStart);
+  assert.doesNotMatch(evidence, /actionLedgerFileEvidence\("apply_report"/);
+  assert.match(publication, /kind: "publication"/);
+  assert.doesNotMatch(publication, /recordPath/);
+  assert.match(publication, /reportEvidence/);
+});
+
 test("retry and review publication lanes finalize unexpected failures", () => {
   const source = readText("src/clawsweeper.ts");
   const retryStart = source.indexOf("const retryLedger = startFailedReviewRetryLedger({");

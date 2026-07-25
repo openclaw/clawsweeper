@@ -31,6 +31,17 @@ test("GitHub App token creation uses the approved immutable action pin everywher
   );
 });
 
+test("GitHub App token owner inputs do not consume the multi-owner repair policy", () => {
+  const invalidOwnerInputs = referenceFiles(".github/workflows").flatMap((path) =>
+    readFileSync(path, "utf8")
+      .split("\n")
+      .filter((line) => /^\s*owner:.*CLAWSWEEPER_ALLOWED_OWNER/.test(line))
+      .map((line) => `${path}: ${line.trim()}`),
+  );
+
+  assert.deepEqual(invalidOwnerInputs, []);
+});
+
 test("cache actions use one runtime generation everywhere", () => {
   const references = referenceRoots.flatMap(referenceFiles).flatMap((path) =>
     readFileSync(path, "utf8")

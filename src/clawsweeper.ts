@@ -22903,6 +22903,17 @@ function actionLedgerFileEvidence(kind: string, filePath: string): ActionEventEv
   };
 }
 
+function actionLedgerFileDigestEvidence(
+  kind: string,
+  filePath: string,
+): ActionEventEvidence | null {
+  if (!existsSync(filePath)) return null;
+  return {
+    kind,
+    sha256: sha256(readFileSync(filePath, "utf8")),
+  };
+}
+
 function actionLedgerItemSubject(
   item: Item,
   options: { sourceRevision?: string; recordPath?: string } = {},
@@ -27232,7 +27243,9 @@ function recordApplyActionEvents(options: {
     },
     privacy: actionLedgerPrivacy(),
   });
-  const reportEvidence = actionLedgerFileEvidence("apply_report", options.reportPath);
+  // The apply report is a local workflow projection, so bind its contents
+  // without claiming that its root-level compatibility path is durable state.
+  const reportEvidence = actionLedgerFileDigestEvidence("apply_report", options.reportPath);
   const reportPublicationPhaseSeq = nextApplyPhaseSeq(options.ledger);
   recordWorkflowPhaseEvent(ROOT, {
     phase: ACTION_EVENT_TYPES.applyPublish,
@@ -27255,9 +27268,6 @@ function recordApplyActionEvents(options: {
     subject: {
       repository: targetRepo(),
       kind: "publication",
-      ...(repoRelativePath(options.reportPath).startsWith("../")
-        ? {}
-        : { recordPath: repoRelativePath(options.reportPath) }),
     },
     evidence: [...workflowRunEvidence(), ...(reportEvidence ? [reportEvidence] : [])],
     attributes: {
