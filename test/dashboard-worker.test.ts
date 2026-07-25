@@ -42,7 +42,11 @@ test("exact-review queue defaults to 64 of the 128 global workers", () => {
 test("exact-review source authority sequence survives queue restarts", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
-  const reserve = (target: ExactReviewQueue, deliveryId: string) =>
+  const reserve = (
+    target: ExactReviewQueue,
+    deliveryId: string,
+    decisionOverrides: Record<string, unknown> = {},
+  ) =>
     target.fetch(
       new Request("https://clawsweeper-exact-review-queue/source-authority", {
         method: "POST",
@@ -59,6 +63,7 @@ test("exact-review source authority sequence survives queue restarts", async () 
             supersedesInProgress: true,
             sourceHeadSha: "a".repeat(40),
             sourceUpdatedAt: "2026-07-23T13:00:02Z",
+            ...decisionOverrides,
           },
         }),
       }),
@@ -72,6 +77,21 @@ test("exact-review source authority sequence survives queue restarts", async () 
     ok: true,
     source_authority_seq: 1,
   });
+  // A reservation made before semantic edited-event fields were deployed must
+  // remain idempotent when the original delivery is redelivered afterwards.
+  assert.deepEqual(
+    await (
+      await reserve(queue, "authority-delivery-1", {
+        sourceBaseSha: "b".repeat(40),
+        sourceIsDraft: false,
+        sourceContentRevision: "c".repeat(64),
+      })
+    ).json(),
+    {
+      ok: true,
+      source_authority_seq: 1,
+    },
+  );
   assert.deepEqual(await (await reserve(queue, "authority-delivery-2")).json(), {
     ok: true,
     source_authority_seq: 2,
@@ -82,6 +102,213 @@ test("exact-review source authority sequence survives queue restarts", async () 
     ok: true,
     source_authority_seq: 3,
   });
+});
+
+test("exact-review queue durably coalesces concurrent unchanged pull request edits", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const targetRepo = "Steipete/Nameplate";
+  const request = (deliveryId: string, sourceAuthoritySeq: number, repo = targetRepo) =>
+    buildExactReviewQueueRequest(deliveryId, 750, "edited", "pull_request", repo, {
+      sourceHeadSha: "a".repeat(40),
+      sourceBaseSha: "b".repeat(40),
+      sourceIsDraft: false,
+      sourceContentRevision: "c".repeat(64),
+      sourceHeadVerified: true,
+      sourceAuthoritySeq,
+      sourceUpdatedAt: "2026-07-25T09:00:00Z",
+    });
+
+  const [first, duplicate] = await Promise.all([
+    queue.fetch(request("semantic-edit-1", 1)),
+    queue.fetch(request("semantic-edit-2", 2, targetRepo.toLowerCase())),
+  ]);
+  const responses = await Promise.all([first.json(), duplicate.json()]);
+  assert.equal(responses.filter((response) => response.queued === true).length, 1);
+  assert.deepEqual(
+    responses.find((response) => response.deduped === true),
+    {
+      ok: true,
+      deduped: true,
+      item_key: "Steipete/Nameplate#750",
+      dedupe_scope: "semantic_edited",
+      dedupe_reason: "unchanged_pull_request_edit",
+    },
+  );
+
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<
+      string,
+      {
+        revision: number;
+        decision: { sourceAuthoritySeq?: number };
+        sourceAuthorityWatermark?: { sequence: number; updatedAt?: string };
+      }
+    >;
+  };
+  assert.equal(state.items["Steipete/Nameplate#750"].revision, 1);
+  assert.equal(state.items["Steipete/Nameplate#750"].decision.sourceAuthoritySeq, 1);
+  assert.deepEqual(state.items["Steipete/Nameplate#750"].sourceAuthorityWatermark, {
+    sequence: 2,
+    updatedAt: "2026-07-25T09:00:00Z",
+  });
+  const stats = await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
+  assert.equal((await stats.json()).lanes.review.semantic_deduped_total, 1);
+});
+
+test("semantic edit suppression advances the pull request authority watermark", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const request = (
+    deliveryId: string,
+    sourceAuthoritySeq: number,
+    sourceUpdatedAt: string,
+    overrides: Record<string, unknown> = {},
+  ) =>
+    buildExactReviewQueueRequest(deliveryId, 752, "edited", "pull_request", "openclaw/openclaw", {
+      sourceHeadSha: "a".repeat(40),
+      sourceBaseSha: "b".repeat(40),
+      sourceIsDraft: false,
+      sourceContentRevision: "c".repeat(64),
+      sourceHeadVerified: true,
+      sourceAuthoritySeq,
+      sourceUpdatedAt,
+      ...overrides,
+    });
+
+  assert.equal(
+    (await queue.fetch(request("watermark-original", 1, "2026-07-25T09:00:01Z"))).status,
+    202,
+  );
+  // An older compatible producer that lacks a content digest still queues
+  // normally. Its authority tuple must not allow a delayed revision to win
+  // after a newer duplicate of the original semantic edit is suppressed.
+  assert.equal(
+    (
+      await queue.fetch(
+        request("watermark-undigested", 2, "2026-07-25T09:00:02Z", {
+          sourceContentRevision: undefined,
+        }),
+      )
+    ).status,
+    202,
+  );
+  const duplicate = await queue.fetch(request("watermark-duplicate", 3, "2026-07-25T09:00:03Z"));
+  assert.equal((await duplicate.json()).dedupe_scope, "semantic_edited");
+
+  const delayed = await queue.fetch(
+    request("watermark-delayed", 4, "2026-07-25T09:00:02Z", {
+      sourceContentRevision: "d".repeat(64),
+    }),
+  );
+  assert.deepEqual(await delayed.json(), {
+    ok: true,
+    deduped: true,
+    item_key: "openclaw/openclaw#752",
+    stale_source: true,
+  });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<
+      string,
+      { revision: number; sourceAuthorityWatermark?: { sequence: number; updatedAt?: string } }
+    >;
+  };
+  assert.equal(state.items["openclaw/openclaw#752"].revision, 2);
+  assert.deepEqual(state.items["openclaw/openclaw#752"].sourceAuthorityWatermark, {
+    sequence: 3,
+    updatedAt: "2026-07-25T09:00:03Z",
+  });
+});
+
+test("exact-review queue retains edits with a changed review tuple", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const headSha = "a".repeat(40);
+  const baseSha = "b".repeat(40);
+  const request = (
+    deliveryId: string,
+    sourceAuthoritySeq: number,
+    overrides: Record<string, unknown> = {},
+  ) =>
+    buildExactReviewQueueRequest(deliveryId, 751, "edited", "pull_request", "openclaw/openclaw", {
+      sourceHeadSha: headSha,
+      sourceBaseSha: baseSha,
+      sourceIsDraft: false,
+      sourceContentRevision: "c".repeat(64),
+      sourceHeadVerified: true,
+      sourceAuthoritySeq,
+      sourceUpdatedAt: "2026-07-25T09:00:00Z",
+      ...overrides,
+    });
+
+  for (const [deliveryId, sourceAuthoritySeq, overrides] of [
+    ["semantic-tuple-1", 1, {}],
+    ["semantic-tuple-base", 2, { sourceBaseSha: "c".repeat(40) }],
+    ["semantic-tuple-draft", 3, { sourceBaseSha: "c".repeat(40), sourceIsDraft: true }],
+    [
+      "semantic-tuple-content",
+      4,
+      {
+        sourceBaseSha: "c".repeat(40),
+        sourceIsDraft: true,
+        sourceContentRevision: "d".repeat(64),
+      },
+    ],
+    [
+      "semantic-tuple-command",
+      5,
+      {
+        sourceBaseSha: "c".repeat(40),
+        sourceIsDraft: true,
+        sourceContentRevision: "d".repeat(64),
+        additionalPrompt: "Review the revised request.",
+      },
+    ],
+    [
+      "semantic-tuple-head",
+      6,
+      {
+        sourceHeadSha: "d".repeat(40),
+        sourceBaseSha: "c".repeat(40),
+        sourceIsDraft: true,
+        sourceContentRevision: "d".repeat(64),
+        additionalPrompt: "Review the revised request.",
+      },
+    ],
+  ] as const) {
+    const response = await queue.fetch(request(deliveryId, sourceAuthoritySeq, overrides));
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      queued: true,
+      item_key: "openclaw/openclaw#751",
+      superseded_publications: 0,
+    });
+  }
+
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<
+      string,
+      {
+        revision: number;
+        decision: {
+          sourceHeadSha?: string;
+          sourceBaseSha?: string;
+          sourceIsDraft?: boolean;
+          sourceContentRevision?: string;
+          additionalPrompt?: string;
+        };
+      }
+    >;
+  };
+  assert.equal(state.items["openclaw/openclaw#751"].revision, 6);
+  assert.equal(state.items["openclaw/openclaw#751"].decision.sourceHeadSha, "d".repeat(40));
+  assert.equal(state.items["openclaw/openclaw#751"].decision.sourceBaseSha, "c".repeat(40));
+  assert.equal(state.items["openclaw/openclaw#751"].decision.sourceIsDraft, true);
+  assert.equal(state.items["openclaw/openclaw#751"].decision.sourceContentRevision, "d".repeat(64));
+  assert.equal(
+    state.items["openclaw/openclaw#751"].decision.additionalPrompt,
+    "Review the revised request.",
+  );
 });
 
 test("exact-review supersession audit migration preserves legacy records", () => {
@@ -14980,7 +15207,7 @@ test("hosted issue webhook enqueues without completing pull request authority", 
   assert.equal(authorityCompletionCalls, 0);
 });
 
-test("hosted synchronize webhook binds and enqueues only the live pull request head", async () => {
+test("hosted edited webhook binds and enqueues only the live pull request head", async () => {
   const originalFetch = globalThis.fetch;
   const originalNow = Date.now;
   const now = 3_000_000;
@@ -14989,6 +15216,11 @@ test("hosted synchronize webhook binds and enqueues only the live pull request h
   const queue = new ExactReviewQueue({ storage }, {});
   const staleHeadSha = "a".repeat(40);
   const sourceHeadSha = "b".repeat(40);
+  const sourceContentRevision = createHash("sha256")
+    .update(
+      JSON.stringify({ version: 1, title: "Document the edit", body: "Fresh review context." }),
+    )
+    .digest("hex");
   let verificationCalls = 0;
   globalThis.fetch = async (input) => {
     verificationCalls += 1;
@@ -15005,7 +15237,7 @@ test("hosted synchronize webhook binds and enqueues only the live pull request h
         secret: "test-secret",
         deliveryId,
         payload: {
-          action: "synchronize",
+          action: "edited",
           repository: {
             full_name: "openclaw/gogcli",
             default_branch: "trunk",
@@ -15017,6 +15249,10 @@ test("hosted synchronize webhook binds and enqueues only the live pull request h
           pull_request: {
             number: 596,
             head: { sha: headSha },
+            base: { sha: "c".repeat(40) },
+            draft: false,
+            title: "Document the edit",
+            body: "Fresh review context.",
             updated_at: updatedAt,
           },
           installation: { id: 123 },
@@ -15030,7 +15266,7 @@ test("hosted synchronize webhook binds and enqueues only the live pull request h
     );
 
   try {
-    const response = await send(sourceHeadSha, "2026-07-23T13:00:02Z", "synchronize-current-596");
+    const response = await send(sourceHeadSha, "2026-07-23T13:00:02Z", "edited-current-596");
     assert.equal(response.status, 202);
     const duplicateResponse = await send(
       sourceHeadSha,
@@ -15041,8 +15277,10 @@ test("hosted synchronize webhook binds and enqueues only the live pull request h
       ok: true,
       deduped: true,
       item_key: "openclaw/gogcli#596",
+      dedupe_scope: "semantic_edited",
+      dedupe_reason: "unchanged_pull_request_edit",
     });
-    assert.equal(verificationCalls, 1);
+    assert.equal(verificationCalls, 2);
     const staleResponse = await send(staleHeadSha, "2026-07-23T13:00:01Z", "synchronize-stale-596");
     assert.equal(staleResponse.status, 202);
     assert.deepEqual(await staleResponse.json(), {
@@ -15050,7 +15288,7 @@ test("hosted synchronize webhook binds and enqueues only the live pull request h
       accepted: false,
       reason: "stale pull request head",
     });
-    assert.equal(verificationCalls, 2);
+    assert.equal(verificationCalls, 3);
     const staleDuplicateResponse = await send(
       staleHeadSha,
       "2026-07-23T13:00:01Z",
@@ -15061,8 +15299,8 @@ test("hosted synchronize webhook binds and enqueues only the live pull request h
       deduped: true,
       item_key: "openclaw/gogcli#596",
     });
-    assert.equal(verificationCalls, 2);
-    assert.equal(storage.rawGet("exact-review-source-authority-sequence:v1"), 2);
+    assert.equal(verificationCalls, 3);
+    assert.equal(storage.rawGet("exact-review-source-authority-sequence:v1"), 3);
     const stored = (await storage.get("exact-review-queue")) as {
       items: Record<
         string,
@@ -15082,9 +15320,12 @@ test("hosted synchronize webhook binds and enqueues only the live pull request h
       itemNumber: 596,
       itemKind: "pull_request",
       sourceEvent: "pull_request",
-      sourceAction: "synchronize",
+      sourceAction: "edited",
       supersedesInProgress: true,
       sourceHeadSha,
+      sourceBaseSha: "c".repeat(40),
+      sourceIsDraft: false,
+      sourceContentRevision,
       sourceHeadVerified: true,
       sourceAuthoritySeq: 1,
       sourceUpdatedAt: "2026-07-23T13:00:02Z",

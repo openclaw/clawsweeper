@@ -67,6 +67,9 @@ export type ExactReviewBaseDecision = {
   sourceAction: string;
   supersedesInProgress: boolean;
   sourceHeadSha?: string;
+  sourceBaseSha?: string;
+  sourceIsDraft?: boolean;
+  sourceContentRevision?: string;
   sourceHeadVerified?: boolean;
   sourceAuthoritySeq?: number;
   sourceUpdatedAt?: string;
@@ -103,6 +106,7 @@ export type ExactReviewQueueItem = {
   decision: ExactReviewDecision;
   ingressFingerprint?: string;
   leaseDecision?: ExactReviewDecision;
+  sourceAuthorityWatermark?: { sequence: number; updatedAt?: string };
   state: "pending" | "dispatching" | "leased" | "parked";
   revision: number;
   createdAt: number;
@@ -267,7 +271,7 @@ type ExactReviewQueueStorageMeta = {
   shed_since_reset?: number;
 };
 type ExactReviewQueueMetricTotals = {
-  review: { enqueued: number; completed: number; superseded: number };
+  review: { enqueued: number; completed: number; superseded: number; semanticDeduped: number };
   publication: {
     enqueued: number;
     completed: number;
@@ -288,10 +292,19 @@ type ExactReviewSourceAuthorityReservation = {
   attempts: number;
   nextAttemptAt: number;
 };
+type ExactReviewEditedSemanticInput = {
+  // Queue state preserves the repository's display casing, while this durable
+  // semantic cursor canonicalizes it so equivalent GitHub repository spellings
+  // share one fingerprint.
+  queueKey: string;
+  storageKey: string;
+  fingerprint: string;
+};
 type ExactReviewQueueMetricDelta = {
   reviewEnqueued?: number;
   reviewCompleted?: number;
   reviewSuperseded?: number;
+  reviewSemanticDeduped?: number;
   reviewRetried?: number;
   reviewShed?: number;
   publicationEnqueued?: number;
@@ -410,6 +423,7 @@ const EXACT_REVIEW_QUEUE_META_TABLE = "exact_review_queue_meta";
 const EXACT_REVIEW_QUEUE_ITEM_TABLE = "exact_review_queue_items";
 const EXACT_REVIEW_QUEUE_DELIVERY_TABLE = "exact_review_queue_deliveries";
 const EXACT_REVIEW_QUEUE_INGRESS_TABLE = "exact_review_queue_ingress";
+const EXACT_REVIEW_QUEUE_EDIT_SEMANTIC_TABLE = "exact_review_queue_edit_semantic";
 const EXACT_REVIEW_QUEUE_METRICS_TABLE = "exact_review_queue_metrics";
 const EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE = "exact_review_queue_metric_buckets";
 const EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE = "exact_review_queue_supersessions";
@@ -534,7 +548,7 @@ export class ExactReviewQueue {
               existing.deliveryId !== deliveryId ||
               existing.installationId !== installationId ||
               stableJson(exactReviewDecisionWithoutSourceAuthority(existing.decision)) !==
-                stableJson(decision) ||
+                stableJson(exactReviewDecisionWithoutSourceAuthority(decision)) ||
               stableJson(existing.ingress || null) !== stableJson(ingress || null)
             ) {
               throw new Error("conflicting exact-review source authority reservation");
@@ -929,6 +943,7 @@ export class ExactReviewQueue {
       }
 
       const now = Date.now();
+      const semanticEdited = await exactReviewEditedSemanticInput(decision);
       const incomingPublicationRevision = exactReviewPublicationRevision(decision);
       const activeBatchItemKeys = incomingPublicationRevision
         ? new Set(this.batchStore.activeLeaseSnapshot(now).itemKeys)
@@ -936,6 +951,7 @@ export class ExactReviewQueue {
       const accepted = this.storage.transactionSync(() => {
         this.pruneDeliveryReceiptsSync(now);
         this.pruneIngressReceiptsSync(now);
+        this.pruneEditedSemanticInputsSync(now);
         this.storage.sql.exec(
           `DELETE FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
             WHERE delivery_id = ? AND received_at <= ?`,
@@ -958,6 +974,34 @@ export class ExactReviewQueue {
         const counterpartIngress = ingress
           ? this.recordIngressSync(ingress, decision.targetBranch, now)
           : null;
+
+        if (semanticEdited && this.isDuplicateEditedSemanticInputSync(semanticEdited, now)) {
+          const state = this.readStateSync();
+          const current =
+            state.items[semanticEdited.queueKey] ??
+            Object.values(state.items).find(
+              (item) =>
+                !exactReviewQueueIsPublication(item) &&
+                item.key.toLowerCase() === semanticEdited.storageKey,
+            );
+          if (
+            current &&
+            !exactReviewQueueIsPublication(current) &&
+            exactReviewDecisionCanSupersedeReview(current, decision)
+          ) {
+            advanceExactReviewSourceAuthorityWatermark(current, decision);
+            this.writeStateSync(state);
+          } else {
+            this.syncLegacyCompatibilitySync(state);
+          }
+          this.incrementQueueMetricsSync({ reviewSemanticDeduped: 1 });
+          return {
+            deduped: true as const,
+            semanticEdited: true as const,
+            key: current?.key || semanticEdited.queueKey,
+            state,
+          };
+        }
 
         const state = this.readStateSync();
         // A delayed or lost alarm must not let an expired one-shot recovery
@@ -1253,6 +1297,7 @@ export class ExactReviewQueue {
               current.firstFailureAt = undefined;
               current.lastFailureReason = undefined;
             }
+            advanceExactReviewSourceAuthorityWatermark(current, decision);
             ingressAdmitted = true;
           }
         } else {
@@ -1276,6 +1321,9 @@ export class ExactReviewQueue {
             updatedAt: now,
             nextAttemptAt: exactReviewQueueDebouncedAttemptAt(state, decision, now, now, this.env),
             attempts: 0,
+            ...(exactReviewSourceAuthorityWatermark(decision)
+              ? { sourceAuthorityWatermark: exactReviewSourceAuthorityWatermark(decision)! }
+              : {}),
           };
           ingressAdmitted = true;
         }
@@ -1294,6 +1342,7 @@ export class ExactReviewQueue {
             delete state.items[key].ingressFingerprint;
           }
         }
+        if (semanticEdited) this.recordEditedSemanticInputSync(semanticEdited, now);
         this.writeStateSync(state);
         if (supersededPublications) {
           this.incrementQueueMetricsSync({
@@ -1322,11 +1371,19 @@ export class ExactReviewQueue {
             item_key:
               "semantic" in accepted && accepted.semantic
                 ? accepted.key
-                : exactReviewItemKey(decision),
+                : "semanticEdited" in accepted && accepted.semanticEdited
+                  ? accepted.key
+                  : exactReviewItemKey(decision),
             ...("semantic" in accepted && accepted.semantic
               ? {
                   semantic_deduped: true,
                   semantic_duplicates_removed: accepted.semanticDuplicatesRemoved,
+                }
+              : {}),
+            ...("semanticEdited" in accepted && accepted.semanticEdited
+              ? {
+                  dedupe_scope: "semantic_edited",
+                  dedupe_reason: "unchanged_pull_request_edit",
                 }
               : {}),
             ...("staleSource" in accepted && accepted.staleSource ? { stale_source: true } : {}),
@@ -2252,6 +2309,7 @@ export class ExactReviewQueue {
       const now = Date.now();
       const snapshot = this.storage.transactionSync(() => {
         this.pruneDeliveryReceiptsSync(now);
+        this.pruneEditedSemanticInputsSync(now);
         this.pruneStateAppendReceiptsSync(now);
         this.reclaimExpiredStateAppendDrainsSync(now);
         this.pruneQueueTelemetrySync(now);
@@ -2362,6 +2420,7 @@ export class ExactReviewQueue {
             enqueued_total: metrics.review.enqueued,
             completed_total: metrics.review.completed,
             superseded_total: metrics.review.superseded,
+            semantic_deduped_total: metrics.review.semanticDeduped,
             flow: reviewFlow,
           },
           publication: {
@@ -5056,6 +5115,20 @@ export class ExactReviewQueue {
          received_at INTEGER NOT NULL
        ) STRICT`,
     );
+    // Store only the current SHA-256 tuple for a PR. That lets a later genuine
+    // change back to an older tuple enqueue normally, while duplicate webhook
+    // deliveries of the current edit stay idempotent even after queue handoff.
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_EDIT_SEMANTIC_TABLE} (
+         item_key TEXT PRIMARY KEY,
+         fingerprint TEXT NOT NULL,
+         observed_at INTEGER NOT NULL
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_queue_edit_semantic_observed_at
+         ON ${EXACT_REVIEW_QUEUE_EDIT_SEMANTIC_TABLE} (observed_at, item_key)`,
+    );
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_PUBLICATION_HEAD_TABLE} (
          target_key TEXT PRIMARY KEY,
@@ -5230,6 +5303,8 @@ export class ExactReviewQueue {
          review_completed_total INTEGER NOT NULL DEFAULT 0 CHECK (review_completed_total >= 0),
          review_superseded_total INTEGER NOT NULL DEFAULT 0
            CHECK (review_superseded_total >= 0),
+         review_semantic_deduped_total INTEGER NOT NULL DEFAULT 0
+           CHECK (review_semantic_deduped_total >= 0),
          publication_enqueued_total INTEGER NOT NULL DEFAULT 0
            CHECK (publication_enqueued_total >= 0),
          publication_completed_total INTEGER NOT NULL CHECK (publication_completed_total >= 0)
@@ -5239,6 +5314,7 @@ export class ExactReviewQueue {
       "review_enqueued_total",
       "review_completed_total",
       "review_superseded_total",
+      "review_semantic_deduped_total",
       "publication_enqueued_total",
       "publication_published_total",
       "publication_superseded_total",
@@ -5863,6 +5939,7 @@ export class ExactReviewQueue {
     const row = Array.from(
       this.storage.sql.exec(
         `SELECT review_enqueued_total, review_completed_total, review_superseded_total,
+                review_semantic_deduped_total,
                 publication_enqueued_total, publication_completed_total,
                 publication_published_total, publication_superseded_total,
                 publication_semantic_deduped_total,
@@ -5876,6 +5953,7 @@ export class ExactReviewQueue {
           review_enqueued_total?: number;
           review_completed_total?: number;
           review_superseded_total?: number;
+          review_semantic_deduped_total?: number;
           publication_enqueued_total?: number;
           publication_completed_total?: number;
           publication_published_total?: number;
@@ -5891,6 +5969,7 @@ export class ExactReviewQueue {
         enqueued: exactReviewMetricTotal(row?.review_enqueued_total),
         completed: exactReviewMetricTotal(row?.review_completed_total),
         superseded: exactReviewMetricTotal(row?.review_superseded_total),
+        semanticDeduped: exactReviewMetricTotal(row?.review_semantic_deduped_total),
       },
       publication: {
         enqueued: exactReviewMetricTotal(row?.publication_enqueued_total),
@@ -5909,6 +5988,7 @@ export class ExactReviewQueue {
     const reviewEnqueued = exactReviewMetricDelta(delta.reviewEnqueued);
     const reviewCompleted = exactReviewMetricDelta(delta.reviewCompleted);
     const reviewSuperseded = exactReviewMetricDelta(delta.reviewSuperseded);
+    const reviewSemanticDeduped = exactReviewMetricDelta(delta.reviewSemanticDeduped);
     const reviewRetried = exactReviewMetricDelta(delta.reviewRetried);
     const reviewShed = exactReviewMetricDelta(delta.reviewShed);
     const publicationEnqueued = exactReviewMetricDelta(delta.publicationEnqueued);
@@ -5923,6 +6003,7 @@ export class ExactReviewQueue {
       !reviewEnqueued &&
       !reviewCompleted &&
       !reviewSuperseded &&
+      !reviewSemanticDeduped &&
       !reviewRetried &&
       !reviewShed &&
       !publicationEnqueued &&
@@ -5941,6 +6022,7 @@ export class ExactReviewQueue {
           SET review_enqueued_total = review_enqueued_total + ?,
               review_completed_total = review_completed_total + ?,
               review_superseded_total = review_superseded_total + ?,
+              review_semantic_deduped_total = review_semantic_deduped_total + ?,
               publication_enqueued_total = publication_enqueued_total + ?,
               publication_completed_total = publication_completed_total + ?,
               publication_published_total = publication_published_total + ?,
@@ -5953,6 +6035,7 @@ export class ExactReviewQueue {
       reviewEnqueued,
       reviewCompleted,
       reviewSuperseded,
+      reviewSemanticDeduped,
       publicationEnqueued,
       publicationCompleted,
       publicationPublished,
@@ -6814,6 +6897,27 @@ export class ExactReviewQueue {
     }
   }
 
+  private pruneEditedSemanticInputsSync(now: number) {
+    const cutoff = now - EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS;
+    for (let batch = 0; batch < EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_MAX_BATCHES; batch += 1) {
+      const deleted = Array.from(
+        this.storage.sql.exec(
+          `DELETE FROM ${EXACT_REVIEW_QUEUE_EDIT_SEMANTIC_TABLE}
+            WHERE item_key IN (
+              SELECT item_key
+                FROM ${EXACT_REVIEW_QUEUE_EDIT_SEMANTIC_TABLE}
+               WHERE observed_at <= ?
+               ORDER BY observed_at, item_key
+               LIMIT ${EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_BATCH}
+            )
+           RETURNING item_key`,
+          cutoff,
+        ),
+      );
+      if (deleted.length < EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_BATCH) break;
+    }
+  }
+
   private recordIngressSync(ingress: ExactReviewIngress, targetBranch: string, now: number) {
     const counterpart = ingress.route === "direct_webhook" ? "target_dispatcher" : "direct_webhook";
     const matched = Array.from(
@@ -6850,6 +6954,38 @@ export class ExactReviewQueue {
       now,
       ingress.fingerprint,
       ingress.route,
+    );
+  }
+
+  private isDuplicateEditedSemanticInputSync(input: ExactReviewEditedSemanticInput, now: number) {
+    const previous = Array.from(
+      this.storage.sql.exec(
+        `SELECT fingerprint FROM ${EXACT_REVIEW_QUEUE_EDIT_SEMANTIC_TABLE}
+          WHERE item_key = ?`,
+        input.storageKey,
+      ),
+    )[0] as { fingerprint?: string } | undefined;
+    if (previous?.fingerprint !== input.fingerprint) return false;
+    this.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_QUEUE_EDIT_SEMANTIC_TABLE}
+          SET observed_at = ?
+        WHERE item_key = ?`,
+      now,
+      input.storageKey,
+    );
+    return true;
+  }
+
+  private recordEditedSemanticInputSync(input: ExactReviewEditedSemanticInput, now: number) {
+    this.storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_QUEUE_EDIT_SEMANTIC_TABLE} (item_key, fingerprint, observed_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(item_key) DO UPDATE SET
+         fingerprint = excluded.fingerprint,
+         observed_at = excluded.observed_at`,
+      input.storageKey,
+      input.fingerprint,
+      now,
     );
   }
 
@@ -7167,6 +7303,12 @@ function exactReviewDecisionWithoutSourceAuthority(decision: ExactReviewDecision
   const {
     sourceAuthoritySeq: _sourceAuthoritySeq,
     sourceHeadVerified: _sourceHeadVerified,
+    // These semantic edit fields were added after source-authority reservations
+    // already existed. They affect queue admission, not the identity of an
+    // already-reserved delivery, so omit them while matching a redelivery.
+    sourceBaseSha: _sourceBaseSha,
+    sourceIsDraft: _sourceIsDraft,
+    sourceContentRevision: _sourceContentRevision,
     ...rest
   } = decision;
   return rest;
@@ -7258,6 +7400,19 @@ function exactReviewBaseDecisionFrom(value): ExactReviewBaseDecision | null {
         .trim()
         .toLowerCase()
     : undefined;
+  const hasSourceBaseSha = Object.hasOwn(decision, "sourceBaseSha");
+  const sourceBaseSha = hasSourceBaseSha
+    ? String(decision.sourceBaseSha || "")
+        .trim()
+        .toLowerCase()
+    : undefined;
+  const hasSourceIsDraft = Object.hasOwn(decision, "sourceIsDraft");
+  const hasSourceContentRevision = Object.hasOwn(decision, "sourceContentRevision");
+  const sourceContentRevision = hasSourceContentRevision
+    ? String(decision.sourceContentRevision || "")
+        .trim()
+        .toLowerCase()
+    : undefined;
   const hasSourceHeadVerified = Object.hasOwn(decision, "sourceHeadVerified");
   const hasSourceAuthoritySeq = Object.hasOwn(decision, "sourceAuthoritySeq");
   const sourceAuthoritySeq = hasSourceAuthoritySeq
@@ -7280,6 +7435,11 @@ function exactReviewBaseDecisionFrom(value): ExactReviewBaseDecision | null {
   if (sourceEvent !== "issues" && sourceEvent !== "pull_request") return null;
   if (!sourceAction) return null;
   if (hasSourceHeadSha && !/^[0-9a-f]{40}$/.test(sourceHeadSha || "")) return null;
+  if (hasSourceBaseSha && !/^[0-9a-f]{40}$/.test(sourceBaseSha || "")) return null;
+  if (hasSourceIsDraft && typeof decision.sourceIsDraft !== "boolean") return null;
+  if (hasSourceContentRevision && !/^[0-9a-f]{64}$/.test(sourceContentRevision || "")) {
+    return null;
+  }
   if (hasSourceHeadVerified && typeof decision.sourceHeadVerified !== "boolean") return null;
   if (
     hasSourceAuthoritySeq &&
@@ -7318,6 +7478,9 @@ function exactReviewBaseDecisionFrom(value): ExactReviewBaseDecision | null {
     sourceAction,
     supersedesInProgress: Boolean(decision.supersedesInProgress),
     ...(hasSourceHeadSha ? { sourceHeadSha } : {}),
+    ...(hasSourceBaseSha ? { sourceBaseSha } : {}),
+    ...(hasSourceIsDraft ? { sourceIsDraft: decision.sourceIsDraft } : {}),
+    ...(hasSourceContentRevision ? { sourceContentRevision } : {}),
     ...(hasSourceHeadVerified ? { sourceHeadVerified: decision.sourceHeadVerified } : {}),
     ...(hasSourceAuthoritySeq ? { sourceAuthoritySeq } : {}),
     ...(hasSourceUpdatedAt ? { sourceUpdatedAt } : {}),
@@ -7330,6 +7493,56 @@ function exactReviewBaseDecisionFrom(value): ExactReviewBaseDecision | null {
     ...(hasCommandStatusMarker ? { commandStatusMarker } : {}),
     ...(hasStatusCommentId ? { statusCommentId } : {}),
     ...(hasAdditionalPrompt ? { additionalPrompt } : {}),
+  };
+}
+
+async function exactReviewEditedSemanticInput(
+  decision: ExactReviewDecision,
+): Promise<ExactReviewEditedSemanticInput | null> {
+  if (
+    decision.itemKind !== "pull_request" ||
+    decision.sourceEvent !== "pull_request" ||
+    decision.sourceAction !== "edited" ||
+    decision.publication
+  ) {
+    return null;
+  }
+  const headSha = String(decision.sourceHeadSha || "").toLowerCase();
+  const baseSha = String(decision.sourceBaseSha || "").toLowerCase();
+  const contentRevision = String(decision.sourceContentRevision || "").toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(headSha) || !/^[0-9a-f]{40}$/.test(baseSha)) return null;
+  if (typeof decision.sourceIsDraft !== "boolean") return null;
+  if (!/^[0-9a-f]{64}$/.test(contentRevision)) return null;
+
+  const tuple = stableJson({
+    version: 1,
+    target_repo: decision.targetRepo.toLowerCase(),
+    target_branch: decision.targetBranch,
+    item_number: decision.itemNumber,
+    head_sha: headSha,
+    base_sha: baseSha,
+    is_draft: decision.sourceIsDraft,
+    content_revision: contentRevision,
+    request: {
+      codex_timeout_ms: Number.isFinite(decision.codexTimeoutMs) ? decision.codexTimeoutMs : null,
+      media_proof_timeout_ms: Number.isFinite(decision.mediaProofTimeoutMs)
+        ? decision.mediaProofTimeoutMs
+        : null,
+      command_status_marker: decision.commandStatusMarker || null,
+      status_comment_id: Number.isSafeInteger(decision.statusCommentId)
+        ? decision.statusCommentId
+        : null,
+      additional_prompt: decision.additionalPrompt || null,
+    },
+  });
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(tuple));
+  const queueKey = exactReviewItemKey(decision);
+  return {
+    queueKey,
+    storageKey: queueKey.toLowerCase(),
+    fingerprint: Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join(""),
   };
 }
 
@@ -7492,7 +7705,8 @@ function exactReviewDecisionCanSupersedeReview(
   const incomingHead = String(incoming.sourceHeadSha || "").toLowerCase();
   if (!/^[0-9a-f]{40}$/.test(incomingHead)) return false;
   const incomingAuthoritySeq = Number(incoming.sourceAuthoritySeq || 0);
-  const activeSourceAuthoritySeq = Number(active.sourceAuthoritySeq || 0);
+  const watermark = current.sourceAuthorityWatermark;
+  const activeSourceAuthoritySeq = Number(watermark?.sequence || active.sourceAuthoritySeq || 0);
   const activeHasAuthority =
     Number.isSafeInteger(activeSourceAuthoritySeq) && activeSourceAuthoritySeq > 0;
   if (!/^[0-9a-f]{40}$/.test(activeHead)) {
@@ -7513,7 +7727,7 @@ function exactReviewDecisionCanSupersedeReview(
   }
   if (!Number.isSafeInteger(incomingAuthoritySeq) || incomingAuthoritySeq <= 0) return false;
 
-  const activeUpdatedAt = Date.parse(String(active.sourceUpdatedAt || ""));
+  const activeUpdatedAt = Date.parse(String(watermark?.updatedAt || active.sourceUpdatedAt || ""));
   const incomingUpdatedAt = Date.parse(String(incoming.sourceUpdatedAt || ""));
   if (
     Number.isFinite(activeUpdatedAt) &&
@@ -7524,6 +7738,27 @@ function exactReviewDecisionCanSupersedeReview(
   }
 
   return incomingAuthoritySeq > activeSourceAuthoritySeq;
+}
+
+function exactReviewSourceAuthorityWatermark(
+  decision: ExactReviewDecision,
+): ExactReviewQueueItem["sourceAuthorityWatermark"] | null {
+  if (decision.itemKind !== "pull_request") return null;
+  const sequence = Number(decision.sourceAuthoritySeq || 0);
+  if (!Number.isSafeInteger(sequence) || sequence <= 0) return null;
+  const updatedAt = String(decision.sourceUpdatedAt || "");
+  return {
+    sequence,
+    ...(Number.isFinite(Date.parse(updatedAt)) ? { updatedAt } : {}),
+  };
+}
+
+function advanceExactReviewSourceAuthorityWatermark(
+  item: ExactReviewQueueItem,
+  decision: ExactReviewDecision,
+) {
+  const watermark = exactReviewSourceAuthorityWatermark(decision);
+  if (watermark) item.sourceAuthorityWatermark = watermark;
 }
 
 function exactReviewItemKey(decision: ExactReviewDecision) {
