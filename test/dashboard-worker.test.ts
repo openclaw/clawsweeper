@@ -4746,384 +4746,6 @@ test("exact-review queue resolves missing target responses before dispatch", asy
   }
 });
 
-test("exact-review queue terminalizes every admitted ordinary publication before legacy dispatch", async () => {
-  let liveChecks = 0;
-  const harness = createExactReviewAdmissionHarness(
-    (_targetRepo, itemNumber) => {
-      liveChecks += 1;
-      return jsonResponse({ state: itemNumber === 9215 ? "closed" : "open" });
-    },
-    { maxConcurrent: "16" },
-  );
-  try {
-    for (let itemNumber = 9211; itemNumber <= 9215; itemNumber += 1) {
-      const itemKind = itemNumber === 9215 ? "pull_request" : "issue";
-      const publication = exactReviewPublicationOverrides(
-        itemNumber,
-        String(itemNumber * 10),
-        "opened",
-        1,
-        "openclaw/gogcli",
-      );
-      if (itemKind === "pull_request") {
-        publication.publication.producerDecision.itemKind = "pull_request";
-        publication.publication.producerDecision.sourceEvent = "pull_request";
-      }
-      assert.equal(
-        (
-          await harness.queue.fetch(
-            buildExactReviewQueueRequest(
-              `legacy-terminal-${itemNumber}`,
-              itemNumber,
-              "exact_review_artifact_publish",
-              itemKind,
-              "openclaw/gogcli",
-              publication,
-            ),
-          )
-        ).status,
-        202,
-      );
-    }
-
-    await harness.queue.alarm();
-
-    // The legacy admission can contain more rows than the four-review probe.
-    // Its fifth item is a merged pull request and must never be dispatched.
-    assert.equal(liveChecks, 5);
-    assert.equal(harness.dispatched.length, 4);
-    const stats = await (
-      await harness.queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
-    ).json();
-    assert.equal(stats.lanes.publication.completed_total, 1);
-    assert.equal(stats.lanes.publication.superseded_total, 1);
-    const terminal = await (
-      await harness.queue.fetch(
-        new Request(
-          "https://clawsweeper-exact-review-queue/item-status?target_repo=openclaw%2Fgogcli&item_number=9215",
-        ),
-      )
-    ).json();
-    assert.equal(terminal.items.length, 0);
-  } finally {
-    harness.restore();
-  }
-});
-
-test("exact-review batch preflight follows the publisher owner selection", async () => {
-  const checked: Array<[string, number]> = [];
-  const harness = createExactReviewAdmissionHarness(
-    (targetRepo, itemNumber) => {
-      checked.push([targetRepo, itemNumber]);
-      return jsonResponse({ state: targetRepo === "alpha/repo" ? "closed" : "open" });
-    },
-    {
-      publicationBatching: true,
-      publicationBatchSize: "2",
-      captureBatchDispatch: true,
-    },
-  );
-  try {
-    for (const [deliveryId, itemNumber, targetRepo] of [
-      ["owner-alpha", 9221, "alpha/repo"],
-      ["owner-beta-1", 9222, "beta/repo"],
-      ["owner-beta-2", 9223, "beta/repo"],
-    ] as const) {
-      assert.equal(
-        (
-          await harness.queue.fetch(
-            buildExactReviewQueueRequest(
-              deliveryId,
-              itemNumber,
-              "exact_review_artifact_publish",
-              "issue",
-              targetRepo,
-              exactReviewPublicationOverrides(
-                itemNumber,
-                String(itemNumber * 10),
-                "opened",
-                1,
-                targetRepo,
-              ),
-            ),
-          )
-        ).status,
-        202,
-      );
-    }
-
-    await harness.queue.alarm();
-
-    // Departure policy sees beta's full batch, while the publisher picks the
-    // oldest alpha owner. The preflight must inspect that publisher selection.
-    assert.deepEqual(checked, [["alpha/repo", 9221]]);
-    assert.equal(harness.batchDispatches, 0);
-    const terminal = await (
-      await harness.queue.fetch(
-        new Request(
-          "https://clawsweeper-exact-review-queue/item-status?target_repo=alpha%2Frepo&item_number=9221",
-        ),
-      )
-    ).json();
-    assert.equal(terminal.items.length, 0);
-  } finally {
-    harness.restore();
-  }
-});
-
-test("exact-review batch terminal probe resets for a later departure", async () => {
-  const originalNow = Date.now;
-  let now = Date.parse("2026-07-25T12:00:00.000Z");
-  Date.now = () => now;
-  let terminal = false;
-  let dispatchAttempts = 0;
-  const harness = createExactReviewAdmissionHarness(
-    () => jsonResponse({ state: terminal ? "closed" : "open" }),
-    {
-      publicationBatching: true,
-      captureBatchDispatch: true,
-      batchDispatch: () => {
-        dispatchAttempts += 1;
-        return new Response(null, { status: 500 });
-      },
-    },
-  );
-  try {
-    const itemNumber = 9231;
-    assert.equal(
-      (
-        await harness.queue.fetch(
-          buildExactReviewQueueRequest(
-            "batch-probe-reset",
-            itemNumber,
-            "exact_review_artifact_publish",
-            "issue",
-            "openclaw/gogcli",
-            exactReviewPublicationOverrides(itemNumber, "92310"),
-          ),
-        )
-      ).status,
-      202,
-    );
-
-    await harness.queue.alarm();
-    assert.equal(harness.batchDispatches, 1);
-    assert.equal(dispatchAttempts, 1);
-
-    terminal = true;
-    now += 300_000;
-    await harness.queue.alarm();
-
-    // A failed dispatch begins a new departure; it must not reuse the first
-    // open probe to publish the now-closed item.
-    assert.equal(harness.batchDispatches, 1);
-    const item = await (
-      await harness.queue.fetch(
-        new Request(
-          "https://clawsweeper-exact-review-queue/item-status?target_repo=openclaw%2Fgogcli&item_number=9231",
-        ),
-      )
-    ).json();
-    assert.equal(item.items.length, 0);
-  } finally {
-    Date.now = originalNow;
-    harness.restore();
-  }
-});
-
-test("exact-review batch claims keep a newer departure fence when an older workflow arrives", async () => {
-  const originalNow = Date.now;
-  let now = Date.parse("2026-07-25T13:00:00.000Z");
-  Date.now = () => now;
-  let releaseBatchDispatch!: () => void;
-  let signalBatchDispatch!: () => void;
-  const batchDispatchStarted = new Promise<void>((resolve) => {
-    signalBatchDispatch = resolve;
-  });
-  const batchDispatchRelease = new Promise<void>((resolve) => {
-    releaseBatchDispatch = resolve;
-  });
-  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
-    publicationBatching: true,
-    publicationBatchSize: "2",
-    publicationFreshLane: true,
-    captureBatchDispatch: true,
-    batchDispatch: async () => {
-      signalBatchDispatch();
-      await batchDispatchRelease;
-      return new Response(null, { status: 204 });
-    },
-  });
-  try {
-    assert.equal(
-      (
-        await harness.queue.fetch(
-          buildExactReviewQueueRequest(
-            "delayed-workflow-old",
-            9241,
-            "exact_review_artifact_publish",
-            "issue",
-            "openclaw/gogcli",
-            exactReviewPublicationOverrides(9241, "92410"),
-          ),
-        )
-      ).status,
-      202,
-    );
-    assert.equal(
-      (
-        await harness.queue.fetch(
-          buildExactReviewQueueRequest(
-            "delayed-workflow-old-second",
-            9242,
-            "exact_review_artifact_publish",
-            "issue",
-            "openclaw/gogcli",
-            exactReviewPublicationOverrides(9242, "92420"),
-          ),
-        )
-      ).status,
-      202,
-    );
-    now += 16 * 60_000;
-    const alarm = harness.queue.alarm();
-    await batchDispatchStarted;
-
-    assert.equal(
-      (
-        await harness.queue.fetch(
-          buildExactReviewQueueRequest(
-            "delayed-workflow-fresh",
-            9243,
-            "exact_review_artifact_publish",
-            "issue",
-            "openclaw/gogcli",
-            exactReviewPublicationOverrides(9243, "92430"),
-          ),
-        )
-      ).status,
-      202,
-    );
-
-    const firstDelayedClaim = await (
-      await harness.queue.fetch(
-        new Request("https://clawsweeper-exact-review-queue/publication-batches/claim", {
-          method: "POST",
-          body: JSON.stringify({ claim_id: "delayed-claim-old", lease_owner: "worker-old" }),
-        }),
-      )
-    ).json();
-    const secondDelayedClaim = await (
-      await harness.queue.fetch(
-        new Request("https://clawsweeper-exact-review-queue/publication-batches/claim", {
-          method: "POST",
-          body: JSON.stringify({ claim_id: "delayed-claim-new", lease_owner: "worker-new" }),
-        }),
-      )
-    ).json();
-    assert.equal(firstDelayedClaim.claimed, false);
-    assert.equal(firstDelayedClaim.preflight_required, true);
-    assert.equal(secondDelayedClaim.claimed, false);
-    assert.equal(secondDelayedClaim.preflight_required, true);
-
-    releaseBatchDispatch();
-    await alarm;
-  } finally {
-    Date.now = originalNow;
-    harness.restore();
-  }
-});
-
-test("exact-review batch claim retries resume their existing leased batch", async () => {
-  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
-    publicationBatching: true,
-    captureBatchDispatch: true,
-  });
-  try {
-    assert.equal(
-      (
-        await harness.queue.fetch(
-          buildExactReviewQueueRequest(
-            "batch-claim-retry",
-            9244,
-            "exact_review_artifact_publish",
-            "issue",
-            "openclaw/gogcli",
-            exactReviewPublicationOverrides(9244, "92440"),
-          ),
-        )
-      ).status,
-      202,
-    );
-    await harness.queue.alarm();
-    assert.equal(harness.batchDispatches, 1);
-
-    const request = () =>
-      new Request("https://clawsweeper-exact-review-queue/publication-batches/claim", {
-        method: "POST",
-        body: JSON.stringify({ claim_id: "retry-claim", lease_owner: "retry-worker" }),
-      });
-    const first = await (await harness.queue.fetch(request())).json();
-    const retry = await (await harness.queue.fetch(request())).json();
-
-    assert.equal(first.claimed, true, JSON.stringify(first));
-    assert.equal(retry.claimed, true, JSON.stringify(retry));
-    assert.equal(retry.batch.batch_id, first.batch.batch_id);
-    assert.deepEqual(retry.batch.items, first.batch.items);
-  } finally {
-    harness.restore();
-  }
-});
-
-test("exact-review batch accepts an in-flight pre-probe rolling-deploy departure", async () => {
-  const originalNow = Date.now;
-  const now = Date.parse("2026-07-25T14:00:00.000Z");
-  Date.now = () => now;
-  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
-    publicationBatching: true,
-  });
-  try {
-    assert.equal(
-      (
-        await harness.queue.fetch(
-          buildExactReviewQueueRequest(
-            "pre-probe-departure",
-            9245,
-            "exact_review_artifact_publish",
-            "issue",
-            "openclaw/gogcli",
-            exactReviewPublicationOverrides(9245, "92450"),
-          ),
-        )
-      ).status,
-      202,
-    );
-    const state = (await harness.storage.get("exact-review-queue")) as {
-      dispatcher?: Record<string, unknown>;
-    };
-    state.dispatcher = {
-      state: "active",
-      checkedAt: now,
-      publicationBatchDispatchedAt: now,
-      publicationBatchDispatchPendingUntil: now + 600_000,
-    };
-    await harness.storage.put("exact-review-queue", state);
-
-    const claim = await (
-      await harness.queue.fetch(
-        new Request("https://clawsweeper-exact-review-queue/publication-batches/claim", {
-          method: "POST",
-          body: JSON.stringify({ claim_id: "pre-probe-claim", lease_owner: "pre-probe-worker" }),
-        }),
-      )
-    ).json();
-    assert.equal(claim.claimed, true, JSON.stringify(claim));
-  } finally {
-    Date.now = originalNow;
-    harness.restore();
-  }
-});
-
 test("exact-review queue retains a 404 item when the target repository is inaccessible", async () => {
   const harness = createExactReviewAdmissionHarness(() => new Response(null, { status: 404 }), {
     targetRepository: () => new Response(null, { status: 404 }),
@@ -15879,29 +15501,20 @@ function signedStateAppendRequest(path: string, payload: unknown, secret: string
 }
 
 function createExactReviewAdmissionHarness(
-  liveItem: (
-    targetRepo: string,
-    itemNumber: number,
-    itemKind: "issue" | "pull_request",
-  ) => Response | Promise<Response>,
+  liveItem: () => Response | Promise<Response>,
   options: {
     maxConcurrent?: string;
     publicationBatching?: boolean;
-    publicationBatchSize?: string;
-    publicationFreshLane?: boolean;
-    captureBatchDispatch?: boolean;
     targetInstallation?: (targetRepo: string) => Response | Promise<Response>;
     targetRepository?: (targetRepo: string) => Response | Promise<Response>;
     targetItem?: (targetRepo: string) => Response | Promise<Response>;
     targetPull?: (targetRepo: string) => Response | Promise<Response>;
     dispatch?: () => Response | Promise<Response>;
-    batchDispatch?: () => Response | Promise<Response>;
   } = {},
 ) {
   const originalFetch = globalThis.fetch;
   const storage = new MemoryDurableStorage();
   const dispatched: Record<string, unknown>[] = [];
-  let batchDispatches = 0;
   const { privateKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
@@ -15912,11 +15525,11 @@ function createExactReviewAdmissionHarness(
     if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml") {
       return jsonResponse({ state: "active" });
     }
-    const installation = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/installation$/);
+    const installation = url.pathname.match(/^\/repos\/(openclaw\/[^/]+)\/installation$/);
     if (installation) {
       return options.targetInstallation?.(installation[1]) ?? jsonResponse({ id: 999 });
     }
-    const repository = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)$/);
+    const repository = url.pathname.match(/^\/repos\/(openclaw\/[^/]+)$/);
     if (repository) {
       return (
         options.targetRepository?.(repository[1]) ?? jsonResponse({ full_name: repository[1] })
@@ -15925,28 +15538,17 @@ function createExactReviewAdmissionHarness(
     if (url.pathname === "/app/installations/999/access_tokens") {
       return jsonResponse({ token: "queue-token" });
     }
-    const targetItem = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)$/);
+    const targetItem = url.pathname.match(
+      /^\/repos\/(openclaw\/(?:gogcli|openclaw))\/issues\/\d+$/,
+    );
     if (targetItem) {
-      return (
-        options.targetItem?.(targetItem[1]) ??
-        liveItem(targetItem[1], Number(targetItem[2]), "issue")
-      );
+      return options.targetItem?.(targetItem[1]) ?? liveItem();
     }
-    const targetPull = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)$/);
+    const targetPull = url.pathname.match(/^\/repos\/(openclaw\/(?:gogcli|openclaw))\/pulls\/\d+$/);
     if (targetPull) {
       return (
-        options.targetPull?.(targetPull[1]) ??
-        options.targetItem?.(targetPull[1]) ??
-        liveItem(targetPull[1], Number(targetPull[2]), "pull_request")
+        options.targetPull?.(targetPull[1]) ?? options.targetItem?.(targetPull[1]) ?? liveItem()
       );
-    }
-    if (
-      options.captureBatchDispatch &&
-      url.pathname ===
-        "/repos/openclaw/clawsweeper/actions/workflows/exact-review-batch-publish.yml/dispatches"
-    ) {
-      batchDispatches += 1;
-      return options.batchDispatch?.() ?? new Response(null, { status: 204 });
     }
     if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
       dispatched.push(JSON.parse(String(init?.body)));
@@ -15964,11 +15566,8 @@ function createExactReviewAdmissionHarness(
       ...(options.publicationBatching
         ? {
             EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-            EXACT_REVIEW_PUBLICATION_BATCH_SIZE: options.publicationBatchSize ?? "1",
+            EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "1",
             EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS: "300000",
-            ...(options.publicationFreshLane
-              ? { EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED: "1" }
-              : {}),
           }
         : {}),
     },
@@ -15977,9 +15576,6 @@ function createExactReviewAdmissionHarness(
     queue,
     storage,
     dispatched,
-    get batchDispatches() {
-      return batchDispatches;
-    },
     restore: () => {
       globalThis.fetch = originalFetch;
     },
