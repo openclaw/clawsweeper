@@ -54,10 +54,6 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(prepareSource, /"retryable_failure", "artifact_unavailable"/);
   assert.match(prepareSource, /"permanent_failure", "tuple_protocol_invalid"/);
   assert.match(prepareSource, /EXACT_REVIEW_BATCH_MUTATION_OUTPUT/);
-  assert.match(
-    publisherSource,
-    /if \(options\.batchMutationOutput\)[\s\S]*?writeBatchMutationResult\(options\.batchMutationOutput, \{[\s\S]*?kind: completionKind,[\s\S]*?reasonCode,/,
-  );
   // Keep the fixture from looking like an embedded credential while still
   // proving that artifact downloads use the owner-scoped repository token.
   const ghToken = ["GH", "TOKEN"].join("_");

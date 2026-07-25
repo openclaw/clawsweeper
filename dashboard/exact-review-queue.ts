@@ -202,7 +202,6 @@ export type ExactReviewQueueState = {
     dispatchFailureAt?: number;
     dispatchFailureFingerprint?: string;
     dispatchConsecutiveFailures?: number;
-    reviewAdmissionNextAt?: number;
     publicationBatchDispatchedAt?: number;
     publicationBatchDispatchSucceeded?: boolean;
     publicationBatchDispatchPendingUntil?: number;
@@ -346,9 +345,6 @@ const EXACT_REVIEW_RETRY_LIMIT = 8;
 const EXACT_REVIEW_RECONCILE_RUN_LIMIT = 128;
 const EXACT_REVIEW_RECONCILE_CLAIM_MATCH_LIMIT = EXACT_REVIEW_RECONCILE_RUN_LIMIT * 2;
 export const EXACT_REVIEW_RECONCILE_CONCURRENCY = 8;
-const EXACT_REVIEW_ADMISSION_LIVE_CHECK_CONCURRENCY = 4;
-const EXACT_REVIEW_ADMISSION_LIVE_CHECK_MAX_ITEMS = 4;
-const EXACT_REVIEW_ADMISSION_INTERVAL_MS = 5_000;
 const EXACT_REVIEW_RECONCILE_LIST_PAGE_LIMIT = 3;
 const EXACT_REVIEW_PUBLICATION_ENQUEUE_SUPERSEDE_LIMIT = 100;
 const EXACT_REVIEW_PUBLICATION_RECONCILE_LIMIT = 100;
@@ -2095,16 +2091,6 @@ export class ExactReviewQueue {
       await this.scheduleNext(current, Date.now());
       return;
     }
-    const snapshotReviewAdmissionNextAt = Number(snapshot.dispatcher?.reviewAdmissionNextAt || 0);
-    if (
-      snapshotReviewAdmissionNextAt > startedAt &&
-      snapshotAdmission.some((item) => !exactReviewQueueIsPublication(item)) &&
-      !snapshotAdmission.some(exactReviewQueueIsPublication)
-    ) {
-      if (snapshotChanged && !batchDispatchAttempted) await this.writeState(snapshot);
-      await this.scheduleNext(batchDispatchAttempted ? this.readStateSync() : snapshot, startedAt);
-      return;
-    }
 
     let preflight: { ok: true; token: string; workflowState: string } | { ok: false } = {
       ok: false,
@@ -2121,29 +2107,23 @@ export class ExactReviewQueue {
     const now = Date.now();
     const state = this.readStateSync();
     // Do not rely on reading back the marker written before preflight. Carry the
-    // current alarm's dispatch result only while it still owns that marker: a
-    // batch claim may clear its pending reservation while later external reads
-    // release the Durable Object input gate.
-    const batchDispatcherFieldsFor = (dispatcher: ExactReviewQueueState["dispatcher"]) => {
-      const persisted = exactReviewBatchDispatcherFields(dispatcher);
-      return batchDispatchRecordedAt !== undefined &&
-        dispatcher?.publicationBatchDispatchedAt === batchDispatchRecordedAt
-        ? {
-            ...persisted,
-            publicationBatchDispatchedAt: batchDispatchRecordedAt,
-            publicationBatchDispatchSucceeded: batchDispatchSucceeded,
-          }
-        : persisted;
-    };
-    const batchDispatcherFields = batchDispatcherFieldsFor(state.dispatcher);
+    // current alarm's dispatch result through every later dispatcher write.
+    const persistedBatchDispatcherFields = exactReviewBatchDispatcherFields(state.dispatcher);
+    const batchDispatcherFields = batchDispatchRecordedAt
+      ? {
+          ...persistedBatchDispatcherFields,
+          publicationBatchDispatchedAt: batchDispatchRecordedAt,
+          publicationBatchDispatchSucceeded: batchDispatchSucceeded,
+        }
+      : persistedBatchDispatcherFields;
     const batchOwnership = this.batchStore.activeLeaseSnapshot(now);
-    const reclaimed = reclaimExpiredExactReviewLeases(
+    reclaimExpiredExactReviewLeases(
       state,
       now,
       exactReviewPublicationDispatchLeaseMs(this.env),
       exactReviewHeartbeatGraceMs(this.env),
     );
-    const expired = expireExactReviewPublicationItems(state, now, this.env);
+    expireExactReviewPublicationItems(state, now, this.env);
     // The preflight fetch releases the input gate, so publication demand may
     // have crossed a scale boundary while the workflow state was checked.
     const publicationControl = this.refreshPublicationControlSync(state, now);
@@ -2167,9 +2147,6 @@ export class ExactReviewQueue {
       this.freshPublicationItemKeysSync(state, now),
       exactReviewPublicationFreshLaneMaxItems(this.env),
     );
-    const reviewAdmissionNextAt = Number(state.dispatcher?.reviewAdmissionNextAt || 0);
-    const admission =
-      reviewAdmissionNextAt > now ? admitted.filter(exactReviewQueueIsPublication) : admitted;
     if (!preflight.ok) {
       const retryAt = now + exactReviewWorkflowPausedRetryMs(this.env);
       state.dispatcher = {
@@ -2198,184 +2175,35 @@ export class ExactReviewQueue {
       return;
     }
 
-    // Keep any local lease reclamation or publication recovery before the
-    // live lookup: its awaits release the input gate, so the re-read below
-    // must start from this alarm's housekeeping result.
-    if (reclaimed || expired) await this.writeState(state);
-
-    // A queued review can become terminal before it has a worker. Probe only
-    // the bounded admission set, then revalidate the exact pending revision
-    // after the external reads release the Durable Object input gate.
-    // Keep a short durable admission interval as well as a bounded pass. This
-    // prevents a ready backlog from turning the one-second alarm wake-up into
-    // repeated App-token, item-read, and workflow-dispatch bursts.
-    const reviewCandidates = admission
-      .filter((item) => !exactReviewQueueIsPublication(item))
-      .map((item) => ({ key: item.key, revision: item.revision, decision: item.decision }));
-    const liveCandidates = reviewCandidates.slice(0, EXACT_REVIEW_ADMISSION_LIVE_CHECK_MAX_ITEMS);
-    const targetTokens = new Map<string, Promise<string>>();
-    const targetTokenFor = (targetRepo: string) => {
-      let token = targetTokens.get(targetRepo);
-      if (!token) {
-        token = exactReviewTargetReadToken(this.env, targetRepo);
-        targetTokens.set(targetRepo, token);
-      }
-      return token;
-    };
-    const liveStates = await mapWithConcurrency(
-      liveCandidates,
-      EXACT_REVIEW_ADMISSION_LIVE_CHECK_CONCURRENCY,
-      async (candidate) => {
-        try {
-          const token = await targetTokenFor(candidate.decision.targetRepo);
-          return {
-            ...candidate,
-            state: await exactReviewTargetItemState(token, candidate.decision),
-          };
-        } catch (error) {
-          const failure = exactReviewAdmissionFailure(error);
-          console.warn(
-            `exact-review admission target check failed for ${candidate.key}`,
-            error instanceof Error ? error.message : String(error),
-          );
-          return { ...candidate, state: "unavailable" as const, failure };
-        }
-      },
-    );
-
-    const checkedAt = Date.now();
-    const liveStateByCandidate = new Map(liveStates.map((candidate) => [candidate.key, candidate]));
-    const checkedState = this.readStateSync();
-    const checkedBatchDispatcherFields = batchDispatcherFieldsFor(checkedState.dispatcher);
     const priorDispatchConsecutiveFailures = Number(
-      checkedState.dispatcher?.dispatchConsecutiveFailures || 0,
+      state.dispatcher?.dispatchConsecutiveFailures || 0,
     );
-    let globalAdmissionFailure: ExactReviewDispatchFailure | null = null;
-    for (const candidate of liveStates) {
-      if (candidate.state !== "unavailable" || candidate.failure.scope !== "global") continue;
-      globalAdmissionFailure = candidate.failure;
-      break;
-    }
-    let terminalCompleted = 0;
-    for (const candidate of liveStates) {
-      const item = checkedState.items[candidate.key];
-      if (
-        !item ||
-        item.revision !== candidate.revision ||
-        item.state !== "pending" ||
-        exactReviewQueueIsPublication(item)
-      ) {
-        continue;
-      }
-      if (candidate.state === "terminal" && !exactReviewQueueHasCommandContext(item)) {
-        delete checkedState.items[item.key];
-        terminalCompleted += 1;
-        continue;
-      }
-      if (candidate.state === "unavailable") {
-        // A shared GitHub or credential failure must not consume each item's
-        // retry budget. The dispatcher backoff below holds the whole admission
-        // pass until that dependency recovers.
-        if (globalAdmissionFailure) continue;
-        item.attempts += 1;
-        const failureAttempts = Number(item.reviewFailureAttempts || 0) + 1;
-        item.reviewFailureAttempts = failureAttempts;
-        if (failureAttempts >= EXACT_REVIEW_RETRY_LIMIT) {
-          item.state = "parked";
-          item.parkedReason = "review_retry_exhausted";
-          item.updatedAt = checkedAt;
-          continue;
-        }
-        item.nextAttemptAt = Math.max(
-          exactReviewQueueEnqueueAttemptAt(checkedState, checkedAt),
-          checkedAt + exactReviewRetryDelayMs(item.attempts),
-        );
-        item.updatedAt = checkedAt;
-      }
-    }
-    if (globalAdmissionFailure) {
-      const consecutiveFailures = priorDispatchConsecutiveFailures + 1;
-      const retryAt =
-        checkedAt +
-        exactReviewDispatchGlobalRetryDelayMs(consecutiveFailures, globalAdmissionFailure);
-      checkedState.dispatcher = {
-        state: "blocked",
-        reason: exactReviewDispatchDispatcherReason(globalAdmissionFailure.failureClass),
-        workflowState: preflight.workflowState,
-        checkedAt,
-        retryAt,
-        dispatchFailureStatus: globalAdmissionFailure.status,
-        dispatchFailureClass: globalAdmissionFailure.failureClass,
-        dispatchFailureAt: checkedAt,
-        dispatchFailureFingerprint: globalAdmissionFailure.fingerprint,
-        dispatchConsecutiveFailures: consecutiveFailures,
-        ...checkedBatchDispatcherFields,
-      };
-      await this.writeState(
-        checkedState,
-        terminalCompleted ? { reviewCompleted: terminalCompleted } : undefined,
-      );
-      await this.scheduleNext(checkedState, checkedAt);
-      return;
-    }
-    const dispatchable = admission.flatMap((candidate) => {
-      const item = checkedState.items[candidate.key];
-      if (!item || item.revision !== candidate.revision || item.state !== "pending") return [];
-      if (exactReviewQueueIsPublication(item)) return [item];
-      const live = liveStateByCandidate.get(candidate.key);
-      // A command acknowledgement needs the workflow's terminal completion
-      // path even when the target is already closed. Unprobed reviews wait for
-      // a later bounded admission pass instead of bypassing the live check.
-      return live?.state === "open" ||
-        (live?.state === "terminal" && exactReviewQueueHasCommandContext(item))
-        ? [item]
-        : [];
-    });
-
-    const hasReadyPendingReview = Object.values(checkedState.items).some(
-      (item) =>
-        !exactReviewQueueIsPublication(item) &&
-        item.state === "pending" &&
-        item.nextAttemptAt <= checkedAt,
-    );
-    const shouldThrottleReviewAdmission =
-      liveCandidates.length === EXACT_REVIEW_ADMISSION_LIVE_CHECK_MAX_ITEMS ||
-      (terminalCompleted > 0 && hasReadyPendingReview);
-    const nextReviewAdmissionAt = shouldThrottleReviewAdmission
-      ? checkedAt + EXACT_REVIEW_ADMISSION_INTERVAL_MS
-      : Number(checkedState.dispatcher?.reviewAdmissionNextAt || 0);
-    checkedState.dispatcher = {
+    state.dispatcher = {
       state: "active",
       workflowState: preflight.workflowState,
-      checkedAt,
-      ...(nextReviewAdmissionAt > checkedAt
-        ? { reviewAdmissionNextAt: nextReviewAdmissionAt }
-        : {}),
-      ...checkedBatchDispatcherFields,
+      checkedAt: now,
+      ...batchDispatcherFields,
     };
-    for (const item of dispatchable) {
+    for (const item of admitted) {
       item.state = "dispatching";
       item.leaseId = crypto.randomUUID();
       item.leaseRevision = item.revision;
       item.leaseDecision = { ...item.decision };
       item.leaseExpiresAt =
-        checkedAt +
+        now +
         (item.decision.sourceAction === EXACT_REVIEW_ARTIFACT_PUBLISH_SOURCE_ACTION
           ? exactReviewPublicationDispatchLeaseMs(this.env)
           : exactReviewDispatchLeaseMs(this.env));
       item.claimedRunId = undefined;
       item.claimedRunAttempt = undefined;
       item.claimGeneration = undefined;
-      item.dispatchedAt = checkedAt;
+      item.dispatchedAt = now;
       item.claimedAt = undefined;
-      item.updatedAt = checkedAt;
+      item.updatedAt = now;
     }
-    await this.writeState(
-      checkedState,
-      terminalCompleted ? { reviewCompleted: terminalCompleted } : undefined,
-    );
-    if (!dispatchable.length) {
-      await this.scheduleNext(checkedState, checkedAt);
+    await this.writeState(state);
+    if (!admitted.length) {
+      await this.scheduleNext(state, now);
       return;
     }
 
@@ -2386,7 +2214,7 @@ export class ExactReviewQueue {
       attempted: boolean;
     }> = [];
     let globalFailure: ExactReviewDispatchFailure | null = null;
-    for (const item of dispatchable) {
+    for (const item of admitted) {
       if (globalFailure) {
         failures.push({
           key: item.key,
@@ -2450,7 +2278,6 @@ export class ExactReviewQueue {
       currentChanged = true;
     }
     if (globalFailure) {
-      const currentBatchDispatcherFields = batchDispatcherFieldsFor(current.dispatcher);
       const consecutiveFailures = priorDispatchConsecutiveFailures + 1;
       const retryAt =
         completedAt + exactReviewDispatchGlobalRetryDelayMs(consecutiveFailures, globalFailure);
@@ -2465,7 +2292,7 @@ export class ExactReviewQueue {
         dispatchFailureAt: completedAt,
         dispatchFailureFingerprint: globalFailure.fingerprint,
         dispatchConsecutiveFailures: consecutiveFailures,
-        ...currentBatchDispatcherFields,
+        ...batchDispatcherFields,
       };
       currentChanged = true;
     }
@@ -5916,9 +5743,6 @@ export class ExactReviewQueue {
       exactReviewHeartbeatGraceMs(this.env),
       legacyExcludedItemKeys,
       batchOwnership.nextLeaseExpiresAt,
-      Number(state.dispatcher?.reviewAdmissionNextAt || 0) > now
-        ? Number(state.dispatcher?.reviewAdmissionNextAt)
-        : null,
     );
     const reviewNext = this.nextReviewReconcileAtSync(now);
     const batchDeparture = exactReviewPublicationBatchDeparture(
@@ -7096,10 +6920,6 @@ function exactReviewQueueIsPublication(item: Pick<ExactReviewQueueItem, "decisio
   return item.decision.sourceAction === EXACT_REVIEW_ARTIFACT_PUBLISH_SOURCE_ACTION;
 }
 
-function exactReviewQueueHasCommandContext(item: Pick<ExactReviewQueueItem, "decision">) {
-  return Boolean(item.decision.commandStatusMarker || item.decision.statusCommentId);
-}
-
 function exactReviewQueueLane(item: ExactReviewQueueItem) {
   return exactReviewQueueIsPublication(item) ? "publication" : "review";
 }
@@ -7451,9 +7271,6 @@ function exactReviewQueueStats(
     heartbeatGraceMs,
     excludedItemKeys,
     publicationBlockedUntil,
-    Number(state.dispatcher?.reviewAdmissionNextAt || 0) > now
-      ? Number(state.dispatcher?.reviewAdmissionNextAt)
-      : null,
   );
   const lanes = {
     review: exactReviewQueueLaneStats(
@@ -7634,7 +7451,6 @@ export function exactReviewQueueNextWakeAt(
   heartbeatGraceMs = DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS,
   excludedItemKeys: ReadonlySet<string> = new Set(),
   publicationBlockedUntil: number | null = null,
-  reviewAdmissionBlockedUntil: number | null = null,
 ) {
   const items = Object.values(state.items);
   if (!items.length) return null;
@@ -7709,7 +7525,7 @@ export function exactReviewQueueNextWakeAt(
         return [Math.max(item.nextAttemptAt, blockedUntil)];
       }
       const target = item.decision.targetRepo;
-      const capacityBlockedUntil = [
+      const blockedUntil = [
         ...(activeReviews.length >= capacity && activeReviewWakeAt.length
           ? [Math.min(...activeReviewWakeAt)]
           : []),
@@ -7721,8 +7537,7 @@ export function exactReviewQueueNextWakeAt(
       return [
         Math.max(
           item.nextAttemptAt,
-          reviewAdmissionBlockedUntil ?? item.nextAttemptAt,
-          capacityBlockedUntil.length ? Math.min(...capacityBlockedUntil) : item.nextAttemptAt,
+          blockedUntil.length ? Math.min(...blockedUntil) : item.nextAttemptAt,
         ),
       ];
     }
@@ -8571,51 +8386,6 @@ async function exactReviewSourceAuthorityLiveHead(
     .toLowerCase();
 }
 
-async function exactReviewTargetReadToken(env, targetRepo: string) {
-  const credentials = githubAppCredentials(env);
-  if (!credentials) throw new Error("github app is not configured");
-  const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
-  const installationId = await githubAppInstallationId(appJwt, targetRepo);
-  return createGithubAppTokenFor({
-    appJwt,
-    installationId,
-    label: targetRepo,
-    repositories: [repoName(targetRepo)],
-    permissions: { issues: "read", pull_requests: "read" },
-  });
-}
-
-async function exactReviewTargetItemState(token: string, decision: ExactReviewDecision) {
-  try {
-    const item = await githubTokenJson({
-      token,
-      path: `/repos/${decision.targetRepo}/issues/${decision.itemNumber}`,
-      method: "GET",
-      body: undefined,
-      errorLabel: "live review item state",
-    });
-    const state = String(item.state || "").trim();
-    if (state === "open") return "open" as const;
-    if (state === "closed") return "terminal" as const;
-    throw new Error("live review item state response missing state");
-  } catch (error) {
-    if (error instanceof GitHubRequestError && error.status === 410) return "terminal" as const;
-    if (error instanceof GitHubRequestError && error.status === 404) {
-      // GitHub masks inaccessible private repositories as 404. Treat the item
-      // as missing only when this token can still read its repository.
-      await githubTokenJson({
-        token,
-        path: `/repos/${decision.targetRepo}`,
-        method: "GET",
-        body: undefined,
-        errorLabel: "live review target repository",
-      });
-      return "terminal" as const;
-    }
-    throw error;
-  }
-}
-
 export async function exactReviewActionsReadToken(env) {
   return exactReviewRepositoryToken(env, { actions: "read" });
 }
@@ -8840,14 +8610,12 @@ type ExactReviewDispatchFailure = {
 class GitHubRequestError extends Error {
   readonly status?: number;
   readonly timedOut: boolean;
-  readonly rateLimited: boolean;
 
-  constructor(message: string, status?: number, timedOut = false, rateLimited = false) {
+  constructor(message: string, status?: number, timedOut = false) {
     super(message);
     this.name = "GitHubRequestError";
     this.status = status;
     this.timedOut = timedOut;
-    this.rateLimited = rateLimited;
   }
 }
 
@@ -8858,10 +8626,10 @@ function exactReviewDispatchFailure(error: unknown): ExactReviewDispatchFailure 
     ? "timeout"
     : status === 400 || status === 404 || status === 422
       ? "permanent_rejection"
-      : requestError?.rateLimited || status === 429
-        ? "rate_limit"
-        : status === 401 || status === 403
-          ? "authentication"
+      : status === 401 || status === 403
+        ? "authentication"
+        : status === 429
+          ? "rate_limit"
           : status !== undefined && status >= 500
             ? "github_outage"
             : "network";
@@ -8871,17 +8639,6 @@ function exactReviewDispatchFailure(error: unknown): ExactReviewDispatchFailure 
     ...(status === undefined ? {} : { status }),
     fingerprint: exactReviewDispatchFailureFingerprint(failureClass, status),
   };
-}
-
-function exactReviewAdmissionFailure(error: unknown): ExactReviewDispatchFailure {
-  const failure = exactReviewDispatchFailure(error);
-  // This error arose while checking one specific target. A target installation
-  // may lack issue-read access even though other target installations are
-  // healthy, so a 403 must not hold the whole queue.
-  if (error instanceof GitHubRequestError && error.status === 403 && !error.rateLimited) {
-    return { ...failure, scope: "item" };
-  }
-  return failure;
 }
 
 function exactReviewDispatchFailureFingerprint(
@@ -8962,8 +8719,6 @@ async function githubTokenJson({ token, path, method = "GET", body, errorLabel }
     throw new GitHubRequestError(
       `${errorLabel || "GitHub"} ${response.status}${text ? `: ${text.slice(0, 240)}` : ""}`,
       response.status,
-      false,
-      githubResponseRateLimited(response, text),
     );
   }
   if (response.status === 204) return {};
@@ -9135,50 +8890,19 @@ async function githubAppInstallationId(appJwt, repo) {
 async function githubAppJson(path, appJwt, options: GithubAppJsonOptions = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), GITHUB_TIMEOUT_MS);
-  let response: Response;
-  try {
-    response = await fetch(`https://api.github.com${path}`, {
-      method: options.method || "GET",
-      signal: controller.signal,
-      headers: {
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-        "User-Agent": "openclaw-clawsweeper-status",
-        Authorization: `Bearer ${appJwt}`,
-      },
-      body: options.body,
-    });
-  } catch (error) {
-    const timedOut =
-      controller.signal.aborted ||
-      (error instanceof Error && (error.name === "AbortError" || error.message === "timeout"));
-    throw new GitHubRequestError(
-      `${options.errorLabel || "GitHub App"} ${timedOut ? "timed out" : "network failure"}`,
-      undefined,
-      timedOut,
-    );
-  } finally {
-    clearTimeout(timeout);
-  }
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new GitHubRequestError(
-      `${options.errorLabel || "GitHub App"} ${response.status}${text ? `: ${text.slice(0, 240)}` : ""}`,
-      response.status,
-      false,
-      githubResponseRateLimited(response, text),
-    );
-  }
+  const response = await fetch(`https://api.github.com${path}`, {
+    method: options.method || "GET",
+    signal: controller.signal,
+    headers: {
+      Accept: "application/vnd.github+json",
+      "Content-Type": "application/json",
+      "User-Agent": "openclaw-clawsweeper-status",
+      Authorization: `Bearer ${appJwt}`,
+    },
+    body: options.body,
+  }).finally(() => clearTimeout(timeout));
+  if (!response.ok) throw new Error(`${options.errorLabel || "GitHub App"} ${response.status}`);
   return response.json();
-}
-
-function githubResponseRateLimited(response: Response, text: string) {
-  return (
-    response.status === 429 ||
-    response.headers.has("retry-after") ||
-    response.headers.get("x-ratelimit-remaining") === "0" ||
-    /(?:secondary )?rate limit|api rate limit|abuse detection/i.test(text)
-  );
 }
 
 async function signGithubAppJwt(issuer, privateKey) {

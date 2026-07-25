@@ -668,11 +668,7 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(publisherSource, /error instanceof GitCommandTimeoutError/);
   assert.match(
     publisherSource,
-    /const completionKind = retryableFailure \? "retryable_failure" : "permanent_failure"/,
-  );
-  assert.match(
-    publisherSource,
-    /writePublicationCompletionOutputs\(completionKind, reasonCode, fingerprint\);/,
+    /writePublicationCompletionOutputs\(\s*retryableFailure \? "retryable_failure" : "permanent_failure",\s*reasonCode,\s*errorFingerprint\(error\),\s*\);/,
   );
   assert.doesNotMatch(publisherSource, /retryableFailure \? "github_transient" : undefined/);
   assert.match(publishComplete.run ?? "", /"state_contention"/);

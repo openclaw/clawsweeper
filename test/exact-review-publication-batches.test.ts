@@ -1249,31 +1249,10 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
         headers: { "content-type": "application/json" },
       });
     }
-    if (url.pathname === "/repos/openclaw/openclaw/installation") {
-      return new Response(JSON.stringify({ id: 1000 }), {
-        headers: { "content-type": "application/json" },
-      });
-    }
     if (url.pathname === "/app/installations/999/access_tokens") {
       const body = JSON.parse(String(init?.body));
       assert.deepEqual(body.permissions, { actions: "write", contents: "write" });
       return new Response(JSON.stringify({ token: "test-token" }), {
-        headers: { "content-type": "application/json" },
-      });
-    }
-    if (url.pathname === "/app/installations/1000/access_tokens") {
-      const body = JSON.parse(String(init?.body));
-      assert.deepEqual(body, {
-        repository_names: ["openclaw"],
-        permissions: { issues: "read", pull_requests: "read" },
-      });
-      return new Response(JSON.stringify({ token: "target-token" }), {
-        headers: { "content-type": "application/json" },
-      });
-    }
-    if (url.pathname === "/repos/openclaw/openclaw/issues/114") {
-      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer target-token");
-      return new Response(JSON.stringify({ state: "open" }), {
         headers: { "content-type": "application/json" },
       });
     }
