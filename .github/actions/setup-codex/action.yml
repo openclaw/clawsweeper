@@ -166,11 +166,34 @@ runs:
         const credentials = Object.fromEntries(
           keys.flatMap((key) => process.env[key] ? [[key, process.env[key]]] : []),
         );
+        if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+          const googleCredentialsPath = path.join(process.env.CLAUDE_CONFIG_DIR, "google-credentials.json");
+          fs.writeFileSync(
+            googleCredentialsPath,
+            `${process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON.trim()}\n`,
+            { mode: 0o600 },
+          );
+          credentials.GOOGLE_APPLICATION_CREDENTIALS = googleCredentialsPath;
+        }
         if (provider === "anthropic" &&
             !credentials.ANTHROPIC_API_KEY &&
             !credentials.ANTHROPIC_AUTH_TOKEN &&
             !credentials.CLAUDE_CODE_OAUTH_TOKEN) {
           throw new Error("Claude Anthropic provider requires ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or CLAUDE_CODE_OAUTH_TOKEN.");
+        }
+        if (provider === "bedrock" &&
+            !credentials.AWS_BEARER_TOKEN_BEDROCK &&
+            !(credentials.AWS_ACCESS_KEY_ID && credentials.AWS_SECRET_ACCESS_KEY) &&
+            !credentials.AWS_PROFILE) {
+          throw new Error("Claude Bedrock provider requires a Bedrock bearer token, AWS access keys, or AWS_PROFILE.");
+        }
+        if (provider === "vertex" &&
+            !credentials.GOOGLE_APPLICATION_CREDENTIALS) {
+          throw new Error("Claude Vertex provider requires Google application credentials.");
+        }
+        if (provider === "foundry" &&
+            !credentials.ANTHROPIC_FOUNDRY_API_KEY) {
+          throw new Error("Claude Foundry provider requires ANTHROPIC_FOUNDRY_API_KEY.");
         }
         if (provider === "bedrock") credentials.CLAUDE_CODE_USE_BEDROCK = "1";
         if (provider === "vertex") credentials.CLAUDE_CODE_USE_VERTEX = "1";

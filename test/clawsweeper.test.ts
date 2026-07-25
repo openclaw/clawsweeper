@@ -2315,6 +2315,10 @@ test("model workflows install pinned CLI releases and keep provider models secre
   assert.match(action, /CLAUDE_CODE_USE_BEDROCK/);
   assert.match(action, /CLAUDE_CODE_USE_VERTEX/);
   assert.match(action, /CLAUDE_CODE_USE_FOUNDRY/);
+  assert.match(action, /GOOGLE_APPLICATION_CREDENTIALS_JSON/);
+  assert.match(action, /Claude Bedrock provider requires/);
+  assert.match(action, /Claude Vertex provider requires/);
+  assert.match(action, /Claude Foundry provider requires/);
   assert.doesNotMatch(action, /@latest/);
   assert.match(localCheck, /CLAWSWEEPER_LOCAL_CODEX_MODEL \?\? "gpt-5\.6-sol"/);
   assert.match(localCheck, /model_reasoning_effort="high"/);
@@ -2337,6 +2341,18 @@ test("model workflows install pinned CLI releases and keep provider models secre
       /claude-provider: \$\{\{ vars\.CLAWSWEEPER_CLAUDE_PROVIDER \|\| 'anthropic' \}\}/,
     );
     assert.match(workflow, /ANTHROPIC_API_KEY: \$\{\{ secrets\.ANTHROPIC_API_KEY \}\}/);
+    const setupCount = workflow.match(/uses: .*setup-codex/g)?.length ?? 0;
+    for (const credential of [
+      "CLAWSWEEPER_AWS_ACCESS_KEY_ID",
+      "CLAWSWEEPER_GOOGLE_APPLICATION_CREDENTIALS_JSON",
+      "CLAWSWEEPER_ANTHROPIC_FOUNDRY_API_KEY",
+    ]) {
+      assert.equal(
+        workflow.match(new RegExp(credential, "g"))?.length,
+        setupCount,
+        `${credential} must be available to every model setup`,
+      );
+    }
     assert.doesNotMatch(workflow, /CLAWSWEEPER_CODEX_CLI_VERSION/);
     for (const line of workflow
       .split("\n")
