@@ -17,7 +17,7 @@ run-name: >-
       github.event.action == 'clawsweeper_target_sweep') &&
       format('Review target repo {0}', github.event.client_payload.target_repo || 'openclaw/openclaw') ||
     (github.event_name == 'repository_dispatch' && github.event.client_payload.queue_lease_id != '') &&
-      format('Review exact item {0} rev {1} head {2}', github.event.client_payload.queue_claim.item_key || github.event.client_payload.item_key || '?', github.event.client_payload.queue_claim.lease_revision || github.event.client_payload.lease_revision || '?', github.event.client_payload.source_head_sha || 'na') ||
+      format('Review exact item {0} rev {1} head {2}', github.event.client_payload.queue_claim.item_key || github.event.client_payload.item_key || '?', github.event.client_payload.queue_claim.lease_revision || github.event.client_payload.lease_revision || '?', github.event.client_payload.queue_claim.source_head_sha || github.event.client_payload.source_head_sha || 'na') ||
     (github.event_name == 'repository_dispatch' && github.event.client_payload.dispatch_key != '') &&
       format('Review event item {0}#{1} [{2}]', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || '?', github.event.client_payload.dispatch_key) ||
     github.event_name == 'repository_dispatch' &&
@@ -278,8 +278,8 @@ jobs:
                 sourceEvent,
                 sourceAction: payload.source_action || "legacy_dispatch",
                 supersedesInProgress: payload.supersedes_in_progress === true,
-                ...(/^[0-9a-f]{40}$/.test(String(payload.source_head_sha || "").trim().toLowerCase())
-                  ? { sourceHeadSha: String(payload.source_head_sha).trim().toLowerCase() }
+                ...(/^[0-9a-f]{40}$/.test(String(payload.queue_claim?.source_head_sha || payload.source_head_sha || "").trim().toLowerCase())
+                  ? { sourceHeadSha: String(payload.queue_claim?.source_head_sha || payload.source_head_sha).trim().toLowerCase() }
                   : {}),
                 ...(Number.isFinite(Number(payload.codex_timeout_ms))
                   ? { codexTimeoutMs: Number(payload.codex_timeout_ms) }
@@ -416,8 +416,8 @@ jobs:
                   sourceEvent: String(dispatch.source_event || ""),
                   sourceAction: String(dispatch.source_action || "legacy_dispatch"),
                   supersedesInProgress: dispatch.supersedes_in_progress === true,
-                  ...(/^[0-9a-f]{40}$/.test(String(dispatch.source_head_sha || "").trim().toLowerCase())
-                    ? { sourceHeadSha: String(dispatch.source_head_sha).trim().toLowerCase() }
+                  ...(/^[0-9a-f]{40}$/.test(String(dispatch.queue_claim?.source_head_sha || dispatch.source_head_sha || "").trim().toLowerCase())
+                    ? { sourceHeadSha: String(dispatch.queue_claim?.source_head_sha || dispatch.source_head_sha).trim().toLowerCase() }
                     : {}),
                   ...(Number.isFinite(Number(reviewOptions.codex_timeout_ms))
                     ? { codexTimeoutMs: Number(reviewOptions.codex_timeout_ms) }

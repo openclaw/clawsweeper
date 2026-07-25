@@ -109,6 +109,7 @@ export type ExactReviewQueueItem = {
   dispatchFailureClass?: ExactReviewDispatchFailureClass;
   dispatchFailureAt?: number;
   dispatchFailureFingerprint?: string;
+  dispatchFailureDetail?: ExactReviewDispatchFailureDetail;
   lastFailureReason?: ExactReviewPublicationReasonCode;
   firstFailureAt?: number;
   publicationFailureAttempts?: number;
@@ -118,6 +119,7 @@ export type ExactReviewCompletionOutcome = "success" | "failure" | "cancelled";
 type ExactReviewPublicationFailureKind = "github_rate_limit" | "github_transient";
 type ExactReviewDispatchFailureClass =
   | "permanent_rejection"
+  | "validation_unknown"
   | "authentication"
   | "rate_limit"
   | "github_outage"
@@ -193,6 +195,7 @@ export type ExactReviewQueueState = {
       | "dispatch_rate_limit"
       | "dispatch_github_outage"
       | "dispatch_timeout"
+      | "dispatch_validation"
       | "dispatch_network";
     workflowState?: string;
     checkedAt: number;
@@ -201,6 +204,7 @@ export type ExactReviewQueueState = {
     dispatchFailureClass?: ExactReviewDispatchFailureClass;
     dispatchFailureAt?: number;
     dispatchFailureFingerprint?: string;
+    dispatchFailureDetail?: ExactReviewDispatchFailureDetail;
     dispatchConsecutiveFailures?: number;
     reviewAdmissionNextAt?: number;
     publicationBatchDispatchedAt?: number;
@@ -1727,6 +1731,7 @@ export class ExactReviewQueue {
           ? new Date(item.dispatchFailureAt).toISOString()
           : null,
         dispatch_failure_fingerprint: item.dispatchFailureFingerprint || null,
+        dispatch_failure_detail: exactReviewDispatchFailureDetailJson(item.dispatchFailureDetail),
         created_at: new Date(item.createdAt).toISOString(),
         next_attempt_at:
           item.state === "pending" ? new Date(item.nextAttemptAt).toISOString() : null,
@@ -2438,6 +2443,7 @@ export class ExactReviewQueue {
         item.dispatchFailureClass = failure.failure.failureClass;
         item.dispatchFailureAt = completedAt;
         item.dispatchFailureFingerprint = failure.failure.fingerprint;
+        item.dispatchFailureDetail = failure.failure.detail;
       }
       if (failure.attempted && failure.failure.scope === "item") {
         item.state = "parked";
@@ -2464,6 +2470,7 @@ export class ExactReviewQueue {
         dispatchFailureClass: globalFailure.failureClass,
         dispatchFailureAt: completedAt,
         dispatchFailureFingerprint: globalFailure.fingerprint,
+        dispatchFailureDetail: globalFailure.detail,
         dispatchConsecutiveFailures: consecutiveFailures,
         ...currentBatchDispatcherFields,
       };
@@ -6871,6 +6878,15 @@ function clearExactReviewDispatchFailure(item: ExactReviewQueueItem) {
   item.dispatchFailureClass = undefined;
   item.dispatchFailureAt = undefined;
   item.dispatchFailureFingerprint = undefined;
+  item.dispatchFailureDetail = undefined;
+}
+
+function exactReviewDispatchFailureDetailJson(detail?: ExactReviewDispatchFailureDetail) {
+  if (!detail) return null;
+  return {
+    validation_fields: detail.validationFields,
+    validation_codes: detail.validationCodes,
+  };
 }
 
 export function exactReviewEffectiveLeaseExpiresAt(
@@ -7528,6 +7544,9 @@ function exactReviewQueueStats(
         ? new Date(state.dispatcher.dispatchFailureAt).toISOString()
         : null,
       dispatch_failure_fingerprint: state.dispatcher?.dispatchFailureFingerprint || null,
+      dispatch_failure_detail: exactReviewDispatchFailureDetailJson(
+        state.dispatcher?.dispatchFailureDetail,
+      ),
       dispatch_consecutive_failures: state.dispatcher?.dispatchConsecutiveFailures || 0,
     },
     target_stats: targetStats,
@@ -8814,6 +8833,7 @@ async function dispatchClawsweeperItem({
           protocol_version: 2,
           item_key: itemKey,
           lease_revision: leaseRevision,
+          ...(decision.sourceHeadSha ? { source_head_sha: decision.sourceHeadSha } : {}),
         },
         target_repo: decision.targetRepo,
         target_branch: decision.targetBranch,
@@ -8822,7 +8842,6 @@ async function dispatchClawsweeperItem({
         source_event: decision.sourceEvent,
         source_action: decision.sourceAction,
         supersedes_in_progress: decision.supersedesInProgress,
-        ...(decision.sourceHeadSha ? { source_head_sha: decision.sourceHeadSha } : {}),
         ...(Object.keys(reviewOptions).length > 0 ? { review_options: reviewOptions } : {}),
       },
     },
@@ -8835,46 +8854,73 @@ type ExactReviewDispatchFailure = {
   failureClass: ExactReviewDispatchFailureClass;
   status?: number;
   fingerprint: string;
+  detail?: ExactReviewDispatchFailureDetail;
+};
+
+type ExactReviewDispatchFailureDetail = {
+  validationFields: string[];
+  validationCodes: string[];
 };
 
 class GitHubRequestError extends Error {
   readonly status?: number;
   readonly timedOut: boolean;
   readonly rateLimited: boolean;
+  readonly validationDetail?: ExactReviewDispatchFailureDetail;
 
-  constructor(message: string, status?: number, timedOut = false, rateLimited = false) {
+  constructor(
+    message: string,
+    status?: number,
+    timedOut = false,
+    rateLimited = false,
+    validationDetail?: ExactReviewDispatchFailureDetail,
+  ) {
     super(message);
     this.name = "GitHubRequestError";
     this.status = status;
     this.timedOut = timedOut;
     this.rateLimited = rateLimited;
+    this.validationDetail = validationDetail;
   }
 }
 
 function exactReviewDispatchFailure(error: unknown): ExactReviewDispatchFailure {
   const requestError = error instanceof GitHubRequestError ? error : null;
   const status = requestError?.status;
+  const detail = requestError?.validationDetail;
   const failureClass: ExactReviewDispatchFailureClass = requestError?.timedOut
     ? "timeout"
-    : status === 400 || status === 404 || status === 422
-      ? "permanent_rejection"
-      : requestError?.rateLimited || status === 429
-        ? "rate_limit"
-        : status === 401 || status === 403
-          ? "authentication"
-          : status !== undefined && status >= 500
-            ? "github_outage"
-            : "network";
+    : requestError?.rateLimited || status === 429
+      ? "rate_limit"
+      : status === 422 && !exactReviewPermanentDispatchValidation(detail)
+        ? "validation_unknown"
+        : status === 400 || status === 404 || status === 422
+          ? "permanent_rejection"
+          : status === 401 || status === 403
+            ? "authentication"
+            : status !== undefined && status >= 500
+              ? "github_outage"
+              : "network";
   return {
     scope: failureClass === "permanent_rejection" ? "item" : "global",
     failureClass,
     ...(status === undefined ? {} : { status }),
-    fingerprint: exactReviewDispatchFailureFingerprint(failureClass, status),
+    ...(detail ? { detail } : {}),
+    fingerprint: exactReviewDispatchFailureFingerprint(failureClass, status, detail),
   };
+}
+
+function exactReviewPermanentDispatchValidation(detail?: ExactReviewDispatchFailureDetail) {
+  return detail?.validationFields.length === 1 && detail.validationFields[0] === "client_payload";
 }
 
 function exactReviewAdmissionFailure(error: unknown): ExactReviewDispatchFailure {
   const failure = exactReviewDispatchFailure(error);
+  // Admission reads one target item. Its validation response cannot describe
+  // the shared repository_dispatch contract, so it must not hold other items.
+  if (error instanceof GitHubRequestError && error.status === 422) {
+    return { ...failure, scope: "item" };
+  }
   // This error arose while checking one specific target. A target installation
   // may lack issue-read access even though other target installations are
   // healthy, so a 403 must not hold the whole queue.
@@ -8887,8 +8933,9 @@ function exactReviewAdmissionFailure(error: unknown): ExactReviewDispatchFailure
 function exactReviewDispatchFailureFingerprint(
   failureClass: ExactReviewDispatchFailureClass,
   status?: number,
+  detail?: ExactReviewDispatchFailureDetail,
 ) {
-  const value = `${failureClass}:${status ?? "none"}`;
+  const value = `${failureClass}:${status ?? "none"}:${detail?.validationFields.join(",") || "none"}:${detail?.validationCodes.join(",") || "none"}`;
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) {
     hash ^= value.charCodeAt(index);
@@ -8904,6 +8951,7 @@ function exactReviewDispatchDispatcherReason(
   if (failureClass === "rate_limit") return "dispatch_rate_limit";
   if (failureClass === "github_outage") return "dispatch_github_outage";
   if (failureClass === "timeout") return "dispatch_timeout";
+  if (failureClass === "validation_unknown") return "dispatch_validation";
   return "dispatch_network";
 }
 
@@ -8960,10 +9008,11 @@ async function githubTokenJson({ token, path, method = "GET", body, errorLabel }
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new GitHubRequestError(
-      `${errorLabel || "GitHub"} ${response.status}${text ? `: ${text.slice(0, 240)}` : ""}`,
+      `${errorLabel || "GitHub"} ${response.status}`,
       response.status,
       false,
       githubResponseRateLimited(response, text),
+      githubResponseValidationDetail(response.status, text),
     );
   }
   if (response.status === 204) return {};
@@ -9163,10 +9212,11 @@ async function githubAppJson(path, appJwt, options: GithubAppJsonOptions = {}) {
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new GitHubRequestError(
-      `${options.errorLabel || "GitHub App"} ${response.status}${text ? `: ${text.slice(0, 240)}` : ""}`,
+      `${options.errorLabel || "GitHub App"} ${response.status}`,
       response.status,
       false,
       githubResponseRateLimited(response, text),
+      githubResponseValidationDetail(response.status, text),
     );
   }
   return response.json();
@@ -9179,6 +9229,39 @@ function githubResponseRateLimited(response: Response, text: string) {
     response.headers.get("x-ratelimit-remaining") === "0" ||
     /(?:secondary )?rate limit|api rate limit|abuse detection/i.test(text)
   );
+}
+
+function githubResponseValidationDetail(status: number, text: string) {
+  if (status !== 422 || text.length > 16_384) return undefined;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const errors = Array.isArray(objectValue(payload).errors) ? objectValue(payload).errors : [];
+  const validationFields = new Set<string>();
+  const validationCodes = new Set<string>();
+  for (const error of errors.slice(0, 8)) {
+    const value = objectValue(error);
+    const field = githubValidationToken(value.field);
+    const code = githubValidationToken(value.code);
+    if (field) validationFields.add(field);
+    if (code) validationCodes.add(code);
+  }
+  if (!validationFields.size && !validationCodes.size) return undefined;
+  return {
+    validationFields: [...validationFields].sort().slice(0, 4),
+    validationCodes: [...validationCodes].sort().slice(0, 4),
+  };
+}
+
+function githubValidationToken(value: unknown) {
+  const token =
+    String(value || "")
+      .match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0]
+      ?.toLowerCase() || "";
+  return token.length <= 64 ? token : "";
 }
 
 async function signGithubAppJwt(issuer, privateKey) {
