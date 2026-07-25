@@ -33,53 +33,6 @@ test("event record directories stay inside the isolated worker root", () => {
   });
 });
 
-test("event base snapshot uses durable state when the isolated worker starts empty", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-event-records-"));
-  const workerRoot = path.join(root, "worker");
-  const stateRoot = path.join(root, "state");
-  const store = {
-    targetRepo: "openclaw/openclaw",
-    itemNumber: "93584",
-    snapshotDir: path.join(workerRoot, "snapshot"),
-  };
-  const paths = eventRecordPaths(store);
-  fs.mkdirSync(workerRoot, { recursive: true });
-  fs.mkdirSync(stateRoot, { recursive: true });
-
-  withCwd(stateRoot, () => {
-    writeEventTuple(paths, {
-      marker: "durable previous review",
-      reviewedAt: "2026-07-24T22:16:08.206Z",
-      itemUpdatedAt: "2026-07-24T22:14:34Z",
-    });
-  });
-
-  withCwd(workerRoot, () => {
-    resetEventSnapshot(store);
-    captureEventBaseSnapshot(store);
-    writeEventTuple(paths, {
-      marker: "fresh exact review",
-      reviewedAt: "2026-07-25T03:12:20.195Z",
-      itemUpdatedAt: "2026-07-25T03:10:15Z",
-    });
-    captureEventSnapshot(store);
-    assert.throws(
-      () => applyEventSnapshot(paths, { remoteRoot: stateRoot }),
-      /missing comparable state-mutation timestamp/,
-    );
-
-    resetEventSnapshot(store);
-    captureEventBaseSnapshot(store, { sourceRoot: stateRoot });
-    writeEventTuple(paths, {
-      marker: "fresh exact review",
-      reviewedAt: "2026-07-25T03:12:20.195Z",
-      itemUpdatedAt: "2026-07-25T03:10:15Z",
-    });
-    captureEventSnapshot(store);
-    assert.equal(applyEventSnapshot(paths, { remoteRoot: stateRoot }), "open");
-  });
-});
-
 test("event snapshot match follows the final tuple winner, not only its action", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-event-records-"));
   const store = {

@@ -151,13 +151,9 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     itemNumber: options.itemNumber,
     snapshotDir: options.snapshotDir,
   };
-  const stateRoot = publishRoot();
 
   resetEventSnapshot(recordStore);
-  const recordPaths = captureEventBaseSnapshot(
-    recordStore,
-    stateRoot ? { sourceRoot: stateRoot } : {},
-  );
+  const recordPaths = captureEventBaseSnapshot(recordStore);
   fs.rmSync(options.reportPath, { force: true });
 
   runClawsweeper(options, [
@@ -178,6 +174,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
   captureEventSnapshot(recordStore);
   hardResetToRemoteMain();
   const stateBaseCommit = captureStatePublishBaseline();
+  const stateRoot = publishRoot();
   const preflightResult = applyEventSnapshotIfCurrent(
     recordPaths,
     stateRoot ? { remoteRoot: stateRoot } : {},
