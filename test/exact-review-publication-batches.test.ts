@@ -2220,8 +2220,9 @@ test("queue completion atomically removes only the owned publication revision", 
   const originalNow = Date.now;
   Date.now = () => 2_000_000;
   try {
+    const storage = new TestStorage();
     const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
+      { storage },
       { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
     );
     const enqueued = await queue.fetch(publicationRequest("delivery-complete", 103, "1003"));
@@ -2300,6 +2301,18 @@ test("queue completion atomically removes only the owned publication revision", 
     ).json();
     assert.equal(completion.accepted, 1);
     assert.equal(completion.batch.state, "completed");
+    const terminal = Array.from(
+      storage.sql.exec(
+        `SELECT terminal_outcome, batch_id, state_commit_sha
+           FROM exact_review_publication_terminals
+          WHERE target_key = ? AND source_revision = ?`,
+        "openclaw/openclaw#103",
+        1,
+      ),
+    )[0];
+    assert.equal(terminal?.terminal_outcome, "published");
+    assert.equal(terminal?.batch_id, "claim-complete");
+    assert.equal(terminal?.state_commit_sha, "b".repeat(40));
 
     const retriedCompletion = await (
       await queue.fetch(

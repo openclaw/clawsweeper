@@ -17,6 +17,11 @@ import {
   type PublicationBatchFence,
 } from "./exact-review-publication-batches.ts";
 import {
+  ExactReviewPublicationTerminalLedger,
+  type ExactReviewPublicationTerminal,
+  type ExactReviewPublicationTerminalOutcome,
+} from "./exact-review-publication-terminal-ledger.ts";
+import {
   REVIEW_TELEMETRY_DEGRADED_MS,
   REVIEW_TELEMETRY_ORPHAN_MS,
   REVIEW_TELEMETRY_RETENTION_MS,
@@ -447,6 +452,7 @@ export class ExactReviewQueue {
   private legacyMirrorDisabled = false;
   private legacyMirrorWarningReported = false;
   private batchStore;
+  private publicationTerminalLedger;
   private stateWriterCoordinator;
   private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
 
@@ -454,6 +460,7 @@ export class ExactReviewQueue {
     this.storage = state.storage;
     this.env = env;
     this.batchStore = new ExactReviewPublicationBatchStore(this.storage);
+    this.publicationTerminalLedger = new ExactReviewPublicationTerminalLedger(this.storage);
     this.stateWriterCoordinator = new StateWriterCoordinator(this.storage);
     const initialize = () => this.initializeStorage();
     this.ready =
@@ -824,6 +831,28 @@ export class ExactReviewQueue {
         );
         let supersededPublications = 0;
         if (incomingPublicationRevision) {
+          const terminal = this.publicationTerminalLedger.terminalFor(
+            incomingPublicationRevision.targetKey,
+            incomingPublicationRevision.sourceRevision,
+          );
+          if (terminal) {
+            this.syncLegacyCompatibilitySync(state);
+            return {
+              deduped: true as const,
+              terminal: true as const,
+              terminalOutcome: terminal.outcome,
+              ...(terminal.compacted
+                ? {
+                    superseded: true as const,
+                    publicationRevision: incomingPublicationRevision.sourceRevision,
+                    supersededByRevision: this.publicationHeadRevisionSync(
+                      incomingPublicationRevision.targetKey,
+                    ),
+                  }
+                : {}),
+              state,
+            };
+          }
           const incomingLineage = exactReviewPublicationLineage(decision);
           const matching = Object.values(state.items)
             .map((item) => ({
@@ -853,6 +882,24 @@ export class ExactReviewQueue {
             now,
           );
           if (incomingPublicationRevision.sourceRevision < newestSourceRevision) {
+            const activeSameRevision = matching.some(
+              ({ item, revision }) =>
+                revision.sourceRevision === incomingPublicationRevision.sourceRevision &&
+                (activeBatchItemKeys.has(item.key) ||
+                  item.state === "dispatching" ||
+                  item.state === "leased"),
+            );
+            // An active publisher still owns this revision's authoritative
+            // completion. Its duplicate ingress is stale, but must not replace
+            // that eventual published/closed outcome in the terminal ledger.
+            if (!activeSameRevision) {
+              this.publicationTerminalLedger.record({
+                targetKey: incomingPublicationRevision.targetKey,
+                sourceRevision: incomingPublicationRevision.sourceRevision,
+                outcome: "superseded",
+                terminalAt: now,
+              });
+            }
             this.writeStateSync(state);
             return {
               deduped: true as const,
@@ -987,6 +1034,8 @@ export class ExactReviewQueue {
             )
             .sort((left, right) => left.item.key.localeCompare(right.item.key))
             .slice(0, EXACT_REVIEW_PUBLICATION_ENQUEUE_SUPERSEDE_LIMIT)) {
+            const terminal = exactReviewPublicationTerminal(entry.item, "superseded", now);
+            if (terminal) this.publicationTerminalLedger.record(terminal);
             delete state.items[entry.item.key];
             supersededPublications += 1;
           }
@@ -1147,6 +1196,9 @@ export class ExactReviewQueue {
                 }
               : {}),
             ...("staleSource" in accepted && accepted.staleSource ? { stale_source: true } : {}),
+            ...("terminal" in accepted && accepted.terminal
+              ? { terminal: true, terminal_outcome: accepted.terminalOutcome }
+              : {}),
             ...(accepted.superseded
               ? {
                   superseded: true,
@@ -1540,6 +1592,24 @@ export class ExactReviewQueue {
       const completedLane =
         !requeued && !completionResult.parked ? exactReviewQueueLane(item) : null;
       const structuredTerminal = publicationCompletion && !requeued && !completionResult.parked;
+      // Older publishers and the signed run reconciler use the generic success
+      // completion path. They do not attest a publication-specific outcome, but
+      // successful removal is still terminal for that immutable source revision.
+      const terminalOutcome =
+        completionResult.terminalOutcome ??
+        (publicationItem &&
+        !publicationCompletion &&
+        outcome === "success" &&
+        !requeued &&
+        !completionResult.parked
+          ? "closed"
+          : undefined);
+      const publicationTerminals =
+        publicationItem && terminalOutcome
+          ? [exactReviewPublicationTerminal(item, terminalOutcome, now)].filter(
+              (terminal): terminal is ExactReviewPublicationTerminal => terminal !== null,
+            )
+          : [];
       await this.writeState(
         state,
         {
@@ -1574,6 +1644,8 @@ export class ExactReviewQueue {
             }
           : undefined,
         completionResult.deadLetter,
+        [],
+        publicationTerminals,
       );
       await this.scheduleNext(state, now);
       return json({ ok: true, requeued });
@@ -1789,6 +1861,7 @@ export class ExactReviewQueue {
       let completedReviews = 0;
       let retriedReviews = 0;
       let completedPublications = 0;
+      const publicationTerminals: ExactReviewPublicationTerminal[] = [];
       for (const run of runs) {
         const matches = Object.values(state.items).filter(
           (item) =>
@@ -1815,17 +1888,27 @@ export class ExactReviewQueue {
         } else {
           completed += 1;
           if (run.outcome === "success") {
-            if (exactReviewQueueIsPublication(item)) completedPublications += 1;
-            else completedReviews += 1;
+            if (exactReviewQueueIsPublication(item)) {
+              completedPublications += 1;
+              const terminal = exactReviewPublicationTerminal(item, "closed", now);
+              if (terminal) publicationTerminals.push(terminal);
+            } else completedReviews += 1;
           }
         }
       }
       if (reconciled) {
-        await this.writeState(state, {
-          reviewCompleted: completedReviews,
-          reviewRetried: retriedReviews,
-          publicationCompleted: completedPublications,
-        });
+        await this.writeState(
+          state,
+          {
+            reviewCompleted: completedReviews,
+            reviewRetried: retriedReviews,
+            publicationCompleted: completedPublications,
+          },
+          undefined,
+          undefined,
+          [],
+          publicationTerminals,
+        );
         await this.scheduleNext(state, now);
       }
       return json({ ok: true, reconciled, requeued, completed });
@@ -2497,6 +2580,7 @@ export class ExactReviewQueue {
       }
     }
     let terminalPublications = 0;
+    const publicationTerminals: ExactReviewPublicationTerminal[] = [];
     for (const candidate of livePublicationStates) {
       const item = checkedState.items[candidate.key];
       if (
@@ -2510,6 +2594,8 @@ export class ExactReviewQueue {
       ) {
         continue;
       }
+      const terminal = exactReviewPublicationTerminal(item, "closed", checkedAt);
+      if (terminal) publicationTerminals.push(terminal);
       delete checkedState.items[item.key];
       terminalPublications += 1;
     }
@@ -2544,6 +2630,7 @@ export class ExactReviewQueue {
         undefined,
         undefined,
         supersessionAudits,
+        publicationTerminals,
       );
       await this.scheduleNext(checkedState, checkedAt);
       return;
@@ -2617,6 +2704,7 @@ export class ExactReviewQueue {
       undefined,
       undefined,
       supersessionAudits,
+      publicationTerminals,
     );
     if (!dispatchable.length) {
       await this.scheduleNext(checkedState, checkedAt);
@@ -2763,6 +2851,7 @@ export class ExactReviewQueue {
     const checkedState = this.readStateSync();
     const batchOwnership = this.batchStore.activeLeaseSnapshot(checkedAt);
     let completed = 0;
+    const terminals: ExactReviewPublicationTerminal[] = [];
     for (const candidate of liveStates) {
       const item = checkedState.items[candidate.key];
       if (
@@ -2776,14 +2865,23 @@ export class ExactReviewQueue {
       ) {
         continue;
       }
+      const terminal = exactReviewPublicationTerminal(item, "closed", checkedAt);
+      if (terminal) terminals.push(terminal);
       delete checkedState.items[item.key];
       completed += 1;
     }
     if (completed) {
-      await this.writeState(checkedState, {
-        publicationCompleted: completed,
-        publicationSuperseded: completed,
-      });
+      await this.writeState(
+        checkedState,
+        {
+          publicationCompleted: completed,
+          publicationSuperseded: completed,
+        },
+        undefined,
+        undefined,
+        [],
+        terminals,
+      );
     }
     return completed;
   }
@@ -3551,6 +3649,7 @@ export class ExactReviewQueue {
     const activeBatchItemKeys = new Set(this.batchStore.activeLeaseSnapshot(Date.now()).itemKeys);
     const state = this.readStateSync();
     let superseded = 0;
+    const terminals: ExactReviewPublicationTerminal[] = [];
     for (const candidate of candidates) {
       const item = state.items[candidate.itemKey];
       if (
@@ -3562,14 +3661,23 @@ export class ExactReviewQueue {
       ) {
         continue;
       }
+      const terminal = exactReviewPublicationTerminal(item, "superseded", Date.now());
+      if (terminal) terminals.push(terminal);
       delete state.items[item.key];
       superseded += 1;
     }
     if (superseded) {
-      await this.writeState(state, {
-        publicationCompleted: superseded,
-        publicationSuperseded: superseded,
-      });
+      await this.writeState(
+        state,
+        {
+          publicationCompleted: superseded,
+          publicationSuperseded: superseded,
+        },
+        undefined,
+        undefined,
+        [],
+        terminals,
+      );
       await this.scheduleNext(state, Date.now());
     }
     return json({ ok: true, superseded, skipped: candidates.length - superseded });
@@ -3761,6 +3869,10 @@ export class ExactReviewQueue {
             ) {
               continue;
             }
+          }
+          if (candidate.reason === "stale_revision") {
+            const terminal = exactReviewPublicationTerminal(current, "superseded", now);
+            if (terminal) this.publicationTerminalLedger.record(terminal);
           }
           delete state.items[current.key];
           changedKeys.add(current.key);
@@ -4103,6 +4215,12 @@ export class ExactReviewQueue {
             deadLetterCapacityAvailable: true,
             env: this.env,
           });
+          if (result.terminalOutcome) {
+            const terminal = exactReviewPublicationTerminal(item, result.terminalOutcome, now, {
+              batchId,
+            });
+            if (terminal) this.publicationTerminalLedger.record(terminal);
+          }
           if (!result.requeued && !result.parked) superseded += 1;
         }
         if (!superseded) return;
@@ -4270,6 +4388,13 @@ export class ExactReviewQueue {
               this.insertDeadLetterSync(result.deadLetter);
               deadLettered += 1;
             }
+            if (result.terminalOutcome) {
+              const terminal = exactReviewPublicationTerminal(item, result.terminalOutcome, now, {
+                batchId,
+                ...(stateCommitSha ? { stateCommitSha } : {}),
+              });
+              if (terminal) this.publicationTerminalLedger.record(terminal);
+            }
             if (!result.requeued && !result.parked) completed += 1;
             if (result.retried) retried += 1;
             if (result.refreshed) refreshed += 1;
@@ -4287,6 +4412,13 @@ export class ExactReviewQueue {
             deadLetterCapacityAvailable: true,
             env: this.env,
           });
+          if (result.terminalOutcome) {
+            const terminal = exactReviewPublicationTerminal(item, result.terminalOutcome, now, {
+              batchId,
+              ...(stateCommitSha ? { stateCommitSha } : {}),
+            });
+            if (terminal) this.publicationTerminalLedger.record(terminal);
+          }
           if (!result.requeued) completed += 1;
           if (completion.terminalOutcome === "published") published += 1;
           else if (completion.terminalOutcome === "superseded") superseded += 1;
@@ -4378,6 +4510,7 @@ export class ExactReviewQueue {
   private async initializeStorage() {
     this.ensureStorageSchemaSync();
     this.batchStore.ensureSchemaSync();
+    this.publicationTerminalLedger.ensureSchemaSync();
     this.stateWriterCoordinator.ensureSchemaSync();
     let meta = this.readStorageMetaSync();
     let migratedLegacy = false;
@@ -5137,8 +5270,10 @@ export class ExactReviewQueue {
     publicationFeedback?: ExactReviewPublicationFeedback,
     deadLetter?: ExactReviewDeadLetterInsert,
     supersessionAudits: ExactReviewSupersessionAudit[] = [],
+    publicationTerminals: ExactReviewPublicationTerminal[] = [],
   ) {
     this.storage.transactionSync(() => {
+      for (const terminal of publicationTerminals) this.publicationTerminalLedger.record(terminal);
       this.writeStateSync(state);
       this.incrementQueueMetricsSync(metricDelta);
       if (publicationFeedback) this.applyPublicationFeedbackSync(publicationFeedback);
@@ -5520,6 +5655,7 @@ export class ExactReviewQueue {
   }
 
   private pruneQueueTelemetrySync(now: number) {
+    this.publicationTerminalLedger.compact(now);
     this.storage.sql.exec(
       `DELETE FROM ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE} WHERE bucket_start < ?`,
       now - EXACT_REVIEW_QUEUE_METRIC_BUCKET_TTL_MS,
@@ -6577,6 +6713,25 @@ function exactReviewPublicationRevision(decision: ExactReviewDecision): {
   };
 }
 
+function exactReviewPublicationTerminal(
+  item: ExactReviewQueueItem,
+  outcome: ExactReviewPublicationTerminalOutcome,
+  terminalAt: number,
+  metadata: { batchId?: string; stateCommitSha?: string } = {},
+): ExactReviewPublicationTerminal | null {
+  const revision = exactReviewPublicationRevision(item.decision);
+  if (!revision) return null;
+  return {
+    targetKey: revision.targetKey,
+    sourceRevision: revision.sourceRevision,
+    outcome,
+    terminalAt,
+    ...(item.claimedRunId ? { runId: item.claimedRunId } : {}),
+    ...(metadata.batchId ? { batchId: metadata.batchId } : {}),
+    ...(metadata.stateCommitSha ? { stateCommitSha: metadata.stateCommitSha } : {}),
+  };
+}
+
 type ExactReviewPublicationLineage = {
   targetKey: string;
   sourceRevision: number;
@@ -7072,6 +7227,7 @@ function finishExactReviewPublicationQueueItem({
   retried: boolean;
   refreshed: boolean;
   parked: boolean;
+  terminalOutcome?: ExactReviewPublicationTerminalOutcome;
   deadLetter?: ExactReviewDeadLetterInsert;
 } {
   const completionRevision = ownedRevision ?? Number(item.leaseRevision || 0);
@@ -7108,6 +7264,12 @@ function finishExactReviewPublicationQueueItem({
       retried: false,
       refreshed: false,
       parked: false,
+      terminalOutcome:
+        completion.kind === "published"
+          ? "published"
+          : completion.kind === "superseded"
+            ? "superseded"
+            : "closed",
     };
   }
 

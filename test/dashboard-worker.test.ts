@@ -4805,6 +4805,33 @@ test("exact-review queue terminalizes every admitted ordinary publication before
       )
     ).json();
     assert.equal(terminal.items.length, 0);
+
+    const redeliveryPublication = exactReviewPublicationOverrides(
+      9215,
+      "92151",
+      "opened",
+      1,
+      "openclaw/gogcli",
+    );
+    redeliveryPublication.publication.producerDecision.itemKind = "pull_request";
+    redeliveryPublication.publication.producerDecision.sourceEvent = "pull_request";
+    const redelivery = await harness.queue.fetch(
+      buildExactReviewQueueRequest(
+        "legacy-terminal-redelivery",
+        9215,
+        "exact_review_artifact_publish",
+        "pull_request",
+        "openclaw/gogcli",
+        redeliveryPublication,
+      ),
+    );
+    assert.deepEqual(await redelivery.json(), {
+      ok: true,
+      deduped: true,
+      item_key: "openclaw/gogcli#9215@publish:92151:1",
+      terminal: true,
+      terminal_outcome: "closed",
+    });
   } finally {
     harness.restore();
   }
@@ -8696,6 +8723,251 @@ test("exact-review publication supersedes stale tuples without counting a publis
   assert.equal(stats.lanes.publication.flow.last_15_minutes.published_rate_per_hour, 0);
   assert.equal(stats.lanes.publication.flow.last_15_minutes.superseded_rate_per_hour, 4);
   assert.equal(stats.lanes.publication.dead_letters.open, 0);
+
+  const redelivery = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "superseded-terminal-redelivery",
+      781,
+      "exact_review_artifact_publish",
+      "issue",
+      "openclaw/openclaw",
+      exactReviewPublicationOverrides(781, "7811", "opened", 1, "openclaw/openclaw"),
+    ),
+  );
+  assert.deepEqual(await redelivery.json(), {
+    ok: true,
+    deduped: true,
+    item_key: "openclaw/openclaw#781@publish:7811:1",
+    terminal: true,
+    terminal_outcome: "superseded",
+  });
+});
+
+test("exact-review publication terminal recording rolls back with the queue and fences redelivery", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(7811, "78110");
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const complete = () =>
+    queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: item.leaseId,
+          item_key: item.key,
+          lease_revision: item.leaseRevision,
+          claim_generation: item.claimGeneration,
+          run_id: item.claimedRunId,
+          run_attempt: item.claimedRunAttempt,
+          outcome: "success",
+          completion_kind: "published",
+          reason_code: "publication_applied",
+        }),
+      }),
+    );
+
+  storage.failNextSql(/INSERT INTO exact_review_publication_terminals/);
+  await assert.rejects(complete(), /injected SQL failure/);
+  const afterCrash = (await storage.get("exact-review-queue")) as {
+    items: Record<string, unknown>;
+  };
+  assert.ok(afterCrash.items[item.key]);
+  assert.equal(
+    Array.from(storage.sql.exec("SELECT * FROM exact_review_publication_terminals")).length,
+    0,
+  );
+
+  assert.deepEqual(await (await complete()).json(), { ok: true, requeued: false });
+  const terminal = Array.from(
+    storage.sql.exec(
+      `SELECT terminal_outcome, run_id
+         FROM exact_review_publication_terminals
+        WHERE target_key = ? AND source_revision = ?`,
+      "openclaw/openclaw#7811",
+      1,
+    ),
+  )[0];
+  assert.equal(terminal?.terminal_outcome, "published");
+  assert.equal(terminal?.run_id, "78110");
+
+  const redelivery = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "published-terminal-redelivery",
+      7811,
+      "exact_review_artifact_publish",
+      "issue",
+      "openclaw/openclaw",
+      exactReviewPublicationOverrides(7811, "78111", "opened", 1, "openclaw/openclaw"),
+    ),
+  );
+  assert.deepEqual(await redelivery.json(), {
+    ok: true,
+    deduped: true,
+    item_key: "openclaw/openclaw#7811@publish:78111:1",
+    terminal: true,
+    terminal_outcome: "published",
+  });
+
+  const laterRevision = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "published-terminal-next-revision",
+      7811,
+      "exact_review_artifact_publish",
+      "issue",
+      "openclaw/openclaw",
+      exactReviewPublicationOverrides(7811, "78112", "opened", 2, "openclaw/openclaw"),
+    ),
+  );
+  assert.equal(laterRevision.status, 202);
+  assert.equal((await laterRevision.json()).queued, true);
+});
+
+test("exact-review publication generic success records a closed terminal outcome", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(7812, "78120");
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const completed = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "success",
+      }),
+    }),
+  );
+  assert.deepEqual(await completed.json(), { ok: true, requeued: false });
+  const terminal = Array.from(
+    storage.sql.exec(
+      `SELECT terminal_outcome, run_id
+         FROM exact_review_publication_terminals
+        WHERE target_key = ? AND source_revision = ?`,
+      "openclaw/openclaw#7812",
+      1,
+    ),
+  )[0];
+  assert.equal(terminal?.terminal_outcome, "closed");
+  assert.equal(terminal?.run_id, "78120");
+
+  const redelivery = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "generic-success-terminal-redelivery",
+      7812,
+      "exact_review_artifact_publish",
+      "issue",
+      "openclaw/openclaw",
+      exactReviewPublicationOverrides(7812, "78121", "opened", 1, "openclaw/openclaw"),
+    ),
+  );
+  assert.deepEqual(await redelivery.json(), {
+    ok: true,
+    deduped: true,
+    item_key: "openclaw/openclaw#7812@publish:78121:1",
+    terminal: true,
+    terminal_outcome: "closed",
+  });
+});
+
+test("stale publication redelivery preserves an active revision's final terminal outcome", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(7813, "78130");
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  assert.equal(
+    (
+      await queue.fetch(
+        buildExactReviewQueueRequest(
+          "active-terminal-newer-revision",
+          7813,
+          "exact_review_artifact_publish",
+          "issue",
+          "openclaw/openclaw",
+          exactReviewPublicationOverrides(7813, "78131", "opened", 2, "openclaw/openclaw"),
+        ),
+      )
+    ).status,
+    202,
+  );
+  const staleRedelivery = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "active-terminal-stale-redelivery",
+      7813,
+      "exact_review_artifact_publish",
+      "issue",
+      "openclaw/openclaw",
+      exactReviewPublicationOverrides(7813, "78130", "opened", 1, "openclaw/openclaw"),
+    ),
+  );
+  const staleResult = await staleRedelivery.json();
+  assert.equal(staleResult.deduped, true);
+  assert.equal(staleResult.superseded, true);
+  assert.equal(staleResult.terminal, undefined);
+  assert.equal(
+    Array.from(
+      storage.sql.exec(
+        `SELECT *
+           FROM exact_review_publication_terminals
+          WHERE target_key = ? AND source_revision = ?`,
+        "openclaw/openclaw#7813",
+        1,
+      ),
+    ).length,
+    0,
+  );
+
+  const completed = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "success",
+        completion_kind: "published",
+        reason_code: "publication_applied",
+      }),
+    }),
+  );
+  assert.deepEqual(await completed.json(), { ok: true, requeued: false });
+  const terminal = Array.from(
+    storage.sql.exec(
+      `SELECT terminal_outcome, run_id
+         FROM exact_review_publication_terminals
+        WHERE target_key = ? AND source_revision = ?`,
+      "openclaw/openclaw#7813",
+      1,
+    ),
+  )[0];
+  assert.equal(terminal?.terminal_outcome, "published");
+  assert.equal(terminal?.run_id, "78130");
+
+  const terminalRedelivery = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "active-terminal-final-redelivery",
+      7813,
+      "exact_review_artifact_publish",
+      "issue",
+      "openclaw/openclaw",
+      exactReviewPublicationOverrides(7813, "78130", "opened", 1, "openclaw/openclaw"),
+    ),
+  );
+  assert.deepEqual(await terminalRedelivery.json(), {
+    ok: true,
+    deduped: true,
+    item_key: "openclaw/openclaw#7813@publish:78130:1",
+    terminal: true,
+    terminal_outcome: "published",
+  });
 });
 
 test("exact-review publication dead-letters exhausted permanent failures and replays idempotently", async () => {
@@ -10075,7 +10347,7 @@ test("signed exact-review reconciliation releases only immutable terminal runs",
       "openclaw/openclaw#711": leasedExactReviewQueueItem(711, "9001"),
       "openclaw/openclaw#712": leasedExactReviewQueueItem(712, "9002"),
       "openclaw/openclaw#720": leasedExactReviewQueueItem(720, "9004"),
-      "openclaw/openclaw#719": leasedExactReviewQueueItem(719, "9003"),
+      "openclaw/openclaw#719": leasedExactReviewPublicationItem(719, "9003"),
     },
   });
   const queue = new ExactReviewQueue({ storage }, {});
@@ -10200,6 +10472,17 @@ test("signed exact-review reconciliation releases only immutable terminal runs",
     assert.equal(state.items["openclaw/openclaw#712"].claimedRunId, "9002");
     assert.equal(state.items["openclaw/openclaw#720"].claimedRunId, "9004");
     assert.equal(state.items["openclaw/openclaw#719"], undefined);
+    const terminal = Array.from(
+      storage.sql.exec(
+        `SELECT terminal_outcome, run_id
+           FROM exact_review_publication_terminals
+          WHERE target_key = ? AND source_revision = ?`,
+        "openclaw/openclaw#719",
+        1,
+      ),
+    )[0];
+    assert.equal(terminal?.terminal_outcome, "closed");
+    assert.equal(terminal?.run_id, "9003");
     const staleAttemptBody = JSON.stringify({
       runs: [{ run_id: "9004", run_attempt: 2 }],
       include_all_claimed: true,
