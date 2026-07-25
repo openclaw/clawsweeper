@@ -2147,8 +2147,15 @@ test("Bay queue projection maps durable batch-owned publication items to Applyin
     status.bay_projection.items.map((item) => ({
       item_key: item.item_key,
       stage: item.stage,
+      batch_id: item.batch_id,
     })),
-    [{ item_key: "openclaw/gogcli#602", stage: "applying" }],
+    [
+      {
+        item_key: "openclaw/gogcli#602",
+        stage: "applying",
+        batch_id: "bay-applying-batch",
+      },
+    ],
   );
 });
 

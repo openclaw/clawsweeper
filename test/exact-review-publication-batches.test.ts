@@ -133,6 +133,10 @@ test("publication batches atomically select ready items without duplicate active
   assert.equal(second, null);
   assert.equal(first?.configuredBatchSize, 2);
   assert.deepEqual(batches.activeLeaseSnapshot(1_500), {
+    items: candidates.slice(0, 2).map((candidate) => ({
+      itemKey: candidate.itemKey,
+      batchId: "batch-1",
+    })),
     itemKeys: candidates.slice(0, 2).map((item) => item.itemKey),
     activeBatches: 1,
     nextLeaseExpiresAt: 2_000,
@@ -183,6 +187,16 @@ test("publication batches allow a bounded number of disjoint active owners", () 
   );
   assert.equal(third, null);
   assert.deepEqual(batches.activeLeaseSnapshot(1_500), {
+    items: [
+      ...candidates.slice(0, 2).map((candidate) => ({
+        itemKey: candidate.itemKey,
+        batchId: "parallel-1",
+      })),
+      ...candidates.slice(2).map((candidate) => ({
+        itemKey: candidate.itemKey,
+        batchId: "parallel-2",
+      })),
+    ],
     itemKeys: candidates.map((item) => item.itemKey),
     activeBatches: 2,
     nextLeaseExpiresAt: 2_000,

@@ -56,6 +56,10 @@ export type PublicationBatchStats = {
   expired: number;
   activeItems: number;
   activeItemKeys: string[];
+  // This contains only unfinished, currently leased membership. It lets the
+  // read-only Bay projection identify the bounded batch that owns an item
+  // without retaining a separate event history or looking it up through GitHub.
+  activeItemBatches: Array<{ itemKey: string; batchId: string }>;
   nextLeaseExpiresAt: number | null;
   oldestActiveAt: number | null;
   reclaimedItemsRetained: number;
@@ -424,6 +428,7 @@ export class ExactReviewPublicationBatchStore {
         expired: counts.get("expired") ?? 0,
         activeItems: activeLease.itemKeys.length,
         activeItemKeys: activeLease.itemKeys,
+        activeItemBatches: activeLease.items,
         nextLeaseExpiresAt: activeLease.nextLeaseExpiresAt,
         oldestActiveAt: leased ? Number(leased.oldest_at) : null,
         reclaimedItemsRetained,
@@ -470,6 +475,10 @@ export class ExactReviewPublicationBatchStore {
       ),
     );
     return {
+      items: rows.map((row) => ({
+        itemKey: String(row.item_key),
+        batchId: String(row.batch_id),
+      })),
       itemKeys: rows.map((row) => String(row.item_key)),
       activeBatches: new Set(rows.map((row) => String(row.batch_id))).size,
       nextLeaseExpiresAt: rows.length

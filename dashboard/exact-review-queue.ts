@@ -1880,7 +1880,10 @@ export class ExactReviewQueue {
         stateWriterCoordinatorQueuedStaleMs(this.env),
       );
       const publicationBatches = this.batchStore.stats(now);
-      const batchOwnedItemKeys = new Set<string>(publicationBatches.activeItemKeys);
+      const batchByItemKey = new Map<string, ExactReviewBayBatchOwner>(
+        publicationBatches.activeItemBatches.map((batch) => [batch.itemKey, batch] as const),
+      );
+      const batchOwnedItemKeys = new Set<string>(batchByItemKey.keys());
       const freshPublicationItemKeys = this.freshPublicationItemKeysSync(state, now);
       const legacyExcludedItemKeys = new Set(batchOwnedItemKeys);
       if (exactReviewPublicationBatchingEnabled(this.env)) {
@@ -1923,7 +1926,7 @@ export class ExactReviewQueue {
         bay_projection: exactReviewQueueBayProjection(
           Object.values(state.items),
           bayPriorityKeys,
-          batchOwnedItemKeys,
+          batchByItemKey,
         ),
         lanes: {
           review: {
@@ -7287,11 +7290,17 @@ type ExactReviewBayProjectionItem = {
   created_at: string;
   updated_at: string;
   next_attempt_at: string;
+  batch_id?: string;
+  batch_created_at?: string;
+};
+
+type ExactReviewBayBatchOwner = {
+  batchId: string;
 };
 
 function exactReviewQueueBayStage(
   item: ExactReviewQueueItem,
-  batchOwnedItemKeys: ReadonlySet<string> = new Set(),
+  batchByItemKey: ReadonlyMap<string, ExactReviewBayBatchOwner> = new Map(),
 ): ExactReviewBayStage {
   // A parked item is deliberately no longer making normal queue progress. This
   // includes bounded review-retry exhaustion, permanent dispatch rejection,
@@ -7301,7 +7310,7 @@ function exactReviewQueueBayStage(
   // The batch publisher's GitHub job is intentionally targetless. Its durable
   // batch membership is the authoritative bounded source for the individual
   // items it is currently applying, without another GitHub lookup.
-  if (batchOwnedItemKeys.has(item.key)) return "applying";
+  if (batchByItemKey.has(item.key)) return "applying";
   if (exactReviewQueueIsPublication(item)) return "publishing";
   if (isLowPriorityExactReviewDecision(item.decision)) return "repairing";
   return item.state === "pending" ? "arriving" : "setting-up";
@@ -7325,7 +7334,7 @@ function exactReviewQueueBayPriorityKeys(values: string[]) {
 function exactReviewQueueBayProjection(
   items: ExactReviewQueueItem[],
   priorityItemKeys: string[] = [],
-  batchOwnedItemKeys: ReadonlySet<string> = new Set(),
+  batchByItemKey: ReadonlyMap<string, ExactReviewBayBatchOwner> = new Map(),
 ) {
   const projected = new Map<string, ExactReviewBayProjectionItem>();
   for (const item of items) {
@@ -7335,15 +7344,21 @@ function exactReviewQueueBayProjection(
     const repository = String(item.decision.targetRepo || "").trim();
     const itemNumber = Number(item.decision.itemNumber);
     if (!repository || !Number.isSafeInteger(itemNumber) || itemNumber <= 0) continue;
+    const batch = batchByItemKey.get(item.key);
     const candidate: ExactReviewBayProjectionItem = {
       item_key: `${repository}#${itemNumber}`,
       repository,
       item_number: itemNumber,
-      stage: exactReviewQueueBayStage(item, batchOwnedItemKeys),
+      stage: exactReviewQueueBayStage(item, batchByItemKey),
       queue_state: item.state,
       created_at: new Date(item.createdAt).toISOString(),
       updated_at: new Date(item.updatedAt).toISOString(),
       next_attempt_at: new Date(item.nextAttemptAt).toISOString(),
+      ...(batch
+        ? {
+            batch_id: batch.batchId,
+          }
+        : {}),
     };
     const previous = projected.get(candidate.item_key);
     const candidateUpdatedAt = Date.parse(candidate.updated_at);

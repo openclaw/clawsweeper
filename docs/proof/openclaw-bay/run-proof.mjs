@@ -446,7 +446,12 @@ const batchApplyingProjection = queueProjection();
 const batchApplyingItemKey = "openclaw/openclaw#108003";
 const batchApplyingItems = batchApplyingProjection.bay_projection.items.map((item) =>
   item.item_key === batchApplyingItemKey
-    ? { ...item, stage: "applying", queue_state: "pending" }
+    ? {
+        ...item,
+        stage: "applying",
+        queue_state: "pending",
+        batch_id: "exact-review-batch:9001",
+      }
     : item,
 );
 proofSnapshots.push({
@@ -1032,9 +1037,9 @@ try {
   await currentStateWriterFailure;
   await page.waitForFunction(() =>
     /history gap · awaiting current sample/i.test(
-      [...document.querySelectorAll("#bay-control-board .bay-control-card")]
-        .find((card) => /State writer/i.test(card.textContent || ""))
-        ?.textContent || "",
+      [...document.querySelectorAll("#bay-control-board .bay-control-card")].find((card) =>
+        /State writer/i.test(card.textContent || ""),
+      )?.textContent || "",
     ),
   );
   const failedStateWriterCopy = await page
@@ -1732,12 +1737,19 @@ try {
   await page.evaluate(async () => {
     await window.__bayProofPoll();
   });
-  const batchPublisherLane = page.locator(`[data-stage="applying"] [data-key="${batchApplyingItemKey}"]`);
+  const batchPublisherLane = page.locator(
+    `[data-stage="applying"] [data-key="${batchApplyingItemKey}"]`,
+  );
   await batchPublisherLane.waitFor({ state: "visible", timeout: 5_000 });
   assertProof(
-    "durable batch ownership places known publication items in Applying",
-    (await batchPublisherLane.count()) === 1,
-    { item_key: batchApplyingItemKey, stage: "applying" },
+    "durable batch ownership places known publication items in Applying & writing",
+    (await batchPublisherLane.count()) === 1 &&
+      /APPLYING & WRITING 1/.test(await page.locator('[data-stage="applying"] h2').innerText()),
+    {
+      item_key: batchApplyingItemKey,
+      stage: "applying",
+      batch_id: "exact-review-batch:9001",
+    },
   );
 
   fixtureIndex = 10;
