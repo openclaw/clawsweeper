@@ -2065,7 +2065,9 @@ test("spam scanner exact dispatches publish only per-comment audit records", () 
   );
   assert.match(workflow, /--path results\/spam-scanner\.json/);
   assert.match(workflow, /cancel-in-progress: false/);
-  assert.match(scanner, /reasoning: \{ effort: "high" \}/);
+  assert.match(scanner, /model_reasoning_effort="high"/);
+  assert.match(scanner, /runCodexProcess/);
+  assert.doesNotMatch(scanner, /api\.openai\.com/);
 });
 
 test("issue implementation workflow lets job intent choose dispatch capacity", () => {
@@ -2297,6 +2299,7 @@ test("model workflows install pinned CLI releases and keep provider models secre
     ".github/workflows/maintainer-activity-report.yml",
     ".github/workflows/repair-cluster-worker.yml",
     ".github/workflows/repair-commit-finding-intake.yml",
+    ".github/workflows/spam-scanner.yml",
     ".github/workflows/sweep.yml",
   ].map((file) => readText(file));
 

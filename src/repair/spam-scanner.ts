@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { runCodexProcess } from "../codex-process.js";
+import { codexEnv, codexModelArgs, PUBLIC_CODEX_MODEL } from "../codex-env.js";
+import { modelRuntime } from "../model-runtime.js";
 import { parseArgs, repoRoot } from "./lib.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import {
@@ -23,7 +27,6 @@ import {
   type SpamModelResult,
   type SpamScanComment,
 } from "./spam-scanner-core.js";
-import { internalCodexModel, PUBLIC_CODEX_MODEL } from "../codex-env.js";
 import { compactText } from "./text-utils.js";
 
 const args = parseArgs(process.argv.slice(2));
@@ -56,6 +59,34 @@ const trustedBots = commaSet(
     process.env.CLAWSWEEPER_SPAM_TRUSTED_BOTS ??
     "clawsweeper[bot],openclaw-clawsweeper[bot]",
 );
+const SPAM_RESULT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    results: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          comment_id: { type: "string" },
+          spam_signal: { type: "string", enum: ["none", "low", "medium", "high"] },
+          confidence: { type: "number", minimum: 0, maximum: 1 },
+          reasons: { type: "array", items: { type: "string" } },
+          should_investigate: { type: "boolean" },
+        },
+        required: [
+          "comment_id",
+          "spam_signal",
+          "confidence",
+          "reasons",
+          "should_investigate",
+        ],
+      },
+    },
+  },
+  required: ["results"],
+} as const;
 
 assertRepo(targetRepo, "repo");
 
@@ -103,6 +134,7 @@ const report = {
   generated_at: new Date().toISOString(),
   repo: targetRepo,
   model: PUBLIC_CODEX_MODEL,
+  model_runtime: modelRuntime(),
   since,
   max_comments: maxComments,
   scanned_comments: comments.length,
@@ -232,86 +264,60 @@ function fetchMinimizationBatch(query: string, ids: string[]): LooseRecord {
 }
 
 async function scanWithModel(comments: SpamScanComment[], scanModel: string) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    console.warn("[spam-scanner] OPENAI_API_KEY missing; writing deterministic audit only.");
-    return new Map<string, SpamModelResult>();
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-spam-scan-"));
+  const schemaPath = path.join(workDir, "spam-scan.schema.json");
+  const outputPath = path.join(workDir, "spam-scan.json");
+  try {
+    fs.writeFileSync(schemaPath, `${JSON.stringify(SPAM_RESULT_SCHEMA)}\n`, { mode: 0o600 });
+    const result = runCodexProcess({
+      args: [
+        "exec",
+        ...codexModelArgs(scanModel),
+        "-c",
+        'model_reasoning_effort="high"',
+        "-c",
+        'approval_policy="never"',
+        "-c",
+        'shell_environment_policy.inherit="none"',
+        "-c",
+        'web_search="disabled"',
+        "--sandbox",
+        "read-only",
+        "--disable",
+        "shell_tool",
+        "--disable",
+        "apps",
+        "--disable",
+        "browser_use",
+        "--disable",
+        "computer_use",
+        "--ephemeral",
+        "--ignore-rules",
+        "--skip-git-repo-check",
+        "--output-schema",
+        schemaPath,
+        "--output-last-message",
+        outputPath,
+        "-",
+      ],
+      cwd: workDir,
+      env: codexEnv({ preserveCodexAuth: true }),
+      input: `${SPAM_MODEL_SYSTEM_PROMPT}\n\nInput:\n${JSON.stringify(buildSpamModelInput(comments))}`,
+      timeoutMs: 120_000,
+      outputFileBytes: 2 * 1024 * 1024,
+    });
+    if (result.error || result.status !== 0 || !fs.existsSync(outputPath)) {
+      const detail = compactText(
+        result.error?.message || result.stderr || result.stdout || `exit ${result.status}`,
+        1000,
+      );
+      throw new Error(`Model spam scan failed: ${detail}`);
+    }
+    const parsed = JSON.parse(fs.readFileSync(outputPath, "utf8")) as JsonValue;
+    return new Map(normalizeModelResults(parsed).map((entry) => [entry.comment_id, entry]));
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
   }
-  const payload = {
-    model: internalCodexModel(scanModel),
-    reasoning: { effort: "high" },
-    input: [
-      {
-        role: "system",
-        content: SPAM_MODEL_SYSTEM_PROMPT,
-      },
-      { role: "user", content: JSON.stringify(buildSpamModelInput(comments)) },
-    ],
-    text: {
-      format: {
-        type: "json_schema",
-        name: "spam_scan",
-        strict: true,
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            results: {
-              type: "array",
-              items: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  comment_id: { type: "string" },
-                  spam_signal: { type: "string", enum: ["none", "low", "medium", "high"] },
-                  confidence: { type: "number", minimum: 0, maximum: 1 },
-                  reasons: { type: "array", items: { type: "string" } },
-                  should_investigate: { type: "boolean" },
-                },
-                required: [
-                  "comment_id",
-                  "spam_signal",
-                  "confidence",
-                  "reasons",
-                  "should_investigate",
-                ],
-              },
-            },
-          },
-          required: ["results"],
-        },
-      },
-    },
-  };
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    throw new Error(`OpenAI spam scan failed: HTTP ${response.status} ${await response.text()}`);
-  }
-  const data = (await response.json()) as LooseRecord;
-  const text = outputText(data);
-  const parsed = JSON.parse(text || "{}") as JsonValue;
-  return new Map(normalizeModelResults(parsed).map((result) => [result.comment_id, result]));
-}
-
-function outputText(data: LooseRecord) {
-  if (typeof data.output_text === "string") return data.output_text;
-  const output = Array.isArray(data.output) ? data.output : [];
-  return output
-    .flatMap((item: JsonValue) =>
-      Array.isArray((item as LooseRecord).content)
-        ? ((item as LooseRecord).content as JsonValue[])
-        : [],
-    )
-    .map((content: JsonValue) => String((content as LooseRecord).text ?? ""))
-    .join("")
-    .trim();
 }
 
 function auditSummary(
