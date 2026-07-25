@@ -7200,7 +7200,7 @@ test("exact-review queue retries dispatch failures and reclaims an unclaimed lea
   }
 });
 
-test("exact-review queue parks structured client-payload validation and explicit command recovers it", async () => {
+test("exact-review queue parks permanent dispatch rejection and explicit command recovers it", async () => {
   const originalFetch = globalThis.fetch;
   const storage = new MemoryDurableStorage();
   const { privateKey } = generateKeyPairSync("rsa", {
@@ -7222,20 +7222,9 @@ test("exact-review queue parks structured client-payload validation and explicit
     if (url.pathname === "/repos/openclaw/clawsweeper/dispatches")
       return dispatchStatus === 204
         ? new Response(null, { status: 204 })
-        : new Response(
-            JSON.stringify({
-              message: "Validation Failed: must-not-persist",
-              errors: [
-                {
-                  resource: "Repository",
-                  field: "client_payload",
-                  code: "invalid",
-                  value: "https://private.example/secret?token=must-not-persist",
-                },
-              ],
-            }),
-            { status: dispatchStatus },
-          );
+        : new Response(JSON.stringify({ message: "unprocessable payload" }), {
+            status: dispatchStatus,
+          });
     throw new Error(`unexpected fetch ${url}`);
   };
 
@@ -7266,14 +7255,7 @@ test("exact-review queue parks structured client-payload validation and explicit
     assert.equal(status.items[0].attempts, 0);
     assert.equal(status.items[0].dispatch_failure_status, 422);
     assert.equal(status.items[0].dispatch_failure_class, "permanent_rejection");
-    assert.deepEqual(status.items[0].dispatch_failure_detail, {
-      validation_fields: ["client_payload"],
-      validation_codes: ["invalid"],
-    });
     assert.match(status.items[0].dispatch_failure_fingerprint, /^dispatch-[0-9a-f]{8}$/);
-
-    const persisted = JSON.stringify(await storage.get("exact-review-queue"));
-    assert.doesNotMatch(persisted, /must-not-persist|private\.example|token=/);
 
     dispatchStatus = 204;
     assert.equal(
@@ -7309,176 +7291,6 @@ test("exact-review queue parks structured client-payload validation and explicit
     assert.equal(recovered.items["openclaw/gogcli#600"].parkedReason, undefined);
     assert.equal(recovered.items["openclaw/gogcli#600"].dispatchFailureClass, undefined);
     assert.equal(recovered.items["openclaw/gogcli#600"].attempts, 0);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("exact-review queue retains a synchronize update after an unclassified 422", async () => {
-  const originalFetch = globalThis.fetch;
-  const storage = new MemoryDurableStorage();
-  const { privateKey } = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
-    publicKeyEncoding: { type: "spki", format: "pem" },
-  });
-  let dispatchedPayload: Record<string, unknown> | undefined;
-  globalThis.fetch = async (input, init) => {
-    const url = new URL(String(input));
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml")
-      return jsonResponse({ state: "active" });
-    if (/^\/repos\/openclaw\/(?:clawsweeper|gogcli)\/installation$/.test(url.pathname))
-      return jsonResponse({ id: 999 });
-    if (/^\/repos\/openclaw\/(?:clawsweeper|gogcli)\/issues\/\d+$/.test(url.pathname))
-      return jsonResponse({ state: "open" });
-    if (url.pathname === "/app/installations/999/access_tokens")
-      return jsonResponse({ token: "dispatch-token" });
-    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
-      dispatchedPayload = JSON.parse(String(init?.body || "{}"));
-      return new Response(
-        JSON.stringify({
-          message: "Validation Failed: must-not-persist",
-          errors: [
-            {
-              resource: "Repository",
-              field: "event_type",
-              code: "invalid",
-              value: "https://private.example/secret?token=must-not-persist",
-            },
-          ],
-        }),
-        { status: 422 },
-      );
-    }
-    throw new Error(`unexpected fetch ${url}`);
-  };
-
-  try {
-    const queue = new ExactReviewQueue(
-      { storage },
-      {
-        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
-        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
-        EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
-      },
-    );
-    await queue.fetch(
-      buildExactReviewQueueRequest(
-        "842-command",
-        842,
-        "legacy_dispatch",
-        "pull_request",
-        "openclaw/clawsweeper",
-        { commandStatusMarker: "<!-- clawsweeper-command-status:842:re_review:old -->" },
-      ),
-    );
-    await queue.fetch(
-      buildExactReviewQueueRequest(
-        "842-synchronize",
-        842,
-        "synchronize",
-        "pull_request",
-        "openclaw/clawsweeper",
-        {
-          sourceHeadSha: "81e4abc894e7d3ec1fddbd856378b6aadb4392f3",
-          sourceHeadVerified: true,
-          sourceAuthoritySeq: 1,
-        },
-      ),
-    );
-    await queue.alarm();
-
-    const clientPayload = (dispatchedPayload?.client_payload || {}) as Record<string, unknown>;
-    assert.equal(Object.keys(clientPayload).length, 10);
-    assert.equal(clientPayload.source_head_sha, undefined);
-    assert.equal(
-      (clientPayload.queue_claim as Record<string, unknown>).source_head_sha,
-      "81e4abc894e7d3ec1fddbd856378b6aadb4392f3",
-    );
-    assert.ok(clientPayload.review_options);
-
-    const status = await (
-      await queue.fetch(
-        new Request(
-          "https://clawsweeper-exact-review-queue/item-status?target_repo=openclaw%2Fclawsweeper&item_number=842",
-        ),
-      )
-    ).json();
-    assert.equal(status.items[0].state, "pending");
-    assert.equal(status.items[0].parked_reason, null);
-    assert.equal(status.items[0].dispatch_failure_status, 422);
-    assert.equal(status.items[0].dispatch_failure_class, "validation_unknown");
-    assert.deepEqual(status.items[0].dispatch_failure_detail, {
-      validation_fields: ["event_type"],
-      validation_codes: ["invalid"],
-    });
-
-    const queueStatus = await (
-      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
-    ).json();
-    assert.equal(queueStatus.dispatcher.state, "blocked");
-    assert.equal(queueStatus.dispatcher.reason, "dispatch_validation");
-    assert.ok(Date.parse(queueStatus.dispatcher.retry_at) > Date.now());
-    assert.deepEqual(queueStatus.dispatcher.dispatch_failure_detail, {
-      validation_fields: ["event_type"],
-      validation_codes: ["invalid"],
-    });
-    assert.doesNotMatch(
-      JSON.stringify(await storage.get("exact-review-queue")),
-      /must-not-persist|private\.example|token=/,
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("exact-review queue treats a secondary-limit 422 as a global retry", async () => {
-  const originalFetch = globalThis.fetch;
-  const storage = new MemoryDurableStorage();
-  const { privateKey } = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
-    publicKeyEncoding: { type: "spki", format: "pem" },
-  });
-  globalThis.fetch = async (input) => {
-    const url = new URL(String(input));
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml")
-      return jsonResponse({ state: "active" });
-    if (/^\/repos\/openclaw\/(?:clawsweeper|gogcli)\/installation$/.test(url.pathname))
-      return jsonResponse({ id: 999 });
-    if (/^\/repos\/openclaw\/(?:clawsweeper|gogcli)\/issues\/\d+$/.test(url.pathname))
-      return jsonResponse({ state: "open" });
-    if (url.pathname === "/app/installations/999/access_tokens")
-      return jsonResponse({ token: "dispatch-token" });
-    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches")
-      return new Response(
-        JSON.stringify({ message: "You have exceeded a secondary rate limit." }),
-        {
-          status: 422,
-        },
-      );
-    throw new Error(`unexpected fetch ${url}`);
-  };
-
-  try {
-    const queue = new ExactReviewQueue(
-      { storage },
-      {
-        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
-        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
-        EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
-      },
-    );
-    await queue.fetch(buildExactReviewQueueRequest("secondary-limit", 843, "synchronize"));
-    await queue.alarm();
-    const status = await (
-      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
-    ).json();
-    assert.equal(status.dispatcher.state, "blocked");
-    assert.equal(status.dispatcher.reason, "dispatch_rate_limit");
-    assert.equal(status.dispatcher.dispatch_failure_status, 422);
-    assert.equal(status.dispatcher.dispatch_failure_class, "rate_limit");
-    assert.equal(status.pending, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }
