@@ -8215,6 +8215,80 @@ test("a later exact-review cycle still publishes after an earlier cycle raised t
   assert.equal(reopened.items["openclaw/openclaw#864"].revision, 3);
 });
 
+test("an existing exact-review item rebases above the publication head on a newer source event", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const reviewKey = "openclaw/openclaw#865";
+
+  assert.equal(
+    (
+      await queue.fetch(
+        buildExactReviewQueueRequest(
+          "existing-review",
+          865,
+          "opened",
+          "issue",
+          "openclaw/openclaw",
+        ),
+      )
+    ).status,
+    202,
+  );
+  const existing = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { revision: number }>;
+  };
+  existing.items[reviewKey].revision = 7;
+  await storage.put("exact-review-queue", existing);
+
+  const recorded = await (
+    await queue.fetch(
+      buildExactReviewQueueRequest(
+        "record-publication-head",
+        865,
+        "exact_review_artifact_publish",
+        "issue",
+        "openclaw/openclaw",
+        exactReviewPublicationOverrides(865, "8650", "opened", 12, "openclaw/openclaw"),
+      ),
+    )
+  ).json();
+  assert.equal(recorded.queued, true);
+
+  assert.equal(
+    (
+      await queue.fetch(
+        buildExactReviewQueueRequest("newer-source", 865, "edited", "issue", "openclaw/openclaw"),
+      )
+    ).status,
+    202,
+  );
+  const rebased = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { revision: number }>;
+  };
+  assert.equal(rebased.items[reviewKey].revision, 13);
+
+  const republished = await (
+    await queue.fetch(
+      buildExactReviewQueueRequest(
+        "rebased-publication",
+        865,
+        "exact_review_artifact_publish",
+        "issue",
+        "openclaw/openclaw",
+        exactReviewPublicationOverrides(
+          865,
+          "8651",
+          "edited",
+          rebased.items[reviewKey].revision,
+          "openclaw/openclaw",
+        ),
+      ),
+    )
+  ).json();
+  assert.equal(republished.queued, true);
+  assert.equal(republished.superseded, undefined);
+});
+
 test("dead-letter fresh recovery seeds a review revision that can still publish", async () => {
   const storage = new MemoryDurableStorage();
   const item = leasedExactReviewPublicationItem(866, "8660");
