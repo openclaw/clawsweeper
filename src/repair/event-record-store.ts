@@ -96,12 +96,16 @@ export function resetEventSnapshot(store: EventRecordStore): void {
   fs.mkdirSync(store.snapshotDir, { recursive: true });
 }
 
-export function captureEventBaseSnapshot(store: EventRecordStore): EventRecordPaths {
+export function captureEventBaseSnapshot(
+  store: EventRecordStore,
+  options: { sourceRoot?: string } = {},
+): EventRecordPaths {
   const paths = eventRecordPaths(store);
-  copyIfExists(paths.itemRecord, paths.snapshotBaseItem);
-  copyIfExists(paths.closedRecord, paths.snapshotBaseClosed);
-  copyIfExists(paths.planRecord, paths.snapshotBasePlan);
-  copyIfExists(paths.decisionPacket, paths.snapshotBaseDecisionPacket);
+  const sourceRoot = options.sourceRoot ?? ".";
+  copyIfExists(path.resolve(sourceRoot, paths.itemRecord), paths.snapshotBaseItem);
+  copyIfExists(path.resolve(sourceRoot, paths.closedRecord), paths.snapshotBaseClosed);
+  copyIfExists(path.resolve(sourceRoot, paths.planRecord), paths.snapshotBasePlan);
+  copyIfExists(path.resolve(sourceRoot, paths.decisionPacket), paths.snapshotBaseDecisionPacket);
   return paths;
 }
 
