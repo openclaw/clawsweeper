@@ -41,6 +41,10 @@ test("maintainer report jobs isolate generation, publication, and deployment cre
   assert.doesNotMatch(generate, /permission-contents: write/);
   assert.doesNotMatch(generate, /maintainers_write_token|git push|CLOUDFLARE_API_TOKEN/);
   assert.equal(generate.match(/persist-credentials: false/g)?.length, 2);
+  assert.match(
+    generate,
+    /setup-pnpm[\s\S]*working-directory: clawsweeper[\s\S]*build-script: build/,
+  );
 
   assert.match(publish, /permission-contents: write/);
   assert.match(publish, /prepare-maintainer-report-publication\.sh/);

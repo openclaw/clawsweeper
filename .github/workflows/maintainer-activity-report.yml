@@ -104,6 +104,11 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
+      - uses: ./clawsweeper/.github/actions/setup-pnpm
+        with:
+          working-directory: clawsweeper
+          build-script: build
+
       - uses: ./clawsweeper/.github/actions/setup-codex
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

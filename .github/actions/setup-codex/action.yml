@@ -80,6 +80,27 @@ runs:
           --prefer-online --no-audit --no-fund --ignore-scripts
         claude --version
 
+        claude_shim="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)/dist/claude-codex-shim.js"
+        test -f "$claude_shim"
+        echo "CLAWSWEEPER_CLAUDE_SHIM=$claude_shim" >> "$GITHUB_ENV"
+        cat > "$HOME/.clawsweeper-repair/claude/bin/codex" <<'SH'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        args=()
+        skip_model_value=0
+        for arg in "$@"; do
+          if [[ "$skip_model_value" == "1" ]]; then
+            skip_model_value=0
+          elif [[ "$arg" == "--model" || "$arg" == "-m" ]]; then
+            skip_model_value=1
+          else
+            args+=("$arg")
+          fi
+        done
+        exec node "${CLAWSWEEPER_CLAUDE_SHIM:?}" "${args[@]}"
+        SH
+        chmod 755 "$HOME/.clawsweeper-repair/claude/bin/codex"
+
     - name: Resolve Codex home
       if: ${{ inputs['model-runtime'] == 'codex' }}
       shell: bash

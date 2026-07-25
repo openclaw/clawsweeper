@@ -2312,6 +2312,8 @@ test("model workflows install pinned CLI releases and keep provider models secre
   assert.match(action, /CLAWSWEEPER_MODEL_RUNTIME=claude/);
   assert.match(action, /CLAWSWEEPER_STEERABLE_CODEX=0/);
   assert.match(action, /CLAWSWEEPER_CLAUDE_CREDENTIALS_FILE=/);
+  assert.match(action, /dist\/claude-codex-shim\.js/);
+  assert.match(action, /skip_model_value/);
   assert.match(action, /CLAUDE_CODE_USE_BEDROCK/);
   assert.match(action, /CLAUDE_CODE_USE_VERTEX/);
   assert.match(action, /CLAUDE_CODE_USE_FOUNDRY/);
@@ -2321,6 +2323,9 @@ test("model workflows install pinned CLI releases and keep provider models secre
   assert.match(action, /Claude Foundry provider requires/);
   assert.doesNotMatch(action, /@latest/);
   assert.match(localCheck, /CLAWSWEEPER_LOCAL_CODEX_MODEL \?\? "gpt-5\.6-sol"/);
+  assert.match(localCheck, /CLAWSWEEPER_LOCAL_CLAUDE_MODEL \?\? "claude-opus-5"/);
+  assert.match(localCheck, /CLAUDE_CODE_USE_BEDROCK/);
+  assert.match(localCheck, /\$\{runtimeName\} local preflight passed/);
   assert.match(localCheck, /model_reasoning_effort="high"/);
   assert.doesNotMatch(localCheck, /CLAWSWEEPER_PREFER_WINDOWS_CODEX_APP/);
   assert.doesNotMatch(localCheck, /gpt-5\.5/);
