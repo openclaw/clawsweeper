@@ -18,6 +18,9 @@ type DurableStorage = {
 export type PublicationBatchCandidate = {
   itemKey: string;
   revision: number;
+  producerRunId?: string;
+  producerRunAttempt?: number;
+  enqueuedAt?: number;
 };
 
 export type PublicationBatchTerminalOutcome = "published" | "superseded" | "lease_expired";
@@ -26,6 +29,14 @@ export type PublicationBatchItem = PublicationBatchCandidate & {
   claimGeneration: number;
   terminalOutcome: PublicationBatchTerminalOutcome | null;
 };
+
+export type PublicationBatchObservationStage =
+  | "preparation_started"
+  | "preparation_finished"
+  | "state_writer_wait"
+  | "state_writer_committed"
+  | "final_github_apply"
+  | "github_throttle";
 
 export type PublicationBatch = {
   batchId: string;
@@ -38,6 +49,17 @@ export type PublicationBatch = {
   completedAt: number | null;
   stateCommitSha: string | null;
   failureFingerprint: string | null;
+  dispatchId: string | null;
+  dispatchedAt: number | null;
+  runnerRunId: string | null;
+  runnerRunAttempt: number | null;
+  runnerStartedAt: number | null;
+  preparationStartedAt: number | null;
+  preparationFinishedAt: number | null;
+  stateWriterWaitAt: number | null;
+  stateWriterCommittedAt: number | null;
+  finalGithubApplyAt: number | null;
+  githubThrottleAt: number | null;
   items: PublicationBatchItem[];
 };
 
@@ -68,6 +90,10 @@ export type PublicationBatchStats = {
     eligibleRemaining: number;
     limit: number;
   };
+};
+
+export type PublicationBatchObservability = {
+  batches: PublicationBatch[];
 };
 
 export class ExactReviewPublicationBatchStore {
@@ -106,6 +132,25 @@ export class ExactReviewPublicationBatchStore {
              CHECK (configured_batch_size >= 1)`,
       );
     }
+    const telemetryBatchColumns = [
+      ["dispatch_id", "TEXT"],
+      ["dispatched_at", "INTEGER"],
+      ["runner_run_id", "TEXT"],
+      ["runner_run_attempt", "INTEGER"],
+      ["runner_started_at", "INTEGER"],
+      ["preparation_started_at", "INTEGER"],
+      ["preparation_finished_at", "INTEGER"],
+      ["state_writer_wait_at", "INTEGER"],
+      ["state_writer_committed_at", "INTEGER"],
+      ["final_github_apply_at", "INTEGER"],
+      ["github_throttle_at", "INTEGER"],
+    ] as const;
+    for (const [name, definition] of telemetryBatchColumns) {
+      if (batchColumns.has(name)) continue;
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE} ADD COLUMN ${name} ${definition}`,
+      );
+    }
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE} (
          batch_id TEXT NOT NULL,
@@ -122,6 +167,24 @@ export class ExactReviewPublicationBatchStore {
            ON DELETE CASCADE
        ) STRICT`,
     );
+    const batchItemColumns = new Set(
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE}')`,
+        ),
+      ).map((row) => String(row.name || "")),
+    );
+    const telemetryItemColumns = [
+      ["producer_run_id", "TEXT"],
+      ["producer_run_attempt", "INTEGER"],
+      ["enqueued_at", "INTEGER"],
+    ] as const;
+    for (const [name, definition] of telemetryItemColumns) {
+      if (batchItemColumns.has(name)) continue;
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE} ADD COLUMN ${name} ${definition}`,
+      );
+    }
     // Only unfinished membership owns an item. Expiry terminalizes that membership,
     // preserving its fencing generation while allowing a later batch to reclaim the item.
     this.storage.sql.exec(
@@ -171,6 +234,8 @@ export class ExactReviewPublicationBatchStore {
     now: number;
     maxItems: number;
     maxConcurrentBatches?: number;
+    dispatch?: { id: string; at: number };
+    runner?: { runId: string; runAttempt: number; startedAt: number };
     candidates: PublicationBatchCandidate[];
   }): PublicationBatch | null {
     return this.storage.transactionSync(() => {
@@ -196,25 +261,35 @@ export class ExactReviewPublicationBatchStore {
       this.storage.sql.exec(
         `INSERT INTO ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
            (batch_id, state, lease_owner, lease_expires_at, configured_batch_size,
-            attempt, created_at)
-         VALUES (?, 'leased', ?, ?, ?, 1, ?)`,
+            attempt, created_at, dispatch_id, dispatched_at, runner_run_id,
+            runner_run_attempt, runner_started_at)
+         VALUES (?, 'leased', ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
         input.batchId,
         input.leaseOwner,
         input.leaseExpiresAt,
         input.maxItems,
         input.now,
+        input.dispatch?.id ?? null,
+        input.dispatch?.at ?? null,
+        input.runner?.runId ?? null,
+        input.runner?.runAttempt ?? null,
+        input.runner?.startedAt ?? null,
       );
       for (const candidate of input.candidates) {
         if (this.countUnfinishedItemsSync(input.batchId) >= input.maxItems) break;
         const generation = this.nextClaimGenerationSync(candidate.itemKey);
         this.storage.sql.exec(
           `INSERT OR IGNORE INTO ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE}
-             (batch_id, item_key, revision, claim_generation)
-           VALUES (?, ?, ?, ?)`,
+             (batch_id, item_key, revision, claim_generation, producer_run_id,
+              producer_run_attempt, enqueued_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
           input.batchId,
           candidate.itemKey,
           candidate.revision,
           generation,
+          candidate.producerRunId ?? null,
+          candidate.producerRunAttempt ?? null,
+          candidate.enqueuedAt ?? null,
         );
       }
       const batch = this.readBatchSync(input.batchId);
@@ -286,6 +361,84 @@ export class ExactReviewPublicationBatchStore {
     return this.storage.transactionSync(() => {
       this.reclaimExpiredSync(now);
       return this.activeLeaseSnapshotSync();
+    });
+  }
+
+  recordObservation(
+    batchId: string,
+    leaseOwner: string,
+    stage: PublicationBatchObservationStage,
+    observedAt: number,
+  ): PublicationBatch | null {
+    const column = {
+      preparation_started: "preparation_started_at",
+      preparation_finished: "preparation_finished_at",
+      state_writer_wait: "state_writer_wait_at",
+      state_writer_committed: "state_writer_committed_at",
+      final_github_apply: "final_github_apply_at",
+      github_throttle: "github_throttle_at",
+    }[stage];
+    return this.storage.transactionSync(() => {
+      const batch = this.readBatchSync(batchId);
+      if (!batch || batch.leaseOwner !== leaseOwner) return null;
+      this.storage.sql.exec(
+        `UPDATE ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
+            SET ${column} = COALESCE(${column}, ?)
+          WHERE batch_id = ? AND lease_owner = ?`,
+        observedAt,
+        batchId,
+        leaseOwner,
+      );
+      return this.readBatchSync(batchId);
+    });
+  }
+
+  recordGithubThrottle(
+    batchId: string,
+    leaseOwner: string,
+    observedAt: number,
+  ): PublicationBatch | null {
+    return this.storage.transactionSync(() => {
+      const batch = this.readBatchSync(batchId);
+      if (!batch || batch.leaseOwner !== leaseOwner) return null;
+      this.storage.sql.exec(
+        `UPDATE ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
+            SET github_throttle_at = COALESCE(github_throttle_at, ?)
+          WHERE batch_id = ? AND lease_owner = ?`,
+        observedAt,
+        batchId,
+        leaseOwner,
+      );
+      return this.readBatchSync(batchId);
+    });
+  }
+
+  observability(now: number, limit = 50): PublicationBatchObservability {
+    return this.storage.transactionSync(() => {
+      this.reclaimExpiredSync(now);
+      // A bounded terminal history must never hide a currently leased batch:
+      // active leases drive capacity and stall alerts, whereas completed and
+      // expired rows are only diagnostic history.
+      const activeBatchIds = Array.from(
+        this.storage.sql.exec(
+          `SELECT batch_id FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
+            WHERE state = 'leased' ORDER BY created_at DESC, batch_id DESC`,
+        ),
+        (row) => String(row.batch_id),
+      );
+      const historicalBatchIds = Array.from(
+        this.storage.sql.exec(
+          `SELECT batch_id FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
+            WHERE state <> 'leased' ORDER BY completed_at DESC, batch_id DESC LIMIT ?`,
+          Math.max(1, Math.min(100, limit)),
+        ),
+        (row) => String(row.batch_id),
+      );
+      return {
+        batches: [...activeBatchIds, ...historicalBatchIds]
+          .map((batchId) => this.readBatchSync(batchId))
+          .filter((batch): batch is PublicationBatch => Boolean(batch)),
+      };
     });
   }
 
@@ -517,7 +670,10 @@ export class ExactReviewPublicationBatchStore {
     const row = Array.from(
       this.storage.sql.exec(
         `SELECT batch_id, state, lease_owner, lease_expires_at, attempt, created_at,
-                configured_batch_size, completed_at, state_commit_sha, failure_fingerprint
+                configured_batch_size, completed_at, state_commit_sha, failure_fingerprint,
+                dispatch_id, dispatched_at, runner_run_id, runner_run_attempt, runner_started_at,
+                preparation_started_at, preparation_finished_at, state_writer_wait_at,
+                state_writer_committed_at, final_github_apply_at, github_throttle_at
            FROM ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE} WHERE batch_id = ?`,
         batchId,
       ),
@@ -525,7 +681,8 @@ export class ExactReviewPublicationBatchStore {
     if (!row) return null;
     const items = Array.from(
       this.storage.sql.exec(
-        `SELECT item_key, revision, claim_generation, terminal_outcome
+        `SELECT item_key, revision, claim_generation, terminal_outcome, producer_run_id,
+                producer_run_attempt, enqueued_at
            FROM ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE}
           WHERE batch_id = ? ORDER BY item_key`,
         batchId,
@@ -538,6 +695,10 @@ export class ExactReviewPublicationBatchStore {
           item.terminal_outcome === null
             ? null
             : (String(item.terminal_outcome) as PublicationBatchTerminalOutcome),
+        producerRunId: item.producer_run_id === null ? undefined : String(item.producer_run_id),
+        producerRunAttempt:
+          item.producer_run_attempt === null ? undefined : Number(item.producer_run_attempt),
+        enqueuedAt: item.enqueued_at === null ? undefined : Number(item.enqueued_at),
       }),
     );
     return {
@@ -551,6 +712,22 @@ export class ExactReviewPublicationBatchStore {
       completedAt: row.completed_at === null ? null : Number(row.completed_at),
       stateCommitSha: row.state_commit_sha === null ? null : String(row.state_commit_sha),
       failureFingerprint: row.failure_fingerprint === null ? null : String(row.failure_fingerprint),
+      dispatchId: row.dispatch_id === null ? null : String(row.dispatch_id),
+      dispatchedAt: row.dispatched_at === null ? null : Number(row.dispatched_at),
+      runnerRunId: row.runner_run_id === null ? null : String(row.runner_run_id),
+      runnerRunAttempt: row.runner_run_attempt === null ? null : Number(row.runner_run_attempt),
+      runnerStartedAt: row.runner_started_at === null ? null : Number(row.runner_started_at),
+      preparationStartedAt:
+        row.preparation_started_at === null ? null : Number(row.preparation_started_at),
+      preparationFinishedAt:
+        row.preparation_finished_at === null ? null : Number(row.preparation_finished_at),
+      stateWriterWaitAt:
+        row.state_writer_wait_at === null ? null : Number(row.state_writer_wait_at),
+      stateWriterCommittedAt:
+        row.state_writer_committed_at === null ? null : Number(row.state_writer_committed_at),
+      finalGithubApplyAt:
+        row.final_github_apply_at === null ? null : Number(row.final_github_apply_at),
+      githubThrottleAt: row.github_throttle_at === null ? null : Number(row.github_throttle_at),
       items,
     };
   }

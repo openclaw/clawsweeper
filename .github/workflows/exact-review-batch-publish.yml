@@ -8,6 +8,14 @@ on:
         required: true
         type: boolean
         default: false
+      dispatch_id:
+        description: "Durable dispatcher reservation identifier"
+        required: false
+        type: string
+      dispatched_at:
+        description: "UTC timestamp for the dispatcher reservation"
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -25,6 +33,8 @@ jobs:
       EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
       EXACT_REVIEW_BATCH_ID: exact-review-batch:${{ github.run_id }}
       EXACT_REVIEW_BATCH_LEASE_OWNER: github:${{ github.run_id }}
+      EXACT_REVIEW_BATCH_DISPATCH_ID: ${{ inputs.dispatch_id }}
+      EXACT_REVIEW_BATCH_DISPATCHED_AT: ${{ inputs.dispatched_at }}
       EXACT_REVIEW_BATCH_MANIFEST: .artifacts/exact-review-batch/manifest.json
       # Scan the full queue window so owner filtering can still fill the 32-item lease cap.
       EXACT_REVIEW_BATCH_MAX_ITEMS: "50"
@@ -32,6 +42,9 @@ jobs:
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
       CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
     steps:
+      - name: Capture runner start timestamp
+        run: echo "EXACT_REVIEW_BATCH_RUNNER_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v7
         with:
           ref: main
@@ -63,6 +76,14 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
           permission-statuses: read
+
+      - name: Record batch preparation start
+        if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
+        continue-on-error: true
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          EXACT_REVIEW_BATCH_OBSERVATION: preparation_started
+        run: pnpm run --silent repair:exact-review-batch observe
 
       - name: Create state token
         if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
@@ -109,6 +130,14 @@ jobs:
           EXACT_REVIEW_BATCH_HEARTBEAT_FAILURE_PATH="$heartbeat_failed" \
             node scripts/prepare-exact-review-batch.mjs
           test ! -f "$heartbeat_failed"
+
+      - name: Record batch preparation finish
+        if: ${{ always() && steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
+        continue-on-error: true
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          EXACT_REVIEW_BATCH_OBSERVATION: preparation_finished
+        run: pnpm run --silent repair:exact-review-batch observe
 
       - name: Finalize healthy members under a fenced heartbeat
         if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
@@ -177,7 +206,8 @@ jobs:
               # scheduled proof lane; no immediate mutation workflow is dispatched.
               :
             elif jq -e '.disposition.routableSyncExpected == true' "$outcome_path" >/dev/null && [ "$source_action" != "failed_review_shard_recovery" ]; then
-              gh workflow run repair-comment-router.yml \
+              github_apply_error="$(mktemp)"
+              if gh workflow run repair-comment-router.yml \
                 --repo "$GITHUB_REPOSITORY" \
                 --ref main \
                 -f execute=true \
@@ -185,13 +215,27 @@ jobs:
                 -f target_branch="$target_branch" \
                 -f item_numbers="$item_number" \
                 -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
-                -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS"
+                -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS" \
+                2>"$github_apply_error"; then
+                rm -f "$github_apply_error"
+              else
+                github_apply_status=$?
+                if grep -Eqi 'rate limit|HTTP 429' "$github_apply_error"; then
+                  EXACT_REVIEW_BATCH_OBSERVATION=github_throttle \
+                    pnpm run --silent repair:exact-review-batch observe || true
+                fi
+                cat "$github_apply_error" >&2
+                rm -f "$github_apply_error"
+                exit "$github_apply_status"
+              fi
             fi
             temporary="${outcome_path}.tmp"
             jq '.postEffectsComplete = true' "$outcome_path" > "$temporary"
             mv "$temporary" "$outcome_path"
           done
           test ! -f "$heartbeat_failed"
+          EXACT_REVIEW_BATCH_OBSERVATION=final_github_apply \
+            pnpm run --silent repair:exact-review-batch observe || true
           pnpm run --silent repair:exact-review-batch complete
 
       - name: Release unfinished batch members

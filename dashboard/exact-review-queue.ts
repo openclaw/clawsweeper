@@ -15,6 +15,7 @@ import {
   ExactReviewPublicationBatchStore,
   type PublicationBatchCompletion,
   type PublicationBatchFence,
+  type PublicationBatchObservationStage,
 } from "./exact-review-publication-batches.ts";
 import {
   DirectPublicationProjectionCapacityError,
@@ -219,6 +220,7 @@ export type ExactReviewQueueState = {
     dispatchFailureFingerprint?: string;
     dispatchFailureDetail?: ExactReviewDispatchFailureDetail;
     dispatchConsecutiveFailures?: number;
+    publicationBatchDispatchId?: string;
     reviewAdmissionNextAt?: number;
     publicationBatchDispatchedAt?: number;
     publicationBatchDispatchSucceeded?: boolean;
@@ -2270,6 +2272,13 @@ export class ExactReviewQueue {
         publicationFlow,
         deadLetters,
       );
+      const reservationClaimObservability = exactReviewReservationClaimObservability({
+        now,
+        dispatcher: state.dispatcher,
+        publication: stats.lanes.publication,
+        batches: this.batchStore.observability(now).batches,
+        maxConcurrentBatches: exactReviewPublicationBatchMaxConcurrent(this.env),
+      });
       return json({
         ...stats,
         pressure: elevateExactReviewPressureForPublication(stats.pressure, publicationHealth),
@@ -2355,6 +2364,7 @@ export class ExactReviewQueue {
         },
         delivery_receipts: this.deliveryReceiptCountSync(),
         review_telemetry_health: reviewTelemetryHealth,
+        reservation_claim_observability: reservationClaimObservability,
         state_writer: { ...stateWriter, coordinator: stateWriterCoordinator },
         state_append: {
           ...stateAppend,
@@ -2527,9 +2537,11 @@ export class ExactReviewQueue {
     let batchDispatchAttempted = false;
     let batchDispatchSucceeded = false;
     let batchDispatchRecordedAt: number | undefined;
+    let batchDispatchId: string | undefined;
     if (snapshotBatchDeparture?.due && batchTerminalPreflightReady) {
       batchDispatchAttempted = true;
       batchDispatchRecordedAt = Date.now();
+      batchDispatchId = `publication-batch-dispatch:${crypto.randomUUID()}`;
       const reserved = this.readStateSync();
       const reservedDispatcher = reserved.dispatcher ?? {
         state: "unknown",
@@ -2537,6 +2549,7 @@ export class ExactReviewQueue {
       };
       reserved.dispatcher = {
         ...reservedDispatcher,
+        publicationBatchDispatchId: batchDispatchId,
         publicationBatchDispatchedAt: batchDispatchRecordedAt,
         publicationBatchDispatchSucceeded: undefined,
         publicationBatchDispatchPendingUntil:
@@ -2547,7 +2560,11 @@ export class ExactReviewQueue {
       await this.writeState(reserved);
       try {
         const token = await exactReviewDispatchToken(this.env);
-        await dispatchExactReviewBatchWorkflow({ token });
+        await dispatchExactReviewBatchWorkflow({
+          token,
+          dispatchId: batchDispatchId,
+          dispatchedAt: new Date(batchDispatchRecordedAt).toISOString(),
+        });
         batchDispatchSucceeded = true;
       } catch (error) {
         console.warn(
@@ -2615,6 +2632,7 @@ export class ExactReviewQueue {
         dispatcher?.publicationBatchDispatchedAt === batchDispatchRecordedAt
         ? {
             ...persisted,
+            publicationBatchDispatchId: batchDispatchId,
             publicationBatchDispatchedAt: batchDispatchRecordedAt,
             publicationBatchDispatchSucceeded: batchDispatchSucceeded,
           }
@@ -4273,6 +4291,19 @@ export class ExactReviewQueue {
     const claimId = exactReviewPublicationBatchId(body.claim_id);
     if (!leaseOwner) return json({ error: "invalid_lease_owner" }, 400);
     if (!claimId) return json({ error: "invalid_claim_id" }, 400);
+    const dispatch = exactReviewPublicationBatchDispatchMetadata(body);
+    if (body.dispatch_id !== undefined && !dispatch) {
+      return json({ error: "invalid_batch_dispatch_metadata" }, 400);
+    }
+    const runner = exactReviewPublicationBatchRunnerMetadata(body);
+    if (
+      (body.runner_run_id !== undefined ||
+        body.runner_run_attempt !== undefined ||
+        body.runner_started_at !== undefined) &&
+      !runner
+    ) {
+      return json({ error: "invalid_batch_runner_metadata" }, 400);
+    }
     const configuredSize = exactReviewPublicationBatchSize(this.env);
     const requestedSize = body.max_items === undefined ? configuredSize : Number(body.max_items);
     if (
@@ -4340,11 +4371,20 @@ export class ExactReviewQueue {
     // rolling deployment; new departures always persist a probe.
     const legacyDispatchReservation =
       dispatchReservationActive && state.dispatcher?.publicationBatchTerminalProbe === undefined;
+    // Older workflow definitions have no dispatch metadata and must remain
+    // claim-compatible. A telemetry-bearing workflow, however, must consume
+    // the reservation that issued its immutable dispatch id; otherwise a late
+    // workflow could erase a newer departure and corrupt its handoff trace.
+    const dispatchMatchesReservation =
+      !dispatch ||
+      !dispatchReservationActive ||
+      dispatch.id === state.dispatcher?.publicationBatchDispatchId;
     const probeMatches =
       !terminalProbeRequired ||
       legacyDispatchReservation ||
       (dispatchReservationActive &&
-        state.dispatcher.publicationBatchTerminalProbe === candidateProbe);
+        state.dispatcher.publicationBatchTerminalProbe === candidateProbe &&
+        dispatchMatchesReservation);
     if (!probeMatches) {
       // Leave the current fence intact. This request may belong to a delayed
       // workflow from an earlier departure; clearing here could let the current
@@ -4366,7 +4406,15 @@ export class ExactReviewQueue {
       now,
       maxItems: leaseSize,
       maxConcurrentBatches: exactReviewPublicationBatchMaxConcurrent(this.env),
-      candidates: candidates.map((item) => ({ itemKey: item.key, revision: item.revision })),
+      ...(dispatch ? { dispatch } : {}),
+      ...(runner ? { runner } : {}),
+      candidates: candidates.map((item) => ({
+        itemKey: item.key,
+        revision: item.revision,
+        producerRunId: item.decision.publication?.producerRunId,
+        producerRunAttempt: item.decision.publication?.producerRunAttempt,
+        enqueuedAt: item.createdAt,
+      })),
     });
     if (
       state.dispatcher?.publicationBatchDispatchPendingUntil ||
@@ -4503,8 +4551,12 @@ export class ExactReviewQueue {
       body.state_writer_progress === undefined
         ? undefined
         : normalizeStateWriterProgress(body.state_writer_progress);
+    const observation = exactReviewPublicationBatchObservation(body);
     if (!batchId || !leaseOwner) return json({ error: "invalid_batch_identity" }, 400);
     if (!members?.length) return json({ error: "invalid_batch_members" }, 400);
+    if ((body.timeline_stage !== undefined || body.observed_at !== undefined) && !observation) {
+      return json({ error: "invalid_batch_timeline_observation" }, 400);
+    }
     if (body.state_writer_progress !== undefined && !progress) {
       this.incrementStateWriterDiagnosticSafely("rejected_progress_total");
       return json({ error: "invalid_state_writer_progress" }, 400);
@@ -4525,6 +4577,22 @@ export class ExactReviewQueue {
         return json({ error: "invalid_batch_state_writer_progress" }, 400);
       }
       this.recordStateWriterProgressSafely(progress, now);
+      if (progress.phase === "waiting") {
+        this.batchStore.recordObservation(
+          batchId,
+          leaseOwner,
+          "state_writer_wait",
+          Date.parse(progress.observed_at),
+        );
+      }
+    }
+    if (observation) {
+      this.batchStore.recordObservation(
+        batchId,
+        leaseOwner,
+        observation.stage,
+        observation.observedAt,
+      );
     }
     return json({ ok: true, batch: exactReviewPublicationBatchJson(batch) });
   }
@@ -4570,7 +4638,7 @@ export class ExactReviewQueue {
       ),
     );
     const now = Date.now();
-    const batch = this.batchStore.complete(
+    let batch = this.batchStore.complete(
       batchId,
       leaseOwner,
       completions.map(({ itemKey, revision, claimGeneration, terminalOutcome }) => ({
@@ -4660,6 +4728,22 @@ export class ExactReviewQueue {
       },
     );
     if (!batch) return json({ error: "batch_lease_not_active" }, 409);
+    if (stateWriter?.commit_count === 1) {
+      batch =
+        this.batchStore.recordObservation(
+          batchId,
+          leaseOwner,
+          "state_writer_committed",
+          Date.parse(stateWriter.finished_at),
+        ) ?? batch;
+    }
+    if (
+      completions.some(
+        (completion) => completion.publicationCompletion?.reasonCode === "github_rate_limit",
+      )
+    ) {
+      batch = this.batchStore.recordGithubThrottle(batchId, leaseOwner, now) ?? batch;
+    }
     this.recordStateWriterOperationSafely(stateWriter, false, now);
     if (acceptedCount) await this.scheduleNext(this.readStateSync(), now);
     return json({
@@ -9255,6 +9339,9 @@ function exactReviewPublicationBatchDeparture(
 
 function exactReviewBatchDispatcherFields(dispatcher: ExactReviewQueueState["dispatcher"]) {
   return {
+    ...(dispatcher?.publicationBatchDispatchId
+      ? { publicationBatchDispatchId: dispatcher.publicationBatchDispatchId }
+      : {}),
     ...(dispatcher?.publicationBatchDispatchedAt
       ? { publicationBatchDispatchedAt: dispatcher.publicationBatchDispatchedAt }
       : {}),
@@ -10003,14 +10090,22 @@ function exactReviewDispatchGlobalRetryDelayMs(
   return Math.min(15 * 60_000, base * 2 ** Math.min(Math.max(0, consecutiveFailures - 1), 5));
 }
 
-async function dispatchExactReviewBatchWorkflow({ token }: { token: string }) {
+async function dispatchExactReviewBatchWorkflow({
+  token,
+  dispatchId,
+  dispatchedAt,
+}: {
+  token: string;
+  dispatchId: string;
+  dispatchedAt: string;
+}) {
   await githubTokenJson({
     token,
     path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/actions/workflows/exact-review-batch-publish.yml/dispatches`,
     method: "POST",
     body: {
       ref: "main",
-      inputs: { execute: "true" },
+      inputs: { execute: "true", dispatch_id: dispatchId, dispatched_at: dispatchedAt },
     },
     errorLabel: "Exact-review batch workflow dispatch",
   });
@@ -10167,6 +10262,244 @@ function exactReviewPublicationBatchJson(batch) {
       terminal_outcome: item.terminalOutcome,
     })),
   };
+}
+
+const RESERVATION_TO_CLAIM_DELAY_BUCKET_MS = 10 * 60_000;
+const RUNNER_HANDOFF_ALERT_MS = 10 * 60_000;
+const STATE_WRITER_ALERT_MS = 20 * 60_000;
+const GITHUB_THROTTLE_ALERT_MS = 15 * 60_000;
+
+function exactReviewReservationClaimObservability({
+  now,
+  dispatcher,
+  publication,
+  batches,
+  maxConcurrentBatches,
+}) {
+  const reservationToClaimDelays = batches.flatMap((batch) =>
+    batch.dispatchedAt === null ? [] : [Math.max(0, batch.createdAt - batch.dispatchedAt)],
+  );
+  const alerts = [];
+  const activeBatches = batches.filter((batch) => batch.state === "leased");
+  const pending = Number(publication?.pending || 0);
+  const activeItems = activeBatches.reduce(
+    (total, batch) => total + batch.items.filter((item) => item.terminalOutcome === null).length,
+    0,
+  );
+  const unassignedPending = Math.max(0, pending - activeItems);
+  if (unassignedPending > 0 && activeBatches.length >= maxConcurrentBatches) {
+    alerts.push({
+      kind: "no_capacity",
+      status: "active",
+      detail:
+        "All configured publication batch slots are leased while durable publication work remains pending.",
+    });
+  }
+  const dispatchAt = Number(dispatcher?.publicationBatchDispatchedAt || 0);
+  const dispatchId = String(dispatcher?.publicationBatchDispatchId || "");
+  const dispatchPendingUntil = Number(dispatcher?.publicationBatchDispatchPendingUntil || 0);
+  // Alert halfway through the actual reservation window. This keeps the alert
+  // actionable for deployments configured below the ten-minute default.
+  const dispatchHandoffAlertMs = Math.max(
+    1_000,
+    Math.floor((dispatchPendingUntil - dispatchAt) / 2),
+  );
+  const dispatchedBatch = dispatchId
+    ? batches.find((batch) => batch.dispatchId === dispatchId)
+    : undefined;
+  if (
+    dispatchAt &&
+    dispatchPendingUntil > now &&
+    !dispatchedBatch &&
+    now - dispatchAt >= dispatchHandoffAlertMs &&
+    dispatcher?.publicationBatchDispatchSucceeded !== false
+  ) {
+    alerts.push({
+      kind: "dispatcher_handoff_stalled",
+      status: "active",
+      dispatch_id: dispatchId || null,
+      since: new Date(dispatchAt).toISOString(),
+      detail:
+        "A batch workflow dispatch has not produced a durable batch claim within the handoff threshold.",
+    });
+  }
+  for (const batch of activeBatches) {
+    if (
+      batch.dispatchedAt !== null &&
+      batch.runnerStartedAt === null &&
+      now - batch.dispatchedAt >= RUNNER_HANDOFF_ALERT_MS
+    ) {
+      alerts.push({
+        kind: "runner_stalled",
+        status: "active",
+        batch_id: batch.batchId,
+        dispatch_id: batch.dispatchId,
+        since: new Date(batch.dispatchedAt).toISOString(),
+        detail:
+          "The workflow was dispatched and the batch was claimed, but no runner-start timestamp was recorded.",
+      });
+    }
+    const stateWriterBlockedAt = batch.stateWriterWaitAt ?? batch.preparationFinishedAt;
+    if (
+      stateWriterBlockedAt !== null &&
+      batch.stateWriterCommittedAt === null &&
+      now - stateWriterBlockedAt >= STATE_WRITER_ALERT_MS
+    ) {
+      alerts.push({
+        kind: "state_writer_stalled",
+        status: "active",
+        batch_id: batch.batchId,
+        since: new Date(stateWriterBlockedAt).toISOString(),
+        detail:
+          "Preparation completed but the state-writer commit timestamp has not arrived within the threshold.",
+      });
+    }
+  }
+  for (const batch of batches) {
+    if (
+      batch.githubThrottleAt !== null &&
+      now - batch.githubThrottleAt < GITHUB_THROTTLE_ALERT_MS
+    ) {
+      alerts.push({
+        kind: "github_throttle",
+        status: "active",
+        batch_id: batch.batchId,
+        since: new Date(batch.githubThrottleAt).toISOString(),
+        detail: "A batch completion reported a GitHub rate-limit outcome.",
+      });
+    }
+  }
+  return {
+    schema_version: 1,
+    generated_at: new Date(now).toISOString(),
+    queue_slots: {
+      pending,
+      unassigned_pending: unassignedPending,
+      active_items: activeItems,
+      active_batches: activeBatches.length,
+      max_concurrent_batches: maxConcurrentBatches,
+      available_batches: Math.max(0, maxConcurrentBatches - activeBatches.length),
+    },
+    delay_buckets: exactReviewReservationClaimDelayBuckets(reservationToClaimDelays),
+    alerts,
+    batches: batches.map((batch) => ({
+      batch_id: batch.batchId,
+      state: batch.state,
+      configured_batch_size: batch.configuredBatchSize,
+      claimed_at: new Date(batch.createdAt).toISOString(),
+      batch_age_seconds: Math.max(0, Math.floor((now - batch.createdAt) / 1000)),
+      dispatch: {
+        id: batch.dispatchId,
+        at: exactReviewReservationClaimTimestamp(batch.dispatchedAt),
+      },
+      workflow: {
+        run_id: batch.runnerRunId,
+        run_attempt: batch.runnerRunAttempt,
+        runner_started_at: exactReviewReservationClaimTimestamp(batch.runnerStartedAt),
+      },
+      timeline: {
+        preparation_started_at: exactReviewReservationClaimTimestamp(batch.preparationStartedAt),
+        preparation_finished_at: exactReviewReservationClaimTimestamp(batch.preparationFinishedAt),
+        state_writer_wait_at: exactReviewReservationClaimTimestamp(batch.stateWriterWaitAt),
+        state_writer_committed_at: exactReviewReservationClaimTimestamp(
+          batch.stateWriterCommittedAt,
+        ),
+        final_github_apply_at: exactReviewReservationClaimTimestamp(batch.finalGithubApplyAt),
+        github_throttle_at: exactReviewReservationClaimTimestamp(batch.githubThrottleAt),
+      },
+      items: batch.items.map((item) => ({
+        item_key: item.itemKey,
+        revision: item.revision,
+        claim_generation: item.claimGeneration,
+        producer_run_id: item.producerRunId ?? null,
+        producer_run_attempt: item.producerRunAttempt ?? null,
+        enqueued_at:
+          item.enqueuedAt === undefined
+            ? null
+            : exactReviewReservationClaimTimestamp(item.enqueuedAt),
+        reservation_to_claim_ms:
+          batch.dispatchedAt === null ? null : Math.max(0, batch.createdAt - batch.dispatchedAt),
+        enqueue_to_claim_ms:
+          item.enqueuedAt === undefined ? null : Math.max(0, batch.createdAt - item.enqueuedAt),
+        terminal_outcome: item.terminalOutcome,
+      })),
+    })),
+  };
+}
+
+function exactReviewReservationClaimDelayBuckets(delays) {
+  const buckets = [
+    { id: "under_1m", max_ms: 60_000 },
+    { id: "1m_to_5m", max_ms: 5 * 60_000 },
+    { id: "5m_to_10m", max_ms: RESERVATION_TO_CLAIM_DELAY_BUCKET_MS },
+    { id: "over_10m", max_ms: Number.POSITIVE_INFINITY },
+  ].map((bucket) => ({
+    id: bucket.id,
+    count: delays.filter(
+      (delay) =>
+        delay <= bucket.max_ms &&
+        (bucket.id === "under_1m" || delay > previousReservationClaimBucketMax(bucket.id)),
+    ).length,
+  }));
+  return { metric: "reservation_to_claim_ms", buckets };
+}
+
+function previousReservationClaimBucketMax(id) {
+  if (id === "1m_to_5m") return 60_000;
+  if (id === "5m_to_10m") return 5 * 60_000;
+  return RESERVATION_TO_CLAIM_DELAY_BUCKET_MS;
+}
+
+function exactReviewReservationClaimTimestamp(value) {
+  return value === null || value === undefined ? null : new Date(value).toISOString();
+}
+
+function exactReviewPublicationBatchDispatchMetadata(value) {
+  const id = String(value.dispatch_id || "").trim();
+  const at = exactReviewPublicationBatchTimestamp(value.dispatched_at);
+  if (!id || !at || !/^[A-Za-z0-9:._-]{1,200}$/.test(id)) return null;
+  return { id, at };
+}
+
+function exactReviewPublicationBatchRunnerMetadata(value) {
+  const runId = String(value.runner_run_id || "").trim();
+  const runAttempt = Number(value.runner_run_attempt);
+  const startedAt = exactReviewPublicationBatchTimestamp(value.runner_started_at);
+  if (
+    !/^[0-9]{1,30}$/.test(runId) ||
+    !Number.isSafeInteger(runAttempt) ||
+    runAttempt < 1 ||
+    !startedAt
+  ) {
+    return null;
+  }
+  return { runId, runAttempt, startedAt };
+}
+
+function exactReviewPublicationBatchObservation(
+  value,
+): { stage: PublicationBatchObservationStage; observedAt: number } | null {
+  const stage = String(value.timeline_stage || "");
+  const observedAt = exactReviewPublicationBatchTimestamp(value.observed_at);
+  if (
+    ![
+      "preparation_started",
+      "preparation_finished",
+      "state_writer_wait",
+      "state_writer_committed",
+      "final_github_apply",
+      "github_throttle",
+    ].includes(stage) ||
+    !observedAt
+  ) {
+    return null;
+  }
+  return { stage: stage as PublicationBatchObservationStage, observedAt };
+}
+
+function exactReviewPublicationBatchTimestamp(value) {
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function objectValue(value) {

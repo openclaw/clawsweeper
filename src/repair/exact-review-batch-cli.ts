@@ -38,8 +38,13 @@ type BatchReceipt = {
 };
 
 const command = process.argv[2];
-if (!command || !["claim", "heartbeat", "commit", "complete", "release"].includes(command)) {
-  throw new Error("usage: exact-review-batch-cli.ts <claim|heartbeat|commit|complete|release>");
+if (
+  !command ||
+  !["claim", "heartbeat", "observe", "commit", "complete", "release"].includes(command)
+) {
+  throw new Error(
+    "usage: exact-review-batch-cli.ts <claim|heartbeat|observe|commit|complete|release>",
+  );
 }
 
 const queueSecret = process.env.CLAWSWEEPER_WEBHOOK_SECRET;
@@ -52,6 +57,7 @@ const client = new ExactReviewBatchQueueClient({
 
 if (command === "claim") await claim();
 else if (command === "heartbeat") await heartbeat();
+else if (command === "observe") await observe();
 else if (command === "commit") await commit();
 else if (command === "complete") await complete();
 else await release();
@@ -59,10 +65,14 @@ else await release();
 async function claim() {
   const leaseOwner = env("EXACT_REVIEW_BATCH_LEASE_OWNER");
   const batchId = env("EXACT_REVIEW_BATCH_ID");
+  const dispatch = optionalDispatchTelemetry();
+  const runner = optionalRunnerTelemetry();
   const lease = await client.claim({
     claimId: batchId,
     leaseOwner,
     maxItems: positiveInteger(env("EXACT_REVIEW_BATCH_MAX_ITEMS")),
+    ...(dispatch ? { dispatch } : {}),
+    ...(runner ? { runner } : {}),
   });
   if (!lease) {
     output("claimed", "false");
@@ -108,6 +118,41 @@ async function heartbeat() {
     items: manifest.items,
   });
   console.log(JSON.stringify({ ok: true, batch_id: manifest.batchId }));
+}
+
+async function observe() {
+  const manifest = readManifest();
+  const stage = String(process.env.EXACT_REVIEW_BATCH_OBSERVATION || "").trim();
+  if (
+    !(
+      [
+        "preparation_started",
+        "preparation_finished",
+        "final_github_apply",
+        "github_throttle",
+      ] as string[]
+    ).includes(stage)
+  ) {
+    throw new Error("EXACT_REVIEW_BATCH_OBSERVATION is invalid");
+  }
+  const observedAt = process.env.EXACT_REVIEW_BATCH_OBSERVED_AT?.trim() || new Date().toISOString();
+  if (!Number.isFinite(Date.parse(observedAt))) {
+    throw new Error("EXACT_REVIEW_BATCH_OBSERVED_AT is invalid");
+  }
+  await client.heartbeat({
+    batchId: manifest.batchId,
+    leaseOwner: manifest.leaseOwner,
+    items: manifest.items,
+    observation: {
+      stage: stage as
+        | "preparation_started"
+        | "preparation_finished"
+        | "final_github_apply"
+        | "github_throttle",
+      observedAt,
+    },
+  });
+  console.log(JSON.stringify({ ok: true, batch_id: manifest.batchId, stage }));
 }
 
 async function commit() {
@@ -528,6 +573,35 @@ function env(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`${name} is required`);
   return value;
+}
+
+function optionalDispatchTelemetry() {
+  const id = process.env.EXACT_REVIEW_BATCH_DISPATCH_ID?.trim();
+  const at = process.env.EXACT_REVIEW_BATCH_DISPATCHED_AT?.trim();
+  if (!id && !at) return undefined;
+  if (!id || !at || !Number.isFinite(Date.parse(at))) {
+    throw new Error("Exact-review batch dispatch telemetry is incomplete");
+  }
+  return { id, at };
+}
+
+function optionalRunnerTelemetry() {
+  const runId = process.env.GITHUB_RUN_ID?.trim();
+  const runAttempt = Number(process.env.GITHUB_RUN_ATTEMPT);
+  const startedAt = process.env.EXACT_REVIEW_BATCH_RUNNER_STARTED_AT?.trim();
+  // A job that began before the workflow gained this environment value checks
+  // out current main for the CLI. Keep that in-flight job claim-compatible and
+  // leave only its optional runner telemetry absent.
+  if (!startedAt) return undefined;
+  if (
+    !runId ||
+    !Number.isSafeInteger(runAttempt) ||
+    runAttempt < 1 ||
+    !Number.isFinite(Date.parse(startedAt))
+  ) {
+    throw new Error("Exact-review batch runner telemetry is incomplete");
+  }
+  return { runId, runAttempt, startedAt };
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

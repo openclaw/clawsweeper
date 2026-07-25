@@ -20,6 +20,12 @@ export type ExactReviewBatchClaim = ExactReviewBatchLease & {
   batchWaitMs: number;
 };
 
+export type ExactReviewBatchObservationStage =
+  | "preparation_started"
+  | "preparation_finished"
+  | "final_github_apply"
+  | "github_throttle";
+
 export type ExactReviewBatchFetch = {
   batch: ExactReviewBatchLease;
   items: ExactReviewBatchQueueItem[];
@@ -48,6 +54,8 @@ export interface ExactReviewBatchQueue {
     claimId: string;
     leaseOwner: string;
     maxItems: number;
+    dispatch?: { id: string; at: string };
+    runner?: { runId: string; runAttempt: number; startedAt: string };
   }): Promise<ExactReviewBatchClaim | null>;
   fetch(input: { batchId: string; leaseOwner: string }): Promise<ExactReviewBatchFetch>;
   heartbeat(input: {
@@ -55,6 +63,7 @@ export interface ExactReviewBatchQueue {
     leaseOwner: string;
     items: readonly ExactReviewBatchMember[];
     stateWriterProgress?: StateWriterProgress;
+    observation?: { stage: ExactReviewBatchObservationStage; observedAt: string };
   }): Promise<ExactReviewBatchLease>;
   complete(input: {
     batchId: string;
@@ -85,11 +94,27 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
     this.request = options.fetch ?? globalThis.fetch;
   }
 
-  async claim(input: { claimId: string; leaseOwner: string; maxItems: number }) {
+  async claim(input: {
+    claimId: string;
+    leaseOwner: string;
+    maxItems: number;
+    dispatch?: { id: string; at: string };
+    runner?: { runId: string; runAttempt: number; startedAt: string };
+  }) {
     const response = await this.post("claim", {
       claim_id: input.claimId,
       lease_owner: input.leaseOwner,
       max_items: input.maxItems,
+      ...(input.dispatch
+        ? { dispatch_id: input.dispatch.id, dispatched_at: input.dispatch.at }
+        : {}),
+      ...(input.runner
+        ? {
+            runner_run_id: input.runner.runId,
+            runner_run_attempt: input.runner.runAttempt,
+            runner_started_at: input.runner.startedAt,
+          }
+        : {}),
     });
     if (response.claimed !== true) return null;
     const batch = parseLease(response.batch);
@@ -128,6 +153,7 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
     leaseOwner: string;
     items: readonly ExactReviewBatchMember[];
     stateWriterProgress?: StateWriterProgress;
+    observation?: { stage: ExactReviewBatchObservationStage; observedAt: string };
   }) {
     const response = await this.post("heartbeat", {
       batch_id: input.batchId,
@@ -138,6 +164,12 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
         claim_generation: item.claimGeneration,
       })),
       ...(input.stateWriterProgress ? { state_writer_progress: input.stateWriterProgress } : {}),
+      ...(input.observation
+        ? {
+            timeline_stage: input.observation.stage,
+            observed_at: input.observation.observedAt,
+          }
+        : {}),
     });
     return parseLease(response.batch);
   }

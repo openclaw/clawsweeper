@@ -1578,6 +1578,7 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
         EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
         EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
         EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS: "60000",
+        EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_RESERVATION_MS: "60000",
         EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
       },
     );
@@ -1588,12 +1589,42 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
     const alarm = queue.alarm();
     await batchDispatchStarted;
 
-    assert.deepEqual(dispatches, [{ ref: "main", inputs: { execute: "true" } }]);
+    assert.equal(dispatches.length, 1);
+    const [dispatch] = dispatches as Array<{
+      ref: string;
+      inputs: Record<string, string>;
+    }>;
+    assert.equal(dispatch?.ref, "main");
+    assert.equal(dispatch?.inputs.execute, "true");
+    assert.match(String(dispatch?.inputs.dispatch_id), /^publication-batch-dispatch:/);
+    assert.equal(dispatch?.inputs.dispatched_at, "1970-01-01T01:56:40.000Z");
     const dispatchedStats = await (await queue.fetch(new Request("https://queue/stats"))).json();
     assert.equal(
       dispatchedStats.lanes.publication.batches.dispatch_pending_until,
-      "1970-01-01T02:06:40.000Z",
+      "1970-01-01T01:57:40.000Z",
     );
+    now += 30_000;
+    const stalledDispatchStats = await (
+      await queue.fetch(new Request("https://queue/stats"))
+    ).json();
+    assert.ok(
+      stalledDispatchStats.reservation_claim_observability.alerts.some(
+        (alert: { kind: string }) => alert.kind === "dispatcher_handoff_stalled",
+      ),
+    );
+    const delayedClaim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-delayed-dispatch",
+          lease_owner: "worker-delayed",
+          max_items: 2,
+          dispatch_id: "publication-batch-dispatch:delayed",
+          dispatched_at: new Date(now - 1_000).toISOString(),
+        }),
+      )
+    ).json();
+    assert.equal(delayedClaim.claimed, false);
+    assert.equal(delayedClaim.preflight_required, true);
     const claimed = await (
       await queue.fetch(
         batchRequest("/publication-batches/claim", {
@@ -1616,7 +1647,7 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
     assert.equal(stats.lanes.publication.batches.last_dispatch_succeeded, true);
     assert.equal(stats.lanes.publication.batches.dispatch_pending_until, null);
     assert.equal(regularDispatches.length, 1);
-    assert.equal(storage.scheduledAlarm(), 7_001_000);
+    assert.equal(storage.scheduledAlarm(), 7_031_000);
 
     await queue.alarm();
     assert.equal(dispatches.length, 1);
@@ -1640,10 +1671,11 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
 
     now = 8_060_000;
     await partialQueue.alarm();
-    assert.deepEqual(dispatches[1], {
-      ref: "main",
-      inputs: { execute: "true" },
-    });
+    const secondDispatch = dispatches[1] as { ref: string; inputs: Record<string, string> };
+    assert.equal(secondDispatch.ref, "main");
+    assert.equal(secondDispatch.inputs.execute, "true");
+    assert.match(secondDispatch.inputs.dispatch_id, /^publication-batch-dispatch:/);
+    assert.equal(secondDispatch.inputs.dispatched_at, "1970-01-01T02:14:20.000Z");
     assert.equal(partialStorage.scheduledAlarm(), 8_660_000);
 
     const multiOwnerStorage = new TestStorage();
@@ -1834,6 +1866,231 @@ test("batch protocol routes require the shared internal signature", async () => 
   );
   assert.equal(authorized.status, 200);
   assert.equal(forwardedPath, "/publication-batches/claim");
+});
+
+test("publication batch observability always retains active leases beside bounded history", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+  const active = batches.claim({
+    batchId: "active-observability",
+    leaseOwner: "worker-active",
+    leaseExpiresAt: 10_000,
+    now: 1_000,
+    maxItems: 1,
+    maxConcurrentBatches: 2,
+    candidates: [candidates[0]!],
+  });
+  const historical = batches.claim({
+    batchId: "historical-observability",
+    leaseOwner: "worker-history",
+    leaseExpiresAt: 10_000,
+    now: 2_000,
+    maxItems: 1,
+    maxConcurrentBatches: 2,
+    candidates: [candidates[1]!],
+  });
+  assert.ok(active);
+  assert.ok(historical);
+  batches.complete(
+    historical.batchId,
+    historical.leaseOwner,
+    historical.items.map((item) => ({ ...item, terminalOutcome: "published" as const })),
+    3_000,
+  );
+
+  const sample = batches.observability(3_001, 1).batches;
+  assert.deepEqual(
+    sample.map((batch) => batch.batchId),
+    ["active-observability", "historical-observability"],
+  );
+});
+
+test("publication batch observability retains the most recently completed terminal history", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+  const slow = batches.claim({
+    batchId: "slow-terminal-observability",
+    leaseOwner: "worker-slow",
+    leaseExpiresAt: 10_000,
+    now: 1_000,
+    maxItems: 1,
+    candidates: [candidates[0]!],
+  });
+  const newer = batches.claim({
+    batchId: "newer-terminal-observability",
+    leaseOwner: "worker-newer",
+    leaseExpiresAt: 10_000,
+    now: 2_000,
+    maxItems: 1,
+    maxConcurrentBatches: 2,
+    candidates: [candidates[1]!],
+  });
+  assert.ok(slow);
+  assert.ok(newer);
+  batches.complete(
+    newer.batchId,
+    newer.leaseOwner,
+    newer.items.map((item) => ({ ...item, terminalOutcome: "published" as const })),
+    2_500,
+  );
+  batches.complete(
+    slow.batchId,
+    slow.leaseOwner,
+    slow.items.map((item) => ({ ...item, terminalOutcome: "published" as const })),
+    3_000,
+  );
+
+  assert.deepEqual(
+    batches.observability(3_001, 1).batches.map((batch) => batch.batchId),
+    ["slow-terminal-observability"],
+  );
+});
+
+test("reservation-to-claim observability traces one batch without exposing lease credentials", async () => {
+  const originalNow = Date.now;
+  let now = 18_000_000;
+  Date.now = () => now;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+    );
+    await queue.fetch(publicationRequest("reservation-claim-trace", 729, "2729"));
+    now += 2_000;
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "trace-batch-729",
+          lease_owner: "worker-secret-not-public",
+          max_items: 1,
+          dispatch_id: "publication-batch-dispatch:trace-729",
+          dispatched_at: new Date(now - 1_000).toISOString(),
+          runner_run_id: "92729",
+          runner_run_attempt: 3,
+          runner_started_at: new Date(now - 500).toISOString(),
+        }),
+      )
+    ).json();
+    const member = claim.batch.items[0];
+    const claimedStats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(claimedStats.reservation_claim_observability.queue_slots.active_items, 1);
+    assert.equal(claimedStats.reservation_claim_observability.queue_slots.unassigned_pending, 0);
+    assert.ok(
+      !claimedStats.reservation_claim_observability.alerts.some(
+        (alert: { kind: string }) => alert.kind === "no_capacity",
+      ),
+    );
+    const heartbeat = (
+      timelineStage: string,
+      observedAt: number,
+      progress?: Record<string, unknown>,
+    ) =>
+      batchRequest("/publication-batches/heartbeat", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-secret-not-public",
+        items: [member],
+        ...(progress ? { state_writer_progress: progress } : {}),
+        ...(timelineStage
+          ? { timeline_stage: timelineStage, observed_at: new Date(observedAt).toISOString() }
+          : {}),
+      });
+    now += 500;
+    assert.equal((await queue.fetch(heartbeat("preparation_started", now))).status, 200);
+    now += 500;
+    assert.equal((await queue.fetch(heartbeat("preparation_finished", now))).status, 200);
+    now += 500;
+    assert.equal(
+      (
+        await queue.fetch(
+          heartbeat("", now, {
+            schema_version: 1,
+            operation_id: `batch:${claim.batch.batch_id}`,
+            mode: "batch",
+            phase: "waiting",
+            sequence: 1,
+            observed_at: new Date(now).toISOString(),
+            configured_batch_size: 1,
+            actual_batch_size: 1,
+          }),
+        )
+      ).status,
+      200,
+    );
+    now += 500;
+    assert.equal((await queue.fetch(heartbeat("final_github_apply", now))).status, 200);
+    now += 500;
+    assert.equal((await queue.fetch(heartbeat("github_throttle", now))).status, 200);
+    now += 500;
+    const completed = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/complete", {
+          batch_id: claim.batch.batch_id,
+          lease_owner: "worker-secret-not-public",
+          state_commit_sha: "a".repeat(40),
+          state_writer: {
+            schema_version: 1,
+            operation_id: `batch:${claim.batch.batch_id}`,
+            mode: "batch",
+            started_at: new Date(now - 1_000).toISOString(),
+            finished_at: new Date(now).toISOString(),
+            wait_ms: 500,
+            acquire_attempts: 1,
+            acquired: true,
+            hold_ms: 500,
+            renewals: 0,
+            released: true,
+            git_duration_ms: 1_000,
+            git_processes: 1,
+            commit_count: 1,
+            materialized_items: 1,
+            configured_batch_size: 1,
+            actual_batch_size: 1,
+            batch_wait_ms: 0,
+            outcome: "materialized",
+          },
+          items: [
+            {
+              item_key: member.item_key,
+              revision: member.revision,
+              claim_generation: member.claim_generation,
+              terminal_outcome: "published",
+            },
+          ],
+        }),
+      )
+    ).json();
+    assert.equal(completed.accepted, 1, JSON.stringify(completed));
+
+    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    const observability = stats.reservation_claim_observability;
+    const batch = observability.batches.find(
+      (entry: { batch_id: string }) => entry.batch_id === claim.batch.batch_id,
+    );
+    assert.ok(batch, JSON.stringify(observability));
+    assert.equal(batch.dispatch.id, "publication-batch-dispatch:trace-729");
+    assert.equal(batch.workflow.run_id, "92729");
+    assert.equal(batch.workflow.run_attempt, 3);
+    assert.ok(batch.workflow.runner_started_at);
+    assert.ok(batch.timeline.preparation_started_at);
+    assert.ok(batch.timeline.preparation_finished_at);
+    assert.ok(batch.timeline.state_writer_wait_at);
+    assert.ok(batch.timeline.state_writer_committed_at);
+    assert.ok(batch.timeline.final_github_apply_at);
+    assert.ok(batch.timeline.github_throttle_at);
+    assert.equal(batch.items[0].producer_run_id, "2729");
+    assert.equal(batch.items[0].reservation_to_claim_ms, 1_000);
+    assert.equal(batch.items[0].enqueue_to_claim_ms, 2_000);
+    assert.equal(observability.delay_buckets.metric, "reservation_to_claim_ms");
+    assert.ok(
+      observability.alerts.some((alert: { kind: string }) => alert.kind === "github_throttle"),
+    );
+    assert.match(JSON.stringify(observability), /publication-batch-dispatch:trace-729/);
+    assert.doesNotMatch(JSON.stringify(observability), /worker-secret-not-public/);
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("authenticated publication reconciliation dry-run reports without mutation", async () => {

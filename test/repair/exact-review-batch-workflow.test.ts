@@ -31,7 +31,11 @@ test("batch publisher is event-driven and queue-bounded instead of workflow-seri
   assert.equal(workflow.on.schedule, undefined);
   assert.ok(workflow.on.workflow_dispatch);
   assert.match(workflow.jobs.publish!.if, /inputs\.execute/);
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ["execute"]);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), [
+    "execute",
+    "dispatch_id",
+    "dispatched_at",
+  ]);
   assert.equal(workflow.jobs.publish!.env.EXACT_REVIEW_BATCH_MAX_ITEMS, "50");
   assert.equal(workflow.jobs.publish!.env.EXACT_REVIEW_BATCH_PREPARE_CONCURRENCY, "4");
   assert.equal(workflow.jobs.publish!.env.CLAWSWEEPER_APP_CLIENT_ID, "Iv23liOECG0slfuhz093");
@@ -70,6 +74,17 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(source, /deferredCloseCoverageExpected == true/);
   assert.match(source, /scheduled proof lane/);
   assert.match(source, /jq '\.postEffectsComplete = true'/);
+  assert.match(source, /Capture runner start timestamp/);
+  assert.match(source, /EXACT_REVIEW_BATCH_DISPATCH_ID/);
+  assert.match(source, /Record batch preparation start/);
+  assert.match(source, /Record batch preparation finish/);
+  assert.match(source, /EXACT_REVIEW_BATCH_OBSERVATION=final_github_apply/);
+  assert.match(source, /EXACT_REVIEW_BATCH_OBSERVATION=github_throttle/);
+  assert.match(source, /rate limit\|HTTP 429/);
+  assert.match(cliSource, /"observe"/);
+  assert.match(cliSource, /optionalDispatchTelemetry/);
+  assert.match(cliSource, /optionalRunnerTelemetry/);
+  assert.match(cliSource, /if \(!startedAt\) return undefined;/);
 });
 
 test("exact-review producer uses direct publication with bounded legacy fallback", () => {
