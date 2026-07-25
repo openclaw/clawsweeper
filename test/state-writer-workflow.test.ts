@@ -73,7 +73,8 @@ test("the setup action exports no long-lived coordinator credential", () => {
 
 test("state materializer and apply publishers enable model-guided recovery with the existing Codex key", () => {
   const expectedKey = "${{ secrets.OPENAI_API_KEY }}";
-  const expectedModel = "${{ secrets.CLAWSWEEPER_MODEL }}";
+  const expectedModel =
+    "${{ vars.CLAWSWEEPER_MODEL_RUNTIME == 'claude' && secrets.CLAWSWEEPER_CLAUDE_MODEL || secrets.CLAWSWEEPER_MODEL }}";
   const expectedJobs = [
     [".github/workflows/state-materializer.yml", "materialize", ["Materialize queued state"]],
     [".github/workflows/sweep.yml", "apply-proof", ["Generate bound close coverage proofs"]],
@@ -100,6 +101,11 @@ test("state materializer and apply publishers enable model-guided recovery with 
     assert.ok(setupCodex, `${file}:${jobName}: setup-codex`);
     assert.equal(setupCodex.env?.OPENAI_API_KEY, expectedKey, `${file}:${jobName}`);
     assert.equal(setupCodex.env?.CLAWSWEEPER_INTERNAL_MODEL, expectedModel, `${file}:${jobName}`);
+    assert.equal(
+      setupCodex.with?.["model-runtime"],
+      "${{ vars.CLAWSWEEPER_MODEL_RUNTIME || 'codex' }}",
+      `${file}:${jobName}`,
+    );
     if (jobName !== "apply-proof") {
       assert.equal(setupCodex["continue-on-error"], true, `${file}:${jobName}: optional setup`);
     }

@@ -2288,7 +2288,7 @@ test("sweep workflow gives high-context Codex reviews twenty minutes by default"
   assert.doesNotMatch(workflow, /codex_timeout_ms=(?:600000|900000)/);
 });
 
-test("Codex workflows install pinned CLI releases and keep the model secret", () => {
+test("model workflows install pinned CLI releases and keep provider models secret", () => {
   const action = readText(".github/actions/setup-codex/action.yml");
   const localCheck = readText("scripts/check-local-codex.mjs");
   const workflows = [
@@ -2302,22 +2302,44 @@ test("Codex workflows install pinned CLI releases and keep the model secret", ()
 
   assert.match(action, /codex-version:[\s\S]*default: "0\.139\.0"/);
   assert.match(action, /proxy-version:[\s\S]*default: "0\.139\.0"/);
+  assert.match(action, /claude-version:[\s\S]*default: "2\.1\.220"/);
   assert.match(action, /@openai\/codex@\$\{\{ inputs\['codex-version'\] \}\}/);
   assert.match(action, /@openai\/codex-responses-api-proxy@\$\{\{ inputs\['proxy-version'\] \}\}/);
+  assert.match(action, /@anthropic-ai\/claude-code@\$\{\{ inputs\['claude-version'\] \}\}/);
+  assert.match(action, /CLAWSWEEPER_MODEL_RUNTIME=claude/);
+  assert.match(action, /CLAWSWEEPER_STEERABLE_CODEX=0/);
+  assert.match(action, /CLAWSWEEPER_CLAUDE_CREDENTIALS_FILE=/);
+  assert.match(action, /CLAUDE_CODE_USE_BEDROCK/);
+  assert.match(action, /CLAUDE_CODE_USE_VERTEX/);
+  assert.match(action, /CLAUDE_CODE_USE_FOUNDRY/);
   assert.doesNotMatch(action, /@latest/);
   assert.match(localCheck, /CLAWSWEEPER_LOCAL_CODEX_MODEL \?\? "gpt-5\.6-sol"/);
   assert.match(localCheck, /model_reasoning_effort="high"/);
   assert.doesNotMatch(localCheck, /CLAWSWEEPER_PREFER_WINDOWS_CODEX_APP/);
   assert.doesNotMatch(localCheck, /gpt-5\.5/);
   assert.match(action, /env -u OPENAI_API_KEY[\s\S]*-u CLAWSWEEPER_INTERNAL_MODEL/);
-  assert.equal(action.match(/--ignore-scripts/g)?.length, 2);
+  assert.equal(action.match(/--ignore-scripts/g)?.length, 3);
   for (const workflow of workflows) {
     assert.match(workflow, /CLAWSWEEPER_MODEL: internal/);
-    assert.match(workflow, /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ secrets\.CLAWSWEEPER_MODEL \}\}/);
+    assert.match(
+      workflow,
+      /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ vars\.CLAWSWEEPER_MODEL_RUNTIME == 'claude' && secrets\.CLAWSWEEPER_CLAUDE_MODEL \|\| secrets\.CLAWSWEEPER_MODEL \}\}/,
+    );
+    assert.match(
+      workflow,
+      /model-runtime: \$\{\{ vars\.CLAWSWEEPER_MODEL_RUNTIME \|\| 'codex' \}\}/,
+    );
+    assert.match(
+      workflow,
+      /claude-provider: \$\{\{ vars\.CLAWSWEEPER_CLAUDE_PROVIDER \|\| 'anthropic' \}\}/,
+    );
+    assert.match(workflow, /ANTHROPIC_API_KEY: \$\{\{ secrets\.ANTHROPIC_API_KEY \}\}/);
     assert.doesNotMatch(workflow, /CLAWSWEEPER_CODEX_CLI_VERSION/);
     for (const line of workflow
       .split("\n")
-      .filter((candidate) => /(?:OPENAI_API_KEY|CLAWSWEEPER_INTERNAL_MODEL):/.test(candidate))) {
+      .filter((candidate) =>
+        /(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|CLAWSWEEPER_INTERNAL_MODEL):/.test(candidate),
+      )) {
       assert.match(line, /^\s{10,}/);
     }
   }
