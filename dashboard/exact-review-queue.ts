@@ -210,6 +210,10 @@ export type ExactReviewQueueState = {
     publicationBatchDispatchedAt?: number;
     publicationBatchDispatchSucceeded?: boolean;
     publicationBatchDispatchPendingUntil?: number;
+    // A batch workflow may only claim the exact selection that the dispatcher
+    // terminal-probed immediately before its dispatch. The marker is cleared
+    // when that departure is consumed, fails, or expires.
+    publicationBatchTerminalProbe?: string;
   };
 };
 type LegacyExactReviewQueueState = ExactReviewQueueState & {
@@ -2024,8 +2028,8 @@ export class ExactReviewQueue {
       this.reconcileStoredReviewRunsSync(startedAt);
       this.syncLegacyCompatibilitySync(this.readStateSync());
     });
-    const snapshot = this.readStateSync();
-    const snapshotBatchOwnership = this.batchStore.activeLeaseSnapshot(startedAt);
+    let snapshot = this.readStateSync();
+    let snapshotBatchOwnership = this.batchStore.activeLeaseSnapshot(startedAt);
     const reclaimedSnapshot = reclaimExpiredExactReviewLeases(
       snapshot,
       startedAt,
@@ -2033,11 +2037,26 @@ export class ExactReviewQueue {
       exactReviewHeartbeatGraceMs(this.env),
     );
     const expiredSnapshot = expireExactReviewPublicationItems(snapshot, startedAt, this.env);
-    const snapshotChanged = reclaimedSnapshot || expiredSnapshot;
+    let snapshotChanged = reclaimedSnapshot || expiredSnapshot;
+    if (
+      snapshot.dispatcher?.publicationBatchTerminalProbe &&
+      Number(snapshot.dispatcher.publicationBatchDispatchPendingUntil || 0) <= startedAt
+    ) {
+      const dispatcher = { ...snapshot.dispatcher };
+      delete dispatcher.publicationBatchTerminalProbe;
+      snapshot.dispatcher = dispatcher;
+      snapshotChanged = true;
+    }
+    // Persist early housekeeping and an expired preflight fence before target
+    // reads release the input gate. A later workflow must never consume an old
+    // terminal probe as though it belonged to its new departure.
+    if (snapshotChanged) {
+      await this.writeState(snapshot);
+    }
     const capacity = exactReviewQueueCapacity(this.env);
     const targetCapacity = exactReviewTargetCapacity(this.env);
-    const snapshotPublicationControl = this.refreshPublicationControlSync(snapshot, startedAt);
-    const snapshotPublicationCapacity = exactReviewPublicationCapacityForState(
+    let snapshotPublicationControl = this.refreshPublicationControlSync(snapshot, startedAt);
+    let snapshotPublicationCapacity = exactReviewPublicationCapacityForState(
       this.env,
       snapshot,
       startedAt,
@@ -2045,7 +2064,7 @@ export class ExactReviewQueue {
       true,
       snapshotPublicationControl.demandCapacity,
     );
-    const snapshotAdmission = exactReviewQueueAdmittedItems(
+    let snapshotAdmission = exactReviewQueueAdmittedItems(
       snapshot,
       startedAt,
       capacity,
@@ -2054,7 +2073,7 @@ export class ExactReviewQueue {
       new Set<string>(snapshotBatchOwnership.itemKeys),
       exactReviewPublicationBatchingEnabled(this.env) || snapshotBatchOwnership.itemKeys.length > 0,
     );
-    const snapshotBatchDeparture = exactReviewPublicationBatchDeparture(
+    let snapshotBatchDeparture = exactReviewPublicationBatchDeparture(
       this.env,
       snapshot,
       startedAt,
@@ -2062,10 +2081,96 @@ export class ExactReviewQueue {
       snapshotBatchOwnership.activeBatches,
       this.freshPublicationItemKeysSync(snapshot, startedAt),
     );
+    let snapshotBatchCandidates = snapshotBatchDeparture?.due
+      ? this.publicationBatchCandidates(
+          snapshot,
+          startedAt,
+          snapshotBatchOwnership,
+          snapshotPublicationCapacity,
+          MAX_EXACT_REVIEW_PUBLICATION_BATCH_SCAN_SIZE,
+          Math.min(
+            MAX_EXACT_REVIEW_PUBLICATION_BATCH_SCAN_SIZE,
+            exactReviewPublicationBatchSize(this.env),
+          ),
+        )
+      : [];
+    let snapshotDispatcherBackoffActive =
+      (snapshot.dispatcher?.state === "paused" || snapshot.dispatcher?.state === "blocked") &&
+      Number(snapshot.dispatcher?.retryAt || 0) > startedAt;
+    let batchTerminalPreflightReady = false;
+    if (snapshotBatchDeparture?.due && !snapshotDispatcherBackoffActive) {
+      const batchTerminalProbe = exactReviewPublicationBatchCandidateProbe(snapshotBatchCandidates);
+      const terminalized = await this.terminalizePublicationCandidates(
+        snapshotBatchCandidates.map((item) => ({
+          key: item.key,
+          revision: item.revision,
+          decision: item.decision,
+        })),
+      );
+      if (terminalized) {
+        await this.scheduleNext(this.readStateSync(), Date.now());
+        return;
+      }
+
+      // Target reads release the Durable Object input gate. Recompute the
+      // departure and admit a workflow only when its exact eventual claim is
+      // the selection that was just checked. A concurrent fresh item or owner
+      // change gets a new departure and therefore a new probe.
+      const recheckedAt = Date.now();
+      snapshot = this.readStateSync();
+      snapshotBatchOwnership = this.batchStore.activeLeaseSnapshot(recheckedAt);
+      snapshotPublicationControl = this.refreshPublicationControlSync(snapshot, recheckedAt);
+      snapshotPublicationCapacity = exactReviewPublicationCapacityForState(
+        this.env,
+        snapshot,
+        recheckedAt,
+        snapshotPublicationControl.capacityCeiling,
+        true,
+        snapshotPublicationControl.demandCapacity,
+      );
+      snapshotAdmission = exactReviewQueueAdmittedItems(
+        snapshot,
+        recheckedAt,
+        capacity,
+        targetCapacity,
+        snapshotPublicationCapacity,
+        new Set<string>(snapshotBatchOwnership.itemKeys),
+        exactReviewPublicationBatchingEnabled(this.env) ||
+          snapshotBatchOwnership.itemKeys.length > 0,
+      );
+      snapshotBatchDeparture = exactReviewPublicationBatchDeparture(
+        this.env,
+        snapshot,
+        recheckedAt,
+        new Set(snapshotBatchOwnership.itemKeys),
+        snapshotBatchOwnership.activeBatches,
+        this.freshPublicationItemKeysSync(snapshot, recheckedAt),
+      );
+      snapshotBatchCandidates = snapshotBatchDeparture?.due
+        ? this.publicationBatchCandidates(
+            snapshot,
+            recheckedAt,
+            snapshotBatchOwnership,
+            snapshotPublicationCapacity,
+            MAX_EXACT_REVIEW_PUBLICATION_BATCH_SCAN_SIZE,
+            Math.min(
+              MAX_EXACT_REVIEW_PUBLICATION_BATCH_SCAN_SIZE,
+              exactReviewPublicationBatchSize(this.env),
+            ),
+          )
+        : [];
+      snapshotDispatcherBackoffActive =
+        (snapshot.dispatcher?.state === "paused" || snapshot.dispatcher?.state === "blocked") &&
+        Number(snapshot.dispatcher?.retryAt || 0) > recheckedAt;
+      batchTerminalPreflightReady =
+        snapshotBatchDeparture?.due === true &&
+        !snapshotDispatcherBackoffActive &&
+        exactReviewPublicationBatchCandidateProbe(snapshotBatchCandidates) === batchTerminalProbe;
+    }
     let batchDispatchAttempted = false;
     let batchDispatchSucceeded = false;
     let batchDispatchRecordedAt: number | undefined;
-    if (snapshotBatchDeparture?.due) {
+    if (snapshotBatchDeparture?.due && batchTerminalPreflightReady) {
       batchDispatchAttempted = true;
       batchDispatchRecordedAt = Date.now();
       const reserved = this.readStateSync();
@@ -2079,6 +2184,8 @@ export class ExactReviewQueue {
         publicationBatchDispatchSucceeded: undefined,
         publicationBatchDispatchPendingUntil:
           batchDispatchRecordedAt + exactReviewPublicationBatchDispatchReservationMs(this.env),
+        publicationBatchTerminalProbe:
+          exactReviewPublicationBatchCandidateProbe(snapshotBatchCandidates),
       };
       await this.writeState(reserved);
       try {
@@ -2097,7 +2204,10 @@ export class ExactReviewQueue {
       if (current.dispatcher?.publicationBatchDispatchedAt === batchDispatchRecordedAt) {
         const dispatcher = { ...current.dispatcher };
         dispatcher.publicationBatchDispatchSucceeded = batchDispatchSucceeded;
-        if (!batchDispatchSucceeded) delete dispatcher.publicationBatchDispatchPendingUntil;
+        if (!batchDispatchSucceeded) {
+          delete dispatcher.publicationBatchDispatchPendingUntil;
+          delete dispatcher.publicationBatchTerminalProbe;
+        }
         current.dispatcher = dispatcher;
         reclaimExpiredExactReviewLeases(
           current,
@@ -2111,7 +2221,6 @@ export class ExactReviewQueue {
     }
     if (!snapshotAdmission.length) {
       const current = batchDispatchAttempted ? this.readStateSync() : snapshot;
-      if (snapshotChanged && !batchDispatchAttempted) await this.writeState(snapshot);
       await this.scheduleNext(current, Date.now());
       return;
     }
@@ -2121,7 +2230,6 @@ export class ExactReviewQueue {
       snapshotAdmission.some((item) => !exactReviewQueueIsPublication(item)) &&
       !snapshotAdmission.some(exactReviewQueueIsPublication)
     ) {
-      if (snapshotChanged && !batchDispatchAttempted) await this.writeState(snapshot);
       await this.scheduleNext(batchDispatchAttempted ? this.readStateSync() : snapshot, startedAt);
       return;
     }
@@ -2262,10 +2370,45 @@ export class ExactReviewQueue {
         }
       },
     );
+    // The legacy lane can admit more ordinary publications than the bounded
+    // review probe. Check its entire dispatch set, not a prefix, so a closed
+    // item cannot slip past the probe simply because it was later in admission
+    // order. Command/status acknowledgements retain their normal completion
+    // route even when their target is terminal.
+    const publicationCandidates = admission
+      .filter(
+        (item) => exactReviewQueueIsPublication(item) && !exactReviewQueueHasCommandContext(item),
+      )
+      .map((item) => ({ key: item.key, revision: item.revision, decision: item.decision }));
+    const livePublicationStates = await mapWithConcurrency(
+      publicationCandidates,
+      EXACT_REVIEW_ADMISSION_LIVE_CHECK_CONCURRENCY,
+      async (candidate) => {
+        try {
+          const token = await targetTokenFor(candidate.decision.targetRepo);
+          return {
+            ...candidate,
+            state: await exactReviewTargetItemState(token, candidate.decision),
+          };
+        } catch (error) {
+          // Do not convert a target-read failure into a terminal result or a
+          // new retry class. Publication delivery retains its established path.
+          console.warn(
+            `exact-review publication terminal check failed for ${candidate.key}`,
+            error instanceof Error ? error.message : String(error),
+          );
+          return { ...candidate, state: { state: "unavailable" as const } };
+        }
+      },
+    );
 
     const checkedAt = Date.now();
     const liveStateByCandidate = new Map(liveStates.map((candidate) => [candidate.key, candidate]));
+    const livePublicationStateByCandidate = new Map(
+      livePublicationStates.map((candidate) => [candidate.key, candidate]),
+    );
     const checkedState = this.readStateSync();
+    const checkedBatchOwnership = this.batchStore.activeLeaseSnapshot(checkedAt);
     const checkedBatchDispatcherFields = batchDispatcherFieldsFor(checkedState.dispatcher);
     const priorDispatchConsecutiveFailures = Number(
       checkedState.dispatcher?.dispatchConsecutiveFailures || 0,
@@ -2353,6 +2496,23 @@ export class ExactReviewQueue {
         item.updatedAt = checkedAt;
       }
     }
+    let terminalPublications = 0;
+    for (const candidate of livePublicationStates) {
+      const item = checkedState.items[candidate.key];
+      if (
+        !item ||
+        item.revision !== candidate.revision ||
+        item.state !== "pending" ||
+        !exactReviewQueueIsPublication(item) ||
+        exactReviewQueueHasCommandContext(item) ||
+        checkedBatchOwnership.itemKeys.includes(item.key) ||
+        candidate.state.state !== "terminal"
+      ) {
+        continue;
+      }
+      delete checkedState.items[item.key];
+      terminalPublications += 1;
+    }
     if (globalAdmissionFailure) {
       const consecutiveFailures = priorDispatchConsecutiveFailures + 1;
       const retryAt =
@@ -2373,8 +2533,13 @@ export class ExactReviewQueue {
       };
       await this.writeState(
         checkedState,
-        terminalCompleted || supersessionAudits.length
-          ? { reviewCompleted: terminalCompleted, reviewSuperseded: supersessionAudits.length }
+        terminalCompleted || terminalPublications || supersessionAudits.length
+          ? {
+              reviewCompleted: terminalCompleted,
+              reviewSuperseded: supersessionAudits.length,
+              publicationCompleted: terminalPublications,
+              publicationSuperseded: terminalPublications,
+            }
           : undefined,
         undefined,
         undefined,
@@ -2386,7 +2551,11 @@ export class ExactReviewQueue {
     const dispatchable = admission.flatMap((candidate) => {
       const item = checkedState.items[candidate.key];
       if (!item || item.revision !== candidate.revision || item.state !== "pending") return [];
-      if (exactReviewQueueIsPublication(item)) return [item];
+      if (exactReviewQueueIsPublication(item)) {
+        if (checkedBatchOwnership.itemKeys.includes(item.key)) return [];
+        const livePublication = livePublicationStateByCandidate.get(candidate.key);
+        return !livePublication || livePublication.state.state !== "terminal" ? [item] : [];
+      }
       const live = liveStateByCandidate.get(candidate.key);
       // A command acknowledgement needs the workflow's terminal completion
       // path even when the target is already closed. Unprobed reviews wait for
@@ -2437,8 +2606,13 @@ export class ExactReviewQueue {
     }
     await this.writeState(
       checkedState,
-      terminalCompleted || supersessionAudits.length
-        ? { reviewCompleted: terminalCompleted, reviewSuperseded: supersessionAudits.length }
+      terminalCompleted || terminalPublications || supersessionAudits.length
+        ? {
+            reviewCompleted: terminalCompleted,
+            reviewSuperseded: supersessionAudits.length,
+            publicationCompleted: terminalPublications,
+            publicationSuperseded: terminalPublications,
+          }
         : undefined,
       undefined,
       undefined,
@@ -2543,6 +2717,75 @@ export class ExactReviewQueue {
     }
     if (currentChanged) await this.writeState(current);
     await this.scheduleNext(current, completedAt);
+  }
+
+  private async terminalizePublicationCandidates(
+    candidates: Array<Pick<ExactReviewQueueItem, "key" | "revision" | "decision">>,
+  ) {
+    const ordinaryCandidates = candidates.filter(
+      (item) => !exactReviewQueueHasCommandContext(item),
+    );
+    if (!ordinaryCandidates.length) return 0;
+
+    const targetTokens = new Map<string, Promise<string>>();
+    const targetTokenFor = (targetRepo: string) => {
+      let token = targetTokens.get(targetRepo);
+      if (!token) {
+        token = exactReviewTargetReadToken(this.env, targetRepo);
+        targetTokens.set(targetRepo, token);
+      }
+      return token;
+    };
+    const liveStates = await mapWithConcurrency(
+      ordinaryCandidates,
+      EXACT_REVIEW_ADMISSION_LIVE_CHECK_CONCURRENCY,
+      async (candidate) => {
+        try {
+          const token = await targetTokenFor(candidate.decision.targetRepo);
+          return {
+            ...candidate,
+            state: await exactReviewTargetItemState(token, candidate.decision),
+          };
+        } catch (error) {
+          // Keep the established publication behavior on a target-read failure:
+          // retain the item for its normal delivery/retry path rather than
+          // treating a temporary lookup problem as a terminal result.
+          console.warn(
+            `exact-review publication terminal check failed for ${candidate.key}`,
+            error instanceof Error ? error.message : String(error),
+          );
+          return { ...candidate, state: { state: "unavailable" as const } };
+        }
+      },
+    );
+
+    const checkedAt = Date.now();
+    const checkedState = this.readStateSync();
+    const batchOwnership = this.batchStore.activeLeaseSnapshot(checkedAt);
+    let completed = 0;
+    for (const candidate of liveStates) {
+      const item = checkedState.items[candidate.key];
+      if (
+        !item ||
+        item.revision !== candidate.revision ||
+        item.state !== "pending" ||
+        !exactReviewQueueIsPublication(item) ||
+        exactReviewQueueHasCommandContext(item) ||
+        batchOwnership.itemKeys.includes(item.key) ||
+        candidate.state.state !== "terminal"
+      ) {
+        continue;
+      }
+      delete checkedState.items[item.key];
+      completed += 1;
+    }
+    if (completed) {
+      await this.writeState(checkedState, {
+        publicationCompleted: completed,
+        publicationSuperseded: completed,
+      });
+    }
+    return completed;
   }
 
   private listDeadLetters(value: unknown) {
@@ -3608,42 +3851,14 @@ export class ExactReviewQueue {
     });
   }
 
-  private async claimPublicationBatch(value: unknown) {
-    // The rollout switch closes only new admission. Fetch and complete stay available so
-    // disabling the flag cannot strand ownership that was leased before the config change.
-    if (!exactReviewPublicationBatchingEnabled(this.env)) {
-      return json({ error: "publication_batching_disabled" }, 409);
-    }
-    const body = objectValue(value);
-    const leaseOwner = exactReviewPublicationBatchOwner(body.lease_owner);
-    const claimId = exactReviewPublicationBatchId(body.claim_id);
-    if (!leaseOwner) return json({ error: "invalid_lease_owner" }, 400);
-    if (!claimId) return json({ error: "invalid_claim_id" }, 400);
-    const configuredSize = exactReviewPublicationBatchSize(this.env);
-    const requestedSize = body.max_items === undefined ? configuredSize : Number(body.max_items);
-    if (
-      !Number.isInteger(requestedSize) ||
-      requestedSize < 1 ||
-      requestedSize > MAX_EXACT_REVIEW_PUBLICATION_BATCH_SCAN_SIZE
-    ) {
-      return json({ error: "invalid_max_items" }, 400);
-    }
-    // The workflow may ask to scan farther than the deployed lease size so an
-    // owner-homogeneous batch can be filled through interleaved repositories.
-    // Keep the configured size as the hard mutation/lease boundary.
-    const leaseSize = Math.min(requestedSize, configuredSize);
-    const now = Date.now();
-    const state = this.readStateSync();
-    const batchOwnership = this.batchStore.activeLeaseSnapshot(now);
-    const publicationControl = this.refreshPublicationControlSync(state, now);
-    const publicationCapacity = exactReviewPublicationCapacityForState(
-      this.env,
-      state,
-      now,
-      publicationControl.capacityCeiling,
-      true,
-      publicationControl.demandCapacity,
-    );
+  private publicationBatchCandidates(
+    state: ExactReviewQueueState,
+    now: number,
+    batchOwnership: { itemKeys: string[] },
+    publicationCapacity: number,
+    requestedSize: number,
+    leaseSize: number,
+  ) {
     // The outer comparison charges one publisher slot for the whole batch. The
     // shared helper counts candidate rows, so widen only its scan window by
     // requestedSize; passing +1 here would silently collapse every batch to one.
@@ -3685,10 +3900,108 @@ export class ExactReviewQueue {
     // One GitHub App installation token is scoped to one owner. Keeping a batch
     // owner-homogeneous lets the workflow retain least privilege without serially
     // minting and exporting a different credential for every item.
-    const candidates = readyCandidates
+    return readyCandidates
       .filter((item) => item.decision.targetRepo.split("/", 1)[0]?.toLowerCase() === firstOwner)
-      .slice(0, leaseSize)
-      .map((item) => ({ itemKey: item.key, revision: item.revision }));
+      .slice(0, leaseSize);
+  }
+
+  private async claimPublicationBatch(value: unknown) {
+    // The rollout switch closes only new admission. Fetch and complete stay available so
+    // disabling the flag cannot strand ownership that was leased before the config change.
+    if (!exactReviewPublicationBatchingEnabled(this.env)) {
+      return json({ error: "publication_batching_disabled" }, 409);
+    }
+    const body = objectValue(value);
+    const leaseOwner = exactReviewPublicationBatchOwner(body.lease_owner);
+    const claimId = exactReviewPublicationBatchId(body.claim_id);
+    if (!leaseOwner) return json({ error: "invalid_lease_owner" }, 400);
+    if (!claimId) return json({ error: "invalid_claim_id" }, 400);
+    const configuredSize = exactReviewPublicationBatchSize(this.env);
+    const requestedSize = body.max_items === undefined ? configuredSize : Number(body.max_items);
+    if (
+      !Number.isInteger(requestedSize) ||
+      requestedSize < 1 ||
+      requestedSize > MAX_EXACT_REVIEW_PUBLICATION_BATCH_SCAN_SIZE
+    ) {
+      return json({ error: "invalid_max_items" }, 400);
+    }
+    // The workflow may ask to scan farther than the deployed lease size so an
+    // owner-homogeneous batch can be filled through interleaved repositories.
+    // Keep the configured size as the hard mutation/lease boundary.
+    const leaseSize = Math.min(requestedSize, configuredSize);
+    const now = Date.now();
+    const state = this.readStateSync();
+    // A workflow retry keeps its original claim id and owner. Its first claim
+    // consumed the departure reservation, so return that live lease before
+    // requiring a terminal probe for a newer departure.
+    const existingBatch = this.batchStore.fetch(claimId, leaseOwner, now);
+    if (existingBatch?.state === "leased") {
+      await this.scheduleNext(state, now);
+      const oldestCandidateAt = existingBatch.items.reduce(
+        (oldest, membership) =>
+          Math.min(oldest, state.items[membership.itemKey]?.createdAt ?? existingBatch.createdAt),
+        existingBatch.createdAt,
+      );
+      return json({
+        ok: true,
+        claimed: true,
+        batch: exactReviewPublicationBatchJson(existingBatch),
+        configured_batch_size: existingBatch.configuredBatchSize,
+        batch_wait_ms: Math.max(0, now - oldestCandidateAt),
+        requested_max_items: requestedSize,
+        effective_max_items: leaseSize,
+      });
+    }
+    const batchOwnership = this.batchStore.activeLeaseSnapshot(now);
+    const publicationControl = this.refreshPublicationControlSync(state, now);
+    const publicationCapacity = exactReviewPublicationCapacityForState(
+      this.env,
+      state,
+      now,
+      publicationControl.capacityCeiling,
+      true,
+      publicationControl.demandCapacity,
+    );
+    const candidates = this.publicationBatchCandidates(
+      state,
+      now,
+      batchOwnership,
+      publicationCapacity,
+      requestedSize,
+      leaseSize,
+    );
+    const candidateProbe = exactReviewPublicationBatchCandidateProbe(candidates);
+    const dispatchReservationActive =
+      Number(state.dispatcher?.publicationBatchDispatchPendingUntil || 0) > now;
+    // Before the dispatcher has ever launched a workflow, retain the existing
+    // direct-claim compatibility. Once it has, every subsequent workflow claim
+    // must carry a live terminal probe; an old delayed workflow cannot erase a
+    // newer departure's fence and fall back to an unprobed claim.
+    const terminalProbeRequired = state.dispatcher?.publicationBatchDispatchedAt !== undefined;
+    // A dispatch reservation written by the previous queue version predates
+    // the probe marker. Let that already-in-flight workflow finish during a
+    // rolling deployment; new departures always persist a probe.
+    const legacyDispatchReservation =
+      dispatchReservationActive && state.dispatcher?.publicationBatchTerminalProbe === undefined;
+    const probeMatches =
+      !terminalProbeRequired ||
+      legacyDispatchReservation ||
+      (dispatchReservationActive &&
+        state.dispatcher.publicationBatchTerminalProbe === candidateProbe);
+    if (!probeMatches) {
+      // Leave the current fence intact. This request may belong to a delayed
+      // workflow from an earlier departure; clearing here could let the current
+      // workflow claim an unprobed, newer selection.
+      await this.scheduleNext(state, now);
+      return json({
+        ok: true,
+        claimed: false,
+        batch: null,
+        requested_max_items: requestedSize,
+        effective_max_items: leaseSize,
+        preflight_required: true,
+      });
+    }
     const batch = this.batchStore.claim({
       batchId: claimId,
       leaseOwner,
@@ -3696,15 +4009,20 @@ export class ExactReviewQueue {
       now,
       maxItems: leaseSize,
       maxConcurrentBatches: exactReviewPublicationBatchMaxConcurrent(this.env),
-      candidates,
+      candidates: candidates.map((item) => ({ itemKey: item.key, revision: item.revision })),
     });
-    if (state.dispatcher?.publicationBatchDispatchPendingUntil) {
+    if (
+      state.dispatcher?.publicationBatchDispatchPendingUntil ||
+      state.dispatcher?.publicationBatchTerminalProbe
+    ) {
       const dispatcher = { ...state.dispatcher };
       delete dispatcher.publicationBatchDispatchPendingUntil;
+      delete dispatcher.publicationBatchTerminalProbe;
       state.dispatcher = dispatcher;
       this.writeStateSync(state);
     }
     if (!batch) {
+      await this.scheduleNext(state, now);
       return json({
         ok: true,
         claimed: false,
@@ -8451,7 +8769,16 @@ function exactReviewBatchDispatcherFields(dispatcher: ExactReviewQueueState["dis
     ...(dispatcher?.publicationBatchDispatchPendingUntil
       ? { publicationBatchDispatchPendingUntil: dispatcher.publicationBatchDispatchPendingUntil }
       : {}),
+    ...(dispatcher?.publicationBatchTerminalProbe
+      ? { publicationBatchTerminalProbe: dispatcher.publicationBatchTerminalProbe }
+      : {}),
   };
+}
+
+function exactReviewPublicationBatchCandidateProbe(
+  candidates: ReadonlyArray<Pick<ExactReviewQueueItem, "key" | "revision">>,
+) {
+  return JSON.stringify(candidates.map((candidate) => [candidate.key, candidate.revision]));
 }
 
 function exactReviewPublicationBatchLeaseMs(env) {
