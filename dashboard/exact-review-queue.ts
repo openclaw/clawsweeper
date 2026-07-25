@@ -8840,12 +8840,14 @@ type ExactReviewDispatchFailure = {
 class GitHubRequestError extends Error {
   readonly status?: number;
   readonly timedOut: boolean;
+  readonly rateLimited: boolean;
 
-  constructor(message: string, status?: number, timedOut = false) {
+  constructor(message: string, status?: number, timedOut = false, rateLimited = false) {
     super(message);
     this.name = "GitHubRequestError";
     this.status = status;
     this.timedOut = timedOut;
+    this.rateLimited = rateLimited;
   }
 }
 
@@ -8856,10 +8858,10 @@ function exactReviewDispatchFailure(error: unknown): ExactReviewDispatchFailure 
     ? "timeout"
     : status === 400 || status === 404 || status === 422
       ? "permanent_rejection"
-      : status === 401 || status === 403
-        ? "authentication"
-        : status === 429
-          ? "rate_limit"
+      : requestError?.rateLimited || status === 429
+        ? "rate_limit"
+        : status === 401 || status === 403
+          ? "authentication"
           : status !== undefined && status >= 500
             ? "github_outage"
             : "network";
@@ -8876,7 +8878,7 @@ function exactReviewAdmissionFailure(error: unknown): ExactReviewDispatchFailure
   // This error arose while checking one specific target. A target installation
   // may lack issue-read access even though other target installations are
   // healthy, so a 403 must not hold the whole queue.
-  if (error instanceof GitHubRequestError && error.status === 403) {
+  if (error instanceof GitHubRequestError && error.status === 403 && !error.rateLimited) {
     return { ...failure, scope: "item" };
   }
   return failure;
@@ -8960,6 +8962,8 @@ async function githubTokenJson({ token, path, method = "GET", body, errorLabel }
     throw new GitHubRequestError(
       `${errorLabel || "GitHub"} ${response.status}${text ? `: ${text.slice(0, 240)}` : ""}`,
       response.status,
+      false,
+      githubResponseRateLimited(response, text),
     );
   }
   if (response.status === 204) return {};
@@ -9161,9 +9165,20 @@ async function githubAppJson(path, appJwt, options: GithubAppJsonOptions = {}) {
     throw new GitHubRequestError(
       `${options.errorLabel || "GitHub App"} ${response.status}${text ? `: ${text.slice(0, 240)}` : ""}`,
       response.status,
+      false,
+      githubResponseRateLimited(response, text),
     );
   }
   return response.json();
+}
+
+function githubResponseRateLimited(response: Response, text: string) {
+  return (
+    response.status === 429 ||
+    response.headers.has("retry-after") ||
+    response.headers.get("x-ratelimit-remaining") === "0" ||
+    /(?:secondary )?rate limit|api rate limit|abuse detection/i.test(text)
+  );
 }
 
 async function signGithubAppJwt(issuer, privateKey) {

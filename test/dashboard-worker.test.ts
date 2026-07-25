@@ -4459,6 +4459,48 @@ test("exact-review queue globally backs off admission GitHub outages without cha
   }
 });
 
+test("exact-review queue globally backs off admission 403 rate limits without charging item attempts", async () => {
+  const harness = createExactReviewAdmissionHarness(
+    () =>
+      new Response(JSON.stringify({ message: "You have exceeded a secondary rate limit." }), {
+        status: 403,
+        headers: { "x-ratelimit-remaining": "0" },
+      }),
+  );
+  try {
+    assert.equal(
+      (
+        await harness.queue.fetch(
+          buildExactReviewQueueRequest("admission-rate-limit", 597, "opened"),
+        )
+      ).status,
+      202,
+    );
+
+    await harness.queue.alarm();
+
+    assert.equal(harness.dispatched.length, 0);
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      dispatcher: {
+        state: string;
+        reason: string;
+        dispatchFailureStatus: number;
+        dispatchFailureClass: string;
+      };
+      items: Record<string, { state: string; attempts: number; reviewFailureAttempts?: number }>;
+    };
+    assert.equal(state.dispatcher.state, "blocked");
+    assert.equal(state.dispatcher.reason, "dispatch_rate_limit");
+    assert.equal(state.dispatcher.dispatchFailureStatus, 403);
+    assert.equal(state.dispatcher.dispatchFailureClass, "rate_limit");
+    assert.equal(state.items["openclaw/gogcli#597"]?.state, "pending");
+    assert.equal(state.items["openclaw/gogcli#597"]?.attempts, 0);
+    assert.equal(state.items["openclaw/gogcli#597"]?.reviewFailureAttempts, undefined);
+  } finally {
+    harness.restore();
+  }
+});
+
 test("exact-review queue keeps healthy targets moving when one target App access fails", async () => {
   const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
     maxConcurrent: "2",
