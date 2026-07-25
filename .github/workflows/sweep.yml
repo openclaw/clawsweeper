@@ -1156,20 +1156,18 @@ jobs:
           )"
           signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
           for attempt in 1 2 3; do
-            response="$(
-              curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-                --request POST \
-                --header "content-type: application/json" \
-                --header "x-clawsweeper-exact-review-signature: $signature" \
-                --data "$payload" \
-                "$queue_url/internal/exact-review/enqueue" || true
-            )"
-            if jq -e '.superseded == true' <<< "$response" >/dev/null 2>&1; then
-              echo "::notice::Exact-review publication revision $(jq -r '.publication_revision // "unknown"' <<< "$response") was superseded by revision $(jq -r '.superseded_by_revision // "unknown"' <<< "$response"); the newer publisher owns final delivery."
+            if response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+              --request POST \
+              --header "content-type: application/json" \
+              --header "x-clawsweeper-exact-review-signature: $signature" \
+              --data "$payload" \
+              "$queue_url/internal/exact-review/enqueue")" &&
+              jq -e '.ok == true and (.queued == true or (.deduped == true and .superseded != true))' <<< "$response" >/dev/null; then
               exit 0
             fi
-            if jq -e '.ok == true and (.queued == true or .deduped == true)' <<< "$response" >/dev/null; then
-              exit 0
+            if jq -e '.superseded == true' <<< "${response:-}" >/dev/null 2>&1; then
+              echo "::error::Exact-review publication revision $(jq -r '.publication_revision // "unknown"' <<< "$response") was rejected as superseded by revision $(jq -r '.superseded_by_revision // "unknown"' <<< "$response"); the verdict was not delivered."
+              exit 1
             fi
             if [ "$attempt" -lt 3 ]; then
               sleep "$((attempt * 5))"
