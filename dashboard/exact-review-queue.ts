@@ -999,10 +999,6 @@ export class ExactReviewQueue {
           // Ordinary source events retain normal replacement behavior, including the
           // command-context merge for pending items.
           if (!ignoredRecovery) {
-            const nextRevision = Math.max(
-              current.revision + 1,
-              this.nextExactReviewItemRevisionSync(key),
-            );
             // Explicit commands arrive through repository_dispatch without a webhook authority
             // tuple. Bind them to the current verified decision via the merge below. An active
             // review keeps its lease and exposes the command as a follow-up revision on completion.
@@ -1043,7 +1039,7 @@ export class ExactReviewQueue {
                 auditId: crypto.randomUUID(),
                 itemKey: key,
                 priorRevision,
-                nextRevision,
+                nextRevision: priorRevision + 1,
                 supersededRunId,
                 sourceAction: decision.sourceAction,
                 reasonCode: "newer_source_event",
@@ -1060,7 +1056,7 @@ export class ExactReviewQueue {
               : mergeable || queuesCommandFollowUp
                 ? mergePendingExactReviewDecision(current.decision, decision)
                 : decision;
-            current.revision = nextRevision;
+            current.revision += 1;
             current.updatedAt = now;
             // Immediacy must come from the merged decision: a pending explicit command
             // keeps its command marker through the merge, and a later plain webhook
