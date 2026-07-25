@@ -6,20 +6,25 @@ import {
 } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   resolveSpawnCommand,
   windowsEnvironmentValue,
   windowsSystemExecutable,
   type CommandInvocation,
 } from "./command.js";
+import { modelRuntime } from "./model-runtime.js";
 
 export type CodexSpawnInvocation = CommandInvocation;
+
+const CLAUDE_CODEX_SHIM_PATH = fileURLToPath(new URL("./claude-codex-shim.js", import.meta.url));
 
 export function codexProcessCommand(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
   cwd = process.cwd(),
 ): string {
+  if (modelRuntime(env) === "claude") return env.CLAUDE_BIN?.trim() || "claude";
   const configured = env.CODEX_BIN?.trim();
   if (configured) return configured;
   if (platform === "win32") {
@@ -46,6 +51,14 @@ export function codexSpawnInvocation(
   platform: NodeJS.Platform = process.platform,
   cwd = process.cwd(),
 ): CodexSpawnInvocation {
+  if (modelRuntime(env) === "claude") {
+    return resolveSpawnCommand(process.execPath, [CLAUDE_CODEX_SHIM_PATH, ...args], {
+      cwd,
+      env,
+      missingCommandMessage: "Unable to resolve Node.js for Claude CLI compatibility.",
+      platform,
+    });
+  }
   const configuredCommand = codexProcessCommand(env, platform, cwd);
   return resolveSpawnCommand(configuredCommand, args, {
     cwd,

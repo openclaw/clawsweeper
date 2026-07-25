@@ -11,6 +11,7 @@ import { spawnCodex, terminateCodexProcessTree } from "./codex-spawn.js";
 interface WorkerOptions {
   args: string[];
   command: string;
+  runtime: "codex" | "claude";
   timeoutMs: number;
   resultPath: string;
   stdoutPath: string;
@@ -28,7 +29,8 @@ const stderr = openCodexOutputCapture(options.stderrPath, {
   maxFileBytes: options.maxOutputFileBytes,
   tailBytes: options.tailBytes,
 });
-process.env.CODEX_BIN = options.command;
+if (options.runtime === "claude") process.env.CLAUDE_BIN = options.command;
+else process.env.CODEX_BIN = options.command;
 const child = spawnCodex(options.args, { cwd: process.cwd(), env: process.env });
 let spawnError: Error | undefined;
 let timeoutError: Error | undefined;

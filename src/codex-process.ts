@@ -8,6 +8,7 @@ import {
   DEFAULT_CODEX_OUTPUT_TAIL_BYTES,
 } from "./codex-output-capture.js";
 import { codexProcessCommand } from "./codex-spawn.js";
+import { modelRuntime } from "./model-runtime.js";
 
 export { codexProcessCommand, codexSpawnInvocation } from "./codex-spawn.js";
 
@@ -50,6 +51,7 @@ export function codexAppServerProcessOptionsFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): CodexAppServerProcessOptions | undefined {
   if (env.CLAWSWEEPER_STEERABLE_CODEX !== "1") return undefined;
+  if (modelRuntime(env) !== "codex") return undefined;
   const statePath =
     env.CLAWSWEEPER_CODEX_THREAD_STATE?.trim() ||
     join(env.CODEX_HOME?.trim() || tmpdir(), "clawsweeper-thread-state.json");
@@ -91,6 +93,7 @@ export function runCodexProcess(options: {
       JSON.stringify({
         args: [...options.args],
         command: codexProcessCommand(options.env, process.platform, options.cwd),
+        runtime: modelRuntime(options.env),
         timeoutMs: options.timeoutMs,
         resultPath,
         stdoutPath,
