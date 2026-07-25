@@ -9,14 +9,16 @@ const runtime =
 const model =
   argValue("--model") ??
   (runtime === "claude"
-    ? process.env.CLAWSWEEPER_LOCAL_CLAUDE_MODEL ?? "claude-opus-5"
-    : process.env.CLAWSWEEPER_LOCAL_CODEX_MODEL ?? "gpt-5.6-sol");
+    ? (process.env.CLAWSWEEPER_LOCAL_CLAUDE_MODEL ?? "claude-opus-5")
+    : (process.env.CLAWSWEEPER_LOCAL_CODEX_MODEL ?? "gpt-5.6-sol"));
 const { codexSpawnInvocation } = await loadCodexLauncher();
 const codexEnv = { ...process.env };
 const codex = codexInvocation([]);
 const runtimeName = runtime === "claude" ? "Claude CLI" : "Codex";
 
-console.log(`${runtimeName} command: ${codex.command}${codex.args.length ? ` ${codex.args.join(" ")}` : ""}`);
+console.log(
+  `${runtimeName} command: ${codex.command}${codex.args.length ? ` ${codex.args.join(" ")}` : ""}`,
+);
 
 if (runtime === "codex") {
   const status = runCodex("Checking Codex login status", [
