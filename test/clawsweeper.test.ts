@@ -2309,6 +2309,7 @@ test("model workflows install pinned CLI releases and keep provider models secre
   assert.match(action, /@openai\/codex@\$\{\{ inputs\['codex-version'\] \}\}/);
   assert.match(action, /@openai\/codex-responses-api-proxy@\$\{\{ inputs\['proxy-version'\] \}\}/);
   assert.match(action, /@anthropic-ai\/claude-code@\$\{\{ inputs\['claude-version'\] \}\}/);
+  assert.match(action, /@anthropic-ai\/claude-code\/install\.cjs/);
   assert.match(action, /CLAWSWEEPER_MODEL_RUNTIME=claude/);
   assert.match(action, /CLAWSWEEPER_STEERABLE_CODEX=0/);
   assert.match(action, /CLAWSWEEPER_CLAUDE_CREDENTIALS_FILE=/);

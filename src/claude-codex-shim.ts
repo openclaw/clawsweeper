@@ -172,12 +172,12 @@ export function translateCodexArgs(args: readonly string[], initialCwd: string):
     }
   }
   if (noTools) {
-    claudeArgs.push("--permission-mode", "dontAsk", "--tools", "");
+    claudeArgs.push("--tools", "", "--allowedTools", "Read");
   } else if (sandbox === "read-only") {
     claudeArgs.push(
-      "--permission-mode",
-      "dontAsk",
       "--tools",
+      "Read,Glob,Grep,Bash",
+      "--allowedTools",
       "Read,Glob,Grep,Bash",
       "--settings",
       JSON.stringify({
@@ -193,9 +193,10 @@ export function translateCodexArgs(args: readonly string[], initialCwd: string):
     );
   } else if (sandbox === "workspace-write") {
     claudeArgs.push(
-      "--permission-mode",
-      "bypassPermissions",
-      "--dangerously-skip-permissions",
+      "--tools",
+      "Read,Glob,Grep,Bash,Edit,Write",
+      "--allowedTools",
+      "Read,Glob,Grep,Bash,Edit,Write",
       "--settings",
       JSON.stringify({
         sandbox: {
@@ -207,7 +208,7 @@ export function translateCodexArgs(args: readonly string[], initialCwd: string):
       }),
     );
   } else if (sandbox === "danger-full-access") {
-    claudeArgs.push("--permission-mode", "bypassPermissions", "--dangerously-skip-permissions");
+    claudeArgs.push("--allowedTools", "*");
   } else {
     throw new Error(`Unsupported Codex sandbox for Claude CLI compatibility: ${sandbox}`);
   }

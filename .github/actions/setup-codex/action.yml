@@ -78,6 +78,7 @@ runs:
           -u CLAWSWEEPER_INTERNAL_MODEL \
           npm install -g "@anthropic-ai/claude-code@${{ inputs['claude-version'] }}" \
           --prefer-online --no-audit --no-fund --ignore-scripts
+        node "$HOME/.clawsweeper-repair/claude/lib/node_modules/@anthropic-ai/claude-code/install.cjs"
         claude --version
 
         claude_shim="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)/dist/claude-codex-shim.js"

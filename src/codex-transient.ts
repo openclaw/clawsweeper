@@ -29,7 +29,7 @@ export function codexTerminalErrorDetail(value: string | null | undefined): stri
     const modelStart = prefixIndex + CODEX_MODEL_ACCESS_PREFIX.length;
     if (normalized.indexOf(CODEX_MODEL_ACCESS_SUFFIX, modelStart) > modelStart) return finalLine;
   }
-  return /not logged in|please run (?:claude\s+)?\/?login|invalid api key|authentication_error|permission_error|do not have access to (?:the )?model/i.test(finalLine) ||
+  return /not logged in|please run (?:claude\s+)?\/?login|invalid api key|failed to authenticate|oauth session expired|authentication_error|permission_error|do not have access to (?:the )?model/i.test(finalLine) ||
     /^model \S+ (?:is not available|does not exist|access denied)/i.test(finalLine)
     ? finalLine
     : "";

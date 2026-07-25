@@ -81,6 +81,7 @@ test("Codex terminal detail returns only the final trusted diagnostic line", () 
 test("Claude authentication and model access errors are terminal", () => {
   for (const message of [
     "Not logged in. Please run /login.",
+    "Failed to authenticate: OAuth session expired and could not be refreshed",
     "authentication_error: invalid API key",
     "permission_error: You do not have access to model claude-opus-5",
     "Model claude-opus-5 is not available in this region",

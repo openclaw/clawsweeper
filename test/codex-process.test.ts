@@ -594,6 +594,10 @@ process.stdin.on("end", () => {
     assert.ok(args.includes("--no-chrome"));
     assert.ok(args.includes("--disable-slash-commands"));
     assert.ok(args.includes("--json-schema"));
+    assert.deepEqual(
+      args.slice(args.indexOf("--allowedTools"), args.indexOf("--allowedTools") + 2),
+      ["--allowedTools", "Read,Glob,Grep,Bash"],
+    );
     assert.deepEqual(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2), [
       "--model",
       "claude-opus-5",
