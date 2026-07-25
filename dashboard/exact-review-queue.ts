@@ -292,11 +292,13 @@ type StateAppendWindowRow = {
   delivery_id: string;
 };
 type ExactReviewSupersessionAudit = {
+  auditId: string;
   itemKey: string;
   priorRevision: number;
   nextRevision: number;
   supersededRunId: string | null;
   sourceAction: string;
+  reasonCode: "newer_source_event" | "live_head_advanced";
   supersededAt: number;
 };
 export type DurableObjectStub = { fetch: (request: Request) => Promise<Response> };
@@ -1030,11 +1032,13 @@ export class ExactReviewQueue {
               const priorRevision = current.revision;
               supersededRunId = current.claimedRunId || null;
               supersessionAudit = {
+                auditId: crypto.randomUUID(),
                 itemKey: key,
                 priorRevision,
                 nextRevision: priorRevision + 1,
                 supersededRunId,
                 sourceAction: decision.sourceAction,
+                reasonCode: "newer_source_event",
                 supersededAt: now,
               };
               clearExactReviewLease(current);
@@ -2238,7 +2242,7 @@ export class ExactReviewQueue {
             `exact-review admission target check failed for ${candidate.key}`,
             error instanceof Error ? error.message : String(error),
           );
-          return { ...candidate, state: "unavailable" as const, failure };
+          return { ...candidate, state: { state: "unavailable" as const }, failure };
         }
       },
     );
@@ -2252,11 +2256,18 @@ export class ExactReviewQueue {
     );
     let globalAdmissionFailure: ExactReviewDispatchFailure | null = null;
     for (const candidate of liveStates) {
-      if (candidate.state !== "unavailable" || candidate.failure.scope !== "global") continue;
+      if (
+        candidate.state.state !== "unavailable" ||
+        !("failure" in candidate) ||
+        candidate.failure.scope !== "global"
+      ) {
+        continue;
+      }
       globalAdmissionFailure = candidate.failure;
       break;
     }
     let terminalCompleted = 0;
+    const supersessionAudits: ExactReviewSupersessionAudit[] = [];
     for (const candidate of liveStates) {
       const item = checkedState.items[candidate.key];
       if (
@@ -2267,12 +2278,45 @@ export class ExactReviewQueue {
       ) {
         continue;
       }
-      if (candidate.state === "terminal" && !exactReviewQueueHasCommandContext(item)) {
+      if (candidate.state.state === "terminal" && !exactReviewQueueHasCommandContext(item)) {
         delete checkedState.items[item.key];
         terminalCompleted += 1;
         continue;
       }
-      if (candidate.state === "unavailable") {
+      if (exactReviewQueueHasStaleLiveHead(item, candidate.state)) {
+        const audit: ExactReviewSupersessionAudit = {
+          auditId: crypto.randomUUID(),
+          itemKey: item.key,
+          priorRevision: item.revision,
+          nextRevision: item.revision + 1,
+          supersededRunId: null,
+          sourceAction: item.decision.sourceAction,
+          reasonCode: "live_head_advanced",
+          supersededAt: checkedAt,
+        };
+        if (exactReviewQueueHasCommandContext(item)) {
+          // A command/status receipt is independently meaningful. Advance it to
+          // the authoritative current head rather than dispatching its stale
+          // source tuple or dropping the acknowledgement lifecycle.
+          item.decision = exactReviewDecisionAtLiveHead(item.decision, candidate.state.headSha);
+          item.revision += 1;
+          item.updatedAt = checkedAt;
+          item.nextAttemptAt = exactReviewQueueEnqueueAttemptAt(checkedState, checkedAt);
+          item.parkedReason = undefined;
+          item.attempts = 0;
+          item.publicationFailureAttempts = 0;
+          item.reviewFailureAttempts = 0;
+          item.firstFailureAt = undefined;
+          item.lastFailureReason = undefined;
+          clearExactReviewDispatchFailure(item);
+        } else {
+          delete checkedState.items[item.key];
+          terminalCompleted += 1;
+        }
+        supersessionAudits.push(audit);
+        continue;
+      }
+      if (candidate.state.state === "unavailable") {
         // A shared GitHub or credential failure must not consume each item's
         // retry budget. The dispatcher backoff below holds the whole admission
         // pass until that dependency recovers.
@@ -2313,7 +2357,12 @@ export class ExactReviewQueue {
       };
       await this.writeState(
         checkedState,
-        terminalCompleted ? { reviewCompleted: terminalCompleted } : undefined,
+        terminalCompleted || supersessionAudits.length
+          ? { reviewCompleted: terminalCompleted, reviewSuperseded: supersessionAudits.length }
+          : undefined,
+        undefined,
+        undefined,
+        supersessionAudits,
       );
       await this.scheduleNext(checkedState, checkedAt);
       return;
@@ -2326,8 +2375,8 @@ export class ExactReviewQueue {
       // A command acknowledgement needs the workflow's terminal completion
       // path even when the target is already closed. Unprobed reviews wait for
       // a later bounded admission pass instead of bypassing the live check.
-      return live?.state === "open" ||
-        (live?.state === "terminal" && exactReviewQueueHasCommandContext(item))
+      return live?.state.state === "open" ||
+        (live?.state.state === "terminal" && exactReviewQueueHasCommandContext(item))
         ? [item]
         : [];
     });
@@ -2372,7 +2421,12 @@ export class ExactReviewQueue {
     }
     await this.writeState(
       checkedState,
-      terminalCompleted ? { reviewCompleted: terminalCompleted } : undefined,
+      terminalCompleted || supersessionAudits.length
+        ? { reviewCompleted: terminalCompleted, reviewSuperseded: supersessionAudits.length }
+        : undefined,
+      undefined,
+      undefined,
+      supersessionAudits,
     );
     if (!dispatchable.length) {
       await this.scheduleNext(checkedState, checkedAt);
@@ -4208,15 +4262,64 @@ export class ExactReviewQueue {
     );
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE} (
+         audit_id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
          item_key TEXT NOT NULL,
          prior_revision INTEGER NOT NULL CHECK (prior_revision >= 1),
          next_revision INTEGER NOT NULL CHECK (next_revision > prior_revision),
          superseded_run_id TEXT,
          source_action TEXT NOT NULL,
-         superseded_at INTEGER NOT NULL,
-         PRIMARY KEY (item_key, prior_revision, next_revision)
-       ) STRICT`,
+         reason_code TEXT NOT NULL DEFAULT 'newer_source_event',
+         superseded_at INTEGER NOT NULL
+        ) STRICT`,
     );
+    const hasSupersessionAuditId = Array.from(
+      this.storage.sql.exec(
+        `SELECT name FROM pragma_table_info('${EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE}')
+          WHERE name = 'audit_id'`,
+      ),
+    ).length;
+    const hasSupersessionReason = Array.from(
+      this.storage.sql.exec(
+        `SELECT name FROM pragma_table_info('${EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE}')
+          WHERE name = 'reason_code'`,
+      ),
+    ).length;
+    if (!hasSupersessionReason) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE}
+           ADD COLUMN reason_code TEXT NOT NULL DEFAULT 'newer_source_event'`,
+      );
+    }
+    if (!hasSupersessionAuditId) {
+      const replacement = `${EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE}_replacement`;
+      this.storage.transactionSync(() => {
+        this.storage.sql.exec(
+          `CREATE TABLE ${replacement} (
+             audit_id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+             item_key TEXT NOT NULL,
+             prior_revision INTEGER NOT NULL CHECK (prior_revision >= 1),
+             next_revision INTEGER NOT NULL CHECK (next_revision > prior_revision),
+             superseded_run_id TEXT,
+             source_action TEXT NOT NULL,
+             reason_code TEXT NOT NULL DEFAULT 'newer_source_event',
+             superseded_at INTEGER NOT NULL
+           ) STRICT`,
+        );
+        this.storage.sql.exec(
+          `INSERT INTO ${replacement}
+             (audit_id, item_key, prior_revision, next_revision, superseded_run_id,
+              source_action, reason_code, superseded_at)
+           SELECT printf('legacy:%s:%d:%d', item_key, prior_revision, next_revision),
+                  item_key, prior_revision, next_revision, superseded_run_id,
+                  source_action, reason_code, superseded_at
+             FROM ${EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE}`,
+        );
+        this.storage.sql.exec(`DROP TABLE ${EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE}`);
+        this.storage.sql.exec(
+          `ALTER TABLE ${replacement} RENAME TO ${EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE}`,
+        );
+      });
+    }
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_queue_supersessions_at
          ON ${EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE} (superseded_at, item_key)`,
@@ -4697,12 +4800,14 @@ export class ExactReviewQueue {
     metricDelta: ExactReviewQueueMetricDelta = {},
     publicationFeedback?: ExactReviewPublicationFeedback,
     deadLetter?: ExactReviewDeadLetterInsert,
+    supersessionAudits: ExactReviewSupersessionAudit[] = [],
   ) {
     this.storage.transactionSync(() => {
       this.writeStateSync(state);
       this.incrementQueueMetricsSync(metricDelta);
       if (publicationFeedback) this.applyPublicationFeedbackSync(publicationFeedback);
       if (deadLetter) this.insertDeadLetterSync(deadLetter);
+      for (const audit of supersessionAudits) this.insertSupersessionAuditSync(audit);
     });
   }
 
@@ -4997,14 +5102,16 @@ export class ExactReviewQueue {
   private insertSupersessionAuditSync(audit: ExactReviewSupersessionAudit) {
     this.storage.sql.exec(
       `INSERT OR IGNORE INTO ${EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE}
-         (item_key, prior_revision, next_revision, superseded_run_id,
-          source_action, superseded_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+          (audit_id, item_key, prior_revision, next_revision, superseded_run_id,
+           source_action, reason_code, superseded_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      audit.auditId,
       audit.itemKey,
       audit.priorRevision,
       audit.nextRevision,
       audit.supersededRunId,
       audit.sourceAction,
+      audit.reasonCode,
       audit.supersededAt,
     );
   }
@@ -6244,6 +6351,28 @@ function mergePendingExactReviewDecision(
     delete merged.statusCommentId;
   }
   return merged;
+}
+
+function exactReviewDecisionAtLiveHead(decision: ExactReviewDecision, headSha: string) {
+  const refreshed = {
+    ...decision,
+    sourceHeadSha: headSha,
+    sourceHeadVerified: true,
+  };
+  // The live read is authoritative for the head, but it has no webhook
+  // sequence or event timestamp to truthfully carry forward.
+  delete refreshed.sourceAuthoritySeq;
+  delete refreshed.sourceUpdatedAt;
+  return refreshed;
+}
+
+function exactReviewQueueHasStaleLiveHead(
+  item: Pick<ExactReviewQueueItem, "decision">,
+  live: ExactReviewTargetItemState,
+): live is { state: "open"; headSha: string } {
+  if (item.decision.itemKind !== "pull_request" || live.state !== "open") return false;
+  const queuedHead = String(item.decision.sourceHeadSha || "").toLowerCase();
+  return /^[0-9a-f]{40}$/.test(queuedHead) && queuedHead !== live.headSha;
 }
 
 function exactReviewDecisionCanSupersedeReview(
@@ -8585,21 +8714,41 @@ async function exactReviewTargetReadToken(env, targetRepo: string) {
   });
 }
 
-async function exactReviewTargetItemState(token: string, decision: ExactReviewDecision) {
+type ExactReviewTargetItemState =
+  | { state: "open"; headSha?: string }
+  | { state: "terminal" }
+  | { state: "unavailable" };
+
+async function exactReviewTargetItemState(
+  token: string,
+  decision: ExactReviewDecision,
+): Promise<Exclude<ExactReviewTargetItemState, { state: "unavailable" }>> {
   try {
+    const isPullRequest = decision.itemKind === "pull_request";
+    const queuedHeadSha = String(decision.sourceHeadSha || "").toLowerCase();
+    const readPullHead = isPullRequest && /^[0-9a-f]{40}$/.test(queuedHeadSha);
     const item = await githubTokenJson({
       token,
-      path: `/repos/${decision.targetRepo}/issues/${decision.itemNumber}`,
+      path: `/repos/${decision.targetRepo}/${readPullHead ? "pulls" : "issues"}/${decision.itemNumber}`,
       method: "GET",
       body: undefined,
       errorLabel: "live review item state",
     });
     const state = String(item.state || "").trim();
-    if (state === "open") return "open" as const;
-    if (state === "closed") return "terminal" as const;
+    if (state === "open") {
+      if (!readPullHead) return { state: "open" };
+      const headSha = String(objectValue(objectValue(item).head).sha || "")
+        .trim()
+        .toLowerCase();
+      if (!/^[0-9a-f]{40}$/.test(headSha)) {
+        throw new Error("live pull request response missing head SHA");
+      }
+      return { state: "open", headSha };
+    }
+    if (state === "closed") return { state: "terminal" };
     throw new Error("live review item state response missing state");
   } catch (error) {
-    if (error instanceof GitHubRequestError && error.status === 410) return "terminal" as const;
+    if (error instanceof GitHubRequestError && error.status === 410) return { state: "terminal" };
     if (error instanceof GitHubRequestError && error.status === 404) {
       // GitHub masks inaccessible private repositories as 404. Treat the item
       // as missing only when this token can still read its repository.
@@ -8610,7 +8759,7 @@ async function exactReviewTargetItemState(token: string, decision: ExactReviewDe
         body: undefined,
         errorLabel: "live review target repository",
       });
-      return "terminal" as const;
+      return { state: "terminal" };
     }
     throw error;
   }
