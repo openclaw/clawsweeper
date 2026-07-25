@@ -9,6 +9,10 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Added
 
+- Added Claude Opus 5 support across review, repair, commit review, maintainer
+  reports, recovery, and spam-audit model calls, with pinned Claude Code,
+  structured-output compatibility, safe sandbox translation, local preflight,
+  and validated Anthropic, Bedrock, Vertex, and Foundry credential paths.
 - Redesigned PR review comments into a scan-first layout: outcome and merge readiness up top, ratings and verification as compact tables, before-merge work as native checklists, evidence folded into details — with hardened fence-aware section parsing and Mermaid sanitization. Thanks @Patrick-Erichsen! (#776)
 - Screenshot-only real-behavior proof (PNG/JPEG/WebP/GIF) is now hydrated through the bounded media path so sandboxed reviewers can assess it instead of marking it insufficient. Thanks @goutamadwant! (#595)
 - The repair owner policy (`CLAWSWEEPER_ALLOWED_OWNER`) accepts a multi-owner list enforced identically at intake and every execution gate; disallowed owners are rejected before a durable job is written. (#809)

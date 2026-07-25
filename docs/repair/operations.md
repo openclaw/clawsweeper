@@ -245,6 +245,12 @@ that proxy config and run without raw OpenAI or Codex API key environment
 variables. The legacy `codex login` path remains available only through the
 local `setup-codex` action's `auth-mode: login` input.
 
+When `CLAWSWEEPER_MODEL_RUNTIME=claude`, the same action installs pinned Claude
+Code, creates an isolated `CLAUDE_CONFIG_DIR`, validates Anthropic, Bedrock,
+Vertex, or Foundry credentials, and passes them through a private mode-`0600`
+file. The compatibility adapter preserves structured output, timeout, sandbox,
+and no-tool behavior expected by repair workers.
+
 Codex runs in a read-only sandbox for classification and receives no GitHub token. GitHub read access is scoped to deterministic preflight scripts. For reviewed fix artifacts, `execute-fix-artifact` gives Codex a temporary target checkout without GitHub credentials, then the deterministic executor commits, pushes, opens the replacement PR, and closes uneditable source PRs only after the replacement exists. When a replacement carries contributor work forward, non-bot source PR authors are added as `Co-authored-by` trailers and named in the replacement PR body and source close comment. Remaining write access is scoped to `apply-result`.
 
 The repair worker wrapper emits a heartbeat while Codex is running. Execute-side
