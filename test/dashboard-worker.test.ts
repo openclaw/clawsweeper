@@ -7331,6 +7331,11 @@ test("exact-review queue retains a synchronize update after an unclassified 422"
       return jsonResponse({ id: 999 });
     if (/^\/repos\/openclaw\/(?:clawsweeper|gogcli)\/issues\/\d+$/.test(url.pathname))
       return jsonResponse({ state: "open" });
+    if (url.pathname === "/repos/openclaw/clawsweeper/pulls/842")
+      return jsonResponse({
+        state: "open",
+        head: { sha: "81e4abc894e7d3ec1fddbd856378b6aadb4392f3" },
+      });
     if (url.pathname === "/app/installations/999/access_tokens")
       return jsonResponse({ token: "dispatch-token" });
     if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
