@@ -363,44 +363,6 @@ test("OpenClaw subprocess env strips workflow credentials and keeps provider key
   }
 });
 
-test("OpenClaw cerebras models get built-in provider defaults", () => {
-  const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-test-"));
-  const recordPath = join(root, "record.json");
-  const binary = fakeOpenclaw(root);
-  try {
-    const result = runOpenclawProcess({
-      label: "cerebras-defaults",
-      prompt: "hi",
-      model: "cerebras/zai-glm-4.7",
-      cwd: root,
-      env: {
-        ...process.env,
-        CLAWSWEEPER_OPENCLAW_BIN: binary,
-        CLAWSWEEPER_OPENCLAW_MODEL: "cerebras/zai-glm-4.7",
-        OPENCLAW_TEST_RECORD: recordPath,
-      },
-      timeoutMs: 60_000,
-    });
-    assert.equal(result.status, 0, result.stderr);
-    const record = JSON.parse(readFileSync(recordPath, "utf8"));
-    assert.deepEqual(record.config.models, {
-      mode: "merge",
-      providers: {
-        cerebras: {
-          baseUrl: "https://api.cerebras.ai/v1",
-          apiKey: "${CEREBRAS_API_KEY}",
-          api: "openai-completions",
-          models: [
-            { id: "zai-glm-4.7", name: "Z.ai GLM 4.7", contextWindow: 128000, maxTokens: 8192 },
-          ],
-        },
-      },
-    });
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
 test("OpenClaw zai models get built-in Coding Plan endpoint defaults", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-test-"));
   const recordPath = join(root, "record.json");

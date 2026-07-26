@@ -334,16 +334,6 @@ const BUILTIN_PROVIDERS = {
       { id: "k3", name: "Kimi K3", contextWindow: 1048576, maxTokens: 131072 },
     ],
   },
-  // Cerebras Code plans serve the GLM coding model at ~1000 tok/s; validated
-  // live 2026-07-25 (474 tok/s wall including network, E2E tool run in 5s).
-  // zai-glm-4.7 deprecates 2026-08-17 — update the id when Cerebras swaps in
-  // its successor.
-  cerebras: {
-    baseUrl: "https://api.cerebras.ai/v1",
-    apiKey: "${CEREBRAS_API_KEY}",
-    api: "openai-completions",
-    models: [{ id: "zai-glm-4.7", name: "Z.ai GLM 4.7", contextWindow: 128000, maxTokens: 8192 }],
-  },
   // Z.AI GLM Coding Plan keys only authorize the coding endpoint — the general
   // paas endpoint rejects them with error 1113. Validated live 2026-07-25
   // (~51 tok/s, E2E tool run in 16s).

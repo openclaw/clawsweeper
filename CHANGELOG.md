@@ -10,7 +10,7 @@ checkpoint, and status-only commits are intentionally omitted.
 ### Added
 
 - The OpenClaw runner ships a built-in Z.AI provider: `CLAWSWEEPER_OPENCLAW_MODEL=zai/glm-5.2` runs GLM-5.2 on the GLM Coding Plan endpoint with only `ZAI_API_KEY` (validated live end to end).
-- The OpenClaw runner ships a built-in Cerebras provider: `CLAWSWEEPER_OPENCLAW_MODEL=cerebras/zai-glm-4.7` needs only `CEREBRAS_API_KEY` (validated live at ~474 tok/s on Cerebras Code Max); provider-key allowlist extended for Cerebras, Z.AI, DeepSeek, and Mistral.
+- The OpenClaw runner's subprocess provider-key allowlist covers Cerebras, Z.AI, DeepSeek, and Mistral keys for `CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON` providers. (A briefly built-in Cerebras GLM-4.7 default was removed before release; use providers JSON for Cerebras.)
 - Redesigned PR review comments into a scan-first layout: outcome and merge readiness up top, ratings and verification as compact tables, before-merge work as native checklists, evidence folded into details — with hardened fence-aware section parsing and Mermaid sanitization. Thanks @Patrick-Erichsen! (#776)
 - Screenshot-only real-behavior proof (PNG/JPEG/WebP/GIF) is now hydrated through the bounded media path so sandboxed reviewers can assess it instead of marking it insufficient. Thanks @goutamadwant! (#595)
 - The repair owner policy (`CLAWSWEEPER_ALLOWED_OWNER`) accepts a multi-owner list enforced identically at intake and every execution gate; disallowed owners are rejected before a durable job is written. (#809)
