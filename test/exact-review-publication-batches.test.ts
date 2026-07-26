@@ -205,6 +205,49 @@ test("direct publication canonically stores, projects, dedupes, and ratchets rev
   );
 });
 
+test("direct publication makes section moves canonical with sibling and stale-sidecar tombstones", async () => {
+  const storage = new TestStorage();
+  ensureProjectionSchema(storage);
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  store.accept(
+    await validateDirectPublicationPlan(directPlan("openclaw/openclaw#11", 1)),
+    1_000,
+    projectionLimits,
+  );
+  store.accept(
+    await validateDirectPublicationPlan(
+      directPlan("openclaw/openclaw#11", 2, {
+        path: "records/openclaw-openclaw/closed/11.md",
+        content: Buffer.from("closed-result"),
+      }),
+    ),
+    1_001,
+    projectionLimits,
+  );
+
+  assert.equal(store.readCanonical("openclaw-openclaw", "closed", 11)?.content, "closed-result");
+  assert.equal(store.readCanonical("openclaw-openclaw", "items", 11)?.deleted, true);
+  assert.equal(store.readCanonical("openclaw-openclaw", "plans", 11)?.deleted, true);
+  assert.equal(store.readCanonical("openclaw-openclaw", "decision-packets", 11)?.deleted, true);
+  const projection = JSON.parse(
+    String(
+      Array.from(
+        storage.sql.exec("SELECT payload_json FROM state_append_window ORDER BY seq DESC LIMIT 1"),
+      )[0]?.payload_json,
+    ),
+  );
+  assert.deepEqual(
+    projection.operations.map((operation) => [operation.section, operation.deleted]),
+    [
+      ["closed", false],
+      ["items", true],
+      ["plans", true],
+      ["decision-packets", true],
+    ],
+  );
+});
+
 test("direct publication idempotency compares canonical digests instead of Git OIDs", async () => {
   const storage = new TestStorage();
   ensureProjectionSchema(storage);

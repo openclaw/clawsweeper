@@ -59,6 +59,14 @@ export type StateAppendRecord = {
   payload: unknown;
   produced_at: string;
   delivery_id: string;
+  materialization_attempts?: number;
+};
+
+type StateMaterializationFailure = {
+  seq: number;
+  key: string;
+  reason: string;
+  retryable: boolean;
 };
 
 export type StateMaterializerSummary = {
@@ -102,7 +110,22 @@ export function selectLatestStateRecords(records: readonly StateAppendRecord[]):
   }
 
   const latest = new Map<string, StateAppendRecord>();
-  for (const record of ordered) latest.set(`${record.kind}\0${record.key}`, record);
+  for (const record of ordered) {
+    const key = `${record.kind}\0${record.key}`;
+    const current = latest.get(key);
+    const currentRevision = current?.kind === "record_tuple" ? recordTupleRevision(current) : null;
+    const incomingRevision = record.kind === "record_tuple" ? recordTupleRevision(record) : null;
+    if (
+      record.kind === "record_tuple" &&
+      current?.kind === "record_tuple" &&
+      currentRevision !== null &&
+      incomingRevision !== null &&
+      currentRevision > incomingRevision
+    ) {
+      continue;
+    }
+    latest.set(key, record);
+  }
   const selected = [...latest.values()].sort((left, right) => left.seq - right.seq);
   return { records: selected, skipped: records.length - selected.length };
 }
@@ -199,6 +222,13 @@ export function planStateMaterialization(
 
     if (record.kind === "record_tuple") {
       const tuple = recordTupleProjection(record);
+      const primaryWrites = tuple.operations.filter(
+        (operation) =>
+          (operation.section === "items" || operation.section === "closed") && !operation.deleted,
+      );
+      if (primaryWrites.length > 1) {
+        throw new Error(`record tuple projection ${record.key} writes both primary sections`);
+      }
       for (const operation of tuple.operations) {
         addPublishPath(operation.path);
         if (operation.deleted) {
@@ -216,6 +246,43 @@ export function planStateMaterialization(
         repository: tuple.operations[0]!.repoSlug,
         number: String(tuple.operations[0]!.itemId),
       });
+      const primaryWrite = primaryWrites[0];
+      if (primaryWrite) {
+        const displacedPrimary = primaryWrite.section === "items" ? paths.closed : paths.item;
+        contentByPath.delete(displacedPrimary);
+        if (currentFiles.has(displacedPrimary)) deletes.add(displacedPrimary);
+        addPublishPath(displacedPrimary);
+
+        if (
+          primaryWrite.section === "closed" &&
+          !tuple.operations.some((operation) => operation.path === paths.plan)
+        ) {
+          contentByPath.delete(paths.plan);
+          if (currentFiles.has(paths.plan)) deletes.add(paths.plan);
+          addPublishPath(paths.plan);
+        }
+        if (
+          typeof primaryWrite.content === "string" &&
+          !primaryReferencesDecisionPacket(primaryWrite.content) &&
+          !tuple.operations.some((operation) => operation.path === paths.packet)
+        ) {
+          contentByPath.delete(paths.packet);
+          if (currentFiles.has(paths.packet)) deletes.add(paths.packet);
+          addPublishPath(paths.packet);
+        }
+      } else if (
+        tuple.operations.some(
+          (operation) =>
+            (operation.section === "items" || operation.section === "closed") && operation.deleted,
+        )
+      ) {
+        for (const sidecar of [paths.plan, paths.packet]) {
+          if (tuple.operations.some((operation) => operation.path === sidecar)) continue;
+          contentByPath.delete(sidecar);
+          if (currentFiles.has(sidecar)) deletes.add(sidecar);
+          addPublishPath(sidecar);
+        }
+      }
       const target = (path: string): string | null => {
         if (deletes.has(path)) return null;
         return contentByPath.get(path) ?? currentFiles.get(path) ?? null;
@@ -336,7 +403,9 @@ export async function runStateMaterializer(
         fetchImpl,
       });
       const currentFiles = readCurrentFiles(materializationPaths(hydrated.records), process.cwd());
-      const plan = planStateMaterialization(hydrated.records, currentFiles);
+      const isolated = planStateMaterializationWithIsolation(hydrated.records, currentFiles);
+      const failures = [...hydrated.failures, ...isolated.failures];
+      const plan = isolated.plan;
       applyStateMaterializationPlan(plan, process.cwd());
       const recordTuplePaths = plan.publishPaths.filter(isRecordTupleProjectionPath);
       const regularPaths = plan.publishPaths.filter((path) => !isRecordTupleProjectionPath(path));
@@ -361,13 +430,33 @@ export async function runStateMaterializer(
       }
       summary.committed += plan.selected;
       summary.skipped += selected.skipped + hydrated.skipped + plan.skipped;
+      summary.errors += failures.length;
+      for (const failure of failures) {
+        console.warn(
+          `state-materializer isolated ${failure.retryable ? "retryable" : "terminal"} record ${failure.key} seq=${failure.seq}: ${failure.reason}`,
+        );
+      }
 
-      const acked = await ackStateWindow({
-        queueUrl,
-        webhookSecret,
-        drainToken: drain.token,
-        fetchImpl,
-      });
+      const disposition =
+        failures.length > 0
+          ? await disposeStateWindow({
+              queueUrl,
+              webhookSecret,
+              drainToken: drain.token,
+              failures,
+              fetchImpl,
+            })
+          : {
+              acked: await ackStateWindow({
+                queueUrl,
+                webhookSecret,
+                drainToken: drain.token,
+                fetchImpl,
+              }),
+              retried: 0,
+              deadLettered: 0,
+            };
+      const acked = disposition.acked;
       if (acked > drain.records.length) {
         throw new Error(`state ack count ${acked} exceeded drained count ${drain.records.length}`);
       }
@@ -380,6 +469,11 @@ export async function runStateMaterializer(
         );
       }
       summary.acked += acked;
+      if (disposition.retried > 0 || disposition.deadLettered > 0) {
+        console.warn(
+          `state-materializer disposition: retried=${disposition.retried} dead_lettered=${disposition.deadLettered}`,
+        );
+      }
     } catch (error) {
       summary.errors += 1;
       console.warn(`state-materializer cycle failed: ${errorMessage(error)}`);
@@ -387,6 +481,54 @@ export async function runStateMaterializer(
     }
   }
   return finish();
+}
+
+function planStateMaterializationWithIsolation(
+  records: readonly StateAppendRecord[],
+  currentFiles: ReadonlyMap<string, string>,
+): { plan: StateMaterializationPlan; failures: StateMaterializationFailure[] } {
+  const staged = new Map(currentFiles);
+  const publishPaths: string[] = [];
+  const failures: StateMaterializationFailure[] = [];
+  let selected = 0;
+  let skipped = 0;
+
+  for (const record of records) {
+    try {
+      const recordPlan = planStateMaterialization([record], staged);
+      for (const path of recordPlan.deletes) staged.delete(path);
+      for (const write of recordPlan.writes) staged.set(write.path, write.content);
+      for (const path of recordPlan.publishPaths) {
+        if (!publishPaths.includes(path)) publishPaths.push(path);
+      }
+      selected += recordPlan.selected;
+      skipped += recordPlan.skipped;
+    } catch (error) {
+      if (record.kind !== "record_tuple") throw error;
+      failures.push({
+        seq: record.seq,
+        key: record.key,
+        reason: materializationFailureReason(error),
+        retryable: false,
+      });
+    }
+  }
+
+  return {
+    plan: {
+      deletes: publishPaths.filter((path) => currentFiles.has(path) && !staged.has(path)).sort(),
+      publishPaths,
+      writes: publishPaths.flatMap((path) => {
+        const content = staged.get(path);
+        return content !== undefined && currentFiles.get(path) !== content
+          ? [{ path, content }]
+          : [];
+      }),
+      selected,
+      skipped,
+    },
+    failures,
+  };
 }
 
 export function applyStateMaterializationPlan(plan: StateMaterializationPlan, root: string): void {
@@ -462,43 +604,59 @@ async function hydrateRecordTupleRecords(options: {
   queueUrl: string;
   webhookSecret: string;
   fetchImpl: typeof fetch;
-}): Promise<{ records: StateAppendRecord[]; skipped: number }> {
+}): Promise<{
+  records: StateAppendRecord[];
+  skipped: number;
+  failures: StateMaterializationFailure[];
+}> {
   const records: StateAppendRecord[] = [];
+  const failures: StateMaterializationFailure[] = [];
   let skipped = 0;
   for (const record of options.records) {
     if (record.kind !== "record_tuple") {
       records.push(record);
       continue;
     }
-    const tuple = recordTupleProjection(record);
-    const operations: RecordTupleProjectionOperation[] = [];
-    let superseded = false;
-    for (const operation of tuple.operations) {
-      if (!operation.oversize) {
-        operations.push(operation);
+    try {
+      const tuple = recordTupleProjection(record);
+      const operations: RecordTupleProjectionOperation[] = [];
+      let superseded = false;
+      for (const operation of tuple.operations) {
+        if (!operation.oversize) {
+          operations.push(operation);
+          continue;
+        }
+        const fetched = await fetchCanonicalRecord({
+          queueUrl: options.queueUrl,
+          webhookSecret: options.webhookSecret,
+          operation,
+          fetchImpl: options.fetchImpl,
+        });
+        if (fetched.kind === "superseded") {
+          superseded = true;
+          break;
+        }
+        operations.push({ ...operation, content: fetched.content, oversize: false });
+      }
+      if (superseded) {
+        skipped += 1;
+        console.warn(`record tuple projection superseded before oversize fetch: ${record.key}`);
         continue;
       }
-      const fetched = await fetchCanonicalRecord({
-        queueUrl: options.queueUrl,
-        webhookSecret: options.webhookSecret,
-        operation,
-        fetchImpl: options.fetchImpl,
+      records.push({ ...record, payload: { ...tuple, operations } });
+    } catch (error) {
+      failures.push({
+        seq: record.seq,
+        key: record.key,
+        reason: materializationFailureReason(error),
+        retryable: error instanceof RetryableStateMaterializationError,
       });
-      if (fetched.kind === "superseded") {
-        superseded = true;
-        break;
-      }
-      operations.push({ ...operation, content: fetched.content, oversize: false });
     }
-    if (superseded) {
-      skipped += 1;
-      console.warn(`record tuple projection superseded before oversize fetch: ${record.key}`);
-      continue;
-    }
-    records.push({ ...record, payload: { ...tuple, operations } });
   }
-  return { records, skipped };
+  return { records, skipped, failures };
 }
+
+class RetryableStateMaterializationError extends Error {}
 
 async function fetchCanonicalRecord(options: {
   queueUrl: string;
@@ -508,17 +666,36 @@ async function fetchCanonicalRecord(options: {
 }): Promise<{ kind: "fetched"; content: string } | { kind: "superseded" }> {
   const signature = `sha256=${createHmac("sha256", options.webhookSecret).update("").digest("hex")}`;
   const path = `/internal/state/records/${encodeURIComponent(options.operation.repoSlug)}/${options.operation.section}/${options.operation.itemId}`;
-  const response = await options.fetchImpl(`${options.queueUrl}${path}`, {
-    method: "GET",
-    headers: { "x-clawsweeper-exact-review-signature": signature },
-  });
+  let response: Response;
+  try {
+    response = await options.fetchImpl(`${options.queueUrl}${path}`, {
+      method: "GET",
+      headers: { "x-clawsweeper-exact-review-signature": signature },
+    });
+  } catch (error) {
+    throw new RetryableStateMaterializationError(
+      `GET ${path} failed transiently: ${errorMessage(error)}`,
+    );
+  }
   const body = (await response.json().catch(() => null)) as unknown;
-  if (!isRecord(body)) throw new Error(`GET ${path} returned invalid JSON`);
+  if (!isRecord(body)) {
+    if (response.status === 429 || response.status >= 500) {
+      throw new RetryableStateMaterializationError(
+        `GET ${path} returned ${response.status} with invalid JSON`,
+      );
+    }
+    throw new Error(`GET ${path} returned invalid JSON`);
+  }
   const revision = Number(body.revision);
   if (Number.isSafeInteger(revision) && revision > options.operation.revision) {
     return { kind: "superseded" };
   }
-  if (!response.ok) throw new Error(`GET ${path} returned ${response.status}`);
+  if (!response.ok) {
+    if (response.status === 429 || response.status >= 500) {
+      throw new RetryableStateMaterializationError(`GET ${path} returned ${response.status}`);
+    }
+    throw new Error(`GET ${path} returned ${response.status}`);
+  }
   const content = body.content;
   const digest = String(body.digest || "");
   if (
@@ -623,6 +800,27 @@ function recordTupleProjection(record: StateAppendRecord): RecordTupleProjection
   return { itemKey, revision, claimGeneration, operations };
 }
 
+function recordTupleRevision(record: StateAppendRecord): number | null {
+  if (!isRecord(record.payload)) return null;
+  const revision = Number(record.payload.revision);
+  return Number.isSafeInteger(revision) && revision >= 1 ? revision : null;
+}
+
+function primaryReferencesDecisionPacket(content: string): boolean {
+  const normalized = content.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) return false;
+  const end = normalized.indexOf("\n---", 4);
+  if (end === -1) return false;
+  const frontMatter = new Map<string, string>();
+  for (const line of normalized.slice(4, end).split("\n")) {
+    const match = /^([a-z][a-z0-9_]*):\s*(.*?)\s*$/.exec(line);
+    if (match?.[1]) frontMatter.set(match[1], match[2] ?? "");
+  }
+  const digest = frontMatter.get("decision_packet_sha256");
+  const pointer = frontMatter.get("decision_packet_path");
+  return Boolean(digest && pointer && digest !== "none" && pointer !== "none");
+}
+
 function assertProjectedContent(operation: RecordTupleProjectionOperation, content: string): void {
   const bytes = Buffer.byteLength(content);
   const digest = createHash("sha256").update(content).digest("hex");
@@ -680,6 +878,42 @@ async function ackStateWindow(options: {
   return acked;
 }
 
+async function disposeStateWindow(options: {
+  queueUrl: string;
+  webhookSecret: string;
+  drainToken: string;
+  failures: readonly StateMaterializationFailure[];
+  fetchImpl: typeof fetch;
+}): Promise<{ acked: number; retried: number; deadLettered: number }> {
+  const body = await postSignedStateRequest({
+    ...options,
+    path: "/internal/state/dispose",
+    payload: {
+      drain_token: options.drainToken,
+      failures: options.failures.map((failure) => ({
+        seq: failure.seq,
+        reason: failure.reason,
+        retryable: failure.retryable,
+      })),
+    },
+  });
+  const acked = Number(body.acked);
+  const retried = Number(body.retried);
+  const deadLettered = Number(body.dead_lettered);
+  if (
+    body.ok !== true ||
+    !Number.isSafeInteger(acked) ||
+    acked < 0 ||
+    !Number.isSafeInteger(retried) ||
+    retried < 0 ||
+    !Number.isSafeInteger(deadLettered) ||
+    deadLettered < 0
+  ) {
+    throw new Error("POST /internal/state/dispose returned an invalid response");
+  }
+  return { acked, retried, deadLettered };
+}
+
 async function postSignedStateRequest(options: {
   queueUrl: string;
   webhookSecret: string;
@@ -715,6 +949,9 @@ function stateAppendRecordFrom(value: unknown): StateAppendRecord {
     payload: value.payload,
     produced_at: String(value.produced_at || "").trim(),
     delivery_id: String(value.delivery_id || "").trim(),
+    ...(Object.hasOwn(value, "materialization_attempts")
+      ? { materialization_attempts: Number(value.materialization_attempts) }
+      : {}),
   };
   assertStateAppendRecord(record);
   return record;
@@ -735,6 +972,12 @@ function assertStateAppendRecord(record: StateAppendRecord): void {
     throw new Error("state drain record has an invalid produced_at");
   }
   if (!record.delivery_id) throw new Error("state drain record has no delivery_id");
+  if (
+    record.materialization_attempts !== undefined &&
+    (!Number.isSafeInteger(record.materialization_attempts) || record.materialization_attempts < 0)
+  ) {
+    throw new Error("state drain record has invalid materialization attempts");
+  }
 }
 
 function boundedPositiveInteger(
@@ -753,6 +996,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function errorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return redactStateSecrets(message);
+}
+
+function materializationFailureReason(error: unknown): string {
+  return errorMessage(error)
+    .replaceAll("\u0000", " ")
+    .replaceAll("\r", " ")
+    .replaceAll("\n", " ")
+    .slice(0, 2_000);
 }
 
 let stateSecretsToRedact: string[] = [];

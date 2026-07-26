@@ -177,6 +177,7 @@ export class ExactReviewDirectPublicationStore {
     limits: DirectPublicationProjectionLimits,
   ): DirectPublicationAcceptResult {
     const storedOperations = storedOperationsFrom(plan.operations);
+    const canonicalOperations = canonicalTupleOperations(plan);
     return this.storage.transactionSync(() => {
       this.pruneTerminalSync(now);
       const existing = this.readSync(plan.itemKey, plan.revision);
@@ -221,7 +222,7 @@ export class ExactReviewDirectPublicationStore {
         return { outcome: "superseded" as const, row, supersededRevisions: [] };
       }
 
-      for (const operation of plan.operations) {
+      for (const operation of canonicalOperations) {
         const current = this.readCanonicalMetadataSync(
           operation.repoSlug,
           operation.section,
@@ -241,7 +242,10 @@ export class ExactReviewDirectPublicationStore {
         }
       }
 
-      const projection = recordTupleProjection(plan, limits.maxRecordBytes);
+      const projection = recordTupleProjection(
+        { ...plan, operations: canonicalOperations },
+        limits.maxRecordBytes,
+      );
       const totals = stateAppendWindowTotalsSync(this.storage);
       if (
         totals.pendingRows + 1 > limits.maxPendingRows ||
@@ -252,7 +256,7 @@ export class ExactReviewDirectPublicationStore {
         );
       }
 
-      for (const operation of plan.operations)
+      for (const operation of canonicalOperations)
         this.writeCanonicalOperationSync(operation, plan, now);
       const inserted = Array.from(
         this.storage.sql.exec(
@@ -518,6 +522,72 @@ export class ExactReviewDirectPublicationStore {
       row.failureReason,
     );
   }
+}
+
+function canonicalTupleOperations(
+  plan: CanonicalDirectPublicationPlan,
+): CanonicalDirectPublicationOperation[] {
+  const operations = [...plan.operations];
+  const primaryWrites = operations.filter(
+    (operation) =>
+      (operation.section === "items" || operation.section === "closed") &&
+      operation.content !== null,
+  );
+  if (primaryWrites.length > 1) {
+    throw new Error(`direct publication tuple writes both primary sections: ${plan.itemKey}`);
+  }
+  const primaryWrite = primaryWrites[0];
+  const first = operations[0]!;
+  const addDelete = (section: RecordSection): void => {
+    if (operations.some((operation) => operation.section === section)) return;
+    const extension = section === "decision-packets" ? "json" : "md";
+    operations.push({
+      path: `records/${first.repoSlug}/${section}/${first.itemId}.${extension}`,
+      expectedOid: null,
+      targetOid: null,
+      mode: "100644",
+      bytes: 0,
+      repoSlug: first.repoSlug,
+      section,
+      itemId: first.itemId,
+      content: null,
+      digest: null,
+    });
+  };
+
+  if (primaryWrite) {
+    addDelete(primaryWrite.section === "items" ? "closed" : "items");
+    if (primaryWrite.section === "closed") addDelete("plans");
+    if (!primaryReferencesDecisionPacket(primaryWrite.content!)) addDelete("decision-packets");
+  } else if (
+    operations.some(
+      (operation) =>
+        (operation.section === "items" || operation.section === "closed") &&
+        operation.content === null,
+    )
+  ) {
+    addDelete("plans");
+    addDelete("decision-packets");
+  }
+  if (operations.length > EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILES) {
+    throw new Error(`canonical record tuple exceeds its file limit: ${plan.itemKey}`);
+  }
+  return operations;
+}
+
+function primaryReferencesDecisionPacket(content: string): boolean {
+  const normalized = content.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) return false;
+  const end = normalized.indexOf("\n---", 4);
+  if (end === -1) return false;
+  const frontMatter = new Map<string, string>();
+  for (const line of normalized.slice(4, end).split("\n")) {
+    const match = /^([a-z][a-z0-9_]*):\s*(.*?)\s*$/.exec(line);
+    if (match?.[1]) frontMatter.set(match[1], match[2] ?? "");
+  }
+  const digest = frontMatter.get("decision_packet_sha256");
+  const pointer = frontMatter.get("decision_packet_path");
+  return Boolean(digest && pointer && digest !== "none" && pointer !== "none");
 }
 
 export function validateRecordSection(value: unknown): RecordSection | null {

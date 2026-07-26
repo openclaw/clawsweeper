@@ -311,6 +311,8 @@ type StateAppendWindowRow = {
   payload_bytes: number;
   produced_at: string;
   delivery_id: string;
+  materialization_attempts: number;
+  materialization_first_failed_at: number | null;
 };
 type ExactReviewSupersessionAudit = {
   auditId: string;
@@ -407,6 +409,7 @@ const STATE_APPEND_WINDOW_TABLE = "state_append_window";
 const STATE_APPEND_RECEIPT_TABLE = "state_append_receipts";
 const STATE_APPEND_DRAIN_TABLE = "state_append_drains";
 const STATE_APPEND_META_TABLE = "state_append_meta";
+const STATE_APPEND_DEAD_LETTER_TABLE = "state_append_dead_letters";
 const STATE_APPEND_KINDS = new Set<StateAppendKind>([
   "sweep_status",
   "comment_router",
@@ -418,6 +421,7 @@ const DEFAULT_STATE_APPEND_MAX_RECORD_BYTES = 256 * 1024;
 // Must outlast a worst-case materializer publish (observed 17 min under
 // residual lease contention during the #738 transition).
 const DEFAULT_STATE_APPEND_DRAIN_LEASE_MS = 30 * 60 * 1000;
+const STATE_APPEND_MATERIALIZATION_RETRY_LIMIT = 3;
 const EXACT_REVIEW_REVIEW_TELEMETRY_TABLE = "exact_review_review_telemetry";
 const EXACT_REVIEW_RUN_TELEMETRY_TABLE = "exact_review_run_telemetry";
 const EXACT_REVIEW_STATE_WRITER_OPERATION_TABLE = "exact_review_state_writer_operations";
@@ -729,6 +733,104 @@ export class ExactReviewQueue {
         return deleted;
       });
       return json({ ok: true, acked });
+    }
+
+    if (request.method === "POST" && url.pathname === "/state/dispose") {
+      const body = objectValue(await request.json().catch(() => null));
+      const drainToken = String(body.drain_token || "").trim();
+      const failures = stateAppendMaterializationFailures(body.failures);
+      if (!drainToken) return json({ error: "missing_drain_token" }, 400);
+      if (failures === null) return json({ error: "invalid_materialization_failures" }, 400);
+      const disposition = this.storage.transactionSync(() => {
+        const now = Date.now();
+        this.reclaimExpiredStateAppendDrainsSync(now);
+        const active = Array.from(
+          this.storage.sql.exec(
+            `SELECT drain_token FROM ${STATE_APPEND_DRAIN_TABLE} WHERE drain_token = ?`,
+            drainToken,
+          ),
+        ).length;
+        if (!active) return { acked: 0, retried: 0, deadLettered: 0 };
+
+        const rows = new Map(
+          this.stateAppendRowsForDrainSync(drainToken).map((row) => [Number(row.seq), row]),
+        );
+        if (failures.some((failure) => !rows.has(failure.seq))) {
+          throw new Error("state materialization failure is outside its drain");
+        }
+
+        let retried = 0;
+        let deadLettered = 0;
+        for (const failure of failures) {
+          const row = rows.get(failure.seq)!;
+          const attempts = Number(row.materialization_attempts || 0) + 1;
+          const firstFailedAt = Number(row.materialization_first_failed_at || now);
+          if (failure.retryable && attempts < STATE_APPEND_MATERIALIZATION_RETRY_LIMIT) {
+            this.storage.sql.exec(
+              `UPDATE ${STATE_APPEND_WINDOW_TABLE}
+                  SET drain_token = NULL,
+                      materialization_attempts = ?,
+                      materialization_first_failed_at = ?,
+                      materialization_last_error = ?
+                WHERE seq = ? AND drain_token = ?`,
+              attempts,
+              firstFailedAt,
+              failure.reason,
+              failure.seq,
+              drainToken,
+            );
+            retried += 1;
+            continue;
+          }
+          this.storage.sql.exec(
+            `INSERT INTO ${STATE_APPEND_DEAD_LETTER_TABLE}
+               (dead_letter_id, seq, kind, record_key, payload_json, produced_at, delivery_id,
+                reason, attempts, first_failed_at, last_failed_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(dead_letter_id) DO UPDATE SET
+               reason = excluded.reason,
+               attempts = excluded.attempts,
+               last_failed_at = excluded.last_failed_at`,
+            `state-append:${row.delivery_id}:${row.seq}`,
+            row.seq,
+            row.kind,
+            row.record_key,
+            row.payload_json,
+            row.produced_at,
+            row.delivery_id,
+            failure.reason,
+            attempts,
+            firstFailedAt,
+            now,
+          );
+          this.storage.sql.exec(
+            `DELETE FROM ${STATE_APPEND_WINDOW_TABLE} WHERE seq = ? AND drain_token = ?`,
+            failure.seq,
+            drainToken,
+          );
+          deadLettered += 1;
+        }
+
+        const acknowledged = Array.from(
+          this.storage.sql.exec(
+            `DELETE FROM ${STATE_APPEND_WINDOW_TABLE}
+              WHERE drain_token = ?
+            RETURNING seq`,
+            drainToken,
+          ),
+        ).length;
+        this.storage.sql.exec(
+          `DELETE FROM ${STATE_APPEND_DRAIN_TABLE} WHERE drain_token = ?`,
+          drainToken,
+        );
+        return { acked: acknowledged + deadLettered, retried, deadLettered };
+      });
+      return json({
+        ok: true,
+        acked: disposition.acked,
+        retried: disposition.retried,
+        dead_lettered: disposition.deadLettered,
+      });
     }
 
     if (request.method === "POST" && url.pathname === "/state-writer/acquire") {
@@ -4817,7 +4919,10 @@ export class ExactReviewQueue {
          payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0),
          produced_at TEXT NOT NULL,
          delivery_id TEXT NOT NULL,
-         drain_token TEXT
+         drain_token TEXT,
+         materialization_attempts INTEGER NOT NULL DEFAULT 0 CHECK (materialization_attempts >= 0),
+         materialization_first_failed_at INTEGER,
+         materialization_last_error TEXT
        ) STRICT`,
     );
     const stateAppendTableRow = Array.from(
@@ -4838,7 +4943,10 @@ export class ExactReviewQueue {
              payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0),
              produced_at TEXT NOT NULL,
              delivery_id TEXT NOT NULL,
-             drain_token TEXT
+             drain_token TEXT,
+             materialization_attempts INTEGER NOT NULL DEFAULT 0 CHECK (materialization_attempts >= 0),
+             materialization_first_failed_at INTEGER,
+             materialization_last_error TEXT
            ) STRICT`,
         );
         this.storage.sql.exec(
@@ -4852,6 +4960,26 @@ export class ExactReviewQueue {
           `ALTER TABLE state_append_window_v2 RENAME TO ${STATE_APPEND_WINDOW_TABLE}`,
         );
       });
+    }
+    for (const [column, definition] of [
+      [
+        "materialization_attempts",
+        "INTEGER NOT NULL DEFAULT 0 CHECK (materialization_attempts >= 0)",
+      ],
+      ["materialization_first_failed_at", "INTEGER"],
+      ["materialization_last_error", "TEXT"],
+    ]) {
+      const present = Array.from(
+        this.storage.sql.exec(
+          `SELECT name FROM pragma_table_info('${STATE_APPEND_WINDOW_TABLE}') WHERE name = ?`,
+          column,
+        ),
+      ).length;
+      if (!present) {
+        this.storage.sql.exec(
+          `ALTER TABLE ${STATE_APPEND_WINDOW_TABLE} ADD COLUMN ${column} ${definition}`,
+        );
+      }
     }
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS state_append_window_drain_seq
@@ -4886,6 +5014,26 @@ export class ExactReviewQueue {
     );
     this.storage.sql.exec(
       `INSERT OR IGNORE INTO ${STATE_APPEND_META_TABLE} (singleton_id) VALUES (1)`,
+    );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${STATE_APPEND_DEAD_LETTER_TABLE} (
+         dead_letter_id TEXT PRIMARY KEY,
+         seq INTEGER NOT NULL CHECK (seq >= 1),
+         kind TEXT NOT NULL,
+         record_key TEXT NOT NULL,
+         payload_json TEXT NOT NULL,
+         produced_at TEXT NOT NULL,
+         delivery_id TEXT NOT NULL,
+         reason TEXT NOT NULL,
+         attempts INTEGER NOT NULL CHECK (attempts >= 1),
+         first_failed_at INTEGER NOT NULL,
+         last_failed_at INTEGER NOT NULL,
+         status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved'))
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS state_append_dead_letters_status
+         ON ${STATE_APPEND_DEAD_LETTER_TABLE} (status, last_failed_at, dead_letter_id)`,
     );
     // Flow telemetry is independent of queue rollback compatibility. A
     // separate singleton keeps cumulative lane counters monotonic without
@@ -6364,7 +6512,8 @@ export class ExactReviewQueue {
 
     const candidates = Array.from(
       this.storage.sql.exec(
-        `SELECT seq, kind, record_key, payload_json, payload_bytes, produced_at, delivery_id
+        `SELECT seq, kind, record_key, payload_json, payload_bytes, produced_at, delivery_id,
+                materialization_attempts, materialization_first_failed_at
            FROM ${STATE_APPEND_WINDOW_TABLE}
           WHERE drain_token IS NULL
           ORDER BY seq
@@ -6403,7 +6552,8 @@ export class ExactReviewQueue {
   private stateAppendRowsForDrainSync(drainToken: string) {
     return Array.from(
       this.storage.sql.exec(
-        `SELECT seq, kind, record_key, payload_json, payload_bytes, produced_at, delivery_id
+        `SELECT seq, kind, record_key, payload_json, payload_bytes, produced_at, delivery_id,
+                materialization_attempts, materialization_first_failed_at
            FROM ${STATE_APPEND_WINDOW_TABLE}
           WHERE drain_token = ?
           ORDER BY seq`,
@@ -9399,7 +9549,35 @@ function stateAppendWindowRowJson(row: StateAppendWindowRow) {
     payload: JSON.parse(row.payload_json),
     produced_at: row.produced_at,
     delivery_id: row.delivery_id,
+    materialization_attempts: Number(row.materialization_attempts || 0),
   };
+}
+
+function stateAppendMaterializationFailures(value: unknown) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 100_000) return null;
+  const seen = new Set<number>();
+  const failures: Array<{ seq: number; reason: string; retryable: boolean }> = [];
+  for (const entry of value) {
+    const record = objectValue(entry);
+    const seq = Number(record.seq);
+    const reason = String(record.reason || "").trim();
+    if (
+      !Number.isSafeInteger(seq) ||
+      seq < 1 ||
+      seen.has(seq) ||
+      !reason ||
+      reason.length > 2_000 ||
+      reason.includes("\u0000") ||
+      reason.includes("\r") ||
+      reason.includes("\n") ||
+      typeof record.retryable !== "boolean"
+    ) {
+      return null;
+    }
+    seen.add(seq);
+    failures.push({ seq, reason, retryable: record.retryable });
+  }
+  return failures;
 }
 
 async function exactReviewDispatchToken(env) {

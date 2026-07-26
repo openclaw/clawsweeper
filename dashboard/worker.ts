@@ -561,6 +561,8 @@ export default {
       return authenticatedExactReviewQueueRequest(request, env, "/state/drain");
     if (url.pathname === "/internal/state/ack" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/state/ack");
+    if (url.pathname === "/internal/state/dispose" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/state/dispose");
     if (url.pathname === "/internal/state-writer/acquire" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/state-writer/acquire");
     if (url.pathname === "/internal/state-writer/heartbeat" && request.method === "POST")

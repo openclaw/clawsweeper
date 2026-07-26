@@ -7647,6 +7647,74 @@ test("state drain replays its active batch and deletes rows only after ack", asy
   assert.equal(stats.state_append.pending_rows, 1);
 });
 
+test("state disposition commits valid rows and dead-letters a poison row after bounded retries", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(
+    stateAppendQueueRequest("/state/append", {
+      delivery_id: "state-mixed-disposition",
+      records: [
+        stateAppendRecord("sweep_status", "valid", { n: 1 }),
+        stateAppendRecord("apply_proof", "poison", { n: 2 }),
+      ],
+    }),
+  );
+
+  const first = await (
+    await queue.fetch(stateAppendQueueRequest("/state/drain", { max_rows: 2, max_bytes: 1024 }))
+  ).json();
+  const poisonSeq = first.records.find((record) => record.key === "poison").seq;
+  const firstDisposition = await queue.fetch(
+    stateAppendQueueRequest("/state/dispose", {
+      drain_token: first.drain_token,
+      failures: [{ seq: poisonSeq, reason: "temporary canonical fetch failure", retryable: true }],
+    }),
+  );
+  assert.deepEqual(await firstDisposition.json(), {
+    ok: true,
+    acked: 1,
+    retried: 1,
+    dead_lettered: 0,
+  });
+
+  for (const expectedAttempts of [1, 2]) {
+    const drain = await (
+      await queue.fetch(stateAppendQueueRequest("/state/drain", { max_rows: 2, max_bytes: 1024 }))
+    ).json();
+    assert.equal(drain.records.length, 1);
+    assert.equal(drain.records[0].materialization_attempts, expectedAttempts);
+    const disposed = await queue.fetch(
+      stateAppendQueueRequest("/state/dispose", {
+        drain_token: drain.drain_token,
+        failures: [
+          { seq: poisonSeq, reason: "temporary canonical fetch failure", retryable: true },
+        ],
+      }),
+    );
+    assert.deepEqual(await disposed.json(), {
+      ok: true,
+      acked: expectedAttempts === 2 ? 1 : 0,
+      retried: expectedAttempts === 2 ? 0 : 1,
+      dead_lettered: expectedAttempts === 2 ? 1 : 0,
+    });
+  }
+
+  const deadLetters = Array.from(
+    storage.sql.exec("SELECT record_key, reason, attempts, status FROM state_append_dead_letters"),
+  );
+  assert.deepEqual(
+    deadLetters.map((row) => ({ ...row })),
+    [
+      {
+        record_key: "poison",
+        reason: "temporary canonical fetch failure",
+        attempts: 3,
+        status: "open",
+      },
+    ],
+  );
+});
+
 test("expired state drain leases make the same rows available under a new token", async () => {
   const originalNow = Date.now;
   let now = Date.parse("2026-07-20T12:00:00.000Z");

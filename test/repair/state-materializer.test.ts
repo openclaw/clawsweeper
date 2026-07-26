@@ -144,6 +144,142 @@ test("materializer commits one canonical record tuple atomically", async () => {
   assert.deepEqual(commitPaths.sort(), tuple.operations.map((operation) => operation.path).sort());
 });
 
+test("materializer projects an items-to-closed move by deleting the displaced primary and stale plan", () => {
+  const open = canonicalTuplePayload(45, "open", "2026-07-20T12:00:00.000Z");
+  const closed = canonicalTuplePayload(45, "closed", "2026-07-20T12:10:00.000Z", {
+    section: "closed",
+    revision: 2,
+    includePlan: false,
+  });
+  const currentFiles = new Map(
+    open.operations.map((operation) => [operation.path, operation.content!]),
+  );
+
+  const plan = planStateMaterialization(
+    [record(1, "record_tuple", "openclaw-openclaw/45", closed)],
+    currentFiles,
+  );
+
+  assert.deepEqual(plan.deletes, [
+    "records/openclaw-openclaw/items/45.md",
+    "records/openclaw-openclaw/plans/45.md",
+  ]);
+  assert.equal(
+    plan.writes.some((write) => write.path === "records/openclaw-openclaw/closed/45.md"),
+    true,
+  );
+  assert.equal(plan.publishPaths.includes("records/openclaw-openclaw/items/45.md"), true);
+});
+
+test("materializer coalesces section-changing tuple records by highest revision", () => {
+  const closed = canonicalTuplePayload(46, "closed-newer", "2026-07-20T12:20:00.000Z", {
+    section: "closed",
+    revision: 2,
+    includePlan: false,
+  });
+  const open = canonicalTuplePayload(46, "open-older", "2026-07-20T12:10:00.000Z", {
+    revision: 1,
+  });
+
+  const plan = planStateMaterialization([
+    record(1, "record_tuple", "openclaw-openclaw/46", closed),
+    record(2, "record_tuple", "openclaw-openclaw/46", open),
+  ]);
+
+  assert.equal(plan.selected, 1);
+  assert.equal(plan.skipped, 1);
+  assert.equal(
+    plan.writes.some(
+      (write) =>
+        write.path === "records/openclaw-openclaw/closed/46.md" &&
+        write.content.includes("closed-newer"),
+    ),
+    true,
+  );
+  assert.equal(
+    plan.writes.some((write) => write.path === "records/openclaw-openclaw/items/46.md"),
+    false,
+  );
+});
+
+test("materializer isolates a corrupt tuple, commits ordinary state, and records its dead letter", async () => {
+  const fixture = createStateFixture();
+  const invalid = canonicalTuplePayload(47, "invalid-open", "2026-07-20T12:10:00.000Z");
+  const closed = canonicalTuplePayload(47, "invalid-closed", "2026-07-20T12:10:00.000Z", {
+    section: "closed",
+    includePlan: false,
+  });
+  invalid.operations.push(closed.operations.find((operation) => operation.section === "closed")!);
+  const records = [
+    record(1, "record_tuple", "openclaw-openclaw/47", invalid),
+    record(2, "sweep_status", "openclaw-openclaw", sweepStatus("continued", "12:10:01.000")),
+  ];
+  let drainCalls = 0;
+  let disposition: Record<string, unknown> | null = null;
+  const fetchImpl = signedQueueFetch(async (url, body) => {
+    if (url.pathname === "/internal/state/drain") {
+      drainCalls += 1;
+      return drainCalls === 1
+        ? Response.json({ ok: true, drain_token: "mixed-cycle", records })
+        : Response.json({ ok: true, drain_token: null, records: [] });
+    }
+    assert.equal(url.pathname, "/internal/state/dispose");
+    disposition = body;
+    return Response.json({ ok: true, acked: 2, retried: 0, dead_lettered: 1 });
+  });
+
+  const summary = await withMaterializerFixture(fixture, () =>
+    runStateMaterializer({ env: materializerEnv(), fetchImpl }),
+  );
+
+  assert.deepEqual(summary, { drained: 2, committed: 1, acked: 2, skipped: 0, errors: 1 });
+  assert.equal(
+    JSON.parse(showState(fixture, "results/sweep-status/openclaw-openclaw.json")).detail,
+    "continued",
+  );
+  assert.deepEqual(disposition, {
+    drain_token: "mixed-cycle",
+    failures: [
+      {
+        seq: 1,
+        reason: "record tuple projection openclaw-openclaw/47 writes both primary sections",
+        retryable: false,
+      },
+    ],
+  });
+});
+
+test("materializer re-drains an already-published backlog without duplicating its commit", async () => {
+  const fixture = createStateFixture();
+  const records = [
+    record(1, "sweep_status", "openclaw-openclaw", sweepStatus("backlog", "12:11:00.000")),
+  ];
+  let drainCalls = 0;
+  let ackCalls = 0;
+  const fetchImpl = signedQueueFetch(async (url) => {
+    if (url.pathname === "/internal/state/drain") {
+      drainCalls += 1;
+      if (drainCalls <= 2) {
+        return Response.json({ ok: true, drain_token: "redrain", records });
+      }
+      return Response.json({ ok: true, drain_token: null, records: [] });
+    }
+    assert.equal(url.pathname, "/internal/state/ack");
+    ackCalls += 1;
+    return Response.json({ ok: true, acked: ackCalls === 1 ? 0 : 1 });
+  });
+
+  const summary = await withMaterializerFixture(fixture, () =>
+    runStateMaterializer({ env: materializerEnv(), fetchImpl }),
+  );
+
+  assert.deepEqual(summary, { drained: 2, committed: 2, acked: 1, skipped: 0, errors: 0 });
+  assert.equal(
+    run("git", ["--git-dir", fixture.origin, "rev-list", "--count", "state"], fixture.root),
+    "2\n",
+  );
+});
+
 test("materializer fetches oversize canonical tuple content before projection", async () => {
   const fixture = createStateFixture();
   const tuple = canonicalTuplePayload(43, "oversize", "2026-07-20T12:11:00.000Z");
@@ -341,12 +477,12 @@ function record(
 type TupleTestOperation = {
   path: string;
   repoSlug: string;
-  section: "items" | "plans" | "decision-packets";
+  section: "items" | "closed" | "plans" | "decision-packets";
   itemId: number;
-  digest: string;
+  digest: string | null;
   revision: number;
   bytes: number;
-  deleted: false;
+  deleted: boolean;
   content?: string;
   oversize?: boolean;
 };
@@ -362,7 +498,11 @@ function canonicalTuplePayload(
   number: number,
   marker: string,
   timestamp: string,
+  options: { section?: "items" | "closed"; revision?: number; includePlan?: boolean } = {},
 ): TupleTestPayload {
+  const section = options.section ?? "items";
+  const revision = options.revision ?? 1;
+  const includePlan = options.includePlan ?? section === "items";
   const packet = `${JSON.stringify(
     {
       version: 1,
@@ -370,7 +510,7 @@ function canonicalTuplePayload(
       updatedAt: timestamp,
       subject: { repo: "openclaw/openclaw", number },
       source: {
-        reportPath: `records/openclaw-openclaw/items/${number}.md`,
+        reportPath: `records/openclaw-openclaw/${section}/${number}.md`,
         reviewedAt: timestamp,
       },
       marker,
@@ -403,13 +543,13 @@ function canonicalTuplePayload(
     "",
   ].join("\n");
   const values = [
-    { section: "items" as const, extension: "md", content: primary },
-    { section: "plans" as const, extension: "md", content: plan },
+    { section, extension: "md", content: primary },
+    ...(includePlan ? [{ section: "plans" as const, extension: "md", content: plan }] : []),
     { section: "decision-packets" as const, extension: "json", content: packet },
   ];
   return {
     itemKey: `openclaw/openclaw#${number}`,
-    revision: 1,
+    revision,
     claimGeneration: 1,
     operations: values.map(({ section, extension, content }) => ({
       path: `records/openclaw-openclaw/${section}/${number}.${extension}`,
@@ -417,7 +557,7 @@ function canonicalTuplePayload(
       section,
       itemId: number,
       digest: createHash("sha256").update(content).digest("hex"),
-      revision: 1,
+      revision,
       bytes: Buffer.byteLength(content),
       deleted: false,
       content,
