@@ -300,6 +300,10 @@ const OPENCLAW_CHILD_ENV_ALLOWLIST = [
   "KIMI_API_KEY",
   "KIMICODE_API_KEY",
   "MOONSHOT_API_KEY",
+  "CEREBRAS_API_KEY",
+  "ZAI_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "MISTRAL_API_KEY",
 ] as const;
 
 function pickEnv(env: NodeJS.ProcessEnv, names: readonly string[]): NodeJS.ProcessEnv {
@@ -320,7 +324,7 @@ function pickEnv(env: NodeJS.ProcessEnv, names: readonly string[]): NodeJS.Proce
 // Verified 2026-07-25: kimi-for-coding needs maxTokens above the runtime
 // default or reasoning-heavy turns die on the output cap; k3 limits are from
 // the Kimi Code catalog (1M context, 131072 max output).
-const KIMI_BUILTIN_PROVIDER = {
+const BUILTIN_PROVIDERS = {
   kimi: {
     baseUrl: "https://api.kimi.com/coding/",
     apiKey: "${KIMI_API_KEY}",
@@ -330,12 +334,23 @@ const KIMI_BUILTIN_PROVIDER = {
       { id: "k3", name: "Kimi K3", contextWindow: 1048576, maxTokens: 131072 },
     ],
   },
+  // Cerebras Code plans serve the GLM coding model at ~1000 tok/s; validated
+  // live 2026-07-25 (474 tok/s wall including network, E2E tool run in 5s).
+  // zai-glm-4.7 deprecates 2026-08-17 — update the id when Cerebras swaps in
+  // its successor.
+  cerebras: {
+    baseUrl: "https://api.cerebras.ai/v1",
+    apiKey: "${CEREBRAS_API_KEY}",
+    api: "openai-completions",
+    models: [{ id: "zai-glm-4.7", name: "Z.ai GLM 4.7", contextWindow: 128000, maxTokens: 8192 }],
+  },
 } as const;
 
 function builtinProviderBlock(model: string): Record<string, unknown> | undefined {
-  const provider = model.split("/", 1)[0];
-  if (provider !== "kimi") return undefined;
-  return structuredClone(KIMI_BUILTIN_PROVIDER) as unknown as Record<string, unknown>;
+  const provider = model.split("/", 1)[0] as keyof typeof BUILTIN_PROVIDERS;
+  const block = BUILTIN_PROVIDERS[provider];
+  if (!block) return undefined;
+  return structuredClone({ [provider]: block }) as unknown as Record<string, unknown>;
 }
 
 function boundedStderrDetail(stderr: string): string {

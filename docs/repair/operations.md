@@ -250,7 +250,13 @@ otherwise ClawSweeper runs `openclaw` from `PATH`.
 Providers that are not bundled with OpenClaw can be supplied through
 `CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON`, a JSON object merged into
 `models.providers`; referenced provider API-key environment variables must also
-be present. ClawSweeper gives OpenClaw a fresh state directory, a coding tool
+be present. Two providers ship as built-in defaults and need only their API key
+in the environment: `kimi/…` (Kimi Code endpoint, `KIMI_API_KEY`; models
+`kimi-for-coding` and `k3`) and `cerebras/…` (Cerebras Code plans,
+`CEREBRAS_API_KEY`; model `zai-glm-4.7` until Cerebras retires it on
+2026-08-17). The subprocess environment is deny-by-default: only the base OS
+surface, `OPENCLAW_*` controls, proxy settings, and known provider API keys
+reach the agent. ClawSweeper gives OpenClaw a fresh state directory, a coding tool
 profile limited to the target workspace, and the lane's existing timeout and
 reasoning effort. OpenClaw can exit zero for terminal agent failures, so the
 wrapper inspects its JSON envelope for agent errors, aborts, timeouts, exhausted
