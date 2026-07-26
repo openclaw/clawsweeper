@@ -257,7 +257,6 @@ export function runAutomergeE2E({
     const repairedHead = currentRef(targetFixture.remote, targetFixture.headRef);
     assertFixturePostRepair(targetFixture, repairedHead);
     if (
-      scenario === "approve-intent-persistence" ||
       scenario === "completed-verdict-resume" ||
       scenario === "completed-verdict-source-drift" ||
       scenario === "resume-intent-persistence"
@@ -288,9 +287,36 @@ export function runAutomergeE2E({
       assert.match(String(behindMerge?.repair_reason ?? ""), /cloud rebase repair/);
       assert.equal(
         behindCommand?.actions.find((action) => action.action === "dispatch_repair")?.status,
+        "waiting",
+      );
+      let behindState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      assert.equal(
+        behindState.pr.labels.includes("clawsweeper:human-review"),
+        true,
+        "approval must preserve the pause label until the newly written repair job is durable",
+      );
+      assert.equal(
+        behindState.workflowDispatches.length,
+        0,
+        "a newly written repair job must not dispatch before its durable publication",
+      );
+      runCommentRouterExact(runtimeRoot, baseEnv, artifacts, "09-comment-router-approve-durable", {
+        commentId: approvalId,
+      });
+      const durableReport = readRouterReport(runtimeRoot);
+      const durableCommand = durableReport.commands.find(
+        (command) => command.intent === "maintainer_approve_automerge",
+      );
+      assert.equal(
+        durableCommand?.actions.find((action) => action.action === "dispatch_repair")?.status,
         "executed",
       );
-      const behindState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      behindState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      assert.equal(
+        behindState.pr.labels.includes("clawsweeper:human-review"),
+        false,
+        "the pause label may clear after the durable repair job dispatches",
+      );
       const repairDispatch = behindState.workflowDispatches.at(-1);
       assert.equal(
         repairDispatch?.inputs.job,
@@ -492,8 +518,8 @@ export function runAutomergeE2E({
     assert.equal(idempotentRouterReport.actionable, 0);
     assert.equal(
       state.calls.filter((call) => call.args[0] === "pr" && call.args[1] === "merge").length,
-      scenario === "approve-intent-persistence" ? 2 : 1,
-      "an idempotent router replay must not attempt a second merge",
+      scenario === "approve-intent-persistence" ? 3 : 1,
+      "only the durable approval replay and final exact-head verdict may retry merge",
     );
     assert.ok(state.calls.some((call) => call.token === "read"));
     assert.ok(state.calls.some((call) => call.token === "write"));

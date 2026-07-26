@@ -2232,38 +2232,17 @@ function executeCommand(command: LooseRecord) {
         .filter((action: JsonValue) => action.action === "remove_label")
         .map((action: JsonValue) => String(action.label ?? ""))
         .filter(Boolean);
-      if (pauseLabels.length > 0) {
-        for (const pausedLabel of pauseLabels) {
-          runGitHubBestEffortMutation(
-            command,
-            "label_remove",
-            { repository: command.repo, number: command.issue_number, label: pausedLabel },
-            [
-              "issue",
-              "edit",
-              String(command.issue_number),
-              "--repo",
-              command.repo,
-              "--remove-label",
-              pausedLabel,
-            ],
-            githubNotFoundNoMutation,
-          );
-        }
-        command.target = {
-          ...command.target,
-          labels: (command.target?.labels ?? []).filter(
-            (label: JsonValue) => !pauseLabels.includes(String(label)),
-          ),
-        };
-      }
+      const deferPauseLabelRemoval = command.intent === "maintainer_approve_automerge";
+      if (pauseLabels.length > 0 && !deferPauseLabelRemoval) applyRemoveLabelActions(command);
       const merge = executeAutomerge(command);
       dispatched = { ...dispatched, merge };
       command.actions = command.actions.map((action: JsonValue) =>
         action.action === "label"
           ? { ...action, status: "executed", label: action.label }
           : action.action === "remove_label"
-            ? { ...action, status: "executed", label: action.label }
+            ? deferPauseLabelRemoval
+              ? action
+              : { ...action, status: "executed", label: action.label }
             : action.action === "update_description_note"
               ? { ...action, status: "executed" }
               : action.action === "merge"
@@ -2306,11 +2285,15 @@ function executeCommand(command: LooseRecord) {
             mode: command.target.mode,
             ...dispatchRepairActionStatus(repair),
           });
+          if (deferPauseLabelRemoval) applyRemoveLabelActions(command);
           if (repair.status === "claimed") {
             keepCommandClaimed(command);
             return;
           }
         }
+      }
+      if (deferPauseLabelRemoval && merge.status === "executed") {
+        applyRemoveLabelActions(command);
       }
     }
     if (
@@ -4160,7 +4143,9 @@ function validateAutomergeReadiness({ command, view, target }: LooseRecord) {
   if (!hasLabel(target, AUTOMERGE_LABEL)) {
     return "PR is not opted into ClawSweeper automerge";
   }
-  if (hasLabel(target, HUMAN_REVIEW_LABEL)) return "PR is paused for human review";
+  if (hasLabel(target, HUMAN_REVIEW_LABEL) && command.intent !== "maintainer_approve_automerge") {
+    return "PR is paused for human review";
+  }
   if (view.state && view.state !== "OPEN")
     return `pull request is ${String(view.state).toLowerCase()}`;
   if (view.isDraft) return "pull request is draft";
