@@ -1006,7 +1006,13 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
   assert.match(sweepJob, /actions\/checkout@v7/);
   assert.match(sweepJob, /build-script: build/);
   assert.match(sweepJob, /name: Create target write token/);
-  assert.match(sweepJob, /owner: openclaw\s+repositories: openclaw\s+permission-issues: write/);
+  // GitHub's label endpoint lives under /issues but needs pull-requests write
+  // when the item is a pull request; issues write alone 403s every
+  // pull-request escalation.
+  assert.match(
+    sweepJob,
+    /owner: openclaw\s+repositories: openclaw\s+permission-issues: write\s+permission-pull-requests: write/,
+  );
   assert.match(sweepJob, /name: Recover orphaned review placeholders/);
   assert.match(sweepJob, /run: node dist\/review-placeholder-recovery\.js/);
   assert.match(

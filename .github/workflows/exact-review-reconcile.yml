@@ -194,6 +194,9 @@ jobs:
 
       # The workflow-scoped GITHUB_TOKEN cannot mutate the target repo; stuck
       # escalation labels need an app installation token for the target owner.
+      # The label endpoint is served under /issues but still requires
+      # pull-requests write when the item is a pull request; issues write alone
+      # escalates issues and 403s every pull-request escalation.
       - name: Create target write token
         id: target-write-token
         continue-on-error: true
@@ -204,6 +207,7 @@ jobs:
           owner: openclaw
           repositories: openclaw
           permission-issues: write
+          permission-pull-requests: write
 
       - name: Recover orphaned review placeholders
         env:
