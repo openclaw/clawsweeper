@@ -72,6 +72,7 @@ export type GitPublishOptions = {
   remote?: string;
   branch?: string;
   rebaseStrategy?: RebaseStrategy | undefined;
+  shallowHistoryExhaustionStrategy?: ShallowHistoryExhaustionStrategy | undefined;
   onRecordTupleFailure?: ((failure: RecordTuplePublishFailure) => void) | undefined;
 };
 
@@ -83,6 +84,18 @@ export type RecordTuplePublishFailure = {
 type RecordTupleFailureReporter = (failure: RecordTuplePublishFailure) => void;
 
 export type RebaseStrategy = "normal" | "theirs" | "apply-records" | "reconcile-records";
+
+export type ShallowHistoryExhaustionStrategy = "defer" | "rebuild-on-remote-head";
+
+export const SHALLOW_MERGE_BASE_EXHAUSTION_DISPOSITION =
+  "git_publish:merge_base_shallow_recovery:bounded_deepen_exhausted";
+
+export class GitShallowHistoryExhaustionError extends Error {
+  constructor(readonly deepenedBy: number) {
+    super(`Shallow Git recovery deferred to the next run after deepening by ${deepenedBy} commits`);
+    this.name = "GitShallowHistoryExhaustionError";
+  }
+}
 
 export type GitRunOptions = {
   allowFailure?: boolean;
@@ -117,13 +130,16 @@ const GIT_TREE_LIST_MAX_BUFFER = 64 * 1024 * 1024;
 const GIT_STATE_DIFF_MAX_BUFFER = 256 * 1024 * 1024;
 const RECONCILIATION_TUPLE_CHUNK_SIZE = 128;
 const PUBLISH_FETCH_TIMEOUT_MS = 60_000;
-const COMMIT_GRAPH_FETCH_FILTER = "tree:0";
 const SHALLOW_MERGE_DEEPEN_STEP = 512;
-const SHALLOW_MERGE_MAX_DEEPEN = 2_048;
-// Recovery fetches (deepen/unshallow/refetch of the state history) are rare
-// one-time repairs but move far more data than an ordinary publish fetch; a
-// 60s budget times out on the grown state repo (prod run 29745570319).
+const SHALLOW_MERGE_MAX_DEEPEN = 1_024;
+// Recovery refetches are rare one-time repairs but move far more data than an
+// ordinary publish fetch; a 60s budget times out on the grown state repo
+// (prod run 29745570319).
 const RECOVERY_FETCH_TIMEOUT_MS = 300_000;
+// Plain shallow-history fetches transfer enough of the 39.5 GiB state repo to
+// exceed the general recovery budget. Two 512-commit deepens remain bounded by
+// the materializer runtime while this dedicated budget gives each one headroom.
+const SHALLOW_HISTORY_FETCH_TIMEOUT_MS = 900_000;
 // Branch pushes move materializer-sized batches and must outlast them, but a
 // push with no timeout turns a stalled transport into a silent hang that only
 // the job timeout can end.
@@ -477,6 +493,7 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
   const maxAttempts = positiveInt(options.maxAttempts, 8);
   const pushAttempts = positiveInt(options.pushAttempts, 3);
   const rebaseStrategy = options.rebaseStrategy ?? "normal";
+  const shallowHistoryExhaustionStrategy = options.shallowHistoryExhaustionStrategy ?? "defer";
   const reportedTupleFailures = new Set<string>();
   const reportTupleFailure: RecordTupleFailureReporter | undefined = options.onRecordTupleFailure
     ? (failure) => {
@@ -489,7 +506,7 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
     "sync",
     `paths=${uniqueNonEmpty(options.paths).length} strategy=${rebaseStrategy}`,
   );
-  prepareReconciliationStateRoot(remote, branch, rebaseStrategy);
+  prepareReconciliationStateRoot(remote, branch, rebaseStrategy, shallowHistoryExhaustionStrategy);
   // Baseline before the head sync: the source-refresh diff below must span the
   // remote commits this checkout had not seen yet, and the sync collapses them
   // into the new HEAD.
@@ -505,7 +522,13 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
     const synchronized =
       !stateBaseCommit ||
       (rebaseStrategy === "reconcile-records"
-        ? pushReconciliationCommit({ remote, branch, pushAttempts, maxAttempts })
+        ? pushReconciliationCommit({
+            remote,
+            branch,
+            pushAttempts,
+            maxAttempts,
+            shallowHistoryExhaustionStrategy,
+          })
         : pushCommit({ remote, branch, pushAttempts, rebaseStrategy }));
     if (!synchronized) {
       throw new Error(`Failed to synchronize unchanged publish with ${remote}/${branch}`);
@@ -532,6 +555,7 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
           branch,
           pushAttempts,
           maxAttempts,
+          shallowHistoryExhaustionStrategy,
           ...(reconciliationSourceCommit ? { reconciliationSourceCommit } : {}),
           ...(reconciliationTupleKeys ? { reconciliationTupleKeys } : {}),
           ...(reportTupleFailure ? { reportTupleFailure } : {}),
@@ -551,6 +575,7 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
         maxAttempts,
         sourceCommit: reconciliationSourceCommit ?? sourceCommit,
         tupleKeys,
+        shallowHistoryExhaustionStrategy,
         ...(reportTupleFailure ? { reportTupleFailure } : {}),
       });
       return completeStatePublish(result, options.paths, stateBaseCommit);
@@ -566,6 +591,7 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
         branch,
         pushAttempts,
         maxAttempts,
+        shallowHistoryExhaustionStrategy,
         ...(reconciliationSourceCommit ? { reconciliationSourceCommit } : {}),
         ...(reconciliationTupleKeys ? { reconciliationTupleKeys } : {}),
         ...(reportTupleFailure ? { reportTupleFailure } : {}),
@@ -890,7 +916,7 @@ function recoverUnavailableGitObjects(remote: string, branch: string, failure: u
   }
   const deepened = spawnBoundedFetch(
     ["fetch", "--deepen=1", remote, branch],
-    RECOVERY_FETCH_TIMEOUT_MS,
+    SHALLOW_HISTORY_FETCH_TIMEOUT_MS,
   );
   if (deepened.status === 0 && gitObjectIdsAvailable(objectIds)) return;
   if (!isShallowRepository()) {
@@ -899,7 +925,7 @@ function recoverUnavailableGitObjects(remote: string, branch: string, failure: u
   }
   const unshallowed = spawnBoundedFetch(
     ["fetch", "--unshallow", remote, branch],
-    RECOVERY_FETCH_TIMEOUT_MS,
+    SHALLOW_HISTORY_FETCH_TIMEOUT_MS,
   );
   if (unshallowed.status === 0 && gitObjectIdsAvailable(objectIds)) return;
   assertGitObjectsAvailable(objectIds);
@@ -1108,6 +1134,7 @@ function pushReconciliationCommit(options: {
   branch: string;
   pushAttempts: number;
   maxAttempts: number;
+  shallowHistoryExhaustionStrategy: ShallowHistoryExhaustionStrategy;
   reconciliationSourceCommit?: string;
   reconciliationTupleKeys?: ReadonlySet<string>;
   reportTupleFailure?: RecordTupleFailureReporter;
@@ -1119,6 +1146,7 @@ function pushReconciliationCommit(options: {
         branch: options.branch,
         pushAttempts: options.pushAttempts,
         rebaseStrategy: "reconcile-records",
+        shallowHistoryExhaustionStrategy: options.shallowHistoryExhaustionStrategy,
         ...(options.reconciliationSourceCommit
           ? { reconciliationSourceCommit: options.reconciliationSourceCommit }
           : {}),
@@ -1142,6 +1170,7 @@ function pushReconciliationCommit(options: {
     branch: options.branch,
     pushAttempts: options.pushAttempts,
     rebaseStrategy: "reconcile-records",
+    shallowHistoryExhaustionStrategy: options.shallowHistoryExhaustionStrategy,
     ...(options.reconciliationSourceCommit
       ? { reconciliationSourceCommit: options.reconciliationSourceCommit }
       : {}),
@@ -1189,6 +1218,7 @@ export function mergeBaseWithShallowRecovery(
   right: string,
   remote: string,
   branch: string,
+  exhaustionStrategy: ShallowHistoryExhaustionStrategy = "defer",
 ): { base: string | null; recoveredShallowMiss: boolean } {
   const args = ["merge-base", left, right];
   let result = spawnGit(args, { quiet: true });
@@ -1200,12 +1230,11 @@ export function mergeBaseWithShallowRecovery(
     return { base: null, recoveredShallowMiss: false };
   }
 
-  configureCommitGraphPromisor(remote);
   let deepenedBy = 0;
   while (deepenedBy < SHALLOW_MERGE_MAX_DEEPEN && isShallowRepository()) {
     const deepenBy = Math.min(SHALLOW_MERGE_DEEPEN_STEP, SHALLOW_MERGE_MAX_DEEPEN - deepenedBy);
-    const deepenArgs = commitGraphHistoryFetchArgs(`--deepen=${deepenBy}`, remote, branch);
-    const deepen = spawnBoundedFetch(deepenArgs, RECOVERY_FETCH_TIMEOUT_MS);
+    const deepenArgs = ["fetch", `--deepen=${deepenBy}`, remote, branch];
+    const deepen = spawnBoundedFetch(deepenArgs, SHALLOW_HISTORY_FETCH_TIMEOUT_MS);
     if (deepen.status !== 0) throw gitRunError(deepen, deepenArgs);
     deepenedBy += deepenBy;
     result = spawnGit(args, { quiet: true });
@@ -1218,70 +1247,16 @@ export function mergeBaseWithShallowRecovery(
     return { base: null, recoveredShallowMiss: true };
   }
 
-  if (modelRecoveryConfigured()) {
-    const attempt = executeModelRecovery({
-      phase: "merge_base_shallow_recovery",
-      failure: gitRunError(result, args),
-      shallow: true,
-      remote,
-      branch,
-      recentAttempts: [
-        `merge_base:${left}:${right}:status=${result.status}`,
-        `bounded_deepen:${deepenedBy}:merge_base_status=${result.status}`,
-      ],
-      availableActions: [
-        "refetch_depth1",
-        "deepen",
-        "unshallow",
-        "rebuild_on_remote_head",
-        "defer_to_next_run",
-        "give_up",
-      ],
-      handlers: commitGraphRecoveryHandlers(remote, branch, {
-        rebuildOnRemoteHead: () => {},
-        deferToNextRun: () => {},
-        giveUp: () => {},
-      }),
-    });
-    if (attempt) {
-      throwForModelRecoveryDirective(attempt.advice, attempt.execution);
-      if (attempt.execution.directive === "rebuild_on_remote_head") {
-        recordRecoveryOutcome(attempt.advice, "rebuild_on_remote_head_selected");
-        return { base: null, recoveredShallowMiss: true };
-      }
-      result = spawnGit(args, { quiet: true });
-      if (result.status === 0) {
-        recordRecoveryOutcome(attempt.advice, "merge_base_recovered");
-        return { base: result.stdout.trim(), recoveredShallowMiss: true };
-      }
-      if (result.status !== 1) {
-        recordRecoveryOutcome(attempt.advice, "verification_failed", {
-          error: gitRunError(result, args),
-        });
-        throw gitRunError(result, args);
-      }
-      if (!isShallowRepository()) {
-        recordRecoveryOutcome(attempt.advice, "history_hydrated_no_merge_base");
-        return { base: null, recoveredShallowMiss: true };
-      }
-      recordRecoveryOutcome(attempt.advice, "verification_failed");
-      console.warn(
-        "Model-guided shallow recovery did not find a merge base; using deterministic fallback",
-      );
-    }
-  }
-
-  if (isShallowRepository()) {
-    const unshallowArgs = commitGraphHistoryFetchArgs("--unshallow", remote, branch);
-    const unshallow = spawnBoundedFetch(unshallowArgs, RECOVERY_FETCH_TIMEOUT_MS);
-    if (unshallow.status !== 0) throw gitRunError(unshallow, unshallowArgs);
-    result = spawnGit(args, { quiet: true });
-    if (result.status === 0) {
-      return { base: result.stdout.trim(), recoveredShallowMiss: true };
-    }
-  }
   if (result.status !== 1) throw gitRunError(result, args);
-  if (isShallowRepository()) throw gitRunError(result, args);
+  if (isShallowRepository()) {
+    if (exhaustionStrategy === "rebuild-on-remote-head") {
+      console.log(
+        `Persistent shallow-history exhaustion after deepening by ${deepenedBy} commits; rebuilding from ${remote}/${branch}`,
+      );
+      return { base: null, recoveredShallowMiss: true };
+    }
+    throw new GitShallowHistoryExhaustionError(deepenedBy);
+  }
   return { base: null, recoveredShallowMiss: true };
 }
 
@@ -1289,6 +1264,7 @@ function prepareReconciliationStateRoot(
   remote: string,
   branch: string,
   rebaseStrategy: RebaseStrategy,
+  exhaustionStrategy: ShallowHistoryExhaustionStrategy,
 ): void {
   const stateRoot = publishRoot();
   if (
@@ -1304,7 +1280,13 @@ function prepareReconciliationStateRoot(
   if (spawnGit(["merge-base", "--is-ancestor", "HEAD", remoteRef], { quiet: true }).status === 0) {
     return;
   }
-  const semanticBase = mergeBaseWithShallowRecovery("HEAD", remoteRef, remote, branch);
+  const semanticBase = mergeBaseWithShallowRecovery(
+    "HEAD",
+    remoteRef,
+    remote,
+    branch,
+    exhaustionStrategy,
+  );
   if (!semanticBase.base) {
     console.log(
       `No common Git base with ${remoteRef}; resetting the unpublished reconciliation checkpoint to the remote head`,
@@ -1356,6 +1338,7 @@ function publishReconciliationChunks(options: {
   maxAttempts: number;
   sourceCommit: string;
   tupleKeys: readonly string[];
+  shallowHistoryExhaustionStrategy: ShallowHistoryExhaustionStrategy;
   reportTupleFailure?: RecordTupleFailureReporter;
 }): PublishResult {
   const chunks = chunked(options.tupleKeys, RECONCILIATION_TUPLE_CHUNK_SIZE);
@@ -1377,6 +1360,7 @@ function publishReconciliationChunks(options: {
         allowedTupleKeys,
         false,
         options.reportTupleFailure,
+        options.shallowHistoryExhaustionStrategy,
       )
     ) {
       throw new Error(`Failed to build reconciliation checkpoint ${index + 1}/${chunks.length}`);
@@ -1393,6 +1377,7 @@ function publishReconciliationChunks(options: {
         branch: options.branch,
         pushAttempts: options.pushAttempts,
         maxAttempts: options.maxAttempts,
+        shallowHistoryExhaustionStrategy: options.shallowHistoryExhaustionStrategy,
         reconciliationSourceCommit: options.sourceCommit,
         reconciliationTupleKeys: allowedTupleKeys,
         ...(options.reportTupleFailure ? { reportTupleFailure: options.reportTupleFailure } : {}),
@@ -2656,6 +2641,7 @@ export function pushCommit(options: {
   reconciliationSourceCommit?: string;
   reconciliationTupleKeys?: ReadonlySet<string>;
   boundedRemoteHeadRebuild?: boolean;
+  shallowHistoryExhaustionStrategy?: ShallowHistoryExhaustionStrategy;
   reportTupleFailure?: RecordTupleFailureReporter;
 }): boolean {
   const remote = options.remote ?? "origin";
@@ -2710,6 +2696,7 @@ export function pushCommit(options: {
             options.reconciliationTupleKeys,
             options.boundedRemoteHeadRebuild,
             options.reportTupleFailure,
+            options.shallowHistoryExhaustionStrategy,
           );
         } catch (error) {
           recordRecoveryOutcome(recovery.advice, "rebuild_on_remote_head_failed", { error });
@@ -2752,6 +2739,7 @@ export function pushCommit(options: {
           options.reconciliationTupleKeys,
           options.boundedRemoteHeadRebuild,
           options.reportTupleFailure,
+          options.shallowHistoryExhaustionStrategy,
         )
       ) {
         return false;
@@ -2885,51 +2873,15 @@ function gitFetchRecoveryHandlers(
       );
     },
     deepen: (depth) => {
-      spawnBoundedFetch(["fetch", `--deepen=${depth}`, remote, branch], RECOVERY_FETCH_TIMEOUT_MS);
+      spawnBoundedFetch(
+        ["fetch", `--deepen=${depth}`, remote, branch],
+        SHALLOW_HISTORY_FETCH_TIMEOUT_MS,
+      );
     },
     unshallow: () => {
-      spawnBoundedFetch(["fetch", "--unshallow", remote, branch], RECOVERY_FETCH_TIMEOUT_MS);
+      spawnBoundedFetch(["fetch", "--unshallow", remote, branch], SHALLOW_HISTORY_FETCH_TIMEOUT_MS);
     },
     ...directives,
-  };
-}
-
-function configureCommitGraphPromisor(remote: string): void {
-  // Merge-base needs commits only; keep omitted trees lazy-fetchable for the
-  // later diff/rebase work that touches a small subset of the state checkout.
-  runGit(["config", "--local", `remote.${remote}.promisor`, "true"], { quiet: true });
-  runGit(["config", "--local", `remote.${remote}.partialclonefilter`, COMMIT_GRAPH_FETCH_FILTER], {
-    quiet: true,
-  });
-}
-
-function commitGraphHistoryFetchArgs(
-  historyArgument: `--deepen=${number}` | "--unshallow",
-  remote: string,
-  branch: string,
-): string[] {
-  return ["fetch", `--filter=${COMMIT_GRAPH_FETCH_FILTER}`, historyArgument, remote, branch];
-}
-
-function commitGraphRecoveryHandlers(
-  remote: string,
-  branch: string,
-  directives: RecoveryActionHandlers,
-): RecoveryActionHandlers {
-  return {
-    ...gitFetchRecoveryHandlers(remote, branch, directives),
-    deepen: (depth) => {
-      spawnBoundedFetch(
-        commitGraphHistoryFetchArgs(`--deepen=${depth}`, remote, branch),
-        RECOVERY_FETCH_TIMEOUT_MS,
-      );
-    },
-    unshallow: () => {
-      spawnBoundedFetch(
-        commitGraphHistoryFetchArgs("--unshallow", remote, branch),
-        RECOVERY_FETCH_TIMEOUT_MS,
-      );
-    },
   };
 }
 
@@ -3023,12 +2975,19 @@ function rebuildReconciliationCommit(
   allowedTupleKeys?: ReadonlySet<string>,
   boundedRemoteHeadRebuild = false,
   reportTupleFailure?: RecordTupleFailureReporter,
+  shallowHistoryExhaustionStrategy: ShallowHistoryExhaustionStrategy = "defer",
 ): boolean {
   const remoteRef = `${remote}/${branch}`;
   const sourceCommit = reconciliationSourceCommit ?? runGit(["rev-parse", "HEAD"]).trim();
   const mergeBase = boundedRemoteHeadRebuild
     ? mergeBaseWithoutHydration(sourceCommit, remoteRef)
-    : mergeBaseWithShallowRecovery(sourceCommit, remoteRef, remote, branch);
+    : mergeBaseWithShallowRecovery(
+        sourceCommit,
+        remoteRef,
+        remote,
+        branch,
+        shallowHistoryExhaustionStrategy,
+      );
   let baseCommit: string;
   let localPaths: string[];
   if (!mergeBase.base) {

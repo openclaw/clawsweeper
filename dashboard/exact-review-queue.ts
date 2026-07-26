@@ -313,6 +313,7 @@ type StateAppendWindowRow = {
   delivery_id: string;
   materialization_attempts: number;
   materialization_first_failed_at: number | null;
+  materialization_last_error: string | null;
 };
 type ExactReviewSupersessionAudit = {
   auditId: string;
@@ -6513,7 +6514,7 @@ export class ExactReviewQueue {
     const candidates = Array.from(
       this.storage.sql.exec(
         `SELECT seq, kind, record_key, payload_json, payload_bytes, produced_at, delivery_id,
-                materialization_attempts, materialization_first_failed_at
+                materialization_attempts, materialization_first_failed_at, materialization_last_error
            FROM ${STATE_APPEND_WINDOW_TABLE}
           WHERE drain_token IS NULL
           ORDER BY seq
@@ -6553,7 +6554,7 @@ export class ExactReviewQueue {
     return Array.from(
       this.storage.sql.exec(
         `SELECT seq, kind, record_key, payload_json, payload_bytes, produced_at, delivery_id,
-                materialization_attempts, materialization_first_failed_at
+                materialization_attempts, materialization_first_failed_at, materialization_last_error
            FROM ${STATE_APPEND_WINDOW_TABLE}
           WHERE drain_token = ?
           ORDER BY seq`,
@@ -9550,6 +9551,9 @@ function stateAppendWindowRowJson(row: StateAppendWindowRow) {
     produced_at: row.produced_at,
     delivery_id: row.delivery_id,
     materialization_attempts: Number(row.materialization_attempts || 0),
+    ...(row.materialization_last_error
+      ? { materialization_last_error: row.materialization_last_error }
+      : {}),
   };
 }
 

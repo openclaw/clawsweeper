@@ -7683,6 +7683,7 @@ test("state disposition commits valid rows and dead-letters a poison row after b
     ).json();
     assert.equal(drain.records.length, 1);
     assert.equal(drain.records[0].materialization_attempts, expectedAttempts);
+    assert.equal(drain.records[0].materialization_last_error, "temporary canonical fetch failure");
     const disposed = await queue.fetch(
       stateAppendQueueRequest("/state/dispose", {
         drain_token: drain.drain_token,

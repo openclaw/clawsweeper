@@ -107,6 +107,16 @@ test("publisher fetches share the bounded fetch helper", () => {
   const source = fs.readFileSync(path.resolve("src/repair/git-publish.ts"), "utf8");
 
   assert.match(source, /const PUBLISH_FETCH_TIMEOUT_MS = 60_000/);
+  assert.match(source, /const RECOVERY_FETCH_TIMEOUT_MS = 300_000/);
+  assert.match(source, /const SHALLOW_HISTORY_FETCH_TIMEOUT_MS = 900_000/);
+  assert.match(
+    source,
+    /\["fetch", `--deepen=\$\{depth\}`, remote, branch\],\s*SHALLOW_HISTORY_FETCH_TIMEOUT_MS/,
+  );
+  assert.match(
+    source,
+    /\["fetch", "--unshallow", remote, branch\],\s*SHALLOW_HISTORY_FETCH_TIMEOUT_MS/,
+  );
   assert.match(
     source,
     /function fetchPublishRemote\([\s\S]*const shallow = isShallowRepository\(\)[\s\S]*runGit\(\["fetch", \.\.\.depthArgs, remote, branch\], \{/,
@@ -121,8 +131,8 @@ test("shallow merge-base recovery deepens before retrying prepare", () => {
 
     const calls = [];
     let deepened = false;
-    childProcess.spawnSync = (command, args) => {
-      calls.push({ command, args });
+    childProcess.spawnSync = (command, args, options) => {
+      calls.push({ command, args, timeout: options.timeout ?? null });
       if (command !== "git") throw new Error("unexpected command: " + command);
       if (args[0] === "merge-base") {
         return deepened
@@ -132,10 +142,7 @@ test("shallow merge-base recovery deepens before retrying prepare", () => {
       if (args[0] === "rev-parse" && args[1] === "--is-shallow-repository") {
         return { status: 0, stdout: "true\n", stderr: "" };
       }
-      if (args[0] === "config") {
-        return { status: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "fetch" && args[1] === "--filter=tree:0" && args[2] === "--deepen=512") {
+      if (args[0] === "fetch" && args[1] === "--deepen=512") {
         deepened = true;
         return { status: 0, stdout: "", stderr: "" };
       }
@@ -152,61 +159,34 @@ test("shallow merge-base recovery deepens before retrying prepare", () => {
   const output = JSON.parse(run("node", ["--input-type=module", "-e", script], process.cwd()));
   assert.deepEqual(output.result, { base: "base-commit", recoveredShallowMiss: true });
   assert.deepEqual(
-    output.calls.filter(({ args }) => args[0] === "config").map(({ args }) => args),
+    output.calls.filter(({ args }) => args[0] === "fetch"),
     [
-      ["config", "--local", "remote.origin.promisor", "true"],
-      ["config", "--local", "remote.origin.partialclonefilter", "tree:0"],
+      {
+        command: "git",
+        args: ["fetch", "--deepen=512", "origin", "state"],
+        timeout: 900_000,
+      },
     ],
-  );
-  assert.deepEqual(
-    output.calls.filter(({ args }) => args[0] === "fetch").map(({ args }) => args),
-    [["fetch", "--filter=tree:0", "--deepen=512", "origin", "state"]],
   );
 });
 
-test("shallow merge-base recovery defers only after bounded deepening is exhausted", () => {
+test("shallow merge-base recovery defers deterministically after bounded deepening", () => {
   const script = String.raw`
     import childProcess from "node:child_process";
-    import fs from "node:fs";
     import { syncBuiltinESMExports } from "node:module";
 
-    process.env.CLAWSWEEPER_MODEL_RECOVERY_ENABLED = "1";
-    process.env.CLAWSWEEPER_ACTION_LEDGER_DISABLED = "1";
-    process.env.OPENAI_API_KEY = "test-recovery-key";
     const calls = [];
-    childProcess.spawnSync = (command, args) => {
-      if (command === "git") {
-        calls.push(args);
-        if (args[0] === "merge-base") return { status: 1, stdout: "", stderr: "" };
-        if (args[0] === "rev-parse" && args[1] === "--is-shallow-repository") {
-          return { status: 0, stdout: "true\n", stderr: "" };
-        }
-        if (args[0] === "config") {
-          return { status: 0, stdout: "", stderr: "" };
-        }
-        if (args[0] === "fetch" && args[1] === "--filter=tree:0" && args[2] === "--deepen=512") {
-          return { status: 0, stdout: "", stderr: "" };
-        }
-        throw new Error("unexpected git args: " + args.join(" "));
+    childProcess.spawnSync = (command, args, options) => {
+      if (command !== "git") throw new Error("unexpected command: " + command);
+      calls.push({ args, timeout: options.timeout ?? null });
+      if (args[0] === "merge-base") return { status: 1, stdout: "", stderr: "" };
+      if (args[0] === "rev-parse" && args[1] === "--is-shallow-repository") {
+        return { status: 0, stdout: "true\n", stderr: "" };
       }
-      if (command === process.execPath && String(args[0]).endsWith("codex-process-worker.js")) {
-        const options = JSON.parse(fs.readFileSync(args[1], "utf8"));
-        const outputIndex = options.args.lastIndexOf("--output-last-message");
-        fs.writeFileSync(
-          options.args[outputIndex + 1],
-          JSON.stringify({
-            diagnosis: "shallow merge history depth",
-            actions: ["defer_to_next_run"],
-            confidence: 1,
-          }),
-        );
-        fs.writeFileSync(
-          options.resultPath,
-          JSON.stringify({ status: 0, signal: null, stdout: "", stderr: "" }),
-        );
-        return { status: 0, signal: null, stdout: "", stderr: "" };
+      if (args[0] === "fetch" && args[1] === "--deepen=512") {
+        return { status: 0, stdout: "", stderr: "" };
       }
-      throw new Error("unexpected command: " + command);
+      throw new Error("unexpected git args: " + args.join(" "));
     };
     syncBuiltinESMExports();
     console.log = () => {};
@@ -225,37 +205,31 @@ test("shallow merge-base recovery defers only after bounded deepening is exhaust
   const output = JSON.parse(run("node", ["--input-type=module", "-e", script], process.cwd()));
   assert.match(
     output.message,
-    /Model-guided Git recovery deferred to the next run: shallow_merge_history_depth/,
+    /Shallow Git recovery deferred to the next run after deepening by 1024 commits/,
   );
   assert.deepEqual(
-    output.calls.filter((args) => args[0] === "fetch"),
-    Array.from({ length: 4 }, () => [
-      "fetch",
-      "--filter=tree:0",
-      "--deepen=512",
-      "origin",
-      "state",
-    ]),
+    output.calls.filter(({ args }) => args[0] === "fetch"),
+    Array.from({ length: 2 }, () => ({
+      args: ["fetch", "--deepen=512", "origin", "state"],
+      timeout: 900_000,
+    })),
   );
 });
 
-test("shallow merge-base recovery filters its final unshallow fallback", () => {
+test("persistent shallow merge-base exhaustion escalates without unshallowing", () => {
   const script = String.raw`
     import childProcess from "node:child_process";
     import { syncBuiltinESMExports } from "node:module";
 
     const calls = [];
-    let shallow = true;
-    childProcess.spawnSync = (command, args) => {
-      calls.push({ command, args });
+    childProcess.spawnSync = (command, args, options) => {
+      calls.push({ command, args, timeout: options.timeout ?? null });
       if (command !== "git") throw new Error("unexpected command: " + command);
       if (args[0] === "merge-base") return { status: 1, stdout: "", stderr: "" };
       if (args[0] === "rev-parse" && args[1] === "--is-shallow-repository") {
-        return { status: 0, stdout: String(shallow) + "\n", stderr: "" };
+        return { status: 0, stdout: "true\n", stderr: "" };
       }
-      if (args[0] === "config") return { status: 0, stdout: "", stderr: "" };
-      if (args[0] === "fetch" && args[1] === "--filter=tree:0") {
-        if (args[2] === "--unshallow") shallow = false;
+      if (args[0] === "fetch" && args[1] === "--deepen=512") {
         return { status: 0, stdout: "", stderr: "" };
       }
       throw new Error("unexpected git args: " + args.join(" "));
@@ -264,24 +238,25 @@ test("shallow merge-base recovery filters its final unshallow fallback", () => {
     console.log = () => {};
 
     const { mergeBaseWithShallowRecovery } = await import("./dist/repair/git-publish.js");
-    const result = mergeBaseWithShallowRecovery("HEAD", "origin/state", "origin", "state");
+    const result = mergeBaseWithShallowRecovery(
+      "HEAD",
+      "origin/state",
+      "origin",
+      "state",
+      "rebuild-on-remote-head",
+    );
     process.stdout.write(JSON.stringify({ calls, result }));
   `;
 
   const output = JSON.parse(run("node", ["--input-type=module", "-e", script], process.cwd()));
   assert.deepEqual(output.result, { base: null, recoveredShallowMiss: true });
   assert.deepEqual(
-    output.calls.filter(({ args }) => args[0] === "fetch").map(({ args }) => args),
-    [
-      ...Array.from({ length: 4 }, () => [
-        "fetch",
-        "--filter=tree:0",
-        "--deepen=512",
-        "origin",
-        "state",
-      ]),
-      ["fetch", "--filter=tree:0", "--unshallow", "origin", "state"],
-    ],
+    output.calls.filter(({ args }) => args[0] === "fetch"),
+    Array.from({ length: 2 }, () => ({
+      command: "git",
+      args: ["fetch", "--deepen=512", "origin", "state"],
+      timeout: 900_000,
+    })),
   );
 });
 
@@ -1661,7 +1636,77 @@ test("reconcile-records preserves a newer remote tuple after resetting unrelated
   assert.throws(() => run("git", ["--git-dir", origin, "show", "state:unrelated.txt"], root));
 });
 
-test("reconcile-records resets shallow state to a truly unrelated remote head", () => {
+test("reconcile-records defers an unprovably unrelated shallow remote head", () => {
+  const { origin, recordsRoot, root, state, work } = createUnrelatedShallowReconciliationFixture();
+
+  assert.throws(
+    () =>
+      withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+        withCwd(work, () =>
+          publishMainCommit({
+            message: "chore: defer unrelated shallow state",
+            paths: [recordsRoot],
+            maxAttempts: 1,
+            pushAttempts: 1,
+            rebaseStrategy: "reconcile-records",
+          }),
+        ),
+      ),
+    /Shallow Git recovery deferred to the next run after deepening by 1024 commits/,
+  );
+
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "state:replacement.txt"], root),
+    "replacement history\n",
+  );
+  assert.throws(() =>
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/42.md`], root),
+  );
+  assert.equal(run("git", ["rev-parse", "--is-shallow-repository"], state).trim(), "true");
+});
+
+test("persistent shallow exhaustion rebuilds reconciliation from the remote head", () => {
+  const { candidateTuple, origin, recordsRoot, root, state, work } =
+    createUnrelatedShallowReconciliationFixture();
+
+  const lines = [];
+  let result;
+  captureConsoleLog(() => {
+    result = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
+      withCwd(work, () =>
+        publishMainCommit({
+          message: "chore: rebuild persistent shallow state",
+          paths: [recordsRoot],
+          maxAttempts: 1,
+          pushAttempts: 1,
+          rebaseStrategy: "reconcile-records",
+          shallowHistoryExhaustionStrategy: "rebuild-on-remote-head",
+        }),
+      ),
+    );
+  }, lines);
+
+  assert.equal(result, "committed");
+  assert.equal(
+    lines.some((line) =>
+      line.includes(
+        "Persistent shallow-history exhaustion after deepening by 1024 commits; rebuilding from origin/state",
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", "state:replacement.txt"], root),
+    "replacement history\n",
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/42.md`], root),
+    candidateTuple.primary,
+  );
+  assert.equal(run("git", ["rev-parse", "--is-shallow-repository"], state).trim(), "true");
+});
+
+function createUnrelatedShallowReconciliationFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-shallow-unrelated-"));
   const origin = path.join(root, "origin.git");
   const seed = path.join(root, "seed");
@@ -1700,42 +1745,8 @@ test("reconcile-records resets shallow state to a truly unrelated remote head", 
   run("git", ["add", "-A"], seed);
   run("git", ["commit", "-m", "replace state history"], seed);
   run("git", ["push", "--force", "origin", "HEAD:state"], seed);
-
-  const lines = [];
-  let result;
-  captureConsoleLog(() => {
-    result = withEnv({ CLAWSWEEPER_STATE_DIR: state }, () =>
-      withCwd(work, () =>
-        publishMainCommit({
-          message: "chore: publish from unrelated shallow state",
-          paths: [recordsRoot],
-          maxAttempts: 1,
-          pushAttempts: 1,
-          rebaseStrategy: "reconcile-records",
-        }),
-      ),
-    );
-  }, lines);
-
-  assert.equal(result, "committed");
-  assert.equal(
-    lines.some((line) =>
-      line.includes(
-        "No common Git base with origin/state; resetting the unpublished reconciliation checkpoint to the remote head",
-      ),
-    ),
-    true,
-  );
-  assert.equal(
-    run("git", ["--git-dir", origin, "show", "state:replacement.txt"], root),
-    "replacement history\n",
-  );
-  assert.equal(
-    run("git", ["--git-dir", origin, "show", `state:${recordsRoot}/items/42.md`], root),
-    candidateTuple.primary,
-  );
-  assert.equal(run("git", ["rev-parse", "--is-shallow-repository"], state).trim(), "false");
-});
+  return { candidateTuple, origin, recordsRoot, root, state, work };
+}
 
 test("reconcile-records prepares a shallow state checkout from the remote head", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-shallow-prepare-"));
@@ -5171,7 +5182,7 @@ function installDeepenFetchFailureShim(fakeBin) {
     git,
     `#!/bin/sh
 set -u
-if test "$1" = fetch && test "$2" = --filter=tree:0 && test "$3" = --deepen=512; then
+if test "$1" = fetch && test "$2" = --deepen=512; then
   printf '%s\n' 'fatal: synthetic deepen failure' >&2
   exit 2
 fi

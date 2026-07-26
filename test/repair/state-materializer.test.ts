@@ -8,6 +8,10 @@ import test from "node:test";
 
 import { actionLedgerJson } from "../../dist/action-ledger.js";
 import {
+  GitShallowHistoryExhaustionError,
+  SHALLOW_MERGE_BASE_EXHAUSTION_DISPOSITION,
+} from "../../dist/repair/git-publish.js";
+import {
   DEFAULT_STATE_MATERIALIZER_MAX_BYTES,
   DEFAULT_STATE_MATERIALIZER_MAX_ROWS,
   planStateMaterialization,
@@ -526,6 +530,87 @@ test("materializer deferral failure distinguishes progress from a stalled cycle"
 
   assert.match(progress, /progress with deferral: drained=1400 committed=720/);
   assert.match(stalled, /stalled cycle with deferral: drained=1400 committed=0/);
+});
+
+test("materializer persists the first shallow-history exhaustion as a retryable disposition", async () => {
+  const fixture = createStateFixture();
+  const records = [
+    record(
+      1,
+      "record_tuple",
+      "openclaw-openclaw/50",
+      canonicalTuplePayload(50, "first shallow exhaustion", "2026-07-20T12:20:00.000Z"),
+    ),
+  ];
+  let disposition: Record<string, unknown> | null = null;
+  const fetchImpl = signedQueueFetch(async (url, body) => {
+    if (url.pathname === "/internal/state/drain") {
+      return Response.json({ ok: true, drain_token: "shallow-first", records });
+    }
+    assert.equal(url.pathname, "/internal/state/dispose");
+    disposition = body;
+    return Response.json({ ok: true, acked: 0, retried: 1, dead_lettered: 0 });
+  });
+
+  await assert.rejects(
+    withMaterializerFixture(fixture, () =>
+      runStateMaterializer({
+        env: materializerEnv(),
+        fetchImpl,
+        publishCommit: (options) => {
+          assert.equal(options.shallowHistoryExhaustionStrategy, "defer");
+          throw new GitShallowHistoryExhaustionError(1_024);
+        },
+      }),
+    ),
+    /state-materializer stalled cycle with deferral.*deepening by 1024 commits/,
+  );
+  assert.deepEqual(disposition, {
+    drain_token: "shallow-first",
+    failures: [
+      {
+        seq: 1,
+        reason: SHALLOW_MERGE_BASE_EXHAUSTION_DISPOSITION,
+        retryable: true,
+      },
+    ],
+  });
+});
+
+test("materializer escalates a repeated shallow-history phase to remote-head rebuild", async () => {
+  const fixture = createStateFixture();
+  const retriedRecord = record(
+    1,
+    "record_tuple",
+    "openclaw-openclaw/51",
+    canonicalTuplePayload(51, "persistent shallow exhaustion", "2026-07-20T12:21:00.000Z"),
+  );
+  retriedRecord.materialization_attempts = 1;
+  retriedRecord.materialization_last_error = SHALLOW_MERGE_BASE_EXHAUSTION_DISPOSITION;
+  let drainCalls = 0;
+  const fetchImpl = signedQueueFetch(async (url) => {
+    if (url.pathname === "/internal/state/drain") {
+      drainCalls += 1;
+      return drainCalls === 1
+        ? Response.json({ ok: true, drain_token: "shallow-retry", records: [retriedRecord] })
+        : Response.json({ ok: true, drain_token: null, records: [] });
+    }
+    assert.equal(url.pathname, "/internal/state/ack");
+    return Response.json({ ok: true, acked: 1 });
+  });
+
+  const summary = await withMaterializerFixture(fixture, () =>
+    runStateMaterializer({
+      env: materializerEnv(),
+      fetchImpl,
+      publishCommit: (options) => {
+        assert.equal(options.shallowHistoryExhaustionStrategy, "rebuild-on-remote-head");
+        return "committed";
+      },
+    }),
+  );
+
+  assert.deepEqual(summary, { drained: 1, committed: 1, acked: 1, skipped: 0, errors: 0 });
 });
 
 test("materializer no-ops when the drain is empty", async () => {

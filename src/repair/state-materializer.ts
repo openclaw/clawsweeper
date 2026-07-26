@@ -11,7 +11,12 @@ import {
 } from "../action-ledger.js";
 import { isActionEventPublishPath } from "../action-ledger-paths.js";
 import { mergeCommentRouterLedgers } from "./comment-router-ledger-merge.js";
-import { publishMainCommit } from "./git-publish.js";
+import {
+  GitShallowHistoryExhaustionError,
+  publishMainCommit,
+  SHALLOW_MERGE_BASE_EXHAUSTION_DISPOSITION,
+  type ShallowHistoryExhaustionStrategy,
+} from "./git-publish.js";
 import {
   convergeRecordTupleSidecars,
   recordTuplePaths,
@@ -65,6 +70,7 @@ export type StateAppendRecord = {
   produced_at: string;
   delivery_id: string;
   materialization_attempts?: number;
+  materialization_last_error?: string;
 };
 
 type StateMaterializationFailure = {
@@ -94,6 +100,7 @@ export type StateMaterializerRunOptions = {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   now?: () => Date;
+  publishCommit?: typeof publishMainCommit;
 };
 
 type StateDrainResponse = {
@@ -306,6 +313,7 @@ export async function runStateMaterializer(
   const env = options.env ?? process.env;
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? (() => new Date());
+  const publishCommit = options.publishCommit ?? publishMainCommit;
   const queueUrl = (env.QUEUE_URL ?? "").replace(/\/$/, "");
   const webhookSecret = env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
   registerStateSecretForRedaction(webhookSecret);
@@ -397,7 +405,7 @@ export async function runStateMaterializer(
       const recordTuplePaths = plan.publishPaths.filter(isRecordTupleProjectionPath);
       const regularPaths = plan.publishPaths.filter((path) => !isRecordTupleProjectionPath(path));
       if (regularPaths.length > 0) {
-        publishMainCommit({
+        publishCommit({
           message: STATE_MATERIALIZER_COMMIT_MESSAGE,
           paths: regularPaths,
           branch,
@@ -406,13 +414,16 @@ export async function runStateMaterializer(
         });
       }
       if (recordTuplePaths.length > 0) {
-        publishMainCommit({
+        publishCommit({
           message: STATE_MATERIALIZER_COMMIT_MESSAGE,
           paths: recordTuplePaths,
           branch,
           maxAttempts: publishMaxAttempts,
           pushAttempts: publishPushAttempts,
           rebaseStrategy: "reconcile-records",
+          shallowHistoryExhaustionStrategy: shallowHistoryExhaustionStrategyForRecords(
+            drain.records,
+          ),
           onRecordTupleFailure: ({ key, reason }) => {
             const record = tupleRecordsByKey.get(key);
             if (!record) {
@@ -479,6 +490,27 @@ export async function runStateMaterializer(
       summary.errors += 1;
       const message = errorMessage(error);
       console.warn(`state-materializer cycle failed: ${message}`);
+      if (error instanceof GitShallowHistoryExhaustionError) {
+        if (!drain.token) throw new Error("shallow-history deferral has no drain token");
+        const disposition = await disposeStateWindow({
+          queueUrl,
+          webhookSecret,
+          drainToken: drain.token,
+          failures: drain.records.map((record) => ({
+            seq: record.seq,
+            key: record.key,
+            reason: SHALLOW_MERGE_BASE_EXHAUSTION_DISPOSITION,
+            retryable: true,
+          })),
+          fetchImpl,
+        });
+        summary.acked += disposition.acked;
+        console.warn(
+          `state-materializer shallow-history deferral disposition: retried=${disposition.retried} dead_lettered=${disposition.deadLettered}`,
+        );
+        finish();
+        throw new Error(stateMaterializerDeferralMessage(summary, message));
+      }
       if (message.includes("deferred to the next run")) {
         finish();
         throw new Error(stateMaterializerDeferralMessage(summary, message));
@@ -487,6 +519,20 @@ export async function runStateMaterializer(
     }
   }
   return finish();
+}
+
+export function shallowHistoryExhaustionStrategyForRecords(
+  records: readonly StateAppendRecord[],
+): ShallowHistoryExhaustionStrategy {
+  // The queue persists both fields through /state/dispose. Requiring the same
+  // last error keeps an unrelated retry from escalating this recovery phase.
+  return records.some(
+    (record) =>
+      (record.materialization_attempts ?? 0) > 0 &&
+      record.materialization_last_error === SHALLOW_MERGE_BASE_EXHAUSTION_DISPOSITION,
+  )
+    ? "rebuild-on-remote-head"
+    : "defer";
 }
 
 export function stateMaterializerDeferralMessage(
@@ -951,6 +997,9 @@ function stateAppendRecordFrom(value: unknown): StateAppendRecord {
     ...(Object.hasOwn(value, "materialization_attempts")
       ? { materialization_attempts: Number(value.materialization_attempts) }
       : {}),
+    ...(Object.hasOwn(value, "materialization_last_error")
+      ? { materialization_last_error: String(value.materialization_last_error || "").trim() }
+      : {}),
   };
   assertStateAppendRecord(record);
   return record;
@@ -976,6 +1025,16 @@ function assertStateAppendRecord(record: StateAppendRecord): void {
     (!Number.isSafeInteger(record.materialization_attempts) || record.materialization_attempts < 0)
   ) {
     throw new Error("state drain record has invalid materialization attempts");
+  }
+  if (
+    record.materialization_last_error !== undefined &&
+    (!record.materialization_last_error ||
+      record.materialization_last_error.length > 2_000 ||
+      record.materialization_last_error.includes("\r") ||
+      record.materialization_last_error.includes("\n") ||
+      record.materialization_last_error.includes(String.fromCharCode(0)))
+  ) {
+    throw new Error("state drain record has invalid materialization last error");
   }
 }
 
