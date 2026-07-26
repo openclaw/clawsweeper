@@ -4,6 +4,14 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { ExactReviewPublicationBatchStore } from "../dashboard/exact-review-publication-batches.ts";
+import {
+  commitDirectPublicationCycle,
+  DirectPublicationRefRaceError,
+  EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES,
+  ExactReviewDirectPublicationStore,
+  validateDirectPublicationPlan,
+  type DirectPublicationPlan,
+} from "../dashboard/exact-review-direct-publication.ts";
 import { ExactReviewQueue } from "../dashboard/exact-review-queue.ts";
 import worker from "../dashboard/worker.ts";
 
@@ -103,6 +111,170 @@ const candidates = [
   { itemKey: "openclaw/openclaw#3@publish:30:1", revision: 3 },
   { itemKey: "openclaw/openclaw#4@publish:40:1", revision: 4 },
 ];
+
+function directPlan(
+  itemKey: string,
+  revision: number,
+  options: { path?: string; expectedOid?: string | null; content?: Buffer; files?: number } = {},
+): DirectPublicationPlan {
+  const content = options.content ?? Buffer.from(`result-${revision}`);
+  const files = options.files ?? 1;
+  return {
+    itemKey,
+    revision,
+    identity: { itemKey, revision, claimGeneration: 1 },
+    operations: Array.from({ length: files }, (_, index) => ({
+      path: options.path ?? `records/repo/items/${revision}-${index}.md`,
+      expectedOid: options.expectedOid ?? null,
+      targetOid: "a".repeat(40),
+      mode: "100644" as const,
+      bytes: content.byteLength,
+      contentBase64: content.toString("base64"),
+    })),
+    totalBytes: content.byteLength * files,
+  };
+}
+
+test("direct publication plans dedupe producer retries and ratchet newer revisions", () => {
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+
+  assert.equal(store.accept(directPlan("openclaw/openclaw#1", 1), 1_000).outcome, "accepted");
+  assert.equal(store.accept(directPlan("openclaw/openclaw#1", 1), 1_001).outcome, "deduped");
+  const newer = store.accept(directPlan("openclaw/openclaw#1", 2), 1_002);
+
+  assert.deepEqual(newer.supersededRevisions, [1]);
+  assert.deepEqual(
+    store.list().map((row) => [row.revision, row.state]),
+    [
+      [1, "superseded"],
+      [2, "pending"],
+    ],
+  );
+});
+
+test("direct publication alarm cadence fires at 15 seconds or 64 staged files", () => {
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  store.accept(directPlan("openclaw/openclaw#2", 1, { files: 63 }), 1_000);
+  assert.equal(store.nextWakeAt(1_000), 16_000);
+  store.accept(directPlan("openclaw/openclaw#3", 1), 2_000);
+  assert.equal(store.nextWakeAt(2_000), 2_000);
+});
+
+test("direct publication retries only the expectedOid conflict and commits other plans", async () => {
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  store.accept(
+    directPlan("openclaw/openclaw#4", 1, { path: "records/a.md", expectedOid: "b".repeat(40) }),
+    1_000,
+  );
+  store.accept(directPlan("openclaw/openclaw#5", 1, { path: "records/b.md" }), 1_000);
+
+  const result = await commitDirectPublicationCycle({
+    store,
+    now: 20_000,
+    api: {
+      async readHead() {
+        return { commitSha: "1".repeat(40), treeSha: "2".repeat(40), paths: new Map() };
+      },
+      async createBlob() {
+        return "a".repeat(40);
+      },
+      async createTree() {
+        return "3".repeat(40);
+      },
+      async createCommit() {
+        return "4".repeat(40);
+      },
+      async updateRef() {},
+    },
+  });
+
+  assert.deepEqual(
+    result.published.map((row) => row.itemKey),
+    ["openclaw/openclaw#5"],
+  );
+  assert.deepEqual(
+    store.list().map((row) => [row.itemKey, row.state, row.attempts]),
+    [
+      ["openclaw/openclaw#4", "retryable", 1],
+      ["openclaw/openclaw#5", "published", 0],
+    ],
+  );
+});
+
+test("direct publication ref update 422 refetches and succeeds on the third bounded attempt", async () => {
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  store.accept(directPlan("openclaw/openclaw#6", 1), 1_000);
+  let heads = 0;
+  let updates = 0;
+  const result = await commitDirectPublicationCycle({
+    store,
+    now: 20_000,
+    api: {
+      async readHead() {
+        heads += 1;
+        return { commitSha: String(heads).repeat(40), treeSha: "2".repeat(40), paths: new Map() };
+      },
+      async createBlob() {
+        return "a".repeat(40);
+      },
+      async createTree() {
+        return "3".repeat(40);
+      },
+      async createCommit() {
+        return "4".repeat(40);
+      },
+      async updateRef() {
+        updates += 1;
+        if (updates < 3) throw new DirectPublicationRefRaceError();
+      },
+    },
+  });
+  assert.equal(heads, 3);
+  assert.equal(updates, 3);
+  assert.equal(result.commitSha, "4".repeat(40));
+  assert.equal(store.list()[0]?.state, "published");
+});
+
+test("direct publication retryable conflicts stop at the bounded attempt ceiling", () => {
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  store.accept(directPlan("openclaw/openclaw#9", 1), 1_000);
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const now = 1_000 + attempt * 31 * 60_000;
+    const claimed = store.claimCycle(now);
+    assert.equal(claimed.length, 1);
+    store.retry(claimed, "expected_oid_conflict", now);
+  }
+  assert.deepEqual(
+    store.list().map((row) => [row.state, row.attempts]),
+    [["failed", 12]],
+  );
+});
+
+test("direct publication validates per-file and per-POST size caps", () => {
+  const tooLargeFile = Buffer.alloc(2 * 1024 * 1024 + 1);
+  assert.throws(
+    () =>
+      validateDirectPublicationPlan(
+        directPlan("openclaw/openclaw#7", 1, { content: tooLargeFile }),
+      ),
+    /byte count/,
+  );
+
+  const content = Buffer.alloc(2 * 1024 * 1024);
+  const plan = directPlan("openclaw/openclaw#8", 1, { content, files: 3 });
+  assert.ok(plan.totalBytes > EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES);
+  assert.throws(() => validateDirectPublicationPlan(plan), /per-POST byte limit/);
+});
 
 test("publication batches atomically select ready items without duplicate active ownership", () => {
   const storage = new TestStorage();

@@ -293,6 +293,8 @@ Runs for the same job path and mode share a concurrency group. Different cluster
 
 Live preflight hydrates job-provided refs by default and records linked refs without expanding them. Set repo variables `CLAWSWEEPER_MAX_LINKED_REFS` above `0` only for small clusters that need first-hop context and `CLAWSWEEPER_HYDRATE_COMMENTS=1` when comment bodies are necessary evidence; normal scale runs use issue/PR metadata, body excerpts, PR files, and PR checks.
 
+Exact-review producers normally deliver GitHub effects and submit prepared state mutations directly to the dashboard Worker. The legacy exact-review batch publisher remains enabled only to drain already-enqueued and direct-publication fallback items; it is scheduled for removal after that queue stays empty through the migration window.
+
 ## Maintainer Comment Routing
 
 `pnpm run repair:comment-router` scans recent issue and PR comments in the target repo.

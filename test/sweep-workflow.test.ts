@@ -390,7 +390,7 @@ test("scheduled review shards receive the compiler-backed runtime artifact", () 
   assert.doesNotMatch(reviewJob, /npm pack "@typescript/);
 });
 
-test("exact event review hands immutable artifacts to the queue-bounded publisher lane", () => {
+test("exact event review publishes directly with a queue-bounded legacy fallback", () => {
   type Step = {
     "continue-on-error"?: boolean;
     name?: string;
@@ -425,7 +425,7 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.equal(reviewer.permissions?.issues, "read");
   assert.equal(
     reviewer.steps.some((candidate) => candidate.uses?.endsWith("/setup-state")),
-    false,
+    true,
   );
   assert.equal(
     reviewer.steps.some(
@@ -481,6 +481,8 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
   assert.match(step(reviewer, "Review exact event item").run ?? "", /sleep 60/);
 
   const create = step(reviewer, "Create exact review artifact bundle");
+  const prepareDirect = step(reviewer, "Deliver GitHub effects and prepare direct state mutation");
+  const postDirect = step(reviewer, "Post direct exact review publication result");
   const upload = step(reviewer, "Upload exact review artifact bundle");
   const queuePublication = step(reviewer, "Queue durable exact review publication");
   const complete = step(reviewer, "Complete exact-review queue lease");
@@ -500,6 +502,13 @@ test("exact event review hands immutable artifacts to the queue-bounded publishe
       (create.run ?? "").indexOf("exact-review-bundle create"),
   );
   assert.equal(upload.uses, "actions/upload-artifact@v7");
+  assert.match(prepareDirect.run ?? "", /repair:publish-event-result/);
+  assert.equal(
+    prepareDirect.env?.EXACT_REVIEW_BATCH_MUTATION_OUTPUT,
+    ".artifacts/direct-publication-outcome.json",
+  );
+  assert.match(postDirect.run ?? "", /repair:exact-review-direct-publication/);
+  assert.match(upload.if ?? "", /direct-exact-review-publication\.outputs\.accepted != 'true'/);
   assert.equal(upload.with?.["retention-days"], 90);
   assert.match(queuePublication.run ?? "", /for attempt in 1 2 3/);
   assert.match(queuePublication.run ?? "", /\.queued == true or \.deduped == true/);

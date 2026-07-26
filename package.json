@@ -64,6 +64,7 @@
     "repair:exact-review-queue-maintenance": "node dist/repair/exact-review-queue-maintenance.js",
     "repair:exact-review-dead-letters": "node scripts/exact-review-dead-letter-operator.mjs",
     "repair:exact-review-batch": "node dist/repair/exact-review-batch-cli.js",
+    "repair:exact-review-direct-publication": "node dist/repair/exact-review-direct-publication.js",
     "proof:state-publication-batching": "node scripts/state-publication-batching-proof.mjs",
     "repair:publish-event-result": "node dist/repair/publish-event-result.js",
     "repair:update-command-status": "node dist/repair/update-command-status.js",

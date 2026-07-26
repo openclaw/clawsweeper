@@ -48,7 +48,7 @@ test("every generated-state checkout receives the explicit coordinator migration
     }
   }
 
-  assert.equal(setups.length, 26, "new state checkouts must join the repo-wide boundary");
+  assert.equal(setups.length, 27, "new state checkouts must join the repo-wide boundary");
   for (const { file, job, step } of setups) {
     assert.equal(step.with?.["coordinator-enabled"], coordinatorGate, `${file}:${job}`);
     assert.equal(step.with?.["coordinator-url"], coordinatorUrl, `${file}:${job}`);
@@ -73,8 +73,7 @@ test("the setup action exports no long-lived coordinator credential", () => {
 
 test("state materializer and apply publishers enable model-guided recovery with the existing Codex key", () => {
   const expectedKey = "${{ secrets.OPENAI_API_KEY }}";
-  const expectedModel =
-    "${{ vars.CLAWSWEEPER_MODEL_RUNTIME == 'claude' && secrets.CLAWSWEEPER_CLAUDE_MODEL || secrets.CLAWSWEEPER_MODEL }}";
+  const expectedModel = "${{ secrets.CLAWSWEEPER_MODEL }}";
   const expectedJobs = [
     [".github/workflows/state-materializer.yml", "materialize", ["Materialize queued state"]],
     [".github/workflows/sweep.yml", "apply-proof", ["Generate bound close coverage proofs"]],
@@ -101,11 +100,6 @@ test("state materializer and apply publishers enable model-guided recovery with 
     assert.ok(setupCodex, `${file}:${jobName}: setup-codex`);
     assert.equal(setupCodex.env?.OPENAI_API_KEY, expectedKey, `${file}:${jobName}`);
     assert.equal(setupCodex.env?.CLAWSWEEPER_INTERNAL_MODEL, expectedModel, `${file}:${jobName}`);
-    assert.equal(
-      setupCodex.with?.["model-runtime"],
-      "${{ vars.CLAWSWEEPER_MODEL_RUNTIME || 'codex' }}",
-      `${file}:${jobName}`,
-    );
     if (jobName !== "apply-proof") {
       assert.equal(setupCodex["continue-on-error"], true, `${file}:${jobName}: optional setup`);
     }
@@ -198,7 +192,7 @@ test("trusted generated-state mutation steps receive a step-scoped coordinator c
   }
   assert.equal(
     publishers,
-    36,
+    37,
     "new or removed generated-state publication surfaces require an explicit credential audit",
   );
 });
@@ -238,6 +232,9 @@ test("the rollout scans 50 and grants four concurrent size-8 preparations", () =
   assert.match(worker, /EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS = "2"/);
   assert.match(worker, /EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS = "900000"/);
   assert.match(worker, /EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS = "60000"/);
+  assert.match(worker, /EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED = "1"/);
+  assert.match(worker, /EXACT_REVIEW_STATE_REPO = "openclaw\/clawsweeper-state"/);
+  assert.match(worker, /EXACT_REVIEW_STATE_REF = "state"/);
 });
 
 function workflows(): Array<{ file: string; workflow: WorkflowDocument }> {

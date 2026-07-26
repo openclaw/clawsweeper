@@ -1779,6 +1779,79 @@ test("fresh dead-letter recovery is available only through the signed internal r
   });
 });
 
+test("direct publication endpoint authenticates, dedupes, and returns a structured 413", async () => {
+  const storage = new MemoryDurableStorage();
+  const leased = leasedExactReviewQueueItem(701, "7010");
+  leased.revision = 4;
+  leased.leaseRevision = 4;
+  leased.claimGeneration = 2;
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [leased.key]: leased } });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const payload = {
+    itemKey: "openclaw/openclaw#701",
+    revision: 4,
+    identity: { itemKey: "openclaw/openclaw#701", revision: 4, claimGeneration: 2 },
+    operations: [
+      {
+        path: "records/openclaw-openclaw/items/701.md",
+        expectedOid: null,
+        targetOid: "c1b0730e0133447badcfd47fd144e254807b06e1",
+        mode: "100644",
+        bytes: 1,
+        contentBase64: "eA==",
+      },
+    ],
+    totalBytes: 1,
+  };
+  const body = JSON.stringify(payload);
+  const url = "https://clawsweeper.openclaw.ai/internal/exact-review/publication-results";
+  const unsigned = await worker.fetch(new Request(url, { method: "POST", body }), env);
+  assert.equal(unsigned.status, 401);
+
+  const signature = `sha256=${createHmac("sha256", "test-secret").update(body).digest("hex")}`;
+  for (const expected of [
+    { accepted: true, deduped: false },
+    { accepted: false, deduped: true },
+  ]) {
+    const response = await worker.fetch(
+      new Request(url, {
+        method: "POST",
+        headers: { "x-clawsweeper-exact-review-signature": signature },
+        body,
+      }),
+      env,
+    );
+    assert.equal(response.status, 202);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      ...expected,
+      superseded: false,
+      superseded_revisions: [],
+    });
+  }
+
+  const oversizedBody = JSON.stringify({ ...payload, padding: "x".repeat(4 * 1024 * 1024) });
+  const oversizedSignature = `sha256=${createHmac("sha256", "test-secret").update(oversizedBody).digest("hex")}`;
+  const oversized = await worker.fetch(
+    new Request(url, {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": oversizedSignature },
+      body: oversizedBody,
+    }),
+    env,
+  );
+  assert.equal(oversized.status, 413);
+  assert.deepEqual(await oversized.json(), {
+    error: "direct_publication_payload_too_large",
+    max_bytes: 4 * 1024 * 1024,
+    fallback_required: true,
+  });
+});
+
 test("exact-review queue counts only work that successfully leaves each lane", async () => {
   const storage = new MemoryDurableStorage();
   const directPublication = leasedExactReviewQueueItem(703, "7030");

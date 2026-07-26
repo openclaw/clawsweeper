@@ -1085,9 +1085,59 @@ jobs:
             echo "generation_attempt=$GITHUB_RUN_ATTEMPT"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Create direct publication state token
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.create-exact-review-bundle.outcome == 'success' && steps.live-item.outputs.proceed == 'true' && (vars.EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED || '1') == '1' }}
+        id: direct-state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-state-token.outcome == 'success' }}
+        id: direct-setup-state
+        with:
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          token: ${{ steps.direct-state-token.outputs.token }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Deliver GitHub effects and prepare direct state mutation
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-setup-state.outcome == 'success' }}
+        id: prepare-direct-exact-review-publication
+        continue-on-error: true
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          CLOSE_REASONS: implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr
+          MIN_AGE_MINUTES: "0"
+          REVIEW_ONLY: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
+          EXACT_EVENT_PUBLICATION: "true"
+          EXACT_REVIEW_CLOSE_COVERAGE_DEFERRED: "true"
+          EXACT_REVIEW_BATCH_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
+          EXACT_REVIEW_BATCH_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
+          EXACT_REVIEW_BATCH_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
+          EXACT_REVIEW_BATCH_MUTATION_OUTPUT: .artifacts/direct-publication-outcome.json
+        run: pnpm run --silent repair:publish-event-result
+
+      - name: Post direct exact review publication result
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.prepare-direct-exact-review-publication.outcome == 'success' }}
+        id: direct-exact-review-publication
+        env:
+          EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED: ${{ vars.EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED || '1' }}
+          EXACT_REVIEW_DIRECT_MUTATION_OUTPUT: .artifacts/direct-publication-outcome.json
+          EXACT_REVIEW_DIRECT_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
+          EXACT_REVIEW_DIRECT_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
+          EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: pnpm run --silent repair:exact-review-direct-publication
+
       - name: Upload exact review artifact bundle
         id: upload-exact-review-bundle
-        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.create-exact-review-bundle.outcome == 'success' }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.create-exact-review-bundle.outcome == 'success' && steps.direct-exact-review-publication.outputs.accepted != 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.create-exact-review-bundle.outputs.artifact_name }}
@@ -1178,7 +1228,7 @@ jobs:
           exit 1
 
       - name: Release unsuccessful workflow-owned review lease
-        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status != 'held' && steps.queue-exact-review-publication.outcome != 'success' }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status != 'held' && steps.direct-exact-review-publication.outputs.accepted != 'true' && steps.queue-exact-review-publication.outcome != 'success' }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -1207,7 +1257,7 @@ jobs:
           done <<< "$reaction_ids"
 
       - name: Mark unsuccessful re-review
-        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.has_command_context == 'true' && steps.setup-pnpm.outcome == 'success' && steps.queue-exact-review-publication.outcome != 'success' && steps.target-write-token.outputs.token != '' }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.has_command_context == 'true' && steps.setup-pnpm.outcome == 'success' && steps.direct-exact-review-publication.outputs.accepted != 'true' && steps.queue-exact-review-publication.outcome != 'success' && steps.target-write-token.outputs.token != '' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -1247,20 +1297,21 @@ jobs:
           LIVE_OUTCOME: ${{ steps.live-item.outcome }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
           PUBLICATION_QUEUE_OUTCOME: ${{ steps.queue-exact-review-publication.outcome }}
+          DIRECT_PUBLICATION_ACCEPTED: ${{ steps.direct-exact-review-publication.outputs.accepted }}
         run: |
           outcome=failure
           if [ "$TARGET_ENABLED" = "false" ]; then
             outcome=success
           elif [ "$REVIEW_OUTCOME" = "cancelled" ]; then
             outcome=cancelled
-          elif [ "$LIVE_OUTCOME" = "success" ] && [ "$PUBLICATION_QUEUE_OUTCOME" = "success" ]; then
+          elif [ "$LIVE_OUTCOME" = "success" ] && { [ "$DIRECT_PUBLICATION_ACCEPTED" = "true" ] || [ "$PUBLICATION_QUEUE_OUTCOME" = "success" ]; }; then
             outcome=success
           fi
           echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
 
       - name: Complete exact-review queue lease
         id: complete-exact-review-queue
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && always() }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && always() && steps.direct-exact-review-publication.outputs.accepted != 'true' }}
         continue-on-error: true
         env:
           PRIMARY_OUTCOME: ${{ steps.exact-review-generation-result.outputs.outcome || 'failure' }}
@@ -1333,7 +1384,10 @@ jobs:
             always() &&
             steps.claim-exact-review-queue.outputs.claimed == 'true' &&
             (
-              steps.complete-exact-review-queue.outcome != 'success' ||
+              (
+                steps.direct-exact-review-publication.outputs.accepted != 'true' &&
+                steps.complete-exact-review-queue.outcome != 'success'
+              ) ||
               (
                 steps.exact-review-generation-result.outputs.outcome != 'success' &&
                 steps.reserve-exact-review-lease.outputs.status != 'held'

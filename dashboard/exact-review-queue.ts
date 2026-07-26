@@ -17,6 +17,16 @@ import {
   type PublicationBatchFence,
 } from "./exact-review-publication-batches.ts";
 import {
+  commitDirectPublicationCycle,
+  DirectPublicationRefRaceError,
+  EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES,
+  ExactReviewDirectPublicationStore,
+  validateDirectPublicationBlobOids,
+  type DirectPublicationCommitApi,
+  type DirectPublicationPlan,
+  type DirectPublicationRow,
+} from "./exact-review-direct-publication.ts";
+import {
   REVIEW_TELEMETRY_DEGRADED_MS,
   REVIEW_TELEMETRY_ORPHAN_MS,
   REVIEW_TELEMETRY_RETENTION_MS,
@@ -104,7 +114,11 @@ export type ExactReviewQueueItem = {
   claimProtocolVersion?: 1 | 2;
   dispatchedAt?: number;
   claimedAt?: number;
-  parkedReason?: "dead_letter_capacity" | "dispatch_rejected" | "review_retry_exhausted";
+  parkedReason?:
+    | "dead_letter_capacity"
+    | "dispatch_rejected"
+    | "review_retry_exhausted"
+    | "direct_publication";
   dispatchFailureStatus?: number;
   dispatchFailureClass?: ExactReviewDispatchFailureClass;
   dispatchFailureAt?: number;
@@ -447,6 +461,7 @@ export class ExactReviewQueue {
   private legacyMirrorDisabled = false;
   private legacyMirrorWarningReported = false;
   private batchStore;
+  private directPublicationStore;
   private stateWriterCoordinator;
   private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
 
@@ -454,6 +469,7 @@ export class ExactReviewQueue {
     this.storage = state.storage;
     this.env = env;
     this.batchStore = new ExactReviewPublicationBatchStore(this.storage);
+    this.directPublicationStore = new ExactReviewDirectPublicationStore(this.storage);
     this.stateWriterCoordinator = new StateWriterCoordinator(this.storage);
     const initialize = () => this.initializeStorage();
     this.ready =
@@ -1684,6 +1700,124 @@ export class ExactReviewQueue {
       return this.reconcilePublicationCandidates(await request.json().catch(() => null));
     }
 
+    if (request.method === "POST" && url.pathname === "/publication-results") {
+      if (!exactReviewDirectPublicationEnabled(this.env)) {
+        return json({ error: "direct_publication_disabled", fallback_required: true }, 409);
+      }
+      const bodyText = await request.text();
+      if (
+        new TextEncoder().encode(bodyText).byteLength >
+        EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES
+      ) {
+        console.warn("direct exact-review publication truncated: request exceeds 4 MB");
+        return json(
+          {
+            error: "direct_publication_payload_too_large",
+            max_bytes: EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES,
+            fallback_required: true,
+          },
+          413,
+        );
+      }
+      let plan: DirectPublicationPlan;
+      try {
+        plan = JSON.parse(bodyText) as DirectPublicationPlan;
+      } catch {
+        return json({ error: "invalid_direct_publication_json" }, 400);
+      }
+      try {
+        const validated = await validateDirectPublicationBlobOids(plan);
+        const state = this.readStateSync();
+        const owned = state.items[validated.itemKey];
+        const validFence =
+          owned &&
+          owned.revision === validated.revision &&
+          exactReviewClaimGeneration(owned.claimGeneration) ===
+            validated.identity.claimGeneration &&
+          validated.identity.itemKey === validated.itemKey &&
+          validated.identity.revision === validated.revision &&
+          (owned.state === "leased" ||
+            (owned.state === "parked" && owned.parkedReason === "direct_publication"));
+        if (!validFence) {
+          return json(
+            { error: "direct_publication_fence_not_owned", fallback_required: true },
+            409,
+          );
+        }
+        const accepted = this.directPublicationStore.accept(validated, Date.now());
+        if (accepted.outcome === "accepted") {
+          const producerDecision = owned.decision.publication
+            ? owned.decision.publication.producerDecision
+            : (owned.leaseDecision ?? owned.decision);
+          const producerRunId = String(owned.claimedRunId || "");
+          const producerRunAttempt = Number(owned.claimedRunAttempt || 0);
+          if (
+            !/^\d+$/.test(producerRunId) ||
+            !Number.isSafeInteger(producerRunAttempt) ||
+            producerRunAttempt < 1
+          ) {
+            throw new Error("direct publication source run identity is unavailable");
+          }
+          const publication: ExactReviewPublication = {
+            artifactName: `exact-review-${producerRunId}-${producerRunAttempt}`,
+            producerRunId,
+            producerRunAttempt,
+            sourceSha: "0".repeat(40),
+            itemKey: validated.itemKey,
+            protocolVersion: 2,
+            leaseRevision: validated.revision,
+            claimGeneration: validated.identity.claimGeneration,
+            liveProceeded: true,
+            liveTerminalNoop: false,
+            liveTerminalMissing: false,
+            liveGuardedOpen: false,
+            producerDecision,
+          };
+          const publicationDecision: ExactReviewDecision = {
+            ...producerDecision,
+            sourceAction: EXACT_REVIEW_ARTIFACT_PUBLISH_SOURCE_ACTION,
+            supersedesInProgress: false,
+            publication,
+          };
+          owned.decision = publicationDecision;
+          owned.leaseDecision = publicationDecision;
+          owned.state = "parked";
+          owned.parkedReason = "direct_publication";
+          owned.updatedAt = Date.now();
+          await this.writeState(state, {
+            reviewCompleted: 1,
+            publicationEnqueued: 1,
+            ...(accepted.supersededRevisions.length
+              ? {
+                  publicationCompleted: accepted.supersededRevisions.length,
+                  publicationSuperseded: accepted.supersededRevisions.length,
+                }
+              : {}),
+          });
+        }
+        await this.scheduleNext(this.readStateSync(), Date.now());
+        return json(
+          {
+            ok: true,
+            accepted: accepted.outcome === "accepted",
+            deduped: accepted.outcome === "deduped",
+            superseded: accepted.outcome === "superseded",
+            superseded_revisions: accepted.supersededRevisions,
+          },
+          202,
+        );
+      } catch (error) {
+        return json(
+          {
+            error: "invalid_direct_publication_plan",
+            detail: error instanceof Error ? error.message : String(error),
+            fallback_required: true,
+          },
+          400,
+        );
+      }
+    }
+
     if (request.method === "POST" && url.pathname === "/review-telemetry") {
       return this.recordReviewTelemetry(await request.json().catch(() => null));
     }
@@ -1884,6 +2018,11 @@ export class ExactReviewQueue {
         stateWriterCoordinatorQueuedStaleMs(this.env),
       );
       const publicationBatches = this.batchStore.stats(now);
+      const directPublications = this.directPublicationStore.list();
+      const directPending = directPublications.filter(
+        (row) => row.state === "pending" || row.state === "retryable" || row.state === "committing",
+      );
+      const directPendingOutsideQueue = directPending.filter((row) => !state.items[row.itemKey]);
       const batchByItemKey = new Map<string, ExactReviewBayBatchOwner>(
         publicationBatches.activeItemBatches.map((batch) => [batch.itemKey, batch] as const),
       );
@@ -1931,6 +2070,7 @@ export class ExactReviewQueue {
           Object.values(state.items),
           bayPriorityKeys,
           batchByItemKey,
+          directPublications,
         ),
         lanes: {
           review: {
@@ -1942,6 +2082,7 @@ export class ExactReviewQueue {
           },
           publication: {
             ...stats.lanes.publication,
+            pending: stats.lanes.publication.pending + directPendingOutsideQueue.length,
             enqueued_total: metrics.publication.enqueued,
             completed_total: metrics.publication.completed,
             published_total: metrics.publication.published,
@@ -1995,6 +2136,18 @@ export class ExactReviewQueue {
                 limit: publicationBatches.cleanup.limit,
               },
             },
+            direct: {
+              enabled: exactReviewDirectPublicationEnabled(this.env),
+              health: githubAppCredentials(this.env)
+                ? { status: "healthy" }
+                : { status: "blocked", reason: "github_app_not_configured" },
+              pending: directPending.length,
+              retryable: directPublications.filter((row) => row.state === "retryable").length,
+              failed: directPublications.filter((row) => row.state === "failed").length,
+              oldest_pending_at: directPending.length
+                ? new Date(Math.min(...directPending.map((row) => row.createdAt))).toISOString()
+                : null,
+            },
           },
         },
         delivery_receipts: this.deliveryReceiptCountSync(),
@@ -2020,6 +2173,7 @@ export class ExactReviewQueue {
     this.cleanupLegacyCompatibilitySync();
     const startedAt = Date.now();
     await this.storage.deleteAlarm();
+    await this.publishDirectResultsIfDue(startedAt);
     await this.processSourceAuthorityReservations(startedAt);
     this.storage.transactionSync(() => {
       this.pruneDeliveryReceiptsSync(startedAt);
@@ -4378,6 +4532,7 @@ export class ExactReviewQueue {
   private async initializeStorage() {
     this.ensureStorageSchemaSync();
     this.batchStore.ensureSchemaSync();
+    this.directPublicationStore.ensureSchemaSync();
     this.stateWriterCoordinator.ensureSchemaSync();
     let meta = this.readStorageMetaSync();
     let migratedLegacy = false;
@@ -6373,12 +6528,14 @@ export class ExactReviewQueue {
       this.freshPublicationItemKeysSync(state, now),
     );
     const sourceAuthorityNext = await this.nextSourceAuthorityVerificationAt();
+    const directPublicationNext = this.directPublicationStore.nextWakeAt(now);
     const next = [
       queueNext,
       reviewNext,
       batchOwnership.nextLeaseExpiresAt,
       batchDeparture?.dueAt ?? null,
       sourceAuthorityNext,
+      directPublicationNext,
     ]
       .filter((candidate): candidate is number => candidate !== null)
       .reduce<number | null>(
@@ -6393,6 +6550,121 @@ export class ExactReviewQueue {
     if (scheduled === null || scheduled <= now || next < scheduled) {
       await this.storage.setAlarm(next);
     }
+  }
+
+  private async publishDirectResultsIfDue(now: number) {
+    const queueState = this.readStateSync();
+    const stale = this.directPublicationStore.list().filter((row) => {
+      if (row.state !== "pending" && row.state !== "retryable") return false;
+      const item = queueState.items[row.itemKey];
+      return (
+        !item ||
+        item.revision !== row.revision ||
+        !exactReviewQueueIsPublication(item) ||
+        item.parkedReason !== "direct_publication"
+      );
+    });
+    if (stale.length) {
+      this.directPublicationStore.supersede(stale, now);
+      this.incrementQueueMetricsSync({
+        publicationCompleted: stale.length,
+        publicationSuperseded: stale.length,
+      });
+    }
+    const next = this.directPublicationStore.nextWakeAt(now);
+    if (next === null || next > now) return;
+    try {
+      const result = await commitDirectPublicationCycle({
+        store: this.directPublicationStore,
+        api: await exactReviewDirectPublicationApi(this.env),
+        now,
+      });
+      if (result.published.length) {
+        const state = this.readStateSync();
+        let completed = 0;
+        let published = 0;
+        for (const row of result.published) {
+          const item = state.items[row.itemKey];
+          if (!item || !exactReviewQueueIsPublication(item)) continue;
+          const terminal = finishExactReviewPublicationQueueItem({
+            state,
+            item,
+            now,
+            completion: { kind: "published", reasonCode: "publication_applied" },
+            ownedRevision: row.revision,
+            deadLetterCapacityAvailable: true,
+            env: this.env,
+          });
+          if (!terminal.requeued && !terminal.parked) completed += 1;
+          if (!terminal.requeued) published += 1;
+        }
+        await this.writeState(state, {
+          publicationCompleted: completed,
+          publicationPublished: published,
+        });
+      }
+      if (result.retryable.length) {
+        await this.recordDirectPublicationRetries(result.retryable, now);
+      }
+    } catch (error) {
+      const deferred = this.directPublicationStore.claimCycle(now);
+      if (deferred.length) {
+        this.directPublicationStore.retry(
+          deferred,
+          error instanceof Error ? error.message : String(error),
+          now,
+        );
+        await this.recordDirectPublicationRetries(deferred, now);
+      }
+      console.error(
+        "direct exact-review publication unavailable",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+
+  private async recordDirectPublicationRetries(rows: readonly DirectPublicationRow[], now: number) {
+    const failed = new Set(
+      this.directPublicationStore
+        .list()
+        .filter((row) => row.state === "failed")
+        .map((row) => `${row.itemKey}\0${row.revision}`),
+    );
+    const exhausted = rows.filter((row) => failed.has(`${row.itemKey}\0${row.revision}`));
+    if (!exhausted.length) {
+      this.incrementQueueMetricsSync({ publicationRetried: rows.length });
+      return;
+    }
+    const state = this.readStateSync();
+    let completed = 0;
+    let deadLettered = 0;
+    for (const row of exhausted) {
+      const item = state.items[row.itemKey];
+      if (!item || !exactReviewQueueIsPublication(item) || item.revision !== row.revision) continue;
+      item.publicationFailureAttempts = EXACT_REVIEW_PUBLICATION_TRANSIENT_RETRY_LIMIT - 1;
+      item.firstFailureAt ??= now;
+      const terminal = finishExactReviewPublicationQueueItem({
+        state,
+        item,
+        now,
+        completion: { kind: "retryable_failure", reasonCode: "state_contention" },
+        ownedRevision: row.revision,
+        deadLetterCapacityAvailable: this.deadLetterCapacityAvailableSync(
+          exactReviewDeadLetterId(item, row.revision),
+        ),
+        env: this.env,
+      });
+      if (terminal.deadLetter) {
+        this.insertDeadLetterSync(terminal.deadLetter);
+        deadLettered += 1;
+      }
+      if (!terminal.requeued && !terminal.parked) completed += 1;
+    }
+    await this.writeState(state, {
+      publicationRetried: rows.length - exhausted.length,
+      publicationCompleted: completed,
+      publicationDeadLettered: deadLettered,
+    });
   }
 }
 
@@ -7653,6 +7925,7 @@ function exactReviewQueueBayProjection(
   items: ExactReviewQueueItem[],
   priorityItemKeys: string[] = [],
   batchByItemKey: ReadonlyMap<string, ExactReviewBayBatchOwner> = new Map(),
+  directPublications: readonly DirectPublicationRow[] = [],
 ) {
   const projected = new Map<string, ExactReviewBayProjectionItem>();
   for (const item of items) {
@@ -7688,6 +7961,26 @@ function exactReviewQueueBayProjection(
         exactReviewQueueBayStagePriority(candidate.stage) >
           exactReviewQueueBayStagePriority(previous.stage))
     ) {
+      projected.set(candidate.item_key, candidate);
+    }
+  }
+  for (const row of directPublications) {
+    if (row.state === "published" || row.state === "superseded") continue;
+    const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d*)$/.exec(row.itemKey);
+    if (!match) continue;
+    const candidate: ExactReviewBayProjectionItem = {
+      item_key: row.itemKey,
+      repository: match[1],
+      item_number: Number(match[2]),
+      stage: row.state === "failed" ? "repairing" : "publishing",
+      queue_state:
+        row.state === "failed" ? "parked" : row.state === "committing" ? "leased" : "pending",
+      created_at: new Date(row.createdAt).toISOString(),
+      updated_at: new Date(row.updatedAt).toISOString(),
+      next_attempt_at: new Date(row.nextAttemptAt).toISOString(),
+    };
+    const previous = projected.get(candidate.item_key);
+    if (!previous || Date.parse(candidate.updated_at) >= Date.parse(previous.updated_at)) {
       projected.set(candidate.item_key, candidate);
     }
   }
@@ -8592,6 +8885,10 @@ function exactReviewPublicationBatchingEnabled(env) {
   return String(env.EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED || "").trim() === "1";
 }
 
+function exactReviewDirectPublicationEnabled(env) {
+  return String(env.EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED ?? "1").trim() === "1";
+}
+
 function exactReviewPublicationBatchSize(env) {
   return Math.max(
     1,
@@ -9154,6 +9451,129 @@ async function exactReviewTargetItemState(
 
 export async function exactReviewActionsReadToken(env) {
   return exactReviewRepositoryToken(env, { actions: "read" });
+}
+
+async function exactReviewDirectPublicationApi(env): Promise<DirectPublicationCommitApi> {
+  const stateRepo = String(env.EXACT_REVIEW_STATE_REPO || "openclaw/clawsweeper-state").trim();
+  const stateRef = String(env.EXACT_REVIEW_STATE_REF || "state").trim();
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(stateRepo)) {
+    throw new Error("EXACT_REVIEW_STATE_REPO is invalid");
+  }
+  if (!/^[A-Za-z0-9_./-]+$/.test(stateRef)) {
+    throw new Error("EXACT_REVIEW_STATE_REF is invalid");
+  }
+  const credentials = githubAppCredentials(env);
+  if (!credentials) {
+    throw new Error("direct publication health: GitHub App private key is not configured");
+  }
+  const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
+  const installationId = await githubAppInstallationId(appJwt, stateRepo);
+  // This token is deliberately separate from dashboard reads: one repository,
+  // contents:write only, and no inherited issue, action, or pull-request scope.
+  const token = await createGithubAppTokenFor({
+    appJwt,
+    installationId,
+    label: stateRepo,
+    repositories: [repoName(stateRepo)],
+    permissions: { contents: "write" },
+  });
+  const api = (path: string, method = "GET", body?: unknown, errorLabel?: string) =>
+    githubTokenJson({ token, path: `/repos/${stateRepo}${path}`, method, body, errorLabel });
+  return {
+    async readHead() {
+      const ref = await api(
+        `/git/ref/heads/${stateRef}`,
+        "GET",
+        undefined,
+        "direct publication state ref",
+      );
+      const commitSha = String(objectValue(ref.object).sha || "").toLowerCase();
+      if (!/^[a-f0-9]{40,64}$/.test(commitSha)) {
+        throw new Error("direct publication state ref response missing commit SHA");
+      }
+      const commit = await api(
+        `/git/commits/${commitSha}`,
+        "GET",
+        undefined,
+        "direct publication state commit",
+      );
+      const treeSha = String(objectValue(commit.tree).sha || "").toLowerCase();
+      if (!/^[a-f0-9]{40,64}$/.test(treeSha)) {
+        throw new Error("direct publication state commit response missing tree SHA");
+      }
+      const tree = await api(
+        `/git/trees/${treeSha}?recursive=1`,
+        "GET",
+        undefined,
+        "direct publication state tree",
+      );
+      if (tree.truncated === true || !Array.isArray(tree.tree)) {
+        throw new Error("direct publication state tree is unavailable or truncated");
+      }
+      const paths = new Map<string, string>();
+      for (const raw of tree.tree) {
+        const entry = objectValue(raw);
+        const path = String(entry.path || "");
+        const sha = String(entry.sha || "").toLowerCase();
+        if (entry.type === "blob" && path && /^[a-f0-9]{40,64}$/.test(sha)) paths.set(path, sha);
+      }
+      return { commitSha, treeSha, paths };
+    },
+    async createBlob(contentBase64) {
+      const blob = await api(
+        "/git/blobs",
+        "POST",
+        { content: contentBase64, encoding: "base64" },
+        "direct publication blob",
+      );
+      const sha = String(blob.sha || "").toLowerCase();
+      if (!/^[a-f0-9]{40,64}$/.test(sha)) {
+        throw new Error("direct publication blob response missing SHA");
+      }
+      return sha;
+    },
+    async createTree(baseTreeSha, entries) {
+      const tree = await api(
+        "/git/trees",
+        "POST",
+        { base_tree: baseTreeSha, tree: entries },
+        "direct publication tree",
+      );
+      const sha = String(tree.sha || "").toLowerCase();
+      if (!/^[a-f0-9]{40,64}$/.test(sha)) {
+        throw new Error("direct publication tree response missing SHA");
+      }
+      return sha;
+    },
+    async createCommit(message, treeSha, parentSha) {
+      const commit = await api(
+        "/git/commits",
+        "POST",
+        { message, tree: treeSha, parents: [parentSha] },
+        "direct publication commit",
+      );
+      const sha = String(commit.sha || "").toLowerCase();
+      if (!/^[a-f0-9]{40,64}$/.test(sha)) {
+        throw new Error("direct publication commit response missing SHA");
+      }
+      return sha;
+    },
+    async updateRef(commitSha) {
+      try {
+        await api(
+          `/git/refs/heads/${stateRef}`,
+          "PATCH",
+          { sha: commitSha, force: false },
+          "direct publication state ref update",
+        );
+      } catch (error) {
+        if (error instanceof GitHubRequestError && error.status === 422) {
+          throw new DirectPublicationRefRaceError();
+        }
+        throw error;
+      }
+    },
+  };
 }
 
 async function exactReviewRepositoryToken(env, permissions) {

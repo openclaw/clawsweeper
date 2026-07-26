@@ -9,6 +9,7 @@ const source = readFileSync(path, "utf8");
 const cliSource = readFileSync("src/repair/exact-review-batch-cli.ts", "utf8");
 const prepareSource = readFileSync("scripts/prepare-exact-review-batch.mjs", "utf8");
 const publisherSource = readFileSync("src/repair/publish-event-result.ts", "utf8");
+const sweepSource = readFileSync(".github/workflows/sweep.yml", "utf8");
 const workflow = YAML.parse(source) as {
   on: {
     schedule?: unknown;
@@ -69,6 +70,29 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(source, /deferredCloseCoverageExpected == true/);
   assert.match(source, /scheduled proof lane/);
   assert.match(source, /jq '\.postEffectsComplete = true'/);
+});
+
+test("exact-review producer uses direct publication with bounded legacy fallback", () => {
+  assert.match(sweepSource, /name: Deliver GitHub effects and prepare direct state mutation/);
+  assert.match(
+    sweepSource,
+    /EXACT_REVIEW_BATCH_MUTATION_OUTPUT: \.artifacts\/direct-publication-outcome\.json/,
+  );
+  assert.match(sweepSource, /repair:exact-review-direct-publication/);
+  assert.match(
+    sweepSource,
+    /EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED: \$\{\{ vars\.EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED \|\| '1' \}\}/,
+  );
+  assert.match(
+    sweepSource,
+    /name: Upload exact review artifact bundle[\s\S]*?steps\.direct-exact-review-publication\.outputs\.accepted != 'true'/,
+  );
+  assert.match(
+    sweepSource,
+    /name: Queue durable exact review publication[\s\S]*?steps\.upload-exact-review-bundle\.outcome == 'success'/,
+  );
+  assert.match(sweepSource, /internal\/exact-review\/enqueue/);
+  assert.match(source, /name: Claim one durable publication batch/);
 });
 
 test("batch workflow uses owner-scoped mutation credentials and isolated state checkout", () => {
