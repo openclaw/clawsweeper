@@ -145,12 +145,12 @@ test("materializer commits one canonical record tuple atomically", async () => {
   assert.deepEqual(commitPaths.sort(), tuple.operations.map((operation) => operation.path).sort());
 });
 
-test("materializer projects an items-to-closed move by deleting the displaced primary and stale plan", () => {
+test("materializer projects an items-to-closed move by deleting an explicitly retained plan", () => {
   const open = canonicalTuplePayload(45, "open", "2026-07-20T12:00:00.000Z");
   const closed = canonicalTuplePayload(45, "closed", "2026-07-20T12:10:00.000Z", {
     section: "closed",
     revision: 2,
-    includePlan: false,
+    includePlan: true,
   });
   const currentFiles = new Map(
     open.operations.map((operation) => [operation.path, operation.content!]),
@@ -170,6 +170,37 @@ test("materializer projects an items-to-closed move by deleting the displaced pr
     true,
   );
   assert.equal(plan.publishPaths.includes("records/openclaw-openclaw/items/45.md"), true);
+  assert.equal(
+    plan.writes.some((write) => write.path === "records/openclaw-openclaw/plans/45.md"),
+    false,
+  );
+});
+
+test("materializer deletes a retained packet when the authoritative primary clears its pointer", () => {
+  const base = canonicalTuplePayload(48, "packet-base", "2026-07-20T12:00:00.000Z");
+  const cleared = clearDecisionPacketReference(
+    canonicalTuplePayload(48, "packet-cleared", "2026-07-20T12:10:00.000Z", { revision: 2 }),
+  );
+  const currentFiles = new Map(
+    base.operations.map((operation) => [operation.path, operation.content!]),
+  );
+
+  const plan = planStateMaterialization(
+    [record(1, "record_tuple", "openclaw-openclaw/48", cleared)],
+    currentFiles,
+  );
+
+  assert.equal(
+    cleared.operations.some((operation) => operation.section === "decision-packets"),
+    true,
+  );
+  assert.equal(plan.deletes.includes("records/openclaw-openclaw/decision-packets/48.json"), true);
+  assert.equal(
+    plan.writes.some(
+      (write) => write.path === "records/openclaw-openclaw/decision-packets/48.json",
+    ),
+    false,
+  );
 });
 
 test("materializer coalesces section-changing tuple records by highest revision", () => {
@@ -372,6 +403,75 @@ test("materializer preserves a fresher concurrent git tuple through winner seman
     showState(fixture, "records/openclaw-openclaw/items/44.md"),
     /incoming-older/,
   );
+});
+
+test("materializer dead-letters a normalize-phase filename alias and commits ordinary state", async () => {
+  const fixture = createStateFixture();
+  const alias = canonicalTuplePayload(49, "legacy alias", "2026-07-20T12:00:00.000Z");
+  writeTupleFiles(fixture.state, alias);
+  const recordsRoot = path.join(fixture.state, "records/openclaw-openclaw");
+  fs.renameSync(
+    path.join(recordsRoot, "items/49.md"),
+    path.join(recordsRoot, "items/openclaw-openclaw-49.md"),
+  );
+  fs.rmSync(path.join(recordsRoot, "plans/49.md"));
+  run("git", ["add", "records/openclaw-openclaw"], fixture.state);
+  run("git", ["commit", "-m", "legacy alias tuple"], fixture.state);
+  run("git", ["push", "origin", "HEAD:state"], fixture.state);
+  fs.cpSync(path.join(fixture.state, "records"), path.join(fixture.source, "records"), {
+    recursive: true,
+  });
+
+  const records = [
+    record(
+      1,
+      "record_tuple",
+      "openclaw-openclaw/49",
+      canonicalTuplePayload(49, "canonical incoming", "2026-07-20T12:10:00.000Z", {
+        revision: 2,
+      }),
+    ),
+    record(2, "sweep_status", "openclaw-openclaw", sweepStatus("continued", "12:10:01.000")),
+  ];
+  let drainCalls = 0;
+  let disposition: Record<string, unknown> | null = null;
+  const fetchImpl = signedQueueFetch(async (url, body) => {
+    if (url.pathname === "/internal/state/drain") {
+      drainCalls += 1;
+      return drainCalls === 1
+        ? Response.json({ ok: true, drain_token: "normalize-alias", records })
+        : Response.json({ ok: true, drain_token: null, records: [] });
+    }
+    assert.equal(url.pathname, "/internal/state/dispose");
+    disposition = body;
+    return Response.json({ ok: true, acked: 2, retried: 0, dead_lettered: 1 });
+  });
+
+  const summary = await withMaterializerFixture(fixture, () =>
+    runStateMaterializer({ env: materializerEnv(), fetchImpl }),
+  );
+
+  assert.deepEqual(summary, { drained: 2, committed: 1, acked: 2, skipped: 0, errors: 1 });
+  assert.equal(
+    JSON.parse(showState(fixture, "results/sweep-status/openclaw-openclaw.json")).detail,
+    "continued",
+  );
+  assert.deepEqual(disposition, {
+    drain_token: "normalize-alias",
+    failures: [
+      {
+        seq: 1,
+        reason:
+          "Invalid record tuple openclaw-openclaw/49: ambiguous items filenames 49.md, openclaw-openclaw-49.md",
+        retryable: false,
+      },
+    ],
+  });
+  assert.equal(
+    statePathExists(fixture, "records/openclaw-openclaw/items/openclaw-openclaw-49.md"),
+    true,
+  );
+  assert.equal(statePathExists(fixture, "records/openclaw-openclaw/items/49.md"), false);
 });
 
 test("materializer does not ack a drain when the state push fails", async () => {
@@ -579,6 +679,19 @@ function canonicalTuplePayload(
       oversize: false,
     })),
   };
+}
+
+function clearDecisionPacketReference(tuple: TupleTestPayload): TupleTestPayload {
+  const primary = tuple.operations.find(
+    (operation) => operation.section === "items" || operation.section === "closed",
+  );
+  if (!primary?.content) throw new Error("tuple primary is missing");
+  primary.content = primary.content
+    .replace(/^decision_packet_sha256: .*$/m, "decision_packet_sha256: none")
+    .replace(/^decision_packet_path: .*$/m, "decision_packet_path: none");
+  primary.digest = createHash("sha256").update(primary.content).digest("hex");
+  primary.bytes = Buffer.byteLength(primary.content);
+  return tuple;
 }
 
 function writeTupleFiles(root: string, tuple: TupleTestPayload): void {

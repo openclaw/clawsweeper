@@ -1206,6 +1206,127 @@ test("reconcile-records quarantines an ambiguous valid tuple without blocking in
   );
 });
 
+test("reconcile-records deletes a packet orphaned by the authoritative primary", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  const base = writeRecordTuple(work, {
+    number: 43,
+    marker: "base packet",
+    reviewedAt: "2026-07-09T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T22:59:00Z",
+  });
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  const cleared = writeRecordTuple(work, {
+    number: 43,
+    marker: "packet pointer cleared",
+    reviewedAt: "2026-07-09T23:02:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:01:00Z",
+    packet: false,
+  });
+  write(path.join(work, recordsRoot, "decision-packets/43.json"), base.packet);
+
+  assert.equal(
+    withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: clear packet pointer",
+        paths: [recordsRoot],
+        maxAttempts: 1,
+        pushAttempts: 1,
+        rebaseStrategy: "reconcile-records",
+      }),
+    ),
+    "committed",
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/items/43.md`], root),
+    cleared.primary,
+  );
+  assert.throws(() =>
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/decision-packets/43.json`], root),
+  );
+});
+
+test("reconcile-records isolates malformed local tuples and commits valid siblings", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const recordsRoot = "records/openclaw-openclaw";
+  run("git", ["init", "--bare", origin], root);
+  run("git", ["clone", origin, work], root);
+  configureUser(work);
+  const baseInvalid = writeRecordTuple(work, {
+    number: 44,
+    marker: "base invalid candidate",
+    reviewedAt: "2026-07-09T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T22:59:00Z",
+  });
+  writeRecordTuple(work, {
+    number: 45,
+    marker: "base valid sibling",
+    reviewedAt: "2026-07-09T23:00:00.000Z",
+    itemUpdatedAt: "2026-07-09T22:59:00Z",
+  });
+  run("git", ["add", "."], work);
+  run("git", ["commit", "-m", "initial"], work);
+  run("git", ["push", "origin", "HEAD:main"], work);
+  run("git", ["--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main"], root);
+  run("git", ["checkout", "-B", "main", "origin/main"], work);
+
+  writeRecordTuple(work, {
+    number: 44,
+    marker: "malformed local candidate",
+    reviewedAt: "2026-07-09T23:02:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:01:00Z",
+  });
+  fs.appendFileSync(path.join(work, recordsRoot, "decision-packets/44.json"), " ");
+  const valid = writeRecordTuple(work, {
+    number: 45,
+    marker: "valid local sibling",
+    reviewedAt: "2026-07-09T23:03:00.000Z",
+    itemUpdatedAt: "2026-07-09T23:02:00Z",
+  });
+  const failures = [];
+
+  assert.equal(
+    withCwd(work, () =>
+      publishMainCommit({
+        message: "chore: isolate malformed tuple",
+        paths: [recordsRoot],
+        maxAttempts: 1,
+        pushAttempts: 1,
+        rebaseStrategy: "reconcile-records",
+        onRecordTupleFailure: (failure) => failures.push(failure),
+      }),
+    ),
+    "committed",
+  );
+  assert.deepEqual(failures, [
+    {
+      key: "openclaw-openclaw/44",
+      reason:
+        "Invalid record tuple openclaw-openclaw/44: local reconciliation decision packet digest mismatch",
+    },
+  ]);
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/items/44.md`], root),
+    baseInvalid.primary,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `main:${recordsRoot}/items/45.md`], root),
+    valid.primary,
+  );
+});
+
 test("reconcile-records retries after a full push batch loses continuous state races", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");

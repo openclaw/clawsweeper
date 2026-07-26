@@ -21,6 +21,7 @@ import {
 } from "./process-env.js";
 import {
   chooseRecordTupleWinner,
+  convergeRecordTupleSidecars,
   RecordTupleError,
   recordTupleIdentityForPath,
   recordTupleMarkdownFileForPath,
@@ -71,7 +72,15 @@ export type GitPublishOptions = {
   remote?: string;
   branch?: string;
   rebaseStrategy?: RebaseStrategy | undefined;
+  onRecordTupleFailure?: ((failure: RecordTuplePublishFailure) => void) | undefined;
 };
+
+export type RecordTuplePublishFailure = {
+  key: string;
+  reason: string;
+};
+
+type RecordTupleFailureReporter = (failure: RecordTuplePublishFailure) => void;
 
 export type RebaseStrategy = "normal" | "theirs" | "apply-records" | "reconcile-records";
 
@@ -468,6 +477,14 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
   const maxAttempts = positiveInt(options.maxAttempts, 8);
   const pushAttempts = positiveInt(options.pushAttempts, 3);
   const rebaseStrategy = options.rebaseStrategy ?? "normal";
+  const reportedTupleFailures = new Set<string>();
+  const reportTupleFailure: RecordTupleFailureReporter | undefined = options.onRecordTupleFailure
+    ? (failure) => {
+        if (reportedTupleFailures.has(failure.key)) return;
+        reportedTupleFailures.add(failure.key);
+        options.onRecordTupleFailure!(failure);
+      }
+    : undefined;
   gitPublishPhase(
     "sync",
     `paths=${uniqueNonEmpty(options.paths).length} strategy=${rebaseStrategy}`,
@@ -504,8 +521,9 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
   let reconciliationTupleKeys: ReadonlySet<string> | undefined;
   if (rebaseStrategy === "reconcile-records") {
     gitPublishPhase("normalize");
-    const normalized = normalizeReconciliationCommit(sourceCommit);
+    const normalized = normalizeReconciliationCommit(sourceCommit, reportTupleFailure);
     sourceCommit = normalized.commit;
+    reconciliationTupleKeys = new Set(normalized.tupleKeys);
     if (!normalized.changed) {
       restoreWorktree(options.restorePaths ?? []);
       if (
@@ -515,14 +533,15 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
           pushAttempts,
           maxAttempts,
           ...(reconciliationSourceCommit ? { reconciliationSourceCommit } : {}),
+          ...(reconciliationTupleKeys ? { reconciliationTupleKeys } : {}),
+          ...(reportTupleFailure ? { reportTupleFailure } : {}),
         })
       ) {
         throw new Error(`Failed to synchronize unchanged publish with ${remote}/${branch}`);
       }
       return completeStatePublish("unchanged", options.paths, stateBaseCommit);
     }
-    const tupleKeys = reconciliationTupleKeysForCommit(sourceCommit);
-    reconciliationTupleKeys = new Set(tupleKeys);
+    const tupleKeys = normalized.tupleKeys;
     if (tupleKeys.length > RECONCILIATION_TUPLE_CHUNK_SIZE) {
       restoreWorktree(options.restorePaths ?? []);
       const result = publishReconciliationChunks({
@@ -532,6 +551,7 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
         maxAttempts,
         sourceCommit: reconciliationSourceCommit ?? sourceCommit,
         tupleKeys,
+        ...(reportTupleFailure ? { reportTupleFailure } : {}),
       });
       return completeStatePublish(result, options.paths, stateBaseCommit);
     }
@@ -548,6 +568,7 @@ function publishMainCommitInternal(options: GitPublishOptions): PublishResult {
         maxAttempts,
         ...(reconciliationSourceCommit ? { reconciliationSourceCommit } : {}),
         ...(reconciliationTupleKeys ? { reconciliationTupleKeys } : {}),
+        ...(reportTupleFailure ? { reportTupleFailure } : {}),
       })
     ) {
       throw new Error(
@@ -1089,6 +1110,7 @@ function pushReconciliationCommit(options: {
   maxAttempts: number;
   reconciliationSourceCommit?: string;
   reconciliationTupleKeys?: ReadonlySet<string>;
+  reportTupleFailure?: RecordTupleFailureReporter;
 }): boolean {
   for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
     if (
@@ -1103,6 +1125,7 @@ function pushReconciliationCommit(options: {
         ...(options.reconciliationTupleKeys
           ? { reconciliationTupleKeys: options.reconciliationTupleKeys }
           : {}),
+        ...(options.reportTupleFailure ? { reportTupleFailure: options.reportTupleFailure } : {}),
       })
     ) {
       return true;
@@ -1125,6 +1148,7 @@ function pushReconciliationCommit(options: {
     ...(options.reconciliationTupleKeys
       ? { reconciliationTupleKeys: options.reconciliationTupleKeys }
       : {}),
+    ...(options.reportTupleFailure ? { reportTupleFailure: options.reportTupleFailure } : {}),
   });
 }
 
@@ -1325,17 +1349,6 @@ function syncStatePublishBaseToRemoteHead(
   runGit(["reset", "--hard", remoteRef]);
 }
 
-function reconciliationTupleKeysForCommit(sourceCommit: string): string[] {
-  const baseCommit = runGit(["rev-parse", `${sourceCommit}^`], { quiet: true }).trim();
-  const keys = new Set<string>();
-  for (const path of changedPathsBetween(baseCommit, sourceCommit)) {
-    const identity = recordTupleIdentityForPath(path);
-    if (!identity) throw new Error(`Unsupported reconciliation publish path: ${path}`);
-    keys.add(recordTupleIdentityKey(identity));
-  }
-  return [...keys];
-}
-
 function publishReconciliationChunks(options: {
   remote: string;
   branch: string;
@@ -1343,6 +1356,7 @@ function publishReconciliationChunks(options: {
   maxAttempts: number;
   sourceCommit: string;
   tupleKeys: readonly string[];
+  reportTupleFailure?: RecordTupleFailureReporter;
 }): PublishResult {
   const chunks = chunked(options.tupleKeys, RECONCILIATION_TUPLE_CHUNK_SIZE);
   console.log(
@@ -1361,6 +1375,8 @@ function publishReconciliationChunks(options: {
         options.branch,
         options.sourceCommit,
         allowedTupleKeys,
+        false,
+        options.reportTupleFailure,
       )
     ) {
       throw new Error(`Failed to build reconciliation checkpoint ${index + 1}/${chunks.length}`);
@@ -1379,6 +1395,7 @@ function publishReconciliationChunks(options: {
         maxAttempts: options.maxAttempts,
         reconciliationSourceCommit: options.sourceCommit,
         reconciliationTupleKeys: allowedTupleKeys,
+        ...(options.reportTupleFailure ? { reportTupleFailure: options.reportTupleFailure } : {}),
       })
     ) {
       throw new Error(`Failed to publish reconciliation checkpoint ${index + 1}/${chunks.length}`);
@@ -2639,6 +2656,7 @@ export function pushCommit(options: {
   reconciliationSourceCommit?: string;
   reconciliationTupleKeys?: ReadonlySet<string>;
   boundedRemoteHeadRebuild?: boolean;
+  reportTupleFailure?: RecordTupleFailureReporter;
 }): boolean {
   const remote = options.remote ?? "origin";
   const branch = options.branch ?? publishDefaultBranch();
@@ -2691,6 +2709,7 @@ export function pushCommit(options: {
             options.reconciliationSourceCommit,
             options.reconciliationTupleKeys,
             options.boundedRemoteHeadRebuild,
+            options.reportTupleFailure,
           );
         } catch (error) {
           recordRecoveryOutcome(recovery.advice, "rebuild_on_remote_head_failed", { error });
@@ -2732,6 +2751,7 @@ export function pushCommit(options: {
           options.reconciliationSourceCommit,
           options.reconciliationTupleKeys,
           options.boundedRemoteHeadRebuild,
+          options.reportTupleFailure,
         )
       ) {
         return false;
@@ -3002,6 +3022,7 @@ function rebuildReconciliationCommit(
   reconciliationSourceCommit?: string,
   allowedTupleKeys?: ReadonlySet<string>,
   boundedRemoteHeadRebuild = false,
+  reportTupleFailure?: RecordTupleFailureReporter,
 ): boolean {
   const remoteRef = `${remote}/${branch}`;
   const sourceCommit = reconciliationSourceCommit ?? runGit(["rev-parse", "HEAD"]).trim();
@@ -3054,13 +3075,20 @@ function rebuildReconciliationCommit(
     new Set([...localIdentities.values()].map((identity) => identity.repository)),
     new Set(localIdentities.keys()),
   );
-  const resolvedTuples = [...localIdentities].map(([key, identity]) => ({
-    key,
-    paths: resolveRecordTuplePaths({
-      identity,
-      changedPaths: [...localPaths, ...(knownTuplePaths.get(key) ?? [])],
-    }),
-  }));
+  const resolvedTuples: Array<{ key: string; paths: RecordTuplePaths }> = [];
+  for (const [key, identity] of localIdentities) {
+    try {
+      resolvedTuples.push({
+        key,
+        paths: resolveRecordTuplePaths({
+          identity,
+          changedPaths: [...localPaths, ...(knownTuplePaths.get(key) ?? [])],
+        }),
+      });
+    } catch (error) {
+      if (!isolateRecordTupleFailure(error, key, reportTupleFailure)) throw error;
+    }
+  }
   const snapshots = readRecordTupleSnapshots(
     resolvedTuples.flatMap(({ paths }) => [
       { commit: baseCommit, paths },
@@ -3068,17 +3096,22 @@ function rebuildReconciliationCommit(
       { commit: remoteRef, paths },
     ]),
   );
-  const selectedTuples: { paths: RecordTuplePaths; commit: string }[] = [];
+  const selectedTuples: RecordTupleSelection[] = [];
   const deferredTupleKeys = new Set<string>();
   for (const [index, { key, paths }] of resolvedTuples.entries()) {
     const offset = index * 3;
-    const winner = chooseReconciliationTupleWinner({
-      base: snapshots[offset]!,
-      local: snapshots[offset + 1]!,
-      remote: snapshots[offset + 2]!,
-    });
-    if (winner === "local") selectedTuples.push({ paths, commit: sourceCommit });
-    else if (winner === "base") selectedTuples.push({ paths, commit: baseCommit });
+    const converged = convergeRecordTupleSidecars(snapshots[offset + 1]!);
+    const winner = chooseReconciliationTupleWinner(
+      {
+        base: snapshots[offset]!,
+        local: converged.tuple,
+        remote: snapshots[offset + 2]!,
+      },
+      reportTupleFailure,
+    );
+    if (winner === "local") {
+      selectedTuples.push({ paths, commit: sourceCommit, deletedPaths: converged.deletedPaths });
+    } else if (winner === "base") selectedTuples.push({ paths, commit: baseCommit });
     else deferredTupleKeys.add(key);
   }
 
@@ -3159,9 +3192,13 @@ function mergeBaseWithoutHydration(
   return { base: null, recoveredShallowMiss: false };
 }
 
-function normalizeReconciliationCommit(sourceCommit: string): {
+function normalizeReconciliationCommit(
+  sourceCommit: string,
+  reportTupleFailure?: RecordTupleFailureReporter,
+): {
   commit: string;
   changed: boolean;
+  tupleKeys: string[];
 } {
   const baseCommit = runGit(["rev-parse", `${sourceCommit}^`], { quiet: true }).trim();
   const localPaths = changedPathsBetween(baseCommit, sourceCommit);
@@ -3177,62 +3214,137 @@ function normalizeReconciliationCommit(sourceCommit: string): {
     new Set([...identities.values()].map((identity) => identity.repository)),
     new Set(identities.keys()),
   );
-  const resolvedTuples = [...identities].map(([key, identity]) => ({
-    key,
-    paths: resolveRecordTuplePaths({
-      identity,
-      changedPaths: [...localPaths, ...(knownTuplePaths.get(key) ?? [])],
-    }),
-  }));
+  const resolvedTuples: Array<{ key: string; paths: RecordTuplePaths }> = [];
+  const isolatedTupleKeys = new Set<string>();
+  const normalizeFailureReporter: RecordTupleFailureReporter | undefined = reportTupleFailure
+    ? (failure) => {
+        isolatedTupleKeys.add(failure.key);
+        reportTupleFailure(failure);
+      }
+    : undefined;
+  for (const [key, identity] of identities) {
+    try {
+      resolvedTuples.push({
+        key,
+        paths: resolveRecordTuplePaths({
+          identity,
+          changedPaths: [...localPaths, ...(knownTuplePaths.get(key) ?? [])],
+        }),
+      });
+    } catch (error) {
+      if (!isolateRecordTupleFailure(error, key, normalizeFailureReporter)) throw error;
+    }
+  }
   const snapshots = readRecordTupleSnapshots(
     resolvedTuples.flatMap(({ paths }) => [
       { commit: baseCommit, paths },
       { commit: sourceCommit, paths },
     ]),
   );
-  const selectedTuples: RecordTuplePaths[] = [];
-  for (const [index, { paths }] of resolvedTuples.entries()) {
+  const selectedTuples: Array<{
+    key: string;
+    paths: RecordTuplePaths;
+    deletedPaths: string[];
+  }> = [];
+  for (const [index, { key, paths }] of resolvedTuples.entries()) {
     const base = snapshots[index * 2]!;
     const local = snapshots[index * 2 + 1]!;
-    const winner = chooseReconciliationTupleWinner({ base, local, remote: base });
-    if (winner === "local") selectedTuples.push(paths);
+    const converged = convergeRecordTupleSidecars(local);
+    const winner = chooseReconciliationTupleWinner(
+      { base, local: converged.tuple, remote: base },
+      normalizeFailureReporter,
+    );
+    if (winner === "local") {
+      selectedTuples.push({ key, paths, deletedPaths: converged.deletedPaths });
+    }
   }
+  const reconciliationTupleKeys = resolvedTuples
+    .map(({ key }) => key)
+    .filter((key) => !isolatedTupleKeys.has(key));
 
-  if (selectedTuples.length === identities.size) {
-    return { commit: sourceCommit, changed: true };
+  const convergedDeletionCount = selectedTuples.reduce(
+    (total, tuple) => total + tuple.deletedPaths.length,
+    0,
+  );
+  if (selectedTuples.length === identities.size && convergedDeletionCount === 0) {
+    return {
+      commit: sourceCommit,
+      changed: true,
+      tupleKeys: reconciliationTupleKeys,
+    };
   }
 
   const discarded = identities.size - selectedTuples.length;
-  console.log(`Discarding ${discarded} stale or ambiguous local record tuple(s) before push`);
+  if (discarded > 0) {
+    console.log(`Discarding ${discarded} stale or invalid local record tuple(s) before push`);
+  }
+  if (convergedDeletionCount > 0) {
+    console.log(`Deleting ${convergedDeletionCount} orphaned record tuple sidecar(s) before push`);
+  }
   runGit(["reset", "--hard", baseCommit]);
   const selectedPaths = applyRecordTupleSelections(
-    selectedTuples.map((paths) => ({ paths, commit: sourceCommit })),
+    selectedTuples.map(({ paths, deletedPaths }) => ({
+      paths,
+      commit: sourceCommit,
+      deletedPaths,
+    })),
   );
   if (selectedPaths.length > 0) stagePaths(selectedPaths);
-  if (!hasStagedChanges()) return { commit: baseCommit, changed: false };
+  if (!hasStagedChanges()) {
+    return { commit: baseCommit, changed: false, tupleKeys: reconciliationTupleKeys };
+  }
   runGit(["commit", "-C", sourceCommit]);
-  return { commit: runGit(["rev-parse", "HEAD"]).trim(), changed: true };
+  return {
+    commit: runGit(["rev-parse", "HEAD"]).trim(),
+    changed: true,
+    tupleKeys: reconciliationTupleKeys,
+  };
 }
 
-function chooseReconciliationTupleWinner(options: {
-  base: RecordTupleContents;
-  local: RecordTupleContents;
-  remote: RecordTupleContents;
-}): RecordTupleWinner | undefined {
+function chooseReconciliationTupleWinner(
+  options: {
+    base: RecordTupleContents;
+    local: RecordTupleContents;
+    remote: RecordTupleContents;
+  },
+  reportTupleFailure?: RecordTupleFailureReporter,
+): RecordTupleWinner | undefined {
   // A malformed local tuple must still fail the publish. Once the candidate is
   // structurally valid, however, an unorderable legacy/base conflict can be
   // quarantined to this tuple instead of blocking every independent repair in
   // a broad reconciliation batch.
-  validateRecordTuple(options.local, "local reconciliation");
+  try {
+    validateRecordTuple(options.local, "local reconciliation");
+  } catch (error) {
+    if (isolateRecordTupleFailure(error, options.local.paths.key, reportTupleFailure)) {
+      return undefined;
+    }
+    throw error;
+  }
   try {
     return chooseRecordTupleWinner(options);
   } catch (error) {
     if (!(error instanceof RecordTupleError)) throw error;
+    if (isolateRecordTupleFailure(error, options.local.paths.key, reportTupleFailure)) {
+      return undefined;
+    }
     console.log(
       `Deferring ambiguous reconciliation for ${options.local.paths.key}: ${error.message}`,
     );
     return undefined;
   }
+}
+
+function isolateRecordTupleFailure(
+  error: unknown,
+  key: string,
+  reportTupleFailure?: RecordTupleFailureReporter,
+): boolean {
+  if (!(error instanceof RecordTupleError) || !reportTupleFailure) return false;
+  const reason = errorMessage(error);
+  reportTupleFailure({ key, reason });
+  console.warn(`Isolating invalid record tuple ${key}: ${reason}`);
+  return true;
 }
 
 function changedPathsBetween(from: string, to: string): string[] {
@@ -3269,7 +3381,7 @@ function resolveRecordTuplePaths(options: {
   }
   for (const [section, files] of Object.entries(markdownFiles)) {
     if (files.size > 1) {
-      throw new Error(
+      throw new RecordTupleError(
         `Invalid record tuple ${recordTupleIdentityKey(options.identity)}: ambiguous ${section} filenames ${[
           ...files,
         ].join(", ")}`,
@@ -3433,9 +3545,7 @@ function gitObjectSpec(commit: string, path: string): string {
   return spec;
 }
 
-function applyRecordTupleSelections(
-  selections: readonly { paths: RecordTuplePaths; commit: string }[],
-): string[] {
+function applyRecordTupleSelections(selections: readonly RecordTupleSelection[]): string[] {
   const commitByPath = new Map<string, string>();
   for (const selection of selections) {
     for (const path of recordTuplePathList(selection.paths)) {
@@ -3466,6 +3576,15 @@ function applyRecordTupleSelections(
     for (const batch of chunked(checkoutPaths, GIT_PATHSPEC_BATCH_SIZE)) {
       runGit(["checkout", commit, "--", ...batch]);
     }
+  }
+  const deletedPaths = uniqueNonEmpty(
+    selections.flatMap((selection) => selection.deletedPaths ?? []),
+  );
+  for (const batch of chunked(deletedPaths, GIT_PATHSPEC_BATCH_SIZE)) {
+    runGit(["rm", "-r", "--ignore-unmatch", "--", ...batch], {
+      allowFailure: true,
+      quiet: true,
+    });
   }
   return selectedPaths;
 }
@@ -3568,9 +3687,15 @@ type GitTreePatch = {
   directories: Map<string, GitTreePatch>;
 };
 
+type RecordTupleSelection = {
+  paths: RecordTuplePaths;
+  commit: string;
+  deletedPaths?: readonly string[];
+};
+
 function rewriteRecordTupleSelectionsTree(
   remoteTree: string,
-  selections: readonly { paths: RecordTuplePaths; commit: string }[],
+  selections: readonly RecordTupleSelection[],
 ): string {
   const patch: GitTreePatch = { files: new Map(), directories: new Map() };
   for (const selection of selections) {
@@ -3585,7 +3710,11 @@ function rewriteRecordTupleSelectionsTree(
     ]);
     const sourceByPath = new Map(entries.map((entry) => [entry.name, entry]));
     for (const path of paths) {
-      addGitTreePatch(patch, path.split("/"), sourceByPath.get(path) ?? null);
+      addGitTreePatch(
+        patch,
+        path.split("/"),
+        selection.deletedPaths?.includes(path) ? null : (sourceByPath.get(path) ?? null),
+      );
     }
   }
   return writePatchedGitTree(remoteTree, patch, new Set(), { allowReplace: true });

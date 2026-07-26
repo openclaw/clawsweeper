@@ -12,7 +12,12 @@ import {
 import { isActionEventPublishPath } from "../action-ledger-paths.js";
 import { mergeCommentRouterLedgers } from "./comment-router-ledger-merge.js";
 import { publishMainCommit } from "./git-publish.js";
-import { recordTuplePaths, validateRecordTuple, type RecordTupleContents } from "./record-tuple.js";
+import {
+  convergeRecordTupleSidecars,
+  recordTuplePaths,
+  validateRecordTuple,
+  type RecordTupleContents,
+} from "./record-tuple.js";
 import { mergeSweepStatusJson } from "./sweep-status-merge.js";
 
 export const DEFAULT_STATE_MATERIALIZER_MAX_ROWS = 2_000;
@@ -252,36 +257,6 @@ export function planStateMaterialization(
         contentByPath.delete(displacedPrimary);
         if (currentFiles.has(displacedPrimary)) deletes.add(displacedPrimary);
         addPublishPath(displacedPrimary);
-
-        if (
-          primaryWrite.section === "closed" &&
-          !tuple.operations.some((operation) => operation.path === paths.plan)
-        ) {
-          contentByPath.delete(paths.plan);
-          if (currentFiles.has(paths.plan)) deletes.add(paths.plan);
-          addPublishPath(paths.plan);
-        }
-        if (
-          typeof primaryWrite.content === "string" &&
-          !primaryReferencesDecisionPacket(primaryWrite.content) &&
-          !tuple.operations.some((operation) => operation.path === paths.packet)
-        ) {
-          contentByPath.delete(paths.packet);
-          if (currentFiles.has(paths.packet)) deletes.add(paths.packet);
-          addPublishPath(paths.packet);
-        }
-      } else if (
-        tuple.operations.some(
-          (operation) =>
-            (operation.section === "items" || operation.section === "closed") && operation.deleted,
-        )
-      ) {
-        for (const sidecar of [paths.plan, paths.packet]) {
-          if (tuple.operations.some((operation) => operation.path === sidecar)) continue;
-          contentByPath.delete(sidecar);
-          if (currentFiles.has(sidecar)) deletes.add(sidecar);
-          addPublishPath(sidecar);
-        }
       }
       const target = (path: string): string | null => {
         if (deletes.has(path)) return null;
@@ -294,7 +269,13 @@ export function planStateMaterialization(
         plan: target(paths.plan),
         packet: target(paths.packet),
       };
-      validateRecordTuple(contents, `record tuple projection ${record.key}`);
+      const converged = convergeRecordTupleSidecars(contents);
+      for (const path of converged.deletedPaths) {
+        contentByPath.delete(path);
+        if (currentFiles.has(path)) deletes.add(path);
+        addPublishPath(path);
+      }
+      validateRecordTuple(converged.tuple, `record tuple projection ${record.key}`);
       continue;
     }
 
@@ -405,6 +386,12 @@ export async function runStateMaterializer(
       const currentFiles = readCurrentFiles(materializationPaths(hydrated.records), process.cwd());
       const isolated = planStateMaterializationWithIsolation(hydrated.records, currentFiles);
       const failures = [...hydrated.failures, ...isolated.failures];
+      const publicationFailureSeqs = new Set<number>();
+      const tupleRecordsByKey = new Map(
+        hydrated.records
+          .filter((record) => record.kind === "record_tuple")
+          .map((record) => [record.key, record]),
+      );
       const plan = isolated.plan;
       applyStateMaterializationPlan(plan, process.cwd());
       const recordTuplePaths = plan.publishPaths.filter(isRecordTupleProjectionPath);
@@ -426,9 +413,23 @@ export async function runStateMaterializer(
           maxAttempts: publishMaxAttempts,
           pushAttempts: publishPushAttempts,
           rebaseStrategy: "reconcile-records",
+          onRecordTupleFailure: ({ key, reason }) => {
+            const record = tupleRecordsByKey.get(key);
+            if (!record) {
+              throw new Error(`git publisher isolated an unknown record tuple: ${key}`);
+            }
+            if (publicationFailureSeqs.has(record.seq)) return;
+            publicationFailureSeqs.add(record.seq);
+            failures.push({
+              seq: record.seq,
+              key,
+              reason: materializationFailureReason(reason),
+              retryable: false,
+            });
+          },
         });
       }
-      summary.committed += plan.selected;
+      summary.committed += plan.selected - publicationFailureSeqs.size;
       summary.skipped += selected.skipped + hydrated.skipped + plan.skipped;
       summary.errors += failures.length;
       for (const failure of failures) {
@@ -817,21 +818,6 @@ function recordTupleRevision(record: StateAppendRecord): number | null {
   if (!isRecord(record.payload)) return null;
   const revision = Number(record.payload.revision);
   return Number.isSafeInteger(revision) && revision >= 1 ? revision : null;
-}
-
-function primaryReferencesDecisionPacket(content: string): boolean {
-  const normalized = content.replace(/\r\n/g, "\n");
-  if (!normalized.startsWith("---\n")) return false;
-  const end = normalized.indexOf("\n---", 4);
-  if (end === -1) return false;
-  const frontMatter = new Map<string, string>();
-  for (const line of normalized.slice(4, end).split("\n")) {
-    const match = /^([a-z][a-z0-9_]*):\s*(.*?)\s*$/.exec(line);
-    if (match?.[1]) frontMatter.set(match[1], match[2] ?? "");
-  }
-  const digest = frontMatter.get("decision_packet_sha256");
-  const pointer = frontMatter.get("decision_packet_path");
-  return Boolean(digest && pointer && digest !== "none" && pointer !== "none");
 }
 
 function assertProjectedContent(operation: RecordTupleProjectionOperation, content: string): void {

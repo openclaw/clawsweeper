@@ -344,6 +344,47 @@ export function validateRecordTuple(tuple: RecordTupleContents, label = "tuple")
   inspectRecordTuple(tuple, label);
 }
 
+export function convergeRecordTupleSidecars(tuple: RecordTupleContents): {
+  tuple: RecordTupleContents;
+  deletedPaths: string[];
+} {
+  const deletedPaths: string[] = [];
+  let plan = tuple.plan;
+  let packet = tuple.packet;
+  const hasSinglePrimary = (tuple.item === null) !== (tuple.closed === null);
+
+  // Sidecars derive their authority from the primary record. A deleted primary
+  // cannot leave either sidecar behind, and closed records cannot carry a work
+  // plan. Dual primaries remain contradictory and are deliberately untouched
+  // so strict validation can quarantine them instead of choosing one.
+  if (tuple.item === null && tuple.closed === null) {
+    if (plan !== null) deletedPaths.push(tuple.paths.plan);
+    if (packet !== null) deletedPaths.push(tuple.paths.packet);
+    plan = null;
+    packet = null;
+  } else if (hasSinglePrimary) {
+    if (tuple.closed !== null && plan !== null) {
+      deletedPaths.push(tuple.paths.plan);
+      plan = null;
+    }
+    const primary = tuple.item ?? tuple.closed;
+    const frontMatter = parseFrontMatter(primary!);
+    const digest = frontMatter.get("decision_packet_sha256");
+    const pointer = frontMatter.get("decision_packet_path");
+    const packetWasCleared =
+      (digest === undefined && pointer === undefined) || (digest === "none" && pointer === "none");
+    if (packetWasCleared && packet !== null) {
+      deletedPaths.push(tuple.paths.packet);
+      packet = null;
+    }
+  }
+
+  return {
+    tuple: { ...tuple, plan, packet },
+    deletedPaths,
+  };
+}
+
 export function recordTupleContentsEqual(
   left: RecordTupleContents,
   right: RecordTupleContents,
