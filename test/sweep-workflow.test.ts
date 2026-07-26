@@ -1007,6 +1007,7 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
   assert.match(sweepJob, /build-script: build/);
   assert.match(sweepJob, /name: Create target write token/);
   assert.match(sweepJob, /owner: openclaw\s+repositories: openclaw\s+permission-issues: write/);
+  assert.match(sweepJob, /permission-pull-requests: write/);
   assert.match(sweepJob, /name: Recover orphaned review placeholders/);
   assert.match(sweepJob, /run: node dist\/review-placeholder-recovery\.js/);
   assert.match(

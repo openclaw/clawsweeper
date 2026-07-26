@@ -204,6 +204,7 @@ jobs:
           owner: openclaw
           repositories: openclaw
           permission-issues: write
+          permission-pull-requests: write
 
       - name: Recover orphaned review placeholders
         env:
