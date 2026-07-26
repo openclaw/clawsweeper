@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import {
 import { isActionEventPublishPath } from "../action-ledger-paths.js";
 import { mergeCommentRouterLedgers } from "./comment-router-ledger-merge.js";
 import { publishMainCommit } from "./git-publish.js";
+import { recordTuplePaths, validateRecordTuple, type RecordTupleContents } from "./record-tuple.js";
 import { mergeSweepStatusJson } from "./sweep-status-merge.js";
 
 export const DEFAULT_STATE_MATERIALIZER_MAX_ROWS = 2_000;
@@ -26,9 +27,30 @@ const STATE_APPEND_KINDS = new Set<StateAppendKind>([
   "sweep_status",
   "comment_router",
   "apply_proof",
+  "record_tuple",
 ]);
 
-export type StateAppendKind = "sweep_status" | "comment_router" | "apply_proof";
+export type StateAppendKind = "sweep_status" | "comment_router" | "apply_proof" | "record_tuple";
+
+type RecordTupleProjectionOperation = {
+  path: string;
+  repoSlug: string;
+  section: "items" | "closed" | "plans" | "decision-packets";
+  itemId: number;
+  digest: string | null;
+  revision: number;
+  bytes: number;
+  deleted: boolean;
+  content?: string;
+  oversize?: boolean;
+};
+
+type RecordTupleProjection = {
+  itemKey: string;
+  revision: number;
+  claimGeneration: number;
+  operations: RecordTupleProjectionOperation[];
+};
 
 export type StateAppendRecord = {
   seq: number;
@@ -175,6 +197,40 @@ export function planStateMaterialization(
       continue;
     }
 
+    if (record.kind === "record_tuple") {
+      const tuple = recordTupleProjection(record);
+      for (const operation of tuple.operations) {
+        addPublishPath(operation.path);
+        if (operation.deleted) {
+          contentByPath.delete(operation.path);
+          if (currentFiles.has(operation.path)) deletes.add(operation.path);
+        } else {
+          if (typeof operation.content !== "string" || operation.oversize) {
+            throw new Error(`record tuple content was not hydrated: ${operation.path}`);
+          }
+          contentByPath.set(operation.path, operation.content);
+          deletes.delete(operation.path);
+        }
+      }
+      const paths = recordTuplePaths({
+        repository: tuple.operations[0]!.repoSlug,
+        number: String(tuple.operations[0]!.itemId),
+      });
+      const target = (path: string): string | null => {
+        if (deletes.has(path)) return null;
+        return contentByPath.get(path) ?? currentFiles.get(path) ?? null;
+      };
+      const contents: RecordTupleContents = {
+        paths,
+        item: target(paths.item),
+        closed: target(paths.closed),
+        plan: target(paths.plan),
+        packet: target(paths.packet),
+      };
+      validateRecordTuple(contents, `record tuple projection ${record.key}`);
+      continue;
+    }
+
     const path = record.key;
     const content = serializeApplyProof(path, record.payload);
     const current = currentFiles.get(path);
@@ -273,18 +329,38 @@ export async function runStateMaterializer(
     try {
       if (!drain.token) throw new Error("non-empty state drain omitted its token");
       const selected = selectLatestStateRecords(drain.records);
-      const currentFiles = readCurrentFiles(materializationPaths(selected.records), process.cwd());
-      const plan = planStateMaterialization(drain.records, currentFiles);
-      applyStateMaterializationPlan(plan, process.cwd());
-      publishMainCommit({
-        message: STATE_MATERIALIZER_COMMIT_MESSAGE,
-        paths: plan.publishPaths,
-        branch,
-        maxAttempts: publishMaxAttempts,
-        pushAttempts: publishPushAttempts,
+      const hydrated = await hydrateRecordTupleRecords({
+        records: selected.records,
+        queueUrl,
+        webhookSecret,
+        fetchImpl,
       });
+      const currentFiles = readCurrentFiles(materializationPaths(hydrated.records), process.cwd());
+      const plan = planStateMaterialization(hydrated.records, currentFiles);
+      applyStateMaterializationPlan(plan, process.cwd());
+      const recordTuplePaths = plan.publishPaths.filter(isRecordTupleProjectionPath);
+      const regularPaths = plan.publishPaths.filter((path) => !isRecordTupleProjectionPath(path));
+      if (regularPaths.length > 0) {
+        publishMainCommit({
+          message: STATE_MATERIALIZER_COMMIT_MESSAGE,
+          paths: regularPaths,
+          branch,
+          maxAttempts: publishMaxAttempts,
+          pushAttempts: publishPushAttempts,
+        });
+      }
+      if (recordTuplePaths.length > 0) {
+        publishMainCommit({
+          message: STATE_MATERIALIZER_COMMIT_MESSAGE,
+          paths: recordTuplePaths,
+          branch,
+          maxAttempts: publishMaxAttempts,
+          pushAttempts: publishPushAttempts,
+          rebaseStrategy: "reconcile-records",
+        });
+      }
       summary.committed += plan.selected;
-      summary.skipped += plan.skipped;
+      summary.skipped += selected.skipped + hydrated.skipped + plan.skipped;
 
       const acked = await ackStateWindow({
         queueUrl,
@@ -335,6 +411,22 @@ export function applyStateMaterializationPlan(plan: StateMaterializationPlan, ro
 function materializationPaths(records: readonly StateAppendRecord[]): string[] {
   const paths: string[] = [];
   for (const record of records) {
+    if (record.kind === "record_tuple") {
+      const tuple = recordTupleProjection(record);
+      const tuplePaths = recordTuplePaths({
+        repository: tuple.operations[0]!.repoSlug,
+        number: String(tuple.operations[0]!.itemId),
+      });
+      for (const recordPath of [
+        tuplePaths.item,
+        tuplePaths.closed,
+        tuplePaths.plan,
+        tuplePaths.packet,
+      ]) {
+        if (!paths.includes(recordPath)) paths.push(recordPath);
+      }
+      continue;
+    }
     const path =
       record.kind === "sweep_status"
         ? sweepStatusPathForStateKey(record.key)
@@ -363,6 +455,187 @@ function readCurrentFiles(paths: readonly string[], root: string): Map<string, s
     if (existsSync(target)) files.set(path, readFileSync(target, "utf8"));
   }
   return files;
+}
+
+async function hydrateRecordTupleRecords(options: {
+  records: readonly StateAppendRecord[];
+  queueUrl: string;
+  webhookSecret: string;
+  fetchImpl: typeof fetch;
+}): Promise<{ records: StateAppendRecord[]; skipped: number }> {
+  const records: StateAppendRecord[] = [];
+  let skipped = 0;
+  for (const record of options.records) {
+    if (record.kind !== "record_tuple") {
+      records.push(record);
+      continue;
+    }
+    const tuple = recordTupleProjection(record);
+    const operations: RecordTupleProjectionOperation[] = [];
+    let superseded = false;
+    for (const operation of tuple.operations) {
+      if (!operation.oversize) {
+        operations.push(operation);
+        continue;
+      }
+      const fetched = await fetchCanonicalRecord({
+        queueUrl: options.queueUrl,
+        webhookSecret: options.webhookSecret,
+        operation,
+        fetchImpl: options.fetchImpl,
+      });
+      if (fetched.kind === "superseded") {
+        superseded = true;
+        break;
+      }
+      operations.push({ ...operation, content: fetched.content, oversize: false });
+    }
+    if (superseded) {
+      skipped += 1;
+      console.warn(`record tuple projection superseded before oversize fetch: ${record.key}`);
+      continue;
+    }
+    records.push({ ...record, payload: { ...tuple, operations } });
+  }
+  return { records, skipped };
+}
+
+async function fetchCanonicalRecord(options: {
+  queueUrl: string;
+  webhookSecret: string;
+  operation: RecordTupleProjectionOperation;
+  fetchImpl: typeof fetch;
+}): Promise<{ kind: "fetched"; content: string } | { kind: "superseded" }> {
+  const signature = `sha256=${createHmac("sha256", options.webhookSecret).update("").digest("hex")}`;
+  const path = `/internal/state/records/${encodeURIComponent(options.operation.repoSlug)}/${options.operation.section}/${options.operation.itemId}`;
+  const response = await options.fetchImpl(`${options.queueUrl}${path}`, {
+    method: "GET",
+    headers: { "x-clawsweeper-exact-review-signature": signature },
+  });
+  const body = (await response.json().catch(() => null)) as unknown;
+  if (!isRecord(body)) throw new Error(`GET ${path} returned invalid JSON`);
+  const revision = Number(body.revision);
+  if (Number.isSafeInteger(revision) && revision > options.operation.revision) {
+    return { kind: "superseded" };
+  }
+  if (!response.ok) throw new Error(`GET ${path} returned ${response.status}`);
+  const content = body.content;
+  const digest = String(body.digest || "");
+  if (
+    revision !== options.operation.revision ||
+    typeof content !== "string" ||
+    digest !== options.operation.digest
+  ) {
+    throw new Error(`canonical record fence mismatch for ${options.operation.path}`);
+  }
+  assertProjectedContent(options.operation, content);
+  return { kind: "fetched", content };
+}
+
+function recordTupleProjection(record: StateAppendRecord): RecordTupleProjection {
+  if (!isRecord(record.payload))
+    throw new Error(`record tuple payload must be an object: ${record.key}`);
+  const itemKey = String(record.payload.itemKey || "").trim();
+  const revision = Number(record.payload.revision);
+  const claimGeneration = Number(record.payload.claimGeneration);
+  const itemMatch = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)#([1-9]\d*)$/.exec(itemKey);
+  if (
+    !itemMatch ||
+    !Number.isSafeInteger(revision) ||
+    revision < 1 ||
+    !Number.isSafeInteger(claimGeneration) ||
+    claimGeneration < 1 ||
+    !Array.isArray(record.payload.operations) ||
+    record.payload.operations.length < 1 ||
+    record.payload.operations.length > 4
+  ) {
+    throw new Error(`invalid record tuple projection fence: ${record.key}`);
+  }
+  const repoSlug = `${itemMatch[1]}-${itemMatch[2]}`;
+  const itemId = Number(itemMatch[3]);
+  if (record.key !== `${repoSlug}/${itemId}`) {
+    throw new Error(`record tuple key does not match its item fence: ${record.key}`);
+  }
+  const seen = new Set<string>();
+  const operations = record.payload.operations.map((value): RecordTupleProjectionOperation => {
+    if (!isRecord(value))
+      throw new Error(`record tuple operation must be an object: ${record.key}`);
+    const hasContent = Object.hasOwn(value, "content");
+    if (hasContent && typeof value.content !== "string") {
+      throw new Error(`record tuple operation has invalid content: ${record.key}`);
+    }
+    const operation = {
+      path: String(value.path || ""),
+      repoSlug: String(value.repoSlug || ""),
+      section: String(value.section || "") as RecordTupleProjectionOperation["section"],
+      itemId: Number(value.itemId),
+      digest: value.digest === null ? null : String(value.digest || ""),
+      revision: Number(value.revision),
+      bytes: Number(value.bytes),
+      deleted: value.deleted === true,
+      ...(hasContent ? { content: value.content as string } : {}),
+      ...(Object.hasOwn(value, "oversize") ? { oversize: value.oversize === true } : {}),
+    };
+    const extension = operation.section === "decision-packets" ? "json" : "md";
+    const expectedPath = `records/${repoSlug}/${operation.section}/${itemId}.${extension}`;
+    if (
+      operation.repoSlug !== repoSlug ||
+      operation.itemId !== itemId ||
+      operation.revision !== revision ||
+      !["items", "closed", "plans", "decision-packets"].includes(operation.section) ||
+      operation.path !== expectedPath ||
+      seen.has(operation.path) ||
+      !Number.isSafeInteger(operation.bytes) ||
+      operation.bytes < 0 ||
+      operation.bytes > 2 * 1024 * 1024
+    ) {
+      throw new Error(`invalid record tuple operation: ${operation.path || record.key}`);
+    }
+    seen.add(operation.path);
+    if (operation.deleted) {
+      if (
+        operation.digest !== null ||
+        operation.bytes !== 0 ||
+        operation.content !== undefined ||
+        operation.oversize
+      ) {
+        throw new Error(`invalid deleted record tuple operation: ${operation.path}`);
+      }
+      return operation;
+    }
+    if (!/^[a-f0-9]{64}$/.test(operation.digest || "")) {
+      throw new Error(`invalid record tuple digest: ${operation.path}`);
+    }
+    if (operation.oversize) {
+      if (operation.content !== undefined) {
+        throw new Error(
+          `oversize record tuple operation carried inline content: ${operation.path}`,
+        );
+      }
+      return operation;
+    }
+    if (typeof operation.content !== "string") {
+      throw new Error(`record tuple operation omitted content: ${operation.path}`);
+    }
+    assertProjectedContent(operation, operation.content);
+    return operation;
+  });
+  return { itemKey, revision, claimGeneration, operations };
+}
+
+function assertProjectedContent(operation: RecordTupleProjectionOperation, content: string): void {
+  const bytes = Buffer.byteLength(content);
+  const digest = createHash("sha256").update(content).digest("hex");
+  if (bytes !== operation.bytes || digest !== operation.digest) {
+    throw new Error(`record tuple content does not match its digest: ${operation.path}`);
+  }
+}
+
+function isRecordTupleProjectionPath(path: string): boolean {
+  return (
+    /^records\/[^/]+\/(?:items|closed|plans)\/[^/]+\.md$/.test(path) ||
+    /^records\/[^/]+\/decision-packets\/\d+\.json$/.test(path)
+  );
 }
 
 async function drainStateWindow(options: {

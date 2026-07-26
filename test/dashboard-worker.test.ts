@@ -1826,13 +1826,63 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
       env,
     );
     assert.equal(response.status, 202);
-    assert.deepEqual(await response.json(), {
+    const responseBody = await response.json();
+    assert.deepEqual(responseBody, {
       ok: true,
       ...expected,
       superseded: false,
       superseded_revisions: [],
+      state_commit_sha: "do-txn:1",
     });
   }
+
+  const recordUrl =
+    "https://clawsweeper.openclaw.ai/internal/state/records/openclaw-openclaw/items/701";
+  const unsignedRecord = await worker.fetch(new Request(recordUrl), env);
+  assert.equal(unsignedRecord.status, 401);
+  const emptySignature = `sha256=${createHmac("sha256", "test-secret").update("").digest("hex")}`;
+  const recordResponse = await worker.fetch(
+    new Request(recordUrl, {
+      headers: { "x-clawsweeper-exact-review-signature": emptySignature },
+    }),
+    env,
+  );
+  assert.equal(recordResponse.status, 200);
+  const record = await recordResponse.json();
+  assert.deepEqual(record, {
+    content: "x",
+    digest: createHash("sha256").update("x").digest("hex"),
+    revision: 4,
+    updatedAt: record.updatedAt,
+  });
+  assert.equal(Number.isFinite(Date.parse(record.updatedAt)), true);
+
+  const listingBody = JSON.stringify({
+    repoSlug: "openclaw-openclaw",
+    section: "items",
+    cursor: 0,
+    limit: 500,
+  });
+  const listingSignature = `sha256=${createHmac("sha256", "test-secret").update(listingBody).digest("hex")}`;
+  const listingResponse = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/state/records/list", {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": listingSignature },
+      body: listingBody,
+    }),
+    env,
+  );
+  assert.equal(listingResponse.status, 200);
+  const listing = await listingResponse.json();
+  assert.deepEqual(listing.records, [
+    {
+      id: 701,
+      digest: createHash("sha256").update("x").digest("hex"),
+      revision: 4,
+      updatedAt: listing.records[0].updatedAt,
+    },
+  ]);
+  assert.equal(listing.nextCursor, null);
 
   const oversizedBody = JSON.stringify({ ...payload, padding: "x".repeat(4 * 1024 * 1024) });
   const oversizedSignature = `sha256=${createHmac("sha256", "test-secret").update(oversizedBody).digest("hex")}`;

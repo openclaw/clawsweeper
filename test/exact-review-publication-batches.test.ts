@@ -5,8 +5,8 @@ import test from "node:test";
 
 import { ExactReviewPublicationBatchStore } from "../dashboard/exact-review-publication-batches.ts";
 import {
-  commitDirectPublicationCycle,
-  DirectPublicationRefRaceError,
+  EXACT_REVIEW_CANONICAL_INLINE_BYTES,
+  EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS,
   EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES,
   ExactReviewDirectPublicationStore,
   validateDirectPublicationPlan,
@@ -67,6 +67,10 @@ class TestStorage {
     this.database.exec(query);
   }
 
+  run(query: string, ...bindings: unknown[]) {
+    this.database.prepare(query).run(...bindings);
+  }
+
   async get(key: string) {
     return this.values.get(key);
   }
@@ -115,18 +119,33 @@ const candidates = [
 function directPlan(
   itemKey: string,
   revision: number,
-  options: { path?: string; expectedOid?: string | null; content?: Buffer; files?: number } = {},
+  options: {
+    path?: string;
+    expectedOid?: string | null;
+    targetOid?: string | null;
+    content?: Buffer;
+    files?: number;
+  } = {},
 ): DirectPublicationPlan {
   const content = options.content ?? Buffer.from(`result-${revision}`);
   const files = options.files ?? 1;
+  const match = /^([^/]+)\/([^#]+)#(\d+)$/.exec(itemKey)!;
+  const root = `records/${match[1]}-${match[2]}`;
+  const number = match[3];
+  const tuplePaths = [
+    `${root}/items/${number}.md`,
+    `${root}/plans/${number}.md`,
+    `${root}/decision-packets/${number}.json`,
+    `${root}/closed/${number}.md`,
+  ];
   return {
     itemKey,
     revision,
     identity: { itemKey, revision, claimGeneration: 1 },
     operations: Array.from({ length: files }, (_, index) => ({
-      path: options.path ?? `records/repo/items/${revision}-${index}.md`,
+      path: options.path ?? tuplePaths[index]!,
       expectedOid: options.expectedOid ?? null,
-      targetOid: "a".repeat(40),
+      targetOid: options.targetOid === undefined ? "a".repeat(40) : options.targetOid,
       mode: "100644" as const,
       bytes: content.byteLength,
       contentBase64: content.toString("base64"),
@@ -135,145 +154,167 @@ function directPlan(
   };
 }
 
-test("direct publication plans dedupe producer retries and ratchet newer revisions", () => {
+const projectionLimits = {
+  maxRecordBytes: 256 * 1024,
+  maxPendingRows: 50_000,
+  maxPendingBytes: 100 * 1024 * 1024,
+};
+
+function ensureProjectionSchema(storage: TestStorage) {
+  storage.exec(`CREATE TABLE state_append_window (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    record_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    payload_bytes INTEGER NOT NULL,
+    produced_at TEXT NOT NULL,
+    delivery_id TEXT NOT NULL,
+    drain_token TEXT
+  ) STRICT`);
+}
+
+test("direct publication canonically stores, projects, dedupes, and ratchets revisions", async () => {
   const storage = new TestStorage();
+  ensureProjectionSchema(storage);
   const store = new ExactReviewDirectPublicationStore(storage);
   store.ensureSchemaSync();
 
-  assert.equal(store.accept(directPlan("openclaw/openclaw#1", 1), 1_000).outcome, "accepted");
-  assert.equal(store.accept(directPlan("openclaw/openclaw#1", 1), 1_001).outcome, "deduped");
-  const newer = store.accept(directPlan("openclaw/openclaw#1", 2), 1_002);
+  const first = await validateDirectPublicationPlan(directPlan("openclaw/openclaw#1", 1));
+  const accepted = store.accept(first, 1_000, projectionLimits);
+  assert.equal(accepted.outcome, "accepted");
+  assert.match(accepted.row.commitSha || "", /^do-txn:\d+$/);
+  assert.equal(store.accept(first, 1_001, projectionLimits).outcome, "deduped");
+  const newer = store.accept(
+    await validateDirectPublicationPlan(directPlan("openclaw/openclaw#1", 2)),
+    1_002,
+    projectionLimits,
+  );
+  assert.equal(newer.outcome, "accepted");
 
-  assert.deepEqual(newer.supersededRevisions, [1]);
+  const record = store.readCanonical("openclaw-openclaw", "items", 1);
+  assert.equal(record?.content, "result-2");
+  assert.equal(record?.revision, 2);
+  assert.match(record?.digest || "", /^[a-f0-9]{64}$/);
+  assert.equal(storage.scalar("SELECT COUNT(*) AS value FROM state_append_window"), 2);
   assert.deepEqual(
     store.list().map((row) => [row.revision, row.state]),
     [
-      [1, "superseded"],
-      [2, "pending"],
+      [1, "published"],
+      [2, "published"],
     ],
   );
 });
 
-test("direct publication alarm cadence fires at 15 seconds or 64 staged files", () => {
+test("direct publication idempotency compares canonical digests instead of Git OIDs", async () => {
   const storage = new TestStorage();
+  ensureProjectionSchema(storage);
   const store = new ExactReviewDirectPublicationStore(storage);
   store.ensureSchemaSync();
-  store.accept(directPlan("openclaw/openclaw#2", 1, { files: 63 }), 1_000);
-  assert.equal(store.nextWakeAt(1_000), 16_000);
-  store.accept(directPlan("openclaw/openclaw#3", 1), 2_000);
-  assert.equal(store.nextWakeAt(2_000), 2_000);
+  const first = await validateDirectPublicationPlan(
+    directPlan("openclaw/openclaw#2", 1, {
+      expectedOid: "b".repeat(40),
+      targetOid: "c".repeat(40),
+    }),
+  );
+  store.accept(first, 1_000, projectionLimits);
+  const retry = await validateDirectPublicationPlan(
+    directPlan("openclaw/openclaw#2", 1, {
+      expectedOid: "d".repeat(40),
+      targetOid: "e".repeat(40),
+    }),
+  );
+  assert.equal(store.accept(retry, 1_001, projectionLimits).outcome, "deduped");
 });
 
-test("direct publication retries only the expectedOid conflict and commits other plans", async () => {
+test("direct publication marks tuple projections oversize and chunks canonical values", async () => {
   const storage = new TestStorage();
+  ensureProjectionSchema(storage);
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  const content = Buffer.alloc(EXACT_REVIEW_CANONICAL_INLINE_BYTES + 1, "x");
+  const plan = await validateDirectPublicationPlan(
+    directPlan("openclaw/openclaw#3", 1, { content }),
+  );
+  store.accept(plan, 1_000, { ...projectionLimits, maxRecordBytes: 1024 });
+  const row = store.readCanonical("openclaw-openclaw", "items", 3);
+  assert.equal(row?.content?.length, content.length);
+  assert.equal(row?.revision, 1);
+  assert.equal(
+    storage.scalar(
+      `SELECT COUNT(*) AS value FROM exact_review_canonical_record_chunks WHERE item_id = 3`,
+    ) > 1,
+    true,
+  );
+  assert.equal(
+    storage.scalar(
+      `SELECT COUNT(*) AS value FROM state_append_window WHERE payload_json LIKE '%"oversize":true%'`,
+    ),
+    1,
+  );
+});
+
+test("direct publication prunes terminal plan receipts after seven days but keeps records", async () => {
+  const storage = new TestStorage();
+  ensureProjectionSchema(storage);
   const store = new ExactReviewDirectPublicationStore(storage);
   store.ensureSchemaSync();
   store.accept(
-    directPlan("openclaw/openclaw#4", 1, { path: "records/a.md", expectedOid: "b".repeat(40) }),
+    await validateDirectPublicationPlan(directPlan("openclaw/openclaw#4", 1)),
     1_000,
+    projectionLimits,
   );
-  store.accept(directPlan("openclaw/openclaw#5", 1, { path: "records/b.md" }), 1_000);
-
-  const result = await commitDirectPublicationCycle({
-    store,
-    now: 20_000,
-    api: {
-      async readHead() {
-        return { commitSha: "1".repeat(40), treeSha: "2".repeat(40), paths: new Map() };
-      },
-      async createBlob() {
-        return "a".repeat(40);
-      },
-      async createTree() {
-        return "3".repeat(40);
-      },
-      async createCommit() {
-        return "4".repeat(40);
-      },
-      async updateRef() {},
-    },
-  });
-
-  assert.deepEqual(
-    result.published.map((row) => row.itemKey),
-    ["openclaw/openclaw#5"],
-  );
-  assert.deepEqual(
-    store.list().map((row) => [row.itemKey, row.state, row.attempts]),
-    [
-      ["openclaw/openclaw#4", "retryable", 1],
-      ["openclaw/openclaw#5", "published", 0],
-    ],
-  );
+  assert.equal(store.pruneTerminalSync(1_000 + EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS), 1);
+  assert.equal(store.list().length, 0);
+  assert.equal(store.readCanonical("openclaw-openclaw", "items", 4)?.content, "result-1");
 });
 
-test("direct publication ref update 422 refetches and succeeds on the third bounded attempt", async () => {
+test("direct publication migrates a pre-deployment pending plan into the canonical store", async () => {
   const storage = new TestStorage();
+  ensureProjectionSchema(storage);
   const store = new ExactReviewDirectPublicationStore(storage);
   store.ensureSchemaSync();
-  store.accept(directPlan("openclaw/openclaw#6", 1), 1_000);
-  let heads = 0;
-  let updates = 0;
-  const result = await commitDirectPublicationCycle({
-    store,
-    now: 20_000,
-    api: {
-      async readHead() {
-        heads += 1;
-        return { commitSha: String(heads).repeat(40), treeSha: "2".repeat(40), paths: new Map() };
-      },
-      async createBlob() {
-        return "a".repeat(40);
-      },
-      async createTree() {
-        return "3".repeat(40);
-      },
-      async createCommit() {
-        return "4".repeat(40);
-      },
-      async updateRef() {
-        updates += 1;
-        if (updates < 3) throw new DirectPublicationRefRaceError();
-      },
-    },
-  });
-  assert.equal(heads, 3);
-  assert.equal(updates, 3);
-  assert.equal(result.commitSha, "4".repeat(40));
-  assert.equal(store.list()[0]?.state, "published");
-});
-
-test("direct publication retryable conflicts stop at the bounded attempt ceiling", () => {
-  const storage = new TestStorage();
-  const store = new ExactReviewDirectPublicationStore(storage);
-  store.ensureSchemaSync();
-  store.accept(directPlan("openclaw/openclaw#9", 1), 1_000);
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    const now = 1_000 + attempt * 31 * 60_000;
-    const claimed = store.claimCycle(now);
-    assert.equal(claimed.length, 1);
-    store.retry(claimed, "expected_oid_conflict", now);
-  }
-  assert.deepEqual(
-    store.list().map((row) => [row.state, row.attempts]),
-    [["failed", 12]],
+  const legacy = directPlan("openclaw/openclaw#5", 1);
+  storage.run(
+    `INSERT INTO exact_review_direct_publication_plans
+       (item_key, revision, identity_item_key, identity_revision, claim_generation,
+        operations_json, total_bytes, file_count, state, attempts, created_at, updated_at,
+        next_attempt_at, commit_sha, failure_reason)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, 1000, 1000, 1000, NULL, NULL)`,
+    legacy.itemKey,
+    legacy.revision,
+    legacy.identity.itemKey,
+    legacy.identity.revision,
+    legacy.identity.claimGeneration,
+    JSON.stringify(legacy.operations),
+    legacy.totalBytes,
+    legacy.operations.length,
   );
+
+  const pending = store.legacyPendingPlans();
+  assert.equal(pending.length, 1);
+  const accepted = store.accept(
+    await validateDirectPublicationPlan(pending[0]!),
+    2_000,
+    projectionLimits,
+  );
+
+  assert.equal(accepted.outcome, "accepted");
+  assert.equal(store.readCanonical("openclaw-openclaw", "items", 5)?.content, "result-1");
+  assert.equal(store.legacyPendingPlans().length, 0);
 });
 
-test("direct publication validates per-file and per-POST size caps", () => {
+test("direct publication validates tuple and per-file size caps", async () => {
   const tooLargeFile = Buffer.alloc(2 * 1024 * 1024 + 1);
-  assert.throws(
-    () =>
-      validateDirectPublicationPlan(
-        directPlan("openclaw/openclaw#7", 1, { content: tooLargeFile }),
-      ),
+  await assert.rejects(
+    validateDirectPublicationPlan(directPlan("openclaw/openclaw#7", 1, { content: tooLargeFile })),
     /byte count/,
   );
 
-  const content = Buffer.alloc(2 * 1024 * 1024);
-  const plan = directPlan("openclaw/openclaw#8", 1, { content, files: 3 });
-  assert.ok(plan.totalBytes > EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES);
-  assert.throws(() => validateDirectPublicationPlan(plan), /per-POST byte limit/);
+  const invalidPath = directPlan("openclaw/openclaw#8", 1, {
+    path: "records/other/items/8.md",
+  });
+  await assert.rejects(validateDirectPublicationPlan(invalidPath), /outside openclaw-openclaw#8/);
+  assert.equal(EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES, 4 * 1024 * 1024);
 });
 
 test("publication batches atomically select ready items without duplicate active ownership", () => {

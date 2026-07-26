@@ -1,14 +1,17 @@
 export const EXACT_REVIEW_DIRECT_PUBLICATION_TABLE = "exact_review_direct_publication_plans";
+export const EXACT_REVIEW_CANONICAL_RECORD_TABLE = "exact_review_canonical_records";
+export const EXACT_REVIEW_CANONICAL_RECORD_CHUNK_TABLE = "exact_review_canonical_record_chunks";
 export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES = 4 * 1024 * 1024;
-export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_COMMIT_BYTES = 20 * 1024 * 1024;
-export const EXACT_REVIEW_DIRECT_PUBLICATION_FILE_THRESHOLD = 64;
-export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILES = 512;
+export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILES = 4;
 export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES = 2 * 1024 * 1024;
-export const EXACT_REVIEW_DIRECT_PUBLICATION_CADENCE_MS = 15_000;
-export const EXACT_REVIEW_DIRECT_PUBLICATION_RETRY_LIMIT = 12;
+export const EXACT_REVIEW_CANONICAL_INLINE_BYTES = Math.floor(1.5 * 1024 * 1024);
+export const EXACT_REVIEW_CANONICAL_CHUNK_BYTES = 512 * 1024;
+export const EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
-const OID_PATTERN = /^[a-f0-9]{40,64}$/;
+const DIRECT_PUBLICATION_TERMINAL_PRUNE_LIMIT = 256;
 const MAX_PATH_BYTES = 1024;
+const STATE_APPEND_WINDOW_TABLE = "state_append_window";
+const RECORD_SECTIONS = new Set<RecordSection>(["items", "closed", "plans", "decision-packets"]);
 
 type SqlStorage = {
   exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
@@ -18,6 +21,8 @@ type DurableStorage = {
   sql: SqlStorage;
   transactionSync: <T>(callback: () => T) => T;
 };
+
+export type RecordSection = "items" | "closed" | "plans" | "decision-packets";
 
 export type DirectPublicationOperation = {
   path: string;
@@ -36,7 +41,27 @@ export type DirectPublicationPlan = {
   totalBytes: number;
 };
 
-export type DirectPublicationRow = DirectPublicationPlan & {
+export type CanonicalDirectPublicationOperation = DirectPublicationOperation & {
+  repoSlug: string;
+  section: RecordSection;
+  itemId: number;
+  content: string | null;
+  digest: string | null;
+};
+
+export type CanonicalDirectPublicationPlan = Omit<DirectPublicationPlan, "operations"> & {
+  operations: CanonicalDirectPublicationOperation[];
+};
+
+export type DirectPublicationStoredOperation = {
+  path: string;
+  bytes: number;
+  digest: string | null;
+  deleted: boolean;
+};
+
+export type DirectPublicationRow = Omit<DirectPublicationPlan, "operations"> & {
+  operations: DirectPublicationStoredOperation[] | DirectPublicationOperation[];
   state: "pending" | "committing" | "retryable" | "published" | "superseded" | "failed";
   attempts: number;
   createdAt: number;
@@ -52,21 +77,27 @@ export type DirectPublicationAcceptResult = {
   supersededRevisions: number[];
 };
 
-export type DirectPublicationCommitApi = {
-  readHead: () => Promise<{ commitSha: string; treeSha: string; paths: Map<string, string> }>;
-  createBlob: (contentBase64: string) => Promise<string>;
-  createTree: (
-    baseTreeSha: string,
-    entries: Array<{ path: string; mode: "100644"; type: "blob"; sha: string | null }>,
-  ) => Promise<string>;
-  createCommit: (message: string, treeSha: string, parentSha: string) => Promise<string>;
-  updateRef: (commitSha: string) => Promise<void>;
+export type DirectPublicationProjectionLimits = {
+  maxRecordBytes: number;
+  maxPendingRows: number;
+  maxPendingBytes: number;
 };
 
-export class DirectPublicationRefRaceError extends Error {
-  constructor() {
-    super("state ref changed while publishing direct exact-review results");
-    this.name = "DirectPublicationRefRaceError";
+export type CanonicalRecord = {
+  repoSlug: string;
+  section: RecordSection;
+  itemId: number;
+  content: string | null;
+  digest: string | null;
+  revision: number;
+  updatedAt: number;
+  deleted: boolean;
+};
+
+export class DirectPublicationProjectionCapacityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DirectPublicationProjectionCapacityError";
   }
 }
 
@@ -101,194 +132,217 @@ export class ExactReviewDirectPublicationStore {
        ) STRICT`,
     );
     this.storage.sql.exec(
-      `CREATE INDEX IF NOT EXISTS exact_review_direct_publication_ready
-         ON ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-         (state, next_attempt_at, created_at, item_key, revision)`,
+      `CREATE INDEX IF NOT EXISTS exact_review_direct_publication_terminal_retention
+         ON ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE} (state, updated_at, item_key, revision)`,
+    );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_CANONICAL_RECORD_TABLE} (
+         repo_slug TEXT NOT NULL,
+         section TEXT NOT NULL CHECK (section IN ('items', 'closed', 'plans', 'decision-packets')),
+         item_id INTEGER NOT NULL CHECK (item_id >= 1),
+         content TEXT,
+         digest TEXT CHECK (digest IS NULL OR length(digest) = 64),
+         byte_length INTEGER NOT NULL CHECK (byte_length >= 0),
+         chunk_count INTEGER NOT NULL DEFAULT 0 CHECK (chunk_count >= 0),
+         deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
+         revision INTEGER NOT NULL CHECK (revision >= 1),
+         item_key TEXT NOT NULL,
+         claim_generation INTEGER NOT NULL CHECK (claim_generation >= 1),
+         updated_at INTEGER NOT NULL,
+         PRIMARY KEY (repo_slug, section, item_id),
+         CHECK ((deleted = 1 AND content IS NULL AND digest IS NULL AND byte_length = 0 AND chunk_count = 0)
+             OR (deleted = 0 AND digest IS NOT NULL AND ((content IS NOT NULL AND chunk_count = 0)
+               OR (content IS NULL AND chunk_count > 0))))
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_canonical_records_listing
+         ON ${EXACT_REVIEW_CANONICAL_RECORD_TABLE} (repo_slug, section, item_id)`,
+    );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_CANONICAL_RECORD_CHUNK_TABLE} (
+         repo_slug TEXT NOT NULL,
+         section TEXT NOT NULL CHECK (section IN ('items', 'closed', 'plans', 'decision-packets')),
+         item_id INTEGER NOT NULL CHECK (item_id >= 1),
+         chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
+         content_base64 TEXT NOT NULL,
+         PRIMARY KEY (repo_slug, section, item_id, chunk_index)
+       ) STRICT`,
     );
   }
 
-  accept(plan: DirectPublicationPlan, now: number): DirectPublicationAcceptResult {
-    const validated = validateDirectPublicationPlan(plan);
+  accept(
+    plan: CanonicalDirectPublicationPlan,
+    now: number,
+    limits: DirectPublicationProjectionLimits,
+  ): DirectPublicationAcceptResult {
+    const storedOperations = storedOperationsFrom(plan.operations);
     return this.storage.transactionSync(() => {
-      const existing = this.readSync(validated.itemKey, validated.revision);
+      this.pruneTerminalSync(now);
+      const existing = this.readSync(plan.itemKey, plan.revision);
       if (existing) {
-        if (canonicalPlan(existing) !== canonicalPlan(validated)) {
-          throw new Error("conflicting direct publication retry");
+        if (["pending", "committing", "retryable"].includes(existing.state)) {
+          if (!legacyPlanMatches(existing, plan)) {
+            throw new Error("conflicting legacy direct publication retry");
+          }
+          this.storage.sql.exec(
+            `DELETE FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+              WHERE item_key = ? AND revision = ?`,
+            plan.itemKey,
+            plan.revision,
+          );
+        } else {
+          if (canonicalStoredPlan(existing) !== canonicalIncomingPlan(plan, storedOperations)) {
+            throw new Error("conflicting direct publication retry");
+          }
+          return { outcome: "deduped" as const, row: existing, supersededRevisions: [] };
         }
-        return { outcome: "deduped" as const, row: existing, supersededRevisions: [] };
       }
+
       const newer = Array.from(
         this.storage.sql.exec(
           `SELECT revision FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
             WHERE item_key = ? AND revision > ?
             ORDER BY revision DESC LIMIT 1`,
-          validated.itemKey,
-          validated.revision,
+          plan.itemKey,
+          plan.revision,
         ),
       )[0];
       if (newer) {
-        const row: DirectPublicationRow = {
-          ...validated,
+        const row = directPublicationRowFromPlan({
+          plan,
+          operations: storedOperations,
           state: "superseded",
-          attempts: 0,
-          createdAt: now,
-          updatedAt: now,
-          nextAttemptAt: now,
+          now,
           commitSha: null,
-          failureReason: "newer_revision_already_staged",
-        };
+          failureReason: "newer_revision_already_published",
+        });
         this.insertSync(row);
         return { outcome: "superseded" as const, row, supersededRevisions: [] };
       }
-      const supersededRevisions = Array.from(
+
+      for (const operation of plan.operations) {
+        const current = this.readCanonicalMetadataSync(
+          operation.repoSlug,
+          operation.section,
+          operation.itemId,
+        );
+        if (current && current.revision > plan.revision) {
+          throw new Error(`canonical record revision advanced for ${operation.path}`);
+        }
+        if (
+          current &&
+          current.revision === plan.revision &&
+          (current.digest !== operation.digest || current.deleted !== (operation.content === null))
+        ) {
+          throw new Error(
+            `canonical record digest conflicts at revision ${plan.revision}: ${operation.path}`,
+          );
+        }
+      }
+
+      const projection = recordTupleProjection(plan, limits.maxRecordBytes);
+      const totals = stateAppendWindowTotalsSync(this.storage);
+      if (
+        totals.pendingRows + 1 > limits.maxPendingRows ||
+        totals.pendingBytes + projection.payloadBytes > limits.maxPendingBytes
+      ) {
+        throw new DirectPublicationProjectionCapacityError(
+          `record tuple projection capacity exceeded: rows=${totals.pendingRows}/${limits.maxPendingRows} bytes=${totals.pendingBytes}/${limits.maxPendingBytes} incoming=${projection.payloadBytes}`,
+        );
+      }
+
+      for (const operation of plan.operations)
+        this.writeCanonicalOperationSync(operation, plan, now);
+      const inserted = Array.from(
         this.storage.sql.exec(
-          `SELECT revision FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-            WHERE item_key = ? AND revision < ?
-              AND state IN ('pending', 'retryable', 'committing')
-            ORDER BY revision`,
-          validated.itemKey,
-          validated.revision,
-        ),
-        (row) => Number(row.revision),
-      );
-      this.storage.sql.exec(
-        `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-            SET state = 'superseded', updated_at = ?, failure_reason = 'newer_revision_staged'
-          WHERE item_key = ? AND revision < ?
-            AND state IN ('pending', 'retryable', 'committing')`,
+          `INSERT INTO ${STATE_APPEND_WINDOW_TABLE}
+             (kind, record_key, payload_json, payload_bytes, produced_at, delivery_id)
+           VALUES ('record_tuple', ?, ?, ?, ?, ?)
+           RETURNING seq`,
+          projection.key,
+          projection.payloadJson,
+          projection.payloadBytes,
+          new Date(now).toISOString(),
+          `record-tuple:${plan.itemKey}:${plan.revision}:${plan.identity.claimGeneration}`,
+        ) as Iterable<{ seq: number }>,
+      )[0];
+      const sequence = Number(inserted?.seq);
+      if (!Number.isSafeInteger(sequence) || sequence < 1) {
+        throw new Error("record tuple projection failed to allocate a sequence");
+      }
+      const receipt = `do-txn:${sequence}`;
+      const row = directPublicationRowFromPlan({
+        plan,
+        operations: storedOperations,
+        state: "published",
         now,
-        validated.itemKey,
-        validated.revision,
-      );
-      const row: DirectPublicationRow = {
-        ...validated,
-        state: "pending",
-        attempts: 0,
-        createdAt: now,
-        updatedAt: now,
-        nextAttemptAt: now,
-        commitSha: null,
+        commitSha: receipt,
         failureReason: null,
-      };
+      });
       this.insertSync(row);
-      return { outcome: "accepted" as const, row, supersededRevisions };
+      return { outcome: "accepted" as const, row, supersededRevisions: [] };
     });
   }
 
-  nextWakeAt(now: number): number | null {
-    const summary = Array.from(
+  readCanonical(repoSlug: string, section: RecordSection, itemId: number): CanonicalRecord | null {
+    const metadata = this.readCanonicalMetadataSync(repoSlug, section, itemId);
+    if (!metadata) return null;
+    if (metadata.deleted) return { ...metadata, content: null };
+    if (metadata.content !== null) return metadata;
+    const chunks = Array.from(
       this.storage.sql.exec(
-        `SELECT MIN(created_at) AS oldest_at, MIN(next_attempt_at) AS retry_at,
-                COALESCE(SUM(CASE WHEN next_attempt_at <= ? THEN file_count ELSE 0 END), 0)
-                  AS files
-           FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-          WHERE state IN ('pending', 'retryable')`,
-        now,
+        `SELECT chunk_index, content_base64
+           FROM ${EXACT_REVIEW_CANONICAL_RECORD_CHUNK_TABLE}
+          WHERE repo_slug = ? AND section = ? AND item_id = ?
+          ORDER BY chunk_index`,
+        repoSlug,
+        section,
+        itemId,
       ),
-    )[0];
-    if (summary?.oldest_at === null || summary?.oldest_at === undefined) return null;
-    const retryAt = Number(summary.retry_at);
-    const cadenceAt = Number(summary.oldest_at) + EXACT_REVIEW_DIRECT_PUBLICATION_CADENCE_MS;
-    return Number(summary.files) >= EXACT_REVIEW_DIRECT_PUBLICATION_FILE_THRESHOLD
-      ? Math.max(now, retryAt)
-      : Math.max(retryAt, cadenceAt);
+    );
+    if (chunks.length !== metadata.chunkCount) {
+      throw new Error(`canonical record chunk count mismatch: ${repoSlug}/${section}/${itemId}`);
+    }
+    const byteParts = chunks.map((row) => base64Bytes(String(row.content_base64)));
+    const combined = new Uint8Array(byteParts.reduce((sum, part) => sum + part.byteLength, 0));
+    let offset = 0;
+    for (const part of byteParts) {
+      combined.set(part, offset);
+      offset += part.byteLength;
+    }
+    const content = new TextDecoder("utf-8", { fatal: true }).decode(combined);
+    if (new TextEncoder().encode(content).byteLength !== metadata.byteLength) {
+      throw new Error(`canonical record byte count mismatch: ${repoSlug}/${section}/${itemId}`);
+    }
+    return { ...metadata, content };
   }
 
-  claimCycle(now: number): DirectPublicationRow[] {
-    return this.storage.transactionSync(() => {
+  listCanonical(options: {
+    repoSlug: string;
+    section: RecordSection;
+    cursor: number;
+    limit: number;
+  }) {
+    return Array.from(
       this.storage.sql.exec(
-        `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-            SET state = 'retryable', next_attempt_at = ?, updated_at = ?,
-                failure_reason = 'stale_inflight_recovery'
-          WHERE state = 'committing' AND updated_at <= ?`,
-        now,
-        now,
-        now - 30 * 60_000,
-      );
-      const rows = Array.from(
-        this.storage.sql.exec(
-          `SELECT * FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-            WHERE state IN ('pending', 'retryable') AND next_attempt_at <= ?
-            ORDER BY created_at, item_key, revision`,
-          now,
-        ),
-        directPublicationRow,
-      );
-      const selected: DirectPublicationRow[] = [];
-      let stagedBytes = 0;
-      for (const row of rows) {
-        if (stagedBytes + row.totalBytes > EXACT_REVIEW_DIRECT_PUBLICATION_MAX_COMMIT_BYTES) break;
-        selected.push(row);
-        stagedBytes += row.totalBytes;
-      }
-      for (const row of selected) {
-        this.storage.sql.exec(
-          `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-              SET state = 'committing', updated_at = ?
-            WHERE item_key = ? AND revision = ? AND state IN ('pending', 'retryable')`,
-          now,
-          row.itemKey,
-          row.revision,
-        );
-        row.state = "committing";
-        row.updatedAt = now;
-      }
-      return selected;
-    });
-  }
-
-  complete(rows: readonly DirectPublicationRow[], commitSha: string, now: number) {
-    this.storage.transactionSync(() => {
-      for (const row of rows) {
-        this.storage.sql.exec(
-          `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-              SET state = 'published', commit_sha = ?, updated_at = ?, failure_reason = NULL
-            WHERE item_key = ? AND revision = ? AND state = 'committing'`,
-          commitSha,
-          now,
-          row.itemKey,
-          row.revision,
-        );
-      }
-    });
-  }
-
-  supersede(rows: readonly DirectPublicationRow[], now: number, reason = "newer_queue_revision") {
-    this.storage.transactionSync(() => {
-      for (const row of rows) {
-        this.storage.sql.exec(
-          `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-              SET state = 'superseded', updated_at = ?, failure_reason = ?
-            WHERE item_key = ? AND revision = ?
-              AND state IN ('pending', 'retryable', 'committing')`,
-          now,
-          reason,
-          row.itemKey,
-          row.revision,
-        );
-      }
-    });
-  }
-
-  retry(rows: readonly DirectPublicationRow[], reason: string, now: number) {
-    this.storage.transactionSync(() => {
-      for (const row of rows) {
-        const attempts = row.attempts + 1;
-        const exhausted = attempts >= EXACT_REVIEW_DIRECT_PUBLICATION_RETRY_LIMIT;
-        this.storage.sql.exec(
-          `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-              SET state = ?, attempts = ?, updated_at = ?, next_attempt_at = ?, failure_reason = ?
-            WHERE item_key = ? AND revision = ? AND state = 'committing'`,
-          exhausted ? "failed" : "retryable",
-          attempts,
-          now,
-          now + directPublicationRetryDelayMs(attempts),
-          reason.slice(0, 500),
-          row.itemKey,
-          row.revision,
-        );
-      }
-    });
+        `SELECT item_id, digest, revision, updated_at
+           FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}
+          WHERE repo_slug = ? AND section = ? AND item_id > ? AND deleted = 0
+          ORDER BY item_id
+          LIMIT ?`,
+        options.repoSlug,
+        options.section,
+        options.cursor,
+        options.limit,
+      ),
+      (row) => ({
+        id: Number(row.item_id),
+        digest: String(row.digest),
+        revision: Number(row.revision),
+        updatedAt: Number(row.updated_at),
+      }),
+    );
   }
 
   list(): DirectPublicationRow[] {
@@ -298,6 +352,49 @@ export class ExactReviewDirectPublicationStore {
       ),
       directPublicationRow,
     );
+  }
+
+  legacyPendingPlans(): DirectPublicationPlan[] {
+    return Array.from(
+      this.storage.sql.exec(
+        `SELECT item_key, revision, identity_item_key, identity_revision, claim_generation,
+                operations_json, total_bytes
+           FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+          WHERE state IN ('pending', 'committing', 'retryable')
+          ORDER BY created_at, item_key, revision`,
+      ),
+      (row) => ({
+        itemKey: String(row.item_key),
+        revision: Number(row.revision),
+        identity: {
+          itemKey: String(row.identity_item_key),
+          revision: Number(row.identity_revision),
+          claimGeneration: Number(row.claim_generation),
+        },
+        operations: JSON.parse(String(row.operations_json)) as DirectPublicationOperation[],
+        totalBytes: Number(row.total_bytes),
+      }),
+    );
+  }
+
+  get(itemKey: string, revision: number): DirectPublicationRow | null {
+    return this.readSync(itemKey, revision);
+  }
+
+  pruneTerminalSync(now: number) {
+    return Array.from(
+      this.storage.sql.exec(
+        `DELETE FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+          WHERE rowid IN (
+            SELECT rowid FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+             WHERE state IN ('published', 'superseded', 'failed') AND updated_at <= ?
+             ORDER BY updated_at, item_key, revision
+             LIMIT ${DIRECT_PUBLICATION_TERMINAL_PRUNE_LIMIT}
+          )
+          RETURNING item_key`,
+        now - EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS,
+      ),
+    ).length;
   }
 
   private readSync(itemKey: string, revision: number) {
@@ -310,6 +407,91 @@ export class ExactReviewDirectPublicationStore {
       ),
     )[0];
     return row ? directPublicationRow(row) : null;
+  }
+
+  private readCanonicalMetadataSync(repoSlug: string, section: RecordSection, itemId: number) {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT content, digest, byte_length, chunk_count, deleted, revision, updated_at
+           FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}
+          WHERE repo_slug = ? AND section = ? AND item_id = ?`,
+        repoSlug,
+        section,
+        itemId,
+      ),
+    )[0];
+    if (!row) return null;
+    return {
+      repoSlug,
+      section,
+      itemId,
+      content: row.content === null ? null : String(row.content),
+      digest: row.digest === null ? null : String(row.digest),
+      byteLength: Number(row.byte_length),
+      chunkCount: Number(row.chunk_count),
+      revision: Number(row.revision),
+      updatedAt: Number(row.updated_at),
+      deleted: Number(row.deleted) === 1,
+    };
+  }
+
+  private writeCanonicalOperationSync(
+    operation: CanonicalDirectPublicationOperation,
+    plan: CanonicalDirectPublicationPlan,
+    now: number,
+  ) {
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_CANONICAL_RECORD_CHUNK_TABLE}
+        WHERE repo_slug = ? AND section = ? AND item_id = ?`,
+      operation.repoSlug,
+      operation.section,
+      operation.itemId,
+    );
+    const chunked =
+      operation.content !== null && operation.bytes > EXACT_REVIEW_CANONICAL_INLINE_BYTES;
+    const chunks = chunked
+      ? byteChunks(operation.content!, EXACT_REVIEW_CANONICAL_CHUNK_BYTES)
+      : [];
+    this.storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}
+         (repo_slug, section, item_id, content, digest, byte_length, chunk_count, deleted,
+          revision, item_key, claim_generation, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(repo_slug, section, item_id) DO UPDATE SET
+         content = excluded.content,
+         digest = excluded.digest,
+         byte_length = excluded.byte_length,
+         chunk_count = excluded.chunk_count,
+         deleted = excluded.deleted,
+         revision = excluded.revision,
+         item_key = excluded.item_key,
+         claim_generation = excluded.claim_generation,
+         updated_at = excluded.updated_at`,
+      operation.repoSlug,
+      operation.section,
+      operation.itemId,
+      operation.content === null || chunked ? null : operation.content,
+      operation.digest,
+      operation.bytes,
+      chunks.length,
+      operation.content === null ? 1 : 0,
+      plan.revision,
+      plan.itemKey,
+      plan.identity.claimGeneration,
+      now,
+    );
+    for (let index = 0; index < chunks.length; index += 1) {
+      this.storage.sql.exec(
+        `INSERT INTO ${EXACT_REVIEW_CANONICAL_RECORD_CHUNK_TABLE}
+           (repo_slug, section, item_id, chunk_index, content_base64)
+         VALUES (?, ?, ?, ?, ?)`,
+        operation.repoSlug,
+        operation.section,
+        operation.itemId,
+        index,
+        chunks[index],
+      );
+    }
   }
 
   private insertSync(row: DirectPublicationRow) {
@@ -338,145 +520,31 @@ export class ExactReviewDirectPublicationStore {
   }
 }
 
-export async function commitDirectPublicationCycle(options: {
-  store: ExactReviewDirectPublicationStore;
-  api: DirectPublicationCommitApi;
-  now: number;
-  message?: string;
-}): Promise<{
-  commitSha: string | null;
-  published: DirectPublicationRow[];
-  retryable: DirectPublicationRow[];
-}> {
-  const claimed = options.store.claimCycle(options.now);
-  if (!claimed.length) return { commitSha: null, published: [], retryable: [] };
-  let remaining = claimed;
-  const published: DirectPublicationRow[] = [];
-  try {
-    for (let refAttempt = 1; refAttempt <= 3; refAttempt += 1) {
-      let head = await options.api.readHead();
-      const alreadyApplied = remaining.filter((row) => targetOidsMatch(row, head.paths));
-      if (alreadyApplied.length) {
-        options.store.complete(alreadyApplied, head.commitSha, options.now);
-        published.push(...alreadyApplied);
-        const appliedKeys = new Set(alreadyApplied.map((row) => `${row.itemKey}\0${row.revision}`));
-        remaining = remaining.filter((row) => !appliedKeys.has(`${row.itemKey}\0${row.revision}`));
-      }
-      if (!remaining.length) {
-        return { commitSha: head.commitSha, published, retryable: [] };
-      }
-      let conflicts = remaining.filter((row) => !expectedOidsMatch(row, head.paths));
-      if (conflicts.length) {
-        // A materializer may have advanced the state ref between producer
-        // preparation and this alarm. Re-read once before spending a retry.
-        head = await options.api.readHead();
-        conflicts = remaining.filter((row) => !expectedOidsMatch(row, head.paths));
-      }
-      if (conflicts.length) {
-        options.store.retry(conflicts, "expected_oid_conflict", options.now);
-        const conflictKeys = new Set(conflicts.map((row) => `${row.itemKey}\0${row.revision}`));
-        remaining = remaining.filter((row) => !conflictKeys.has(`${row.itemKey}\0${row.revision}`));
-      }
-      if (!remaining.length)
-        return {
-          commitSha: published.length ? head.commitSha : null,
-          published,
-          retryable: claimed.filter((row) => !published.includes(row)),
-        };
-      const compatibility = compatibleDirectPublicationPlans(remaining);
-      if (compatibility.conflicts.length) {
-        options.store.retry(
-          compatibility.conflicts,
-          "incompatible_same_path_mutation",
-          options.now,
-        );
-        remaining = compatibility.plans;
-      }
-      if (!remaining.length)
-        return {
-          commitSha: published.length ? head.commitSha : null,
-          published,
-          retryable: claimed.filter((row) => !published.includes(row)),
-        };
-
-      const entries: Array<{ path: string; mode: "100644"; type: "blob"; sha: string | null }> = [];
-      for (const row of remaining) {
-        for (const operation of row.operations) {
-          if (operation.targetOid === null) {
-            entries.push({ path: operation.path, mode: operation.mode, type: "blob", sha: null });
-            continue;
-          }
-          const oid = await options.api.createBlob(operation.contentBase64!);
-          if (oid !== operation.targetOid) {
-            options.store.retry([row], "prepared_blob_oid_mismatch", options.now);
-            const rowKey = `${row.itemKey}\0${row.revision}`;
-            remaining = remaining.filter(
-              (candidate) => `${candidate.itemKey}\0${candidate.revision}` !== rowKey,
-            );
-            break;
-          }
-          entries.push({ path: operation.path, mode: operation.mode, type: "blob", sha: oid });
-        }
-      }
-      if (!remaining.length)
-        return {
-          commitSha: published.length ? head.commitSha : null,
-          published,
-          retryable: claimed.filter((row) => !published.includes(row)),
-        };
-      const remainingPaths = new Set(
-        remaining.flatMap((row) => row.operations.map((op) => op.path)),
-      );
-      const filteredEntries = [
-        ...new Map(
-          entries
-            .filter((entry) => remainingPaths.has(entry.path))
-            .map((entry) => [entry.path, entry] as const),
-        ).values(),
-      ];
-      const treeSha = await options.api.createTree(head.treeSha, filteredEntries);
-      const commitSha = await options.api.createCommit(
-        options.message ?? `chore(state): publish ${remaining.length} exact-review result(s)`,
-        treeSha,
-        head.commitSha,
-      );
-      try {
-        await options.api.updateRef(commitSha);
-        options.store.complete(remaining, commitSha, options.now);
-        published.push(...remaining);
-        return {
-          commitSha,
-          published,
-          retryable: claimed.filter((row) => !published.includes(row)),
-        };
-      } catch (error) {
-        if (!(error instanceof DirectPublicationRefRaceError) || refAttempt === 3) {
-          options.store.retry(remaining, errorMessage(error), options.now);
-          return { commitSha: null, published: [], retryable: claimed };
-        }
-      }
-    }
-  } catch (error) {
-    options.store.retry(remaining, errorMessage(error), options.now);
-    return { commitSha: null, published: [], retryable: claimed };
-  }
-  options.store.retry(remaining, "state_ref_race", options.now);
-  return { commitSha: null, published: [], retryable: claimed };
+export function validateRecordSection(value: unknown): RecordSection | null {
+  const section = String(value || "").trim() as RecordSection;
+  return RECORD_SECTIONS.has(section) ? section : null;
 }
 
-export function validateDirectPublicationPlan(value: DirectPublicationPlan): DirectPublicationPlan {
+export function validateRepoSlug(value: unknown): string | null {
+  const slug = String(value || "").trim();
+  return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/.test(slug) ? slug : null;
+}
+
+export async function validateDirectPublicationPlan(
+  value: DirectPublicationPlan,
+): Promise<CanonicalDirectPublicationPlan> {
   const plan = value && typeof value === "object" ? value : ({} as DirectPublicationPlan);
   const itemKey = boundedItemKey(plan.itemKey);
-  if (!itemKey) throw new Error("invalid direct publication item key");
+  const itemIdentity = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)#([1-9]\d*)$/.exec(itemKey);
+  if (!itemIdentity) throw new Error("invalid direct publication item key");
   if (!Number.isSafeInteger(plan.revision) || plan.revision < 1) {
     throw new Error("invalid direct publication revision");
   }
   const identity = plan.identity;
   if (
     !identity ||
-    !boundedItemKey(identity.itemKey) ||
-    !Number.isSafeInteger(identity.revision) ||
-    identity.revision < 1 ||
+    boundedItemKey(identity.itemKey) !== itemKey ||
+    identity.revision !== plan.revision ||
     !Number.isSafeInteger(identity.claimGeneration) ||
     identity.claimGeneration < 1
   ) {
@@ -486,22 +554,23 @@ export function validateDirectPublicationPlan(value: DirectPublicationPlan): Dir
     throw new Error("a direct publication plan must change a path");
   }
   if (plan.operations.length > EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILES) {
-    throw new Error("a direct publication plan exceeds the exact-review file limit");
+    throw new Error("a direct publication plan exceeds the exact-review tuple file limit");
   }
+  const repoSlug = `${itemIdentity[1]}-${itemIdentity[2]}`;
+  const itemId = Number(itemIdentity[3]);
   const paths = new Set<string>();
   let totalBytes = 0;
-  const operations = plan.operations.map((raw): DirectPublicationOperation => {
+  const operations: CanonicalDirectPublicationOperation[] = [];
+  for (const raw of plan.operations) {
     const operation = raw && typeof raw === "object" ? raw : ({} as DirectPublicationOperation);
     const path = canonicalPath(operation.path);
     if (path !== operation.path || paths.has(path)) {
       throw new Error(`invalid or repeated direct publication path: ${String(operation.path)}`);
     }
     paths.add(path);
-    if (operation.expectedOid !== null && !OID_PATTERN.test(String(operation.expectedOid))) {
-      throw new Error(`invalid expected object id for ${path}`);
-    }
-    if (operation.targetOid !== null && !OID_PATTERN.test(String(operation.targetOid))) {
-      throw new Error(`invalid target object id for ${path}`);
+    const tuple = canonicalTuplePath(path);
+    if (!tuple || tuple.repoSlug !== repoSlug || tuple.itemId !== itemId) {
+      throw new Error(`direct publication path is outside ${repoSlug}#${itemId}: ${path}`);
     }
     if (operation.mode !== "100644") throw new Error(`invalid mutation mode for ${path}`);
     if (
@@ -515,13 +584,8 @@ export function validateDirectPublicationPlan(value: DirectPublicationPlan): Dir
       if (operation.bytes !== 0 || operation.contentBase64 !== undefined) {
         throw new Error(`deleted mutation paths must not carry content: ${path}`);
       }
-      return {
-        path,
-        expectedOid: operation.expectedOid,
-        targetOid: null,
-        mode: "100644",
-        bytes: 0,
-      };
+      operations.push({ ...operation, path, ...tuple, content: null, digest: null, bytes: 0 });
+      continue;
     }
     const contentBase64 = operation.contentBase64;
     if (
@@ -530,20 +594,20 @@ export function validateDirectPublicationPlan(value: DirectPublicationPlan): Dir
     ) {
       throw new Error(`missing or invalid mutation content for ${path}`);
     }
-    const decodedBytes = base64DecodedBytes(contentBase64);
-    if (decodedBytes !== operation.bytes) {
+    const bytes = base64Bytes(contentBase64);
+    if (bytes.byteLength !== operation.bytes) {
       throw new Error(`mutation byte count does not match content for ${path}`);
     }
-    totalBytes += decodedBytes;
-    return {
-      path,
-      expectedOid: operation.expectedOid,
-      targetOid: operation.targetOid,
-      mode: "100644",
-      bytes: decodedBytes,
-      contentBase64,
-    };
-  });
+    let content: string;
+    try {
+      content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new Error(`canonical record content is not UTF-8: ${path}`);
+    }
+    const digest = await sha256Hex(bytes);
+    totalBytes += bytes.byteLength;
+    operations.push({ ...operation, path, ...tuple, contentBase64, content, digest });
+  }
   if (!Number.isSafeInteger(plan.totalBytes) || plan.totalBytes !== totalBytes) {
     throw new Error("direct publication total does not match its operations");
   }
@@ -553,29 +617,93 @@ export function validateDirectPublicationPlan(value: DirectPublicationPlan): Dir
   return {
     itemKey,
     revision: plan.revision,
-    identity: { ...identity, itemKey: identity.itemKey.trim() },
+    identity: { itemKey, revision: plan.revision, claimGeneration: identity.claimGeneration },
     operations,
     totalBytes,
   };
 }
 
-export async function validateDirectPublicationBlobOids(value: DirectPublicationPlan) {
-  const plan = validateDirectPublicationPlan(value);
-  for (const operation of plan.operations) {
-    if (operation.targetOid === null) continue;
-    const content = base64Bytes(operation.contentBase64!);
-    const header = new TextEncoder().encode(`blob ${content.byteLength}\0`);
-    const input = new Uint8Array(header.byteLength + content.byteLength);
-    input.set(header);
-    input.set(content, header.byteLength);
-    const algorithm = operation.targetOid.length === 64 ? "SHA-256" : "SHA-1";
-    const digest = new Uint8Array(await crypto.subtle.digest(algorithm, input));
-    const oid = [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-    if (oid !== operation.targetOid) {
-      throw new Error(`prepared mutation target does not match content for ${operation.path}`);
-    }
+// Kept as a compatibility export for callers deployed with the former validator name.
+// The direct path now derives SHA-256 content digests and deliberately ignores Git blob OIDs.
+export const validateDirectPublicationBlobOids = validateDirectPublicationPlan;
+
+function recordTupleProjection(plan: CanonicalDirectPublicationPlan, maxRecordBytes: number) {
+  const operationJson = (operation: CanonicalDirectPublicationOperation, inline: boolean) => ({
+    path: operation.path,
+    repoSlug: operation.repoSlug,
+    section: operation.section,
+    itemId: operation.itemId,
+    digest: operation.digest,
+    revision: plan.revision,
+    bytes: operation.bytes,
+    deleted: operation.content === null,
+    ...(operation.content === null
+      ? {}
+      : inline
+        ? { content: operation.content, oversize: false }
+        : { oversize: true }),
+  });
+  const base = {
+    itemKey: plan.itemKey,
+    revision: plan.revision,
+    claimGeneration: plan.identity.claimGeneration,
+    operations: plan.operations.map((operation) => operationJson(operation, true)),
+  };
+  let payloadJson = JSON.stringify(base);
+  let payloadBytes = new TextEncoder().encode(payloadJson).byteLength;
+  if (payloadBytes > maxRecordBytes) {
+    const oversize = {
+      ...base,
+      operations: plan.operations.map((operation) => operationJson(operation, false)),
+    };
+    payloadJson = JSON.stringify(oversize);
+    payloadBytes = new TextEncoder().encode(payloadJson).byteLength;
+    console.warn(
+      `record tuple projection uses canonical fetch: ${plan.itemKey}@${plan.revision} inline_bytes=${new TextEncoder().encode(JSON.stringify(base)).byteLength} limit=${maxRecordBytes}`,
+    );
   }
-  return plan;
+  if (payloadBytes > maxRecordBytes) {
+    throw new Error(
+      `record tuple projection metadata exceeds append limit: bytes=${payloadBytes} limit=${maxRecordBytes}`,
+    );
+  }
+  const first = plan.operations[0]!;
+  return { key: `${first.repoSlug}/${first.itemId}`, payloadJson, payloadBytes };
+}
+
+function storedOperationsFrom(
+  operations: readonly CanonicalDirectPublicationOperation[],
+): DirectPublicationStoredOperation[] {
+  return operations.map((operation) => ({
+    path: operation.path,
+    bytes: operation.bytes,
+    digest: operation.digest,
+    deleted: operation.content === null,
+  }));
+}
+
+function directPublicationRowFromPlan(options: {
+  plan: CanonicalDirectPublicationPlan;
+  operations: DirectPublicationStoredOperation[];
+  state: DirectPublicationRow["state"];
+  now: number;
+  commitSha: string | null;
+  failureReason: string | null;
+}): DirectPublicationRow {
+  return {
+    itemKey: options.plan.itemKey,
+    revision: options.plan.revision,
+    identity: options.plan.identity,
+    operations: options.operations,
+    totalBytes: options.plan.totalBytes,
+    state: options.state,
+    attempts: 0,
+    createdAt: options.now,
+    updatedAt: options.now,
+    nextAttemptAt: options.now,
+    commitSha: options.commitSha,
+    failureReason: options.failureReason,
+  };
 }
 
 function directPublicationRow(row: Record<string, unknown>): DirectPublicationRow {
@@ -587,7 +715,7 @@ function directPublicationRow(row: Record<string, unknown>): DirectPublicationRo
       revision: Number(row.identity_revision),
       claimGeneration: Number(row.claim_generation),
     },
-    operations: JSON.parse(String(row.operations_json)) as DirectPublicationOperation[],
+    operations: JSON.parse(String(row.operations_json)) as DirectPublicationStoredOperation[],
     totalBytes: Number(row.total_bytes),
     state: row.state as DirectPublicationRow["state"],
     attempts: Number(row.attempts),
@@ -599,7 +727,20 @@ function directPublicationRow(row: Record<string, unknown>): DirectPublicationRo
   };
 }
 
-function canonicalPlan(plan: DirectPublicationPlan) {
+function canonicalIncomingPlan(
+  plan: CanonicalDirectPublicationPlan,
+  operations: DirectPublicationStoredOperation[],
+) {
+  return JSON.stringify({
+    itemKey: plan.itemKey,
+    revision: plan.revision,
+    identity: plan.identity,
+    operations,
+    totalBytes: plan.totalBytes,
+  });
+}
+
+function canonicalStoredPlan(plan: DirectPublicationRow) {
   return JSON.stringify({
     itemKey: plan.itemKey,
     revision: plan.revision,
@@ -609,42 +750,41 @@ function canonicalPlan(plan: DirectPublicationPlan) {
   });
 }
 
-function expectedOidsMatch(row: DirectPublicationRow, paths: ReadonlyMap<string, string>) {
-  return row.operations.every(
-    (operation) => (paths.get(operation.path) ?? null) === operation.expectedOid,
+function legacyPlanMatches(
+  existing: DirectPublicationRow,
+  incoming: CanonicalDirectPublicationPlan,
+): boolean {
+  const operations = existing.operations as DirectPublicationOperation[];
+  return (
+    existing.itemKey === incoming.itemKey &&
+    existing.revision === incoming.revision &&
+    JSON.stringify(existing.identity) === JSON.stringify(incoming.identity) &&
+    existing.totalBytes === incoming.totalBytes &&
+    JSON.stringify(operations) ===
+      JSON.stringify(
+        incoming.operations.map(
+          ({
+            repoSlug: _repoSlug,
+            section: _section,
+            itemId: _itemId,
+            content: _content,
+            digest: _digest,
+            ...operation
+          }) => operation,
+        ),
+      )
   );
 }
 
-function targetOidsMatch(row: DirectPublicationRow, paths: ReadonlyMap<string, string>) {
-  return row.operations.every(
-    (operation) => (paths.get(operation.path) ?? null) === operation.targetOid,
-  );
-}
-
-function compatibleDirectPublicationPlans(rows: readonly DirectPublicationRow[]) {
-  const byPath = new Map<string, DirectPublicationOperation>();
-  const plans: DirectPublicationRow[] = [];
-  const conflicts: DirectPublicationRow[] = [];
-  for (const row of rows) {
-    const incompatible = row.operations.some((operation) => {
-      const existing = byPath.get(operation.path);
-      return Boolean(
-        existing &&
-        (existing.expectedOid !== operation.expectedOid ||
-          existing.targetOid !== operation.targetOid ||
-          existing.mode !== operation.mode ||
-          existing.bytes !== operation.bytes ||
-          existing.contentBase64 !== operation.contentBase64),
-      );
-    });
-    if (incompatible) {
-      conflicts.push(row);
-      continue;
-    }
-    plans.push(row);
-    for (const operation of row.operations) byPath.set(operation.path, operation);
-  }
-  return { plans, conflicts };
+function canonicalTuplePath(path: string) {
+  const match =
+    /^records\/([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\/(items|closed|plans|decision-packets)\/([1-9]\d*)\.(md|json)$/.exec(
+      path,
+    );
+  if (!match) return null;
+  const section = match[2] as RecordSection;
+  if ((section === "decision-packets") !== (match[4] === "json")) return null;
+  return { repoSlug: match[1]!, section, itemId: Number(match[3]) };
 }
 
 function boundedItemKey(value: unknown) {
@@ -670,9 +810,17 @@ function canonicalPath(value: unknown) {
   return path;
 }
 
-function base64DecodedBytes(value: string) {
-  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
-  return (value.length / 4) * 3 - padding;
+function stateAppendWindowTotalsSync(storage: DurableStorage) {
+  const row = Array.from(
+    storage.sql.exec(
+      `SELECT COUNT(*) AS pending_rows, COALESCE(SUM(payload_bytes), 0) AS pending_bytes
+         FROM ${STATE_APPEND_WINDOW_TABLE}`,
+    ),
+  )[0];
+  return {
+    pendingRows: Number(row?.pending_rows || 0),
+    pendingBytes: Number(row?.pending_bytes || 0),
+  };
 }
 
 function base64Bytes(value: string) {
@@ -680,10 +828,21 @@ function base64Bytes(value: string) {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
-function directPublicationRetryDelayMs(attempt: number) {
-  return Math.min(30 * 60_000, 60_000 * 2 ** Math.min(Math.max(0, attempt - 1), 5));
+function byteChunks(content: string, maximumBytes: number) {
+  const bytes = new TextEncoder().encode(content);
+  const chunks: string[] = [];
+  for (let offset = 0; offset < bytes.byteLength; offset += maximumBytes) {
+    const chunk = bytes.slice(offset, Math.min(bytes.byteLength, offset + maximumBytes));
+    let binary = "";
+    for (const byte of chunk) binary += String.fromCharCode(byte);
+    chunks.push(btoa(binary));
+  }
+  return chunks;
 }
 
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
+async function sha256Hex(bytes: Uint8Array) {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer),
+  );
+  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
