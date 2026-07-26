@@ -1868,6 +1868,29 @@ test("batch protocol routes require the shared internal signature", async () => 
   assert.equal(forwardedPath, "/publication-batches/claim");
 });
 
+test("batch claims reject partial dispatch metadata", async () => {
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  );
+  for (const body of [
+    {
+      claim_id: "partial-dispatch-id",
+      lease_owner: "worker-partial",
+      dispatch_id: "publication-batch-dispatch:partial",
+    },
+    {
+      claim_id: "partial-dispatch-time",
+      lease_owner: "worker-partial",
+      dispatched_at: "2026-07-26T08:00:00.000Z",
+    },
+  ]) {
+    const response = await queue.fetch(batchRequest("/publication-batches/claim", body));
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, "invalid_batch_dispatch_metadata");
+  }
+});
+
 test("publication batch observability always retains active leases beside bounded history", () => {
   const storage = new TestStorage();
   const batches = new ExactReviewPublicationBatchStore(storage);
@@ -2029,6 +2052,7 @@ test("reservation-to-claim observability traces one batch without exposing lease
           batch_id: claim.batch.batch_id,
           lease_owner: "worker-secret-not-public",
           state_commit_sha: "a".repeat(40),
+          failure_fingerprint: "failure-body-secret-not-public",
           state_writer: {
             schema_version: 1,
             operation_id: `batch:${claim.batch.batch_id}`,
@@ -2065,10 +2089,23 @@ test("reservation-to-claim observability traces one batch without exposing lease
 
     const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
     const observability = stats.reservation_claim_observability;
+    assert.deepEqual(observability.publication_paths, {
+      cloudflare_canonical_direct: {
+        enabled: true,
+        reservation_to_claim: "not_applicable",
+        state_writer_timing: "not_applicable",
+      },
+      legacy_state_repo_batch: {
+        enabled: true,
+        reservation_to_claim: "tracked",
+        state_writer_timing: "tracked",
+      },
+    });
     const batch = observability.batches.find(
       (entry: { batch_id: string }) => entry.batch_id === claim.batch.batch_id,
     );
     assert.ok(batch, JSON.stringify(observability));
+    assert.equal(batch.publication_path, "legacy_state_repo_batch");
     assert.equal(batch.dispatch.id, "publication-batch-dispatch:trace-729");
     assert.equal(batch.workflow.run_id, "92729");
     assert.equal(batch.workflow.run_attempt, 3);
@@ -2088,6 +2125,7 @@ test("reservation-to-claim observability traces one batch without exposing lease
     );
     assert.match(JSON.stringify(observability), /publication-batch-dispatch:trace-729/);
     assert.doesNotMatch(JSON.stringify(observability), /worker-secret-not-public/);
+    assert.doesNotMatch(JSON.stringify(observability), /failure-body-secret-not-public/);
   } finally {
     Date.now = originalNow;
   }

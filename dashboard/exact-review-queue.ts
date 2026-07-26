@@ -2277,6 +2277,8 @@ export class ExactReviewQueue {
         dispatcher: state.dispatcher,
         publication: stats.lanes.publication,
         batches: this.batchStore.observability(now).batches,
+        directPublicationEnabled: exactReviewDirectPublicationEnabled(this.env),
+        legacyStateRepoBatchEnabled: exactReviewPublicationBatchingEnabled(this.env),
         maxConcurrentBatches: exactReviewPublicationBatchMaxConcurrent(this.env),
       });
       return json({
@@ -4292,7 +4294,7 @@ export class ExactReviewQueue {
     if (!leaseOwner) return json({ error: "invalid_lease_owner" }, 400);
     if (!claimId) return json({ error: "invalid_claim_id" }, 400);
     const dispatch = exactReviewPublicationBatchDispatchMetadata(body);
-    if (body.dispatch_id !== undefined && !dispatch) {
+    if ((body.dispatch_id !== undefined || body.dispatched_at !== undefined) && !dispatch) {
       return json({ error: "invalid_batch_dispatch_metadata" }, 400);
     }
     const runner = exactReviewPublicationBatchRunnerMetadata(body);
@@ -10274,6 +10276,8 @@ function exactReviewReservationClaimObservability({
   dispatcher,
   publication,
   batches,
+  directPublicationEnabled,
+  legacyStateRepoBatchEnabled,
   maxConcurrentBatches,
 }) {
   const reservationToClaimDelays = batches.flatMap((batch) =>
@@ -10372,6 +10376,22 @@ function exactReviewReservationClaimObservability({
   return {
     schema_version: 1,
     generated_at: new Date(now).toISOString(),
+    // Direct publication never enters a publication batch unless it falls back.
+    // Keep its canonical Durable Object path distinct from the batch-only
+    // timestamps below so dashboards do not infer state-writer latency for a
+    // direct publication.
+    publication_paths: {
+      cloudflare_canonical_direct: {
+        enabled: directPublicationEnabled,
+        reservation_to_claim: "not_applicable",
+        state_writer_timing: "not_applicable",
+      },
+      legacy_state_repo_batch: {
+        enabled: legacyStateRepoBatchEnabled,
+        reservation_to_claim: "tracked",
+        state_writer_timing: "tracked",
+      },
+    },
     queue_slots: {
       pending,
       unassigned_pending: unassignedPending,
@@ -10384,6 +10404,7 @@ function exactReviewReservationClaimObservability({
     alerts,
     batches: batches.map((batch) => ({
       batch_id: batch.batchId,
+      publication_path: "legacy_state_repo_batch",
       state: batch.state,
       configured_batch_size: batch.configuredBatchSize,
       claimed_at: new Date(batch.createdAt).toISOString(),
