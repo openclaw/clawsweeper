@@ -542,6 +542,8 @@ export default {
       return githubWebhook(request, env, ctx);
     if (url.pathname === "/internal/exact-review/enqueue" && request.method === "POST")
       return authenticatedExactReviewEnqueue(request, env);
+    if (url.pathname === "/internal/exact-review/source-authority" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/source-authority");
     const canonicalRecordPath =
       request.method === "GET"
         ? /^\/internal\/state\/records\/[^/]+\/(?:items|closed|plans|decision-packets)\/[1-9]\d*$/.exec(

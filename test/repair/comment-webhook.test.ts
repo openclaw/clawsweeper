@@ -368,6 +368,47 @@ test("webhook accepts eligible pull request events for generic steipete reposito
   });
 });
 
+test("webhook carries the semantic tuple through edited pull request fallback intake", () => {
+  const title = "Clarify the review request";
+  const body = "The revised context is ready for review.";
+  const result = classifyWebhook({
+    event: "pull_request",
+    payload: {
+      action: "edited",
+      repository: {
+        full_name: "openclaw/openclaw",
+        private: false,
+        archived: false,
+        fork: false,
+        has_issues: true,
+      },
+      pull_request: {
+        number: 857,
+        head: { sha: "a".repeat(40) },
+        base: { sha: "b".repeat(40) },
+        draft: false,
+        title,
+        body,
+        updated_at: "2026-07-26T09:00:00Z",
+      },
+      installation: { id: 456 },
+    },
+  });
+
+  assert.equal(result.accepted, true);
+  if (!result.accepted || result.type !== "item") return;
+  assert.equal(result.sourceBaseSha, "b".repeat(40));
+  assert.equal(result.sourceIsDraft, false);
+  assert.equal(result.sourceUpdatedAt, "2026-07-26T09:00:00Z");
+  assert.equal(
+    result.sourceContentRevision,
+    crypto
+      .createHash("sha256")
+      .update(JSON.stringify({ version: 1, title, body }))
+      .digest("hex"),
+  );
+});
+
 test("adaptive Codex timeout preserves the default for small non-media PRs", () => {
   assert.equal(
     adaptiveCodexTimeoutMsForTest({
@@ -448,7 +489,7 @@ test("pull request webhooks dispatch adaptive Codex timeout payload", async () =
     const result = await handleGitHubWebhook({
       event: "pull_request",
       payload: {
-        action: "synchronize",
+        action: "edited",
         repository: {
           full_name: "openclaw/openclaw",
           default_branch: "main",
@@ -460,6 +501,9 @@ test("pull request webhooks dispatch adaptive Codex timeout payload", async () =
         pull_request: {
           number: 91093,
           head: { sha: "b".repeat(40) },
+          base: { sha: "c".repeat(40) },
+          draft: false,
+          title: "Add direct fallback semantic ingress coverage",
           changed_files: 71,
           additions: 4176,
           deletions: 0,
@@ -468,6 +512,7 @@ test("pull request webhooks dispatch adaptive Codex timeout payload", async () =
             "https://uploads.example.invalid/proof-a.mov",
             "https://uploads.example.invalid/proof-b.mp4",
           ].join("\n"),
+          updated_at: "2026-07-26T09:00:00Z",
         },
         installation: { id: 123 },
       },
@@ -478,18 +523,34 @@ test("pull request webhooks dispatch adaptive Codex timeout payload", async () =
       body: { ok: true, dispatched: "clawsweeper_item" },
     });
     assert.equal(dispatchedBody?.event_type, "clawsweeper_item");
+    const clientPayload = dispatchedBody?.client_payload as Record<string, unknown>;
+    const queueClaim = clientPayload.queue_claim as Record<string, unknown>;
+    assert.ok(Object.keys(clientPayload).length <= 10, JSON.stringify(clientPayload));
+    assert.equal(queueClaim.codex_timeout_ms, 1_268_800);
+    assert.equal(queueClaim.media_proof_timeout_ms, 240_000);
+    assert.equal(clientPayload.source_head_sha, undefined);
+    assert.equal(queueClaim.source_head_sha, "b".repeat(40));
+    assert.equal(queueClaim.source_base_sha, "c".repeat(40));
+    assert.equal(queueClaim.source_is_draft, false);
     assert.equal(
-      (dispatchedBody?.client_payload as Record<string, unknown>)?.codex_timeout_ms,
-      1_268_800,
+      queueClaim.source_content_revision,
+      crypto
+        .createHash("sha256")
+        .update(
+          JSON.stringify({
+            version: 1,
+            title: "Add direct fallback semantic ingress coverage",
+            body: [
+              "Proof:",
+              "https://uploads.example.invalid/proof-a.mov",
+              "https://uploads.example.invalid/proof-b.mp4",
+            ].join("\n"),
+          }),
+        )
+        .digest("hex"),
     );
-    assert.equal(
-      (dispatchedBody?.client_payload as Record<string, unknown>)?.media_proof_timeout_ms,
-      240_000,
-    );
-    assert.equal(
-      (dispatchedBody?.client_payload as Record<string, unknown>)?.source_head_sha,
-      "b".repeat(40),
-    );
+    assert.equal(queueClaim.source_updated_at, "2026-07-26T09:00:00Z");
+    assert.equal(queueClaim.installation_id, 123);
   } finally {
     globalThis.fetch = previousFetch;
     restoreEnv("CLAWSWEEPER_APP_ID", previousAppId);

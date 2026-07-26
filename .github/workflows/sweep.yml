@@ -250,10 +250,37 @@ jobs:
           set -euo pipefail
           test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
           queue_url="${QUEUE_URL%/}"
-          IFS=$'\t' read -r target_repo target_branch < <(node <<'NODE'
+          IFS=$'\t' read -r target_repo target_branch use_source_authority < <(node <<'NODE'
           const payload = JSON.parse(process.env.CLIENT_PAYLOAD || "{}");
+          const itemKind = payload.item_kind === "pull_request" ? "pull_request" : "issue";
+          const queueClaim = payload.queue_claim && typeof payload.queue_claim === "object"
+            ? payload.queue_claim
+            : {};
+          const installationId = Number(queueClaim.installation_id ?? payload.installation_id);
+          const sourceHeadSha = String(
+            queueClaim.source_head_sha ?? payload.source_head_sha ?? "",
+          )
+            .trim()
+            .toLowerCase();
+          const sourceBaseSha = String(
+            queueClaim.source_base_sha ?? payload.source_base_sha ?? "",
+          )
+            .trim()
+            .toLowerCase();
+          const sourceIsDraft = queueClaim.source_is_draft ?? payload.source_is_draft;
+          const sourceContentRevision = String(
+            queueClaim.source_content_revision ?? payload.source_content_revision ?? "",
+          )
+            .trim()
+            .toLowerCase();
+          const ingressFingerprint = String(payload.ingress_fingerprint || "").trim().toLowerCase();
+          const targetDispatcherIngress =
+            payload.ingress_route === "target_dispatcher" &&
+            itemKind === "pull_request" &&
+            (payload.source_event === "pull_request" || payload.source_event === "pull_request_target") &&
+            /^[0-9a-f]{64}$/.test(ingressFingerprint);
           process.stdout.write(
-            `${String(payload.target_repo || "openclaw/openclaw").trim()}\t${String(payload.target_branch || "").trim()}\n`,
+            `${String(payload.target_repo || "openclaw/openclaw").trim()}\t${String(payload.target_branch || "").trim()}\t${itemKind === "pull_request" && payload.source_event === "pull_request" && payload.source_action === "edited" && Number.isInteger(installationId) && installationId > 0 && /^[0-9a-f]{40}$/.test(sourceHeadSha) && /^[0-9a-f]{40}$/.test(sourceBaseSha) && typeof sourceIsDraft === "boolean" && /^[0-9a-f]{64}$/.test(sourceContentRevision) && !targetDispatcherIngress ? "1" : "0"}\n`,
           );
           NODE
           )
@@ -268,6 +295,10 @@ jobs:
             echo "Invalid legacy target branch for $target_repo: $target_branch" >&2
             exit 1
           fi
+          queue_path="/internal/exact-review/enqueue"
+          if [ "$use_source_authority" = "1" ]; then
+            queue_path="/internal/exact-review/source-authority"
+          fi
           payload="$(TARGET_REPO="$target_repo" TARGET_BRANCH="$target_branch" node <<'NODE'
           const payload = JSON.parse(process.env.CLIENT_PAYLOAD || "{}");
           const itemKind = payload.item_kind === "pull_request" ? "pull_request" : "issue";
@@ -275,6 +306,9 @@ jobs:
             payload.source_event === "pull_request" || payload.source_event === "pull_request_target"
               ? "pull_request"
               : "issues";
+          const queueClaim = payload.queue_claim && typeof payload.queue_claim === "object"
+            ? payload.queue_claim
+            : {};
           const dispatchKey = String(payload.dispatch_key || "").trim();
           const ingressFingerprint = String(payload.ingress_fingerprint || "").trim().toLowerCase();
           const ingress =
@@ -284,11 +318,20 @@ jobs:
             /^[0-9a-f]{64}$/.test(ingressFingerprint)
               ? { route: "target_dispatcher", fingerprint: ingressFingerprint }
               : undefined;
+          const sourceHeadSha = String(queueClaim.source_head_sha ?? payload.source_head_sha ?? "").trim().toLowerCase();
+          const sourceBaseSha = String(queueClaim.source_base_sha ?? payload.source_base_sha ?? "").trim().toLowerCase();
+          const sourceIsDraft = queueClaim.source_is_draft ?? payload.source_is_draft;
+          const sourceContentRevision = String(queueClaim.source_content_revision ?? payload.source_content_revision ?? "").trim().toLowerCase();
+          const sourceUpdatedAt = String(queueClaim.source_updated_at ?? payload.source_updated_at ?? "").trim();
+          const installationId = Number(queueClaim.installation_id ?? payload.installation_id);
           process.stdout.write(
             JSON.stringify({
               delivery_id: dispatchKey
                 ? `router:${dispatchKey}`
                 : `legacy:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
+              ...(itemKind === "pull_request" && Number.isInteger(installationId) && installationId > 0
+                ? { installation_id: installationId }
+                : {}),
               decision: {
                 targetRepo: process.env.TARGET_REPO,
                 targetBranch: process.env.TARGET_BRANCH,
@@ -297,14 +340,30 @@ jobs:
                 sourceEvent,
                 sourceAction: payload.source_action || "legacy_dispatch",
                 supersedesInProgress: payload.supersedes_in_progress === true,
-                ...(/^[0-9a-f]{40}$/.test(String(payload.queue_claim?.source_head_sha || payload.source_head_sha || "").trim().toLowerCase())
-                  ? { sourceHeadSha: String(payload.queue_claim?.source_head_sha || payload.source_head_sha).trim().toLowerCase() }
+                ...(/^[0-9a-f]{40}$/.test(sourceHeadSha)
+                  ? { sourceHeadSha }
                   : {}),
-                ...(Number.isFinite(Number(payload.codex_timeout_ms))
-                  ? { codexTimeoutMs: Number(payload.codex_timeout_ms) }
+                ...(/^[0-9a-f]{40}$/.test(sourceBaseSha)
+                  ? { sourceBaseSha }
                   : {}),
-                ...(Number.isFinite(Number(payload.media_proof_timeout_ms))
-                  ? { mediaProofTimeoutMs: Number(payload.media_proof_timeout_ms) }
+                ...(typeof sourceIsDraft === "boolean" ? { sourceIsDraft } : {}),
+                ...(/^[0-9a-f]{64}$/.test(sourceContentRevision)
+                  ? { sourceContentRevision }
+                  : {}),
+                ...(sourceUpdatedAt && Number.isFinite(Date.parse(sourceUpdatedAt))
+                  ? { sourceUpdatedAt }
+                  : {}),
+                ...(Number.isFinite(Number(queueClaim.codex_timeout_ms ?? payload.codex_timeout_ms))
+                  ? { codexTimeoutMs: Number(queueClaim.codex_timeout_ms ?? payload.codex_timeout_ms) }
+                  : {}),
+                ...(Number.isFinite(
+                  Number(queueClaim.media_proof_timeout_ms ?? payload.media_proof_timeout_ms),
+                )
+                  ? {
+                      mediaProofTimeoutMs: Number(
+                        queueClaim.media_proof_timeout_ms ?? payload.media_proof_timeout_ms,
+                      ),
+                    }
                   : {}),
                 ...(Object.hasOwn(payload, "command_status_marker")
                   ? { commandStatusMarker: payload.command_status_marker }
@@ -327,7 +386,7 @@ jobs:
             --header "content-type: application/json" \
             --header "x-clawsweeper-exact-review-signature: $signature" \
             --data "$payload" \
-            "$queue_url/internal/exact-review/enqueue" >/dev/null
+            "$queue_url$queue_path" >/dev/null
 
   event-review-apply:
     name: Review exact event item

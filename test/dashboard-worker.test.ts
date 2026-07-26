@@ -8184,6 +8184,47 @@ test("authenticated legacy exact-review intake enters the durable queue", async 
   assert.equal(denied.status, 401);
 });
 
+test("authenticated legacy pull request intake reserves source authority", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const payload = JSON.stringify({
+    delivery_id: "legacy:edited:857:1",
+    installation_id: 123,
+    decision: {
+      targetRepo: "openclaw/gogcli",
+      targetBranch: "main",
+      itemNumber: 857,
+      itemKind: "pull_request",
+      sourceEvent: "pull_request",
+      sourceAction: "edited",
+      supersedesInProgress: true,
+      sourceHeadSha: "a".repeat(40),
+      sourceBaseSha: "b".repeat(40),
+      sourceIsDraft: false,
+      sourceContentRevision: "c".repeat(64),
+      sourceUpdatedAt: "2026-07-26T09:00:00Z",
+    },
+  });
+  const signature = `sha256=${createHmac("sha256", "test-secret").update(payload).digest("hex")}`;
+
+  const accepted = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/source-authority", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-clawsweeper-exact-review-signature": signature,
+      },
+      body: payload,
+    }),
+    {
+      CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    },
+  );
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(await accepted.json(), { ok: true, source_authority_seq: 1 });
+});
+
 test("exact-review queue rejects unbounded or unsafe command context", async () => {
   const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
   const invalidDecisions = [

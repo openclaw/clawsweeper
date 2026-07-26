@@ -58,6 +58,10 @@ type AcceptedItemWebhook = {
   sourceAction: string;
   supersedesInProgress: boolean;
   sourceHeadSha?: string;
+  sourceBaseSha?: string;
+  sourceIsDraft?: boolean;
+  sourceContentRevision?: string;
+  sourceUpdatedAt?: string;
   codexTimeoutMs?: number;
   mediaProofTimeoutMs?: number;
 };
@@ -306,6 +310,11 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
     const sourceHeadSha = String(asRecord(pull.head).sha ?? "")
       .trim()
       .toLowerCase();
+    const sourceBaseSha = String(asRecord(pull.base).sha ?? "")
+      .trim()
+      .toLowerCase();
+    const sourceContentRevision = pullRequestEditedContentRevision(action, pull);
+    const sourceUpdatedAt = exactWebhookTimestamp(pull.updated_at);
     const reviewBudget = adaptiveReviewBudgetForPullRequest(pull);
     return {
       accepted: true,
@@ -318,6 +327,10 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
       sourceEvent: "pull_request",
       sourceAction: action,
       ...(/^[0-9a-f]{40}$/.test(sourceHeadSha) ? { sourceHeadSha } : {}),
+      ...(/^[0-9a-f]{40}$/.test(sourceBaseSha) ? { sourceBaseSha } : {}),
+      ...(typeof pull.draft === "boolean" ? { sourceIsDraft: pull.draft } : {}),
+      ...(sourceContentRevision ? { sourceContentRevision } : {}),
+      ...(sourceUpdatedAt ? { sourceUpdatedAt } : {}),
       supersedesInProgress: [
         "edited",
         "synchronize",
@@ -331,6 +344,20 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
   }
 
   return { accepted: false, reason: "unsupported event" };
+}
+
+function pullRequestEditedContentRevision(action: string, pull: LooseRecord) {
+  if (
+    action !== "edited" ||
+    typeof pull.title !== "string" ||
+    (pull.body !== null && typeof pull.body !== "string")
+  ) {
+    return null;
+  }
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify({ version: 1, title: pull.title, body: pull.body || "" }))
+    .digest("hex");
 }
 
 function isCloseGuardLabel(value: JsonValue) {
@@ -730,11 +757,22 @@ async function dispatchItemReview({
         source_event: accepted.sourceEvent,
         source_action: accepted.sourceAction,
         supersedes_in_progress: accepted.supersedesInProgress,
-        ...(accepted.sourceHeadSha ? { source_head_sha: accepted.sourceHeadSha } : {}),
-        ...(accepted.codexTimeoutMs ? { codex_timeout_ms: accepted.codexTimeoutMs } : {}),
-        ...(accepted.mediaProofTimeoutMs
-          ? { media_proof_timeout_ms: accepted.mediaProofTimeoutMs }
-          : {}),
+        queue_claim: {
+          ...(accepted.sourceHeadSha ? { source_head_sha: accepted.sourceHeadSha } : {}),
+          ...(accepted.sourceBaseSha ? { source_base_sha: accepted.sourceBaseSha } : {}),
+          ...(typeof accepted.sourceIsDraft === "boolean"
+            ? { source_is_draft: accepted.sourceIsDraft }
+            : {}),
+          ...(accepted.sourceContentRevision
+            ? { source_content_revision: accepted.sourceContentRevision }
+            : {}),
+          ...(accepted.sourceUpdatedAt ? { source_updated_at: accepted.sourceUpdatedAt } : {}),
+          installation_id: accepted.installationId,
+          ...(accepted.codexTimeoutMs ? { codex_timeout_ms: accepted.codexTimeoutMs } : {}),
+          ...(accepted.mediaProofTimeoutMs
+            ? { media_proof_timeout_ms: accepted.mediaProofTimeoutMs }
+            : {}),
+        },
       },
     },
   });
