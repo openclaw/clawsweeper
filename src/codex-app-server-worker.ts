@@ -20,7 +20,6 @@ interface AppServerOptions {
 interface WorkerOptions {
   args: string[];
   command: string;
-  runtime: "codex" | "claude";
   timeoutMs: number;
   resultPath: string;
   stdoutPath: string;
@@ -71,9 +70,6 @@ const stderr = openCodexOutputCapture(options.stderrPath, {
   maxFileBytes: options.maxOutputFileBytes,
   tailBytes: options.tailBytes,
 });
-if (options.runtime !== "codex") {
-  throw new Error("Steerable app-server sessions require the Codex runtime.");
-}
 process.env.CODEX_BIN = options.command;
 const child = spawnCodex(
   [

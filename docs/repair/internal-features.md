@@ -618,14 +618,6 @@ Important defaults:
 
 - `CLAWSWEEPER_MODEL`: GitHub Actions secret containing the actual worker model.
   Public workflow inputs and generated state use only `internal`.
-- `CLAWSWEEPER_MODEL_RUNTIME`: model CLI runtime; `codex` by default or
-  `claude`.
-- `CLAWSWEEPER_CLAUDE_MODEL`: provider-specific Claude model secret. Opus 5 is
-  `claude-opus-5` for Anthropic, Vertex, and Foundry and
-  `anthropic.claude-opus-5` for Bedrock.
-- `CLAWSWEEPER_CLAUDE_PROVIDER`: `anthropic`, `bedrock`, `vertex`, or
-  `foundry`. The setup action validates that the matching provider credentials
-  exist before a worker starts.
 - `CLAWSWEEPER_CODEX_REASONING_EFFORT`: model reasoning effort. Repair workers
   default to `high` and normalize accidental `xhigh` overrides back to `high`
   to keep automerge repair latency predictable.

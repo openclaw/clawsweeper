@@ -369,7 +369,7 @@ git diff --check
 
 The workflow needs:
 
-- authentication for the selected Codex or Claude provider
+- Codex/OpenAI authentication for model execution
 - a read-only GitHub token for worker inspection
 - a separate write-scoped GitHub token for the deterministic applicator
 - execution gates that default closed: set `CLAWSWEEPER_ALLOW_EXECUTE=1` and `CLAWSWEEPER_ALLOW_FIX_PR=1` only for an intentional execution window; otherwise execute/autonomous dispatches render plan-only output and skip mutation steps
@@ -385,13 +385,8 @@ The workflow needs:
 - required `CLAWSWEEPER_MODEL` GitHub Actions secret containing the actual
   internal model name; workflows, dispatch payloads, comments, and reports use
   only the public `internal` alias
-- optional Claude runtime configuration:
-  `CLAWSWEEPER_MODEL_RUNTIME=claude`,
-  `CLAWSWEEPER_CLAUDE_PROVIDER=anthropic|bedrock|vertex|foundry`, and the
-  provider-specific `CLAWSWEEPER_CLAUDE_MODEL` secret. Opus 5 uses
-  `claude-opus-5`, except Bedrock uses `anthropic.claude-opus-5`.
-- pinned Codex CLI, Responses proxy, or Claude Code packages install on every
-  model worker run
+- Codex CLI and its responses API proxy install from their latest npm tags on
+  every worker run
 - repair workers default to high reasoning on the fast service tier, and
   accidental `xhigh` reasoning overrides are normalized back to `high`
 - optional `CLAWSWEEPER_MAX_LIVE_WORKERS` variable for dispatch/requeue/self-heal worker fan-out; dispatch defaults are derived from `job_intent`, cluster-lane classification, `workers.max`, and `lanes.repair.cluster_max_live_runs`

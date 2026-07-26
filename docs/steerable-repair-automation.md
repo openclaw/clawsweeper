@@ -682,12 +682,6 @@ failure fails that steerable attempt rather than pretending it is observable.
 Normal non-steerable behavior can be selected by disabling
 `CLAWSWEEPER_STEERABLE_CODEX`.
 
-Claude runtime jobs are always non-steerable because Claude Code does not expose
-the Codex app-server thread protocol. Selecting
-`CLAWSWEEPER_MODEL_RUNTIME=claude` forces `CLAWSWEEPER_STEERABLE_CODEX=0`; the
-repair itself still runs, but no persistent thread or live `turn/steer` channel
-is registered.
-
 ### Operator Cancels From CrabFleet
 
 CrabFleet uses a dedicated GitHub Actions cancel lifecycle. It marks the work

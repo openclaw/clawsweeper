@@ -637,26 +637,9 @@ usage is documented in
 
 ```bash
 codex login --device-auth -c 'service_tier="fast"'
-pnpm run model:local:check
+pnpm run codex:local:check
 pnpm run review -- --local-only --target-repo owner/name --item-number 123
 ```
-
-Claude Opus 5 uses the same review and repair commands through the Claude CLI
-compatibility runtime. Claude Code `2.1.220` is pinned in Actions. For a local
-Anthropic smoke:
-
-```bash
-export CLAWSWEEPER_MODEL_RUNTIME=claude
-export CLAWSWEEPER_LOCAL_CLAUDE_MODEL=claude-opus-5
-export ANTHROPIC_API_KEY
-pnpm run model:local:check
-```
-
-Set `CLAUDE_CODE_USE_BEDROCK=1`, `CLAUDE_CODE_USE_VERTEX=1`, or
-`CLAUDE_CODE_USE_FOUNDRY=1` with that provider's normal Claude Code
-credentials to exercise another provider. `CLAUDE_BIN` selects a non-default
-Claude CLI executable. The legacy `pnpm run codex:local:check` alias remains
-available.
 
 `review` is the single issue/PR review command. `--local-only` makes it an
 advisory local run: it skips the review-start placeholder comment, defaults the
@@ -850,18 +833,6 @@ Required secrets:
 - `OPENAI_API_KEY`: OpenAI API key used by the per-job local Codex Responses
   proxy. Codex subprocesses inherit only the proxy-backed `CODEX_HOME`, not the
   raw API key.
-- `CLAWSWEEPER_CLAUDE_MODEL`: provider-specific Claude model used when
-  `CLAWSWEEPER_MODEL_RUNTIME=claude`. Use `claude-opus-5` for Anthropic,
-  Vertex, and Foundry, or `anthropic.claude-opus-5` for Bedrock.
-- Anthropic Claude auth: one of `ANTHROPIC_API_KEY`,
-  `ANTHROPIC_AUTH_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN`.
-- Bedrock Claude auth: `CLAWSWEEPER_AWS_BEARER_TOKEN_BEDROCK`, or
-  `CLAWSWEEPER_AWS_ACCESS_KEY_ID` and
-  `CLAWSWEEPER_AWS_SECRET_ACCESS_KEY`; optional
-  `CLAWSWEEPER_AWS_SESSION_TOKEN`.
-- Vertex Claude auth:
-  `CLAWSWEEPER_GOOGLE_APPLICATION_CREDENTIALS_JSON`.
-- Foundry Claude auth: `CLAWSWEEPER_ANTHROPIC_FOUNDRY_API_KEY`.
 - `CLAWSWEEPER_APP_CLIENT_ID`: public GitHub App client ID for `clawsweeper`.
   Currently `Iv23liOECG0slfuhz093`.
 - `CLAWSWEEPER_APP_PRIVATE_KEY`: private key for `clawsweeper`; plan/review
@@ -875,19 +846,10 @@ Required secrets:
 
 Token flow:
 
-- `CLAWSWEEPER_MODEL_RUNTIME` selects `codex` (default) or `claude`.
-  `CLAWSWEEPER_CLAUDE_PROVIDER` selects `anthropic`, `bedrock`, `vertex`, or
-  `foundry`. Provider region, project, base URL, and resource values use the
-  matching `CLAWSWEEPER_AWS_*`, `CLAWSWEEPER_GOOGLE_*`, and
-  `CLAWSWEEPER_ANTHROPIC_FOUNDRY_*` repository variables.
 - Review jobs create an isolated per-run `CODEX_HOME`; steerable repair jobs
   use a stable per-work cache path. Both start a local Responses proxy from
   `OPENAI_API_KEY`, write proxy-only Codex config there, and run Codex without
   OpenAI or Codex token environment variables.
-- Claude jobs create an isolated `CLAUDE_CONFIG_DIR`, put provider credentials
-  in a mode-`0600` handoff file, and run in Claude safe mode with the same
-  read-only/workspace-write boundaries. Claude mode disables Codex app-server
-  thread persistence and live steering.
 - Steerable repair jobs cache only the app-server `sessions/` directory and
   ClawSweeper thread-id file. Planning and execution resume the same logical
   Codex thread; CrabFleet credentials stay in the wrapper and are stripped

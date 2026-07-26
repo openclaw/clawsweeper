@@ -3,7 +3,7 @@ const CODEX_MODEL_ACCESS_SUFFIX = " does not exist or you do not have access to 
 
 export function isRetryableCodexTransportError(value: string | null | undefined): boolean {
   const message = value ?? "";
-  return /write_stdin failed: stdin is closed|stdin is closed for this session|rate limit reached|rate_limit_error|tokens per min|\bTPM\b|requests per min|\b429\b|\b529\b|temporarily unavailable|overloaded(?:_error)?|stream disconnected|reconnecting|please try again in \d+(?:\.\d+)?(?:ms|s)/i.test(
+  return /write_stdin failed: stdin is closed|stdin is closed for this session|rate limit reached|tokens per min|\bTPM\b|requests per min|\b429\b|temporarily unavailable|overloaded|stream disconnected|reconnecting|please try again in \d+(?:\.\d+)?(?:ms|s)/i.test(
     message,
   );
 }
@@ -25,15 +25,9 @@ export function codexTerminalErrorDetail(value: string | null | undefined): stri
       .at(-1) ?? "";
   const normalized = finalLine.toLowerCase();
   const prefixIndex = normalized.indexOf(CODEX_MODEL_ACCESS_PREFIX);
-  if (prefixIndex !== -1) {
-    const modelStart = prefixIndex + CODEX_MODEL_ACCESS_PREFIX.length;
-    if (normalized.indexOf(CODEX_MODEL_ACCESS_SUFFIX, modelStart) > modelStart) return finalLine;
-  }
-  return /not logged in|please run (?:claude\s+)?\/?login|invalid api key|failed to authenticate|oauth session expired|authentication_error|permission_error|do not have access to (?:the )?model/i.test(
-    finalLine,
-  ) || /^model \S+ (?:is not available|does not exist|access denied)/i.test(finalLine)
-    ? finalLine
-    : "";
+  if (prefixIndex === -1) return "";
+  const modelStart = prefixIndex + CODEX_MODEL_ACCESS_PREFIX.length;
+  return normalized.indexOf(CODEX_MODEL_ACCESS_SUFFIX, modelStart) > modelStart ? finalLine : "";
 }
 
 export function codexJsonlFailureDetail(value: string | null | undefined): string {

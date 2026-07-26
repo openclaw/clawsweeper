@@ -1,21 +1,12 @@
-name: Setup model CLI
-description: Cache, install, and authenticate the configured ClawSweeper model runtime.
+name: Setup Codex CLI
+description: Cache, install, and authenticate the OpenAI Codex CLI.
 inputs:
-  model-runtime:
-    description: Model runtime to install. Supported values are codex and claude.
-    default: "codex"
   codex-version:
     description: Exact Codex CLI npm package version.
     default: "0.139.0"
   proxy-version:
     description: Exact Codex Responses proxy npm package version.
     default: "0.139.0"
-  claude-version:
-    description: Exact Claude Code npm package version.
-    default: "2.1.220"
-  claude-provider:
-    description: Claude upstream provider. Supported values are anthropic, bedrock, vertex, and foundry.
-    default: "anthropic"
   auth-mode:
     description: Authentication mode. Use proxy to keep OPENAI_API_KEY out of Codex subprocesses, or login for legacy codex login.
     default: "proxy"
@@ -38,15 +29,12 @@ runs:
           ~/.npm
           ~/.cache/node/corepack
           ~/.clawsweeper-repair/codex
-          ~/.clawsweeper-repair/claude
-        key: ${{ runner.os }}-node24-runtime-${{ inputs['model-runtime'] }}-codex-${{ inputs['codex-version'] }}-proxy-${{ inputs['proxy-version'] }}-claude-${{ inputs['claude-version'] }}-${{ inputs['cache-suffix'] || 'default' }}-v5
+        key: ${{ runner.os }}-node24-codex-${{ inputs['codex-version'] }}-proxy-${{ inputs['proxy-version'] }}-${{ inputs['cache-suffix'] || 'default' }}-v4
         restore-keys: |
-          ${{ runner.os }}-node24-runtime-${{ inputs['model-runtime'] }}-
           ${{ runner.os }}-node24-codex-${{ inputs['codex-version'] }}-proxy-${{ inputs['proxy-version'] }}-
           ${{ runner.os }}-node24-codex-
 
     - name: Install Codex CLI
-      if: ${{ inputs['model-runtime'] == 'codex' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -64,46 +52,7 @@ runs:
         fi
         codex --version
 
-    - name: Install Claude CLI
-      if: ${{ inputs['model-runtime'] == 'claude' }}
-      shell: bash
-      run: |
-        set -euo pipefail
-        npm config set prefix "$HOME/.clawsweeper-repair/claude"
-        npm config set cache "$HOME/.npm"
-        echo "$HOME/.clawsweeper-repair/claude/bin" >> "$GITHUB_PATH"
-        export PATH="$HOME/.clawsweeper-repair/claude/bin:$PATH"
-
-        env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN \
-          -u CLAWSWEEPER_INTERNAL_MODEL \
-          npm install -g "@anthropic-ai/claude-code@${{ inputs['claude-version'] }}" \
-          --prefer-online --no-audit --no-fund --ignore-scripts
-        node "$HOME/.clawsweeper-repair/claude/lib/node_modules/@anthropic-ai/claude-code/install.cjs"
-        claude --version
-
-        claude_shim="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)/dist/claude-codex-shim.js"
-        test -f "$claude_shim"
-        echo "CLAWSWEEPER_CLAUDE_SHIM=$claude_shim" >> "$GITHUB_ENV"
-        cat > "$HOME/.clawsweeper-repair/claude/bin/codex" <<'SH'
-        #!/usr/bin/env bash
-        set -euo pipefail
-        args=()
-        skip_model_value=0
-        for arg in "$@"; do
-          if [[ "$skip_model_value" == "1" ]]; then
-            skip_model_value=0
-          elif [[ "$arg" == "--model" || "$arg" == "-m" ]]; then
-            skip_model_value=1
-          else
-            args+=("$arg")
-          fi
-        done
-        exec node "${CLAWSWEEPER_CLAUDE_SHIM:?}" "${args[@]}"
-        SH
-        chmod 755 "$HOME/.clawsweeper-repair/claude/bin/codex"
-
     - name: Resolve Codex home
-      if: ${{ inputs['model-runtime'] == 'codex' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -118,25 +67,7 @@ runs:
         export CODEX_HOME="$codex_home"
         echo "Using isolated CODEX_HOME=$CODEX_HOME"
 
-    - name: Resolve Claude home
-      if: ${{ inputs['model-runtime'] == 'claude' }}
-      shell: bash
-      run: |
-        set -euo pipefail
-        if [[ -n "${{ inputs['codex-home'] }}" ]]; then
-          claude_config_dir="${{ inputs['codex-home'] }}"
-        else
-          claude_config_dir="$HOME/.clawsweeper-repair/claude-home/${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
-        fi
-        mkdir -p "$claude_config_dir"
-        chmod 700 "$claude_config_dir"
-        echo "CLAUDE_CONFIG_DIR=$claude_config_dir" >> "$GITHUB_ENV"
-        echo "CLAWSWEEPER_MODEL_RUNTIME=claude" >> "$GITHUB_ENV"
-        echo "CLAWSWEEPER_STEERABLE_CODEX=0" >> "$GITHUB_ENV"
-        echo "Using isolated CLAUDE_CONFIG_DIR=$claude_config_dir"
-
     - name: Configure internal Codex model
-      if: ${{ inputs['model-runtime'] == 'codex' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -145,100 +76,9 @@ runs:
         model_json="$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$CLAWSWEEPER_INTERNAL_MODEL")"
         printf 'model = %s\n' "$model_json" > "$CODEX_HOME/config.toml"
         chmod 600 "$CODEX_HOME/config.toml"
-        echo "CLAWSWEEPER_MODEL_RUNTIME=codex" >> "$GITHUB_ENV"
-
-    - name: Configure internal Claude model and provider
-      if: ${{ inputs['model-runtime'] == 'claude' }}
-      shell: bash
-      env:
-        CLAUDE_PROVIDER: ${{ inputs['claude-provider'] }}
-      run: |
-        set -euo pipefail
-        export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:?}"
-        test -n "${CLAWSWEEPER_INTERNAL_MODEL:-}"
-        credentials_file="$CLAUDE_CONFIG_DIR/provider-env.json"
-        node <<'NODE'
-        const fs = require("node:fs");
-        const path = require("node:path");
-        const provider = process.env.CLAUDE_PROVIDER;
-        const supported = new Set(["anthropic", "bedrock", "vertex", "foundry"]);
-        if (!supported.has(provider)) {
-          throw new Error(`Unsupported Claude provider: ${provider}`);
-        }
-        const keys = [
-          "ANTHROPIC_API_KEY",
-          "ANTHROPIC_AUTH_TOKEN",
-          "ANTHROPIC_BASE_URL",
-          "ANTHROPIC_CUSTOM_HEADERS",
-          "ANTHROPIC_FOUNDRY_API_KEY",
-          "ANTHROPIC_FOUNDRY_BASE_URL",
-          "ANTHROPIC_FOUNDRY_RESOURCE",
-          "AWS_ACCESS_KEY_ID",
-          "AWS_BEARER_TOKEN_BEDROCK",
-          "AWS_DEFAULT_REGION",
-          "AWS_PROFILE",
-          "AWS_REGION",
-          "AWS_SECRET_ACCESS_KEY",
-          "AWS_SESSION_TOKEN",
-          "CLAUDE_CODE_OAUTH_TOKEN",
-          "GOOGLE_APPLICATION_CREDENTIALS",
-          "GOOGLE_CLOUD_PROJECT",
-          "GOOGLE_CLOUD_REGION",
-        ];
-        const credentials = Object.fromEntries(
-          keys.flatMap((key) => process.env[key] ? [[key, process.env[key]]] : []),
-        );
-        if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
-          const googleCredentialsPath = path.join(process.env.CLAUDE_CONFIG_DIR, "google-credentials.json");
-          fs.writeFileSync(
-            googleCredentialsPath,
-            `${process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON.trim()}\n`,
-            { mode: 0o600 },
-          );
-          credentials.GOOGLE_APPLICATION_CREDENTIALS = googleCredentialsPath;
-        }
-        if (provider === "anthropic" &&
-            !credentials.ANTHROPIC_API_KEY &&
-            !credentials.ANTHROPIC_AUTH_TOKEN &&
-            !credentials.CLAUDE_CODE_OAUTH_TOKEN) {
-          throw new Error("Claude Anthropic provider requires ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or CLAUDE_CODE_OAUTH_TOKEN.");
-        }
-        if (provider === "bedrock" &&
-            !credentials.AWS_BEARER_TOKEN_BEDROCK &&
-            !(credentials.AWS_ACCESS_KEY_ID && credentials.AWS_SECRET_ACCESS_KEY) &&
-            !credentials.AWS_PROFILE) {
-          throw new Error("Claude Bedrock provider requires a Bedrock bearer token, AWS access keys, or AWS_PROFILE.");
-        }
-        if (provider === "vertex" &&
-            !credentials.GOOGLE_APPLICATION_CREDENTIALS) {
-          throw new Error("Claude Vertex provider requires Google application credentials.");
-        }
-        if (provider === "foundry" &&
-            !credentials.ANTHROPIC_FOUNDRY_API_KEY) {
-          throw new Error("Claude Foundry provider requires ANTHROPIC_FOUNDRY_API_KEY.");
-        }
-        if (provider === "bedrock") credentials.CLAUDE_CODE_USE_BEDROCK = "1";
-        if (provider === "vertex") credentials.CLAUDE_CODE_USE_VERTEX = "1";
-        if (provider === "foundry") credentials.CLAUDE_CODE_USE_FOUNDRY = "1";
-        const configDir = process.env.CLAUDE_CONFIG_DIR;
-        fs.writeFileSync(
-          path.join(configDir, "settings.json"),
-          `${JSON.stringify({
-            model: process.env.CLAWSWEEPER_INTERNAL_MODEL,
-            skipDangerousModePermissionPrompt: true,
-          }, null, 2)}\n`,
-          { mode: 0o600 },
-        );
-        fs.writeFileSync(
-          path.join(configDir, "provider-env.json"),
-          `${JSON.stringify(credentials)}\n`,
-          { mode: 0o600 },
-        );
-        NODE
-        echo "CLAWSWEEPER_CLAUDE_CREDENTIALS_FILE=$credentials_file" >> "$GITHUB_ENV"
 
     - name: Authenticate Codex through Responses proxy
-      if: ${{ inputs['model-runtime'] == 'codex' && inputs['auth-mode'] == 'proxy' }}
+      if: ${{ inputs['auth-mode'] == 'proxy' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -273,7 +113,7 @@ runs:
         echo "Configured Codex Responses proxy on localhost."
 
     - name: Authenticate Codex with login
-      if: ${{ inputs['model-runtime'] == 'codex' && inputs['auth-mode'] == 'login' }}
+      if: ${{ inputs['auth-mode'] == 'login' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -285,15 +125,8 @@ runs:
         fi
 
     - name: Reject unknown Codex auth mode
-      if: ${{ inputs['model-runtime'] == 'codex' && inputs['auth-mode'] != 'proxy' && inputs['auth-mode'] != 'login' }}
+      if: ${{ inputs['auth-mode'] != 'proxy' && inputs['auth-mode'] != 'login' }}
       shell: bash
       run: |
         echo "Unsupported setup-codex auth-mode: ${{ inputs['auth-mode'] }}" >&2
-        exit 1
-
-    - name: Reject unknown model runtime
-      if: ${{ inputs['model-runtime'] != 'codex' && inputs['model-runtime'] != 'claude' }}
-      shell: bash
-      run: |
-        echo "Unsupported model runtime: ${{ inputs['model-runtime'] }}" >&2
         exit 1
