@@ -137,6 +137,13 @@ test("state materializer uses an available GitHub-hosted runner", () => {
   assert.equal(materializer?.["runs-on"], "ubuntu-latest");
 });
 
+test("state materializer checks out a recovery-sized state history window", () => {
+  const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
+  const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
+  const setupState = materializer?.steps?.find(isSetupState);
+  assert.equal(setupState?.with?.["fetch-depth"], 512);
+});
+
 test("state materializer bounds its coordinator acquire below the job timeout", () => {
   const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
   const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;

@@ -114,6 +114,112 @@ test("publisher fetches share the bounded fetch helper", () => {
   assert.equal(source.match(/runGit\(\["fetch"/g)?.length, 1);
 });
 
+test("shallow merge-base recovery deepens before retrying prepare", () => {
+  const script = String.raw`
+    import childProcess from "node:child_process";
+    import { syncBuiltinESMExports } from "node:module";
+
+    const calls = [];
+    let deepened = false;
+    childProcess.spawnSync = (command, args) => {
+      calls.push({ command, args });
+      if (command !== "git") throw new Error("unexpected command: " + command);
+      if (args[0] === "merge-base") {
+        return deepened
+          ? { status: 0, stdout: "base-commit\n", stderr: "" }
+          : { status: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--is-shallow-repository") {
+        return { status: 0, stdout: "true\n", stderr: "" };
+      }
+      if (args[0] === "fetch" && args[1] === "--deepen=512") {
+        deepened = true;
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      throw new Error("unexpected git args: " + args.join(" "));
+    };
+    syncBuiltinESMExports();
+    console.log = () => {};
+
+    const { mergeBaseWithShallowRecovery } = await import("./dist/repair/git-publish.js");
+    const result = mergeBaseWithShallowRecovery("HEAD", "origin/state", "origin", "state");
+    process.stdout.write(JSON.stringify({ calls, result }));
+  `;
+
+  const output = JSON.parse(run("node", ["--input-type=module", "-e", script], process.cwd()));
+  assert.deepEqual(output.result, { base: "base-commit", recoveredShallowMiss: true });
+  assert.deepEqual(
+    output.calls.filter(({ args }) => args[0] === "fetch").map(({ args }) => args),
+    [["fetch", "--deepen=512", "origin", "state"]],
+  );
+});
+
+test("shallow merge-base recovery defers only after bounded deepening is exhausted", () => {
+  const script = String.raw`
+    import childProcess from "node:child_process";
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+
+    process.env.CLAWSWEEPER_MODEL_RECOVERY_ENABLED = "1";
+    process.env.CLAWSWEEPER_ACTION_LEDGER_DISABLED = "1";
+    process.env.OPENAI_API_KEY = "test-recovery-key";
+    const calls = [];
+    childProcess.spawnSync = (command, args) => {
+      if (command === "git") {
+        calls.push(args);
+        if (args[0] === "merge-base") return { status: 1, stdout: "", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--is-shallow-repository") {
+          return { status: 0, stdout: "true\n", stderr: "" };
+        }
+        if (args[0] === "fetch" && args[1] === "--deepen=512") {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+        throw new Error("unexpected git args: " + args.join(" "));
+      }
+      if (command === process.execPath && String(args[0]).endsWith("codex-process-worker.js")) {
+        const options = JSON.parse(fs.readFileSync(args[1], "utf8"));
+        const outputIndex = options.args.lastIndexOf("--output-last-message");
+        fs.writeFileSync(
+          options.args[outputIndex + 1],
+          JSON.stringify({
+            diagnosis: "shallow merge history depth",
+            actions: ["defer_to_next_run"],
+            confidence: 1,
+          }),
+        );
+        fs.writeFileSync(
+          options.resultPath,
+          JSON.stringify({ status: 0, signal: null, stdout: "", stderr: "" }),
+        );
+        return { status: 0, signal: null, stdout: "", stderr: "" };
+      }
+      throw new Error("unexpected command: " + command);
+    };
+    syncBuiltinESMExports();
+    console.log = () => {};
+    console.warn = () => {};
+
+    const { mergeBaseWithShallowRecovery } = await import("./dist/repair/git-publish.js");
+    let message = "";
+    try {
+      mergeBaseWithShallowRecovery("HEAD", "origin/state", "origin", "state");
+    } catch (error) {
+      message = error.message;
+    }
+    process.stdout.write(JSON.stringify({ calls, message }));
+  `;
+
+  const output = JSON.parse(run("node", ["--input-type=module", "-e", script], process.cwd()));
+  assert.match(
+    output.message,
+    /Model-guided Git recovery deferred to the next run: shallow_merge_history_depth/,
+  );
+  assert.deepEqual(
+    output.calls.filter((args) => args[0] === "fetch").map((args) => args[1]),
+    ["--deepen=512", "--deepen=512", "--deepen=512", "--deepen=512"],
+  );
+});
+
 test("commitMessageForPublishedPaths skips CI for generated-only publishes", () => {
   assert.equal(
     commitMessageForPublishedPaths("chore: update sweep records", [
@@ -4879,7 +4985,7 @@ function installDeepenFetchFailureShim(fakeBin) {
     git,
     `#!/bin/sh
 set -u
-if test "$1" = fetch && test "$2" = --deepen=32; then
+if test "$1" = fetch && test "$2" = --deepen=512; then
   printf '%s\n' 'fatal: synthetic deepen failure' >&2
   exit 2
 fi

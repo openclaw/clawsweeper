@@ -12,6 +12,7 @@ import {
   DEFAULT_STATE_MATERIALIZER_MAX_ROWS,
   planStateMaterialization,
   runStateMaterializer,
+  stateMaterializerDeferralMessage,
   type StateAppendRecord,
 } from "../../dist/repair/state-materializer.js";
 
@@ -411,6 +412,20 @@ test("materializer does not ack a drain when the state push fails", async () => 
     JSON.parse(showState(fixture, "results/sweep-status/openclaw-openclaw.json")).detail,
     "initial",
   );
+});
+
+test("materializer deferral failure distinguishes progress from a stalled cycle", () => {
+  const progress = stateMaterializerDeferralMessage(
+    { drained: 1_400, committed: 720, acked: 720, skipped: 0, errors: 1 },
+    "Model-guided Git recovery deferred to the next run: merge_shallow_history",
+  );
+  const stalled = stateMaterializerDeferralMessage(
+    { drained: 1_400, committed: 0, acked: 0, skipped: 0, errors: 1 },
+    "Model-guided Git recovery deferred to the next run: merge_shallow_history",
+  );
+
+  assert.match(progress, /progress with deferral: drained=1400 committed=720/);
+  assert.match(stalled, /stalled cycle with deferral: drained=1400 committed=0/);
 });
 
 test("materializer no-ops when the drain is empty", async () => {

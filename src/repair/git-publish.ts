@@ -108,6 +108,8 @@ const GIT_TREE_LIST_MAX_BUFFER = 64 * 1024 * 1024;
 const GIT_STATE_DIFF_MAX_BUFFER = 256 * 1024 * 1024;
 const RECONCILIATION_TUPLE_CHUNK_SIZE = 128;
 const PUBLISH_FETCH_TIMEOUT_MS = 60_000;
+const SHALLOW_MERGE_DEEPEN_STEP = 512;
+const SHALLOW_MERGE_MAX_DEEPEN = 2_048;
 // Recovery fetches (deepen/unshallow/refetch of the state history) are rare
 // one-time repairs but move far more data than an ordinary publish fetch; a
 // 60s budget times out on the grown state repo (prod run 29745570319).
@@ -1157,7 +1159,7 @@ function gitRunError(
   return new Error(detail.trim());
 }
 
-function mergeBaseWithShallowRecovery(
+export function mergeBaseWithShallowRecovery(
   left: string,
   right: string,
   remote: string,
@@ -1173,6 +1175,23 @@ function mergeBaseWithShallowRecovery(
     return { base: null, recoveredShallowMiss: false };
   }
 
+  let deepenedBy = 0;
+  while (deepenedBy < SHALLOW_MERGE_MAX_DEEPEN && isShallowRepository()) {
+    const deepenBy = Math.min(SHALLOW_MERGE_DEEPEN_STEP, SHALLOW_MERGE_MAX_DEEPEN - deepenedBy);
+    const deepenArgs = ["fetch", `--deepen=${deepenBy}`, remote, branch];
+    const deepen = spawnBoundedFetch(deepenArgs, RECOVERY_FETCH_TIMEOUT_MS);
+    if (deepen.status !== 0) throw gitRunError(deepen, deepenArgs);
+    deepenedBy += deepenBy;
+    result = spawnGit(args, { quiet: true });
+    if (result.status === 0) {
+      return { base: result.stdout.trim(), recoveredShallowMiss: true };
+    }
+    if (result.status !== 1) throw gitRunError(result, args);
+  }
+  if (!isShallowRepository()) {
+    return { base: null, recoveredShallowMiss: true };
+  }
+
   if (modelRecoveryConfigured()) {
     const attempt = executeModelRecovery({
       phase: "merge_base_shallow_recovery",
@@ -1180,7 +1199,10 @@ function mergeBaseWithShallowRecovery(
       shallow: true,
       remote,
       branch,
-      recentAttempts: [`merge_base:${left}:${right}:status=${result.status}`],
+      recentAttempts: [
+        `merge_base:${left}:${right}:status=${result.status}`,
+        `bounded_deepen:${deepenedBy}:merge_base_status=${result.status}`,
+      ],
       availableActions: [
         "refetch_depth1",
         "deepen",
@@ -1222,19 +1244,6 @@ function mergeBaseWithShallowRecovery(
       );
     }
   }
-
-  const deepenArgs = ["fetch", "--deepen=32", remote, branch];
-  const deepen = spawnGit(deepenArgs, {
-    quiet: true,
-    timeout: RECOVERY_FETCH_TIMEOUT_MS,
-  });
-  if (deepen.timedOut) throw new GitCommandTimeoutError(deepenArgs, PUBLISH_FETCH_TIMEOUT_MS);
-  if (deepen.status !== 0) throw gitRunError(deepen, deepenArgs);
-  result = spawnGit(args, { quiet: true });
-  if (result.status === 0) {
-    return { base: result.stdout.trim(), recoveredShallowMiss: true };
-  }
-  if (result.status !== 1) throw gitRunError(result, args);
 
   if (isShallowRepository()) {
     const unshallowArgs = ["fetch", "--unshallow", remote, branch];

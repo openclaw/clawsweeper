@@ -476,11 +476,24 @@ export async function runStateMaterializer(
       }
     } catch (error) {
       summary.errors += 1;
-      console.warn(`state-materializer cycle failed: ${errorMessage(error)}`);
+      const message = errorMessage(error);
+      console.warn(`state-materializer cycle failed: ${message}`);
+      if (message.includes("deferred to the next run")) {
+        finish();
+        throw new Error(stateMaterializerDeferralMessage(summary, message));
+      }
       break;
     }
   }
   return finish();
+}
+
+export function stateMaterializerDeferralMessage(
+  summary: StateMaterializerSummary,
+  reason: string,
+): string {
+  const outcome = summary.committed > 0 ? "progress with deferral" : "stalled cycle with deferral";
+  return `state-materializer ${outcome}: drained=${summary.drained} committed=${summary.committed} acked=${summary.acked} skipped=${summary.skipped} errors=${summary.errors}; ${reason}`;
 }
 
 function planStateMaterializationWithIsolation(
