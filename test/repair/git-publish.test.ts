@@ -132,7 +132,10 @@ test("shallow merge-base recovery deepens before retrying prepare", () => {
       if (args[0] === "rev-parse" && args[1] === "--is-shallow-repository") {
         return { status: 0, stdout: "true\n", stderr: "" };
       }
-      if (args[0] === "fetch" && args[1] === "--deepen=512") {
+      if (args[0] === "config") {
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "fetch" && args[1] === "--filter=tree:0" && args[2] === "--deepen=512") {
         deepened = true;
         return { status: 0, stdout: "", stderr: "" };
       }
@@ -149,8 +152,15 @@ test("shallow merge-base recovery deepens before retrying prepare", () => {
   const output = JSON.parse(run("node", ["--input-type=module", "-e", script], process.cwd()));
   assert.deepEqual(output.result, { base: "base-commit", recoveredShallowMiss: true });
   assert.deepEqual(
+    output.calls.filter(({ args }) => args[0] === "config").map(({ args }) => args),
+    [
+      ["config", "--local", "remote.origin.promisor", "true"],
+      ["config", "--local", "remote.origin.partialclonefilter", "tree:0"],
+    ],
+  );
+  assert.deepEqual(
     output.calls.filter(({ args }) => args[0] === "fetch").map(({ args }) => args),
-    [["fetch", "--deepen=512", "origin", "state"]],
+    [["fetch", "--filter=tree:0", "--deepen=512", "origin", "state"]],
   );
 });
 
@@ -171,7 +181,10 @@ test("shallow merge-base recovery defers only after bounded deepening is exhaust
         if (args[0] === "rev-parse" && args[1] === "--is-shallow-repository") {
           return { status: 0, stdout: "true\n", stderr: "" };
         }
-        if (args[0] === "fetch" && args[1] === "--deepen=512") {
+        if (args[0] === "config") {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "fetch" && args[1] === "--filter=tree:0" && args[2] === "--deepen=512") {
           return { status: 0, stdout: "", stderr: "" };
         }
         throw new Error("unexpected git args: " + args.join(" "));
@@ -215,8 +228,60 @@ test("shallow merge-base recovery defers only after bounded deepening is exhaust
     /Model-guided Git recovery deferred to the next run: shallow_merge_history_depth/,
   );
   assert.deepEqual(
-    output.calls.filter((args) => args[0] === "fetch").map((args) => args[1]),
-    ["--deepen=512", "--deepen=512", "--deepen=512", "--deepen=512"],
+    output.calls.filter((args) => args[0] === "fetch"),
+    Array.from({ length: 4 }, () => [
+      "fetch",
+      "--filter=tree:0",
+      "--deepen=512",
+      "origin",
+      "state",
+    ]),
+  );
+});
+
+test("shallow merge-base recovery filters its final unshallow fallback", () => {
+  const script = String.raw`
+    import childProcess from "node:child_process";
+    import { syncBuiltinESMExports } from "node:module";
+
+    const calls = [];
+    let shallow = true;
+    childProcess.spawnSync = (command, args) => {
+      calls.push({ command, args });
+      if (command !== "git") throw new Error("unexpected command: " + command);
+      if (args[0] === "merge-base") return { status: 1, stdout: "", stderr: "" };
+      if (args[0] === "rev-parse" && args[1] === "--is-shallow-repository") {
+        return { status: 0, stdout: String(shallow) + "\n", stderr: "" };
+      }
+      if (args[0] === "config") return { status: 0, stdout: "", stderr: "" };
+      if (args[0] === "fetch" && args[1] === "--filter=tree:0") {
+        if (args[2] === "--unshallow") shallow = false;
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      throw new Error("unexpected git args: " + args.join(" "));
+    };
+    syncBuiltinESMExports();
+    console.log = () => {};
+
+    const { mergeBaseWithShallowRecovery } = await import("./dist/repair/git-publish.js");
+    const result = mergeBaseWithShallowRecovery("HEAD", "origin/state", "origin", "state");
+    process.stdout.write(JSON.stringify({ calls, result }));
+  `;
+
+  const output = JSON.parse(run("node", ["--input-type=module", "-e", script], process.cwd()));
+  assert.deepEqual(output.result, { base: null, recoveredShallowMiss: true });
+  assert.deepEqual(
+    output.calls.filter(({ args }) => args[0] === "fetch").map(({ args }) => args),
+    [
+      ...Array.from({ length: 4 }, () => [
+        "fetch",
+        "--filter=tree:0",
+        "--deepen=512",
+        "origin",
+        "state",
+      ]),
+      ["fetch", "--filter=tree:0", "--unshallow", "origin", "state"],
+    ],
   );
 });
 
@@ -4985,7 +5050,7 @@ function installDeepenFetchFailureShim(fakeBin) {
     git,
     `#!/bin/sh
 set -u
-if test "$1" = fetch && test "$2" = --deepen=512; then
+if test "$1" = fetch && test "$2" = --filter=tree:0 && test "$3" = --deepen=512; then
   printf '%s\n' 'fatal: synthetic deepen failure' >&2
   exit 2
 fi

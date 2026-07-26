@@ -108,6 +108,7 @@ const GIT_TREE_LIST_MAX_BUFFER = 64 * 1024 * 1024;
 const GIT_STATE_DIFF_MAX_BUFFER = 256 * 1024 * 1024;
 const RECONCILIATION_TUPLE_CHUNK_SIZE = 128;
 const PUBLISH_FETCH_TIMEOUT_MS = 60_000;
+const COMMIT_GRAPH_FETCH_FILTER = "tree:0";
 const SHALLOW_MERGE_DEEPEN_STEP = 512;
 const SHALLOW_MERGE_MAX_DEEPEN = 2_048;
 // Recovery fetches (deepen/unshallow/refetch of the state history) are rare
@@ -1175,10 +1176,11 @@ export function mergeBaseWithShallowRecovery(
     return { base: null, recoveredShallowMiss: false };
   }
 
+  configureCommitGraphPromisor(remote);
   let deepenedBy = 0;
   while (deepenedBy < SHALLOW_MERGE_MAX_DEEPEN && isShallowRepository()) {
     const deepenBy = Math.min(SHALLOW_MERGE_DEEPEN_STEP, SHALLOW_MERGE_MAX_DEEPEN - deepenedBy);
-    const deepenArgs = ["fetch", `--deepen=${deepenBy}`, remote, branch];
+    const deepenArgs = commitGraphHistoryFetchArgs(`--deepen=${deepenBy}`, remote, branch);
     const deepen = spawnBoundedFetch(deepenArgs, RECOVERY_FETCH_TIMEOUT_MS);
     if (deepen.status !== 0) throw gitRunError(deepen, deepenArgs);
     deepenedBy += deepenBy;
@@ -1211,7 +1213,7 @@ export function mergeBaseWithShallowRecovery(
         "defer_to_next_run",
         "give_up",
       ],
-      handlers: gitFetchRecoveryHandlers(remote, branch, {
+      handlers: commitGraphRecoveryHandlers(remote, branch, {
         rebuildOnRemoteHead: () => {},
         deferToNextRun: () => {},
         giveUp: () => {},
@@ -1246,14 +1248,8 @@ export function mergeBaseWithShallowRecovery(
   }
 
   if (isShallowRepository()) {
-    const unshallowArgs = ["fetch", "--unshallow", remote, branch];
-    const unshallow = spawnGit(unshallowArgs, {
-      quiet: true,
-      timeout: RECOVERY_FETCH_TIMEOUT_MS,
-    });
-    if (unshallow.timedOut) {
-      throw new GitCommandTimeoutError(unshallowArgs, PUBLISH_FETCH_TIMEOUT_MS);
-    }
+    const unshallowArgs = commitGraphHistoryFetchArgs("--unshallow", remote, branch);
+    const unshallow = spawnBoundedFetch(unshallowArgs, RECOVERY_FETCH_TIMEOUT_MS);
     if (unshallow.status !== 0) throw gitRunError(unshallow, unshallowArgs);
     result = spawnGit(args, { quiet: true });
     if (result.status === 0) {
@@ -2875,6 +2871,45 @@ function gitFetchRecoveryHandlers(
       spawnBoundedFetch(["fetch", "--unshallow", remote, branch], RECOVERY_FETCH_TIMEOUT_MS);
     },
     ...directives,
+  };
+}
+
+function configureCommitGraphPromisor(remote: string): void {
+  // Merge-base needs commits only; keep omitted trees lazy-fetchable for the
+  // later diff/rebase work that touches a small subset of the state checkout.
+  runGit(["config", "--local", `remote.${remote}.promisor`, "true"], { quiet: true });
+  runGit(["config", "--local", `remote.${remote}.partialclonefilter`, COMMIT_GRAPH_FETCH_FILTER], {
+    quiet: true,
+  });
+}
+
+function commitGraphHistoryFetchArgs(
+  historyArgument: `--deepen=${number}` | "--unshallow",
+  remote: string,
+  branch: string,
+): string[] {
+  return ["fetch", `--filter=${COMMIT_GRAPH_FETCH_FILTER}`, historyArgument, remote, branch];
+}
+
+function commitGraphRecoveryHandlers(
+  remote: string,
+  branch: string,
+  directives: RecoveryActionHandlers,
+): RecoveryActionHandlers {
+  return {
+    ...gitFetchRecoveryHandlers(remote, branch, directives),
+    deepen: (depth) => {
+      spawnBoundedFetch(
+        commitGraphHistoryFetchArgs(`--deepen=${depth}`, remote, branch),
+        RECOVERY_FETCH_TIMEOUT_MS,
+      );
+    },
+    unshallow: () => {
+      spawnBoundedFetch(
+        commitGraphHistoryFetchArgs("--unshallow", remote, branch),
+        RECOVERY_FETCH_TIMEOUT_MS,
+      );
+    },
   };
 }
 
