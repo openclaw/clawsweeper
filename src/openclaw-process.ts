@@ -344,6 +344,15 @@ const BUILTIN_PROVIDERS = {
     api: "openai-completions",
     models: [{ id: "zai-glm-4.7", name: "Z.ai GLM 4.7", contextWindow: 128000, maxTokens: 8192 }],
   },
+  // Z.AI GLM Coding Plan keys only authorize the coding endpoint — the general
+  // paas endpoint rejects them with error 1113. Validated live 2026-07-25
+  // (~51 tok/s, E2E tool run in 16s).
+  zai: {
+    baseUrl: "https://api.z.ai/api/coding/paas/v4",
+    apiKey: "${ZAI_API_KEY}",
+    api: "openai-completions",
+    models: [{ id: "glm-5.2", name: "GLM-5.2", contextWindow: 1000000, maxTokens: 131072 }],
+  },
 } as const;
 
 function builtinProviderBlock(model: string): Record<string, unknown> | undefined {

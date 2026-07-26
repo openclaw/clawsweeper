@@ -400,3 +400,39 @@ test("OpenClaw cerebras models get built-in provider defaults", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("OpenClaw zai models get built-in Coding Plan endpoint defaults", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-test-"));
+  const recordPath = join(root, "record.json");
+  const binary = fakeOpenclaw(root);
+  try {
+    const result = runOpenclawProcess({
+      label: "zai-defaults",
+      prompt: "hi",
+      model: "zai/glm-5.2",
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_OPENCLAW_BIN: binary,
+        CLAWSWEEPER_OPENCLAW_MODEL: "zai/glm-5.2",
+        OPENCLAW_TEST_RECORD: recordPath,
+      },
+      timeoutMs: 60_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const record = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.deepEqual(record.config.models, {
+      mode: "merge",
+      providers: {
+        zai: {
+          baseUrl: "https://api.z.ai/api/coding/paas/v4",
+          apiKey: "${ZAI_API_KEY}",
+          api: "openai-completions",
+          models: [{ id: "glm-5.2", name: "GLM-5.2", contextWindow: 1000000, maxTokens: 131072 }],
+        },
+      },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
