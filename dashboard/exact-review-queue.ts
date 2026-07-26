@@ -21,10 +21,15 @@ import {
   DirectPublicationProjectionCapacityError,
   EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES,
   ExactReviewDirectPublicationStore,
+  sha256Hex,
   validateDirectPublicationBlobOids,
+  validateRecordId,
   validateRecordSection,
   validateRepoSlug,
+  validateTupleRecordSection,
   type DirectPublicationPlan,
+  type RecordBackfillInput,
+  type RecordSection,
 } from "./exact-review-direct-publication.ts";
 import {
   REVIEW_TELEMETRY_DEGRADED_MS,
@@ -43,6 +48,12 @@ import {
   type DurableReviewRunTelemetry,
   normalizeReviewRunTelemetry,
 } from "./review-run-telemetry.ts";
+import {
+  ExactReviewRecordSnapshotStore,
+  RECORD_SNAPSHOT_DOWNLOAD_MAX_BYTES,
+  SnapshotStoreUnavailableError,
+  type RecordSnapshot,
+} from "./record-snapshots.ts";
 
 type GithubAppJsonOptions = { method?: string; body?: BodyInit; errorLabel?: string };
 const GITHUB_TIMEOUT_MS = 4500;
@@ -480,6 +491,19 @@ const DEFAULT_STATE_WRITER_COORDINATOR_QUEUED_STALE_MS = 2 * 60_000;
 // push that outlives this absolute coordinator horizon.
 const DEFAULT_STATE_WRITER_COORDINATOR_MAX_LEASE_AGE_MS = 30 * 60_000;
 const EXACT_REVIEW_INGRESS_FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/;
+const RECORD_EXPORT_DEFAULT_LIMIT = 100;
+const RECORD_EXPORT_MAX_LIMIT = 200;
+const RECORD_EXPORT_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+const RECORD_INGEST_MAX_RECORDS = 100;
+const RECORD_INGEST_MAX_REQUEST_BYTES = 4 * 1024 * 1024;
+const RECORD_INGEST_MAX_FILE_BYTES = 2 * 1024 * 1024;
+const RECORD_EXPORT_SECTIONS: readonly RecordSection[] = [
+  "items",
+  "closed",
+  "plans",
+  "decision-packets",
+  "commits",
+];
 
 export class ExactReviewQueue {
   private storage;
@@ -490,6 +514,7 @@ export class ExactReviewQueue {
   private legacyMirrorWarningReported = false;
   private batchStore;
   private directPublicationStore;
+  private recordSnapshotStore;
   private stateWriterCoordinator;
   private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
 
@@ -498,6 +523,11 @@ export class ExactReviewQueue {
     this.env = env;
     this.batchStore = new ExactReviewPublicationBatchStore(this.storage);
     this.directPublicationStore = new ExactReviewDirectPublicationStore(this.storage);
+    this.recordSnapshotStore = new ExactReviewRecordSnapshotStore(
+      this.storage,
+      this.directPublicationStore,
+      env.STATE_SNAPSHOTS,
+    );
     this.stateWriterCoordinator = new StateWriterCoordinator(this.storage);
     const initialize = () => this.initializeStorage();
     this.ready =
@@ -1935,7 +1965,7 @@ export class ExactReviewQueue {
         : null;
     if (canonicalRecordMatch) {
       const repoSlug = validateRepoSlug(canonicalRecordMatch[1]);
-      const section = validateRecordSection(canonicalRecordMatch[2]);
+      const section = validateTupleRecordSection(canonicalRecordMatch[2]);
       const itemId = Number(canonicalRecordMatch[3]);
       if (!repoSlug || !section || !Number.isSafeInteger(itemId)) {
         return json({ error: "invalid_canonical_record_identity" }, 400);
@@ -1968,7 +1998,7 @@ export class ExactReviewQueue {
     if (request.method === "POST" && url.pathname === "/records/list") {
       const body = objectValue(await request.json().catch(() => null));
       const repoSlug = validateRepoSlug(body.repoSlug);
-      const section = validateRecordSection(body.section);
+      const section = validateTupleRecordSection(body.section);
       const cursor = body.cursor === undefined || body.cursor === null ? 0 : Number(body.cursor);
       const limit = body.limit === undefined ? 100 : Number(body.limit);
       if (
@@ -2001,6 +2031,178 @@ export class ExactReviewQueue {
         })),
         nextCursor: records.length === limit ? (records.at(-1)?.id ?? null) : null,
       });
+    }
+
+    if (request.method === "POST" && url.pathname === "/records/export") {
+      const body = objectValue(await request.json().catch(() => null));
+      const repoSlug = validateRepoSlug(body.repoSlug);
+      const rawSections = body.sections === undefined ? RECORD_EXPORT_SECTIONS : body.sections;
+      const sections = Array.isArray(rawSections)
+        ? [...new Set(rawSections.map(validateRecordSection).filter(Boolean))]
+        : [];
+      const sinceRevision = body.sinceRevision === undefined ? 0 : Number(body.sinceRevision);
+      const cursor = body.cursor === undefined || body.cursor === null ? 0 : Number(body.cursor);
+      const limit = body.limit === undefined ? RECORD_EXPORT_DEFAULT_LIMIT : Number(body.limit);
+      if (
+        !repoSlug ||
+        !Array.isArray(rawSections) ||
+        !sections.length ||
+        sections.length !== rawSections.length ||
+        !Number.isSafeInteger(sinceRevision) ||
+        sinceRevision < 0 ||
+        !Number.isSafeInteger(cursor) ||
+        cursor < 0 ||
+        !Number.isSafeInteger(limit) ||
+        limit < 1 ||
+        limit > RECORD_EXPORT_MAX_LIMIT
+      ) {
+        return json({ error: "invalid_canonical_record_export" }, 400);
+      }
+      const exported = this.directPublicationStore.exportRecords({
+        repoSlug,
+        sections: sections as RecordSection[],
+        sinceRevision,
+        cursor,
+        limit,
+        maxBytes: RECORD_EXPORT_MAX_RESPONSE_BYTES,
+      });
+      return json({
+        repoSlug,
+        sections,
+        sinceRevision,
+        cursor,
+        limit,
+        revision: exported.watermark,
+        records: exported.records.map((record) => ({
+          section: record.section,
+          id: record.id,
+          content: record.content,
+          digest: record.digest,
+          revision: record.revision,
+          storeRevision: record.storeRevision,
+          updatedAt: new Date(record.updatedAt).toISOString(),
+          deleted: record.deleted,
+        })),
+        nextCursor: exported.nextCursor,
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/records/snapshots/latest") {
+      const body = objectValue(await request.json().catch(() => null));
+      const repoSlug = validateRepoSlug(body.repoSlug);
+      if (!repoSlug) return json({ error: "invalid_snapshot_repository" }, 400);
+      try {
+        const snapshot = await this.recordSnapshotStore.latest(repoSlug);
+        if (!snapshot) {
+          return json({ error: "snapshot_not_found", snapshotStoreAvailable: true, repoSlug }, 404);
+        }
+        return json({ ok: true, snapshotStoreAvailable: true, snapshot: snapshotJson(snapshot) });
+      } catch (error) {
+        return snapshotErrorResponse(error);
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/records/snapshots/trigger") {
+      const body = objectValue(await request.json().catch(() => null));
+      const repoSlug = validateRepoSlug(body.repoSlug);
+      if (!repoSlug) return json({ error: "invalid_snapshot_repository" }, 400);
+      try {
+        const snapshot = await this.recordSnapshotStore.produce(repoSlug);
+        return json(
+          { ok: true, snapshotStoreAvailable: true, snapshot: snapshotJson(snapshot) },
+          201,
+        );
+      } catch (error) {
+        return snapshotErrorResponse(error);
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/records/snapshots/chunk") {
+      const body = objectValue(await request.json().catch(() => null));
+      const repoSlug = validateRepoSlug(body.repoSlug);
+      if (!repoSlug) return json({ error: "invalid_snapshot_repository" }, 400);
+      try {
+        const result = await this.recordSnapshotStore.readRange(
+          repoSlug,
+          Number(body.revisionWatermark),
+          Number(body.offset),
+          Number(body.length),
+        );
+        return new Response(result.object.body, {
+          status: 206,
+          headers: {
+            "accept-ranges": "bytes",
+            "content-length": String(result.length),
+            "content-range": `bytes ${Number(body.offset)}-${Number(body.offset) + result.length - 1}/${result.snapshot.bytes}`,
+            "content-type": "application/gzip",
+            "x-clawsweeper-snapshot-revision": String(result.snapshot.revisionWatermark),
+          },
+        });
+      } catch (error) {
+        return snapshotErrorResponse(error);
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/records/ingest") {
+      const bodyText = await request.text();
+      if (new TextEncoder().encode(bodyText).byteLength > RECORD_INGEST_MAX_REQUEST_BYTES) {
+        return json(
+          { error: "canonical_record_ingest_too_large", maxBytes: RECORD_INGEST_MAX_REQUEST_BYTES },
+          413,
+        );
+      }
+      let parsedBody: unknown;
+      try {
+        parsedBody = JSON.parse(bodyText || "null");
+      } catch {
+        return json({ error: "invalid_canonical_record_ingest" }, 400);
+      }
+      const body = objectValue(parsedBody);
+      const repoSlug = validateRepoSlug(body.repoSlug);
+      if (
+        !repoSlug ||
+        !Array.isArray(body.records) ||
+        body.records.length < 1 ||
+        body.records.length > RECORD_INGEST_MAX_RECORDS
+      ) {
+        return json({ error: "invalid_canonical_record_ingest" }, 400);
+      }
+      const records: RecordBackfillInput[] = [];
+      for (const value of body.records) {
+        const record = objectValue(value);
+        const section = validateRecordSection(record.section);
+        const id = section ? validateRecordId(section, record.id) : null;
+        const content = typeof record.content === "string" ? record.content : null;
+        const digest = String(record.digest || "").toLowerCase();
+        if (!section || !id || content === null || !/^[0-9a-f]{64}$/.test(digest)) {
+          return json({ error: "invalid_canonical_record_ingest" }, 400);
+        }
+        const bytes = new TextEncoder().encode(content);
+        if (bytes.byteLength > RECORD_INGEST_MAX_FILE_BYTES) {
+          return json(
+            {
+              error: "canonical_record_too_large",
+              section,
+              id,
+              maxBytes: RECORD_INGEST_MAX_FILE_BYTES,
+            },
+            413,
+          );
+        }
+        if ((await sha256Hex(bytes)) !== digest) {
+          return json({ error: "canonical_record_digest_mismatch", section, id }, 400);
+        }
+        records.push({ section, id, content, digest, bytes: bytes.byteLength });
+      }
+      try {
+        const ingested = this.directPublicationStore.ingestBackfill(repoSlug, records, Date.now());
+        return json({ ok: true, repoSlug, ...ingested }, 202);
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("conflicting revision-0 backfill")) {
+          return json({ error: "canonical_record_backfill_conflict" }, 409);
+        }
+        throw error;
+      }
     }
 
     if (request.method === "POST" && url.pathname === "/publication-results") {
@@ -4948,6 +5150,7 @@ export class ExactReviewQueue {
     this.ensureStorageSchemaSync();
     this.batchStore.ensureSchemaSync();
     this.directPublicationStore.ensureSchemaSync();
+    this.recordSnapshotStore.ensureSchemaSync();
     this.stateWriterCoordinator.ensureSchemaSync();
     let meta = this.readStorageMetaSync();
     let migratedLegacy = false;
@@ -11186,6 +11389,48 @@ function stringEnv(value) {
 function numberFrom(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function snapshotJson(snapshot: RecordSnapshot) {
+  return {
+    repoSlug: snapshot.repoSlug,
+    revisionWatermark: snapshot.revisionWatermark,
+    objectKey: snapshot.objectKey,
+    bytes: snapshot.bytes,
+    uncompressedBytes: snapshot.uncompressedBytes,
+    fileCount: snapshot.fileCount,
+    createdAt: new Date(snapshot.createdAt).toISOString(),
+    access: {
+      mode: "worker_range_proxy",
+      maxChunkBytes: RECORD_SNAPSHOT_DOWNLOAD_MAX_BYTES,
+    },
+  };
+}
+
+function snapshotErrorResponse(error: unknown) {
+  if (error instanceof SnapshotStoreUnavailableError) {
+    console.error(`snapshot store unavailable: ${error.cause || error.message}`);
+    return json(
+      {
+        error: "snapshot_store_unavailable",
+        snapshotStoreAvailable: false,
+        detail: "STATE_SNAPSHOTS is not available",
+      },
+      503,
+    );
+  }
+  if (error instanceof RangeError) {
+    const notFound = error.message === "snapshot not found";
+    return json(
+      {
+        error: notFound ? "snapshot_not_found" : "invalid_snapshot_range",
+        snapshotStoreAvailable: true,
+      },
+      notFound ? 404 : 400,
+    );
+  }
+  console.error(`snapshot request failed: ${error}`);
+  return json({ error: "snapshot_request_failed", snapshotStoreAvailable: true }, 500);
 }
 
 function json(value, status = 200) {

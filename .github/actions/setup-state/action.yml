@@ -44,6 +44,22 @@ inputs:
     description: Durable state-writer scheduling class
     required: false
     default: ordinary
+  records-source:
+    description: Record transport used by hydrate-state (git or worker).
+    required: false
+    default: git
+  records-url:
+    description: Worker base URL used when records-source is worker.
+    required: false
+    default: https://clawsweeper.openclaw.ai
+  records-repo-slugs:
+    description: Optional comma/newline-separated record repository slugs; defaults to state checkout directories.
+    required: false
+    default: ""
+  records-secret:
+    description: HMAC secret used only when records-source is worker.
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
@@ -85,8 +101,31 @@ runs:
       with:
         node-version: ${{ inputs.node-version }}
 
+    - name: Resolve Worker record snapshot cache key
+      id: records-snapshot
+      if: ${{ inputs.records-source == 'worker' }}
+      shell: bash
+      env:
+        CLAWSWEEPER_STATE_DIR: ${{ inputs.state-path }}
+        CLAWSWEEPER_RECORDS_URL: ${{ inputs.records-url }}
+        CLAWSWEEPER_RECORDS_REPO_SLUGS: ${{ inputs.records-repo-slugs }}
+        CLAWSWEEPER_RECORDS_SECRET: ${{ inputs.records-secret }}
+      run: node "${{ inputs.worktree-path }}/scripts/prepare-worker-record-cache.ts"
+
+    - name: Restore Worker record snapshot
+      if: ${{ inputs.records-source == 'worker' && steps.records-snapshot.outputs.available == 'true' }}
+      uses: actions/cache@v6
+      with:
+        path: ${{ inputs.worktree-path }}/.artifacts/worker-records-cache
+        key: clawsweeper-records-${{ runner.os }}-${{ steps.records-snapshot.outputs.cache-key }}
+
     - name: Hydrate generated state
       shell: bash
       env:
         CLAWSWEEPER_STATE_DIR: ${{ inputs.state-path }}
+        CLAWSWEEPER_RECORDS_SOURCE: ${{ inputs.records-source }}
+        CLAWSWEEPER_RECORDS_URL: ${{ inputs.records-url }}
+        CLAWSWEEPER_RECORDS_REPO_SLUGS: ${{ inputs.records-repo-slugs }}
+        CLAWSWEEPER_RECORDS_SECRET: ${{ inputs.records-secret }}
+        CLAWSWEEPER_RECORDS_CACHE_DIR: ${{ inputs.worktree-path }}/.artifacts/worker-records-cache
       run: node "${{ inputs.worktree-path }}/scripts/hydrate-state.ts" --state-dir "${{ inputs.state-path }}" --worktree "${{ inputs.worktree-path }}"

@@ -558,6 +558,16 @@ export default {
       );
     if (url.pathname === "/internal/state/records/list" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/records/list");
+    if (url.pathname === "/internal/state/records/export" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/records/export");
+    if (url.pathname === "/internal/state/records/ingest" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/records/ingest");
+    if (url.pathname === "/internal/state/records/snapshots/latest" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/records/snapshots/latest");
+    if (url.pathname === "/internal/state/records/snapshots/trigger" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/records/snapshots/trigger");
+    if (url.pathname === "/internal/state/records/snapshots/chunk" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/records/snapshots/chunk");
     if (url.pathname === "/internal/state/append" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/state/append");
     if (url.pathname === "/internal/state/drain" && request.method === "POST")

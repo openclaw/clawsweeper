@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { createContext, Script } from "node:vm";
+import { gunzipSync } from "node:zlib";
 
 import worker, {
   automaticIssueWork,
@@ -2129,6 +2130,290 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
   });
 });
 
+test("record backfill and export authenticate, page, increment, dedupe, and preserve live revisions", async () => {
+  const storage = new MemoryDurableStorage();
+  const leased = leasedExactReviewQueueItem(711, "7110");
+  leased.revision = 4;
+  leased.leaseRevision = 4;
+  leased.claimGeneration = 2;
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [leased.key]: leased } });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const secret = "record-export-secret";
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const commitId = "a".repeat(40);
+  const seedRecords = [
+    { section: "items", id: "711", content: "legacy-item" },
+    { section: "plans", id: "712", content: "legacy-plan" },
+    { section: "commits", id: commitId, content: "legacy-commit" },
+  ].map((record) => ({
+    ...record,
+    digest: createHash("sha256").update(record.content).digest("hex"),
+  }));
+  const ingestPayload = { repoSlug: "openclaw-openclaw", records: seedRecords };
+  const ingestPath = "/internal/state/records/ingest";
+  const unsigned = await worker.fetch(
+    stateAppendQueueRequest(ingestPath, ingestPayload, "https://clawsweeper.openclaw.ai"),
+    env,
+  );
+  assert.equal(unsigned.status, 401);
+
+  const first = await worker.fetch(
+    signedStateAppendRequest(ingestPath, ingestPayload, secret),
+    env,
+  );
+  assert.equal(first.status, 202);
+  assert.deepEqual(await first.json(), {
+    ok: true,
+    repoSlug: "openclaw-openclaw",
+    inserted: 3,
+    unchanged: 0,
+    skippedNewer: 0,
+    watermark: 3,
+  });
+  const repeated = await worker.fetch(
+    signedStateAppendRequest(ingestPath, ingestPayload, secret),
+    env,
+  );
+  assert.deepEqual(await repeated.json(), {
+    ok: true,
+    repoSlug: "openclaw-openclaw",
+    inserted: 0,
+    unchanged: 3,
+    skippedNewer: 0,
+    watermark: 3,
+  });
+
+  const publication = {
+    itemKey: "openclaw/openclaw#711",
+    revision: 4,
+    identity: { itemKey: "openclaw/openclaw#711", revision: 4, claimGeneration: 2 },
+    operations: [
+      {
+        path: "records/openclaw-openclaw/items/711.md",
+        expectedOid: null,
+        targetOid: "b".repeat(40),
+        mode: "100644",
+        bytes: 4,
+        contentBase64: Buffer.from("live").toString("base64"),
+      },
+    ],
+    totalBytes: 4,
+  };
+  const publicationBody = JSON.stringify(publication);
+  const publicationSignature = `sha256=${createHmac("sha256", secret).update(publicationBody).digest("hex")}`;
+  const published = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/publication-results", {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": publicationSignature },
+      body: publicationBody,
+    }),
+    env,
+  );
+  assert.equal(published.status, 202);
+
+  const guarded = await worker.fetch(
+    signedStateAppendRequest(
+      ingestPath,
+      { repoSlug: "openclaw-openclaw", records: [seedRecords[0]] },
+      secret,
+    ),
+    env,
+  );
+  assert.equal(guarded.status, 202);
+  assert.equal((await guarded.json()).skippedNewer, 1);
+
+  const exportPath = "/internal/state/records/export";
+  const pageOnePayload = {
+    repoSlug: "openclaw-openclaw",
+    sections: ["items", "commits"],
+    limit: 1,
+  };
+  const unsignedExport = await worker.fetch(
+    stateAppendQueueRequest(exportPath, pageOnePayload, "https://clawsweeper.openclaw.ai"),
+    env,
+  );
+  assert.equal(unsignedExport.status, 401);
+  const pageOneResponse = await worker.fetch(
+    signedStateAppendRequest(exportPath, pageOnePayload, secret),
+    env,
+  );
+  assert.equal(pageOneResponse.status, 200);
+  const pageOne = await pageOneResponse.json();
+  assert.equal(pageOne.records.length, 1);
+  assert.equal(pageOne.nextCursor, 3);
+  const pageTwo = await (
+    await worker.fetch(
+      signedStateAppendRequest(
+        exportPath,
+        { ...pageOnePayload, cursor: pageOne.nextCursor },
+        secret,
+      ),
+      env,
+    )
+  ).json();
+  assert.equal(pageTwo.records.length, 1);
+  assert.equal(pageTwo.nextCursor, 4);
+  const terminalPage = await (
+    await worker.fetch(
+      signedStateAppendRequest(
+        exportPath,
+        { ...pageOnePayload, cursor: pageTwo.nextCursor },
+        secret,
+      ),
+      env,
+    )
+  ).json();
+  assert.deepEqual(terminalPage.records, []);
+  assert.equal(terminalPage.nextCursor, null);
+  assert.deepEqual(pageTwo.records[0], {
+    section: "items",
+    id: "711",
+    content: "live",
+    digest: createHash("sha256").update("live").digest("hex"),
+    revision: 4,
+    storeRevision: 4,
+    updatedAt: pageTwo.records[0].updatedAt,
+    deleted: false,
+  });
+  const incremental = await (
+    await worker.fetch(
+      signedStateAppendRequest(
+        exportPath,
+        { repoSlug: "openclaw-openclaw", sections: ["items"], sinceRevision: 3 },
+        secret,
+      ),
+      env,
+    )
+  ).json();
+  assert.deepEqual(incremental.records, pageTwo.records);
+
+  const conflictingContent = "changed-plan";
+  const conflict = await worker.fetch(
+    signedStateAppendRequest(
+      ingestPath,
+      {
+        repoSlug: "openclaw-openclaw",
+        records: [
+          {
+            section: "plans",
+            id: "712",
+            content: conflictingContent,
+            digest: createHash("sha256").update(conflictingContent).digest("hex"),
+          },
+        ],
+      },
+      secret,
+    ),
+    env,
+  );
+  assert.equal(conflict.status, 409);
+  assert.deepEqual(await conflict.json(), { error: "canonical_record_backfill_conflict" });
+});
+
+test("record snapshots authenticate, stream multipart R2 objects, serve ranges, prune, and fail closed", async () => {
+  const secret = "record-snapshot-secret";
+  const unavailableStorage = new MemoryDurableStorage();
+  const unavailableQueue = new ExactReviewQueue({ storage: unavailableStorage }, {});
+  const unavailableEnv = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(unavailableQueue),
+  };
+  const triggerPath = "/internal/state/records/snapshots/trigger";
+  const triggerBody = { repoSlug: "openclaw-openclaw" };
+  const unsigned = await worker.fetch(
+    stateAppendQueueRequest(triggerPath, triggerBody, "https://clawsweeper.openclaw.ai"),
+    unavailableEnv,
+  );
+  assert.equal(unsigned.status, 401);
+  const unavailable = await worker.fetch(
+    signedStateAppendRequest(triggerPath, triggerBody, secret),
+    unavailableEnv,
+  );
+  assert.equal(unavailable.status, 503);
+  assert.deepEqual(await unavailable.json(), {
+    error: "snapshot_store_unavailable",
+    snapshotStoreAvailable: false,
+    detail: "STATE_SNAPSHOTS is not available",
+  });
+
+  const storage = new MemoryDurableStorage();
+  const bucket = new MemoryR2Bucket();
+  const queue = new ExactReviewQueue({ storage }, { STATE_SNAPSHOTS: bucket });
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const records = [
+    { section: "items", id: "901", content: "snapshot item\n" },
+    { section: "decision-packets", id: "901", content: '{"decision":"snapshot"}\n' },
+  ].map((record) => ({
+    ...record,
+    digest: createHash("sha256").update(record.content).digest("hex"),
+  }));
+  const ingest = await worker.fetch(
+    signedStateAppendRequest(
+      "/internal/state/records/ingest",
+      { repoSlug: "openclaw-openclaw", records },
+      secret,
+    ),
+    env,
+  );
+  assert.equal(ingest.status, 202);
+
+  let latestSnapshot: {
+    revisionWatermark: number;
+    bytes: number;
+    fileCount: number;
+    objectKey: string;
+  } | null = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await worker.fetch(
+      signedStateAppendRequest(triggerPath, triggerBody, secret),
+      env,
+    );
+    assert.equal(response.status, 201);
+    latestSnapshot = (await response.json()).snapshot;
+  }
+  assert.ok(latestSnapshot);
+  assert.equal(latestSnapshot.fileCount, records.length);
+  assert.equal(latestSnapshot.revisionWatermark, records.length);
+  assert.equal(bucket.keys().length, 2);
+  const snapshotRows = Array.from(
+    storage.sql.exec("SELECT object_key FROM exact_review_record_snapshots"),
+  );
+  assert.equal(snapshotRows.length, 2);
+
+  const latestResponse = await worker.fetch(
+    signedStateAppendRequest("/internal/state/records/snapshots/latest", triggerBody, secret),
+    env,
+  );
+  assert.equal(latestResponse.status, 200);
+  assert.equal((await latestResponse.json()).snapshot.objectKey, latestSnapshot.objectKey);
+
+  const chunkBody = {
+    repoSlug: "openclaw-openclaw",
+    revisionWatermark: latestSnapshot.revisionWatermark,
+    offset: 0,
+    length: latestSnapshot.bytes,
+  };
+  const chunk = await worker.fetch(
+    signedStateAppendRequest("/internal/state/records/snapshots/chunk", chunkBody, secret),
+    env,
+  );
+  assert.equal(chunk.status, 206);
+  assert.equal(
+    chunk.headers.get("content-range"),
+    `bytes 0-${latestSnapshot.bytes - 1}/${latestSnapshot.bytes}`,
+  );
+  const tar = gunzipSync(Buffer.from(await chunk.arrayBuffer()));
+  assert.match(tar.toString("utf8"), /items\/901\.md/);
+  assert.match(tar.toString("utf8"), /snapshot item/);
+  assert.match(tar.toString("utf8"), /decision-packets\/901\.json/);
+});
+
 test("exact-review queue counts only work that successfully leaves each lane", async () => {
   const storage = new MemoryDurableStorage();
   const directPublication = leasedExactReviewQueueItem(703, "7030");
@@ -3949,6 +4234,55 @@ class MemoryDurableNamespace {
 
   get() {
     return this.stub;
+  }
+}
+
+class MemoryR2Bucket {
+  private objects = new Map<string, Uint8Array>();
+
+  async createMultipartUpload(key: string) {
+    const parts = new Map<number, Uint8Array>();
+    return {
+      uploadPart: async (partNumber: number, value: ArrayBuffer | Uint8Array) => {
+        parts.set(partNumber, new Uint8Array(value).slice());
+        return { partNumber, etag: `part-${partNumber}` };
+      },
+      complete: async (completed: Array<{ partNumber: number }>) => {
+        const selected = completed.map((part) => parts.get(part.partNumber)!);
+        const bytes = new Uint8Array(selected.reduce((sum, part) => sum + part.byteLength, 0));
+        let offset = 0;
+        for (const part of selected) {
+          bytes.set(part, offset);
+          offset += part.byteLength;
+        }
+        this.objects.set(key, bytes);
+        return { key, size: bytes.byteLength };
+      },
+      abort: async () => undefined,
+    };
+  }
+
+  async head(key: string) {
+    const value = this.objects.get(key);
+    return value ? { key, size: value.byteLength } : null;
+  }
+
+  async get(key: string, options?: { range?: { offset: number; length: number } }) {
+    const value = this.objects.get(key);
+    if (!value) return null;
+    const offset = options?.range?.offset ?? 0;
+    const length = options?.range?.length ?? value.byteLength - offset;
+    const body = new Response(value.slice(offset, offset + length)).body;
+    assert.ok(body);
+    return { body, size: value.byteLength };
+  }
+
+  async delete(keys: string | string[]) {
+    for (const key of Array.isArray(keys) ? keys : [keys]) this.objects.delete(key);
+  }
+
+  keys() {
+    return [...this.objects.keys()].sort();
   }
 }
 

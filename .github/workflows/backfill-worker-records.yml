@@ -1,0 +1,84 @@
+name: Backfill Worker records
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: Repository whose state records should be seeded (owner/name).
+        required: true
+        type: string
+        default: openclaw/openclaw
+      cursor:
+        description: Zero-based batch cursor from a prior interrupted run.
+        required: false
+        type: number
+        default: 0
+      max_batches:
+        description: Optional bounded batch count; 0 processes the remaining batches.
+        required: false
+        type: number
+        default: 0
+
+concurrency:
+  group: backfill-worker-records-${{ inputs.target_repo }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          filter: blob:none
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve target record slug
+        id: target
+        env:
+          TARGET_REPO: ${{ inputs.target_repo }}
+        run: |
+          if ! [[ "$TARGET_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "target_repo must be owner/name" >&2
+            exit 2
+          fi
+          echo "slug=${TARGET_REPO//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: Create state token
+        id: state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        with:
+          token: ${{ steps.state-token.outputs.token }}
+          fetch-depth: 1
+          sparse-checkout: records/${{ steps.target.outputs.slug }}
+          persist-credentials: "false"
+          records-source: git
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+
+      - name: Seed revision-zero Worker records
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          CLAWSWEEPER_RECORDS_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          BACKFILL_CURSOR: ${{ inputs.cursor }}
+          BACKFILL_MAX_BATCHES: ${{ inputs.max_batches }}
+          TARGET_SLUG: ${{ steps.target.outputs.slug }}
+        run: |
+          args=(--state-dir clawsweeper-state --repo-slug "$TARGET_SLUG" --cursor "$BACKFILL_CURSOR")
+          if (( BACKFILL_MAX_BATCHES > 0 )); then
+            args+=(--max-batches "$BACKFILL_MAX_BATCHES")
+          fi
+          node scripts/backfill-worker-records.ts "${args[@]}"

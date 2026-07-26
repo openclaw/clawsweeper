@@ -1,6 +1,10 @@
 export const EXACT_REVIEW_DIRECT_PUBLICATION_TABLE = "exact_review_direct_publication_plans";
 export const EXACT_REVIEW_CANONICAL_RECORD_TABLE = "exact_review_canonical_records";
 export const EXACT_REVIEW_CANONICAL_RECORD_CHUNK_TABLE = "exact_review_canonical_record_chunks";
+export const EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE = "exact_review_record_export_index";
+export const EXACT_REVIEW_RECORD_BACKFILL_TABLE = "exact_review_record_backfill";
+export const EXACT_REVIEW_RECORD_BACKFILL_CHUNK_TABLE = "exact_review_record_backfill_chunks";
+export const EXACT_REVIEW_RECORD_EXPORT_META_TABLE = "exact_review_record_export_meta";
 export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES = 4 * 1024 * 1024;
 export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILES = 4;
 export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -11,7 +15,13 @@ export const EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1
 const DIRECT_PUBLICATION_TERMINAL_PRUNE_LIMIT = 256;
 const MAX_PATH_BYTES = 1024;
 const STATE_APPEND_WINDOW_TABLE = "state_append_window";
-const RECORD_SECTIONS = new Set<RecordSection>(["items", "closed", "plans", "decision-packets"]);
+const RECORD_SECTIONS = new Set<RecordSection>([
+  "items",
+  "closed",
+  "plans",
+  "decision-packets",
+  "commits",
+]);
 
 type SqlStorage = {
   exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
@@ -22,7 +32,8 @@ type DurableStorage = {
   transactionSync: <T>(callback: () => T) => T;
 };
 
-export type RecordSection = "items" | "closed" | "plans" | "decision-packets";
+export type RecordSection = "items" | "closed" | "plans" | "decision-packets" | "commits";
+export type ExactReviewTupleRecordSection = Exclude<RecordSection, "commits">;
 
 export type DirectPublicationOperation = {
   path: string;
@@ -43,7 +54,7 @@ export type DirectPublicationPlan = {
 
 export type CanonicalDirectPublicationOperation = DirectPublicationOperation & {
   repoSlug: string;
-  section: RecordSection;
+  section: ExactReviewTupleRecordSection;
   itemId: number;
   content: string | null;
   digest: string | null;
@@ -85,13 +96,38 @@ export type DirectPublicationProjectionLimits = {
 
 export type CanonicalRecord = {
   repoSlug: string;
-  section: RecordSection;
+  section: ExactReviewTupleRecordSection;
   itemId: number;
   content: string | null;
   digest: string | null;
   revision: number;
   updatedAt: number;
   deleted: boolean;
+};
+
+export type RecordExportEntry = {
+  repoSlug: string;
+  section: RecordSection;
+  id: string;
+  content: string | null;
+  digest: string | null;
+  revision: number;
+  storeRevision: number;
+  updatedAt: number;
+  deleted: boolean;
+};
+
+export type RecordBackfillInput = {
+  section: RecordSection;
+  id: string;
+  content: string;
+  digest: string;
+  bytes: number;
+};
+
+export type RecordSnapshotIdentity = {
+  section: RecordSection;
+  id: string;
 };
 
 export class DirectPublicationProjectionCapacityError extends Error {
@@ -169,6 +205,68 @@ export class ExactReviewDirectPublicationStore {
          PRIMARY KEY (repo_slug, section, item_id, chunk_index)
        ) STRICT`,
     );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_RECORD_EXPORT_META_TABLE} (
+         singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+         current_revision INTEGER NOT NULL CHECK (current_revision >= 0)
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `INSERT OR IGNORE INTO ${EXACT_REVIEW_RECORD_EXPORT_META_TABLE}
+         (singleton_id, current_revision) VALUES (1, 0)`,
+    );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} (
+         repo_slug TEXT NOT NULL,
+         section TEXT NOT NULL CHECK (
+           section IN ('items', 'closed', 'plans', 'decision-packets', 'commits')
+         ),
+         record_id TEXT NOT NULL,
+         digest TEXT CHECK (digest IS NULL OR length(digest) = 64),
+         deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
+         revision INTEGER NOT NULL CHECK (revision >= 0),
+         store_revision INTEGER NOT NULL UNIQUE CHECK (store_revision >= 1),
+         source TEXT NOT NULL CHECK (source IN ('canonical', 'backfill')),
+         updated_at INTEGER NOT NULL,
+         PRIMARY KEY (repo_slug, section, record_id),
+         CHECK ((deleted = 1 AND digest IS NULL) OR (deleted = 0 AND digest IS NOT NULL))
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_record_export_by_repo_revision
+         ON ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+         (repo_slug, store_revision, section, record_id)`,
+    );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_RECORD_BACKFILL_TABLE} (
+         repo_slug TEXT NOT NULL,
+         section TEXT NOT NULL CHECK (
+           section IN ('items', 'closed', 'plans', 'decision-packets', 'commits')
+         ),
+         record_id TEXT NOT NULL,
+         content TEXT,
+         digest TEXT NOT NULL CHECK (length(digest) = 64),
+         byte_length INTEGER NOT NULL CHECK (byte_length >= 0),
+         chunk_count INTEGER NOT NULL DEFAULT 0 CHECK (chunk_count >= 0),
+         updated_at INTEGER NOT NULL,
+         PRIMARY KEY (repo_slug, section, record_id),
+         CHECK ((content IS NOT NULL AND chunk_count = 0)
+           OR (content IS NULL AND chunk_count > 0))
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_RECORD_BACKFILL_CHUNK_TABLE} (
+         repo_slug TEXT NOT NULL,
+         section TEXT NOT NULL CHECK (
+           section IN ('items', 'closed', 'plans', 'decision-packets', 'commits')
+         ),
+         record_id TEXT NOT NULL,
+         chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
+         content_base64 TEXT NOT NULL,
+         PRIMARY KEY (repo_slug, section, record_id, chunk_index)
+       ) STRICT`,
+    );
+    this.seedExportIndexFromCanonicalSync();
   }
 
   accept(
@@ -289,7 +387,11 @@ export class ExactReviewDirectPublicationStore {
     });
   }
 
-  readCanonical(repoSlug: string, section: RecordSection, itemId: number): CanonicalRecord | null {
+  readCanonical(
+    repoSlug: string,
+    section: ExactReviewTupleRecordSection,
+    itemId: number,
+  ): CanonicalRecord | null {
     const metadata = this.readCanonicalMetadataSync(repoSlug, section, itemId);
     if (!metadata) return null;
     if (metadata.deleted) return { ...metadata, content: null };
@@ -324,7 +426,7 @@ export class ExactReviewDirectPublicationStore {
 
   listCanonical(options: {
     repoSlug: string;
-    section: RecordSection;
+    section: ExactReviewTupleRecordSection;
     cursor: number;
     limit: number;
   }) {
@@ -347,6 +449,137 @@ export class ExactReviewDirectPublicationStore {
         updatedAt: Number(row.updated_at),
       }),
     );
+  }
+
+  exportRecords(options: {
+    repoSlug: string;
+    sections: readonly RecordSection[];
+    sinceRevision: number;
+    cursor: number;
+    limit: number;
+    maxBytes: number;
+  }): { records: RecordExportEntry[]; nextCursor: number | null; watermark: number } {
+    const placeholders = options.sections.map(() => "?").join(", ");
+    const rows = Array.from(
+      this.storage.sql.exec(
+        `SELECT repo_slug, section, record_id, digest, deleted, revision, store_revision,
+                source, updated_at
+           FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+          WHERE repo_slug = ?
+            AND section IN (${placeholders})
+            AND store_revision > ?
+            AND store_revision > ?
+          ORDER BY store_revision
+          LIMIT ?`,
+        options.repoSlug,
+        ...options.sections,
+        options.sinceRevision,
+        options.cursor,
+        options.limit,
+      ),
+    );
+    const records: RecordExportEntry[] = [];
+    let responseBytes = 0;
+    for (const row of rows) {
+      const entry = this.recordExportEntrySync(row);
+      const entryBytes = new TextEncoder().encode(JSON.stringify(entry)).byteLength;
+      if (records.length && responseBytes + entryBytes > options.maxBytes) break;
+      records.push(entry);
+      responseBytes += entryBytes;
+    }
+    const watermark = this.currentExportRevisionSync();
+    const lastRevision = records.at(-1)?.storeRevision ?? null;
+    return {
+      records,
+      nextCursor:
+        lastRevision !== null && (records.length < rows.length || rows.length === options.limit)
+          ? lastRevision
+          : null,
+      watermark,
+    };
+  }
+
+  ingestBackfill(repoSlug: string, records: readonly RecordBackfillInput[], now: number) {
+    return this.storage.transactionSync(() => {
+      const result = { inserted: 0, unchanged: 0, skippedNewer: 0 };
+      for (const record of records) {
+        const existing = Array.from(
+          this.storage.sql.exec(
+            `SELECT digest, deleted, revision, source
+               FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+              WHERE repo_slug = ? AND section = ? AND record_id = ?`,
+            repoSlug,
+            record.section,
+            record.id,
+          ),
+        )[0];
+        if (existing) {
+          const revision = Number(existing.revision);
+          if (revision > 0 || String(existing.source) === "canonical") {
+            result.skippedNewer += 1;
+            continue;
+          }
+          if (Number(existing.deleted) === 0 && String(existing.digest) === record.digest) {
+            result.unchanged += 1;
+            continue;
+          }
+          throw new Error(
+            `conflicting revision-0 backfill for ${repoSlug}/${record.section}/${record.id}`,
+          );
+        }
+        this.writeBackfillRecordSync(repoSlug, record, now);
+        const storeRevision = this.nextExportRevisionSync();
+        this.storage.sql.exec(
+          `INSERT INTO ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+             (repo_slug, section, record_id, digest, deleted, revision, store_revision,
+              source, updated_at)
+           VALUES (?, ?, ?, ?, 0, 0, ?, 'backfill', ?)`,
+          repoSlug,
+          record.section,
+          record.id,
+          record.digest,
+          storeRevision,
+          now,
+        );
+        result.inserted += 1;
+      }
+      return { ...result, watermark: this.currentExportRevisionSync() };
+    });
+  }
+
+  currentExportRevision() {
+    return this.currentExportRevisionSync();
+  }
+
+  snapshotRecordIdentities(repoSlug: string): RecordSnapshotIdentity[] {
+    return Array.from(
+      this.storage.sql.exec(
+        `SELECT section, record_id
+           FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+          WHERE repo_slug = ? AND deleted = 0
+          ORDER BY section, record_id`,
+        repoSlug,
+      ),
+      (row) => ({
+        section: String(row.section) as RecordSection,
+        id: String(row.record_id),
+      }),
+    );
+  }
+
+  readExportRecord(repoSlug: string, section: RecordSection, id: string): RecordExportEntry | null {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT repo_slug, section, record_id, digest, deleted, revision, store_revision,
+                source, updated_at
+           FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+          WHERE repo_slug = ? AND section = ? AND record_id = ?`,
+        repoSlug,
+        section,
+        id,
+      ),
+    )[0];
+    return row ? this.recordExportEntrySync(row) : null;
   }
 
   list(): DirectPublicationRow[] {
@@ -413,7 +646,11 @@ export class ExactReviewDirectPublicationStore {
     return row ? directPublicationRow(row) : null;
   }
 
-  private readCanonicalMetadataSync(repoSlug: string, section: RecordSection, itemId: number) {
+  private readCanonicalMetadataSync(
+    repoSlug: string,
+    section: ExactReviewTupleRecordSection,
+    itemId: number,
+  ) {
     const row = Array.from(
       this.storage.sql.exec(
         `SELECT content, digest, byte_length, chunk_count, deleted, revision, updated_at
@@ -496,6 +733,195 @@ export class ExactReviewDirectPublicationStore {
         chunks[index],
       );
     }
+    const storeRevision = this.nextExportRevisionSync();
+    this.storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+         (repo_slug, section, record_id, digest, deleted, revision, store_revision,
+          source, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'canonical', ?)
+       ON CONFLICT(repo_slug, section, record_id) DO UPDATE SET
+         digest = excluded.digest,
+         deleted = excluded.deleted,
+         revision = excluded.revision,
+         store_revision = excluded.store_revision,
+         source = 'canonical',
+         updated_at = excluded.updated_at`,
+      operation.repoSlug,
+      operation.section,
+      String(operation.itemId),
+      operation.digest,
+      operation.content === null ? 1 : 0,
+      plan.revision,
+      storeRevision,
+      now,
+    );
+  }
+
+  private seedExportIndexFromCanonicalSync() {
+    const rows = Array.from(
+      this.storage.sql.exec(
+        `SELECT repo_slug, section, item_id, digest, deleted, revision, updated_at
+           FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}
+          WHERE NOT EXISTS (
+            SELECT 1 FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} export
+             WHERE export.repo_slug = ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}.repo_slug
+               AND export.section = ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}.section
+               AND export.record_id = CAST(${EXACT_REVIEW_CANONICAL_RECORD_TABLE}.item_id AS TEXT)
+          )
+          ORDER BY repo_slug, section, item_id`,
+      ),
+    );
+    for (const row of rows) {
+      const storeRevision = this.nextExportRevisionSync();
+      this.storage.sql.exec(
+        `INSERT INTO ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+           (repo_slug, section, record_id, digest, deleted, revision, store_revision,
+            source, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'canonical', ?)`,
+        String(row.repo_slug),
+        String(row.section),
+        String(row.item_id),
+        row.digest === null ? null : String(row.digest),
+        Number(row.deleted),
+        Number(row.revision),
+        storeRevision,
+        Number(row.updated_at),
+      );
+    }
+  }
+
+  private nextExportRevisionSync() {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `UPDATE ${EXACT_REVIEW_RECORD_EXPORT_META_TABLE}
+            SET current_revision = current_revision + 1
+          WHERE singleton_id = 1
+          RETURNING current_revision`,
+      ),
+    )[0];
+    const revision = Number(row?.current_revision);
+    if (!Number.isSafeInteger(revision) || revision < 1) {
+      throw new Error("record export revision allocation failed");
+    }
+    return revision;
+  }
+
+  private currentExportRevisionSync() {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT current_revision FROM ${EXACT_REVIEW_RECORD_EXPORT_META_TABLE}
+          WHERE singleton_id = 1`,
+      ),
+    )[0];
+    const revision = Number(row?.current_revision ?? 0);
+    if (!Number.isSafeInteger(revision) || revision < 0) {
+      throw new Error("invalid record export revision watermark");
+    }
+    return revision;
+  }
+
+  private recordExportEntrySync(row: Record<string, unknown>): RecordExportEntry {
+    const repoSlug = String(row.repo_slug);
+    const section = String(row.section) as RecordSection;
+    const id = String(row.record_id);
+    const deleted = Number(row.deleted) === 1;
+    let content: string | null = null;
+    if (!deleted) {
+      if (String(row.source) === "canonical") {
+        const itemId = Number(id);
+        if (section === "commits" || !Number.isSafeInteger(itemId) || itemId < 1) {
+          throw new Error(`invalid canonical export identity: ${repoSlug}/${section}/${id}`);
+        }
+        const canonical = this.readCanonical(repoSlug, section, itemId);
+        if (!canonical || canonical.deleted || canonical.content === null) {
+          throw new Error(`canonical export content missing: ${repoSlug}/${section}/${id}`);
+        }
+        content = canonical.content;
+      } else {
+        content = this.readBackfillContentSync(repoSlug, section, id);
+      }
+    }
+    return {
+      repoSlug,
+      section,
+      id,
+      content,
+      digest: row.digest === null ? null : String(row.digest),
+      revision: Number(row.revision),
+      storeRevision: Number(row.store_revision),
+      updatedAt: Number(row.updated_at),
+      deleted,
+    };
+  }
+
+  private writeBackfillRecordSync(repoSlug: string, record: RecordBackfillInput, now: number) {
+    const chunked = record.bytes > EXACT_REVIEW_CANONICAL_INLINE_BYTES;
+    const chunks = chunked ? byteChunks(record.content, EXACT_REVIEW_CANONICAL_CHUNK_BYTES) : [];
+    this.storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}
+         (repo_slug, section, record_id, content, digest, byte_length, chunk_count, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      repoSlug,
+      record.section,
+      record.id,
+      chunked ? null : record.content,
+      record.digest,
+      record.bytes,
+      chunks.length,
+      now,
+    );
+    for (let index = 0; index < chunks.length; index += 1) {
+      this.storage.sql.exec(
+        `INSERT INTO ${EXACT_REVIEW_RECORD_BACKFILL_CHUNK_TABLE}
+           (repo_slug, section, record_id, chunk_index, content_base64)
+         VALUES (?, ?, ?, ?, ?)`,
+        repoSlug,
+        record.section,
+        record.id,
+        index,
+        chunks[index],
+      );
+    }
+  }
+
+  private readBackfillContentSync(repoSlug: string, section: RecordSection, id: string) {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT content, byte_length, chunk_count
+           FROM ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}
+          WHERE repo_slug = ? AND section = ? AND record_id = ?`,
+        repoSlug,
+        section,
+        id,
+      ),
+    )[0];
+    if (!row) throw new Error(`backfill export content missing: ${repoSlug}/${section}/${id}`);
+    if (row.content !== null) return String(row.content);
+    const chunks = Array.from(
+      this.storage.sql.exec(
+        `SELECT chunk_index, content_base64
+           FROM ${EXACT_REVIEW_RECORD_BACKFILL_CHUNK_TABLE}
+          WHERE repo_slug = ? AND section = ? AND record_id = ?
+          ORDER BY chunk_index`,
+        repoSlug,
+        section,
+        id,
+      ),
+    );
+    if (chunks.length !== Number(row.chunk_count)) {
+      throw new Error(`backfill export chunk count mismatch: ${repoSlug}/${section}/${id}`);
+    }
+    const parts = chunks.map((chunk) => base64Bytes(String(chunk.content_base64)));
+    const bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
+    let offset = 0;
+    for (const part of parts) {
+      bytes.set(part, offset);
+      offset += part.byteLength;
+    }
+    if (bytes.byteLength !== Number(row.byte_length)) {
+      throw new Error(`backfill export byte count mismatch: ${repoSlug}/${section}/${id}`);
+    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   }
 
   private insertSync(row: DirectPublicationRow) {
@@ -538,7 +964,7 @@ function canonicalTupleOperations(
   }
   const primaryWrite = primaryWrites[0];
   const first = operations[0]!;
-  const addDelete = (section: RecordSection): void => {
+  const addDelete = (section: ExactReviewTupleRecordSection): void => {
     if (operations.some((operation) => operation.section === section)) return;
     const extension = section === "decision-packets" ? "json" : "md";
     operations.push({
@@ -593,6 +1019,17 @@ function primaryReferencesDecisionPacket(content: string): boolean {
 export function validateRecordSection(value: unknown): RecordSection | null {
   const section = String(value || "").trim() as RecordSection;
   return RECORD_SECTIONS.has(section) ? section : null;
+}
+
+export function validateTupleRecordSection(value: unknown): ExactReviewTupleRecordSection | null {
+  const section = validateRecordSection(value);
+  return section && section !== "commits" ? section : null;
+}
+
+export function validateRecordId(section: RecordSection, value: unknown): string | null {
+  const id = String(value || "").trim();
+  if (section === "commits") return /^[0-9a-f]{40}$/.test(id) ? id : null;
+  return /^[1-9]\d*$/.test(id) && Number.isSafeInteger(Number(id)) ? id : null;
 }
 
 export function validateRepoSlug(value: unknown): string | null {
@@ -852,7 +1289,7 @@ function canonicalTuplePath(path: string) {
       path,
     );
   if (!match) return null;
-  const section = match[2] as RecordSection;
+  const section = match[2] as ExactReviewTupleRecordSection;
   if ((section === "decision-packets") !== (match[4] === "json")) return null;
   return { repoSlug: match[1]!, section, itemId: Number(match[3]) };
 }
@@ -910,7 +1347,7 @@ function byteChunks(content: string, maximumBytes: number) {
   return chunks;
 }
 
-async function sha256Hex(bytes: Uint8Array) {
+export async function sha256Hex(bytes: Uint8Array) {
   const digest = new Uint8Array(
     await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer),
   );

@@ -9,6 +9,11 @@ crons = ["*/5 * * * *"]
 
 [assets]
 directory = "./public"
+
+[[r2_buckets]]
+binding = "STATE_SNAPSHOTS"
+bucket_name = "clawsweeper-state-snapshots"
+
 [[durable_objects.bindings]]
 name = "STATUS_STORE"
 class_name = "StatusStore"

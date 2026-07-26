@@ -80,13 +80,14 @@ test("review runtime artifact carries the TypeScript compiler service", () => {
       join(dirname(typescriptSource), "@typescript", nativePackageName),
     );
     const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-    const packed = JSON.parse(
+    const packOutput = JSON.parse(
       execFileSync(
         npmCommand,
         ["pack", nativeSource, "--pack-destination", fixture, "--ignore-scripts", "--json"],
         { encoding: "utf8" },
       ),
-    )[0];
+    );
+    const packed = Array.isArray(packOutput) ? packOutput[0] : Object.values(packOutput)[0];
     assert.equal(typeof packed?.filename, "string");
     assert.equal(typeof packed?.integrity, "string");
     const packageFile = join(fixture, packed.filename);
