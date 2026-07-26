@@ -2065,9 +2065,7 @@ test("spam scanner exact dispatches publish only per-comment audit records", () 
   );
   assert.match(workflow, /--path results\/spam-scanner\.json/);
   assert.match(workflow, /cancel-in-progress: false/);
-  assert.match(scanner, /model_reasoning_effort="high"/);
-  assert.match(scanner, /runCodexProcess/);
-  assert.doesNotMatch(scanner, /api\.openai\.com/);
+  assert.match(scanner, /reasoning: \{ effort: "high" \}/);
 });
 
 test("issue implementation workflow lets job intent choose dispatch capacity", () => {
@@ -2226,7 +2224,8 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   assert.ok(primaryResultIndex > uploadBundleIndex);
   assert.ok(completeLeaseIndex > primaryResultIndex);
   assert.ok(failReviewIndex > completeLeaseIndex);
-  assert.doesNotMatch(eventReviewBlock, /\.github\/actions\/setup-state/);
+  assert.match(eventReviewBlock, /\.github\/actions\/setup-state/);
+  assert.match(eventReviewBlock, /repair:exact-review-direct-publication/);
   assert.match(eventReviewBlock, /\/internal\/exact-review\/claim/);
   assert.match(eventReviewBlock, /\/internal\/exact-review\/complete/);
   assert.match(claimStep, /RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
@@ -2290,8 +2289,9 @@ test("sweep workflow gives high-context Codex reviews twenty minutes by default"
   assert.doesNotMatch(workflow, /codex_timeout_ms=(?:600000|900000)/);
 });
 
-test("model workflows install pinned CLI releases and keep provider models secret", () => {
+test("agent workflows install pinned CLI releases and keep runner models secret", () => {
   const action = readText(".github/actions/setup-codex/action.yml");
+  const openclawAction = readText(".github/actions/setup-openclaw/action.yml");
   const localCheck = readText("scripts/check-local-codex.mjs");
   const workflows = [
     ".github/workflows/assist.yml",
@@ -2299,74 +2299,62 @@ test("model workflows install pinned CLI releases and keep provider models secre
     ".github/workflows/maintainer-activity-report.yml",
     ".github/workflows/repair-cluster-worker.yml",
     ".github/workflows/repair-commit-finding-intake.yml",
-    ".github/workflows/spam-scanner.yml",
     ".github/workflows/sweep.yml",
   ].map((file) => readText(file));
 
   assert.match(action, /codex-version:[\s\S]*default: "0\.139\.0"/);
   assert.match(action, /proxy-version:[\s\S]*default: "0\.139\.0"/);
-  assert.match(action, /claude-version:[\s\S]*default: "2\.1\.220"/);
   assert.match(action, /@openai\/codex@\$\{\{ inputs\['codex-version'\] \}\}/);
   assert.match(action, /@openai\/codex-responses-api-proxy@\$\{\{ inputs\['proxy-version'\] \}\}/);
-  assert.match(action, /@anthropic-ai\/claude-code@\$\{\{ inputs\['claude-version'\] \}\}/);
-  assert.match(action, /@anthropic-ai\/claude-code\/install\.cjs/);
-  assert.match(action, /CLAWSWEEPER_MODEL_RUNTIME=claude/);
-  assert.match(action, /CLAWSWEEPER_STEERABLE_CODEX=0/);
-  assert.match(action, /CLAWSWEEPER_CLAUDE_CREDENTIALS_FILE=/);
-  assert.match(action, /dist\/claude-codex-shim\.js/);
-  assert.match(action, /skip_model_value/);
-  assert.match(action, /CLAUDE_CODE_USE_BEDROCK/);
-  assert.match(action, /CLAUDE_CODE_USE_VERTEX/);
-  assert.match(action, /CLAUDE_CODE_USE_FOUNDRY/);
-  assert.match(action, /GOOGLE_APPLICATION_CREDENTIALS_JSON/);
-  assert.match(action, /Claude Bedrock provider requires/);
-  assert.match(action, /Claude Vertex provider requires/);
-  assert.match(action, /Claude Foundry provider requires/);
   assert.doesNotMatch(action, /@latest/);
   assert.match(localCheck, /CLAWSWEEPER_LOCAL_CODEX_MODEL \?\? "gpt-5\.6-sol"/);
-  assert.match(localCheck, /CLAWSWEEPER_LOCAL_CLAUDE_MODEL \?\? "claude-opus-5"/);
-  assert.match(localCheck, /CLAUDE_CODE_USE_BEDROCK/);
-  assert.match(localCheck, /\$\{runtimeName\} local preflight passed/);
   assert.match(localCheck, /model_reasoning_effort="high"/);
   assert.doesNotMatch(localCheck, /CLAWSWEEPER_PREFER_WINDOWS_CODEX_APP/);
   assert.doesNotMatch(localCheck, /gpt-5\.5/);
   assert.match(action, /env -u OPENAI_API_KEY[\s\S]*-u CLAWSWEEPER_INTERNAL_MODEL/);
-  assert.equal(action.match(/--ignore-scripts/g)?.length, 3);
+  assert.equal(action.match(/--ignore-scripts/g)?.length, 2);
   for (const workflow of workflows) {
     assert.match(workflow, /CLAWSWEEPER_MODEL: internal/);
-    assert.match(
-      workflow,
-      /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ vars\.CLAWSWEEPER_MODEL_RUNTIME == 'claude' && secrets\.CLAWSWEEPER_CLAUDE_MODEL \|\| secrets\.CLAWSWEEPER_MODEL \}\}/,
-    );
-    assert.match(
-      workflow,
-      /model-runtime: \$\{\{ vars\.CLAWSWEEPER_MODEL_RUNTIME \|\| 'codex' \}\}/,
-    );
-    assert.match(
-      workflow,
-      /claude-provider: \$\{\{ vars\.CLAWSWEEPER_CLAUDE_PROVIDER \|\| 'anthropic' \}\}/,
-    );
-    assert.match(workflow, /ANTHROPIC_API_KEY: \$\{\{ secrets\.ANTHROPIC_API_KEY \}\}/);
-    const setupCount = workflow.match(/uses: .*setup-codex/g)?.length ?? 0;
-    for (const credential of [
-      "CLAWSWEEPER_AWS_ACCESS_KEY_ID",
-      "CLAWSWEEPER_GOOGLE_APPLICATION_CREDENTIALS_JSON",
-      "CLAWSWEEPER_ANTHROPIC_FOUNDRY_API_KEY",
-    ]) {
-      assert.equal(
-        workflow.match(new RegExp(credential, "g"))?.length,
-        setupCount,
-        `${credential} must be available to every model setup`,
-      );
-    }
+    assert.match(workflow, /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ secrets\.CLAWSWEEPER_MODEL \}\}/);
     assert.doesNotMatch(workflow, /CLAWSWEEPER_CODEX_CLI_VERSION/);
     for (const line of workflow
       .split("\n")
-      .filter((candidate) =>
-        /(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|CLAWSWEEPER_INTERNAL_MODEL):/.test(candidate),
-      )) {
+      .filter((candidate) => /(?:OPENAI_API_KEY|CLAWSWEEPER_INTERNAL_MODEL):/.test(candidate))) {
       assert.match(line, /^\s{10,}/);
     }
+  }
+
+  assert.match(openclawAction, /openclaw-version:[\s\S]*default: "2026\.7\.2"/);
+  assert.match(openclawAction, /openclaw@\$\{\{ inputs\['openclaw-version'\] \}\}/);
+  assert.doesNotMatch(openclawAction, /@latest/);
+  assert.equal(openclawAction.match(/env\.CLAWSWEEPER_RUNNER == 'openclaw'/g)?.length, 4);
+  // Source builds bridge unreleased OpenClaw features and must stay pinned to
+  // an exact SHA, gated to the openclaw runner, and off by default.
+  assert.match(openclawAction, /openclaw-source-ref:[\s\S]*default: ""/);
+  assert.equal(openclawAction.match(/inputs\['openclaw-source-ref'\] != ''/g)?.length, 2);
+  assert.match(openclawAction, /inputs\['openclaw-source-ref'\] == ''/);
+  assert.match(openclawAction, /CLAWSWEEPER_OPENCLAW_BIN=\$launcher/);
+  const runnerWorkflowFiles = [
+    ".github/workflows/assist.yml",
+    ".github/workflows/commit-review.yml",
+    ".github/workflows/repair-cluster-worker.yml",
+    ".github/workflows/repair-commit-finding-intake.yml",
+    ".github/workflows/spam-scanner.yml",
+    ".github/workflows/sweep.yml",
+  ];
+  for (const workflow of runnerWorkflowFiles.map((file) => readText(file))) {
+    assert.match(workflow, /CLAWSWEEPER_RUNNER: \$\{\{ vars\.CLAWSWEEPER_RUNNER \|\| 'codex' \}\}/);
+    assert.match(
+      workflow,
+      /CLAWSWEEPER_OPENCLAW_MODEL: \$\{\{ secrets\.CLAWSWEEPER_OPENCLAW_MODEL \}\}/,
+    );
+    assert.match(workflow, /CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON/);
+    assert.match(workflow, /KIMI_API_KEY: \$\{\{/);
+  }
+  for (const file of runnerWorkflowFiles.filter(
+    (candidate) => candidate !== ".github/workflows/spam-scanner.yml",
+  )) {
+    assert.match(readText(file), /setup-openclaw/);
   }
 });
 
@@ -2389,7 +2377,8 @@ test("synchronous Codex review surfaces use the shared bounded runner", () => {
     "src/pr-close-coverage-proof.ts",
   ]) {
     const source = readText(file);
-    assert.match(source, /runCodexProcess/);
+    assert.match(source, /runAgentProcess/);
+    assert.doesNotMatch(source, /runCodexProcess/);
     assert.doesNotMatch(source, /spawnSync\(\s*"codex"/);
   }
   assert.match(readText("src/clawsweeper.ts"), /"--output-last-message",\s*outputPath,\s*"--json"/);
@@ -2401,8 +2390,10 @@ test("failed Codex workers use bounded automatic retry paths", () => {
   const executor = readText("src/repair/execute-fix-artifact.ts");
   const selfHeal = readText("src/repair/self-heal-failed-runs.ts");
 
-  assert.match(worker, /appendCodexOutputCapture/);
-  assert.match(worker, /openCodexOutputCapture\(codexTranscriptPath\)/);
+  assert.match(worker, /runAgentProcess/);
+  assert.match(worker, /stdoutPath: String\(codexTranscriptPath\)/);
+  assert.match(worker, /stderrPath: String\(stderrPath\)/);
+  assert.match(worker, /startCodexWorkerHeartbeat/);
   assert.match(outputCapture, /DEFAULT_CODEX_OUTPUT_FILE_BYTES = 128 \* 1024 \* 1024/);
   assert.match(outputCapture, /Codex output truncated; final tail follows/);
   assert.doesNotMatch(worker, /Codex output exceeded|CLAWSWEEPER_CODEX_STDIO_MAX_BUFFER_MB/);
@@ -2899,6 +2890,24 @@ test("codex subprocess env strips GitHub and App credentials", () => {
     assert.equal(env.OPENAI_API_KEY, undefined);
     assert.equal(env.CODEX_API_KEY, undefined);
     assert.equal(env.GIT_OPTIONAL_LOCKS, "0");
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("OpenClaw subprocess env preserves provider auth without exposing Codex auth", () => {
+  const originalEnv = { ...process.env };
+  try {
+    process.env.CLAWSWEEPER_RUNNER = "openclaw";
+    process.env.OPENAI_API_KEY = "openai";
+    process.env.CODEX_API_KEY = "codex";
+    process.env.CODEX_ACCESS_TOKEN = "codex-access";
+
+    const env = codexEnv();
+
+    assert.equal(env.OPENAI_API_KEY, "openai");
+    assert.equal(env.CODEX_API_KEY, undefined);
+    assert.equal(env.CODEX_ACCESS_TOKEN, undefined);
   } finally {
     process.env = originalEnv;
   }

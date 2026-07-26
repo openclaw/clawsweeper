@@ -57,6 +57,13 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
   CLAWSWEEPER_MODEL: internal
+  CLAWSWEEPER_RUNNER: ${{ vars.CLAWSWEEPER_RUNNER || 'codex' }}
+  CLAWSWEEPER_OPENCLAW_MODEL: ${{ secrets.CLAWSWEEPER_OPENCLAW_MODEL }}
+  CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON: ${{ secrets.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON }}
+  ANTHROPIC_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.ANTHROPIC_API_KEY || '' }}
+  GEMINI_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.GEMINI_API_KEY || '' }}
+  KIMI_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.KIMI_API_KEY || '' }}
+  OPENROUTER_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.OPENROUTER_API_KEY || '' }}
 
 concurrency:
   group: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.comment_id && format('spam-scanner-{0}-issue-comment-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.comment_id) || github.event_name == 'repository_dispatch' && github.event.client_payload.review_comment_id && format('spam-scanner-{0}-review-comment-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.review_comment_id) || format('spam-scanner-{0}', github.event.inputs.target_repo || github.event.client_payload.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw') }}
@@ -114,31 +121,11 @@ jobs:
         with:
           build-script: build:repair
 
-      - uses: ./.github/actions/setup-codex
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.CLAWSWEEPER_AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLAWSWEEPER_AWS_SECRET_ACCESS_KEY }}
-          AWS_SESSION_TOKEN: ${{ secrets.CLAWSWEEPER_AWS_SESSION_TOKEN }}
-          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.CLAWSWEEPER_AWS_BEARER_TOKEN_BEDROCK }}
-          AWS_REGION: ${{ vars.CLAWSWEEPER_AWS_REGION }}
-          GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.CLAWSWEEPER_GOOGLE_APPLICATION_CREDENTIALS_JSON }}
-          GOOGLE_CLOUD_PROJECT: ${{ vars.CLAWSWEEPER_GOOGLE_CLOUD_PROJECT }}
-          GOOGLE_CLOUD_REGION: ${{ vars.CLAWSWEEPER_GOOGLE_CLOUD_REGION }}
-          ANTHROPIC_FOUNDRY_API_KEY: ${{ secrets.CLAWSWEEPER_ANTHROPIC_FOUNDRY_API_KEY }}
-          ANTHROPIC_FOUNDRY_BASE_URL: ${{ vars.CLAWSWEEPER_ANTHROPIC_FOUNDRY_BASE_URL }}
-          ANTHROPIC_FOUNDRY_RESOURCE: ${{ vars.CLAWSWEEPER_ANTHROPIC_FOUNDRY_RESOURCE }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_MODEL_RUNTIME == 'claude' && secrets.CLAWSWEEPER_CLAUDE_MODEL || secrets.CLAWSWEEPER_MODEL }}
-        with:
-          model-runtime: ${{ vars.CLAWSWEEPER_MODEL_RUNTIME || 'codex' }}
-          claude-provider: ${{ vars.CLAWSWEEPER_CLAUDE_PROVIDER || 'anthropic' }}
-
       - name: Scan spam comments
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
         run: |
           set -euo pipefail
           target_repo="${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"

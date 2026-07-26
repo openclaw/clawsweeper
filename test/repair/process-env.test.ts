@@ -68,6 +68,22 @@ test("clawsweeper git identity defaults to avatar-friendly bot name", () => {
   });
 });
 
+test("repair OpenClaw env preserves provider auth without exposing Codex auth", () => {
+  withEnv(
+    {
+      GITHUB_ACTIONS: "true",
+      CLAWSWEEPER_RUNNER: "openclaw",
+      OPENAI_API_KEY: "openai",
+      CODEX_API_KEY: "codex",
+    },
+    () => {
+      const env = codexSubprocessEnv();
+      assert.equal(env.OPENAI_API_KEY, "openai");
+      assert.equal(env.CODEX_API_KEY, undefined);
+    },
+  );
+});
+
 test("repair Codex config keeps repair workers on high fast", () => {
   assert.equal(repairCodexReasoningEffort(undefined), "high");
   assert.equal(repairCodexReasoningEffort(""), "high");

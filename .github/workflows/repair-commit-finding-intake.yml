@@ -58,6 +58,14 @@ env:
   CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS: ${{ vars.CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS || '300000' }}
   CLAWSWEEPER_FIX_PREFLIGHT_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_FIX_PREFLIGHT_TIMEOUT_MS || '120000' }}
   CLAWSWEEPER_MODEL: internal
+  CLAWSWEEPER_RUNNER: ${{ vars.CLAWSWEEPER_RUNNER || 'codex' }}
+  CLAWSWEEPER_OPENCLAW_MODEL: ${{ secrets.CLAWSWEEPER_OPENCLAW_MODEL }}
+  CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON: ${{ secrets.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON }}
+  CLAWSWEEPER_OPENCLAW_OPENAI_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.OPENAI_API_KEY || '' }}
+  ANTHROPIC_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.ANTHROPIC_API_KEY || '' }}
+  GEMINI_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.GEMINI_API_KEY || '' }}
+  KIMI_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.KIMI_API_KEY || '' }}
+  OPENROUTER_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.OPENROUTER_API_KEY || '' }}
   CLAWSWEEPER_TARGET_VALIDATION_MODE: ${{ vars.CLAWSWEEPER_TARGET_VALIDATION_MODE || 'changed-only' }}
   CLAWSWEEPER_RESOLVE_REVIEW_THREADS: ${{ vars.CLAWSWEEPER_RESOLVE_REVIEW_THREADS || '1' }}
   CLAWSWEEPER_MAX_ACTIVE_PRS_PER_AREA: ${{ vars.CLAWSWEEPER_MAX_ACTIVE_PRS_PER_AREA || '50' }}
@@ -149,28 +157,15 @@ jobs:
           pnpm run repair:commit-finding-intake -- "${args[@]}"
 
       - uses: ./.github/actions/setup-codex
-        if: ${{ steps.prepare.outputs.should_repair == 'true' }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.prepare.outputs.should_repair == 'true' }}
         with:
-          model-runtime: ${{ vars.CLAWSWEEPER_MODEL_RUNTIME || 'codex' }}
-          claude-provider: ${{ vars.CLAWSWEEPER_CLAUDE_PROVIDER || 'anthropic' }}
           cache-suffix: target-pnpm
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.CLAWSWEEPER_AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLAWSWEEPER_AWS_SECRET_ACCESS_KEY }}
-          AWS_SESSION_TOKEN: ${{ secrets.CLAWSWEEPER_AWS_SESSION_TOKEN }}
-          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.CLAWSWEEPER_AWS_BEARER_TOKEN_BEDROCK }}
-          AWS_REGION: ${{ vars.CLAWSWEEPER_AWS_REGION }}
-          GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.CLAWSWEEPER_GOOGLE_APPLICATION_CREDENTIALS_JSON }}
-          GOOGLE_CLOUD_PROJECT: ${{ vars.CLAWSWEEPER_GOOGLE_CLOUD_PROJECT }}
-          GOOGLE_CLOUD_REGION: ${{ vars.CLAWSWEEPER_GOOGLE_CLOUD_REGION }}
-          ANTHROPIC_FOUNDRY_API_KEY: ${{ secrets.CLAWSWEEPER_ANTHROPIC_FOUNDRY_API_KEY }}
-          ANTHROPIC_FOUNDRY_BASE_URL: ${{ vars.CLAWSWEEPER_ANTHROPIC_FOUNDRY_BASE_URL }}
-          ANTHROPIC_FOUNDRY_RESOURCE: ${{ vars.CLAWSWEEPER_ANTHROPIC_FOUNDRY_RESOURCE }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_MODEL_RUNTIME == 'claude' && secrets.CLAWSWEEPER_CLAUDE_MODEL || secrets.CLAWSWEEPER_MODEL }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
+
+      - uses: ./.github/actions/setup-openclaw
+        if: ${{ steps.prepare.outputs.should_repair == 'true' }}
 
       - name: Review synthetic result
         if: ${{ steps.prepare.outputs.should_repair == 'true' }}

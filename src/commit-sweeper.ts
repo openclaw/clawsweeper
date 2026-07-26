@@ -19,8 +19,9 @@ import {
 import { publishCheckFromReport, splitFrontMatter } from "./commit-checks.js";
 import { argBool, argNumber, argString, parseArgs, type Args } from "./clawsweeper-args.js";
 import { safeOutputTail } from "./clawsweeper-text.js";
-import { codexEnv, codexLoginConfig, codexModelArgs, PUBLIC_CODEX_MODEL } from "./codex-env.js";
-import { codexProcessErrorCode, runCodexProcess } from "./codex-process.js";
+import { runAgentProcess } from "./agent-runner.js";
+import { codexEnv, codexLoginConfig, PUBLIC_CODEX_MODEL } from "./codex-env.js";
+import { codexProcessErrorCode } from "./codex-process.js";
 import { runText } from "./command.js";
 import { ghRetryKind, ghRetryWaitMs } from "./github-retry.js";
 import {
@@ -316,16 +317,17 @@ function runCodex(options: {
     "utf8",
   );
   const codexConfig = [
-    `model_reasoning_effort="${options.reasoningEffort}"`,
     codexLoginConfig(),
     'approval_policy="never"',
     ...(options.extraCodexConfig ?? []),
   ];
-  if (options.serviceTier) codexConfig.splice(1, 0, `service_tier="${options.serviceTier}"`);
-  const result = runCodexProcess({
-    args: [
-      "exec",
-      ...codexModelArgs(options.model),
+  if (options.serviceTier) codexConfig.unshift(`service_tier="${options.serviceTier}"`);
+  const result = runAgentProcess({
+    label: `commit-review-${options.sha}`,
+    prompt: readFileSync(promptPath, "utf8"),
+    model: options.model,
+    reasoningEffort: options.reasoningEffort,
+    codexExtraArgs: [
       ...codexConfig.flatMap((config) => ["-c", config]),
       "-C",
       options.targetDir,
@@ -337,7 +339,6 @@ function runCodex(options: {
     ],
     cwd: options.targetDir,
     env: codexEnv({ ghToken: process.env.COMMIT_SWEEPER_TARGET_GH_TOKEN }),
-    input: readFileSync(promptPath, "utf8"),
     timeoutMs: options.timeoutMs,
   });
   if (result.error || result.status !== 0 || !existsSync(outputPath)) {

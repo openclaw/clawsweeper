@@ -131,15 +131,33 @@ test("run-worker starts Codex in the target checkout when one is available", () 
     });
 
     assert.equal(fs.readFileSync(cwdFile, "utf8"), fs.realpathSync(targetCheckout));
-    const args = JSON.parse(fs.readFileSync(argsFile, "utf8"));
-    assert.equal(args[args.indexOf("--cd") + 1], targetCheckout);
-    assert.equal(args[args.indexOf("--sandbox") + 1], "danger-full-access");
-    assert.equal(args.includes("--model"), false);
-    assert.equal(args.includes("secret-model-for-test"), false);
     const runDirs = fs.globSync(path.join(repoRoot, `.clawsweeper-repair/runs/${jobName}-plan-*`));
     assert.equal(runDirs.length, 1);
     const runDir = runDirs[0];
     assert.ok(runDir);
+    const args = JSON.parse(fs.readFileSync(argsFile, "utf8"));
+    assert.deepEqual(args, [
+      "exec",
+      "--cd",
+      targetCheckout,
+      "--sandbox",
+      "danger-full-access",
+      "-c",
+      'approval_policy="never"',
+      "-c",
+      'forced_login_method="api"',
+      "-c",
+      'model_reasoning_effort="high"',
+      "-c",
+      'service_tier="fast"',
+      "--output-schema",
+      path.join(repoRoot, "schema/repair/codex-result.schema.json"),
+      "--output-last-message",
+      path.join(runDir, "result.json"),
+      "--json",
+      "-",
+    ]);
+    assert.equal(args.includes("secret-model-for-test"), false);
     assert.ok(fs.statSync(path.join(runDir, "codex.jsonl")).size > 2 * 1024 * 1024);
     assert.equal(fs.statSync(path.join(runDir, "codex.stderr.log")).size, 2 * 1024 * 1024);
   } finally {

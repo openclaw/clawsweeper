@@ -31,11 +31,11 @@ import {
 import {
   codexEnv,
   codexLoginConfig,
-  codexModelArgs,
   PUBLIC_CODEX_MODEL,
   redactInternalCodexModel,
 } from "./codex-env.js";
-import { codexProcessErrorCode, runCodexProcess } from "./codex-process.js";
+import { runAgentProcess } from "./agent-runner.js";
+import { codexProcessErrorCode } from "./codex-process.js";
 import {
   codexJsonlFailureDetail,
   codexRetryDelayMs,
@@ -10619,13 +10619,13 @@ function runCodex(options: {
   );
   const startedAt = Date.now();
   const runReviewPass = (reasoningEffort: string, passAttempts: number): Decision => {
-    const codexConfig = [`model_reasoning_effort="${reasoningEffort}"`, 'approval_policy="never"'];
+    const codexConfig = ['approval_policy="never"'];
     if (options.forcedLoginMethod) {
-      codexConfig.splice(1, 0, `forced_login_method="${options.forcedLoginMethod}"`);
+      codexConfig.unshift(`forced_login_method="${options.forcedLoginMethod}"`);
     } else if (!options.preserveCodexAuth) {
-      codexConfig.splice(1, 0, codexLoginConfig());
+      codexConfig.unshift(codexLoginConfig());
     }
-    if (options.serviceTier) codexConfig.splice(1, 0, `service_tier="${options.serviceTier}"`);
+    if (options.serviceTier) codexConfig.unshift(`service_tier="${options.serviceTier}"`);
     if (options.extraCodexConfig) codexConfig.push(...options.extraCodexConfig);
     for (let attempt = 1; attempt <= passAttempts; attempt += 1) {
       if (existsSync(outputPath)) unlinkSync(outputPath);
@@ -10637,10 +10637,12 @@ function runCodex(options: {
           retryable: false,
         });
       }
-      const result = runCodexProcess({
-        args: [
-          "exec",
-          ...codexModelArgs(options.model),
+      const result = runAgentProcess({
+        label: `review-${options.item.number}-attempt-${attempt}`,
+        prompt,
+        model: options.model,
+        reasoningEffort,
+        codexExtraArgs: [
           ...codexConfig.flatMap((config) => ["-c", config]),
           "-C",
           options.openclawDir,
@@ -10663,7 +10665,6 @@ function runCodex(options: {
           }),
           CLAWSWEEPER_PROOF_SCRATCH_DIR: proofScratchDir,
         },
-        input: prompt,
         stderrPath: join(options.workDir, `${options.item.number}.${attempt}.codex.stderr.log`),
         stdoutPath: join(options.workDir, `${options.item.number}.${attempt}.codex.stdout.log`),
         timeoutMs: remainingMs,
@@ -10973,17 +10974,15 @@ function runCodexAssist(options: {
     ...(options.lens === undefined ? {} : { lens: options.lens }),
   });
   writeFileSync(promptPath, prompt, "utf8");
-  const codexConfig = [
-    `model_reasoning_effort="${options.reasoningEffort}"`,
-    codexLoginConfig(),
-    'approval_policy="never"',
-  ];
+  const codexConfig = [codexLoginConfig(), 'approval_policy="never"'];
   const emptyGitHubConfigDir = join(options.workDir, ".gh-empty");
   ensureDir(emptyGitHubConfigDir);
-  const result = runCodexProcess({
-    args: [
-      "exec",
-      ...codexModelArgs(options.model),
+  const result = runAgentProcess({
+    label: `assist-${options.item.number}`,
+    prompt,
+    model: options.model,
+    reasoningEffort: options.reasoningEffort,
+    codexExtraArgs: [
       ...codexConfig.flatMap((config) => ["-c", config]),
       "--output-last-message",
       outputPath,
@@ -10993,7 +10992,6 @@ function runCodexAssist(options: {
     ],
     cwd: ROOT,
     env: { ...untrustedCodexEnv(), GH_CONFIG_DIR: emptyGitHubConfigDir },
-    input: prompt,
     timeoutMs: options.timeoutMs,
   });
   if (result.error || result.status !== 0 || !existsSync(outputPath)) {

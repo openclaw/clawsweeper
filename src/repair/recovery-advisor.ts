@@ -9,8 +9,8 @@ import {
   ACTION_EVENT_TYPES,
 } from "../action-ledger.js";
 import { recordWorkflowActionEvent } from "../action-ledger-runtime.js";
-import { codexEnv, codexModelArgs } from "../codex-env.js";
-import { runCodexProcess } from "../codex-process.js";
+import { runAgentProcess } from "../agent-runner.js";
+import { codexEnv } from "../codex-env.js";
 import { repoRoot } from "./paths.js";
 
 const RECOVERY_MODEL_TIMEOUT_MS = 30_000;
@@ -463,12 +463,12 @@ function defaultRecoveryModelRunner(input: { prompt: string; timeoutMs: number }
   const workDir = mkdtempSync(join(tmpdir(), "clawsweeper-recovery-advisor-"));
   const outputPath = join(workDir, "recovery-plan.json");
   try {
-    const result = runCodexProcess({
-      args: [
-        "exec",
-        ...codexModelArgs(process.env.CLAWSWEEPER_MODEL_RECOVERY_MODEL ?? "internal"),
-        "-c",
-        'model_reasoning_effort="low"',
+    const result = runAgentProcess({
+      label: "git-recovery-advisor",
+      prompt: input.prompt,
+      model: process.env.CLAWSWEEPER_MODEL_RECOVERY_MODEL ?? "internal",
+      reasoningEffort: "low",
+      codexExtraArgs: [
         "-c",
         'approval_policy="never"',
         "-c",
@@ -496,7 +496,6 @@ function defaultRecoveryModelRunner(input: { prompt: string; timeoutMs: number }
       ],
       cwd: workDir,
       env: recoveryCodexEnv(),
-      input: input.prompt,
       timeoutMs: input.timeoutMs,
       tailBytes: 8 * 1024,
       outputFileBytes: RECOVERY_OUTPUT_MAX_BYTES,
@@ -517,7 +516,12 @@ function defaultRecoveryModelRunner(input: { prompt: string; timeoutMs: number }
 
 function recoveryCodexEnv(): NodeJS.ProcessEnv {
   const env = codexEnv({ preserveCodexAuth: true });
-  const allowedSecrets = new Set(["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"]);
+  const allowedSecrets = new Set([
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "CODEX_ACCESS_TOKEN",
+    ...openclawProviderSecretNames(env.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON),
+  ]);
   for (const key of Object.keys(env)) {
     if (
       !allowedSecrets.has(key) &&
@@ -527,6 +531,30 @@ function recoveryCodexEnv(): NodeJS.ProcessEnv {
     }
   }
   return env;
+}
+
+function openclawProviderSecretNames(providersJson: string | undefined): string[] {
+  if (!providersJson?.trim()) return [];
+  try {
+    const names = new Set<string>();
+    const visit = (value: unknown): void => {
+      if (typeof value === "string") {
+        for (const match of value.matchAll(/\$\{([A-Z][A-Z0-9_]*)\}/g)) {
+          if (match[1]) names.add(match[1]);
+        }
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.forEach(visit);
+        return;
+      }
+      if (value && typeof value === "object") Object.values(value).forEach(visit);
+    };
+    visit(JSON.parse(providersJson));
+    return [...names];
+  } catch {
+    return [];
+  }
 }
 
 function recoveryPrompt(context: RecoveryFailureContext, contextHash: string): string {

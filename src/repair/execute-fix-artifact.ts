@@ -34,7 +34,8 @@ import {
   isRetryableCodexTransportError,
   isTerminalCodexErrorMessage,
 } from "../codex-transient.js";
-import { codexAppServerProcessOptionsFromEnv, runCodexProcess } from "../codex-process.js";
+import { runAgentProcess } from "../agent-runner.js";
+import { codexAppServerProcessOptionsFromEnv } from "../codex-process.js";
 import {
   branchHasBaseDiff,
   currentHead,
@@ -357,12 +358,16 @@ function spawnCodexSyncWithHeartbeat(
     if (typeof options.cwd !== "string" || typeof options.input !== "string") {
       throw new Error(`${label} requires string cwd and input.`);
     }
+    if (args[0] !== "exec") throw new Error(`${label} requires a Codex exec argument list.`);
     const appServer = codexAppServerProcessOptionsFromEnv(label);
-    return runCodexProcess({
-      args,
+    return runAgentProcess({
+      label,
+      prompt: options.input,
+      model,
+      reasoningEffort: codexReasoningEffort,
+      codexExtraArgs: args.slice(1),
       cwd: options.cwd,
       env: options.env ?? process.env,
-      input: options.input,
       timeoutMs: options.timeout ?? currentCodexTimeoutMs(),
       ...(options.stdoutPath ? { stdoutPath: options.stdoutPath } : {}),
       ...(options.stderrPath ? { stderrPath: options.stderrPath } : {}),

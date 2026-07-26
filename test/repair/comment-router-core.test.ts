@@ -3580,10 +3580,7 @@ test("assist workflow preserves flat field fallbacks after nested dispatch field
     /LENS: \$\{\{ github\.event\.client_payload\.assist\.lens \|\| github\.event\.client_payload\.lens \|\| inputs\.lens \|\| 'auto' \}\}/,
   );
   assert.match(workflow, /MODEL: internal/);
-  assert.match(
-    workflow,
-    /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ vars\.CLAWSWEEPER_MODEL_RUNTIME == 'claude' && secrets\.CLAWSWEEPER_CLAUDE_MODEL \|\| secrets\.CLAWSWEEPER_MODEL \}\}/,
-  );
+  assert.match(workflow, /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ secrets\.CLAWSWEEPER_MODEL \}\}/);
   assert.match(workflow, /REASONING_EFFORT: high/);
   assert.doesNotMatch(workflow, /client_payload\.(?:assist\.)?reasoning_effort/);
   assert.match(

@@ -1254,10 +1254,7 @@ test("apply workflow isolates proof Codex and limits mutation Codex to model-gui
   assert.match(applyJob, /CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "1"/);
   assert.match(applyJob, /OPENAI_API_KEY: \$\{\{ secrets\.OPENAI_API_KEY \}\}/);
   assert.match(applyJob, /uses: \.\/\.github\/actions\/setup-codex/);
-  assert.match(
-    applyJob,
-    /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ vars\.CLAWSWEEPER_MODEL_RUNTIME == 'claude' && secrets\.CLAWSWEEPER_CLAUDE_MODEL \|\| secrets\.CLAWSWEEPER_MODEL \}\}/,
-  );
+  assert.match(applyJob, /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ secrets\.CLAWSWEEPER_MODEL \}\}/);
   assert.doesNotMatch(applyJob, /--codex-model|--codex-reasoning-effort/);
   assert.match(applyJob, /Create target write token/);
   assert.match(applyJob, /Create state token/);

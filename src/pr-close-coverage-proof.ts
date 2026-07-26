@@ -1,9 +1,9 @@
-import { codexLoginConfig, codexModelArgs } from "./codex-env.js";
+import { runAgentProcess } from "./agent-runner.js";
+import { codexLoginConfig } from "./codex-env.js";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { codexEnv } from "./codex-env.js";
-import { runCodexProcess } from "./codex-process.js";
 import { safeOutputTail, truncateText } from "./clawsweeper-text.js";
 
 export type PrCloseCoverageProofModelDecision = "covered" | "keep_open";
@@ -285,18 +285,16 @@ export function runPrCloseCoverageProofModel(options: {
   });
   writeFileSync(join(options.runtime.workDir, `${prefix}.prompt.md`), prompt, "utf8");
   if (existsSync(outputPath)) unlinkSync(outputPath);
-  const codexConfig = [
-    `model_reasoning_effort="${options.runtime.reasoningEffort}"`,
-    codexLoginConfig(),
-    'approval_policy="never"',
-  ];
+  const codexConfig = [codexLoginConfig(), 'approval_policy="never"'];
   if (options.runtime.serviceTier) {
-    codexConfig.splice(1, 0, `service_tier="${options.runtime.serviceTier}"`);
+    codexConfig.unshift(`service_tier="${options.runtime.serviceTier}"`);
   }
-  const result = runCodexProcess({
-    args: [
-      "exec",
-      ...codexModelArgs(options.runtime.model),
+  const result = runAgentProcess({
+    label: `pr-close-coverage-${options.source.number}-${options.covering.number}`,
+    prompt,
+    model: options.runtime.model,
+    reasoningEffort: options.runtime.reasoningEffort,
+    codexExtraArgs: [
       ...codexConfig.flatMap((config) => ["-c", config]),
       "-C",
       options.runtime.rootDir,
@@ -310,7 +308,6 @@ export function runPrCloseCoverageProofModel(options: {
     ],
     cwd: options.runtime.rootDir,
     env: codexEnv({ ghToken: options.runtime.ghToken }),
-    input: prompt,
     timeoutMs: options.runtime.timeoutMs,
   });
   if (result.error) {

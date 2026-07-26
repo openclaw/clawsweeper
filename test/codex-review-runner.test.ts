@@ -142,7 +142,30 @@ fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON)
   };
 
   try {
-    assert.ok(runAndReadArgs(false).includes('forced_login_method="chatgpt"'));
+    const defaultArgs = runAndReadArgs(false);
+    assert.deepEqual(defaultArgs, [
+      "exec",
+      "--model",
+      "model-test",
+      "-c",
+      'model_reasoning_effort="high"',
+      "-c",
+      'forced_login_method="chatgpt"',
+      "-c",
+      'approval_policy="never"',
+      "-C",
+      openclawDir,
+      "--output-schema",
+      join(process.cwd(), "schema", "clawsweeper-decision.schema.json"),
+      "--output-last-message",
+      join(workDir, "83395.json"),
+      "--json",
+      "--sandbox",
+      "read-only",
+      "--add-dir",
+      join(workDir, "proof-scratch", "83395"),
+      "-",
+    ]);
     assert.equal(runAndReadArgs(true).includes('forced_login_method="chatgpt"'), false);
     assert.equal(
       runAndReadArgs(true).some((arg) => arg.startsWith("forced_login_method=")),
@@ -776,6 +799,20 @@ test("Codex failure redaction hides the configured internal model", () => {
     assert.equal(redacted.match(/\[REDACTED_INTERNAL_MODEL\]/g)?.length, 2);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("agent failure redaction hides the configured OpenClaw model", () => {
+  const previous = process.env.CLAWSWEEPER_OPENCLAW_MODEL;
+  try {
+    process.env.CLAWSWEEPER_OPENCLAW_MODEL = "private-provider/private-model";
+    assert.equal(
+      redactInternalCodexModel("selected private-provider/private-model"),
+      "selected [REDACTED_INTERNAL_MODEL]",
+    );
+  } finally {
+    if (previous === undefined) delete process.env.CLAWSWEEPER_OPENCLAW_MODEL;
+    else process.env.CLAWSWEEPER_OPENCLAW_MODEL = previous;
   }
 });
 

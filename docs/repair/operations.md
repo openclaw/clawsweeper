@@ -239,17 +239,29 @@ Use Blacksmith labels only when you intentionally want a non-parity hosted runne
 pnpm run repair:dispatch -- jobs/openclaw/cluster-*.md --mode plan --runner blacksmith-4vcpu-ubuntu-2404
 ```
 
+## Choosing the agent runner
+
+ClawSweeper uses Codex by default. Set `CLAWSWEEPER_RUNNER=openclaw` to run the
+agent lanes through the released OpenClaw CLI instead, and set the required
+`CLAWSWEEPER_OPENCLAW_MODEL` to a `provider/model` reference such as
+`openai/gpt-5.6-sol`. `CLAWSWEEPER_OPENCLAW_BIN` may override the executable;
+otherwise ClawSweeper runs `openclaw` from `PATH`.
+
+Providers that are not bundled with OpenClaw can be supplied through
+`CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON`, a JSON object merged into
+`models.providers`; referenced provider API-key environment variables must also
+be present. ClawSweeper gives OpenClaw a fresh state directory, a coding tool
+profile limited to the target workspace, and the lane's existing timeout and
+reasoning effort. OpenClaw can exit zero for terminal agent failures, so the
+wrapper inspects its JSON envelope for agent errors, aborts, timeouts, exhausted
+fallbacks, and error payloads and converts them into ordinary non-zero process
+failures before existing retry logic sees the result.
+
 The workflow uses Node 24 and starts a local Codex Responses proxy from
 `OPENAI_API_KEY` inside an isolated per-run `CODEX_HOME`. Codex subprocesses use
 that proxy config and run without raw OpenAI or Codex API key environment
 variables. The legacy `codex login` path remains available only through the
 local `setup-codex` action's `auth-mode: login` input.
-
-When `CLAWSWEEPER_MODEL_RUNTIME=claude`, the same action installs pinned Claude
-Code, creates an isolated `CLAUDE_CONFIG_DIR`, validates Anthropic, Bedrock,
-Vertex, or Foundry credentials, and passes them through a private mode-`0600`
-file. The compatibility adapter preserves structured output, timeout, sandbox,
-and no-tool behavior expected by repair workers.
 
 Codex runs in a read-only sandbox for classification and receives no GitHub token. GitHub read access is scoped to deterministic preflight scripts. For reviewed fix artifacts, `execute-fix-artifact` gives Codex a temporary target checkout without GitHub credentials, then the deterministic executor commits, pushes, opens the replacement PR, and closes uneditable source PRs only after the replacement exists. When a replacement carries contributor work forward, non-bot source PR authors are added as `Co-authored-by` trailers and named in the replacement PR body and source close comment. Remaining write access is scoped to `apply-result`.
 

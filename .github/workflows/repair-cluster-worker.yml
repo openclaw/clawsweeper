@@ -74,6 +74,14 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
   CLAWSWEEPER_MODEL: internal
+  CLAWSWEEPER_RUNNER: ${{ vars.CLAWSWEEPER_RUNNER || 'codex' }}
+  CLAWSWEEPER_OPENCLAW_MODEL: ${{ secrets.CLAWSWEEPER_OPENCLAW_MODEL }}
+  CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON: ${{ secrets.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON }}
+  CLAWSWEEPER_OPENCLAW_OPENAI_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.OPENAI_API_KEY || '' }}
+  ANTHROPIC_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.ANTHROPIC_API_KEY || '' }}
+  GEMINI_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.GEMINI_API_KEY || '' }}
+  KIMI_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.KIMI_API_KEY || '' }}
+  OPENROUTER_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.OPENROUTER_API_KEY || '' }}
 
 concurrency:
   group: ${{ inputs.requeue && format('clawsweeper-repair-requeue-{0}-{1}', inputs.job, github.run_id) || format('clawsweeper-repair-{0}', inputs.job) }}
@@ -228,7 +236,7 @@ jobs:
 
       - name: Resolve Codex session cache
         id: codex_session
-        if: ${{ steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         env:
           JOB_PATH: ${{ inputs.job }}
         run: |
@@ -245,32 +253,19 @@ jobs:
           build-script: build:repair
 
       - uses: ./.github/actions/setup-codex
-        if: ${{ steps.check_job.outputs.job_exists == '1' }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.CLAWSWEEPER_AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLAWSWEEPER_AWS_SECRET_ACCESS_KEY }}
-          AWS_SESSION_TOKEN: ${{ secrets.CLAWSWEEPER_AWS_SESSION_TOKEN }}
-          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.CLAWSWEEPER_AWS_BEARER_TOKEN_BEDROCK }}
-          AWS_REGION: ${{ vars.CLAWSWEEPER_AWS_REGION }}
-          GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.CLAWSWEEPER_GOOGLE_APPLICATION_CREDENTIALS_JSON }}
-          GOOGLE_CLOUD_PROJECT: ${{ vars.CLAWSWEEPER_GOOGLE_CLOUD_PROJECT }}
-          GOOGLE_CLOUD_REGION: ${{ vars.CLAWSWEEPER_GOOGLE_CLOUD_REGION }}
-          ANTHROPIC_FOUNDRY_API_KEY: ${{ secrets.CLAWSWEEPER_ANTHROPIC_FOUNDRY_API_KEY }}
-          ANTHROPIC_FOUNDRY_BASE_URL: ${{ vars.CLAWSWEEPER_ANTHROPIC_FOUNDRY_BASE_URL }}
-          ANTHROPIC_FOUNDRY_RESOURCE: ${{ vars.CLAWSWEEPER_ANTHROPIC_FOUNDRY_RESOURCE }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_MODEL_RUNTIME == 'claude' && secrets.CLAWSWEEPER_CLAUDE_MODEL || secrets.CLAWSWEEPER_MODEL }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
         with:
-          model-runtime: ${{ vars.CLAWSWEEPER_MODEL_RUNTIME || 'codex' }}
-          claude-provider: ${{ vars.CLAWSWEEPER_CLAUDE_PROVIDER || 'anthropic' }}
           codex-home: ${{ steps.codex_session.outputs.codex_home }}
+
+      - uses: ./.github/actions/setup-openclaw
+        if: ${{ steps.check_job.outputs.job_exists == '1' }}
 
       - name: Restore Codex session
         id: restore_codex_session
-        if: ${{ steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         uses: actions/cache/restore@v6
         with:
           path: |
@@ -282,7 +277,7 @@ jobs:
 
       - name: Register steerable Action session
         id: crabfleet_session
-        if: ${{ steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' && !inputs.dry_run }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' && !inputs.dry_run }}
         env:
           CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN: ${{ secrets.CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN }}
           CLAWSWEEPER_CRABFLEET_OWNER: ${{ vars.CLAWSWEEPER_CRABFLEET_OWNER }}
@@ -393,7 +388,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Save Codex session
-        if: ${{ always() && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ always() && env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         uses: actions/cache/save@v6
         with:
           path: |
@@ -526,7 +521,7 @@ jobs:
 
       - name: Resolve Codex session cache
         id: codex_session
-        if: ${{ steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         env:
           JOB_PATH: ${{ inputs.job }}
         run: |
@@ -544,32 +539,19 @@ jobs:
           build-script: build:repair
 
       - uses: ./.github/actions/setup-codex
-        if: ${{ steps.check_job.outputs.job_exists == '1' }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.CLAWSWEEPER_AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLAWSWEEPER_AWS_SECRET_ACCESS_KEY }}
-          AWS_SESSION_TOKEN: ${{ secrets.CLAWSWEEPER_AWS_SESSION_TOKEN }}
-          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.CLAWSWEEPER_AWS_BEARER_TOKEN_BEDROCK }}
-          AWS_REGION: ${{ vars.CLAWSWEEPER_AWS_REGION }}
-          GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.CLAWSWEEPER_GOOGLE_APPLICATION_CREDENTIALS_JSON }}
-          GOOGLE_CLOUD_PROJECT: ${{ vars.CLAWSWEEPER_GOOGLE_CLOUD_PROJECT }}
-          GOOGLE_CLOUD_REGION: ${{ vars.CLAWSWEEPER_GOOGLE_CLOUD_REGION }}
-          ANTHROPIC_FOUNDRY_API_KEY: ${{ secrets.CLAWSWEEPER_ANTHROPIC_FOUNDRY_API_KEY }}
-          ANTHROPIC_FOUNDRY_BASE_URL: ${{ vars.CLAWSWEEPER_ANTHROPIC_FOUNDRY_BASE_URL }}
-          ANTHROPIC_FOUNDRY_RESOURCE: ${{ vars.CLAWSWEEPER_ANTHROPIC_FOUNDRY_RESOURCE }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_MODEL_RUNTIME == 'claude' && secrets.CLAWSWEEPER_CLAUDE_MODEL || secrets.CLAWSWEEPER_MODEL }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
         with:
-          model-runtime: ${{ vars.CLAWSWEEPER_MODEL_RUNTIME || 'codex' }}
-          claude-provider: ${{ vars.CLAWSWEEPER_CLAUDE_PROVIDER || 'anthropic' }}
           cache-suffix: target-pnpm
           codex-home: ${{ steps.codex_session.outputs.codex_home }}
 
+      - uses: ./.github/actions/setup-openclaw
+        if: ${{ steps.check_job.outputs.job_exists == '1' }}
+
       - name: Restore Codex session
-        if: ${{ steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         uses: actions/cache/restore@v6
         with:
           path: |
@@ -581,7 +563,7 @@ jobs:
 
       - name: Resume steerable Action session
         id: crabfleet_session
-        if: ${{ steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         env:
           CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN: ${{ secrets.CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN }}
           CLAWSWEEPER_CRABFLEET_OWNER: ${{ vars.CLAWSWEEPER_CRABFLEET_OWNER }}
@@ -920,7 +902,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Save Codex session
-        if: ${{ always() && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ always() && env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         uses: actions/cache/save@v6
         with:
           path: |

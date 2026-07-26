@@ -22,7 +22,7 @@ export function codexSubprocessEnv(): NodeJS.ProcessEnv {
     if (/^CLAWSWEEPER_.*GH_TOKEN$/.test(key)) delete env[key];
   }
   if (process.env.GITHUB_ACTIONS === "true") {
-    delete env.OPENAI_API_KEY;
+    if (env.CLAWSWEEPER_RUNNER !== "openclaw") delete env.OPENAI_API_KEY;
     delete env.CODEX_API_KEY;
   }
   delete env.CLAWSWEEPER_INTERNAL_MODEL;

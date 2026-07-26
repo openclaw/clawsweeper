@@ -1,0 +1,69 @@
+name: Setup OpenClaw CLI
+description: Install the pinned OpenClaw CLI when ClawSweeper selects the OpenClaw runner.
+inputs:
+  openclaw-version:
+    description: Exact OpenClaw CLI npm package version.
+    default: "2026.7.2"
+  openclaw-source-ref:
+    description: >-
+      Optional openclaw/openclaw commit SHA. When set, build the CLI from
+      source at that ref instead of installing the npm package. Bridges
+      features that have landed on main but not yet shipped in a release.
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Cache OpenClaw CLI and npm downloads
+      if: ${{ env.CLAWSWEEPER_RUNNER == 'openclaw' }}
+      uses: actions/cache@v6
+      with:
+        path: |
+          ~/.npm
+          ~/.cache/node/corepack
+          ~/.clawsweeper-repair/openclaw
+        key: ${{ runner.os }}-node24-openclaw-${{ inputs['openclaw-version'] }}-v1
+        restore-keys: |
+          ${{ runner.os }}-node24-openclaw-
+
+    - name: Install OpenClaw CLI
+      if: ${{ env.CLAWSWEEPER_RUNNER == 'openclaw' && inputs['openclaw-source-ref'] == '' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        npm config set prefix "$HOME/.clawsweeper-repair/openclaw"
+        npm config set cache "$HOME/.npm"
+        echo "$HOME/.clawsweeper-repair/openclaw/bin" >> "$GITHUB_PATH"
+        export PATH="$HOME/.clawsweeper-repair/openclaw/bin:$PATH"
+        npm install -g "openclaw@${{ inputs['openclaw-version'] }}" \
+          --prefer-online --no-audit --no-fund
+        openclaw --version
+
+    - name: Cache OpenClaw source build
+      if: ${{ env.CLAWSWEEPER_RUNNER == 'openclaw' && inputs['openclaw-source-ref'] != '' }}
+      uses: actions/cache@v6
+      with:
+        path: ~/.clawsweeper-repair/openclaw-source
+        key: ${{ runner.os }}-node24-openclaw-source-${{ inputs['openclaw-source-ref'] }}-v1
+
+    - name: Build OpenClaw CLI from source
+      if: ${{ env.CLAWSWEEPER_RUNNER == 'openclaw' && inputs['openclaw-source-ref'] != '' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        source_root="$HOME/.clawsweeper-repair/openclaw-source"
+        if [ ! -x "$source_root/checkout/dist/index.js" ] || \
+           [ "$(cat "$source_root/ref" 2>/dev/null)" != "${{ inputs['openclaw-source-ref'] }}" ]; then
+          rm -rf "$source_root"
+          mkdir -p "$source_root"
+          git init -q "$source_root/checkout"
+          git -C "$source_root/checkout" fetch -q --depth 1 \
+            https://github.com/openclaw/openclaw.git "${{ inputs['openclaw-source-ref'] }}"
+          git -C "$source_root/checkout" checkout -q FETCH_HEAD
+          (cd "$source_root/checkout" && corepack enable && pnpm install --frozen-lockfile && pnpm build)
+          printf '%s\n' "${{ inputs['openclaw-source-ref'] }}" > "$source_root/ref"
+        fi
+        launcher="$source_root/openclaw"
+        printf '#!/bin/sh\nexec node "%s/checkout/dist/index.js" "$@"\n' "$source_root" > "$launcher"
+        chmod +x "$launcher"
+        echo "CLAWSWEEPER_OPENCLAW_BIN=$launcher" >> "$GITHUB_ENV"
+        "$launcher" --version

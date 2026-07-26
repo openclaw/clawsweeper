@@ -649,7 +649,7 @@ function compatibleDirectPublicationPlans(rows: readonly DirectPublicationRow[])
 
 function boundedItemKey(value: unknown) {
   const text = String(value || "").trim();
-  return text && text.length <= 500 && !/[\0\r\n]/.test(text) ? text : "";
+  return text && text.length <= 500 && !text.includes("\0") && !/[\r\n]/.test(text) ? text : "";
 }
 
 function canonicalPath(value: unknown) {
@@ -660,7 +660,8 @@ function canonicalPath(value: unknown) {
     !path ||
     path.startsWith("/") ||
     path.endsWith("/") ||
-    /[\0\r\n]/.test(path) ||
+    path.includes("\0") ||
+    /[\r\n]/.test(path) ||
     path.split("/").some((part) => !part || part === "." || part === ".." || part === ".git") ||
     new TextEncoder().encode(path).byteLength > MAX_PATH_BYTES
   ) {

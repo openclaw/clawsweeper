@@ -12,6 +12,7 @@ checkpoint, and status-only commits are intentionally omitted.
 - Redesigned PR review comments into a scan-first layout: outcome and merge readiness up top, ratings and verification as compact tables, before-merge work as native checklists, evidence folded into details — with hardened fence-aware section parsing and Mermaid sanitization. Thanks @Patrick-Erichsen! (#776)
 - Screenshot-only real-behavior proof (PNG/JPEG/WebP/GIF) is now hydrated through the bounded media path so sandboxed reviewers can assess it instead of marking it insufficient. Thanks @goutamadwant! (#595)
 - The repair owner policy (`CLAWSWEEPER_ALLOWED_OWNER`) accepts a multi-owner list enforced identically at intake and every execution gate; disallowed owners are rejected before a durable job is written. (#809)
+- Added a pluggable `CLAWSWEEPER_RUNNER` agent-process seam with Codex as the unchanged default and isolated OpenClaw CLI execution for provider/model fallbacks.
 
 - Added review-time bulk-filer detection, transparent labeling, duplicate scrutiny, fix-lane suppression, and within-bucket scheduling de-prioritization for high-volume issue authors.
 - Added end-to-end exact-review handoff health with phase ages, delayed/stalled claim classification, and a phase-aware operator rail on the live dashboard.
