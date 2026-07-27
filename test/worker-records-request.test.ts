@@ -56,6 +56,65 @@ test("signedPost includes a body snippet for non-JSON error bodies", async () =>
   );
 });
 
+test("signedPost throws invalid_json_body for a 2xx response with an empty body", async () => {
+  const { calls, fetchImpl } = fetchStub([jsonResponse(200, "")]);
+  await assert.rejects(
+    signedPost({ baseUrl, path: "/internal/test", webhookSecret, body: {}, fetch: fetchImpl }),
+    (error: Error & { status?: number; code?: string; bodySnippet?: string }) => {
+      assert.equal(error.name, "WorkerRecordRequestError");
+      assert.equal(error.status, 200);
+      assert.equal(error.code, "invalid_json_body");
+      assert.equal(error.bodySnippet, "");
+      return true;
+    },
+  );
+  assert.equal(calls.length, 1, "2xx must not retry");
+});
+
+test("signedPost throws invalid_json_body with a snippet for a 2xx HTML body", async () => {
+  const { fetchImpl } = fetchStub([
+    jsonResponse(200, "<html><body>maintenance page</body></html>", "text/html"),
+  ]);
+  await assert.rejects(
+    signedPost({ baseUrl, path: "/internal/test", webhookSecret, body: {}, fetch: fetchImpl }),
+    (error: Error & { status?: number; code?: string; bodySnippet?: string }) => {
+      assert.equal(error.name, "WorkerRecordRequestError");
+      assert.equal(error.status, 200);
+      assert.equal(error.code, "invalid_json_body");
+      assert.equal(error.bodySnippet, "<html><body>maintenance page</body></html>");
+      assert.match(error.message, /invalid_json_body/);
+      assert.match(error.message, /maintenance page/);
+      return true;
+    },
+  );
+});
+
+test("signedPost resends the full JSON request body on a retry after a 502", async () => {
+  const responses = [
+    jsonResponse(502, "<html>bad gateway</html>", "text/html"),
+    jsonResponse(200, { ok: true }),
+  ];
+  const bodies: string[] = [];
+  const fetchImpl: typeof globalThis.fetch = async (_input, init) => {
+    bodies.push(String(init?.body));
+    const next = responses.shift();
+    if (!next) throw new Error("fetch stub exhausted");
+    return next;
+  };
+  const payload = { repoSlug: "openclaw-openclaw", sections: ["items"], cursor: 0 };
+  const value = await signedPost<{ ok: boolean }>({
+    baseUrl,
+    path: "/internal/test",
+    webhookSecret,
+    body: payload,
+    fetch: fetchImpl,
+  });
+  assert.deepEqual(value, { ok: true });
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[0], JSON.stringify(payload), "first attempt must carry the full JSON body");
+  assert.equal(bodies[1], bodies[0], "retry must resend an identical body payload");
+});
+
 test("signedPost retries 5xx responses and succeeds within the attempt budget", async () => {
   const { calls, fetchImpl } = fetchStub([
     jsonResponse(502, "<html>bad gateway</html>", "text/html"),

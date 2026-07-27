@@ -817,7 +817,14 @@ export async function signedPost<T>(options: {
   try {
     return JSON.parse(bodyText) as T;
   } catch {
-    return null as T;
+    // A 2xx with an empty or non-JSON body is a protocol violation (e.g. an
+    // edge proxy serving a blank 200). Returning null here crashes callers far
+    // from the request; fail loudly with the status and a body snippet instead.
+    throw new WorkerRecordRequestError(
+      response.status,
+      "invalid_json_body",
+      bodyText.trim().slice(0, 200),
+    );
   }
 }
 
