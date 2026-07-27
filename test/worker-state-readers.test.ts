@@ -285,6 +285,87 @@ test("backfill workflow is manual per-target and setup-state plumbs the opt-in W
   assert.match(action, /\.artifacts\/worker-records-cache/);
 });
 
+test("worker records ops workflow snapshots and verifies one requested repository", () => {
+  const workflowSource = readFileSync(".github/workflows/worker-records-ops.yml", "utf8");
+  const workflow = parse(workflowSource) as {
+    on?: {
+      workflow_dispatch?: {
+        inputs?: Record<
+          string,
+          { required?: boolean; type?: string; default?: string; options?: string[] }
+        >;
+      };
+    };
+    env?: Record<string, string>;
+    jobs?: Record<
+      string,
+      {
+        needs?: string;
+        steps?: Array<{ uses?: string; with?: Record<string, unknown>; run?: string }>;
+      }
+    >;
+  };
+  const inputs = workflow.on?.workflow_dispatch?.inputs;
+  assert.deepEqual(inputs?.target_repo, {
+    description: "Repository whose Worker records should be operated on (owner/name).",
+    required: true,
+    type: "string",
+  });
+  assert.deepEqual(inputs?.action, {
+    description: "Worker records operation to run.",
+    required: true,
+    type: "choice",
+    options: ["snapshot", "verify", "both"],
+    default: "both",
+  });
+  assert.match(workflow.env?.CLAWSWEEPER_RECORDS_URL ?? "", /CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL/);
+
+  const snapshot = workflow.jobs?.snapshot;
+  const verify = workflow.jobs?.verify;
+  assert.ok(snapshot);
+  assert.ok(verify);
+  assert.equal(verify.needs, "snapshot");
+  for (const job of [snapshot, verify]) {
+    assert.ok(job.steps?.some((step) => step.uses === "actions/checkout@v7"));
+    assert.ok(job.steps?.some((step) => step.uses === "./.github/actions/setup-pnpm"));
+  }
+  assert.equal(
+    snapshot.steps?.some((step) => step.uses === "./.github/actions/setup-state"),
+    false,
+  );
+  const setupState = verify.steps?.find((step) => step.uses === "./.github/actions/setup-state");
+  assert.equal(setupState?.with?.["records-source"], "git");
+  assert.equal(setupState?.with?.["persist-credentials"], "false");
+  assert.equal(
+    setupState?.with?.["coordinator-enabled"],
+    "${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}",
+  );
+  assert.equal(
+    setupState?.with?.["coordinator-url"],
+    "${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}",
+  );
+
+  assert.match(workflowSource, /inputs\.action == 'snapshot' \|\| inputs\.action == 'both'/);
+  assert.match(
+    workflowSource,
+    /inputs\.action == 'verify' \|\| needs\.snapshot\.result == 'success'/,
+  );
+  assert.match(workflowSource, /signedPost/);
+  assert.match(workflowSource, /\/internal\/state\/records\/snapshots\/trigger/);
+  assert.match(workflowSource, /body: \{ repoSlug: process\.env\.TARGET_SLUG \}/);
+  assert.equal(
+    workflowSource.match(
+      /CLAWSWEEPER_WEBHOOK_SECRET: \$\{\{ secrets\.CLAWSWEEPER_WEBHOOK_SECRET \}\}/g,
+    )?.length,
+    2,
+  );
+  assert.match(
+    workflowSource,
+    /pnpm run state:records:verify --[\s\\]*--state-dir clawsweeper-state[\s\\]*--repo-slug "\$TARGET_SLUG"/,
+  );
+  assert.match(workflowSource, /records\/\$\{\{ steps\.target\.outputs\.slug \}\}/);
+});
+
 function createStateFixture() {
   const root = mkdtempSync(path.join(tmpdir(), "clawsweeper-worker-records-test-"));
   const stateRoot = path.join(root, "state");
