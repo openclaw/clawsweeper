@@ -41,15 +41,18 @@ test("sparse repair build workflows include runtime dependencies", () => {
   }
 });
 
-test("state-hydrating sparse repair workflows keep their hydration script", () => {
+test("state-hydrating sparse repair workflows keep hydration dependencies", () => {
   for (const workflowPath of [
     ".github/workflows/repair-comment-router.yml",
     ".github/workflows/spam-scanner.yml",
   ]) {
-    assert.ok(
-      sparseEntriesCover(sourceSparseCheckoutEntries(workflowPath), "scripts/hydrate-state.ts"),
-      `${workflowPath} missing scripts/hydrate-state.ts`,
-    );
+    const entries = sourceSparseCheckoutEntries(workflowPath);
+    for (const requiredPath of ["scripts/hydrate-state.ts", "scripts/worker-records.ts"]) {
+      assert.ok(
+        sparseEntriesCover(entries, requiredPath),
+        `${workflowPath} missing ${requiredPath}`,
+      );
+    }
   }
 });
 
