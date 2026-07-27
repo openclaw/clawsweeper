@@ -134,6 +134,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Worker record request failures now surface the real status, error code, and a body snippet instead of dying on `Response.clone: Body has already been consumed`, and signed Worker requests retry transient 5xx/network failures (3 attempts, exponential backoff) so Cloudflare 502s no longer kill long export/reconcile runs.
 - Made canonical record replay normalize revision-ordered legacy tuple remnants, continue after per-item validation rejections, and fail once at the end with every rejected item id.
 - Allowed stuck-placeholder recovery to label pull requests by granting its target token pull-request write permission alongside issue write. Thanks @masatohoshino! (#865)
 - Kept root-level apply reports as digest-only action-ledger evidence so ledger-enabled apply runs can finish, publish their compatibility report, and advance their cursor. Thanks @yetval! (#833)

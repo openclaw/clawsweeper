@@ -75,12 +75,18 @@ export class WorkerSnapshotUnavailableError extends Error {
 class WorkerRecordRequestError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly bodySnippet: string;
 
-  constructor(status: number, code: string) {
-    super(`Worker record request failed (${status}): ${code}`);
+  constructor(status: number, code: string, bodySnippet = "") {
+    super(
+      bodySnippet && bodySnippet !== code
+        ? `Worker record request failed (${status}): ${code} — ${bodySnippet}`
+        : `Worker record request failed (${status}): ${code}`,
+    );
     this.name = "WorkerRecordRequestError";
     this.status = status;
     this.code = code;
+    this.bodySnippet = bodySnippet;
   }
 }
 
@@ -719,7 +725,9 @@ async function downloadSnapshot(options: {
         },
         fetch: options.fetch,
       });
-      if (!response.ok) throw await workerRequestError(response);
+      if (!response.ok) {
+        throw workerRequestError(response.status, await response.text().catch(() => ""));
+      }
       if (response.status !== 206) {
         throw new Error(`Worker snapshot chunk returned status ${response.status}`);
       }
@@ -802,10 +810,19 @@ export async function signedPost<T>(options: {
   fetch?: typeof globalThis.fetch;
 }): Promise<T> {
   const response = await signedRequest(options);
-  const value = await response.json().catch(() => null);
-  if (!response.ok) throw await workerRequestError(response, value);
-  return value as T;
+  // Read the body exactly once; a Response body is a one-shot stream and a
+  // later clone() of a consumed response throws, masking the real failure.
+  const bodyText = await response.text().catch(() => "");
+  if (!response.ok) throw workerRequestError(response.status, bodyText);
+  try {
+    return JSON.parse(bodyText) as T;
+  } catch {
+    return null as T;
+  }
 }
+
+const SIGNED_REQUEST_MAX_ATTEMPTS = 3;
+const SIGNED_REQUEST_RETRY_BASE_MS = 250;
 
 async function signedRequest(options: {
   baseUrl: string;
@@ -821,28 +838,50 @@ async function signedRequest(options: {
   if (!options.webhookSecret) throw new Error("Worker records HMAC secret is required");
   const body = JSON.stringify(options.body);
   const signature = `sha256=${createHmac("sha256", options.webhookSecret).update(body).digest("hex")}`;
-  return (options.fetch ?? globalThis.fetch)(`${baseUrl}${options.path}`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-clawsweeper-exact-review-signature": signature,
-    },
-    body,
-  });
+  const performFetch = options.fetch ?? globalThis.fetch;
+  // Bounded retry for transient failures: 5xx responses and network errors
+  // (GitHub/Cloudflare 502s regularly kill long reconcile/export runs). 4xx
+  // responses are deterministic and returned to the caller immediately.
+  for (let attempt = 1; ; attempt += 1) {
+    let response: Response;
+    try {
+      response = await performFetch(`${baseUrl}${options.path}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature": signature,
+        },
+        body,
+      });
+    } catch (error) {
+      if (attempt >= SIGNED_REQUEST_MAX_ATTEMPTS) throw error;
+      await signedRequestBackoff(attempt);
+      continue;
+    }
+    if (response.status < 500 || attempt >= SIGNED_REQUEST_MAX_ATTEMPTS) return response;
+    await response.body?.cancel().catch(() => {});
+    await signedRequestBackoff(attempt);
+  }
 }
 
-async function workerRequestError(response: Response, parsedValue?: unknown) {
-  const value =
-    parsedValue ??
-    (await response
-      .clone()
-      .json()
-      .catch(() => null));
+function signedRequestBackoff(attempt: number) {
+  return new Promise((resolve) =>
+    setTimeout(resolve, SIGNED_REQUEST_RETRY_BASE_MS * 2 ** (attempt - 1)),
+  );
+}
+
+function workerRequestError(status: number, bodyText: string) {
+  let value: unknown = null;
+  try {
+    value = JSON.parse(bodyText);
+  } catch {
+    // Non-JSON error body (e.g. an HTML 502 page); fall through to the snippet.
+  }
   const code =
     value && typeof value === "object" && "error" in value
       ? String((value as { error: unknown }).error)
-      : String(response.status);
-  return new WorkerRecordRequestError(response.status, code);
+      : String(status);
+  return new WorkerRecordRequestError(status, code, bodyText.trim().slice(0, 200));
 }
 
 function batchIngestRecords(
