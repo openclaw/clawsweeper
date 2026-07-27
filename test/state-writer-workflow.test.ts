@@ -48,7 +48,7 @@ test("every generated-state checkout receives the explicit coordinator migration
     }
   }
 
-  assert.equal(setups.length, 30, "new state checkouts must join the repo-wide boundary");
+  assert.equal(setups.length, 31, "new state checkouts must join the repo-wide boundary");
   for (const { file, job, step } of setups) {
     assert.equal(step.with?.["coordinator-enabled"], coordinatorGate, `${file}:${job}`);
     assert.equal(step.with?.["coordinator-url"], coordinatorUrl, `${file}:${job}`);
