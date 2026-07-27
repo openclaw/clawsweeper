@@ -31,7 +31,8 @@ jobs:
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
+          owner: openclaw
+          repositories: clawsweeper
           permission-actions: read
           permission-contents: write
           permission-pull-requests: read
@@ -51,10 +52,22 @@ jobs:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
+      - name: Create target read token
+        id: target-read-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: openclaw
+          repositories: openclaw
+          permission-contents: read
+          permission-pull-requests: read
+
       - uses: ./.github/actions/setup-state
         with:
           coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          coordinator-class: publication_batch
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: actions/setup-node@v6
@@ -145,7 +158,7 @@ jobs:
       - name: Publish result ledger
         if: ${{ steps.download.outputs.has_artifacts == '1' }}
         env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -195,11 +208,23 @@ jobs:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
           set -euo pipefail
+          paths_file=".artifacts/cluster-result-state-paths.txt"
+          mkdir -p .artifacts
+          pnpm run repair:state-delta-paths -- \
+            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --out "$paths_file" \
+            --root results \
+            --root jobs/openclaw \
+            --root repair-apply-report.json \
+            --root notifications
+          if [ ! -s "$paths_file" ]; then
+            echo "No cluster result state changed."
+            exit 0
+          fi
+          publish_args=()
+          while IFS= read -r path; do publish_args+=(--path "$path"); done < "$paths_file"
           pnpm run repair:publish-main -- \
             --message "chore: publish cluster result" \
-            --path results \
-            --path jobs/openclaw/closed \
-            --path repair-apply-report.json \
-            --path notifications \
+            "${publish_args[@]}" \
             --max-attempts 12 \
             --push-attempts 4

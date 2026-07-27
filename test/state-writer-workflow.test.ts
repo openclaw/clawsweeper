@@ -30,6 +30,7 @@ const coordinatorUrl =
 const publicationEntryPoints = [
   /repair:publish-main\b/,
   /repair:publish-event-result\b/,
+  /repair:publish-cluster-intake\b/,
   /repair:exact-review-batch commit\b/,
   /scripts\/prepare-exact-review-batch\.mjs\b/,
   /dist\/repair\/state-materializer\.js\b/,
@@ -171,6 +172,7 @@ test("only bounded publication owners request priority admission", () => {
   }
   assert.deepEqual(prioritySetups, [
     ".github/workflows/exact-review-batch-publish.yml:publish",
+    ".github/workflows/repair-publish-results.yml:publish",
     ".github/workflows/state-materializer.yml:materialize",
   ]);
   const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;

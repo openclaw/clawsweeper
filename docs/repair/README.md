@@ -270,11 +270,11 @@ pnpm run repair:import-gitcrawl -- --from-gitcrawl --limit 40 --mode autonomous 
 
 # Automatic imported-cluster intake runs through repair-cluster-intake.yml.
 # gitcrawl-store refreshes openclaw/openclaw every 15 minutes; the ClawSweeper
-# intake runs daily, records the processed portable DB SHA in
-# results/cluster-repair-intake/<repo>.json, and skips repeated ticks for the
-# same store snapshot. The selector model compares the candidate batch without
-# word lists, scores, or semantic thresholds, and dispatches at most one cluster
-# through the two-worker cluster_repair lane.
+# intake runs daily and the selector model compares the candidate batch without
+# word lists, scores, or semantic thresholds. Intake appends the selected job,
+# store identity, selector summary, and stable dispatch key to the Cloudflare
+# durable window before dispatch. The state materializer projects only those
+# exact paths and recovers pending dispatch without duplicating completed work.
 
 # Dispatch reviewed jobs. Dispatch derives its default live-worker cap from the
 # job's job_intent and config/automation-limits.json. Existing repair lanes
@@ -380,6 +380,9 @@ The workflow needs:
   may reject the entire batch.
 - optional `CLAWSWEEPER_CLUSTER_REPAIR_CANDIDATE_BATCH` variable for the scheduled
   intake; default is `8` candidates, from which the model selects at most one.
+- imported-cluster intake is accepted into the Cloudflare durable window before
+  materialization or dispatch; publication recovery retains the exact selected
+  job and selector decision.
 - merge is separately gated by `CLAWSWEEPER_ALLOW_MERGE`, which defaults to `0`; merge-ready PRs are labeled `clawsweeper:human-review` and `clawsweeper:merge-ready` for a maintainer to merge manually when the global gate is closed
 - required `CLAWSWEEPER_MODEL` GitHub Actions secret containing the actual
   internal model name; workflows, dispatch payloads, comments, and reports use
