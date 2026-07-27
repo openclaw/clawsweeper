@@ -211,6 +211,60 @@ test("queue client signs protocol calls and rejects malformed responses", async 
   });
 });
 
+test("queue client reports legacy terminal reconciliation counters", async () => {
+  const client = new ExactReviewBatchQueueClient({
+    baseUrl: "https://queue.example",
+    webhookSecret: "secret",
+    fetch: async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          apply: true,
+          scanned: 0,
+          legacy_terminal_scanned: 1,
+          eligible: 1,
+          changed: 1,
+          eligible_remaining: 0,
+          stale_revision_eligible: 0,
+          stale_revision_changed: 0,
+          lineage_duplicate_eligible: 0,
+          lineage_duplicate_changed: 0,
+          lineage_refreshed: 0,
+          legacy_terminal_candidates: 1,
+          legacy_terminal_selected: 1,
+          legacy_terminal_eligible: 1,
+          legacy_terminal_changed: 1,
+          protected_batch_items: 0,
+          protected_lineage_items: 0,
+          oldest_eligible_age_seconds: 60,
+          oldest_remaining_age_seconds: null,
+        }),
+      ),
+  });
+
+  assert.deepEqual(await client.reconcilePublications({ apply: true, maxItems: 100 }), {
+    apply: true,
+    scanned: 0,
+    legacyTerminalScanned: 1,
+    eligible: 1,
+    changed: 1,
+    eligibleRemaining: 0,
+    staleRevisionEligible: 0,
+    staleRevisionChanged: 0,
+    lineageDuplicateEligible: 0,
+    lineageDuplicateChanged: 0,
+    lineageRefreshed: 0,
+    legacyTerminalCandidates: 1,
+    legacyTerminalSelected: 1,
+    legacyTerminalEligible: 1,
+    legacyTerminalChanged: 1,
+    protectedBatchItems: 0,
+    protectedLineageItems: 0,
+    oldestEligibleAgeSeconds: 60,
+    oldestRemainingAgeSeconds: null,
+  });
+});
+
 test("queue client uses the current-main effective cap during a rolling deploy", async () => {
   const client = new ExactReviewBatchQueueClient({
     baseUrl: "https://queue.example",

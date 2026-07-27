@@ -2870,7 +2870,7 @@ export class ExactReviewQueue {
           decision: item.decision,
         })),
       );
-      if (terminalized) {
+      if (terminalized.length) {
         await this.scheduleNext(this.readStateSync(), Date.now());
         return;
       }
@@ -3492,11 +3492,12 @@ export class ExactReviewQueue {
 
   private async terminalizePublicationCandidates(
     candidates: Array<Pick<ExactReviewQueueItem, "key" | "revision" | "decision">>,
+    options: { apply?: boolean; legacyReconciliation?: boolean } = {},
   ) {
     const ordinaryCandidates = candidates.filter(
       (item) => !exactReviewQueueHasCommandContext(item),
     );
-    if (!ordinaryCandidates.length) return 0;
+    if (!ordinaryCandidates.length) return [];
 
     const targetTokens = new Map<string, Promise<string>>();
     const targetTokenFor = (targetRepo: string) => {
@@ -3533,30 +3534,51 @@ export class ExactReviewQueue {
     const checkedAt = Date.now();
     const checkedState = this.readStateSync();
     const batchOwnership = this.batchStore.activeLeaseSnapshot(checkedAt);
-    let completed = 0;
+    const checkedBatchItemKeys = new Set<string>(batchOwnership.itemKeys);
+    if (options.legacyReconciliation) {
+      for (const candidate of liveStates) {
+        if (candidate.state.state !== "terminal") continue;
+        const item = checkedState.items[candidate.key];
+        if (!item) continue;
+        reclaimExpiredExactReviewLease(
+          checkedState,
+          item.key,
+          item,
+          checkedAt,
+          exactReviewPublicationDispatchLeaseMs(this.env),
+          exactReviewHeartbeatGraceMs(this.env),
+        );
+      }
+    }
+    const legacyAuthorityByTarget = options.legacyReconciliation
+      ? exactReviewLegacyPublicationAuthorityIndex(checkedState, checkedBatchItemKeys)
+      : null;
+    const completedKeys: string[] = [];
     for (const candidate of liveStates) {
       const item = checkedState.items[candidate.key];
       if (
         !item ||
         item.revision !== candidate.revision ||
-        item.state !== "pending" ||
+        (item.state !== "pending" && (!options.legacyReconciliation || item.state !== "parked")) ||
         !exactReviewQueueIsPublication(item) ||
         exactReviewQueueHasCommandContext(item) ||
         batchOwnership.itemKeys.includes(item.key) ||
+        (options.legacyReconciliation &&
+          !exactReviewLegacyTerminalPublicationCandidate(item, legacyAuthorityByTarget!)) ||
         candidate.state.state !== "terminal"
       ) {
         continue;
       }
       delete checkedState.items[item.key];
-      completed += 1;
+      completedKeys.push(item.key);
     }
-    if (completed) {
+    if (options.apply !== false && completedKeys.length) {
       await this.writeState(checkedState, {
-        publicationCompleted: completed,
-        publicationSuperseded: completed,
+        publicationCompleted: completedKeys.length,
+        publicationSuperseded: completedKeys.length,
       });
     }
-    return completed;
+    return completedKeys;
   }
 
   private listDeadLetters(value: unknown) {
@@ -4361,14 +4383,33 @@ export class ExactReviewQueue {
     }
 
     const now = Date.now();
-    const activeBatchItemKeys = new Set(this.batchStore.activeLeaseSnapshot(now).itemKeys);
-    const state = this.readStateSync();
-    reclaimExpiredExactReviewLeases(
+    let activeBatchItemKeys = new Set<string>(this.batchStore.activeLeaseSnapshot(now).itemKeys);
+    let state = this.readStateSync();
+    const reclaimed = reclaimExpiredExactReviewLeases(
       state,
       now,
       exactReviewPublicationDispatchLeaseMs(this.env),
       exactReviewHeartbeatGraceMs(this.env),
     );
+    if (apply && reclaimed) {
+      // Persist expiry recovery before the bounded target reads release the
+      // Durable Object input gate, so a later alarm cannot revive this stale
+      // owner while reconciliation is validating it.
+      await this.writeState(state);
+      await this.scheduleNext(state, now);
+      state = this.readStateSync();
+      activeBatchItemKeys = new Set<string>(this.batchStore.activeLeaseSnapshot(now).itemKeys);
+    }
+    const legacyTerminalScanned = Object.values(state.items).length;
+    const legacyAuthorityByTarget = exactReviewLegacyPublicationAuthorityIndex(
+      state,
+      activeBatchItemKeys,
+    );
+    const legacyTerminalCandidates = Object.values(state.items)
+      .filter((item) =>
+        exactReviewLegacyTerminalPublicationCandidate(item, legacyAuthorityByTarget),
+      )
+      .sort((left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key));
     const newestByTarget = new Map<string, number>();
     const versioned = Object.values(state.items).flatMap((item) => {
       const revision = exactReviewPublicationRevision(item.decision);
@@ -4489,6 +4530,10 @@ export class ExactReviewQueue {
         left.item.createdAt - right.item.createdAt || left.item.key.localeCompare(right.item.key),
     );
     const selected = candidates.slice(0, limit);
+    const selectedLegacyTerminal = legacyTerminalCandidates.slice(
+      0,
+      Math.max(0, limit - selected.length),
+    );
     const changedKeys = new Set<string>();
     const changedLineages = new Set<string>();
     let staleRevisionChanged = 0;
@@ -4580,10 +4625,27 @@ export class ExactReviewQueue {
       if (changedKeys.size) await this.scheduleNext(state, now);
     }
 
+    const legacyTerminalEligibleKeys = await this.terminalizePublicationCandidates(
+      selectedLegacyTerminal,
+      {
+        apply,
+        legacyReconciliation: true,
+      },
+    );
+    const legacyTerminalEligibleKeySet = new Set(legacyTerminalEligibleKeys);
+    const legacyTerminalEligible = selectedLegacyTerminal.filter((item) =>
+      legacyTerminalEligibleKeySet.has(item.key),
+    );
+    const legacyTerminalChanged = apply ? legacyTerminalEligibleKeys : [];
+    if (legacyTerminalChanged.length) {
+      await this.scheduleNext(this.readStateSync(), Date.now());
+    }
+
     const remaining = apply
       ? candidates.filter(({ item }) => !changedKeys.has(item.key))
       : candidates;
-    const oldestAgeSeconds = (entries: ReconcileCandidate[]) =>
+    const remainingLegacyTerminal = apply ? [] : legacyTerminalEligible;
+    const oldestAgeSeconds = (entries: Array<{ item: ExactReviewQueueItem }>) =>
       entries.length
         ? Math.floor(
             Math.max(0, now - Math.min(...entries.map(({ item }) => item.createdAt))) / 1000,
@@ -4597,28 +4659,51 @@ export class ExactReviewQueue {
       ok: true,
       apply,
       scanned: versioned.length,
-      eligible: candidates.length,
-      changed: changedKeys.size,
-      eligible_remaining: remaining.length,
+      legacy_terminal_scanned: legacyTerminalScanned,
+      eligible: candidates.length + legacyTerminalEligible.length,
+      changed: changedKeys.size + legacyTerminalChanged.length,
+      eligible_remaining: remaining.length + remainingLegacyTerminal.length,
       stale_revision_eligible: staleRevisionEligible,
       stale_revision_changed: staleRevisionChanged,
       lineage_duplicate_eligible: lineageDuplicateEligible,
       lineage_duplicate_changed: lineageDuplicateChanged,
       lineage_refreshed: lineageRefreshed,
+      legacy_terminal_candidates: legacyTerminalCandidates.length,
+      legacy_terminal_selected: selectedLegacyTerminal.length,
+      legacy_terminal_eligible: legacyTerminalEligible.length,
+      legacy_terminal_changed: legacyTerminalChanged.length,
       protected_batch_items: activeBatchItemKeys.size,
       protected_lineage_items: protectedLineageItems,
-      oldest_eligible_age_seconds: oldestAgeSeconds(candidates),
-      oldest_remaining_age_seconds: oldestAgeSeconds(remaining),
-      sample: selected.slice(0, 20).map(({ item, revision, reason, lineage, retainedKey }) => ({
-        item_key: item.key,
-        queue_revision: item.revision,
-        reason,
-        target_key: revision.targetKey,
-        publication_revision: revision.sourceRevision,
-        superseded_by_revision: newestByTarget.get(revision.targetKey),
-        lineage_claim_generation: lineage?.claimGeneration ?? null,
-        retained_item_key: retainedKey ?? null,
-      })),
+      oldest_eligible_age_seconds: oldestAgeSeconds([
+        ...candidates,
+        ...legacyTerminalEligible.map((item) => ({ item })),
+      ]),
+      oldest_remaining_age_seconds: oldestAgeSeconds([
+        ...remaining,
+        ...remainingLegacyTerminal.map((item) => ({ item })),
+      ]),
+      sample: [
+        ...selected.map(({ item, revision, reason, lineage, retainedKey }) => ({
+          item_key: item.key,
+          queue_revision: item.revision,
+          reason,
+          target_key: revision.targetKey,
+          publication_revision: revision.sourceRevision,
+          superseded_by_revision: newestByTarget.get(revision.targetKey),
+          lineage_claim_generation: lineage?.claimGeneration ?? null,
+          retained_item_key: retainedKey ?? null,
+        })),
+        ...legacyTerminalEligible.map((item) => ({
+          item_key: item.key,
+          queue_revision: item.revision,
+          reason: "legacy_terminal" as const,
+          target_key: item.decision.publication!.itemKey.toLowerCase(),
+          publication_revision: null,
+          superseded_by_revision: null,
+          lineage_claim_generation: null,
+          retained_item_key: null,
+        })),
+      ].slice(0, 20),
     });
   }
 
@@ -8902,6 +8987,92 @@ function exactReviewQueueIsPublication(item: Pick<ExactReviewQueueItem, "decisio
 
 function exactReviewQueueHasCommandContext(item: Pick<ExactReviewQueueItem, "decision">) {
   return Boolean(item.decision.commandStatusMarker || item.decision.statusCommentId);
+}
+
+type ExactReviewLegacyPublicationAuthority = {
+  hasBaseAuthority: boolean;
+  hasActiveOwner: boolean;
+  hasVersionedPublication: boolean;
+  newestLegacyPublication: ExactReviewPublication | null;
+};
+
+function exactReviewLegacyPublicationAuthorityIndex(
+  state: ExactReviewQueueState,
+  activeBatchItemKeys: Set<string>,
+) {
+  const byTarget = new Map<string, ExactReviewLegacyPublicationAuthority>();
+  const authorityFor = (targetKey: string) => {
+    const existing = byTarget.get(targetKey);
+    if (existing) return existing;
+    const authority: ExactReviewLegacyPublicationAuthority = {
+      hasBaseAuthority: false,
+      hasActiveOwner: false,
+      hasVersionedPublication: false,
+      newestLegacyPublication: null,
+    };
+    byTarget.set(targetKey, authority);
+    return authority;
+  };
+
+  for (const item of Object.values(state.items)) {
+    const publication = item.decision.publication;
+    const targetKey = (publication?.itemKey || item.key).toLowerCase();
+    const authority = authorityFor(targetKey);
+    if (!publication) {
+      authority.hasBaseAuthority = true;
+      continue;
+    }
+    if (
+      activeBatchItemKeys.has(item.key) ||
+      item.state === "dispatching" ||
+      item.state === "leased"
+    ) {
+      authority.hasActiveOwner = true;
+    }
+    if (publication.protocolVersion === 2) {
+      authority.hasVersionedPublication = true;
+      continue;
+    }
+    if (
+      !authority.newestLegacyPublication ||
+      exactReviewPublicationProducerIsNewer(publication, authority.newestLegacyPublication)
+    ) {
+      authority.newestLegacyPublication = publication;
+    }
+  }
+  return byTarget;
+}
+
+function exactReviewLegacyTerminalPublicationCandidate(
+  item: ExactReviewQueueItem,
+  authorityByTarget: Map<string, ExactReviewLegacyPublicationAuthority>,
+) {
+  // Protocol-v1 rows have no durable terminal receipt. Reconcile only the
+  // ordinary delivery path after an explicit target-terminal read; command
+  // status rows keep their acknowledgement/completion workflow intact.
+  const publication = item.decision.publication;
+  if (
+    !publication ||
+    publication.protocolVersion !== 1 ||
+    !publication.liveProceeded ||
+    !exactReviewQueueIsPublication(item) ||
+    exactReviewQueueHasCommandContext(item) ||
+    (item.state !== "pending" && item.state !== "parked")
+  ) {
+    return false;
+  }
+
+  const authority = authorityByTarget.get(publication.itemKey.toLowerCase());
+  const newerLegacyPublication =
+    authority?.newestLegacyPublication &&
+    exactReviewPublicationProducerIsNewer(authority.newestLegacyPublication, publication);
+  return Boolean(
+    authority &&
+    !authority.hasBaseAuthority &&
+    !authority.hasActiveOwner &&
+    !authority.hasVersionedPublication &&
+    !newerLegacyPublication,
+  );
 }
 
 function exactReviewQueueLane(item: ExactReviewQueueItem) {

@@ -212,11 +212,19 @@ the existing supersession behavior.
 Each dry-run or apply result records the total scanned and eligible rows, rows
 changed and remaining, stale-revision versus duplicate-lineage counts, refreshed
 retained lineages, protected ownership, and the oldest eligible and remaining
-ages. Operators should inspect a dry-run first, apply one bounded pass, then
-observe the public 15-minute and 60-minute publication flow. Another pass should
-wait for stable positive net drain and unchanged contention/dead-letter safety;
-historical cleanup is not a reason to raise publication concurrency or bypass
-the state-writer rollout gates.
+ages. A pass may also reconcile a protocol-v1 ordinary publication only when its
+producer recorded `live_proceeded`, the row is pending or parked without an
+active batch or lease, no newer target authority remains, and one bounded target
+read confirms the item is terminal. Protocol-v1 command/status rows are never
+reclaimed by this path because their acknowledgement completion has no equivalent
+durable receipt. Each pass reports protocol-v1 candidates separately from the
+bounded subset selected for a target read and the subset confirmed terminal; a
+dry run performs that same read without deleting a row. Operators should inspect
+a dry-run first, apply one bounded pass, then observe the public 15-minute and
+60-minute publication flow. Another pass should wait for stable positive net
+drain and unchanged contention/dead-letter safety; historical cleanup is not a
+reason to raise publication concurrency or bypass the state-writer rollout
+gates.
 
 ### Bounded fresh-authority admission
 
