@@ -37,6 +37,7 @@
     "repair:build-fix-artifact": "node dist/repair/plan-cluster.js",
     "repair:import-gitcrawl": "node dist/repair/import-gitcrawl-clusters.js",
     "repair:filter-cluster-candidates-live": "node dist/repair/filter-cluster-candidates-live.js",
+    "repair:publish-cluster-intake": "node dist/repair/publish-cluster-intake.js",
     "repair:import-gitcrawl-low-signal": "node dist/repair/import-gitcrawl-low-signal-prs.js",
     "repair:import-ghcrawl": "node dist/repair/import-gitcrawl-clusters.js",
     "repair:import-low-signal": "node dist/repair/import-gitcrawl-low-signal-prs.js",
