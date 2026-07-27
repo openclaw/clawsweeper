@@ -56,6 +56,20 @@ test("review prompt documents gated backlog close policies", () => {
   );
 });
 
+test("review prompt closes independently disproven nonexistent-source bug reports", () => {
+  const prompt = readFileSync(new URL("../prompts/review-item.md", import.meta.url), "utf8");
+
+  assert.match(prompt, /For `cannot_reproduce`, distinguish missing reporter evidence/);
+  assert.match(prompt, /Search the complete current tree,\s+source history, renamed paths/);
+  assert.match(prompt, /actual owner, callers, dependency contract, and relevant regression tests/);
+  assert.match(prompt, /named implementation never existed or cannot perform the alleged/);
+  assert.match(prompt, /propose a high-confidence close with that source-backed evidence/);
+  assert.match(prompt, /Do not keep a source-disproven issue open/);
+  assert.match(prompt, /Bulk filing is not itself a close reason/);
+  assert.match(prompt, /each claim is\s+independently disproved/);
+  assert.match(prompt, /Keep open when an affected shipped version/);
+});
+
 test("unsponsored feature issue proposals emit source-bound trusted close markers", () => {
   const markers = reviewAutomationMarkersFromReport(
     reportFrontMatter({

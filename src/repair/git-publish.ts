@@ -2433,8 +2433,8 @@ function pushPublishedCommit(
       console.log(
         "State publish renewed its owner lease without the branch; recovering the lost state race",
       );
-      if (receiptRef && isCommitRefsTransactionFailure(pushed)) {
-        return pushStateAndReceiptAfterCommitRefsFailure(
+      if (isCommitRefsTransactionFailure(pushed)) {
+        return recoverStatePublishAfterCommitRefsFailure(
           source,
           remote,
           branch,
@@ -2450,8 +2450,8 @@ function pushPublishedCommit(
         "State publish lease ownership changed before branch publication",
       );
     }
-    if (receiptRef && isCommitRefsTransactionFailure(pushed)) {
-      return pushStateAndReceiptAfterCommitRefsFailure(
+    if (isCommitRefsTransactionFailure(pushed)) {
+      return recoverStatePublishAfterCommitRefsFailure(
         source,
         remote,
         branch,
@@ -2480,11 +2480,11 @@ function commitRefsRetryDelayMs(attempt: number): number {
   );
 }
 
-function pushStateAndReceiptAfterCommitRefsFailure(
+function recoverStatePublishAfterCommitRefsFailure(
   source: string,
   remote: string,
   branch: string,
-  receiptRef: string,
+  receiptRef: string | undefined,
   expectedReceiptOid: string | null,
   lease: StatePublishLease,
 ): GitRunResult {
@@ -2493,13 +2493,13 @@ function pushStateAndReceiptAfterCommitRefsFailure(
   const sourceParent = runGit(["rev-parse", `${sourceCommit}^`], { quiet: true }).trim();
   const branchRef = `refs/heads/${branch}`;
   let remoteBranchOid = remoteRefOid(remote, branchRef);
-  let remoteReceiptOid = remoteRefOid(remote, receiptRef);
-  if (remoteReceiptOid !== expectedReceiptOid && remoteReceiptOid !== sourceCommit) {
+  let remoteReceiptOid = receiptRef ? remoteRefOid(remote, receiptRef) : null;
+  if (receiptRef && remoteReceiptOid !== expectedReceiptOid && remoteReceiptOid !== sourceCommit) {
     throw new StatePublishContentionError(
       `State batch receipt ${receiptRef} changed before commit_refs recovery`,
     );
   }
-  if (remoteBranchOid === sourceCommit && remoteReceiptOid === sourceCommit) {
+  if (remoteBranchOid === sourceCommit && (!receiptRef || remoteReceiptOid === sourceCommit)) {
     return { status: 0, stdout: "", stderr: "", timedOut: false };
   }
   if (remoteBranchOid !== sourceCommit && remoteBranchOid !== sourceParent) {
@@ -2510,9 +2510,11 @@ function pushStateAndReceiptAfterCommitRefsFailure(
   lease.coordinator?.assertActive();
 
   console.log(
-    "State publish retrying GitHub commit_refs failure with fenced single-ref receipt and state updates",
+    receiptRef
+      ? "State publish retrying GitHub commit_refs failure with fenced single-ref receipt and state updates"
+      : "State publish retrying GitHub commit_refs failure with fenced single-ref state updates",
   );
-  if (remoteReceiptOid !== sourceCommit) {
+  if (receiptRef && remoteReceiptOid !== sourceCommit) {
     // A batch-specific receipt may safely outlive this lease. A later retry
     // resumes only while state still equals sourceParent and otherwise fails
     // closed, so persist that progress before renewing the shared-state fence.

@@ -466,6 +466,20 @@ Use reason-specific anchors:
   release tag/version. If it is only on current `main`, say that and include the
   commit timestamp. If you cannot establish either the shipped release or the
   main-only timestamp with high confidence, keep the item open.
+- For `cannot_reproduce`, distinguish missing reporter evidence from a report
+  whose concrete mechanism is disproved. Search the complete current tree,
+  source history, renamed paths, and shipped version when identified; trace the
+  actual owner, callers, dependency contract, and relevant regression tests. If
+  the named implementation never existed or cannot perform the alleged
+  operation, and the real implementation or tests disprove the reported
+  failure, propose a high-confidence close with that source-backed evidence.
+  Do not keep a source-disproven issue open, ask for screenshots or logs, or
+  request maintainer follow-up merely because the reporter did not supply a
+  reproduction. Bulk filing is not itself a close reason, but repeated reports
+  about nonexistent files still close for `cannot_reproduce` when each claim is
+  independently disproved. Keep open when an affected shipped version, real
+  source path, observed user failure, or dependency behavior remains
+  unverified.
 - For `mostly_implemented_on_main`, use the same source/history/release
   provenance standard as `implemented_on_main`, but only for pull requests older
   than 60 days whose central useful change is already on current `main`.

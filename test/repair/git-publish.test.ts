@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import test from "node:test";
 
 import {
@@ -2770,6 +2770,103 @@ test("state publish lease renews and fences a push after the original TTL", () =
   );
 });
 
+test("receipt-less state publication recovers GitHub commit_refs rejections", () => {
+  const { origin, root, work } = createStateLeaseTestRepo(
+    "clawsweeper-state-materializer-commit-refs-",
+  );
+  const candidate = path.join(root, "candidate");
+  const number = 10_103;
+  const recordRoot = "records/openclaw-openclaw";
+  const tuple = writeRecordTuple(candidate, {
+    number,
+    marker: "materialized close proposal",
+    reviewedAt: "2026-07-27T10:00:00.000Z",
+    itemUpdatedAt: "2026-07-27T09:59:00Z",
+  });
+  const paths = [
+    `${recordRoot}/items/${number}.md`,
+    `${recordRoot}/closed/${number}.md`,
+    `${recordRoot}/plans/${number}.md`,
+    `${recordRoot}/decision-packets/${number}.json`,
+  ];
+  const rejectedStateMarker = path.join(origin, "hooks", "rejected-materializer-state-once");
+  const hook = path.join(origin, "hooks", "pre-receive");
+  fs.writeFileSync(
+    hook,
+    [
+      "#!/bin/sh",
+      "count=0",
+      'only_ref=""',
+      "while read -r old_oid new_oid ref_name; do",
+      "  count=$((count + 1))",
+      '  only_ref="$ref_name"',
+      "done",
+      'if [ "$count" -ge 2 ]; then',
+      '  echo "fatal error in commit_refs" >&2',
+      "  exit 1",
+      "fi",
+      `if [ "$only_ref" = "refs/heads/state" ] && [ ! -f '${rejectedStateMarker}' ]; then`,
+      `  touch '${rejectedStateMarker}'`,
+      '  echo "fatal error in commit_refs" >&2',
+      "  exit 1",
+      "fi",
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
+  fs.chmodSync(hook, 0o755);
+
+  let result;
+  const lines = captureConsoleLog(() => {
+    result = withEnv(
+      {
+        CLAWSWEEPER_PUBLISH_ROOT: work,
+        CLAWSWEEPER_PUBLISH_BRANCH: "state",
+      },
+      () =>
+        withCwd(candidate, () =>
+          withStatePublishLease(
+            () =>
+              publishMainCommit({
+                message: "chore: materialize source-disproven close proposal",
+                paths,
+                branch: "state",
+                maxAttempts: 1,
+                pushAttempts: 1,
+                rebaseStrategy: "reconcile-records",
+              }),
+            { branch: "state", acquireTimeoutMs: 5_000, waitMs: 10 },
+          ),
+        ),
+    );
+  });
+
+  assert.equal(result, "committed");
+  assert.equal(fs.existsSync(rejectedStateMarker), true);
+  assert.equal(
+    lines.some((line) => line.includes("commit_refs failure with fenced single-ref state updates")),
+    true,
+  );
+  assert.equal(
+    run("git", ["--git-dir", origin, "show", `state:${recordRoot}/items/${number}.md`], root),
+    tuple.primary,
+  );
+  assert.equal(
+    run(
+      "git",
+      [
+        "--git-dir",
+        origin,
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/heads/clawsweeper-state-batches",
+      ],
+      root,
+    ),
+    "",
+  );
+});
+
 test("state publish lease survives a lost race without resetting the state worktree", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-lease-rebuild-"));
   const origin = path.join(root, "origin.git");
@@ -5333,6 +5430,19 @@ function installCheckoutHeader(work) {
     ["config", "--local", `includeIf.gitdir:${path.join(work, ".git")}.path`, credentialsConfig],
     work,
   );
+  // macOS resolves temporary `/var` repositories through `/private/var`.
+  // Probe first so matching gitdir includes never load the same header twice.
+  const checkoutHeaders = spawnSync(
+    "git",
+    ["config", "--includes", "--local", "--name-only", "--get-regexp", "^http\\..*\\.extraheader$"],
+    { cwd: work, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+  if (checkoutHeaders.error) throw checkoutHeaders.error;
+  if (checkoutHeaders.status === 1) {
+    run("git", ["config", "--local", "include.path", credentialsConfig], work);
+  } else if (checkoutHeaders.status !== 0) {
+    throw new Error(`Failed to inspect fixture checkout headers: ${checkoutHeaders.stderr.trim()}`);
+  }
 }
 
 function installCheckpointFailureHook(work, other, branch) {
