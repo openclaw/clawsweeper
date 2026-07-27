@@ -250,7 +250,7 @@ jobs:
           set -euo pipefail
           test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
           queue_url="${QUEUE_URL%/}"
-          IFS=$'\t' read -r target_repo target_branch use_source_authority < <(node <<'NODE'
+          mapfile -d '' -t legacy_intake_fields < <(node <<'NODE'
           const payload = JSON.parse(process.env.CLIENT_PAYLOAD || "{}");
           const itemKind = payload.item_kind === "pull_request" ? "pull_request" : "issue";
           const queueClaim = payload.queue_claim && typeof payload.queue_claim === "object"
@@ -280,10 +280,17 @@ jobs:
             (payload.source_event === "pull_request" || payload.source_event === "pull_request_target") &&
             /^[0-9a-f]{64}$/.test(ingressFingerprint);
           process.stdout.write(
-            `${String(payload.target_repo || "openclaw/openclaw").trim()}\t${String(payload.target_branch || "").trim()}\t${itemKind === "pull_request" && payload.source_event === "pull_request" && payload.source_action === "edited" && Number.isInteger(installationId) && installationId > 0 && /^[0-9a-f]{40}$/.test(sourceHeadSha) && /^[0-9a-f]{40}$/.test(sourceBaseSha) && typeof sourceIsDraft === "boolean" && /^[0-9a-f]{64}$/.test(sourceContentRevision) && !targetDispatcherIngress ? "1" : "0"}\n`,
+            `${String(payload.target_repo || "openclaw/openclaw").trim()}\0${String(payload.target_branch || "").trim()}\0${itemKind === "pull_request" && payload.source_event === "pull_request" && payload.source_action === "edited" && Number.isInteger(installationId) && installationId > 0 && /^[0-9a-f]{40}$/.test(sourceHeadSha) && /^[0-9a-f]{40}$/.test(sourceBaseSha) && typeof sourceIsDraft === "boolean" && /^[0-9a-f]{64}$/.test(sourceContentRevision) && !targetDispatcherIngress ? "1" : "0"}\0`,
           );
           NODE
           )
+          if [ "${#legacy_intake_fields[@]}" -ne 3 ]; then
+            echo "Invalid legacy intake field count." >&2
+            exit 1
+          fi
+          target_repo="${legacy_intake_fields[0]}"
+          target_branch="${legacy_intake_fields[1]}"
+          use_source_authority="${legacy_intake_fields[2]}"
           if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
             echo "Invalid legacy target repository: $target_repo" >&2
             exit 1

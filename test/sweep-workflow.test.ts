@@ -2656,6 +2656,13 @@ test("sweep event reviews and target fanout avoid storm amplification", () => {
   assert.match(legacyIntakeBlock, /gh api "repos\/\$target_repo" --jq \.default_branch/);
   assert.match(legacyIntakeBlock, /targetBranch: process\.env\.TARGET_BRANCH/);
   assert.doesNotMatch(legacyIntakeBlock, /targetBranch: payload\.target_branch \|\| "main"/);
+  assert.match(legacyIntakeBlock, /mapfile -d '' -t legacy_intake_fields/);
+  assert.match(legacyIntakeBlock, /\.trim\(\)\}\\0\$\{String\(payload\.target_branch/);
+  assert.match(legacyIntakeBlock, /target_branch="\$\{legacy_intake_fields\[1\]\}"/);
+  assert.doesNotMatch(
+    legacyIntakeBlock,
+    /IFS=\$'\\t' read -r target_repo target_branch use_source_authority/,
+  );
   assert.match(legacyIntakeBlock, /sourceBaseSha/);
   assert.match(legacyIntakeBlock, /sourceIsDraft/);
   assert.match(legacyIntakeBlock, /sourceContentRevision/);
