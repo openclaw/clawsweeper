@@ -8219,6 +8219,65 @@ test("canonical tuple publication updates Worker authority and appends one proje
   assert.equal((await rejected.json()).error, "canonical_record_tuple_conflict");
 });
 
+test("canonical tuple publication accepts explicit absent sidecars and closed records", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const packet = '{"version":1}\n';
+  const packetDigest = createHash("sha256").update(packet).digest("hex");
+  const cases = [
+    {
+      itemId: 51,
+      primarySection: "items",
+      primary: [
+        "---",
+        `decision_packet_sha256: ${packetDigest}`,
+        "decision_packet_path: records/openclaw-openclaw/decision-packets/51.json",
+        "---",
+        "open item without a plan",
+        "",
+      ].join("\n"),
+      plan: null,
+      packet,
+    },
+    {
+      itemId: 52,
+      primarySection: "items",
+      primary:
+        "---\ndecision_packet_sha256: none\ndecision_packet_path: none\n---\nopen item without a packet\n",
+      plan: "---\nreviewed_at: 2026-07-26T01:00:00Z\n---\nwork plan\n",
+      packet: null,
+    },
+    {
+      itemId: 53,
+      primarySection: "closed",
+      primary: "---\ndecision_packet_sha256: none\ndecision_packet_path: none\n---\nclosed item\n",
+      plan: null,
+      packet: null,
+    },
+  ] as const;
+
+  for (const fixture of cases) {
+    const content = new Map<string, string | null>([
+      ["items", fixture.primarySection === "items" ? fixture.primary : null],
+      ["closed", fixture.primarySection === "closed" ? fixture.primary : null],
+      ["plans", fixture.plan],
+      ["decision-packets", fixture.packet],
+    ]);
+    const operations = [...content].map(([section, value]) => ({
+      path: `records/openclaw-openclaw/${section}/${fixture.itemId}.${section === "decision-packets" ? "json" : "md"}`,
+      expectedDigest: null,
+      ...(value === null ? {} : { contentBase64: Buffer.from(value).toString("base64") }),
+    }));
+    const response = await queue.fetch(
+      stateAppendQueueRequest("/records/tuples", {
+        deliveryId: `record-tuple:partial:${fixture.itemId}`,
+        key: `openclaw-openclaw/${fixture.itemId}`,
+        operations,
+      }),
+    );
+    assert.equal(response.status, 202, await response.text());
+  }
+});
+
 test("state append sheds atomically at the configured cap without consuming its receipt", async () => {
   const queue = new ExactReviewQueue(
     { storage: new MemoryDurableStorage() },

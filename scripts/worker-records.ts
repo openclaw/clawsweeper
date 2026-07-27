@@ -53,6 +53,12 @@ export type WorkerStoredSnapshot = {
   access: { mode: "worker_range_proxy"; maxChunkBytes: number };
 };
 
+export type WorkerRecordReplayFailure = {
+  itemId: string;
+  status: number | null;
+  code: string;
+};
+
 export class WorkerSnapshotUnavailableError extends Error {
   readonly reason: "snapshot_store_unavailable" | "snapshot_not_found";
 
@@ -74,6 +80,15 @@ class WorkerRecordRequestError extends Error {
     this.name = "WorkerRecordRequestError";
     this.status = status;
     this.code = code;
+  }
+}
+
+class WorkerRecordReplayTupleError extends Error {
+  readonly code = "invalid_replay_record_tuple";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkerRecordReplayTupleError";
   }
 }
 
@@ -373,6 +388,9 @@ export async function replayWorkerRecordProjections(options: {
   cursor?: number;
   fetch?: typeof globalThis.fetch;
   onTuple?: (progress: { completed: number; total: number; itemId: string }) => void;
+  onTupleFailure?: (
+    progress: WorkerRecordReplayFailure & { completed: number; total: number },
+  ) => void;
 }) {
   const snapshot = await exportWorkerRecords({
     baseUrl: options.baseUrl,
@@ -400,50 +418,179 @@ export async function replayWorkerRecordProjections(options: {
   }
   const ids = selectedIds.slice(cursor, cursor + maximum);
   let deduped = 0;
+  let replayed = 0;
+  const failures: WorkerRecordReplayFailure[] = [];
   for (let index = 0; index < ids.length; index += 1) {
     const itemId = ids[index]!;
-    const operations = (["items", "closed", "plans", "decision-packets"] as const).map(
-      (section) => {
-        const record = byKey.get(`${section}/${itemId}`);
-        const extension = section === "decision-packets" ? "json" : "md";
-        const path = `records/${options.repoSlug}/${section}/${itemId}.${extension}`;
-        if (!record || record.deleted) return { path, expectedDigest: null };
-        if (record.content === null || record.digest === null) {
-          throw new Error(`Worker replay record is missing content: ${section}/${itemId}`);
-        }
-        return {
-          path,
-          expectedDigest: record.digest,
-          contentBase64: Buffer.from(record.content).toString("base64"),
-        };
-      },
-    );
-    const contentHash = createHash("sha256")
-      .update(JSON.stringify({ repoSlug: options.repoSlug, itemId, operations }))
-      .digest("hex");
-    const response = await signedPost<{ deduped?: boolean }>({
-      baseUrl: options.baseUrl,
-      path: "/internal/state/records/tuples",
-      webhookSecret: options.webhookSecret,
-      body: {
-        deliveryId: `record-replay:${options.repoSlug}:${itemId}:${contentHash}`,
-        key: `${options.repoSlug}/${itemId}`,
-        operations,
-      },
-      fetch: options.fetch,
-    });
-    if (response.deduped === true) deduped += 1;
-    options.onTuple?.({ completed: index + 1, total: ids.length, itemId });
+    try {
+      const operations = replayTupleOperations(options.repoSlug, itemId, byKey);
+      const contentHash = createHash("sha256")
+        .update(JSON.stringify({ repoSlug: options.repoSlug, itemId, operations }))
+        .digest("hex");
+      const response = await signedPost<{ deduped?: boolean }>({
+        baseUrl: options.baseUrl,
+        path: "/internal/state/records/tuples",
+        webhookSecret: options.webhookSecret,
+        body: {
+          deliveryId: `record-replay:${options.repoSlug}:${itemId}:${contentHash}`,
+          key: `${options.repoSlug}/${itemId}`,
+          operations,
+        },
+        fetch: options.fetch,
+      });
+      replayed += 1;
+      if (response.deduped === true) deduped += 1;
+      options.onTuple?.({ completed: index + 1, total: ids.length, itemId });
+    } catch (error) {
+      const failure = replayFailure(itemId, error);
+      if (!failure) throw error;
+      failures.push(failure);
+      options.onTupleFailure?.({
+        ...failure,
+        completed: index + 1,
+        total: ids.length,
+      });
+    }
   }
   const completedCursor = cursor + ids.length;
   return {
-    replayed: ids.length,
+    attempted: ids.length,
+    replayed,
     deduped,
+    failed: failures.length,
+    failedIds: failures.map((failure) => failure.itemId),
+    failures,
     available: selectedIds.length,
     cursor,
     nextCursor: completedCursor < selectedIds.length ? completedCursor : null,
     revision: snapshot.revision,
   };
+}
+
+const REPLAY_TUPLE_SECTIONS = ["items", "closed", "plans", "decision-packets"] as const;
+
+function replayTupleOperations(
+  repoSlug: string,
+  itemId: string,
+  byKey: ReadonlyMap<string, WorkerRecord>,
+) {
+  const records = new Map(
+    REPLAY_TUPLE_SECTIONS.map((section) => [section, byKey.get(`${section}/${itemId}`)]),
+  );
+  const live = (section: (typeof REPLAY_TUPLE_SECTIONS)[number]) => {
+    const record = records.get(section);
+    return record && !record.deleted ? record : null;
+  };
+  let item = live("items");
+  let closed = live("closed");
+  let plan = live("plans");
+  let packet = live("decision-packets");
+
+  // Revision-zero backfill rows can expose an older section beside a canonical
+  // row. Replay may remove only the side whose lower revision proves it stale.
+  if (item && closed) {
+    if (item.revision === closed.revision) {
+      throw replayTupleError(itemId, "open and closed primary records have equal authority");
+    }
+    if (item.revision > closed.revision) closed = null;
+    else item = null;
+  }
+  const primary = item ?? closed;
+  if (!primary) {
+    if (plan || packet) {
+      throw replayTupleError(itemId, "sidecars have no authoritative primary record");
+    }
+  } else {
+    if (closed && plan) {
+      if (closed.revision <= plan.revision) {
+        throw replayTupleError(itemId, "closed primary does not supersede its work plan");
+      }
+      plan = null;
+    }
+    packet = replayDecisionPacket(repoSlug, itemId, primary, packet);
+  }
+
+  const targets = { items: item, closed, plans: plan, "decision-packets": packet };
+  return REPLAY_TUPLE_SECTIONS.map((section) => {
+    const current = live(section);
+    const target = targets[section];
+    const extension = section === "decision-packets" ? "json" : "md";
+    const path = `records/${repoSlug}/${section}/${itemId}.${extension}`;
+    return {
+      path,
+      expectedDigest: current?.digest ?? null,
+      ...(target ? { contentBase64: Buffer.from(target.content!).toString("base64") } : {}),
+    };
+  });
+}
+
+function replayDecisionPacket(
+  repoSlug: string,
+  itemId: string,
+  primary: WorkerRecord,
+  packet: WorkerRecord | null,
+) {
+  const frontMatter = recordFrontMatter(primary.content!);
+  const digest = frontMatter.get("decision_packet_sha256");
+  const pointer = frontMatter.get("decision_packet_path");
+  const noReference =
+    (digest === undefined && pointer === undefined) || (digest === "none" && pointer === "none");
+  if (noReference) {
+    if (!packet) return null;
+    if (primary.revision <= packet.revision) {
+      throw replayTupleError(itemId, "unreferenced decision packet is not older than its primary");
+    }
+    return null;
+  }
+  const expectedPath = `records/${repoSlug}/decision-packets/${itemId}.json`;
+  if (!packet || digest !== packet.digest || pointer !== expectedPath) {
+    throw replayTupleError(itemId, "decision packet reference does not match canonical content");
+  }
+  return packet;
+}
+
+function recordFrontMatter(markdown: string) {
+  const normalized = markdown.replace(/\r\n/g, "\n");
+  const end = normalized.startsWith("---\n") ? normalized.indexOf("\n---", 4) : -1;
+  const values = new Map<string, string>();
+  if (end === -1) return values;
+  for (const line of normalized.slice(4, end).split("\n")) {
+    const match = /^([a-z][a-z0-9_]*):\s*(.*?)\s*$/.exec(line);
+    if (!match?.[1]) continue;
+    const value = match[2] ?? "";
+    values.set(match[1], unquoteYamlScalar(value));
+  }
+  return values;
+}
+
+function unquoteYamlScalar(value: string) {
+  if (
+    value.length >= 2 &&
+    ((value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'")))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function replayTupleError(itemId: string, detail: string) {
+  return new WorkerRecordReplayTupleError(`Invalid replay tuple ${itemId}: ${detail}`);
+}
+
+function replayFailure(itemId: string, error: unknown): WorkerRecordReplayFailure | null {
+  if (error instanceof WorkerRecordReplayTupleError) {
+    return { itemId, status: null, code: error.code };
+  }
+  if (
+    error instanceof WorkerRecordRequestError &&
+    (error.code.startsWith("invalid_canonical_record_tuple") ||
+      error.code === "canonical_record_tuple_conflict" ||
+      error.code === "canonical_record_tuple_too_large")
+  ) {
+    return { itemId, status: error.status, code: error.code };
+  }
+  return null;
 }
 
 function validateTupleItemId(value: string) {

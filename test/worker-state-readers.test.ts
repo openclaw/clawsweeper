@@ -8,6 +8,7 @@ import { gzipSync } from "node:zlib";
 import { parse } from "yaml";
 
 import { hydrateState } from "../scripts/hydrate-state.ts";
+import { backfillWorkerRecords } from "../scripts/backfill-worker-records.ts";
 import { verifyWorkerRecordParity } from "../scripts/verify-worker-record-parity.ts";
 import {
   ingestGitRecords,
@@ -260,8 +261,17 @@ test("backfill importer walks all record sections and sends digest-bearing rows"
 });
 
 test("canonical projection replay re-appends a complete tuple without overwriting from git", async () => {
-  const item = contents.get("items/1")!;
   const packet = contents.get("decision-packets/1")!;
+  const packetDigest = createHash("sha256").update(packet).digest("hex");
+  const item = [
+    "---",
+    "number: 1",
+    `decision_packet_sha256: ${packetDigest}`,
+    `decision_packet_path: records/${repoSlug}/decision-packets/1.json`,
+    "---",
+    "byte-identical item",
+    "",
+  ].join("\n");
   const requests: Array<Record<string, unknown>> = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input.toString());
@@ -291,8 +301,12 @@ test("canonical projection replay re-appends a complete tuple without overwritin
   });
 
   assert.deepEqual(result, {
+    attempted: 1,
     replayed: 1,
     deduped: 0,
+    failed: 0,
+    failedIds: [],
+    failures: [],
     available: 1,
     cursor: 0,
     nextCursor: null,
@@ -314,6 +328,151 @@ test("canonical projection replay re-appends a complete tuple without overwritin
       contentBase64: Buffer.from(packet).toString("base64"),
     },
   ]);
+});
+
+test("canonical projection replay expresses partial and revision-ordered legacy tuples", async () => {
+  const packet = '{"decision":"keep"}\n';
+  const packetDigest = createHash("sha256").update(packet).digest("hex");
+  const itemWithPacket = [
+    "---",
+    `decision_packet_sha256: ${packetDigest}`,
+    `decision_packet_path: records/${repoSlug}/decision-packets/10.json`,
+    "---",
+    "item with no plan",
+    "",
+  ].join("\n");
+  const itemWithPlan = "---\ndecision_packet_sha256: none\ndecision_packet_path: none\n---\nitem\n";
+  const plan = "---\nreviewed_at: 2026-07-26T01:00:00Z\n---\nplan\n";
+  const closed = "---\ndecision_packet_sha256: none\ndecision_packet_path: none\n---\nclosed\n";
+  const staleOpen = "---\nreviewed_at: 2026-07-26T00:00:00Z\n---\nstale open\n";
+  const requests = new Map<string, Array<Record<string, unknown>>>();
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(input.toString());
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    if (url.pathname === "/internal/state/records/export") {
+      return Response.json({
+        repoSlug,
+        revision: 12,
+        nextCursor: null,
+        records: [
+          workerRecord("items", "10", itemWithPacket, 1, 2),
+          workerRecord("decision-packets", "10", packet, 2, 2),
+          workerRecord("items", "11", itemWithPlan, 3, 2),
+          workerRecord("plans", "11", plan, 4, 2),
+          workerRecord("closed", "12", closed, 5, 3),
+          workerRecord("plans", "12", plan, 6, 1),
+          workerRecord("items", "13", staleOpen, 7, 1),
+          workerRecord("closed", "13", closed, 8, 4),
+        ],
+      });
+    }
+    const itemId = String(body.key).split("/").at(-1)!;
+    requests.set(itemId, body.operations);
+    return Response.json({ ok: true, accepted: true, deduped: false, revision: 5, sequence: 9 });
+  }) as typeof fetch;
+
+  const result = await replayWorkerRecordProjections({
+    baseUrl: "https://worker.example",
+    webhookSecret: "fixture-secret",
+    repoSlug,
+    itemIds: ["10", "11", "12", "13"],
+    fetch: fetchImpl,
+  });
+
+  assert.equal(result.replayed, 4);
+  assert.equal(result.failed, 0);
+  assert.equal(
+    requests.get("10")?.find((entry) => String(entry.path).includes("/plans/"))?.contentBase64,
+    undefined,
+  );
+  assert.equal(
+    requests.get("11")?.find((entry) => String(entry.path).includes("/decision-packets/"))
+      ?.contentBase64,
+    undefined,
+  );
+  const closedPlan = requests.get("12")?.find((entry) => String(entry.path).includes("/plans/"));
+  assert.equal(closedPlan?.expectedDigest, createHash("sha256").update(plan).digest("hex"));
+  assert.equal(closedPlan?.contentBase64, undefined);
+  const stalePrimary = requests.get("13")?.find((entry) => String(entry.path).includes("/items/"));
+  assert.equal(stalePrimary?.expectedDigest, createHash("sha256").update(staleOpen).digest("hex"));
+  assert.equal(stalePrimary?.contentBase64, undefined);
+});
+
+test("backfill replay continues after tuple rejection and fails once with every rejected id", async () => {
+  const fixture = createStateFixture();
+  const tupleIds: string[] = [];
+  const errors: string[] = [];
+  const output: string[] = [];
+  const originalError = console.error;
+  const originalLog = console.log;
+  console.error = (...values) => errors.push(values.join(" "));
+  console.log = (...values) => output.push(values.join(" "));
+  try {
+    await assert.rejects(
+      backfillWorkerRecords(
+        [
+          "--state-dir",
+          fixture.stateRoot,
+          "--repo-slug",
+          repoSlug,
+          "--replay-projections",
+          "--replay-item-ids",
+          "1,2,3",
+        ],
+        { CLAWSWEEPER_WEBHOOK_SECRET: "fixture-secret" },
+        (async (input: string | URL | Request, init?: RequestInit) => {
+          const url = new URL(input.toString());
+          const body = JSON.parse(String(init?.body ?? "{}"));
+          if (url.pathname === "/internal/state/records/ingest") {
+            return Response.json({
+              inserted: body.records.length,
+              unchanged: 0,
+              skippedNewer: 0,
+              watermark: 1,
+            });
+          }
+          if (url.pathname === "/internal/state/records/export") {
+            return Response.json({
+              repoSlug,
+              revision: 3,
+              nextCursor: null,
+              records: [
+                workerRecord("items", "1", "---\n---\none\n", 1),
+                workerRecord("items", "2", "---\n---\ntwo\n", 2),
+                workerRecord("items", "3", "---\n---\nthree\n", 3),
+              ],
+            });
+          }
+          const itemId = String(body.key).split("/").at(-1)!;
+          tupleIds.push(itemId);
+          if (itemId === "2") {
+            return Response.json(
+              { error: "invalid_canonical_record_tuple", detail: "fixture rejection" },
+              { status: 400 },
+            );
+          }
+          return Response.json({ ok: true, accepted: true, deduped: false });
+        }) as typeof fetch,
+      ),
+      /failed for 1 tuple\(s\): 2:invalid_canonical_record_tuple/,
+    );
+  } finally {
+    console.error = originalError;
+    console.log = originalLog;
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+
+  assert.deepEqual(tupleIds, ["1", "2", "3"]);
+  assert.ok(
+    errors.some((line) =>
+      line.includes(
+        "rejected tuple=2/3 repo=openclaw-openclaw item=2 status=400 code=invalid_canonical_record_tuple",
+      ),
+    ),
+  );
+  const summary = JSON.parse(output.at(-1)!);
+  assert.deepEqual(summary.replay.failedIds, ["2"]);
+  assert.equal(summary.replay.replayed, 2);
 });
 
 test("backfill workflow is manual per-target and setup-state plumbs the opt-in Worker flag", () => {
@@ -449,13 +608,14 @@ function workerRecord(
   id: string,
   content: string,
   storeRevision: number,
+  revision = 1,
 ): WorkerRecord {
   return {
     section,
     id,
     content,
     digest: createHash("sha256").update(content).digest("hex"),
-    revision: 1,
+    revision,
     storeRevision,
     deleted: false,
   };

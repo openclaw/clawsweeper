@@ -54,9 +54,20 @@ export async function backfillWorkerRecords(
           `[worker-record-replay] tuple=${completed}/${total} repo=${repoSlug} item=${itemId}`,
         );
       },
+      onTupleFailure: ({ completed, total, itemId, status, code }) => {
+        console.error(
+          `[worker-record-replay] rejected tuple=${completed}/${total} repo=${repoSlug} item=${itemId} status=${status ?? "local"} code=${code}`,
+        );
+      },
     });
   }
   console.log(JSON.stringify({ repoSlug, ...result, replay }));
+  if (replay?.failed) {
+    const summary = replay.failures.map((failure) => `${failure.itemId}:${failure.code}`).join(",");
+    throw new Error(
+      `Worker record projection replay failed for ${replay.failed} tuple(s): ${summary}`,
+    );
+  }
   return { ...result, replay };
 }
 

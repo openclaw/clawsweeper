@@ -133,6 +133,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Made canonical record replay normalize revision-ordered legacy tuple remnants, continue after per-item validation rejections, and fail once at the end with every rejected item id.
 - Allowed stuck-placeholder recovery to label pull requests by granting its target token pull-request write permission alongside issue write. Thanks @masatohoshino! (#865)
 - Kept root-level apply reports as digest-only action-ledger evidence so ledger-enabled apply runs can finish, publish their compatibility report, and advance their cursor. Thanks @yetval! (#833)
 - Restored repair and spam workflows by keeping the multi-owner repair policy out of the GitHub App token action's single-owner input. Thanks @yetval! (#834)
