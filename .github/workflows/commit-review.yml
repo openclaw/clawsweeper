@@ -274,10 +274,10 @@ jobs:
             active_background_workers="$(active_sweep_background_workers)"
             unpressured_page_size="$(pnpm --dir clawsweeper run --silent workflow -- worker-limit commit_review --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
             if ! pressure_json="$(pnpm --dir clawsweeper run --silent workflow -- queue-pressure --queue-url "$QUEUE_URL")"; then
-              pressure_json='{"ok":false,"reason":"probe_failed","level":"none"}'
+              pressure_json='{"ok":false,"reason":"probe_failed","level":"unknown"}'
             fi
-            if ! pressure_level="$(printf '%s' "$pressure_json" | jq -er '.level | select(. == "none" or . == "soft" or . == "hard")' 2>/dev/null)"; then
-              pressure_level="none"
+            if ! pressure_level="$(printf '%s' "$pressure_json" | jq -er '.level | select(. == "none" or . == "soft" or . == "hard" or . == "unknown")' 2>/dev/null)"; then
+              pressure_level="unknown"
             fi
             PAGE_SIZE="$(pnpm --dir clawsweeper run --silent workflow -- worker-limit commit_review --active-critical "$active_critical_workers" --active-background "$active_background_workers" --pressure-level "$pressure_level")"
             pressure_numbers="$(printf '%s' "$pressure_json" | jq -r 'if .ok then "pending=\(.pendingCount), oldest=\((.oldestPendingAgeMs / 3600000 * 10 | round) / 10)h" else "unavailable=\(.reason)" end' 2>/dev/null || printf 'unavailable=probe_failed')"

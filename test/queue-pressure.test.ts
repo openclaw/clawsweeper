@@ -28,7 +28,7 @@ test("queue pressure levels include threshold boundaries", () => {
   assert.equal(queuePressureLevel(pressure(0, QUEUE_PRESSURE_SOFT_AGE_MS)), "soft");
   assert.equal(queuePressureLevel(pressure(QUEUE_PRESSURE_HARD_PENDING, 0)), "hard");
   assert.equal(queuePressureLevel(pressure(0, QUEUE_PRESSURE_HARD_AGE_MS)), "hard");
-  assert.equal(queuePressureLevel({ ok: false, reason: "unavailable" }), "none");
+  assert.equal(queuePressureLevel({ ok: false, reason: "unavailable" }), "unknown");
 });
 
 test("queue pressure levels honor environment overrides", () => {
@@ -136,7 +136,7 @@ test("queue pressure uses review thresholds and elevates unhealthy publication",
   assert.deepEqual(emptyReviewLane, { ok: true, pendingCount: 0, oldestPendingAgeMs: 0 });
 });
 
-test("queue pressure fetch fails open on errors, timeouts, and malformed bodies", async () => {
+test("queue pressure fetch fails closed for background admission on errors, timeouts, and malformed bodies", async () => {
   const failed = await fetchExactReviewQueuePressure({
     queueUrl: "https://clawsweeper.example",
     fetchImpl: async () => {
@@ -144,7 +144,7 @@ test("queue pressure fetch fails open on errors, timeouts, and malformed bodies"
     },
   });
   assert.deepEqual(failed, { ok: false, reason: "network unavailable" });
-  assert.equal(queuePressureLevel(failed), "none");
+  assert.equal(queuePressureLevel(failed), "unknown");
 
   const timedOut = await fetchExactReviewQueuePressure({
     queueUrl: "https://clawsweeper.example",
@@ -155,7 +155,14 @@ test("queue pressure fetch fails open on errors, timeouts, and malformed bodies"
       }),
   });
   assert.deepEqual(timedOut, { ok: false, reason: "timeout" });
-  assert.equal(queuePressureLevel(timedOut), "none");
+  assert.equal(queuePressureLevel(timedOut), "unknown");
+
+  const serverError = await fetchExactReviewQueuePressure({
+    queueUrl: "https://clawsweeper.example",
+    fetchImpl: async () => Response.json({ error: "unavailable" }, { status: 503 }),
+  });
+  assert.deepEqual(serverError, { ok: false, reason: "http_503" });
+  assert.equal(queuePressureLevel(serverError), "unknown");
 
   for (const body of [
     null,
@@ -169,7 +176,7 @@ test("queue pressure fetch fails open on errors, timeouts, and malformed bodies"
       fetchImpl: async () => Response.json(body),
     });
     assert.deepEqual(malformed, { ok: false, reason: "malformed_response" });
-    assert.equal(queuePressureLevel(malformed), "none");
+    assert.equal(queuePressureLevel(malformed), "unknown");
   }
 });
 
@@ -182,6 +189,10 @@ test("worker limits scale every background lane and leave priority lanes unchang
       workerLimit(lane, { pressureLevel: "hard" }),
       Math.max(1, Math.floor(normalBudget * 0.1)),
     );
+    assert.equal(
+      workerLimit(lane, { pressureLevel: "unknown" }),
+      workerLimit(lane, { pressureLevel: "hard" }),
+    );
   }
 
   const priorityLanes: WorkerLane[] = [
@@ -193,8 +204,21 @@ test("worker limits scale every background lane and leave priority lanes unchang
   ];
   for (const lane of priorityLanes) {
     assert.equal(workerLimit(lane, { pressureLevel: "hard" }), workerLimit(lane));
+    assert.equal(workerLimit(lane, { pressureLevel: "unknown" }), workerLimit(lane));
   }
   assert.equal(workerLimit("normal_review"), AUTOMATION_LIMITS.review_shards.normal_default);
+});
+
+test("a publication-critical unavailable probe cannot admit the normal 89-shard background burst", () => {
+  const normal = workerLimit("normal_review", { pressureLevel: "none" });
+  const conservative = workerLimit("normal_review", { pressureLevel: "unknown" });
+
+  assert.equal(normal, AUTOMATION_LIMITS.review_shards.normal_default);
+  assert.equal(conservative, workerLimit("normal_review", { pressureLevel: "hard" }));
+  assert.ok(conservative >= 1);
+  assert.ok(conservative < normal);
+  assert.notEqual(conservative, 89);
+  assert.equal(workerLimit("exact_item", { pressureLevel: "unknown" }), 1);
 });
 
 function pressure(pendingCount: number, oldestPendingAgeMs: number): ExactReviewQueuePressure {

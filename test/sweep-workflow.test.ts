@@ -2535,11 +2535,18 @@ test("background planners fetch exact-review queue pressure once and pass its le
     assert.match(block, /--pressure-level "\$pressure_level"/);
     assert.match(block, /queue pressure: \$pressure_level/);
     assert.match(block, /if ! pressure_json=/);
-    assert.match(block, /unavailable=probe_failed/);
+    assert.match(block, /"level":"unknown"/);
+    assert.match(block, /select\(. == "none" or . == "soft" or . == "hard" or . == "unknown"\)/);
+    assert.doesNotMatch(block, /"level":"none"/);
     assert.match(block, /CLAWSWEEPER_QUEUE_PRESSURE_SOFT_PENDING/);
     assert.match(block, /CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS/);
   }
   assert.match(sweepBlock, /if \[ -z "\$exact_item" \]; then/);
+  assert.ok(
+    sweepBlock.indexOf('if [ -z "$exact_item" ]; then') <
+      sweepBlock.indexOf("queue-pressure --queue-url"),
+    "only background planning may probe and apply queue-pressure admission",
+  );
   assert.match(sweepBlock, /hot_intake \$hot_intake_unpressured->\$hot_intake_shards/);
   assert.match(sweepBlock, /normal_review \$normal_unpressured->\$normal_shards/);
   assert.match(commitBlock, /commit_review \$unpressured_page_size->\$PAGE_SIZE/);

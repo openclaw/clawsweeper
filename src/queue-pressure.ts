@@ -4,7 +4,7 @@ export const QUEUE_PRESSURE_SOFT_AGE_MS = 30 * 60 * 1_000;
 export const QUEUE_PRESSURE_HARD_AGE_MS = 2 * 60 * 60 * 1_000;
 export const QUEUE_PRESSURE_FETCH_TIMEOUT_MS = 5_000;
 
-export type QueuePressureLevel = "none" | "soft" | "hard";
+export type QueuePressureLevel = "none" | "soft" | "hard" | "unknown";
 
 export type ExactReviewQueuePressure =
   | {
@@ -91,7 +91,10 @@ export async function fetchExactReviewQueuePressure({
 }
 
 export function queuePressureLevel(pressure: ExactReviewQueuePressure): QueuePressureLevel {
-  if (!pressure.ok) return "none";
+  // An unavailable control-plane signal is not evidence that the queue is empty.
+  // Background admission must retain a bounded capacity until the next healthy
+  // probe, while exact-item work keeps its independent interactive reservation.
+  if (!pressure.ok) return "unknown";
   if (pressure.publicationStatus === "critical") return "hard";
   const hardPending = envThreshold(
     "CLAWSWEEPER_QUEUE_PRESSURE_HARD_PENDING",

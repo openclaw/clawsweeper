@@ -349,7 +349,7 @@ function requiredWorkerLane(value: string): WorkerLane {
 }
 
 function requiredQueuePressureLevel(value: string): QueuePressureLevel {
-  if (value === "none" || value === "soft" || value === "hard") return value;
+  if (value === "none" || value === "soft" || value === "hard" || value === "unknown") return value;
   throw new Error(`unknown queue pressure level: ${value}`);
 }
 

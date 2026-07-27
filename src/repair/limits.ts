@@ -171,7 +171,8 @@ export function workerLimit(
       rawAvailable >= config.workers.minimum_background ? rawAvailable : Math.max(1, rawAvailable);
     const normalBudget = Math.max(1, Math.min(laneMax, withFloor));
     if (pressureLevel === "soft") return Math.ceil(normalBudget * 0.5);
-    if (pressureLevel === "hard") return Math.max(1, Math.floor(normalBudget * 0.1));
+    if (pressureLevel === "hard" || pressureLevel === "unknown")
+      return Math.max(1, Math.floor(normalBudget * 0.1));
     return normalBudget;
   }
 }

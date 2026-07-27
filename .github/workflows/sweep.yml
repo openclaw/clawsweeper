@@ -2685,15 +2685,15 @@ jobs:
           active_critical_workers="$(( $(active_run_count ".github/workflows/repair-cluster-worker.yml") + $(active_sweep_exact_workers) ))"
           active_background_workers="$(( $(active_run_count ".github/workflows/commit-review.yml") * commit_page_size + $(active_sweep_background_workers) ))"
           exact_item="${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}"
-          pressure_level="none"
+          pressure_level="unknown"
           hot_intake_unpressured="$(worker_limit hot_intake --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
           normal_unpressured="$(worker_limit normal_review --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
           if [ -z "$exact_item" ]; then
             if ! pressure_json="$(pnpm --dir clawsweeper run --silent workflow -- queue-pressure --queue-url "$QUEUE_URL")"; then
-              pressure_json='{"ok":false,"reason":"probe_failed","level":"none"}'
+              pressure_json='{"ok":false,"reason":"probe_failed","level":"unknown"}'
             fi
-            if ! pressure_level="$(printf '%s' "$pressure_json" | jq -er '.level | select(. == "none" or . == "soft" or . == "hard")' 2>/dev/null)"; then
-              pressure_level="none"
+            if ! pressure_level="$(printf '%s' "$pressure_json" | jq -er '.level | select(. == "none" or . == "soft" or . == "hard" or . == "unknown")' 2>/dev/null)"; then
+              pressure_level="unknown"
             fi
           fi
           hot_intake_shards="$(worker_limit hot_intake --active-critical "$active_critical_workers" --active-background "$active_background_workers" --pressure-level "$pressure_level")"
