@@ -14,9 +14,9 @@ on:
         default: "openclaw/openclaw"
         type: string
       limit:
-        description: "Maximum imported gitcrawl clusters per run"
+        description: "Number of unprocessed clusters offered to the selector model"
         required: false
-        default: "1"
+        default: "8"
         type: string
       runner:
         description: "Runner label for repair planning/review work"
@@ -86,6 +86,30 @@ jobs:
           owner: openclaw
           repositories: gitcrawl-store
           permission-contents: read
+
+      - name: Resolve target owner
+        id: target
+        env:
+          TARGET_REPO: ${{ github.event.inputs.target_repo || vars.CLAWSWEEPER_CLUSTER_REPAIR_TARGET_REPO || 'openclaw/openclaw' }}
+        run: |
+          set -euo pipefail
+          owner="${TARGET_REPO%%/*}"
+          if ! printf '%s' "$owner" | grep -Eq '^[A-Za-z0-9_.-]+$'; then
+            echo "Invalid target repository: $TARGET_REPO" >&2
+            exit 1
+          fi
+          echo "owner=$owner" >> "$GITHUB_OUTPUT"
+
+      - name: Create target read token
+        id: target-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          permission-contents: read
+          permission-issues: read
+          permission-pull-requests: read
 
       - uses: actions/checkout@v7
         with:
@@ -187,13 +211,13 @@ jobs:
           fi
           echo "should_import=true" >> "$GITHUB_OUTPUT"
 
-      - name: Import one cluster from gitcrawl-store
+      - name: Prepare unprocessed cluster candidates
         id: import
         if: ${{ steps.prepare.outputs.should_import == 'true' }}
         env:
           TARGET_REPO: ${{ steps.prepare.outputs.target_repo }}
           DB_PATH: ${{ steps.prepare.outputs.db_path }}
-          LIMIT: ${{ github.event.inputs.limit || vars.CLAWSWEEPER_CLUSTER_REPAIR_IMPORT_LIMIT || '1' }}
+          LIMIT: ${{ github.event.inputs.limit || vars.CLAWSWEEPER_CLUSTER_REPAIR_CANDIDATE_BATCH || '8' }}
         run: |
           set -euo pipefail
           mkdir -p .artifacts/cluster-repair-intake
@@ -214,9 +238,39 @@ jobs:
 
           mapfile -t generated < <(grep '^jobs/' "$generated_log" || true)
           printf '%s\n' "${generated[@]}" > .artifacts/cluster-repair-intake/generated-paths.txt
+          echo "count=${#generated[@]}" >> "$GITHUB_OUTPUT"
+
+      - name: Select one useful cluster or none
+        id: select
+        if: ${{ steps.prepare.outputs.should_import == 'true' }}
+        env:
+          TARGET_REPO: ${{ steps.prepare.outputs.target_repo }}
+          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
+          MODEL: ${{ github.event.inputs.model || 'internal' }}
+        run: |
+          set -euo pipefail
+          candidates_file=".artifacts/cluster-repair-intake/generated-paths.txt"
+          selected_file=".artifacts/cluster-repair-intake/selected-paths.txt"
+          pnpm run repair:select-cluster-candidate -- \
+            --repo "$TARGET_REPO" \
+            --paths-file "$candidates_file" \
+            --out "$selected_file" \
+            --report .artifacts/cluster-repair-intake/selection-report.json \
+            --model "$MODEL"
+
+          while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            if ! grep -Fqx -- "$candidate" "$selected_file"; then
+              rm -f -- "$candidate"
+            fi
+          done < "$candidates_file"
+          mv "$selected_file" "$candidates_file"
+          mapfile -t selected < "$candidates_file"
           {
-            echo "count=${#generated[@]}"
-            if [ "${#generated[@]}" -gt 0 ]; then
+            echo "count=${#selected[@]}"
+            if [ "${#selected[@]}" -gt 0 ]; then
               echo "should_dispatch=true"
             else
               echo "should_dispatch=false"
@@ -231,17 +285,21 @@ jobs:
           STORE_SHA: ${{ steps.prepare.outputs.store_sha }}
           EXPORTED_AT: ${{ steps.prepare.outputs.exported_at }}
           MANIFEST_PATH: ${{ steps.prepare.outputs.manifest_path }}
-          GENERATED_COUNT: ${{ steps.import.outputs.count || '0' }}
+          GENERATED_COUNT: ${{ steps.select.outputs.count || '0' }}
         run: |
           set -euo pipefail
           mkdir -p "$(dirname "$LEDGER_PATH")"
           node <<'NODE'
           const fs = require("fs");
           const generatedPath = ".artifacts/cluster-repair-intake/generated-paths.txt";
+          const selectionPath = ".artifacts/cluster-repair-intake/selection-report.json";
           const generated = (fs.existsSync(generatedPath) ? fs.readFileSync(generatedPath, "utf8") : "")
             .split(/\r?\n/)
             .map((line) => line.trim())
             .filter(Boolean);
+          const selection = fs.existsSync(selectionPath)
+            ? JSON.parse(fs.readFileSync(selectionPath, "utf8"))
+            : { evaluated: 0, rejected: 0, selected: 0, reason_counts: {}, decision: null, assessments: [] };
           const ledger = {
             schema: "clawsweeper-cluster-repair-intake-v1",
             target_repo: process.env.TARGET_REPO,
@@ -250,6 +308,7 @@ jobs:
             manifest_path: process.env.MANIFEST_PATH,
             generated_count: Number(process.env.GENERATED_COUNT || generated.length || 0),
             generated_jobs: generated,
+            selector: selection,
             run_url: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
             updated_at: new Date().toISOString(),
           };
@@ -270,7 +329,7 @@ jobs:
             --push-attempts 4
 
       - name: Dispatch imported cluster repair
-        if: ${{ steps.import.outputs.should_dispatch == 'true' }}
+        if: ${{ steps.select.outputs.should_dispatch == 'true' }}
         env:
           GH_TOKEN: ${{ steps.central-token.outputs.token }}
           RUNNER: ${{ github.event.inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}

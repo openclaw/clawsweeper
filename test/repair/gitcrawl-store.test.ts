@@ -28,22 +28,18 @@ test("gitcrawl docs describe external store freshness instead of per-run crawlin
   assert.match(repairDocs, /git -C \.\.\/gitcrawl-store pull --ff-only/);
 });
 
-test("gitcrawl cluster import drip-feeds mostly open clusters by default", () => {
+test("gitcrawl cluster intake delegates candidate quality to the selector model", () => {
   const source = readFileSync("src/repair/import-gitcrawl-clusters.ts", "utf8");
+  const selector = readFileSync("src/repair/select-cluster-candidate.ts", "utf8");
   const limitsDocs = readFileSync("docs/limits.md", "utf8");
   const repairDocs = readFileSync("docs/repair/README.md", "utf8");
 
   assert.match(source, /const allowEmpty = Boolean\(args\["allow-empty"\]\)/);
   assert.match(source, /const allowInstantClose = booleanArg\("allow-instant-close", false\)/);
-  assert.match(source, /const skipClosedPercent = percentArg\("skip-closed-percent", 75\)/);
-  assert.match(source, /skip mostly-closed cluster/);
-  assert.match(source, /closedPercent >= skipClosedPercent/);
-  assert.match(
-    source,
-    /\(\(closed_count \* 100\) \/ member_count\) < \$\{sqlNumber\(skipClosedPercent\)\}/,
-  );
-  assert.match(limitsDocs, /75% closed members are skipped/);
-  assert.match(repairDocs, /75%\+ closed clusters by default/);
+  assert.doesNotMatch(source, /skip-closed-percent|selection score|rankGitcrawlCluster/);
+  assert.match(selector, /select at most one, or select none/i);
+  assert.match(limitsDocs, /selector model compares/);
+  assert.match(repairDocs, /selector model compares/);
 });
 
 test("scheduled cluster repair intake follows gitcrawl-store freshness cadence", () => {
@@ -55,10 +51,11 @@ test("scheduled cluster repair intake follows gitcrawl-store freshness cadence",
   assert.match(workflow, /cron: "8 8 \* \* \*"/);
   assert.match(workflow, /gitcrawl-store refreshes openclaw\/openclaw every 15 minutes/);
   assert.match(workflow, /last_processed_store_sha256/);
-  assert.match(workflow, /CLAWSWEEPER_CLUSTER_REPAIR_IMPORT_LIMIT \|\| '1'/);
+  assert.match(workflow, /CLAWSWEEPER_CLUSTER_REPAIR_CANDIDATE_BATCH \|\| '8'/);
+  assert.match(workflow, /repair:select-cluster-candidate/);
   assert.match(workflow, /pnpm run repair:dispatch/);
   assert.doesNotMatch(workflow, /git pull --rebase origin main/);
-  assert.match(limitsDocs, /default is `1` cluster per daily\s+run/);
+  assert.match(limitsDocs, /one cluster or rejects the batch/);
   assert.match(repairDocs, /intake runs daily/);
   assert.match(internalDocs, /refreshes `openclaw\/openclaw` every 15\s+minutes/);
 });

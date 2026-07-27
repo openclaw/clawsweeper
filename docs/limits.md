@@ -317,12 +317,12 @@ hot intake `14`, and commit review `2`. Existing repair lanes keep their
 - `CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED=1` enables the scheduled
   `repair-cluster-intake.yml` imported-cluster intake. Direct repair import and
   dispatch commands are not blocked by this variable; they keep the existing
-  repair execution gates. Gitcrawl cluster import also drip-feeds by default:
-  clusters with at least 75% closed members are skipped unless
-  `--skip-closed-percent` is overridden.
-- `CLAWSWEEPER_CLUSTER_REPAIR_IMPORT_LIMIT` overrides the scheduled
-  `repair-cluster-intake.yml` import limit. The default is `1` cluster per daily
-  run; the upstream gitcrawl-store refreshes every 15 minutes, and ClawSweeper
+  repair execution gates. The selector model compares live evidence for a batch
+  of unprocessed clusters and chooses one cluster or rejects the batch. Candidate
+  quality is not decided by word lists, scores, or semantic thresholds.
+- `CLAWSWEEPER_CLUSTER_REPAIR_CANDIDATE_BATCH` controls how many unprocessed
+  clusters the scheduled selector model compares. The default is `8`; the model
+  still selects at most one cluster. The upstream gitcrawl-store refreshes every 15 minutes, and ClawSweeper
   records the processed store SHA so repeated ticks against the same snapshot
   skip.
 - `CLAWSWEEPER_MAX_LIVE_WORKERS` overrides the `job_intent`-derived repair

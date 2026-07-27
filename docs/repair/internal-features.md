@@ -596,11 +596,11 @@ Important gates:
 - `CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED`: opt-in for the scheduled
   `repair-cluster-intake.yml` imported-cluster intake. Direct repair import and
   dispatch commands are not blocked by this variable; they keep the existing
-  repair execution gates. Gitcrawl cluster import skips clusters with at least
-  75% closed members by default; `--skip-closed-percent` is the explicit
-  override.
-- `CLAWSWEEPER_CLUSTER_REPAIR_IMPORT_LIMIT`: scheduled imported-cluster intake
-  limit; default `1` cluster per daily `repair-cluster-intake.yml` run.
+  repair execution gates. A model compares the live evidence for each offered
+  cluster and selects one useful candidate or rejects the batch.
+- `CLAWSWEEPER_CLUSTER_REPAIR_CANDIDATE_BATCH`: number of unprocessed clusters
+  offered to the scheduled selector model; default `8`. The selector emits at
+  most one cluster per daily `repair-cluster-intake.yml` run.
   The upstream `openclaw/gitcrawl-store` refreshes `openclaw/openclaw` every 15
   minutes, so the intake records the processed portable DB SHA in
   `results/cluster-repair-intake/<repo>.json` and skips duplicate ticks against

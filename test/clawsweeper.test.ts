@@ -2490,7 +2490,7 @@ test("cluster intake publishes generated repair state through state repo", () =>
   const workflow = readText(".github/workflows/repair-cluster-intake.yml");
   const stateTokenIndex = workflow.indexOf("uses: ./.github/actions/create-state-token");
   const setupStateIndex = workflow.indexOf("uses: ./.github/actions/setup-state");
-  const importIndex = workflow.indexOf("- name: Import one cluster from gitcrawl-store");
+  const importIndex = workflow.indexOf("- name: Prepare unprocessed cluster candidates");
   const publishIndex = workflow.indexOf("- name: Publish intake jobs and ledger");
 
   assert.notEqual(stateTokenIndex, -1);

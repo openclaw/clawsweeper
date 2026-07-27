@@ -264,16 +264,16 @@ pnpm run repair:build-fix-artifact -- jobs/openclaw/inbox/autonomous-example.md 
 # legacy ~/.config/gitcrawl/gitcrawl.db; it never fetches GitHub issues itself.
 pnpm run repair:import-gitcrawl-low-signal -- --limit 20 --batch-size 5 --mode autonomous --sort stale
 
-# Stage the next largest active gitcrawl clusters, skipping already-imported,
-# security-sensitive, feature-request, and 75%+ closed clusters by default.
-# Mixed clusters can route security refs while continuing ordinary bug/dedupe work.
+# Stage unprocessed active gitcrawl clusters. The scheduled intake gives their
+# live evidence to the selector model, which chooses one useful cluster or none.
 pnpm run repair:import-gitcrawl -- --from-gitcrawl --limit 40 --mode autonomous --suffix autonomous-smoke --allow-instant-close --allow-merge --allow-fix-pr --allow-post-merge-close
 
 # Automatic imported-cluster intake runs through repair-cluster-intake.yml.
 # gitcrawl-store refreshes openclaw/openclaw every 15 minutes; the ClawSweeper
 # intake runs daily, records the processed portable DB SHA in
 # results/cluster-repair-intake/<repo>.json, and skips repeated ticks for the
-# same store snapshot. It imports at most one cluster by default and dispatches
+# same store snapshot. The selector model compares the candidate batch without
+# word lists, scores, or semantic thresholds, and dispatches at most one cluster
 # through the two-worker cluster_repair lane.
 
 # Dispatch reviewed jobs. Dispatch derives its default live-worker cap from the
@@ -376,11 +376,10 @@ The workflow needs:
 - `CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED=1` opt-in for the scheduled
   `repair-cluster-intake.yml` imported-cluster intake. Direct repair import and
   dispatch commands are not blocked by this variable; they keep the existing
-  repair execution gates. Gitcrawl cluster import skips clusters with at least
-  75% closed members by default; pass `--skip-closed-percent` only for an
-  intentional broader import.
-- optional `CLAWSWEEPER_CLUSTER_REPAIR_IMPORT_LIMIT` variable for the scheduled
-  imported-cluster intake; default is `1` cluster per daily run.
+  repair execution gates. The selector model compares live cluster evidence and
+  may reject the entire batch.
+- optional `CLAWSWEEPER_CLUSTER_REPAIR_CANDIDATE_BATCH` variable for the scheduled
+  intake; default is `8` candidates, from which the model selects at most one.
 - merge is separately gated by `CLAWSWEEPER_ALLOW_MERGE`, which defaults to `0`; merge-ready PRs are labeled `clawsweeper:human-review` and `clawsweeper:merge-ready` for a maintainer to merge manually when the global gate is closed
 - required `CLAWSWEEPER_MODEL` GitHub Actions secret containing the actual
   internal model name; workflows, dispatch payloads, comments, and reports use

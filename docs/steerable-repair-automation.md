@@ -774,7 +774,7 @@ GitCrawl controls:
 | Name | Purpose |
 | --- | --- |
 | `CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED` | Enables scheduled GitCrawl cluster intake. |
-| `CLAWSWEEPER_CLUSTER_REPAIR_IMPORT_LIMIT` | Maximum clusters imported by one intake run. |
+| `CLAWSWEEPER_CLUSTER_REPAIR_CANDIDATE_BATCH` | Unprocessed clusters compared by the selector model; it selects at most one. |
 | `CLAWSWEEPER_MAX_LIVE_WORKERS` | Optional explicit repair dispatch override. |
 
 Mutation controls:
