@@ -3985,8 +3985,12 @@ class MemorySqlCursor<T extends Record<string, unknown>> implements Iterable<T> 
 class MemorySqlStorage {
   private readonly database = new DatabaseSync(":memory:");
   private failure: { pattern: RegExp; error: Error } | undefined;
+  private bindingLimit = Number.POSITIVE_INFINITY;
 
   exec(query: string, ...bindings: unknown[]) {
+    if (bindings.length > this.bindingLimit) {
+      throw new Error(`test SQL binding limit exceeded: ${bindings.length}`);
+    }
     if (this.failure?.pattern.test(query)) {
       const { error } = this.failure;
       this.failure = undefined;
@@ -4015,6 +4019,10 @@ class MemorySqlStorage {
 
   failNext(pattern: RegExp, error = new Error("injected SQL failure")) {
     this.failure = { pattern, error };
+  }
+
+  setBindingLimit(limit: number) {
+    this.bindingLimit = limit;
   }
 
   hasNormalizedQueue() {
@@ -8278,6 +8286,112 @@ test("canonical tuple publication accepts explicit absent sidecars and closed re
   }
 });
 
+test("cluster intake schema migration preserves materialization retry history", () => {
+  const storage = new MemoryDurableStorage();
+  storage.sql.exec(`CREATE TABLE state_append_window (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL CHECK (kind IN ('sweep_status', 'comment_router', 'apply_proof', 'record_tuple')),
+    record_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0),
+    produced_at TEXT NOT NULL,
+    delivery_id TEXT NOT NULL,
+    drain_token TEXT,
+    materialization_attempts INTEGER NOT NULL DEFAULT 0 CHECK (materialization_attempts >= 0),
+    materialization_first_failed_at INTEGER,
+    materialization_last_error TEXT
+  ) STRICT`);
+  storage.sql.exec(
+    `INSERT INTO state_append_window
+       (kind, record_key, payload_json, payload_bytes, produced_at, delivery_id, drain_token,
+        materialization_attempts, materialization_first_failed_at, materialization_last_error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    "record_tuple",
+    "openclaw-openclaw/42",
+    "{}",
+    2,
+    "2026-07-26T12:00:00.000Z",
+    "retry-history",
+    null,
+    2,
+    1_785_066_000_000,
+    "Shallow Git recovery deferred after deepening by 1024 commits",
+  );
+
+  new ExactReviewQueue({ storage }, {});
+
+  assert.deepEqual(
+    Array.from(
+      storage.sql.exec(
+        `SELECT materialization_attempts, materialization_first_failed_at,
+                materialization_last_error
+           FROM state_append_window WHERE record_key = ?`,
+        "openclaw-openclaw/42",
+      ),
+    ).map((row) => ({ ...row })),
+    [
+      {
+        materialization_attempts: 2,
+        materialization_first_failed_at: 1_785_066_000_000,
+        materialization_last_error: "Shallow Git recovery deferred after deepening by 1024 commits",
+      },
+    ],
+  );
+});
+
+test("cluster intake schema migration upgrades a pre-retry append table", () => {
+  const storage = new MemoryDurableStorage();
+  storage.sql.exec(`CREATE TABLE state_append_window (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL CHECK (kind IN ('sweep_status', 'comment_router', 'apply_proof', 'record_tuple')),
+    record_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0),
+    produced_at TEXT NOT NULL,
+    delivery_id TEXT NOT NULL,
+    drain_token TEXT
+  ) STRICT`);
+  storage.sql.exec(
+    `INSERT INTO state_append_window
+       (kind, record_key, payload_json, payload_bytes, produced_at, delivery_id, drain_token)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    "record_tuple",
+    "openclaw-openclaw/41",
+    "{}",
+    2,
+    "2026-07-25T12:00:00.000Z",
+    "pre-retry-schema",
+    null,
+  );
+
+  new ExactReviewQueue({ storage }, {});
+
+  assert.deepEqual(
+    Array.from(
+      storage.sql.exec(
+        `SELECT kind, materialization_attempts, materialization_first_failed_at,
+                materialization_last_error
+           FROM state_append_window WHERE record_key = ?`,
+        "openclaw-openclaw/41",
+      ),
+    ).map((row) => ({ ...row })),
+    [
+      {
+        kind: "record_tuple",
+        materialization_attempts: 0,
+        materialization_first_failed_at: null,
+        materialization_last_error: null,
+      },
+    ],
+  );
+  storage.sql.exec(
+    `INSERT INTO state_append_window
+       (kind, record_key, payload_json, payload_bytes, produced_at, delivery_id)
+     VALUES ('cluster_intake', 'openclaw-openclaw/store', '{}', 2,
+             '2026-07-26T12:00:00.000Z', 'cluster-intake-supported')`,
+  );
+});
+
 test("state append sheds atomically at the configured cap without consuming its receipt", async () => {
   const queue = new ExactReviewQueue(
     { storage: new MemoryDurableStorage() },
@@ -8433,6 +8547,73 @@ test("state disposition commits valid rows and dead-letters a poison row after b
         status: "open",
       },
     ],
+  );
+});
+
+test("state drain claims large prioritized batches within the SQL binding limit", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const records = Array.from({ length: 120 }, (_, index) =>
+    stateAppendRecord("cluster_intake", `cluster-${index + 1}`, { jobs: [], index }),
+  );
+  assert.equal(
+    (
+      await queue.fetch(
+        stateAppendQueueRequest("/state/append", {
+          delivery_id: "large-prioritized-drain",
+          records,
+        }),
+      )
+    ).status,
+    202,
+  );
+  storage.sql.setBindingLimit(51);
+
+  const drained = await (
+    await queue.fetch(
+      stateAppendQueueRequest("/state/drain", { max_rows: 120, max_bytes: 1024 * 1024 }),
+    )
+  ).json();
+  assert.equal(drained.records.length, 120);
+  assert.deepEqual(
+    drained.records.map((record) => record.seq),
+    Array.from({ length: 120 }, (_, index) => index + 1),
+  );
+});
+
+test("cluster intake jumps queued publication traffic without capturing unrelated rows", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  await queue.fetch(
+    stateAppendQueueRequest("/state/append", {
+      delivery_id: "ordinary-publications",
+      records: [
+        stateAppendRecord("sweep_status", "one", { n: 1 }),
+        stateAppendRecord("comment_router", "two", { n: 2 }),
+        stateAppendRecord("apply_proof", "three", { n: 3 }),
+      ],
+    }),
+  );
+  await queue.fetch(
+    stateAppendQueueRequest("/state/append", {
+      delivery_id: "cluster-intake-priority",
+      records: [stateAppendRecord("cluster_intake", "openclaw-openclaw/store", { jobs: [] })],
+    }),
+  );
+
+  const priority = await (
+    await queue.fetch(stateAppendQueueRequest("/state/drain", { max_rows: 1, max_bytes: 1024 }))
+  ).json();
+  assert.deepEqual(
+    priority.records.map((record) => [record.seq, record.kind]),
+    [[4, "cluster_intake"]],
+  );
+  await queue.fetch(stateAppendQueueRequest("/state/ack", { drain_token: priority.drain_token }));
+  const ordinary = await (
+    await queue.fetch(stateAppendQueueRequest("/state/drain", { max_rows: 10, max_bytes: 1024 }))
+  ).json();
+  assert.deepEqual(
+    ordinary.records.map((record) => record.seq),
+    [1, 2, 3],
   );
 });
 

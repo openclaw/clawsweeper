@@ -78,7 +78,23 @@ test("postStateAppend signs and posts the exact append body", async () => {
       records,
       fetchImpl,
     }),
-    { ok: true, shed: false },
+    { ok: true, shed: false, deduped: false },
+  );
+});
+
+test("postStateAppend propagates an idempotent delivery receipt", async () => {
+  const fetchImpl = (async () =>
+    Response.json({ ok: true, deduped: true }, { status: 202 })) as typeof fetch;
+
+  assert.deepEqual(
+    await postStateAppend({
+      queueUrl: "https://queue.test",
+      webhookSecret,
+      deliveryId: "delivery-duplicate",
+      records,
+      fetchImpl,
+    }),
+    { ok: true, shed: false, deduped: true },
   );
 });
 
@@ -94,7 +110,7 @@ test("postStateAppend reports a shed response without throwing", async () => {
       records,
       fetchImpl,
     }),
-    { ok: false, shed: true },
+    { ok: false, shed: true, deduped: false },
   );
 });
 
@@ -109,7 +125,7 @@ test("postStateAppend preserves an explicit unsuccessful response as a fallback 
       records,
       fetchImpl,
     }),
-    { ok: false, shed: false },
+    { ok: false, shed: false, deduped: false },
   );
 });
 

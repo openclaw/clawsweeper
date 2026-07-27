@@ -330,7 +330,12 @@ type ExactReviewQueueMetricDelta = {
   publicationDeadLettered?: number;
   publicationRefreshed?: number;
 };
-type StateAppendKind = "sweep_status" | "comment_router" | "apply_proof" | "record_tuple";
+type StateAppendKind =
+  | "sweep_status"
+  | "comment_router"
+  | "apply_proof"
+  | "record_tuple"
+  | "cluster_intake";
 type StateAppendRecord = {
   kind: StateAppendKind;
   key: string;
@@ -452,6 +457,7 @@ const STATE_APPEND_KINDS = new Set<StateAppendKind>([
   "sweep_status",
   "comment_router",
   "apply_proof",
+  "cluster_intake",
 ]);
 const DEFAULT_STATE_APPEND_MAX_PENDING_ROWS = 50_000;
 const DEFAULT_STATE_APPEND_MAX_PENDING_BYTES = 100 * 1024 * 1024;
@@ -5401,7 +5407,7 @@ export class ExactReviewQueue {
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${STATE_APPEND_WINDOW_TABLE} (
          seq INTEGER PRIMARY KEY AUTOINCREMENT,
-         kind TEXT NOT NULL CHECK (kind IN ('sweep_status', 'comment_router', 'apply_proof', 'record_tuple')),
+         kind TEXT NOT NULL CHECK (kind IN ('sweep_status', 'comment_router', 'apply_proof', 'record_tuple', 'cluster_intake')),
          record_key TEXT NOT NULL,
          payload_json TEXT NOT NULL,
          payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0),
@@ -5413,42 +5419,9 @@ export class ExactReviewQueue {
          materialization_last_error TEXT
        ) STRICT`,
     );
-    const stateAppendTableRow = Array.from(
-      this.storage.sql.exec(
-        `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`,
-        STATE_APPEND_WINDOW_TABLE,
-      ),
-    )[0] as { sql?: string } | undefined;
-    const stateAppendTableSql = String(stateAppendTableRow?.sql || "");
-    if (!stateAppendTableSql.includes("'record_tuple'")) {
-      this.storage.transactionSync(() => {
-        this.storage.sql.exec(
-          `CREATE TABLE state_append_window_v2 (
-             seq INTEGER PRIMARY KEY AUTOINCREMENT,
-             kind TEXT NOT NULL CHECK (kind IN ('sweep_status', 'comment_router', 'apply_proof', 'record_tuple')),
-             record_key TEXT NOT NULL,
-             payload_json TEXT NOT NULL,
-             payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0),
-             produced_at TEXT NOT NULL,
-             delivery_id TEXT NOT NULL,
-             drain_token TEXT,
-             materialization_attempts INTEGER NOT NULL DEFAULT 0 CHECK (materialization_attempts >= 0),
-             materialization_first_failed_at INTEGER,
-             materialization_last_error TEXT
-           ) STRICT`,
-        );
-        this.storage.sql.exec(
-          `INSERT INTO state_append_window_v2
-             (seq, kind, record_key, payload_json, payload_bytes, produced_at, delivery_id, drain_token)
-           SELECT seq, kind, record_key, payload_json, payload_bytes, produced_at, delivery_id, drain_token
-             FROM ${STATE_APPEND_WINDOW_TABLE}`,
-        );
-        this.storage.sql.exec(`DROP TABLE ${STATE_APPEND_WINDOW_TABLE}`);
-        this.storage.sql.exec(
-          `ALTER TABLE state_append_window_v2 RENAME TO ${STATE_APPEND_WINDOW_TABLE}`,
-        );
-      });
-    }
+    // Durable Objects can skip intermediate deployments. Normalize columns
+    // introduced by the retry-history migration before rebuilding an older
+    // kind constraint, because the copy below preserves those values.
     for (const [column, definition] of [
       [
         "materialization_attempts",
@@ -5468,6 +5441,44 @@ export class ExactReviewQueue {
           `ALTER TABLE ${STATE_APPEND_WINDOW_TABLE} ADD COLUMN ${column} ${definition}`,
         );
       }
+    }
+    const stateAppendTableRow = Array.from(
+      this.storage.sql.exec(
+        `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`,
+        STATE_APPEND_WINDOW_TABLE,
+      ),
+    )[0] as { sql?: string } | undefined;
+    const stateAppendTableSql = String(stateAppendTableRow?.sql || "");
+    if (!stateAppendTableSql.includes("'cluster_intake'")) {
+      this.storage.transactionSync(() => {
+        this.storage.sql.exec(
+          `CREATE TABLE state_append_window_v2 (
+             seq INTEGER PRIMARY KEY AUTOINCREMENT,
+             kind TEXT NOT NULL CHECK (kind IN ('sweep_status', 'comment_router', 'apply_proof', 'record_tuple', 'cluster_intake')),
+             record_key TEXT NOT NULL,
+             payload_json TEXT NOT NULL,
+             payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0),
+             produced_at TEXT NOT NULL,
+             delivery_id TEXT NOT NULL,
+             drain_token TEXT,
+             materialization_attempts INTEGER NOT NULL DEFAULT 0 CHECK (materialization_attempts >= 0),
+             materialization_first_failed_at INTEGER,
+             materialization_last_error TEXT
+           ) STRICT`,
+        );
+        this.storage.sql.exec(
+          `INSERT INTO state_append_window_v2
+             (seq, kind, record_key, payload_json, payload_bytes, produced_at, delivery_id, drain_token,
+              materialization_attempts, materialization_first_failed_at, materialization_last_error)
+           SELECT seq, kind, record_key, payload_json, payload_bytes, produced_at, delivery_id, drain_token,
+                  materialization_attempts, materialization_first_failed_at, materialization_last_error
+             FROM ${STATE_APPEND_WINDOW_TABLE}`,
+        );
+        this.storage.sql.exec(`DROP TABLE ${STATE_APPEND_WINDOW_TABLE}`);
+        this.storage.sql.exec(
+          `ALTER TABLE state_append_window_v2 RENAME TO ${STATE_APPEND_WINDOW_TABLE}`,
+        );
+      });
     }
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS state_append_window_drain_seq
@@ -7050,7 +7061,7 @@ export class ExactReviewQueue {
                 materialization_attempts, materialization_first_failed_at, materialization_last_error
            FROM ${STATE_APPEND_WINDOW_TABLE}
           WHERE drain_token IS NULL
-          ORDER BY seq
+          ORDER BY CASE kind WHEN 'cluster_intake' THEN 0 ELSE 1 END, seq
           LIMIT ?`,
         maxRows,
       ) as Iterable<StateAppendWindowRow>,
@@ -7073,13 +7084,25 @@ export class ExactReviewQueue {
       now,
       expiresAt,
     );
-    this.storage.sql.exec(
-      `UPDATE ${STATE_APPEND_WINDOW_TABLE}
-          SET drain_token = ?
-        WHERE drain_token IS NULL AND seq <= ?`,
-      token,
-      rows.at(-1)?.seq,
-    );
+    const selectedSequences = rows.map((row) => Number(row.seq));
+    for (
+      let offset = 0;
+      offset < selectedSequences.length;
+      offset += EXACT_REVIEW_QUEUE_SQL_BINDING_ROW_BATCH
+    ) {
+      const batch = selectedSequences.slice(
+        offset,
+        offset + EXACT_REVIEW_QUEUE_SQL_BINDING_ROW_BATCH,
+      );
+      const placeholders = batch.map(() => "?").join(",");
+      this.storage.sql.exec(
+        `UPDATE ${STATE_APPEND_WINDOW_TABLE}
+            SET drain_token = ?
+          WHERE drain_token IS NULL AND seq IN (${placeholders})`,
+        token,
+        ...batch,
+      );
+    }
     return { token, expiresAt, rows };
   }
 
@@ -10236,8 +10259,8 @@ function stateWriterTicketInput(value: unknown): StateWriterTicketInput | null {
   const runId = boundedStateWriterIdentity(body.run_id);
   const runAttempt = Number(body.run_attempt);
   const writerClass =
-    body.writer_class === "publication_batch"
-      ? "publication_batch"
+    body.writer_class === "publication_batch" || body.writer_class === "cluster_intake"
+      ? body.writer_class
       : body.writer_class === "ordinary" || body.writer_class === undefined
         ? "ordinary"
         : null;

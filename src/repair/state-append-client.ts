@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 
 export type StateAppendInputRecord = {
-  kind: "sweep_status" | "comment_router" | "apply_proof";
+  kind: "sweep_status" | "comment_router" | "apply_proof" | "cluster_intake";
   key: string;
   payload: unknown;
   produced_at: string;
@@ -10,6 +10,7 @@ export type StateAppendInputRecord = {
 export type StateAppendResult = {
   ok: boolean;
   shed: boolean;
+  deduped: boolean;
 };
 
 export type CanonicalRecordTupleOperation = {
@@ -55,14 +56,14 @@ export async function postStateAppend(options: {
       body,
     });
     const value = (await response.json().catch(() => null)) as unknown;
-    if (isRecord(value) && value.shed === true) return { ok: false, shed: true };
+    if (isRecord(value) && value.shed === true) return { ok: false, shed: true, deduped: false };
     if (!response.ok) {
       throw new Error(`POST /internal/state/append returned ${response.status}`);
     }
     if (!isRecord(value) || typeof value.ok !== "boolean") {
       throw new Error("POST /internal/state/append returned an invalid response");
     }
-    return { ok: value.ok, shed: false };
+    return { ok: value.ok, shed: false, deduped: value.deduped === true };
   } catch (error) {
     throw new Error(redactStateAppendSecrets(errorMessage(error)));
   }

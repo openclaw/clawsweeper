@@ -3,8 +3,10 @@ const STATE_WRITER_META_TABLE = "state_writer_meta";
 const STATE_WRITER_TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const STATE_WRITER_TERMINAL_PRUNE_LIMIT = 256;
 const MAX_CONSECUTIVE_BATCH_TURNS = 2;
+const MAX_CONSECUTIVE_INTAKE_TURNS = 1;
+const MAX_CONSECUTIVE_PRIORITY_TURNS = 2;
 
-export type StateWriterClass = "ordinary" | "publication_batch";
+export type StateWriterClass = "ordinary" | "publication_batch" | "cluster_intake";
 
 type SqlStorage = {
   exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
@@ -42,6 +44,7 @@ export type StateWriterTicket = {
 export type StateWriterCoordinatorStats = {
   queued: number;
   queued_batch: number;
+  queued_intake: number;
   queued_ordinary: number;
   leased: number;
   admitted: number;
@@ -51,6 +54,7 @@ export type StateWriterCoordinatorStats = {
   last_wait_ms: number;
   max_wait_ms: number;
   consecutive_batch_turns: number;
+  consecutive_intake_turns: number;
   active: null | {
     ticket_id: string;
     owner: string;
@@ -88,7 +92,7 @@ export class StateWriterCoordinator {
          run_id TEXT NOT NULL,
          run_attempt INTEGER NOT NULL CHECK (run_attempt >= 1),
          writer_class TEXT NOT NULL DEFAULT 'ordinary'
-           CHECK (writer_class IN ('ordinary', 'publication_batch')),
+           CHECK (writer_class IN ('ordinary', 'publication_batch', 'cluster_intake')),
          state TEXT NOT NULL CHECK (state IN ('queued', 'leased', 'completed', 'expired')),
          enqueued_at INTEGER NOT NULL,
          last_seen_at INTEGER NOT NULL,
@@ -101,6 +105,7 @@ export class StateWriterCoordinator {
        ) STRICT`,
     );
     this.ensureTicketColumnsSync();
+    this.ensureWriterClassSchemaSync();
     this.storage.sql.exec(
       `CREATE UNIQUE INDEX IF NOT EXISTS state_writer_one_active_ticket
          ON ${STATE_WRITER_TICKET_TABLE} (state)
@@ -124,7 +129,9 @@ export class StateWriterCoordinator {
          last_wait_ms INTEGER NOT NULL DEFAULT 0 CHECK (last_wait_ms >= 0),
          max_wait_ms INTEGER NOT NULL DEFAULT 0 CHECK (max_wait_ms >= 0),
          consecutive_batch_turns INTEGER NOT NULL DEFAULT 0
-           CHECK (consecutive_batch_turns >= 0)
+           CHECK (consecutive_batch_turns >= 0),
+         consecutive_intake_turns INTEGER NOT NULL DEFAULT 0
+           CHECK (consecutive_intake_turns >= 0)
        ) STRICT`,
     );
     this.ensureMetaColumnsSync();
@@ -203,11 +210,30 @@ export class StateWriterCoordinator {
                     max_wait_ms = MAX(max_wait_ms, ?),
                     consecutive_batch_turns = CASE
                       WHEN ? = 'publication_batch' THEN consecutive_batch_turns + 1
-                      ELSE 0
+                      WHEN ? = 'ordinary' THEN 0
+                      WHEN ? = 'cluster_intake' AND NOT EXISTS (
+                        SELECT 1 FROM ${STATE_WRITER_TICKET_TABLE}
+                         WHERE state = 'queued' AND writer_class = 'ordinary'
+                      ) THEN 0
+                      ELSE consecutive_batch_turns
+                    END,
+                    consecutive_intake_turns = CASE
+                      WHEN ? = 'cluster_intake' THEN consecutive_intake_turns + 1
+                      WHEN ? = 'ordinary' THEN 0
+                      WHEN ? = 'publication_batch' AND NOT EXISTS (
+                        SELECT 1 FROM ${STATE_WRITER_TICKET_TABLE}
+                         WHERE state = 'queued' AND writer_class = 'ordinary'
+                      ) THEN 0
+                      ELSE consecutive_intake_turns
                     END
               WHERE singleton_id = 1`,
             waitMs,
             waitMs,
+            input.writerClass,
+            input.writerClass,
+            input.writerClass,
+            input.writerClass,
+            input.writerClass,
             input.writerClass,
           );
         }
@@ -310,11 +336,12 @@ export class StateWriterCoordinator {
       const meta = Array.from(
         this.storage.sql.exec(
           `SELECT admitted_total, completed_total, expired_total, recovered_total,
-                  last_wait_ms, max_wait_ms, consecutive_batch_turns
+                  last_wait_ms, max_wait_ms, consecutive_batch_turns,
+                  consecutive_intake_turns
              FROM ${STATE_WRITER_META_TABLE} WHERE singleton_id = 1`,
         ),
       )[0] as Record<string, unknown> | undefined;
-      const queuedClasses = { publication_batch: 0, ordinary: 0 };
+      const queuedClasses = { cluster_intake: 0, publication_batch: 0, ordinary: 0 };
       for (const row of this.storage.sql.exec(
         `SELECT writer_class, COUNT(*) AS count FROM ${STATE_WRITER_TICKET_TABLE}
           WHERE state = 'queued' GROUP BY writer_class`,
@@ -327,6 +354,7 @@ export class StateWriterCoordinator {
       return {
         ...liveCounts,
         queued_batch: queuedClasses.publication_batch,
+        queued_intake: queuedClasses.cluster_intake,
         queued_ordinary: queuedClasses.ordinary,
         admitted: Number(meta?.admitted_total || 0),
         completed: Number(meta?.completed_total || 0),
@@ -335,6 +363,7 @@ export class StateWriterCoordinator {
         last_wait_ms: Number(meta?.last_wait_ms || 0),
         max_wait_ms: Number(meta?.max_wait_ms || 0),
         consecutive_batch_turns: Number(meta?.consecutive_batch_turns || 0),
+        consecutive_intake_turns: Number(meta?.consecutive_intake_turns || 0),
         active: active
           ? {
               ticket_id: String(active.ticket_id),
@@ -370,6 +399,7 @@ export class StateWriterCoordinator {
       "last_wait_ms",
       "max_wait_ms",
       "consecutive_batch_turns",
+      "consecutive_intake_turns",
     ]) {
       if (!columns.has(column)) {
         this.storage.sql.exec(
@@ -401,6 +431,55 @@ export class StateWriterCoordinator {
            ADD COLUMN writer_class TEXT NOT NULL DEFAULT 'ordinary'`,
       );
     }
+  }
+
+  private ensureWriterClassSchemaSync(): void {
+    const tableSql = String(
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`,
+          STATE_WRITER_TICKET_TABLE,
+        ),
+      )[0]?.sql || "",
+    );
+    if (tableSql.includes("'cluster_intake'")) return;
+    this.storage.transactionSync(() => {
+      this.storage.sql.exec(
+        `CREATE TABLE state_writer_tickets_v2 (
+           seq INTEGER PRIMARY KEY AUTOINCREMENT,
+           ticket_id TEXT NOT NULL UNIQUE,
+           owner TEXT NOT NULL,
+           branch TEXT NOT NULL,
+           repository TEXT NOT NULL,
+           workflow TEXT NOT NULL,
+           job TEXT NOT NULL,
+           run_id TEXT NOT NULL,
+           run_attempt INTEGER NOT NULL CHECK (run_attempt >= 1),
+           writer_class TEXT NOT NULL DEFAULT 'ordinary'
+             CHECK (writer_class IN ('ordinary', 'publication_batch', 'cluster_intake')),
+           state TEXT NOT NULL CHECK (state IN ('queued', 'leased', 'completed', 'expired')),
+           enqueued_at INTEGER NOT NULL,
+           last_seen_at INTEGER NOT NULL,
+           leased_at INTEGER,
+           lease_token TEXT,
+           lease_generation INTEGER NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+           lease_expires_at INTEGER,
+           lease_deadline_at INTEGER,
+           completed_at INTEGER
+         ) STRICT`,
+      );
+      this.storage.sql.exec(
+        `INSERT INTO state_writer_tickets_v2
+           SELECT seq, ticket_id, owner, branch, repository, workflow, job, run_id, run_attempt,
+                  writer_class, state, enqueued_at, last_seen_at, leased_at, lease_token,
+                  lease_generation, lease_expires_at, lease_deadline_at, completed_at
+             FROM ${STATE_WRITER_TICKET_TABLE}`,
+      );
+      this.storage.sql.exec(`DROP TABLE ${STATE_WRITER_TICKET_TABLE}`);
+      this.storage.sql.exec(
+        `ALTER TABLE state_writer_tickets_v2 RENAME TO ${STATE_WRITER_TICKET_TABLE}`,
+      );
+    });
   }
 
   private reclaimAndPruneSync(now: number, queuedStaleMs: number): void {
@@ -468,24 +547,43 @@ export class StateWriterCoordinator {
         `SELECT * FROM ${STATE_WRITER_TICKET_TABLE} WHERE state = 'queued' ORDER BY seq`,
       ),
     ) as Record<string, unknown>[];
+    const intakes = rows.filter((row) => row.writer_class === "cluster_intake");
     const batches = rows.filter((row) => row.writer_class === "publication_batch");
-    const ordinary = rows.filter((row) => row.writer_class !== "publication_batch");
+    const ordinary = rows.filter((row) => row.writer_class === "ordinary");
     const ordered: Record<string, unknown>[] = [];
     let consecutiveBatchTurns = this.consecutiveBatchTurnsSync();
-    while (batches.length || ordinary.length) {
+    let consecutiveIntakeTurns = this.consecutiveIntakeTurnsSync();
+    while (intakes.length || batches.length || ordinary.length) {
+      const priorityBudgetAvailable =
+        ordinary.length === 0 ||
+        consecutiveBatchTurns + consecutiveIntakeTurns < MAX_CONSECUTIVE_PRIORITY_TURNS;
+      if (
+        intakes.length > 0 &&
+        priorityBudgetAvailable &&
+        (batches.length + ordinary.length === 0 ||
+          consecutiveIntakeTurns < MAX_CONSECUTIVE_INTAKE_TURNS)
+      ) {
+        ordered.push(intakes.shift()!);
+        consecutiveIntakeTurns += 1;
+        if (ordinary.length === 0) consecutiveBatchTurns = 0;
+        continue;
+      }
       // A publication batch may skip the ordinary backlog, but after two such
       // turns an ordinary writer is guaranteed the next lease. This keeps the
       // incident lane serviceable without replacing one FIFO starvation mode
       // with permanent starvation of status, repair, and dashboard writers.
       if (
         batches.length > 0 &&
+        priorityBudgetAvailable &&
         (ordinary.length === 0 || consecutiveBatchTurns < MAX_CONSECUTIVE_BATCH_TURNS)
       ) {
         ordered.push(batches.shift()!);
         consecutiveBatchTurns += 1;
+        if (ordinary.length === 0) consecutiveIntakeTurns = 0;
       } else {
         ordered.push(ordinary.shift()!);
         consecutiveBatchTurns = 0;
+        consecutiveIntakeTurns = 0;
       }
     }
     return ordered;
@@ -498,6 +596,15 @@ export class StateWriterCoordinator {
       ),
     )[0] as { consecutive_batch_turns?: number } | undefined;
     return Number(row?.consecutive_batch_turns || 0);
+  }
+
+  private consecutiveIntakeTurnsSync(): number {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT consecutive_intake_turns FROM ${STATE_WRITER_META_TABLE} WHERE singleton_id = 1`,
+      ),
+    )[0] as { consecutive_intake_turns?: number } | undefined;
+    return Number(row?.consecutive_intake_turns || 0);
   }
 
   private ticketJsonSync(row: Record<string, unknown>): StateWriterTicket {

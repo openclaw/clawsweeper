@@ -236,6 +236,143 @@ test("publication batches skip ordinary backlog but yield after two consecutive 
   assert.equal(stats.consecutive_batch_turns, 0);
 });
 
+test("intake and publication priority share one bounded budget before ordinary traffic", () => {
+  const { coordinator } = fixture();
+  const active = writer("active-intake", "Sweep", "status");
+  const ordinary = writer("ordinary-intake", "Repair comment router", "route");
+  const batch = writer(
+    "batch-intake",
+    "Publish exact review batch",
+    "publish",
+    "publication_batch",
+  );
+  const intakeOne = writer(
+    "cluster-intake-one",
+    "Materialize queued state",
+    "materialize",
+    "cluster_intake",
+  );
+  const intakeTwo = writer(
+    "cluster-intake-two",
+    "Materialize queued state",
+    "materialize",
+    "cluster_intake",
+  );
+
+  const activeLease = acquire(coordinator, active, 1_000);
+  acquire(coordinator, ordinary, 1_100);
+  acquire(coordinator, batch, 1_200);
+  assert.equal(acquire(coordinator, intakeOne, 1_300).position, 1);
+  assert.equal(acquire(coordinator, intakeTwo, 1_400).position, 4);
+  assert.equal(
+    coordinator.release(
+      active.ticketId,
+      active.owner,
+      required(activeLease.leaseToken),
+      1_500,
+      QUEUED_STALE_MS,
+    ),
+    true,
+  );
+
+  const intakeLease = acquire(coordinator, intakeOne, 1_600);
+  assert.equal(intakeLease.state, "leased");
+  assert.equal(
+    coordinator.release(
+      intakeOne.ticketId,
+      intakeOne.owner,
+      required(intakeLease.leaseToken),
+      1_700,
+      QUEUED_STALE_MS,
+    ),
+    true,
+  );
+  assert.equal(acquire(coordinator, intakeTwo, 1_800).position, 3);
+  const batchLease = acquire(coordinator, batch, 1_801);
+  assert.equal(batchLease.state, "leased");
+  assert.equal(
+    coordinator.release(
+      batch.ticketId,
+      batch.owner,
+      required(batchLease.leaseToken),
+      1_900,
+      QUEUED_STALE_MS,
+    ),
+    true,
+  );
+  assert.equal(acquire(coordinator, intakeTwo, 2_000).position, 2);
+  const ordinaryLease = acquire(coordinator, ordinary, 2_001);
+  assert.equal(ordinaryLease.state, "leased");
+  const stats = coordinator.stats(2_001, QUEUED_STALE_MS);
+  assert.equal(stats.queued_intake, 1);
+  assert.equal(stats.queued_ordinary, 0);
+  assert.equal(stats.consecutive_intake_turns, 0);
+  assert.equal(stats.consecutive_batch_turns, 0);
+});
+
+test("publication batches yield back to intake when no ordinary writer is queued", () => {
+  const { coordinator } = fixture();
+  const active = writer("active-priority", "Sweep", "status");
+  const intakeOne = writer(
+    "intake-priority-one",
+    "Materialize queued state",
+    "materialize",
+    "cluster_intake",
+  );
+  const intakeTwo = writer(
+    "intake-priority-two",
+    "Materialize queued state",
+    "materialize",
+    "cluster_intake",
+  );
+  const batchOne = writer(
+    "batch-priority-one",
+    "Publish exact review batch",
+    "publish",
+    "publication_batch",
+  );
+  const batchTwo = writer(
+    "batch-priority-two",
+    "Publish exact review batch",
+    "publish",
+    "publication_batch",
+  );
+
+  const activeLease = acquire(coordinator, active, 1_000);
+  acquire(coordinator, intakeOne, 1_100);
+  acquire(coordinator, batchOne, 1_200);
+  acquire(coordinator, batchTwo, 1_300);
+  coordinator.release(
+    active.ticketId,
+    active.owner,
+    required(activeLease.leaseToken),
+    1_400,
+    QUEUED_STALE_MS,
+  );
+  const intakeOneLease = acquire(coordinator, intakeOne, 1_500);
+  coordinator.release(
+    intakeOne.ticketId,
+    intakeOne.owner,
+    required(intakeOneLease.leaseToken),
+    1_600,
+    QUEUED_STALE_MS,
+  );
+  acquire(coordinator, intakeTwo, 1_700);
+  const batchOneLease = acquire(coordinator, batchOne, 1_800);
+  assert.equal(batchOneLease.state, "leased");
+  coordinator.release(
+    batchOne.ticketId,
+    batchOne.owner,
+    required(batchOneLease.leaseToken),
+    1_900,
+    QUEUED_STALE_MS,
+  );
+
+  const intakeTwoLease = acquire(coordinator, intakeTwo, 2_000);
+  assert.equal(intakeTwoLease.state, "leased");
+  assert.equal(acquire(coordinator, batchTwo, 2_001).position, 1);
+});
+
 test("expired active and abandoned queue-head writers recover without accepting stale owners", () => {
   const { coordinator } = fixture();
   const active = writer("active", "Exact review batch publish", "publish");
