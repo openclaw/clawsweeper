@@ -18,6 +18,7 @@ import {
   validateClusterJobContent,
   verifyClusterDispatchAuthenticationTag,
 } from "./cluster-intake-state.js";
+import { allowedRepairOwners } from "./lib.js";
 
 type RestoreClusterIntakeJobOptions = {
   root: string;
@@ -43,7 +44,14 @@ export function restoreClusterIntakeJob(options: RestoreClusterIntakeJobOptions)
   if (!match) throw new Error("invalid durable cluster intake job path");
   const owner = match[1]!;
   const clusterId = Number(match[2]);
-  if (owner !== options.allowedOwner || !/^[A-Za-z0-9_.-]+$/.test(options.allowedOwner)) {
+  // CLAWSWEEPER_ALLOWED_OWNER is a comma- or whitespace-separated owner list
+  // (issue #604); the job-path owner must be one of the validated entries.
+  const allowedOwners = allowedRepairOwners(options.allowedOwner);
+  if (
+    allowedOwners.length === 0 ||
+    allowedOwners.some((entry) => !/^[A-Za-z0-9_.-]+$/.test(entry)) ||
+    !allowedOwners.includes(owner.toLowerCase())
+  ) {
     throw new Error("durable cluster intake owner is not allowed");
   }
   if (!/^[a-f0-9]{64}$/.test(options.digest)) {

@@ -56,7 +56,7 @@ test("scheduled cluster repair intake follows gitcrawl-store freshness cadence",
   assert.match(workflow, /repair:publish-cluster-intake/);
   assert.match(workflow, /owner: \$\{\{ steps\.target\.outputs\.owner \}\}/);
   assert.match(workflow, /repositories: \$\{\{ steps\.target\.outputs\.name \}\}/);
-  assert.match(workflow, /gh workflow run state-materializer\.yml --ref main/);
+  assert.match(workflow, /gh workflow run state-materializer\.yml --ref "\$GITHUB_REF_NAME"/);
   assert.doesNotMatch(workflow, /pnpm run repair:dispatch/);
   assert.doesNotMatch(workflow, /git pull --rebase origin main/);
   assert.match(limitsDocs, /one cluster or rejects the batch/);

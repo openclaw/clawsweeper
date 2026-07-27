@@ -93,18 +93,36 @@ jobs:
           ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
         run: |
           set -euo pipefail
-          if ! printf '%s' "$ALLOWED_OWNER" | grep -Eq '^[A-Za-z0-9_.-]+$'; then
+          # CLAWSWEEPER_ALLOWED_OWNER is a comma- or whitespace-separated owner
+          # list (issue #604; allowedRepairOwners in src/repair/lib.ts).
+          owners_normalized="$(printf '%s' "$ALLOWED_OWNER" | tr ',' ' ' | tr -s '[:space:]' ' ')"
+          read -r -a allowed_owners <<< "$owners_normalized"
+          if [ "${#allowed_owners[@]}" -eq 0 ]; then
             echo "Invalid allowed repository owner" >&2
             exit 2
           fi
+          for allowed_owner in "${allowed_owners[@]}"; do
+            if ! printf '%s' "$allowed_owner" | grep -Eq '^[A-Za-z0-9_.-]+$'; then
+              echo "Invalid allowed repository owner" >&2
+              exit 2
+            fi
+          done
           if ! printf '%s' "$TARGET_REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
             echo "Invalid target repository" >&2
             exit 2
           fi
           target_owner="${TARGET_REPO%%/*}"
           target_name="${TARGET_REPO#*/}"
-          if [ "$target_owner" != "$ALLOWED_OWNER" ]; then
-            echo "Target repository must be owned by ${ALLOWED_OWNER}" >&2
+          target_owner_lower="$(printf '%s' "$target_owner" | tr '[:upper:]' '[:lower:]')"
+          owner_allowed=0
+          for allowed_owner in "${allowed_owners[@]}"; do
+            if [ "$target_owner_lower" = "$(printf '%s' "$allowed_owner" | tr '[:upper:]' '[:lower:]')" ]; then
+              owner_allowed=1
+              break
+            fi
+          done
+          if [ "$owner_allowed" != "1" ]; then
+            echo "Target repository must be owned by one of: ${ALLOWED_OWNER}" >&2
             exit 2
           fi
           {
@@ -365,8 +383,11 @@ jobs:
           set -euo pipefail
           pnpm run repair:publish-cluster-intake -- .artifacts/cluster-repair-intake/intent.json
 
+      # The wake targets the intake's own ref so intake and materializer run
+      # the same revision (identical to `main` for scheduled production runs;
+      # a branch dispatch proves the branch end-to-end before merge).
       - name: Request immediate state materialization
         if: ${{ steps.prepare.outputs.should_import == 'true' }}
         env:
           GH_TOKEN: ${{ steps.central-token.outputs.token }}
-        run: gh workflow run state-materializer.yml --ref main -f intake_priority=true
+        run: gh workflow run state-materializer.yml --ref "$GITHUB_REF_NAME" -f intake_priority=true

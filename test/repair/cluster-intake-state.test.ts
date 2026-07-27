@@ -1046,6 +1046,18 @@ test("worker restores only an authenticated semantically valid durable job", () 
   assert.equal(fs.readFileSync(restored, "utf8"), job.content);
   assert.equal(fs.statSync(restored).mode & 0o777, 0o600);
 
+  // CLAWSWEEPER_ALLOWED_OWNER is a comma/whitespace-separated owner list in
+  // production (e.g. "openclaw,steipete"); membership must be honored.
+  restoreClusterIntakeJob({ ...options, allowedOwner: "steipete, openclaw" });
+  assert.throws(
+    () => restoreClusterIntakeJob({ ...options, allowedOwner: "steipete,elsewhere" }),
+    /owner is not allowed/,
+  );
+  assert.throws(
+    () => restoreClusterIntakeJob({ ...options, allowedOwner: "" }),
+    /owner is not allowed/,
+  );
+
   assert.throws(
     () => restoreClusterIntakeJob({ ...options, dispatchKey: `${job.dispatch_key}-forged` }),
     /authentication failed/,

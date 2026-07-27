@@ -117,6 +117,10 @@ jobs:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_REPO: openclaw/clawsweeper
+          # Dispatch workers at the materializer's own ref so the restore and
+          # receipt code lines up with the dispatching revision (this is
+          # `main` for every scheduled production run).
+          CLAWSWEEPER_DISPATCH_REF: ${{ github.ref_name }}
           CLAWSWEEPER_WORKER_RUNNER: ${{ vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
           CLAWSWEEPER_EXECUTION_RUNNER: ${{ vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
         run: node dist/repair/state-materializer.js

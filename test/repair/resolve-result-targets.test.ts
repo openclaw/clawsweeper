@@ -46,6 +46,44 @@ test("result targets fall back to the configured default when artifacts carry no
   assert.deepEqual(resolved, { owner: "openclaw", repositories: ["openclaw"] });
 });
 
+test("result targets honor the production owner-list contract", () => {
+  // CLAWSWEEPER_ALLOWED_OWNER is a comma/whitespace-separated list (issue
+  // #604); production sets "openclaw,steipete".
+  const resolved = resolveResultTargets({
+    artifactsDir: artifactsWithResults(["steipete/vibetunnel"]),
+    allowedOwner: "openclaw,steipete",
+    fallbackRepo: "openclaw/openclaw",
+  });
+  assert.deepEqual(resolved, { owner: "steipete", repositories: ["vibetunnel"] });
+  const fallback = resolveResultTargets({
+    artifactsDir: artifactsWithResults([]),
+    allowedOwner: "openclaw, steipete",
+    fallbackRepo: "openclaw/openclaw",
+  });
+  assert.deepEqual(fallback, { owner: "openclaw", repositories: ["openclaw"] });
+  assert.throws(
+    () =>
+      resolveResultTargets({
+        artifactsDir: artifactsWithResults(["evil/openclaw"]),
+        allowedOwner: "openclaw,steipete",
+        fallbackRepo: "openclaw/openclaw",
+      }),
+    /outside openclaw,steipete/,
+  );
+});
+
+test("result targets fail closed when results span multiple owners", () => {
+  assert.throws(
+    () =>
+      resolveResultTargets({
+        artifactsDir: artifactsWithResults(["openclaw/openclaw", "steipete/vibetunnel"]),
+        allowedOwner: "openclaw,steipete",
+        fallbackRepo: "openclaw/openclaw",
+      }),
+    /span multiple owners/,
+  );
+});
+
 test("result targets fail closed on a repository outside the allowed owner", () => {
   assert.throws(
     () =>
@@ -99,6 +137,19 @@ test("intake hydrates state with a read-only, non-persisted credential", () => {
   assert.match(workflow, /actions-permission: read/);
   assert.match(workflow, /persist-credentials: "false"/);
   assert.doesNotMatch(workflow, /permission-contents: write/);
+});
+
+test("intake target validation honors the owner-list contract and version-coherent refs", () => {
+  const intake = fs.readFileSync(".github/workflows/repair-cluster-intake.yml", "utf8");
+  // Owner membership must be checked against the parsed list, never a raw
+  // single-string comparison against CLAWSWEEPER_ALLOWED_OWNER.
+  assert.match(intake, /comma- or whitespace-separated owner/);
+  assert.match(intake, /owner_allowed=1/);
+  assert.doesNotMatch(intake, /\[ "\$target_owner" != "\$ALLOWED_OWNER" \]/);
+  // The materializer wake and worker dispatch stay on the invoking revision.
+  assert.match(intake, /gh workflow run state-materializer\.yml --ref "\$GITHUB_REF_NAME"/);
+  const materializer = fs.readFileSync(".github/workflows/state-materializer.yml", "utf8");
+  assert.match(materializer, /CLAWSWEEPER_DISPATCH_REF: \$\{\{ github\.ref_name \}\}/);
 });
 
 test("self-heal treats a failed publisher rerun as non-blocking", () => {

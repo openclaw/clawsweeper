@@ -2504,7 +2504,7 @@ test("cluster intake durably accepts selected work before materialization", () =
   assert.ok(importIndex < publishIndex, "selection must finish before durable acceptance");
   assert.ok(publishIndex < materializeIndex, "durable acceptance must precede materialization");
   assert.match(workflow, /repair:publish-cluster-intake/);
-  assert.match(workflow, /gh workflow run state-materializer\.yml --ref main/);
+  assert.match(workflow, /gh workflow run state-materializer\.yml --ref "\$GITHUB_REF_NAME"/);
   assert.doesNotMatch(workflow, /repair:publish-main|pnpm run repair:dispatch/);
 });
 
