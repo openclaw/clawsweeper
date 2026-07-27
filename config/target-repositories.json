@@ -32,6 +32,19 @@
       }
     },
     {
+      "target_repo": "openclaw/openclaw-facetime",
+      "display_name": "OpenClaw FaceTime",
+      "checkout_dir": "openclaw-facetime",
+      "prompt_note": "Use the openclaw-facetime source tree and current main branch. This is a macOS-native project: reviews touch SIP constraints, helper-process injection, Core Audio, and realtime capture paths, so weigh platform-specific evidence carefully and never assume Linux-runner reproduction proves or disproves macOS behavior. Propose auto-close only for issues and pull requests that are certainly implemented on main; keep anything platform-uncertain open for maintainer triage.",
+      "apply_close_rules": {
+        "issue": ["implemented_on_main"],
+        "pull_request": ["implemented_on_main"]
+      },
+      "package_manager": "pnpm",
+      "validation_commands": ["pnpm typecheck", "pnpm test", "pnpm build"],
+      "changed_gate": null
+    },
+    {
       "target_repo": "openclaw/fs-safe",
       "display_name": "fs-safe",
       "checkout_dir": "fs-safe",
