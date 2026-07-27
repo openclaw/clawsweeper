@@ -35,7 +35,6 @@ export type ExactReviewBatchFetch = {
 export type ExactReviewPublicationReconcileResult = {
   apply: boolean;
   scanned: number;
-  legacyTerminalScanned: number;
   eligible: number;
   changed: number;
   eligibleRemaining: number;
@@ -44,10 +43,6 @@ export type ExactReviewPublicationReconcileResult = {
   lineageDuplicateEligible: number;
   lineageDuplicateChanged: number;
   lineageRefreshed: number;
-  legacyTerminalCandidates: number;
-  legacyTerminalSelected: number;
-  legacyTerminalEligible: number;
-  legacyTerminalChanged: number;
   protectedBatchItems: number;
   protectedLineageItems: number;
   oldestEligibleAgeSeconds: number | null;
@@ -187,10 +182,6 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
     return {
       apply: response.apply === true,
       scanned: nonNegativeInteger(response.scanned, "scanned"),
-      legacyTerminalScanned: nonNegativeInteger(
-        response.legacy_terminal_scanned ?? 0,
-        "legacy_terminal_scanned",
-      ),
       eligible: nonNegativeInteger(response.eligible, "eligible"),
       changed: nonNegativeInteger(response.changed, "changed"),
       eligibleRemaining: nonNegativeInteger(response.eligible_remaining, "eligible_remaining"),
@@ -211,22 +202,6 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
         "lineage_duplicate_changed",
       ),
       lineageRefreshed: nonNegativeInteger(response.lineage_refreshed ?? 0, "lineage_refreshed"),
-      legacyTerminalCandidates: nonNegativeInteger(
-        response.legacy_terminal_candidates ?? 0,
-        "legacy_terminal_candidates",
-      ),
-      legacyTerminalSelected: nonNegativeInteger(
-        response.legacy_terminal_selected ?? 0,
-        "legacy_terminal_selected",
-      ),
-      legacyTerminalEligible: nonNegativeInteger(
-        response.legacy_terminal_eligible ?? 0,
-        "legacy_terminal_eligible",
-      ),
-      legacyTerminalChanged: nonNegativeInteger(
-        response.legacy_terminal_changed ?? 0,
-        "legacy_terminal_changed",
-      ),
       protectedBatchItems: nonNegativeInteger(
         response.protected_batch_items,
         "protected_batch_items",
