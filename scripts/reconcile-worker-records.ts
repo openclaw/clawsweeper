@@ -39,14 +39,21 @@ export type AuthorityTupleDecision = {
 
 type ParsedRecordPath = { path: string; section: TupleSection | "commits"; id: string };
 
+export type GitCommitTimesResult = {
+  times: Map<string, string>;
+  unavailable: Set<string>;
+};
+
 export function decideRecordAuthority(options: {
   mismatches: readonly RecordParityMismatch[];
   canonicalRecords: ReadonlyMap<string, WorkerRecord>;
   gitRecordPaths: ReadonlySet<string>;
   githubStates: ReadonlyMap<string, GitHubState>;
   gitCommitTimes: ReadonlyMap<string, string>;
+  provenanceUnavailable?: ReadonlySet<string>;
 }) {
   const decisions: AuthorityDecision[] = [];
+  const degraded: string[] = [];
   const actionable = new Map<
     string,
     Array<{ mismatch: RecordParityMismatch; parsed: ParsedRecordPath }>
@@ -138,6 +145,29 @@ export function decideRecordAuthority(options: {
         verdict: "git-wins",
         reason: `git-only ${gitOnlySidecar.parsed.section} must be imported with its atomic tuple`,
       };
+    } else if (
+      records.some(
+        ({ mismatch, parsed }) =>
+          mismatch.workerDigest !== null && options.provenanceUnavailable?.has(parsed.path),
+      )
+    ) {
+      // Recency comparison is impossible without git provenance. Canonical is
+      // the designed authority (git is a projection being retired), so keeping
+      // it plus a projection replay is the safe degradation instead of aborting
+      // the whole run. This is not destructive: the divergent git content stays
+      // recoverable in the state repo's commit history, and every degraded path
+      // is printed and recorded in the decision table for operator follow-up.
+      for (const { mismatch, parsed } of records) {
+        if (mismatch.workerDigest !== null && options.provenanceUnavailable?.has(parsed.path)) {
+          degraded.push(parsed.path);
+        }
+      }
+      tuple = {
+        itemId,
+        verdict: "canonical-wins",
+        reason:
+          "provenance-unavailable: git commit recency could not be read; canonical stays authoritative",
+      };
     } else {
       let gitNewer: ParsedRecordPath | null = null;
       for (const { mismatch, parsed } of records) {
@@ -175,6 +205,7 @@ export function decideRecordAuthority(options: {
   return {
     decisions: decisions.sort((left, right) => left.path.localeCompare(right.path)),
     tuples,
+    degraded: degraded.sort((left, right) => left.localeCompare(right)),
   };
 }
 
@@ -193,7 +224,7 @@ export async function reconcileWorkerRecordAuthority(options: {
     stateRoot: string,
     repoSlug: string,
     recordPaths: readonly string[],
-  ) => Map<string, string>;
+  ) => GitCommitTimesResult;
 }) {
   validateTargetRepo(options.targetRepo);
   const parity = options.parityReport
@@ -236,7 +267,7 @@ export async function reconcileWorkerRecordAuthority(options: {
   const contentDifferPaths = parity.mismatches.flatMap((mismatch) =>
     mismatch.gitDigest !== null && mismatch.workerDigest !== null ? [mismatch.path] : [],
   );
-  const gitCommitTimes = (options.gitCommitTimes ?? loadGitCommitTimes)(
+  const provenance = (options.gitCommitTimes ?? loadGitCommitTimes)(
     options.stateRoot,
     options.repoSlug,
     contentDifferPaths,
@@ -246,12 +277,25 @@ export async function reconcileWorkerRecordAuthority(options: {
     canonicalRecords,
     gitRecordPaths: new Set(gitRecords.keys()),
     githubStates,
-    gitCommitTimes,
+    gitCommitTimes: provenance.times,
+    provenanceUnavailable: provenance.unavailable,
   });
+  if (authority.degraded.length) {
+    console.error(
+      `WARNING: git provenance unavailable for ${authority.degraded.length} record(s); ` +
+        "degraded to canonical-wins + projection replay:",
+    );
+    for (const degradedPath of authority.degraded) console.error(`  - ${degradedPath}`);
+  }
   if (options.summaryFile) {
     appendFileSync(
       options.summaryFile,
-      renderDecisionTable(options.targetRepo, options.dryRun === true, authority.decisions),
+      renderDecisionTable(
+        options.targetRepo,
+        options.dryRun === true,
+        authority.decisions,
+        authority.degraded.length,
+      ),
     );
   }
 
@@ -335,6 +379,8 @@ export async function reconcileWorkerRecordAuthority(options: {
     dryRun: options.dryRun === true,
     mismatchCount: parity.mismatches.length,
     decisions: authority.decisions,
+    degradedPaths: authority.degraded,
+    degradedCount: authority.degraded.length,
     corrections,
     replay,
   };
@@ -468,14 +514,31 @@ export function loadGitHubStates(targetRepo: string, itemIds: readonly string[])
   return states;
 }
 
+export type GhCommandResult = {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  error?: Error;
+};
+
+export type GitCommitTimesDeps = {
+  runGh?: (args: readonly string[]) => GhCommandResult;
+  sleep?: (ms: number) => void;
+};
+
+const PROVENANCE_MAX_ATTEMPTS = 4;
+const PROVENANCE_BASE_DELAY_MS = 2000;
+
 export function loadGitCommitTimes(
   _stateRoot: string,
   repoSlug: string,
   recordPaths: readonly string[],
-) {
+  deps?: GitCommitTimesDeps,
+): GitCommitTimesResult {
   const requested = new Set(recordPaths);
-  if (!requested.size) return new Map<string, string>();
-  const result = new Map<string, string>();
+  const times = new Map<string, string>();
+  const unavailable = new Set<string>();
+  if (!requested.size) return { times, unavailable };
   const paths = [...requested];
   for (let offset = 0; offset < paths.length; offset += 50) {
     const batch = paths.slice(offset, offset + 50);
@@ -486,32 +549,87 @@ export function loadGitCommitTimes(
       )
       .join("\n");
     const query = `query { repository(owner: "openclaw", name: "clawsweeper-state") { object(expression: "state") { ... on Commit { ${fields} } } } }`;
-    const command = spawnSync("gh", ["api", "graphql", "-f", `query=${query}`], {
-      encoding: "utf8",
-      maxBuffer: 8 * 1024 * 1024,
-    });
-    if (command.status !== 0) {
-      throw new Error(`gh api failed while reading git provenance: ${command.stderr.trim()}`);
+    const stdout = runProvenanceQueryWithRetry(query, deps);
+    if (stdout === null) {
+      // Retries exhausted on a transient failure: mark the batch degraded
+      // instead of aborting the whole reconcile run.
+      for (const recordPath of batch) unavailable.add(recordPath);
+      continue;
     }
-    const commit = JSON.parse(command.stdout).data?.repository?.object as
+    const commit = JSON.parse(stdout).data?.repository?.object as
       | Record<string, { nodes?: Array<{ committedDate?: string }> }>
       | undefined;
     for (let index = 0; index < batch.length; index += 1) {
       const recordPath = batch[index]!;
       const committedAt = commit?.[`p${index}`]?.nodes?.[0]?.committedDate;
-      if (committedAt) result.set(recordPath, committedAt);
+      if (committedAt) times.set(recordPath, committedAt);
     }
   }
   for (const recordPath of requested) {
-    if (!result.has(recordPath)) throw new Error(`Git provenance was not found for ${recordPath}`);
+    if (!times.has(recordPath) && !unavailable.has(recordPath)) {
+      throw new Error(`Git provenance was not found for ${recordPath}`);
+    }
   }
-  return result;
+  return { times, unavailable };
+}
+
+function runProvenanceQueryWithRetry(query: string, deps?: GitCommitTimesDeps): string | null {
+  const runGh = deps?.runGh ?? runGhCommand;
+  const sleep = deps?.sleep ?? sleepSync;
+  let lastFailure = "";
+  for (let attempt = 1; attempt <= PROVENANCE_MAX_ATTEMPTS; attempt += 1) {
+    const command = runGh(["api", "graphql", "-f", `query=${query}`]);
+    if (command.status === 0) return command.stdout;
+    lastFailure = (command.stderr.trim() || command.error?.message || "unknown failure").trim();
+    if (!isRetryableGhFailure(command)) {
+      throw new Error(`gh api failed while reading git provenance: ${lastFailure}`);
+    }
+    if (attempt < PROVENANCE_MAX_ATTEMPTS) {
+      const delayMs = PROVENANCE_BASE_DELAY_MS * 2 ** (attempt - 1);
+      console.error(
+        `gh git provenance read failed (attempt ${attempt}/${PROVENANCE_MAX_ATTEMPTS}): ` +
+          `${lastFailure}; retrying in ${delayMs / 1000}s`,
+      );
+      sleep(delayMs);
+    }
+  }
+  console.error(
+    `gh git provenance read failed after ${PROVENANCE_MAX_ATTEMPTS} attempts: ${lastFailure}`,
+  );
+  return null;
+}
+
+function isRetryableGhFailure(command: GhCommandResult) {
+  // Spawn failures (gh missing, EPERM, ...) are configuration problems.
+  if (command.error) return false;
+  const httpStatus = /HTTP\s+(\d{3})/.exec(command.stderr);
+  if (httpStatus?.[1]) return Number(httpStatus[1]) >= 500;
+  // No HTTP status in stderr: retry only transport-shaped failures, not
+  // GraphQL/query errors.
+  return /connect|connection|timeout|timed out|temporar|unavailable|reset by peer|unexpected EOF|dial tcp|TLS handshake|network/i.test(
+    command.stderr,
+  );
+}
+
+function runGhCommand(args: readonly string[]): GhCommandResult {
+  const command = spawnSync("gh", args, { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  return {
+    status: command.status,
+    stdout: command.stdout ?? "",
+    stderr: command.stderr ?? "",
+    ...(command.error ? { error: command.error } : {}),
+  };
+}
+
+function sleepSync(ms: number) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 function renderDecisionTable(
   targetRepo: string,
   dryRun: boolean,
   decisions: readonly AuthorityDecision[],
+  degradedCount: number,
 ) {
   const counts = { "git-wins": 0, "canonical-wins": 0, "both-stale": 0, lag: 0 };
   for (const decision of decisions) counts[decision.verdict] += 1;
@@ -524,7 +642,7 @@ function renderDecisionTable(
   return [
     `### Worker record authority reconciliation: ${targetRepo}`,
     "",
-    `Mode: ${dryRun ? "dry run" : "apply"}. Git wins: ${counts["git-wins"]}; canonical wins: ${counts["canonical-wins"]}; both stale: ${counts["both-stale"]}; projection lag: ${counts.lag}.`,
+    `Mode: ${dryRun ? "dry run" : "apply"}. Git wins: ${counts["git-wins"]}; canonical wins: ${counts["canonical-wins"]}; both stale: ${counts["both-stale"]}; projection lag: ${counts.lag}; provenance degradations: ${degradedCount}.`,
     "",
     "| Path | Verdict | Reason |",
     "| --- | --- | --- |",
@@ -538,13 +656,21 @@ function renderDecisionOutcome(result: {
   repoSlug: string;
   dryRun: boolean;
   decisions: readonly AuthorityDecision[];
+  degradedPaths: readonly string[];
   corrections: readonly { itemId: string; deduped: boolean }[];
   replay: { attempted: number; deduped: number } | null;
 }) {
   return [
     "#### Reconciliation outcome",
     "",
-    `Corrective tuples: ${result.corrections.length}; replayed canonical tuples: ${result.replay?.attempted ?? 0}; deduped receipts: ${result.corrections.filter((entry) => entry.deduped).length + (result.replay?.deduped ?? 0)}.`,
+    `Corrective tuples: ${result.corrections.length}; replayed canonical tuples: ${result.replay?.attempted ?? 0}; deduped receipts: ${result.corrections.filter((entry) => entry.deduped).length + (result.replay?.deduped ?? 0)}; provenance degradations: ${result.degradedPaths.length}.`,
+    ...(result.degradedPaths.length
+      ? [
+          "",
+          "Degraded (provenance-unavailable) paths:",
+          ...result.degradedPaths.map((degradedPath) => `- \`${escapeTable(degradedPath)}\``),
+        ]
+      : []),
     "",
   ].join("\n");
 }

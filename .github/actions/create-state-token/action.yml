@@ -15,6 +15,14 @@ inputs:
     description: State repository name.
     required: false
     default: clawsweeper-state
+  contents-permission:
+    description: Contents permission for the state repository token (read or write).
+    required: false
+    default: write
+  actions-permission:
+    description: Actions permission for the state repository token (read or write).
+    required: false
+    default: write
 outputs:
   token:
     description: GitHub App installation token for the state repository.
@@ -30,5 +38,5 @@ runs:
         private-key: ${{ inputs.private-key }}
         owner: ${{ inputs.owner }}
         repositories: ${{ inputs.repository }}
-        permission-actions: write
-        permission-contents: write
+        permission-actions: ${{ inputs.actions-permission }}
+        permission-contents: ${{ inputs.contents-permission }}

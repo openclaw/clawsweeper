@@ -95,8 +95,9 @@ test("initial planning forwards the selected model like requeues", () => {
 
   assert.ok(runWorkerIndex >= 0);
   assert.ok(reviewWorkerIndex > runWorkerIndex);
-  assert.match(runWorker, /--model "\$\{\{ inputs\.model \}\}"/);
-  assert.equal(workflow.match(/--model "\$\{\{ inputs\.model \}\}"/g)?.length, 2);
+  assert.match(workflow, /CLUSTER_WORKER_MODEL: \$\{\{ inputs\.model \}\}/);
+  assert.match(runWorker, /--model "\$CLUSTER_WORKER_MODEL"/);
+  assert.match(workflow.slice(reviewWorkerIndex), /--model "\$CLUSTER_WORKER_MODEL"/);
 });
 
 test("execution-gate downgrades complete the planning session without starting execution", () => {
@@ -110,7 +111,7 @@ test("execution-gate downgrades complete the planning session without starting e
   assert.match(workflow.slice(runWorkerIndex, completionIndex), /effective_mode=\$worker_mode/);
   assert.match(
     workflow.slice(completionIndex, executeIndex),
-    /steps\.run_worker\.outputs\.effective_mode.*plan/,
+    /EFFECTIVE_MODE: \$\{\{ steps\.run_worker\.outputs\.effective_mode \}\}[\s\S]*?"\$EFFECTIVE_MODE" == "plan"/,
   );
   assert.match(
     workflow.slice(executeIndex),

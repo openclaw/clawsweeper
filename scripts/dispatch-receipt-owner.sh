@@ -24,10 +24,15 @@ if [ -n "$active_owner_id" ]; then
   exit 0
 fi
 
-successful_run_ids="$(
+# Mirror the TypeScript dispatch observer (dispatchClaimDecision): a prior run
+# owns the receipt when its required worker job succeeded, even if a later job
+# in the same run failed and the aggregate run conclusion is not "success".
+# Selecting only conclusion=success runs here would let a duplicate planning
+# pass slip through behind a mixed-outcome owner.
+completed_run_ids="$(
   jq -r --arg title "$expected_title" --arg current "$current_run_id" '
     .workflow_runs[]
-    | select(.display_title == $title and .id < ($current | tonumber) and .conclusion == "success")
+    | select(.display_title == $title and .id < ($current | tonumber) and .status == "completed")
     | .id
   ' <<<"$runs_json"
 )"
@@ -43,6 +48,6 @@ while IFS= read -r run_id; do
     printf 'owner\n'
     exit 0
   fi
-done <<<"$successful_run_ids"
+done <<<"$completed_run_ids"
 
 printf 'none\n'

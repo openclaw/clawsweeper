@@ -6,9 +6,19 @@ on:
       - repair cluster worker
     types:
       - completed
+  # Manual publication lane for a completed worker run: re-publish after a
+  # transient publisher failure, or prove a branch revision of this workflow
+  # end-to-end before merge. The run id is validated against the worker
+  # workflow before any artifact is touched.
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Completed repair-cluster-worker run id to publish"
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
   actions: read
   pull-requests: read
 
@@ -31,18 +41,64 @@ jobs:
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
+          owner: openclaw
+          repositories: clawsweeper
           permission-actions: read
-          permission-contents: write
+          permission-contents: read
           permission-pull-requests: read
 
+      # workflow_run events always execute trusted default-branch code; a
+      # manual dispatch runs the code of its requested (write-gated) ref.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || github.event.repository.default_branch }}
           filter: blob:none
           fetch-depth: 0
           token: ${{ steps.app_token.outputs.token }}
           persist-credentials: false
+
+      - name: Resolve worker run
+        id: worker-run
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_RUN_ID: ${{ github.event.inputs.run_id }}
+          EVENT_RUN_ID: ${{ github.event.workflow_run.id }}
+          EVENT_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          EVENT_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          EVENT_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            {
+              echo "run_id=$EVENT_RUN_ID"
+              echo "run_attempt=$EVENT_RUN_ATTEMPT"
+              echo "run_url=$EVENT_RUN_URL"
+              echo "head_sha=$EVENT_HEAD_SHA"
+              echo "conclusion=$EVENT_CONCLUSION"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! printf '%s' "$DISPATCH_RUN_ID" | grep -Eq '^[1-9][0-9]*$'; then
+            echo "::error::run_id must be a positive integer."
+            exit 2
+          fi
+          run_json="$(gh run view "$DISPATCH_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --json workflowName,status,conclusion,headSha,url,attempt)"
+          workflow_name="$(printf '%s' "$run_json" | jq -r .workflowName)"
+          status="$(printf '%s' "$run_json" | jq -r .status)"
+          if [ "$workflow_name" != "repair cluster worker" ] || [ "$status" != "completed" ]; then
+            echo "::error::run $DISPATCH_RUN_ID is not a completed repair-cluster-worker run (workflow=$workflow_name status=$status)."
+            exit 2
+          fi
+          {
+            echo "run_id=$DISPATCH_RUN_ID"
+            printf 'run_attempt=%s\n' "$(printf '%s' "$run_json" | jq -r .attempt)"
+            printf 'run_url=%s\n' "$(printf '%s' "$run_json" | jq -r .url)"
+            printf 'head_sha=%s\n' "$(printf '%s' "$run_json" | jq -r .headSha)"
+            printf 'conclusion=%s\n' "$(printf '%s' "$run_json" | jq -r .conclusion)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create state token
         id: state-token
@@ -55,6 +111,7 @@ jobs:
         with:
           coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          coordinator-class: publication_batch
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: actions/setup-node@v6
@@ -114,8 +171,8 @@ jobs:
         id: download
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RUN_ID: ${{ steps.worker-run.outputs.run_id }}
+          RUN_ATTEMPT: ${{ steps.worker-run.outputs.run_attempt }}
         run: |
           set -euo pipefail
           rm -rf artifacts
@@ -138,6 +195,36 @@ jobs:
           echo "has_artifacts=0" >> "$GITHUB_OUTPUT"
           echo "::notice title=No repair artifacts::No downloadable artifacts for worker run $RUN_ID."
 
+      # The reader token is minted for the validated target repositories the
+      # worker actually operated on (result.repo in the downloaded artifacts),
+      # so a valid non-default allowed-owner target can publish its results.
+      - name: Resolve result target repositories
+        id: result-targets
+        if: ${{ steps.download.outputs.has_artifacts == '1' }}
+        env:
+          ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
+          FALLBACK_REPO: ${{ vars.CLAWSWEEPER_CLUSTER_REPAIR_TARGET_REPO || 'openclaw/openclaw' }}
+        run: |
+          set -euo pipefail
+          resolved="$(pnpm run --silent repair:resolve-result-targets -- \
+            --artifacts artifacts \
+            --allowed-owner "$ALLOWED_OWNER" \
+            --fallback "$FALLBACK_REPO")"
+          printf '%s\n' "$resolved"
+          printf '%s\n' "$resolved" | grep -E '^(owner|repositories)=' >> "$GITHUB_OUTPUT"
+
+      - name: Create target read token
+        id: target-read-token
+        if: ${{ steps.download.outputs.has_artifacts == '1' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.result-targets.outputs.owner }}
+          repositories: ${{ steps.result-targets.outputs.repositories }}
+          permission-contents: read
+          permission-pull-requests: read
+
       # This workflow_run job executes trusted main-branch code only; artifacts
       # from worker runs are downloaded as data and handled by repair publishers.
       # codeql[actions/untrusted-checkout/critical]
@@ -145,15 +232,19 @@ jobs:
       - name: Publish result ledger
         if: ${{ steps.download.outputs.has_artifacts == '1' }}
         env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-          RUN_URL: ${{ github.event.workflow_run.html_url }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
+          RUN_ID: ${{ steps.worker-run.outputs.run_id }}
+          RUN_URL: ${{ steps.worker-run.outputs.run_url }}
+          HEAD_SHA: ${{ steps.worker-run.outputs.head_sha }}
+          CONCLUSION: ${{ steps.worker-run.outputs.conclusion }}
+          # workflow_run publishes trusted default-branch code; a manual
+          # dispatch publishes the code of its own write-gated ref (mixing the
+          # main tree with a branch-built dist/ broke run 30308450188).
+          PUBLISH_REF: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || 'main' }}
         run: |
           set -euo pipefail
-          git fetch origin main
-          git checkout -B main origin/main
+          git fetch origin "$PUBLISH_REF"
+          git checkout -B publish-ref "origin/$PUBLISH_REF"
           pnpm run repair:publish-result -- artifacts \
             --skip-dashboard \
             --run-id "$RUN_ID" \
@@ -170,7 +261,7 @@ jobs:
       - name: Notify OpenClaw about ClawSweeper events
         if: ${{ steps.download.outputs.has_artifacts == '1' }}
         env:
-          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ID: ${{ steps.worker-run.outputs.run_id }}
           CLAWSWEEPER_OPENCLAW_HOOK_URL: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_URL }}
           CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_TOKEN }}
           CLAWSWEEPER_OPENCLAW_AGENT_ID: ${{ vars.CLAWSWEEPER_OPENCLAW_AGENT_ID || 'clawsweeper' }}
@@ -195,11 +286,23 @@ jobs:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
           set -euo pipefail
+          paths_file=".artifacts/cluster-result-state-paths.txt"
+          mkdir -p .artifacts
+          pnpm run repair:state-delta-paths -- \
+            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --out "$paths_file" \
+            --root results \
+            --root jobs/openclaw \
+            --root repair-apply-report.json \
+            --root notifications
+          if [ ! -s "$paths_file" ]; then
+            echo "No cluster result state changed."
+            exit 0
+          fi
+          publish_args=()
+          while IFS= read -r path; do publish_args+=(--path "$path"); done < "$paths_file"
           pnpm run repair:publish-main -- \
             --message "chore: publish cluster result" \
-            --path results \
-            --path jobs/openclaw/closed \
-            --path repair-apply-report.json \
-            --path notifications \
+            "${publish_args[@]}" \
             --max-attempts 12 \
             --push-attempts 4

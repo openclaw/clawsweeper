@@ -102,6 +102,28 @@ test("dispatch receipt gate keeps a successfully executed worker as owner", () =
   );
 });
 
+test("dispatch receipt gate keeps a failed run with a successful worker job as owner", () => {
+  // Matches the TypeScript observer: a successful "Plan and review cluster"
+  // job owns the receipt even when a later job failed the aggregate run, so a
+  // duplicate planning pass cannot slip through behind a mixed-outcome owner.
+  assert.equal(
+    runGate(
+      {
+        runs: [
+          { id: 101, display_title: EXPECTED_TITLE, status: "completed", conclusion: "failure" },
+        ],
+        jobs101: [
+          { name: "Deduplicate command dispatch receipt", conclusion: "success" },
+          { name: "Plan and review cluster", conclusion: "success" },
+          { name: "Execute approved fix", conclusion: "failure" },
+        ],
+      },
+      "Plan and review cluster",
+    ),
+    "owner",
+  );
+});
+
 test("dispatch receipt gate fails closed when worker job verification fails", () => {
   const fixture = fixtureEnv({
     runs: [{ id: 102, display_title: EXPECTED_TITLE, status: "completed", conclusion: "success" }],

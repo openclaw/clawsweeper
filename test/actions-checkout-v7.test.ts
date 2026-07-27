@@ -69,21 +69,21 @@ test("production crawl-remote checkout is pinned to the audited v7 commit", () =
 });
 
 test("trusted-event workflows explicitly checkout the default branch", () => {
-  for (const path of [
-    ".github/workflows/dashboard-ci.yml",
-    ".github/workflows/github-activity.yml",
-    ".github/workflows/repair-publish-results.yml",
-  ]) {
+  const expectedRefs: Record<string, string> = {
+    ".github/workflows/dashboard-ci.yml": "${{ github.event.repository.default_branch }}",
+    ".github/workflows/github-activity.yml": "${{ github.event.repository.default_branch }}",
+    // workflow_run events stay pinned to trusted default-branch code; the
+    // manual publication lane runs its own write-gated dispatch ref.
+    ".github/workflows/repair-publish-results.yml":
+      "${{ github.event_name == 'workflow_dispatch' && github.ref_name || github.event.repository.default_branch }}",
+  };
+  for (const [path, expectedRef] of Object.entries(expectedRefs)) {
     const workflow = parse(readFileSync(path, "utf8")) as WorkflowDocument;
     const checkoutSteps = Object.values(workflow.jobs ?? {})
       .flatMap((job) => job.steps ?? [])
       .filter((step) => step.uses === "actions/checkout@v7");
     assert.equal(checkoutSteps.length, 1, path);
-    assert.equal(
-      checkoutSteps[0]?.with?.ref,
-      "${{ github.event.repository.default_branch }}",
-      path,
-    );
+    assert.equal(checkoutSteps[0]?.with?.ref, expectedRef, path);
   }
 });
 

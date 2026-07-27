@@ -44,7 +44,9 @@ export async function publishClusterIntake(
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
 if (invokedPath && invokedPath === fileURLToPath(import.meta.url)) {
-  const intentPath = process.argv[2];
+  // `pnpm run <script> -- <arg>` forwards the `--` separator literally on the
+  // hosted runner's pnpm; accept the first real positional either way.
+  const intentPath = process.argv.slice(2).find((argument) => argument !== "--");
   if (!intentPath) {
     console.error("usage: publish-cluster-intake <intent.json>");
     process.exitCode = 2;

@@ -72,7 +72,7 @@ export class WorkerSnapshotUnavailableError extends Error {
   }
 }
 
-class WorkerRecordRequestError extends Error {
+export class WorkerRecordRequestError extends Error {
   readonly status: number;
   readonly code: string;
   readonly bodySnippet: string;
@@ -837,7 +837,7 @@ export async function signedPost<T>(options: {
 const SIGNED_REQUEST_MAX_ATTEMPTS = 3;
 const SIGNED_REQUEST_RETRY_BASE_MS = 250;
 
-async function signedRequest(options: {
+export async function signedRequest(options: {
   baseUrl: string;
   path: string;
   webhookSecret: string;

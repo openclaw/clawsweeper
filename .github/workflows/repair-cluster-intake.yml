@@ -45,8 +45,7 @@ on:
     - cron: "8 8 * * *"
 
 permissions:
-  actions: write
-  contents: write
+  contents: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -75,7 +74,7 @@ jobs:
           owner: openclaw
           repositories: clawsweeper
           permission-actions: write
-          permission-contents: write
+          permission-contents: read
 
       - name: Create gitcrawl-store token
         id: store-token
@@ -87,18 +86,50 @@ jobs:
           repositories: gitcrawl-store
           permission-contents: read
 
-      - name: Resolve target owner
+      - name: Resolve target repository
         id: target
         env:
           TARGET_REPO: ${{ github.event.inputs.target_repo || vars.CLAWSWEEPER_CLUSTER_REPAIR_TARGET_REPO || 'openclaw/openclaw' }}
+          ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
         run: |
           set -euo pipefail
-          owner="${TARGET_REPO%%/*}"
-          if ! printf '%s' "$owner" | grep -Eq '^[A-Za-z0-9_.-]+$'; then
-            echo "Invalid target repository: $TARGET_REPO" >&2
-            exit 1
+          # CLAWSWEEPER_ALLOWED_OWNER is a comma- or whitespace-separated owner
+          # list (issue #604; allowedRepairOwners in src/repair/lib.ts).
+          owners_normalized="$(printf '%s' "$ALLOWED_OWNER" | tr ',' ' ' | tr -s '[:space:]' ' ')"
+          read -r -a allowed_owners <<< "$owners_normalized"
+          if [ "${#allowed_owners[@]}" -eq 0 ]; then
+            echo "Invalid allowed repository owner" >&2
+            exit 2
           fi
-          echo "owner=$owner" >> "$GITHUB_OUTPUT"
+          for allowed_owner in "${allowed_owners[@]}"; do
+            if ! printf '%s' "$allowed_owner" | grep -Eq '^[A-Za-z0-9_.-]+$'; then
+              echo "Invalid allowed repository owner" >&2
+              exit 2
+            fi
+          done
+          if ! printf '%s' "$TARGET_REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+            echo "Invalid target repository" >&2
+            exit 2
+          fi
+          target_owner="${TARGET_REPO%%/*}"
+          target_name="${TARGET_REPO#*/}"
+          target_owner_lower="$(printf '%s' "$target_owner" | tr '[:upper:]' '[:lower:]')"
+          owner_allowed=0
+          for allowed_owner in "${allowed_owners[@]}"; do
+            if [ "$target_owner_lower" = "$(printf '%s' "$allowed_owner" | tr '[:upper:]' '[:lower:]')" ]; then
+              owner_allowed=1
+              break
+            fi
+          done
+          if [ "$owner_allowed" != "1" ]; then
+            echo "Target repository must be owned by one of: ${ALLOWED_OWNER}" >&2
+            exit 2
+          fi
+          {
+            printf 'owner=%s\n' "$target_owner"
+            printf 'name=%s\n' "$target_name"
+            printf 'full_name=%s/%s\n' "$target_owner" "$target_name"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create target read token
         id: target-token
@@ -107,7 +138,7 @@ jobs:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: ${{ steps.target.outputs.owner }}
-          permission-contents: read
+          repositories: ${{ steps.target.outputs.name }}
           permission-issues: read
           permission-pull-requests: read
 
@@ -121,12 +152,17 @@ jobs:
         with:
           build-script: build:repair
 
+      # Intake never publishes state directly: acceptance goes through the
+      # authenticated durable append and the state materializer owns every
+      # write. The hydration credential is read-only and never persisted.
       - name: Create state token
         id: state-token
         uses: ./.github/actions/create-state-token
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          contents-permission: read
+          actions-permission: read
 
       - uses: ./.github/actions/setup-state
         with:
@@ -134,6 +170,7 @@ jobs:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
+          persist-credentials: "false"
 
       - uses: actions/checkout@v7
         with:
@@ -154,7 +191,7 @@ jobs:
         env:
           ENABLED: ${{ github.event.inputs.enabled || '1' }}
           SCHEDULE_ENABLED: ${{ vars.CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED == '1' && '1' || '0' }}
-          TARGET_REPO: ${{ github.event.inputs.target_repo || vars.CLAWSWEEPER_CLUSTER_REPAIR_TARGET_REPO || 'openclaw/openclaw' }}
+          TARGET_REPO: ${{ steps.target.outputs.full_name }}
           FORCE_STORE: ${{ github.event.inputs.force_store == 'true' && '1' || '0' }}
         run: |
           set -euo pipefail
@@ -277,19 +314,20 @@ jobs:
             fi
           } >> "$GITHUB_OUTPUT"
 
-      - name: Record intake ledger
+      - name: Build durable intake intent
         if: ${{ steps.prepare.outputs.should_import == 'true' }}
         env:
-          LEDGER_PATH: ${{ steps.prepare.outputs.ledger_path }}
           TARGET_REPO: ${{ steps.prepare.outputs.target_repo }}
           STORE_SHA: ${{ steps.prepare.outputs.store_sha }}
           EXPORTED_AT: ${{ steps.prepare.outputs.exported_at }}
           MANIFEST_PATH: ${{ steps.prepare.outputs.manifest_path }}
-          GENERATED_COUNT: ${{ steps.select.outputs.count || '0' }}
+          WORKER_RUNNER: ${{ github.event.inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+          EXECUTION_RUNNER: ${{ github.event.inputs.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
+          MODEL: internal
         run: |
           set -euo pipefail
-          mkdir -p "$(dirname "$LEDGER_PATH")"
           node <<'NODE'
+          const crypto = require("crypto");
           const fs = require("fs");
           const generatedPath = ".artifacts/cluster-repair-intake/generated-paths.txt";
           const selectionPath = ".artifacts/cluster-repair-intake/selection-report.json";
@@ -300,48 +338,56 @@ jobs:
           const selection = fs.existsSync(selectionPath)
             ? JSON.parse(fs.readFileSync(selectionPath, "utf8"))
             : { evaluated: 0, rejected: 0, selected: 0, reason_counts: {}, decision: null, assessments: [] };
-          const ledger = {
-            schema: "clawsweeper-cluster-repair-intake-v1",
+          const repoSlug = process.env.TARGET_REPO.replace("/", "-");
+          const jobs = generated.map((jobPath) => {
+            const match = /\/gitcrawl-(\d+)-/.exec(jobPath);
+            if (!match) throw new Error(`Generated job omitted gitcrawl cluster ID: ${jobPath}`);
+            const content = fs.readFileSync(jobPath, "utf8");
+            const clusterId = Number(match[1]);
+            return {
+              cluster_id: clusterId,
+              path: jobPath,
+              content,
+              digest: crypto.createHash("sha256").update(content).digest("hex"),
+              dispatch_key: `cluster-intake:${repoSlug}:${clusterId}`,
+            };
+          });
+          const intent = {
+            schema: "clawsweeper-cluster-intake-intent-v1",
             target_repo: process.env.TARGET_REPO,
-            last_processed_store_sha256: process.env.STORE_SHA,
-            last_processed_store_exported_at: process.env.EXPORTED_AT,
+            repo_slug: repoSlug,
+            store_sha256: process.env.STORE_SHA,
+            store_exported_at: process.env.EXPORTED_AT,
             manifest_path: process.env.MANIFEST_PATH,
-            generated_count: Number(process.env.GENERATED_COUNT || generated.length || 0),
-            generated_jobs: generated,
-            selector: selection,
             run_url: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
-            updated_at: new Date().toISOString(),
+            accepted_at: new Date().toISOString(),
+            runner: process.env.WORKER_RUNNER,
+            execution_runner: process.env.EXECUTION_RUNNER,
+            model: process.env.MODEL,
+            selector_summary: {
+              evaluated: Number(selection.evaluated || 0),
+              rejected: Number(selection.rejected || 0),
+              reason_counts: selection.reason_counts || {},
+            },
+            jobs,
           };
-          fs.writeFileSync(process.env.LEDGER_PATH, `${JSON.stringify(ledger, null, 2)}\n`);
+          fs.writeFileSync(".artifacts/cluster-repair-intake/intent.json", `${JSON.stringify(intent, null, 2)}\n`);
           NODE
 
-      - name: Publish intake jobs and ledger
+      - name: Durably accept cluster intake
         if: ${{ steps.prepare.outputs.should_import == 'true' }}
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
-          pnpm run repair:publish-main -- \
-            --message "chore: record cluster repair intake" \
-            --path jobs \
-            --path results/cluster-repair-intake \
-            --max-attempts 12 \
-            --push-attempts 4
+          pnpm run repair:publish-cluster-intake -- .artifacts/cluster-repair-intake/intent.json
 
-      - name: Dispatch imported cluster repair
-        if: ${{ steps.select.outputs.should_dispatch == 'true' }}
+      # The wake targets the intake's own ref so intake and materializer run
+      # the same revision (identical to `main` for scheduled production runs;
+      # a branch dispatch proves the branch end-to-end before merge).
+      - name: Request immediate state materialization
+        if: ${{ steps.prepare.outputs.should_import == 'true' }}
         env:
           GH_TOKEN: ${{ steps.central-token.outputs.token }}
-          RUNNER: ${{ github.event.inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
-          EXECUTION_RUNNER: ${{ github.event.inputs.execution_runner || vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
-          MODEL: internal
-        run: |
-          set -euo pipefail
-          mapfile -t jobs < .artifacts/cluster-repair-intake/generated-paths.txt
-          pnpm run repair:dispatch -- "${jobs[@]}" \
-            --mode autonomous \
-            --wait-for-capacity \
-            --runner "$RUNNER" \
-            --execution-runner "$EXECUTION_RUNNER" \
-            --model "$MODEL" \
-            --ref main
+        run: gh workflow run state-materializer.yml --ref "$GITHUB_REF_NAME" -f intake_priority=true

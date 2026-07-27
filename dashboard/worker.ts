@@ -47,6 +47,11 @@ import {
   normalizeApplyObservabilityEvent,
   summarizeApplyObservability,
 } from "./apply-observability.ts";
+import {
+  STATE_BLOB_OPERATIONS,
+  handleStateBlobRequest,
+  type StateBlobOperation,
+} from "./state-blobs.ts";
 
 export {
   ExactReviewQueue,
@@ -570,6 +575,13 @@ export default {
       return authenticatedExactReviewQueueRequest(request, env, "/records/snapshots/trigger");
     if (url.pathname === "/internal/state/records/snapshots/chunk" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/records/snapshots/chunk");
+    if (url.pathname.startsWith("/internal/state/blobs/") && request.method === "POST") {
+      const operation = url.pathname.slice("/internal/state/blobs/".length);
+      if (STATE_BLOB_OPERATIONS.includes(operation as StateBlobOperation)) {
+        return authenticatedStateBlobRequest(request, env, operation as StateBlobOperation);
+      }
+      return json({ error: "not_found" }, 404);
+    }
     if (url.pathname === "/internal/state/append" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/state/append");
     if (url.pathname === "/internal/state/drain" && request.method === "POST")
@@ -1750,6 +1762,19 @@ async function authenticatedExactReviewQueueRead(request, env, path: string) {
     path,
     new Request(`https://clawsweeper-exact-review-queue${path}`, { method: "GET" }),
   );
+}
+
+async function authenticatedStateBlobRequest(request, env, operation: StateBlobOperation) {
+  const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
+  if (!secret) return json({ error: "webhook_not_configured" }, 503);
+  const bodyText = await request.text();
+  const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
+  if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText }))) {
+    return json({ error: "invalid_signature" }, 401);
+  }
+  const body = parseJsonObject(bodyText);
+  if (!body) return json({ error: "invalid_json" }, 400);
+  return handleStateBlobRequest(env.STATE_SNAPSHOTS, operation, body);
 }
 
 async function authenticatedExactReviewOperatorRequest(request, env, path: string) {

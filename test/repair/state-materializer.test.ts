@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { actionLedgerJson } from "../../dist/action-ledger.js";
+import { acceptClusterIntakeIntent } from "../../dist/repair/cluster-intake-state.js";
 import {
   GitShallowHistoryExhaustionError,
   SHALLOW_MERGE_BASE_EXHAUSTION_DISPOSITION,
@@ -40,6 +41,134 @@ test("materializer preserves canonical apply-proof content supplied as a string"
     selected: 1,
     skipped: 0,
   });
+});
+
+test("capacity-full cluster intake is acknowledged without retaining unrelated drain rows", async () => {
+  const fixture = createStateFixture();
+  const records = [
+    record(1, "sweep_status", "openclaw-openclaw", sweepStatus("healthy", "12:00:00.000")),
+    record(2, "cluster_intake", "openclaw-openclaw/store", clusterIntentPayload()),
+  ];
+  let drains = 0;
+  let acked = false;
+  const fetchImpl = signedQueueFetch(async (url, body) => {
+    if (url.pathname === "/internal/state/drain") {
+      drains += 1;
+      return drains === 1
+        ? Response.json({ ok: true, drain_token: "cluster-drain", records })
+        : Response.json({ ok: true, drain_token: null, records: [] });
+    }
+    assert.equal(url.pathname, "/internal/state/ack");
+    assert.deepEqual(body, { drain_token: "cluster-drain" });
+    acked = true;
+    return Response.json({ ok: true, acked: records.length });
+  });
+
+  const summary = await withMaterializerFixture(fixture, () =>
+    runStateMaterializer({
+      env: materializerEnv(),
+      fetchImpl,
+      clusterCapacity: () => ({ active: 2, max_live_workers: 2 }),
+    }),
+  );
+
+  assert.deepEqual(summary, { drained: 2, committed: 2, acked: 2, skipped: 0, errors: 0 });
+  assert.equal(acked, true);
+  const ledger = JSON.parse(
+    showState(fixture, "results/cluster-repair-intake/openclaw-openclaw.json"),
+  );
+  assert.equal(ledger.clusters["42"].status, "dispatch_pending");
+  assert.equal(
+    JSON.parse(showState(fixture, "results/sweep-status/openclaw-openclaw.json")).detail,
+    "healthy",
+  );
+});
+
+test("materializer isolates a malformed cluster intent and still commits ordinary state", async () => {
+  const fixture = createStateFixture();
+  const malformed = clusterIntentPayload();
+  (malformed.jobs as Array<Record<string, unknown>>)[0]!.digest = "0".repeat(64);
+  const records = [
+    record(1, "cluster_intake", "openclaw-openclaw/store", malformed),
+    record(2, "sweep_status", "openclaw-openclaw", sweepStatus("continued", "12:00:02.000")),
+  ];
+  let drains = 0;
+  let disposition: Record<string, unknown> | null = null;
+  const fetchImpl = signedQueueFetch(async (url, body) => {
+    if (url.pathname === "/internal/state/drain") {
+      drains += 1;
+      return drains === 1
+        ? Response.json({ ok: true, drain_token: "poison-intake", records })
+        : Response.json({ ok: true, drain_token: null, records: [] });
+    }
+    assert.equal(url.pathname, "/internal/state/dispose");
+    disposition = body;
+    return Response.json({ ok: true, acked: 2, retried: 0, dead_lettered: 1 });
+  });
+
+  const summary = await withMaterializerFixture(fixture, () =>
+    runStateMaterializer({
+      env: materializerEnv(),
+      fetchImpl,
+      clusterCapacity: () => ({ active: 0, max_live_workers: 2 }),
+    }),
+  );
+
+  assert.deepEqual(summary, { drained: 2, committed: 1, acked: 2, skipped: 0, errors: 1 });
+  assert.equal(
+    JSON.parse(showState(fixture, "results/sweep-status/openclaw-openclaw.json")).detail,
+    "continued",
+  );
+  assert.equal(
+    statePathExists(fixture, "results/cluster-repair-intake/openclaw-openclaw.json"),
+    false,
+  );
+  assert.deepEqual(disposition, {
+    drain_token: "poison-intake",
+    failures: [
+      {
+        seq: 1,
+        reason:
+          "invalid cluster intake job fence: jobs/openclaw/inbox/gitcrawl-42-capacity-proof.md",
+        retryable: false,
+      },
+    ],
+  });
+});
+
+test("startup cluster recovery uses the configured isolated publisher", async () => {
+  const fixture = createStateFixture();
+  const intake = record(1, "cluster_intake", "openclaw-openclaw/store", clusterIntentPayload());
+  const plan = planStateMaterialization([intake]);
+  for (const write of plan.writes) {
+    const target = path.join(fixture.source, write.path);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, write.content);
+  }
+  const publishedPaths: string[][] = [];
+  const fetchImpl = signedQueueFetch(async (url) => {
+    assert.equal(url.pathname, "/internal/state/drain");
+    return Response.json({ ok: true, drain_token: null, records: [] });
+  });
+
+  const summary = await withMaterializerFixture(fixture, () =>
+    runStateMaterializer({
+      env: materializerEnv(),
+      fetchImpl,
+      clusterCapacity: () => ({ active: 0, max_live_workers: 2 }),
+      clusterDispatchObserver: () => ({
+        action: "recover",
+        run: { databaseId: 42, url: "https://github.com/openclaw/clawsweeper/actions/runs/42" },
+      }),
+      publishCommit: (options) => {
+        publishedPaths.push([...options.paths]);
+        return "committed";
+      },
+    }),
+  );
+
+  assert.deepEqual(summary, { drained: 0, committed: 0, acked: 0, skipped: 0, errors: 0 });
+  assert.deepEqual(publishedPaths, [["results/cluster-repair-intake/openclaw-openclaw.json"]]);
 });
 
 test("materializer applies every record kind in sequence and keeps the last value per key", async () => {
@@ -815,6 +944,75 @@ function routerLedger(key: string, time: string): Record<string, unknown> {
       },
     ],
   };
+}
+
+function clusterIntentPayload(): Record<string, unknown> {
+  const content = `---
+repo: openclaw/openclaw
+cluster_id: gitcrawl-42-capacity-proof
+mode: autonomous
+job_intent: repair_cluster
+allowed_actions:
+  - comment
+  - label
+  - close
+  - fix
+  - raise_pr
+blocked_actions:
+  - force_push
+  - bypass_checks
+  - merge
+require_human_for:
+  - security_sensitive
+  - failing_checks
+  - conflicting_prs
+  - unclear_canonical
+  - broad_code_delta
+canonical:
+  - "#420"
+candidates:
+  - "#420"
+  - "#421"
+cluster_refs:
+  - "#420"
+  - "#421"
+security_policy: central_security_only
+security_sensitive: false
+allow_instant_close: false
+allow_fix_pr: true
+allow_merge: false
+allow_post_merge_close: true
+require_fix_before_close: true
+---
+
+# Capacity proof
+`;
+  return acceptClusterIntakeIntent(
+    {
+      schema: "clawsweeper-cluster-intake-intent-v1",
+      target_repo: "openclaw/openclaw",
+      repo_slug: "openclaw-openclaw",
+      store_sha256: "a".repeat(64),
+      store_exported_at: "2026-07-20T11:59:00.000Z",
+      manifest_path: "gitcrawl-store/data/openclaw__openclaw.sync.db.manifest.json",
+      run_url: "https://github.com/openclaw/clawsweeper/actions/runs/1",
+      accepted_at: "2026-07-20T12:00:01.000Z",
+      runner: "blacksmith-4vcpu-ubuntu-2404",
+      execution_runner: "blacksmith-16vcpu-ubuntu-2404",
+      model: "internal",
+      selector_summary: { evaluated: 2, rejected: 1, reason_counts: {} },
+      jobs: [
+        {
+          cluster_id: 42,
+          path: "jobs/openclaw/inbox/gitcrawl-42-capacity-proof.md",
+          content,
+          digest: createHash("sha256").update(content).digest("hex"),
+          dispatch_key: "cluster-intake:openclaw-openclaw:42",
+        },
+      ],
+    },
+    webhookSecret,
+  );
 }
 
 function signedQueueFetch(

@@ -70,9 +70,11 @@ test("direct repair requeues forward a stable dispatch receipt and publish it", 
   assert.match(finalizeStep, /--lane repair-requeue/);
   assert.match(publishStep, /--lane repair-requeue/);
   assert.match(publishStep, /--message "chore: append repair requeue action ledger"/);
-  assert.match(workflow, /pnpm run repair:requeue -- "\$\{\{ inputs\.job \}\}"/);
-  assert.match(workflow, /--source-job-path "\$\{\{ inputs\.job \}\}"/);
-  assert.match(workflow, /--requeue-depth "\$\{\{ inputs\.requeue_depth \}\}"/);
+  assert.match(workflow, /CLUSTER_JOB_PATH: \$\{\{ inputs\.job \}\}/);
+  assert.match(workflow, /CLUSTER_REQUEUE_DEPTH: \$\{\{ inputs\.requeue_depth \}\}/);
+  assert.match(workflow, /pnpm run repair:requeue -- "\$CLUSTER_JOB_PATH"/);
+  assert.match(workflow, /--source-job-path "\$CLUSTER_JOB_PATH"/);
+  assert.match(workflow, /--requeue-depth "\$CLUSTER_REQUEUE_DEPTH"/);
   assert.match(workflow, /--max-requeue-depth 1/);
 });
 

@@ -134,6 +134,14 @@ for (const clusterId of clusterIds) {
     console.error(`skip closed-only cluster: ${clusterId} ${representative.title ?? ""}`);
     continue;
   }
+  // The durable cluster-intake acceptance contract requires at least two
+  // candidate references (cluster-intake-state reference policy); offering a
+  // single-candidate cluster would fail the whole intake run after selection
+  // (live proof run 30304188033). Single open items belong to other lanes.
+  if (selectingFromGitcrawl && openMembers.length < 2) {
+    console.error(`skip single-candidate cluster: ${clusterId} ${representative.title ?? ""}`);
+    continue;
+  }
   const issueCount = members.filter((member: JsonValue) => member.kind === "issue").length;
   const pullRequestCount = members.filter(
     (member: JsonValue) => member.kind === "pull_request",
@@ -253,7 +261,7 @@ function selectClusterIds() {
       join threads t on t.id = cm.thread_id
       where cg.status = 'active'
       group by cg.id
-      having open_count > 0
+      having open_count >= 2
       order by max(case when t.state = 'open' then t.updated_at else '' end) desc, cg.id asc
     `)
       .map((row: JsonValue) => Number(row.id))
@@ -270,7 +278,7 @@ function selectClusterIds() {
     join threads t on t.id = cm.thread_id
     where c.closed_at_local is null
     group by c.id
-    having open_count > 0
+    having open_count >= 2
     order by max(case when t.state = 'open' then t.updated_at else '' end) desc, c.id asc
   `)
     .map((row: JsonValue) => Number(row.id))

@@ -48,6 +48,11 @@ export type ExactReviewPublicationReconcileResult = {
   legacyTerminalSelected: number;
   legacyTerminalEligible: number;
   legacyTerminalChanged: number;
+  legacyStateBatchTerminalCandidates: number;
+  legacyStateBatchTerminalSelected: number;
+  legacyStateBatchTerminalProducerSucceeded: number;
+  legacyStateBatchTerminalEligible: number;
+  legacyStateBatchTerminalChanged: number;
   protectedBatchItems: number;
   protectedLineageItems: number;
   oldestEligibleAgeSeconds: number | null;
@@ -226,6 +231,26 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
       legacyTerminalChanged: nonNegativeInteger(
         response.legacy_terminal_changed ?? 0,
         "legacy_terminal_changed",
+      ),
+      legacyStateBatchTerminalCandidates: nonNegativeInteger(
+        response.legacy_state_batch_terminal_candidates ?? 0,
+        "legacy_state_batch_terminal_candidates",
+      ),
+      legacyStateBatchTerminalSelected: nonNegativeInteger(
+        response.legacy_state_batch_terminal_selected ?? 0,
+        "legacy_state_batch_terminal_selected",
+      ),
+      legacyStateBatchTerminalProducerSucceeded: nonNegativeInteger(
+        response.legacy_state_batch_terminal_producer_succeeded ?? 0,
+        "legacy_state_batch_terminal_producer_succeeded",
+      ),
+      legacyStateBatchTerminalEligible: nonNegativeInteger(
+        response.legacy_state_batch_terminal_eligible ?? 0,
+        "legacy_state_batch_terminal_eligible",
+      ),
+      legacyStateBatchTerminalChanged: nonNegativeInteger(
+        response.legacy_state_batch_terminal_changed ?? 0,
+        "legacy_state_batch_terminal_changed",
       ),
       protectedBatchItems: nonNegativeInteger(
         response.protected_batch_items,

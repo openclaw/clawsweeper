@@ -38,7 +38,9 @@ credentials.
 flowchart LR
   A[GitHub issue, PR, comment, or schedule] --> B[ClawSweeper intake]
   G[GitCrawl store snapshot] --> B
-  B --> C[Durable job in clawsweeper-state]
+  B --> Q[Authenticated durable intake queue]
+  Q --> S[Prioritized state materializer]
+  S --> C[Exact job and ledger paths in clawsweeper-state]
   C --> D[GitHub Actions repair worker]
   D --> E[Codex app-server thread]
   D --> F[CrabFleet action session]
@@ -169,9 +171,24 @@ The `repair-cluster-intake.yml` workflow:
    `results/cluster-repair-intake/<repo-slug>.json`.
 5. Skips a store snapshot that was already processed unless a maintainer uses
    the force input.
-6. Imports a bounded number of eligible clusters into durable job markdown.
-7. Publishes the jobs and updated intake ledger.
-8. Dispatches them through the `repair_cluster` lane with capacity waiting.
+6. Gives a bounded batch of hydrated live GitHub evidence to the selector model.
+   The model chooses one narrow, actionable cluster or rejects the batch; quality
+   is not decided by word lists, scores, or semantic thresholds.
+7. Appends one authenticated `cluster_intake` intent containing the exact job
+   bytes, digest, store identity, and selector report to the durable Cloudflare
+   state queue. An accepted append is the recovery boundary; the workflow does
+   not publish from its checkout.
+8. Wakes the prioritized state materializer. It projects only the accepted job
+   and ledger paths, preserving unrelated generated state, and keeps
+   capacity-blocked or publication-failed intent durable for a later cycle.
+9. Publishes a durable dispatch claim for each stable dispatch key, then starts
+   the `repair_cluster` worker and records the matching planning-job receipt.
+   Workflow creation is at-least-once: `workflow_dispatch` has no atomic run
+   receipt, so a crash inside the dispatch window can create another workflow
+   run. Worker execution is exactly-once by intent: the worker-side dispatch
+   receipt gate skips the duplicate planning pass. Recovery redispatches only
+   ledger entries whose HMAC accepted-intent receipt verifies against the
+   webhook secret; git ledger and job files are never dispatch authority.
 
 Scheduled cluster intake is independently gated:
 
@@ -224,20 +241,22 @@ and one durable Codex thread state.
 
 ### GitCrawl Store Ledger
 
-Cluster intake records the processed store content hash. A delayed schedule or
-duplicate workflow tick against the same exported database does not enqueue the
-same snapshot again.
+Cluster intake records every processed store content hash and accepted cluster
+identity. Import history spans inbox jobs, archived jobs, result records, and
+the intake ledger, so a delayed schedule, a duplicate workflow tick, or a newer
+store containing an already completed cluster cannot enqueue the same work
+again. The durable dispatch receipt independently suppresses transport retries.
 
 ### GitHub Actions Concurrency
 
-`repair-cluster-worker.yml` serializes identical job path and mode pairs:
+`repair-cluster-worker.yml` serializes runs for the same job path:
 
 ```text
-clawsweeper-repair-<job-path>-<mode>
+clawsweeper-repair-<job-path>
 ```
 
 Different jobs may run concurrently. The same logical job is queued instead of
-executed twice at the same time.
+executed twice at the same time, regardless of mode.
 
 ### Mutation Idempotency
 

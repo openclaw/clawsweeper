@@ -226,6 +226,19 @@ drain and unchanged contention/dead-letter safety; historical cleanup is not a
 reason to raise publication concurrency or bypass the state-writer rollout
 gates.
 
+A separate protocol-v2 state-batch reconciliation covers only the pre-direct
+ordinary publication shape: it excludes direct-publication receipts (the
+zero-source-SHA shape) and all command/status rows. Before its bounded target
+read, the exact recorded producer run attempt must be completed successfully;
+the row must be pending or parked, have no active queue or batch owner, have no
+base review authority, and still match the newest durable publication head and
+producer provenance for its target. A terminal target can then make the
+ordinary delivery unnecessary; this does not claim that a review comment was
+published. The result reports this path separately as
+`legacy_state_batch_terminal_*`, including candidate, selected,
+producer-succeeded, target-eligible, and changed counts. Producer lookup or
+target-read failure fails closed and leaves the row for a later bounded pass.
+
 ### Bounded fresh-authority admission
 
 Historical cleanup and current-result publication share the same guarded batch

@@ -30,6 +30,7 @@ const coordinatorUrl =
 const publicationEntryPoints = [
   /repair:publish-main\b/,
   /repair:publish-event-result\b/,
+  /repair:publish-cluster-intake\b/,
   /repair:exact-review-batch commit\b/,
   /scripts\/prepare-exact-review-batch\.mjs\b/,
   /dist\/repair\/state-materializer\.js\b/,
@@ -48,7 +49,7 @@ test("every generated-state checkout receives the explicit coordinator migration
     }
   }
 
-  assert.equal(setups.length, 30, "new state checkouts must join the repo-wide boundary");
+  assert.equal(setups.length, 31, "new state checkouts must join the repo-wide boundary");
   for (const { file, job, step } of setups) {
     assert.equal(step.with?.["coordinator-enabled"], coordinatorGate, `${file}:${job}`);
     assert.equal(step.with?.["coordinator-url"], coordinatorUrl, `${file}:${job}`);
@@ -144,6 +145,34 @@ test("state materializer checks out a recovery-sized state history window", () =
   assert.equal(setupState?.with?.["fetch-depth"], 512);
 });
 
+test("state materializer self-dedupes superseded scheduled runs", () => {
+  const source = readFileSync(join(workflowDirectory, "state-materializer.yml"), "utf8");
+  const workflow = parse(source) as WorkflowDocument & { concurrency?: unknown };
+  // The drain slot must be job-scoped: workflow-level concurrency left
+  // superseded runs "pending" with no job created, where the dedupe job could
+  // never execute.
+  assert.equal(workflow.concurrency, undefined);
+  const materialize = workflow.jobs?.materialize as
+    | (WorkflowJob & { concurrency?: Record<string, unknown> })
+    | undefined;
+  assert.equal(materialize?.concurrency?.group, "clawsweeper-state-materializer");
+  assert.equal(materialize?.concurrency?.["cancel-in-progress"], false);
+
+  const dedupe = workflow.jobs?.dedupe as
+    | (WorkflowJob & { permissions?: Record<string, unknown>; needs?: unknown })
+    | undefined;
+  assert.ok(dedupe, "dedupe job");
+  assert.equal(dedupe.needs, undefined, "dedupe must start immediately on every trigger");
+  assert.deepEqual(dedupe.permissions, { actions: "write" });
+  const cancelStep = dedupe.steps?.find((step) => String(step.run || "").includes("/cancel"));
+  assert.ok(cancelStep, "cancel step");
+  const command = String(cancelStep.run);
+  // Only schedule-triggered runs are dedupe candidates; workflow_dispatch runs
+  // may carry explicit inputs and must survive.
+  assert.match(command, /\/runs\?event=schedule/);
+  assert.match(command, /run_number < \$GITHUB_RUN_NUMBER/);
+});
+
 test("state materializer bounds its coordinator acquire below the job timeout", () => {
   const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
   const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
@@ -154,12 +183,16 @@ test("state materializer bounds its coordinator acquire below the job timeout", 
   assert.equal(budgetMs + 15 * 60_000 <= Number(materializer?.["timeout-minutes"]) * 60_000, true);
 });
 
-test("only the batch publisher and the state materializer request priority admission", () => {
+test("only bounded publication owners request priority admission", () => {
+  const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
   const prioritySetups: string[] = [];
   for (const { file, workflow } of workflows()) {
     for (const [job, definition] of Object.entries(workflow.jobs ?? {})) {
       for (const step of definition.steps ?? []) {
-        if (isSetupState(step) && step.with?.["coordinator-class"] === "publication_batch") {
+        if (
+          isSetupState(step) &&
+          String(step.with?.["coordinator-class"] || "").includes("publication_batch")
+        ) {
           prioritySetups.push(`${file}:${job}`);
         }
       }
@@ -167,8 +200,12 @@ test("only the batch publisher and the state materializer request priority admis
   }
   assert.deepEqual(prioritySetups, [
     ".github/workflows/exact-review-batch-publish.yml:publish",
+    ".github/workflows/repair-publish-results.yml:publish",
     ".github/workflows/state-materializer.yml:materialize",
   ]);
+  const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
+  const setup = materializer?.steps?.find(isSetupState);
+  assert.match(String(setup?.with?.["coordinator-class"]), /cluster_intake/);
 });
 
 test("trusted generated-state mutation steps receive a step-scoped coordinator credential", () => {

@@ -3,6 +3,7 @@ import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { materializeStateBlobs, WorkerBlobsUnavailableError } from "./worker-blobs.ts";
 import {
   discoverRecordRepoSlugs,
   materializeWorkerRecords,
@@ -19,12 +20,15 @@ const GENERATED_PATHS = [
   "apply-report.json",
   "repair-apply-report.json",
 ] as const;
-const NON_RECORD_PATHS = GENERATED_PATHS.filter((relativePath) => relativePath !== "records");
+// The ledger/assets trees ride the blob transport together: both are plain
+// file trees served from R2 under the ledger/v1/... and assets/... prefixes.
+const BLOB_PATHS = ["ledger", "assets"] as const;
 
 type Args = {
   stateDir?: string;
   worktree?: string;
   recordsSource?: "git" | "worker";
+  ledgerSource?: "git" | "worker";
   recordsUrl?: string;
   recordsRepoSlugs?: string[];
 };
@@ -40,6 +44,8 @@ export async function hydrateState(
   );
   const worktreeRoot = path.resolve(args.worktree ?? process.cwd());
   const recordsSource = args.recordsSource ?? parseRecordsSource(env.CLAWSWEEPER_RECORDS_SOURCE);
+  const ledgerSource =
+    args.ledgerSource ?? parseSource(env.CLAWSWEEPER_LEDGER_SOURCE, "CLAWSWEEPER_LEDGER_SOURCE");
 
   if (!existsSync(stateRoot)) throw new Error(`State directory does not exist: ${stateRoot}`);
   if (!GENERATED_PATHS.some((relativePath) => existsSync(path.join(stateRoot, relativePath)))) {
@@ -48,8 +54,45 @@ export async function hydrateState(
     );
   }
 
-  const gitPaths = recordsSource === "git" ? GENERATED_PATHS : NON_RECORD_PATHS;
+  const gitPaths = GENERATED_PATHS.filter(
+    (relativePath) =>
+      (recordsSource === "git" || relativePath !== "records") &&
+      (ledgerSource === "git" || !BLOB_PATHS.includes(relativePath as "ledger" | "assets")),
+  );
   for (const relativePath of gitPaths) copyGeneratedPath(stateRoot, worktreeRoot, relativePath);
+
+  const baseUrl =
+    args.recordsUrl ??
+    env.CLAWSWEEPER_RECORDS_URL ??
+    env.CLAWSWEEPER_STATE_COORDINATOR_URL ??
+    "https://clawsweeper.openclaw.ai";
+  const webhookSecret = env.CLAWSWEEPER_RECORDS_SECRET ?? env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
+
+  let blobs: Awaited<ReturnType<typeof materializeStateBlobs>> | undefined;
+  let ledgerFallback: { reason: string; source: "git" } | undefined;
+  if (ledgerSource === "worker") {
+    if (!webhookSecret) {
+      throw new Error("CLAWSWEEPER_RECORDS_SECRET is required for Worker ledger hydration");
+    }
+    try {
+      blobs = await materializeStateBlobs({
+        worktreeRoot,
+        baseUrl,
+        webhookSecret,
+        cacheRoot: env.CLAWSWEEPER_BLOBS_CACHE_DIR,
+        fetch: fetchImpl,
+      });
+    } catch (error) {
+      if (!(error instanceof WorkerBlobsUnavailableError)) throw error;
+      console.error(
+        `[hydrate-state] WORKER LEDGER CUTOVER REFUSED: ${error.message.toUpperCase()}; FALLING BACK TO GIT LEDGER/ASSETS`,
+      );
+      for (const relativePath of BLOB_PATHS) {
+        copyGeneratedPath(stateRoot, worktreeRoot, relativePath);
+      }
+      ledgerFallback = { reason: error.reason, source: "git" };
+    }
+  }
 
   let worker: Awaited<ReturnType<typeof materializeWorkerRecords>> | undefined;
   let recordsFallback: { reason: string; source: "git" } | undefined;
@@ -58,7 +101,6 @@ export async function hydrateState(
       args.recordsRepoSlugs ??
       parseRepoSlugs(env.CLAWSWEEPER_RECORDS_REPO_SLUGS) ??
       discoverRecordRepoSlugs(stateRoot);
-    const webhookSecret = env.CLAWSWEEPER_RECORDS_SECRET ?? env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
     if (repoSlugs.length && !webhookSecret) {
       throw new Error("CLAWSWEEPER_RECORDS_SECRET is required for Worker record hydration");
     }
@@ -66,11 +108,7 @@ export async function hydrateState(
       if (!repoSlugs.length) throw new WorkerSnapshotUnavailableError("snapshot_not_found");
       worker = await materializeWorkerRecords({
         worktreeRoot,
-        baseUrl:
-          args.recordsUrl ??
-          env.CLAWSWEEPER_RECORDS_URL ??
-          env.CLAWSWEEPER_STATE_COORDINATOR_URL ??
-          "https://clawsweeper.openclaw.ai",
+        baseUrl,
         webhookSecret: webhookSecret || "unused-empty-snapshot",
         repoSlugs,
         cacheRoot: env.CLAWSWEEPER_RECORDS_CACHE_DIR,
@@ -94,12 +132,19 @@ export async function hydrateState(
   }
 
   const result = {
-    hydrated: worker || recordsFallback ? [...gitPaths, "records"] : [...gitPaths],
+    hydrated: [
+      ...gitPaths,
+      ...(worker || recordsFallback ? ["records"] : []),
+      ...(blobs || ledgerFallback ? BLOB_PATHS : []),
+    ],
     recordsSource: recordsFallback?.source ?? recordsSource,
     ...(recordsFallback ? { requestedRecordsSource: recordsSource, recordsFallback } : {}),
+    ledgerSource: ledgerFallback?.source ?? ledgerSource,
+    ...(ledgerFallback ? { requestedLedgerSource: ledgerSource, ledgerFallback } : {}),
     source: stateRoot,
     target: worktreeRoot,
     ...(worker ? { worker: worker.repositories, manifest: worker.manifestPath } : {}),
+    ...(blobs ? { blobs } : {}),
   };
   console.log(JSON.stringify(result));
   return result;
@@ -123,6 +168,8 @@ function parseArgs(argv: string[]): Args {
     else if (arg === "--worktree") parsed.worktree = requiredValue(argv, ++index, arg);
     else if (arg === "--records-source") {
       parsed.recordsSource = parseRecordsSource(requiredValue(argv, ++index, arg));
+    } else if (arg === "--ledger-source") {
+      parsed.ledgerSource = parseSource(requiredValue(argv, ++index, arg), arg);
     } else if (arg === "--records-url") parsed.recordsUrl = requiredValue(argv, ++index, arg);
     else if (arg === "--records-repo-slugs") {
       parsed.recordsRepoSlugs = parseRepoSlugs(requiredValue(argv, ++index, arg)) ?? [];
@@ -132,9 +179,13 @@ function parseArgs(argv: string[]): Args {
 }
 
 function parseRecordsSource(value: string | undefined): "git" | "worker" {
+  return parseSource(value, "CLAWSWEEPER_RECORDS_SOURCE");
+}
+
+function parseSource(value: string | undefined, label: string): "git" | "worker" {
   const source = value?.trim() || "git";
   if (source !== "git" && source !== "worker") {
-    throw new Error(`CLAWSWEEPER_RECORDS_SOURCE must be git or worker, received: ${source}`);
+    throw new Error(`${label} must be git or worker, received: ${source}`);
   }
   return source;
 }

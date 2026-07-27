@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -57,4 +58,15 @@ test("cluster intake publication exposes a repeated durable delivery", async () 
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("the CLI ignores the pnpm-forwarded -- separator instead of reading it as a path", () => {
+  // `pnpm run repair:publish-cluster-intake -- <intent>` forwards the literal
+  // `--` on the hosted runner (live proof run 30303202343 failed with
+  // ENOENT '.../--'); the CLI must use the first real positional.
+  const result = spawnSync(process.execPath, ["dist/repair/publish-cluster-intake.js", "--"], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /usage: publish-cluster-intake/);
 });

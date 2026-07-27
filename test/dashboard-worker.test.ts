@@ -380,6 +380,69 @@ test("exact-review supersession audit migration preserves legacy records", () =>
   assert.equal(rollbackAudit[0]?.reason_code, "newer_source_event");
 });
 
+test("exact-review supersession audit migration keeps existing rows non-authoritative", async () => {
+  const storage = new MemoryDurableStorage();
+  storage.sql.exec(`CREATE TABLE exact_review_queue_supersessions (
+    audit_id TEXT PRIMARY KEY,
+    item_key TEXT NOT NULL,
+    prior_revision INTEGER NOT NULL CHECK (prior_revision >= 1),
+    next_revision INTEGER NOT NULL CHECK (next_revision > prior_revision),
+    superseded_run_id TEXT,
+    source_action TEXT NOT NULL,
+    reason_code TEXT NOT NULL DEFAULT 'newer_source_event',
+    superseded_at INTEGER NOT NULL
+  ) STRICT`);
+  storage.sql.exec(
+    `INSERT INTO exact_review_queue_supersessions
+       (audit_id, item_key, prior_revision, next_revision, superseded_run_id,
+        source_action, reason_code, superseded_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    "existing-audit",
+    "openclaw/openclaw#113454",
+    7,
+    8,
+    "30138593401",
+    "synchronize",
+    "newer_source_event",
+    1_785_000_000_002,
+  );
+
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const rows = Array.from(
+    storage.sql.exec(
+      `SELECT superseded_lease_id, superseded_run_attempt,
+              superseded_claim_generation, superseded_protocol_version
+         FROM exact_review_queue_supersessions`,
+    ),
+  ).map((row) => ({ ...row }));
+  assert.deepEqual(rows, [
+    {
+      superseded_lease_id: null,
+      superseded_run_attempt: null,
+      superseded_claim_generation: null,
+      superseded_protocol_version: null,
+    },
+  ]);
+
+  const completion = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: "legacy-lease",
+        item_key: "openclaw/openclaw#113454",
+        lease_revision: 7,
+        claim_generation: 1,
+        run_id: "30138593401",
+        run_attempt: 1,
+        outcome: "success",
+      }),
+    }),
+  );
+  assert.equal(completion.status, 409);
+  assert.deepEqual(await completion.json(), { error: "lease_not_claimed" });
+});
+
 test("automerge reliability summarizes failures, recovery, duration, and stalled runs", () => {
   const run = (
     id: number,
@@ -5926,6 +5989,349 @@ test("publication reconcile preserves active legacy leases and newer publication
     };
     assert.equal(state.items[leasedItemKey]?.state, "leased");
     assert.ok(state.items[supersededItemKey]);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("publication reconcile terminalizes a completed protocol-v2 state-batch publication after its target closes", async () => {
+  let liveChecks = 0;
+  const producerChecks: Array<[string, number | null, string]> = [];
+  const harness = createExactReviewAdmissionHarness(
+    () => {
+      liveChecks += 1;
+      return jsonResponse({ state: "closed" });
+    },
+    {
+      producerRun: (runId, runAttempt, kind) => {
+        producerChecks.push([runId, runAttempt, kind]);
+        return jsonResponse({
+          id: runId,
+          run_attempt: 1,
+          status: "completed",
+          ...(kind === "attempt" ? { conclusion: "success" } : {}),
+        });
+      },
+    },
+  );
+  const itemNumber = 113313;
+  const producerRunId = "30091560737";
+  const itemKey = `openclaw/openclaw#${itemNumber}@publish:${producerRunId}:1`;
+  const rootPublication = exactReviewPublicationOverrides(
+    itemNumber,
+    producerRunId,
+    "synchronize",
+    1,
+    "openclaw/openclaw",
+  );
+  rootPublication.publication.producerDecision = {
+    ...rootPublication.publication.producerDecision,
+    itemKind: "pull_request",
+    sourceEvent: "pull_request",
+  };
+  try {
+    assert.equal(
+      (
+        await harness.queue.fetch(
+          buildExactReviewQueueRequest(
+            "legacy-v2-state-batch-terminal",
+            itemNumber,
+            "exact_review_artifact_publish",
+            "pull_request",
+            "openclaw/openclaw",
+            rootPublication,
+          ),
+        )
+      ).status,
+      202,
+    );
+
+    const reconciled = await (
+      await harness.queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/publications/reconcile", {
+          method: "POST",
+          body: JSON.stringify({ apply: true, max_items: 100 }),
+        }),
+      )
+    ).json();
+
+    assert.deepEqual(producerChecks, [
+      [producerRunId, null, "summary"],
+      [producerRunId, 1, "attempt"],
+    ]);
+    assert.equal(liveChecks, 1);
+    assert.equal(reconciled.changed, 1);
+    assert.equal(reconciled.legacy_state_batch_terminal_candidates, 1);
+    assert.equal(reconciled.legacy_state_batch_terminal_selected, 1);
+    assert.equal(reconciled.legacy_state_batch_terminal_producer_succeeded, 1);
+    assert.equal(reconciled.legacy_state_batch_terminal_eligible, 1);
+    assert.equal(reconciled.legacy_state_batch_terminal_changed, 1);
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, unknown>;
+    };
+    assert.equal(state.items[itemKey], undefined);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("publication reconcile retains a protocol-v2 command publication awaiting acknowledgement", async () => {
+  let liveChecks = 0;
+  let producerChecks = 0;
+  const harness = createExactReviewAdmissionHarness(
+    () => {
+      liveChecks += 1;
+      return jsonResponse({ state: "closed" });
+    },
+    {
+      producerRun: () => {
+        producerChecks += 1;
+        return jsonResponse({ id: "30091560738", run_attempt: 1, status: "completed" });
+      },
+    },
+  );
+  const itemNumber = 9313;
+  const producerRunId = "30091560738";
+  const itemKey = `openclaw/gogcli#${itemNumber}@publish:${producerRunId}:1`;
+  const commandStatusMarker =
+    "<!-- clawsweeper-command-status:9313:re_review:0123456789abcdef0123456789abcdef01234567 -->";
+  try {
+    assert.equal(
+      (
+        await harness.queue.fetch(
+          buildExactReviewQueueRequest(
+            "legacy-v2-command-awaiting-ack",
+            itemNumber,
+            "exact_review_artifact_publish",
+            "issue",
+            "openclaw/gogcli",
+            {
+              ...exactReviewPublicationOverrides(itemNumber, producerRunId),
+              commandStatusMarker,
+            },
+          ),
+        )
+      ).status,
+      202,
+    );
+
+    const reconciled = await (
+      await harness.queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/publications/reconcile", {
+          method: "POST",
+          body: JSON.stringify({ apply: true, max_items: 100 }),
+        }),
+      )
+    ).json();
+
+    assert.equal(liveChecks, 0);
+    assert.equal(producerChecks, 0);
+    assert.equal(reconciled.changed, 0);
+    assert.equal(reconciled.legacy_state_batch_terminal_candidates, 0);
+    assert.equal(reconciled.legacy_state_batch_terminal_eligible, 0);
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, { decision: { commandStatusMarker?: string } }>;
+    };
+    assert.equal(state.items[itemKey]?.decision.commandStatusMarker, commandStatusMarker);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("publication reconcile preserves protocol-v2 state-batch rows owned by an active batch or lease", async () => {
+  let batchLiveChecks = 0;
+  let batchProducerChecks = 0;
+  const batchHarness = createExactReviewAdmissionHarness(
+    () => {
+      batchLiveChecks += 1;
+      return jsonResponse({ state: "closed" });
+    },
+    {
+      publicationBatching: true,
+      producerRun: () => {
+        batchProducerChecks += 1;
+        return jsonResponse({ id: "30091560739", run_attempt: 1, status: "completed" });
+      },
+    },
+  );
+  const batchItemNumber = 9314;
+  const batchItemKey = `openclaw/gogcli#${batchItemNumber}@publish:30091560739:1`;
+  try {
+    assert.equal(
+      (
+        await batchHarness.queue.fetch(
+          buildExactReviewQueueRequest(
+            "legacy-v2-active-batch",
+            batchItemNumber,
+            "exact_review_artifact_publish",
+            "issue",
+            "openclaw/gogcli",
+            exactReviewPublicationOverrides(batchItemNumber, "30091560739"),
+          ),
+        )
+      ).status,
+      202,
+    );
+    const claim = await (
+      await batchHarness.queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/publication-batches/claim", {
+          method: "POST",
+          body: JSON.stringify({
+            claim_id: "legacy-v2-active-batch",
+            lease_owner: "legacy-v2-owner",
+            max_items: 1,
+          }),
+        }),
+      )
+    ).json();
+    assert.equal(claim.claimed, true);
+    const batchReconciled = await (
+      await batchHarness.queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/publications/reconcile", {
+          method: "POST",
+          body: JSON.stringify({ apply: true, max_items: 100 }),
+        }),
+      )
+    ).json();
+    assert.equal(batchLiveChecks, 0);
+    assert.equal(batchProducerChecks, 0);
+    assert.equal(batchReconciled.changed, 0);
+    assert.equal(batchReconciled.legacy_state_batch_terminal_candidates, 0);
+    const batchState = (await batchHarness.storage.get("exact-review-queue")) as {
+      items: Record<string, unknown>;
+    };
+    assert.ok(batchState.items[batchItemKey]);
+  } finally {
+    batchHarness.restore();
+  }
+
+  let leaseLiveChecks = 0;
+  let leaseProducerChecks = 0;
+  const leaseHarness = createExactReviewAdmissionHarness(
+    () => {
+      leaseLiveChecks += 1;
+      return jsonResponse({ state: "closed" });
+    },
+    {
+      producerRun: () => {
+        leaseProducerChecks += 1;
+        return jsonResponse({ id: "30091560740", run_attempt: 1, status: "completed" });
+      },
+    },
+  );
+  const leaseItemNumber = 9315;
+  const leaseItemKey = `openclaw/gogcli#${leaseItemNumber}@publish:30091560740:1`;
+  try {
+    assert.equal(
+      (
+        await leaseHarness.queue.fetch(
+          buildExactReviewQueueRequest(
+            "legacy-v2-active-lease",
+            leaseItemNumber,
+            "exact_review_artifact_publish",
+            "issue",
+            "openclaw/gogcli",
+            exactReviewPublicationOverrides(leaseItemNumber, "30091560740"),
+          ),
+        )
+      ).status,
+      202,
+    );
+    const stored = (await leaseHarness.storage.get("exact-review-queue")) as {
+      items: Record<string, Record<string, unknown>>;
+    };
+    const item = stored.items[leaseItemKey]!;
+    Object.assign(item, {
+      state: "leased",
+      leaseId: "active-legacy-v2-lease",
+      leaseRevision: 1,
+      leaseExpiresAt: Date.now() + 60_000,
+      claimedRunId: "9315",
+      claimedAt: Date.now(),
+      leaseDecision: item.decision,
+    });
+    await leaseHarness.storage.put("exact-review-queue", stored);
+
+    const leaseReconciled = await (
+      await leaseHarness.queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/publications/reconcile", {
+          method: "POST",
+          body: JSON.stringify({ apply: true, max_items: 100 }),
+        }),
+      )
+    ).json();
+    assert.equal(leaseLiveChecks, 0);
+    assert.equal(leaseProducerChecks, 0);
+    assert.equal(leaseReconciled.changed, 0);
+    assert.equal(leaseReconciled.legacy_state_batch_terminal_candidates, 0);
+    const leaseState = (await leaseHarness.storage.get("exact-review-queue")) as {
+      items: Record<string, { state: string }>;
+    };
+    assert.equal(leaseState.items[leaseItemKey]?.state, "leased");
+  } finally {
+    leaseHarness.restore();
+  }
+});
+
+test("publication reconcile leaves a protocol-v2 state-batch row to existing stale-revision handling when a newer head exists", async () => {
+  let liveChecks = 0;
+  let producerChecks = 0;
+  const harness = createExactReviewAdmissionHarness(
+    () => {
+      liveChecks += 1;
+      return jsonResponse({ state: "closed" });
+    },
+    {
+      producerRun: () => {
+        producerChecks += 1;
+        return jsonResponse({ id: "30091560741", run_attempt: 1, status: "completed" });
+      },
+    },
+  );
+  const itemNumber = 9316;
+  const itemKey = `openclaw/gogcli#${itemNumber}@publish:30091560741:1`;
+  try {
+    assert.equal(
+      (
+        await harness.queue.fetch(
+          buildExactReviewQueueRequest(
+            "legacy-v2-newer-head",
+            itemNumber,
+            "exact_review_artifact_publish",
+            "issue",
+            "openclaw/gogcli",
+            exactReviewPublicationOverrides(itemNumber, "30091560741"),
+          ),
+        )
+      ).status,
+      202,
+    );
+    harness.storage.sql.exec(
+      `INSERT INTO exact_review_publication_heads (target_key, source_revision, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(target_key) DO UPDATE SET source_revision = excluded.source_revision`,
+      `openclaw/gogcli#${itemNumber}`,
+      2,
+      Date.now(),
+    );
+
+    const reconciled = await (
+      await harness.queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/publications/reconcile", {
+          method: "POST",
+          body: JSON.stringify({ apply: false, max_items: 100 }),
+        }),
+      )
+    ).json();
+
+    assert.equal(liveChecks, 0);
+    assert.equal(producerChecks, 0);
+    assert.equal(reconciled.stale_revision_eligible, 1);
+    assert.equal(reconciled.legacy_state_batch_terminal_candidates, 0);
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, unknown>;
+    };
+    assert.ok(state.items[itemKey]);
   } finally {
     harness.restore();
   }
@@ -18281,6 +18687,11 @@ function createExactReviewAdmissionHarness(
     targetRepository?: (targetRepo: string) => Response | Promise<Response>;
     targetItem?: (targetRepo: string) => Response | Promise<Response>;
     targetPull?: (targetRepo: string) => Response | Promise<Response>;
+    producerRun?: (
+      runId: string,
+      runAttempt: number | null,
+      kind: "summary" | "attempt",
+    ) => Response | Promise<Response>;
     dispatch?: () => Response | Promise<Response>;
     batchDispatch?: () => Response | Promise<Response>;
   } = {},
@@ -18311,6 +18722,28 @@ function createExactReviewAdmissionHarness(
     }
     if (url.pathname === "/app/installations/999/access_tokens") {
       return jsonResponse({ token: "queue-token" });
+    }
+    const producerRunAttempt = url.pathname.match(
+      /^\/repos\/openclaw\/clawsweeper\/actions\/runs\/(\d+)\/attempts\/(\d+)$/,
+    );
+    if (producerRunAttempt) {
+      return (
+        options.producerRun?.(producerRunAttempt[1]!, Number(producerRunAttempt[2]), "attempt") ??
+        jsonResponse({
+          id: producerRunAttempt[1],
+          run_attempt: Number(producerRunAttempt[2]),
+          status: "in_progress",
+        })
+      );
+    }
+    const producerRun = url.pathname.match(
+      /^\/repos\/openclaw\/clawsweeper\/actions\/runs\/(\d+)$/,
+    );
+    if (producerRun) {
+      return (
+        options.producerRun?.(producerRun[1]!, null, "summary") ??
+        jsonResponse({ id: producerRun[1], run_attempt: 1, status: "in_progress" })
+      );
     }
     const targetItem = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)$/);
     if (targetItem) {
