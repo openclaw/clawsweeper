@@ -38,6 +38,7 @@
     "repair:import-gitcrawl": "node dist/repair/import-gitcrawl-clusters.js",
     "repair:select-cluster-candidate": "node dist/repair/select-cluster-candidate.js",
     "repair:publish-cluster-intake": "node dist/repair/publish-cluster-intake.js",
+    "repair:restore-cluster-intake-job": "node dist/repair/restore-cluster-intake-job.js",
     "repair:import-gitcrawl-low-signal": "node dist/repair/import-gitcrawl-low-signal-prs.js",
     "repair:import-ghcrawl": "node dist/repair/import-gitcrawl-clusters.js",
     "repair:import-low-signal": "node dist/repair/import-gitcrawl-low-signal-prs.js",

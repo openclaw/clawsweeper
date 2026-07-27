@@ -154,12 +154,16 @@ test("state materializer bounds its coordinator acquire below the job timeout", 
   assert.equal(budgetMs + 15 * 60_000 <= Number(materializer?.["timeout-minutes"]) * 60_000, true);
 });
 
-test("only the batch publisher and the state materializer request priority admission", () => {
+test("only bounded publication owners request priority admission", () => {
+  const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
   const prioritySetups: string[] = [];
   for (const { file, workflow } of workflows()) {
     for (const [job, definition] of Object.entries(workflow.jobs ?? {})) {
       for (const step of definition.steps ?? []) {
-        if (isSetupState(step) && step.with?.["coordinator-class"] === "publication_batch") {
+        if (
+          isSetupState(step) &&
+          String(step.with?.["coordinator-class"] || "").includes("publication_batch")
+        ) {
           prioritySetups.push(`${file}:${job}`);
         }
       }
@@ -169,6 +173,9 @@ test("only the batch publisher and the state materializer request priority admis
     ".github/workflows/exact-review-batch-publish.yml:publish",
     ".github/workflows/state-materializer.yml:materialize",
   ]);
+  const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
+  const setup = materializer?.steps?.find(isSetupState);
+  assert.match(String(setup?.with?.["coordinator-class"]), /cluster_intake/);
 });
 
 test("trusted generated-state mutation steps receive a step-scoped coordinator credential", () => {

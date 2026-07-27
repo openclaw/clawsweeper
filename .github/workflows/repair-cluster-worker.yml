@@ -14,6 +14,21 @@ on:
         required: false
         default: ""
         type: string
+      job_payload:
+        description: "Optional base64 job content from durable cluster intake"
+        required: false
+        default: ""
+        type: string
+      job_digest:
+        description: "SHA-256 fence for job_payload"
+        required: false
+        default: ""
+        type: string
+      job_auth:
+        description: "Materializer HMAC binding the durable job dispatch"
+        required: false
+        default: ""
+        type: string
       automerge_session_id:
         description: "Stable automerge product telemetry session"
         required: false
@@ -82,6 +97,20 @@ env:
   GEMINI_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.GEMINI_API_KEY || '' }}
   KIMI_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.KIMI_API_KEY || '' }}
   OPENROUTER_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.OPENROUTER_API_KEY || '' }}
+  CLUSTER_JOB_PATH: ${{ inputs.job }}
+  CLUSTER_DISPATCH_KEY: ${{ inputs.dispatch_key }}
+  CLUSTER_JOB_PAYLOAD: ${{ inputs.job_payload }}
+  CLUSTER_JOB_DIGEST: ${{ inputs.job_digest }}
+  CLUSTER_JOB_AUTH: ${{ inputs.job_auth }}
+  CLUSTER_WORKER_MODE: ${{ inputs.mode }}
+  CLUSTER_WORKER_MODEL: ${{ inputs.model }}
+  CLUSTER_WORKER_DRY_RUN: ${{ inputs.dry_run }}
+  CLUSTER_WORKER_RUNNER: ${{ inputs.runner }}
+  CLUSTER_EXECUTION_RUNNER: ${{ inputs.execution_runner }}
+  CLUSTER_PLANNER_SANDBOX: ${{ inputs.planner_sandbox }}
+  CLUSTER_REQUEUE_DEPTH: ${{ inputs.requeue_depth }}
+  CLUSTER_AUTOMERGE_SESSION_ID: ${{ inputs.automerge_session_id }}
+  CLUSTER_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 concurrency:
   group: ${{ inputs.requeue && format('clawsweeper-repair-requeue-{0}-{1}', inputs.job, github.run_id) || format('clawsweeper-repair-{0}', inputs.job) }}
@@ -101,8 +130,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          sparse-checkout: scripts/dispatch-receipt-owner.sh
-          sparse-checkout-cone-mode: false
+          filter: blob:none
+
+      - uses: ./.github/actions/setup-pnpm
+        if: ${{ inputs.job_payload != '' }}
+        with:
+          build-script: build:repair
+
+      - name: Authenticate durable intake before credentials
+        if: ${{ inputs.job_payload != '' }}
+        env:
+          CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: pnpm run repair:restore-cluster-intake-job
 
       - id: receipt
         env:
@@ -219,6 +259,16 @@ jobs:
           fetch-depth: 1
           sparse-checkout: jobs
 
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:repair
+
+      - name: Restore durable intake job
+        if: ${{ inputs.job_payload != '' }}
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: pnpm run repair:restore-cluster-intake-job
+
       - name: Check job file
         id: check_job
         env:
@@ -246,11 +296,6 @@ jobs:
           echo "key=$key" >> "$GITHUB_OUTPUT"
           echo "codex_home=$codex_home" >> "$GITHUB_OUTPUT"
           echo "CLAWSWEEPER_CODEX_THREAD_STATE=$codex_home/clawsweeper-thread-state.json" >> "$GITHUB_ENV"
-
-      - uses: ./.github/actions/setup-pnpm
-        if: ${{ steps.check_job.outputs.job_exists == '1' }}
-        with:
-          build-script: build:repair
 
       - uses: ./.github/actions/setup-codex
         if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' }}
@@ -281,7 +326,7 @@ jobs:
         env:
           CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN: ${{ secrets.CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN }}
           CLAWSWEEPER_CRABFLEET_OWNER: ${{ vars.CLAWSWEEPER_CRABFLEET_OWNER }}
-        run: pnpm run repair:action-session -- register "${{ inputs.job }}"
+        run: pnpm run repair:action-session -- register "$CLUSTER_JOB_PATH"
 
       - name: Verify GitHub read token
         if: ${{ steps.check_job.outputs.job_exists == '1' }}
@@ -298,7 +343,7 @@ jobs:
         if: ${{ steps.check_job.outputs.job_exists == '1' }}
         env:
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
-        run: pnpm run repair:validate-job -- "${{ inputs.job }}"
+        run: pnpm run repair:validate-job -- "$CLUSTER_JOB_PATH"
 
       - name: Verify self-heal head
         id: self_heal_head
@@ -306,7 +351,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
-        run: pnpm run repair:conflict-self-heal -- --verify-job-head "${{ inputs.job }}"
+        run: pnpm run repair:conflict-self-heal -- --verify-job-head "$CLUSTER_JOB_PATH"
 
       - name: Publish automatic implementation planning status
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' }}
@@ -316,10 +361,10 @@ jobs:
           CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
         run: |
           pnpm run repair:issue-implementation-status -- \
-            --job "${{ inputs.job }}" \
+            --job "$CLUSTER_JOB_PATH" \
             --state "Planning" \
             --detail "Codex is reading the issue and repository, choosing an implementation, and planning validation." \
-            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            --run-url "$CLUSTER_RUN_URL"
 
       - name: Run worker
         id: run_worker
@@ -328,14 +373,14 @@ jobs:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
         run: |
-          worker_mode="${{ inputs.mode }}"
+          worker_mode="$CLUSTER_WORKER_MODE"
           if [ "$worker_mode" != "plan" ] && [ "${CLAWSWEEPER_ALLOW_EXECUTE}" != "1" ]; then
             echo "CLAWSWEEPER_ALLOW_EXECUTE is not explicitly 1; rendering plan-only output for requested $worker_mode run"
             worker_mode="plan"
           fi
           echo "effective_mode=$worker_mode" >> "$GITHUB_OUTPUT"
-          args=("${{ inputs.job }}" --mode "$worker_mode" --model "${{ inputs.model }}")
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
+          args=("$CLUSTER_JOB_PATH" --mode "$worker_mode" --model "$CLUSTER_WORKER_MODEL")
+          if [ "$CLUSTER_WORKER_DRY_RUN" = "true" ]; then
             args+=(--dry-run)
           fi
           pnpm run repair:worker -- "${args[@]}"
@@ -398,8 +443,10 @@ jobs:
 
       - name: Record planning completion
         if: ${{ success() && steps.crabfleet_session.outcome == 'success' }}
+        env:
+          EFFECTIVE_MODE: ${{ steps.run_worker.outputs.effective_mode }}
         run: |
-          if [[ "${{ steps.run_worker.outputs.effective_mode }}" == "plan" || "${{ inputs.dry_run }}" == "true" ]]; then
+          if [[ "$EFFECTIVE_MODE" == "plan" || "$CLUSTER_WORKER_DRY_RUN" == "true" ]]; then
             pnpm run repair:action-session -- update \
               --state completed \
               --phase "done" \
@@ -513,6 +560,17 @@ jobs:
             jobs
             ledger
 
+      - uses: ./.github/actions/setup-pnpm
+        id: execute-setup-pnpm
+        with:
+          build-script: build:repair
+
+      - name: Restore durable intake job
+        if: ${{ inputs.job_payload != '' }}
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: pnpm run repair:restore-cluster-intake-job
+
       - name: Check job file
         id: check_job
         env:
@@ -531,12 +589,6 @@ jobs:
           echo "key=$key" >> "$GITHUB_OUTPUT"
           echo "codex_home=$codex_home" >> "$GITHUB_OUTPUT"
           echo "CLAWSWEEPER_CODEX_THREAD_STATE=$codex_home/clawsweeper-thread-state.json" >> "$GITHUB_ENV"
-
-      - uses: ./.github/actions/setup-pnpm
-        id: execute-setup-pnpm
-        if: ${{ steps.check_job.outputs.job_exists == '1' }}
-        with:
-          build-script: build:repair
 
       - uses: ./.github/actions/setup-codex
         if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' }}
@@ -567,7 +619,7 @@ jobs:
         env:
           CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN: ${{ secrets.CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN }}
           CLAWSWEEPER_CRABFLEET_OWNER: ${{ vars.CLAWSWEEPER_CRABFLEET_OWNER }}
-        run: pnpm run repair:action-session -- register "${{ inputs.job }}"
+        run: pnpm run repair:action-session -- register "$CLUSTER_JOB_PATH"
 
       - name: Download worker artifacts
         if: ${{ steps.check_job.outputs.job_exists == '1' }}
@@ -580,7 +632,7 @@ jobs:
         if: ${{ steps.check_job.outputs.job_exists == '1' }}
         env:
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
-        run: pnpm run repair:validate-job -- "${{ inputs.job }}"
+        run: pnpm run repair:validate-job -- "$CLUSTER_JOB_PATH"
 
       - name: Verify self-heal head
         id: self_heal_head
@@ -588,7 +640,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
-        run: pnpm run repair:conflict-self-heal -- --verify-job-head "${{ inputs.job }}"
+        run: pnpm run repair:conflict-self-heal -- --verify-job-head "$CLUSTER_JOB_PATH"
 
       - name: Verify Linux validation containment
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' && env.CLAWSWEEPER_ALLOW_FIX_PR == '1' }}
@@ -608,10 +660,10 @@ jobs:
           CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
         run: |
           pnpm run repair:issue-implementation-status -- \
-            --job "${{ inputs.job }}" \
+            --job "$CLUSTER_JOB_PATH" \
             --state "Building" \
             --detail "Codex is editing, validating, and reviewing the implementation before a branch or pull request is published." \
-            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            --run-url "$CLUSTER_RUN_URL"
 
       - name: Execute credited fix artifact
         id: execute_fix
@@ -621,7 +673,7 @@ jobs:
           GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
           CLAWSWEEPER_AUTOMERGE_SESSION_ID: ${{ inputs.automerge_session_id }}
-        run: pnpm run repair:execute-fix -- "${{ inputs.job }}" --latest --defer-publication
+        run: pnpm run repair:execute-fix -- "$CLUSTER_JOB_PATH" --latest --defer-publication
 
       - name: Renew target write token for post-flight
         id: target_post_flight_token
@@ -643,7 +695,7 @@ jobs:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
           CLAWSWEEPER_AUTOMERGE_SESSION_ID: ${{ inputs.automerge_session_id }}
-        run: pnpm run repair:execute-fix -- "${{ inputs.job }}" --latest --publish-report-only
+        run: pnpm run repair:execute-fix -- "$CLUSTER_JOB_PATH" --latest --publish-report-only
 
       - name: Record deterministic validation phase
         if: ${{ success() && steps.crabfleet_session.outcome == 'success' }}
@@ -654,7 +706,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
-        run: pnpm run repair:apply-result -- "${{ inputs.job }}" --latest
+        run: pnpm run repair:apply-result -- "$CLUSTER_JOB_PATH" --latest
 
       - name: Post-flight finalize fix PRs
         id: post_flight
@@ -662,14 +714,14 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
-        run: pnpm run repair:post-flight -- "${{ inputs.job }}" --latest
+        run: pnpm run repair:post-flight -- "$CLUSTER_JOB_PATH" --latest
 
       - name: Apply post-flight closeouts
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' }}
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
-        run: pnpm run repair:apply-result -- "${{ inputs.job }}" --latest
+        run: pnpm run repair:apply-result -- "$CLUSTER_JOB_PATH" --latest
 
       - name: Tag ClawSweeper targets
         if: ${{ always() && steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' }}
@@ -768,10 +820,10 @@ jobs:
             fi
           fi
           pnpm run repair:issue-implementation-status -- \
-            --job "${{ inputs.job }}" \
+            --job "$CLUSTER_JOB_PATH" \
             --state "$state" \
             --detail "$detail" \
-            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --run-url "$CLUSTER_RUN_URL" \
             --pr-url "$pr_url"
 
       - name: Detect repair requeue requests
@@ -792,20 +844,21 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.requeue-token.outputs.token }}
           CLAWSWEEPER_MUTATION_TOKEN_SOURCE: clawsweeper-app
+          REQUEUE_COUNT: ${{ steps.repair_requeue.outputs.count }}
         run: |
           set -euo pipefail
-          echo "Requeueing ${{ steps.repair_requeue.outputs.count }} source-head race repair result(s) against the latest head."
-          pnpm run repair:requeue -- "${{ inputs.job }}" \
-            --mode "${{ inputs.mode }}" \
+          echo "Requeueing $REQUEUE_COUNT source-head race repair result(s) against the latest head."
+          pnpm run repair:requeue -- "$CLUSTER_JOB_PATH" \
+            --mode "$CLUSTER_WORKER_MODE" \
             --execute \
             --open-execute-window \
             --wait-for-capacity \
-            --source-job-path "${{ inputs.job }}" \
-            --requeue-depth "${{ inputs.requeue_depth }}" \
+            --source-job-path "$CLUSTER_JOB_PATH" \
+            --requeue-depth "$CLUSTER_REQUEUE_DEPTH" \
             --max-requeue-depth 1 \
-            --runner "${{ inputs.runner }}" \
-            --execution-runner "${{ inputs.execution_runner }}" \
-            --model "${{ inputs.model }}"
+            --runner "$CLUSTER_WORKER_RUNNER" \
+            --execution-runner "$CLUSTER_EXECUTION_RUNNER" \
+            --model "$CLUSTER_WORKER_MODEL"
 
       - name: Finalize repair requeue action ledger
         if: ${{ always() && steps.execute-setup-pnpm.outcome == 'success' && steps.repair-requeue-ledger.outcome == 'success' && steps.repair_requeue.outputs.count != '' && steps.repair_requeue.outputs.count != '0' }}
