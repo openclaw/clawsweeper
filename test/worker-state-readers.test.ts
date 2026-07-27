@@ -350,7 +350,7 @@ test("reconciliation imports a git-only packet for a both-stale item keyed to ca
       summaryFile,
       fetch: fetchImpl,
       githubStates: () => new Map([["857", "closed"]]),
-      gitCommitTimes: () => new Map(),
+      gitCommitTimes: () => ({ times: new Map(), unavailable: new Set() }),
     });
 
     assert.deepEqual(result.decisions, [
