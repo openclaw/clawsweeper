@@ -132,6 +132,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Allowed stuck-placeholder recovery to label pull requests by granting its target token pull-request write permission alongside issue write. Thanks @masatohoshino! (#865)
 - Kept root-level apply reports as digest-only action-ledger evidence so ledger-enabled apply runs can finish, publish their compatibility report, and advance their cursor. Thanks @yetval! (#833)
 - Restored repair and spam workflows by keeping the multi-owner repair policy out of the GitHub App token action's single-owner input. Thanks @yetval! (#834)
 - Stopped the review pipeline stranding delivered verdicts: a single drifted state item is quarantined instead of aborting its whole batch, the commit_refs recovery path retries its final state-branch push with exponential backoff like its receipt and lease siblings, the superseded-placeholder sweep runs on every apply pass instead of only right after posting the durable verdict comment, and placeholder recovery spends its per-run budget on the oldest orphans first and labels long-stuck ones. Thanks @yetval! (#816)
