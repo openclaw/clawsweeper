@@ -600,9 +600,7 @@ Important gates:
   cluster and selects one useful candidate or rejects the batch.
 - `CLAWSWEEPER_CLUSTER_REPAIR_CANDIDATE_BATCH`: number of unprocessed clusters
   offered to the scheduled selector model; default `8`. The selector emits at
-  most one cluster per daily `repair-cluster-intake.yml` run. The former
-  `CLAWSWEEPER_CLUSTER_REPAIR_IMPORT_LIMIT` variable remains a compatibility
-  alias when the candidate-batch variable is absent.
+  most one cluster per daily `repair-cluster-intake.yml` run.
   The upstream `openclaw/gitcrawl-store` refreshes `openclaw/openclaw` every 15
   minutes, so the intake records the processed portable DB SHA in
   `results/cluster-repair-intake/<repo>.json` and skips duplicate ticks against

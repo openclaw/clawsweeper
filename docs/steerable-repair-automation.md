@@ -775,7 +775,6 @@ GitCrawl controls:
 | --- | --- |
 | `CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED` | Enables scheduled GitCrawl cluster intake. |
 | `CLAWSWEEPER_CLUSTER_REPAIR_CANDIDATE_BATCH` | Unprocessed clusters compared by the selector model; it selects at most one. |
-| `CLAWSWEEPER_CLUSTER_REPAIR_IMPORT_LIMIT` | Compatibility alias for the candidate batch when the preferred setting is absent. |
 | `CLAWSWEEPER_MAX_LIVE_WORKERS` | Optional explicit repair dispatch override. |
 
 Mutation controls:
