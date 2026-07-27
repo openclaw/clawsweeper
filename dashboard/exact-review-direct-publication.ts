@@ -5,6 +5,7 @@ export const EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE = "exact_review_record_expor
 export const EXACT_REVIEW_RECORD_BACKFILL_TABLE = "exact_review_record_backfill";
 export const EXACT_REVIEW_RECORD_BACKFILL_CHUNK_TABLE = "exact_review_record_backfill_chunks";
 export const EXACT_REVIEW_RECORD_EXPORT_META_TABLE = "exact_review_record_export_meta";
+export const CANONICAL_RECORD_TUPLE_RECEIPT_TABLE = "canonical_record_tuple_receipts";
 export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES = 4 * 1024 * 1024;
 export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILES = 4;
 export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -105,6 +106,28 @@ export type CanonicalRecord = {
   deleted: boolean;
 };
 
+export type CanonicalRecordTupleMutationOperation = {
+  path: string;
+  expectedDigest: string | null;
+  contentBase64?: string;
+};
+
+export type CanonicalRecordTupleMutation = {
+  deliveryId: string;
+  key: string;
+  operations: CanonicalRecordTupleMutationOperation[];
+};
+
+export type ValidatedCanonicalRecordTupleMutation = {
+  deliveryId: string;
+  key: string;
+  repoSlug: string;
+  itemId: number;
+  operations: CanonicalDirectPublicationOperation[];
+  expectedDigests: Map<ExactReviewTupleRecordSection, string | null>;
+  fingerprint: string;
+};
+
 export type RecordExportEntry = {
   repoSlug: string;
   section: RecordSection;
@@ -137,6 +160,13 @@ export class DirectPublicationProjectionCapacityError extends Error {
   }
 }
 
+export class CanonicalRecordTupleConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CanonicalRecordTupleConflictError";
+  }
+}
+
 export class ExactReviewDirectPublicationStore {
   private readonly storage: DurableStorage;
 
@@ -166,6 +196,19 @@ export class ExactReviewDirectPublicationStore {
          failure_reason TEXT,
          PRIMARY KEY (item_key, revision)
        ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${CANONICAL_RECORD_TUPLE_RECEIPT_TABLE} (
+         delivery_id TEXT PRIMARY KEY,
+         fingerprint TEXT NOT NULL CHECK (length(fingerprint) = 64),
+         revision INTEGER NOT NULL CHECK (revision >= 1),
+         sequence INTEGER NOT NULL CHECK (sequence >= 1),
+         received_at INTEGER NOT NULL
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS canonical_record_tuple_receipt_retention
+         ON ${CANONICAL_RECORD_TUPLE_RECEIPT_TABLE} (received_at, delivery_id)`,
     );
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_direct_publication_terminal_retention
@@ -320,29 +363,18 @@ export class ExactReviewDirectPublicationStore {
         return { outcome: "superseded" as const, row, supersededRevisions: [] };
       }
 
-      for (const operation of canonicalOperations) {
-        const current = this.readCanonicalMetadataSync(
-          operation.repoSlug,
-          operation.section,
-          operation.itemId,
-        );
-        if (current && current.revision > plan.revision) {
-          throw new Error(`canonical record revision advanced for ${operation.path}`);
-        }
-        if (
-          current &&
-          current.revision === plan.revision &&
-          (current.digest !== operation.digest || current.deleted !== (operation.content === null))
-        ) {
-          throw new Error(
-            `canonical record digest conflicts at revision ${plan.revision}: ${operation.path}`,
-          );
-        }
-      }
+      const canonicalRevision = Math.max(
+        plan.revision,
+        this.nextTupleRevisionSync(
+          canonicalOperations[0]!.repoSlug,
+          canonicalOperations[0]!.itemId,
+        ),
+      );
 
       const projection = recordTupleProjection(
         { ...plan, operations: canonicalOperations },
         limits.maxRecordBytes,
+        canonicalRevision,
       );
       const totals = stateAppendWindowTotalsSync(this.storage);
       if (
@@ -355,7 +387,7 @@ export class ExactReviewDirectPublicationStore {
       }
 
       for (const operation of canonicalOperations)
-        this.writeCanonicalOperationSync(operation, plan, now);
+        this.writeCanonicalOperationSync(operation, plan, now, canonicalRevision);
       const inserted = Array.from(
         this.storage.sql.exec(
           `INSERT INTO ${STATE_APPEND_WINDOW_TABLE}
@@ -384,6 +416,110 @@ export class ExactReviewDirectPublicationStore {
       });
       this.insertSync(row);
       return { outcome: "accepted" as const, row, supersededRevisions: [] };
+    });
+  }
+
+  acceptCanonicalTupleMutation(
+    mutation: ValidatedCanonicalRecordTupleMutation,
+    now: number,
+    limits: DirectPublicationProjectionLimits,
+  ) {
+    return this.storage.transactionSync(() => {
+      this.storage.sql.exec(
+        `DELETE FROM ${CANONICAL_RECORD_TUPLE_RECEIPT_TABLE}
+          WHERE delivery_id IN (
+            SELECT delivery_id FROM ${CANONICAL_RECORD_TUPLE_RECEIPT_TABLE}
+             WHERE received_at <= ?
+             ORDER BY received_at, delivery_id
+             LIMIT ${DIRECT_PUBLICATION_TERMINAL_PRUNE_LIMIT}
+          )`,
+        now - EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS,
+      );
+      const receipt = Array.from(
+        this.storage.sql.exec(
+          `SELECT fingerprint, revision, sequence
+             FROM ${CANONICAL_RECORD_TUPLE_RECEIPT_TABLE}
+            WHERE delivery_id = ?`,
+          mutation.deliveryId,
+        ),
+      )[0];
+      if (receipt) {
+        if (String(receipt.fingerprint) !== mutation.fingerprint) {
+          throw new CanonicalRecordTupleConflictError(
+            `canonical tuple delivery ${mutation.deliveryId} is bound to another payload`,
+          );
+        }
+        return {
+          outcome: "deduped" as const,
+          revision: Number(receipt.revision),
+          sequence: Number(receipt.sequence),
+        };
+      }
+
+      for (const operation of mutation.operations) {
+        const current = this.readExportRecord(
+          mutation.repoSlug,
+          operation.section,
+          String(mutation.itemId),
+        );
+        const currentDigest = current && !current.deleted ? current.digest : null;
+        const expectedDigest = mutation.expectedDigests.get(operation.section) ?? null;
+        if (currentDigest !== expectedDigest) {
+          throw new CanonicalRecordTupleConflictError(
+            `canonical record changed before tuple publication: ${operation.path}`,
+          );
+        }
+      }
+
+      const revision = this.nextTupleRevisionSync(mutation.repoSlug, mutation.itemId);
+      const plan: CanonicalDirectPublicationPlan = {
+        itemKey: mutation.key,
+        revision,
+        identity: { itemKey: mutation.key, revision, claimGeneration: 1 },
+        operations: mutation.operations,
+        totalBytes: mutation.operations.reduce((sum, operation) => sum + operation.bytes, 0),
+      };
+      const projection = recordTupleProjection(plan, limits.maxRecordBytes, revision);
+      const totals = stateAppendWindowTotalsSync(this.storage);
+      if (
+        totals.pendingRows + 1 > limits.maxPendingRows ||
+        totals.pendingBytes + projection.payloadBytes > limits.maxPendingBytes
+      ) {
+        throw new DirectPublicationProjectionCapacityError(
+          `record tuple projection capacity exceeded: rows=${totals.pendingRows}/${limits.maxPendingRows} bytes=${totals.pendingBytes}/${limits.maxPendingBytes} incoming=${projection.payloadBytes}`,
+        );
+      }
+      for (const operation of mutation.operations) {
+        this.writeCanonicalOperationSync(operation, plan, now, revision);
+      }
+      const inserted = Array.from(
+        this.storage.sql.exec(
+          `INSERT INTO ${STATE_APPEND_WINDOW_TABLE}
+             (kind, record_key, payload_json, payload_bytes, produced_at, delivery_id)
+           VALUES ('record_tuple', ?, ?, ?, ?, ?)
+           RETURNING seq`,
+          projection.key,
+          projection.payloadJson,
+          projection.payloadBytes,
+          new Date(now).toISOString(),
+          mutation.deliveryId,
+        ) as Iterable<{ seq: number }>,
+      )[0];
+      const sequence = Number(inserted?.seq);
+      if (!Number.isSafeInteger(sequence) || sequence < 1) {
+        throw new Error("canonical tuple publication failed to allocate a sequence");
+      }
+      this.storage.sql.exec(
+        `INSERT INTO ${CANONICAL_RECORD_TUPLE_RECEIPT_TABLE}
+           (delivery_id, fingerprint, revision, sequence, received_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        mutation.deliveryId,
+        mutation.fingerprint,
+        revision,
+        sequence,
+        now,
+      );
+      return { outcome: "accepted" as const, revision, sequence };
     });
   }
 
@@ -680,6 +816,7 @@ export class ExactReviewDirectPublicationStore {
     operation: CanonicalDirectPublicationOperation,
     plan: CanonicalDirectPublicationPlan,
     now: number,
+    revision = plan.revision,
   ) {
     this.storage.sql.exec(
       `DELETE FROM ${EXACT_REVIEW_CANONICAL_RECORD_CHUNK_TABLE}
@@ -716,7 +853,7 @@ export class ExactReviewDirectPublicationStore {
       operation.bytes,
       chunks.length,
       operation.content === null ? 1 : 0,
-      plan.revision,
+      revision,
       plan.itemKey,
       plan.identity.claimGeneration,
       now,
@@ -751,10 +888,27 @@ export class ExactReviewDirectPublicationStore {
       String(operation.itemId),
       operation.digest,
       operation.content === null ? 1 : 0,
-      plan.revision,
+      revision,
       storeRevision,
       now,
     );
+  }
+
+  private nextTupleRevisionSync(repoSlug: string, itemId: number): number {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT COALESCE(MAX(revision), 0) AS revision
+           FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}
+          WHERE repo_slug = ? AND item_id = ?`,
+        repoSlug,
+        itemId,
+      ),
+    )[0];
+    const current = Number(row?.revision ?? 0);
+    if (!Number.isSafeInteger(current) || current < 0 || current >= Number.MAX_SAFE_INTEGER) {
+      throw new Error(`invalid canonical tuple revision for ${repoSlug}/${itemId}`);
+    }
+    return current + 1;
   }
 
   private seedExportIndexFromCanonicalSync() {
@@ -1037,6 +1191,168 @@ export function validateRepoSlug(value: unknown): string | null {
   return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/.test(slug) ? slug : null;
 }
 
+export async function validateCanonicalRecordTupleMutation(
+  value: CanonicalRecordTupleMutation,
+): Promise<ValidatedCanonicalRecordTupleMutation> {
+  const mutation =
+    value && typeof value === "object" ? value : ({} as CanonicalRecordTupleMutation);
+  const deliveryId = String(mutation.deliveryId || "").trim();
+  if (
+    !deliveryId ||
+    deliveryId.length > 512 ||
+    /[\r\n]/.test(deliveryId) ||
+    deliveryId.includes("\u0000")
+  ) {
+    throw new Error("invalid canonical tuple delivery id");
+  }
+  const key = String(mutation.key || "").trim();
+  const keyMatch = /^([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\/([1-9]\d*)$/.exec(key);
+  const repoSlug = validateRepoSlug(keyMatch?.[1]);
+  const itemId = Number(keyMatch?.[2]);
+  if (!repoSlug || !Number.isSafeInteger(itemId) || itemId < 1) {
+    throw new Error("invalid canonical tuple key");
+  }
+  if (!Array.isArray(mutation.operations) || mutation.operations.length !== 4) {
+    throw new Error("canonical tuple publication must include all four record sections");
+  }
+  const expectedDigests = new Map<ExactReviewTupleRecordSection, string | null>();
+  const operations: CanonicalDirectPublicationOperation[] = [];
+  const sections = new Set<ExactReviewTupleRecordSection>();
+  for (const raw of mutation.operations) {
+    const operation =
+      raw && typeof raw === "object" ? raw : ({} as CanonicalRecordTupleMutationOperation);
+    const tuple = canonicalTuplePath(String(operation.path || ""));
+    if (!tuple || tuple.repoSlug !== repoSlug || tuple.itemId !== itemId) {
+      throw new Error(`canonical tuple path is outside ${key}: ${String(operation.path)}`);
+    }
+    if (sections.has(tuple.section)) {
+      throw new Error(`canonical tuple repeats section ${tuple.section}`);
+    }
+    sections.add(tuple.section);
+    const expectedDigest = operation.expectedDigest;
+    if (expectedDigest !== null && !/^[a-f0-9]{64}$/.test(String(expectedDigest))) {
+      throw new Error(`invalid expected digest for ${operation.path}`);
+    }
+    expectedDigests.set(tuple.section, expectedDigest);
+    if (operation.contentBase64 === undefined) {
+      operations.push({
+        path: operation.path,
+        expectedOid: null,
+        targetOid: null,
+        mode: "100644",
+        bytes: 0,
+        ...tuple,
+        content: null,
+        digest: null,
+      });
+      continue;
+    }
+    if (
+      typeof operation.contentBase64 !== "string" ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+        operation.contentBase64,
+      )
+    ) {
+      throw new Error(`invalid canonical tuple content for ${operation.path}`);
+    }
+    const bytes = base64Bytes(operation.contentBase64);
+    if (bytes.byteLength > EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES) {
+      throw new Error(`canonical tuple content is too large: ${operation.path}`);
+    }
+    let content: string;
+    try {
+      content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new Error(`canonical tuple content is not UTF-8: ${operation.path}`);
+    }
+    operations.push({
+      path: operation.path,
+      expectedOid: null,
+      targetOid: "canonical",
+      mode: "100644",
+      bytes: bytes.byteLength,
+      contentBase64: operation.contentBase64,
+      ...tuple,
+      content,
+      digest: await sha256Hex(bytes),
+    });
+  }
+  const primaryCount = operations.filter(
+    (operation) =>
+      (operation.section === "items" || operation.section === "closed") &&
+      operation.content !== null,
+  ).length;
+  const sidecarCount = operations.filter(
+    (operation) =>
+      (operation.section === "plans" || operation.section === "decision-packets") &&
+      operation.content !== null,
+  ).length;
+  if (primaryCount > 1 || (primaryCount === 0 && sidecarCount > 0)) {
+    throw new Error(`canonical tuple has invalid primary/sidecar structure: ${key}`);
+  }
+  const closed = operations.find((operation) => operation.section === "closed")?.content;
+  const plan = operations.find((operation) => operation.section === "plans")?.content;
+  if (closed !== null && closed !== undefined && plan !== null && plan !== undefined) {
+    throw new Error(`canonical closed tuple retains a work plan: ${key}`);
+  }
+  validateCanonicalTuplePacketReference(key, operations);
+  const canonicalFingerprint = JSON.stringify({
+    key,
+    operations: operations.map((operation) => ({
+      path: operation.path,
+      expectedDigest: expectedDigests.get(operation.section) ?? null,
+      digest: operation.digest,
+    })),
+  });
+  return {
+    deliveryId,
+    key,
+    repoSlug,
+    itemId,
+    operations,
+    expectedDigests,
+    fingerprint: await sha256Hex(new TextEncoder().encode(canonicalFingerprint)),
+  };
+}
+
+function validateCanonicalTuplePacketReference(
+  key: string,
+  operations: readonly CanonicalDirectPublicationOperation[],
+) {
+  const primary = operations.find(
+    (operation) =>
+      (operation.section === "items" || operation.section === "closed") &&
+      operation.content !== null,
+  );
+  const packet = operations.find((operation) => operation.section === "decision-packets")!;
+  if (!primary) return;
+  const normalized = primary.content!.replace(/\r\n/g, "\n");
+  const end = normalized.startsWith("---\n") ? normalized.indexOf("\n---", 4) : -1;
+  const frontMatter = new Map<string, string>();
+  if (end !== -1) {
+    for (const line of normalized.slice(4, end).split("\n")) {
+      const match = /^([a-z][a-z0-9_]*):\s*(.*?)\s*$/.exec(line);
+      if (match?.[1]) frontMatter.set(match[1], match[2] ?? "");
+    }
+  }
+  const digest = frontMatter.get("decision_packet_sha256");
+  const pointer = frontMatter.get("decision_packet_path");
+  if (packet.content === null) {
+    if (
+      !(
+        (digest === undefined && pointer === undefined) ||
+        (digest === "none" && pointer === "none")
+      )
+    ) {
+      throw new Error(`canonical tuple references a missing decision packet: ${key}`);
+    }
+    return;
+  }
+  if (digest !== packet.digest || pointer !== packet.path) {
+    throw new Error(`canonical tuple decision packet reference is inconsistent: ${key}`);
+  }
+}
+
 export async function validateDirectPublicationPlan(
   value: DirectPublicationPlan,
 ): Promise<CanonicalDirectPublicationPlan> {
@@ -1134,14 +1450,18 @@ export async function validateDirectPublicationPlan(
 // The direct path now derives SHA-256 content digests and deliberately ignores Git blob OIDs.
 export const validateDirectPublicationBlobOids = validateDirectPublicationPlan;
 
-function recordTupleProjection(plan: CanonicalDirectPublicationPlan, maxRecordBytes: number) {
+function recordTupleProjection(
+  plan: CanonicalDirectPublicationPlan,
+  maxRecordBytes: number,
+  revision = plan.revision,
+) {
   const operationJson = (operation: CanonicalDirectPublicationOperation, inline: boolean) => ({
     path: operation.path,
     repoSlug: operation.repoSlug,
     section: operation.section,
     itemId: operation.itemId,
     digest: operation.digest,
-    revision: plan.revision,
+    revision,
     bytes: operation.bytes,
     deleted: operation.content === null,
     ...(operation.content === null
@@ -1152,7 +1472,7 @@ function recordTupleProjection(plan: CanonicalDirectPublicationPlan, maxRecordBy
   });
   const base = {
     itemKey: plan.itemKey,
-    revision: plan.revision,
+    revision,
     claimGeneration: plan.identity.claimGeneration,
     operations: plan.operations.map((operation) => operationJson(operation, true)),
   };

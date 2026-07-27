@@ -12,6 +12,77 @@ const statusPath = "results/sweep-status/openclaw-openclaw.json";
 const routerPath = "results/comment-router.json";
 const proofPath = `ledger/v1/import-bindings/events/${"a".repeat(64)}.json`;
 const oversizedProofPath = `ledger/v1/import-bindings/events/${"b".repeat(64)}.json`;
+const tupleRoot = "records/openclaw-openclaw";
+const tupleItemPath = `${tupleRoot}/items/42.md`;
+
+test("publish-main appends changed record tuples canonically and never invokes git", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-record-source-"));
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-record-state-"));
+  const before = recordMarkdown("2026-07-26T01:00:00.000Z", "before");
+  const after = recordMarkdown("2026-07-26T02:00:00.000Z", "after");
+  writeText(stateRoot, tupleItemPath, before);
+  writeText(root, tupleItemPath, after);
+  const gitPublishes: GitPublishOptions[] = [];
+  let posted: Record<string, unknown> | undefined;
+
+  const result = await publishMainWithStateAppend(
+    { message: "chore: update sweep records", paths: [tupleRoot] },
+    {
+      root,
+      env: appendEnv({ CLAWSWEEPER_STATE_DIR: stateRoot }),
+      fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
+        assert.equal(input.toString(), "https://queue.test/internal/state/records/tuples");
+        posted = JSON.parse(String(init?.body ?? "")) as Record<string, unknown>;
+        return Response.json(
+          { ok: true, accepted: true, deduped: false, revision: 7, sequence: 11 },
+          { status: 202 },
+        );
+      }) as typeof fetch,
+      publishGit: capturePublishes(gitPublishes),
+    },
+  );
+
+  assert.equal(result, "appended");
+  assert.equal(gitPublishes.length, 0);
+  assert.equal(posted?.key, "openclaw-openclaw/42");
+  assert.match(String(posted?.deliveryId), /^record-tuple:1234:2:[a-f0-9]{64}$/);
+  assert.deepEqual(posted?.operations, [
+    {
+      path: tupleItemPath,
+      expectedDigest: createHash("sha256").update(before).digest("hex"),
+      contentBase64: Buffer.from(after).toString("base64"),
+    },
+    { path: `${tupleRoot}/closed/42.md`, expectedDigest: null },
+    { path: `${tupleRoot}/plans/42.md`, expectedDigest: null },
+    { path: `${tupleRoot}/decision-packets/42.json`, expectedDigest: null },
+  ]);
+});
+
+test("publish-main fails closed when canonical tuple publication is rejected", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-record-source-"));
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-record-state-"));
+  writeText(stateRoot, tupleItemPath, recordMarkdown("2026-07-26T01:00:00.000Z", "before"));
+  writeText(root, tupleItemPath, recordMarkdown("2026-07-26T02:00:00.000Z", "after"));
+  const gitPublishes: GitPublishOptions[] = [];
+
+  await assert.rejects(
+    publishMainWithStateAppend(
+      { message: "chore: update sweep records", paths: [tupleRoot] },
+      {
+        root,
+        env: appendEnv({ CLAWSWEEPER_STATE_DIR: stateRoot }),
+        fetchImpl: (async () =>
+          Response.json(
+            { error: "canonical_record_tuple_conflict" },
+            { status: 409 },
+          )) as typeof fetch,
+        publishGit: capturePublishes(gitPublishes),
+      },
+    ),
+    /canonical_record_tuple_conflict/,
+  );
+  assert.equal(gitPublishes.length, 0);
+});
 
 test("publish-main appends sweep status instead of invoking the git publisher", async () => {
   const root = statusFixture();
@@ -344,6 +415,10 @@ function routerLedger(): Record<string, unknown> {
       },
     ],
   };
+}
+
+function recordMarkdown(reviewedAt: string, body: string): string {
+  return `---\nrepo: openclaw/openclaw\nnumber: 42\nreviewed_at: ${reviewedAt}\n---\n\n${body}\n`;
 }
 
 function appendEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {

@@ -9,7 +9,11 @@ import { parse } from "yaml";
 
 import { hydrateState } from "../scripts/hydrate-state.ts";
 import { verifyWorkerRecordParity } from "../scripts/verify-worker-record-parity.ts";
-import { ingestGitRecords, type WorkerRecord } from "../scripts/worker-records.ts";
+import {
+  ingestGitRecords,
+  replayWorkerRecordProjections,
+  type WorkerRecord,
+} from "../scripts/worker-records.ts";
 
 const repoSlug = "openclaw-openclaw";
 const commitId = "c".repeat(40);
@@ -255,6 +259,63 @@ test("backfill importer walks all record sections and sends digest-bearing rows"
   }
 });
 
+test("canonical projection replay re-appends a complete tuple without overwriting from git", async () => {
+  const item = contents.get("items/1")!;
+  const packet = contents.get("decision-packets/1")!;
+  const requests: Array<Record<string, unknown>> = [];
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(input.toString());
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    if (url.pathname === "/internal/state/records/export") {
+      return Response.json({
+        repoSlug,
+        revision: 4,
+        nextCursor: null,
+        records: [
+          workerRecord("items", "1", item, 1),
+          workerRecord("decision-packets", "1", packet, 2),
+        ],
+      });
+    }
+    assert.equal(url.pathname, "/internal/state/records/tuples");
+    requests.push(body);
+    return Response.json({ ok: true, accepted: true, deduped: false, revision: 2, sequence: 9 });
+  }) as typeof fetch;
+
+  const result = await replayWorkerRecordProjections({
+    baseUrl: "https://worker.example",
+    webhookSecret: "fixture-secret",
+    repoSlug,
+    itemIds: ["1"],
+    fetch: fetchImpl,
+  });
+
+  assert.deepEqual(result, {
+    replayed: 1,
+    deduped: 0,
+    available: 1,
+    cursor: 0,
+    nextCursor: null,
+    revision: 4,
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.key, `${repoSlug}/1`);
+  assert.deepEqual(requests[0]?.operations, [
+    {
+      path: `records/${repoSlug}/items/1.md`,
+      expectedDigest: createHash("sha256").update(item).digest("hex"),
+      contentBase64: Buffer.from(item).toString("base64"),
+    },
+    { path: `records/${repoSlug}/closed/1.md`, expectedDigest: null },
+    { path: `records/${repoSlug}/plans/1.md`, expectedDigest: null },
+    {
+      path: `records/${repoSlug}/decision-packets/1.json`,
+      expectedDigest: createHash("sha256").update(packet).digest("hex"),
+      contentBase64: Buffer.from(packet).toString("base64"),
+    },
+  ]);
+});
+
 test("backfill workflow is manual per-target and setup-state plumbs the opt-in Worker flag", () => {
   const workflowSource = readFileSync(".github/workflows/backfill-worker-records.yml", "utf8");
   const workflow = parse(workflowSource) as {
@@ -266,12 +327,17 @@ test("backfill workflow is manual per-target and setup-state plumbs the opt-in W
   assert.ok(workflow.on?.workflow_dispatch?.inputs?.target_repo);
   assert.ok(workflow.on?.workflow_dispatch?.inputs?.cursor);
   assert.ok(workflow.on?.workflow_dispatch?.inputs?.max_batches);
+  assert.ok(workflow.on?.workflow_dispatch?.inputs?.replay_projections);
+  assert.ok(workflow.on?.workflow_dispatch?.inputs?.replay_item_ids);
+  assert.ok(workflow.on?.workflow_dispatch?.inputs?.max_replay_tuples);
+  assert.ok(workflow.on?.workflow_dispatch?.inputs?.replay_cursor);
   const setupState = workflow.jobs?.backfill?.steps?.find(
     (step) => step.uses === "./.github/actions/setup-state",
   );
   assert.equal(setupState?.with?.["records-source"], "git");
   assert.match(workflowSource, /scripts\/backfill-worker-records\.ts/);
   assert.match(workflowSource, /--cursor "\$BACKFILL_CURSOR"/);
+  assert.match(workflowSource, /--replay-projections --max-replay-tuples/);
   assert.match(workflowSource, /records\/\$\{\{ steps\.target\.outputs\.slug \}\}/);
 
   const action = readFileSync(".github/actions/setup-state/action.yml", "utf8");
@@ -376,6 +442,23 @@ function createStateFixture() {
   }
   write(path.join(stateRoot, "jobs", "fixture.json"), "{}\n");
   return { root, stateRoot };
+}
+
+function workerRecord(
+  section: WorkerRecord["section"],
+  id: string,
+  content: string,
+  storeRevision: number,
+): WorkerRecord {
+  return {
+    section,
+    id,
+    content,
+    digest: createHash("sha256").update(content).digest("hex"),
+    revision: 1,
+    storeRevision,
+    deleted: false,
+  };
 }
 
 function workerFetch(

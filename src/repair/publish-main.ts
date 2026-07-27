@@ -11,8 +11,11 @@ import {
   type PublishResult,
   type RebaseStrategy,
 } from "./git-publish.js";
+import { recordTuplePaths, validateRecordTuple, type RecordTupleContents } from "./record-tuple.js";
 import {
+  postCanonicalRecordTuple,
   postStateAppend,
+  type CanonicalRecordTupleMutation,
   type StateAppendInputRecord,
   type StateAppendResult,
 } from "./state-append-client.js";
@@ -39,6 +42,11 @@ type StateAppendPlan = {
   records: StateAppendInputRecord[];
 };
 
+type CanonicalRecordPlan = {
+  mutations: CanonicalRecordTupleMutation[];
+  remainingPaths: string[];
+};
+
 const SWEEP_STATUS_DIRECTORY = "results/sweep-status";
 const SWEEP_STATUS_FILE_PATTERN = /^results\/sweep-status\/([A-Za-z0-9][A-Za-z0-9_.-]*)\.json$/;
 const COMMENT_ROUTER_LEDGER_PATH = "results/comment-router.json";
@@ -50,34 +58,55 @@ export async function publishMainWithStateAppend(
 ): Promise<PublishResult | "appended"> {
   const env = runtime.env ?? process.env;
   const publishGit = runtime.publishGit ?? publishMainCommit;
+  const root = runtime.root ?? process.cwd();
   const queueUrl = env.QUEUE_URL ?? "";
   const webhookSecret = env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
+  const canonicalPlan = planCanonicalRecordTuples(
+    options.paths,
+    root,
+    env.CLAWSWEEPER_STATE_DIR,
+    env,
+  );
+  if (canonicalPlan.mutations.length > 0) {
+    if (env.CLAWSWEEPER_STATE_APPEND_ENABLED !== "1" || !queueUrl || !webhookSecret) {
+      throw new Error("canonical record publication is required for record tuple changes");
+    }
+    for (const mutation of canonicalPlan.mutations) {
+      await postCanonicalRecordTuple({
+        queueUrl,
+        webhookSecret,
+        mutation,
+        ...(runtime.fetchImpl ? { fetchImpl: runtime.fetchImpl } : {}),
+      });
+    }
+  }
+  const canonicalAppended = canonicalPlan.mutations.length > 0;
+  const publicationOptions = { ...options, paths: canonicalPlan.remainingPaths };
+  if (publicationOptions.paths.length === 0) {
+    console.log(`Appended ${canonicalPlan.mutations.length} canonical record tuple(s)`);
+    return "appended";
+  }
   if (env.CLAWSWEEPER_STATE_APPEND_ENABLED !== "1" || !queueUrl || !webhookSecret) {
-    return publishGit(options);
+    return publishGit(publicationOptions);
   }
 
   let plan: StateAppendPlan;
   try {
-    plan = planStateAppend(
-      options.paths,
-      runtime.root ?? process.cwd(),
-      env.CLAWSWEEPER_STATE_DIR,
-      runtime.now,
-    );
+    plan = planStateAppend(publicationOptions.paths, root, env.CLAWSWEEPER_STATE_DIR, runtime.now);
   } catch {
     console.warn("state-append shed/failed; falling back to git publish");
-    return publishGit(options);
+    return publishGit(publicationOptions);
   }
-  if (plan.records.length === 0) return publishGit(options);
+  if (plan.records.length === 0) return publishGit(publicationOptions);
 
-  const remainingPaths = options.paths.filter((path) => !plan.consumedPaths.has(path));
+  const remainingPaths = publicationOptions.paths.filter((path) => !plan.consumedPaths.has(path));
   // Router replay is crash-recoverable through deterministic job paths, stable
   // dispatch keys, and live-run/status reconciliation. Publish those outputs
   // first so an interrupted append is retried instead of suppressing missing work.
   const publishRemainingFirst =
     remainingPaths.length > 0 && plan.records.some((record) => record.kind === "comment_router");
   const remainingResult = publishRemainingFirst
-    ? publishGit({ ...options, paths: remainingPaths })
+    ? publishGit({ ...publicationOptions, paths: remainingPaths })
     : undefined;
   const contentHash = stateAppendContentHash(plan.records);
   const deliveryId = `router:${stateAppendLane(plan.records)}-${deliveryPart(env.GITHUB_RUN_ID, "local")}-${deliveryPart(env.GITHUB_RUN_ATTEMPT, "1")}-${contentHash}`;
@@ -93,17 +122,145 @@ export async function publishMainWithStateAppend(
     });
   } catch {
     console.warn("state-append shed/failed; falling back to git publish");
-    return publishGit(options);
+    return publishGit(publicationOptions);
   }
   if (!appendResult.ok || appendResult.shed) {
     console.warn("state-append shed/failed; falling back to git publish");
-    return publishGit(options);
+    return publishGit(publicationOptions);
   }
 
   if (remainingResult) return remainingResult;
-  if (remainingPaths.length > 0) return publishGit({ ...options, paths: remainingPaths });
-  console.log(`Appended ${plan.records.length} state record(s) to durable state`);
+  if (remainingPaths.length > 0)
+    return publishGit({ ...publicationOptions, paths: remainingPaths });
+  console.log(
+    `Appended ${plan.records.length} state record(s) and ${canonicalAppended ? canonicalPlan.mutations.length : 0} canonical tuple(s) to durable state`,
+  );
   return "appended";
+}
+
+const RECORD_TUPLE_PATH =
+  /^records\/([A-Za-z0-9][A-Za-z0-9_.-]*)\/(items|closed|plans|decision-packets)\/([1-9]\d*)\.(md|json)$/;
+const RECORD_TUPLE_SECTIONS = ["items", "closed", "plans", "decision-packets"] as const;
+
+function planCanonicalRecordTuples(
+  requestedPaths: readonly string[],
+  root: string,
+  stateRoot: string | undefined,
+  env: NodeJS.ProcessEnv,
+): CanonicalRecordPlan {
+  const recordRequests = requestedPaths.filter((path) => isRecordsPath(normalizedPath(path)));
+  if (recordRequests.length === 0) {
+    return { mutations: [], remainingPaths: [...requestedPaths] };
+  }
+  if (!stateRoot) throw new Error("record publication requires a hydrated state checkout");
+  const localFiles = collectRequestedRecordFiles(root, recordRequests);
+  const stateFiles = collectRequestedRecordFiles(stateRoot, recordRequests);
+  const changedPaths = new Set(
+    [...new Set([...localFiles.keys(), ...stateFiles.keys()])].filter(
+      (path) => localFiles.get(path) !== stateFiles.get(path),
+    ),
+  );
+  const changedTupleKeys = new Set<string>();
+  for (const path of changedPaths) {
+    const match = RECORD_TUPLE_PATH.exec(path);
+    if (match && (match[2] === "decision-packets") === (match[4] === "json")) {
+      changedTupleKeys.add(`${match[1]}/${match[3]}`);
+    } else if (/^records\/[^/]+\/(?:items|closed|plans|decision-packets)\//.test(path)) {
+      throw new Error(`record tuple path is not canonically addressable: ${path}`);
+    }
+  }
+  const mutations = [...changedTupleKeys].sort().map((key) => {
+    const [repository, number] = key.split("/");
+    if (!repository || !number) throw new Error(`invalid canonical tuple key: ${key}`);
+    const paths = recordTuplePaths({ repository, number });
+    const localContent = (path: string) =>
+      localFiles.has(path) ? localFiles.get(path)! : readOptionalRecordFile(root, path);
+    const stateContent = (path: string) =>
+      stateFiles.has(path) ? stateFiles.get(path)! : readOptionalRecordFile(stateRoot, path);
+    const tuple: RecordTupleContents = {
+      paths,
+      item: localContent(paths.item),
+      closed: localContent(paths.closed),
+      plan: localContent(paths.plan),
+      packet: localContent(paths.packet),
+    };
+    validateRecordTuple(tuple, "canonical publication tuple");
+    const operations = RECORD_TUPLE_SECTIONS.map((section) => {
+      const path =
+        section === "items"
+          ? paths.item
+          : section === "closed"
+            ? paths.closed
+            : section === "plans"
+              ? paths.plan
+              : paths.packet;
+      const content = localContent(path);
+      const expected = stateContent(path);
+      return {
+        path,
+        expectedDigest: expected === null ? null : sha256(expected),
+        ...(content === null ? {} : { contentBase64: Buffer.from(content).toString("base64") }),
+      };
+    });
+    const contentHash = createHash("sha256")
+      .update(JSON.stringify({ key, operations }))
+      .digest("hex");
+    return {
+      deliveryId: `record-tuple:${deliveryPart(env.GITHUB_RUN_ID, "local")}:${deliveryPart(env.GITHUB_RUN_ATTEMPT, "1")}:${contentHash}`,
+      key,
+      operations,
+    };
+  });
+  const remainingPaths = requestedPaths.flatMap((requestedPath) => {
+    const normalized = normalizedPath(requestedPath);
+    if (!isRecordsPath(normalized)) return [requestedPath];
+    const coveredChanges = [...changedPaths].filter(
+      (path) => path === normalized || path.startsWith(`${normalized}/`),
+    );
+    const otherChanges = coveredChanges.filter((path) => !RECORD_TUPLE_PATH.test(path));
+    if (coveredChanges.some((path) => RECORD_TUPLE_PATH.test(path))) return otherChanges;
+    return [requestedPath];
+  });
+  return { mutations, remainingPaths: [...new Set(remainingPaths)] };
+}
+
+function isRecordsPath(path: string): boolean {
+  return path === "records" || path.startsWith("records/");
+}
+
+function readOptionalRecordFile(root: string, path: string): string | null {
+  const absolute = resolve(root, path);
+  if (!existsSync(absolute)) return null;
+  return readContainedRegularFile(root, path);
+}
+
+function collectRequestedRecordFiles(root: string, requestedPaths: readonly string[]) {
+  const files = new Map<string, string>();
+  for (const requestedPath of requestedPaths) {
+    collectRecordFiles(root, normalizedPath(requestedPath), files);
+  }
+  return files;
+}
+
+function collectRecordFiles(root: string, relativePath: string, files: Map<string, string>): void {
+  const absolute = resolve(root, relativePath);
+  if (!existsSync(absolute)) return;
+  const stat = lstatSync(absolute);
+  if (stat.isSymbolicLink())
+    throw new Error(`record publication path is symbolic: ${relativePath}`);
+  if (stat.isFile()) {
+    files.set(relativePath, readContainedRegularFile(root, relativePath));
+    return;
+  }
+  if (!stat.isDirectory())
+    throw new Error(`record publication path is not regular: ${relativePath}`);
+  for (const entry of readdirSync(absolute, { withFileTypes: true })) {
+    collectRecordFiles(root, `${relativePath}/${entry.name}`, files);
+  }
+}
+
+function sha256(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 function planStateAppend(

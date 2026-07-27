@@ -18,16 +18,19 @@ import {
   type PublicationBatchObservationStage,
 } from "./exact-review-publication-batches.ts";
 import {
+  CanonicalRecordTupleConflictError,
   DirectPublicationProjectionCapacityError,
   EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES,
   ExactReviewDirectPublicationStore,
   sha256Hex,
+  validateCanonicalRecordTupleMutation,
   validateDirectPublicationBlobOids,
   validateRecordId,
   validateRecordSection,
   validateRepoSlug,
   validateTupleRecordSection,
   type DirectPublicationPlan,
+  type CanonicalRecordTupleMutation,
   type RecordBackfillInput,
   type RecordSection,
 } from "./exact-review-direct-publication.ts";
@@ -2205,7 +2208,63 @@ export class ExactReviewQueue {
       }
     }
 
-    if (request.method === "POST" && url.pathname === "/publication-results") {
+    if (request.method === "POST" && url.pathname === "/records/tuples") {
+      const bodyText = await request.text();
+      if (
+        new TextEncoder().encode(bodyText).byteLength >
+        EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES
+      ) {
+        return json({ error: "canonical_record_tuple_too_large" }, 413);
+      }
+      let mutation: CanonicalRecordTupleMutation;
+      try {
+        mutation = JSON.parse(bodyText) as CanonicalRecordTupleMutation;
+      } catch {
+        return json({ error: "invalid_canonical_record_tuple_json" }, 400);
+      }
+      try {
+        const validated = await validateCanonicalRecordTupleMutation(mutation);
+        const accepted = this.directPublicationStore.acceptCanonicalTupleMutation(
+          validated,
+          Date.now(),
+          {
+            maxRecordBytes: stateAppendMaxRecordBytes(this.env),
+            maxPendingRows: stateAppendMaxPendingRows(this.env),
+            maxPendingBytes: stateAppendMaxPendingBytes(this.env),
+          },
+        );
+        return json(
+          {
+            ok: true,
+            accepted: accepted.outcome === "accepted",
+            deduped: accepted.outcome === "deduped",
+            revision: accepted.revision,
+            sequence: accepted.sequence,
+          },
+          202,
+        );
+      } catch (error) {
+        if (error instanceof CanonicalRecordTupleConflictError) {
+          return json({ error: "canonical_record_tuple_conflict", detail: error.message }, 409);
+        }
+        if (error instanceof DirectPublicationProjectionCapacityError) {
+          return json({ error: "canonical_record_tuple_capacity", detail: error.message }, 429);
+        }
+        return json(
+          {
+            error: "invalid_canonical_record_tuple",
+            detail: error instanceof Error ? error.message : String(error),
+          },
+          400,
+        );
+      }
+    }
+
+    if (
+      request.method === "POST" &&
+      (url.pathname === "/publication-results" || url.pathname === "/publication-batch-results")
+    ) {
+      const deferredBatchCompletion = url.pathname === "/publication-batch-results";
       if (!exactReviewDirectPublicationEnabled(this.env)) {
         return json({ error: "direct_publication_disabled", fallback_required: true }, 409);
       }
@@ -2256,7 +2315,7 @@ export class ExactReviewQueue {
           maxPendingRows: stateAppendMaxPendingRows(this.env),
           maxPendingBytes: stateAppendMaxPendingBytes(this.env),
         });
-        if (owned && validFence) {
+        if (owned && validFence && !deferredBatchCompletion) {
           const producerDecision = owned.decision.publication
             ? owned.decision.publication.producerDecision
             : (owned.leaseDecision ?? owned.decision);

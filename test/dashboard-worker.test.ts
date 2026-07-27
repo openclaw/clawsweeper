@@ -2064,6 +2064,41 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
     });
   }
 
+  const batchLeased = leasedExactReviewQueueItem(702, "7020");
+  batchLeased.revision = 4;
+  batchLeased.leaseRevision = 4;
+  batchLeased.claimGeneration = 2;
+  const queueState = (await storage.get("exact-review-queue")) as {
+    items: Record<string, typeof batchLeased>;
+  };
+  queueState.items[batchLeased.key] = batchLeased;
+  await storage.put("exact-review-queue", queueState);
+  const batchPayload = {
+    ...payload,
+    itemKey: "openclaw/openclaw#702",
+    identity: { itemKey: "openclaw/openclaw#702", revision: 4, claimGeneration: 2 },
+    operations: [
+      {
+        ...payload.operations[0],
+        path: "records/openclaw-openclaw/items/702.md",
+      },
+    ],
+  };
+  const batchBody = JSON.stringify(batchPayload);
+  const batchSignature = `sha256=${createHmac("sha256", "test-secret").update(batchBody).digest("hex")}`;
+  const batchResponse = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/publication-batch-results", {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": batchSignature },
+      body: batchBody,
+    }),
+    env,
+  );
+  assert.equal(batchResponse.status, 202);
+  assert.equal((await batchResponse.json()).accepted, true);
+  const afterBatch = (await storage.get("exact-review-queue")) as typeof queueState;
+  assert.equal(afterBatch.items[batchLeased.key]?.state, "leased");
+
   const recordUrl =
     "https://clawsweeper.openclaw.ai/internal/state/records/openclaw-openclaw/items/701";
   const unsignedRecord = await worker.fetch(new Request(recordUrl), env);
@@ -2108,6 +2143,12 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
       digest: createHash("sha256").update("x").digest("hex"),
       revision: 4,
       updatedAt: listing.records[0].updatedAt,
+    },
+    {
+      id: 702,
+      digest: createHash("sha256").update("x").digest("hex"),
+      revision: 4,
+      updatedAt: listing.records[1].updatedAt,
     },
   ]);
   assert.equal(listing.nextCursor, null);
@@ -8117,6 +8158,65 @@ test("state append is idempotent by delivery and reports bounded-window stats", 
     max_pending_rows: 50_000,
     max_pending_bytes: 100 * 1024 * 1024,
   });
+});
+
+test("canonical tuple publication updates Worker authority and appends one projection", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const item =
+    "---\nrepo: openclaw/openclaw\nnumber: 42\nreviewed_at: 2026-07-26T02:00:00.000Z\n---\n\nreview\n";
+  const mutation = {
+    deliveryId: "record-tuple:run-1:42",
+    key: "openclaw-openclaw/42",
+    operations: [
+      {
+        path: "records/openclaw-openclaw/items/42.md",
+        expectedDigest: null,
+        contentBase64: Buffer.from(item).toString("base64"),
+      },
+      { path: "records/openclaw-openclaw/closed/42.md", expectedDigest: null },
+      { path: "records/openclaw-openclaw/plans/42.md", expectedDigest: null },
+      { path: "records/openclaw-openclaw/decision-packets/42.json", expectedDigest: null },
+    ],
+  };
+
+  const first = await queue.fetch(stateAppendQueueRequest("/records/tuples", mutation));
+  assert.equal(first.status, 202);
+  assert.deepEqual(await first.json(), {
+    ok: true,
+    accepted: true,
+    deduped: false,
+    revision: 1,
+    sequence: 1,
+  });
+  const duplicate = await queue.fetch(stateAppendQueueRequest("/records/tuples", mutation));
+  assert.equal(duplicate.status, 202);
+  assert.equal((await duplicate.json()).deduped, true);
+
+  const canonical = await (
+    await queue.fetch(
+      new Request("https://queue/records/openclaw-openclaw/items/42", { method: "GET" }),
+    )
+  ).json();
+  assert.equal(canonical.content, item);
+  assert.equal(canonical.digest, createHash("sha256").update(item).digest("hex"));
+  assert.equal(canonical.revision, 1);
+
+  const drained = await (
+    await queue.fetch(
+      stateAppendQueueRequest("/state/drain", { max_rows: 10, max_bytes: 1024 * 1024 }),
+    )
+  ).json();
+  assert.equal(drained.records.length, 1);
+  assert.equal(drained.records[0].kind, "record_tuple");
+  assert.equal(drained.records[0].key, "openclaw-openclaw/42");
+  assert.equal(drained.records[0].payload.operations.length, 4);
+
+  const conflict = structuredClone(mutation);
+  conflict.deliveryId = "record-tuple:run-2:42";
+  conflict.operations[0]!.expectedDigest = "0".repeat(64);
+  const rejected = await queue.fetch(stateAppendQueueRequest("/records/tuples", conflict));
+  assert.equal(rejected.status, 409);
+  assert.equal((await rejected.json()).error, "canonical_record_tuple_conflict");
 });
 
 test("state append sheds atomically at the configured cap without consuming its receipt", async () => {

@@ -60,6 +60,9 @@ export async function postDirectPublicationResult(options: {
   attempts?: number;
   fetch?: typeof globalThis.fetch;
   sleep?: (milliseconds: number) => Promise<void>;
+  path?:
+    | "/internal/exact-review/publication-results"
+    | "/internal/exact-review/publication-batch-results";
 }): Promise<DirectPublicationPostResult> {
   const baseUrl = options.baseUrl.replace(/\/$/, "");
   if (!baseUrl.startsWith("https://")) throw new Error("Direct publication URL must use HTTPS");
@@ -82,15 +85,18 @@ export async function postDirectPublicationResult(options: {
   let lastStatus: number | undefined;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      const response = await request(`${baseUrl}/internal/exact-review/publication-results`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-clawsweeper-exact-review-signature": signature,
+      const response = await request(
+        `${baseUrl}${options.path ?? "/internal/exact-review/publication-results"}`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-clawsweeper-exact-review-signature": signature,
+          },
+          body,
+          signal: AbortSignal.timeout(20_000),
         },
-        body,
-        signal: AbortSignal.timeout(20_000),
-      });
+      );
       lastStatus = response.status;
       const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
       if (

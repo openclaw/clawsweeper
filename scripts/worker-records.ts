@@ -364,6 +364,99 @@ export async function ingestGitRecords(options: {
   };
 }
 
+export async function replayWorkerRecordProjections(options: {
+  baseUrl: string;
+  webhookSecret: string;
+  repoSlug: string;
+  itemIds?: readonly string[];
+  maxTuples?: number;
+  cursor?: number;
+  fetch?: typeof globalThis.fetch;
+  onTuple?: (progress: { completed: number; total: number; itemId: string }) => void;
+}) {
+  const snapshot = await exportWorkerRecords({
+    baseUrl: options.baseUrl,
+    webhookSecret: options.webhookSecret,
+    repoSlug: options.repoSlug,
+    fetch: options.fetch,
+  });
+  const byKey = new Map(
+    snapshot.records.map((record) => [`${record.section}/${record.id}`, record]),
+  );
+  const selectedIds = options.itemIds?.length
+    ? [...new Set(options.itemIds.map(validateTupleItemId))].sort(compareNumericText)
+    : [
+        ...new Set(
+          snapshot.records.flatMap((record) => (record.section === "commits" ? [] : [record.id])),
+        ),
+      ].sort(compareNumericText);
+  const maximum = options.maxTuples ?? selectedIds.length;
+  if (!Number.isSafeInteger(maximum) || maximum < 1) {
+    throw new Error("Replay tuple limit must be a positive integer");
+  }
+  const cursor = options.cursor ?? 0;
+  if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor > selectedIds.length) {
+    throw new Error("Replay tuple cursor must be a valid zero-based offset");
+  }
+  const ids = selectedIds.slice(cursor, cursor + maximum);
+  let deduped = 0;
+  for (let index = 0; index < ids.length; index += 1) {
+    const itemId = ids[index]!;
+    const operations = (["items", "closed", "plans", "decision-packets"] as const).map(
+      (section) => {
+        const record = byKey.get(`${section}/${itemId}`);
+        const extension = section === "decision-packets" ? "json" : "md";
+        const path = `records/${options.repoSlug}/${section}/${itemId}.${extension}`;
+        if (!record || record.deleted) return { path, expectedDigest: null };
+        if (record.content === null || record.digest === null) {
+          throw new Error(`Worker replay record is missing content: ${section}/${itemId}`);
+        }
+        return {
+          path,
+          expectedDigest: record.digest,
+          contentBase64: Buffer.from(record.content).toString("base64"),
+        };
+      },
+    );
+    const contentHash = createHash("sha256")
+      .update(JSON.stringify({ repoSlug: options.repoSlug, itemId, operations }))
+      .digest("hex");
+    const response = await signedPost<{ deduped?: boolean }>({
+      baseUrl: options.baseUrl,
+      path: "/internal/state/records/tuples",
+      webhookSecret: options.webhookSecret,
+      body: {
+        deliveryId: `record-replay:${options.repoSlug}:${itemId}:${contentHash}`,
+        key: `${options.repoSlug}/${itemId}`,
+        operations,
+      },
+      fetch: options.fetch,
+    });
+    if (response.deduped === true) deduped += 1;
+    options.onTuple?.({ completed: index + 1, total: ids.length, itemId });
+  }
+  const completedCursor = cursor + ids.length;
+  return {
+    replayed: ids.length,
+    deduped,
+    available: selectedIds.length,
+    cursor,
+    nextCursor: completedCursor < selectedIds.length ? completedCursor : null,
+    revision: snapshot.revision,
+  };
+}
+
+function validateTupleItemId(value: string) {
+  if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) {
+    throw new Error(`Invalid tuple item id: ${value}`);
+  }
+  return value;
+}
+
+function compareNumericText(left: string, right: string) {
+  return Number(left) - Number(right);
+}
+
 export function recordTreeDigests(root: string, repoSlug: string) {
   return new Map(
     collectGitRecords(root, repoSlug).map((record) => [

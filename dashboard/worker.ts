@@ -562,6 +562,8 @@ export default {
       return authenticatedExactReviewQueueRequest(request, env, "/records/export");
     if (url.pathname === "/internal/state/records/ingest" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/records/ingest");
+    if (url.pathname === "/internal/state/records/tuples" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/records/tuples");
     if (url.pathname === "/internal/state/records/snapshots/latest" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/records/snapshots/latest");
     if (url.pathname === "/internal/state/records/snapshots/trigger" && request.method === "POST")
@@ -623,6 +625,11 @@ export default {
       return authenticatedExactReviewQueueRequest(request, env, "/publications/reconcile");
     if (url.pathname === "/internal/exact-review/publication-results" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/publication-results");
+    if (
+      url.pathname === "/internal/exact-review/publication-batch-results" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/publication-batch-results");
     if (url.pathname === "/internal/exact-review/review-telemetry" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/review-telemetry");
     if (url.pathname === "/internal/exact-review/review-run-telemetry" && request.method === "POST")

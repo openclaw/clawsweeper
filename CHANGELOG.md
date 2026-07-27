@@ -69,6 +69,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Made every item/closed/plan/decision-packet writer publish an atomic canonical Worker tuple first, leaving the git state tree as materializer-only projection; added bounded canonical projection replay for migration convergence.
 - Removed the Claude CLI runtime layer; ClawSweeper is Codex-only.
 - Allowed four isolated exact-review batches to prepare concurrently while
   retaining one fenced state-writer mutation boundary.

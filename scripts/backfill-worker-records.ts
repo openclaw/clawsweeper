@@ -2,7 +2,7 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { ingestGitRecords } from "./worker-records.ts";
+import { ingestGitRecords, replayWorkerRecordProjections } from "./worker-records.ts";
 
 export async function backfillWorkerRecords(
   argv: string[],
@@ -32,8 +32,32 @@ export async function backfillWorkerRecords(
       );
     },
   });
-  console.log(JSON.stringify({ repoSlug, ...result }));
-  return result;
+  let replay: Awaited<ReturnType<typeof replayWorkerRecordProjections>> | null = null;
+  if (args.replayProjections) {
+    if (result.nextCursor !== null) {
+      throw new Error("Projection replay requires the git backfill to reach its final cursor");
+    }
+    replay = await replayWorkerRecordProjections({
+      repoSlug,
+      baseUrl:
+        args.recordsUrl ??
+        env.CLAWSWEEPER_RECORDS_URL ??
+        env.CLAWSWEEPER_STATE_COORDINATOR_URL ??
+        "https://clawsweeper.openclaw.ai",
+      webhookSecret,
+      fetch: fetchImpl,
+      ...(args.replayItemIds?.length ? { itemIds: args.replayItemIds } : {}),
+      ...(args.maxReplayTuples ? { maxTuples: args.maxReplayTuples } : {}),
+      ...(args.replayCursor !== undefined ? { cursor: args.replayCursor } : {}),
+      onTuple: ({ completed, total, itemId }) => {
+        console.error(
+          `[worker-record-replay] tuple=${completed}/${total} repo=${repoSlug} item=${itemId}`,
+        );
+      },
+    });
+  }
+  console.log(JSON.stringify({ repoSlug, ...result, replay }));
+  return { ...result, replay };
 }
 
 function parseArgs(argv: string[]) {
@@ -43,6 +67,10 @@ function parseArgs(argv: string[]) {
     recordsUrl?: string;
     cursor?: number;
     maxBatches?: number;
+    replayProjections?: boolean;
+    replayItemIds?: string[];
+    maxReplayTuples?: number;
+    replayCursor?: number;
   } = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -52,6 +80,16 @@ function parseArgs(argv: string[]) {
     else if (arg === "--records-url") result.recordsUrl = requiredValue(argv, ++index, arg);
     else if (arg === "--cursor") result.cursor = nonNegativeInteger(argv, ++index, arg);
     else if (arg === "--max-batches") result.maxBatches = positiveInteger(argv, ++index, arg);
+    else if (arg === "--replay-projections") result.replayProjections = true;
+    else if (arg === "--replay-item-ids")
+      result.replayItemIds = requiredValue(argv, ++index, arg)
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+    else if (arg === "--max-replay-tuples")
+      result.maxReplayTuples = positiveInteger(argv, ++index, arg);
+    else if (arg === "--replay-cursor")
+      result.replayCursor = nonNegativeInteger(argv, ++index, arg);
     else throw new Error(`Unknown argument: ${arg}`);
   }
   return result;

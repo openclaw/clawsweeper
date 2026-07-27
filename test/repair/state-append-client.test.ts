@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
 
-import { postStateAppend } from "../../dist/repair/state-append-client.js";
+import {
+  postCanonicalRecordTuple,
+  postStateAppend,
+} from "../../dist/repair/state-append-client.js";
 
 const webhookSecret = "state-append-test-secret";
 const records = [
@@ -13,6 +16,46 @@ const records = [
     produced_at: "2026-07-21T12:00:00.000Z",
   },
 ];
+
+test("postCanonicalRecordTuple signs the canonical tuple endpoint", async () => {
+  const mutation = {
+    deliveryId: "record-tuple:run:1:digest",
+    key: "openclaw-openclaw/42",
+    operations: [
+      {
+        path: "records/openclaw-openclaw/items/42.md",
+        expectedDigest: null,
+        contentBase64: Buffer.from("item\n").toString("base64"),
+      },
+      { path: "records/openclaw-openclaw/closed/42.md", expectedDigest: null },
+      { path: "records/openclaw-openclaw/plans/42.md", expectedDigest: null },
+      { path: "records/openclaw-openclaw/decision-packets/42.json", expectedDigest: null },
+    ],
+  };
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    assert.equal(input.toString(), "https://queue.test/internal/state/records/tuples");
+    const body = String(init?.body ?? "");
+    assert.deepEqual(JSON.parse(body), mutation);
+    assert.equal(
+      new Headers(init?.headers).get("x-clawsweeper-exact-review-signature"),
+      `sha256=${createHmac("sha256", webhookSecret).update(body).digest("hex")}`,
+    );
+    return Response.json(
+      { ok: true, accepted: true, deduped: false, revision: 3, sequence: 9 },
+      { status: 202 },
+    );
+  }) as typeof fetch;
+
+  assert.deepEqual(
+    await postCanonicalRecordTuple({
+      queueUrl: "https://queue.test",
+      webhookSecret,
+      mutation,
+      fetchImpl,
+    }),
+    { revision: 3, sequence: 9, deduped: false },
+  );
+});
 
 test("postStateAppend signs and posts the exact append body", async () => {
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {

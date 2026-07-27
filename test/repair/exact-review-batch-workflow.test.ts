@@ -199,16 +199,12 @@ test("batch failure cleanup completes manifest fences without a queue fetch", ()
   assert.doesNotMatch(releaseSource, /client\.fetch/);
 });
 
-test("batch commit rewrites quarantined outcome files before the receipt is written", () => {
+test("batch commit publishes every prepared tuple to canonical Worker state", () => {
   const commitSource = /async function commit\(\) \{([\s\S]*?)\n\}/.exec(cliSource)?.[1] ?? "";
-  assert.match(
-    commitSource,
-    /outcomePathByItemKey\.set\(current\.itemKey, manifestItem\.outcomePath\)/,
-  );
-  const quarantineRewrite = commitSource.indexOf("for (const itemKey of quarantinedItemKeys)");
-  const receiptWrite = commitSource.indexOf("const receiptPath = batchReceiptPath();");
-  assert.ok(quarantineRewrite >= 0 && receiptWrite >= 0 && quarantineRewrite < receiptWrite);
-  const rewriteWindow = commitSource.slice(quarantineRewrite, receiptWrite);
-  assert.match(rewriteWindow, /kind: "retryable_failure"/);
-  assert.match(rewriteWindow, /reasonCode: "state_conflict_quarantined"/);
+  assert.match(commitSource, /await publishCanonicalBatch\(plans\)/);
+  assert.match(cliSource, /postDirectPublicationResult/);
+  assert.match(cliSource, /publication-batch-results/);
+  assert.match(cliSource, /runGit\(\["cat-file", "blob", operation\.targetOid\]/);
+  assert.doesNotMatch(cliSource, /commitPreparedStateBatch/);
+  assert.doesNotMatch(cliSource, /state-publication-batch/);
 });
