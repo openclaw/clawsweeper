@@ -42,6 +42,14 @@ test("gitcrawl cluster intake delegates candidate quality to the selector model"
   assert.match(repairDocs, /selector model compares/);
 });
 
+test("gitcrawl cluster intake only offers clusters that satisfy the acceptance contract", () => {
+  const source = readFileSync("src/repair/import-gitcrawl-clusters.ts", "utf8");
+  // Durable acceptance requires >= 2 candidate refs (cluster-intake-state
+  // reference policy); a single-candidate offer fails the whole intake run.
+  assert.equal(source.match(/having open_count >= 2/g)?.length, 2);
+  assert.match(source, /skip single-candidate cluster/);
+});
+
 test("scheduled cluster repair intake follows gitcrawl-store freshness cadence", () => {
   const workflow = readFileSync(".github/workflows/repair-cluster-intake.yml", "utf8");
   const limitsDocs = readFileSync("docs/limits.md", "utf8");
