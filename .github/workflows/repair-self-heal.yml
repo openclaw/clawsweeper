@@ -54,7 +54,8 @@ jobs:
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
+          owner: openclaw
+          repositories: clawsweeper
           permission-actions: write
           permission-contents: write
 
@@ -80,6 +81,25 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
         with:
           build-script: build:repair
+
+      - name: Retry failed cluster result publications
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          cutoff="$(date -u -v-12H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '12 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+          runs_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/repair-publish-results.yml/runs?status=completed&per_page=50")"
+          mapfile -t failed_publishers < <(jq -r --arg cutoff "$cutoff" '
+            .workflow_runs[]
+            | select(.created_at >= $cutoff)
+            | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out")
+            | select(.run_attempt < 3)
+            | .id
+          ' <<<"$runs_json")
+          for run_id in "${failed_publishers[@]}"; do
+            echo "Retrying failed cluster result publisher $run_id"
+            gh run rerun "$run_id" --repo "$GITHUB_REPOSITORY"
+          done
 
       - name: Self-heal failed cluster runs
         env:

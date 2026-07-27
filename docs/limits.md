@@ -322,9 +322,11 @@ hot intake `14`, and commit review `2`. Existing repair lanes keep their
   quality is not decided by word lists, scores, or semantic thresholds.
 - `CLAWSWEEPER_CLUSTER_REPAIR_CANDIDATE_BATCH` controls how many unprocessed
   clusters the scheduled selector model compares. The default is `8`; the model
-  still selects at most one cluster. The upstream gitcrawl-store refreshes every 15 minutes, and ClawSweeper
-  records the processed store SHA so repeated ticks against the same snapshot
-  skip.
+  still selects at most one cluster. The upstream gitcrawl-store refreshes every
+  15 minutes. Intake durably appends the selected job, store identity, selector
+  summary, and stable dispatch key before requesting materialization. The state
+  materializer projects only those exact paths and recovers pending dispatch
+  without duplicating completed worker execution.
 - `CLAWSWEEPER_MAX_LIVE_WORKERS` overrides the `job_intent`-derived repair
   dispatch cap.
 - `CLAWSWEEPER_AUTOMERGE_MAX_LIVE_WORKERS` overrides

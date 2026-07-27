@@ -602,9 +602,12 @@ Important gates:
   offered to the scheduled selector model; default `8`. The selector emits at
   most one cluster per daily `repair-cluster-intake.yml` run.
   The upstream `openclaw/gitcrawl-store` refreshes `openclaw/openclaw` every 15
-  minutes, so the intake records the processed portable DB SHA in
-  `results/cluster-repair-intake/<repo>.json` and skips duplicate ticks against
-  the same store snapshot.
+  minutes. Intake first appends the selected job, store identity, selector
+  summary, and stable dispatch key to the Cloudflare durable window. The state
+  materializer projects only those exact paths, retries after publication loss,
+  and recovers retained pending intent without duplicating completed workers.
+  Intake-triggered materializers receive one bounded priority turn before
+  yielding to queued batch or ordinary writers.
 - `CLAWSWEEPER_ALLOW_EXECUTE`: allows deterministic write lanes. Workflows treat
   any value except literal `1` as closed.
 - `CLAWSWEEPER_ALLOW_FIX_PR`: allows branch repair and replacement PR creation.

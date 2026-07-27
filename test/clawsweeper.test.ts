@@ -2486,22 +2486,26 @@ test("repair workflows preserve existing dispatch while scheduled cluster intake
   assert.doesNotMatch(importLowSignal, /CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED/);
 });
 
-test("cluster intake publishes generated repair state through state repo", () => {
+test("cluster intake durably accepts selected work before materialization", () => {
   const workflow = readText(".github/workflows/repair-cluster-intake.yml");
   const stateTokenIndex = workflow.indexOf("uses: ./.github/actions/create-state-token");
   const setupStateIndex = workflow.indexOf("uses: ./.github/actions/setup-state");
   const importIndex = workflow.indexOf("- name: Prepare unprocessed cluster candidates");
-  const publishIndex = workflow.indexOf("- name: Publish intake jobs and ledger");
+  const publishIndex = workflow.indexOf("- name: Durably accept cluster intake");
+  const materializeIndex = workflow.indexOf("- name: Request immediate state materialization");
 
   assert.notEqual(stateTokenIndex, -1);
   assert.notEqual(setupStateIndex, -1);
   assert.notEqual(importIndex, -1);
   assert.notEqual(publishIndex, -1);
+  assert.notEqual(materializeIndex, -1);
   assert.ok(stateTokenIndex < setupStateIndex, "state token must be created before setup-state");
   assert.ok(setupStateIndex < importIndex, "state repo must be hydrated before job import");
-  assert.ok(setupStateIndex < publishIndex, "state repo must be configured before publish-main");
-  assert.match(workflow, /--path jobs/);
-  assert.match(workflow, /--path results\/cluster-repair-intake/);
+  assert.ok(importIndex < publishIndex, "selection must finish before durable acceptance");
+  assert.ok(publishIndex < materializeIndex, "durable acceptance must precede materialization");
+  assert.match(workflow, /repair:publish-cluster-intake/);
+  assert.match(workflow, /gh workflow run state-materializer\.yml --ref main/);
+  assert.doesNotMatch(workflow, /repair:publish-main|pnpm run repair:dispatch/);
 });
 
 test("conflict self-heal publishes exact-head jobs before worker dispatch", () => {
