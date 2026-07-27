@@ -96,9 +96,13 @@ jobs:
             | select(.run_attempt < 3)
             | .id
           ' <<<"$runs_json")
+          # Rerun failures are reported but never fatal: one flaky publisher
+          # rerun must not abort the later cluster self-heal steps.
           for run_id in "${failed_publishers[@]}"; do
             echo "Retrying failed cluster result publisher $run_id"
-            gh run rerun "$run_id" --repo "$GITHUB_REPOSITORY"
+            if ! gh run rerun "$run_id" --repo "$GITHUB_REPOSITORY"; then
+              echo "::warning title=Publisher rerun failed::Could not rerun publisher run ${run_id}; continuing with remaining recovery work."
+            fi
           done
 
       - name: Self-heal failed cluster runs

@@ -181,10 +181,14 @@ The `repair-cluster-intake.yml` workflow:
 8. Wakes the prioritized state materializer. It projects only the accepted job
    and ledger paths, preserving unrelated generated state, and keeps
    capacity-blocked or publication-failed intent durable for a later cycle.
-9. Claims each stable dispatch key only after durable publication, starts the
-   `repair_cluster` worker once, and records the matching planning-job receipt.
-   A lost claim publication or a later execution failure is recovered from the
-   exact Actions receipt instead of dispatching the planning work again.
+9. Publishes a durable dispatch claim for each stable dispatch key, then starts
+   the `repair_cluster` worker and records the matching planning-job receipt.
+   Workflow creation is at-least-once: `workflow_dispatch` has no atomic run
+   receipt, so a crash inside the dispatch window can create another workflow
+   run. Worker execution is exactly-once by intent: the worker-side dispatch
+   receipt gate skips the duplicate planning pass. Recovery redispatches only
+   ledger entries whose HMAC accepted-intent receipt verifies against the
+   webhook secret; git ledger and job files are never dispatch authority.
 
 Scheduled cluster intake is independently gated:
 
@@ -245,14 +249,14 @@ again. The durable dispatch receipt independently suppresses transport retries.
 
 ### GitHub Actions Concurrency
 
-`repair-cluster-worker.yml` serializes identical job path and mode pairs:
+`repair-cluster-worker.yml` serializes runs for the same job path:
 
 ```text
-clawsweeper-repair-<job-path>-<mode>
+clawsweeper-repair-<job-path>
 ```
 
 Different jobs may run concurrently. The same logical job is queued instead of
-executed twice at the same time.
+executed twice at the same time, regardless of mode.
 
 ### Mutation Idempotency
 

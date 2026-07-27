@@ -9,6 +9,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Added
 
+- Cut cluster repair intake over to durable state publication: intake appends an authenticated intent (exact job bytes, digest, store identity, selector report) and hydrates with a read-only non-persisted state credential; result publication mints its target-read token for the validated worker target repositories, projects exact changed state paths, and publisher-rerun failures no longer block subsequent self-heal. Thanks @RomneyDa! (#873)
 - Added authenticated Worker blob endpoints (`/internal/state/blobs/*`) that serve the `ledger/v1` and `assets` state trees from R2 with create-only immutable ledger writes, a cursor-resumable `migrate-state-blobs` workflow with digest verification, and an opt-in `CLAWSWEEPER_LEDGER_SOURCE=worker` dual-read in `hydrate-state` (default stays git).
 
 - Durable cluster intake now dispatches through the state materializer with receipt-verified recovery: git ledger/job files stay projection (dispatch requires the HMAC accepted-intent receipt minted at durable acceptance), the dispatch claim is published before the workflow side effect, malformed intake rows dead-letter per row instead of re-failing the drain, and the shell receipt gate matches the observer's successful-planning-job definition. At-least-once workflow creation with exactly-once worker execution intent. Thanks @RomneyDa! (#884)

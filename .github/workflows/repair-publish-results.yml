@@ -8,7 +8,7 @@ on:
       - completed
 
 permissions:
-  contents: write
+  contents: read
   actions: read
   pull-requests: read
 
@@ -34,7 +34,7 @@ jobs:
           owner: openclaw
           repositories: clawsweeper
           permission-actions: read
-          permission-contents: write
+          permission-contents: read
           permission-pull-requests: read
 
       - uses: actions/checkout@v7
@@ -51,17 +51,6 @@ jobs:
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-
-      - name: Create target read token
-        id: target-read-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: openclaw
-          repositories: openclaw
-          permission-contents: read
-          permission-pull-requests: read
 
       - uses: ./.github/actions/setup-state
         with:
@@ -150,6 +139,36 @@ jobs:
           fi
           echo "has_artifacts=0" >> "$GITHUB_OUTPUT"
           echo "::notice title=No repair artifacts::No downloadable artifacts for worker run $RUN_ID."
+
+      # The reader token is minted for the validated target repositories the
+      # worker actually operated on (result.repo in the downloaded artifacts),
+      # so a valid non-default allowed-owner target can publish its results.
+      - name: Resolve result target repositories
+        id: result-targets
+        if: ${{ steps.download.outputs.has_artifacts == '1' }}
+        env:
+          ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
+          FALLBACK_REPO: ${{ vars.CLAWSWEEPER_CLUSTER_REPAIR_TARGET_REPO || 'openclaw/openclaw' }}
+        run: |
+          set -euo pipefail
+          resolved="$(pnpm run --silent repair:resolve-result-targets -- \
+            --artifacts artifacts \
+            --allowed-owner "$ALLOWED_OWNER" \
+            --fallback "$FALLBACK_REPO")"
+          printf '%s\n' "$resolved"
+          printf '%s\n' "$resolved" | grep -E '^(owner|repositories)=' >> "$GITHUB_OUTPUT"
+
+      - name: Create target read token
+        id: target-read-token
+        if: ${{ steps.download.outputs.has_artifacts == '1' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.result-targets.outputs.owner }}
+          repositories: ${{ steps.result-targets.outputs.repositories }}
+          permission-contents: read
+          permission-pull-requests: read
 
       # This workflow_run job executes trusted main-branch code only; artifacts
       # from worker runs are downloaded as data and handled by repair publishers.

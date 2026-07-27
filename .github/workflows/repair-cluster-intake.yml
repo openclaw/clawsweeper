@@ -45,8 +45,7 @@ on:
     - cron: "8 8 * * *"
 
 permissions:
-  actions: write
-  contents: write
+  contents: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -75,7 +74,7 @@ jobs:
           owner: openclaw
           repositories: clawsweeper
           permission-actions: write
-          permission-contents: write
+          permission-contents: read
 
       - name: Create gitcrawl-store token
         id: store-token
@@ -135,12 +134,17 @@ jobs:
         with:
           build-script: build:repair
 
+      # Intake never publishes state directly: acceptance goes through the
+      # authenticated durable append and the state materializer owns every
+      # write. The hydration credential is read-only and never persisted.
       - name: Create state token
         id: state-token
         uses: ./.github/actions/create-state-token
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          contents-permission: read
+          actions-permission: read
 
       - uses: ./.github/actions/setup-state
         with:
@@ -148,6 +152,7 @@ jobs:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
+          persist-credentials: "false"
 
       - uses: actions/checkout@v7
         with:
