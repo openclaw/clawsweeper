@@ -237,10 +237,14 @@ jobs:
           RUN_URL: ${{ steps.worker-run.outputs.run_url }}
           HEAD_SHA: ${{ steps.worker-run.outputs.head_sha }}
           CONCLUSION: ${{ steps.worker-run.outputs.conclusion }}
+          # workflow_run publishes trusted default-branch code; a manual
+          # dispatch publishes the code of its own write-gated ref (mixing the
+          # main tree with a branch-built dist/ broke run 30308450188).
+          PUBLISH_REF: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || 'main' }}
         run: |
           set -euo pipefail
-          git fetch origin main
-          git checkout -B main origin/main
+          git fetch origin "$PUBLISH_REF"
+          git checkout -B publish-ref "origin/$PUBLISH_REF"
           pnpm run repair:publish-result -- artifacts \
             --skip-dashboard \
             --run-id "$RUN_ID" \
