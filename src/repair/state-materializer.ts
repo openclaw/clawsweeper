@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { createHash, createHmac } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import type { LooseRecord } from "./json-types.js";
 
 import {
   actionLedgerJson,
@@ -12,11 +14,18 @@ import {
 import { isActionEventPublishPath } from "../action-ledger-paths.js";
 import { mergeCommentRouterLedgers } from "./comment-router-ledger-merge.js";
 import {
+  dispatchClaimDecision,
+  hasSuccessfulDispatchExecutionJob,
+} from "./comment-router-utils.js";
+import { ghJson } from "./github-cli.js";
+import {
   GitShallowHistoryExhaustionError,
   publishMainCommit,
   SHALLOW_MERGE_BASE_EXHAUSTION_DISPOSITION,
   type ShallowHistoryExhaustionStrategy,
 } from "./git-publish.js";
+import { liveWorkerCapacity } from "./live-worker-capacity.js";
+import { workerLimit } from "./limits.js";
 import {
   convergeRecordTupleSidecars,
   recordTuplePaths,
@@ -24,6 +33,19 @@ import {
   type RecordTupleContents,
 } from "./record-tuple.js";
 import { mergeSweepStatusJson } from "./sweep-status-merge.js";
+import {
+  clusterDispatchAuthenticationTag,
+  clusterIntakeIntent,
+  clusterWorkflowDispatchInputs,
+  CLUSTER_INTAKE_LEDGER_SCHEMA,
+  markClusterIntakeDispatchClaimed,
+  markClusterIntakeDispatched,
+  mergeClusterIntakeLedger,
+  validateClusterJobContent,
+  type ClusterIntakeIntent,
+  type ClusterIntakeLedger,
+  type ClusterLedgerEntry,
+} from "./cluster-intake-state.js";
 
 export const DEFAULT_STATE_MATERIALIZER_MAX_ROWS = 2_000;
 export const DEFAULT_STATE_MATERIALIZER_MAX_BYTES = 20 * 1024 * 1024;
@@ -38,9 +60,15 @@ const STATE_APPEND_KINDS = new Set<StateAppendKind>([
   "comment_router",
   "apply_proof",
   "record_tuple",
+  "cluster_intake",
 ]);
 
-export type StateAppendKind = "sweep_status" | "comment_router" | "apply_proof" | "record_tuple";
+export type StateAppendKind =
+  | "sweep_status"
+  | "comment_router"
+  | "apply_proof"
+  | "record_tuple"
+  | "cluster_intake";
 
 type RecordTupleProjectionOperation = {
   path: string;
@@ -101,7 +129,22 @@ export type StateMaterializerRunOptions = {
   fetchImpl?: typeof fetch;
   now?: () => Date;
   publishCommit?: typeof publishMainCommit;
+  clusterCapacity?: (options: Record<string, unknown>) => {
+    active: number;
+    max_live_workers: number;
+  };
+  clusterDispatchObserver?: ClusterDispatchObserver;
 };
+
+export type ClusterDispatchObservation = {
+  action: "dispatch" | "wait" | "recover";
+  run: LooseRecord | null;
+};
+
+export type ClusterDispatchObserver = (
+  entry: ClusterLedgerEntry,
+  env: NodeJS.ProcessEnv,
+) => ClusterDispatchObservation;
 
 type StateDrainResponse = {
   token: string | null;
@@ -232,6 +275,35 @@ export function planStateMaterialization(
       continue;
     }
 
+    if (record.kind === "cluster_intake") {
+      const intent = clusterIntakeIntent(record.payload);
+      const ledgerPath = clusterIntakeLedgerPath(intent);
+      const sameRepository = selected.records
+        .filter((candidate) => candidate.kind === "cluster_intake")
+        .map((candidate) => clusterIntakeIntent(candidate.payload))
+        .filter((candidate) => candidate.target_repo === intent.target_repo);
+      const ledger = mergeClusterIntakeLedger(currentFiles.get(ledgerPath), sameRepository);
+      contentByPath.set(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+      addPublishPath(ledgerPath);
+      for (const job of intent.jobs) {
+        const accepted = ledger.clusters[String(job.cluster_id)];
+        if (
+          accepted?.job !== job.path ||
+          accepted.dispatch_key !== job.dispatch_key ||
+          accepted.digest !== job.digest
+        ) {
+          continue;
+        }
+        const current = currentFiles.get(job.path);
+        if (current !== undefined && current !== job.content) {
+          throw new Error(`cluster intake job already has different content: ${job.path}`);
+        }
+        contentByPath.set(job.path, job.content);
+        addPublishPath(job.path);
+      }
+      continue;
+    }
+
     if (record.kind === "record_tuple") {
       const tuple = recordTupleProjection(record);
       const primaryWrites = tuple.operations.filter(
@@ -314,6 +386,8 @@ export async function runStateMaterializer(
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? (() => new Date());
   const publishCommit = options.publishCommit ?? publishMainCommit;
+  const clusterCapacity = reserveClusterCapacity(options.clusterCapacity ?? liveWorkerCapacity);
+  const clusterDispatchObserver = options.clusterDispatchObserver ?? observeClusterDispatch;
   const queueUrl = (env.QUEUE_URL ?? "").replace(/\/$/, "");
   const webhookSecret = env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
   registerStateSecretForRedaction(webhookSecret);
@@ -362,6 +436,30 @@ export async function runStateMaterializer(
     summary.errors += 1;
     console.warn("state-materializer skipped: missing queue URL or webhook secret");
     return finish();
+  }
+
+  try {
+    const recovered = recoverPendingClusterIntakes(
+      process.cwd(),
+      env,
+      clusterCapacity,
+      clusterDispatchObserver,
+    );
+    if (recovered.updatedLedgers.length > 0) {
+      publishCommit({
+        message: STATE_MATERIALIZER_COMMIT_MESSAGE,
+        paths: recovered.updatedLedgers,
+        branch,
+        maxAttempts: publishMaxAttempts,
+        pushAttempts: publishPushAttempts,
+      });
+    }
+  } catch (error) {
+    // A durable pending ledger is an independent retry source. Report the
+    // dispatch failure, but keep draining unrelated state instead of turning
+    // worker capacity or Actions availability into a global publication lock.
+    summary.errors += 1;
+    console.warn(`cluster intake recovery failed: ${errorMessage(error)}`);
   }
 
   while (now().getTime() - startedAt < maximumRuntimeMs) {
@@ -439,6 +537,35 @@ export async function runStateMaterializer(
             });
           },
         });
+      }
+      const clusterIntakes = hydrated.records
+        .filter((record) => record.kind === "cluster_intake")
+        .map((record) => clusterIntakeIntent(record.payload));
+      if (clusterIntakes.length > 0) {
+        try {
+          const dispatch = dispatchClusterIntakes(
+            clusterIntakes,
+            process.cwd(),
+            env,
+            clusterCapacity,
+            clusterDispatchObserver,
+          );
+          if (dispatch.updatedLedgers.length > 0) {
+            publishCommit({
+              message: STATE_MATERIALIZER_COMMIT_MESSAGE,
+              paths: dispatch.updatedLedgers,
+              branch,
+              maxAttempts: publishMaxAttempts,
+              pushAttempts: publishPushAttempts,
+            });
+          }
+          if (dispatch.pending) {
+            console.warn("cluster intake remains durably pending until worker capacity frees");
+          }
+        } catch (error) {
+          summary.errors += 1;
+          console.warn(`cluster intake dispatch deferred: ${errorMessage(error)}`);
+        }
       }
       summary.committed += plan.selected - publicationFailureSeqs.size;
       summary.skipped += selected.skipped + hydrated.skipped + plan.skipped;
@@ -519,6 +646,24 @@ export async function runStateMaterializer(
     }
   }
   return finish();
+}
+
+export function reserveClusterCapacity(
+  capacity: (options: Record<string, unknown>) => {
+    active: number;
+    max_live_workers: number;
+  },
+): (options: Record<string, unknown>) => { active: number; max_live_workers: number } {
+  let reserved = 0;
+  return (options) => {
+    const snapshot = capacity(options);
+    const maximum = Math.max(0, Math.floor(Number(snapshot.max_live_workers) || 0));
+    const visibleActive = Math.max(0, Math.floor(Number(snapshot.active) || 0));
+    const effectiveActive = Math.min(maximum, visibleActive + reserved);
+    const requested = Math.max(0, Math.floor(Number(options.requested) || 0));
+    reserved += Math.min(requested, Math.max(0, maximum - effectiveActive));
+    return { active: effectiveActive, max_live_workers: maximum };
+  };
 }
 
 export function shallowHistoryExhaustionStrategyForRecords(
@@ -629,6 +774,16 @@ function materializationPaths(records: readonly StateAppendRecord[]): string[] {
       }
       continue;
     }
+    if (record.kind === "cluster_intake") {
+      const intent = clusterIntakeIntent(record.payload);
+      for (const recordPath of [
+        clusterIntakeLedgerPath(intent),
+        ...intent.jobs.map((job) => job.path),
+      ]) {
+        if (!paths.includes(recordPath)) paths.push(recordPath);
+      }
+      continue;
+    }
     const path =
       record.kind === "sweep_status"
         ? sweepStatusPathForStateKey(record.key)
@@ -644,6 +799,294 @@ function materializationPaths(records: readonly StateAppendRecord[]): string[] {
     }
   }
   return paths;
+}
+
+export function dispatchClusterIntakes(
+  intents: readonly ClusterIntakeIntent[],
+  root: string,
+  env: NodeJS.ProcessEnv = process.env,
+  capacity: (options: Record<string, unknown>) => {
+    active: number;
+    max_live_workers: number;
+  } = liveWorkerCapacity,
+  observe: ClusterDispatchObserver = observeClusterDispatch,
+): { updatedLedgers: string[]; pending: boolean } {
+  const updatedLedgers: string[] = [];
+  let pending = false;
+  const byRepository = new Map<string, ClusterIntakeIntent[]>();
+  for (const intent of intents) {
+    const values = byRepository.get(intent.target_repo) ?? [];
+    values.push(intent);
+    byRepository.set(intent.target_repo, values);
+  }
+  for (const repositoryIntents of byRepository.values()) {
+    const ledgerPath = clusterIntakeLedgerPath(repositoryIntents[0]!);
+    const absoluteLedger = resolve(root, ledgerPath);
+    const ledger = mergeClusterIntakeLedger(
+      readFileSync(absoluteLedger, "utf8"),
+      repositoryIntents,
+    );
+    const dispatch = dispatchClusterLedger(ledgerPath, ledger, root, env, capacity, observe, false);
+    if (dispatch.updated) updatedLedgers.push(ledgerPath);
+    pending ||= dispatch.pending;
+  }
+  return { updatedLedgers, pending };
+}
+
+export function recoverPendingClusterIntakes(
+  root: string,
+  env: NodeJS.ProcessEnv = process.env,
+  capacity: (options: Record<string, unknown>) => {
+    active: number;
+    max_live_workers: number;
+  } = liveWorkerCapacity,
+  observe: ClusterDispatchObserver = observeClusterDispatch,
+): { updatedLedgers: string[]; pending: boolean } {
+  const ledgerRoot = resolve(root, "results/cluster-repair-intake");
+  if (!existsSync(ledgerRoot)) return { updatedLedgers: [], pending: false };
+  const updatedLedgers: string[] = [];
+  let pending = false;
+  for (const name of readdirSync(ledgerRoot)
+    .filter((entry) => entry.endsWith(".json"))
+    .sort()) {
+    const ledgerPath = `results/cluster-repair-intake/${name}`;
+    const parsed = JSON.parse(readFileSync(resolve(root, ledgerPath), "utf8")) as unknown;
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      (parsed as { schema?: unknown }).schema !== CLUSTER_INTAKE_LEDGER_SCHEMA
+    ) {
+      continue;
+    }
+    const dispatch = dispatchClusterLedger(
+      ledgerPath,
+      parsed as ClusterIntakeLedger,
+      root,
+      env,
+      capacity,
+      observe,
+      true,
+    );
+    if (dispatch.updated) updatedLedgers.push(ledgerPath);
+    pending ||= dispatch.pending;
+  }
+  return { updatedLedgers, pending };
+}
+
+function dispatchClusterLedger(
+  ledgerPath: string,
+  ledger: ClusterIntakeLedger,
+  root: string,
+  env: NodeJS.ProcessEnv,
+  capacity: (options: Record<string, unknown>) => {
+    active: number;
+    max_live_workers: number;
+  },
+  observe: ClusterDispatchObserver,
+  recoverUnclaimed: boolean,
+): { updated: boolean; pending: boolean } {
+  const repoSlug = ledger.target_repo.replace("/", "-");
+  const unresolvedJobs = Object.values(ledger.clusters)
+    .filter((entry) => entry.status !== "dispatched")
+    .sort(
+      (left, right) =>
+        left.accepted_at.localeCompare(right.accepted_at) || left.cluster_id - right.cluster_id,
+    )
+    .map((entry) => {
+      if (
+        entry.dispatch_key !== `cluster-intake:${repoSlug}:${entry.cluster_id}` ||
+        !/^[a-f0-9]{64}$/.test(entry.digest) ||
+        !/^[A-Za-z0-9._-]{1,80}$/.test(entry.runner) ||
+        !/^[A-Za-z0-9._-]{1,80}$/.test(entry.execution_runner) ||
+        !/^[A-Za-z0-9._-]{1,80}$/.test(entry.model)
+      ) {
+        throw new Error(`invalid unresolved cluster dispatch metadata: ${entry.cluster_id}`);
+      }
+      const absoluteJob = resolve(root, entry.job);
+      const resolvedRoot = resolve(root);
+      if (
+        absoluteJob === resolvedRoot ||
+        !absoluteJob.startsWith(`${resolvedRoot}${sep}`) ||
+        !existsSync(absoluteJob)
+      ) {
+        throw new Error(`unresolved cluster job is missing or outside checkout: ${entry.job}`);
+      }
+      const content = readFileSync(absoluteJob, "utf8");
+      if (createHash("sha256").update(content).digest("hex") !== entry.digest) {
+        throw new Error(`unresolved cluster job digest mismatch: ${entry.job}`);
+      }
+      validateClusterJobContent(content, ledger.target_repo, entry.cluster_id);
+      return {
+        cluster_id: entry.cluster_id,
+        path: entry.job,
+        content,
+        digest: entry.digest,
+        dispatch_key: entry.dispatch_key,
+        accepted_intent_digest: entry.accepted_intent_digest,
+        accepted_intent_receipt: entry.accepted_intent_receipt,
+        runner: entry.runner,
+        execution_runner: entry.execution_runner,
+        model: entry.model,
+        ledgerEntry: entry,
+      };
+    });
+  let pending = false;
+  let ledgerUpdated = false;
+  let workingLedger = ledger;
+  const dispatchableJobs = [] as (typeof unresolvedJobs)[number][];
+  for (const job of unresolvedJobs) {
+    if (job.ledgerEntry.status === "dispatch_pending" && !recoverUnclaimed) {
+      dispatchableJobs.push(job);
+      continue;
+    }
+    const observationEntry =
+      job.ledgerEntry.status === "dispatch_pending"
+        ? { ...job.ledgerEntry, dispatch_claimed_at: job.ledgerEntry.accepted_at }
+        : job.ledgerEntry;
+    if (!observationEntry.dispatch_claimed_at) {
+      throw new Error(`cluster dispatch claim has no timestamp: ${job.cluster_id}`);
+    }
+    const observation = observe(observationEntry, env);
+    if (observation.action === "recover") {
+      const runId = Number(observation.run?.id ?? observation.run?.databaseId ?? 0);
+      workingLedger = markClusterIntakeDispatched(workingLedger, [job], new Date().toISOString(), {
+        ...(Number.isSafeInteger(runId) && runId > 0 ? { id: runId } : {}),
+        ...(observation.run?.url || observation.run?.html_url
+          ? { url: String(observation.run.url ?? observation.run.html_url) }
+          : {}),
+      });
+      ledgerUpdated = true;
+      continue;
+    }
+    if (observation.action === "wait") {
+      pending = true;
+      continue;
+    }
+    dispatchableJobs.push(job);
+  }
+  let jobsToDispatch = dispatchableJobs;
+  if (dispatchableJobs.length > 0) {
+    const workerCapacity = capacity({
+      repo: env.CLAWSWEEPER_REPO || "openclaw/clawsweeper",
+      workflow: "repair-cluster-worker.yml",
+      requested: dispatchableJobs.length,
+      maxLiveWorkers: workerLimit("cluster_repair"),
+      env,
+    });
+    const available = Math.max(0, workerCapacity.max_live_workers - workerCapacity.active);
+    jobsToDispatch = dispatchableJobs.slice(0, available);
+    pending ||= jobsToDispatch.length < dispatchableJobs.length;
+  }
+  const dispatchClaimedAt = new Date().toISOString();
+  for (const job of jobsToDispatch) {
+    const jobAuthentication = clusterDispatchAuthenticationTag(
+      env.CLAWSWEEPER_WEBHOOK_SECRET ?? "",
+      {
+        jobPath: job.path,
+        jobDigest: job.digest,
+        dispatchKey: job.dispatch_key,
+        mode: "autonomous",
+        runner: job.runner,
+        executionRunner: job.execution_runner,
+        plannerSandbox: "read-only",
+        model: job.model,
+        dryRun: "false",
+      },
+    );
+    const dispatchInputs = clusterWorkflowDispatchInputs(job, {
+      runner: job.runner,
+      executionRunner: job.execution_runner,
+      model: job.model,
+      jobAuth: jobAuthentication,
+    });
+    const result = spawnSync(
+      "gh",
+      [
+        "workflow",
+        "run",
+        "repair-cluster-worker.yml",
+        "--repo",
+        env.CLAWSWEEPER_REPO || "openclaw/clawsweeper",
+        "--ref",
+        env.CLAWSWEEPER_DISPATCH_REF || "main",
+        ...Object.entries(dispatchInputs).flatMap(([key, value]) => ["-f", `${key}=${value}`]),
+      ],
+      { cwd: root, encoding: "utf8", env, stdio: "pipe" },
+    );
+    if (result.status !== 0) {
+      throw new Error(
+        `cluster intake dispatch failed for ${ledger.target_repo} cluster ${job.cluster_id}: ${result.stderr || result.stdout || result.status}`,
+      );
+    }
+  }
+  if (jobsToDispatch.length > 0) {
+    workingLedger = markClusterIntakeDispatchClaimed(
+      workingLedger,
+      jobsToDispatch,
+      dispatchClaimedAt,
+    );
+    ledgerUpdated = true;
+    pending = true;
+  }
+  if (ledgerUpdated) {
+    writeFileSync(resolve(root, ledgerPath), `${JSON.stringify(workingLedger, null, 2)}\n`, "utf8");
+  }
+  return { updated: ledgerUpdated, pending };
+}
+
+export function observeClusterDispatch(
+  entry: ClusterLedgerEntry,
+  env: NodeJS.ProcessEnv,
+): ClusterDispatchObservation {
+  const repo = env.CLAWSWEEPER_REPO || "openclaw/clawsweeper";
+  const expectedTitle = `repair cluster ${entry.job} [${entry.dispatch_key}]`;
+  const runs = ghJson<LooseRecord[]>(
+    [
+      "run",
+      "list",
+      "--repo",
+      repo,
+      "--workflow",
+      "repair-cluster-worker.yml",
+      "--limit",
+      "100",
+      "--json",
+      "databaseId,displayTitle,status,conclusion,createdAt,updatedAt,url",
+    ],
+    { env },
+  ).map((run) => {
+    if (
+      String(run.displayTitle ?? run.display_title ?? "") !== expectedTitle ||
+      String(run.status ?? "").toLowerCase() !== "completed"
+    ) {
+      return run;
+    }
+    const runId = Number(run.databaseId ?? run.id ?? 0);
+    if (!Number.isSafeInteger(runId) || runId < 1) {
+      return { ...run, dispatch_execution_verified: false };
+    }
+    const response = ghJson<LooseRecord>(
+      ["api", `repos/${repo}/actions/runs/${runId}/jobs?per_page=100`],
+      { env },
+    );
+    const jobs = Array.isArray(response.jobs) ? response.jobs : [];
+    return {
+      ...run,
+      dispatch_execution_verified: hasSuccessfulDispatchExecutionJob(
+        jobs,
+        "Plan and review cluster",
+      ),
+    };
+  });
+  return dispatchClaimDecision({
+    claim: { processed_at: entry.dispatch_claimed_at },
+    runs,
+    expectedTitle,
+  }) as ClusterDispatchObservation;
+}
+
+function clusterIntakeLedgerPath(intent: ClusterIntakeIntent): string {
+  return `results/cluster-repair-intake/${intent.repo_slug}.json`;
 }
 
 function readCurrentFiles(paths: readonly string[], root: string): Map<string, string> {

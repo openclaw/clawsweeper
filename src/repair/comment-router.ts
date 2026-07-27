@@ -690,7 +690,7 @@ function verifyDispatchExecutionRuns({
     const createdAtMs = Date.parse(String(run.created_at ?? run.createdAt ?? ""));
     if (
       String(run.display_title ?? run.displayTitle ?? "") !== expectedTitle ||
-      String(run.conclusion ?? "").toLowerCase() !== "success" ||
+      String(run.status ?? "").toLowerCase() !== "completed" ||
       !Number.isFinite(claimedAtMs) ||
       !Number.isFinite(createdAtMs) ||
       createdAtMs < claimedAtMs - 5_000

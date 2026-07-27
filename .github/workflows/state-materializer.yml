@@ -7,6 +7,12 @@ on:
     # 2h14m wait for a slot). Fire at the cadence a cycle can actually finish.
     - cron: "*/20 * * * *"
   workflow_dispatch:
+    inputs:
+      intake_priority:
+        description: "Prioritize a newly accepted durable cluster intake"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: clawsweeper-state-materializer
@@ -51,6 +57,17 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Create dispatch token
+        id: dispatch-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: openclaw
+          repositories: clawsweeper
+          permission-actions: write
+          permission-contents: read
+
       - uses: ./.github/actions/setup-action-ledger
         continue-on-error: true
 
@@ -70,7 +87,7 @@ jobs:
           # turns (run 30003798477 timed out after 35 minutes at queue
           # position 3); the batch lane's two-turn cap still guarantees
           # ordinary writers a slot.
-          coordinator-class: publication_batch
+          coordinator-class: ${{ inputs.intake_priority && 'cluster_intake' || 'publication_batch' }}
           token: ${{ steps.state-token.outputs.token }}
           # depth-1 cannot fast-forward or rebuild against a branch other
           # writers keep advancing (non-fast-forward shallow push rejections,
@@ -94,10 +111,14 @@ jobs:
 
       - name: Materialize queued state
         env:
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_STATE_REPO_TOKEN: ${{ steps.state-token.outputs.token }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_REPO: openclaw/clawsweeper
+          CLAWSWEEPER_WORKER_RUNNER: ${{ vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+          CLAWSWEEPER_EXECUTION_RUNNER: ${{ vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
         run: node dist/repair/state-materializer.js
 
       - name: Finalize materializer recovery action ledger

@@ -335,8 +335,9 @@ export function dispatchClaimDecision({
   });
   const successfulRun = matchingRuns.find(
     (run) =>
-      String(run.conclusion ?? "").toLowerCase() === "success" &&
-      run.dispatch_execution_verified !== false,
+      run.dispatch_execution_verified === true ||
+      (String(run.conclusion ?? "").toLowerCase() === "success" &&
+        run.dispatch_execution_verified !== false),
   );
   if (successfulRun) return { action: "recover", run: successfulRun };
   const activeRun = matchingRuns.find((run) =>
