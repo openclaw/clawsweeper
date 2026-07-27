@@ -1435,13 +1435,52 @@ jobs:
               ...(retryAt ? { retry_at: retryAt } : {}),
             }));
           ')"
+          response_file="$(mktemp)"
+          error_file="$(mktemp)"
+          trap 'rm -f "$response_file" "$error_file"' EXIT
           for attempt in 1 2 3; do
-            if curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+            : > "$response_file"
+            : > "$error_file"
+            if status="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
               --request POST \
               --header "content-type: application/json" \
               --data "$payload" \
-              "$queue_url/internal/exact-review/complete" >/dev/null; then
-              exit 0
+              "$queue_url/internal/exact-review/complete" 2>"$error_file")"; then
+              response="$(<"$response_file")"
+              if [[ "$status" == 2* ]]; then
+                exit 0
+              fi
+              # These three conflicts each name a terminal owner for this item:
+              # the lease is gone, a newer claim took it over, or this attempt is
+              # stale. There is no outcome left for this run to record, so it must
+              # not go red. Every other conflict, including the claim step's
+              # ambiguous lease_decision_unavailable, stays visible.
+              if [ "$status" = "409" ]; then
+                conflict_reason="$(RESPONSE="$response" node <<'NODE'
+                  const response = JSON.parse(process.env.RESPONSE || "{}");
+                  const safeConflicts = new Set([
+                    "lease_not_active",
+                    "lease_already_claimed",
+                    "stale_run_attempt",
+                  ]);
+                  if (!safeConflicts.has(response.error)) process.exit(1);
+                  process.stdout.write(response.error);
+          NODE
+                )" || {
+                  echo "Unexpected exact-review completion conflict: $response" >&2
+                  exit 1
+                }
+                echo "::notice::Exact-review completion skipped because the durable queue already owns the outcome: $conflict_reason"
+                exit 0
+              fi
+              echo "Exact-review completion returned HTTP $status: $response" >&2
+              if [[ "$status" != 5* ]]; then
+                exit 1
+              fi
+            else
+              cat "$error_file" >&2
             fi
             if [ "$attempt" -lt 3 ]; then
               sleep "$((attempt * 5))"
