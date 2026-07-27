@@ -6,6 +6,11 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { hasSecuritySignalText, parseArgs, repoRoot } from "./lib.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
+import { rankGitcrawlCluster } from "./gitcrawl-cluster-ranking.js";
+import {
+  existingGitcrawlClusterIds,
+  existingGitcrawlMemberRefs,
+} from "./gitcrawl-cluster-history.js";
 
 const args = parseArgs(process.argv.slice(2));
 const repo = String(args.repo ?? "openclaw/openclaw");
@@ -34,16 +39,24 @@ const limit = numberArg("limit", 40);
 const minSize = numberArg("min-size", 2);
 const minOpenMembers = numberArg("min-open-members", 1);
 const skipClosedPercent = percentArg("skip-closed-percent", 75);
-let clusterIds = args._.map((value: string) => Number(value)).filter(Boolean);
+const rankingAsOf = dateArg("as-of", new Date());
+const candidatePoolLimit = numberArg("candidate-pool-limit", Math.max(100, limit * 50));
+const selectionReportPath = typeof args.report === "string" ? path.resolve(args.report) : "";
+let selectionReport = {
+  evaluated: 0,
+  rejected: 0,
+  selected: 0,
+  reason_counts: {} as Record<string, number>,
+};
+let clusterIds: number[] = args._.map((value: string) => Number(value)).filter(Boolean);
 const selectingFromGitcrawl = clusterIds.length === 0 && fromGitcrawl;
 const clusterSource = detectClusterSource();
 
-if (selectingFromGitcrawl) {
-  clusterIds = selectClusterIds();
-}
+if (selectingFromGitcrawl) clusterIds = selectClusterIds();
 
 if (clusterIds.length === 0) {
   if (selectingFromGitcrawl && allowEmpty) {
+    writeSelectionReport();
     console.error("no eligible gitcrawl clusters found");
     process.exit(0);
   }
@@ -81,9 +94,40 @@ function resolveGitcrawlDbPath(repoFullName: string, explicitDb?: string): strin
 
 fs.mkdirSync(outDir, { recursive: true });
 
-const existingClusterIds = skipExisting ? existingGitcrawlClusterIds(outDir) : new Set();
-const existingMemberRefs = skipExisting ? existingGitcrawlMemberRefs(outDir, suffix) : new Map();
+const historyRoots = [
+  outDir,
+  path.join(repoRoot(), "jobs", repo.split("/")[0] ?? "unknown"),
+  path.join(repoRoot(), "results", repo.split("/")[0] ?? "unknown"),
+  path.join(repoRoot(), "results", "cluster-repair-intake"),
+];
+const existingClusterIds = skipExisting
+  ? existingGitcrawlClusterIds(historyRoots, repo)
+  : new Set<number>();
+const existingMemberRefs = skipExisting
+  ? existingGitcrawlMemberRefs(historyRoots, repo)
+  : new Map();
 const prefetchedMembers = selectingFromGitcrawl ? prefetchMembers(clusterIds) : null;
+if (selectingFromGitcrawl && prefetchedMembers) {
+  const ranked = clusterIds.map((clusterId) => ({
+    clusterId,
+    ranking: rankGitcrawlCluster(prefetchedMembers.get(clusterId) ?? [], { asOf: rankingAsOf }),
+  }));
+  selectionReport.evaluated = ranked.length;
+  for (const candidate of ranked.filter((entry) => !entry.ranking.eligible)) {
+    selectionReport.rejected += 1;
+    for (const reason of candidate.ranking.reasons) {
+      const category = reason.split(" (")[0]!;
+      selectionReport.reason_counts[category] = (selectionReport.reason_counts[category] ?? 0) + 1;
+    }
+    console.error(`reject cluster ${candidate.clusterId}: ${candidate.ranking.reasons.join("; ")}`);
+  }
+  clusterIds = ranked
+    .filter((entry) => entry.ranking.eligible)
+    .sort(
+      (left, right) => right.ranking.score - left.ranking.score || left.clusterId - right.clusterId,
+    )
+    .map((entry) => entry.clusterId);
+}
 let createdCount = 0;
 
 for (const clusterId of clusterIds) {
@@ -170,6 +214,7 @@ for (const clusterId of clusterIds) {
     .map((member: JsonValue) => member.updated_at)
     .sort()
     .at(-1);
+  const ranking = rankGitcrawlCluster(members, { asOf: rankingAsOf });
   const slug = slugify(representative.title || `cluster-${clusterId}`);
   const fileStem = suffix
     ? `gitcrawl-${clusterId}-${slugify(suffix)}`
@@ -240,6 +285,8 @@ for (const clusterId of clusterIds) {
     `- open candidates in local store: ${openMembers.length}`,
     `- representative: #${representative.number}, currently ${representative.state} in local store`,
     `- latest member update: ${latestUpdatedAt}`,
+    `- selection score: ${ranking.score}`,
+    `- selection signals: ${ranking.signals.join("; ")}`,
     "",
     "## Goal",
     "",
@@ -268,6 +315,15 @@ for (const clusterId of clusterIds) {
   createdCount += 1;
   console.log(path.relative(repoRoot(), filePath));
 }
+selectionReport.selected = createdCount;
+writeSelectionReport();
+
+function writeSelectionReport() {
+  if (selectionReportPath) {
+    fs.mkdirSync(path.dirname(selectionReportPath), { recursive: true });
+    fs.writeFileSync(selectionReportPath, `${JSON.stringify(selectionReport, null, 2)}\n`);
+  }
+}
 
 function selectClusterIds() {
   if (clusterSource === "portable") {
@@ -285,7 +341,10 @@ function selectClusterIds() {
       having member_count >= ${sqlNumber(minSize)}
         and open_count >= ${sqlNumber(minOpenMembers)}
         and ((closed_count * 100) / member_count) < ${sqlNumber(skipClosedPercent)}
-      order by member_count desc, cg.id asc
+      order by max(case when t.state = 'open' then t.updated_at else '' end) desc,
+        member_count asc,
+        cg.id asc
+      limit ${sqlNumber(candidatePoolLimit)}
     `)
       .map((row: JsonValue) => Number(row.id))
       .filter(Boolean);
@@ -304,7 +363,10 @@ function selectClusterIds() {
     having member_count >= ${sqlNumber(minSize)}
       and open_count >= ${sqlNumber(minOpenMembers)}
       and ((closed_count * 100) / member_count) < ${sqlNumber(skipClosedPercent)}
-    order by member_count desc, c.id asc
+    order by max(case when t.state = 'open' then t.updated_at else '' end) desc,
+      member_count asc,
+      c.id asc
+    limit ${sqlNumber(candidatePoolLimit)}
   `)
     .map((row: JsonValue) => Number(row.id))
     .filter(Boolean);
@@ -442,6 +504,14 @@ function percentArg(name: string, fallback: JsonValue) {
   return value;
 }
 
+function dateArg(name: string, fallback: Date): Date {
+  const raw = args[name];
+  if (raw === undefined) return fallback;
+  const value = new Date(String(raw));
+  if (!Number.isFinite(value.getTime())) throw new Error(`--${name} must be an ISO date`);
+  return value;
+}
+
 function booleanArg(name: string, fallback: JsonValue) {
   const value = args[name];
   if (value === undefined) return fallback;
@@ -469,40 +539,6 @@ function isProductFeatureRequest(title: JsonValue) {
   return /^\s*\[?\s*feature(?:\s+(?:request|proposal))?\b/i.test(String(title ?? ""));
 }
 
-function existingGitcrawlClusterIds(dir: string) {
-  if (!fs.existsSync(dir)) return new Set();
-  const ids = new Set();
-  for (const entry of fs.readdirSync(dir, { recursive: true })) {
-    const file = path.join(dir, String(entry));
-    if (!file.endsWith(".md") || !fs.statSync(file).isFile()) continue;
-    const text = fs.readFileSync(file, "utf8");
-    for (const match of text.matchAll(/\b(?:ghcrawl|gitcrawl)-(\d+)\b/g)) ids.add(Number(match[1]));
-  }
-  return ids;
-}
-
-function existingGitcrawlMemberRefs(dir: string, suffix: JsonValue) {
-  const refs = new Map();
-  if (!fs.existsSync(dir)) return refs;
-  const suffixSlug = suffix ? slugify(suffix) : "";
-  for (const entry of fs.readdirSync(dir, { recursive: true })) {
-    const file = path.join(dir, String(entry));
-    if (!file.endsWith(".md") || !fs.statSync(file).isFile()) continue;
-    if (suffixSlug && !path.basename(file).endsWith(`-${suffixSlug}.md`)) continue;
-    const text = fs.readFileSync(file, "utf8");
-    const frontmatter = text.match(/^---\n([\s\S]*?)\n---/);
-    const clusterRefs = frontmatter?.[1]?.match(/^cluster_refs:\n((?:  - .+\n?)*)/m)?.[1] ?? "";
-    for (const match of clusterRefs.matchAll(/#(\d+)/g)) {
-      const number = Number(match[1]);
-      if (!Number.isSafeInteger(number)) continue;
-      const files = refs.get(number) ?? [];
-      files.push(path.relative(repoRoot(), file));
-      refs.set(number, files);
-    }
-  }
-  return refs;
-}
-
 function yamlList(values: LooseRecord[]) {
   if (values.length === 0) return ["  []"];
   return values.map((value: string) => `  - ${quoteYaml(value)}`);
@@ -528,7 +564,7 @@ function goalText(mode: string) {
   return "Run one live autonomous classification pass. Classify open candidates only, verify live GitHub state, choose the current canonical issue or PR if the representative is obsolete, and emit only high-confidence planned close/comment/label actions. Closed context refs are evidence only and must not receive close actions.";
 }
 
-function jobNotes(clusterId: string, securitySensitiveMembers: JsonValue) {
+function jobNotes(clusterId: string | number, securitySensitiveMembers: JsonValue) {
   const base = `Generated from gitcrawl run cluster ${clusterId} on ${new Date().toISOString().slice(0, 10)}.`;
   if (securitySensitiveMembers.length === 0) return base;
   return `${base} Security-sensitive refs ${securitySensitiveMembers.map((member: JsonValue) => `#${member.number}`).join(", ")} must be routed with route_security and must not block unrelated non-security work.`;
