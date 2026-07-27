@@ -814,18 +814,24 @@ export async function signedPost<T>(options: {
   // later clone() of a consumed response throws, masking the real failure.
   const bodyText = await response.text().catch(() => "");
   if (!response.ok) throw workerRequestError(response.status, bodyText);
+  let value: unknown;
   try {
-    return JSON.parse(bodyText) as T;
+    value = JSON.parse(bodyText);
   } catch {
-    // A 2xx with an empty or non-JSON body is a protocol violation (e.g. an
-    // edge proxy serving a blank 200). Returning null here crashes callers far
-    // from the request; fail loudly with the status and a body snippet instead.
+    value = undefined;
+  }
+  // A 2xx whose body is empty, non-JSON, or a JSON null/primitive (e.g. a
+  // literal "null" page) is a protocol violation — every endpoint returns an
+  // object envelope. Returning it would crash callers far from the request;
+  // fail loudly with the status and a body snippet instead.
+  if (typeof value !== "object" || value === null) {
     throw new WorkerRecordRequestError(
       response.status,
       "invalid_json_body",
       bodyText.trim().slice(0, 200),
     );
   }
+  return value as T;
 }
 
 const SIGNED_REQUEST_MAX_ATTEMPTS = 3;

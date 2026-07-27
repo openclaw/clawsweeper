@@ -89,6 +89,21 @@ test("signedPost throws invalid_json_body with a snippet for a 2xx HTML body", a
   );
 });
 
+test("signedPost throws invalid_json_body for a 2xx response with a literal null body", async () => {
+  const { calls, fetchImpl } = fetchStub([jsonResponse(200, "null")]);
+  await assert.rejects(
+    signedPost({ baseUrl, path: "/internal/test", webhookSecret, body: {}, fetch: fetchImpl }),
+    (error: Error & { status?: number; code?: string; bodySnippet?: string }) => {
+      assert.equal(error.name, "WorkerRecordRequestError");
+      assert.equal(error.status, 200);
+      assert.equal(error.code, "invalid_json_body");
+      assert.equal(error.bodySnippet, "null");
+      return true;
+    },
+  );
+  assert.equal(calls.length, 1);
+});
+
 test("signedPost resends the full JSON request body on a retry after a 502", async () => {
   const responses = [
     jsonResponse(502, "<html>bad gateway</html>", "text/html"),
