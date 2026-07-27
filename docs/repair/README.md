@@ -380,6 +380,8 @@ The workflow needs:
   may reject the entire batch.
 - optional `CLAWSWEEPER_CLUSTER_REPAIR_CANDIDATE_BATCH` variable for the scheduled
   intake; default is `8` candidates, from which the model selects at most one.
+  Existing `CLAWSWEEPER_CLUSTER_REPAIR_IMPORT_LIMIT` settings remain supported
+  as a compatibility alias when the preferred candidate-batch variable is absent.
 - merge is separately gated by `CLAWSWEEPER_ALLOW_MERGE`, which defaults to `0`; merge-ready PRs are labeled `clawsweeper:human-review` and `clawsweeper:merge-ready` for a maintainer to merge manually when the global gate is closed
 - required `CLAWSWEEPER_MODEL` GitHub Actions secret containing the actual
   internal model name; workflows, dispatch payloads, comments, and reports use

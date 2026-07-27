@@ -14,7 +14,7 @@ on:
         default: "openclaw/openclaw"
         type: string
       limit:
-        description: "Number of unprocessed clusters offered to the selector model"
+        description: "Maximum unprocessed clusters prepared; the selector chooses at most one"
         required: false
         default: "8"
         type: string
@@ -217,7 +217,7 @@ jobs:
         env:
           TARGET_REPO: ${{ steps.prepare.outputs.target_repo }}
           DB_PATH: ${{ steps.prepare.outputs.db_path }}
-          LIMIT: ${{ github.event.inputs.limit || vars.CLAWSWEEPER_CLUSTER_REPAIR_CANDIDATE_BATCH || '8' }}
+          LIMIT: ${{ github.event.inputs.limit || vars.CLAWSWEEPER_CLUSTER_REPAIR_CANDIDATE_BATCH || vars.CLAWSWEEPER_CLUSTER_REPAIR_IMPORT_LIMIT || '8' }}
         run: |
           set -euo pipefail
           mkdir -p .artifacts/cluster-repair-intake
