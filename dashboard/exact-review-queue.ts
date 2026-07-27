@@ -466,6 +466,7 @@ const DEFAULT_STATE_APPEND_MAX_RECORD_BYTES = 256 * 1024;
 // residual lease contention during the #738 transition).
 const DEFAULT_STATE_APPEND_DRAIN_LEASE_MS = 30 * 60 * 1000;
 const STATE_APPEND_MATERIALIZATION_RETRY_LIMIT = 3;
+const STATE_APPEND_MAX_CONSECUTIVE_INTAKE_ONLY_DRAINS = 1;
 const EXACT_REVIEW_REVIEW_TELEMETRY_TABLE = "exact_review_review_telemetry";
 const EXACT_REVIEW_RUN_TELEMETRY_TABLE = "exact_review_run_telemetry";
 const EXACT_REVIEW_STATE_WRITER_OPERATION_TABLE = "exact_review_state_writer_operations";
@@ -5508,9 +5509,24 @@ export class ExactReviewQueue {
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${STATE_APPEND_META_TABLE} (
          singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-         shed_since_reset INTEGER NOT NULL DEFAULT 0 CHECK (shed_since_reset >= 0)
+         shed_since_reset INTEGER NOT NULL DEFAULT 0 CHECK (shed_since_reset >= 0),
+         consecutive_intake_only_drains INTEGER NOT NULL DEFAULT 0
+           CHECK (consecutive_intake_only_drains >= 0)
        ) STRICT`,
     );
+    const intakeDrainBudgetPresent = Array.from(
+      this.storage.sql.exec(
+        `SELECT name FROM pragma_table_info('${STATE_APPEND_META_TABLE}')
+          WHERE name = 'consecutive_intake_only_drains'`,
+      ),
+    ).length;
+    if (!intakeDrainBudgetPresent) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${STATE_APPEND_META_TABLE}
+           ADD COLUMN consecutive_intake_only_drains INTEGER NOT NULL DEFAULT 0
+             CHECK (consecutive_intake_only_drains >= 0)`,
+      );
+    }
     this.storage.sql.exec(
       `INSERT OR IGNORE INTO ${STATE_APPEND_META_TABLE} (singleton_id) VALUES (1)`,
     );
@@ -7055,14 +7071,26 @@ export class ExactReviewQueue {
       };
     }
 
+    const appendMeta = Array.from(
+      this.storage.sql.exec(
+        `SELECT consecutive_intake_only_drains
+           FROM ${STATE_APPEND_META_TABLE}
+          WHERE singleton_id = 1`,
+      ),
+    )[0] as { consecutive_intake_only_drains?: number } | undefined;
+    const prioritizeOrdinary =
+      Number(appendMeta?.consecutive_intake_only_drains || 0) >=
+      STATE_APPEND_MAX_CONSECUTIVE_INTAKE_ONLY_DRAINS;
     const candidates = Array.from(
       this.storage.sql.exec(
         `SELECT seq, kind, record_key, payload_json, payload_bytes, produced_at, delivery_id,
                 materialization_attempts, materialization_first_failed_at, materialization_last_error
            FROM ${STATE_APPEND_WINDOW_TABLE}
           WHERE drain_token IS NULL
-          ORDER BY CASE kind WHEN 'cluster_intake' THEN 0 ELSE 1 END, seq
+          ORDER BY CASE WHEN kind = 'cluster_intake' THEN ? ELSE ? END, seq
           LIMIT ?`,
+        prioritizeOrdinary ? 1 : 0,
+        prioritizeOrdinary ? 0 : 1,
         maxRows,
       ) as Iterable<StateAppendWindowRow>,
     );
@@ -7074,6 +7102,18 @@ export class ExactReviewQueue {
       bytes += Number(row.payload_bytes);
     }
     if (!rows.length) return { token: null, expiresAt: null, rows };
+
+    const intakeOnly = rows.every((row) => row.kind === "cluster_intake");
+    this.storage.sql.exec(
+      `UPDATE ${STATE_APPEND_META_TABLE}
+          SET consecutive_intake_only_drains = CASE
+                WHEN ? THEN MIN(consecutive_intake_only_drains + 1, ?)
+                ELSE 0
+              END
+        WHERE singleton_id = 1`,
+      intakeOnly ? 1 : 0,
+      STATE_APPEND_MAX_CONSECUTIVE_INTAKE_ONLY_DRAINS,
+    );
 
     const token = crypto.randomUUID();
     const expiresAt = now + stateAppendDrainLeaseMs(this.env);
