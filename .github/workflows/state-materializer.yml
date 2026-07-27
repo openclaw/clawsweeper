@@ -14,11 +14,6 @@ on:
         default: false
         type: boolean
 
-concurrency:
-  group: clawsweeper-state-materializer
-  cancel-in-progress: false
-  queue: max
-
 permissions:
   contents: read
 
@@ -26,10 +21,51 @@ env:
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
 
 jobs:
+  # Workflow-level concurrency left superseded runs in status "pending" with no
+  # job created, where neither GitHub's pending-run dedup nor an in-run step
+  # could touch them (observed twice on 2026-07-26: 6-9 pending runs each
+  # serializing up to an hour of lock time for a drain the newest run performs
+  # anyway). Scoping the group to the drain job lets every trigger start this
+  # dedupe job immediately while the drain job alone waits on the group.
+  dedupe:
+    name: Cancel superseded scheduled runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel older runs still waiting for the drain slot
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Every cycle drains the whole append window, so any older run that
+          # has not started draining is redundant with this one. Only schedule
+          # runs are candidates: workflow_dispatch runs may carry explicit
+          # inputs (intake_priority) and are never cancelled.
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/state-materializer.yml/runs?event=schedule&per_page=100" \
+            --jq ".workflow_runs[] | select(.conclusion == null) | select(.id != $GITHUB_RUN_ID) | select(.run_number < $GITHUB_RUN_NUMBER) | .id" |
+            while IFS= read -r run_id; do
+              # A run whose drain job already executes holds real progress;
+              # runs with only queued/waiting jobs (or none) are superseded.
+              in_progress_jobs="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" \
+                --jq '[.jobs[] | select(.status == "in_progress")] | length')"
+              if [ "$in_progress_jobs" -gt 0 ]; then
+                echo "Keeping run $run_id: a job is already in progress."
+                continue
+              fi
+              echo "Cancelling superseded scheduled run $run_id: this run drains the same append window."
+              gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/cancel"
+            done
+
   materialize:
     name: Drain queued state into one commit
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    concurrency:
+      group: clawsweeper-state-materializer
+      cancel-in-progress: false
+      queue: max
     env:
       CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "1"
       # Priority intent wins a slot quickly; a long acquire budget just lets one

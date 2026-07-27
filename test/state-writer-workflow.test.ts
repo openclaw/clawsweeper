@@ -145,6 +145,34 @@ test("state materializer checks out a recovery-sized state history window", () =
   assert.equal(setupState?.with?.["fetch-depth"], 512);
 });
 
+test("state materializer self-dedupes superseded scheduled runs", () => {
+  const source = readFileSync(join(workflowDirectory, "state-materializer.yml"), "utf8");
+  const workflow = parse(source) as WorkflowDocument & { concurrency?: unknown };
+  // The drain slot must be job-scoped: workflow-level concurrency left
+  // superseded runs "pending" with no job created, where the dedupe job could
+  // never execute.
+  assert.equal(workflow.concurrency, undefined);
+  const materialize = workflow.jobs?.materialize as
+    | (WorkflowJob & { concurrency?: Record<string, unknown> })
+    | undefined;
+  assert.equal(materialize?.concurrency?.group, "clawsweeper-state-materializer");
+  assert.equal(materialize?.concurrency?.["cancel-in-progress"], false);
+
+  const dedupe = workflow.jobs?.dedupe as
+    | (WorkflowJob & { permissions?: Record<string, unknown>; needs?: unknown })
+    | undefined;
+  assert.ok(dedupe, "dedupe job");
+  assert.equal(dedupe.needs, undefined, "dedupe must start immediately on every trigger");
+  assert.deepEqual(dedupe.permissions, { actions: "write" });
+  const cancelStep = dedupe.steps?.find((step) => String(step.run || "").includes("/cancel"));
+  assert.ok(cancelStep, "cancel step");
+  const command = String(cancelStep.run);
+  // Only schedule-triggered runs are dedupe candidates; workflow_dispatch runs
+  // may carry explicit inputs and must survive.
+  assert.match(command, /\/runs\?event=schedule/);
+  assert.match(command, /run_number < \$GITHUB_RUN_NUMBER/);
+});
+
 test("state materializer bounds its coordinator acquire below the job timeout", () => {
   const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
   const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
