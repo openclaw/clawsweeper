@@ -10,6 +10,7 @@ import { parse } from "yaml";
 import { hydrateState } from "../scripts/hydrate-state.ts";
 import { backfillWorkerRecords } from "../scripts/backfill-worker-records.ts";
 import { verifyWorkerRecordParity } from "../scripts/verify-worker-record-parity.ts";
+import { decideRecordAuthority } from "../scripts/reconcile-worker-records.ts";
 import {
   ingestGitRecords,
   replayWorkerRecordProjections,
@@ -192,6 +193,83 @@ test("record parity verifier reports matching trees and exact path/digest mismat
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
+});
+
+test("authority reconciliation trusts GitHub-closed placement over canonical-open state", () => {
+  const canonicalOpen = workerRecord("items", "42", "canonical open\n", 4);
+  const result = decideRecordAuthority({
+    mismatches: [
+      { path: "closed/42.md", gitDigest: "a".repeat(64), workerDigest: null },
+      { path: "items/42.md", gitDigest: null, workerDigest: "b".repeat(64) },
+    ],
+    canonicalRecords: new Map([["items/42.md", canonicalOpen]]),
+    gitRecordPaths: new Set(["closed/42.md"]),
+    githubStates: new Map([["42", "closed"]]),
+    gitCommitTimes: new Map(),
+  });
+
+  assert.deepEqual(result.tuples, [
+    {
+      itemId: "42",
+      verdict: "git-wins",
+      reason: "GitHub is closed; canonical items placement is stale",
+    },
+  ]);
+  assert.equal(
+    result.decisions.find((entry) => entry.path === "closed/42.md")?.verdict,
+    "git-wins",
+  );
+  assert.equal(result.decisions.find((entry) => entry.path === "items/42.md")?.verdict, "lag");
+});
+
+test("authority reconciliation imports a git-only decision packet with its tuple", () => {
+  const result = decideRecordAuthority({
+    mismatches: [
+      {
+        path: "decision-packets/43.json",
+        gitDigest: "c".repeat(64),
+        workerDigest: null,
+      },
+    ],
+    canonicalRecords: new Map(),
+    gitRecordPaths: new Set(["items/43.md", "decision-packets/43.json"]),
+    githubStates: new Map([["43", "open"]]),
+    gitCommitTimes: new Map(),
+  });
+
+  assert.deepEqual(result.tuples, [
+    {
+      itemId: "43",
+      verdict: "git-wins",
+      reason: "git-only decision-packets must be imported with its atomic tuple",
+    },
+  ]);
+});
+
+test("authority reconciliation keeps canonical content when its provenance is newer", () => {
+  const canonical = workerRecord("items", "44", "canonical\n", 7);
+  canonical.updatedAt = "2026-07-26T12:00:00.000Z";
+  const result = decideRecordAuthority({
+    mismatches: [
+      {
+        path: "items/44.md",
+        gitDigest: "d".repeat(64),
+        workerDigest: canonical.digest,
+      },
+    ],
+    canonicalRecords: new Map([["items/44.md", canonical]]),
+    gitRecordPaths: new Set(["items/44.md"]),
+    githubStates: new Map([["44", "open"]]),
+    gitCommitTimes: new Map([["items/44.md", "2026-07-26T11:00:00.000Z"]]),
+  });
+
+  assert.deepEqual(result.tuples, [
+    {
+      itemId: "44",
+      verdict: "canonical-wins",
+      reason: "canonical provenance post-dates every differing git record",
+    },
+  ]);
 });
 
 test("backfill importer walks all record sections and sends digest-bearing rows", async () => {
@@ -540,15 +618,17 @@ test("worker records ops workflow snapshots and verifies one requested repositor
     description: "Worker records operation to run.",
     required: true,
     type: "choice",
-    options: ["snapshot", "verify", "both"],
+    options: ["snapshot", "verify", "both", "reconcile"],
     default: "both",
   });
   assert.match(workflow.env?.CLAWSWEEPER_RECORDS_URL ?? "", /CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL/);
 
   const snapshot = workflow.jobs?.snapshot;
   const verify = workflow.jobs?.verify;
+  const reconcile = workflow.jobs?.reconcile;
   assert.ok(snapshot);
   assert.ok(verify);
+  assert.ok(reconcile);
   assert.equal(verify.needs, "snapshot");
   for (const job of [snapshot, verify]) {
     assert.ok(job.steps?.some((step) => step.uses === "actions/checkout@v7"));
@@ -582,13 +662,16 @@ test("worker records ops workflow snapshots and verifies one requested repositor
     workflowSource.match(
       /CLAWSWEEPER_WEBHOOK_SECRET: \$\{\{ secrets\.CLAWSWEEPER_WEBHOOK_SECRET \}\}/g,
     )?.length,
-    2,
+    3,
   );
   assert.match(
     workflowSource,
     /pnpm run state:records:verify --[\s\\]*--state-dir clawsweeper-state[\s\\]*--repo-slug "\$TARGET_SLUG"/,
   );
   assert.match(workflowSource, /records\/\$\{\{ steps\.target\.outputs\.slug \}\}/);
+  assert.match(workflowSource, /inputs\.action == 'reconcile'/);
+  assert.match(workflowSource, /state:records:reconcile/);
+  assert.match(workflowSource, /--summary-file "\$GITHUB_STEP_SUMMARY"/);
 });
 
 function createStateFixture() {

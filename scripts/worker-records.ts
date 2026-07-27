@@ -26,6 +26,7 @@ export type WorkerRecord = {
   digest: string | null;
   revision: number;
   storeRevision: number;
+  updatedAt?: string;
   deleted: boolean;
 };
 
@@ -877,6 +878,9 @@ function validateWorkerRecord(record: WorkerRecord) {
   }
   if (!Number.isSafeInteger(record.storeRevision) || record.storeRevision < 1) {
     throw new Error("Worker returned invalid store revision");
+  }
+  if (record.updatedAt !== undefined && !Number.isFinite(Date.parse(record.updatedAt))) {
+    throw new Error("Worker returned invalid record provenance timestamp");
   }
   if (record.deleted) {
     if (record.content !== null || record.digest !== null) {

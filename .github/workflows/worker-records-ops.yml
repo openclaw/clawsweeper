@@ -15,6 +15,7 @@ on:
           - snapshot
           - verify
           - both
+          - reconcile
         default: both
 
 concurrency:
@@ -157,3 +158,60 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$verify_exit"
+
+  reconcile:
+    name: Reconcile Worker record authority
+    if: ${{ inputs.action == 'reconcile' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          filter: blob:none
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-pnpm
+
+      - name: Resolve target record slug
+        id: target
+        env:
+          TARGET_REPO: ${{ inputs.target_repo }}
+        run: |
+          if ! [[ "$TARGET_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "target_repo must be owner/name" >&2
+            exit 2
+          fi
+          echo "slug=${TARGET_REPO//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: Create state token
+        id: state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        with:
+          token: ${{ steps.state-token.outputs.token }}
+          filter: blob:none
+          fetch-depth: 1
+          sparse-checkout: records/${{ steps.target.outputs.slug }}
+          persist-credentials: "false"
+          records-source: git
+          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+
+      - name: Reconcile canonical record authority
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          GH_TOKEN: ${{ steps.state-token.outputs.token }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          TARGET_SLUG: ${{ steps.target.outputs.slug }}
+        run: |
+          pnpm run state:records:reconcile -- \
+            --state-dir clawsweeper-state \
+            --target-repo "$TARGET_REPO" \
+            --repo-slug "$TARGET_SLUG" \
+            --summary-file "$GITHUB_STEP_SUMMARY"
