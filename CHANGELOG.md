@@ -70,6 +70,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Bound durable cluster dispatch recovery to a verifiable accepted-intent receipt and strictly validated v2 intake ledgers. Thanks @RomneyDa! (#883)
 - Prioritized durable cluster intake without starving sweep, router, proof, or canonical tuple rows during sustained intake. Thanks @RomneyDa! (#882)
 - Made every item/closed/plan/decision-packet writer publish an atomic canonical Worker tuple first, leaving the git state tree as materializer-only projection; added bounded canonical projection replay for migration convergence.
 - Removed the Claude CLI runtime layer; ClawSweeper is Codex-only.

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { clusterIntakeIntent } from "./cluster-intake-state.js";
+import { acceptClusterIntakeIntent } from "./cluster-intake-state.js";
 import { postStateAppend } from "./state-append-client.js";
 
 export async function publishClusterIntake(
@@ -11,9 +11,12 @@ export async function publishClusterIntake(
   options: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {},
 ): Promise<{ deduped: boolean }> {
   const env = options.env ?? process.env;
-  const intent = clusterIntakeIntent(JSON.parse(readFileSync(intentPath, "utf8")));
   const queueUrl = env.QUEUE_URL ?? "";
   const webhookSecret = env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
+  const intent = acceptClusterIntakeIntent(
+    JSON.parse(readFileSync(intentPath, "utf8")),
+    webhookSecret,
+  );
   const deliveryId = `cluster-intake:${intent.repo_slug}:${intent.store_sha256}`;
   const result = await postStateAppend({
     queueUrl,

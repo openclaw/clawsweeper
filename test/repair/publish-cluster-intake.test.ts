@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { clusterIntakeIntent } from "../../dist/repair/cluster-intake-state.js";
 import { publishClusterIntake } from "../../dist/repair/publish-cluster-intake.js";
 
 test("cluster intake publication exposes a repeated durable delivery", async () => {
@@ -30,8 +31,13 @@ test("cluster intake publication exposes a repeated durable delivery", async () 
   let requests = 0;
   const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
     requests += 1;
-    const body = JSON.parse(String(init?.body)) as { delivery_id: string };
+    const body = JSON.parse(String(init?.body)) as {
+      delivery_id: string;
+      records: Array<{ payload: unknown }>;
+    };
     assert.equal(body.delivery_id, `cluster-intake:openclaw-openclaw:${"a".repeat(64)}`);
+    const accepted = clusterIntakeIntent(body.records[0].payload);
+    assert.deepEqual(accepted.jobs, []);
     return Response.json(requests === 1 ? { ok: true, appended: 1 } : { ok: true, deduped: true }, {
       status: 202,
     });
