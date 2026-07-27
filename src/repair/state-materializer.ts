@@ -36,12 +36,14 @@ import { mergeSweepStatusJson } from "./sweep-status-merge.js";
 import {
   clusterDispatchAuthenticationTag,
   clusterIntakeIntent,
+  clusterIntakeLedger,
   clusterWorkflowDispatchInputs,
   CLUSTER_INTAKE_LEDGER_SCHEMA,
   markClusterIntakeDispatchClaimed,
   markClusterIntakeDispatched,
   mergeClusterIntakeLedger,
   validateClusterJobContent,
+  verifyClusterLedgerEntryAcceptedIntent,
   type ClusterIntakeIntent,
   type ClusterIntakeLedger,
   type ClusterLedgerEntry,
@@ -438,12 +440,26 @@ export async function runStateMaterializer(
     return finish();
   }
 
+  // A durable dispatch claim must be published before the workflow_dispatch
+  // side effect so a crash between the two redispatches through recovery
+  // instead of losing the claim.
+  const persistClusterClaim = (ledgerPath: string): void => {
+    publishCommit({
+      message: STATE_MATERIALIZER_COMMIT_MESSAGE,
+      paths: [ledgerPath],
+      branch,
+      maxAttempts: publishMaxAttempts,
+      pushAttempts: publishPushAttempts,
+    });
+  };
+
   try {
     const recovered = recoverPendingClusterIntakes(
       process.cwd(),
       env,
       clusterCapacity,
       clusterDispatchObserver,
+      persistClusterClaim,
     );
     if (recovered.updatedLedgers.length > 0) {
       publishCommit({
@@ -538,8 +554,9 @@ export async function runStateMaterializer(
           },
         });
       }
+      const isolatedSeqs = new Set(failures.map((failure) => failure.seq));
       const clusterIntakes = hydrated.records
-        .filter((record) => record.kind === "cluster_intake")
+        .filter((record) => record.kind === "cluster_intake" && !isolatedSeqs.has(record.seq))
         .map((record) => clusterIntakeIntent(record.payload));
       if (clusterIntakes.length > 0) {
         try {
@@ -549,6 +566,7 @@ export async function runStateMaterializer(
             env,
             clusterCapacity,
             clusterDispatchObserver,
+            persistClusterClaim,
           );
           if (dispatch.updatedLedgers.length > 0) {
             publishCommit({
@@ -709,7 +727,10 @@ function planStateMaterializationWithIsolation(
       selected += recordPlan.selected;
       skipped += recordPlan.skipped;
     } catch (error) {
-      if (record.kind !== "record_tuple") throw error;
+      // Malformed cluster intents are isolated per row like corrupt record
+      // tuples: one poison row dead-letters alone instead of re-failing the
+      // whole drain on every cycle.
+      if (record.kind !== "record_tuple" && record.kind !== "cluster_intake") throw error;
       failures.push({
         seq: record.seq,
         key: record.key,
@@ -775,7 +796,14 @@ function materializationPaths(records: readonly StateAppendRecord[]): string[] {
       continue;
     }
     if (record.kind === "cluster_intake") {
-      const intent = clusterIntakeIntent(record.payload);
+      // A malformed intent contributes no paths here; the per-row isolation in
+      // the planning phase dead-letters it without failing the batch.
+      let intent: ClusterIntakeIntent;
+      try {
+        intent = clusterIntakeIntent(record.payload);
+      } catch {
+        continue;
+      }
       for (const recordPath of [
         clusterIntakeLedgerPath(intent),
         ...intent.jobs.map((job) => job.path),
@@ -810,6 +838,7 @@ export function dispatchClusterIntakes(
     max_live_workers: number;
   } = liveWorkerCapacity,
   observe: ClusterDispatchObserver = observeClusterDispatch,
+  persistClaim?: (ledgerPath: string) => void,
 ): { updatedLedgers: string[]; pending: boolean } {
   const updatedLedgers: string[] = [];
   let pending = false;
@@ -826,7 +855,16 @@ export function dispatchClusterIntakes(
       readFileSync(absoluteLedger, "utf8"),
       repositoryIntents,
     );
-    const dispatch = dispatchClusterLedger(ledgerPath, ledger, root, env, capacity, observe, false);
+    const dispatch = dispatchClusterLedger(
+      ledgerPath,
+      ledger,
+      root,
+      env,
+      capacity,
+      observe,
+      persistClaim,
+      false,
+    );
     if (dispatch.updated) updatedLedgers.push(ledgerPath);
     pending ||= dispatch.pending;
   }
@@ -841,6 +879,7 @@ export function recoverPendingClusterIntakes(
     max_live_workers: number;
   } = liveWorkerCapacity,
   observe: ClusterDispatchObserver = observeClusterDispatch,
+  persistClaim?: (ledgerPath: string) => void,
 ): { updatedLedgers: string[]; pending: boolean } {
   const ledgerRoot = resolve(root, "results/cluster-repair-intake");
   if (!existsSync(ledgerRoot)) return { updatedLedgers: [], pending: false };
@@ -858,13 +897,26 @@ export function recoverPendingClusterIntakes(
     ) {
       continue;
     }
+    // The git checkout is projection, never dispatch authority: a ledger that
+    // fails the strict v2 contract is skipped instead of blessed, and the
+    // durable queue remains the source that can rebuild it.
+    let ledger: ClusterIntakeLedger;
+    try {
+      ledger = clusterIntakeLedger(parsed);
+    } catch (error) {
+      console.warn(
+        `cluster intake recovery skipped unverifiable ledger ${ledgerPath}: ${errorMessage(error)}`,
+      );
+      continue;
+    }
     const dispatch = dispatchClusterLedger(
       ledgerPath,
-      parsed as ClusterIntakeLedger,
+      ledger,
       root,
       env,
       capacity,
       observe,
+      persistClaim,
       true,
     );
     if (dispatch.updated) updatedLedgers.push(ledgerPath);
@@ -883,9 +935,11 @@ function dispatchClusterLedger(
     max_live_workers: number;
   },
   observe: ClusterDispatchObserver,
+  persistClaim: ((ledgerPath: string) => void) | undefined,
   recoverUnclaimed: boolean,
 ): { updated: boolean; pending: boolean } {
   const repoSlug = ledger.target_repo.replace("/", "-");
+  const dispatchSecret = env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
   const unresolvedJobs = Object.values(ledger.clusters)
     .filter((entry) => entry.status !== "dispatched")
     .sort(
@@ -893,6 +947,12 @@ function dispatchClusterLedger(
         left.accepted_at.localeCompare(right.accepted_at) || left.cluster_id - right.cluster_id,
     )
     .map((entry) => {
+      // Git ledger and job files are projection, not authority. Only entries
+      // carrying the HMAC accepted-intent receipt minted when the durable
+      // append was accepted may reach dispatch; hand-written or corrupted
+      // state fails closed here instead of being blessed with a fresh
+      // materializer signature.
+      verifyClusterLedgerEntryAcceptedIntent(dispatchSecret, ledger.target_repo, entry);
       if (
         entry.dispatch_key !== `cluster-intake:${repoSlug}:${entry.cluster_id}` ||
         !/^[a-f0-9]{64}$/.test(entry.digest) ||
@@ -977,22 +1037,38 @@ function dispatchClusterLedger(
     jobsToDispatch = dispatchableJobs.slice(0, available);
     pending ||= jobsToDispatch.length < dispatchableJobs.length;
   }
-  const dispatchClaimedAt = new Date().toISOString();
-  for (const job of jobsToDispatch) {
-    const jobAuthentication = clusterDispatchAuthenticationTag(
-      env.CLAWSWEEPER_WEBHOOK_SECRET ?? "",
-      {
-        jobPath: job.path,
-        jobDigest: job.digest,
-        dispatchKey: job.dispatch_key,
-        mode: "autonomous",
-        runner: job.runner,
-        executionRunner: job.execution_runner,
-        plannerSandbox: "read-only",
-        model: job.model,
-        dryRun: "false",
-      },
+  if (jobsToDispatch.length > 0) {
+    // The claim is persisted and published before the workflow_dispatch side
+    // effect. GitHub gives no atomic run receipt, so this is at-least-once
+    // workflow creation: a crash in the window between publication and
+    // dispatch redispatches through recovery, and the worker-side receipt
+    // gate keeps worker execution intent exactly-once.
+    workingLedger = markClusterIntakeDispatchClaimed(
+      workingLedger,
+      jobsToDispatch,
+      new Date().toISOString(),
     );
+    ledgerUpdated = true;
+    pending = true;
+  }
+  if (ledgerUpdated) {
+    writeFileSync(resolve(root, ledgerPath), `${JSON.stringify(workingLedger, null, 2)}\n`, "utf8");
+  }
+  if (jobsToDispatch.length > 0) {
+    persistClaim?.(ledgerPath);
+  }
+  for (const job of jobsToDispatch) {
+    const jobAuthentication = clusterDispatchAuthenticationTag(dispatchSecret, {
+      jobPath: job.path,
+      jobDigest: job.digest,
+      dispatchKey: job.dispatch_key,
+      mode: "autonomous",
+      runner: job.runner,
+      executionRunner: job.execution_runner,
+      plannerSandbox: "read-only",
+      model: job.model,
+      dryRun: "false",
+    });
     const dispatchInputs = clusterWorkflowDispatchInputs(job, {
       runner: job.runner,
       executionRunner: job.execution_runner,
@@ -1014,22 +1090,12 @@ function dispatchClusterLedger(
       { cwd: root, encoding: "utf8", env, stdio: "pipe" },
     );
     if (result.status !== 0) {
+      // The durable claim already covers this job; recovery observes the
+      // missing run and redispatches after the claim grace window.
       throw new Error(
         `cluster intake dispatch failed for ${ledger.target_repo} cluster ${job.cluster_id}: ${result.stderr || result.stdout || result.status}`,
       );
     }
-  }
-  if (jobsToDispatch.length > 0) {
-    workingLedger = markClusterIntakeDispatchClaimed(
-      workingLedger,
-      jobsToDispatch,
-      dispatchClaimedAt,
-    );
-    ledgerUpdated = true;
-    pending = true;
-  }
-  if (ledgerUpdated) {
-    writeFileSync(resolve(root, ledgerPath), `${JSON.stringify(workingLedger, null, 2)}\n`, "utf8");
   }
   return { updated: ledgerUpdated, pending };
 }

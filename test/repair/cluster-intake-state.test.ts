@@ -460,23 +460,32 @@ test("dispatch recovery retries pending intent and completed dispatch is idempot
   const env = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
-    CLAWSWEEPER_WEBHOOK_SECRET: dispatchSecret,
+    CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   const capacity = () => ({ active: 0, max_live_workers: 2 });
   assert.throws(() => dispatchClusterIntakes([value], root, env, capacity), /dispatch failed/);
+  // The claim is persisted before the workflow_dispatch side effect, so a
+  // failed dispatch leaves a durable claim for recovery instead of silently
+  // reverting to pending.
   assert.equal(
     JSON.parse(fs.readFileSync(path.join(ledgerPath, "openclaw-openclaw.json"), "utf8")).clusters[
       "42"
     ].status,
-    "dispatch_pending",
+    "dispatch_claimed",
   );
 
   const calls = path.join(root, "calls.txt");
   fs.writeFileSync(gh, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n`, { mode: 0o755 });
-  assert.deepEqual(dispatchClusterIntakes([value], root, env, capacity), {
-    updatedLedgers: ["results/cluster-repair-intake/openclaw-openclaw.json"],
-    pending: true,
-  });
+  assert.deepEqual(
+    dispatchClusterIntakes([value], root, env, capacity, () => ({
+      action: "dispatch",
+      run: null,
+    })),
+    {
+      updatedLedgers: ["results/cluster-repair-intake/openclaw-openclaw.json"],
+      pending: true,
+    },
+  );
   assert.equal(
     JSON.parse(fs.readFileSync(path.join(ledgerPath, "openclaw-openclaw.json"), "utf8")).clusters[
       "42"
@@ -503,10 +512,15 @@ test("cluster dispatch retains pending intent while worker capacity is full", ()
   const value = intent();
   const ledgerPath = writeDurableIntents(root, [value]);
   assert.deepEqual(
-    dispatchClusterIntakes([value], root, process.env, () => ({
-      active: 2,
-      max_live_workers: 2,
-    })),
+    dispatchClusterIntakes(
+      [value],
+      root,
+      { ...process.env, CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret },
+      () => ({
+        active: 2,
+        max_live_workers: 2,
+      }),
+    ),
     { updatedLedgers: [], pending: true },
   );
   const ledger = JSON.parse(
@@ -536,7 +550,7 @@ test("cluster dispatch persists an available subset and recovers the remainder",
   const env = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
-    CLAWSWEEPER_WEBHOOK_SECRET: dispatchSecret,
+    CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   const partial = dispatchClusterIntakes([first, second], root, env, () => ({
     active: 1,
@@ -594,7 +608,7 @@ test("simultaneous conflicting snapshots dispatch the ledger-accepted job once",
   const env = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
-    CLAWSWEEPER_WEBHOOK_SECRET: dispatchSecret,
+    CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   dispatchClusterIntakes([accepted, conflicting], root, env, () => ({
     active: 0,
@@ -614,10 +628,15 @@ test("a capacity-blocked intake recovers from its durable ledger without the que
   const value = intent();
   writeDurableIntents(root, [value]);
   assert.deepEqual(
-    dispatchClusterIntakes([value], root, process.env, () => ({
-      active: 2,
-      max_live_workers: 2,
-    })),
+    dispatchClusterIntakes(
+      [value],
+      root,
+      { ...process.env, CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret },
+      () => ({
+        active: 2,
+        max_live_workers: 2,
+      }),
+    ),
     { updatedLedgers: [], pending: true },
   );
 
@@ -628,7 +647,7 @@ test("a capacity-blocked intake recovers from its durable ledger without the que
   const env = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
-    CLAWSWEEPER_WEBHOOK_SECRET: dispatchSecret,
+    CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   assert.deepEqual(
     recoverPendingClusterIntakes(
@@ -670,7 +689,7 @@ test("failed or invisible worker claims retry without terminalizing durable inte
   const env = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
-    CLAWSWEEPER_WEBHOOK_SECRET: dispatchSecret,
+    CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   const capacity = () => ({ active: 0, max_live_workers: 2 });
   dispatchClusterIntakes([value], root, env, capacity);
@@ -708,7 +727,7 @@ test("recovery rediscovers a successful worker when the claim publication was lo
   const env = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
-    CLAWSWEEPER_WEBHOOK_SECRET: dispatchSecret,
+    CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   dispatchClusterIntakes([value], root, env, () => ({ active: 0, max_live_workers: 2 }));
   fs.writeFileSync(path.join(ledgerPath, "openclaw-openclaw.json"), durablePending);
@@ -735,6 +754,151 @@ test("recovery rediscovers a successful worker when the claim publication was lo
   assert.equal(ledger.clusters["42"].status, "dispatched");
 });
 
+test("the durable claim is published before the workflow dispatch side effect", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-cluster-claim-order-"));
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  const value = intent();
+  writeDurableIntents(root, [value]);
+  const events = path.join(root, "events.txt");
+  fs.writeFileSync(path.join(bin, "gh"), `#!/bin/sh\nprintf 'dispatch\\n' >> '${events}'\n`, {
+    mode: 0o755,
+  });
+  const env = {
+    ...process.env,
+    PATH: `${bin}:${process.env.PATH}`,
+    CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
+  };
+  const persistedStatuses: string[] = [];
+  dispatchClusterIntakes(
+    [value],
+    root,
+    env,
+    () => ({ active: 0, max_live_workers: 2 }),
+    () => ({ action: "dispatch", run: null }),
+    (persistedLedger) => {
+      fs.appendFileSync(events, "persist\n");
+      persistedStatuses.push(
+        JSON.parse(fs.readFileSync(path.join(root, persistedLedger), "utf8")).clusters["42"].status,
+      );
+    },
+  );
+  assert.deepEqual(fs.readFileSync(events, "utf8").trim().split("\n"), ["persist", "dispatch"]);
+  assert.deepEqual(persistedStatuses, ["dispatch_claimed"]);
+});
+
+test("a crash between claim publication and dispatch redispatches exactly one worker", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-cluster-claim-crash-"));
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  const value = intent();
+  const ledgerPath = writeDurableIntents(root, [value]);
+  const gh = path.join(bin, "gh");
+  // The dispatch side effect never happens, exactly like a runner crash right
+  // after the durable claim publication.
+  fs.writeFileSync(gh, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  const env = {
+    ...process.env,
+    PATH: `${bin}:${process.env.PATH}`,
+    CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
+  };
+  const capacity = () => ({ active: 0, max_live_workers: 2 });
+  let persisted = 0;
+  assert.throws(
+    () =>
+      dispatchClusterIntakes(
+        [value],
+        root,
+        env,
+        capacity,
+        () => ({ action: "dispatch", run: null }),
+        () => {
+          persisted += 1;
+        },
+      ),
+    /dispatch failed/,
+  );
+  assert.equal(persisted, 1);
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(ledgerPath, "openclaw-openclaw.json"), "utf8")).clusters[
+      "42"
+    ].status,
+    "dispatch_claimed",
+  );
+
+  const calls = path.join(root, "calls.txt");
+  fs.writeFileSync(gh, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n`, { mode: 0o755 });
+  const recovered = recoverPendingClusterIntakes(root, env, capacity, () => ({
+    action: "dispatch",
+    run: null,
+  }));
+  assert.deepEqual(recovered, {
+    updatedLedgers: ["results/cluster-repair-intake/openclaw-openclaw.json"],
+    pending: true,
+  });
+  assert.equal(fs.readFileSync(calls, "utf8").trim().split("\n").length, 1);
+  recoverPendingClusterIntakes(root, env, capacity, () => ({
+    action: "recover",
+    run: { databaseId: 7 },
+  }));
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(ledgerPath, "openclaw-openclaw.json"), "utf8")).clusters[
+      "42"
+    ].status,
+    "dispatched",
+  );
+  assert.equal(fs.readFileSync(calls, "utf8").trim().split("\n").length, 1);
+});
+
+test("recovery refuses git state without a verifiable accepted-intent receipt", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-cluster-authority-"));
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  const value = intent();
+  const ledgerPath = writeDurableIntents(root, [value]);
+  const calls = path.join(root, "calls.txt");
+  fs.writeFileSync(path.join(bin, "gh"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n`, {
+    mode: 0o755,
+  });
+  const capacity = () => ({ active: 0, max_live_workers: 2 });
+  const observer = () => ({ action: "dispatch" as const, run: null });
+
+  // A receipt minted under a different secret is exactly what fabricated or
+  // corrupted git ledger state looks like to the materializer: fail closed
+  // before any dispatch instead of blessing it with a fresh signature.
+  const wrongSecretEnv = {
+    ...process.env,
+    PATH: `${bin}:${process.env.PATH}`,
+    CLAWSWEEPER_WEBHOOK_SECRET: "not-the-accepting-secret",
+  };
+  assert.throws(
+    () => recoverPendingClusterIntakes(root, wrongSecretEnv, capacity, observer),
+    /accepted-intent receipt verification failed/,
+  );
+  assert.throws(
+    () => dispatchClusterIntakes([value], root, wrongSecretEnv, capacity, observer),
+    /accepted-intent receipt verification failed/,
+  );
+  assert.equal(fs.existsSync(calls), false);
+
+  // A structurally invalid v2 ledger is skipped as unverifiable projection
+  // instead of becoming dispatch authority.
+  const env = {
+    ...process.env,
+    PATH: `${bin}:${process.env.PATH}`,
+    CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
+  };
+  const ledgerFile = path.join(ledgerPath, "openclaw-openclaw.json");
+  const tampered = JSON.parse(fs.readFileSync(ledgerFile, "utf8"));
+  tampered.injected_by_state_writer = true;
+  fs.writeFileSync(ledgerFile, `${JSON.stringify(tampered)}\n`);
+  assert.deepEqual(recoverPendingClusterIntakes(root, env, capacity, observer), {
+    updatedLedgers: [],
+    pending: false,
+  });
+  assert.equal(fs.existsSync(calls), false);
+});
+
 test("a later batch dispatch failure does not hide the earlier successful worker", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-cluster-partial-dispatch-"));
   const bin = path.join(root, "bin");
@@ -752,7 +916,7 @@ test("a later batch dispatch failure does not hide the earlier successful worker
   const env = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
-    CLAWSWEEPER_WEBHOOK_SECRET: dispatchSecret,
+    CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   const capacity = () => ({ active: 0, max_live_workers: 2 });
   assert.throws(

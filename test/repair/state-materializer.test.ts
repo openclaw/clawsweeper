@@ -84,6 +84,58 @@ test("capacity-full cluster intake is acknowledged without retaining unrelated d
   );
 });
 
+test("materializer isolates a malformed cluster intent and still commits ordinary state", async () => {
+  const fixture = createStateFixture();
+  const malformed = clusterIntentPayload();
+  (malformed.jobs as Array<Record<string, unknown>>)[0]!.digest = "0".repeat(64);
+  const records = [
+    record(1, "cluster_intake", "openclaw-openclaw/store", malformed),
+    record(2, "sweep_status", "openclaw-openclaw", sweepStatus("continued", "12:00:02.000")),
+  ];
+  let drains = 0;
+  let disposition: Record<string, unknown> | null = null;
+  const fetchImpl = signedQueueFetch(async (url, body) => {
+    if (url.pathname === "/internal/state/drain") {
+      drains += 1;
+      return drains === 1
+        ? Response.json({ ok: true, drain_token: "poison-intake", records })
+        : Response.json({ ok: true, drain_token: null, records: [] });
+    }
+    assert.equal(url.pathname, "/internal/state/dispose");
+    disposition = body;
+    return Response.json({ ok: true, acked: 2, retried: 0, dead_lettered: 1 });
+  });
+
+  const summary = await withMaterializerFixture(fixture, () =>
+    runStateMaterializer({
+      env: materializerEnv(),
+      fetchImpl,
+      clusterCapacity: () => ({ active: 0, max_live_workers: 2 }),
+    }),
+  );
+
+  assert.deepEqual(summary, { drained: 2, committed: 1, acked: 2, skipped: 0, errors: 1 });
+  assert.equal(
+    JSON.parse(showState(fixture, "results/sweep-status/openclaw-openclaw.json")).detail,
+    "continued",
+  );
+  assert.equal(
+    statePathExists(fixture, "results/cluster-repair-intake/openclaw-openclaw.json"),
+    false,
+  );
+  assert.deepEqual(disposition, {
+    drain_token: "poison-intake",
+    failures: [
+      {
+        seq: 1,
+        reason:
+          "invalid cluster intake job fence: jobs/openclaw/inbox/gitcrawl-42-capacity-proof.md",
+        retryable: false,
+      },
+    ],
+  });
+});
+
 test("startup cluster recovery uses the configured isolated publisher", async () => {
   const fixture = createStateFixture();
   const intake = record(1, "cluster_intake", "openclaw-openclaw/store", clusterIntentPayload());
