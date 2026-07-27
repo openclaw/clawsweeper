@@ -968,7 +968,8 @@ test("superseding source revisions revoke the old lease without Actions cancella
       Array.from(
         storage.sql.exec(
           `SELECT item_key, prior_revision, next_revision, superseded_run_id,
-                  source_action, superseded_at
+                  superseded_lease_id, superseded_run_attempt, superseded_claim_generation,
+                  superseded_protocol_version, source_action, superseded_at
              FROM exact_review_queue_supersessions`,
         ),
         (row) => ({ ...row }),
@@ -978,7 +979,11 @@ test("superseding source revisions revoke the old lease without Actions cancella
           item_key: "openclaw/openclaw#753",
           prior_revision: 1,
           next_revision: 2,
+          superseded_lease_id: "lease-753",
           superseded_run_id: "7530",
+          superseded_run_attempt: 1,
+          superseded_claim_generation: 1,
+          superseded_protocol_version: 2,
           source_action: "synchronize",
           superseded_at: now,
         },
@@ -1000,7 +1005,10 @@ test("superseding source revisions revoke the old lease without Actions cancella
       }),
     );
     assert.equal(staleCompletion.status, 409);
-    assert.deepEqual(await staleCompletion.json(), { error: "lease_not_claimed" });
+    assert.deepEqual(await staleCompletion.json(), {
+      error: "lease_superseded",
+      superseded_by_revision: 2,
+    });
   } finally {
     Date.now = originalNow;
   }
@@ -7430,7 +7438,27 @@ test("a newer exact-review enqueue revokes a claimed immutable decision", async 
     }),
   );
   assert.equal(complete.status, 409);
-  assert.deepEqual(await complete.json(), { error: "lease_not_claimed" });
+  assert.deepEqual(await complete.json(), {
+    error: "lease_superseded",
+    superseded_by_revision: 2,
+  });
+
+  const mismatchedGeneration = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: "lease-620",
+        item_key: "openclaw/openclaw#620",
+        lease_revision: 1,
+        claim_generation: 2,
+        run_id: "6200",
+        run_attempt: 1,
+        outcome: "success",
+      }),
+    }),
+  );
+  assert.equal(mismatchedGeneration.status, 409);
+  assert.deepEqual(await mismatchedGeneration.json(), { error: "lease_not_claimed" });
 });
 
 test("a newer exact-review enqueue revokes a claimed legacy workflow lease", async () => {

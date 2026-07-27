@@ -360,7 +360,11 @@ type ExactReviewSupersessionAudit = {
   itemKey: string;
   priorRevision: number;
   nextRevision: number;
+  supersededLeaseId: string | null;
   supersededRunId: string | null;
+  supersededRunAttempt: number | null;
+  supersededClaimGeneration: number | null;
+  supersededProtocolVersion: 1 | 2 | null;
   sourceAction: string;
   reasonCode: "newer_source_event" | "live_head_advanced";
   supersededAt: number;
@@ -1297,7 +1301,11 @@ export class ExactReviewQueue {
                 itemKey: key,
                 priorRevision,
                 nextRevision,
+                supersededLeaseId: current.leaseId || null,
                 supersededRunId,
+                supersededRunAttempt: current.claimedRunAttempt ?? null,
+                supersededClaimGeneration: current.claimGeneration ?? null,
+                supersededProtocolVersion: current.claimProtocolVersion ?? null,
                 sourceAction: decision.sourceAction,
                 reasonCode: "newer_source_event",
                 supersededAt: now,
@@ -1745,6 +1753,28 @@ export class ExactReviewQueue {
         (tupleCompletion && exactReviewClaimGeneration(item.claimGeneration) !== claimGeneration) ||
         item.claimedRunId !== runId
       ) {
+        // A superseded active review has no completion left to record, but only
+        // acknowledge it when the durable audit proves this exact v2 claimant
+        // was fenced by a newer source revision. All ordinary ownership misses
+        // remain conflicts so callers cannot mistake malformed tuples for a
+        // completed or superseded review.
+        const supersededByRevision =
+          tupleCompletion && completionProtocolVersion === 2 && runAttempt !== null
+            ? this.supersededCompletionRevisionSync({
+                itemKey,
+                leaseId,
+                leaseRevision,
+                claimGeneration,
+                runId,
+                runAttempt,
+              })
+            : null;
+        if (supersededByRevision !== null) {
+          return json(
+            { error: "lease_superseded", superseded_by_revision: supersededByRevision },
+            409,
+          );
+        }
         return json({ error: "lease_not_claimed" }, 409);
       }
       if ((item.claimProtocolVersion ?? 1) !== completionProtocolVersion) {
@@ -3219,7 +3249,11 @@ export class ExactReviewQueue {
           itemKey: item.key,
           priorRevision: item.revision,
           nextRevision: item.revision + 1,
+          supersededLeaseId: null,
           supersededRunId: null,
+          supersededRunAttempt: null,
+          supersededClaimGeneration: null,
+          supersededProtocolVersion: null,
           sourceAction: item.decision.sourceAction,
           reasonCode: "live_head_advanced",
           supersededAt: checkedAt,
@@ -5726,7 +5760,14 @@ export class ExactReviewQueue {
          item_key TEXT NOT NULL,
          prior_revision INTEGER NOT NULL CHECK (prior_revision >= 1),
          next_revision INTEGER NOT NULL CHECK (next_revision > prior_revision),
+         superseded_lease_id TEXT,
          superseded_run_id TEXT,
+         superseded_run_attempt INTEGER
+           CHECK (superseded_run_attempt IS NULL OR superseded_run_attempt >= 1),
+         superseded_claim_generation INTEGER
+           CHECK (superseded_claim_generation IS NULL OR superseded_claim_generation >= 1),
+         superseded_protocol_version INTEGER
+           CHECK (superseded_protocol_version IS NULL OR superseded_protocol_version IN (1, 2)),
          source_action TEXT NOT NULL,
          reason_code TEXT NOT NULL DEFAULT 'newer_source_event',
          superseded_at INTEGER NOT NULL
@@ -5759,7 +5800,14 @@ export class ExactReviewQueue {
              item_key TEXT NOT NULL,
              prior_revision INTEGER NOT NULL CHECK (prior_revision >= 1),
              next_revision INTEGER NOT NULL CHECK (next_revision > prior_revision),
+             superseded_lease_id TEXT,
              superseded_run_id TEXT,
+             superseded_run_attempt INTEGER
+               CHECK (superseded_run_attempt IS NULL OR superseded_run_attempt >= 1),
+             superseded_claim_generation INTEGER
+               CHECK (superseded_claim_generation IS NULL OR superseded_claim_generation >= 1),
+             superseded_protocol_version INTEGER
+               CHECK (superseded_protocol_version IS NULL OR superseded_protocol_version IN (1, 2)),
              source_action TEXT NOT NULL,
              reason_code TEXT NOT NULL DEFAULT 'newer_source_event',
              superseded_at INTEGER NOT NULL
@@ -5779,6 +5827,35 @@ export class ExactReviewQueue {
           `ALTER TABLE ${replacement} RENAME TO ${EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE}`,
         );
       });
+    }
+    for (const [column, definition] of [
+      ["superseded_lease_id", "TEXT"],
+      [
+        "superseded_run_attempt",
+        "INTEGER CHECK (superseded_run_attempt IS NULL OR superseded_run_attempt >= 1)",
+      ],
+      [
+        "superseded_claim_generation",
+        "INTEGER CHECK (superseded_claim_generation IS NULL OR superseded_claim_generation >= 1)",
+      ],
+      [
+        "superseded_protocol_version",
+        "INTEGER CHECK (superseded_protocol_version IS NULL OR superseded_protocol_version IN (1, 2))",
+      ],
+    ]) {
+      const present = Array.from(
+        this.storage.sql.exec(
+          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE}')
+            WHERE name = ?`,
+          column,
+        ),
+      ).length;
+      if (!present) {
+        this.storage.sql.exec(
+          `ALTER TABLE ${EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE}
+             ADD COLUMN ${column} ${definition}`,
+        );
+      }
     }
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_queue_supersessions_at
@@ -6570,17 +6647,63 @@ export class ExactReviewQueue {
     );
   }
 
+  private supersededCompletionRevisionSync({
+    itemKey,
+    leaseId,
+    leaseRevision,
+    claimGeneration,
+    runId,
+    runAttempt,
+  }: {
+    itemKey: string;
+    leaseId: string;
+    leaseRevision: number;
+    claimGeneration: number;
+    runId: string;
+    runAttempt: number;
+  }) {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT next_revision
+           FROM ${EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE}
+          WHERE item_key = ?
+            AND prior_revision = ?
+            AND superseded_lease_id = ?
+            AND superseded_run_id = ?
+            AND superseded_run_attempt = ?
+            AND superseded_claim_generation = ?
+            AND superseded_protocol_version = 2
+            AND reason_code = 'newer_source_event'
+          ORDER BY superseded_at DESC, audit_id DESC
+          LIMIT 1`,
+        itemKey,
+        leaseRevision,
+        leaseId,
+        runId,
+        runAttempt,
+        claimGeneration,
+      ),
+    )[0] as { next_revision?: unknown } | undefined;
+    const nextRevision = Number(row?.next_revision);
+    return Number.isInteger(nextRevision) && nextRevision > leaseRevision ? nextRevision : null;
+  }
+
   private insertSupersessionAuditSync(audit: ExactReviewSupersessionAudit) {
     this.storage.sql.exec(
       `INSERT OR IGNORE INTO ${EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE}
-          (audit_id, item_key, prior_revision, next_revision, superseded_run_id,
-           source_action, reason_code, superseded_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          (audit_id, item_key, prior_revision, next_revision, superseded_lease_id,
+           superseded_run_id, superseded_run_attempt, superseded_claim_generation,
+           superseded_protocol_version, source_action, reason_code, superseded_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       audit.auditId,
       audit.itemKey,
       audit.priorRevision,
       audit.nextRevision,
+      audit.supersededLeaseId,
       audit.supersededRunId,
+      audit.supersededRunAttempt,
+      audit.supersededClaimGeneration,
+      audit.supersededProtocolVersion,
       audit.sourceAction,
       audit.reasonCode,
       audit.supersededAt,

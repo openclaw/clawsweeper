@@ -2265,18 +2265,19 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   assert.match(completeLeaseStep, /lease_revision: leaseRevision/);
   assert.match(completeLeaseStep, /run_attempt: runAttempt/);
   assert.match(completeLeaseStep, /outcome,/);
-  // A completion conflict means the durable queue already owns the outcome, so
-  // it must not fail a run whose review generation and publication succeeded.
-  // Unknown conflicts and every other non-2xx status stay visible.
+  // A completion callback is non-fatal only when the queue proves that this
+  // exact lease was superseded. Unknown conflicts and every other non-2xx
+  // status stay visible.
   assert.doesNotMatch(completeLeaseStep, /curl --fail/);
   assert.match(completeLeaseStep, /--write-out '%\{http_code\}'/);
   assert.match(completeLeaseStep, /if \[\[ "\$status" == 2\* \]\]; then\s*\n\s*exit 0/);
-  // Completion accepts only conflicts that name a terminal owner. The claim
-  // step's ambiguous lease_decision_unavailable must keep failing the run.
-  assert.match(
-    completeLeaseStep,
-    /const safeConflicts = new Set\(\[\s*"lease_not_active",\s*"lease_already_claimed",\s*"stale_run_attempt",\s*\]\);/,
-  );
+  // Completion accepts only its audited supersession response; claim-path
+  // conflicts and ambiguous ownership misses must keep failing the run.
+  assert.match(completeLeaseStep, /const safeConflicts = new Set\(\["lease_superseded"\]\);/);
+  assert.doesNotMatch(completeLeaseStep, /"lease_not_claimed"/);
+  assert.doesNotMatch(completeLeaseStep, /"lease_not_active"/);
+  assert.doesNotMatch(completeLeaseStep, /"lease_already_claimed"/);
+  assert.doesNotMatch(completeLeaseStep, /"stale_run_attempt"/);
   assert.doesNotMatch(completeLeaseStep, /"lease_decision_unavailable"/);
   assert.match(
     completeLeaseStep,

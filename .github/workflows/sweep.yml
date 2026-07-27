@@ -1452,19 +1452,15 @@ jobs:
               if [[ "$status" == 2* ]]; then
                 exit 0
               fi
-              # These three conflicts each name a terminal owner for this item:
-              # the lease is gone, a newer claim took it over, or this attempt is
-              # stale. There is no outcome left for this run to record, so it must
-              # not go red. Every other conflict, including the claim step's
-              # ambiguous lease_decision_unavailable, stays visible.
+              # Only this completion-specific conflict is emitted after the
+              # durable queue verifies that this exact v2 lease tuple was fenced
+              # by a newer source revision. Every generic ownership conflict
+              # stays visible so a malformed or mismatched callback cannot turn
+              # a failed completion into a green workflow.
               if [ "$status" = "409" ]; then
                 conflict_reason="$(RESPONSE="$response" node <<'NODE'
                   const response = JSON.parse(process.env.RESPONSE || "{}");
-                  const safeConflicts = new Set([
-                    "lease_not_active",
-                    "lease_already_claimed",
-                    "stale_run_attempt",
-                  ]);
+                  const safeConflicts = new Set(["lease_superseded"]);
                   if (!safeConflicts.has(response.error)) process.exit(1);
                   process.stdout.write(response.error);
           NODE
@@ -1472,7 +1468,7 @@ jobs:
                   echo "Unexpected exact-review completion conflict: $response" >&2
                   exit 1
                 }
-                echo "::notice::Exact-review completion skipped because the durable queue already owns the outcome: $conflict_reason"
+                echo "::notice::Exact-review completion skipped because its lease was superseded: $conflict_reason"
                 exit 0
               fi
               echo "Exact-review completion returned HTTP $status: $response" >&2
