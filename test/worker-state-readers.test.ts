@@ -10,7 +10,10 @@ import { parse } from "yaml";
 import { hydrateState } from "../scripts/hydrate-state.ts";
 import { backfillWorkerRecords } from "../scripts/backfill-worker-records.ts";
 import { verifyWorkerRecordParity } from "../scripts/verify-worker-record-parity.ts";
-import { decideRecordAuthority } from "../scripts/reconcile-worker-records.ts";
+import {
+  decideRecordAuthority,
+  reconcileWorkerRecordAuthority,
+} from "../scripts/reconcile-worker-records.ts";
 import {
   ingestGitRecords,
   replayWorkerRecordProjections,
@@ -244,6 +247,143 @@ test("authority reconciliation imports a git-only decision packet with its tuple
       reason: "git-only decision-packets must be imported with its atomic tuple",
     },
   ]);
+});
+
+test("authority reconciliation tolerates agreeing-but-stale placement and keeps the ambiguous throw", () => {
+  // Item 857: canonical and git both keep the item under items/, GitHub says
+  // closed, and the only parity mismatch is a git-only decision packet.
+  const canonicalOpen = workerRecord("items", "857", "canonical open\n", 4);
+  const result = decideRecordAuthority({
+    mismatches: [
+      { path: "decision-packets/857.json", gitDigest: "a".repeat(64), workerDigest: null },
+    ],
+    canonicalRecords: new Map([["items/857.md", canonicalOpen]]),
+    gitRecordPaths: new Set(["items/857.md", "decision-packets/857.json"]),
+    githubStates: new Map([["857", "closed"]]),
+    gitCommitTimes: new Map(),
+  });
+
+  assert.deepEqual(result.tuples, [
+    {
+      itemId: "857",
+      verdict: "both-stale",
+      reason: "GitHub is closed but git and canonical agree on items; sweep will correct placement",
+    },
+  ]);
+  assert.equal(
+    result.decisions.find((entry) => entry.path === "decision-packets/857.json")?.verdict,
+    "both-stale",
+  );
+
+  // Genuinely ambiguous: stores disagree on the primary and git lacks the
+  // GitHub-expected primary. This must still fail loudly.
+  assert.throws(
+    () =>
+      decideRecordAuthority({
+        mismatches: [
+          { path: "decision-packets/858.json", gitDigest: "b".repeat(64), workerDigest: null },
+        ],
+        canonicalRecords: new Map([["items/858.md", workerRecord("items", "858", "open\n", 5)]]),
+        gitRecordPaths: new Set(["decision-packets/858.json"]),
+        githubStates: new Map([["858", "closed"]]),
+        gitCommitTimes: new Map(),
+      }),
+    /Canonical placement for 858 contradicts GitHub, but git lacks closed/,
+  );
+});
+
+test("reconciliation imports a git-only packet for a both-stale item keyed to canonical placement", async () => {
+  const slug = "openclaw-clawsweeper";
+  const packet = '{"decision":"merge"}\n';
+  const packetDigest = createHash("sha256").update(packet).digest("hex");
+  const item = [
+    "---",
+    "number: 857",
+    `decision_packet_sha256: ${packetDigest}`,
+    `decision_packet_path: records/${slug}/decision-packets/857.json`,
+    "---",
+    "shared item body",
+    "",
+  ].join("\n");
+  const root = mkdtempSync(path.join(tmpdir(), "clawsweeper-both-stale-test-"));
+  const stateRoot = path.join(root, "state");
+  write(path.join(stateRoot, "records", slug, "items", "857.md"), item);
+  write(path.join(stateRoot, "records", slug, "decision-packets", "857.json"), packet);
+  const parityReport = path.join(root, "parity.json");
+  writeFileSync(
+    parityReport,
+    JSON.stringify({
+      repoSlug: slug,
+      gitRecords: 2,
+      workerRecords: 1,
+      mismatches: [
+        { path: "decision-packets/857.json", gitDigest: packetDigest, workerDigest: null },
+      ],
+    }),
+  );
+  const summaryFile = path.join(root, "summary.md");
+  writeFileSync(summaryFile, "");
+  const tupleRequests: Array<Record<string, unknown>> = [];
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(input.toString());
+    if (url.pathname === "/internal/state/records/export") {
+      return Response.json({
+        repoSlug: slug,
+        revision: 4,
+        nextCursor: null,
+        records: [workerRecord("items", "857", item, 1)],
+      });
+    }
+    assert.equal(url.pathname, "/internal/state/records/tuples");
+    tupleRequests.push(JSON.parse(String(init?.body ?? "{}")));
+    return Response.json({ ok: true, accepted: true, deduped: false, revision: 2, sequence: 7 });
+  }) as typeof fetch;
+
+  try {
+    const result = await reconcileWorkerRecordAuthority({
+      stateRoot,
+      targetRepo: "openclaw/clawsweeper",
+      repoSlug: slug,
+      baseUrl: "https://worker.example",
+      webhookSecret: "fixture-secret",
+      parityReport,
+      summaryFile,
+      fetch: fetchImpl,
+      githubStates: () => new Map([["857", "closed"]]),
+      gitCommitTimes: () => new Map(),
+    });
+
+    assert.deepEqual(result.decisions, [
+      {
+        path: "decision-packets/857.json",
+        itemId: "857",
+        verdict: "both-stale",
+        reason:
+          "GitHub is closed but git and canonical agree on items; sweep will correct placement",
+      },
+    ]);
+    assert.deepEqual(result.corrections, [
+      { itemId: "857", deduped: false, revision: 2, sequence: 7 },
+    ]);
+    assert.equal(tupleRequests.length, 1);
+    assert.deepEqual(tupleRequests[0]?.operations, [
+      {
+        path: `records/${slug}/items/857.md`,
+        expectedDigest: createHash("sha256").update(item).digest("hex"),
+        contentBase64: Buffer.from(item).toString("base64"),
+      },
+      { path: `records/${slug}/closed/857.md`, expectedDigest: null },
+      { path: `records/${slug}/plans/857.md`, expectedDigest: null },
+      {
+        path: `records/${slug}/decision-packets/857.json`,
+        expectedDigest: null,
+        contentBase64: Buffer.from(packet).toString("base64"),
+      },
+    ]);
+    assert.match(readFileSync(summaryFile, "utf8"), /both-stale/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("authority reconciliation keeps canonical content when its provenance is newer", () => {

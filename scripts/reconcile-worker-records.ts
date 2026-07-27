@@ -27,13 +27,13 @@ export type RecordParityMismatch = {
 export type AuthorityDecision = {
   path: string;
   itemId: string;
-  verdict: "git-wins" | "canonical-wins" | "lag";
+  verdict: "git-wins" | "canonical-wins" | "both-stale" | "lag";
   reason: string;
 };
 
 export type AuthorityTupleDecision = {
   itemId: string;
-  verdict: "git-wins" | "canonical-wins";
+  verdict: "git-wins" | "canonical-wins" | "both-stale";
   reason: string;
 };
 
@@ -97,16 +97,25 @@ export function decideRecordAuthority(options: {
 
     let tuple: AuthorityTupleDecision;
     if (canonicalPrimary && canonicalPrimary !== expectedPrimary) {
-      if (!gitHasExpectedPrimary) {
+      if (gitHasExpectedPrimary) {
+        tuple = {
+          itemId,
+          verdict: "git-wins",
+          reason: `GitHub is ${githubState}; canonical ${canonicalPrimary} placement is stale`,
+        };
+      } else if (options.gitRecordPaths.has(recordPath(canonicalPrimary, itemId))) {
+        // Both stores agree on placement; only GitHub disagrees. Placement is not a
+        // parity problem — the normal sweep corrects it when it re-reviews the item.
+        tuple = {
+          itemId,
+          verdict: "both-stale",
+          reason: `GitHub is ${githubState} but git and canonical agree on ${canonicalPrimary}; sweep will correct placement`,
+        };
+      } else {
         throw new Error(
           `Canonical placement for ${itemId} contradicts GitHub, but git lacks ${expectedPrimary}`,
         );
       }
-      tuple = {
-        itemId,
-        verdict: "git-wins",
-        reason: `GitHub is ${githubState}; canonical ${canonicalPrimary} placement is stale`,
-      };
     } else if (
       canonicalPrimary === expectedPrimary &&
       gitHasOppositePrimary &&
@@ -252,13 +261,22 @@ export async function reconcileWorkerRecordAuthority(options: {
     revision: number;
     sequence: number;
   }> = [];
-  const gitWinners = authority.tuples.filter((tuple) => tuple.verdict === "git-wins");
+  const gitWinners = authority.tuples.filter(
+    (tuple) => tuple.verdict === "git-wins" || tuple.verdict === "both-stale",
+  );
   if (!options.dryRun) {
     for (const tuple of gitWinners) {
       const mutation = gitTupleMutation({
         repoSlug: options.repoSlug,
         itemId: tuple.itemId,
-        githubState: githubStates.get(tuple.itemId)!,
+        // A both-stale tuple keeps the placement both stores agree on, so the
+        // corrective tuple validates against the current canonical primary.
+        primarySection:
+          tuple.verdict === "both-stale"
+            ? canonicalPrimarySection(canonicalRecords, tuple.itemId)!
+            : githubStates.get(tuple.itemId)! === "open"
+              ? "items"
+              : "closed",
         gitRecords,
         canonicalRecords,
       });
@@ -327,11 +345,11 @@ export async function reconcileWorkerRecordAuthority(options: {
 function gitTupleMutation(options: {
   repoSlug: string;
   itemId: string;
-  githubState: GitHubState;
+  primarySection: "items" | "closed";
   gitRecords: ReadonlyMap<string, { content: string; digest: string }>;
   canonicalRecords: ReadonlyMap<string, WorkerRecord>;
 }) {
-  const primarySection = options.githubState === "open" ? "items" : "closed";
+  const primarySection = options.primarySection;
   const primary = options.gitRecords.get(recordPath(primarySection, options.itemId));
   if (!primary) {
     throw new Error(
@@ -495,7 +513,7 @@ function renderDecisionTable(
   dryRun: boolean,
   decisions: readonly AuthorityDecision[],
 ) {
-  const counts = { "git-wins": 0, "canonical-wins": 0, lag: 0 };
+  const counts = { "git-wins": 0, "canonical-wins": 0, "both-stale": 0, lag: 0 };
   for (const decision of decisions) counts[decision.verdict] += 1;
   const rows = decisions
     .map(
@@ -506,7 +524,7 @@ function renderDecisionTable(
   return [
     `### Worker record authority reconciliation: ${targetRepo}`,
     "",
-    `Mode: ${dryRun ? "dry run" : "apply"}. Git wins: ${counts["git-wins"]}; canonical wins: ${counts["canonical-wins"]}; projection lag: ${counts.lag}.`,
+    `Mode: ${dryRun ? "dry run" : "apply"}. Git wins: ${counts["git-wins"]}; canonical wins: ${counts["canonical-wins"]}; both stale: ${counts["both-stale"]}; projection lag: ${counts.lag}.`,
     "",
     "| Path | Verdict | Reason |",
     "| --- | --- | --- |",
