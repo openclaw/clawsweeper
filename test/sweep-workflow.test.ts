@@ -2627,7 +2627,77 @@ test("planned background reviews allow safe content-cache reuse without weakenin
   assert.doesNotMatch(eventReviewJob, /--planned-automatic-review/);
 });
 
-test("sweep event reviews and target fanout avoid storm amplification", () => {
+test("legacy event field serializer preserves branchless issue and PR intake", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: Array<{ name?: string; run?: string }> }>;
+  };
+  const run = workflow.jobs["legacy-event-queue-intake"]?.steps.find(
+    (step) => step.name === "Enqueue legacy event through the durable control plane",
+  )?.run;
+  assert.ok(run);
+  const script = run.match(/node <<'NODE'\n([\s\S]*?)\nNODE\n/)?.[1];
+  assert.ok(script);
+
+  const serialize = (payload: Record<string, unknown>): string[] => {
+    const output = execFileSync(process.execPath, ["-"], {
+      encoding: "utf8",
+      env: { ...process.env, CLIENT_PAYLOAD: JSON.stringify(payload) },
+      input: script,
+    });
+    const fields = output.split("\0");
+    assert.equal(fields.pop(), "");
+    return fields;
+  };
+
+  assert.deepEqual(
+    serialize({
+      item_kind: "issue",
+      target_repo: "openclaw/openclaw",
+      source_event: "issues",
+      source_action: "opened",
+    }),
+    ["openclaw/openclaw", "", "0"],
+  );
+  assert.deepEqual(
+    serialize({
+      item_kind: "pull_request",
+      target_repo: "openclaw/clawhub",
+      item_number: 3273,
+      source_event: "pull_request_target",
+      source_action: "opened",
+      supersedes_in_progress: false,
+    }),
+    ["openclaw/clawhub", "", "0"],
+  );
+  assert.deepEqual(
+    serialize({
+      item_kind: "pull_request",
+      target_repo: "openclaw/clawhub",
+      source_event: "pull_request",
+      source_action: "edited",
+      queue_claim: {
+        installation_id: 1,
+        source_head_sha: "a".repeat(40),
+        source_base_sha: "b".repeat(40),
+        source_is_draft: false,
+        source_content_revision: "c".repeat(64),
+      },
+    }),
+    ["openclaw/clawhub", "", "1"],
+  );
+  assert.deepEqual(
+    serialize({
+      item_kind: "pull_request",
+      target_repo: "openclaw/clawhub",
+      target_branch: "main",
+      source_event: "issue_comment",
+      source_action: "created",
+    }),
+    ["openclaw/clawhub", "main", "0"],
+  );
+});
+
+test("sweep issue and PR event reviews and target fanout avoid storm amplification", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const legacyIntakeBlock = workflow.slice(
     workflow.indexOf("legacy-event-queue-intake:"),
