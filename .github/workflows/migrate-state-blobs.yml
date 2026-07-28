@@ -44,7 +44,10 @@ env:
 jobs:
   migrate:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # 120 minutes was killed twice mid-migration (runs 30300581022, 30313938441):
+    # per-file HMAC uploads of the ~315MB many-file ledger tree need more room.
+    # Idempotent resume makes a long budget safe.
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v7
         with:
