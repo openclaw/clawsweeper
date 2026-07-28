@@ -27,9 +27,16 @@ try {
     webhookSecret,
     repoSlugs: resolvedRepoSlugs,
   });
+  if (result.coldSlugs.length) {
+    console.error(
+      `[worker-record-cache] ${result.coldSlugs.length} cold slug(s) have no stored snapshot and are excluded from the cache key (hydration replays their journal from revision 0): ${result.coldSlugs.join(", ")}`,
+    );
+  }
   writeOutput("available", "true");
   writeOutput("cache-key", result.key);
-  console.log(JSON.stringify({ available: true, pairs: result.pairs }));
+  console.log(
+    JSON.stringify({ available: true, pairs: result.pairs, coldSlugs: result.coldSlugs }),
+  );
 } catch (error) {
   if (!(error instanceof WorkerSnapshotUnavailableError)) throw error;
   writeOutput("available", "false");

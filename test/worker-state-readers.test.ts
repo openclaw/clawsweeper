@@ -15,8 +15,11 @@ import {
   reconcileWorkerRecordAuthority,
 } from "../scripts/reconcile-worker-records.ts";
 import {
+  COLD_HYDRATION_MAX_RECORDS,
   ingestGitRecords,
   replayWorkerRecordProjections,
+  resolveWorkerSnapshotCacheKey,
+  WorkerSnapshotUnavailableError,
   type WorkerRecord,
 } from "../scripts/worker-records.ts";
 
@@ -340,24 +343,37 @@ test("hydrate-state refuses Worker cutover and loudly falls back to git without 
   }
 });
 
-test("hydrate-state refusal names the failing slug, request evidence, and prior successes", async () => {
+test("hydrate-state cold-hydrates a snapshot-less slug from revision 0 and keeps cutover", async () => {
   const fixture = createStateFixture();
-  const target = path.join(fixture.root, "partial-fallback-target");
+  const target = path.join(fixture.root, "cold-slug-target");
   const cacheRoot = path.join(fixture.root, "snapshot-cache");
-  const missingSlug = "zz-missing";
+  const coldSlug = "zz-cold";
+  const coldItem = "---\nnumber: 7\n---\ncanonical-only item\n";
+  const coldPlan = "---\nnumber: 7\n---\ncanonical-only plan\n";
   const errors: string[] = [];
   const originalError = console.error;
   console.error = (...values) => errors.push(values.join(" "));
   const healthyFetch = workerFetch(contents);
+  const coldExportBodies: Array<Record<string, unknown>> = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
     const body = JSON.parse(String(init?.body || "{}")) as { repoSlug?: string };
-    if (body.repoSlug === missingSlug) {
-      assert.ok(url.pathname.endsWith("/snapshots/latest"));
-      return Response.json(
-        { error: "snapshot_not_found", snapshotStoreAvailable: true },
-        { status: 404 },
-      );
+    if (body.repoSlug === coldSlug) {
+      if (url.pathname.endsWith("/snapshots/latest")) {
+        // First records postdate the R2 seeding: no snapshot exists yet.
+        return Response.json(
+          { error: "snapshot_not_found", snapshotStoreAvailable: true },
+          { status: 404 },
+        );
+      }
+      assert.ok(url.pathname.endsWith("/export"));
+      coldExportBodies.push(JSON.parse(String(init?.body || "{}")));
+      return Response.json({
+        repoSlug: coldSlug,
+        revision: 2,
+        nextCursor: null,
+        records: [workerRecord("items", "7", coldItem, 1), workerRecord("plans", "7", coldPlan, 2)],
+      });
     }
     return healthyFetch(input, init);
   }) as typeof fetch;
@@ -373,7 +389,102 @@ test("hydrate-state refusal names the failing slug, request evidence, and prior 
         "--records-url",
         "https://worker.example",
         "--records-repo-slugs",
-        `${repoSlug},${missingSlug}`,
+        `${repoSlug},${coldSlug}`,
+      ],
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: "fixture-secret",
+        CLAWSWEEPER_RECORDS_CACHE_DIR: cacheRoot,
+      },
+      fetchImpl,
+    );
+    assert.equal(result.recordsSource, "worker");
+    assert.equal(result.recordsFallback, undefined);
+    assert.deepEqual(Object.keys(result.worker ?? {}).sort(), [repoSlug, coldSlug]);
+    assert.deepEqual(result.worker?.[coldSlug], {
+      revision: 2,
+      snapshotRevision: 0,
+      snapshotBytes: 0,
+      snapshotCache: "cold",
+      deltaRecords: 2,
+      recordCount: 2,
+    });
+    // Cold hydration replays the whole journal, so the export starts at 0.
+    assert.equal(coldExportBodies.length, 1);
+    assert.equal(coldExportBodies[0]?.sinceRevision, 0);
+    assert.equal(
+      readFileSync(path.join(target, "records", coldSlug, "items", "7.md"), "utf8"),
+      coldItem,
+    );
+    assert.equal(
+      readFileSync(path.join(target, "records", coldSlug, "plans", "7.md"), "utf8"),
+      coldPlan,
+    );
+    // The snapshot-backed slug rides the untouched snapshot+delta path.
+    assert.equal(result.worker?.[repoSlug]?.snapshotCache, "miss");
+    assert.equal(
+      readFileSync(path.join(target, "records", repoSlug, "items", "1.md"), "utf8"),
+      contents.get("items/1"),
+    );
+    const log = errors.join("\n");
+    assert.match(
+      log,
+      new RegExp(
+        `\\[worker-records\\] COLD HYDRATION repo=${coldSlug}: no stored snapshot, ` +
+          `replayed the full journal from revision 0 \\(revision=2 journalRecords=2 records=2 ` +
+          `bound=${COLD_HYDRATION_MAX_RECORDS}\\)`,
+      ),
+    );
+  } finally {
+    console.error = originalError;
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("hydrate-state refusal names a cold slug over the hydration bound and prior successes", async () => {
+  const fixture = createStateFixture();
+  const target = path.join(fixture.root, "partial-fallback-target");
+  const cacheRoot = path.join(fixture.root, "snapshot-cache");
+  const oversizedSlug = "zz-oversized";
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...values) => errors.push(values.join(" "));
+  const healthyFetch = workerFetch(contents);
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const body = JSON.parse(String(init?.body || "{}")) as { repoSlug?: string };
+    if (body.repoSlug === oversizedSlug) {
+      if (url.pathname.endsWith("/snapshots/latest")) {
+        return Response.json(
+          { error: "snapshot_not_found", snapshotStoreAvailable: true },
+          { status: 404 },
+        );
+      }
+      assert.ok(url.pathname.endsWith("/export"));
+      const records = Array.from({ length: COLD_HYDRATION_MAX_RECORDS + 1 }, (_, index) =>
+        workerRecord("items", String(index + 1), `record ${index + 1}\n`, index + 1),
+      );
+      return Response.json({
+        repoSlug: oversizedSlug,
+        revision: records.length,
+        nextCursor: null,
+        records,
+      });
+    }
+    return healthyFetch(input, init);
+  }) as typeof fetch;
+  try {
+    const result = await hydrateState(
+      [
+        "--state-dir",
+        fixture.stateRoot,
+        "--worktree",
+        target,
+        "--records-source",
+        "worker",
+        "--records-url",
+        "https://worker.example",
+        "--records-repo-slugs",
+        `${repoSlug},${oversizedSlug}`,
       ],
       {
         CLAWSWEEPER_WEBHOOK_SECRET: "fixture-secret",
@@ -383,20 +494,19 @@ test("hydrate-state refusal names the failing slug, request evidence, and prior 
     );
     assert.equal(result.recordsSource, "git");
     assert.equal(result.recordsFallback?.reason, "snapshot_not_found");
-    assert.equal(result.recordsFallback?.slug, missingSlug);
+    assert.equal(result.recordsFallback?.slug, oversizedSlug);
     assert.deepEqual(result.recordsFallback?.detail, {
-      endpoint: "/internal/state/records/snapshots/latest",
-      status: 404,
-      code: "snapshot_not_found",
-      bodySnippet: '{"error":"snapshot_not_found","snapshotStoreAvailable":true}',
+      endpoint: "/internal/state/records/export",
+      code: "cold_hydration_bound_exceeded",
+      bodySnippet: `cold slug journal exceeded ${COLD_HYDRATION_MAX_RECORDS} records; trigger a snapshot for this repository`,
       succeededSlugs: 1,
     });
     const log = errors.join("\n");
     assert.match(
       log,
       new RegExp(
-        `WORKER RECORD CUTOVER REFUSED: SNAPSHOT NOT FOUND \\(repo=${missingSlug} ` +
-          `endpoint=/internal/state/records/snapshots/latest status=404 code=snapshot_not_found ` +
+        `WORKER RECORD CUTOVER REFUSED: SNAPSHOT NOT FOUND \\(repo=${oversizedSlug} ` +
+          `endpoint=/internal/state/records/export code=cold_hydration_bound_exceeded ` +
           `succeededSlugs=1 body=.*\\); FALLING BACK TO GIT RECORDS`,
       ),
     );
@@ -416,6 +526,53 @@ test("hydrate-state refusal names the failing slug, request evidence, and prior 
     console.error = originalError;
     rmSync(fixture.root, { recursive: true, force: true });
   }
+});
+
+test("snapshot cache key skips cold slugs but still refuses on store outages", async () => {
+  const storedSnapshot = {
+    repoSlug,
+    revisionWatermark: 5,
+    objectKey: `${repoSlug}/5/fixture.tar.gz`,
+    bytes: 128,
+    uncompressedBytes: 256,
+    fileCount: 3,
+    createdAt: "2026-07-26T00:00:00.000Z",
+    access: { mode: "worker_range_proxy", maxChunkBytes: 1024 },
+  };
+  const coldSlug = "zz-cold";
+  const result = await resolveWorkerSnapshotCacheKey({
+    baseUrl: "https://worker.example",
+    webhookSecret: "fixture-secret",
+    repoSlugs: [coldSlug, repoSlug],
+    fetch: (async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || "{}")) as { repoSlug?: string };
+      if (body.repoSlug === coldSlug) {
+        return Response.json(
+          { error: "snapshot_not_found", snapshotStoreAvailable: true },
+          { status: 404 },
+        );
+      }
+      return Response.json({ ok: true, snapshotStoreAvailable: true, snapshot: storedSnapshot });
+    }) as typeof fetch,
+  });
+  assert.deepEqual(result.pairs, [`${repoSlug}:5`]);
+  assert.deepEqual(result.coldSlugs, [coldSlug]);
+
+  await assert.rejects(
+    resolveWorkerSnapshotCacheKey({
+      baseUrl: "https://worker.example",
+      webhookSecret: "fixture-secret",
+      repoSlugs: [repoSlug],
+      fetch: (async () =>
+        Response.json(
+          { error: "snapshot_store_unavailable", snapshotStoreAvailable: false },
+          { status: 503 },
+        )) as typeof fetch,
+    }),
+    (error: unknown) =>
+      error instanceof WorkerSnapshotUnavailableError &&
+      error.reason === "snapshot_store_unavailable",
+  );
 });
 
 test("record parity verifier reports matching trees and exact path/digest mismatches", async () => {

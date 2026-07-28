@@ -128,6 +128,30 @@ class WorkerRecordReplayTupleError extends Error {
   }
 }
 
+// Cold hydration (no stored snapshot yet) replays the full journal from
+// revision 0, so it must stay a small-repo affordance: a slug whose record set
+// outgrows this bound has earned a real snapshot and still refuses cutover.
+// 2000 records is ~20 export pages and covers hundreds of reviewed items,
+// giving a newly onboarded repository long runway before the first manual
+// snapshot sweep is required.
+export const COLD_HYDRATION_MAX_RECORDS = 2000;
+
+export class WorkerRecordExportBoundError extends Error {
+  readonly repoSlug: string;
+  readonly received: number;
+  readonly maxRecords: number;
+
+  constructor(repoSlug: string, received: number, maxRecords: number) {
+    super(
+      `Worker record export for ${repoSlug} exceeded the ${maxRecords}-record bound (received ${received} before aborting)`,
+    );
+    this.name = "WorkerRecordExportBoundError";
+    this.repoSlug = repoSlug;
+    this.received = received;
+    this.maxRecords = maxRecords;
+  }
+}
+
 export async function exportWorkerRecords(options: {
   baseUrl: string;
   webhookSecret: string;
@@ -135,6 +159,7 @@ export async function exportWorkerRecords(options: {
   sections?: readonly RecordSection[];
   sinceRevision?: number;
   limit?: number;
+  maxRecords?: number;
   fetch?: typeof globalThis.fetch;
 }): Promise<WorkerRecordSnapshot> {
   const sections = options.sections ?? RECORD_SECTIONS;
@@ -165,6 +190,11 @@ export async function exportWorkerRecords(options: {
       const key = `${record.section}/${record.id}`;
       const prior = records.get(key);
       if (!prior || prior.storeRevision < record.storeRevision) records.set(key, record);
+    }
+    // Abort mid-pagination: the bound exists so an unsnapshotted large repo
+    // never triggers an unbounded full-journal download.
+    if (options.maxRecords !== undefined && records.size > options.maxRecords) {
+      throw new WorkerRecordExportBoundError(options.repoSlug, records.size, options.maxRecords);
     }
     if (
       page.nextCursor !== null &&
@@ -211,7 +241,7 @@ export async function materializeWorkerRecords(options: {
       revision: number;
       snapshotRevision: number;
       snapshotBytes: number;
-      snapshotCache: "hit" | "miss";
+      snapshotCache: "hit" | "miss" | "cold";
       deltaRecords: number;
       recordCount: number;
     }
@@ -225,35 +255,73 @@ export async function materializeWorkerRecords(options: {
           webhookSecret: options.webhookSecret,
           repoSlug,
           fetch: options.fetch,
-        });
-        const cached = await ensureSnapshotCache({
-          cacheRoot,
-          baseUrl: options.baseUrl,
-          webhookSecret: options.webhookSecret,
-          snapshot: storedSnapshot,
-          fetch: options.fetch,
+        }).catch((error: unknown) => {
+          // A slug whose records were all created canonically after the last
+          // snapshot sweep has no snapshot yet. That is a cold slug, not an
+          // outage: hydrate it purely from the journal below instead of
+          // refusing the whole multi-slug run. Store outages still refuse.
+          if (
+            error instanceof WorkerSnapshotUnavailableError &&
+            error.reason === "snapshot_not_found"
+          ) {
+            return null;
+          }
+          throw error;
         });
         const stagedRepoRoot = path.join(stagedRecordsRoot, repoSlug);
-        cpSync(cached.treeRoot, stagedRepoRoot, { recursive: true });
+        let snapshotBytes = 0;
+        let snapshotCache: "hit" | "miss" | "cold" = "cold";
+        if (storedSnapshot) {
+          const cached = await ensureSnapshotCache({
+            cacheRoot,
+            baseUrl: options.baseUrl,
+            webhookSecret: options.webhookSecret,
+            snapshot: storedSnapshot,
+            fetch: options.fetch,
+          });
+          cpSync(cached.treeRoot, stagedRepoRoot, { recursive: true });
+          snapshotBytes = storedSnapshot.bytes;
+          snapshotCache = cached.cache;
+        } else {
+          mkdirSync(stagedRepoRoot, { recursive: true });
+        }
         const journal = await exportWorkerRecords({
           baseUrl: options.baseUrl,
           webhookSecret: options.webhookSecret,
           repoSlug,
-          sinceRevision: storedSnapshot.revisionWatermark,
+          sinceRevision: storedSnapshot?.revisionWatermark ?? 0,
+          ...(storedSnapshot ? {} : { maxRecords: COLD_HYDRATION_MAX_RECORDS }),
           fetch: options.fetch,
+        }).catch((error: unknown) => {
+          // Over the bound, the named refusal returns: the operator must run a
+          // snapshot sweep for this slug before worker hydration accepts it.
+          if (error instanceof WorkerRecordExportBoundError) {
+            throw new WorkerSnapshotUnavailableError(
+              "snapshot_not_found",
+              {
+                endpoint: "/internal/state/records/export",
+                code: "cold_hydration_bound_exceeded",
+                bodySnippet: `cold slug journal exceeded ${error.maxRecords} records; trigger a snapshot for this repository`,
+              },
+              { cause: error },
+            );
+          }
+          throw error;
         });
         applyWorkerRecords(stagedRepoRoot, journal.records);
         repositories[repoSlug] = {
           revision: journal.revision,
-          snapshotRevision: storedSnapshot.revisionWatermark,
-          snapshotBytes: storedSnapshot.bytes,
-          snapshotCache: cached.cache,
+          snapshotRevision: storedSnapshot?.revisionWatermark ?? 0,
+          snapshotBytes,
+          snapshotCache,
           deltaRecords: journal.records.length,
           recordCount: collectGitRecords(stagingRoot, repoSlug).length,
         };
         const entry = repositories[repoSlug];
         log(
-          `[worker-records] snapshot hydrated repo=${repoSlug} revision=${entry.revision} snapshotRevision=${entry.snapshotRevision} snapshotBytes=${entry.snapshotBytes} cache=${entry.snapshotCache} deltaRecords=${entry.deltaRecords} records=${entry.recordCount}`,
+          storedSnapshot
+            ? `[worker-records] snapshot hydrated repo=${repoSlug} revision=${entry.revision} snapshotRevision=${entry.snapshotRevision} snapshotBytes=${entry.snapshotBytes} cache=${entry.snapshotCache} deltaRecords=${entry.deltaRecords} records=${entry.recordCount}`
+            : `[worker-records] COLD HYDRATION repo=${repoSlug}: no stored snapshot, replayed the full journal from revision 0 (revision=${entry.revision} journalRecords=${entry.deltaRecords} records=${entry.recordCount} bound=${COLD_HYDRATION_MAX_RECORDS}); trigger a snapshot sweep to make future hydrations incremental`,
         );
       } catch (error) {
         // Re-wrap so the refusal that aborts a multi-slug hydration names the
@@ -335,11 +403,19 @@ export async function resolveWorkerSnapshotCacheKey(options: {
   fetch?: typeof globalThis.fetch;
 }) {
   const snapshots = [] as WorkerStoredSnapshot[];
+  const coldSlugs: string[] = [];
   for (const repoSlug of [...options.repoSlugs].sort()) {
     try {
       snapshots.push(await fetchWorkerStoredSnapshot({ ...options, repoSlug }));
     } catch (error) {
       if (error instanceof WorkerSnapshotUnavailableError) {
+        // A snapshot-less (cold) slug contributes nothing to the snapshot
+        // cache, so it must not invalidate the cache key for the whole fleet;
+        // hydration cold-hydrates it from the journal. Store outages still throw.
+        if (error.reason === "snapshot_not_found") {
+          coldSlugs.push(repoSlug);
+          continue;
+        }
         throw new WorkerSnapshotUnavailableError(
           error.reason,
           { repoSlug, ...error.detail, succeededSlugs: snapshots.length },
@@ -352,6 +428,7 @@ export async function resolveWorkerSnapshotCacheKey(options: {
   const pairs = snapshots.map((snapshot) => `${snapshot.repoSlug}:${snapshot.revisionWatermark}`);
   return {
     snapshots,
+    coldSlugs,
     key: createHash("sha256").update(pairs.join("\n")).digest("hex").slice(0, 24),
     pairs,
   };
