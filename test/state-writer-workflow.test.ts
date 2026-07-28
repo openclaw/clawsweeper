@@ -187,6 +187,7 @@ test("state materializer checks out a recovery-sized state history window", () =
   const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
   const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
   const setupState = materializer?.steps?.find(isSetupState);
+  assert.equal(setupState?.with?.filter, "blob:none");
   assert.equal(setupState?.with?.["fetch-depth"], 512);
 });
 

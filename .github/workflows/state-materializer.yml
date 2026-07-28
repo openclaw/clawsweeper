@@ -137,6 +137,7 @@ jobs:
           # ordinary writers a slot.
           coordinator-class: ${{ inputs.intake_priority && 'cluster_intake' || 'publication_batch' }}
           token: ${{ steps.state-token.outputs.token }}
+          filter: blob:none
           # depth-1 cannot fast-forward or rebuild against a branch other
           # writers keep advancing (non-fast-forward shallow push rejections,
           # runs 29938808338 / 29957012043); a full clone of `state`'s own
