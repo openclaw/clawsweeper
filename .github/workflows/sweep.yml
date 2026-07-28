@@ -1177,6 +1177,7 @@ jobs:
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           token: ${{ steps.direct-state-token.outputs.token }}
+          filter: blob:none
           fetch-depth: 1
           persist-credentials: false
 

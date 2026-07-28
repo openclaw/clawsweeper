@@ -107,6 +107,16 @@ test("the setup action exports no long-lived coordinator credential", () => {
   assert.match(source, /CLAWSWEEPER_STATE_COORDINATOR_CLASS=\$\{\{ inputs\.coordinator-class \}\}/);
 });
 
+test("exact-review direct publication partial-clones generated state", () => {
+  const sweep = workflows().find(({ file }) => file === ".github/workflows/sweep.yml")?.workflow;
+  const publisher = sweep?.jobs?.["event-review-apply"];
+  const setup = publisher?.steps?.find((step) => step.uses === "./.github/actions/setup-state");
+
+  assert.ok(setup, "event-review-apply setup-state step");
+  assert.equal(setup.with?.filter, "blob:none");
+  assert.equal(setup.with?.["fetch-depth"], 1);
+});
+
 test("state materializer and apply publishers enable model-guided recovery with the existing Codex key", () => {
   const expectedKey = "${{ secrets.OPENAI_API_KEY }}";
   const expectedModel = "${{ secrets.CLAWSWEEPER_MODEL }}";
