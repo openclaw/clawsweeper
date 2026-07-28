@@ -56,6 +56,38 @@ test("every generated-state checkout receives the explicit coordinator migration
   }
 });
 
+test("hydrating checkouts follow the records-source flip while git-lane tooling stays pinned", () => {
+  // These call sites seed, verify, or reconcile the Worker store *from* git;
+  // flipping them to the Worker transport would be circular.
+  const pinnedGitLane = [
+    ".github/workflows/backfill-worker-records.yml:backfill",
+    ".github/workflows/migrate-state-blobs.yml:migrate",
+    ".github/workflows/worker-records-ops.yml:reconcile",
+    ".github/workflows/worker-records-ops.yml:verify",
+  ];
+  const recordsGate = "${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'git' }}";
+  const recordsSecret = "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}";
+  const pinned: string[] = [];
+  for (const { file, workflow } of workflows()) {
+    for (const [job, definition] of Object.entries(workflow.jobs ?? {})) {
+      for (const step of definition.steps ?? []) {
+        if (!isSetupState(step)) continue;
+        const site = `${file}:${job}`;
+        if (step.with?.["records-source"] === "git") {
+          pinned.push(site);
+          assert.equal(step.with?.["records-url"], undefined, site);
+          assert.equal(step.with?.["records-secret"], undefined, site);
+          continue;
+        }
+        assert.equal(step.with?.["records-source"], recordsGate, site);
+        assert.equal(step.with?.["records-url"], coordinatorUrl, site);
+        assert.equal(step.with?.["records-secret"], recordsSecret, site);
+      }
+    }
+  }
+  assert.deepEqual(pinned.sort(), pinnedGitLane);
+});
+
 test("the setup action exports no long-lived coordinator credential", () => {
   const actionPath = ".github/actions/setup-state/action.yml";
   const source = readFileSync(actionPath, "utf8");

@@ -151,6 +151,9 @@ jobs:
         with:
           coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'git' }}
+          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           token: ${{ steps.state-token.outputs.token }}
           worktree-path: clawsweeper
           fetch-depth: 1
@@ -424,6 +427,9 @@ jobs:
         with:
           coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'git' }}
+          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           token: ${{ steps.state-token.outputs.token }}
           worktree-path: clawsweeper
           fetch-depth: 1
@@ -547,6 +553,9 @@ jobs:
         with:
           coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'git' }}
+          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
