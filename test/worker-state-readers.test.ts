@@ -162,6 +162,10 @@ test("worker-mode hydration discovers slugs from the Worker and warns about git-
       ],
       {
         CLAWSWEEPER_WEBHOOK_SECRET: "fixture-secret",
+        // setup-state always exports this env var, usually empty; an empty
+        // explicit list must not suppress Worker discovery (live regression:
+        // materializer runs 30348317111 / 30352195592 refused cutover).
+        CLAWSWEEPER_RECORDS_REPO_SLUGS: "",
         CLAWSWEEPER_RECORDS_CACHE_DIR: cacheRoot,
       },
       fetchImpl,

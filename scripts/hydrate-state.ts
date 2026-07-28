@@ -260,7 +260,11 @@ function parseSource(value: string | undefined, label: string): "git" | "worker"
 }
 
 function parseRepoSlugs(value: string | undefined) {
-  if (value === undefined) return undefined;
+  // setup-state always exports CLAWSWEEPER_RECORDS_REPO_SLUGS, usually as an
+  // empty string; an empty explicit list must mean "no override" so Worker
+  // discovery can run — [] would win over discovery via ?? and refuse cutover
+  // with no_record_repo_slugs (live: materializer runs 30348317111, 30352195592).
+  if (value === undefined || value.trim() === "") return undefined;
   return [...new Set(value.split(/[\s,]+/).filter(Boolean))].sort();
 }
 
