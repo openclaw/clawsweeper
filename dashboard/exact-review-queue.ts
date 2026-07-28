@@ -57,6 +57,7 @@ import {
   SnapshotStoreUnavailableError,
   type RecordSnapshot,
 } from "./record-snapshots.ts";
+import { sanitizedServerError } from "./error-safety.ts";
 
 type GithubAppJsonOptions = { method?: string; body?: BodyInit; errorLabel?: string };
 const GITHUB_TIMEOUT_MS = 4500;
@@ -2286,18 +2287,15 @@ export class ExactReviewQueue {
         );
       } catch (error) {
         if (error instanceof CanonicalRecordTupleConflictError) {
-          return json({ error: "canonical_record_tuple_conflict", detail: error.message }, 409);
+          console.warn(`canonical record tuple conflict: ${sanitizedServerError(error)}`);
+          return json({ error: "canonical_record_tuple_conflict" }, 409);
         }
         if (error instanceof DirectPublicationProjectionCapacityError) {
-          return json({ error: "canonical_record_tuple_capacity", detail: error.message }, 429);
+          console.warn(`canonical record tuple capacity rejected: ${sanitizedServerError(error)}`);
+          return json({ error: "canonical_record_tuple_capacity" }, 429);
         }
-        return json(
-          {
-            error: "invalid_canonical_record_tuple",
-            detail: error instanceof Error ? error.message : String(error),
-          },
-          400,
-        );
+        console.warn(`canonical record tuple rejected: ${sanitizedServerError(error)}`);
+        return json({ error: "invalid_canonical_record_tuple" }, 400);
       }
     }
 
@@ -2433,23 +2431,19 @@ export class ExactReviewQueue {
         );
       } catch (error) {
         if (error instanceof DirectPublicationProjectionCapacityError) {
-          console.warn(`direct publication projection rejected: ${error.message}`);
+          console.warn(`direct publication projection rejected: ${sanitizedServerError(error)}`);
           return json(
             {
               error: "direct_publication_projection_capacity",
-              detail: error.message,
               fallback_required: true,
             },
             429,
           );
         }
-        console.warn(
-          `direct publication plan rejected: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        console.warn(`direct publication plan rejected: ${sanitizedServerError(error)}`);
         return json(
           {
             error: "invalid_direct_publication_plan",
-            detail: error instanceof Error ? error.message : String(error),
             fallback_required: true,
           },
           400,
@@ -7725,11 +7719,9 @@ export class ExactReviewQueue {
       // indistinguishable from rollback-era mutations on the next upgrade.
       this.storage.kv.delete(EXACT_REVIEW_QUEUE_STATE_KEY);
     } catch (error) {
-      console.warn(
-        "exact-review stale legacy rollback shadow could not be removed",
-        error instanceof Error ? error.message : String(error),
-      );
-      throw error;
+      const detail = sanitizedServerError(error);
+      console.warn("exact-review stale legacy rollback shadow could not be removed", detail);
+      throw new Error("exact-review legacy rollback shadow cleanup failed");
     }
     this.reportLegacyMirrorUnavailable(reason);
   }
@@ -12026,7 +12018,9 @@ function snapshotJson(snapshot: RecordSnapshot) {
 
 function snapshotErrorResponse(error: unknown) {
   if (error instanceof SnapshotStoreUnavailableError) {
-    console.error(`snapshot store unavailable: ${error.cause || error.message}`);
+    console.error(
+      `snapshot store unavailable: ${sanitizedServerError(error.cause || error.message)}`,
+    );
     return json(
       {
         error: "snapshot_store_unavailable",
@@ -12046,7 +12040,7 @@ function snapshotErrorResponse(error: unknown) {
       notFound ? 404 : 400,
     );
   }
-  console.error(`snapshot request failed: ${error}`);
+  console.error(`snapshot request failed: ${sanitizedServerError(error)}`);
   return json({ error: "snapshot_request_failed", snapshotStoreAvailable: true }, 500);
 }
 

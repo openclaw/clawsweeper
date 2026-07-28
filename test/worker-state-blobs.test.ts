@@ -60,6 +60,32 @@ test("state blob endpoints reject unsigned requests and fail closed without a bu
   );
 });
 
+test("state blob failures return stable errors and sanitize server logs", async () => {
+  const sensitive = "secret-state-token";
+  const bucket = new FakeR2Bucket();
+  bucket.head = async () => {
+    throw new Error(
+      `R2 request failed at https://operator:${sensitive}@storage.example/object?token=${sensitive}`,
+    );
+  };
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...values: unknown[]) => errors.push(values.join(" "));
+  try {
+    const response = await worker.fetch(signedBlobRequest("stat", { path: ledgerPath }), {
+      CLAWSWEEPER_WEBHOOK_SECRET: secret,
+      STATE_SNAPSHOTS: bucket,
+    });
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: "blob_store_unavailable" });
+  } finally {
+    console.error = originalError;
+  }
+  assert.doesNotMatch(errors.join("\n"), new RegExp(sensitive));
+  assert.match(errors.join("\n"), /https:\/\/\[REDACTED\]@storage\.example/);
+  assert.match(errors.join("\n"), /token=\[REDACTED\]/);
+});
+
 test("single-shot blob uploads verify digests server-side and re-put idempotently", async () => {
   const env = { CLAWSWEEPER_WEBHOOK_SECRET: secret, STATE_SNAPSHOTS: new FakeR2Bucket() };
   const options = { baseUrl, webhookSecret: secret, fetch: viaWorker(env) };

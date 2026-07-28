@@ -16,6 +16,8 @@
  * writes stream through R2 multipart uploads with fixed-size base64 parts.
  */
 
+import { sanitizedServerError } from "./error-safety.ts";
+
 export const STATE_BLOB_OPERATIONS = [
   "put",
   "stat",
@@ -131,13 +133,8 @@ export async function handleStateBlobRequest(
     return blobJson({ error: "unknown_blob_operation" }, 404);
   } catch (error) {
     if (error instanceof BlobRequestError) return blobJson(error.body, error.status);
-    return blobJson(
-      {
-        error: "blob_store_unavailable",
-        detail: error instanceof Error ? error.message : String(error),
-      },
-      503,
-    );
+    console.error(`state blob request failed: ${sanitizedServerError(error)}`);
+    return blobJson({ error: "blob_store_unavailable" }, 503);
   }
 }
 
@@ -425,10 +422,8 @@ function multipartParts(value: unknown): BlobR2UploadedPart[] | null {
 }
 
 function invalidUpload(error: unknown) {
-  return new BlobRequestError(400, {
-    error: "invalid_blob_upload",
-    detail: error instanceof Error ? error.message : String(error),
-  });
+  console.warn(`state blob upload rejected: ${sanitizedServerError(error)}`);
+  return new BlobRequestError(400, { error: "invalid_blob_upload" });
 }
 
 function blobBucket(value: unknown): BlobR2Bucket | null {

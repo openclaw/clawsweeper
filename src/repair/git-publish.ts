@@ -266,7 +266,7 @@ export function runGit(args: readonly string[], options: GitRunOptions = {}): st
     const detail =
       result.stderr ||
       result.stdout ||
-      `${formatGitDisplayCommand(options.displayArgs ?? args)} exited ${result.status}`;
+      `${formatGitDisplayCommand(gitSubcommand(options.displayArgs ?? args))} exited ${result.status}`;
     throw new Error(detail.trim());
   }
   return result.stdout;
@@ -274,7 +274,7 @@ export function runGit(args: readonly string[], options: GitRunOptions = {}): st
 
 export function spawnGit(args: readonly string[], options: GitRunOptions = {}): GitRunResult {
   recordGitProcess(gitSubcommand(args));
-  console.log(`$ ${formatGitDisplayCommand(options.displayArgs ?? args)}`);
+  console.log(`$ ${formatGitDisplayCommand(gitSubcommand(options.displayArgs ?? args))}`);
   const child = spawnSync("git", [...args], {
     cwd: publishRoot(),
     env: options.env ?? process.env,
@@ -283,12 +283,16 @@ export function spawnGit(args: readonly string[], options: GitRunOptions = {}): 
     maxBuffer: options.maxBuffer ?? 16 * 1024 * 1024,
     timeout: options.timeout,
   });
-  if (!options.quiet && child.stdout) process.stdout.write(child.stdout);
-  if (!options.quiet && child.stderr) process.stderr.write(child.stderr);
+  const credentials = gitCredentialValues(args);
+  const rawStdout = child.stdout ?? "";
+  const safeStdout = redactGitProcessOutput(rawStdout, credentials);
+  const stderr = redactGitProcessOutput(child.stderr ?? "", credentials);
+  if (!options.quiet && safeStdout) process.stdout.write(safeStdout);
+  if (!options.quiet && stderr) process.stderr.write(stderr);
   return {
     status: child.status ?? 1,
-    stdout: child.stdout ?? "",
-    stderr: child.stderr ?? "",
+    stdout: child.status === 0 ? rawStdout : safeStdout,
+    stderr,
     timedOut: (child.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT",
   };
 }
@@ -344,8 +348,8 @@ function recordGitProcess(action: string | undefined): void {
   activeGitPublishMetrics.actions.set(key, (activeGitPublishMetrics.actions.get(key) ?? 0) + 1);
 }
 
-function formatGitDisplayCommand(args: readonly string[]): string {
-  return `git ${safeGitDisplayAction(gitSubcommand(args))} <redacted-args>`;
+function formatGitDisplayCommand(action: string | undefined): string {
+  return `git ${safeGitDisplayAction(action)} <redacted-args>`;
 }
 
 function gitSubcommand(args: readonly string[]): string | undefined {
@@ -1198,7 +1202,8 @@ function gitPublishPhase(phase: string, detail = ""): void {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message.replace(/[\r\n]+/g, " ") : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  return redactGitProcessOutput(message).replace(/[\r\n]+/g, " ");
 }
 
 function gitRunError(
@@ -1209,8 +1214,58 @@ function gitRunError(
   const detail =
     result.stderr ||
     result.stdout ||
-    `${formatGitDisplayCommand(displayArgs)} exited ${result.status}`;
+    `${formatGitDisplayCommand(gitSubcommand(displayArgs))} exited ${result.status}`;
   return new Error(detail.trim());
+}
+
+type GitCredentialValues = {
+  passwords: readonly string[];
+  usernames: readonly string[];
+};
+
+function gitCredentialValues(args: readonly string[]): GitCredentialValues {
+  const passwords = new Set<string>();
+  const usernames = new Set<string>();
+  for (const argument of args) {
+    if (!argument.includes("://")) continue;
+    try {
+      const url = new URL(argument);
+      if (url.username) usernames.add(decodeURIComponent(url.username));
+      if (url.password) passwords.add(decodeURIComponent(url.password));
+    } catch {
+      // Invalid URLs are still covered by the generic credential patterns below.
+    }
+  }
+  const longestFirst = (left: string, right: string) => right.length - left.length;
+  return {
+    passwords: [...passwords].filter(Boolean).sort(longestFirst),
+    usernames: [...usernames].filter(Boolean).sort(longestFirst),
+  };
+}
+
+function redactGitProcessOutput(
+  value: string,
+  credentials: GitCredentialValues = { passwords: [], usernames: [] },
+): string {
+  let redacted = value;
+  for (const secret of credentials.passwords) {
+    redacted = redacted.replaceAll(secret, "[REDACTED]");
+  }
+  for (const username of credentials.usernames) {
+    const escaped = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    redacted = redacted.replace(
+      new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`, "gu"),
+      "[REDACTED]",
+    );
+  }
+  return redacted
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/giu, "$1[REDACTED]@")
+    .replace(
+      /([?&](?:access_?token|api_?key|key|password|secret|signature|token)=)[^&\s]+/giu,
+      "$1[REDACTED]",
+    )
+    .replace(/\b(GH_TOKEN|GITHUB_TOKEN)=([^\s"']+)/giu, "$1=[REDACTED]")
+    .replace(/\b(?:github_pat_|gh[pousr]_)[A-Za-z0-9_]{20,}\b/gu, "[REDACTED_GITHUB_TOKEN]");
 }
 
 export function mergeBaseWithShallowRecovery(

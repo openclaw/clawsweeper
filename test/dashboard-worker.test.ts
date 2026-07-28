@@ -7601,20 +7601,29 @@ test("exact-review rolls SQL back when an obsolete shadow cannot be removed", as
   const queue = new ExactReviewQueue({ storage }, {});
   await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
   const originalShadow = structuredClone(storage.rawGet("exact-review-queue"));
+  const secret = "legacy-shadow-secret";
   storage.failNextPut("exact-review-queue");
-  storage.failNextDelete("exact-review-queue");
+  storage.failNextDelete(
+    "exact-review-queue",
+    new Error(
+      `legacy shadow delete failed at https://operator:${secret}@storage.example/shadow?token=${secret}`,
+    ),
+  );
   const warnings: unknown[][] = [];
   const originalWarn = console.warn;
   console.warn = (...args) => warnings.push(args);
   try {
     await assert.rejects(
       queue.fetch(buildExactReviewQueueRequest("delivery-atomic-shadow", 633, "opened")),
-      /injected storage delete failure/,
+      /exact-review legacy rollback shadow cleanup failed/,
     );
   } finally {
     console.warn = originalWarn;
   }
   assert.match(String(warnings[0][0]), /stale legacy rollback shadow could not be removed/);
+  assert.doesNotMatch(warnings.flat().join("\n"), new RegExp(secret));
+  assert.match(warnings.flat().join("\n"), /https:\/\/\[REDACTED\]@storage\.example/);
+  assert.match(warnings.flat().join("\n"), /token=\[REDACTED\]/);
   assert.deepEqual(storage.rawGet("exact-review-queue"), originalShadow);
   let state = (await storage.get("exact-review-queue")) as {
     deliveries: Record<string, number>;
@@ -9039,6 +9048,46 @@ test("canonical tuple publication updates Worker authority and appends one proje
   const rejected = await queue.fetch(stateAppendQueueRequest("/records/tuples", conflict));
   assert.equal(rejected.status, 409);
   assert.equal((await rejected.json()).error, "canonical_record_tuple_conflict");
+});
+
+test("canonical tuple failures return stable errors and sanitize server logs", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const secret = "canonical-storage-secret";
+  storage.failNextSql(
+    /INSERT INTO state_append_window/,
+    new Error(
+      `database unavailable at https://operator:${secret}@storage.example/records?token=${secret}`,
+    ),
+  );
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...values: unknown[]) => warnings.push(values.join(" "));
+  try {
+    const response = await queue.fetch(
+      stateAppendQueueRequest("/records/tuples", {
+        deliveryId: "record-tuple:failure:42",
+        key: "openclaw-openclaw/42",
+        operations: [
+          {
+            path: "records/openclaw-openclaw/items/42.md",
+            expectedDigest: null,
+            contentBase64: Buffer.from("record\n").toString("base64"),
+          },
+          { path: "records/openclaw-openclaw/closed/42.md", expectedDigest: null },
+          { path: "records/openclaw-openclaw/plans/42.md", expectedDigest: null },
+          { path: "records/openclaw-openclaw/decision-packets/42.json", expectedDigest: null },
+        ],
+      }),
+    );
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "invalid_canonical_record_tuple" });
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.doesNotMatch(warnings.join("\n"), new RegExp(secret));
+  assert.match(warnings.join("\n"), /https:\/\/\[REDACTED\]@storage\.example/);
+  assert.match(warnings.join("\n"), /token=\[REDACTED\]/);
 });
 
 test("canonical tuple publication accepts explicit absent sidecars and closed records", async () => {

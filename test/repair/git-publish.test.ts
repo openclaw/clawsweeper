@@ -4870,6 +4870,97 @@ test("setTokenOrigin redacts tokens from command logs", () => {
   );
 });
 
+test("setTokenOrigin redacts credentials from subprocess failures", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-redaction-"));
+  const fakeBin = path.join(root, "bin");
+  const token = "super-secret-token";
+  write(
+    path.join(fakeBin, "git"),
+    [
+      "#!/bin/sh",
+      `echo "fatal: could not access 'https://x-access-token:${token}@github.com/openclaw/clawsweeper.git': denied" >&2`,
+      `echo "GITHUB_TOKEN=${token}" >&2`,
+      "exit 1",
+      "",
+    ].join("\n"),
+  );
+  fs.chmodSync(path.join(fakeBin, "git"), 0o755);
+
+  let failure: unknown;
+  const stderr: string[] = [];
+  const originalWrite = process.stderr.write;
+  process.stderr.write = ((value: string | Uint8Array) => {
+    stderr.push(String(value));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    withEnv({ PATH: `${fakeBin}:${process.env.PATH}` }, () => {
+      try {
+        setTokenOrigin(token, "openclaw/clawsweeper");
+      } catch (error) {
+        failure = error;
+      }
+    });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+
+  assert.ok(failure instanceof Error);
+  assert.doesNotMatch(failure.message, new RegExp(token));
+  assert.doesNotMatch(stderr.join(""), new RegExp(token));
+  assert.match(failure.message, /https:\/\/\[REDACTED\]@github\.com/);
+  assert.match(failure.message, /GITHUB_TOKEN=\[REDACTED\]/);
+});
+
+test("spawnGit preserves ordinary successful output while sanitizing URL credentials", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-stdout-"));
+  const fakeBin = path.join(root, "bin");
+  write(
+    path.join(fakeBin, "git"),
+    ["#!/bin/sh", 'echo "refs/heads/digit"', "exit 0", ""].join("\n"),
+  );
+  fs.chmodSync(path.join(fakeBin, "git"), 0o755);
+
+  const stdout: string[] = [];
+  const originalWrite = process.stdout.write;
+  process.stdout.write = ((value: string | Uint8Array) => {
+    stdout.push(String(value));
+    return true;
+  }) as typeof process.stdout.write;
+  let result;
+  try {
+    result = withEnv({ PATH: `${fakeBin}:${process.env.PATH}` }, () =>
+      spawnGit(["ls-remote", "https://git:secret@github.com/openclaw/clawsweeper.git"]),
+    );
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, "refs/heads/digit\n");
+  assert.doesNotMatch(stdout.join(""), /secret/);
+  assert.equal(stdout.at(-1), "refs/heads/digit\n");
+});
+
+test("spawnGit redacts username-only URL credentials from failures", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-username-"));
+  const fakeBin = path.join(root, "bin");
+  const token = "username-only-secret-token";
+  write(
+    path.join(fakeBin, "git"),
+    ["#!/bin/sh", `echo "fatal: credential ${token}. rejected" >&2`, "exit 1", ""].join("\n"),
+  );
+  fs.chmodSync(path.join(fakeBin, "git"), 0o755);
+
+  const result = withEnv({ PATH: `${fakeBin}:${process.env.PATH}` }, () =>
+    spawnGit(["fetch", `https://${token}@github.com/openclaw/clawsweeper.git`], { quiet: true }),
+  );
+
+  assert.equal(result.status, 1);
+  assert.doesNotMatch(result.stderr, new RegExp(token));
+  assert.match(result.stderr, /credential \[REDACTED\]\. rejected/);
+});
+
 function withCwd(cwd, callback) {
   const previous = process.cwd();
   process.chdir(cwd);
