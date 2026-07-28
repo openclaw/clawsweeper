@@ -345,6 +345,143 @@ test("state blob migration is cursor-resumable, idempotent, and loud on ledger d
   }
 });
 
+test("concurrent migration uploads every file exactly once and repeat runs skip them", async () => {
+  const fixture = createWideStateFixture(9);
+  const env = { CLAWSWEEPER_WEBHOOK_SECRET: secret, STATE_SNAPSHOTS: new FakeR2Bucket() };
+  const workerFetch = viaWorker(env);
+  const putPaths: string[] = [];
+  const counting: typeof globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/internal/state/blobs/put")) {
+      putPaths.push(JSON.parse(String(init?.body)).path);
+    }
+    return workerFetch(input, init);
+  };
+  const processEnv = { CLAWSWEEPER_WEBHOOK_SECRET: secret, CLAWSWEEPER_RECORDS_URL: baseUrl };
+  try {
+    const first = await migrateStateBlobs(
+      ["--state-dir", fixture.stateRoot, "--concurrency", "4"],
+      processEnv,
+      counting,
+    );
+    assert.equal(first.uploaded, fixture.blobFiles.length);
+    assert.equal(first.unchanged, 0);
+    assert.equal(first.nextCursor, null);
+    assert.deepEqual([...putPaths].sort(), fixture.blobFiles);
+
+    const options = { baseUrl, webhookSecret: secret, fetch: workerFetch };
+    for (const blobPath of fixture.blobFiles) {
+      const stat = await statStateBlob({ ...options, blobPath });
+      assert.equal(stat?.digest, sha256(readFileSync(path.join(fixture.stateRoot, blobPath))));
+    }
+
+    putPaths.length = 0;
+    const repeat = await migrateStateBlobs(
+      ["--state-dir", fixture.stateRoot, "--concurrency", "4"],
+      processEnv,
+      counting,
+    );
+    assert.equal(repeat.uploaded, 0);
+    assert.equal(repeat.unchanged, fixture.blobFiles.length);
+    assert.deepEqual(putPaths, []);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("migration progress reports a contiguous-prefix resume cursor under out-of-order completion", async () => {
+  const fixture = createWideStateFixture(6);
+  const firstPath = fixture.blobFiles[0]!;
+  const env = { CLAWSWEEPER_WEBHOOK_SECRET: secret, STATE_SNAPSHOTS: new FakeR2Bucket() };
+  const workerFetch = viaWorker(env);
+  // Hold the sorted-first file's upload until two later files have landed, so
+  // completion order is provably out of order.
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let otherPuts = 0;
+  const gated: typeof globalThis.fetch = async (input, init) => {
+    const isPut = String(input).endsWith("/internal/state/blobs/put");
+    const putPath = isPut ? JSON.parse(String(init?.body)).path : null;
+    if (putPath === firstPath) await firstGate;
+    const response = await workerFetch(input, init);
+    if (putPath !== null && putPath !== firstPath) {
+      otherPuts += 1;
+      if (otherPuts === 2) releaseFirst();
+    }
+    return response;
+  };
+  const lines: string[] = [];
+  const originalError = console.error;
+  console.error = (...values: unknown[]) => lines.push(values.join(" "));
+  try {
+    const summary = await migrateStateBlobs(
+      ["--state-dir", fixture.stateRoot, "--concurrency", "3"],
+      { CLAWSWEEPER_WEBHOOK_SECRET: secret, CLAWSWEEPER_RECORDS_URL: baseUrl },
+      gated,
+    );
+    assert.equal(summary.uploaded, fixture.blobFiles.length);
+
+    const progress = lines
+      .filter((line) => line.includes("resumeCursor="))
+      .map((line) => {
+        const match = line.match(/file=(\d+)\/\d+ resumeCursor=(\d+) path=(.+)$/);
+        assert.ok(match, `unparseable progress line: ${line}`);
+        return { file: Number(match[1]), resumeCursor: Number(match[2]), path: match[3]! };
+      });
+    // One flushed progress line per completed file.
+    assert.equal(progress.length, fixture.blobFiles.length);
+    const firstLineIndex = progress.findIndex((entry) => entry.path === firstPath);
+    assert.ok(firstLineIndex >= 2, "first file must complete after at least two later files");
+    // Until the first file lands, no prefix is complete: the safe resume
+    // cursor must stay at 0 even though later files already finished.
+    for (const entry of progress.slice(0, firstLineIndex)) {
+      assert.equal(entry.resumeCursor, 0);
+    }
+    for (let index = 1; index < progress.length; index += 1) {
+      assert.ok(progress[index]!.resumeCursor >= progress[index - 1]!.resumeCursor);
+    }
+    assert.equal(progress.at(-1)!.resumeCursor, fixture.blobFiles.length);
+  } finally {
+    console.error = originalError;
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("migration backs off and retries when the worker signals 429 pressure", async () => {
+  const fixture = createWideStateFixture(4);
+  const env = { CLAWSWEEPER_WEBHOOK_SECRET: secret, STATE_SNAPSHOTS: new FakeR2Bucket() };
+  const workerFetch = viaWorker(env);
+  let served429 = 0;
+  const throttled: typeof globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/internal/state/blobs/put") && served429 === 0) {
+      served429 += 1;
+      return new Response(JSON.stringify({ error: "rate_limited" }), { status: 429 });
+    }
+    return workerFetch(input, init);
+  };
+  const lines: string[] = [];
+  const originalError = console.error;
+  console.error = (...values: unknown[]) => lines.push(values.join(" "));
+  try {
+    const summary = await migrateStateBlobs(
+      ["--state-dir", fixture.stateRoot, "--concurrency", "2"],
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: secret,
+        CLAWSWEEPER_RECORDS_URL: baseUrl,
+        CLAWSWEEPER_MIGRATE_BACKOFF_BASE_MS: "1",
+      },
+      throttled,
+    );
+    assert.equal(served429, 1);
+    assert.equal(summary.uploaded, fixture.blobFiles.length);
+    assert.match(lines.join("\n"), /pressure retry attempt=1/);
+  } finally {
+    console.error = originalError;
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("hydrate-state defaults ledger hydration to git and never calls the worker", async () => {
   const fixture = createStateFixture();
   const target = path.join(fixture.root, "git-target");
@@ -520,6 +657,21 @@ function createStateFixture() {
     assetFiles,
     blobFiles: [...ledgerFiles, ...assetFiles].sort(),
   };
+}
+
+function createWideStateFixture(ledgerCount: number) {
+  const root = mkdtempSync(path.join(tmpdir(), "clawsweeper-state-blobs-wide-"));
+  const stateRoot = path.join(root, "state");
+  const files: string[] = [];
+  for (let index = 0; index < ledgerCount; index += 1) {
+    const file = `ledger/v1/events/2026/07/26/openclaw/openclaw/shard-${String(index).padStart(3, "0")}.jsonl`;
+    write(path.join(stateRoot, ...file.split("/")), `{"shard":${index}}\n`);
+    files.push(file);
+  }
+  const asset = "assets/dashboards/summary.json";
+  write(path.join(stateRoot, ...asset.split("/")), '{"summary":true}\n');
+  files.push(asset);
+  return { root, stateRoot, blobFiles: files.sort() };
 }
 
 function viaWorker(env: Record<string, unknown>): typeof globalThis.fetch {

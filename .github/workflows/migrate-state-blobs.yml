@@ -30,6 +30,11 @@ on:
           - multipart
           - all
         default: multipart
+      concurrency:
+        description: Concurrent blob uploads (per-file round trips dominate the runtime).
+        required: false
+        type: number
+        default: 12
 
 concurrency:
   group: migrate-state-blobs
@@ -44,9 +49,10 @@ env:
 jobs:
   migrate:
     runs-on: ubuntu-latest
-    # 120 minutes was killed twice mid-migration (runs 30300581022, 30313938441):
-    # per-file HMAC uploads of the ~315MB many-file ledger tree need more room.
-    # Idempotent resume makes a long budget safe.
+    # 120 minutes was killed twice mid-migration (runs 30300581022, 30313938441)
+    # and 350 once (run 30321613186) while uploads were strictly sequential;
+    # bounded concurrency (default 12) removes the per-file round-trip
+    # bottleneck, and idempotent resume makes the long budget safe regardless.
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v7
@@ -83,13 +89,14 @@ jobs:
           MIGRATE_CURSOR: ${{ inputs.cursor }}
           MIGRATE_MAX_FILES: ${{ inputs.max_files }}
           MIGRATE_VERIFY: ${{ inputs.verify }}
+          MIGRATE_CONCURRENCY: ${{ inputs.concurrency }}
         run: |
           case "$MIGRATE_TREES" in
             ledger) trees="ledger/v1" ;;
             assets) trees="assets" ;;
             *) trees="ledger/v1,assets" ;;
           esac
-          args=(--state-dir clawsweeper-state --trees "$trees" --cursor "$MIGRATE_CURSOR" --verify "$MIGRATE_VERIFY")
+          args=(--state-dir clawsweeper-state --trees "$trees" --cursor "$MIGRATE_CURSOR" --verify "$MIGRATE_VERIFY" --concurrency "$MIGRATE_CONCURRENCY")
           if (( MIGRATE_MAX_FILES > 0 )); then
             args+=(--max-files "$MIGRATE_MAX_FILES")
           fi
