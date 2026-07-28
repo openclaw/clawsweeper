@@ -65,8 +65,8 @@ test("hydrating checkouts follow the records/ledger-source flips while git-lane 
     ".github/workflows/worker-records-ops.yml:reconcile",
     ".github/workflows/worker-records-ops.yml:verify",
   ];
-  const recordsGate = "${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'git' }}";
-  const ledgerGate = "${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'git' }}";
+  const recordsGate = "${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}";
+  const ledgerGate = "${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'worker' }}";
   const recordsSecret = "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}";
   const pinned: string[] = [];
   for (const { file, workflow } of workflows()) {
