@@ -22,6 +22,23 @@ test("sweep keeps optional media tooling out of review startup", () => {
   assert.doesNotMatch(workflow, /setup-media-proof-tools/);
 });
 
+test("audit uploads its canonical close-verdict inventory before state publication", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const auditStart = workflow.indexOf("\n  audit-dashboard:");
+  const auditEnd = workflow.indexOf("\n  apply-proof:", auditStart);
+  assert.notEqual(auditStart, -1);
+  assert.notEqual(auditEnd, -1);
+  const auditJob = workflow.slice(auditStart, auditEnd);
+  const refresh = auditJob.indexOf("- name: Refresh Audit Health");
+  const upload = auditJob.indexOf("- name: Upload canonical close-verdict audit");
+  const publish = auditJob.indexOf("- name: Commit Audit Health");
+
+  assert.ok(refresh < upload && upload < publish);
+  assert.match(auditJob, /--output \.artifacts\/clawsweeper-audit\.json/);
+  assert.match(auditJob, /name: close-verdict-audit-\$\{\{ github\.run_id \}\}/);
+  assert.match(auditJob, /retention-days: 14/);
+});
+
 test("exact publication forwards state writer telemetry through the Node payload builder", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   assert.match(

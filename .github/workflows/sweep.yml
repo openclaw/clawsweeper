@@ -4262,12 +4262,21 @@ jobs:
           moved_to_closed="$(jq -r '.movedToClosed' <<<"$reconcile_json")"
           moved_to_items="$(jq -r '.movedToItems' <<<"$reconcile_json")"
           removed_stale_closed_copies="$(jq -r '.removedStaleClosedCopies' <<<"$reconcile_json")"
-          pnpm run audit -- --target-repo "$TARGET_REPO" --max-pages 250 --sample-limit 25 --output /tmp/clawsweeper-audit.json --update-dashboard
+          mkdir -p .artifacts
+          pnpm run audit -- --target-repo "$TARGET_REPO" --max-pages 250 --sample-limit 25 --output .artifacts/clawsweeper-audit.json --update-dashboard
           pnpm run status -- \
             --target-repo "$TARGET_REPO" \
             --state "Audit finished" \
             --detail "Reconciled durable $TARGET_REPO records before audit: moved ${moved_to_closed} closed records, restored ${moved_to_items} reopened records, removed ${removed_stale_closed_copies} stale archived copies. Refreshed audit state from a full live scan." \
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Upload canonical close-verdict audit
+        uses: actions/upload-artifact@v7
+        with:
+          name: close-verdict-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/clawsweeper-audit.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Commit Audit Health
         env:
