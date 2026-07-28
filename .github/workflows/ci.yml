@@ -93,7 +93,7 @@ jobs:
       NPM_CONFIG_IGNORE_SCRIPTS: "true"
       NPM_CONFIG_USERCONFIG: /dev/null
       TOOLCHAIN_ROOT: ${{ github.workspace }}/.github/deploy/crawl-remote-toolchain
-      WRANGLER_VERSION: 4.107.1
+      WRANGLER_VERSION: 4.114.0
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:

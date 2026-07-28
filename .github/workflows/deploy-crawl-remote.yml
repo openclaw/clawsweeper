@@ -490,7 +490,7 @@ jobs:
       WRANGLER_DEPLOY_TIMEOUT_SECONDS: "180"
       WRANGLER_READ_TIMEOUT_SECONDS: "30"
       WRANGLER_ROLLBACK_TIMEOUT_SECONDS: "180"
-      WRANGLER_VERSION: 4.107.1
+      WRANGLER_VERSION: 4.114.0
     steps:
       - name: Record protected deployment deadline
         run: |
