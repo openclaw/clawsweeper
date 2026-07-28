@@ -88,6 +88,35 @@ test("hydrating checkouts follow the records-source flip while git-lane tooling 
   assert.deepEqual(pinned.sort(), pinnedGitLane);
 });
 
+test("sparse hydrating checkouts carry the whole setup-state script closure", () => {
+  // A sparse checkout that names hydrator scripts one by one silently drops any
+  // script the shared action gains later, so derive the requirement from the
+  // action itself instead of restating today's list.
+  const required = setupStateScriptClosure();
+  const sparseSites: string[] = [];
+  for (const { file, workflow } of workflows()) {
+    for (const [job, definition] of Object.entries(workflow.jobs ?? {})) {
+      const steps = definition.steps ?? [];
+      if (!steps.some(isSetupState)) continue;
+      for (const step of steps) {
+        const sparse = step.with?.["sparse-checkout"];
+        if (!step.uses?.startsWith("actions/checkout")) continue;
+        if (step.with?.repository !== undefined || typeof sparse !== "string") continue;
+        const site = `${file}:${job}`;
+        sparseSites.push(site);
+        const listed = new Set(sparse.split("\n").map((entry) => entry.trim()));
+        for (const script of required) {
+          assert.ok(listed.has(script), `${site} must check out ${script}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(sparseSites.sort(), [
+    ".github/workflows/repair-comment-router.yml:route-comments",
+    ".github/workflows/spam-scanner.yml:scan",
+  ]);
+});
+
 test("the setup action exports no long-lived coordinator credential", () => {
   const actionPath = ".github/actions/setup-state/action.yml";
   const source = readFileSync(actionPath, "utf8");
@@ -321,6 +350,31 @@ function workflows(): Array<{ file: string; workflow: WorkflowDocument }> {
       const file = join(workflowDirectory, name);
       return { file, workflow: parse(readFileSync(file, "utf8")) as WorkflowDocument };
     });
+}
+
+function setupStateScriptClosure(): string[] {
+  const action = parse(readFileSync(".github/actions/setup-state/action.yml", "utf8")) as {
+    runs?: { steps?: WorkflowStep[] };
+  };
+  const pending: string[] = [];
+  for (const step of action.runs?.steps ?? []) {
+    for (const match of String(step.run ?? "").matchAll(/scripts\/[\w.-]+\.ts/g)) {
+      if (match[0]) pending.push(match[0]);
+    }
+  }
+  const closure = new Set<string>();
+  while (pending.length > 0) {
+    const script = pending.pop();
+    if (!script || closure.has(script)) continue;
+    closure.add(script);
+    // Both static `from "./x.ts"` and dynamic `import("./x.ts")`, either quote style.
+    for (const match of readFileSync(script, "utf8").matchAll(
+      /(?:from|import\s*\()\s*["']\.\/([\w.-]+\.ts)["']/g,
+    )) {
+      if (match[1]) pending.push(`scripts/${match[1]}`);
+    }
+  }
+  return [...closure].sort();
 }
 
 function isSetupState(step: WorkflowStep): boolean {
