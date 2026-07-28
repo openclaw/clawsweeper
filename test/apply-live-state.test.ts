@@ -539,7 +539,7 @@ test("event apply emits proof only while a captured protected-label guard remain
       const ghMock = `
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
-const path = args[1] || "";
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
 if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
@@ -562,6 +562,8 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
     comments: 0,
     pull_request: null
   }));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
 } else {
   console.error("unexpected gh args", JSON.stringify(args));
   process.exit(1);
@@ -573,7 +575,14 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
           closedDir,
           plansDir,
           reportPath,
-          extraArgs: ["--event-apply-proof"],
+          extraArgs: [
+            "--event-apply-proof",
+            "--dry-run",
+            "--processed-limit",
+            "2",
+            "--apply-kind",
+            "all",
+          ],
         });
       });
 
@@ -588,7 +597,109 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
                 guardedOpenStateVerified: true,
               },
             ]
-          : [],
+          : [
+              {
+                number: 321,
+                action: "review_comment_synced",
+                reason: "would create durable Codex review comment",
+                durableReviewSynced: true,
+              },
+              {
+                number: 321,
+                action: "closed",
+                reason: "dry-run: would close as already implemented on main",
+              },
+            ],
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("event apply retries a captured locked-conversation guard after unlock", () => {
+  for (const locked of [true, false]) {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const itemsDir = join(root, "items");
+      const closedDir = join(root, "closed");
+      const plansDir = join(root, "plans");
+      const reportPath = join(root, "apply-report.json");
+      mkdirSync(itemsDir, { recursive: true });
+      mkdirSync(plansDir, { recursive: true });
+      writeFileSync(
+        join(itemsDir, "321.md"),
+        implementedCloseReport({ action_taken: "skipped_locked_conversation" }),
+        "utf8",
+      );
+
+      const ghMock = `
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 321,
+    title: "Locked issue",
+    html_url: "https://github.com/openclaw/clawsweeper/issues/321",
+    body: "",
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: ${locked},
+    active_lock_reason: ${locked ? JSON.stringify("resolved") : "null"},
+    author_association: "CONTRIBUTOR",
+    user: { login: "reporter" },
+    labels: [],
+    comments: 0,
+    pull_request: null
+  }));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+      withMockGh(root, ghMock, () => {
+        runApplyDecisionsForTest({
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: ["--event-apply-proof", "--dry-run", "--processed-limit", "2"],
+        });
+      });
+
+      assert.deepEqual(
+        JSON.parse(readText(reportPath)),
+        locked
+          ? [
+              {
+                number: 321,
+                action: "skipped_locked_conversation",
+                reason: "conversation is locked (resolved)",
+                guardedOpenStateVerified: true,
+              },
+            ]
+          : [
+              {
+                number: 321,
+                action: "review_comment_synced",
+                reason: "would create durable Codex review comment",
+                durableReviewSynced: true,
+              },
+              {
+                number: 321,
+                action: "closed",
+                reason: "dry-run: would close as already implemented on main",
+              },
+            ],
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -612,6 +723,7 @@ test("event apply emits proof only while a captured PR close-exemption guard rem
           type: "pull_request",
           action_taken: "skipped_close_exempt_label",
           close_reason: "stalled_unproven_pr",
+          item_updated_at: "2026-01-01T00:00:00Z",
           labels: JSON.stringify(["clawsweeper:human-review"]),
         }),
         "utf8",
@@ -676,7 +788,14 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
           closedDir,
           plansDir,
           reportPath,
-          extraArgs: ["--event-apply-proof"],
+          extraArgs: [
+            "--event-apply-proof",
+            "--dry-run",
+            "--processed-limit",
+            "2",
+            "--apply-kind",
+            "all",
+          ],
         });
       });
 
@@ -691,7 +810,14 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
                 guardedOpenStateVerified: true,
               },
             ]
-          : [],
+          : [
+              {
+                number: 321,
+                action: "kept_open",
+                reason:
+                  "no visible dated proof request (needs-proof label event or proof nudge) on the live PR",
+              },
+            ],
       );
     } finally {
       rmSync(root, { recursive: true, force: true });

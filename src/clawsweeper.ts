@@ -55,6 +55,12 @@ import {
 import { parseGhJson, parseGhJsonLinesWithRetry, parseGhJsonWithRetry } from "./github-json.js";
 import { stableJson } from "./stable-json.js";
 import {
+  LEGACY_FIXED_CLOSE_SKIP_ACTIONS,
+  LIVE_RECHECK_CLOSE_GUARD_ACTIONS,
+  isLegacyFixedCloseSkipAction,
+  isLiveRecheckCloseGuardAction,
+} from "./apply-close-actions.js";
+import {
   REVIEW_STRUCTURAL_CACHE_VERSION,
   reviewStructuralRecordAtLeastAsFresh,
   reviewStructuralItemStateDigest,
@@ -1361,6 +1367,8 @@ interface AuditRecord {
   labels: string[];
   decision: string | undefined;
   closeReason: string | undefined;
+  confidence?: string | undefined;
+  reviewedAt?: string | undefined;
   action: string | undefined;
   reviewStatus: string;
   currentState: string | undefined;
@@ -1380,6 +1388,8 @@ interface AuditFinding {
   action?: string;
   decision?: string;
   closeReason?: string;
+  confidence?: string;
+  reviewedAt?: string;
   reviewStatus?: string;
   currentState?: string;
 }
@@ -1404,6 +1414,7 @@ interface AuditResult {
     staleItemRecords: number;
     duplicateRecords: number;
     protectedProposed: number;
+    autoCloseOpen: number;
     staleReviews: number;
   };
   findings: {
@@ -1416,6 +1427,7 @@ interface AuditResult {
     staleItemRecords: AuditFinding[];
     duplicateRecords: AuditFinding[];
     protectedProposed: AuditFinding[];
+    autoCloseOpen: AuditFinding[];
     staleReviews: AuditFinding[];
   };
 }
@@ -1961,10 +1973,6 @@ const ITEM_CATEGORIES = new Set<ItemCategory>([
   "admin",
   "security",
   "unclear",
-]);
-const RETRYABLE_CLOSE_SKIP_ACTIONS = new Set<string>([
-  "skipped_maintainer_authored",
-  "skipped_invalid_decision",
 ]);
 const PAIR_BLOCKED_CLOSE_ACTIONS = new Set<string>([
   "skipped_open_closing_pr",
@@ -7801,9 +7809,18 @@ function isRetryableCloseSkipReport(markdown: string): boolean {
   const action = frontMatterValue(markdown, "action_taken");
   const closeReason = reportCloseReason(markdown);
   return (
-    Boolean(action && RETRYABLE_CLOSE_SKIP_ACTIONS.has(action)) &&
+    Boolean(action && closeReason && isLegacyFixedCloseSkipAction(action, closeReason)) &&
     isVerifiedFixedCloseReason(closeReason) &&
     hasHighConfidenceAllowedCloseMetadata(markdown)
+  );
+}
+
+function isLiveRecheckCloseGuardReport(markdown: string): boolean {
+  const action = frontMatterValue(markdown, "action_taken");
+  return Boolean(
+    action &&
+    isLiveRecheckCloseGuardAction(action) &&
+    hasHighConfidenceAllowedCloseMetadata(markdown),
   );
 }
 
@@ -20954,7 +20971,8 @@ const APPLY_SYNC_EQUIVALENT_CLOSE_MARKER_ACTIONS = new Set([
   "kept_open",
   "skipped_pr_close_coverage_proof",
   "retry_pr_close_coverage_proof",
-  ...RETRYABLE_CLOSE_SKIP_ACTIONS,
+  ...LEGACY_FIXED_CLOSE_SKIP_ACTIONS,
+  ...LIVE_RECHECK_CLOSE_GUARD_ACTIONS,
   ...PAIR_BLOCKED_CLOSE_ACTIONS,
 ]);
 
@@ -27712,8 +27730,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     let requiredMaintainerDecision: MaintainerDecision | null;
     const shouldProbeClosedState = shouldProbeClosedStateReport(markdown);
     const isRetryableSkippedClose = isRetryableCloseSkipReport(markdown);
+    const isLiveRecheckGuardClose = isLiveRecheckCloseGuardReport(markdown);
     const isUpgradedCloseCandidate =
       isRetryableSkippedClose ||
+      isLiveRecheckGuardClose ||
       isRetryablePrCloseCoverageProofReport(markdown) ||
       isRetryableKeptOpenCloseReport(markdown) ||
       isPairBlockedCloseReport(markdown);
@@ -28752,10 +28772,22 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
             : lockedReason
               ? { action: "skipped_locked_conversation", reason: lockedReason }
               : null;
-      if (emitEventApplyProof && guardedOpenProof) {
-        if (recordApplySkipped(guardedOpenProof.action, guardedOpenProof.reason, true)) break;
+      if (guardedOpenProof) {
+        if (
+          emitEventApplyProof &&
+          recordApplySkipped(guardedOpenProof.action, guardedOpenProof.reason, true)
+        ) {
+          break;
+        }
+        continue;
       }
-      continue;
+      if (isLiveRecheckGuardClose) {
+        markdown = replaceFrontMatterValue(markdown, "action_taken", "proposed_close");
+        isCloseProposal = isApplyCloseCandidateReport(markdown);
+      }
+      if (!isCloseProposal) {
+        continue;
+      }
     }
     const earlyLeaseState = refreshReviewStartLeaseState();
     existingReviewComment = earlyLeaseState.comment;
@@ -31471,6 +31503,8 @@ function markdownAuditRecord(
     labels: frontMatterStringArray(markdown, "labels"),
     decision: frontMatterValue(markdown, "decision"),
     closeReason: frontMatterValue(markdown, "close_reason"),
+    confidence: frontMatterValue(markdown, "confidence"),
+    reviewedAt: frontMatterValue(markdown, "reviewed_at"),
     action: frontMatterValue(markdown, "action_taken"),
     reviewStatus: effectiveReviewStatus(markdown),
     currentState: frontMatterValue(markdown, "current_state"),
@@ -31519,6 +31553,8 @@ function recordFinding(record: AuditRecord, extra: Partial<AuditFinding> = {}): 
     ...(record.action ? { action: record.action } : {}),
     ...(record.decision ? { decision: record.decision } : {}),
     ...(record.closeReason ? { closeReason: record.closeReason } : {}),
+    ...(record.confidence ? { confidence: record.confidence } : {}),
+    ...(record.reviewedAt ? { reviewedAt: record.reviewedAt } : {}),
     reviewStatus: record.reviewStatus,
     ...(record.currentState ? { currentState: record.currentState } : {}),
     ...(record.location === "items" ? { itemPath: record.path } : { closedPath: record.path }),
@@ -31588,6 +31624,31 @@ export function auditFromSnapshot(options: {
         applyBlockingProtectedLabels(record.labels, record.closeReason).length > 0,
     )
     .map((record) => recordFinding(record));
+  const autoCloseOpen = options.itemRecords
+    .filter((record) => {
+      if (
+        record.decision !== "close" ||
+        record.confidence !== "high" ||
+        !record.kind ||
+        !record.closeReason ||
+        !openByNumber.has(record.number)
+      ) {
+        return false;
+      }
+      return isAutoCloseAllowed(
+        repositoryProfileFor(record.repo),
+        record.kind,
+        record.closeReason as CloseReason,
+      );
+    })
+    .map((record) =>
+      recordFinding(record, {
+        currentState: "open",
+        ...(openByNumber.get(record.number)?.updatedAt
+          ? { updatedAt: openByNumber.get(record.number)!.updatedAt }
+          : {}),
+      }),
+    );
   const staleReviews = options.itemRecords
     .filter((record) => record.reviewStatus.startsWith("stale_"))
     .map((record) => recordFinding(record));
@@ -31612,6 +31673,7 @@ export function auditFromSnapshot(options: {
       staleItemRecords: staleItemRecords.length,
       duplicateRecords: duplicateRecords.length,
       protectedProposed: protectedProposed.length,
+      autoCloseOpen: autoCloseOpen.length,
       staleReviews: staleReviews.length,
     },
     findings: {
@@ -31624,6 +31686,7 @@ export function auditFromSnapshot(options: {
       staleItemRecords,
       duplicateRecords,
       protectedProposed,
+      autoCloseOpen,
       staleReviews,
     },
   };
@@ -31669,6 +31732,8 @@ function auditFindingCategory(category: keyof AuditResult["findings"]): string {
       return "Duplicate record";
     case "protectedProposed":
       return "Protected proposed close";
+    case "autoCloseOpen":
+      return "Auto-close verdict still open";
     case "staleReviews":
       return "Stale review";
     case "missingOpen":
@@ -31766,6 +31831,7 @@ ${auditReviewTargets(result)}
 | Stale item records | ${result.counts.staleItemRecords} |
 | Duplicate records | ${result.counts.duplicateRecords} |
 | Protected proposed closes | ${result.counts.protectedProposed} |
+| Auto-close verdicts still open | ${result.counts.autoCloseOpen} |
 | Stale reviews | ${result.counts.staleReviews} |
 
 | Item | Category | Title | Detail |

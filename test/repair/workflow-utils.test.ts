@@ -1519,6 +1519,16 @@ test("workflow utilities select eligible proposed close records", () => {
       "",
     ].join("\n"),
   );
+  writeProposedRecord(root, 37, "issue", "skipped_protected_label", "implemented_on_main", oldDate);
+  writeProposedRecord(
+    root,
+    38,
+    "pull_request",
+    "skipped_close_exempt_label",
+    "stalled_unproven_pr",
+    oldDate,
+  );
+  writeProposedRecord(root, 39, "issue", "skipped_locked_conversation", "clawhub", oldDate);
 
   const selected = withCwd(root, () =>
     proposedItemNumbers({
@@ -1533,7 +1543,7 @@ test("workflow utilities select eligible proposed close records", () => {
 
   assert.deepEqual(
     selected,
-    [5, 12, 15, 17, 18, 21, 22, 24, 25, 26, 27, 30, 31, 32, 33, 34, 35, 36],
+    [5, 12, 15, 17, 18, 21, 22, 24, 25, 26, 27, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39],
   );
   assert.deepEqual(
     withCwd(root, () =>
@@ -1673,6 +1683,16 @@ test("workflow utilities summarize proposed close candidate quality buckets", ()
   writeProposedRecord(root, 12, "pull_request", "proposed_close", "abandoned_pr", oldDate);
   writeProposedRecord(root, 13, "issue", "proposed_close", "stalled_unproven_pr", oldDate);
   writeProposedRecord(root, 14, "issue", "proposed_close", "abandoned_pr", oldDate);
+  writeProposedRecord(root, 15, "issue", "skipped_protected_label", "implemented_on_main", oldDate);
+  writeProposedRecord(
+    root,
+    16,
+    "pull_request",
+    "skipped_close_exempt_label",
+    "stalled_unproven_pr",
+    oldDate,
+  );
+  writeProposedRecord(root, 17, "issue", "skipped_locked_conversation", "clawhub", oldDate);
 
   const summary = withCwd(root, () =>
     proposedItemQualitySummary({
@@ -1696,11 +1716,11 @@ test("workflow utilities summarize proposed close candidate quality buckets", ()
     }),
   );
 
-  assert.equal(summary.total, 8);
-  assert.deepEqual(selected, [5, 6, 7, 8, 9, 10, 11, 12]);
+  assert.equal(summary.total, 11);
+  assert.deepEqual(selected, [5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 17]);
   assert.equal(
     summary.summary,
-    "1 implemented-on-main, 1 duplicate/superseded, 1 needs PR close proof, 3 aging/low-signal, 1 policy-sensitive, 1 retry after guard skip",
+    "1 implemented-on-main, 1 duplicate/superseded, 1 needs PR close proof, 3 aging/low-signal, 1 policy-sensitive, 4 retry after guard skip",
   );
   assert.deepEqual(
     summary.buckets.map((bucket) => [bucket.bucket, bucket.count]),
@@ -1710,7 +1730,7 @@ test("workflow utilities summarize proposed close candidate quality buckets", ()
       ["needs_pr_close_coverage", 1],
       ["aging_or_low_signal", 3],
       ["policy_sensitive", 1],
-      ["retry_after_guard_skip", 1],
+      ["retry_after_guard_skip", 4],
     ],
   );
   assert.match(summary.buckets[2]?.next_step ?? "", /close-coverage proof/);

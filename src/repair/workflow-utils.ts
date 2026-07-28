@@ -11,6 +11,10 @@ import {
   queuePressureLevel,
   type QueuePressureLevel,
 } from "../queue-pressure.js";
+import {
+  isLiveRecheckCloseGuardAction,
+  isSelectableApplyCloseAction,
+} from "../apply-close-actions.js";
 
 type ApplyAction = {
   action: string;
@@ -1686,6 +1690,13 @@ function proposedItemQualityBucket(options: {
   )
     return "policy_sensitive";
   if (
+    options.action === "skipped_invalid_decision" ||
+    options.action === "skipped_maintainer_authored" ||
+    isLiveRecheckCloseGuardAction(options.action)
+  ) {
+    return "retry_after_guard_skip";
+  }
+  if (
     options.closeReason === "abandoned_pr" ||
     options.closeReason === "stale_insufficient_info" ||
     options.closeReason === "stalled_unproven_pr" ||
@@ -1693,12 +1704,6 @@ function proposedItemQualityBucket(options: {
     options.closeReason === "low_signal_unmergeable_pr"
   ) {
     return "aging_or_low_signal";
-  }
-  if (
-    options.action === "skipped_invalid_decision" ||
-    options.action === "skipped_maintainer_authored"
-  ) {
-    return "retry_after_guard_skip";
   }
   if (options.closeReason === "duplicate_or_superseded") return "duplicate_or_superseded";
   if (options.closeReason === "implemented_on_main" || options.closeReason === "clawhub") {
@@ -1743,23 +1748,8 @@ function timestampValue(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-const SELECTABLE_CLOSE_ACTIONS = new Set([
-  "proposed_close",
-  "retry_pr_close_coverage_proof",
-  "kept_open",
-  "skipped_low_signal_live_guard",
-  "skipped_open_closing_pr",
-  "skipped_same_author_pair",
-]);
-
-const RETRYABLE_CLOSE_SKIP_ACTIONS = new Set([
-  "skipped_maintainer_authored",
-  "skipped_invalid_decision",
-]);
-
 function isSelectableCloseAction(action: string, reason: string): boolean {
-  if (RETRYABLE_CLOSE_SKIP_ACTIONS.has(action)) return reason === "implemented_on_main";
-  return SELECTABLE_CLOSE_ACTIONS.has(action);
+  return isSelectableApplyCloseAction(action, reason);
 }
 
 function hasPullRequestClosePromotionSignal(

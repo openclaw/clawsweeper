@@ -3018,6 +3018,8 @@ test("audit detects live/local state drift and unsafe proposed records", () => {
         labels: ["maintainer"],
         decision: "close",
         closeReason: "implemented_on_main",
+        confidence: "high",
+        reviewedAt: "2026-04-25T12:00:00.000Z",
         action: "proposed_close",
       }),
       auditRecord(7, { reviewStatus: "stale_local_checkout_blocked" }),
@@ -3051,6 +3053,22 @@ test("audit detects live/local state drift and unsafe proposed records", () => {
   assert.equal(result.counts.duplicateRecords, 1);
   assert.equal(result.counts.protectedProposed, 1);
   assert.equal(result.findings.protectedProposed[0].number, 6);
+  assert.equal(result.counts.autoCloseOpen, 1);
+  assert.deepEqual(result.findings.autoCloseOpen[0], {
+    number: 9,
+    kind: "issue",
+    title: "Item 9",
+    labels: ["maintainer"],
+    action: "proposed_close",
+    decision: "close",
+    closeReason: "implemented_on_main",
+    confidence: "high",
+    reviewedAt: "2026-04-25T12:00:00.000Z",
+    reviewStatus: "complete",
+    currentState: "open",
+    itemPath: "items/9.md",
+    updatedAt: "2026-01-01T00:00:00Z",
+  });
   assert.equal(result.counts.staleReviews, 1);
 });
 
