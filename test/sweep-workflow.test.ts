@@ -1471,6 +1471,48 @@ test("reconcile publication batches large corrected tuple sets below exec argume
   ]);
 });
 
+test("record publication sizes its command by the flag list, not by the record count", () => {
+  const recordCount = 4000;
+  const output = execFileSync(
+    "bash",
+    [
+      "-lc",
+      [
+        "source scripts/apply-workflow-helpers.sh",
+        'pnpm() { captured_manifest="${!#}"; printf "argc %s\\n" "$#"; printf "arg %s\\n" "$@"; printf "manifest_lines %s\\n" "$(wc -l < "$captured_manifest" | tr -d " ")"; }',
+        "paths=()",
+        `for index in $(seq 1 ${recordCount}); do paths+=("records/openclaw-openclaw/items/\${index}.md"); done`,
+        'publish_changes_with_strategy reconcile-records "persist reconciliation" "${paths[@]}"',
+        '[ -e "$captured_manifest" ] && printf "manifest_retained\\n" || printf "manifest_removed\\n"',
+      ].join("\n"),
+    ],
+    { encoding: "utf8" },
+  );
+
+  const lines = output.trim().split("\n");
+  const args = lines.filter((line) => line.startsWith("arg ")).map((line) => line.slice(4));
+
+  // A flag per path made this vector grow with the reconcile until the whole
+  // command passed the kernel's 128 KiB single-argument limit and pnpm died
+  // with E2BIG, taking the apply lane down before it applied anything.
+  assert.ok(lines.includes("argc 9"), `expected a fixed-size command, got ${lines[0]}`);
+  assert.deepEqual(args, [
+    "run",
+    "repair:publish-main",
+    "--",
+    "--message",
+    "persist reconciliation",
+    "--rebase-strategy",
+    "reconcile-records",
+    "--paths-file",
+    args[8],
+  ]);
+  assert.ok(!args.includes("--path"));
+  assert.ok(!args.some((arg) => arg.startsWith("records/")));
+  assert.ok(lines.includes(`manifest_lines ${recordCount}`));
+  assert.ok(lines.includes("manifest_removed"));
+});
+
 test("apply checkpoints split record tuples from auxiliary state", () => {
   const output = execFileSync(
     "bash",

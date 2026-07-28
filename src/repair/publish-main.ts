@@ -698,6 +698,8 @@ function parseArgs(argv: readonly string[]): Args {
     if (arg === "--") continue;
     if (arg === "--message") parsed.message = requiredValue(argv, ++index, arg);
     else if (arg === "--path") parsed.paths.push(requiredValue(argv, ++index, arg));
+    else if (arg === "--paths-file")
+      parsed.paths.push(...readPathsFile(requiredValue(argv, ++index, arg)));
     else if (arg === "--restore") parsed.restorePaths.push(requiredValue(argv, ++index, arg));
     else if (arg === "--max-attempts")
       parsed.maxAttempts = parsePositiveInt(requiredValue(argv, ++index, arg), arg);
@@ -708,8 +710,20 @@ function parseArgs(argv: readonly string[]): Args {
     else throw new Error(`Unknown argument: ${arg}`);
   }
   if (!parsed.message) throw new Error("--message is required");
-  if (parsed.paths.length === 0) throw new Error("At least one --path is required");
+  if (parsed.paths.length === 0)
+    throw new Error("At least one --path or --paths-file entry is required");
   return parsed;
+}
+
+// A flag per path overflows the kernel's single-argument limit once a publish
+// covers a few hundred records, so callers with an unbounded list pass a manifest.
+function readPathsFile(file: string): string[] {
+  const paths = readFileSync(resolve(file), "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (paths.length === 0) throw new Error(`--paths-file has no entries: ${file}`);
+  return paths;
 }
 
 function requiredValue(argv: readonly string[], index: number, flag: string): string {

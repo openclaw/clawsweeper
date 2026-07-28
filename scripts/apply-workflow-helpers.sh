@@ -132,12 +132,19 @@ publish_changes_with_strategy() {
   local rebase_strategy="$1"
   local message="$2"
   shift 2
-  local publish_args=(--message "$message" --rebase-strategy "$rebase_strategy")
-  local path
-  for path in "$@"; do
-    publish_args+=(--path "$path")
-  done
-  pnpm run repair:publish-main -- "${publish_args[@]}"
+  # Reconciliation publishes four paths per changed record, so a flag per path
+  # outgrows the kernel's single-argument limit and pnpm spawns with E2BIG.
+  # The manifest keeps the command a fixed size no matter how many records move.
+  local paths_file
+  paths_file="$(mktemp)"
+  printf '%s\n' "$@" >"$paths_file"
+  local status=0
+  pnpm run repair:publish-main -- \
+    --message "$message" \
+    --rebase-strategy "$rebase_strategy" \
+    --paths-file "$paths_file" || status=$?
+  rm -f "$paths_file"
+  return "$status"
 }
 
 publish_changes() {

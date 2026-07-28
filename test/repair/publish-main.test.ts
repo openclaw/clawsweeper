@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -571,6 +572,62 @@ function conflictResponse(
     },
     { status: 409 },
   );
+}
+
+test("publish-main takes paths from a manifest and merges them with --path", () => {
+  const cli = path.resolve("dist/repair/publish-main.js");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-paths-file-"));
+  const manifest = path.join(dir, "manifest.txt");
+  const recordPath = "records/openclaw-openclaw/items/42.md";
+
+  // Padding and blank lines around the entry are dropped, and the record path
+  // survives to record publication — a stage only records/* paths reach.
+  fs.writeFileSync(manifest, `\n  ${recordPath}  \n\n`);
+  assert.match(
+    runPublishMain(cli, dir, ["--message", "probe", "--paths-file", manifest]),
+    /record publication requires a hydrated state checkout/,
+  );
+
+  // The same run without the manifest never reaches that stage, so the manifest
+  // is what carried the record path in.
+  assert.match(
+    runPublishMain(cli, dir, ["--message", "probe", "--path", "results/probe.json"]),
+    /not in a git directory/,
+  );
+
+  // Both flags feed one list.
+  assert.match(
+    runPublishMain(cli, dir, [
+      "--message",
+      "probe",
+      "--path",
+      "results/probe.json",
+      "--paths-file",
+      manifest,
+    ]),
+    /record publication requires a hydrated state checkout/,
+  );
+
+  fs.writeFileSync(manifest, "\n   \n");
+  assert.match(
+    runPublishMain(cli, dir, ["--message", "probe", "--paths-file", manifest]),
+    /--paths-file has no entries/,
+  );
+
+  assert.match(
+    runPublishMain(cli, dir, ["--message", "probe"]),
+    /At least one --path or --paths-file entry is required/,
+  );
+});
+
+function runPublishMain(cli: string, cwd: string, args: readonly string[]): string {
+  const result = spawnSync(process.execPath, [cli, ...args], {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, CLAWSWEEPER_STATE_DIR: "", CLAWSWEEPER_STATE_APPEND_ENABLED: "" },
+  });
+  assert.notEqual(result.status, 0, "publish-main must not publish from a scratch directory");
+  return `${result.stdout}${result.stderr}`;
 }
 
 function appendEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
