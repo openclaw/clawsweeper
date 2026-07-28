@@ -149,7 +149,98 @@ test("hydrate-state refuses Worker cutover and loudly falls back to git without 
     );
     assert.equal(result.recordsSource, "git");
     assert.equal(result.recordsFallback?.reason, "snapshot_store_unavailable");
-    assert.match(errors.join("\n"), /WORKER RECORD CUTOVER REFUSED.*FALLING BACK TO GIT/);
+    assert.equal(result.recordsFallback?.slug, repoSlug);
+    assert.deepEqual(result.recordsFallback?.detail, {
+      endpoint: "/internal/state/records/snapshots/latest",
+      status: 503,
+      code: "snapshot_store_unavailable",
+      bodySnippet: '{"error":"snapshot_store_unavailable","snapshotStoreAvailable":false}',
+      succeededSlugs: 0,
+    });
+    const refusal = errors.join("\n");
+    assert.match(refusal, /WORKER RECORD CUTOVER REFUSED.*FALLING BACK TO GIT/);
+    assert.match(
+      refusal,
+      new RegExp(`repo=${repoSlug} .*status=503 code=snapshot_store_unavailable`),
+    );
+    assert.equal(
+      readFileSync(path.join(target, "records", repoSlug, "items", "1.md"), "utf8"),
+      contents.get("items/1"),
+    );
+  } finally {
+    console.error = originalError;
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("hydrate-state refusal names the failing slug, request evidence, and prior successes", async () => {
+  const fixture = createStateFixture();
+  const target = path.join(fixture.root, "partial-fallback-target");
+  const cacheRoot = path.join(fixture.root, "snapshot-cache");
+  const missingSlug = "zz-missing";
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...values) => errors.push(values.join(" "));
+  const healthyFetch = workerFetch(contents);
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const body = JSON.parse(String(init?.body || "{}")) as { repoSlug?: string };
+    if (body.repoSlug === missingSlug) {
+      assert.ok(url.pathname.endsWith("/snapshots/latest"));
+      return Response.json(
+        { error: "snapshot_not_found", snapshotStoreAvailable: true },
+        { status: 404 },
+      );
+    }
+    return healthyFetch(input, init);
+  }) as typeof fetch;
+  try {
+    const result = await hydrateState(
+      [
+        "--state-dir",
+        fixture.stateRoot,
+        "--worktree",
+        target,
+        "--records-source",
+        "worker",
+        "--records-url",
+        "https://worker.example",
+        "--records-repo-slugs",
+        `${repoSlug},${missingSlug}`,
+      ],
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: "fixture-secret",
+        CLAWSWEEPER_RECORDS_CACHE_DIR: cacheRoot,
+      },
+      fetchImpl,
+    );
+    assert.equal(result.recordsSource, "git");
+    assert.equal(result.recordsFallback?.reason, "snapshot_not_found");
+    assert.equal(result.recordsFallback?.slug, missingSlug);
+    assert.deepEqual(result.recordsFallback?.detail, {
+      endpoint: "/internal/state/records/snapshots/latest",
+      status: 404,
+      code: "snapshot_not_found",
+      bodySnippet: '{"error":"snapshot_not_found","snapshotStoreAvailable":true}',
+      succeededSlugs: 1,
+    });
+    const log = errors.join("\n");
+    assert.match(
+      log,
+      new RegExp(
+        `WORKER RECORD CUTOVER REFUSED: SNAPSHOT NOT FOUND \\(repo=${missingSlug} ` +
+          `endpoint=/internal/state/records/snapshots/latest status=404 code=snapshot_not_found ` +
+          `succeededSlugs=1 body=.*\\); FALLING BACK TO GIT RECORDS`,
+      ),
+    );
+    assert.match(
+      log,
+      new RegExp(
+        `\\[worker-records\\] snapshot hydrated repo=${repoSlug} revision=\\d+ ` +
+          `snapshotRevision=\\d+ snapshotBytes=\\d+ cache=miss deltaRecords=\\d+ records=\\d+`,
+      ),
+    );
+    // Fallback still materialized the git records tree.
     assert.equal(
       readFileSync(path.join(target, "records", repoSlug, "items", "1.md"), "utf8"),
       contents.get("items/1"),

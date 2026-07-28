@@ -60,16 +60,45 @@ export type WorkerRecordReplayFailure = {
   code: string;
 };
 
+export type WorkerSnapshotUnavailableDetail = {
+  repoSlug?: string;
+  endpoint?: string;
+  status?: number;
+  code?: string;
+  bodySnippet?: string;
+  succeededSlugs?: number;
+};
+
 export class WorkerSnapshotUnavailableError extends Error {
   readonly reason: "snapshot_store_unavailable" | "snapshot_not_found";
+  readonly detail: WorkerSnapshotUnavailableDetail;
+  readonly detailText: string;
 
-  constructor(reason: "snapshot_store_unavailable" | "snapshot_not_found") {
-    super(
-      reason === "snapshot_store_unavailable" ? "snapshot store unavailable" : "snapshot not found",
-    );
+  constructor(
+    reason: "snapshot_store_unavailable" | "snapshot_not_found",
+    detail: WorkerSnapshotUnavailableDetail = {},
+    options?: { cause?: unknown },
+  ) {
+    const base =
+      reason === "snapshot_store_unavailable" ? "snapshot store unavailable" : "snapshot not found";
+    const detailText = snapshotUnavailableDetailText(detail);
+    super(detailText ? `${base} (${detailText})` : base, options);
     this.name = "WorkerSnapshotUnavailableError";
     this.reason = reason;
+    this.detail = detail;
+    this.detailText = detailText;
   }
+}
+
+function snapshotUnavailableDetailText(detail: WorkerSnapshotUnavailableDetail) {
+  const parts: string[] = [];
+  if (detail.repoSlug) parts.push(`repo=${detail.repoSlug}`);
+  if (detail.endpoint) parts.push(`endpoint=${detail.endpoint}`);
+  if (detail.status !== undefined) parts.push(`status=${detail.status}`);
+  if (detail.code) parts.push(`code=${detail.code}`);
+  if (detail.succeededSlugs !== undefined) parts.push(`succeededSlugs=${detail.succeededSlugs}`);
+  if (detail.bodySnippet) parts.push(`body=${JSON.stringify(detail.bodySnippet)}`);
+  return parts.join(" ");
 }
 
 export class WorkerRecordRequestError extends Error {
@@ -164,7 +193,9 @@ export async function materializeWorkerRecords(options: {
   repoSlugs: readonly string[];
   cacheRoot?: string;
   fetch?: typeof globalThis.fetch;
+  log?: (line: string) => void;
 }) {
+  const log = options.log ?? ((line: string) => console.error(line));
   mkdirSync(options.worktreeRoot, { recursive: true });
   const recordsRoot = path.join(options.worktreeRoot, "records");
   const cacheRoot = path.resolve(
@@ -187,38 +218,55 @@ export async function materializeWorkerRecords(options: {
   > = {};
   try {
     for (const repoSlug of options.repoSlugs) {
-      validateRepoSlug(repoSlug);
-      const storedSnapshot = await fetchWorkerStoredSnapshot({
-        baseUrl: options.baseUrl,
-        webhookSecret: options.webhookSecret,
-        repoSlug,
-        fetch: options.fetch,
-      });
-      const cached = await ensureSnapshotCache({
-        cacheRoot,
-        baseUrl: options.baseUrl,
-        webhookSecret: options.webhookSecret,
-        snapshot: storedSnapshot,
-        fetch: options.fetch,
-      });
-      const stagedRepoRoot = path.join(stagedRecordsRoot, repoSlug);
-      cpSync(cached.treeRoot, stagedRepoRoot, { recursive: true });
-      const journal = await exportWorkerRecords({
-        baseUrl: options.baseUrl,
-        webhookSecret: options.webhookSecret,
-        repoSlug,
-        sinceRevision: storedSnapshot.revisionWatermark,
-        fetch: options.fetch,
-      });
-      applyWorkerRecords(stagedRepoRoot, journal.records);
-      repositories[repoSlug] = {
-        revision: journal.revision,
-        snapshotRevision: storedSnapshot.revisionWatermark,
-        snapshotBytes: storedSnapshot.bytes,
-        snapshotCache: cached.cache,
-        deltaRecords: journal.records.length,
-        recordCount: collectGitRecords(stagingRoot, repoSlug).length,
-      };
+      try {
+        validateRepoSlug(repoSlug);
+        const storedSnapshot = await fetchWorkerStoredSnapshot({
+          baseUrl: options.baseUrl,
+          webhookSecret: options.webhookSecret,
+          repoSlug,
+          fetch: options.fetch,
+        });
+        const cached = await ensureSnapshotCache({
+          cacheRoot,
+          baseUrl: options.baseUrl,
+          webhookSecret: options.webhookSecret,
+          snapshot: storedSnapshot,
+          fetch: options.fetch,
+        });
+        const stagedRepoRoot = path.join(stagedRecordsRoot, repoSlug);
+        cpSync(cached.treeRoot, stagedRepoRoot, { recursive: true });
+        const journal = await exportWorkerRecords({
+          baseUrl: options.baseUrl,
+          webhookSecret: options.webhookSecret,
+          repoSlug,
+          sinceRevision: storedSnapshot.revisionWatermark,
+          fetch: options.fetch,
+        });
+        applyWorkerRecords(stagedRepoRoot, journal.records);
+        repositories[repoSlug] = {
+          revision: journal.revision,
+          snapshotRevision: storedSnapshot.revisionWatermark,
+          snapshotBytes: storedSnapshot.bytes,
+          snapshotCache: cached.cache,
+          deltaRecords: journal.records.length,
+          recordCount: collectGitRecords(stagingRoot, repoSlug).length,
+        };
+        const entry = repositories[repoSlug];
+        log(
+          `[worker-records] snapshot hydrated repo=${repoSlug} revision=${entry.revision} snapshotRevision=${entry.snapshotRevision} snapshotBytes=${entry.snapshotBytes} cache=${entry.snapshotCache} deltaRecords=${entry.deltaRecords} records=${entry.recordCount}`,
+        );
+      } catch (error) {
+        // Re-wrap so the refusal that aborts a multi-slug hydration names the
+        // failing slug and how many slugs had already hydrated cleanly.
+        if (error instanceof WorkerSnapshotUnavailableError) {
+          throw new WorkerSnapshotUnavailableError(
+            error.reason,
+            { repoSlug, ...error.detail, succeededSlugs: Object.keys(repositories).length },
+            { cause: error.cause ?? error },
+          );
+        }
+        throw error;
+      }
     }
     rmSync(recordsRoot, { force: true, recursive: true });
     renameSync(stagedRecordsRoot, recordsRoot);
@@ -245,13 +293,14 @@ export async function fetchWorkerStoredSnapshot(options: {
   repoSlug: string;
   fetch?: typeof globalThis.fetch;
 }): Promise<WorkerStoredSnapshot> {
+  const endpoint = "/internal/state/records/snapshots/latest";
   try {
     const envelope = await signedPost<{
       snapshotStoreAvailable: boolean;
       snapshot: WorkerStoredSnapshot;
     }>({
       ...options,
-      path: "/internal/state/records/snapshots/latest",
+      path: endpoint,
       body: { repoSlug: options.repoSlug },
     });
     validateStoredSnapshot(envelope.snapshot, options.repoSlug);
@@ -261,7 +310,19 @@ export async function fetchWorkerStoredSnapshot(options: {
       error instanceof WorkerRecordRequestError &&
       (error.code === "snapshot_store_unavailable" || error.code === "snapshot_not_found")
     ) {
-      throw new WorkerSnapshotUnavailableError(error.code);
+      // Preserve the request evidence: which repo, which endpoint, and what
+      // the Worker actually said. A bare reason is undebuggable at cutover.
+      throw new WorkerSnapshotUnavailableError(
+        error.code,
+        {
+          repoSlug: options.repoSlug,
+          endpoint,
+          status: error.status,
+          code: error.code,
+          bodySnippet: error.bodySnippet,
+        },
+        { cause: error },
+      );
     }
     throw error;
   }
@@ -275,7 +336,18 @@ export async function resolveWorkerSnapshotCacheKey(options: {
 }) {
   const snapshots = [] as WorkerStoredSnapshot[];
   for (const repoSlug of [...options.repoSlugs].sort()) {
-    snapshots.push(await fetchWorkerStoredSnapshot({ ...options, repoSlug }));
+    try {
+      snapshots.push(await fetchWorkerStoredSnapshot({ ...options, repoSlug }));
+    } catch (error) {
+      if (error instanceof WorkerSnapshotUnavailableError) {
+        throw new WorkerSnapshotUnavailableError(
+          error.reason,
+          { repoSlug, ...error.detail, succeededSlugs: snapshots.length },
+          { cause: error.cause ?? error },
+        );
+      }
+      throw error;
+    }
   }
   const pairs = snapshots.map((snapshot) => `${snapshot.repoSlug}:${snapshot.revisionWatermark}`);
   return {

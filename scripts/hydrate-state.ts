@@ -95,7 +95,20 @@ export async function hydrateState(
   }
 
   let worker: Awaited<ReturnType<typeof materializeWorkerRecords>> | undefined;
-  let recordsFallback: { reason: string; source: "git" } | undefined;
+  let recordsFallback:
+    | {
+        reason: string;
+        source: "git";
+        slug?: string;
+        detail?: {
+          endpoint?: string;
+          status?: number;
+          code?: string;
+          bodySnippet?: string;
+          succeededSlugs?: number;
+        };
+      }
+    | undefined;
   if (recordsSource === "worker") {
     const repoSlugs =
       args.recordsRepoSlugs ??
@@ -105,7 +118,11 @@ export async function hydrateState(
       throw new Error("CLAWSWEEPER_RECORDS_SECRET is required for Worker record hydration");
     }
     try {
-      if (!repoSlugs.length) throw new WorkerSnapshotUnavailableError("snapshot_not_found");
+      if (!repoSlugs.length) {
+        throw new WorkerSnapshotUnavailableError("snapshot_not_found", {
+          code: "no_record_repo_slugs",
+        });
+      }
       worker = await materializeWorkerRecords({
         worktreeRoot,
         baseUrl,
@@ -123,11 +140,23 @@ export async function hydrateState(
           { cause: error },
         );
       }
+      // Keep the reason shout-case for greppability, but append the request
+      // evidence verbatim: slug, endpoint, HTTP status, error code, body.
+      const reasonText =
+        error.reason === "snapshot_store_unavailable"
+          ? "SNAPSHOT STORE UNAVAILABLE"
+          : "SNAPSHOT NOT FOUND";
       console.error(
-        `[hydrate-state] WORKER RECORD CUTOVER REFUSED: ${error.message.toUpperCase()}; FALLING BACK TO GIT RECORDS`,
+        `[hydrate-state] WORKER RECORD CUTOVER REFUSED: ${reasonText}${error.detailText ? ` (${error.detailText})` : ""}; FALLING BACK TO GIT RECORDS`,
       );
       copyGeneratedPath(stateRoot, worktreeRoot, "records");
-      recordsFallback = { reason: error.reason, source: "git" };
+      const { repoSlug: failedSlug, ...detail } = error.detail;
+      recordsFallback = {
+        reason: error.reason,
+        source: "git",
+        ...(failedSlug ? { slug: failedSlug } : {}),
+        ...(Object.keys(detail).length ? { detail } : {}),
+      };
     }
   }
 
