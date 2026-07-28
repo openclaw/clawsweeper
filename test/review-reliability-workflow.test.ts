@@ -35,3 +35,19 @@ test("review reliability telemetry shares the terminal reconciler workflow", () 
   );
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
 });
+
+test("exact review generation enters finalization before state hydration", () => {
+  const workflow = parse(readFileSync(".github/workflows/sweep.yml", "utf8")) as Record<
+    string,
+    any
+  >;
+  const steps = workflow.jobs["event-review-apply"].steps as Array<Record<string, unknown>>;
+  const review = steps.find((step) => step.name === "Review exact event item");
+  const setupStateIndex = steps.findIndex((step) => step.uses === "./.github/actions/setup-state");
+  const reviewIndex = steps.indexOf(review!);
+
+  assert.ok(review);
+  assert.ok(reviewIndex >= 0 && reviewIndex < setupStateIndex);
+  assert.match(String(review.run), /phase: "finalizing"/);
+  assert.match(String(review.run), /mark_finalizing \|\| review_exit_code=1/);
+});

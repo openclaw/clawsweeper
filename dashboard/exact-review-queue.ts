@@ -136,6 +136,7 @@ export type ExactReviewQueueItem = {
   leaseRevision?: number;
   leaseExpiresAt?: number;
   leaseHeartbeatAt?: number;
+  leasePhase?: "review" | "finalizing";
   claimedRunId?: string;
   claimedRunAttempt?: number;
   claimGeneration?: number;
@@ -1597,6 +1598,7 @@ export class ExactReviewQueue {
       const hasClaimGeneration = body.claim_generation !== undefined;
       const claimGeneration = hasClaimGeneration ? Number(body.claim_generation) : null;
       const hasSourceHeadSha = body.source_head_sha !== undefined;
+      const phase = body.phase === undefined ? "review" : String(body.phase);
       const sourceHeadSha = hasSourceHeadSha
         ? String(body.source_head_sha || "")
             .trim()
@@ -1613,6 +1615,9 @@ export class ExactReviewQueue {
       }
       if (hasSourceHeadSha && !/^[0-9a-f]{40}$/.test(sourceHeadSha || "")) {
         return json({ error: "invalid_source_head_sha" }, 400);
+      }
+      if (phase !== "review" && phase !== "finalizing") {
+        return json({ error: "invalid_lease_phase" }, 400);
       }
 
       const now = Date.now();
@@ -1655,10 +1660,11 @@ export class ExactReviewQueue {
         return json({ error: "lease_not_active" }, 409);
       }
       item.leaseHeartbeatAt = now;
+      item.leasePhase = phase;
       item.updatedAt = now;
       await this.writeState(state);
       await this.scheduleNext(state, now);
-      return json({ ok: true, lease_heartbeat_at: new Date(now).toISOString() });
+      return json({ ok: true, phase, lease_heartbeat_at: new Date(now).toISOString() });
     }
 
     if (request.method === "POST" && url.pathname === "/complete") {
@@ -8977,6 +8983,7 @@ function clearExactReviewLease(item: ExactReviewQueueItem) {
   item.leaseDecision = undefined;
   item.leaseExpiresAt = undefined;
   item.leaseHeartbeatAt = undefined;
+  item.leasePhase = undefined;
   item.claimedRunId = undefined;
   item.claimedRunAttempt = undefined;
   item.claimGeneration = undefined;
@@ -9008,7 +9015,12 @@ export function exactReviewEffectiveLeaseExpiresAt(
 ) {
   const leaseExpiresAt = Number(item.leaseExpiresAt || 0);
   const leaseHeartbeatAt = Number(item.leaseHeartbeatAt || 0);
-  if (leaseExpiresAt && item.state === "leased" && leaseHeartbeatAt) {
+  if (
+    leaseExpiresAt &&
+    item.state === "leased" &&
+    leaseHeartbeatAt &&
+    item.leasePhase !== "finalizing"
+  ) {
     return Math.min(leaseExpiresAt, leaseHeartbeatAt + heartbeatGraceMs);
   }
   if (

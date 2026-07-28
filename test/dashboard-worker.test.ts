@@ -1868,7 +1868,7 @@ test("exact-review queue does not count work for a disabled target", async () =>
   assert.equal(stats.lanes.publication.enqueued_total, 0);
 });
 
-test("heartbeated exact-review leases use the heartbeat grace while legacy leases keep execution expiry", () => {
+test("review heartbeats use grace while finalizing leases keep execution expiry", () => {
   const now = 1_000_000;
   const item = {
     ...leasedExactReviewQueueItem(700, "7000"),
@@ -1880,6 +1880,9 @@ test("heartbeated exact-review leases use the heartbeat grace while legacy lease
   item.leaseHeartbeatAt = now;
   assert.equal(exactReviewEffectiveLeaseExpiresAt(item, 15 * 60_000), now + 20 * 60_000);
   assert.equal(exactReviewEffectiveLeaseExpiresAt(item, 15 * 60_000, 5 * 60_000), now + 5 * 60_000);
+
+  item.leasePhase = "finalizing";
+  assert.equal(exactReviewEffectiveLeaseExpiresAt(item, 15 * 60_000), item.leaseExpiresAt);
 });
 
 test("exact-review heartbeat refreshes only the matching live lease tuple", async () => {
@@ -1911,7 +1914,14 @@ test("exact-review heartbeat refreshes only the matching live lease tuple", asyn
     env,
   );
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).ok, true);
+  const heartbeatResponse = (await response.json()) as {
+    ok: boolean;
+    phase: string;
+    lease_heartbeat_at: string;
+  };
+  assert.equal(heartbeatResponse.ok, true);
+  assert.equal(heartbeatResponse.phase, "review");
+  assert.equal(Number.isFinite(Date.parse(heartbeatResponse.lease_heartbeat_at)), true);
   const heartbeatAt = Number(
     (
       (await storage.get("exact-review-queue")) as {
@@ -1920,6 +1930,24 @@ test("exact-review heartbeat refreshes only the matching live lease tuple", asyn
     ).items["openclaw/openclaw#700"].leaseHeartbeatAt,
   );
   assert.ok(heartbeatAt > 0);
+
+  const finalizing = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/heartbeat", {
+      method: "POST",
+      body: JSON.stringify({ ...JSON.parse(body), phase: "finalizing" }),
+    }),
+    env,
+  );
+  assert.equal(finalizing.status, 200);
+  assert.equal(((await finalizing.json()) as { phase: string }).phase, "finalizing");
+  assert.equal(
+    (
+      (await storage.get("exact-review-queue")) as {
+        items: Record<string, { leasePhase?: string }>;
+      }
+    ).items["openclaw/openclaw#700"].leasePhase,
+    "finalizing",
+  );
 
   const mismatchBody = JSON.stringify({
     item_key: "openclaw/openclaw#700",

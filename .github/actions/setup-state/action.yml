@@ -67,7 +67,32 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/checkout@v7
+    # Worker transport owns the three enormous generated trees. Do not make every
+    # hydrator materialize the 42 GB git projection before replacing those trees
+    # from the Worker. An explicit sparse checkout still wins, and either git
+    # source keeps the full checkout as the deliberate rollback path.
+    - name: Check out Worker-projected state
+      if: ${{ inputs.sparse-checkout == '' && inputs.records-source == 'worker' && inputs.ledger-source == 'worker' }}
+      uses: actions/checkout@v7
+      with:
+        repository: openclaw/clawsweeper-state
+        ref: state
+        path: ${{ inputs.state-path }}
+        token: ${{ inputs.token }}
+        filter: ${{ inputs.filter || 'blob:none' }}
+        fetch-depth: ${{ inputs.fetch-depth }}
+        sparse-checkout: |
+          /jobs/
+          /results/
+          /notifications/
+          /apply-report.json
+          /repair-apply-report.json
+        sparse-checkout-cone-mode: false
+        persist-credentials: ${{ inputs.persist-credentials }}
+
+    - name: Check out git-projected state
+      if: ${{ inputs.sparse-checkout != '' || inputs.records-source != 'worker' || inputs.ledger-source != 'worker' }}
+      uses: actions/checkout@v7
       with:
         repository: openclaw/clawsweeper-state
         ref: state

@@ -1034,6 +1034,34 @@ jobs:
             kill "$heartbeat_pid" 2>/dev/null || true
             wait "$heartbeat_pid" 2>/dev/null || true
           }
+          mark_finalizing() {
+            finalizing_payload="$(HEARTBEAT_PAYLOAD="$heartbeat_payload" node -e '
+              const payload = JSON.parse(process.env.HEARTBEAT_PAYLOAD || "{}");
+              process.stdout.write(JSON.stringify({ ...payload, phase: "finalizing" }));
+            ')" || return 1
+            for attempt in 1 2 3; do
+              finalizing_status="$(curl --silent --connect-timeout 5 --max-time 20 \
+                --output /dev/null \
+                --write-out '%{http_code}' \
+                --request POST \
+                --header "content-type: application/json" \
+                --data-binary "$finalizing_payload" \
+                "${QUEUE_URL%/}/internal/exact-review/heartbeat" 2>/dev/null)" || finalizing_status=""
+              if [ "$finalizing_status" = "200" ]; then
+                return 0
+              fi
+              if [ "$finalizing_status" = "409" ]; then
+                echo "::notice::Exact-review finalization lost its lease tuple."
+                : > "$superseded_marker"
+                return 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                sleep "$((attempt * 5))"
+              fi
+            done
+            echo "::error::Exact-review lease could not enter finalization."
+            return 1
+          }
           trap cleanup_heartbeat EXIT
           codex_timeout_ms="${{ steps.target.outputs.codex_timeout_ms }}"
           if ! [[ "$codex_timeout_ms" =~ ^[0-9]+$ ]] || [ "$codex_timeout_ms" -lt 1 ]; then
@@ -1075,6 +1103,9 @@ jobs:
           wait "$review_pid"
           review_exit_code=$?
           cleanup_heartbeat
+          if [ "$review_exit_code" -eq 0 ] && [ ! -f "$superseded_marker" ]; then
+            mark_finalizing || review_exit_code=1
+          fi
           if [ -f "$superseded_marker" ]; then
             wait_for_review_group
             review_exit_code=143

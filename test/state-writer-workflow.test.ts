@@ -107,6 +107,37 @@ test("the setup action exports no long-lived coordinator credential", () => {
   assert.match(source, /CLAWSWEEPER_STATE_COORDINATOR_CLASS=\$\{\{ inputs\.coordinator-class \}\}/);
 });
 
+test("worker-projected state skips the transported git trees", () => {
+  const actionPath = ".github/actions/setup-state/action.yml";
+  const action = parse(readFileSync(actionPath, "utf8")) as {
+    runs?: { steps?: WorkflowStep[] };
+  };
+  const checkouts = (action.runs?.steps ?? []).filter(
+    (step) => step.uses === "actions/checkout@v7",
+  );
+  assert.equal(checkouts.length, 2);
+
+  const worker = checkouts.find((step) => step.name === "Check out Worker-projected state");
+  assert.ok(worker);
+  assert.match(String((worker as WorkflowStep & { if?: string }).if), /records-source == 'worker'/);
+  assert.match(String((worker as WorkflowStep & { if?: string }).if), /ledger-source == 'worker'/);
+  assert.equal(worker.with?.filter, "${{ inputs.filter || 'blob:none' }}");
+  assert.equal(worker.with?.["sparse-checkout-cone-mode"], false);
+  const sparse = String(worker.with?.["sparse-checkout"] || "");
+  for (const required of ["/jobs/", "/results/", "/notifications/"]) {
+    assert.match(sparse, new RegExp(required.replaceAll("/", "\\/")));
+  }
+  for (const transported of ["records", "ledger", "assets"]) {
+    assert.doesNotMatch(sparse, new RegExp(`/${transported}/`));
+  }
+
+  const git = checkouts.find((step) => step.name === "Check out git-projected state");
+  assert.ok(git);
+  assert.match(String((git as WorkflowStep & { if?: string }).if), /records-source != 'worker'/);
+  assert.match(String((git as WorkflowStep & { if?: string }).if), /ledger-source != 'worker'/);
+  assert.equal(git.with?.["sparse-checkout"], "${{ inputs.sparse-checkout }}");
+});
+
 test("exact-review direct publication partial-clones generated state", () => {
   const sweep = workflows().find(({ file }) => file === ".github/workflows/sweep.yml")?.workflow;
   const publisher = sweep?.jobs?.["event-review-apply"];
