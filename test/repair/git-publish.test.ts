@@ -4877,12 +4877,10 @@ test("spawnGit never copies environment-derived command names into logs", () => 
   write(path.join(fakeBin, "git"), ["#!/bin/sh", "exit 0", ""].join("\n"));
   fs.chmodSync(path.join(fakeBin, "git"), 0o755);
 
-  const lines = withEnv(
-    { GITHUB_TOKEN: token, PATH: `${fakeBin}:${process.env.PATH}` },
-    () =>
-      captureConsoleLog(() => {
-        spawnGit([process.env.GITHUB_TOKEN ?? ""], { quiet: true });
-      }),
+  const lines = withEnv({ GITHUB_TOKEN: token, PATH: `${fakeBin}:${process.env.PATH}` }, () =>
+    captureConsoleLog(() => {
+      spawnGit([process.env.GITHUB_TOKEN ?? ""], { quiet: true });
+    }),
   );
 
   assert.deepEqual(lines, ["$ git command <redacted-args>"]);
