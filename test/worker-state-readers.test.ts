@@ -970,6 +970,7 @@ test("backfill workflow is manual per-target and setup-state plumbs the opt-in W
     (step) => step.uses === "./.github/actions/setup-state",
   );
   assert.equal(setupState?.with?.["records-source"], "git");
+  assert.equal(setupState?.with?.["ledger-source"], "git");
   assert.match(workflowSource, /scripts\/backfill-worker-records\.ts/);
   assert.match(workflowSource, /--cursor "\$BACKFILL_CURSOR"/);
   assert.match(workflowSource, /--replay-projections --max-replay-tuples/);
@@ -977,13 +978,21 @@ test("backfill workflow is manual per-target and setup-state plumbs the opt-in W
 
   const action = readFileSync(".github/actions/setup-state/action.yml", "utf8");
   assert.match(action, /records-source:[\s\S]*?default: git/);
+  assert.match(action, /ledger-source:[\s\S]*?default: git/);
   assert.match(action, /CLAWSWEEPER_RECORDS_SOURCE: \$\{\{ inputs\.records-source \}\}/);
   assert.match(action, /CLAWSWEEPER_RECORDS_URL: \$\{\{ inputs\.records-url \}\}/);
   assert.match(action, /CLAWSWEEPER_RECORDS_REPO_SLUGS: \$\{\{ inputs\.records-repo-slugs \}\}/);
   assert.match(action, /CLAWSWEEPER_RECORDS_SECRET: \$\{\{ inputs\.records-secret \}\}/);
+  assert.match(action, /CLAWSWEEPER_LEDGER_SOURCE: \$\{\{ inputs\.ledger-source \}\}/);
+  assert.match(
+    action,
+    /CLAWSWEEPER_BLOBS_CACHE_DIR: \$\{\{ inputs\.worktree-path \}\}\/\.artifacts\/worker-blobs-cache/,
+  );
   assert.match(action, /uses: actions\/cache@v6/);
   assert.match(action, /steps\.records-snapshot\.outputs\.cache-key/);
   assert.match(action, /\.artifacts\/worker-records-cache/);
+  assert.match(action, /inputs\.ledger-source == 'worker'/);
+  assert.match(action, /\.artifacts\/worker-blobs-cache/);
 });
 
 test("worker records ops workflow snapshots and verifies one requested repository", () => {
@@ -1038,6 +1047,7 @@ test("worker records ops workflow snapshots and verifies one requested repositor
   );
   const setupState = verify.steps?.find((step) => step.uses === "./.github/actions/setup-state");
   assert.equal(setupState?.with?.["records-source"], "git");
+  assert.equal(setupState?.with?.["ledger-source"], "git");
   assert.equal(setupState?.with?.["persist-credentials"], "false");
   assert.equal(
     setupState?.with?.["coordinator-enabled"],

@@ -133,6 +133,7 @@ jobs:
           fetch-depth: 1
           sparse-checkout: records/${{ steps.target.outputs.slug }}
           persist-credentials: "false"
+          ledger-source: git
           records-source: git
           coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -199,6 +200,7 @@ jobs:
           fetch-depth: 1
           sparse-checkout: records/${{ steps.target.outputs.slug }}
           persist-credentials: "false"
+          ledger-source: git
           records-source: git
           coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}

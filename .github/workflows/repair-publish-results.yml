@@ -111,6 +111,7 @@ jobs:
         with:
           coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          ledger-source: ${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'git' }}
           records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'git' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}

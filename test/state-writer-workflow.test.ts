@@ -56,7 +56,7 @@ test("every generated-state checkout receives the explicit coordinator migration
   }
 });
 
-test("hydrating checkouts follow the records-source flip while git-lane tooling stays pinned", () => {
+test("hydrating checkouts follow the records/ledger-source flips while git-lane tooling stays pinned", () => {
   // These call sites seed, verify, or reconcile the Worker store *from* git;
   // flipping them to the Worker transport would be circular.
   const pinnedGitLane = [
@@ -66,6 +66,7 @@ test("hydrating checkouts follow the records-source flip while git-lane tooling 
     ".github/workflows/worker-records-ops.yml:verify",
   ];
   const recordsGate = "${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'git' }}";
+  const ledgerGate = "${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'git' }}";
   const recordsSecret = "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}";
   const pinned: string[] = [];
   for (const { file, workflow } of workflows()) {
@@ -75,11 +76,13 @@ test("hydrating checkouts follow the records-source flip while git-lane tooling 
         const site = `${file}:${job}`;
         if (step.with?.["records-source"] === "git") {
           pinned.push(site);
+          assert.equal(step.with?.["ledger-source"], "git", site);
           assert.equal(step.with?.["records-url"], undefined, site);
           assert.equal(step.with?.["records-secret"], undefined, site);
           continue;
         }
         assert.equal(step.with?.["records-source"], recordsGate, site);
+        assert.equal(step.with?.["ledger-source"], ledgerGate, site);
         assert.equal(step.with?.["records-url"], coordinatorUrl, site);
         assert.equal(step.with?.["records-secret"], recordsSecret, site);
       }

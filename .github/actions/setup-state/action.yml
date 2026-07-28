@@ -60,6 +60,10 @@ inputs:
     description: HMAC secret used only when records-source is worker.
     required: false
     default: ""
+  ledger-source:
+    description: Ledger/assets blob transport used by hydrate-state (git or worker). Worker mode reuses records-url and records-secret.
+    required: false
+    default: git
 runs:
   using: composite
   steps:
@@ -119,6 +123,18 @@ runs:
         path: ${{ inputs.worktree-path }}/.artifacts/worker-records-cache
         key: clawsweeper-records-${{ runner.os }}-${{ steps.records-snapshot.outputs.cache-key }}
 
+    - name: Restore Worker blob cache
+      if: ${{ inputs.ledger-source == 'worker' }}
+      uses: actions/cache@v6
+      with:
+        path: ${{ inputs.worktree-path }}/.artifacts/worker-blobs-cache
+        # Blob cache entries are digest-addressed and immutable, so any prior
+        # cache is a valid warm start; the run-unique key makes every run save
+        # its grown cache for the next one to restore by prefix.
+        key: clawsweeper-blobs-${{ runner.os }}-${{ github.run_id }}
+        restore-keys: |
+          clawsweeper-blobs-${{ runner.os }}-
+
     - name: Hydrate generated state
       shell: bash
       env:
@@ -128,4 +144,6 @@ runs:
         CLAWSWEEPER_RECORDS_REPO_SLUGS: ${{ inputs.records-repo-slugs }}
         CLAWSWEEPER_RECORDS_SECRET: ${{ inputs.records-secret }}
         CLAWSWEEPER_RECORDS_CACHE_DIR: ${{ inputs.worktree-path }}/.artifacts/worker-records-cache
+        CLAWSWEEPER_LEDGER_SOURCE: ${{ inputs.ledger-source }}
+        CLAWSWEEPER_BLOBS_CACHE_DIR: ${{ inputs.worktree-path }}/.artifacts/worker-blobs-cache
       run: node "${{ inputs.worktree-path }}/scripts/hydrate-state.ts" --state-dir "${{ inputs.state-path }}" --worktree "${{ inputs.worktree-path }}"
