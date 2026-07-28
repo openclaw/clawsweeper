@@ -4870,6 +4870,25 @@ test("setTokenOrigin redacts tokens from command logs", () => {
   );
 });
 
+test("spawnGit never copies environment-derived command names into logs", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-command-log-"));
+  const fakeBin = path.join(root, "bin");
+  const token = "environment-derived-secret";
+  write(path.join(fakeBin, "git"), ["#!/bin/sh", "exit 0", ""].join("\n"));
+  fs.chmodSync(path.join(fakeBin, "git"), 0o755);
+
+  const lines = withEnv(
+    { GITHUB_TOKEN: token, PATH: `${fakeBin}:${process.env.PATH}` },
+    () =>
+      captureConsoleLog(() => {
+        spawnGit([process.env.GITHUB_TOKEN ?? ""], { quiet: true });
+      }),
+  );
+
+  assert.deepEqual(lines, ["$ git command <redacted-args>"]);
+  assert.doesNotMatch(lines.join("\n"), new RegExp(token));
+});
+
 test("setTokenOrigin redacts credentials from subprocess failures", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-redaction-"));
   const fakeBin = path.join(root, "bin");

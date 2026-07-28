@@ -367,35 +367,63 @@ function gitSubcommand(args: readonly string[]): string | undefined {
 function safeGitDisplayAction(action: string | undefined): string {
   switch (action) {
     case "add":
+      return "add";
     case "commit":
+      return "commit";
     case "config":
+      return "config";
     case "diff":
+      return "diff";
     case "fetch":
+      return "fetch";
     case "checkout":
+      return "checkout";
     case "cat-file":
+      return "cat-file";
     case "check-ref-format":
+      return "check-ref-format";
     case "clean":
+      return "clean";
     case "log":
+      return "log";
     case "ls-remote":
+      return "ls-remote";
     case "ls-files":
+      return "ls-files";
     case "ls-tree":
+      return "ls-tree";
     case "merge-base":
+      return "merge-base";
     case "mktree":
+      return "mktree";
     case "push":
+      return "push";
     case "read-tree":
+      return "read-tree";
     case "rebase":
+      return "rebase";
     case "remote":
+      return "remote";
     case "restore":
+      return "restore";
     case "reset":
+      return "reset";
     case "rev-parse":
+      return "rev-parse";
     case "rm":
+      return "rm";
     case "status":
+      return "status";
     case "update-ref":
+      return "update-ref";
     case "update-index":
+      return "update-index";
     case "hash-object":
+      return "hash-object";
     case "write-tree":
+      return "write-tree";
     case "commit-tree":
-      return action;
+      return "commit-tree";
     default:
       return "command";
   }
