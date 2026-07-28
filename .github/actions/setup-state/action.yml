@@ -53,7 +53,7 @@ inputs:
     required: false
     default: https://clawsweeper.openclaw.ai
   records-repo-slugs:
-    description: Optional comma/newline-separated record repository slugs; defaults to state checkout directories.
+    description: Optional comma/newline-separated record repository slugs; defaults to the Worker record store's slug list.
     required: false
     default: ""
   records-secret:

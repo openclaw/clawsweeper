@@ -357,6 +357,53 @@ export async function resolveWorkerSnapshotCacheKey(options: {
   };
 }
 
+export async function discoverWorkerRecordRepoSlugs(options: {
+  baseUrl: string;
+  webhookSecret: string;
+  fetch?: typeof globalThis.fetch;
+}): Promise<Array<{ repoSlug: string; revision: number }>> {
+  const endpoint = "/internal/state/records/slugs";
+  let envelope: { repositories?: unknown };
+  try {
+    envelope = await signedPost<{ repositories?: unknown }>({
+      baseUrl: options.baseUrl,
+      path: endpoint,
+      webhookSecret: options.webhookSecret,
+      body: {},
+      fetch: options.fetch,
+    });
+  } catch (error) {
+    // Any request failure (including a 404 from a Worker deployment that
+    // predates the endpoint) means the canonical slug list is unreachable;
+    // surface it as a cutover refusal so hydration falls back to git loudly.
+    if (error instanceof WorkerRecordRequestError) {
+      throw new WorkerSnapshotUnavailableError(
+        "snapshot_store_unavailable",
+        { endpoint, status: error.status, code: error.code, bodySnippet: error.bodySnippet },
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+  if (!Array.isArray(envelope.repositories)) {
+    throw new Error("Worker returned an invalid record slug envelope");
+  }
+  const repositories = envelope.repositories.map((value) => {
+    const entry = value as { repoSlug?: unknown; revision?: unknown };
+    if (
+      !entry ||
+      typeof entry.repoSlug !== "string" ||
+      !isRepoSlug(entry.repoSlug) ||
+      !Number.isSafeInteger(entry.revision) ||
+      (entry.revision as number) < 0
+    ) {
+      throw new Error("Worker returned an invalid record slug entry");
+    }
+    return { repoSlug: entry.repoSlug, revision: entry.revision as number };
+  });
+  return repositories.sort((left, right) => left.repoSlug.localeCompare(right.repoSlug));
+}
+
 export function discoverRecordRepoSlugs(stateRoot: string): string[] {
   const recordsRoot = path.join(stateRoot, "records");
   if (!existsSync(recordsRoot)) return [];

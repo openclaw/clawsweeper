@@ -561,6 +561,8 @@ export default {
         env,
         url.pathname.slice("/internal/state".length),
       );
+    if (url.pathname === "/internal/state/records/slugs" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/records/slugs");
     if (url.pathname === "/internal/state/records/list" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/records/list");
     if (url.pathname === "/internal/state/records/export" && request.method === "POST")

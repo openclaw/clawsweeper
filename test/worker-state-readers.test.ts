@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -116,6 +116,169 @@ test("hydrate-state Worker mode uses snapshot cold and warm paths before replayi
     );
     assert.equal(warmManifest.repositories[repoSlug].snapshotCache, "hit");
   } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("worker-mode hydration discovers slugs from the Worker and warns about git-only slugs", async () => {
+  const fixture = createStateFixture();
+  write(path.join(fixture.stateRoot, "records", "git-only-repo", "items", "9.md"), "orphan\n");
+  const target = path.join(fixture.root, "discovery-target");
+  const cacheRoot = path.join(fixture.root, "snapshot-cache");
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...values) => errors.push(values.join(" "));
+  const healthyFetch = workerFetch(contents);
+  let slugRequests = 0;
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/internal/state/records/slugs") {
+      slugRequests += 1;
+      const bodyText = String(init?.body || "");
+      const signature = `sha256=${createHmac("sha256", "fixture-secret").update(bodyText).digest("hex")}`;
+      assert.equal(
+        new Headers(init?.headers).get("x-clawsweeper-exact-review-signature"),
+        signature,
+      );
+      assert.equal(bodyText, "{}");
+      return Response.json({
+        ok: true,
+        repositories: [{ repoSlug, revision: contents.size }],
+      });
+    }
+    return healthyFetch(input, init);
+  }) as typeof fetch;
+  try {
+    const result = await hydrateState(
+      [
+        "--state-dir",
+        fixture.stateRoot,
+        "--worktree",
+        target,
+        "--records-source",
+        "worker",
+        "--records-url",
+        "https://worker.example",
+      ],
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: "fixture-secret",
+        CLAWSWEEPER_RECORDS_CACHE_DIR: cacheRoot,
+      },
+      fetchImpl,
+    );
+    assert.equal(slugRequests, 1);
+    assert.equal(result.recordsSource, "worker");
+    assert.equal(result.recordsFallback, undefined);
+    assert.deepEqual(Object.keys(result.worker ?? {}), [repoSlug]);
+    assert.equal(
+      readFileSync(path.join(target, "records", repoSlug, "items", "1.md"), "utf8"),
+      contents.get("items/1"),
+    );
+    // The Worker list is canonical: the git-only slug is not hydrated, only warned about.
+    assert.equal(existsSync(path.join(target, "records", "git-only-repo")), false);
+    const log = errors.join("\n");
+    assert.match(
+      log,
+      new RegExp(
+        `worker slug discovery: 1 repositories endpoint=/internal/state/records/slugs ` +
+          `revisions=${repoSlug}:${contents.size}`,
+      ),
+    );
+    assert.match(
+      log,
+      /WARNING: 1 record repo slug\(s\) exist in the git state checkout but not in the Worker record store \(un-backfilled\?\): git-only-repo/,
+    );
+  } finally {
+    console.error = originalError;
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("explicit record repo slugs win over the environment and skip Worker discovery", async () => {
+  const fixture = createStateFixture();
+  const target = path.join(fixture.root, "explicit-target");
+  const cacheRoot = path.join(fixture.root, "snapshot-cache");
+  const healthyFetch = workerFetch(contents);
+  const requestedSlugs = new Set<string>();
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    assert.notEqual(url.pathname, "/internal/state/records/slugs");
+    const body = JSON.parse(String(init?.body || "{}")) as { repoSlug?: string };
+    if (body.repoSlug) requestedSlugs.add(body.repoSlug);
+    return healthyFetch(input, init);
+  }) as typeof fetch;
+  try {
+    const result = await hydrateState(
+      [
+        "--state-dir",
+        fixture.stateRoot,
+        "--worktree",
+        target,
+        "--records-source",
+        "worker",
+        "--records-url",
+        "https://worker.example",
+        "--records-repo-slugs",
+        repoSlug,
+      ],
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: "fixture-secret",
+        CLAWSWEEPER_RECORDS_REPO_SLUGS: "ignored-env-slug",
+        CLAWSWEEPER_RECORDS_CACHE_DIR: cacheRoot,
+      },
+      fetchImpl,
+    );
+    assert.equal(result.recordsSource, "worker");
+    assert.deepEqual(Object.keys(result.worker ?? {}), [repoSlug]);
+    assert.deepEqual([...requestedSlugs], [repoSlug]);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("hydrate-state refuses cutover with request evidence when slug discovery is unavailable", async () => {
+  const fixture = createStateFixture();
+  const target = path.join(fixture.root, "discovery-fallback-target");
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...values) => errors.push(values.join(" "));
+  try {
+    const result = await hydrateState(
+      [
+        "--state-dir",
+        fixture.stateRoot,
+        "--worktree",
+        target,
+        "--records-source",
+        "worker",
+        "--records-url",
+        "https://worker.example",
+      ],
+      { CLAWSWEEPER_WEBHOOK_SECRET: "fixture-secret" },
+      (async (input: string | URL | Request) => {
+        // A Worker deployment that predates the slugs endpoint answers 404.
+        assert.equal(new URL(String(input)).pathname, "/internal/state/records/slugs");
+        return Response.json({ error: "not_found" }, { status: 404 });
+      }) as typeof fetch,
+    );
+    assert.equal(result.recordsSource, "git");
+    assert.equal(result.recordsFallback?.reason, "snapshot_store_unavailable");
+    assert.equal(result.recordsFallback?.slug, undefined);
+    assert.deepEqual(result.recordsFallback?.detail, {
+      endpoint: "/internal/state/records/slugs",
+      status: 404,
+      code: "not_found",
+      bodySnippet: '{"error":"not_found"}',
+    });
+    const refusal = errors.join("\n");
+    assert.match(refusal, /WORKER RECORD CUTOVER REFUSED.*FALLING BACK TO GIT/);
+    assert.match(refusal, /endpoint=\/internal\/state\/records\/slugs status=404 code=not_found/);
+    assert.equal(
+      readFileSync(path.join(target, "records", repoSlug, "items", "1.md"), "utf8"),
+      contents.get("items/1"),
+    );
+  } finally {
+    console.error = originalError;
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });

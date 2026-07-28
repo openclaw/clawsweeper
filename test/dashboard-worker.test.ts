@@ -2425,6 +2425,57 @@ test("record backfill and export authenticate, page, increment, dedupe, and pres
   assert.deepEqual(await conflict.json(), { error: "canonical_record_backfill_conflict" });
 });
 
+test("record slug discovery authenticates and lists per-repository revisions", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const secret = "record-slug-secret";
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const slugsPath = "/internal/state/records/slugs";
+  const unsigned = await worker.fetch(
+    stateAppendQueueRequest(slugsPath, {}, "https://clawsweeper.openclaw.ai"),
+    env,
+  );
+  assert.equal(unsigned.status, 401);
+
+  const empty = await worker.fetch(signedStateAppendRequest(slugsPath, {}, secret), env);
+  assert.equal(empty.status, 200);
+  assert.deepEqual(await empty.json(), { ok: true, repositories: [] });
+
+  const seed = (slug: string, id: string, content: string) => ({
+    repoSlug: slug,
+    records: [
+      {
+        section: "items",
+        id,
+        content,
+        digest: createHash("sha256").update(content).digest("hex"),
+      },
+    ],
+  });
+  const ingestPath = "/internal/state/records/ingest";
+  for (const payload of [
+    seed("zz-later", "1", "later-first"),
+    seed("aa-early", "2", "early"),
+    seed("zz-later", "3", "later-second"),
+  ]) {
+    const ingested = await worker.fetch(signedStateAppendRequest(ingestPath, payload, secret), env);
+    assert.equal(ingested.status, 202);
+  }
+
+  const listed = await worker.fetch(signedStateAppendRequest(slugsPath, {}, secret), env);
+  assert.equal(listed.status, 200);
+  assert.deepEqual(await listed.json(), {
+    ok: true,
+    repositories: [
+      { repoSlug: "aa-early", revision: 2 },
+      { repoSlug: "zz-later", revision: 3 },
+    ],
+  });
+});
+
 test("record snapshots authenticate, stream multipart R2 objects, serve ranges, prune, and fail closed", async () => {
   const secret = "record-snapshot-secret";
   const unavailableStorage = new MemoryDurableStorage();

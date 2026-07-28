@@ -587,6 +587,22 @@ export class ExactReviewDirectPublicationStore {
     );
   }
 
+  listRecordRepoSlugs(): Array<{ repoSlug: string; revision: number }> {
+    // Distinct repositories present in the canonical record store, with each
+    // repository's latest store revision. Tombstoned rows still count: a slug
+    // whose records were all deleted still exists in the store and hydration
+    // must learn about it to materialize the deletions.
+    return Array.from(
+      this.storage.sql.exec(
+        `SELECT repo_slug, MAX(store_revision) AS revision
+           FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+          GROUP BY repo_slug
+          ORDER BY repo_slug`,
+      ),
+      (row) => ({ repoSlug: String(row.repo_slug), revision: Number(row.revision) }),
+    );
+  }
+
   exportRecords(options: {
     repoSlug: string;
     sections: readonly RecordSection[];

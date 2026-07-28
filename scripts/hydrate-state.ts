@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { materializeStateBlobs, WorkerBlobsUnavailableError } from "./worker-blobs.ts";
 import {
   discoverRecordRepoSlugs,
+  discoverWorkerRecordRepoSlugs,
   materializeWorkerRecords,
   WorkerSnapshotUnavailableError,
 } from "./worker-records.ts";
@@ -110,14 +111,18 @@ export async function hydrateState(
       }
     | undefined;
   if (recordsSource === "worker") {
-    const repoSlugs =
-      args.recordsRepoSlugs ??
-      parseRepoSlugs(env.CLAWSWEEPER_RECORDS_REPO_SLUGS) ??
-      discoverRecordRepoSlugs(stateRoot);
-    if (repoSlugs.length && !webhookSecret) {
+    const explicitRepoSlugs =
+      args.recordsRepoSlugs ?? parseRepoSlugs(env.CLAWSWEEPER_RECORDS_REPO_SLUGS);
+    // An explicitly empty slug list is the only worker-mode shape that never
+    // talks to the Worker; everything else (explicit slugs or endpoint
+    // discovery) signs requests and therefore needs the secret up front.
+    if (explicitRepoSlugs?.length !== 0 && !webhookSecret) {
       throw new Error("CLAWSWEEPER_RECORDS_SECRET is required for Worker record hydration");
     }
     try {
+      const repoSlugs =
+        explicitRepoSlugs ??
+        (await discoverHydrationRepoSlugs({ stateRoot, baseUrl, webhookSecret, fetchImpl }));
       if (!repoSlugs.length) {
         throw new WorkerSnapshotUnavailableError("snapshot_not_found", {
           code: "no_record_repo_slugs",
@@ -126,7 +131,7 @@ export async function hydrateState(
       worker = await materializeWorkerRecords({
         worktreeRoot,
         baseUrl,
-        webhookSecret: webhookSecret || "unused-empty-snapshot",
+        webhookSecret,
         repoSlugs,
         cacheRoot: env.CLAWSWEEPER_RECORDS_CACHE_DIR,
         fetch: fetchImpl,
@@ -177,6 +182,41 @@ export async function hydrateState(
   };
   console.log(JSON.stringify(result));
   return result;
+}
+
+// Worker-mode slug discovery: the canonical record store is the authority on
+// which repositories exist, because the worker-mode sparse checkout does not
+// materialize records/ and a readdir there silently discovers nothing. The git
+// tree, when present, is only consulted to warn about un-backfilled slugs.
+async function discoverHydrationRepoSlugs(options: {
+  stateRoot: string;
+  baseUrl: string;
+  webhookSecret: string;
+  fetchImpl: typeof globalThis.fetch;
+}): Promise<string[]> {
+  const discovered = await discoverWorkerRecordRepoSlugs({
+    baseUrl: options.baseUrl,
+    webhookSecret: options.webhookSecret,
+    fetch: options.fetchImpl,
+  });
+  const workerSlugs = discovered.map((entry) => entry.repoSlug);
+  console.error(
+    `[hydrate-state] worker slug discovery: ${workerSlugs.length} repositories ` +
+      `endpoint=/internal/state/records/slugs revisions=${discovered
+        .map((entry) => `${entry.repoSlug}:${entry.revision}`)
+        .join(",")}`,
+  );
+  const workerSlugSet = new Set(workerSlugs);
+  const gitOnlySlugs = discoverRecordRepoSlugs(options.stateRoot).filter(
+    (slug) => !workerSlugSet.has(slug),
+  );
+  if (gitOnlySlugs.length) {
+    console.error(
+      `[hydrate-state] WARNING: ${gitOnlySlugs.length} record repo slug(s) exist in the git ` +
+        `state checkout but not in the Worker record store (un-backfilled?): ${gitOnlySlugs.join(", ")}`,
+    );
+  }
+  return workerSlugs;
 }
 
 function copyGeneratedPath(stateRoot: string, worktreeRoot: string, relativePath: string) {

@@ -141,6 +141,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Worker-mode hydration now discovers record repo slugs from the authenticated `/internal/state/records/slugs` Worker endpoint (canonical DO store, per-slug revisions) instead of reading the git state checkout's `records/` directory, which the worker-mode sparse checkout never materializes — this ended the permanent `no_record_repo_slugs` cutover refusal; explicit `CLAWSWEEPER_RECORDS_REPO_SLUGS`/`--records-repo-slugs` still wins, git-only (un-backfilled) slugs are warned about, and the snapshot cache key preparation uses the same discovery.
 - Worker record request failures now surface the real status, error code, and a body snippet instead of dying on `Response.clone: Body has already been consumed`, and signed Worker requests retry transient 5xx/network failures (3 attempts, exponential backoff) so Cloudflare 502s no longer kill long export/reconcile runs.
 - Made canonical record replay normalize revision-ordered legacy tuple remnants, continue after per-item validation rejections, and fail once at the end with every rejected item id.
 - Allowed stuck-placeholder recovery to label pull requests by granting its target token pull-request write permission alongside issue write. Thanks @masatohoshino! (#865)

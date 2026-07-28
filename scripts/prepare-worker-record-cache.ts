@@ -1,24 +1,29 @@
 #!/usr/bin/env node
 import { appendFileSync } from "node:fs";
-import path from "node:path";
 
 import {
-  discoverRecordRepoSlugs,
+  discoverWorkerRecordRepoSlugs,
   resolveWorkerSnapshotCacheKey,
   WorkerSnapshotUnavailableError,
 } from "./worker-records.ts";
 
-const stateRoot = path.resolve(process.env.CLAWSWEEPER_STATE_DIR ?? "clawsweeper-state");
 const repoSlugs = parseRepoSlugs(process.env.CLAWSWEEPER_RECORDS_REPO_SLUGS);
-const resolvedRepoSlugs = repoSlugs.length ? repoSlugs : discoverRecordRepoSlugs(stateRoot);
+const baseUrl = process.env.CLAWSWEEPER_RECORDS_URL ?? "https://clawsweeper.openclaw.ai";
 const webhookSecret =
   process.env.CLAWSWEEPER_RECORDS_SECRET ?? process.env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
 if (!webhookSecret) throw new Error("CLAWSWEEPER_RECORDS_SECRET is required");
 
 try {
+  // Match hydrate-state discovery: the Worker record store is the slug
+  // authority (the worker-mode sparse checkout has no records/ tree to read).
+  const resolvedRepoSlugs = repoSlugs.length
+    ? repoSlugs
+    : (await discoverWorkerRecordRepoSlugs({ baseUrl, webhookSecret })).map(
+        (entry) => entry.repoSlug,
+      );
   if (!resolvedRepoSlugs.length) throw new WorkerSnapshotUnavailableError("snapshot_not_found");
   const result = await resolveWorkerSnapshotCacheKey({
-    baseUrl: process.env.CLAWSWEEPER_RECORDS_URL ?? "https://clawsweeper.openclaw.ai",
+    baseUrl,
     webhookSecret,
     repoSlugs: resolvedRepoSlugs,
   });

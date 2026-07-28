@@ -2040,6 +2040,10 @@ export class ExactReviewQueue {
       });
     }
 
+    if (request.method === "POST" && url.pathname === "/records/slugs") {
+      return json({ ok: true, repositories: this.directPublicationStore.listRecordRepoSlugs() });
+    }
+
     if (request.method === "POST" && url.pathname === "/records/list") {
       const body = objectValue(await request.json().catch(() => null));
       const repoSlug = validateRepoSlug(body.repoSlug);
