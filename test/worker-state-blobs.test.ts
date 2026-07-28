@@ -62,10 +62,11 @@ test("state blob endpoints reject unsigned requests and fail closed without a bu
 
 test("state blob failures return stable errors and sanitize server logs", async () => {
   const sensitive = "secret-state-token";
+  const bearerCredential = ["bearer", "credential", "value"].join("-");
   const bucket = new FakeR2Bucket();
   bucket.head = async () => {
     throw new Error(
-      `R2 request failed at https://operator:${sensitive}@storage.example/object?token=${sensitive}`,
+      `R2 request failed at https://operator:${sensitive}@storage.example/object?token=${sensitive}; Authorization: Bearer ${bearerCredential}`,
     );
   };
   const errors: string[] = [];
@@ -82,8 +83,10 @@ test("state blob failures return stable errors and sanitize server logs", async 
     console.error = originalError;
   }
   assert.doesNotMatch(errors.join("\n"), new RegExp(sensitive));
+  assert.doesNotMatch(errors.join("\n"), new RegExp(bearerCredential));
   assert.match(errors.join("\n"), /https:\/\/\[REDACTED\]@storage\.example/);
   assert.match(errors.join("\n"), /token=\[REDACTED\]/);
+  assert.match(errors.join("\n"), /Authorization: Bearer \[REDACTED\]/);
 });
 
 test("single-shot blob uploads verify digests server-side and re-put idempotently", async () => {
