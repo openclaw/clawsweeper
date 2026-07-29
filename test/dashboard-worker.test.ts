@@ -14,6 +14,7 @@ import worker, {
   ExactReviewQueue,
   exactReviewEffectiveLeaseExpiresAt,
   exactReviewPublicationCapacity,
+  exactReviewPublicationCapacityForState,
   exactReviewQueueAdmittedItems,
   exactReviewQueueCapacity,
   exactReviewQueueNextWakeAt,
@@ -32,16 +33,49 @@ import {
 import { captureCanonicalRecordBaseline } from "../dist/repair/canonical-record-baseline.js";
 import { publishMainWithStateAppend } from "../dist/repair/publish-main.js";
 
-test("exact-review queue defaults to 64 of the 128 global workers", () => {
-  assert.equal(exactReviewQueueCapacity({}), 64);
+test("exact-review queue defaults to all 128 global workers", () => {
+  assert.equal(exactReviewQueueCapacity({}), 128);
   assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "32" }), 32);
   assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "100" }), 100);
   assert.equal(
     exactReviewQueueCapacity({
       EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "100",
-      WORKER_BUDGET: "64",
+      EXACT_REVIEW_ACTIONS_BUDGET: "64",
     }),
     64,
+  );
+});
+
+test("production doubles exact review claims and canonical publication batches", () => {
+  const wrangler = fs.readFileSync("dashboard/wrangler.toml", "utf8");
+  assert.match(wrangler, /EXACT_REVIEW_QUEUE_MAX_CONCURRENT = "128"/);
+  assert.match(wrangler, /EXACT_REVIEW_TARGET_MAX_CONCURRENT = "120"/);
+  assert.match(wrangler, /EXACT_REVIEW_ACTIONS_BUDGET = "194"/);
+  assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "8"/);
+  assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT = "8"/);
+});
+
+test("full exact-review admission preserves production verdict publication capacity", () => {
+  const state = {
+    items: Object.fromEntries(
+      Array.from({ length: 128 }, (_, index) => {
+        const item = leasedExactReviewQueueItem(120_000 + index, String(120_000 + index));
+        return [item.key, item];
+      }),
+    ),
+  };
+  assert.equal(
+    exactReviewPublicationCapacityForState(
+      {
+        EXACT_REVIEW_ACTIONS_BUDGET: "194",
+        EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT: "50",
+        EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT: "50",
+        EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "50",
+      },
+      state,
+      Date.now(),
+    ),
+    50,
   );
 });
 
@@ -2862,7 +2896,7 @@ test("dashboard status reads the exact-review handoff model from the durable que
       available_slots: status.lanes.review.available_slots,
       capacity: status.lanes.review.capacity,
     },
-    { pending: 3, ready: 2, backoff: 1, active: 1, available_slots: 63, capacity: 64 },
+    { pending: 3, ready: 2, backoff: 1, active: 1, available_slots: 127, capacity: 128 },
   );
   assert.deepEqual(
     {

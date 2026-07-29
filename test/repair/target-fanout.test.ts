@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,7 +8,9 @@ import test from "node:test";
 import {
   defaultLimit,
   filterEligibleRepositories,
+  renderFleetReviewCoverage,
   selectRepositories,
+  summarizeFleetReviewCoverage,
   type InventoryConfig,
   type ListedRepository,
 } from "../../dist/repair/target-fanout.js";
@@ -24,9 +26,64 @@ const config: InventoryConfig = {
 };
 
 test("target fanout defaults match the scheduled cursor batch sizes", () => {
-  assert.equal(defaultLimit("hot-intake"), "10");
-  assert.equal(defaultLimit("normal-review"), "6");
+  assert.equal(defaultLimit("hot-intake"), "20");
+  assert.equal(defaultLimit("normal-review"), "12");
   assert.equal(defaultLimit("audit"), "12");
+});
+
+test("target fanout summarizes trailing weekly coverage from canonical open records", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-coverage-"));
+  const now = Date.parse("2026-07-29T12:00:00Z");
+  const repositories = [
+    { targetRepo: "openclaw/a", defaultBranch: "main", visibility: "PUBLIC" },
+    { targetRepo: "steipete/b", defaultBranch: "main", visibility: "PUBLIC" },
+  ];
+  try {
+    const aItems = join(root, "openclaw-a", "items");
+    const bItems = join(root, "steipete-b", "items");
+    mkdirSync(aItems, { recursive: true });
+    mkdirSync(bItems, { recursive: true });
+    writeFileSync(
+      join(aItems, "1.md"),
+      "---\nreview_status: complete\nreviewed_at: 2026-07-28T12:00:00Z\n---\n",
+    );
+    writeFileSync(
+      join(aItems, "2.md"),
+      "---\nreview_status: complete\nreviewed_at: 2026-07-20T12:00:00Z\n---\n",
+    );
+    writeFileSync(
+      join(bItems, "3.md"),
+      "---\nreview_status: failed\nreviewed_at: 2026-07-29T11:00:00Z\n---\n",
+    );
+    const coverage = summarizeFleetReviewCoverage({
+      repositories,
+      openCounts: new Map([
+        ["openclaw/a", { issues: 2, pullRequests: 1 }],
+        ["steipete/b", { issues: 0, pullRequests: 1 }],
+      ]),
+      windowDays: 7,
+      recordsRoot: root,
+      now,
+    });
+
+    assert.deepEqual(coverage, {
+      generatedAt: "2026-07-29T12:00:00.000Z",
+      windowDays: 7,
+      repositoryCount: 2,
+      repositoriesWithOpenItems: 2,
+      openIssues: 2,
+      openPullRequests: 2,
+      openTotal: 4,
+      scannedOpenRecords: 1,
+      remainingOpenItems: 3,
+      coveragePercent: 25,
+      requiredItemsPerHourWithHeadroom: (4 / 168) * 1.3,
+    });
+    assert.match(renderFleetReviewCoverage(coverage), /Items scanned in trailing 7 days \| 1/);
+    assert.match(renderFleetReviewCoverage(coverage), /Trailing coverage \| 25\.0%/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("target fanout filters eligible repositories conservatively", () => {

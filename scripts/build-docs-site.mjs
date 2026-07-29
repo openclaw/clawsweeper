@@ -588,7 +588,7 @@ function landingBody() {
 <span class="prompt">$</span> pnpm run review -- --target-repo openclaw/openclaw --artifact-dir artifacts/reviews
 <span class="comment"># records/openclaw-openclaw/items/812.md</span>
 <span class="comment"># durable comment marker: clawsweeper:review</span>
-<span class="prompt">$</span> pnpm run apply-decisions -- --target-repo openclaw/openclaw --limit 20
+<span class="prompt">$</span> pnpm run apply-decisions -- --target-repo openclaw/openclaw --limit 40
 <span class="comment"># guarded close/comment mutations only after live re-fetch</span>
 <span class="prompt">$</span> pnpm commit-reports -- --since 24h --findings
 <span class="comment"># 6 commits reviewed - 1 finding (non-security)</span>

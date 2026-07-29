@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveCommand } from "../command.js";
@@ -33,6 +33,25 @@ export interface SelectedRepository {
   targetRepo: string;
   defaultBranch: string;
   visibility: string;
+}
+
+export interface RepositoryOpenCounts {
+  issues: number;
+  pullRequests: number;
+}
+
+export interface FleetReviewCoverage {
+  generatedAt: string;
+  windowDays: number;
+  repositoryCount: number;
+  repositoriesWithOpenItems: number;
+  openIssues: number;
+  openPullRequests: number;
+  openTotal: number;
+  scannedOpenRecords: number;
+  remainingOpenItems: number;
+  coveragePercent: number;
+  requiredItemsPerHourWithHeadroom: number;
 }
 
 interface SelectionResult {
@@ -71,6 +90,13 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   };
 
   const repositories = await loadEligibleRepositories(config, options.owners);
+  if (args._[0] === "coverage") {
+    const windowDays = positiveNumber(stringArg(args["window-days"], "7"), "window-days");
+    const openCounts = loadRepositoryOpenCounts(repositories);
+    const coverage = summarizeFleetReviewCoverage({ repositories, openCounts, windowDays });
+    process.stdout.write(renderFleetReviewCoverage(coverage));
+    return;
+  }
   const selection = selectRepositories(repositories, {
     limit: options.limit,
     cursor: readCursor(options.cursorPath),
@@ -329,9 +355,134 @@ function fanoutMode(value: string): FanoutMode {
 }
 
 export function defaultLimit(mode: FanoutMode): string {
-  if (mode === "hot-intake") return "10";
-  if (mode === "normal-review") return "6";
+  if (mode === "hot-intake") return "20";
+  if (mode === "normal-review") return "12";
   return "12";
+}
+
+function loadRepositoryOpenCounts(
+  repositories: readonly SelectedRepository[],
+): Map<string, RepositoryOpenCounts> {
+  const counts = new Map<string, RepositoryOpenCounts>();
+  const batchSize = 25;
+  for (let start = 0; start < repositories.length; start += batchSize) {
+    const batch = repositories.slice(start, start + batchSize);
+    const fields = batch
+      .map((repository, index) => {
+        const [owner, name] = repository.targetRepo.split("/");
+        return `r${index}:repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)}){issues(states:OPEN){totalCount} pullRequests(states:OPEN){totalCount}}`;
+      })
+      .join(" ");
+    const output = runGh(
+      ["api", "graphql", "-f", `query=query FleetCoverage { ${fields} }`],
+      publicInventoryEnv(),
+    );
+    const data = record(record(JSON.parse(output), "GraphQL response").data, "GraphQL data");
+    for (const [index, repository] of batch.entries()) {
+      const result = record(data[`r${index}`], `${repository.targetRepo} counts`);
+      const issues = record(result.issues, `${repository.targetRepo} issue counts`);
+      const pullRequests = record(
+        result.pullRequests,
+        `${repository.targetRepo} pull request counts`,
+      );
+      counts.set(repository.targetRepo, {
+        issues: nonNegativeNumber(issues.totalCount, "issue totalCount"),
+        pullRequests: nonNegativeNumber(pullRequests.totalCount, "pull request totalCount"),
+      });
+    }
+  }
+  return counts;
+}
+
+export function summarizeFleetReviewCoverage(options: {
+  repositories: readonly SelectedRepository[];
+  openCounts: ReadonlyMap<string, RepositoryOpenCounts>;
+  windowDays: number;
+  recordsRoot?: string;
+  now?: number;
+}): FleetReviewCoverage {
+  const now = options.now ?? Date.now();
+  const cutoff = now - options.windowDays * 24 * 60 * 60 * 1000;
+  const recordsRoot = options.recordsRoot ?? join(repoRoot(), "records");
+  let openIssues = 0;
+  let openPullRequests = 0;
+  let scannedOpenRecords = 0;
+  let repositoriesWithOpenItems = 0;
+  for (const repository of options.repositories) {
+    const counts = options.openCounts.get(repository.targetRepo) ?? {
+      issues: 0,
+      pullRequests: 0,
+    };
+    const openTotal = counts.issues + counts.pullRequests;
+    openIssues += counts.issues;
+    openPullRequests += counts.pullRequests;
+    if (openTotal > 0) repositoriesWithOpenItems += 1;
+    const repoSlug = repository.targetRepo.toLowerCase().replace("/", "-");
+    const itemsDir = join(recordsRoot, repoSlug, "items");
+    let freshRecords = 0;
+    if (existsSync(itemsDir)) {
+      for (const entry of readdirSync(itemsDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+        const markdown = readFileSync(join(itemsDir, entry.name), "utf8");
+        if (frontMatterField(markdown, "review_status") !== "complete") continue;
+        const reviewedAt = Date.parse(frontMatterField(markdown, "reviewed_at"));
+        if (Number.isFinite(reviewedAt) && reviewedAt >= cutoff && reviewedAt <= now) {
+          freshRecords += 1;
+        }
+      }
+    }
+    // Canonical items are reconciled against live open state on scheduled audits.
+    // Cap each repository at its live total so delayed external-close reconciliation
+    // cannot make the fleet summary exceed 100%.
+    scannedOpenRecords += Math.min(freshRecords, openTotal);
+  }
+  const openTotal = openIssues + openPullRequests;
+  const coveragePercent = openTotal > 0 ? (scannedOpenRecords / openTotal) * 100 : 100;
+  return {
+    generatedAt: new Date(now).toISOString(),
+    windowDays: options.windowDays,
+    repositoryCount: options.repositories.length,
+    repositoriesWithOpenItems,
+    openIssues,
+    openPullRequests,
+    openTotal,
+    scannedOpenRecords,
+    remainingOpenItems: Math.max(0, openTotal - scannedOpenRecords),
+    coveragePercent,
+    requiredItemsPerHourWithHeadroom:
+      openTotal > 0 ? (openTotal / (options.windowDays * 24)) * 1.3 : 0,
+  };
+}
+
+export function renderFleetReviewCoverage(coverage: FleetReviewCoverage): string {
+  return `## Weekly review coverage
+
+Generated ${coverage.generatedAt}. Canonical open-item records are compared with batched live GitHub totals; repository counts are capped at the live open total while external-close reconciliation catches up.
+
+| Metric | Value |
+| --- | ---: |
+| Eligible repositories | ${coverage.repositoryCount} |
+| Repositories with open items | ${coverage.repositoriesWithOpenItems} |
+| Open issues | ${coverage.openIssues} |
+| Open pull requests | ${coverage.openPullRequests} |
+| Open items total | ${coverage.openTotal} |
+| Items scanned in trailing ${coverage.windowDays} days | ${coverage.scannedOpenRecords} |
+| Remaining outside trailing window | ${coverage.remainingOpenItems} |
+| Trailing coverage | ${coverage.coveragePercent.toFixed(1)}% |
+| Required items/hour with 30% headroom | ${coverage.requiredItemsPerHourWithHeadroom.toFixed(1)} |
+
+`;
+}
+
+function frontMatterField(markdown: string, key: string): string {
+  const match = markdown.match(new RegExp(`^${key}:\\s*(.+?)\\s*$`, "m"));
+  return match?.[1]?.trim().replace(/^['"]|['"]$/g, "") ?? "";
+}
+
+function nonNegativeNumber(value: unknown, label: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${label} must be non-negative`);
+  return parsed;
 }
 
 function positiveNumber(value: string, label: string): number {

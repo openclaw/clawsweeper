@@ -47,6 +47,7 @@ const RECENT_ISSUE_DAYS = 30;
 const HOURLY_REVIEW_MS = 60 * 60 * 1000;
 const DAILY_REVIEW_DAYS = 1;
 const WEEKLY_REVIEW_DAYS = 7;
+export const WEEKLY_COVERAGE_REVIEW_DAYS = 6;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const BULK_FILED_LABEL = "clawsweeper:bulk-filed";
 
@@ -148,7 +149,10 @@ export function shouldReviewItem(
   if (hasReviewPolicyMismatch(review, reviewPolicy)) return true;
   const reviewedAt = reviewedAtMs(review);
   if (reviewedAt === null) return true;
-  return now - reviewedAt >= reviewCadenceMs(item, review, now);
+  return (
+    now - reviewedAt >=
+    Math.min(reviewCadenceMs(item, review, now), WEEKLY_COVERAGE_REVIEW_DAYS * DAY_MS)
+  );
 }
 
 export const REVIEW_CACHE_MAX_AGE_DAYS = 14;
@@ -216,7 +220,9 @@ export function nextReviewDueAtMs(
   if (hasReviewPolicyMismatch(review, reviewPolicy)) return 0;
   const reviewedAt = reviewedAtMs(review);
   if (reviewedAt === null) return 0;
-  return reviewedAt + reviewCadenceMs(item, review, now);
+  return (
+    reviewedAt + Math.min(reviewCadenceMs(item, review, now), WEEKLY_COVERAGE_REVIEW_DAYS * DAY_MS)
+  );
 }
 
 export function compareDueCandidates<
@@ -251,12 +257,12 @@ function compareBackfillCandidates<
   );
 }
 
-function weeklyReviewDeadlineMs(candidate: SchedulerDueCandidate): number {
+function weeklyCoverageReferenceMs(candidate: SchedulerDueCandidate): number {
   if (candidate.reviewedAt > 0) {
-    return candidate.reviewedAt + WEEKLY_REVIEW_DAYS * DAY_MS;
+    return candidate.reviewedAt;
   }
   const createdAt = Date.parse(candidate.item.createdAt);
-  return Number.isFinite(createdAt) ? createdAt + WEEKLY_REVIEW_DAYS * DAY_MS : 0;
+  return Number.isFinite(createdAt) ? createdAt : 0;
 }
 
 const SCHEDULER_BUCKET_WEIGHTS: ReadonlyArray<readonly [SchedulerBucket, number]> = [
@@ -297,17 +303,21 @@ export function selectDueCandidates<
     selected.push(candidate);
   };
 
-  // Weekly freshness is the outer SLO. Catch up breached items before applying
-  // the normal weighted mix for hourly and daily work.
-  const weeklyOverdue = due
-    .filter((candidate) => weeklyReviewDeadlineMs(candidate) <= now)
+  // Weekly freshness is the outer SLO. Start the coverage lane one day before
+  // the deadline, then select the oldest last-review timestamps across every
+  // cadence bucket before spending capacity on hot-item churn.
+  const weeklyCoverageDue = due
+    .filter(
+      (candidate) =>
+        weeklyCoverageReferenceMs(candidate) + WEEKLY_COVERAGE_REVIEW_DAYS * DAY_MS <= now,
+    )
     .sort(
       (left, right) =>
         bulkFiledComparison(left, right) ||
-        weeklyReviewDeadlineMs(left) - weeklyReviewDeadlineMs(right) ||
+        weeklyCoverageReferenceMs(left) - weeklyCoverageReferenceMs(right) ||
         compare(left, right),
     );
-  for (const candidate of weeklyOverdue) take(candidate);
+  for (const candidate of weeklyCoverageDue) take(candidate);
   for (const [bucket, candidates] of buckets) {
     buckets.set(
       bucket,
@@ -381,11 +391,4 @@ export function hotIntakeRecencyMs(item: Pick<SchedulerItem, "createdAt" | "upda
     Number.isFinite(updatedAt) ? updatedAt : 0,
     Number.isFinite(createdAt) ? createdAt : 0,
   );
-}
-
-export function shouldStopSaturatedPlanScan(options: {
-  dueCount: number;
-  capacity: number;
-}): boolean {
-  return options.capacity > 0 && options.dueCount >= options.capacity;
 }

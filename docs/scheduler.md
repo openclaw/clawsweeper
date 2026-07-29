@@ -135,9 +135,13 @@ Target fanout dispatches review batches through `repository_dispatch` so each
 selected repository can carry its inventory default branch without consuming
 manual workflow inputs. Scheduled fanout uses:
 
-- hot intake: `4/15 * * * *`, 10 target repositories per cursor step
-- normal review: `41 * * * *`, 6 target repositories per cursor step
+- hot intake: `4/15 * * * *`, 20 target repositories per cursor step
+- normal review: `41 * * * *`, 12 target repositories per cursor step
 - audit: `37 */6 * * *`, 12 target repositories per cursor step
+
+The six-hour audit fanout also writes a GitHub Actions summary with canonical
+open-item reports reviewed in the trailing seven days versus batched live open
+issue and PR totals across the complete dynamic inventory.
 
 Exact event review also starts Codex before generated-state hydration. The
 single-item review only needs the target repository and live GitHub item state;
@@ -239,14 +243,13 @@ Current defaults:
 - exact manual hot intake: 1 shard, 1 item
 - broad hot intake: up to 44 shards when quiet, batch size 1, scans up to 10
   GitHub pages
-- scheduled normal backfill: up to 89 shards when quiet, batch size 3, scans up
+- scheduled normal backfill: up to 89 shards when quiet, batch size 1, scans up
   to 250 GitHub pages after reserving interactive and expansion capacity
 - normal active floor: 38 shards for `openclaw/openclaw` scheduled runs and
   workflow-dispatch continuations; stale current-review backfill is eligible
   after 6 hours
-- manual normal backfill: defaults to 89 shards, batch size 3, scans up to 250
-  GitHub pages unless overridden, and stops early once scanned due candidates
-  fill planned capacity
+- manual normal backfill: defaults to 89 shards, batch size 3, and scans up to
+  250 GitHub pages unless overridden
 
 The hard planner cap is 128 shards. The workflow clamps invalid or larger
 `shard_count` inputs to 128.
@@ -305,11 +308,10 @@ Capacity status reports this as `floor: due backlog below active floor`. If the
 central worker scheduler returns fewer than 38 allowed shards, the smaller
 worker allowance wins.
 
-On saturated queues, normal planning stops scanning as soon as it has enough due
-candidates to fill `batch_size * shard_count`. `dueBacklog` remains the due
-backlog found during the scan, not a full-repository count. This keeps
-continuation runs from spending minutes on extra GitHub page reads before the
-review shard matrix can start.
+On saturated queues, normal planning reads the complete bounded open-item scan
+before selecting candidates. For the current largest repository this is about
+60 REST pages per five-minute normal tick, or roughly 720 installation-token
+requests per hour; that bounded cost is necessary for oldest-review fairness.
 
 Optional planning-started and in-progress dashboard publishes in the plan job
 are capped at 20 seconds. They are useful telemetry, but they must not delay
@@ -355,10 +357,13 @@ older issue backlog forever. The normal scheduler cycles through:
 - weekly older issues
 
 Within each bucket, earlier due times and older reviews win before item number.
-Items whose latest complete review, or creation time when never reviewed, is
-already more than seven days old are selected first across all buckets. The
-weighted mix applies to the remaining capacity, making weekly freshness an
-enforced outer SLO instead of only a cadence hint.
+The weekly coverage lane becomes eligible after six days of review age, then
+selects the oldest latest-review timestamp (or creation time when never
+reviewed) across all buckets before hot-item churn. Normal planning completes
+its bounded open-item scan before applying that ordering, so a saturated
+item-number prefix cannot hide older review timestamps. The weighted mix
+applies to remaining capacity; the extra day is operational headroom before
+the seven-day freshness deadline.
 
 ## Planning
 
@@ -382,8 +387,7 @@ pnpm run --silent plan -- \
 - `candidates`: selected open items
 - `shards`: selected item numbers distributed across shard jobs
 - `capacity`: `batch_size * clamped_shard_count`
-- `dueBacklog`: due candidates found during the scan; on saturated queues this
-  can be a lower bound because planning stops once capacity is full
+- `dueBacklog`: due candidates found during the complete bounded scan
 - `activeCodexTarget`: nonempty shard count
 - `oldestUnreviewedAt`: oldest scanned due candidate with no existing review
 - `capacityReason`: why the selected count did or did not fill capacity
@@ -479,16 +483,20 @@ hold the planner concurrency group or delay the next 89-shard backfill
 wave. Exact issue/PR reviews and repository-dispatch item runs still sync their
 selected comments inline before finishing.
 
-Long apply runs commit checkpoints every 20 fresh closes and dispatch a
+Automatic apply may close up to 40 items per run. Long apply runs commit
+checkpoints every 40 fresh closes and dispatch a
 continuation with a fresh GitHub App token after any checkpoint that closes at
 least one item. A saturated scan that closes nothing stops without chaining so
 the same records cannot create an unbounded runner loop.
 
-Untargeted cursor-based close apply starts with a 300-record scan window. If
+Untargeted cursor-based close apply starts with a 600-record scan window. If
 the previous cursor window was a full close-mode scan, closed nothing, skipped
 at least 80% of processed records, and did not hit a live-fetch, runtime-budget,
 or missing-cursor failure, the next automatic window expands to inspect more
-records, capped at 900. This changes only the deterministic scan window:
+records, capped at 1800. Each automatic checkpoint may spend up to 20 minutes
+in deterministic apply scanning, while the existing 55-minute App-token budget,
+70-minute apply step, and six-hour coordinator job ceiling remain unchanged.
+This changes only the deterministic scan window:
 `apply_limit`, checkpoint size, close gates, live-state checks, and maintainer
 policy gates stay unchanged. The workflow logs and sweep status detail include
 the selected scan window and reason.

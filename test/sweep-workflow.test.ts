@@ -1684,16 +1684,16 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
     workflow,
     /github\.event\.schedule == '8,23,38,53 \* \* \* \*'\) && 'openclaw\/clawhub'/,
   );
-  assert.match(inputBlock, /apply_limit:[\s\S]*default: "20"/);
-  assert.match(inputBlock, /apply_checkpoint_size:[\s\S]*default: "20"/);
-  assert.match(workflow, /github\.event\.inputs\.apply_limit != '20'/);
-  assert.match(workflow, /github\.event\.inputs\.apply_checkpoint_size != '20'/);
-  assert.match(applyStep, /Capping apply checkpoint size at 20/);
-  assert.match(applyStep, /base_close_processed_limit=300/);
+  assert.match(inputBlock, /apply_limit:[\s\S]*default: "40"/);
+  assert.match(inputBlock, /apply_checkpoint_size:[\s\S]*default: "40"/);
+  assert.match(workflow, /github\.event\.inputs\.apply_limit != '40'/);
+  assert.match(workflow, /github\.event\.inputs\.apply_checkpoint_size != '40'/);
+  assert.match(applyStep, /Capping apply checkpoint size at 40/);
+  assert.match(applyStep, /base_close_processed_limit=600/);
   assert.match(applyHelper, /coverage_proof_limit=2/);
   assert.match(applyHelper, /apply_token_budget_ms=3300000/);
-  assert.match(applyHelper, /max_runtime_arg=\(--max-runtime-ms 600000\)/);
-  assert.match(applyHelper, /max_close_processed_limit=900/);
+  assert.match(applyHelper, /max_runtime_arg=\(--max-runtime-ms 1200000\)/);
+  assert.match(applyHelper, /max_close_processed_limit=1800/);
   assert.match(applyStep, /close_processed_limit="\$base_close_processed_limit"/);
   assert.match(applyStep, /source scripts\/apply-workflow-helpers\.sh/);
   assert.match(
@@ -1844,8 +1844,8 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
   assert.match(continueStep, /can_share_apply_continuation=false/);
   assert.match(continueStep, /\[ "\$\{APPLY_AUTO_SELECTED_BATCH:-false\}" = "true" \]/);
   assert.match(continueStep, /\[ -z "\$\{APPLY_ITEM_NUMBERS:-\}" \]/);
-  assert.match(continueStep, /\[ "\$\{APPLY_LIMIT:-20\}" = "20" \]/);
-  assert.match(continueStep, /\[ "\$\{APPLY_CHECKPOINT_SIZE:-20\}" = "20" \]/);
+  assert.match(continueStep, /\[ "\$\{APPLY_LIMIT:-40\}" = "40" \]/);
+  assert.match(continueStep, /\[ "\$\{APPLY_CHECKPOINT_SIZE:-40\}" = "40" \]/);
   assert.match(continueStep, /\[ "\$\{APPLY_COMMENT_SYNC_MIN_AGE_DAYS:-7\}" = "7" \]/);
   assert.match(continueStep, /preserving exact continuation dispatch/);
   assert.match(
@@ -2945,8 +2945,11 @@ test("sweep issue and PR event reviews and target fanout avoid storm amplificati
   assert.match(legacyIntakeBlock, /additionalPrompt: payload\.additional_prompt/);
   assert.match(
     fanoutBlock,
-    /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '41 \* \* \* \*' && '6' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '10'\) \}\}/,
+    /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '41 \* \* \* \*' && '12' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '20'\) \}\}/,
   );
+  assert.match(fanoutBlock, /Summarize trailing weekly review coverage/);
+  assert.match(fanoutBlock, /target-fanout -- coverage --window-days 7/);
+  assert.match(fanoutBlock, /GITHUB_STEP_SUMMARY/);
 });
 
 test("setup-state defaults to an auth-safe shallow checkout", () => {

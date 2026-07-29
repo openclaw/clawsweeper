@@ -59,8 +59,9 @@ The mental model:
 | `workers.reserve_for_interactive`          |      16 | Worker slots background lanes leave open for exact/manual/urgent work.                |
 | `workers.expansion_reserve`                |       8 | Extra slots background lanes leave open for independently planned matrix expansion.   |
 | `workers.minimum_background`               |      16 | Target floor for background progress when enough global capacity is available.        |
-| `lanes.exact_review.max_concurrent`        |      64 | Maximum concurrent exact-item review workflow runs admitted to Codex.                 |
-| `lanes.exact_review.target_max_concurrent` |      60 | Maximum concurrent exact-item review workflow runs one target repository may consume. |
+| `lanes.exact_review.max_concurrent`        |     128 | Maximum concurrent exact-item review workflow runs admitted to Codex.                 |
+| `lanes.exact_review.target_max_concurrent` |     120 | Maximum concurrent exact-item review workflow runs one target repository may consume. |
+| `lanes.exact_review.actions_budget`        |     194 | Review plus publication Actions budget; preserves 50 publishers and 16 reserve slots at 128 reviews. |
 | `lanes.assist.max`                         |      10 | Maximum concurrent lightweight assist jobs.                                           |
 | `lanes.repair.cluster_max_live_runs`       |       2 | Default live repair workflow cap for imported gitcrawl cluster dispatches.            |
 
@@ -75,8 +76,8 @@ by default.
 
 | Name                                                | Current | Meaning                                                                               |
 | --------------------------------------------------- | ------: | ------------------------------------------------------------------------------------- |
-| `exact_review.concurrent_max`                       |      64 | Exact-item review admission cap, clamped to `workers.max`.                            |
-| `exact_review.target_concurrent_max`                |      60 | Exact-item per-target admission cap, clamped to global exact-review capacity.         |
+| `exact_review.concurrent_max`                       |     128 | Exact-item review admission cap, clamped to `workers.max`.                            |
+| `exact_review.target_concurrent_max`                |     120 | Exact-item per-target admission cap, clamped to global exact-review capacity.         |
 | `assist.default`                                    |      10 | Maintainer assist job cap.                                                            |
 | `review_shards.normal_default`                      |      89 | Quiet-system normal review shard ceiling.                                             |
 | `review_shards.normal_active_floor`                 |      38 | Minimum active normal review shards to keep queued for `openclaw/openclaw`.           |
@@ -169,12 +170,18 @@ dashboard router and only imports that service boundary. The queue coalesces
 deliveries by repository and item number, so a new webhook updates the latest
 desired review rather than consuming another runner. Only
 `EXACT_REVIEW_QUEUE_MAX_CONCURRENT` leased items may dispatch an exact-review
-workflow at once; the default is 64. `EXACT_REVIEW_TARGET_MAX_CONCURRENT` bounds
+workflow at once; the default is 128. `EXACT_REVIEW_TARGET_MAX_CONCURRENT` bounds
 how many of those slots one target repository may consume; production sets it
-to 60 so other target repositories retain four global slots during an OpenClaw
+to 120 so other target repositories retain eight global slots during an OpenClaw
 backlog drain. Exact capacity is consumed only while queue work is pending. As
 those priority workers start, normal, hot-intake, and commit-review planners
 count them and reduce their next background wave.
+
+`EXACT_REVIEW_ACTIONS_BUDGET` is deliberately separate from the 128-slot Codex
+worker budget. Its production value is 194: 128 exact reviews, 50 deterministic
+publication members, and 16 control-plane reserve slots. Full review admission
+therefore cannot reduce verdict publication to zero, while repair and broad
+review derivations remain anchored to `workers.max = 128`.
 
 Fresh webhook work waits for `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS` (90 seconds by
 default) so rapid edits and pushes coalesce before dispatch. Repeated pending
@@ -196,19 +203,22 @@ When pending depth reaches
 `EXACT_REVIEW_PENDING_SOFT_LIMIT` (300 by default), new recovery-only work is
 shed; existing items, webhook events, commands, and publications remain admitted.
 
-Exact-review result publication has a separate adaptive Actions lane. It starts
-at 24 and rises in steps of 8 up to 48 when ready-plus-backoff demand, oldest
-age, or the 15-minute net drain rate shows sustained pressure. Scale-up requires
-two five-minute samples and is limited to one step per ten minutes; healthy
-scale-down requires 30 minutes below 80 pending. GitHub rate limits halve the
-pressure ceiling for at least 15 minutes, while transient GitHub failures reduce
-it by 8 for at least five minutes. Admission also leaves 16 slots inside
+Exact-review result publication has a separate adaptive Actions lane. Source
+fallbacks start at 24 and rise in steps of 8 up to 48; production currently
+pins minimum, base, and maximum at 50. GitHub rate limits still lower the
+adaptive ceiling, and admission leaves 16 slots inside
 `WORKER_BUDGET` after active exact reviews. Its checkout, artifact handling,
 comment sync, and result routing are deterministic
 control-plane work: they consume GitHub runners, but not Codex slots. The
 comment router and the singleton lease reconciler follow the same accounting
 rule. Dashboard Codex capacity therefore counts only jobs whose steps execute
 Codex and does not deduct these control-plane workflows from `workers.max`.
+
+Legacy state-repository publication once limited exact-review preparation to
+four concurrent size-8 batches. Canonical Worker publication removes that
+shared Git writer constraint, so production now admits eight preparation
+batches (up to 64 publication members) while retaining the Durable Object's
+transactional SQLite ownership boundaries.
 
 Each dispatched workflow claims its opaque lease before checkout. Protocol v2
 binds claim and completion to the item key, lease revision, run attempt, claim

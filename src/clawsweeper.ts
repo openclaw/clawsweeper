@@ -107,7 +107,7 @@ import {
   schedulerBucket,
   selectDueCandidates,
   shouldReviewItem,
-  shouldStopSaturatedPlanScan,
+  WEEKLY_COVERAGE_REVIEW_DAYS,
   type SchedulerDueCandidate,
 } from "./scheduler-policy.js";
 import {
@@ -1444,7 +1444,6 @@ const HOT_REVIEW_DAYS = 7;
 const RECENT_ISSUE_DAYS = 30;
 const DEFAULT_BACKFILL_REVIEW_AGE_MINUTES = 360;
 const DAILY_REVIEW_DAYS = 1;
-const WEEKLY_REVIEW_DAYS = 7;
 const STALE_INSUFFICIENT_INFO_MIN_AGE_DAYS = 60;
 const STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS = 60;
 const UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS = 14;
@@ -9207,7 +9206,6 @@ function planCandidates(options: {
       );
       if (fallback) backfill.push(fallback);
     }
-    if (shouldStopSaturatedPlanScan({ dueCount: due.length, capacity })) break;
   }
   const selected = appendFloorBackfillCandidates(
     selectDueCandidates(due, capacity, compareDueCandidates, now),
@@ -32289,7 +32287,10 @@ function cadenceBucketForReview(
     return { bucket: "dailyNewIssues", cadenceMs: DAILY_REVIEW_DAYS * DAY_MS };
   }
 
-  return { bucket: "weeklyOlderIssues", cadenceMs: WEEKLY_REVIEW_DAYS * DAY_MS };
+  return {
+    bucket: "weeklyOlderIssues",
+    cadenceMs: WEEKLY_COVERAGE_REVIEW_DAYS * DAY_MS,
+  };
 }
 
 function dashboardStats(

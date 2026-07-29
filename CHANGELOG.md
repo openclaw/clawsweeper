@@ -9,6 +9,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Doubled exact-review admission to 128 global and 120 per target with a separate 194-slot Actions budget that preserves verdict publication at full review load, doubled scheduled fleet review fanout and canonical publication batch preparation, prioritized six-day oldest-review coverage before hot-item churn, exposed a six-hour fleet coverage summary, and raised automatic apply to 40 closes with proportional scan/runtime budgets without changing close eligibility.
 - Completed the Cloudflare-canonical state migration: records publish only to the Durable Object, action ledgers and assets publish only to R2, canonical-only workflows no longer check out `clawsweeper-state`, the former materializer only compacts the legacy append window, and the remaining `jobs`/`results`/`notifications`/apply-report Git writers use the Durable Object coordinator without Git lease refs or rebuild recovery.
 
 ### Added
@@ -84,7 +85,7 @@ checkpoint, and status-only commits are intentionally omitted.
 - Prioritized durable cluster intake without starving sweep, router, proof, or canonical tuple rows during sustained intake. Thanks @RomneyDa! (#882)
 - Made every item/closed/plan/decision-packet writer publish an atomic canonical Worker tuple first, leaving the git state tree as materializer-only projection; added bounded canonical projection replay for migration convergence.
 - Removed the Claude CLI runtime layer; ClawSweeper is Codex-only.
-- Allowed four isolated exact-review batches to prepare concurrently while
+- Allowed eight isolated exact-review batches to prepare concurrently while
   retaining one fenced state-writer mutation boundary.
 - Snapshot exact-review batch clone credentials once before worker fanout so
   parallel preparation no longer drops members during repeated shared-repo

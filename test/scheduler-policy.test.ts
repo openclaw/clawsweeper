@@ -7,7 +7,6 @@ import {
   reviewPriority,
   selectDueCandidates,
   shouldReviewItem,
-  shouldStopSaturatedPlanScan,
 } from "../dist/scheduler-policy.js";
 import { item } from "./helpers.ts";
 
@@ -126,6 +125,26 @@ test("hot new items review daily unless target-side activity requires hourly cad
     ),
     true,
   );
+});
+
+test("weekly coverage becomes due at six days to preserve deadline headroom", () => {
+  const reviewedAt = Date.parse("2026-07-01T12:00:00Z");
+  const review = {
+    reviewedAt: new Date(reviewedAt).toISOString(),
+    itemUpdatedAt: "2026-01-01T00:00:00Z",
+    reviewStatus: "complete",
+    reviewPolicy: "current",
+  };
+  const oldIssue = item({
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  });
+
+  assert.equal(
+    shouldReviewItem(oldIssue, review, reviewedAt + 6 * 86_400_000 - 1, "current"),
+    false,
+  );
+  assert.equal(shouldReviewItem(oldIssue, review, reviewedAt + 6 * 86_400_000, "current"), true);
 });
 
 test("scheduler ignores ClawSweeper-owned updated_at churn after review", () => {
@@ -457,7 +476,7 @@ test("mixed-bucket weekly-overdue ordering is transitive and globally bulk-last"
   assert.deepEqual(selectedNumbers(due, due.length, now), [23, 24, 21, 22]);
 });
 
-test("normal scheduler prioritizes items already breaching weekly freshness", () => {
+test("normal scheduler prioritizes oldest weekly-coverage timestamps before hot churn", () => {
   const now = Date.parse("2026-06-14T12:00:00Z");
   const due = [
     {
@@ -468,6 +487,7 @@ test("normal scheduler prioritizes items already breaching weekly freshness", ()
       }),
       bucket: "hot_issue",
       priority: 0,
+      reviewedAt: Date.parse("2026-06-08T11:00:00Z"),
       nextDueAt: 0,
     },
     {
@@ -478,6 +498,7 @@ test("normal scheduler prioritizes items already breaching weekly freshness", ()
       }),
       bucket: "daily_pull_request",
       priority: 3,
+      reviewedAt: Date.parse("2026-06-07T12:00:00Z"),
       nextDueAt: 0,
     },
     {
@@ -488,6 +509,7 @@ test("normal scheduler prioritizes items already breaching weekly freshness", ()
       }),
       bucket: "weekly_issue",
       priority: 6,
+      reviewedAt: Date.parse("2026-06-06T12:00:00Z"),
       nextDueAt: 0,
     },
   ];
@@ -568,13 +590,6 @@ test("normal scheduler can fill active floor from stale current reviews", () => 
 
   assert.deepEqual(backfilledNumbers(selected, backfill, 3, 10), [1, 10, 11]);
   assert.deepEqual(backfilledNumbers(selected, backfill, 3, 2), [1, 10]);
-});
-
-test("normal scheduler can stop scanning once planned capacity is saturated", () => {
-  assert.equal(shouldStopSaturatedPlanScan({ dueCount: 99, capacity: 100 }), false);
-  assert.equal(shouldStopSaturatedPlanScan({ dueCount: 100, capacity: 100 }), true);
-  assert.equal(shouldStopSaturatedPlanScan({ dueCount: 150, capacity: 100 }), true);
-  assert.equal(shouldStopSaturatedPlanScan({ dueCount: 1, capacity: 0 }), false);
 });
 
 test("hot intake recency prefers newly updated or created issues", () => {

@@ -4,7 +4,7 @@
 # settings as shell variables before sourcing this file.
 # shellcheck disable=SC2034,SC2154
 
-max_close_processed_limit=900
+max_close_processed_limit=1800
 coverage_proof_limit=2
 apply_token_budget_ms=3300000
 
@@ -321,7 +321,7 @@ apply_checkpoint_examined_count() {
 select_automatic_apply_runtime() {
   max_runtime_arg=()
   if [ "$auto_selected_apply_batch" = "true" ]; then
-    max_runtime_arg=(--max-runtime-ms 600000)
+    max_runtime_arg=(--max-runtime-ms 1200000)
   fi
 }
 

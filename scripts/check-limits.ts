@@ -13,6 +13,7 @@ type WorkerConfig = {
     exact_review: {
       max_concurrent: number;
       target_max_concurrent: number;
+      actions_budget: number;
     };
     assist: {
       max: number;
@@ -70,8 +71,15 @@ const expectations: { file: string; label: string; pattern: RegExp }[] = [
   },
   {
     file: "dashboard/wrangler.toml",
-    label: "dashboard worker budget",
+    label: "dashboard Codex worker budget",
     pattern: new RegExp(`WORKER_BUDGET = "${config.workers.max}"`),
+  },
+  {
+    file: "dashboard/wrangler.toml",
+    label: "exact review Actions budget",
+    pattern: new RegExp(
+      `EXACT_REVIEW_ACTIONS_BUDGET = "${config.lanes.exact_review.actions_budget}"`,
+    ),
   },
   {
     file: "dashboard/wrangler.toml",
@@ -89,8 +97,10 @@ const expectations: { file: string; label: string; pattern: RegExp }[] = [
   },
   {
     file: "dashboard/exact-review-queue.ts",
-    label: "dashboard worker budget fallback",
-    pattern: new RegExp(`numberFrom\\(env\\.WORKER_BUDGET, ${config.workers.max}\\)`),
+    label: "exact review Actions budget fallback",
+    pattern: new RegExp(
+      `DEFAULT_EXACT_REVIEW_ACTIONS_BUDGET = ${config.lanes.exact_review.actions_budget}`,
+    ),
   },
   {
     file: "README.md",

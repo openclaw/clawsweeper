@@ -31,14 +31,14 @@ run-name: >-
       github.event.inputs.apply_existing == 'true' &&
       github.event.inputs.apply_sync_comments_only != 'true' &&
       (github.event.inputs.apply_item_numbers != '' ||
-        github.event.inputs.apply_limit != '20' ||
+        github.event.inputs.apply_limit != '40' ||
         github.event.inputs.apply_min_age_days != '0' ||
         github.event.inputs.apply_min_age_minutes != '' ||
         github.event.inputs.apply_kind != 'all' ||
         github.event.inputs.apply_close_reasons != 'all' ||
         github.event.inputs.apply_stale_min_age_days != '60' ||
         github.event.inputs.apply_close_delay_ms != '2000' ||
-        github.event.inputs.apply_checkpoint_size != '20' ||
+        github.event.inputs.apply_checkpoint_size != '40' ||
         github.event.inputs.apply_comment_sync_min_age_days != '7')) &&
       format('Apply custom ClawSweeper closures for {0}', github.event.inputs.target_repo || 'openclaw/openclaw') ||
     ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') ||
@@ -95,7 +95,7 @@ on:
       apply_limit:
         description: "Maximum existing proposed items to close in apply-existing mode"
         required: false
-        default: "20"
+        default: "40"
       apply_min_age_days:
         description: "Minimum item age in days before apply-existing can close it"
         required: false
@@ -135,7 +135,7 @@ on:
       apply_checkpoint_size:
         description: "Fresh closes per checkpoint commit in apply-existing mode"
         required: false
-        default: "20"
+        default: "40"
       batch_size:
         description: "Items per worker job"
         required: false
@@ -2447,7 +2447,7 @@ jobs:
           CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: ${{ steps.openclaw-token.outputs.token }}
           CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: ${{ steps.steipete-token.outputs.token || '__public__' }}
           FANOUT_MODE: ${{ github.event.schedule == '41 * * * *' && 'normal-review' || (github.event.schedule == '37 */6 * * *' && 'audit' || 'hot-intake') }}
-          FANOUT_LIMIT: ${{ github.event.schedule == '41 * * * *' && '6' || (github.event.schedule == '37 */6 * * *' && '12' || '10') }}
+          FANOUT_LIMIT: ${{ github.event.schedule == '41 * * * *' && '12' || (github.event.schedule == '37 */6 * * *' && '12' || '20') }}
         run: |
           set -euo pipefail
           pnpm run target-fanout -- \
@@ -2456,6 +2456,15 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --workflow sweep.yml \
             --ref main
+
+      - name: Summarize trailing weekly review coverage
+        if: ${{ github.event.schedule == '37 */6 * * *' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: ${{ steps.openclaw-token.outputs.token }}
+          CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: ${{ steps.steipete-token.outputs.token || '__public__' }}
+        run: pnpm run target-fanout -- coverage --window-days 7 >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish fanout cursor
         env:
@@ -4723,16 +4732,16 @@ jobs:
           test -n "$GH_TOKEN"
           source scripts/apply-workflow-helpers.sh
           initialize_apply_token_budget
-          limit="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '20' }}"
+          limit="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '40' }}"
           min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
           min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
           apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
           apply_close_reasons="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}"
           stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
           close_delay_ms="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_delay_ms || '2000' }}"
-          checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '20' }}"
+          checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '40' }}"
           comment_sync_processed_limit=1000
-          base_close_processed_limit=300
+          base_close_processed_limit=600
           close_processed_limit="$base_close_processed_limit"
           adaptive_apply_scan_reason="base_window"
           sync_batch_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '25' }}"
@@ -4794,9 +4803,9 @@ jobs:
           if [ -n "$min_age_minutes" ]; then
             min_age_minutes_arg=(--min-age-minutes "$min_age_minutes")
           fi
-          if [ "$checkpoint_size" -gt 20 ]; then
-            echo "Capping apply checkpoint size at 20"
-            checkpoint_size=20
+          if [ "$checkpoint_size" -gt 40 ]; then
+            echo "Capping apply checkpoint size at 40"
+            checkpoint_size=40
           fi
           select_adaptive_apply_batch
           mkdir -p .artifacts/apply-reports
@@ -5174,14 +5183,14 @@ jobs:
           can_share_apply_continuation=false
           if [ "${APPLY_AUTO_SELECTED_BATCH:-false}" = "true" ] &&
             [ -z "${APPLY_ITEM_NUMBERS:-}" ] &&
-            [ "${APPLY_LIMIT:-20}" = "20" ] &&
+            [ "${APPLY_LIMIT:-40}" = "40" ] &&
             [ "${APPLY_MIN_AGE_DAYS:-0}" = "0" ] &&
             [ -z "${APPLY_MIN_AGE_MINUTES:-}" ] &&
             [ "${APPLY_KIND:-all}" = "all" ] &&
             [ "${APPLY_CLOSE_REASONS:-all}" = "all" ] &&
             [ "${APPLY_STALE_MIN_AGE_DAYS:-60}" = "60" ] &&
             [ "${APPLY_CLOSE_DELAY_MS:-2000}" = "2000" ] &&
-            [ "${APPLY_CHECKPOINT_SIZE:-20}" = "20" ] &&
+            [ "${APPLY_CHECKPOINT_SIZE:-40}" = "40" ] &&
             [ "${APPLY_COMMENT_SYNC_MIN_AGE_DAYS:-7}" = "7" ]; then
             can_share_apply_continuation=true
           fi

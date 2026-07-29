@@ -34,6 +34,7 @@ applied once per environment. External Durable Object bindings use Wrangler's
 Copy these queue-runtime values to the destination without changing them:
 
 - `WORKER_BUDGET`
+- `EXACT_REVIEW_ACTIONS_BUDGET`
 - `EXACT_REVIEW_QUEUE_MAX_CONCURRENT`
 - `EXACT_REVIEW_TARGET_MAX_CONCURRENT`
 - `EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT`

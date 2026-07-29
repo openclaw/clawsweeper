@@ -57,6 +57,7 @@ export {
   ExactReviewQueue,
   exactReviewEffectiveLeaseExpiresAt,
   exactReviewPublicationCapacity,
+  exactReviewPublicationCapacityForState,
   exactReviewQueueAdmittedItems,
   exactReviewQueueCapacity,
   exactReviewQueueNextWakeAt,

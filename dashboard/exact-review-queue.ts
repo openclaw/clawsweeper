@@ -380,8 +380,9 @@ export type DurableObjectNamespace = {
   get: (id: unknown) => DurableObjectStub;
 };
 
-const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 64;
-const DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT = 60;
+const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 128;
+const DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT = 120;
+const DEFAULT_EXACT_REVIEW_ACTIONS_BUDGET = 194;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT = 4;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT = 24;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT = 48;
@@ -10020,7 +10021,7 @@ export function exactReviewQueueCapacity(env) {
   return Math.max(
     1,
     Math.min(
-      numberFrom(env.WORKER_BUDGET, 128),
+      numberFrom(env.EXACT_REVIEW_ACTIONS_BUDGET, DEFAULT_EXACT_REVIEW_ACTIONS_BUDGET),
       numberFrom(env.EXACT_REVIEW_QUEUE_MAX_CONCURRENT, DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT),
     ),
   );
@@ -10290,7 +10291,7 @@ function exactReviewPublicationControlStatus(env, control: ExactReviewPublicatio
   };
 }
 
-function exactReviewPublicationCapacityForState(
+export function exactReviewPublicationCapacityForState(
   env,
   state: ExactReviewQueueState,
   now: number,
@@ -10325,7 +10326,10 @@ function exactReviewPublicationCapacityForState(
           Number.isFinite(oldestPendingAt) ? now - oldestPendingAt : 0,
         )
       : Math.min(capacityCeiling, demandCapacity);
-  const workerBudget = Math.max(1, numberFrom(env.WORKER_BUDGET, 128));
+  const workerBudget = Math.max(
+    1,
+    numberFrom(env.EXACT_REVIEW_ACTIONS_BUDGET, DEFAULT_EXACT_REVIEW_ACTIONS_BUDGET),
+  );
   const budgeted = Math.max(
     0,
     workerBudget - activeReviews - EXACT_REVIEW_PUBLICATION_ACTIONS_RESERVE,
