@@ -633,6 +633,7 @@ jobs:
           const mediaTimeout =
             Number.isInteger(mediaValue) && mediaValue > 0 ? Math.min(480_000, mediaValue) : 0;
           const [owner, name] = targetRepo.split("/");
+          const targetSlug = targetRepo.trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, "-");
           const checkoutDir = targetRepo === process.env.GITHUB_REPOSITORY ? `${name}-target` : name;
           const hasCommandContext = Boolean(decision.commandStatusMarker || decision.statusCommentId);
           const targetEnabled =
@@ -641,6 +642,7 @@ jobs:
             target_repo: targetRepo,
             target_repo_owner: owner,
             target_repo_name: name,
+            target_slug: targetSlug,
             target_checkout_dir: checkoutDir,
             item_number: itemNumber,
             codex_timeout_ms: Math.min(
@@ -1196,7 +1198,9 @@ jobs:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ steps.target.outputs.target_slug }}
           hydrate-git-state: "false"
+          hydrate-state-blobs: "false"
 
       - name: Deliver GitHub effects and prepare direct state mutation
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-setup-state.outcome == 'success' }}
@@ -1628,6 +1632,7 @@ jobs:
                 if (!Number.isInteger(claimGeneration) || claimGeneration < 1) process.exit(1);
                 const targetRepo = String(decision.targetRepo);
                 const [targetRepoOwner, targetRepoName] = targetRepo.split("/");
+                const targetSlug = targetRepo.trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, "-");
                 const values = {
                   artifact_name: publication.artifactName,
                   generation_attempt: publication.producerRunAttempt,
@@ -1641,6 +1646,7 @@ jobs:
                   target_repo: targetRepo,
                   target_repo_owner: targetRepoOwner,
                   target_repo_name: targetRepoName,
+                  target_slug: targetSlug,
                   target_branch: decision.targetBranch,
                   item_number: decision.itemNumber,
                   item_kind: decision.itemKind,
@@ -1793,7 +1799,9 @@ jobs:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ steps.publication-context.outputs.target_slug }}
           hydrate-git-state: "false"
+          hydrate-state-blobs: "false"
 
       - name: Publish event result and apply safe close
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
@@ -2417,6 +2425,7 @@ jobs:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          hydrate-state-blobs: "false"
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
@@ -2505,6 +2514,7 @@ jobs:
       target_repo: ${{ steps.target.outputs.target_repo }}
       target_repo_name: ${{ steps.target.outputs.target_repo_name }}
       target_repo_owner: ${{ steps.target.outputs.target_repo_owner }}
+      target_slug: ${{ steps.target.outputs.target_slug }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -2533,6 +2543,7 @@ jobs:
           fi
           target_owner="${target_repo%%/*}"
           target_name="${target_repo#*/}"
+          target_slug="$(printf '%s' "$target_repo" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
           target_checkout_dir="$target_name"
           if [ "$target_repo" = "${{ github.repository }}" ]; then
             target_checkout_dir="${target_name}-target"
@@ -2541,6 +2552,7 @@ jobs:
             echo "target_repo=$target_repo"
             echo "target_repo_owner=$target_owner"
             echo "target_repo_name=$target_name"
+            echo "target_slug=$target_slug"
             echo "target_branch=$target_branch"
             echo "target_checkout_dir=$target_checkout_dir"
           } >> "$GITHUB_OUTPUT"
@@ -2570,6 +2582,8 @@ jobs:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ steps.target.outputs.target_slug }}
+          hydrate-state-blobs: "false"
           token: ${{ steps.state-token.outputs.token }}
           worktree-path: clawsweeper
           fetch-depth: 1
@@ -3317,6 +3331,8 @@ jobs:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ needs.plan.outputs.target_slug }}
+          hydrate-state-blobs: "false"
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
@@ -4018,6 +4034,8 @@ jobs:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: openclaw-openclaw
+          hydrate-state-blobs: "false"
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
@@ -4210,6 +4228,7 @@ jobs:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          hydrate-state-blobs: "false"
           token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
@@ -4319,7 +4338,13 @@ jobs:
               *) target_repo="openclaw/openclaw" ;;
             esac
           fi
+          if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+            echo "Invalid target repository: $target_repo" >&2
+            exit 1
+          fi
+          target_slug="$(printf '%s' "$target_repo" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
           echo "target_repo=$target_repo" >> "$GITHUB_OUTPUT"
+          echo "target_slug=$target_slug" >> "$GITHUB_OUTPUT"
 
       - name: Resolve proof artifact identity
         id: proof-artifact
@@ -4332,6 +4357,7 @@ jobs:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ steps.target.outputs.target_slug }}
           hydrate-state-blobs: "false"
           token: ${{ github.token }}
           persist-credentials: "false"
@@ -4628,10 +4654,12 @@ jobs:
           fi
           target_owner="${target_repo%%/*}"
           target_name="${target_repo#*/}"
+          target_slug="$(printf '%s' "$target_repo" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
           {
             echo "target_repo=$target_repo"
             echo "target_repo_owner=$target_owner"
             echo "target_repo_name=$target_name"
+            echo "target_slug=$target_slug"
           } >> "$GITHUB_OUTPUT"
 
       - name: Publish apply telemetry start
@@ -4673,6 +4701,7 @@ jobs:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ steps.target.outputs.target_slug }}
           hydrate-state-blobs: "false"
           token: ${{ steps.state-token.outputs.token }}
 

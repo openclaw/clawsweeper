@@ -11,6 +11,7 @@ import {
 import { exactReviewBatchStateWriterProgressReporter } from "./exact-review-batch-state-writer-progress.js";
 import { postDirectPublicationResult } from "./exact-review-direct-publication.js";
 import { StateWriterTelemetryRecorder } from "./state-writer-telemetry-recorder.js";
+import { normalizeRepo, slugForRepo } from "../repository-profiles.js";
 import type { StateWriterOperation } from "../state-writer-telemetry.js";
 import {
   validatePreparedStateMutationPlans,
@@ -102,6 +103,10 @@ async function claim() {
   output(
     "target_repositories",
     [...new Set(targets.map((target) => target.split("/")[1]))].join(","),
+  );
+  output(
+    "records_repo_slugs",
+    [...new Set(targets.map((target) => slugForRepo(normalizeRepo(target))))].sort().join(","),
   );
 }
 

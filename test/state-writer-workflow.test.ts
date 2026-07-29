@@ -53,6 +53,61 @@ test("every state hydration uses the canonical Worker with an explicit git-state
   );
 });
 
+test("per-target state hydration is slug-scoped while fleet lanes retain discovery", () => {
+  const setups: Array<{ site: string; step: WorkflowStep }> = [];
+  for (const { file, workflow } of workflows()) {
+    for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+      for (const step of job.steps ?? []) {
+        if (isSetupState(step)) setups.push({ site: `${file}:${jobName}`, step });
+      }
+    }
+  }
+
+  assert.deepEqual(
+    setups
+      .filter(({ step }) => step.with?.["records-repo-slugs"] !== undefined)
+      .map(({ site }) => site),
+    [
+      ".github/workflows/commit-review.yml:plan",
+      ".github/workflows/commit-review.yml:review",
+      ".github/workflows/commit-review.yml:publish",
+      ".github/workflows/exact-review-batch-publish.yml:publish",
+      ".github/workflows/proof-nudges.yml:proof-nudges",
+      ".github/workflows/repair-cluster-intake.yml:intake",
+      ".github/workflows/repair-comment-router.yml:route-comments",
+      ".github/workflows/repair-commit-finding-intake.yml:intake",
+      ".github/workflows/repair-conflict-self-heal.yml:self-heal",
+      ".github/workflows/repair-issue-implementation-intake.yml:intake",
+      ".github/workflows/spam-scanner.yml:scan",
+      ".github/workflows/sweep.yml:event-review-apply",
+      ".github/workflows/sweep.yml:event-review-publish",
+      ".github/workflows/sweep.yml:plan",
+      ".github/workflows/sweep.yml:publish",
+      ".github/workflows/sweep.yml:retry-failed-reviews",
+      ".github/workflows/sweep.yml:apply-proof",
+      ".github/workflows/sweep.yml:apply-existing",
+    ],
+  );
+  assert.deepEqual(
+    setups
+      .filter(({ step }) => step.with?.["records-repo-slugs"] === undefined)
+      .map(({ site }) => site),
+    [
+      ".github/workflows/repair-cluster-worker.yml:cluster",
+      ".github/workflows/repair-cluster-worker.yml:execute",
+      ".github/workflows/repair-finalize-open-prs.yml:finalize",
+      ".github/workflows/repair-publish-results.yml:publish",
+      ".github/workflows/repair-self-heal.yml:self-heal",
+      ".github/workflows/sweep.yml:target-fanout",
+      ".github/workflows/sweep.yml:audit-dashboard",
+    ],
+  );
+
+  for (const { site, step } of setups) {
+    assert.equal(step.with?.["hydrate-state-blobs"], "false", site);
+  }
+});
+
 test("setup-state checks out only the remaining operational git tree", () => {
   const source = readFileSync(".github/actions/setup-state/action.yml", "utf8");
   const action = parse(source) as {

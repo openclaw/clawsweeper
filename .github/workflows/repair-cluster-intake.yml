@@ -114,6 +114,7 @@ jobs:
           target_owner="${TARGET_REPO%%/*}"
           target_name="${TARGET_REPO#*/}"
           target_owner_lower="$(printf '%s' "$target_owner" | tr '[:upper:]' '[:lower:]')"
+          target_slug="$(printf '%s' "$TARGET_REPO" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
           owner_allowed=0
           for allowed_owner in "${allowed_owners[@]}"; do
             if [ "$target_owner_lower" = "$(printf '%s' "$allowed_owner" | tr '[:upper:]' '[:lower:]')" ]; then
@@ -129,6 +130,7 @@ jobs:
             printf 'owner=%s\n' "$target_owner"
             printf 'name=%s\n' "$target_name"
             printf 'full_name=%s/%s\n' "$target_owner" "$target_name"
+            printf 'slug=%s\n' "$target_slug"
           } >> "$GITHUB_OUTPUT"
 
       - name: Create target read token
@@ -166,6 +168,7 @@ jobs:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ steps.target.outputs.slug }}
           # Intake reads jobs and results only; ledger/assets hydration is unrelated and unbounded.
           hydrate-state-blobs: "false"
           token: ${{ steps.state-token.outputs.token }}

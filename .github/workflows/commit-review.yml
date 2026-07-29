@@ -83,6 +83,7 @@ jobs:
       target_repo: ${{ steps.target.outputs.target_repo }}
       target_repo_name: ${{ steps.target.outputs.target_repo_name }}
       target_repo_owner: ${{ steps.target.outputs.target_repo_owner }}
+      target_slug: ${{ steps.target.outputs.target_slug }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -120,10 +121,12 @@ jobs:
           fi
           target_owner="${target_repo%%/*}"
           target_name="${target_repo#*/}"
+          target_slug="$(printf '%s' "$target_repo" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
           {
             echo "target_repo=$target_repo"
             echo "target_repo_owner=$target_owner"
             echo "target_repo_name=$target_name"
+            echo "target_slug=$target_slug"
             echo "target_checkout_dir=target-$target_name"
           } >> "$GITHUB_OUTPUT"
 
@@ -145,8 +148,10 @@ jobs:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ steps.target.outputs.target_slug }}
           worktree-path: clawsweeper
           hydrate-git-state: "false"
+          hydrate-state-blobs: "false"
 
       - uses: ./clawsweeper/.github/actions/setup-pnpm
         with:
@@ -411,8 +416,10 @@ jobs:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ needs.plan.outputs.target_slug }}
           worktree-path: clawsweeper
           hydrate-git-state: "false"
+          hydrate-state-blobs: "false"
 
       - uses: ./clawsweeper/.github/actions/setup-pnpm
         with:
@@ -527,7 +534,9 @@ jobs:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ needs.plan.outputs.target_slug }}
           hydrate-git-state: "false"
+          hydrate-state-blobs: "false"
 
       - uses: ./.github/actions/setup-pnpm
         with:

@@ -115,7 +115,10 @@ test("batch workflow uses owner-scoped mutation credentials and canonical Worker
   assert.match(source, /repositories: \$\{\{ steps\.batch\.outputs\.target_repositories \}\}/);
   assert.doesNotMatch(source, /uses: \.\/\.github\/actions\/create-state-token/);
   assert.match(source, /uses: \.\/\.github\/actions\/setup-state/);
+  assert.match(source, /records-repo-slugs: \$\{\{ steps\.batch\.outputs\.records_repo_slugs \}\}/);
   assert.match(source, /hydrate-git-state: "false"/);
+  assert.match(source, /hydrate-state-blobs: "false"/);
+  assert.match(cliSource, /slugForRepo\(normalizeRepo\(target\)\)/);
   assert.doesNotMatch(source, /permissions:\n(?:.*\n)*?\s+issues: write/);
   assert.match(prepareSource, /cpSync\(recordsSource, join\(root, "records"\)/);
   assert.doesNotMatch(prepareSource, /stateClone|CLAWSWEEPER_STATE_DIR|"clone"/);
