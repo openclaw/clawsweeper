@@ -2526,7 +2526,11 @@ jobs:
             --ref main
 
       - name: Summarize trailing weekly review coverage
-        if: ${{ github.event.schedule == '37 */6 * * *' }}
+        # Also runs for operator dispatches of the audit lane: the signed live
+        # inventory is what gives /api/review-coverage its true denominator, and
+        # gating it on one cron string left the metric reporting "missing" for
+        # up to six hours after a deploy or an on-demand audit.
+        if: ${{ github.event.schedule == '37 */6 * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') }}
         env:
           GH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
