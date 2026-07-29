@@ -4818,6 +4818,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
         run: |
           set -euo pipefail

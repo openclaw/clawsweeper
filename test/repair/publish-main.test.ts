@@ -58,6 +58,59 @@ test("publish-main appends changed record tuples canonically and never invokes g
   ]);
 });
 
+test("publish-main canonically moves reconciled records from items to closed", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-record-source-"));
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-record-state-"));
+  const record = closeRecord("source-revision", "closed directly on GitHub");
+  const tupleClosedPath = `${tupleRoot}/closed/42.md`;
+  writeText(stateRoot, tupleItemPath, record);
+  writeText(root, tupleClosedPath, record);
+  const gitPublishes: GitPublishOptions[] = [];
+  let posted: Record<string, unknown> | undefined;
+
+  const result = await publishMainWithStateAppend(
+    {
+      message: "chore: persist sweep reconciliation",
+      paths: [tupleItemPath, tupleClosedPath],
+      rebaseStrategy: "reconcile-records",
+    },
+    {
+      root,
+      env: appendEnv({
+        CLAWSWEEPER_STATE_DIR: stateRoot,
+        CLAWSWEEPER_CANONICAL_PUBLICATION_KIND: "reconcile",
+      }),
+      fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
+        assert.equal(input.toString(), "https://queue.test/internal/state/records/tuples");
+        posted = JSON.parse(String(init?.body ?? "")) as Record<string, unknown>;
+        return Response.json(
+          { ok: true, accepted: true, deduped: false, revision: 8, sequence: 12 },
+          { status: 202 },
+        );
+      }) as typeof fetch,
+      publishGit: capturePublishes(gitPublishes),
+    },
+  );
+
+  assert.equal(result, "appended");
+  assert.equal(gitPublishes.length, 0);
+  assert.equal(posted?.key, "openclaw-openclaw/42");
+  assert.match(String(posted?.deliveryId), /^record-reconcile:openclaw-openclaw:42:[a-f0-9]{64}$/);
+  assert.deepEqual(posted?.operations, [
+    {
+      path: tupleItemPath,
+      expectedDigest: createHash("sha256").update(record).digest("hex"),
+    },
+    {
+      path: tupleClosedPath,
+      expectedDigest: null,
+      contentBase64: Buffer.from(record).toString("base64"),
+    },
+    { path: `${tupleRoot}/plans/42.md`, expectedDigest: null },
+    { path: `${tupleRoot}/decision-packets/42.json`, expectedDigest: null },
+  ]);
+});
+
 test("publish-main fails closed when canonical tuple publication is rejected", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-record-source-"));
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-record-state-"));

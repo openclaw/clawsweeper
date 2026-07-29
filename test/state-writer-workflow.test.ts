@@ -330,6 +330,21 @@ test("trusted generated-state mutation steps receive a step-scoped coordinator c
   );
 });
 
+test("apply preselect reconciliation receives canonical record publication inputs", () => {
+  const sweep = workflows().find(({ file }) => file === ".github/workflows/sweep.yml")?.workflow;
+  const job = sweep?.jobs?.["apply-existing"];
+  const step = job?.steps?.find(
+    (candidate) => candidate.name === "Reconcile before apply preselect",
+  );
+
+  assert.ok(job, "apply-existing job");
+  assert.ok(step, "apply preselect reconciliation step");
+  assert.equal(job.env?.CLAWSWEEPER_STATE_APPEND_ENABLED, "1");
+  assert.equal(step.env?.CLAWSWEEPER_WEBHOOK_SECRET, "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}");
+  assert.equal(step.env?.QUEUE_URL, coordinatorUrl);
+  assert.match(step.run ?? "", /persist_reconciliation/);
+});
+
 test("every immutable action-event publisher uses the state append window", () => {
   const publishers: string[] = [];
   for (const { file, workflow } of workflows()) {
