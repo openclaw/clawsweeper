@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -595,6 +595,35 @@ test("hydrate-state CLAWSWEEPER_LEDGER_SOURCE=worker materializes ledger/assets 
       ),
       /CLAWSWEEPER_RECORDS_SECRET is required for Worker ledger hydration/,
     );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("hydrate-state can skip state blobs for record-only jobs", async () => {
+  const fixture = createStateFixture();
+  const target = path.join(fixture.root, "record-only-target");
+  try {
+    const result = await hydrateState(
+      [
+        "--state-dir",
+        fixture.stateRoot,
+        "--worktree",
+        target,
+        "--ledger-source",
+        "worker",
+        "--skip-state-blobs",
+      ],
+      {},
+      async () => {
+        throw new Error("record-only hydration must not fetch state blobs");
+      },
+    );
+    assert.equal(result.ledgerSource, "worker");
+    assert.equal(result.blobs, undefined);
+    assert.equal(readFileSync(path.join(target, "jobs", "fixture.json"), "utf8"), "{}\n");
+    assert.equal(existsSync(path.join(target, "ledger")), false);
+    assert.equal(existsSync(path.join(target, "assets")), false);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }

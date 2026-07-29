@@ -64,6 +64,10 @@ inputs:
     description: Ledger/assets blob transport used by hydrate-state (git or worker). Worker mode reuses records-url and records-secret.
     required: false
     default: git
+  hydrate-state-blobs:
+    description: Hydrate the ledger/assets blob trees. Set false for jobs that only need canonical records and mutable state.
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:
@@ -149,7 +153,7 @@ runs:
         key: clawsweeper-records-${{ runner.os }}-${{ steps.records-snapshot.outputs.cache-key }}
 
     - name: Restore Worker blob cache
-      if: ${{ inputs.ledger-source == 'worker' }}
+      if: ${{ inputs.ledger-source == 'worker' && inputs.hydrate-state-blobs == 'true' }}
       uses: actions/cache@v6
       with:
         path: ${{ inputs.worktree-path }}/.artifacts/worker-blobs-cache
@@ -171,4 +175,15 @@ runs:
         CLAWSWEEPER_RECORDS_CACHE_DIR: ${{ inputs.worktree-path }}/.artifacts/worker-records-cache
         CLAWSWEEPER_LEDGER_SOURCE: ${{ inputs.ledger-source }}
         CLAWSWEEPER_BLOBS_CACHE_DIR: ${{ inputs.worktree-path }}/.artifacts/worker-blobs-cache
-      run: node "${{ inputs.worktree-path }}/scripts/hydrate-state.ts" --state-dir "${{ inputs.state-path }}" --worktree "${{ inputs.worktree-path }}"
+        HYDRATE_STATE_BLOBS: ${{ inputs.hydrate-state-blobs }}
+      run: |
+        hydrate_args=(
+          --state-dir "${{ inputs.state-path }}"
+          --worktree "${{ inputs.worktree-path }}"
+        )
+        case "$HYDRATE_STATE_BLOBS" in
+          true) ;;
+          false) hydrate_args+=(--skip-state-blobs) ;;
+          *) echo "hydrate-state-blobs must be true or false" >&2; exit 2 ;;
+        esac
+        node "${{ inputs.worktree-path }}/scripts/hydrate-state.ts" "${hydrate_args[@]}"

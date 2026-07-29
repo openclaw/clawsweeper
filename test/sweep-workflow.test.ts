@@ -1210,6 +1210,7 @@ test("apply workflow isolates proof Codex and limits mutation Codex to model-gui
   );
   assert.match(proofJob, /persist-credentials: false/);
   assert.match(proofJob, /persist-credentials: "false"/);
+  assert.match(proofJob, /hydrate-state-blobs: "false"/);
   assert.doesNotMatch(proofJob, /Create target write token|Create state token/);
   assert.match(proofJob, /proposed-pr-close-coverage-item-numbers/);
   assert.match(proofJob, /--batch-size 2/);
@@ -1265,6 +1266,7 @@ test("apply workflow isolates proof Codex and limits mutation Codex to model-gui
   );
   assert.match(proofPublisherJob, /path: \.clawsweeper-repair\/action-ledger-proof/);
   assert.match(proofPublisherJob, /Publish apply proof action events/);
+  assert.match(proofPublisherJob, /hydrate-state-blobs: "false"/);
   assert.doesNotMatch(proofPublisherJob, /github\.run_attempt/);
 
   assert.match(applyJob, /needs: \[apply-proof, publish-apply-proof-action-ledger\]/);
@@ -1281,6 +1283,7 @@ test("apply workflow isolates proof Codex and limits mutation Codex to model-gui
   assert.doesNotMatch(applyJob, /--codex-model|--codex-reasoning-effort/);
   assert.match(applyJob, /Create target write token/);
   assert.match(applyJob, /Create state token/);
+  assert.match(applyJob, /hydrate-state-blobs: "false"/);
   assert.match(applyJob, /actions\/download-artifact@v8/);
   assert.match(applyJob, /name: \$\{\{ needs\.apply-proof\.outputs\.artifact_name \}\}/);
   assert.doesNotMatch(applyJob, /action-ledger-proof/);
@@ -2596,6 +2599,10 @@ test("target review queues coalesce background work without delaying exact plann
   );
   assert.match(concurrencyBlock, /format\('clawsweeper-comment-sync-\{0\}', github\.run_id\)/);
   assert.match(concurrencyBlock, /format\('clawsweeper-apply-\{0\}', github\.run_id\)/);
+  assert.match(
+    concurrencyBlock,
+    /github\.event_name == 'workflow_dispatch'.*format\('clawsweeper-operator-dispatch-\{0\}', github\.run_id\)/,
+  );
   assert.doesNotMatch(concurrencyBlock, /queue: max/);
   assert.match(planHeader, /group: \$\{\{ format\('clawsweeper-planner-\{0\}'/);
   assert.match(

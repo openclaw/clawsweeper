@@ -32,6 +32,7 @@ type Args = {
   ledgerSource?: "git" | "worker";
   recordsUrl?: string;
   recordsRepoSlugs?: string[];
+  hydrateStateBlobs?: boolean;
 };
 
 export async function hydrateState(
@@ -47,6 +48,7 @@ export async function hydrateState(
   const recordsSource = args.recordsSource ?? parseRecordsSource(env.CLAWSWEEPER_RECORDS_SOURCE);
   const ledgerSource =
     args.ledgerSource ?? parseSource(env.CLAWSWEEPER_LEDGER_SOURCE, "CLAWSWEEPER_LEDGER_SOURCE");
+  const hydrateStateBlobs = args.hydrateStateBlobs ?? true;
 
   if (!existsSync(stateRoot)) throw new Error(`State directory does not exist: ${stateRoot}`);
   if (!GENERATED_PATHS.some((relativePath) => existsSync(path.join(stateRoot, relativePath)))) {
@@ -71,7 +73,7 @@ export async function hydrateState(
 
   let blobs: Awaited<ReturnType<typeof materializeStateBlobs>> | undefined;
   let ledgerFallback: { reason: string; source: "git" } | undefined;
-  if (ledgerSource === "worker") {
+  if (ledgerSource === "worker" && hydrateStateBlobs) {
     if (!webhookSecret) {
       throw new Error("CLAWSWEEPER_RECORDS_SECRET is required for Worker ledger hydration");
     }
@@ -240,6 +242,7 @@ function parseArgs(argv: string[]): Args {
     } else if (arg === "--ledger-source") {
       parsed.ledgerSource = parseSource(requiredValue(argv, ++index, arg), arg);
     } else if (arg === "--records-url") parsed.recordsUrl = requiredValue(argv, ++index, arg);
+    else if (arg === "--skip-state-blobs") parsed.hydrateStateBlobs = false;
     else if (arg === "--records-repo-slugs") {
       parsed.recordsRepoSlugs = parseRepoSlugs(requiredValue(argv, ++index, arg)) ?? [];
     } else throw new Error(`Unknown argument: ${arg}`);

@@ -136,6 +136,18 @@ test("worker-projected state skips the transported git trees", () => {
   assert.match(String((git as WorkflowStep & { if?: string }).if), /records-source != 'worker'/);
   assert.match(String((git as WorkflowStep & { if?: string }).if), /ledger-source != 'worker'/);
   assert.equal(git.with?.["sparse-checkout"], "${{ inputs.sparse-checkout }}");
+
+  const restoreBlobCache = (action.runs?.steps ?? []).find(
+    (step) => step.name === "Restore Worker blob cache",
+  ) as (WorkflowStep & { if?: string }) | undefined;
+  assert.ok(restoreBlobCache);
+  assert.match(String(restoreBlobCache.if), /inputs\.hydrate-state-blobs == 'true'/);
+  const hydrate = (action.runs?.steps ?? []).find(
+    (step) => step.name === "Hydrate generated state",
+  );
+  assert.ok(hydrate);
+  assert.equal(hydrate.env?.HYDRATE_STATE_BLOBS, "${{ inputs.hydrate-state-blobs }}");
+  assert.match(hydrate.run ?? "", /--skip-state-blobs/);
 });
 
 test("exact-review direct publication partial-clones generated state", () => {

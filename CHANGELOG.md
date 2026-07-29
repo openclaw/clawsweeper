@@ -141,6 +141,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Restored close-backlog throughput by keeping apply jobs off the enormous immutable state-blob hydration path, and isolated operator-dispatched sweeps from background concurrency coalescing.
+
 - Prevented exact-review cancellation storms by sparsely checking out Worker-projected state and keeping completed review-generation leases fenced through final publication.
 - Apply now rechecks close proposals previously blocked by protected labels, PR close-exemption labels, or locked conversations, and resumes the normal conservative close gates when the live blocker is gone instead of stranding the verdict permanently; canonical audit output is uploaded before state publication so a later tuple conflict cannot discard the close-verdict inventory.
 - Worker-mode hydration now cold-hydrates a slug that has no stored snapshot yet (records created canonically after the R2 seeding, e.g. a repository's first review) by replaying its journal from revision 0, bounded at 2000 records, instead of refusing cutover for the entire fleet; over-bound slugs still produce the named `snapshot_not_found` refusal (`cold_hydration_bound_exceeded`) telling the operator to trigger a snapshot, and snapshot cache key preparation excludes cold slugs instead of disabling the cache.
