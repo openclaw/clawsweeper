@@ -147,7 +147,7 @@ test("weekly coverage becomes due at six days to preserve deadline headroom", ()
   assert.equal(shouldReviewItem(oldIssue, review, reviewedAt + 6 * 86_400_000, "current"), true);
 });
 
-test("scheduler ignores ClawSweeper-owned updated_at churn after review", () => {
+test("scheduler keeps ambiguous post-sync activity due after review", () => {
   const reviewedAt = "2026-04-30T12:52:57Z";
   const review = {
     path: "items/123.md",
@@ -172,54 +172,36 @@ test("scheduler ignores ClawSweeper-owned updated_at churn after review", () => 
     ),
     false,
   );
-  assert.equal(
-    shouldReviewItem(
-      item({
-        createdAt: "2026-03-01T11:12:04Z",
-        updatedAt: "2026-04-30T13:05:00Z",
-      }),
-      { ...review, reviewCommentSyncedAt: "2026-04-30T13:04:59Z" },
-      now,
-      "current",
-    ),
-    true,
-  );
-  assert.equal(
-    shouldReviewItem(
-      item({
-        createdAt: "2026-03-01T11:12:04Z",
-        updatedAt: "2026-04-30T13:04:58Z",
-      }),
-      { ...review, reviewCommentSyncedAt: "2026-04-30T13:04:59Z" },
-      now,
-      "current",
-    ),
-    false,
-  );
-  assert.equal(
-    shouldReviewItem(
-      item({
-        createdAt: "2026-03-01T11:12:04Z",
-        updatedAt: "2026-04-30T13:04:58Z",
-      }),
-      { ...review, labelsSyncedAt: "2026-04-30T13:04:59Z" },
-      now,
-      "current",
-    ),
-    false,
-  );
-  assert.equal(
-    shouldReviewItem(
-      item({
-        createdAt: "2026-03-01T11:12:04Z",
-        updatedAt: "2026-04-30T13:05:00Z",
-      }),
-      { ...review, labelsSyncedAt: "2026-04-30T13:04:59Z" },
-      now,
-      "current",
-    ),
-    true,
-  );
+  const syncedAt = Date.parse("2026-04-30T13:04:59Z");
+  for (const syncField of ["reviewCommentSyncedAt", "labelsSyncedAt"]) {
+    assert.equal(
+      shouldReviewItem(
+        item({
+          createdAt: "2026-03-01T11:12:04Z",
+          updatedAt: "2026-04-30T13:04:58Z",
+        }),
+        { ...review, [syncField]: "2026-04-30T13:04:59Z" },
+        now,
+        "current",
+      ),
+      false,
+    );
+    for (let lagSeconds = 1; lagSeconds <= 5; lagSeconds += 1) {
+      assert.equal(
+        shouldReviewItem(
+          item({
+            createdAt: "2026-03-01T11:12:04Z",
+            updatedAt: new Date(syncedAt + lagSeconds * 1000).toISOString(),
+          }),
+          { ...review, [syncField]: "2026-04-30T13:04:59Z" },
+          now,
+          "current",
+        ),
+        true,
+        `${syncField} update ${lagSeconds}s after synchronization remains due`,
+      );
+    }
+  }
 });
 
 test("hot new item priority is protected from older activity churn", () => {
