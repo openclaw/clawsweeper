@@ -172,6 +172,8 @@ jobs:
           records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          # Intake reads jobs and results only; ledger/assets hydration is unrelated and unbounded.
+          hydrate-state-blobs: "false"
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
           persist-credentials: "false"

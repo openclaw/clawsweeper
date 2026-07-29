@@ -71,6 +71,16 @@ test("scheduled cluster repair intake follows gitcrawl-store freshness cadence",
   assert.match(internalDocs, /refreshes `openclaw\/openclaw` every 15\s+minutes/);
 });
 
+test("cluster intake skips unrelated ledger and asset blob hydration", () => {
+  const workflow = readFileSync(".github/workflows/repair-cluster-intake.yml", "utf8");
+  const setupStateIndex = workflow.indexOf("uses: ./.github/actions/setup-state");
+  const nextStepIndex = workflow.indexOf("\n      - ", setupStateIndex + 1);
+
+  assert.notEqual(setupStateIndex, -1);
+  assert.notEqual(nextStepIndex, -1);
+  assert.match(workflow.slice(setupStateIndex, nextStepIndex), /hydrate-state-blobs: "false"/);
+});
+
 test("gitcrawl cluster import is not blocked by the scheduled intake gate", () => {
   const source = readFileSync("src/repair/import-gitcrawl-clusters.ts", "utf8");
   const lowSignalSource = readFileSync("src/repair/import-gitcrawl-low-signal-prs.ts", "utf8");
