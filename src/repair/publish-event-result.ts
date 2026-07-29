@@ -24,30 +24,20 @@ import {
 } from "./event-apply-proof.js";
 import {
   captureStatePublishBaseline,
-  commitMessageForPublishedPaths,
   configureGitUser,
   GitCommandTimeoutError,
   hardResetToRemoteMain,
-  hasStagedChanges,
   publishRoot,
-  pushSingleRecordTupleCommit,
   refreshSourceAfterStatePublish,
   runGit,
   setTokenOrigin,
-  setStatePublishTelemetryObserver,
-  stagePaths,
-  StatePublishContentionError,
-  syncPublishPaths,
-  withStatePublishLease,
 } from "./git-publish.js";
 import { isJsonObject } from "./json-types.js";
 import { RecordTupleError } from "./record-tuple.js";
 import {
-  StateWriterTelemetryRecorder,
-  type StateWriterTelemetryObserver,
-} from "./state-writer-telemetry-recorder.js";
-import { stateWriterProgressReporter } from "./state-writer-progress-reporter.js";
-import type { StateWriterOperation } from "../state-writer-telemetry.js";
+  postDirectPublicationResult,
+  prepareDirectPublicationPayload,
+} from "./exact-review-direct-publication.js";
 import {
   staleEventDisposition,
   staleEventDispositionOutputLines,
@@ -55,6 +45,8 @@ import {
 } from "./stale-event-disposition.js";
 import {
   prepareStateMutationPlan,
+  type PreparedStateMutationPlan,
+  type StateMutationIdentity,
   type StateMutationSourceOperation,
 } from "./state-publication-mutation.js";
 
@@ -88,7 +80,6 @@ type PublishedEventSnapshot = {
   routingDeferred: boolean;
   terminalClosed: boolean;
   terminalMissing: boolean;
-  stateWriter?: StateWriterOperation;
 };
 
 class GuardedOpenPublishRaceError extends Error {}
@@ -113,19 +104,16 @@ const options = eventOptionsFromEnv();
 try {
   await publishEventResult(options);
 } catch (error) {
-  const retryableFailure =
-    error instanceof GitCommandTimeoutError || error instanceof StatePublishContentionError;
+  const retryableFailure = error instanceof GitCommandTimeoutError;
   const completionKind = retryableFailure ? "retryable_failure" : "permanent_failure";
   const reasonCode =
     error instanceof GitCommandTimeoutError
       ? "github_transient"
-      : error instanceof StatePublishContentionError
-        ? "state_contention"
-        : error instanceof PublicationResultError
-          ? error.reasonCode
-          : error instanceof RecordTupleError
-            ? "tuple_protocol_invalid"
-            : "unknown_failure";
+      : error instanceof PublicationResultError
+        ? error.reasonCode
+        : error instanceof RecordTupleError
+          ? "tuple_protocol_invalid"
+          : "unknown_failure";
   const fingerprint = errorFingerprint(error);
   if (options.batchMutationOutput) {
     writeBatchMutationResult(options.batchMutationOutput, {
@@ -326,11 +314,10 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     return;
   }
   for (let attempt = 1; attempt <= 20; attempt += 1) {
-    const published = publishSnapshot({
+    const published = await publishSnapshot({
       paths: recordPaths,
       options,
       summary,
-      stateBaseCommit,
       guardedOpenAction,
       requeueLatestExpected,
       routableSyncExpected,
@@ -348,11 +335,10 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     );
     await sleep(delaySeconds * 1000);
   }
-  const published = publishSnapshot({
+  const published = await publishSnapshot({
     paths: recordPaths,
     options,
     summary,
-    stateBaseCommit,
     guardedOpenAction,
     requeueLatestExpected,
     routableSyncExpected,
@@ -402,41 +388,16 @@ function prepareBatchMutation({
       `No event record snapshot for ${paths.targetSlug}#${options.itemNumber}`,
     );
   }
-  const commitPaths = [
-    paths.itemRecord,
-    paths.closedRecord,
-    paths.planRecord,
-    paths.decisionPacket,
-  ];
-  syncPublishPaths(commitPaths);
-  const operations: StateMutationSourceOperation[] = [];
-  for (const path of commitPaths) {
-    const expectedOid = runGit(["rev-parse", "--verify", `HEAD:${path}`], {
-      allowFailure: true,
-      quiet: true,
-    }).trim();
-    const statePath = `${stateRoot}/${path}`;
-    if (!fs.existsSync(statePath)) {
-      if (expectedOid) operations.push({ path, expectedOid, delete: true });
-      continue;
-    }
-    operations.push({
-      path,
-      expectedOid: expectedOid || null,
-      content: fs.readFileSync(statePath),
-    });
-  }
-  if (!operations.length) {
-    throw new Error(`Batch mutation for ${paths.targetSlug}#${options.itemNumber} is empty`);
-  }
-  const plan = prepareStateMutationPlan({
-    identity: {
+  const plan = prepareTupleMutationPlan(
+    paths,
+    options.workRoot,
+    {
       itemKey: envValue("EXACT_REVIEW_BATCH_ITEM_KEY"),
       revision: positiveEnvInteger("EXACT_REVIEW_BATCH_REVISION"),
       claimGeneration: positiveEnvInteger("EXACT_REVIEW_BATCH_CLAIM_GENERATION"),
     },
-    operations,
-  });
+    "Batch",
+  );
   // These expectations are emitted with the plan so the batch workflow can run
   // post-commit routing without re-running GitHub mutations.
   return {
@@ -452,6 +413,41 @@ function prepareBatchMutation({
       terminalMissingExpected,
     },
   };
+}
+
+function prepareTupleMutationPlan(
+  paths: EventRecordPaths,
+  contentRoot: string,
+  identity: StateMutationIdentity,
+  label: string,
+): PreparedStateMutationPlan {
+  const commitPaths = [
+    paths.itemRecord,
+    paths.closedRecord,
+    paths.planRecord,
+    paths.decisionPacket,
+  ];
+  const operations: StateMutationSourceOperation[] = [];
+  for (const path of commitPaths) {
+    const expectedOid = runGit(["rev-parse", "--verify", `HEAD:${path}`], {
+      allowFailure: true,
+      quiet: true,
+    }).trim();
+    const contentPath = join(contentRoot, path);
+    if (!fs.existsSync(contentPath)) {
+      if (expectedOid) operations.push({ path, expectedOid, delete: true });
+      continue;
+    }
+    operations.push({
+      path,
+      expectedOid: expectedOid || null,
+      content: fs.readFileSync(contentPath),
+    });
+  }
+  if (!operations.length) {
+    throw new Error(`${label} mutation for ${paths.targetSlug} is empty`);
+  }
+  return prepareStateMutationPlan({ identity, operations });
 }
 
 function runApplyDecisions(options: EventOptions, paths: EventRecordPaths): void {
@@ -506,11 +502,10 @@ function eventRecordDirectoryArgs(options: EventOptions, paths: EventRecordPaths
   ];
 }
 
-function publishSnapshot({
+async function publishSnapshot({
   paths,
   options,
   summary,
-  stateBaseCommit,
   guardedOpenAction,
   requeueLatestExpected,
   routableSyncExpected,
@@ -521,205 +516,151 @@ function publishSnapshot({
   paths: EventRecordPaths;
   options: EventOptions;
   summary: () => void;
-  stateBaseCommit: string | null;
   guardedOpenAction: string | null;
   requeueLatestExpected: boolean;
   routableSyncExpected: boolean;
   deferredCloseCoverageExpected: boolean;
   terminalClosedExpected: boolean;
   terminalMissingExpected: boolean;
-}): PublishedEventSnapshot | null {
-  const observer = stateWriterObserver();
-  const recorder = new StateWriterTelemetryRecorder({
-    ...(process.env.GITHUB_RUN_ID ? { runId: process.env.GITHUB_RUN_ID } : {}),
-    ...(process.env.GITHUB_RUN_ATTEMPT ? { runAttempt: process.env.GITHUB_RUN_ATTEMPT } : {}),
-    ...(observer ? { observer } : {}),
-  });
-  const commitPaths = [
-    paths.itemRecord,
-    paths.closedRecord,
-    paths.planRecord,
-    paths.decisionPacket,
-  ];
-  const resetTelemetry = setStatePublishTelemetryObserver(recorder);
-  try {
-    const complete = (
-      candidateApplied: boolean,
-      supersededReason?: "remote_newer_tuple" | "remote_closed",
-    ): PublishedEventSnapshot => {
-      // The reconciliation push can succeed just before another publisher
-      // advances the same tuple. Refresh from the authoritative remote before
-      // emitting any completion output; the workflow never routes an ordinary
-      // synced verdict inline, so no read-then-route atomicity is implied here.
-      hardResetToRemoteMain();
-      refreshSourceAfterStatePublish(commitPaths, stateBaseCommit);
-      const candidateMatchesCurrentTuple = candidateApplied && eventSnapshotMatchesCurrent(paths);
-      const candidateTupleState = candidateEventTupleState(paths);
-      const disposition = exactEventPublishDisposition({
-        candidateMatchesCurrentTuple,
-        candidateTupleState,
-        terminalClosedExpected,
-        terminalMissingExpected,
-        guardedOpenAction,
-        routableSyncExpected,
-      });
-      const completionSupersededReason =
-        supersededReason ||
-        (deferredCloseCoverageExpected && !candidateMatchesCurrentTuple
-          ? ("remote_newer_tuple" as const)
-          : undefined);
-      const deferredCloseCoverage = !completionSupersededReason && deferredCloseCoverageExpected;
-      const published = {
-        ...disposition,
-        completionKind: completionSupersededReason
-          ? ("superseded" as const)
-          : deferredCloseCoverage
-            ? ("deferred" as const)
-            : ("published" as const),
-        reasonCode:
-          completionSupersededReason ||
-          (deferredCloseCoverage
-            ? ("close_coverage_deferred" as const)
-            : ("publication_applied" as const)),
-        policyNoop: disposition.guardedOpenAction === "skipped_same_author_pair",
-        requeueLatest:
-          requeueLatestExpected && candidateMatchesCurrentTuple && candidateTupleState === "open",
-        remoteTupleVerified: candidateMatchesCurrentTuple,
-        routingDeferred:
-          exactEventRoutingDeferred({
-            candidateMatchesCurrentTuple,
-            candidateTupleState,
-            guardedOpenAction,
-            requeueLatestExpected,
-          }) && !deferredCloseCoverage,
-      };
-      if (completionSupersededReason) {
-        summary();
-        return published;
-      }
-      if (routableSyncExpected && !published.routableSyncVerified) {
-        throw new RoutableSyncPublishRaceError(
-          `Durable review sync for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
-        );
-      }
-      if (terminalMissingExpected && !published.terminalMissing) {
-        throw new TerminalMissingPublishRaceError(
-          `Verified missing item ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
-        );
-      }
-      if (terminalClosedExpected && !published.terminalClosed) {
-        throw new TerminalClosedPublishRaceError(
-          `Verified terminal close for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
-        );
-      }
-      if (requeueLatestExpected && !published.requeueLatest) {
-        throw new SourceDriftPublishRaceError(
-          `Verified source drift for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
-        );
-      }
-      if (
-        guardedOpenAction !== null &&
-        !published.terminalClosed &&
-        !published.terminalMissing &&
-        published.guardedOpenAction === null
-      ) {
-        throw new GuardedOpenPublishRaceError(
-          `Deterministic remain-open guard for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
-        );
-      }
+}): Promise<PublishedEventSnapshot | null> {
+  const complete = (
+    candidateApplied: boolean,
+    supersededReason?: "remote_newer_tuple" | "remote_closed",
+  ): PublishedEventSnapshot => {
+    const candidateMatchesCurrentTuple = candidateApplied && eventSnapshotMatchesCurrent(paths);
+    const candidateTupleState = candidateEventTupleState(paths);
+    const disposition = exactEventPublishDisposition({
+      candidateMatchesCurrentTuple,
+      candidateTupleState,
+      terminalClosedExpected,
+      terminalMissingExpected,
+      guardedOpenAction,
+      routableSyncExpected,
+    });
+    const completionSupersededReason =
+      supersededReason ||
+      (deferredCloseCoverageExpected && !candidateMatchesCurrentTuple
+        ? ("remote_newer_tuple" as const)
+        : undefined);
+    const deferredCloseCoverage = !completionSupersededReason && deferredCloseCoverageExpected;
+    const published = {
+      ...disposition,
+      completionKind: completionSupersededReason
+        ? ("superseded" as const)
+        : deferredCloseCoverage
+          ? ("deferred" as const)
+          : ("published" as const),
+      reasonCode:
+        completionSupersededReason ||
+        (deferredCloseCoverage
+          ? ("close_coverage_deferred" as const)
+          : ("publication_applied" as const)),
+      policyNoop: disposition.guardedOpenAction === "skipped_same_author_pair",
+      requeueLatest:
+        requeueLatestExpected && candidateMatchesCurrentTuple && candidateTupleState === "open",
+      remoteTupleVerified: candidateMatchesCurrentTuple,
+      routingDeferred:
+        exactEventRoutingDeferred({
+          candidateMatchesCurrentTuple,
+          candidateTupleState,
+          guardedOpenAction,
+          requeueLatestExpected,
+        }) && !deferredCloseCoverage,
+    };
+    if (completionSupersededReason) {
       summary();
       return published;
-    };
-    const mutation = withStatePublishLease(
-      () => {
-        hardResetToRemoteMain();
-        const stateRoot = publishRoot();
-        const snapshotResult = applyEventSnapshot(
-          paths,
-          stateRoot ? { remoteRoot: stateRoot } : {},
-        );
-        if (snapshotResult === "remote-closed") {
-          console.log(
-            `Remote already has closed record for ${paths.targetSlug}#${options.itemNumber}; skipping open-record publish`,
-          );
-          return {
-            candidateApplied: false,
-            supersededReason: "remote_closed" as const,
-            writerOutcome: "superseded" as const,
-          };
-        }
-        if (snapshotResult === "remote-newer") {
-          console.log(
-            `Remote has newer record tuple for ${paths.targetSlug}#${options.itemNumber}; skipping stale event publish`,
-          );
-          return {
-            candidateApplied: false,
-            supersededReason: "remote_newer_tuple" as const,
-            writerOutcome: "superseded" as const,
-          };
-        }
-        if (snapshotResult === "missing") {
-          throw new PublicationResultError(
-            "missing_record_tuple",
-            `No event record snapshot for ${paths.targetSlug}#${options.itemNumber}`,
-          );
-        }
+    }
+    if (routableSyncExpected && !published.routableSyncVerified) {
+      throw new RoutableSyncPublishRaceError(
+        `Durable review sync for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
+      );
+    }
+    if (terminalMissingExpected && !published.terminalMissing) {
+      throw new TerminalMissingPublishRaceError(
+        `Verified missing item ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
+      );
+    }
+    if (terminalClosedExpected && !published.terminalClosed) {
+      throw new TerminalClosedPublishRaceError(
+        `Verified terminal close for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
+      );
+    }
+    if (requeueLatestExpected && !published.requeueLatest) {
+      throw new SourceDriftPublishRaceError(
+        `Verified source drift for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
+      );
+    }
+    if (
+      guardedOpenAction !== null &&
+      !published.terminalClosed &&
+      !published.terminalMissing &&
+      published.guardedOpenAction === null
+    ) {
+      throw new GuardedOpenPublishRaceError(
+        `Deterministic remain-open guard for ${paths.targetSlug}#${options.itemNumber} lost the publish race; requeue against the latest item revision`,
+      );
+    }
+    summary();
+    return published;
+  };
+  try {
+    hardResetToRemoteMain();
+    const stateRoot = publishRoot();
+    const snapshotResult = applyEventSnapshot(paths, stateRoot ? { remoteRoot: stateRoot } : {});
+    if (snapshotResult === "remote-closed") {
+      console.log(
+        `Remote already has closed record for ${paths.targetSlug}#${options.itemNumber}; skipping open-record publish`,
+      );
+      return complete(false, "remote_closed");
+    }
+    if (snapshotResult === "remote-newer") {
+      console.log(
+        `Remote has newer record tuple for ${paths.targetSlug}#${options.itemNumber}; skipping stale event publish`,
+      );
+      return complete(false, "remote_newer_tuple");
+    }
+    if (snapshotResult === "missing") {
+      throw new PublicationResultError(
+        "missing_record_tuple",
+        `No event record snapshot for ${paths.targetSlug}#${options.itemNumber}`,
+      );
+    }
 
-        syncPublishPaths(commitPaths);
-        stagePaths(commitPaths);
-        if (!hasStagedChanges()) {
-          console.log("No event result changes");
-          return {
-            candidateApplied: true,
-            supersededReason: undefined,
-            writerOutcome: "unchanged" as const,
-          };
-        }
-
-        runGit([
-          "commit",
-          "-m",
-          commitMessageForPublishedPaths(
-            `chore: apply event sweep result for ${paths.targetSlug}#${options.itemNumber}`,
-            commitPaths,
-          ),
-        ]);
-        if (!pushSingleRecordTupleCommit({ paths: commitPaths, pushAttempts: 3 })) return null;
-        return {
-          candidateApplied: true,
-          supersededReason: undefined,
-          writerOutcome: "materialized" as const,
-        };
+    const itemKey = envValue("EXACT_REVIEW_ITEM_KEY");
+    const revision = positiveEnvInteger("EXACT_REVIEW_LEASE_REVISION");
+    const plan = prepareTupleMutationPlan(
+      paths,
+      options.workRoot,
+      {
+        itemKey,
+        revision,
+        claimGeneration: positiveEnvInteger("EXACT_REVIEW_CLAIM_GENERATION"),
       },
-      { observer: recorder },
+      "Exact event",
     );
-    if (!mutation) {
-      recorder.finalize("failed");
-      writeStateWriterOutput(recorder);
-      return null;
+    const publication = await postDirectPublicationResult({
+      baseUrl: envValue("EXACT_REVIEW_QUEUE_URL"),
+      webhookSecret: envValue("CLAWSWEEPER_WEBHOOK_SECRET"),
+      path: "/internal/exact-review/publication-batch-results",
+      payload: prepareDirectPublicationPayload({
+        itemKey,
+        revision,
+        plan,
+        stateRoot: options.workRoot,
+      }),
+    });
+    if (publication.kind === "fallback") {
+      throw new Error(`Canonical exact-event publication failed: ${publication.reason}`);
     }
-    const published = complete(mutation.candidateApplied, mutation.supersededReason);
-    if (mutation.writerOutcome === "materialized" && published.remoteTupleVerified) {
-      recorder.recordMaterializedCommit(1);
+    if (publication.response.superseded === true) {
+      return complete(false, "remote_newer_tuple");
     }
-    const writerOutcome =
-      published.completionKind === "superseded"
-        ? "superseded"
-        : mutation.writerOutcome === "materialized" && !published.remoteTupleVerified
-          ? "failed"
-          : mutation.writerOutcome;
-    recorder.finalize(writerOutcome);
-    const stateWriter = recorder.toTerminalObject();
-    return { ...published, ...(stateWriter ? { stateWriter } : {}) };
+    return complete(true);
   } catch (error) {
-    recorder.finalize(
-      error instanceof StatePublishContentionError ? "contention_timeout" : "failed",
-    );
-    writeStateWriterOutput(recorder);
     if (
       error instanceof GitCommandTimeoutError ||
       error instanceof RecordTupleError ||
-      error instanceof StatePublishContentionError ||
       error instanceof GuardedOpenPublishRaceError ||
       error instanceof RoutableSyncPublishRaceError ||
       error instanceof SourceDriftPublishRaceError ||
@@ -729,8 +670,6 @@ function publishSnapshot({
       throw error;
     console.error(error instanceof Error ? error.message : String(error));
     return null;
-  } finally {
-    resetTelemetry();
   }
 }
 
@@ -840,36 +779,10 @@ function writeEventDispositionOutputs(published: PublishedEventSnapshot): void {
       `policy_noop=${published.policyNoop ? "true" : "false"}`,
       `requeue_latest=${published.requeueLatest ? "true" : "false"}`,
       `routing_deferred=${published.routingDeferred ? "true" : "false"}`,
-      ...(published.stateWriter
-        ? [`state_writer_json=${JSON.stringify(published.stateWriter)}`]
-        : []),
       "",
     ].join("\n"),
     "utf8",
   );
-}
-
-function writeStateWriterOutput(recorder: StateWriterTelemetryRecorder): void {
-  const terminal = recorder.toTerminalObject();
-  const outputPath = process.env.GITHUB_OUTPUT;
-  if (!terminal || !outputPath) return;
-  fs.appendFileSync(outputPath, `state_writer_json=${JSON.stringify(terminal)}\n`, "utf8");
-}
-
-function stateWriterObserver(): StateWriterTelemetryObserver | undefined {
-  const integer = (value: string | undefined) => {
-    const number = Number(value);
-    return Number.isInteger(number) && number > 0 ? number : null;
-  };
-  return stateWriterProgressReporter({
-    queueUrl: String(process.env.EXACT_REVIEW_QUEUE_URL || ""),
-    leaseId: String(process.env.EXACT_REVIEW_LEASE_ID || ""),
-    itemKey: String(process.env.EXACT_REVIEW_ITEM_KEY || ""),
-    leaseRevision: integer(process.env.EXACT_REVIEW_LEASE_REVISION) ?? 0,
-    claimGeneration: integer(process.env.EXACT_REVIEW_CLAIM_GENERATION) ?? 0,
-    runId: String(process.env.GITHUB_RUN_ID || ""),
-    runAttempt: integer(process.env.GITHUB_RUN_ATTEMPT) ?? 0,
-  });
 }
 
 function writeLegacyRefreshRequiredOutputs(): void {

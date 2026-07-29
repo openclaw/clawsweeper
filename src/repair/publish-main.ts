@@ -260,14 +260,19 @@ function planCanonicalRecordTuples(
   const remainingPaths = requestedPaths.flatMap((requestedPath) => {
     const normalized = normalizedPath(requestedPath);
     if (!isRecordsPath(normalized)) return [requestedPath];
+    if (isRecordTupleProjectionPath(normalized)) return [];
     const coveredChanges = [...changedPaths].filter(
       (path) => path === normalized || path.startsWith(`${normalized}/`),
     );
-    const otherChanges = coveredChanges.filter((path) => !RECORD_TUPLE_PATH.test(path));
-    if (coveredChanges.some((path) => RECORD_TUPLE_PATH.test(path))) return otherChanges;
-    return [requestedPath];
+    return coveredChanges.filter((path) => !isRecordTupleProjectionPath(path));
   });
   return { items, remainingPaths: [...new Set(remainingPaths)] };
+}
+
+function isRecordTupleProjectionPath(path: string): boolean {
+  return /^records\/[A-Za-z0-9][A-Za-z0-9_.-]*\/(?:items|closed|plans|decision-packets)(?:\/|$)/.test(
+    path,
+  );
 }
 
 async function postCanonicalRecordTupleWithRecovery(options: {

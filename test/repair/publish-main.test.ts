@@ -111,6 +111,54 @@ test("publish-main canonically moves reconciled records from items to closed", a
   ]);
 });
 
+test("publish-main keeps tuple projections out of worker-sparse Git publication", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-sparse-source-"));
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-sparse-state-"));
+  const record = closeRecord("source-revision", "closed directly on GitHub");
+  const tupleClosedPath = `${tupleRoot}/closed/42.md`;
+  const tuplePlanPath = `${tupleRoot}/plans/42.md`;
+  const tuplePacketPath = `${tupleRoot}/decision-packets/42.json`;
+  writeText(stateRoot, tupleItemPath, record);
+  writeText(root, tupleClosedPath, record);
+  writeText(root, "apply-report.json", "[]\n");
+  const gitPublishes: GitPublishOptions[] = [];
+
+  const result = await publishMainWithStateAppend(
+    {
+      message: "chore: persist sweep reconciliation",
+      paths: [tupleItemPath, tupleClosedPath, tuplePlanPath, tuplePacketPath, "apply-report.json"],
+      rebaseStrategy: "reconcile-records",
+    },
+    {
+      root,
+      env: appendEnv({
+        CLAWSWEEPER_STATE_DIR: stateRoot,
+        CLAWSWEEPER_CANONICAL_PUBLICATION_KIND: "reconcile",
+      }),
+      fetchImpl: (async () =>
+        Response.json(
+          { ok: true, accepted: true, deduped: false, revision: 8, sequence: 12 },
+          { status: 202 },
+        )) as typeof fetch,
+      publishGit: (options) => {
+        assert.equal(
+          options.paths.some((candidate) => candidate.startsWith("records/")),
+          false,
+          `worker-sparse Git stage received record paths: ${options.paths.join(", ")}`,
+        );
+        gitPublishes.push(options);
+        return "committed";
+      },
+    },
+  );
+
+  assert.equal(result, "committed");
+  assert.deepEqual(
+    gitPublishes.map((publish) => publish.paths),
+    [["apply-report.json"]],
+  );
+});
+
 test("publish-main fails closed when canonical tuple publication is rejected", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-record-source-"));
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-record-state-"));

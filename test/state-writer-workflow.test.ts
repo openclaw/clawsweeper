@@ -345,6 +345,20 @@ test("apply preselect reconciliation receives canonical record publication input
   assert.match(step.run ?? "", /persist_reconciliation/);
 });
 
+test("apply and sweep record publishers leave Git tuple projection to the materializer", () => {
+  const publisher = readFileSync("src/repair/publish-event-result.ts", "utf8");
+  const publishMain = readFileSync("src/repair/publish-main.ts", "utf8");
+
+  assert.match(publisher, /postDirectPublicationResult/);
+  assert.match(publisher, /\/internal\/exact-review\/publication-batch-results/);
+  assert.doesNotMatch(publisher, /\bstagePaths\b|\bpushSingleRecordTupleCommit\b/);
+  assert.match(publishMain, /if \(isRecordTupleProjectionPath\(normalized\)\) return \[\];/);
+  assert.match(
+    publishMain,
+    /return coveredChanges\.filter\(\(path\) => !isRecordTupleProjectionPath\(path\)\);/,
+  );
+});
+
 test("every immutable action-event publisher uses the state append window", () => {
   const publishers: string[] = [];
   for (const { file, workflow } of workflows()) {

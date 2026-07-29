@@ -407,7 +407,7 @@ test("scheduled review shards receive the compiler-backed runtime artifact", () 
   assert.doesNotMatch(reviewJob, /npm pack "@typescript/);
 });
 
-test("exact event review publishes directly with a queue-bounded legacy fallback", () => {
+test("exact event review publishes directly with a queue-bounded canonical fallback", () => {
   type Step = {
     "continue-on-error"?: boolean;
     name?: string;
@@ -717,7 +717,7 @@ test("exact event review publishes directly with a queue-bounded legacy fallback
   assert.match(publisherSource, /read-only apply-proof lane/);
   assert.match(publisherSource, /deferredCloseCoverageExpected/);
   assert.match(publisherSource, /deferredCloseCoverageExpected && !candidateMatchesCurrentTuple/);
-  assert.match(publisherSource, /syncPublishPaths\(commitPaths\)/);
+  assert.match(publisherSource, /prepareTupleMutationPlan/);
   assert.match(publisherSource, /\}\) && !deferredCloseCoverage/);
   assert.match(publisherSource, /writePublicationCompletionOutputs\(\s*"superseded"/);
   assert.match(publisherSource, /completionKind: completionSupersededReason/);
@@ -729,16 +729,11 @@ test("exact event review publishes directly with a queue-bounded legacy fallback
   assert.match(reviewSource, /clawsweeper-command-status:/);
   assert.match(reviewSource, /CLAWSWEEPER_BOT_AUTHORS\.has/);
   const completeStart = publisherSource.indexOf("const complete =");
-  assert.ok(publisherSource.indexOf("hardResetToRemoteMain();", completeStart) > completeStart);
+  assert.ok(completeStart >= 0);
+  assert.match(publisherSource, /await postDirectPublicationResult/);
+  assert.match(publisherSource, /\/internal\/exact-review\/publication-batch-results/);
+  assert.doesNotMatch(publisherSource, /\bstagePaths\b|\bpushSingleRecordTupleCommit\b/);
   assert.match(publisherSource, /GitCommandTimeoutError/);
-  assert.match(publisherSource, /StatePublishContentionError/);
-  assert.match(publisherSource, /StatePublishContentionError\s*\? "state_contention"/);
-  assert.match(
-    publisherSource,
-    /const mutation = withStatePublishLease\(\s*\(\) => \{\s*hardResetToRemoteMain\(\)/,
-  );
-  assert.match(publisherSource, /observer:\s*recorder/);
-  assert.match(publisherSource, /state_writer_json=/);
   assert.match(publisherSource, /retryable_failure/);
   assert.match(publisherSource, /error instanceof GitCommandTimeoutError/);
   assert.match(
