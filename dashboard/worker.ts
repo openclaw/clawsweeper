@@ -678,6 +678,8 @@ export default {
       return exactReviewQueueRequest(env, `/review-telemetry?${url.searchParams.toString()}`);
     if (url.pathname === "/api/review-observability" && request.method === "GET")
       return exactReviewQueueRequest(env, `/review-observability?${url.searchParams.toString()}`);
+    if (url.pathname === "/api/review-coverage" && request.method === "GET")
+      return exactReviewQueueRequest(env, "/review-coverage");
     if (url.pathname === "/api/apply-observability" && request.method === "GET")
       return applyObservabilityJson(request, env);
     if (url.pathname === "/api/health-history" && request.method === "GET")
@@ -8589,6 +8591,69 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
 .automerge-table { width: 100%; border-collapse: collapse; font-size: 11px; }
 .automerge-table th, .automerge-table td { padding: 9px 8px; border-bottom: 1px solid var(--line-soft); text-align: left; white-space: nowrap; }
 .automerge-table th { color: var(--muted); font-weight: 500; }
+.health-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.health-strip:empty { display: none; }
+.health-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 550;
+  line-height: 1.35;
+}
+.health-chip strong { color: var(--text); font-weight: 650; }
+.health-chip::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+.health-chip.ok::before { background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 15%, transparent); }
+.health-chip.amber::before { background: var(--amber); box-shadow: 0 0 0 3px color-mix(in srgb, var(--amber) 17%, transparent); }
+.health-chip.red::before { background: var(--red); box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 17%, transparent); }
+.health-chip.ok { border-color: color-mix(in srgb, var(--green) 28%, var(--line)); }
+.health-chip.amber { border-color: color-mix(in srgb, var(--amber) 35%, var(--line)); }
+.health-chip.red { border-color: color-mix(in srgb, var(--red) 35%, var(--line)); }
+.review-coverage { margin-top: 6px; }
+.coverage-fleets { display: grid; gap: 10px; margin-top: 14px; }
+.coverage-fleet {
+  display: grid;
+  grid-template-columns: minmax(170px, 240px) minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.coverage-fleet-name { display: grid; gap: 3px; min-width: 0; }
+.coverage-fleet-name strong { font-size: 13px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.coverage-fleet-name span { color: var(--muted); font-size: 11px; }
+.coverage-bar { position: relative; height: 8px; border-radius: 999px; background: var(--track); overflow: hidden; }
+.coverage-bar > i { display: block; height: 100%; border-radius: 999px; background: var(--green); transition: width 0.6s ease; }
+.coverage-bar.amber > i { background: var(--amber); }
+.coverage-bar.red > i { background: var(--red); }
+.coverage-value { display: grid; gap: 3px; justify-items: end; }
+.coverage-value strong { font-size: 19px; font-weight: 600; letter-spacing: -0.02em; line-height: 1; }
+.coverage-value span { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.coverage-flags { display: inline-flex; gap: 6px; }
+.coverage-flag {
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+.coverage-flag.stale { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, var(--line)); }
+.coverage-flag.failed { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, var(--line)); }
 @media (max-width: 1280px) {
   .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .metric { padding: 16px 18px 14px; }
@@ -8623,6 +8688,8 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   .work-row { grid-template-columns: 1fr; align-items: start; }
   .work-state, .stage-block, .timebox { justify-content: start; justify-items: start; }
   .worker-toolbar { align-items: stretch; flex-direction: column; }
+  .coverage-fleet { grid-template-columns: 1fr; gap: 9px; }
+  .coverage-value { justify-items: start; }
 }
 @media (max-width: 560px) {
   main { width: min(100vw - 24px, 1280px); padding-top: 18px; }
@@ -8661,8 +8728,16 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   <section class="hero">
     <div class="hero-headline"><span class="hero-dot" id="hero-dot"></span><span id="hero-headline">Loading pipeline state...</span></div>
     <div class="muted" id="subtitle"></div>
+    <div class="health-strip" id="health-strip" aria-label="Subsystem health at a glance"></div>
   </section>
   <section class="grid" id="metrics"></section>
+  <section class="review-coverage" aria-labelledby="review-coverage-title">
+    <div class="overview-head">
+      <h2 id="review-coverage-title">Fleet Review Coverage</h2>
+      <span class="muted" id="review-coverage-note">Open items reviewed in the trailing 7 days</span>
+    </div>
+    <div id="review-coverage-body" aria-live="polite"><div class="empty">Loading review coverage…</div></div>
+  </section>
   <section class="overview-shell" aria-labelledby="system-overview-title">
     <div class="overview-head">
       <h2 id="system-overview-title">System Overview</h2>
@@ -8847,6 +8922,9 @@ let activeApplyRange = "24h";
 let healthHistoryLoadedAt = 0;
 let healthHistorySamples = [];
 let applyObservabilityRequestGeneration = 0;
+let lastApplyObservability = null;
+let lastReviewCoverage = null;
+let reviewCoverageRequestGeneration = 0;
 
 function exactReviewHistory(lane) {
   return healthHistorySamples.flatMap(sample => {
@@ -9175,12 +9253,118 @@ async function loadApplyObservability() {
     if (!response.ok) throw new Error("apply observability returned " + response.status);
     const payload = await response.json();
     if (generation !== applyObservabilityRequestGeneration) return;
+    lastApplyObservability = payload;
     renderApplyObservability(payload);
   } catch {
     if (generation !== applyObservabilityRequestGeneration) return;
+    lastApplyObservability = null;
     document.getElementById("apply-observability-summary").innerHTML = '<span class="review-status degraded">Telemetry unavailable</span>';
     document.getElementById("apply-observability-body").innerHTML = '<div class="empty">Durable apply telemetry could not be loaded.</div>';
   }
+  renderHealthStrip();
+}
+
+async function loadReviewCoverage() {
+  const generation = ++reviewCoverageRequestGeneration;
+  try {
+    const response = await fetch("/api/review-coverage", { cache: "no-store" });
+    if (!response.ok) throw new Error("review coverage returned " + response.status);
+    const payload = await response.json();
+    if (generation !== reviewCoverageRequestGeneration) return;
+    lastReviewCoverage = payload;
+  } catch {
+    if (generation !== reviewCoverageRequestGeneration) return;
+    lastReviewCoverage = null;
+  }
+  renderReviewCoverage();
+  renderHealthStrip();
+}
+
+function coverageBand(percent) {
+  if (percent == null) return "";
+  return percent >= 90 ? "ok" : percent >= 60 ? "amber" : "red";
+}
+
+function renderReviewCoverage() {
+  const note = document.getElementById("review-coverage-note");
+  const target = document.getElementById("review-coverage-body");
+  if (!note || !target) return;
+  const payload = lastReviewCoverage;
+  if (!payload || payload.ok !== true) {
+    note.textContent = "Open items reviewed in the trailing 7 days";
+    target.innerHTML = '<div class="empty">Review coverage is unavailable. The canonical record store could not be reached.</div>';
+    return;
+  }
+  const totals = payload.totals || {};
+  const windowDays = Number(payload.window_days) || 7;
+  note.textContent = totals.open_records
+    ? fmt.format(totals.reviewed_recent || 0) + " of " + fmt.format(totals.open_records) + " open records reviewed in the trailing " + windowDays + " days" +
+      (totals.coverage_percent == null ? "" : " · " + totals.coverage_percent + "%") +
+      " · updated " + since(payload.generated_at)
+    : "Open items reviewed in the trailing " + windowDays + " days";
+  const fleets = Array.isArray(payload.fleets) ? payload.fleets : [];
+  if (!fleets.length) {
+    target.innerHTML = '<div class="empty">No canonical item records yet. Coverage appears after the first hydrated review sweep.</div>';
+    return;
+  }
+  const ordered = [...fleets].sort((left, right) => (left.coverage_percent ?? 101) - (right.coverage_percent ?? 101));
+  target.innerHTML = '<div class="coverage-fleets">' + ordered.map(fleet => {
+    const percent = fleet.coverage_percent;
+    const band = coverageBand(percent);
+    const flags =
+      (fleet.stale ? '<span class="coverage-flag stale">' + fmt.format(fleet.stale) + ' stale</span>' : '') +
+      (fleet.failed ? '<span class="coverage-flag failed">' + fmt.format(fleet.failed) + ' failed</span>' : '') +
+      (fleet.pending ? '<span class="coverage-flag">' + fmt.format(fleet.pending) + ' pending</span>' : '');
+    return '<div class="coverage-fleet">' +
+      '<div class="coverage-fleet-name"><strong>' + esc(fleet.repo) + '</strong><span>' + fmt.format(fleet.reviewed_recent || 0) + ' of ' + fmt.format(fleet.open_records || 0) + ' open records reviewed</span></div>' +
+      '<div><div class="coverage-bar ' + band + '"><i style="width:' + Math.max(0, Math.min(100, percent ?? 0)) + '%"></i></div></div>' +
+      '<div class="coverage-value"><strong>' + (percent == null ? "n/a" : percent + "%") + '</strong>' +
+      (flags ? '<span class="coverage-flags">' + flags + '</span>' : '<span>fully current</span>') +
+      '</div></div>';
+  }).join("") + '</div>';
+}
+
+function healthChip(label, value, band, title) {
+  return '<span class="health-chip ' + band + '" title="' + esc(title || "") + '">' + esc(label) + ' <strong>' + esc(value) + '</strong></span>';
+}
+
+function statusBand(status, amberStates, redStates) {
+  const value = String(status || "").toLowerCase();
+  if (redStates.includes(value)) return "red";
+  if (amberStates.includes(value)) return "amber";
+  return value ? "ok" : "";
+}
+
+function renderHealthStrip() {
+  const target = document.getElementById("health-strip");
+  if (!target) return;
+  const data = lastData;
+  if (!data) {
+    target.innerHTML = "";
+    return;
+  }
+  const chips = [];
+  const handoff = data.exact_review_queue?.handoff_health;
+  if (handoff?.status) {
+    chips.push(healthChip("Review handoff", handoff.status, statusBand(handoff.status, ["degraded", "congested"], ["stalled"]), "Exact-review queue to workflow handoff health."));
+  }
+  const operational = data.operational_health;
+  if (operational?.status) {
+    chips.push(healthChip("Work execution", operational.status, statusBand(operational.status, ["degraded", "unknown"], ["stalled"]), "GitHub workflow execution health."));
+  }
+  const failures = Number(data.health?.unresolved_failures || 0);
+  chips.push(healthChip("Incidents", failures ? fmt.format(failures) + " unresolved" : "none", failures ? "amber" : "ok", "Unresolved worker failures in the recent sample."));
+  if (lastApplyObservability) {
+    const sixty = lastApplyObservability.last_60_minutes || {};
+    const applyKnown = lastApplyObservability.telemetry_complete === true;
+    chips.push(healthChip("Apply lane", applyKnown ? fmt.format(Number(sixty.applied) || 0) + " applied · " + fmt.format(Number(sixty.closed) || 0) + " closed / 60m" : "awaiting telemetry", applyKnown ? "ok" : "amber", "Durable apply and close lane activity in the last hour."));
+  }
+  if (lastReviewCoverage?.ok === true) {
+    const coverage = lastReviewCoverage.totals?.coverage_percent;
+    const stale = Number(lastReviewCoverage.totals?.stale || 0);
+    chips.push(healthChip("7d coverage", (coverage == null ? "n/a" : coverage + "%") + (stale ? " · " + fmt.format(stale) + " stale" : ""), coverage == null ? "" : coverageBand(coverage), "Share of open records with a completed review in the trailing 7 days."));
+  }
+  target.innerHTML = chips.join("");
 }
 
 function formatAgeMinutes(value) {
@@ -9789,6 +9973,7 @@ async function load() {
   );
   loadHealthHistory(activeHealthRange, false).catch(() => undefined);
   loadApplyObservability().catch(() => undefined);
+  loadReviewCoverage().catch(() => undefined);
   loadAutomergeMetrics().catch(() => undefined);
   } catch (error) {
     if (lastData) {
@@ -9836,6 +10021,7 @@ function renderDashboard(data, note) {
     metric("Recovery Rate", data.health?.recovery_rate_percent == null ? "n/a" : data.health.recovery_rate_percent + "%", fmt.format(data.health?.unresolved_failures || 0) + " unresolved", data.health?.recovery_rate_percent == null ? 100 : data.health.recovery_rate_percent, data.health?.unresolved_failures ? "var(--amber)" : "var(--green)"),
     metric("Codex Capacity", fleet.budget_used_percent + "%", "Codex slot utilization", fleet.budget_used_percent, "var(--green)")
   ].join("");
+  renderHealthStrip();
   renderExecutionAlert(data.operational_health);
   renderSystemMap(data);
   renderExactReviewLanes(data.exact_review_queue);

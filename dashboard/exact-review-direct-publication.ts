@@ -12,6 +12,9 @@ export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES = 2 * 1024 * 1024;
 export const EXACT_REVIEW_CANONICAL_INLINE_BYTES = Math.floor(1.5 * 1024 * 1024);
 export const EXACT_REVIEW_CANONICAL_CHUNK_BYTES = 512 * 1024;
 export const EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+export const REVIEW_COVERAGE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+// Front matter always leads a canonical record; 4 KiB comfortably bounds it.
+export const REVIEW_COVERAGE_HEAD_BYTES = 4096;
 
 const DIRECT_PUBLICATION_TERMINAL_PRUNE_LIMIT = 256;
 const MAX_PATH_BYTES = 1024;
@@ -541,6 +544,90 @@ export class ExactReviewDirectPublicationStore {
         updatedAt: Number(row.updated_at),
       }),
     );
+  }
+
+  reviewCoverageSync(now: number, windowMs = REVIEW_COVERAGE_WINDOW_MS): ReviewCoverageSummary {
+    // Canonical `items` records are the open-item universe after the state-repo
+    // retirement: one record per open item, front matter carries reviewed_at and
+    // review_status. Only the front matter is needed, so read a bounded head of
+    // each record instead of hydrating full markdown bodies.
+    const rows = this.storage.sql.exec(
+      `SELECT r.repo_slug AS repo_slug,
+              CASE
+                WHEN r.content IS NOT NULL THEN substr(r.content, 1, ${REVIEW_COVERAGE_HEAD_BYTES})
+                ELSE (SELECT substr(c.content_base64, 1, ${REVIEW_COVERAGE_HEAD_BYTES * 2})
+                        FROM ${EXACT_REVIEW_CANONICAL_RECORD_CHUNK_TABLE} c
+                       WHERE c.repo_slug = r.repo_slug
+                         AND c.section = r.section
+                         AND c.item_id = r.item_id
+                         AND c.chunk_index = 0)
+              END AS head,
+              (r.content IS NULL) AS chunked
+         FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE} r
+        WHERE r.section = 'items' AND r.deleted = 0`,
+    );
+    const fleets = new Map<string, MutableReviewCoverageFleet>();
+    for (const row of rows) {
+      const head = reviewCoverageHeadText(row.head, Number(row.chunked) === 1);
+      const fields = reviewCoverageFrontMatter(head);
+      const repo = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(fields.repo ?? "")
+        ? fields.repo!
+        : String(row.repo_slug);
+      const fleet = fleets.get(repo) ?? {
+        repo,
+        repo_slug: String(row.repo_slug),
+        open_records: 0,
+        reviewed_recent: 0,
+        stale: 0,
+        failed: 0,
+        pending: 0,
+        oldest_reviewed_at: null as string | null,
+      };
+      fleet.open_records += 1;
+      const status = fields.review_status ?? "";
+      const reviewedAtMs = fields.reviewed_at ? Date.parse(fields.reviewed_at) : Number.NaN;
+      const fresh =
+        status === "complete" && Number.isFinite(reviewedAtMs) && now - reviewedAtMs < windowMs;
+      if (fresh) fleet.reviewed_recent += 1;
+      else if (status.startsWith("stale_")) fleet.stale += 1;
+      else if (status === "failed") fleet.failed += 1;
+      else fleet.pending += 1;
+      if (
+        Number.isFinite(reviewedAtMs) &&
+        (fleet.oldest_reviewed_at === null || reviewedAtMs < Date.parse(fleet.oldest_reviewed_at))
+      ) {
+        fleet.oldest_reviewed_at = new Date(reviewedAtMs).toISOString();
+      }
+      fleets.set(repo, fleet);
+    }
+    const fleetList = [...fleets.values()]
+      .map((fleet) => ({
+        ...fleet,
+        coverage_percent: fleet.open_records
+          ? Math.round((fleet.reviewed_recent / fleet.open_records) * 1000) / 10
+          : null,
+      }))
+      .sort((left, right) => left.repo.localeCompare(right.repo));
+    const totals = fleetList.reduce(
+      (sum, fleet) => ({
+        open_records: sum.open_records + fleet.open_records,
+        reviewed_recent: sum.reviewed_recent + fleet.reviewed_recent,
+        stale: sum.stale + fleet.stale,
+        failed: sum.failed + fleet.failed,
+        pending: sum.pending + fleet.pending,
+      }),
+      { open_records: 0, reviewed_recent: 0, stale: 0, failed: 0, pending: 0 },
+    );
+    return {
+      window_days: Math.round(windowMs / (24 * 60 * 60 * 1000)),
+      fleets: fleetList,
+      totals: {
+        ...totals,
+        coverage_percent: totals.open_records
+          ? Math.round((totals.reviewed_recent / totals.open_records) * 1000) / 10
+          : null,
+      },
+    };
   }
 
   listRecordRepoSlugs(): Array<{ repoSlug: string; revision: number }> {
@@ -1506,6 +1593,63 @@ function canonicalPath(value: unknown) {
     throw new Error(`invalid bounded state mutation path: ${String(value)}`);
   }
   return path;
+}
+
+type MutableReviewCoverageFleet = {
+  repo: string;
+  repo_slug: string;
+  open_records: number;
+  reviewed_recent: number;
+  stale: number;
+  failed: number;
+  pending: number;
+  oldest_reviewed_at: string | null;
+};
+
+export type ReviewCoverageFleet = MutableReviewCoverageFleet & {
+  coverage_percent: number | null;
+};
+
+export type ReviewCoverageSummary = {
+  window_days: number;
+  fleets: ReviewCoverageFleet[];
+  totals: {
+    open_records: number;
+    reviewed_recent: number;
+    stale: number;
+    failed: number;
+    pending: number;
+    coverage_percent: number | null;
+  };
+};
+
+function reviewCoverageHeadText(head: unknown, chunked: boolean): string {
+  const raw = typeof head === "string" ? head : "";
+  if (!chunked) return raw;
+  // Chunked records store base64 text; a 4-aligned prefix decodes standalone.
+  const aligned = raw.slice(0, raw.length - (raw.length % 4));
+  try {
+    return new TextDecoder("utf-8").decode(base64Bytes(aligned));
+  } catch {
+    return "";
+  }
+}
+
+function reviewCoverageFrontMatter(head: string): {
+  repo: string | null;
+  reviewed_at: string | null;
+  review_status: string | null;
+} {
+  const result: { repo: string | null; reviewed_at: string | null; review_status: string | null } =
+    { repo: null, reviewed_at: null, review_status: null };
+  if (!head.startsWith("---")) return result;
+  const end = head.indexOf("\n---", 3);
+  const frontMatter = end === -1 ? head : head.slice(0, end);
+  for (const key of ["repo", "reviewed_at", "review_status"] as const) {
+    const match = frontMatter.match(new RegExp(`^${key}:[ \\t]*"?([^"\\n]*)"?[ \\t]*$`, "m"));
+    if (match) result[key] = match[1].trim() || null;
+  }
+  return result;
 }
 
 function base64Bytes(value: string) {

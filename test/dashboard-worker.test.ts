@@ -9185,6 +9185,141 @@ test("canonical tuple publication updates Worker authority without a git project
   });
 });
 
+test("review coverage summarizes canonical item records per fleet", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const now = Date.now();
+  const itemRecord = (repo: string | null, number: number, frontMatter: string) =>
+    `---\n${repo ? `repo: ${repo}\n` : ""}number: ${number}\n${frontMatter}---\n\nreview body\n`;
+  const publish = async (slug: string, number: number, content: string) => {
+    const response = await queue.fetch(
+      stateAppendQueueRequest("/records/tuples", {
+        deliveryId: `record-tuple:coverage:${slug}:${number}`,
+        key: `${slug}/${number}`,
+        operations: [
+          {
+            path: `records/${slug}/items/${number}.md`,
+            expectedDigest: null,
+            contentBase64: Buffer.from(content).toString("base64"),
+          },
+          { path: `records/${slug}/closed/${number}.md`, expectedDigest: null },
+          { path: `records/${slug}/plans/${number}.md`, expectedDigest: null },
+          { path: `records/${slug}/decision-packets/${number}.json`, expectedDigest: null },
+        ],
+      }),
+    );
+    assert.equal(response.status, 202);
+  };
+  const fresh = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+  const outdated = new Date(now - 10 * 24 * 60 * 60 * 1000).toISOString();
+  await publish(
+    "openclaw-openclaw",
+    1,
+    itemRecord("openclaw/openclaw", 1, `reviewed_at: ${fresh}\nreview_status: complete\n`),
+  );
+  await publish(
+    "openclaw-openclaw",
+    2,
+    itemRecord("openclaw/openclaw", 2, `reviewed_at: ${outdated}\nreview_status: complete\n`),
+  );
+  await publish(
+    "openclaw-openclaw",
+    3,
+    itemRecord("openclaw/openclaw", 3, `reviewed_at: ${outdated}\nreview_status: stale_reopened\n`),
+  );
+  await publish(
+    "openclaw-openclaw",
+    4,
+    itemRecord("openclaw/openclaw", 4, `reviewed_at: ${fresh}\nreview_status: failed\n`),
+  );
+  await publish(
+    "other-repo",
+    9,
+    itemRecord(null, 9, `reviewed_at: "${fresh}"\nreview_status: "complete"\n`),
+  );
+
+  const response = await queue.fetch(new Request("https://queue/review-coverage"));
+  assert.equal(response.status, 200);
+  const payload = (await response.json()) as {
+    ok: boolean;
+    window_days: number;
+    generated_at: string;
+    fleets: Array<Record<string, unknown>>;
+    totals: Record<string, unknown>;
+  };
+  assert.equal(payload.ok, true);
+  assert.equal(payload.window_days, 7);
+  assert.equal(payload.fleets.length, 2);
+  const [openclaw, other] = payload.fleets;
+  assert.equal(openclaw.repo, "openclaw/openclaw");
+  assert.equal(openclaw.repo_slug, "openclaw-openclaw");
+  assert.equal(openclaw.open_records, 4);
+  assert.equal(openclaw.reviewed_recent, 1);
+  assert.equal(openclaw.stale, 1);
+  assert.equal(openclaw.failed, 1);
+  assert.equal(openclaw.pending, 1);
+  assert.equal(openclaw.coverage_percent, 25);
+  assert.equal(openclaw.oldest_reviewed_at, new Date(Date.parse(outdated)).toISOString());
+  assert.equal(other.repo, "other-repo");
+  assert.equal(other.open_records, 1);
+  assert.equal(other.reviewed_recent, 1);
+  assert.equal(other.coverage_percent, 100);
+  assert.deepEqual(payload.totals, {
+    open_records: 5,
+    reviewed_recent: 2,
+    stale: 1,
+    failed: 1,
+    pending: 1,
+    coverage_percent: 40,
+  });
+
+  // Deleting the record tombstones it out of the open universe.
+  await queue.fetch(
+    stateAppendQueueRequest("/records/tuples", {
+      deliveryId: "record-tuple:coverage:other-repo:9:close",
+      key: "other-repo/9",
+      operations: [
+        {
+          path: "records/other-repo/items/9.md",
+          expectedDigest: createHash("sha256")
+            .update(itemRecord(null, 9, `reviewed_at: "${fresh}"\nreview_status: "complete"\n`))
+            .digest("hex"),
+        },
+        { path: "records/other-repo/closed/9.md", expectedDigest: null },
+        { path: "records/other-repo/plans/9.md", expectedDigest: null },
+        { path: "records/other-repo/decision-packets/9.json", expectedDigest: null },
+      ],
+    }),
+  );
+  const cached = (await (
+    await queue.fetch(new Request("https://queue/review-coverage"))
+  ).json()) as {
+    generated_at: string;
+    totals: Record<string, unknown>;
+  };
+  // Responses are cached for up to a minute; the tombstone appears on refresh.
+  assert.equal(cached.generated_at, payload.generated_at);
+  assert.equal(cached.totals.open_records, 5);
+});
+
+test("worker exposes review coverage through the public API route", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const env = { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) };
+  const response = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/review-coverage"),
+    env,
+  );
+  assert.equal(response.status, 200);
+  const payload = (await response.json()) as { ok: boolean; fleets: unknown[] };
+  assert.equal(payload.ok, true);
+  assert.deepEqual(payload.fleets, []);
+
+  const unconfigured = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/review-coverage"),
+    {},
+  );
+  assert.equal(unconfigured.status, 503);
+});
+
 test("apply preselect and checkpoint publish captured canonical tuple baselines", async () => {
   const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-preselect-source-"));
@@ -13168,6 +13303,11 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.doesNotMatch(html, /\/api\/review-observability\?range=/);
   assert.match(html, /Apply \/ close health/);
   assert.match(html, /id="apply-observability-body"/);
+  assert.match(html, /id="health-strip"/);
+  assert.match(html, /Fleet Review Coverage/);
+  assert.match(html, /id="review-coverage-body"/);
+  assert.match(html, /\/api\/review-coverage/);
+  assert.ok(html.indexOf('id="review-coverage-body"') < html.indexOf("System Overview"));
   assert.match(html, /\/api\/apply-observability\?range=/);
   assert.match(html, /data-trend-range="6h"/);
   assert.match(html, /<details class="execution-alert">/);

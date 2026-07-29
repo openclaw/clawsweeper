@@ -32,6 +32,7 @@ import {
   type CanonicalRecordTupleMutation,
   type CanonicalCommitRecordInput,
   type RecordSection,
+  type ReviewCoverageSummary,
 } from "./exact-review-direct-publication.ts";
 import {
   REVIEW_TELEMETRY_DEGRADED_MS,
@@ -537,6 +538,7 @@ export class ExactReviewQueue {
   private recordSnapshotStore;
   private stateWriterCoordinator;
   private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
+  private reviewCoverageCache: { at: number; summary: ReviewCoverageSummary } | null = null;
 
   constructor(state, env) {
     this.storage = state.storage;
@@ -2467,6 +2469,23 @@ export class ExactReviewQueue {
 
     if (request.method === "GET" && url.pathname === "/review-observability") {
       return this.reviewObservability(url.searchParams);
+    }
+
+    if (request.method === "GET" && url.pathname === "/review-coverage") {
+      // The dashboard polls this with the status refresh; cache the bounded
+      // canonical-record scan so polling stays cheap.
+      const now = Date.now();
+      if (!this.reviewCoverageCache || now - this.reviewCoverageCache.at > 60_000) {
+        this.reviewCoverageCache = {
+          at: now,
+          summary: this.directPublicationStore.reviewCoverageSync(now),
+        };
+      }
+      return json({
+        ok: true,
+        generated_at: new Date(this.reviewCoverageCache.at).toISOString(),
+        ...this.reviewCoverageCache.summary,
+      });
     }
 
     if (request.method === "POST" && url.pathname === "/publication-batches/claim") {
