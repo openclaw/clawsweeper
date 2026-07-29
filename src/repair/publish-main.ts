@@ -25,6 +25,7 @@ import {
 import { recordTuplePaths, validateRecordTuple, type RecordTupleContents } from "./record-tuple.js";
 import {
   CanonicalRecordTupleConflictError,
+  CanonicalRecordTupleRequestError,
   postCanonicalRecordTuple,
   postStateAppend,
   type CanonicalRecordTupleConflictState,
@@ -56,7 +57,10 @@ type StateAppendPlan = {
 };
 
 type CanonicalRecordPlan = {
-  mutations: CanonicalRecordTupleMutation[];
+  items: Array<
+    | { key: string; mutation: CanonicalRecordTupleMutation; error?: never }
+    | { key: string; mutation?: never; error: unknown }
+  >;
   remainingPaths: string[];
 };
 
@@ -80,26 +84,48 @@ export async function publishMainWithStateAppend(
     env.CLAWSWEEPER_STATE_DIR,
     env,
   );
-  if (canonicalPlan.mutations.length > 0) {
+  const canonicalItemCount = canonicalPlan.items.length;
+  let canonicalResolvedCount = 0;
+  let canonicalFailedCount = 0;
+  if (canonicalItemCount > 0) {
     if (env.CLAWSWEEPER_STATE_APPEND_ENABLED !== "1" || !queueUrl || !webhookSecret) {
       throw new Error("canonical record publication is required for record tuple changes");
     }
-    for (const mutation of canonicalPlan.mutations) {
-      await postCanonicalRecordTupleWithRecovery({
-        queueUrl,
-        webhookSecret,
-        mutation,
-        root,
-        stateRoot: env.CLAWSWEEPER_STATE_DIR!,
-        env,
-        ...(runtime.fetchImpl ? { fetchImpl: runtime.fetchImpl } : {}),
-      });
+    const isolateFailures = env.CLAWSWEEPER_CANONICAL_PUBLICATION_KIND === "reconcile";
+    for (const item of canonicalPlan.items) {
+      try {
+        if ("error" in item) throw item.error;
+        await postCanonicalRecordTupleWithRecovery({
+          queueUrl,
+          webhookSecret,
+          mutation: item.mutation,
+          root,
+          stateRoot: env.CLAWSWEEPER_STATE_DIR!,
+          env,
+          ...(runtime.fetchImpl ? { fetchImpl: runtime.fetchImpl } : {}),
+        });
+        canonicalResolvedCount += 1;
+      } catch (error) {
+        if (!isolateFailures || isCanonicalInfrastructureError(error)) throw error;
+        canonicalFailedCount += 1;
+        console.error(`[canonical reconcile] ${item.key} failed: ${publishErrorMessage(error)}`);
+      }
+    }
+    if (canonicalFailedCount === canonicalItemCount) {
+      throw new Error(
+        `Canonical reconciliation failed for all ${canonicalItemCount} item(s); see per-item errors above`,
+      );
+    }
+    if (canonicalFailedCount > 0) {
+      console.warn(
+        `[canonical reconcile] continued after ${canonicalFailedCount} of ${canonicalItemCount} item(s) failed`,
+      );
     }
   }
-  const canonicalAppended = canonicalPlan.mutations.length > 0;
+  const canonicalAppended = canonicalResolvedCount > 0;
   const publicationOptions = { ...options, paths: canonicalPlan.remainingPaths };
   if (publicationOptions.paths.length === 0) {
-    console.log(`Appended ${canonicalPlan.mutations.length} canonical record tuple(s)`);
+    console.log(`Resolved ${canonicalResolvedCount} canonical record tuple(s)`);
     return "appended";
   }
   if (env.CLAWSWEEPER_STATE_APPEND_ENABLED !== "1" || !queueUrl || !webhookSecret) {
@@ -149,7 +175,7 @@ export async function publishMainWithStateAppend(
   if (remainingPaths.length > 0)
     return publishGit({ ...publicationOptions, paths: remainingPaths });
   console.log(
-    `Appended ${plan.records.length} state record(s) and ${canonicalAppended ? canonicalPlan.mutations.length : 0} canonical tuple(s) to durable state`,
+    `Appended ${plan.records.length} state record(s) and ${canonicalAppended ? canonicalResolvedCount : 0} canonical tuple(s) to durable state`,
   );
   return "appended";
 }
@@ -166,7 +192,7 @@ function planCanonicalRecordTuples(
 ): CanonicalRecordPlan {
   const recordRequests = requestedPaths.filter((path) => isRecordsPath(normalizedPath(path)));
   if (recordRequests.length === 0) {
-    return { mutations: [], remainingPaths: [...requestedPaths] };
+    return { items: [], remainingPaths: [...requestedPaths] };
   }
   if (!stateRoot) throw new Error("record publication requires a hydrated state checkout");
   const localFiles = collectRequestedRecordFiles(root, recordRequests);
@@ -185,51 +211,51 @@ function planCanonicalRecordTuples(
       throw new Error(`record tuple path is not canonically addressable: ${path}`);
     }
   }
-  const mutations = [...changedTupleKeys].sort().map((key) => {
-    const [repository, number] = key.split("/");
-    if (!repository || !number) throw new Error(`invalid canonical tuple key: ${key}`);
-    const paths = recordTuplePaths({ repository, number });
-    const localContent = (path: string) =>
-      localFiles.has(path) ? localFiles.get(path)! : readOptionalRecordFile(root, path);
-    const stateContent = (path: string) =>
-      stateFiles.has(path) ? stateFiles.get(path)! : readOptionalRecordFile(stateRoot, path);
-    const tuple: RecordTupleContents = {
-      paths,
-      item: localContent(paths.item),
-      closed: localContent(paths.closed),
-      plan: localContent(paths.plan),
-      packet: localContent(paths.packet),
-    };
-    validateRecordTuple(tuple, "canonical publication tuple");
-    const operations = RECORD_TUPLE_SECTIONS.map((section) => {
-      const path =
-        section === "items"
-          ? paths.item
-          : section === "closed"
-            ? paths.closed
-            : section === "plans"
-              ? paths.plan
-              : paths.packet;
-      const content = localContent(path);
-      const expected = stateContent(path);
-      return {
-        path,
-        expectedDigest: expected === null ? null : sha256(expected),
-        ...(content === null ? {} : { contentBase64: Buffer.from(content).toString("base64") }),
+  const items = [...changedTupleKeys].sort().map((key) => {
+    try {
+      const [repository, number] = key.split("/");
+      if (!repository || !number) throw new Error(`invalid canonical tuple key: ${key}`);
+      const paths = recordTuplePaths({ repository, number });
+      const localContent = (path: string) =>
+        localFiles.has(path) ? localFiles.get(path)! : readOptionalRecordFile(root, path);
+      const stateContent = (path: string) =>
+        stateFiles.has(path) ? stateFiles.get(path)! : readOptionalRecordFile(stateRoot, path);
+      const tuple: RecordTupleContents = {
+        paths,
+        item: localContent(paths.item),
+        closed: localContent(paths.closed),
+        plan: localContent(paths.plan),
+        packet: localContent(paths.packet),
       };
-    });
-    const contentHash = createHash("sha256")
-      .update(JSON.stringify({ key, operations }))
-      .digest("hex");
-    const deliveryPrefix =
-      env.CLAWSWEEPER_CANONICAL_PUBLICATION_KIND === "reconcile"
-        ? `record-reconcile:${repository}:${number}`
-        : `record-tuple:${deliveryPart(env.GITHUB_RUN_ID, "local")}:${deliveryPart(env.GITHUB_RUN_ATTEMPT, "1")}`;
-    return {
-      deliveryId: `${deliveryPrefix}:${contentHash}`,
-      key,
-      operations,
-    };
+      validateRecordTuple(tuple, "canonical publication tuple");
+      const operations = RECORD_TUPLE_SECTIONS.map((section) => {
+        const path = tuplePathForSection(paths, section);
+        const content = localContent(path);
+        const expected = stateContent(path);
+        return {
+          path,
+          expectedDigest: expected === null ? null : sha256(expected),
+          ...(content === null ? {} : { contentBase64: Buffer.from(content).toString("base64") }),
+        };
+      });
+      const contentHash = createHash("sha256")
+        .update(JSON.stringify({ key, operations }))
+        .digest("hex");
+      const deliveryPrefix =
+        env.CLAWSWEEPER_CANONICAL_PUBLICATION_KIND === "reconcile"
+          ? `record-reconcile:${repository}:${number}`
+          : `record-tuple:${deliveryPart(env.GITHUB_RUN_ID, "local")}:${deliveryPart(env.GITHUB_RUN_ATTEMPT, "1")}`;
+      return {
+        key,
+        mutation: {
+          deliveryId: `${deliveryPrefix}:${contentHash}`,
+          key,
+          operations,
+        },
+      };
+    } catch (error) {
+      return { key, error };
+    }
   });
   const remainingPaths = requestedPaths.flatMap((requestedPath) => {
     const normalized = normalizedPath(requestedPath);
@@ -241,7 +267,7 @@ function planCanonicalRecordTuples(
     if (coveredChanges.some((path) => RECORD_TUPLE_PATH.test(path))) return otherChanges;
     return [requestedPath];
   });
-  return { mutations, remainingPaths: [...new Set(remainingPaths)] };
+  return { items, remainingPaths: [...new Set(remainingPaths)] };
 }
 
 async function postCanonicalRecordTupleWithRecovery(options: {
@@ -270,71 +296,84 @@ async function postCanonicalRecordTupleWithRecovery(options: {
     const paths = recordTuplePaths({ repository: repoSlug, number: itemNumber });
     const baseline = tupleFromRoot(options.stateRoot, paths);
     const target = tupleFromMutation(options.mutation, paths);
-    const reconciliationReceipt = `record-reconcile:${repoSlug}:${itemNumber}:`;
-    const canReverify =
-      current.deliveryId?.startsWith(reconciliationReceipt) === true &&
-      sameCloseAuthorization(baseline, current.tuple) &&
-      sameCloseAuthorization(baseline, target);
-    if (canReverify) {
-      const operations = options.mutation.operations.map((operation) => {
-        const currentOperation = current.state.operations.find(
-          (candidate) => candidate.path === operation.path,
-        );
-        if (!currentOperation) throw new Error(`canonical CURRENT tuple omitted ${operation.path}`);
-        return { ...operation, expectedDigest: currentOperation.expectedDigest };
-      });
-      const contentHash = createHash("sha256")
-        .update(JSON.stringify({ key: options.mutation.key, operations }))
-        .digest("hex");
-      try {
-        await postCanonicalRecordTuple({
-          queueUrl: options.queueUrl,
-          webhookSecret: options.webhookSecret,
-          mutation: {
-            ...options.mutation,
-            deliveryId: `${reconciliationReceipt}${contentHash}`,
-            operations,
-          },
-          ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
-        });
-      } catch (retryError) {
-        if (!(retryError instanceof CanonicalRecordTupleConflictError)) throw retryError;
-        const retryCurrent = currentTupleFromConflict(retryError.current, options.mutation.key);
-        if (!retryCurrent) throw retryError;
-        deferCanonicalConflict(options, retryCurrent, itemNumber, reconciliationReceipt);
-        return;
-      }
+    const baselineLocation = tupleLocation(baseline);
+    const targetLocation = tupleLocation(target);
+    const currentLocation = tupleLocation(current.tuple);
+    if (targetLocation === currentLocation) {
+      syncTupleToRoot(options.root, current.tuple);
       console.warn(
-        `Reverified ${options.mutation.key} against canonical CURRENT reconciliation revision ${current.state.revision}`,
+        `Skipped ${options.mutation.key}: canonical CURRENT revision ${current.state.revision} already has ${targetLocation ?? "deleted"} placement`,
       );
       return;
     }
-    deferCanonicalConflict(options, current, itemNumber, reconciliationReceipt);
-  }
-}
+    if (
+      baselineLocation === targetLocation ||
+      currentLocation === null ||
+      currentLocation !== baselineLocation
+    ) {
+      syncTupleToRoot(options.root, current.tuple);
+      console.warn(
+        `Skipped ${options.mutation.key}: canonical CURRENT revision ${current.state.revision} made the reconcile move obsolete`,
+      );
+      return;
+    }
 
-function deferCanonicalConflict(
-  options: { root: string; env: NodeJS.ProcessEnv; mutation: CanonicalRecordTupleMutation },
-  current: {
-    state: CanonicalRecordTupleConflictState;
-    tuple: RecordTupleContents;
-    deliveryId: string | null;
-  },
-  itemNumber: string,
-  reconciliationReceipt: string,
-): void {
-  syncTupleToRoot(options.root, current.tuple);
-  recordReconciliationDeferral(options.env, {
-    itemNumber: Number(itemNumber),
-    key: options.mutation.key,
-    currentRevision: current.state.revision,
-    reason: current.deliveryId?.startsWith(reconciliationReceipt)
-      ? "canonical CURRENT close verdict or item source revision changed"
-      : "canonical CURRENT revision was not produced by authority reconciliation",
-  });
-  console.warn(
-    `Deferred ${options.mutation.key} to re-review after canonical CURRENT revision ${current.state.revision}`,
-  );
+    const rebasedTarget = rebaseReconciliationMove({ baseline, target, current: current.tuple });
+    const operations = current.state.operations.map((operation) => {
+      const content = tupleContentForPath(rebasedTarget, operation.path);
+      return {
+        path: operation.path,
+        expectedDigest: operation.expectedDigest,
+        ...(content === null ? {} : { contentBase64: Buffer.from(content).toString("base64") }),
+      };
+    });
+    const contentHash = createHash("sha256")
+      .update(JSON.stringify({ key: options.mutation.key, operations }))
+      .digest("hex");
+    const retryMutation: CanonicalRecordTupleMutation = {
+      ...options.mutation,
+      deliveryId: `record-reconcile:${repoSlug}:${itemNumber}:${contentHash}`,
+      operations,
+    };
+    try {
+      await postCanonicalRecordTuple({
+        queueUrl: options.queueUrl,
+        webhookSecret: options.webhookSecret,
+        mutation: retryMutation,
+        ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+      });
+    } catch (retryError) {
+      if (!(retryError instanceof CanonicalRecordTupleConflictError)) throw retryError;
+      let retryCurrent: ReturnType<typeof currentTupleFromConflict> = null;
+      try {
+        retryCurrent = currentTupleFromConflict(retryError.current, options.mutation.key);
+      } catch (parseError) {
+        console.warn(
+          `Skipped ${options.mutation.key} after retry conflict with invalid CURRENT state: ${publishErrorMessage(parseError)}`,
+        );
+        return;
+      }
+      if (retryCurrent) {
+        syncTupleToRoot(options.root, retryCurrent.tuple);
+        if (tupleLocation(retryCurrent.tuple) !== targetLocation) {
+          recordReconciliationDeferralIfConfigured(options.env, {
+            itemNumber: Number(itemNumber),
+            key: options.mutation.key,
+            currentRevision: retryCurrent.state.revision,
+            reason: "canonical CURRENT changed again during reconcile retry",
+          });
+        }
+      }
+      console.warn(
+        `Skipped ${options.mutation.key}: canonical CURRENT changed again during the single retry`,
+      );
+      return;
+    }
+    syncTupleToRoot(options.root, rebasedTarget);
+    console.warn(
+      `Retried ${options.mutation.key} against canonical CURRENT revision ${current.state.revision}`,
+    );
+  }
 }
 
 function currentTupleFromConflict(
@@ -398,43 +437,115 @@ function tupleFromRoot(
   };
 }
 
-function sameCloseAuthorization(left: RecordTupleContents, right: RecordTupleContents): boolean {
-  const leftPrimary = left.item ?? left.closed;
-  const rightPrimary = right.item ?? right.closed;
-  if (!leftPrimary || !rightPrimary) return false;
-  const leftFields = recordFrontMatter(leftPrimary);
-  const rightFields = recordFrontMatter(rightPrimary);
-  const sourceRevision = leftFields.get("item_source_revision");
-  return (
-    leftFields.get("decision") === "close" &&
-    rightFields.get("decision") === "close" &&
-    Boolean(sourceRevision && sourceRevision !== "unknown") &&
-    rightFields.get("item_source_revision") === sourceRevision &&
-    rightFields.get("close_reason") === leftFields.get("close_reason") &&
-    rightFields.get("decision_packet_sha256") === leftFields.get("decision_packet_sha256") &&
-    rightFields.get("decision_packet_path") === leftFields.get("decision_packet_path")
-  );
+function tupleLocation(tuple: RecordTupleContents): "items" | "closed" | null {
+  if (tuple.item !== null) return "items";
+  if (tuple.closed !== null) return "closed";
+  return null;
 }
 
-function recordFrontMatter(markdown: string): Map<string, string> {
-  const normalized = markdown.replace(/\r\n/g, "\n");
-  const end = normalized.startsWith("---\n") ? normalized.indexOf("\n---", 4) : -1;
-  const fields = new Map<string, string>();
-  if (end === -1) return fields;
-  for (const line of normalized.slice(4, end).split("\n")) {
-    const match = /^([a-z][a-z0-9_]*):\s*(.*?)\s*$/.exec(line);
-    if (!match?.[1]) continue;
-    const value = match[2] ?? "";
-    fields.set(
-      match[1],
-      value.length >= 2 &&
-        ((value.startsWith('"') && value.endsWith('"')) ||
-          (value.startsWith("'") && value.endsWith("'")))
-        ? value.slice(1, -1)
-        : value,
-    );
+function rebaseReconciliationMove(options: {
+  baseline: RecordTupleContents;
+  target: RecordTupleContents;
+  current: RecordTupleContents;
+}): RecordTupleContents {
+  const baselinePrimary = options.baseline.item ?? options.baseline.closed;
+  const targetPrimary = options.target.item ?? options.target.closed;
+  const currentPrimary = options.current.item ?? options.current.closed;
+  const targetLocation = tupleLocation(options.target);
+  if (!baselinePrimary || !targetPrimary || !currentPrimary || !targetLocation) {
+    throw new Error(`Cannot rebase non-move reconciliation for ${options.target.paths.key}`);
   }
-  return fields;
+  const rebasedPrimary = applyFrontMatterDelta(baselinePrimary, targetPrimary, currentPrimary);
+  const rebased: RecordTupleContents = {
+    paths: options.target.paths,
+    item: targetLocation === "items" ? rebasedPrimary : null,
+    closed: targetLocation === "closed" ? rebasedPrimary : null,
+    plan: rebaseTupleSidecar(options.baseline.plan, options.target.plan, options.current.plan),
+    packet: rebaseTupleSidecar(
+      options.baseline.packet,
+      options.target.packet,
+      options.current.packet,
+    ),
+  };
+  validateRecordTuple(rebased, "rebased canonical reconciliation tuple");
+  return rebased;
+}
+
+function rebaseTupleSidecar(
+  baseline: string | null,
+  target: string | null,
+  current: string | null,
+): string | null {
+  if (target === baseline) return current;
+  if (target === null) return null;
+  if (baseline === null || current === null) return target;
+  return applyFrontMatterDelta(baseline, target, current);
+}
+
+function applyFrontMatterDelta(baseline: string, target: string, current: string): string {
+  const baselineDocument = parseFrontMatterDocument(baseline);
+  const targetDocument = parseFrontMatterDocument(target);
+  const currentDocument = parseFrontMatterDocument(current);
+  if (!baselineDocument || !targetDocument || !currentDocument) return target;
+  if (baselineDocument.body !== targetDocument.body) return target;
+
+  const changedKeys = new Set(
+    [...new Set([...baselineDocument.fields.keys(), ...targetDocument.fields.keys()])].filter(
+      (key) => baselineDocument.fields.get(key)?.value !== targetDocument.fields.get(key)?.value,
+    ),
+  );
+  const lines = [...currentDocument.lines];
+  for (const key of changedKeys) {
+    const targetField = targetDocument.fields.get(key);
+    const currentIndex = lines.findIndex((line) => line.startsWith(`${key}:`));
+    if (!targetField) {
+      if (currentIndex !== -1) lines.splice(currentIndex, 1);
+      continue;
+    }
+    if (currentIndex !== -1) {
+      lines[currentIndex] = targetField.line;
+      continue;
+    }
+    const closingIndex = lines.findIndex((line, index) => index > 0 && line === "---");
+    if (closingIndex === -1) return target;
+    lines.splice(closingIndex, 0, targetField.line);
+  }
+  return lines.join("\n");
+}
+
+function parseFrontMatterDocument(markdown: string): {
+  lines: string[];
+  body: string;
+  fields: Map<string, { line: string; value: string }>;
+} | null {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  if (lines[0] !== "---") return null;
+  const closingIndex = lines.findIndex((line, index) => index > 0 && line === "---");
+  if (closingIndex === -1) return null;
+  const fields = new Map<string, { line: string; value: string }>();
+  for (const line of lines.slice(1, closingIndex)) {
+    const match = /^([a-z][a-z0-9_]*):\s*(.*?)\s*$/.exec(line);
+    if (match?.[1]) fields.set(match[1], { line, value: match[2] ?? "" });
+  }
+  return { lines, body: lines.slice(closingIndex + 1).join("\n"), fields };
+}
+
+function tuplePathForSection(
+  paths: ReturnType<typeof recordTuplePaths>,
+  section: (typeof RECORD_TUPLE_SECTIONS)[number],
+): string {
+  if (section === "items") return paths.item;
+  if (section === "closed") return paths.closed;
+  if (section === "plans") return paths.plan;
+  return paths.packet;
+}
+
+function tupleContentForPath(tuple: RecordTupleContents, path: string): string | null {
+  if (path === tuple.paths.item) return tuple.item;
+  if (path === tuple.paths.closed) return tuple.closed;
+  if (path === tuple.paths.plan) return tuple.plan;
+  if (path === tuple.paths.packet) return tuple.packet;
+  throw new Error(`canonical CURRENT tuple included unexpected path ${path}`);
 }
 
 function syncTupleToRoot(root: string, tuple: RecordTupleContents): void {
@@ -462,6 +573,28 @@ function recordReconciliationDeferral(
   if (!path) throw new Error("reconciliation deferral path is required for conflict recovery");
   mkdirSync(dirname(path), { recursive: true });
   appendFileSync(path, `${JSON.stringify(deferral)}\n`, "utf8");
+}
+
+function recordReconciliationDeferralIfConfigured(
+  env: NodeJS.ProcessEnv,
+  deferral: { itemNumber: number; key: string; currentRevision: number; reason: string },
+): void {
+  if (!env.CLAWSWEEPER_RECONCILE_DEFERRED_PATH) return;
+  recordReconciliationDeferral(env, deferral);
+}
+
+function isCanonicalInfrastructureError(error: unknown): boolean {
+  return (
+    error instanceof CanonicalRecordTupleRequestError &&
+    (error.status === 401 ||
+      error.status === 403 ||
+      error.status === 503 ||
+      /(?:snapshot_|state_|storage_|store_)unavailable/.test(error.code))
+  );
+}
+
+function publishErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isRecordsPath(path: string): boolean {

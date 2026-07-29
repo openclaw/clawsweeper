@@ -42,6 +42,18 @@ export class CanonicalRecordTupleConflictError extends Error {
   }
 }
 
+export class CanonicalRecordTupleRequestError extends Error {
+  readonly status: number;
+  readonly code: string;
+
+  constructor(status: number, code: string) {
+    super(`POST /internal/state/records/tuples returned ${status}: ${code}`);
+    this.name = "CanonicalRecordTupleRequestError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 export async function postStateAppend(options: {
   queueUrl: string;
   webhookSecret: string;
@@ -121,7 +133,7 @@ export async function postCanonicalRecordTuple(options: {
       if (response.status === 409 && code === "canonical_record_tuple_conflict") {
         throw new CanonicalRecordTupleConflictError(parseConflictState(responseRecord?.current));
       }
-      throw new Error(`POST /internal/state/records/tuples returned ${response.status}: ${code}`);
+      throw new CanonicalRecordTupleRequestError(response.status, code);
     }
     const revision = Number(responseRecord.revision);
     const sequence = Number(responseRecord.sequence);
@@ -135,7 +147,12 @@ export async function postCanonicalRecordTuple(options: {
     }
     return { revision, sequence, deduped: responseRecord.deduped === true };
   } catch (error) {
-    if (error instanceof CanonicalRecordTupleConflictError) throw error;
+    if (
+      error instanceof CanonicalRecordTupleConflictError ||
+      error instanceof CanonicalRecordTupleRequestError
+    ) {
+      throw error;
+    }
     throw new Error(redactStateAppendSecrets(errorMessage(error)));
   }
 }
