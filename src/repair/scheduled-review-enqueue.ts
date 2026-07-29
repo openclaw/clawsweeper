@@ -47,6 +47,23 @@ export async function enqueueScheduledReviewPlan(
   options: EnqueueOptions,
 ): Promise<ScheduledReviewEnqueueSummary> {
   const fetchImpl = options.fetchImpl ?? fetch;
+  for (const candidate of options.plan.candidates) validateCandidate(candidate, options.targetRepo);
+  const queueUrl = options.queueUrl.replace(/\/$/, "");
+  const capabilityResponse = await fetchImpl(`${queueUrl}/api/exact-review-queue`, {
+    signal: AbortSignal.timeout(20_000),
+  });
+  const capability = (await capabilityResponse.json().catch(() => null)) as Record<
+    string,
+    unknown
+  > | null;
+  const scheduledFeed = capability?.scheduled_feed as Record<string, unknown> | undefined;
+  if (
+    !capabilityResponse.ok ||
+    !scheduledFeed ||
+    !Number.isFinite(Number(scheduledFeed.target_rate_per_hour))
+  ) {
+    throw new Error("exact-review queue does not advertise scheduled feed admission");
+  }
   const ages = (options.plan.selection ?? [])
     .map((selection) => Number(selection.ageMs))
     .filter((age) => Number.isFinite(age) && age >= 0)
@@ -75,7 +92,6 @@ export async function enqueueScheduledReviewPlan(
   };
 
   for (const [index, candidate] of options.plan.candidates.entries()) {
-    validateCandidate(candidate, options.targetRepo);
     const payload = JSON.stringify({
       delivery_id: `${options.deliveryPrefix}:${index}:${candidate.number}`,
       decision: {
@@ -92,18 +108,15 @@ export async function enqueueScheduledReviewPlan(
     });
     const signature = `sha256=${createHmac("sha256", options.secret).update(payload).digest("hex")}`;
     summary.attempted += 1;
-    const response = await fetchImpl(
-      `${options.queueUrl.replace(/\/$/, "")}/internal/exact-review/enqueue`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-clawsweeper-exact-review-signature": signature,
-        },
-        body: payload,
-        signal: AbortSignal.timeout(20_000),
+    const response = await fetchImpl(`${queueUrl}/internal/exact-review/enqueue`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-clawsweeper-exact-review-signature": signature,
       },
-    );
+      body: payload,
+      signal: AbortSignal.timeout(20_000),
+    });
     const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
     if (!response.ok || !body || body.ok !== true) {
       throw new Error(

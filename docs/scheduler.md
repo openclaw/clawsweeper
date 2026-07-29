@@ -315,6 +315,9 @@ items, records each candidate's previous-review age in `plan.json`, and writes a
 run-summary funnel for selected, attempted, enqueued, deduped, shed, and deferred
 items. The queue exposes the configured rate, burst, and currently available
 token balance under `scheduled_feed` in `GET /api/exact-review-queue`.
+The producer probes that field before its first enqueue and fails closed while
+an older Worker is still deployed, preventing a workflow-first rollout from
+bypassing the rate limiter.
 
 At the configured target, the installation-token estimate is
 `200 reviews/hour * 30 calls/review = 6,000 calls/hour`. That is half of the

@@ -29,6 +29,9 @@ test("scheduled review enqueue reports the full selection-to-queue funnel and st
     secret,
     deliveryPrefix: "scheduled:100:1",
     fetchImpl: async (_input, init) => {
+      if (!init?.method) {
+        return Response.json({ scheduled_feed: { target_rate_per_hour: 200 } });
+      }
       const body = String(init?.body || "");
       const headers = (init?.headers ?? {}) as Record<string, string>;
       requests.push({
@@ -63,6 +66,22 @@ test("scheduled review enqueue reports the full selection-to-queue funnel and st
   assert.equal(second.decision.sourceAction, "scheduled_normal_backfill");
   assert.equal(second.decision.sourceEvent, "pull_request");
   assert.equal(second.decision.supersedesInProgress, false);
+});
+
+test("scheduled review enqueue fails closed until the queue advertises pacing", async () => {
+  await assert.rejects(
+    enqueueScheduledReviewPlan({
+      plan: { candidates: [] },
+      lane: "normal_backfill",
+      targetRepo: "openclaw/openclaw",
+      targetBranch: "main",
+      queueUrl: "https://queue.example",
+      secret: "secret",
+      deliveryPrefix: "scheduled:100:1",
+      fetchImpl: async () => Response.json({ lanes: {} }),
+    }),
+    /does not advertise scheduled feed admission/,
+  );
 });
 
 test("scheduled review enqueue rejects cross-repository plan candidates", async () => {
