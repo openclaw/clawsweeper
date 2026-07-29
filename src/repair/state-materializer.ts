@@ -42,6 +42,7 @@ import {
   markClusterIntakeDispatchClaimed,
   markClusterIntakeDispatched,
   mergeClusterIntakeLedger,
+  mergeClusterSelectorDecisionLedger,
   validateClusterJobContent,
   verifyClusterLedgerEntryAcceptedIntent,
   type ClusterIntakeIntent,
@@ -287,6 +288,15 @@ export function planStateMaterialization(
       const ledger = mergeClusterIntakeLedger(currentFiles.get(ledgerPath), sameRepository);
       contentByPath.set(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
       addPublishPath(ledgerPath);
+      const selectorLedgerPath = clusterSelectorDecisionLedgerPath(intent);
+      const selectorLedger = mergeClusterSelectorDecisionLedger(
+        currentFiles.get(selectorLedgerPath),
+        sameRepository,
+      );
+      if (selectorLedger) {
+        contentByPath.set(selectorLedgerPath, `${JSON.stringify(selectorLedger, null, 2)}\n`);
+        addPublishPath(selectorLedgerPath);
+      }
       for (const job of intent.jobs) {
         const accepted = ledger.clusters[String(job.cluster_id)];
         if (
@@ -806,6 +816,7 @@ function materializationPaths(records: readonly StateAppendRecord[]): string[] {
       }
       for (const recordPath of [
         clusterIntakeLedgerPath(intent),
+        clusterSelectorDecisionLedgerPath(intent),
         ...intent.jobs.map((job) => job.path),
       ]) {
         if (!paths.includes(recordPath)) paths.push(recordPath);
@@ -1153,6 +1164,10 @@ export function observeClusterDispatch(
 
 function clusterIntakeLedgerPath(intent: ClusterIntakeIntent): string {
   return `results/cluster-repair-intake/${intent.repo_slug}.json`;
+}
+
+function clusterSelectorDecisionLedgerPath(intent: ClusterIntakeIntent): string {
+  return `results/cluster-repair-intake/${intent.repo_slug}.selector-decisions-v1.json`;
 }
 
 function readCurrentFiles(paths: readonly string[], root: string): Map<string, string> {

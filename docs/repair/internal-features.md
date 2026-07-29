@@ -604,10 +604,11 @@ Important gates:
   The upstream `openclaw/gitcrawl-store` refreshes `openclaw/openclaw` every 15
   minutes. Intake first appends the selected job, store identity, model
   rationale and per-cluster decisions, and stable dispatch key to the
-  Cloudflare durable window. Rejected cluster IDs remain durable history, while
-  only selected jobs are projected. The materializer retries after publication
-  loss and recovers retained pending intent without duplicating completed
-  workers.
+  Cloudflare durable window. Decisions project through a separately versioned
+  sidecar so older strict-v2 dispatch-ledger readers remain compatible. Rejected
+  cluster IDs remain durable history, while only selected jobs are projected.
+  The materializer retries after publication loss and recovers retained pending
+  intent without duplicating completed workers.
   Intake-triggered materializers receive one bounded priority turn before
   yielding to queued batch or ordinary writers.
 - `CLAWSWEEPER_ALLOW_EXECUTE`: allows deterministic write lanes. Workflows treat

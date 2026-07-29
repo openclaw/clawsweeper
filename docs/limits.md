@@ -325,12 +325,13 @@ hot intake `14`, and commit review `2`. Existing repair lanes keep their
   still selects at most one cluster. The upstream gitcrawl-store refreshes every
   15 minutes. Intake durably appends the selected job, store identity, the
   model's per-cluster decisions and rationale, and stable dispatch key before
-  requesting materialization. Rejected cluster IDs are therefore not offered
-  again on the next store snapshot. A cluster with one live candidate may be
-  offered when its other members provide useful context; the model remains the
-  usefulness judge. The state materializer projects only the exact selected
-  paths and recovers pending dispatch without duplicating completed worker
-  execution.
+  requesting materialization. Decisions project to a versioned sidecar so the
+  strict v2 dispatch ledger remains backward-compatible with in-flight readers.
+  Rejected cluster IDs are therefore not offered again on the next store
+  snapshot. A cluster with one live candidate may be offered when its other
+  members provide useful context; the model remains the usefulness judge. The
+  state materializer projects only the exact selected job paths and recovers
+  pending dispatch without duplicating completed worker execution.
 - `CLAWSWEEPER_MAX_LIVE_WORKERS` overrides the `job_intent`-derived repair
   dispatch cap.
 - `CLAWSWEEPER_AUTOMERGE_MAX_LIVE_WORKERS` overrides

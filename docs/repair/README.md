@@ -278,9 +278,11 @@ pnpm run repair:import-gitcrawl -- --from-gitcrawl --limit 40 --mode autonomous 
 # and useful closed context remain eligible for model evaluation. Intake appends
 # the selected job, store identity, model rationale and per-cluster decisions,
 # and stable dispatch key to the Cloudflare durable window before dispatch.
-# Rejected cluster IDs are remembered instead of being offered again on the next
-# snapshot; the state materializer projects only selected paths and recovers
-# pending dispatch without duplicating completed work.
+# Decisions materialize into a versioned sidecar, leaving the strict v2 dispatch
+# ledger readable by in-flight older workers. Rejected cluster IDs are remembered
+# instead of being offered again on the next snapshot; the state materializer
+# projects only selected job paths and recovers pending dispatch without
+# duplicating completed work.
 #
 # Durable intake dispatch guarantee: at-least-once workflow creation with
 # exactly-once worker execution intent. GitHub workflow_dispatch has no atomic

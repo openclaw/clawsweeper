@@ -3,6 +3,7 @@ import { parseSimpleYaml, validateJob } from "./lib.js";
 
 export const CLUSTER_INTAKE_SCHEMA = "clawsweeper-cluster-intake-intent-v1";
 export const CLUSTER_INTAKE_LEDGER_SCHEMA = "clawsweeper-cluster-repair-intake-v2";
+export const CLUSTER_SELECTOR_DECISION_LEDGER_SCHEMA = "clawsweeper-cluster-selector-decisions-v1";
 const CLUSTER_INTAKE_MAX_RECORD_BYTES = 240 * 1024;
 export const CLUSTER_WORKFLOW_DISPATCH_MAX_PAYLOAD_BYTES = 65_535;
 const GITHUB_REF_MAX_BYTES = 255;
@@ -89,7 +90,21 @@ type StoreLedgerEntry = {
     | "dispatched";
   generated_jobs: string[];
   selector_summary: ClusterIntakeIntent["selector_summary"];
-  selector_decision?: ClusterSelectorDecision | null;
+};
+
+type ClusterSelectorDecisionLedgerEntry = {
+  store_sha256: string;
+  store_exported_at: string;
+  accepted_at: string;
+  run_url: string;
+  selector_summary: ClusterIntakeIntent["selector_summary"];
+  selector_decision: ClusterSelectorDecision;
+};
+
+export type ClusterSelectorDecisionLedger = {
+  schema: typeof CLUSTER_SELECTOR_DECISION_LEDGER_SCHEMA;
+  target_repo: string;
+  stores: ClusterSelectorDecisionLedgerEntry[];
 };
 
 export type ClusterIntakeLedger = {
@@ -509,7 +524,6 @@ export function mergeClusterIntakeLedger(
       outcome,
       generated_jobs: generatedJobs,
       selector_summary: intent.selector_summary,
-      selector_decision: intent.selector_decision,
     });
   }
   const latestStore = [...stores.values()]
@@ -536,6 +550,38 @@ export function mergeClusterIntakeLedger(
       .sort((a, b) => a.accepted_at.localeCompare(b.accepted_at))
       .slice(-90),
     clusters,
+  };
+}
+
+export function mergeClusterSelectorDecisionLedger(
+  currentText: string | undefined,
+  intents: readonly ClusterIntakeIntent[],
+): ClusterSelectorDecisionLedger | undefined {
+  const first = intents[0];
+  if (!first) throw new Error("cluster selector decision merge requires an intent");
+  const current = parseClusterSelectorDecisionLedger(currentText, first.target_repo);
+  const stores = new Map(current.stores.map((entry) => [entry.store_sha256, entry]));
+  for (const intent of intents) {
+    if (intent.target_repo !== first.target_repo) {
+      throw new Error("mixed cluster selector decision repositories");
+    }
+    if (!intent.selector_decision || stores.has(intent.store_sha256)) continue;
+    stores.set(intent.store_sha256, {
+      store_sha256: intent.store_sha256,
+      store_exported_at: intent.store_exported_at,
+      accepted_at: intent.accepted_at,
+      run_url: intent.run_url,
+      selector_summary: intent.selector_summary,
+      selector_decision: intent.selector_decision,
+    });
+  }
+  if (stores.size === 0) return undefined;
+  return {
+    schema: CLUSTER_SELECTOR_DECISION_LEDGER_SCHEMA,
+    target_repo: first.target_repo,
+    stores: [...stores.values()]
+      .sort((left, right) => left.accepted_at.localeCompare(right.accepted_at))
+      .slice(-90),
   };
 }
 
@@ -815,7 +861,6 @@ function strictStoreLedgerEntry(value: unknown, targetRepo: string): StoreLedger
       "outcome",
       "generated_jobs",
       "selector_summary",
-      "selector_decision",
     ],
     "cluster intake ledger store",
   );
@@ -835,9 +880,6 @@ function strictStoreLedgerEntry(value: unknown, targetRepo: string): StoreLedger
     "cluster intake ledger store generated jobs",
   );
   const selectorSummary = strictSelectorSummary(value.selector_summary);
-  const selectorDecision = Object.hasOwn(value, "selector_decision")
-    ? selectorDecisionFrom(value.selector_decision, selectorSummary)
-    : undefined;
   return {
     store_sha256: strictDigest(value.store_sha256, "cluster intake ledger store SHA"),
     store_exported_at: strictIso(
@@ -849,7 +891,6 @@ function strictStoreLedgerEntry(value: unknown, targetRepo: string): StoreLedger
     outcome: value.outcome as StoreLedgerEntry["outcome"],
     generated_jobs: generatedJobs,
     selector_summary: selectorSummary,
-    ...(selectorDecision !== undefined ? { selector_decision: selectorDecision } : {}),
   };
 }
 
@@ -1008,6 +1049,65 @@ function parseLedger(text: string | undefined, targetRepo: string): ClusterIntak
     generated_jobs: Array.isArray(parsed.generated_jobs) ? parsed.generated_jobs.map(String) : [],
     run_url: String(parsed.run_url || ""),
     updated_at: String(parsed.updated_at || ""),
+  };
+}
+
+function parseClusterSelectorDecisionLedger(
+  text: string | undefined,
+  targetRepo: string,
+): ClusterSelectorDecisionLedger {
+  if (!text) {
+    return { schema: CLUSTER_SELECTOR_DECISION_LEDGER_SCHEMA, target_repo: targetRepo, stores: [] };
+  }
+  const value = JSON.parse(text) as unknown;
+  if (!isRecord(value) || value.schema !== CLUSTER_SELECTOR_DECISION_LEDGER_SCHEMA) {
+    throw new Error("invalid cluster selector decision ledger schema");
+  }
+  exactKeys(value, ["schema", "target_repo", "stores"], "cluster selector decision ledger");
+  if (
+    strictRepository(value.target_repo, "cluster selector decision ledger target") !== targetRepo
+  ) {
+    throw new Error("cluster selector decision ledger target mismatch");
+  }
+  if (!Array.isArray(value.stores) || value.stores.length > 90) {
+    throw new Error("invalid cluster selector decision ledger stores");
+  }
+  const stores = value.stores.map((entry): ClusterSelectorDecisionLedgerEntry => {
+    if (!isRecord(entry)) throw new Error("invalid cluster selector decision ledger store");
+    exactKeys(
+      entry,
+      [
+        "store_sha256",
+        "store_exported_at",
+        "accepted_at",
+        "run_url",
+        "selector_summary",
+        "selector_decision",
+      ],
+      "cluster selector decision ledger store",
+    );
+    const selectorSummary = strictSelectorSummary(entry.selector_summary);
+    const selectorDecision = selectorDecisionFrom(entry.selector_decision, selectorSummary);
+    if (!selectorDecision) throw new Error("cluster selector decision ledger omitted decision");
+    return {
+      store_sha256: strictDigest(entry.store_sha256, "cluster selector decision store SHA"),
+      store_exported_at: strictIso(
+        entry.store_exported_at,
+        "cluster selector decision store exported_at",
+      ),
+      accepted_at: strictIso(entry.accepted_at, "cluster selector decision accepted_at"),
+      run_url: strictGithubUrl(entry.run_url, "cluster selector decision run URL"),
+      selector_summary: selectorSummary,
+      selector_decision: selectorDecision,
+    };
+  });
+  if (new Set(stores.map((entry) => entry.store_sha256)).size !== stores.length) {
+    throw new Error("duplicate cluster selector decision store");
+  }
+  return {
+    schema: CLUSTER_SELECTOR_DECISION_LEDGER_SCHEMA,
+    target_repo: targetRepo,
+    stores,
   };
 }
 
