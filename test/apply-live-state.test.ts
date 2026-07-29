@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { guardedOpenApplyProofFields } from "../dist/clawsweeper.js";
+import { capturedCanonicalRecordBaselineKeys } from "../dist/repair/canonical-record-baseline.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
 import {
   implementedCloseReport,
@@ -565,8 +566,96 @@ process.exit(1);
   }
 });
 
+test("apply rejects a repo-policy-forbidden close class before comment sync", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const previousBaselineDir = process.env.CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR;
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const baselineDir = join(root, "canonical-baseline");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const original = implementedCloseReport({
+      action_taken: "proposed_close",
+      close_reason: "duplicate_or_superseded",
+    });
+    writeFileSync(join(itemsDir, "321.md"), original, "utf8");
+    process.env.CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR = baselineDir;
+
+    const ghMock = `
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+const path = args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 321,
+    title: "Policy-forbidden duplicate",
+    html_url: "https://github.com/openclaw/clawsweeper/issues/321",
+    body: "",
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "reporter" },
+    labels: [],
+    comments: 0,
+    pull_request: null
+  }));
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--sync-comments-only"],
+      });
+    });
+
+    assert.deepEqual(JSON.parse(readText(reportPath)), [
+      {
+        number: 321,
+        action: "skipped_invalid_decision",
+        reason:
+          "duplicate_or_superseded is not allowed for openclaw/clawsweeper issue apply policy",
+      },
+    ]);
+    assert.match(readText(join(itemsDir, "321.md")), /^action_taken: skipped_invalid_decision$/m);
+    assert.equal(
+      readText(join(baselineDir, "records/openclaw-clawsweeper/items/321.md")),
+      original,
+    );
+    assert.deepEqual(
+      [...capturedCanonicalRecordBaselineKeys(baselineDir)],
+      ["openclaw-clawsweeper/321"],
+    );
+  } finally {
+    if (previousBaselineDir === undefined) {
+      delete process.env.CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR;
+    } else {
+      process.env.CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR = previousBaselineDir;
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("event apply emits proof only while a captured protected-label guard remains live", () => {
-  for (const labels of [["security"], []]) {
+  for (const labels of [
+    ["security"],
+    ["clawsweeper:needs-security-review"],
+    ["clawsweeper:needs-maintainer-review"],
+    ["clawsweeper:needs-product-decision"],
+    [],
+  ]) {
     const root = mkdtempSync(tmpPrefix);
     try {
       const itemsDir = join(root, "items");
@@ -641,7 +730,7 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
               {
                 number: 321,
                 action: "skipped_protected_label",
-                reason: "protected label: security",
+                reason: `protected label: ${labels[0]}`,
                 guardedOpenStateVerified: true,
               },
             ]
@@ -861,9 +950,9 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
           : [
               {
                 number: 321,
-                action: "kept_open",
+                action: "skipped_invalid_decision",
                 reason:
-                  "no visible dated proof request (needs-proof label event or proof nudge) on the live PR",
+                  "stalled_unproven_pr is not allowed for openclaw/clawsweeper pull_request apply policy",
               },
             ],
       );

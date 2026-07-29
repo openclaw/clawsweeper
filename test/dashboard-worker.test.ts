@@ -29,6 +29,7 @@ import {
   TRIAGE_ROUTING_GROUPS,
   triageRoutingGroupsForLabels,
 } from "../dashboard/triage-routing-groups.ts";
+import { captureCanonicalRecordBaseline } from "../dist/repair/canonical-record-baseline.js";
 import { publishMainWithStateAppend } from "../dist/repair/publish-main.js";
 
 test("exact-review queue defaults to 64 of the 128 global workers", () => {
@@ -9165,7 +9166,7 @@ test("canonical tuple publication updates Worker authority and appends one proje
   });
 });
 
-test("apply preselect moves a reconciliation-authored canonical tuple from items to closed", async () => {
+test("apply preselect and checkpoint publish captured canonical tuple baselines", async () => {
   const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-preselect-source-"));
   const sparseStateRoot = fs.mkdtempSync(
@@ -9180,24 +9181,29 @@ test("apply preselect moves a reconciliation-authored canonical tuple from items
   const closedPath = `${tupleRoot}/closed/${itemId}.md`;
   const planPath = `${tupleRoot}/plans/${itemId}.md`;
   const packetPath = `${tupleRoot}/decision-packets/${itemId}.json`;
-  const packet = (state: "open" | "closed", reportPath: string) =>
+  const packet = (state: "open" | "closed", reportPath: string, number = itemId) =>
     `${JSON.stringify(
       {
         version: 1,
         generatedAt: "2026-07-27T18:00:00.000Z",
         updatedAt: "2026-07-27T17:00:00.000Z",
-        subject: { repo: "openclaw/openclaw", kind: "issue", number: itemId, state },
+        subject: { repo: "openclaw/openclaw", kind: "issue", number, state },
         source: { reportPath, reviewedAt: "2026-07-27T18:00:00.000Z" },
       },
       null,
       2,
     )}\n`;
-  const primary = (state: "open" | "closed", packetContent: string, reconciledAt: string) =>
+  const primary = (
+    state: "open" | "closed",
+    packetContent: string,
+    reconciledAt: string,
+    number = itemId,
+  ) =>
     [
       "---",
       `decision_packet_sha256: ${createHash("sha256").update(packetContent).digest("hex")}`,
-      `decision_packet_path: ${packetPath}`,
-      `number: ${itemId}`,
+      `decision_packet_path: ${tupleRoot}/decision-packets/${number}.json`,
+      `number: ${number}`,
       "repository: openclaw/openclaw",
       `current_state: ${state}`,
       "reviewed_at: 2026-07-27T18:00:00.000Z",
@@ -9241,8 +9247,21 @@ test("apply preselect moves a reconciliation-authored canonical tuple from items
   // checkout is sparse and intentionally has no records/ baseline.
   write(root, itemPath, openPrimary);
   write(root, packetPath, openPacket);
-  write(canonicalBaselineRoot, itemPath, openPrimary);
-  write(canonicalBaselineRoot, packetPath, openPacket);
+  captureCanonicalRecordBaseline({
+    baselineRoot: canonicalBaselineRoot,
+    repositorySlug: "openclaw-openclaw",
+    itemNumber: itemId,
+    sources: [
+      { section: "items", name: `${itemId}.md`, path: path.join(root, itemPath) },
+      { section: "closed", name: `${itemId}.md`, path: path.join(root, closedPath) },
+      { section: "plans", name: `${itemId}.md`, path: path.join(root, planPath) },
+      {
+        section: "decision-packets",
+        name: `${itemId}.json`,
+        path: path.join(root, packetPath),
+      },
+    ],
+  });
 
   const closedPacket = packet("closed", closedPath);
   const closedPrimary = primary("closed", closedPacket, "2026-07-28T04:33:00.000Z");
@@ -9290,6 +9309,115 @@ test("apply preselect moves a reconciliation-authored canonical tuple from items
     "the legitimate items-to-closed move must reach canonical state",
   );
   assert.equal((await closed.json()).content, closedPrimary);
+
+  // The checkpoint lane mutates a hydrated record after preselect. Its state
+  // checkout still has no records/, and the broad records path must be scoped
+  // to the tuple captured immediately before this mutation.
+  const applyItemId = itemId + 1;
+  const applyItemPath = `${tupleRoot}/items/${applyItemId}.md`;
+  const applyClosedPath = `${tupleRoot}/closed/${applyItemId}.md`;
+  const applyPlanPath = `${tupleRoot}/plans/${applyItemId}.md`;
+  const applyPacketPath = `${tupleRoot}/decision-packets/${applyItemId}.json`;
+  const applyPacket = packet("open", applyItemPath, applyItemId);
+  const applyBefore = primary("open", applyPacket, "2026-07-28T04:34:00.000Z", applyItemId);
+  const applySeed = await queue.fetch(
+    stateAppendQueueRequest("/records/tuples", {
+      deliveryId: `record-reconcile:openclaw-openclaw:${applyItemId}:seed`,
+      key: `openclaw-openclaw/${applyItemId}`,
+      operations: [
+        {
+          path: applyItemPath,
+          expectedDigest: null,
+          contentBase64: Buffer.from(applyBefore).toString("base64"),
+        },
+        { path: applyClosedPath, expectedDigest: null },
+        { path: applyPlanPath, expectedDigest: null },
+        {
+          path: applyPacketPath,
+          expectedDigest: null,
+          contentBase64: Buffer.from(applyPacket).toString("base64"),
+        },
+      ],
+    }),
+  );
+  assert.equal(applySeed.status, 202, await applySeed.text());
+  write(root, applyItemPath, applyBefore);
+  write(root, applyPacketPath, applyPacket);
+
+  const applyBaselineRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "clawsweeper-apply-checkpoint-baseline-"),
+  );
+  captureCanonicalRecordBaseline({
+    baselineRoot: applyBaselineRoot,
+    repositorySlug: "openclaw-openclaw",
+    itemNumber: applyItemId,
+    sources: [
+      { section: "items", name: `${applyItemId}.md`, path: path.join(root, applyItemPath) },
+      {
+        section: "closed",
+        name: `${applyItemId}.md`,
+        path: path.join(root, applyClosedPath),
+      },
+      { section: "plans", name: `${applyItemId}.md`, path: path.join(root, applyPlanPath) },
+      {
+        section: "decision-packets",
+        name: `${applyItemId}.json`,
+        path: path.join(root, applyPacketPath),
+      },
+    ],
+  });
+  const applyAfter = applyBefore.replace(
+    "reconciled_at: 2026-07-28T04:34:00.000Z",
+    "reconciled_at: 2026-07-28T04:34:00.000Z\napply_checked_at: 2026-07-28T05:24:00.000Z",
+  );
+  write(root, applyItemPath, applyAfter);
+
+  const unrelatedItemId = applyItemId + 1;
+  const unrelatedItemPath = `${tupleRoot}/items/${unrelatedItemId}.md`;
+  const unrelatedPacketPath = `${tupleRoot}/decision-packets/${unrelatedItemId}.json`;
+  const unrelatedPacket = packet("open", unrelatedItemPath, unrelatedItemId);
+  write(
+    root,
+    unrelatedItemPath,
+    primary("open", unrelatedPacket, "2026-07-28T04:35:00.000Z", unrelatedItemId),
+  );
+  write(root, unrelatedPacketPath, unrelatedPacket);
+
+  const applyMutations: Array<Record<string, unknown>> = [];
+  await publishMainWithStateAppend(
+    {
+      message: "chore: apply sweep decisions checkpoint 1",
+      paths: [tupleRoot],
+      rebaseStrategy: "reconcile-records",
+    },
+    {
+      root,
+      env: {
+        CLAWSWEEPER_STATE_APPEND_ENABLED: "1",
+        CLAWSWEEPER_STATE_DIR: sparseStateRoot,
+        CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: applyBaselineRoot,
+        QUEUE_URL: "https://queue.test",
+        CLAWSWEEPER_WEBHOOK_SECRET: "apply-checkpoint-test-secret",
+      },
+      fetchImpl: (async (_input: string | URL | Request, init?: RequestInit) => {
+        const mutation = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        applyMutations.push(mutation);
+        const response = await queue.fetch(stateAppendQueueRequest("/records/tuples", mutation));
+        return Response.json(await response.json(), { status: response.status });
+      }) as typeof fetch,
+      publishGit: () => {
+        throw new Error("canonical apply checkpoint must not use Git publication");
+      },
+    },
+  );
+
+  assert.equal(applyMutations.length, 1);
+  assert.equal(applyMutations[0]?.key, `openclaw-openclaw/${applyItemId}`);
+  const applied = await queue.fetch(
+    new Request(`https://queue/records/openclaw-openclaw/items/${applyItemId}`, { method: "GET" }),
+  );
+  assert.equal(applied.status, 200);
+  assert.equal((await applied.json()).content, applyAfter);
 });
 
 test("canonical tuple failures return stable errors and sanitize server logs", async () => {

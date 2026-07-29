@@ -1178,6 +1178,50 @@ test("broad record publishers isolate tuple reconciliation from status and auxil
   }
 });
 
+test("every sweep tuple mutator hands publish-main a captured canonical baseline", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const stepBlock = (name: string): string => {
+    const start = workflow.indexOf(`- name: ${name}`);
+    assert.notEqual(start, -1, name);
+    const end = workflow.indexOf("\n      - ", start + 1);
+    return workflow.slice(start, end === -1 ? undefined : end);
+  };
+
+  const applyArtifacts = stepBlock("Apply review artifacts");
+  assert.match(
+    applyArtifacts,
+    /CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: \.artifacts\/review-canonical-baseline/,
+  );
+  const commitReview = stepBlock("Commit review records");
+  assert.match(
+    commitReview,
+    /CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: \.artifacts\/review-canonical-baseline/,
+  );
+  assert.match(commitReview, /--canonical-record-baseline-dir/);
+
+  const selectedComments = stepBlock("Sync selected review comments");
+  assert.ok(
+    selectedComments.indexOf("begin_canonical_record_mutation") <
+      selectedComments.indexOf("pnpm run apply-decisions"),
+  );
+  assert.ok(
+    selectedComments.indexOf("pnpm run apply-decisions") <
+      selectedComments.indexOf("chore: sync selected review comments"),
+  );
+
+  const refreshAudit = stepBlock("Refresh Audit Health");
+  const commitAudit = stepBlock("Commit Audit Health");
+  assert.match(
+    refreshAudit,
+    /CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: \.artifacts\/audit-canonical-baseline/,
+  );
+  assert.match(refreshAudit, /--canonical-record-baseline-dir/);
+  assert.match(
+    commitAudit,
+    /CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: \.artifacts\/audit-canonical-baseline/,
+  );
+});
+
 test("apply workflow isolates proof Codex and limits mutation Codex to model-guided recovery", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const workflowConcurrency = workflow.slice(
@@ -1473,6 +1517,29 @@ test("apply checkpoints split record tuples from auxiliary state", () => {
     { encoding: "utf8" },
   );
   assert.equal(failedOutput.trim(), "reconcile-records");
+});
+
+test("best-effort apply status publishes one sparse-safe file without noisy restore", () => {
+  const output = execFileSync(
+    "bash",
+    [
+      "-lc",
+      [
+        "source scripts/apply-workflow-helpers.sh",
+        'publish_changes() { printf "publish=%s\\npath=%s\\n" "$1" "$2"; return 1; }',
+        'git() { if [ "$1" = restore ]; then printf "unexpected restore\\n"; fi; return 1; }',
+        'TARGET_REPO="OpenClaw/OpenClaw"',
+        'publish_status "apply status"',
+      ].join("\n"),
+    ],
+    { encoding: "utf8" },
+  );
+
+  assert.deepEqual(output.trim().split("\n"), [
+    "publish=apply status",
+    "path=results/sweep-status/openclaw-openclaw.json",
+    "Best-effort status update failed: apply status",
+  ]);
 });
 
 test("apply workflow rejects malformed or oversized coverage proof artifact trees", () => {
@@ -1843,7 +1910,17 @@ test("apply workflow finalization retries only target status after checkpointed 
   ]) {
     assert.ok(applyStep.indexOf(laterBranch) > closeCheckpoint);
   }
+  assert.match(applyStep, /publish_status "chore: mark sweep apply in progress"/);
   assert.match(applyStep, /publish_status "chore: mark sweep apply finished"/);
+  assert.doesNotMatch(
+    applyStep,
+    /publish_changes "chore: mark sweep apply in progress"[^\n]*records/,
+  );
+  assert.equal(
+    [...applyStep.matchAll(/begin_canonical_record_mutation/g)].length,
+    2,
+    "comment-sync and close checkpoints each need a fresh pre-mutation tuple baseline",
+  );
 
   assert.match(finalStatusStep, /APPLY_NOOP:-false/);
   assert.match(finalStatusStep, /--message "chore: mark sweep apply finished"/);

@@ -168,10 +168,23 @@ publish_changes() {
 
 publish_status() {
   local message="$1"
-  if ! publish_changes "$message" results/sweep-status; then
+  local target_slug
+  local status_path
+  target_slug="$(printf '%s' "$TARGET_REPO" | tr '[:upper:]' '[:lower:]')"
+  target_slug="${target_slug//\//-}"
+  status_path="results/sweep-status/${target_slug}.json"
+  if ! publish_changes "$message" "$status_path"; then
     echo "Best-effort status update failed: $message"
-    git restore results/sweep-status || true
+    if git ls-files --error-unmatch -- "$status_path" >/dev/null 2>&1; then
+      git restore -- "$status_path"
+    fi
   fi
+}
+
+begin_canonical_record_mutation() {
+  mkdir -p .artifacts
+  CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR="$(mktemp -d .artifacts/canonical-record-baseline.XXXXXX)"
+  export CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR
 }
 
 publish_reconciled_records() {

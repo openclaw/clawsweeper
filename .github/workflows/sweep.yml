@@ -3427,6 +3427,7 @@ jobs:
         id: apply-review-artifacts
         if: ${{ always() && !cancelled() && steps.sync-review-artifacts.outcome == 'success' }}
         env:
+          CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: .artifacts/review-canonical-baseline
           GH_TOKEN: ${{ github.token }}
           EXACT_ITEM: ${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
           EXPECTED_METRIC_COUNT: ${{ needs.plan.outputs.planned_shards }}
@@ -3509,6 +3510,7 @@ jobs:
         id: commit-review-records
         if: ${{ always() && !cancelled() && steps.apply-review-artifacts.outputs.artifacts_applied == 'true' }}
         env:
+          CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: .artifacts/review-canonical-baseline
           CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           EXACT_ITEM: ${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
@@ -3522,7 +3524,10 @@ jobs:
           if [ "$HOT_INTAKE" = "true" ] && [ -z "$EXACT_ITEM" ]; then
             echo "Skipping full reconcile for broad hot-intake publish."
           else
-            pnpm run reconcile -- --target-repo "$TARGET_REPO" --skip-closed-at
+            pnpm run reconcile -- \
+              --target-repo "$TARGET_REPO" \
+              --skip-closed-at \
+              --canonical-record-baseline-dir "$CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR"
           fi
           pnpm run repair:publish-main -- \
             --message "chore: update sweep records" \
@@ -3732,6 +3737,8 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
+          source scripts/apply-workflow-helpers.sh
+          begin_canonical_record_mutation
           target_slug="$TARGET_REPO"
           target_slug="${target_slug//\//-}"
           item_numbers="$(pnpm run --silent workflow -- artifact-item-numbers --artifact-dir artifacts)"
@@ -4283,12 +4290,17 @@ jobs:
 
       - name: Refresh Audit Health
         env:
+          CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: .artifacts/audit-canonical-baseline
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
         run: |
           set -euo pipefail
           git pull --rebase --autostash
-          reconcile_json="$(pnpm run --silent reconcile -- --target-repo "$TARGET_REPO" --max-pages 250 --skip-closed-at)"
+          reconcile_json="$(pnpm run --silent reconcile -- \
+            --target-repo "$TARGET_REPO" \
+            --max-pages 250 \
+            --skip-closed-at \
+            --canonical-record-baseline-dir "$CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR")"
           echo "$reconcile_json"
           moved_to_closed="$(jq -r '.movedToClosed' <<<"$reconcile_json")"
           moved_to_items="$(jq -r '.movedToItems' <<<"$reconcile_json")"
@@ -4311,6 +4323,7 @@ jobs:
 
       - name: Commit Audit Health
         env:
+          CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: .artifacts/audit-canonical-baseline
           CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -5001,10 +5014,7 @@ jobs:
             --state "Apply in progress" \
             --detail "Starting apply/comment-sync run for up to $limit fresh $apply_kind closes. Close reasons: $apply_close_reasons.$candidate_quality_detail Scan window: $close_processed_limit records ($adaptive_apply_scan_reason). Existing Codex automated review comments are updated in place when closing or when comment-only sync is stale by ${comment_sync_min_age_days} day(s); checkpoints commit every $checkpoint_size fresh closes; close delay is ${close_delay_ms}ms; sync-comments-only=$sync_comments_only; item numbers=${item_numbers:-all}." \
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          if ! publish_changes "chore: mark sweep apply in progress" records results/sweep-status; then
-            echo "Best-effort apply start status update failed"
-            git restore results/sweep-status || true
-          fi
+          publish_status "chore: mark sweep apply in progress"
           closed_total=0
           continue_apply=false
           checkpoint=0
@@ -5012,6 +5022,7 @@ jobs:
             checkpoint=1
             echo "::group::Apply checkpoint $checkpoint"
             echo "Syncing durable review comments only for item numbers: ${item_numbers:-all}"
+            begin_canonical_record_mutation
             pnpm run apply-decisions -- \
               --target-repo "$TARGET_REPO" \
               --skip-dashboard \
@@ -5072,6 +5083,7 @@ jobs:
               cursor_trace_arg=(--cursor-trace "$cursor_trace_path")
             fi
             echo "::group::Apply checkpoint $checkpoint"
+            begin_canonical_record_mutation
             CLAWSWEEPER_APPLY_CHECKPOINT="$checkpoint" pnpm run apply-decisions -- \
               --target-repo "$TARGET_REPO" \
               --skip-dashboard \

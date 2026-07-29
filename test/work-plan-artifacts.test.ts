@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { renderWorkPlanFromReport } from "../dist/clawsweeper.js";
+import { capturedCanonicalRecordBaselineKeys } from "../dist/repair/canonical-record-baseline.js";
 import { tmpPrefix, workPlanCandidateReport } from "./helpers.ts";
 
 test("renderWorkPlanFromReport renders dashboard plan artifacts for fresh queue_fix_pr candidates", () => {
@@ -83,6 +84,54 @@ test("apply-artifacts writes and removes generated work plans", () => {
       "--skip-reconcile",
     ]);
     assert.equal(existsSync(planPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-artifacts captures the hydrated tuple before replacing a review record", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const artifactDir = join(root, "artifacts");
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const baselineDir = join(root, "canonical-baseline");
+    mkdirSync(artifactDir, { recursive: true });
+    mkdirSync(itemsDir, { recursive: true });
+    const before = workPlanCandidateReport({ reviewed_at: "2026-05-20T00:00:00.000Z" });
+    const after = workPlanCandidateReport({ reviewed_at: "2026-05-21T00:00:00.000Z" });
+    writeFileSync(join(itemsDir, "321.md"), before, "utf8");
+    writeFileSync(join(artifactDir, "321.md"), after, "utf8");
+
+    execFileSync(process.execPath, [
+      "dist/clawsweeper.js",
+      "apply-artifacts",
+      "--target-repo",
+      "openclaw/clawsweeper",
+      "--artifact-dir",
+      artifactDir,
+      "--items-dir",
+      itemsDir,
+      "--closed-dir",
+      closedDir,
+      "--plans-dir",
+      plansDir,
+      "--canonical-record-baseline-dir",
+      baselineDir,
+      "--replay-closed-artifacts",
+      "--skip-reconcile",
+    ]);
+
+    assert.equal(
+      readFileSync(join(baselineDir, "records/openclaw-clawsweeper/items/321.md"), "utf8"),
+      before,
+    );
+    assert.deepEqual(
+      [...capturedCanonicalRecordBaselineKeys(baselineDir)],
+      ["openclaw-clawsweeper/321"],
+    );
+    assert.match(readFileSync(join(itemsDir, "321.md"), "utf8"), /reviewed_at: 2026-05-21/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

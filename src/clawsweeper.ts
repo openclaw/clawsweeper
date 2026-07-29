@@ -4,7 +4,6 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
-  copyFileSync,
   existsSync,
   fstatSync,
   mkdirSync,
@@ -144,6 +143,7 @@ import {
   MANUAL_ONLY_LABEL,
   PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES,
 } from "./repair/exact-review-guard-labels.js";
+import { captureCanonicalRecordBaseline } from "./repair/canonical-record-baseline.js";
 import {
   buildOpenClawPrSurfaceStats,
   renderOpenClawPrSurfaceSummary,
@@ -1923,6 +1923,12 @@ const ISSUE_STALE_PROTECTION_LABEL = {
   description: "Exempts this issue from stale automation.",
 } as const;
 const PROTECTED_LABELS = new Set<string>(CLOSE_PROTECTED_LABEL_NAMES);
+const APPLY_PROTECTED_LABELS = new Set<string>([
+  ...CLOSE_PROTECTED_LABEL_NAMES,
+  "clawsweeper:needs-security-review",
+  "clawsweeper:needs-maintainer-review",
+  "clawsweeper:needs-product-decision",
+]);
 const ALLOWED_REASONS = new Set<CloseReason>([
   "implemented_on_main",
   "mostly_implemented_on_main",
@@ -4228,7 +4234,12 @@ export function isProtectedItem(item: Pick<Item, "labels">): boolean {
 }
 
 function applyBlockingProtectedLabels(labels: readonly string[], closeReason: unknown): string[] {
-  const blocked = protectedLabels(labels);
+  const blocked = labels
+    .map((label) => normalizeLabelName(label))
+    .filter(
+      (label, index, normalized) =>
+        APPLY_PROTECTED_LABELS.has(label) && normalized.indexOf(label) === index,
+    );
   if (!isVerifiedFixedCloseReason(closeReason)) return blocked;
   return blocked.filter((label) => label !== "maintainer");
 }
@@ -27362,7 +27373,7 @@ function applyDecisionsCommand(args: Args): void {
 }
 
 function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudget): void {
-  repoFromArgs(args);
+  const profile = repoFromArgs(args);
   const recordRoot = resolve(stringArg(args.record_root, ROOT));
   const itemsDir = resolve(stringArg(args.items_dir, defaultItemsDir()));
   const closedDir = resolve(stringArg(args.closed_dir, defaultClosedDir()));
@@ -27381,6 +27392,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
   const closeDelayMs = numberArg(args.close_delay_ms, 2_000);
   const progressEvery = Math.max(1, numberArg(args.progress_every, 10));
   const dryRun = boolArg(args.dry_run);
+  const canonicalBaselineDir = stringArg(
+    args.canonical_record_baseline_dir,
+    process.env.CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR ?? "",
+  ).trim();
   const requirePrecomputedPrCloseCoverageProof = boolArg(
     args.require_precomputed_pr_close_coverage_proof,
   );
@@ -27469,6 +27484,27 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
         location,
         ...applyQueueSortFields(entry.markdown, syncCommentsOnly, applyKind),
       }));
+  const captureApplyCanonicalBaseline = (reportPath: string): void => {
+    if (dryRun || !canonicalBaselineDir) return;
+    const file = basename(reportPath);
+    const number = numberForMarkdownFile(file);
+    const packetName = `${number}.json`;
+    captureCanonicalRecordBaseline({
+      baselineRoot: canonicalBaselineDir,
+      repositorySlug: profile.slug,
+      itemNumber: number,
+      sources: [
+        { section: "items", name: file, path: join(itemsDir, file) },
+        { section: "closed", name: file, path: join(closedDir, file) },
+        { section: "plans", name: file, path: join(plansDir, file) },
+        {
+          section: "decision-packets",
+          name: packetName,
+          path: join(decisionPacketsDir, packetName),
+        },
+      ],
+    });
+  };
   const syncDecisionPacketMarkdown = (
     reportPath: string,
     nextMarkdown: string,
@@ -27486,6 +27522,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     nextMarkdown: string,
     subjectState: DecisionPacketSubjectState = "open",
   ): void => {
+    captureApplyCanonicalBaseline(reportPath);
     writeFileSync(
       reportPath,
       syncDecisionPacketMarkdown(reportPath, nextMarkdown, subjectState),
@@ -27752,6 +27789,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       counterpartRepo === repo && closedThisRun.has(pairCloseKey(repo, counterpartNumber));
     const archiveClosed = (nextMarkdown: string): void => {
       if (dryRun) return;
+      captureApplyCanonicalBaseline(path);
       ensureDir(closedDir);
       const closedPath = join(closedDir, file);
       const syncedMarkdown = syncDecisionPacketMarkdown(closedPath, nextMarkdown, "closed");
@@ -27831,7 +27869,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       const detail = error instanceof Error ? error.message : String(error);
       const reason = `invalid maintainer_decision: ${detail}`;
       markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
-      if (!dryRun) writeFileSync(path, markdown, "utf8");
+      if (!dryRun) {
+        captureApplyCanonicalBaseline(path);
+        writeFileSync(path, markdown, "utf8");
+      }
       results.push({ number, action: "kept_open", reason });
       processedCount += 1;
       maybeLogProgress(`skipped #${number}: ${reason}`);
@@ -27901,6 +27942,24 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       continue;
     }
     const { item, state } = liveItem;
+    if (
+      state === "open" &&
+      decision === "close" &&
+      closeReason &&
+      applyBlockingProtectedLabels(item.labels, closeReason).length === 0 &&
+      !prAutoCloseExemptDecisionReason(item, closeReason) &&
+      !isAutoCloseAllowed(repositoryProfileFor(repo), item.kind, closeReason)
+    ) {
+      if (
+        markApplySkipped(
+          "skipped_invalid_decision",
+          `${closeReason} is not allowed for ${repo} ${item.kind} apply policy`,
+        )
+      ) {
+        break;
+      }
+      continue;
+    }
     const previousLabels = [...item.labels];
     const reportLabelsBeforeApply = frontMatterStringArray(markdown, "labels");
     let currentContext: ItemContext | undefined;
@@ -31185,13 +31244,17 @@ function botProofCommand(args: Args): void {
 }
 
 function applyArtifactsCommand(args: Args): void {
-  repoFromArgs(args);
+  const profile = repoFromArgs(args);
   const artifactDir = resolve(stringArg(args.artifact_dir, "artifacts"));
   const recordRoot = resolve(stringArg(args.record_root, ROOT));
   const itemsDir = resolve(stringArg(args.items_dir, defaultItemsDir()));
   const closedDir = resolve(stringArg(args.closed_dir, defaultClosedDir()));
   const plansDir = resolve(stringArg(args.plans_dir, defaultPlansDir()));
   const decisionPacketsDir = decisionPacketsDirFromArgs(args, itemsDir, closedDir);
+  const canonicalBaselineDir = stringArg(
+    args.canonical_record_baseline_dir,
+    process.env.CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR ?? "",
+  ).trim();
   const skipReconcile = boolArg(args.skip_reconcile);
   const replayClosedArtifacts = boolArg(args.replay_closed_artifacts);
   const maxPages = numberArg(args.max_pages, 250);
@@ -31389,6 +31452,24 @@ function applyArtifactsCommand(args: Args): void {
           destination,
           mutation: false,
         };
+        if (canonicalBaselineDir) {
+          const packetName = `${number}.json`;
+          captureCanonicalRecordBaseline({
+            baselineRoot: canonicalBaselineDir,
+            repositorySlug: profile.slug,
+            itemNumber: number,
+            sources: [
+              { section: "items", name: destinationFile, path: join(itemsDir, destinationFile) },
+              { section: "closed", name: destinationFile, path: join(closedDir, destinationFile) },
+              { section: "plans", name: destinationFile, path: join(plansDir, destinationFile) },
+              {
+                section: "decision-packets",
+                name: packetName,
+                path: join(decisionPacketsDir, packetName),
+              },
+            ],
+          });
+        }
         const stalePath = join(destinationDir === itemsDir ? closedDir : itemsDir, destinationFile);
         if (existsSync(stalePath)) {
           unlinkSync(stalePath);
@@ -31429,7 +31510,14 @@ function applyArtifactsCommand(args: Args): void {
     console.error(
       `[apply-artifacts] applied=${appliedArtifacts} skipped_closed=${skippedClosedArtifacts}`,
     );
-    if (!skipReconcile) reconcileFolders({ itemsDir, closedDir, plansDir, decisionPacketsDir });
+    if (!skipReconcile)
+      reconcileFolders({
+        itemsDir,
+        closedDir,
+        plansDir,
+        decisionPacketsDir,
+        ...(canonicalBaselineDir ? { canonicalBaselineDir, repositorySlug: profile.slug } : {}),
+      });
     finishPublication();
   } catch (error) {
     const interruptedMutation = activePublication?.mutation ?? false;
@@ -31939,32 +32027,25 @@ function reconcileFolders(options: {
       return;
     }
     const packetName = `${number}.json`;
-    const copies = [
-      { section: "items", name: file, source: join(options.itemsDir, file) },
-      { section: "closed", name: file, source: join(options.closedDir, file) },
-      { section: "plans", name: file, source: join(plansDir, file) },
-      ...(options.decisionPacketsDir
-        ? [
-            {
-              section: "decision-packets",
-              name: packetName,
-              source: join(options.decisionPacketsDir, packetName),
-            },
-          ]
-        : []),
-    ];
-    for (const copy of copies) {
-      if (!existsSync(copy.source)) continue;
-      const destination = join(
-        options.canonicalBaselineDir,
-        "records",
-        options.repositorySlug,
-        copy.section,
-        copy.name,
-      );
-      ensureDir(dirname(destination));
-      copyFileSync(copy.source, destination);
-    }
+    captureCanonicalRecordBaseline({
+      baselineRoot: options.canonicalBaselineDir,
+      repositorySlug: options.repositorySlug,
+      itemNumber: number,
+      sources: [
+        { section: "items" as const, name: file, path: join(options.itemsDir, file) },
+        { section: "closed" as const, name: file, path: join(options.closedDir, file) },
+        { section: "plans" as const, name: file, path: join(plansDir, file) },
+        ...(options.decisionPacketsDir
+          ? [
+              {
+                section: "decision-packets" as const,
+                name: packetName,
+                path: join(options.decisionPacketsDir, packetName),
+              },
+            ]
+          : []),
+      ],
+    });
     capturedBaselines.add(number);
   };
   const syncReconciledDecisionPacket = (

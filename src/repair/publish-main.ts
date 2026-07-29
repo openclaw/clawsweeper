@@ -16,6 +16,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { isActionEventPublishPath } from "../action-ledger-paths.js";
+import { capturedCanonicalRecordBaselineKeys } from "./canonical-record-baseline.js";
 import {
   publishMainCommit,
   type GitPublishOptions,
@@ -192,8 +193,33 @@ function planCanonicalRecordTuples(
     return { items: [], remainingPaths: [...requestedPaths] };
   }
   if (!stateRoot) throw new Error("record publication requires a hydrated state checkout");
-  const localFiles = collectRequestedRecordFiles(root, recordRequests);
-  const stateFiles = collectRequestedRecordFiles(stateRoot, recordRequests);
+  const explicitBaselineRoot = env.CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR?.trim();
+  const capturedKeys = explicitBaselineRoot
+    ? capturedCanonicalRecordBaselineKeys(explicitBaselineRoot)
+    : null;
+  if (capturedKeys) {
+    for (const requestedPath of recordRequests) {
+      const match = RECORD_TUPLE_PATH.exec(normalizedPath(requestedPath));
+      if (!match?.[1] || !match[3]) continue;
+      const key = `${match[1]}/${match[3]}`;
+      if (!capturedKeys.has(key)) {
+        throw new Error(`canonical tuple ${key} was not captured before mutation`);
+      }
+    }
+  }
+  const includeFile = (path: string): boolean => {
+    if (!capturedKeys) return true;
+    const match = RECORD_TUPLE_PATH.exec(path);
+    return Boolean(match?.[1] && match[3] && capturedKeys.has(`${match[1]}/${match[3]}`));
+  };
+  const localFiles = new Map(
+    [...collectRequestedRecordFiles(root, recordRequests)].filter(([path]) => includeFile(path)),
+  );
+  const stateFiles = new Map(
+    [...collectRequestedRecordFiles(stateRoot, recordRequests)].filter(([path]) =>
+      includeFile(path),
+    ),
+  );
   const changedPaths = new Set(
     [...new Set([...localFiles.keys(), ...stateFiles.keys()])].filter(
       (path) => localFiles.get(path) !== stateFiles.get(path),

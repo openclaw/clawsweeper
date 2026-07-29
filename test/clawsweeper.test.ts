@@ -283,7 +283,7 @@ if (/\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   }
 });
 
-test("apply-decisions writes decision packets for changed-since-review reports", () => {
+test("apply-decisions writes decision packets for protected close-guard reports", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -345,8 +345,8 @@ if (/\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
     assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
       {
         number: 321,
-        action: "skipped_changed_since_review",
-        reason: "updated_at changed",
+        action: "skipped_protected_label",
+        reason: "protected label: clawsweeper:needs-product-decision",
       },
     ]);
     assert.equal(existsSync(join(root, "decision-packets", "321.json")), true);
@@ -444,13 +444,8 @@ if (/\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
     assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
       {
         number: 321,
-        action: "review_comment_synced",
-        reason: "updated durable Codex review comment",
-      },
-      {
-        number: 321,
-        action: "kept_open",
-        reason: `maintainer decision required: ${maintainerDecision.question}`,
+        action: "skipped_protected_label",
+        reason: "protected label: clawsweeper:needs-product-decision",
       },
     ]);
   } finally {

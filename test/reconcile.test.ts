@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import test from "node:test";
 
+import { capturedCanonicalRecordBaselineKeys } from "../dist/repair/canonical-record-baseline.js";
 import { reportFrontMatter, tmpPrefix, withMockGh } from "./helpers.ts";
 
 test("reconcile reports every changed record tuple and cleans already-closed sidecars", () => {
@@ -143,6 +144,14 @@ if (args[0] === "api" && args[1]?.includes("/issues?state=open")) {
       ),
       '{"subject":{"state":"open"}}\n',
     );
+    assert.deepEqual([...capturedCanonicalRecordBaselineKeys(canonicalBaselineDir)].sort(), [
+      "openclaw-openclaw/1",
+      "openclaw-openclaw/2",
+      "openclaw-openclaw/3",
+      "openclaw-openclaw/4",
+      "openclaw-openclaw/5",
+      "openclaw-openclaw/7",
+    ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { captureCanonicalRecordBaseline } from "../../dist/repair/canonical-record-baseline.js";
 import { publishMainWithStateAppend } from "../../dist/repair/publish-main.js";
 import type { GitPublishOptions, PublishResult } from "../../dist/repair/git-publish.js";
 
@@ -191,12 +192,34 @@ test("publish-main refetches CURRENT and retries a conflicted reconciliation mov
   const sparseStateRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), "clawsweeper-canonical-current-sparse-state-"),
   );
+  const canonicalBaselineRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "clawsweeper-canonical-current-baseline-"),
+  );
   const baseline = closeRecord("old-source-revision", "baseline", "open");
   const target = closeRecord("old-source-revision", "baseline", "closed");
   const current = closeRecord("new-source-revision", "event-driven review", "open");
   const rebased = closeRecord("new-source-revision", "event-driven review", "closed");
   const tupleClosedPath = `${tupleRoot}/closed/42.md`;
   writeText(stateRoot, tupleItemPath, baseline);
+  captureCanonicalRecordBaseline({
+    baselineRoot: canonicalBaselineRoot,
+    repositorySlug: "openclaw-openclaw",
+    itemNumber: 42,
+    sources: [
+      { section: "items", name: "42.md", path: path.join(stateRoot, tupleItemPath) },
+      { section: "closed", name: "42.md", path: path.join(stateRoot, tupleClosedPath) },
+      {
+        section: "plans",
+        name: "42.md",
+        path: path.join(stateRoot, `${tupleRoot}/plans/42.md`),
+      },
+      {
+        section: "decision-packets",
+        name: "42.json",
+        path: path.join(stateRoot, `${tupleRoot}/decision-packets/42.json`),
+      },
+    ],
+  });
   writeText(root, tupleClosedPath, target);
   const posted: Array<Record<string, unknown>> = [];
   const deferredPath = path.join(root, ".artifacts/deferred.jsonl");
@@ -208,7 +231,7 @@ test("publish-main refetches CURRENT and retries a conflicted reconciliation mov
         root,
         env: appendEnv({
           CLAWSWEEPER_STATE_DIR: sparseStateRoot,
-          CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: stateRoot,
+          CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: canonicalBaselineRoot,
           CLAWSWEEPER_CANONICAL_PUBLICATION_KIND: "reconcile",
           CLAWSWEEPER_RECONCILE_DEFERRED_PATH: deferredPath,
         }),
