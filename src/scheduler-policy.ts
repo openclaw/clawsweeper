@@ -317,6 +317,13 @@ export function selectDueCandidates<
         weeklyCoverageReferenceMs(left) - weeklyCoverageReferenceMs(right) ||
         compare(left, right),
     );
+  // A never-reviewed backlog can contain years-old items. If all of those sort
+  // ahead of an already-tracked record, the rolling coverage set never gets
+  // refreshed even though the scheduler is busy. Renew overdue canonical
+  // records first; unseen items still consume every remaining coverage slot.
+  for (const candidate of weeklyCoverageDue) {
+    if (candidate.review != null) take(candidate);
+  }
   for (const candidate of weeklyCoverageDue) take(candidate);
   for (const [bucket, candidates] of buckets) {
     buckets.set(

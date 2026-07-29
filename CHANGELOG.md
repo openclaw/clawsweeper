@@ -9,6 +9,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Made exact-review reservation races and mid-generation supersession successful no-ops with bounded jittered retries, surfaced provider throttling separately from content/output failures, renewed overdue canonical records ahead of unseen backlog, and based dashboard coverage on signed live open-item inventory with explicit expired, untracked, protected, and unmanaged cohorts.
 - Routed scheduled review through the durable exact-review queue, raised each target plan from one to 20 candidates, and added oldest-age funnel telemetry plus a fleet-wide 200-review/hour admission budget with duplicate, backlog, and lease-safe backpressure.
 - Scoped per-target canonical record hydration to the selected repository and skipped unused ledger/assets downloads in workflow lanes, preventing exact-item review publication from collapsing under concurrent full-fleet state setup.
 - Doubled exact-review admission to 128 global and 120 per target with a separate 194-slot Actions budget that preserves verdict publication at full review load, doubled scheduled fleet review fanout and canonical publication batch preparation, prioritized six-day oldest-review coverage before hot-item churn, exposed a six-hour fleet coverage summary, and raised automatic apply to 40 closes with proportional scan/runtime budgets without changing close eligibility.

@@ -13,7 +13,7 @@ import { item } from "./helpers.ts";
 function schedulerCandidate(candidate) {
   return {
     item: candidate.item,
-    review: null,
+    review: candidate.review ?? null,
     priority: candidate.priority ?? reviewPriority(candidate.item, null),
     reviewedAt: candidate.reviewedAt ?? 0,
     nextDueAt: candidate.nextDueAt ?? 0,
@@ -497,6 +497,36 @@ test("normal scheduler prioritizes oldest weekly-coverage timestamps before hot 
   ];
 
   assert.deepEqual(selectedNumbers(due, 3, now), [3, 2, 1]);
+});
+
+test("weekly coverage renews overdue canonical records before growing the unseen backlog", () => {
+  const now = Date.parse("2026-06-14T12:00:00Z");
+  const due = [
+    {
+      item: item({ number: 1, createdAt: "2020-01-01T00:00:00Z" }),
+      bucket: "weekly_issue",
+      priority: 6,
+      reviewedAt: 0,
+      nextDueAt: 0,
+    },
+    {
+      item: item({ number: 2, createdAt: "2021-01-01T00:00:00Z" }),
+      bucket: "weekly_issue",
+      priority: 6,
+      reviewedAt: 0,
+      nextDueAt: 0,
+    },
+    {
+      item: item({ number: 3, createdAt: "2026-01-01T00:00:00Z" }),
+      review: { reviewStatus: "complete", reviewedAt: "2026-06-07T12:00:00Z" },
+      bucket: "weekly_issue",
+      priority: 6,
+      reviewedAt: Date.parse("2026-06-07T12:00:00Z"),
+      nextDueAt: 0,
+    },
+  ];
+
+  assert.deepEqual(selectedNumbers(due, 2, now), [3, 1]);
 });
 
 test("weekly freshness preselection still fills remaining scheduler capacity", () => {

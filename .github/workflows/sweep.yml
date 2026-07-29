@@ -908,10 +908,32 @@ jobs:
           codex_timeout_seconds=$(((CODEX_TIMEOUT_MS + 999) / 1000))
           media_preprocessing_reserve_seconds=480
           review_timeout_ms=$(((codex_timeout_seconds + media_preprocessing_reserve_seconds + 180) * 1000))
-          reservation="$(pnpm run --silent reserve-review-lease -- \
-            --target-repo "$TARGET_REPO" \
-            --item-number "$ITEM_NUMBER" \
-            --review-timeout-ms "$review_timeout_ms")"
+          reservation=""
+          reservation_error="$(mktemp)"
+          trap 'rm -f "$reservation_error"' EXIT
+          for attempt in 1 2 3 4 5; do
+            : > "$reservation_error"
+            if reservation="$(pnpm run --silent reserve-review-lease -- \
+              --target-repo "$TARGET_REPO" \
+              --item-number "$ITEM_NUMBER" \
+              --review-timeout-ms "$review_timeout_ms" 2>"$reservation_error")"; then
+              break
+            else
+              reserve_exit=$?
+            fi
+            if ! grep -Eqi '(exact-review queue authority changed|review revision changed|could not (confirm|identify).+review lease).+retry required' "$reservation_error"; then
+              cat "$reservation_error" >&2
+              exit "$reserve_exit"
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "::notice::Exact-review reservation contention did not settle after 5 attempts; queue authority moved on, so this run is a successful no-op."
+              reservation='{"status":"superseded"}'
+              break
+            fi
+            delay_seconds=$((attempt * 2 + RANDOM % 4))
+            echo "::notice::Exact-review reservation contention on attempt $attempt/5; retrying in ${delay_seconds}s."
+            sleep "$delay_seconds"
+          done
           echo "$reservation"
           RESERVATION="$reservation" node <<'NODE'
           const fs = require("node:fs");
@@ -935,16 +957,26 @@ jobs:
             append("retry_at", new Date(retryAt).toISOString());
             process.exit(0);
           }
+          if (reservation.status === "superseded") {
+            append("status", "superseded");
+            process.exit(0);
+          }
           process.exit(1);
           NODE
 
       # At-least-once queue delivery can overlap an exact-head review that is already
       # running. The durable queue owns retry, so lease contention is deferred work.
       - name: Defer exact review while same-head lease is held
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'held' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && (steps.reserve-exact-review-lease.outputs.status == 'held' || steps.reserve-exact-review-lease.outputs.status == 'superseded') }}
         env:
+          RESERVATION_STATUS: ${{ steps.reserve-exact-review-lease.outputs.status }}
           RETRY_AT: ${{ steps.reserve-exact-review-lease.outputs.retry_at }}
-        run: echo "::notice::Another exact-head review is already active; retry deferred until $RETRY_AT."
+        run: |
+          if [ "$RESERVATION_STATUS" = "superseded" ]; then
+            echo "::notice::Exact-review queue authority moved to another worker; this run completed as a successful no-op."
+          else
+            echo "::notice::Another exact-head review is already active; retry deferred until $RETRY_AT."
+          fi
 
       - name: Review exact event item
         id: review-exact-event-item
@@ -1116,7 +1148,10 @@ jobs:
           fi
           if [ -f "$superseded_marker" ]; then
             wait_for_review_group
-            review_exit_code=143
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+            echo "exit_code=0" >> "$GITHUB_OUTPUT"
+            echo "::notice::Exact-review generation stopped because another worker owns the newer queue authority; completing this run as a successful no-op."
+            exit 0
           fi
           set -e
           echo "exit_code=$review_exit_code" >> "$GITHUB_OUTPUT"
@@ -1154,9 +1189,10 @@ jobs:
         env:
           REVIEW_EXIT_CODE: ${{ steps.review-exact-event-item.outputs.exit_code || '' }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome || 'not_started' }}
+          REVIEW_SUPERSEDED: ${{ steps.review-exact-event-item.outputs.superseded || 'false' }}
         run: |
           args=()
-          if [ "$REVIEW_OUTCOME" = "cancelled" ] || [ "$REVIEW_EXIT_CODE" = "130" ] || [ "$REVIEW_EXIT_CODE" = "143" ]; then
+          if [ "$REVIEW_SUPERSEDED" = "true" ] || [ "$REVIEW_OUTCOME" = "cancelled" ] || [ "$REVIEW_EXIT_CODE" = "130" ] || [ "$REVIEW_EXIT_CODE" = "143" ]; then
             args=(--interrupt-open-attempts --reason cancelled)
           elif [ "$REVIEW_EXIT_CODE" = "124" ] || [ "$REVIEW_EXIT_CODE" = "137" ]; then
             args=(--interrupt-open-attempts --reason timeout)
@@ -1167,7 +1203,7 @@ jobs:
 
       - name: Create exact review artifact bundle
         id: create-exact-review-bundle
-        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.target.outputs.target_enabled == 'true' && steps.live-item.outcome == 'success' && steps.setup-pnpm.outcome == 'success' && (steps.live-item.outputs.proceed != 'true' || (steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.retry_at == '')) }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.target.outputs.target_enabled == 'true' && steps.live-item.outcome == 'success' && steps.setup-pnpm.outcome == 'success' && steps.review-exact-event-item.outputs.superseded != 'true' && (steps.live-item.outputs.proceed != 'true' || (steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.retry_at == '')) }}
         env:
           EXACT_REVIEW_ACTION_LEDGER_ROOT: ${{ env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT }}
           EXACT_REVIEW_BUNDLE_DIR: .artifacts/exact-review-bundle
@@ -1372,13 +1408,17 @@ jobs:
           STATUS_COMMENT_ID: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).statusCommentId || '' }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
+          REVIEW_SUPERSEDED: ${{ steps.review-exact-event-item.outputs.superseded || 'false' }}
           RESERVATION_STATUS: ${{ steps.reserve-exact-review-lease.outputs.status }}
           RETRY_AT: ${{ steps.reserve-exact-review-lease.outputs.retry_at || steps.review-exact-event-item.outputs.retry_at }}
           CLAWSWEEPER_ACTION_LEDGER_DISABLED: "1"
         run: |
           state="Failed"
           detail="The exact review did not produce a publishable artifact. The durable queue will retry it."
-          if [ "$RESERVATION_STATUS" = "held" ]; then
+          if [ "$RESERVATION_STATUS" = "superseded" ] || [ "$REVIEW_SUPERSEDED" = "true" ]; then
+            state="Waiting"
+            detail="A newer exact-review queue owner superseded this run. This run completed as a no-op."
+          elif [ "$RESERVATION_STATUS" = "held" ]; then
             state="Waiting"
             detail="Another exact-head review is already active. The durable queue will retry after its lease expires."
           elif [ "$REVIEW_OUTCOME" = "cancelled" ] || [ -n "$RETRY_AT" ]; then
@@ -1401,11 +1441,15 @@ jobs:
           TARGET_ENABLED: ${{ steps.target.outputs.target_enabled }}
           LIVE_OUTCOME: ${{ steps.live-item.outcome }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
+          REVIEW_SUPERSEDED: ${{ steps.review-exact-event-item.outputs.superseded || 'false' }}
+          RESERVATION_STATUS: ${{ steps.reserve-exact-review-lease.outputs.status }}
           PUBLICATION_QUEUE_OUTCOME: ${{ steps.queue-exact-review-publication.outcome }}
           DIRECT_PUBLICATION_ACCEPTED: ${{ steps.direct-exact-review-publication.outputs.accepted }}
         run: |
           outcome=failure
           if [ "$TARGET_ENABLED" = "false" ]; then
+            outcome=success
+          elif [ "$RESERVATION_STATUS" = "superseded" ] || [ "$REVIEW_SUPERSEDED" = "true" ]; then
             outcome=success
           elif [ "$REVIEW_OUTCOME" = "cancelled" ]; then
             outcome=cancelled
@@ -1526,15 +1570,24 @@ jobs:
             (
               (
                 steps.direct-exact-review-publication.outputs.accepted != 'true' &&
-                steps.complete-exact-review-queue.outcome != 'success'
+                steps.complete-exact-review-queue.outcome != 'success' &&
+                steps.reserve-exact-review-lease.outputs.status != 'superseded' &&
+                steps.review-exact-event-item.outputs.superseded != 'true'
               ) ||
               (
                 steps.exact-review-generation-result.outputs.outcome != 'success' &&
-                steps.reserve-exact-review-lease.outputs.status != 'held'
+                steps.reserve-exact-review-lease.outputs.status != 'held' &&
+                steps.reserve-exact-review-lease.outputs.status != 'superseded'
               )
             )
           }}
-        run: exit 1
+        env:
+          RESERVATION_STATUS: ${{ steps.reserve-exact-review-lease.outputs.status || 'unknown' }}
+          REVIEW_EXIT_CODE: ${{ steps.review-exact-event-item.outputs.exit_code || 'unknown' }}
+          REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome || 'not_started' }}
+        run: |
+          echo "::error::Exact review generation failed: classification=codex_or_content_failure reservation=$RESERVATION_STATUS review_outcome=$REVIEW_OUTCOME review_exit=$REVIEW_EXIT_CODE"
+          exit 1
 
   event-review-publish:
     name: Publish exact review artifact
@@ -2479,7 +2532,9 @@ jobs:
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: ${{ steps.openclaw-token.outputs.token }}
           CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: ${{ steps.steipete-token.outputs.token || '__public__' }}
-        run: pnpm run target-fanout -- coverage --window-days 7 >> "$GITHUB_STEP_SUMMARY"
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          REVIEW_COVERAGE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+        run: pnpm run target-fanout -- coverage --window-days 7 --publish-url "$REVIEW_COVERAGE_URL" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish fanout cursor
         env:

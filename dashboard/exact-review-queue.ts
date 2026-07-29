@@ -20,7 +20,9 @@ import {
 import {
   CanonicalRecordTupleConflictError,
   EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES,
+  REVIEW_COVERAGE_INVENTORY_KEY,
   ExactReviewDirectPublicationStore,
+  normalizeReviewCoverageInventory,
   sha256Hex,
   validateCanonicalRecordTupleMutation,
   validateDirectPublicationPlan,
@@ -569,6 +571,19 @@ export class ExactReviewQueue {
     await this.ready;
     this.cleanupLegacyCompatibilitySync();
     const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/review-coverage/inventory") {
+      const inventory = normalizeReviewCoverageInventory(await request.json().catch(() => null));
+      if (!inventory) return json({ error: "invalid_review_coverage_inventory" }, 400);
+      const stored = normalizeReviewCoverageInventory(
+        this.storage.kv.get(REVIEW_COVERAGE_INVENTORY_KEY),
+      );
+      if (stored && Date.parse(stored.generated_at) > Date.parse(inventory.generated_at)) {
+        return json({ ok: true, accepted: false, stale: true }, 202);
+      }
+      this.storage.kv.put(REVIEW_COVERAGE_INVENTORY_KEY, inventory);
+      this.reviewCoverageCache = null;
+      return json({ ok: true, accepted: true }, 202);
+    }
     if (request.method === "POST" && url.pathname === "/source-authority") {
       const body = objectValue(await request.json().catch(() => null));
       const deliveryId = String(body.delivery_id || "").trim();
@@ -2512,7 +2527,11 @@ export class ExactReviewQueue {
       if (!this.reviewCoverageCache || now - this.reviewCoverageCache.at > 60_000) {
         this.reviewCoverageCache = {
           at: now,
-          summary: this.directPublicationStore.reviewCoverageSync(now),
+          summary: this.directPublicationStore.reviewCoverageSync(
+            now,
+            undefined,
+            normalizeReviewCoverageInventory(this.storage.kv.get(REVIEW_COVERAGE_INVENTORY_KEY)),
+          ),
         };
       }
       return json({

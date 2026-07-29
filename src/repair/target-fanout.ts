@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -54,6 +55,16 @@ export interface FleetReviewCoverage {
   requiredItemsPerHourWithHeadroom: number;
 }
 
+export interface ReviewCoverageInventorySnapshot {
+  generated_at: string;
+  repositories: Array<{
+    repo: string;
+    repo_slug: string;
+    open_issues: number;
+    open_pull_requests: number;
+  }>;
+}
+
 interface SelectionResult {
   repositories: SelectedRepository[];
   cursor: number;
@@ -94,7 +105,19 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   if (args._[0] === "coverage") {
     const windowDays = positiveNumber(stringArg(args["window-days"], "7"), "window-days");
     const openCounts = loadRepositoryOpenCounts(repositories);
-    const coverage = summarizeFleetReviewCoverage({ repositories, openCounts, windowDays });
+    const now = Date.now();
+    const coverage = summarizeFleetReviewCoverage({ repositories, openCounts, windowDays, now });
+    const publishUrl = stringArg(args["publish-url"], "");
+    if (publishUrl) {
+      await publishReviewCoverageInventory({
+        baseUrl: publishUrl,
+        webhookSecret: stringValue(
+          process.env.CLAWSWEEPER_WEBHOOK_SECRET,
+          "CLAWSWEEPER_WEBHOOK_SECRET",
+        ),
+        snapshot: reviewCoverageInventorySnapshot(repositories, openCounts, now),
+      });
+    }
     process.stdout.write(renderFleetReviewCoverage(coverage));
     return;
   }
@@ -453,6 +476,68 @@ export function summarizeFleetReviewCoverage(options: {
     requiredItemsPerHourWithHeadroom:
       openTotal > 0 ? (openTotal / (options.windowDays * 24)) * 1.3 : 0,
   };
+}
+
+export function reviewCoverageInventorySnapshot(
+  repositories: readonly SelectedRepository[],
+  openCounts: ReadonlyMap<string, RepositoryOpenCounts>,
+  now = Date.now(),
+): ReviewCoverageInventorySnapshot {
+  return {
+    generated_at: new Date(now).toISOString(),
+    repositories: repositories.map((repository) => {
+      const counts = openCounts.get(repository.targetRepo) ?? { issues: 0, pullRequests: 0 };
+      return {
+        repo: repository.targetRepo,
+        repo_slug: repository.targetRepo.toLowerCase().replace("/", "-"),
+        open_issues: counts.issues,
+        open_pull_requests: counts.pullRequests,
+      };
+    }),
+  };
+}
+
+export async function publishReviewCoverageInventory(options: {
+  baseUrl: string;
+  webhookSecret: string;
+  snapshot: ReviewCoverageInventorySnapshot;
+  attempts?: number;
+  fetchImpl?: typeof globalThis.fetch;
+  sleep?: (milliseconds: number) => Promise<void>;
+}): Promise<void> {
+  const baseUrl = options.baseUrl.replace(/\/$/, "");
+  if (!baseUrl.startsWith("https://")) {
+    throw new Error("Review coverage inventory URL must use HTTPS");
+  }
+  const body = JSON.stringify(options.snapshot);
+  const signature = `sha256=${createHmac("sha256", options.webhookSecret).update(body).digest("hex")}`;
+  const attempts = Math.max(1, Math.min(5, Math.floor(options.attempts ?? 3)));
+  const request = options.fetchImpl ?? globalThis.fetch;
+  const sleep =
+    options.sleep ??
+    ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  let lastFailure = "review coverage inventory publication failed";
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await request(`${baseUrl}/internal/review-coverage/inventory`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature": signature,
+        },
+        body,
+        signal: AbortSignal.timeout(20_000),
+      });
+      const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+      if (response.ok && payload.ok === true) return;
+      lastFailure = String(payload.error || `http_${response.status}`);
+      if (response.status >= 400 && response.status < 500 && response.status !== 429) break;
+    } catch (error) {
+      lastFailure = error instanceof Error ? error.message : String(error);
+    }
+    if (attempt < attempts) await sleep(attempt * 5_000);
+  }
+  throw new Error(`Review coverage inventory publication failed: ${lastFailure}`);
 }
 
 export function renderFleetReviewCoverage(coverage: FleetReviewCoverage): string {

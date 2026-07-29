@@ -167,12 +167,13 @@ test("exact-review queue durably coalesces concurrent unchanged pull request edi
   ]);
   const responses = await Promise.all([first.json(), duplicate.json()]);
   assert.equal(responses.filter((response) => response.queued === true).length, 1);
+  const deduped = responses.find((response) => response.deduped === true);
   assert.deepEqual(
-    responses.find((response) => response.deduped === true),
+    { ...deduped, item_key: String(deduped?.item_key).toLowerCase() },
     {
       ok: true,
       deduped: true,
-      item_key: "Steipete/Nameplate#750",
+      item_key: "steipete/nameplate#750",
       dedupe_scope: "semantic_edited",
       dedupe_reason: "unchanged_pull_request_edit",
     },
@@ -9343,10 +9344,47 @@ test("review coverage summarizes canonical item records per fleet", async () => 
     itemRecord("openclaw/openclaw", 4, `reviewed_at: ${fresh}\nreview_status: failed\n`),
   );
   await publish(
+    "openclaw-openclaw",
+    5,
+    itemRecord(
+      "openclaw/openclaw",
+      5,
+      `labels: ["security"]\nreviewed_at: ${fresh}\nreview_status: complete\n`,
+    ),
+  );
+  await publish(
     "other-repo",
     9,
     itemRecord(null, 9, `reviewed_at: "${fresh}"\nreview_status: "complete"\n`),
   );
+  await publish(
+    "unmanaged-repo",
+    10,
+    itemRecord(null, 10, `reviewed_at: "${fresh}"\nreview_status: "complete"\n`),
+  );
+  const inventory = await queue.fetch(
+    new Request("https://queue/review-coverage/inventory", {
+      method: "POST",
+      body: JSON.stringify({
+        generated_at: new Date(now).toISOString(),
+        repositories: [
+          {
+            repo: "openclaw/openclaw",
+            repo_slug: "openclaw-openclaw",
+            open_issues: 5,
+            open_pull_requests: 2,
+          },
+          {
+            repo: "other/repo",
+            repo_slug: "other-repo",
+            open_issues: 1,
+            open_pull_requests: 1,
+          },
+        ],
+      }),
+    }),
+  );
+  assert.equal(inventory.status, 202);
 
   const response = await queue.fetch(new Request("https://queue/review-coverage"));
   assert.equal(response.status, 200);
@@ -9359,28 +9397,46 @@ test("review coverage summarizes canonical item records per fleet", async () => 
   };
   assert.equal(payload.ok, true);
   assert.equal(payload.window_days, 7);
-  assert.equal(payload.fleets.length, 2);
-  const [openclaw, other] = payload.fleets;
+  assert.equal(payload.inventory_status, "current");
+  assert.equal(payload.fleets.length, 3);
+  const [openclaw, other, unmanaged] = payload.fleets;
   assert.equal(openclaw.repo, "openclaw/openclaw");
   assert.equal(openclaw.repo_slug, "openclaw-openclaw");
-  assert.equal(openclaw.open_records, 4);
+  assert.equal(openclaw.open_records, 7);
+  assert.equal(openclaw.reviewable_records, 6);
+  assert.equal(openclaw.tracked_records, 5);
   assert.equal(openclaw.reviewed_recent, 1);
   assert.equal(openclaw.stale, 1);
   assert.equal(openclaw.failed, 1);
-  assert.equal(openclaw.pending, 1);
-  assert.equal(openclaw.coverage_percent, 25);
+  assert.equal(openclaw.expired, 1);
+  assert.equal(openclaw.untracked_open, 2);
+  assert.equal(openclaw.pending, 3);
+  assert.equal(openclaw.excluded, 1);
+  assert.equal(openclaw.coverage_percent, 16.7);
   assert.equal(openclaw.oldest_reviewed_at, new Date(Date.parse(outdated)).toISOString());
-  assert.equal(other.repo, "other-repo");
-  assert.equal(other.open_records, 1);
+  assert.equal(other.repo, "other/repo");
+  assert.equal(other.open_records, 2);
   assert.equal(other.reviewed_recent, 1);
-  assert.equal(other.coverage_percent, 100);
+  assert.equal(other.untracked_open, 1);
+  assert.equal(other.coverage_percent, 50);
+  assert.equal(unmanaged.schedulable, false);
+  assert.equal(unmanaged.tracked_records, 1);
+  assert.equal(unmanaged.unschedulable_records, 1);
   assert.deepEqual(payload.totals, {
-    open_records: 5,
+    open_records: 9,
+    reviewable_records: 8,
+    tracked_records: 6,
     reviewed_recent: 2,
     stale: 1,
     failed: 1,
-    pending: 1,
-    coverage_percent: 40,
+    expired: 1,
+    unreviewed_records: 0,
+    untracked_open: 3,
+    pending: 4,
+    excluded: 1,
+    unschedulable_records: 1,
+    record_drift: 0,
+    coverage_percent: 25,
   });
 
   // Deleting the record tombstones it out of the open universe.
@@ -9409,12 +9465,38 @@ test("review coverage summarizes canonical item records per fleet", async () => 
   };
   // Responses are cached for up to a minute; the tombstone appears on refresh.
   assert.equal(cached.generated_at, payload.generated_at);
-  assert.equal(cached.totals.open_records, 5);
+  assert.equal(cached.totals.open_records, 9);
+  assert.equal(cached.totals.tracked_records, 6);
 });
 
 test("worker exposes review coverage through the public API route", async () => {
   const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
-  const env = { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) };
+  const secret = "coverage-secret";
+  const env = {
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+  };
+  const inventoryBody = JSON.stringify({
+    generated_at: new Date().toISOString(),
+    repositories: [
+      {
+        repo: "openclaw/openclaw",
+        repo_slug: "openclaw-openclaw",
+        open_issues: 1,
+        open_pull_requests: 0,
+      },
+    ],
+  });
+  const inventorySignature = `sha256=${createHmac("sha256", secret).update(inventoryBody).digest("hex")}`;
+  const inventoryResponse = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/review-coverage/inventory", {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": inventorySignature },
+      body: inventoryBody,
+    }),
+    env,
+  );
+  assert.equal(inventoryResponse.status, 202);
   const response = await worker.fetch(
     new Request("https://clawsweeper.openclaw.ai/api/review-coverage"),
     env,
@@ -9422,7 +9504,7 @@ test("worker exposes review coverage through the public API route", async () => 
   assert.equal(response.status, 200);
   const payload = (await response.json()) as { ok: boolean; fleets: unknown[] };
   assert.equal(payload.ok, true);
-  assert.deepEqual(payload.fleets, []);
+  assert.equal(payload.fleets.length, 1);
 
   const unconfigured = await worker.fetch(
     new Request("https://clawsweeper.openclaw.ai/api/review-coverage"),

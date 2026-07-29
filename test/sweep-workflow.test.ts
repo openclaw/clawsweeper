@@ -462,6 +462,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.equal(reserveLease.env?.GH_TOKEN, "${{ steps.target-write-token.outputs.token }}");
   assert.match(reserveLease.run ?? "", /pnpm run --silent reserve-review-lease/);
   assert.match(reserveLease.run ?? "", /review-timeout-ms/);
+  assert.match(reserveLease.run ?? "", /for attempt in 1 2 3 4 5/);
+  assert.match(reserveLease.run ?? "", /RANDOM % 4/);
+  assert.match(reserveLease.run ?? "", /status.*superseded/);
+  assert.match(reserveLease.run ?? "", /successful no-op/);
   assert.match(source, /Review exact item \{0\} rev \{1\} head \{2\}/);
   assert.equal(
     reserveLease.env?.EXACT_REVIEW_ITEM_KEY,
@@ -511,6 +515,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   const releaseGeneration = step(reviewer, "Release unsuccessful workflow-owned review lease");
   assert.match(create.if ?? "", /review-exact-event-item\.outcome == 'success'/);
   assert.match(create.if ?? "", /review-exact-event-item\.outputs\.retry_at == ''/);
+  assert.match(create.if ?? "", /review-exact-event-item\.outputs\.superseded != 'true'/);
   assert.equal(create.env?.EXACT_REVIEW_PRODUCER_JOB, "event-review-apply");
   assert.equal(
     create.env?.EXACT_REVIEW_DECISION,
@@ -536,6 +541,11 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(deferHeldReview.if ?? "", /reserve-exact-review-lease\.outputs\.status == 'held'/);
   assert.match(deferHeldReview.run ?? "", /retry deferred/);
   assert.match(failGeneration.if ?? "", /reserve-exact-review-lease\.outputs\.status != 'held'/);
+  assert.match(
+    failGeneration.if ?? "",
+    /reserve-exact-review-lease\.outputs\.status != 'superseded'/,
+  );
+  assert.match(failGeneration.if ?? "", /review-exact-event-item\.outputs\.superseded != 'true'/);
   assert.match(failGeneration.if ?? "", /complete-exact-review-queue\.outcome != 'success'/);
   assert.match(releaseGeneration.if ?? "", /reserve-exact-review-lease\.outputs\.status != 'held'/);
   assert.match(releaseGeneration.run ?? "", /content == "eyes"/);
@@ -2580,6 +2590,16 @@ test("scheduled reviews feed the durable queue instead of one-item matrix worker
   assert.match(workflow, /Review scheduled hot item/);
   assert.match(workflow, /Review scheduled normal item/);
   assert.match(workflow, /needs\.plan\.outputs\.queue_feed != 'true'/);
+});
+
+test("fleet coverage publishes live open inventory to the dashboard worker", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const coverageStep = workflow.slice(
+    workflow.indexOf("- name: Summarize trailing weekly review coverage"),
+    workflow.indexOf("\n      - name: Publish fanout cursor"),
+  );
+  assert.match(coverageStep, /CLAWSWEEPER_WEBHOOK_SECRET/);
+  assert.match(coverageStep, /--publish-url "\$REVIEW_COVERAGE_URL"/);
 });
 
 test("review git info follows checked-out target branch", () => {

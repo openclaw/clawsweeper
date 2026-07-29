@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +9,9 @@ import test from "node:test";
 import {
   defaultLimit,
   filterEligibleRepositories,
+  publishReviewCoverageInventory,
   renderFleetReviewCoverage,
+  reviewCoverageInventorySnapshot,
   selectRepositories,
   summarizeFleetReviewCoverage,
   type InventoryConfig,
@@ -84,6 +87,69 @@ test("target fanout summarizes trailing weekly coverage from canonical open reco
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("target fanout publishes signed live open counts for dashboard coverage", async () => {
+  const now = Date.parse("2026-07-29T12:00:00Z");
+  const repositories = [
+    { targetRepo: "openclaw/openclaw", defaultBranch: "main", visibility: "PUBLIC" },
+    { targetRepo: "steipete/tool", defaultBranch: "main", visibility: "PUBLIC" },
+  ];
+  const snapshot = reviewCoverageInventorySnapshot(
+    repositories,
+    new Map([
+      ["openclaw/openclaw", { issues: 3596, pullRequests: 2319 }],
+      ["steipete/tool", { issues: 2, pullRequests: 1 }],
+    ]),
+    now,
+  );
+  assert.deepEqual(snapshot, {
+    generated_at: "2026-07-29T12:00:00.000Z",
+    repositories: [
+      {
+        repo: "openclaw/openclaw",
+        repo_slug: "openclaw-openclaw",
+        open_issues: 3596,
+        open_pull_requests: 2319,
+      },
+      {
+        repo: "steipete/tool",
+        repo_slug: "steipete-tool",
+        open_issues: 2,
+        open_pull_requests: 1,
+      },
+    ],
+  });
+
+  const requests: Array<{ body: string; signature: string }> = [];
+  const waits: number[] = [];
+  await publishReviewCoverageInventory({
+    baseUrl: "https://queue.example/",
+    webhookSecret: "coverage-secret",
+    snapshot,
+    attempts: 2,
+    fetchImpl: async (_input, init) => {
+      const body = String(init?.body ?? "");
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      requests.push({
+        body,
+        signature: String(headers["x-clawsweeper-exact-review-signature"]),
+      });
+      return requests.length === 1
+        ? Response.json({ error: "busy" }, { status: 503 })
+        : Response.json({ ok: true }, { status: 202 });
+    },
+    sleep: async (milliseconds) => {
+      waits.push(milliseconds);
+    },
+  });
+  assert.equal(requests.length, 2);
+  assert.deepEqual(waits, [5_000]);
+  assert.equal(requests[0]?.body, JSON.stringify(snapshot));
+  assert.equal(
+    requests[0]?.signature,
+    `sha256=${createHmac("sha256", "coverage-secret").update(JSON.stringify(snapshot)).digest("hex")}`,
+  );
 });
 
 test("target fanout filters eligible repositories conservatively", () => {

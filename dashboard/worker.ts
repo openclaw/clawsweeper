@@ -547,6 +547,8 @@ export default {
       return authenticatedExactReviewEnqueue(request, env);
     if (url.pathname === "/internal/exact-review/source-authority" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/source-authority");
+    if (url.pathname === "/internal/review-coverage/inventory" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/review-coverage/inventory");
     const canonicalRecordPath =
       request.method === "GET"
         ? /^\/internal\/state\/records\/[^/]+\/(?:items|closed|plans|decision-packets)\/[1-9]\d*$/.exec(
@@ -9297,9 +9299,13 @@ function renderReviewCoverage() {
   }
   const totals = payload.totals || {};
   const windowDays = Number(payload.window_days) || 7;
+  const inventorySuffix = payload.inventory_status === "stale"
+    ? " · live inventory stale"
+    : payload.inventory_status === "missing" ? " · awaiting live inventory" : "";
   note.textContent = totals.open_records
-    ? fmt.format(totals.reviewed_recent || 0) + " of " + fmt.format(totals.open_records) + " open records reviewed in the trailing " + windowDays + " days" +
+    ? fmt.format(totals.reviewed_recent || 0) + " of " + fmt.format(totals.reviewable_records || totals.open_records) + " reviewable open items reviewed in the trailing " + windowDays + " days" +
       (totals.coverage_percent == null ? "" : " · " + totals.coverage_percent + "%") +
+      inventorySuffix +
       " · updated " + since(payload.generated_at)
     : "Open items reviewed in the trailing " + windowDays + " days";
   const fleets = Array.isArray(payload.fleets) ? payload.fleets : [];
@@ -9314,9 +9320,17 @@ function renderReviewCoverage() {
     const flags =
       (fleet.stale ? '<span class="coverage-flag stale">' + fmt.format(fleet.stale) + ' stale</span>' : '') +
       (fleet.failed ? '<span class="coverage-flag failed">' + fmt.format(fleet.failed) + ' failed</span>' : '') +
+      (fleet.expired ? '<span class="coverage-flag stale">' + fmt.format(fleet.expired) + ' expired</span>' : '') +
+      (fleet.untracked_open ? '<span class="coverage-flag">' + fmt.format(fleet.untracked_open) + ' never reviewed</span>' : '') +
+      (fleet.excluded ? '<span class="coverage-flag">' + fmt.format(fleet.excluded) + ' protected</span>' : '') +
+      (fleet.unschedulable_records ? '<span class="coverage-flag">' + fmt.format(fleet.unschedulable_records) + ' unmanaged records</span>' : '') +
       (fleet.pending ? '<span class="coverage-flag">' + fmt.format(fleet.pending) + ' pending</span>' : '');
     return '<div class="coverage-fleet">' +
-      '<div class="coverage-fleet-name"><strong>' + esc(fleet.repo) + '</strong><span>' + fmt.format(fleet.reviewed_recent || 0) + ' of ' + fmt.format(fleet.open_records || 0) + ' open records reviewed</span></div>' +
+      '<div class="coverage-fleet-name"><strong>' + esc(fleet.repo) + '</strong><span>' +
+        (fleet.schedulable === false
+          ? fmt.format(fleet.tracked_records || 0) + ' canonical records outside the current fleet'
+          : fmt.format(fleet.reviewed_recent || 0) + ' of ' + fmt.format(fleet.reviewable_records || 0) + ' reviewable open items reviewed') +
+      '</span></div>' +
       '<div><div class="coverage-bar ' + band + '"><i style="width:' + Math.max(0, Math.min(100, percent ?? 0)) + '%"></i></div></div>' +
       '<div class="coverage-value"><strong>' + (percent == null ? "n/a" : percent + "%") + '</strong>' +
       (flags ? '<span class="coverage-flags">' + flags + '</span>' : '<span>fully current</span>') +
@@ -9362,7 +9376,7 @@ function renderHealthStrip() {
   if (lastReviewCoverage?.ok === true) {
     const coverage = lastReviewCoverage.totals?.coverage_percent;
     const stale = Number(lastReviewCoverage.totals?.stale || 0);
-    chips.push(healthChip("7d coverage", (coverage == null ? "n/a" : coverage + "%") + (stale ? " · " + fmt.format(stale) + " stale" : ""), coverage == null ? "" : coverageBand(coverage), "Share of open records with a completed review in the trailing 7 days."));
+    chips.push(healthChip("7d coverage", (coverage == null ? "n/a" : coverage + "%") + (stale ? " · " + fmt.format(stale) + " stale" : ""), coverage == null ? "" : coverageBand(coverage), "Share of reviewable live open items with a completed review in the trailing 7 days."));
   }
   target.innerHTML = chips.join("");
 }

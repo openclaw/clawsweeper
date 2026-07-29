@@ -10310,6 +10310,27 @@ function codexFailureReason(detail: string, errorCode?: string | null): string {
   return "codex execution failed";
 }
 
+function codexFailureLogKind(markdown: string): string {
+  if (/retryable codex transport failure \(capacity\)/i.test(markdown)) {
+    return "provider_throttle";
+  }
+  if (/retryable codex transport failure \(network\)/i.test(markdown)) {
+    return "transport_network";
+  }
+  if (
+    /missing structured output|invalid structured output|output buffer overflow/i.test(markdown)
+  ) {
+    return "content_or_output";
+  }
+  if (/model unavailable or access denied/i.test(markdown)) return "model_access";
+  if (/Codex review failed: timeout/i.test(markdown)) return "timeout";
+  return "codex_execution";
+}
+
+export function codexFailureLogKindForTest(markdown: string): string {
+  return codexFailureLogKind(markdown);
+}
+
 function codexFallbackMinBudgetMs(): number {
   const configured = Number(process.env.CLAWSWEEPER_CODEX_FALLBACK_MIN_BUDGET_MS?.trim());
   return Number.isFinite(configured) && configured > 0
@@ -25055,6 +25076,12 @@ function reviewCommand(args: Args): void {
       );
     }
     if (codexFailures > 0) {
+      for (const reportPath of codexFailureReports) {
+        const failureKind = codexFailureLogKind(readFileSync(reportPath, "utf8"));
+        console.error(
+          `[review] ${new Date().toISOString()} codex-failure classification=${failureKind} report=${displayPath(reportPath)}`,
+        );
+      }
       const message = `Codex failed for ${codexFailures} item${
         codexFailures === 1 ? "" : "s"
       }; review artifacts were written and the workflow recovery lane can requeue the planned set.${

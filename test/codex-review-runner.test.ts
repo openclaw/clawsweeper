@@ -14,10 +14,28 @@ import test from "node:test";
 
 import {
   codexFailureDecisionForTest,
+  codexFailureLogKindForTest,
   redactInternalCodexModel,
   runCodexForTest,
 } from "../dist/clawsweeper.js";
 import { closeDecision, item, tmpPrefix } from "./helpers.ts";
+
+test("Codex failure logs distinguish provider throttling from content output failures", () => {
+  assert.equal(
+    codexFailureLogKindForTest(
+      "Codex review failed: retryable codex transport failure (capacity).",
+    ),
+    "provider_throttle",
+  );
+  assert.equal(
+    codexFailureLogKindForTest("Codex review failed: invalid structured output."),
+    "content_or_output",
+  );
+  assert.equal(
+    codexFailureLogKindForTest("Codex review failed: codex execution failed."),
+    "codex_execution",
+  );
+});
 
 test("runCodex accepts valid structured output after non-zero Codex exit", () => {
   const root = mkdtempSync(tmpPrefix);

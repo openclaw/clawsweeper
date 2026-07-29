@@ -13,6 +13,8 @@ export const EXACT_REVIEW_CANONICAL_INLINE_BYTES = Math.floor(1.5 * 1024 * 1024)
 export const EXACT_REVIEW_CANONICAL_CHUNK_BYTES = 512 * 1024;
 export const EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const REVIEW_COVERAGE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+export const REVIEW_COVERAGE_INVENTORY_KEY = "review-coverage-inventory:v1";
+export const REVIEW_COVERAGE_INVENTORY_STALE_MS = 12 * 60 * 60 * 1000;
 // Front matter always leads a canonical record; 4 KiB comfortably bounds it.
 export const REVIEW_COVERAGE_HEAD_BYTES = 4096;
 
@@ -546,11 +548,15 @@ export class ExactReviewDirectPublicationStore {
     );
   }
 
-  reviewCoverageSync(now: number, windowMs = REVIEW_COVERAGE_WINDOW_MS): ReviewCoverageSummary {
-    // Canonical `items` records are the open-item universe after the state-repo
-    // retirement: one record per open item, front matter carries reviewed_at and
-    // review_status. Only the front matter is needed, so read a bounded head of
-    // each record instead of hydrating full markdown bodies.
+  reviewCoverageSync(
+    now: number,
+    windowMs = REVIEW_COVERAGE_WINDOW_MS,
+    inventory: ReviewCoverageInventorySnapshot | null = null,
+  ): ReviewCoverageSummary {
+    // Canonical `items` records cover items that have reached publication; they
+    // are not a complete GitHub-open inventory. Only the front matter is needed,
+    // so read a bounded head and combine it with the periodically published live
+    // fleet counts instead of treating missing records as nonexistent work.
     const rows = this.storage.sql.exec(
       `SELECT r.repo_slug AS repo_slug,
               CASE
@@ -570,61 +576,127 @@ export class ExactReviewDirectPublicationStore {
     for (const row of rows) {
       const head = reviewCoverageHeadText(row.head, Number(row.chunked) === 1);
       const fields = reviewCoverageFrontMatter(head);
-      const repo = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(fields.repo ?? "")
-        ? fields.repo!
-        : String(row.repo_slug);
-      const fleet = fleets.get(repo) ?? {
+      const repoSlug = String(row.repo_slug);
+      const repo = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(fields.repository ?? "")
+        ? fields.repository!
+        : /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(fields.repo ?? "")
+          ? fields.repo!
+          : repoSlug;
+      const fleet = fleets.get(repoSlug) ?? {
         repo,
-        repo_slug: String(row.repo_slug),
-        open_records: 0,
+        repo_slug: repoSlug,
+        tracked_records: 0,
         reviewed_recent: 0,
         stale: 0,
         failed: 0,
-        pending: 0,
+        expired: 0,
+        unreviewed_records: 0,
+        excluded: 0,
         oldest_reviewed_at: null as string | null,
       };
-      fleet.open_records += 1;
+      fleet.tracked_records += 1;
       const status = fields.review_status ?? "";
       const reviewedAtMs = fields.reviewed_at ? Date.parse(fields.reviewed_at) : Number.NaN;
       const fresh =
-        status === "complete" && Number.isFinite(reviewedAtMs) && now - reviewedAtMs < windowMs;
-      if (fresh) fleet.reviewed_recent += 1;
+        status === "complete" &&
+        Number.isFinite(reviewedAtMs) &&
+        reviewedAtMs <= now &&
+        now - reviewedAtMs < windowMs;
+      if (reviewCoverageRecordExcluded(fields.labels)) fleet.excluded += 1;
+      else if (fresh) fleet.reviewed_recent += 1;
       else if (status.startsWith("stale_")) fleet.stale += 1;
       else if (status === "failed") fleet.failed += 1;
-      else fleet.pending += 1;
+      else if (status === "complete" && Number.isFinite(reviewedAtMs)) fleet.expired += 1;
+      else fleet.unreviewed_records += 1;
       if (
         Number.isFinite(reviewedAtMs) &&
         (fleet.oldest_reviewed_at === null || reviewedAtMs < Date.parse(fleet.oldest_reviewed_at))
       ) {
         fleet.oldest_reviewed_at = new Date(reviewedAtMs).toISOString();
       }
-      fleets.set(repo, fleet);
+      fleets.set(repoSlug, fleet);
+    }
+    const inventoryBySlug = new Map(
+      (inventory?.repositories ?? []).map((entry) => [entry.repo_slug, entry] as const),
+    );
+    for (const entry of inventory?.repositories ?? []) {
+      if (fleets.has(entry.repo_slug)) continue;
+      fleets.set(entry.repo_slug, {
+        repo: entry.repo,
+        repo_slug: entry.repo_slug,
+        tracked_records: 0,
+        reviewed_recent: 0,
+        stale: 0,
+        failed: 0,
+        expired: 0,
+        unreviewed_records: 0,
+        excluded: 0,
+        oldest_reviewed_at: null,
+      });
     }
     const fleetList = [...fleets.values()]
-      .map((fleet) => ({
-        ...fleet,
-        coverage_percent: fleet.open_records
-          ? Math.round((fleet.reviewed_recent / fleet.open_records) * 1000) / 10
-          : null,
-      }))
+      .map((fleet) =>
+        projectReviewCoverageFleet(
+          fleet,
+          inventoryBySlug.get(fleet.repo_slug) ?? null,
+          inventory !== null,
+        ),
+      )
       .sort((left, right) => left.repo.localeCompare(right.repo));
     const totals = fleetList.reduce(
-      (sum, fleet) => ({
-        open_records: sum.open_records + fleet.open_records,
-        reviewed_recent: sum.reviewed_recent + fleet.reviewed_recent,
-        stale: sum.stale + fleet.stale,
-        failed: sum.failed + fleet.failed,
-        pending: sum.pending + fleet.pending,
-      }),
-      { open_records: 0, reviewed_recent: 0, stale: 0, failed: 0, pending: 0 },
+      (sum, fleet) => {
+        if (!fleet.schedulable) {
+          sum.unschedulable_records += fleet.unschedulable_records;
+          return sum;
+        }
+        sum.open_records += fleet.open_records;
+        sum.reviewable_records += fleet.reviewable_records;
+        sum.tracked_records += fleet.tracked_records;
+        sum.reviewed_recent += fleet.reviewed_recent;
+        sum.stale += fleet.stale;
+        sum.failed += fleet.failed;
+        sum.expired += fleet.expired;
+        sum.unreviewed_records += fleet.unreviewed_records;
+        sum.untracked_open += fleet.untracked_open;
+        sum.pending += fleet.pending;
+        sum.excluded += fleet.excluded;
+        sum.record_drift += fleet.record_drift;
+        return sum;
+      },
+      {
+        open_records: 0,
+        reviewable_records: 0,
+        tracked_records: 0,
+        reviewed_recent: 0,
+        stale: 0,
+        failed: 0,
+        expired: 0,
+        unreviewed_records: 0,
+        untracked_open: 0,
+        pending: 0,
+        excluded: 0,
+        unschedulable_records: 0,
+        record_drift: 0,
+      },
     );
+    const inventoryGeneratedAt = inventory?.generated_at ?? null;
+    const inventoryGeneratedAtMs = Date.parse(inventoryGeneratedAt ?? "");
+    const inventoryStatus =
+      inventory === null
+        ? "missing"
+        : !Number.isFinite(inventoryGeneratedAtMs) ||
+            now - inventoryGeneratedAtMs > REVIEW_COVERAGE_INVENTORY_STALE_MS
+          ? "stale"
+          : "current";
     return {
       window_days: Math.round(windowMs / (24 * 60 * 60 * 1000)),
+      inventory_generated_at: inventoryGeneratedAt,
+      inventory_status: inventoryStatus,
       fleets: fleetList,
       totals: {
         ...totals,
-        coverage_percent: totals.open_records
-          ? Math.round((totals.reviewed_recent / totals.open_records) * 1000) / 10
+        coverage_percent: totals.reviewable_records
+          ? Math.round((totals.reviewed_recent / totals.reviewable_records) * 1000) / 10
           : null,
       },
     };
@@ -1598,30 +1670,177 @@ function canonicalPath(value: unknown) {
 type MutableReviewCoverageFleet = {
   repo: string;
   repo_slug: string;
-  open_records: number;
+  tracked_records: number;
   reviewed_recent: number;
   stale: number;
   failed: number;
-  pending: number;
+  expired: number;
+  unreviewed_records: number;
+  excluded: number;
   oldest_reviewed_at: string | null;
 };
 
+export type ReviewCoverageInventoryRepository = {
+  repo: string;
+  repo_slug: string;
+  open_issues: number;
+  open_pull_requests: number;
+};
+
+export type ReviewCoverageInventorySnapshot = {
+  generated_at: string;
+  repositories: ReviewCoverageInventoryRepository[];
+};
+
 export type ReviewCoverageFleet = MutableReviewCoverageFleet & {
+  open_records: number;
+  reviewable_records: number;
+  untracked_open: number;
+  pending: number;
+  unschedulable_records: number;
+  record_drift: number;
+  schedulable: boolean;
   coverage_percent: number | null;
 };
 
 export type ReviewCoverageSummary = {
   window_days: number;
+  inventory_generated_at: string | null;
+  inventory_status: "current" | "stale" | "missing";
   fleets: ReviewCoverageFleet[];
   totals: {
     open_records: number;
+    reviewable_records: number;
+    tracked_records: number;
     reviewed_recent: number;
     stale: number;
     failed: number;
+    expired: number;
+    unreviewed_records: number;
+    untracked_open: number;
     pending: number;
+    excluded: number;
+    unschedulable_records: number;
+    record_drift: number;
     coverage_percent: number | null;
   };
 };
+
+export function normalizeReviewCoverageInventory(
+  value: unknown,
+): ReviewCoverageInventorySnapshot | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  const generatedAt = String(input.generated_at ?? "").trim();
+  const generatedAtMs = Date.parse(generatedAt);
+  if (!Number.isFinite(generatedAtMs) || !Array.isArray(input.repositories)) return null;
+  if (input.repositories.length > 2_000) return null;
+  const seen = new Set<string>();
+  const repositories: ReviewCoverageInventoryRepository[] = [];
+  for (const candidate of input.repositories) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+    const entry = candidate as Record<string, unknown>;
+    const repo = String(entry.repo ?? "")
+      .trim()
+      .toLowerCase();
+    const repoSlug = String(entry.repo_slug ?? "")
+      .trim()
+      .toLowerCase();
+    const openIssues = Number(entry.open_issues);
+    const openPullRequests = Number(entry.open_pull_requests);
+    if (
+      !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repo) ||
+      !/^[a-z0-9][a-z0-9_.-]*$/.test(repoSlug) ||
+      repo.replace("/", "-") !== repoSlug ||
+      !Number.isSafeInteger(openIssues) ||
+      openIssues < 0 ||
+      !Number.isSafeInteger(openPullRequests) ||
+      openPullRequests < 0 ||
+      seen.has(repoSlug)
+    ) {
+      return null;
+    }
+    seen.add(repoSlug);
+    repositories.push({
+      repo,
+      repo_slug: repoSlug,
+      open_issues: openIssues,
+      open_pull_requests: openPullRequests,
+    });
+  }
+  return { generated_at: new Date(generatedAtMs).toISOString(), repositories };
+}
+
+function projectReviewCoverageFleet(
+  fleet: MutableReviewCoverageFleet,
+  inventory: ReviewCoverageInventoryRepository | null,
+  hasInventory: boolean,
+): ReviewCoverageFleet {
+  if (hasInventory && inventory === null) {
+    return {
+      ...fleet,
+      open_records: 0,
+      reviewable_records: 0,
+      reviewed_recent: 0,
+      stale: 0,
+      failed: 0,
+      expired: 0,
+      unreviewed_records: 0,
+      untracked_open: 0,
+      pending: 0,
+      excluded: 0,
+      unschedulable_records: fleet.tracked_records,
+      record_drift: 0,
+      schedulable: false,
+      coverage_percent: null,
+    };
+  }
+  const openRecords = inventory
+    ? inventory.open_issues + inventory.open_pull_requests
+    : fleet.tracked_records;
+  const excluded = Math.min(fleet.excluded, openRecords);
+  const reviewableRecords = Math.max(0, openRecords - excluded);
+  let remaining = reviewableRecords;
+  const take = (count: number) => {
+    const accepted = Math.min(Math.max(0, count), remaining);
+    remaining -= accepted;
+    return accepted;
+  };
+  const reviewedRecent = take(fleet.reviewed_recent);
+  const stale = take(fleet.stale);
+  const failed = take(fleet.failed);
+  const expired = take(fleet.expired);
+  const unreviewedRecords = take(fleet.unreviewed_records);
+  const untrackedOpen = remaining;
+  return {
+    ...fleet,
+    repo: inventory?.repo ?? fleet.repo,
+    open_records: openRecords,
+    reviewable_records: reviewableRecords,
+    reviewed_recent: reviewedRecent,
+    stale,
+    failed,
+    expired,
+    unreviewed_records: unreviewedRecords,
+    untracked_open: untrackedOpen,
+    pending: expired + unreviewedRecords + untrackedOpen,
+    excluded,
+    unschedulable_records: 0,
+    record_drift: Math.max(0, fleet.tracked_records - openRecords),
+    schedulable: true,
+    coverage_percent: reviewableRecords
+      ? Math.round((reviewedRecent / reviewableRecords) * 1000) / 10
+      : null,
+  };
+}
+
+const REVIEW_COVERAGE_EXCLUDED_LABELS = new Set<string>(
+  CLOSE_PROTECTED_LABEL_NAMES.filter((label) => label !== "maintainer"),
+);
+
+function reviewCoverageRecordExcluded(labels: readonly string[]): boolean {
+  return labels.some((label) => REVIEW_COVERAGE_EXCLUDED_LABELS.has(label.toLowerCase()));
+}
 
 function reviewCoverageHeadText(head: unknown, chunked: boolean): string {
   const raw = typeof head === "string" ? head : "";
@@ -1636,18 +1855,36 @@ function reviewCoverageHeadText(head: unknown, chunked: boolean): string {
 }
 
 function reviewCoverageFrontMatter(head: string): {
+  repository: string | null;
   repo: string | null;
   reviewed_at: string | null;
   review_status: string | null;
+  labels: string[];
 } {
-  const result: { repo: string | null; reviewed_at: string | null; review_status: string | null } =
-    { repo: null, reviewed_at: null, review_status: null };
+  const result: {
+    repository: string | null;
+    repo: string | null;
+    reviewed_at: string | null;
+    review_status: string | null;
+    labels: string[];
+  } = { repository: null, repo: null, reviewed_at: null, review_status: null, labels: [] };
   if (!head.startsWith("---")) return result;
   const end = head.indexOf("\n---", 3);
   const frontMatter = end === -1 ? head : head.slice(0, end);
-  for (const key of ["repo", "reviewed_at", "review_status"] as const) {
+  for (const key of ["repository", "repo", "reviewed_at", "review_status"] as const) {
     const match = frontMatter.match(new RegExp(`^${key}:[ \\t]*"?([^"\\n]*)"?[ \\t]*$`, "m"));
     if (match) result[key] = match[1].trim() || null;
+  }
+  const labels = frontMatter.match(/^labels:[ \t]*(.+?)[ \t]*$/m)?.[1]?.trim();
+  if (labels) {
+    try {
+      const parsed = JSON.parse(labels);
+      if (Array.isArray(parsed)) {
+        result.labels = parsed.filter((label): label is string => typeof label === "string");
+      }
+    } catch {
+      result.labels = labels === "none" ? [] : labels.split(",").map((label) => label.trim());
+    }
   }
   return result;
 }
@@ -1682,3 +1919,4 @@ export async function sha256Hex(bytes: Uint8Array) {
   );
   return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
+import { CLOSE_PROTECTED_LABEL_NAMES } from "../src/repair/exact-review-guard-labels.ts";
