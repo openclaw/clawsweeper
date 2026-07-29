@@ -64,6 +64,8 @@ EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = "60000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = "90000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "180000"
 EXACT_REVIEW_PENDING_SOFT_LIMIT = "300"
+EXACT_REVIEW_TARGET_RATE_PER_HOUR = "200"
+EXACT_REVIEW_TARGET_BURST = "50"
 # Keep each mutation lease at 8 while allowing four isolated workflows to prepare
 # concurrently. Final commits still cross the single state-writer coordinator.
 # A full-window publish moves ~2k paths and observed ~40 min; the drain lease

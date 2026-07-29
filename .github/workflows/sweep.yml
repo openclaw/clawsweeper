@@ -17,6 +17,12 @@ run-name: >-
       github.event.action == 'clawsweeper_target_sweep') &&
       format('Review target repo {0}', github.event.client_payload.target_repo || 'openclaw/openclaw') ||
     (github.event_name == 'repository_dispatch' && github.event.client_payload.queue_lease_id != '') &&
+      github.event.client_payload.source_action == 'scheduled_hot_intake' &&
+      format('Review scheduled hot item {0} rev {1}', github.event.client_payload.queue_claim.item_key || github.event.client_payload.item_key || '?', github.event.client_payload.queue_claim.lease_revision || github.event.client_payload.lease_revision || '?') ||
+    (github.event_name == 'repository_dispatch' && github.event.client_payload.queue_lease_id != '') &&
+      github.event.client_payload.source_action == 'scheduled_normal_backfill' &&
+      format('Review scheduled normal item {0} rev {1}', github.event.client_payload.queue_claim.item_key || github.event.client_payload.item_key || '?', github.event.client_payload.queue_claim.lease_revision || github.event.client_payload.lease_revision || '?') ||
+    (github.event_name == 'repository_dispatch' && github.event.client_payload.queue_lease_id != '') &&
       format('Review exact item {0} rev {1} head {2}', github.event.client_payload.queue_claim.item_key || github.event.client_payload.item_key || '?', github.event.client_payload.queue_claim.lease_revision || github.event.client_payload.lease_revision || '?', github.event.client_payload.queue_claim.source_head_sha || github.event.client_payload.source_head_sha || 'na') ||
     (github.event_name == 'repository_dispatch' && github.event.client_payload.dispatch_key != '') &&
       format('Review event item {0}#{1} [{2}]', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.item_number || '?', github.event.client_payload.dispatch_key) ||
@@ -2496,6 +2502,13 @@ jobs:
       batch_size: ${{ steps.mode.outputs.batch_size }}
       codex_timeout_ms: ${{ steps.mode.outputs.codex_timeout_ms }}
       hot_intake: ${{ steps.mode.outputs.hot_intake }}
+      queue_feed: ${{ steps.mode.outputs.queue_feed }}
+      queue_offered: ${{ steps.enqueue-scheduled.outputs.offered || '0' }}
+      queue_attempted: ${{ steps.enqueue-scheduled.outputs.attempted || '0' }}
+      queue_enqueued: ${{ steps.enqueue-scheduled.outputs.queued || '0' }}
+      queue_deduped: ${{ steps.enqueue-scheduled.outputs.deduped || '0' }}
+      queue_shed: ${{ steps.enqueue-scheduled.outputs.shed || '0' }}
+      queue_deferred: ${{ steps.enqueue-scheduled.outputs.deferred || '0' }}
       matrix: ${{ steps.select.outputs.matrix }}
       max_pages: ${{ steps.mode.outputs.max_pages }}
       min_active_shards: ${{ steps.mode.outputs.min_active_shards }}
@@ -2633,7 +2646,7 @@ jobs:
               for run_status in in_progress pending queued waiting requested; do
                 gh api "repos/${{ github.repository }}/actions/runs?per_page=100&status=${run_status}" \
                   --paginate \
-                  --jq '.workflow_runs[] | {databaseId:.id, workflowPath:.path, displayTitle:.display_title, status:.status, createdAt:.created_at, updatedAt:.updated_at}' 2>/dev/null \
+                  --jq '.workflow_runs[] | {databaseId:.id, workflowPath:.path, displayTitle:.display_title, event:.event, status:.status, createdAt:.created_at, updatedAt:.updated_at}' 2>/dev/null \
                   || true
               done
             } | jq -s 'unique_by(.databaseId)'
@@ -2646,19 +2659,19 @@ jobs:
               || printf '0'
           }
           active_sweep_exact_workers() {
-            local runs total id title status jobs_json active_shards total_shards
+            local runs total id title status run_event jobs_json active_shards total_shards
             local reserved_shards hard_cap requested_shards item_numbers commas item_count
             total=0
             hard_cap="$(limit review_shards.hard_cap)"
             runs="$(printf '%s' "$ACTIVE_RUNS_JSON" \
-              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select((.displayTitle | startswith("Review event item ")) or (.displayTitle | startswith("Review event items "))) | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
-            while IFS=$'\t' read -r id title status; do
+              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select((.displayTitle | startswith("Review exact item ")) or (.displayTitle | startswith("Review scheduled hot item ")) or (.displayTitle | startswith("Review scheduled normal item ")) or (.event == "workflow_dispatch" and ((.displayTitle | startswith("Review event item ")) or (.displayTitle | startswith("Review event items "))))) | [.databaseId, .displayTitle, .status, .event] | @tsv' 2>/dev/null || true)"
+            while IFS=$'\t' read -r id title status run_event; do
               if [ -z "$id" ]; then
                 continue
               fi
               active_shards=0
               total_shards=0
-              if [[ "$title" == Review\ event\ item\ * ]]; then
+              if [[ "$title" == Review\ exact\ item\ * ]] || [[ "$title" == Review\ scheduled\ hot\ item\ * ]] || [[ "$title" == Review\ scheduled\ normal\ item\ * ]] || { [ "$run_event" = "workflow_dispatch" ] && [[ "$title" == Review\ event\ item\ * ]]; }; then
                 active_shards=1
                 total=$((total + active_shards))
                 continue
@@ -2776,6 +2789,7 @@ jobs:
             echo "queue pressure: $pressure_level ($pressure_numbers) — hot_intake $hot_intake_unpressured->$hot_intake_shards, normal_review $normal_unpressured->$normal_shards"
           fi
           hot_intake="${{ ((github.event_name == 'repository_dispatch' && github.event.client_payload.hot_intake == 'true') || (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'true' || 'false' }}"
+          queue_feed="${{ ((github.event_name == 'repository_dispatch' && github.event.action == 'clawsweeper_target_sweep') || github.event_name == 'schedule') && 'true' || 'false' }}"
           target_repo="${{ steps.target.outputs.target_repo }}"
           if [ "$hot_intake" = "true" ] && [ -n "$exact_item" ]; then
             batch_size="1"
@@ -2812,6 +2826,14 @@ jobs:
             min_active_shards="0"
             min_backfill_review_age_minutes="360"
           fi
+          if [ "$queue_feed" = "true" ] && [ -z "$exact_item" ]; then
+            # The Durable Object turns every selected item into an independent exact-review
+            # workflow. Plan a bounded feed batch here; the Worker owns the global 200/hour
+            # admission target and queue backpressure across overlapping target sweeps.
+            batch_size="20"
+            shard_count="1"
+            min_active_shards="0"
+          fi
           if ! [[ "$shard_count" =~ ^[0-9]+$ ]]; then
             shard_count="$normal_shards"
           fi
@@ -2835,6 +2857,7 @@ jobs:
             echo "batch_size=$batch_size"
             echo "codex_timeout_ms=${{ github.event.client_payload.review_options.codex_timeout_ms || github.event.client_payload.codex_timeout_ms || github.event.inputs.codex_timeout_ms || vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}"
             echo "hot_intake=$hot_intake"
+            echo "queue_feed=$queue_feed"
             echo "max_pages=$max_pages"
             echo "min_active_shards=$min_active_shards"
             echo "min_backfill_review_age_minutes=$min_backfill_review_age_minutes"
@@ -2887,7 +2910,47 @@ jobs:
             --shard-count "$SHARD_COUNT" >> "$GITHUB_OUTPUT"
           cat plan.json
 
+      - name: Enqueue scheduled review candidates
+        id: enqueue-scheduled
+        if: ${{ steps.mode.outputs.queue_feed == 'true' && steps.select.outputs.planned_count != '0' }}
+        working-directory: clawsweeper
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+        run: |
+          set -euo pipefail
+          lane="normal_backfill"
+          if [ "${{ steps.mode.outputs.hot_intake }}" = "true" ]; then
+            lane="hot_intake"
+          fi
+          result="$(pnpm run --silent repair:scheduled-review-enqueue -- \
+            --plan plan.json \
+            --lane "$lane" \
+            --target-repo "${{ steps.target.outputs.target_repo }}" \
+            --target-branch "${{ steps.target.outputs.target_branch }}" \
+            --queue-url "$QUEUE_URL" \
+            --delivery-prefix "scheduled:${{ github.run_id }}:${{ github.run_attempt }}")"
+          jq -e '.offered >= .attempted and .attempted >= (.queued + .deduped + .shed + .rejected)' <<<"$result" >/dev/null
+          {
+            echo "offered=$(jq -r .offered <<<"$result")"
+            echo "attempted=$(jq -r .attempted <<<"$result")"
+            echo "queued=$(jq -r .queued <<<"$result")"
+            echo "deduped=$(jq -r .deduped <<<"$result")"
+            echo "shed=$(jq -r .shed <<<"$result")"
+            echo "deferred=$(jq -r .deferred <<<"$result")"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Scheduled review funnel"
+            echo
+            echo "| Selected | Attempted | Enqueued | Deduped | Shed | Deferred |"
+            echo "| ---: | ---: | ---: | ---: | ---: | ---: |"
+            echo "| $(jq -r .offered <<<"$result") | $(jq -r .attempted <<<"$result") | $(jq -r .queued <<<"$result") | $(jq -r .deduped <<<"$result") | $(jq -r .shed <<<"$result") | $(jq -r .deferred <<<"$result") |"
+            echo
+            echo "Selected candidate age (hours): p50 $(jq -r '.ageHours.p50 // "n/a"' <<<"$result"), p90 $(jq -r '.ageHours.p90 // "n/a"' <<<"$result"), oldest $(jq -r '.ageHours.max // "n/a"' <<<"$result")."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Prepare review runtime artifact
+        if: ${{ steps.mode.outputs.queue_feed != 'true' }}
         working-directory: clawsweeper
         env:
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -2901,6 +2964,7 @@ jobs:
           tar -czf .artifacts/review-runtime.tar.gz -C .artifacts/review-runtime .
 
       - uses: actions/upload-artifact@v7
+        if: ${{ steps.mode.outputs.queue_feed != 'true' }}
         with:
           name: clawsweeper-runtime-dist
           path: clawsweeper/.artifacts/review-runtime.tar.gz
@@ -2909,7 +2973,7 @@ jobs:
           retention-days: 1
 
       - name: Publish planning status
-        if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.apply_existing != 'true') && (steps.mode.outputs.hot_intake != 'true' || github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '') }}
+        if: ${{ steps.mode.outputs.queue_feed != 'true' && (github.event_name != 'workflow_dispatch' || github.event.inputs.apply_existing != 'true') && (steps.mode.outputs.hot_intake != 'true' || github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '') }}
         continue-on-error: true
         working-directory: clawsweeper
         env:
@@ -2940,6 +3004,7 @@ jobs:
   review:
     name: Review shard ${{ matrix.shard }} · ${{ needs.plan.outputs.target_repo }}#${{ matrix.item_numbers }}
     needs: plan
+    if: ${{ needs.plan.outputs.queue_feed != 'true' }}
     runs-on: ${{ vars.CLAWSWEEPER_REVIEW_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 75
     continue-on-error: true
@@ -3288,7 +3353,7 @@ jobs:
   publish:
     name: Publish review artifacts
     needs: [plan, review]
-    if: ${{ always() && needs.plan.result == 'success' && needs.review.result != 'cancelled' && needs.plan.outputs.target_repo != '' && (github.event_name != 'repository_dispatch' || github.event.action == 'clawsweeper_target_sweep') && !((github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) || (github.event_name == 'schedule' && ((github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *') || (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *')))) }}
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.queue_feed != 'true' && needs.review.result != 'cancelled' && needs.plan.outputs.target_repo != '' && (github.event_name != 'repository_dispatch' || github.event.action == 'clawsweeper_target_sweep') && !((github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) || (github.event_name == 'schedule' && ((github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *') || (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *')))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
@@ -3860,7 +3925,7 @@ jobs:
   recover-review-failures:
     name: Recover failed review shards
     needs: [plan, review, publish]
-    if: ${{ always() && needs.plan.result == 'success' && needs.review.result != 'skipped' && !contains(github.event.inputs.additional_prompt || '', '[clawsweeper-recovery-attempt=1]') && needs.plan.outputs.planned_item_numbers != '' && github.event_name != 'repository_dispatch' }}
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.queue_feed != 'true' && needs.review.result != 'skipped' && !contains(github.event.inputs.additional_prompt || '', '[clawsweeper-recovery-attempt=1]') && needs.plan.outputs.planned_item_numbers != '' && github.event_name != 'repository_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

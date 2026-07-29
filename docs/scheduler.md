@@ -241,31 +241,34 @@ Current defaults:
 
 - exact event review: 1 shard, 1 item
 - exact manual hot intake: 1 shard, 1 item
-- broad hot intake: up to 44 shards when quiet, batch size 1, scans up to 10
-  GitHub pages
-- scheduled normal backfill: up to 89 shards when quiet, batch size 1, scans up
-  to 250 GitHub pages after reserving interactive and expansion capacity
-- normal active floor: 38 shards for `openclaw/openclaw` scheduled runs and
-  workflow-dispatch continuations; stale current-review backfill is eligible
-  after 6 hours
+- scheduled hot intake and normal backfill: select up to 20 due items per target
+  cycle, then enqueue each item through the durable exact-review queue; every
+  admitted item receives its own parallel workflow
+- total review admission target: 200 items/hour across the fleet; organic work
+  consumes the budget first and scheduled backfill fills the remainder, split
+  35% hot intake and 65% normal backfill, with a 50-item burst
+- fleet fanout: 20 hot targets every 15 minutes and 12 normal targets hourly;
+  each target cycle can offer up to 20 due items to the shared admission budget
+- manual broad hot intake: up to 44 shards when quiet
 - manual normal backfill: defaults to 89 shards, batch size 3, and scans up to
   250 GitHub pages unless overridden
 
 The hard planner cap is 128 shards. The workflow clamps invalid or larger
 `shard_count` inputs to 128.
 
-Broad background review also clamps manual `shard_count` input to the current
+Broad background review clamps manual `shard_count` input to the current
 lane allowance from `worker-limit`. Pending or planning background sweeps reserve
 their quiet lane size until their matrix shards exist, so overlapping manual or
-scheduled dispatches cannot temporarily exceed the shared worker budget while
-GitHub is still expanding jobs.
+operator dispatches cannot temporarily exceed the shared worker budget while
+GitHub is still expanding jobs. Scheduled feeds use one planner shard because
+the Durable Object, not the matrix, owns review concurrency.
 
-Planning is also the runtime build point for matrix review. The plan job installs
+Planning is also the runtime build point for manual matrix review. The plan job installs
 with pinned Node 24 and `pnpm@11.10.0`, builds `dist/` once, and uploads that
 runtime artifact. Review shards download the built `dist/` and run
 `node dist/clawsweeper.js review` directly instead of running a per-shard pnpm
-install and build. This keeps 44-89 shard waves from stampeding the npm
-registry or Corepack metadata endpoints.
+install and build. Scheduled queue feeds skip this artifact because each exact
+review workflow builds from its immutable queue decision.
 
 Each review shard also wraps the review command in a shell timeout derived from
 the per-item Codex timeout and the shard batch size, with a 70-minute ceiling so
@@ -280,13 +283,12 @@ hydrating historical records. Publish and apply jobs keep full state history
 because they may rebase and push generated records.
 
 Normal backfill runs every 5 minutes for `openclaw/openclaw`. Its planner
-serializes per target repository, but the run-scoped workflow group allows a
-new wave to overlap an older wave that is finishing slow shards or publishing.
-One quiet-system run can hold up to 89 Codex review shards with up to three
-items per shard; each later planner subtracts the older wave's live shards
-before choosing its own matrix size.
+serializes per target repository, selects globally before sharding, and offers
+the oldest due candidates to the durable queue. Queue admission is fleet-wide,
+so overlapping core and fanout cycles fill only the residual of the configured
+200/hour model-spend target after organic review demand.
 
-The quiet-system ceiling is not a promise that every scheduled run dispatches
+The manual quiet-system ceiling is not a promise that every operator run dispatches
 that many shards. The `mode` step checks active repair workers, exact-item sweep
 runs, commit-review pages, and live normal/hot review shard jobs, then asks
 `worker-limit normal_review` or `worker-limit hot_intake` for the current
@@ -300,13 +302,28 @@ Background lanes also subtract an 8-worker expansion reserve so independently
 planned exact-item and commit-review runs have room to start without pushing the
 live Codex count past the global budget.
 
-The active floor is not a separate lane and does not change close/apply safety.
+The manual active floor is not a separate lane and does not change close/apply safety.
 It only changes normal planning when due backlog is below the desired floor:
 after selecting all due candidates, the planner fills up to 38 nonempty shards
 with eligible items whose latest complete review is at least 6 hours old.
 Capacity status reports this as `floor: due backlog below active floor`. If the
 central worker scheduler returns fewer than 38 allowed shards, the smaller
 worker allowance wins.
+
+Scheduled planning does not use the active-floor backfill. It selects only due
+items, records each candidate's previous-review age in `plan.json`, and writes a
+run-summary funnel for selected, attempted, enqueued, deduped, shed, and deferred
+items. The queue exposes the configured rate, burst, and currently available
+token balance under `scheduled_feed` in `GET /api/exact-review-queue`.
+
+At the configured target, the installation-token estimate is
+`200 reviews/hour * 30 calls/review = 6,000 calls/hour`. That is half of the
+roughly 12,000-call or 400-review/hour ceiling, leaving equivalent headroom for
+planning, retries, publication, and traffic variance. At a 4.1-minute mean
+service time, 200/hour needs about `200 * 4.1 / 60 = 13.7` concurrent review
+workers, well below the 120 per-target and 128 global claim limits. Model usage
+is nevertheless about five times a 40-review/hour baseline; lower
+`EXACT_REVIEW_TARGET_RATE_PER_HOUR` to dial spend down.
 
 On saturated queues, normal planning reads the complete bounded open-item scan
 before selecting candidates. For the current largest repository this is about
@@ -613,10 +630,11 @@ can be newer than local files.
 
 ## Common Changes
 
-To change how many normal Codex sessions can run, update both
-`.github/workflows/sweep.yml` and the planner constants in `src/clawsweeper.ts`.
-The workflow can otherwise continue with stale defaults during continuation
-runs.
+To change review spend, set
+`EXACT_REVIEW_TARGET_RATE_PER_HOUR`; the Worker applies the fleet-wide rate
+while the workflow's 20-item plan batch keeps enough candidates available. To
+change manual normal Codex sessions, update the worker limits and workflow
+defaults together.
 
 To change review cadence, update the cadence constants and the scheduler bucket
 logic in `src/clawsweeper.ts`, then update dashboard labels and this document.

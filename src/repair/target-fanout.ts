@@ -73,6 +73,7 @@ interface FanoutOptions {
 
 const DEFAULT_CURSOR_DIR = join(repoRoot(), "results", "target-fanout-cursors");
 const PUBLIC_INVENTORY_TOKEN = "__public__";
+export const SCHEDULED_REVIEW_PLAN_BATCH_SIZE = 20;
 
 export async function runTargetFanout(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
@@ -275,7 +276,7 @@ function workflowDispatchArgs(repository: SelectedRepository, options: FanoutOpt
       "-f",
       `client_payload[hot_intake]=${options.mode === "hot-intake" ? "true" : "false"}`,
       "-f",
-      "client_payload[batch_size]=1",
+      `client_payload[batch_size]=${SCHEDULED_REVIEW_PLAN_BATCH_SIZE}`,
       "-f",
       "client_payload[shard_count]=1",
     ];

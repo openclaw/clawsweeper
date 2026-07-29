@@ -375,7 +375,7 @@ test("review execution tokens can read check runs and commit statuses", () => {
   );
 });
 
-test("scheduled review shards receive the compiler-backed runtime artifact", () => {
+test("manual review shards receive the compiler-backed runtime artifact", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const planJobStart = workflow.indexOf("\n  plan:");
   const reviewJobStart = workflow.indexOf("\n  review:", planJobStart);
@@ -398,6 +398,8 @@ test("scheduled review shards receive the compiler-backed runtime artifact", () 
     planJob,
     /name: clawsweeper-runtime-dist\s+path: clawsweeper\/\.artifacts\/review-runtime\.tar\.gz\s+include-hidden-files: true/,
   );
+  assert.match(planJob, /if: \$\{\{ steps\.mode\.outputs\.queue_feed != 'true' \}\}/);
+  assert.match(reviewJob, /if: \$\{\{ needs\.plan\.outputs\.queue_feed != 'true' \}\}/);
   assert.match(reviewJob, /name: clawsweeper-runtime-dist\s+path: clawsweeper\/\.artifacts/);
   assert.doesNotMatch(reviewJob, /name: clawsweeper-runtime-dist\s+path: clawsweeper\/dist/);
   assert.match(reviewJob, /tar -xzf \.artifacts\/review-runtime\.tar\.gz/);
@@ -2427,7 +2429,7 @@ test("comment router prunes bare ack comments after updating shared automerge st
   assert.match(postComment, /pruned_ack_comment_id: String\(precreatedId\)/);
 });
 
-test("manual exact-item review dispatches reserve their live shard capacity", () => {
+test("exact queue and manual item dispatches reserve their live shard capacity", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const runName = workflow.slice(workflow.indexOf("run-name:"), workflow.indexOf("\non:"));
   const exactCapacityBlock = workflow.slice(
@@ -2465,8 +2467,14 @@ test("manual exact-item review dispatches reserve their live shard capacity", ()
   );
   assert.match(exactCapacityBlock, /\.displayTitle \| startswith\("Review event item "\)/);
   assert.match(exactCapacityBlock, /\.displayTitle \| startswith\("Review event items "\)/);
+  assert.match(exactCapacityBlock, /\.displayTitle \| startswith\("Review exact item "\)/);
+  assert.match(exactCapacityBlock, /\.displayTitle \| startswith\("Review scheduled hot item "\)/);
+  assert.match(
+    exactCapacityBlock,
+    /\.displayTitle \| startswith\("Review scheduled normal item "\)/,
+  );
   const singularFastPath = exactCapacityBlock.slice(
-    exactCapacityBlock.indexOf('if [[ "$title" == Review\\ event\\ item\\ * ]]'),
+    exactCapacityBlock.indexOf('if [[ "$title" == Review\\ exact\\ item\\ * ]]'),
     exactCapacityBlock.indexOf('if [ "$status" = "in_progress" ]'),
   );
   assert.match(singularFastPath, /active_shards=1/);
@@ -2552,6 +2560,26 @@ test("target hot sweep dispatches honor shard cap payload", () => {
     /shard_count="\$\{\{ github\.event\.client_payload\.shard_count \|\| '' \}\}"/,
   );
   assert.match(modeBlock, /shard_count="\$hot_intake_shards"/);
+});
+
+test("scheduled reviews feed the durable queue instead of one-item matrix workers", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const modeBlock = workflow.slice(
+    workflow.indexOf("- id: mode"),
+    workflow.indexOf("\n      - id: select"),
+  );
+  const enqueueBlock = workflow.slice(
+    workflow.indexOf("- name: Enqueue scheduled review candidates"),
+    workflow.indexOf("\n      - name: Prepare review runtime artifact"),
+  );
+
+  assert.match(modeBlock, /queue_feed=.*clawsweeper_target_sweep/);
+  assert.match(modeBlock, /batch_size="20"[\s\S]*shard_count="1"/);
+  assert.match(enqueueBlock, /repair:scheduled-review-enqueue/);
+  assert.match(enqueueBlock, /Scheduled review funnel/);
+  assert.match(workflow, /Review scheduled hot item/);
+  assert.match(workflow, /Review scheduled normal item/);
+  assert.match(workflow, /needs\.plan\.outputs\.queue_feed != 'true'/);
 });
 
 test("review git info follows checked-out target branch", () => {
@@ -2790,17 +2818,16 @@ test("target review queues coalesce background work without delaying exact plann
   assert.match(planHeader, /cancel-in-progress: false/);
 });
 
-test("scheduled normal review uses one item per shard for lease coverage", () => {
+test("scheduled normal review offers a 20-item queue batch on one planner shard", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const modeBlock = workflow.slice(
     workflow.indexOf("- id: mode"),
     workflow.indexOf("- id: select"),
   );
 
-  assert.match(
-    modeBlock,
-    /if \[ "\$\{\{ github\.event_name \}\}" = "schedule" \]; then\s+batch_size="1"/,
-  );
+  assert.match(modeBlock, /if \[ "\$queue_feed" = "true" \] && \[ -z "\$exact_item" \]; then/);
+  assert.match(modeBlock, /batch_size="20"[\s\S]*shard_count="1"/);
+  assert.match(modeBlock, /min_active_shards="0"/);
 });
 
 test("planned background reviews allow safe content-cache reuse without weakening exact reviews", () => {

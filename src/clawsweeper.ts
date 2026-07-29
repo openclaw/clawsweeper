@@ -1139,6 +1139,15 @@ interface PlanCandidateResult {
   oldestUnreviewedAt: string | undefined;
   capacityReason: string;
   floorBackfill: number;
+  selection: PlanSelectionTelemetry[];
+}
+
+interface PlanSelectionTelemetry {
+  itemNumber: number;
+  bucket: SchedulerDueCandidate["bucket"];
+  lastReviewedAt: string | null;
+  ageMs: number;
+  nextDueAt: string;
 }
 
 const DEFAULT_PLAN_BATCH_SIZE = 3;
@@ -9068,6 +9077,23 @@ function planCapacityReason(options: {
   return "under capacity: due backlog below planned capacity";
 }
 
+function planSelectionTelemetry(
+  selected: readonly DueCandidate[],
+  now: number,
+): PlanSelectionTelemetry[] {
+  return selected.map((candidate) => {
+    const createdAt = Date.parse(candidate.item.createdAt);
+    const referenceAt = candidate.reviewedAt > 0 ? candidate.reviewedAt : createdAt;
+    return {
+      itemNumber: candidate.item.number,
+      bucket: candidate.bucket,
+      lastReviewedAt: candidate.review?.reviewedAt ?? null,
+      ageMs: Number.isFinite(referenceAt) ? Math.max(0, now - referenceAt) : 0,
+      nextDueAt: new Date(candidate.nextDueAt).toISOString(),
+    };
+  });
+}
+
 function planCandidates(options: {
   batchSize: number;
   maxPages: number;
@@ -9103,6 +9129,7 @@ function planCandidates(options: {
       activeCodexTarget: activeCodexTarget(shards),
       oldestUnreviewedAt: undefined,
       floorBackfill: 0,
+      selection: [],
       capacityReason: planCapacityReason({
         selectedCount: candidates.length,
         dueBacklog: candidates.length,
@@ -9125,6 +9152,7 @@ function planCandidates(options: {
       activeCodexTarget: activeCodexTarget(shards),
       oldestUnreviewedAt: undefined,
       floorBackfill: 0,
+      selection: [],
       capacityReason: planCapacityReason({
         selectedCount: candidates.length,
         dueBacklog: candidates.length,
@@ -9150,9 +9178,8 @@ function planCandidates(options: {
       );
       if (candidate) due.push(candidate);
     }
-    const candidates = selectDueCandidates(due, capacity, compareHotIntakeDueCandidates, now).map(
-      ({ item }) => item,
-    );
+    const selected = selectDueCandidates(due, capacity, compareHotIntakeDueCandidates, now);
+    const candidates = selected.map(({ item }) => item);
     const shards = Array.from(
       { length: Math.max(1, Math.min(shardCount, candidates.length || 1)) },
       (_, shard) => ({ shard, itemNumbers: [] as number[] }),
@@ -9169,6 +9196,7 @@ function planCandidates(options: {
       activeCodexTarget: activeCodexTarget(shards),
       oldestUnreviewedAt: oldestUnreviewedAt(due),
       floorBackfill: 0,
+      selection: planSelectionTelemetry(selected, now),
       capacityReason: planCapacityReason({
         selectedCount: candidates.length,
         dueBacklog: due.length,
@@ -9231,6 +9259,7 @@ function planCandidates(options: {
     activeCodexTarget: activeCodexTarget(shards),
     oldestUnreviewedAt: oldestUnreviewedAt(due),
     floorBackfill,
+    selection: planSelectionTelemetry(selected, now),
     capacityReason: planCapacityReason({
       selectedCount: candidates.length,
       dueBacklog: due.length,

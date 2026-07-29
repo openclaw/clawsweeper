@@ -66,6 +66,8 @@ const FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION = "failed_review_shard_recovery
 const EXACT_REVIEW_ARTIFACT_PUBLISH_SOURCE_ACTION = "exact_review_artifact_publish";
 const EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION = "artifact_retention_recovery";
 const EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION = "source_drift_requeue";
+const EXACT_REVIEW_SCHEDULED_HOT_SOURCE_ACTION = "scheduled_hot_intake";
+const EXACT_REVIEW_SCHEDULED_NORMAL_SOURCE_ACTION = "scheduled_normal_backfill";
 // Direct publication synthesizes its receipt inside the Durable Object and does
 // not have a state-batch artifact source SHA. Keep that path out of the
 // historical state-batch reconciliation below.
@@ -410,6 +412,11 @@ const DEFAULT_EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = 60_000;
 const DEFAULT_EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = 90_000;
 const DEFAULT_EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = 3 * 60_000;
 const DEFAULT_EXACT_REVIEW_PENDING_SOFT_LIMIT = 300;
+const DEFAULT_EXACT_REVIEW_TARGET_RATE_PER_HOUR = 200;
+const DEFAULT_EXACT_REVIEW_TARGET_BURST = 50;
+const EXACT_REVIEW_SCHEDULED_FEED_KEY_PREFIX = "exact-review-scheduled-feed:v1";
+type ExactReviewScheduledLane = "hot_intake" | "normal_backfill";
+type ExactReviewScheduledBucket = ExactReviewScheduledLane | "global";
 const EXACT_REVIEW_COMPLETION_RETRY_MAX_MS = 2 * 60 * 60 * 1000;
 const EXACT_REVIEW_ARTIFACT_RETRY_MAX_MS = 80 * 24 * 60 * 60 * 1000;
 const EXACT_REVIEW_PUBLICATION_TRANSIENT_RETRY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -1250,6 +1257,15 @@ export class ExactReviewQueue {
           }
         }
         const current = state.items[key];
+        if (current && exactReviewScheduledLane(decision)) {
+          this.writeStateSync(state);
+          return {
+            deduped: true as const,
+            scheduled: true as const,
+            key,
+            state,
+          };
+        }
         let supersededRunId: string | null = null;
         let supersessionAudit: ExactReviewSupersessionAudit | null = null;
         let ingressAdmitted = false;
@@ -1357,13 +1373,25 @@ export class ExactReviewQueue {
         } else {
           if (
             !decision.publication &&
-            isLowPriorityExactReviewDecision(decision) &&
+            (isLowPriorityExactReviewDecision(decision) || exactReviewScheduledLane(decision)) &&
             exactReviewQueuePendingCount(state) >= exactReviewPendingSoftLimit(this.env)
           ) {
             state.shedSinceReset = exactReviewShedSinceReset(state) + 1;
             this.writeStateSync(state);
             this.incrementQueueMetricsSync({ reviewShed: 1 });
-            return { shed: true as const };
+            return { shed: true as const, reason: "backpressure" as const };
+          }
+          if (
+            exactReviewScheduledLane(decision) &&
+            !this.takeScheduledReviewTokenSync(decision, now)
+          ) {
+            state.shedSinceReset = exactReviewShedSinceReset(state) + 1;
+            this.writeStateSync(state);
+            this.incrementQueueMetricsSync({ reviewShed: 1 });
+            return { shed: true as const, reason: "scheduled_rate" as const };
+          }
+          if (!decision.publication && !exactReviewScheduledLane(decision)) {
+            this.consumeScheduledReviewCapacitySync(now);
           }
           state.items[key] = {
             key,
@@ -1440,6 +1468,12 @@ export class ExactReviewQueue {
                   dedupe_reason: "unchanged_pull_request_edit",
                 }
               : {}),
+            ...("scheduled" in accepted && accepted.scheduled
+              ? {
+                  dedupe_scope: "scheduled_queue_item",
+                  dedupe_reason: "item_already_pending_or_active",
+                }
+              : {}),
             ...("staleSource" in accepted && accepted.staleSource ? { stale_source: true } : {}),
             ...(accepted.superseded
               ? {
@@ -1456,7 +1490,7 @@ export class ExactReviewQueue {
         );
       }
       if (accepted.shed) {
-        return json({ ok: true, shed: true, reason: "backpressure" }, 202);
+        return json({ ok: true, shed: true, reason: accepted.reason }, 202);
       }
       await this.scheduleNext(accepted.state, now);
       return json(
@@ -2789,6 +2823,7 @@ export class ExactReviewQueue {
           },
         },
         delivery_receipts: this.deliveryReceiptCountSync(),
+        scheduled_feed: this.scheduledReviewFeedStatusSync(now),
         review_telemetry_health: reviewTelemetryHealth,
         reservation_claim_observability: reservationClaimObservability,
         state_writer: { ...stateWriter, coordinator: stateWriterCoordinator },
@@ -6421,6 +6456,72 @@ export class ExactReviewQueue {
       this.env,
       this.storage.kv.get(EXACT_REVIEW_PUBLICATION_CONTROL_KEY),
     );
+  }
+
+  private takeScheduledReviewTokenSync(decision: ExactReviewDecision, now: number) {
+    const lane = exactReviewScheduledLane(decision);
+    if (!lane) return true;
+    const global = this.scheduledReviewBucketSync("global", now);
+    const bucket = this.scheduledReviewBucketSync(lane, now);
+    const admitted = global.tokens >= 1 && bucket.tokens >= 1;
+    this.storage.kv.put(exactReviewScheduledFeedKey("global"), {
+      tokens: admitted ? global.tokens - 1 : global.tokens,
+      updatedAt: now,
+    });
+    this.storage.kv.put(exactReviewScheduledFeedKey(lane), {
+      tokens: admitted ? bucket.tokens - 1 : bucket.tokens,
+      updatedAt: now,
+    });
+    return admitted;
+  }
+
+  private consumeScheduledReviewCapacitySync(now: number) {
+    const global = this.scheduledReviewBucketSync("global", now);
+    this.storage.kv.put(exactReviewScheduledFeedKey("global"), {
+      tokens: Math.max(-global.burst, global.tokens - 1),
+      updatedAt: now,
+    });
+  }
+
+  private scheduledReviewBucketSync(lane: ExactReviewScheduledBucket, now: number) {
+    const ratePerHour = exactReviewScheduledRatePerHour(this.env, lane);
+    const burst = exactReviewScheduledBurst(this.env, lane);
+    const stored = objectValue(this.storage.kv.get(exactReviewScheduledFeedKey(lane)));
+    const updatedAt = Number(stored.updatedAt);
+    const storedTokens = Number(stored.tokens);
+    if (!Number.isFinite(updatedAt) || !Number.isFinite(storedTokens)) {
+      return { tokens: burst, updatedAt: now, ratePerHour, burst };
+    }
+    const elapsedMs = Math.max(0, now - updatedAt);
+    return {
+      tokens: Math.min(burst, Math.max(0, storedTokens) + (elapsedMs * ratePerHour) / 3_600_000),
+      updatedAt: now,
+      ratePerHour,
+      burst,
+    };
+  }
+
+  private scheduledReviewFeedStatusSync(now: number) {
+    const global = this.scheduledReviewBucketSync("global", now);
+    const hot = this.scheduledReviewBucketSync("hot_intake", now);
+    const normal = this.scheduledReviewBucketSync("normal_backfill", now);
+    return {
+      target_rate_per_hour: global.ratePerHour,
+      burst: global.burst,
+      token_balance: Math.floor(global.tokens),
+      lanes: {
+        hot_intake: {
+          target_rate_per_hour: hot.ratePerHour,
+          burst: hot.burst,
+          token_balance: Math.floor(hot.tokens),
+        },
+        normal_backfill: {
+          target_rate_per_hour: normal.ratePerHour,
+          burst: normal.burst,
+          token_balance: Math.floor(normal.tokens),
+        },
+      },
+    };
   }
 
   private refreshPublicationControlSync(state: ExactReviewQueueState, now: number) {
@@ -10641,6 +10742,50 @@ function exactReviewPendingSoftLimit(env) {
       numberFrom(env.EXACT_REVIEW_PENDING_SOFT_LIMIT, DEFAULT_EXACT_REVIEW_PENDING_SOFT_LIMIT),
     ),
   );
+}
+
+function exactReviewScheduledLane(decision: ExactReviewDecision): ExactReviewScheduledLane | null {
+  if (decision.sourceAction === EXACT_REVIEW_SCHEDULED_HOT_SOURCE_ACTION) return "hot_intake";
+  if (decision.sourceAction === EXACT_REVIEW_SCHEDULED_NORMAL_SOURCE_ACTION) {
+    return "normal_backfill";
+  }
+  return null;
+}
+
+function exactReviewScheduledFeedKey(lane: ExactReviewScheduledBucket) {
+  return `${EXACT_REVIEW_SCHEDULED_FEED_KEY_PREFIX}:${lane}`;
+}
+
+function exactReviewScheduledRatePerHour(env, lane: ExactReviewScheduledBucket) {
+  const total = Math.max(
+    2,
+    Math.min(
+      2_000,
+      Math.floor(
+        numberFrom(
+          env.EXACT_REVIEW_TARGET_RATE_PER_HOUR,
+          DEFAULT_EXACT_REVIEW_TARGET_RATE_PER_HOUR,
+        ),
+      ),
+    ),
+  );
+  if (lane === "global") return total;
+  const hot = Math.max(1, Math.floor(total * 0.35));
+  return lane === "hot_intake" ? hot : total - hot;
+}
+
+function exactReviewScheduledBurst(env, lane: ExactReviewScheduledBucket) {
+  const total = Math.max(
+    2,
+    Math.min(
+      exactReviewScheduledRatePerHour(env, "hot_intake") +
+        exactReviewScheduledRatePerHour(env, "normal_backfill"),
+      Math.floor(numberFrom(env.EXACT_REVIEW_TARGET_BURST, DEFAULT_EXACT_REVIEW_TARGET_BURST)),
+    ),
+  );
+  if (lane === "global") return total;
+  const hot = Math.max(1, Math.floor(total * 0.35));
+  return lane === "hot_intake" ? hot : total - hot;
 }
 
 function stateAppendMaxPendingRows(env) {

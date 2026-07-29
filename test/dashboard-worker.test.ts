@@ -53,6 +53,8 @@ test("production doubles exact review claims and canonical publication batches",
   assert.match(wrangler, /EXACT_REVIEW_ACTIONS_BUDGET = "194"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "8"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT = "8"/);
+  assert.match(wrangler, /EXACT_REVIEW_TARGET_RATE_PER_HOUR = "200"/);
+  assert.match(wrangler, /EXACT_REVIEW_TARGET_BURST = "50"/);
 });
 
 test("full exact-review admission preserves production verdict publication capacity", () => {
@@ -1885,6 +1887,115 @@ test("exact-review queue sheds only new recovery work above the pending soft lim
     retry_amplification: null,
   });
   assert.equal(stats.lanes.publication.enqueued_total, 1);
+});
+
+test("scheduled review feed is lane-paced and exposes its configured target", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      EXACT_REVIEW_TARGET_RATE_PER_HOUR: "2",
+      EXACT_REVIEW_TARGET_BURST: "2",
+      EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "600000",
+    },
+  );
+
+  for (const [lane, sourceAction, start] of [
+    ["hot_intake", "scheduled_hot_intake", 780],
+    ["normal_backfill", "scheduled_normal_backfill", 790],
+  ] as const) {
+    const admitted = await queue.fetch(
+      buildExactReviewQueueRequest(`scheduled-${lane}-1`, start, sourceAction),
+    );
+    assert.equal((await admitted.json()).queued, true);
+    const limited = await queue.fetch(
+      buildExactReviewQueueRequest(`scheduled-${lane}-2`, start + 1, sourceAction),
+    );
+    assert.deepEqual(await limited.json(), {
+      ok: true,
+      shed: true,
+      reason: "scheduled_rate",
+    });
+  }
+
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.pending, 2);
+  assert.equal(stats.shed_since_reset, 2);
+  assert.deepEqual(stats.scheduled_feed, {
+    target_rate_per_hour: 2,
+    burst: 2,
+    token_balance: 0,
+    lanes: {
+      hot_intake: { target_rate_per_hour: 1, burst: 1, token_balance: 0 },
+      normal_backfill: { target_rate_per_hour: 1, burst: 1, token_balance: 0 },
+    },
+  });
+});
+
+test("organic reviews consume the global target before scheduled backfill", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      EXACT_REVIEW_TARGET_RATE_PER_HOUR: "2",
+      EXACT_REVIEW_TARGET_BURST: "2",
+    },
+  );
+  await queue.fetch(buildExactReviewQueueRequest("organic-1", 795, "opened"));
+  await queue.fetch(buildExactReviewQueueRequest("organic-2", 796, "opened"));
+  const scheduled = await queue.fetch(
+    buildExactReviewQueueRequest("scheduled-after-organic", 797, "scheduled_normal_backfill"),
+  );
+  assert.deepEqual(await scheduled.json(), {
+    ok: true,
+    shed: true,
+    reason: "scheduled_rate",
+  });
+});
+
+test("scheduled review feed dedupes untouched queued items without superseding them", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  assert.equal(
+    (await queue.fetch(buildExactReviewQueueRequest("ordinary-before-schedule", 800, "opened")))
+      .status,
+    202,
+  );
+
+  const duplicate = await queue.fetch(
+    buildExactReviewQueueRequest("scheduled-duplicate", 800, "scheduled_normal_backfill"),
+  );
+  assert.deepEqual(await duplicate.json(), {
+    ok: true,
+    deduped: true,
+    item_key: "openclaw/gogcli#800",
+    dedupe_scope: "scheduled_queue_item",
+    dedupe_reason: "item_already_pending_or_active",
+  });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { revision: number; decision: { sourceAction: string } }>;
+  };
+  assert.equal(state.items["openclaw/gogcli#800"].revision, 1);
+  assert.equal(state.items["openclaw/gogcli#800"].decision.sourceAction, "opened");
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.review.enqueued_total, 1);
+  assert.equal(stats.lanes.review.superseded_total, 0);
+});
+
+test("scheduled review feed stops at the pending soft limit", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_PENDING_SOFT_LIMIT: "1" });
+  await queue.fetch(
+    buildExactReviewQueueRequest("scheduled-pending-1", 810, "scheduled_hot_intake"),
+  );
+  const shed = await queue.fetch(
+    buildExactReviewQueueRequest("scheduled-pending-2", 811, "scheduled_hot_intake"),
+  );
+  assert.deepEqual(await shed.json(), { ok: true, shed: true, reason: "backpressure" });
 });
 
 test("exact-review queue does not count work for a disabled target", async () => {

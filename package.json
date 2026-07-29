@@ -67,6 +67,7 @@
     "repair:spam-scan": "node dist/repair/spam-scanner.js",
     "repair:exact-review-bundle": "node dist/repair/exact-review-bundle-cli.js",
     "repair:exact-review-queue-maintenance": "node dist/repair/exact-review-queue-maintenance.js",
+    "repair:scheduled-review-enqueue": "node dist/repair/scheduled-review-enqueue.js",
     "repair:exact-review-dead-letters": "node scripts/exact-review-dead-letter-operator.mjs",
     "repair:exact-review-batch": "node dist/repair/exact-review-batch-cli.js",
     "repair:exact-review-direct-publication": "node dist/repair/exact-review-direct-publication.js",

@@ -184,7 +184,7 @@ jobs:
               for run_status in in_progress pending queued waiting requested; do
                 gh api "repos/${{ github.repository }}/actions/runs?per_page=100&status=${run_status}" \
                   --paginate \
-                  --jq '.workflow_runs[] | {databaseId:.id, workflowPath:.path, displayTitle:.display_title, status:.status, createdAt:.created_at, updatedAt:.updated_at}' 2>/dev/null \
+                  --jq '.workflow_runs[] | {databaseId:.id, workflowPath:.path, displayTitle:.display_title, event:.event, status:.status, createdAt:.created_at, updatedAt:.updated_at}' 2>/dev/null \
                   || true
               done
             } | jq -s 'unique_by(.databaseId)'
@@ -261,7 +261,7 @@ jobs:
           }
           active_sweep_exact_count() {
             printf '%s' "$ACTIVE_RUNS_JSON" \
-              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq '[.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select((.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) and (.displayTitle | startswith("Review event item ")))] | length' 2>/dev/null \
+              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq '[.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select((.displayTitle | startswith("Review exact item ")) or (.displayTitle | startswith("Review scheduled hot item ")) or (.displayTitle | startswith("Review scheduled normal item ")) or (.event == "workflow_dispatch" and (.displayTitle | startswith("Review event item "))))] | length' 2>/dev/null \
               || printf '0'
           }
           # An explicit CLAWSWEEPER_COMMIT_REVIEW_PAGE_SIZE is an operator escape hatch:

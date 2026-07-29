@@ -108,9 +108,11 @@ Formula summary:
 
 ## Dynamic Scheduling
 
-Normal review, hot intake, and commit review are background lanes. Before they
-dispatch, the workflow asks `pnpm run workflow -- worker-limit <lane>` for the
-current allowance.
+Manual normal review, manual hot intake, and commit review are background lanes.
+Before they dispatch, the workflow asks
+`pnpm run workflow -- worker-limit <lane>` for the current allowance. Automated
+normal and hot cycles enqueue exact-review work instead, so the Durable Object's
+rate, backlog, and claim limits own their concurrency.
 
 The scheduler does this for background lanes:
 
@@ -147,9 +149,10 @@ unset, empty, or invalid values use the defaults.
 | `CLAWSWEEPER_QUEUE_PRESSURE_SOFT_AGE_MS`  | 1800000 |
 | `CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS`  | 7200000 |
 
-Only normal review, hot intake, and commit review use this pressure multiplier.
-Repair, assist, issue implementation, cluster repair, and exact-item review keep
-their existing priority budgets.
+Only manual normal review, manual hot intake, and commit review use this pressure
+multiplier. Scheduled review uses the queue's 300-item soft limit and 200/hour
+admission target. Repair, assist, issue implementation, cluster repair, and
+exact-item review keep their existing priority budgets.
 
 Background planner jobs serialize per target repository. A sweep that is still
 planning, queued, or expanding its matrix reserves its quiet lane size. Once
@@ -200,8 +203,14 @@ on the lease claim tuple, so they cannot terminate the sole valid owner. An olde
 unclaimed workflow cannot pass the replacement lease tuple and exits before
 review compute. Explicit command work and publication work bypass the delay.
 When pending depth reaches
-`EXACT_REVIEW_PENDING_SOFT_LIMIT` (300 by default), new recovery-only work is
-shed; existing items, webhook events, commands, and publications remain admitted.
+`EXACT_REVIEW_PENDING_SOFT_LIMIT` (300 by default), new recovery and scheduled
+feed work is shed; existing items, webhook events, commands, and publications
+remain admitted. All newly queued review work debits a durable 200-review/hour
+budget with a 50-item burst. Organic work is always admitted and consumes the
+budget first; scheduled work fills the remainder and is split 35% hot intake and
+65% normal backfill so hot churn cannot starve oldest-first coverage. Re-offering an item
+that is already pending, dispatching, or leased is a semantic dedupe: it does not
+advance the queue revision, revoke a lease, or count as new work.
 
 Exact-review result publication has a separate adaptive Actions lane. Source
 fallbacks start at 24 and rise in steps of 8 up to 48; production currently
@@ -240,7 +249,10 @@ Candidates absent from those pages fall back to exact run lookup. This keeps
 steady-state GitHub API work constant without losing an older claim, while a
 terminal burst does not consume one Actions runner per review. Unclaimed
 dispatches expire after six minutes and receive a new opaque lease; delayed
-workflows holding the expired lease cannot claim it.
+workflows holding the expired lease cannot claim it. The six-minute timer covers
+only the GitHub dispatch-to-claim handoff. Once the first workflow step claims
+the item, the 130-minute execution lease and one-minute heartbeats take over, so
+the handoff recycler cannot race a normal four-minute review completion.
 Run-attempt binding and a per-claim generation check keep delayed terminal
 decisions from releasing a later rerun; queued and in-progress runs are never
 released. If a workflow never claims or completes, the Durable Object reclaims
@@ -262,9 +274,10 @@ resolve, and exact-revision supersede records without exposing decisions publicl
 
 Examples with the current config:
 
-- Quiet system: scheduled and manual normal review can request 89 shards, with
-  104 background slots available after reserving 16 for interactive work and 8
-  for matrix expansion.
+- Quiet system: manual normal review can request 89 shards, with 104 background
+  slots available after reserving 16 for interactive work and 8 for matrix
+  expansion. Scheduled plans offer up to 20 candidates to the 200/hour durable
+  admission budget instead of starting matrix shards.
 - 4 active repair workers and 96 active background workers: normal review gets
   4 because `128 - 16 interactive reserve - 8 expansion reserve - 4 priority
   - 96 background = 4`.
@@ -318,7 +331,12 @@ hot intake `14`, and commit review `2`. Existing repair lanes keep their
 - `EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS` overrides the 180,000 ms maximum
   coalescing window measured from the item's first enqueue.
 - `EXACT_REVIEW_PENDING_SOFT_LIMIT` overrides the pending-depth threshold for
-  shedding new recovery-only exact-review work; the default is 300.
+  shedding new recovery and scheduled exact-review work; the default is 300.
+- `EXACT_REVIEW_TARGET_RATE_PER_HOUR` sets the fleet-wide review
+  admission target; the default is 200, organic reviews consume it first, and
+  the scheduled remainder is split 35/65 between hot intake and normal backfill.
+- `EXACT_REVIEW_TARGET_BURST` bounds the scheduled admission burst; the
+  default is 50 and uses the same lane split.
 - `EXACT_REVIEW_HEARTBEAT_GRACE_MS` overrides the 1,200,000 ms exact-review worker heartbeat
   grace. It is clamped to at least 420,000 ms so a configured grace can never dip
   near the one-minute worker heartbeat interval during scheduler or network stalls.

@@ -53,6 +53,26 @@ test("review observer attributes each review entry path without counting support
       ?.trigger_lane,
     "normal_backfill",
   );
+  assert.deepEqual(
+    classifyReviewRun(
+      run({ display_title: "Review scheduled hot item openclaw/openclaw#674 rev 2" }),
+    ),
+    {
+      trigger_lane: "hot_intake",
+      trigger_origin: "schedule",
+      target_repo: "openclaw/openclaw",
+    },
+  );
+  assert.deepEqual(
+    classifyReviewRun(
+      run({ display_title: "Review scheduled normal item openclaw/openclaw#674 rev 2" }),
+    ),
+    {
+      trigger_lane: "normal_backfill",
+      trigger_origin: "schedule",
+      target_repo: "openclaw/openclaw",
+    },
+  );
   assert.equal(
     classifyReviewRun(run({ display_title: "Retry failed Codex reviews", event: "schedule" }))
       ?.trigger_lane,

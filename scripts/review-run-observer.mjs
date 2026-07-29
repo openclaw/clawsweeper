@@ -39,22 +39,26 @@ export function classifyReviewRun(run) {
   const event = String(run.event || "");
   if (/^(Apply |Sync |Audit |Fan out )/.test(title)) return null;
   let triggerLane;
-  if (title.startsWith("Review event item")) triggerLane = "exact_event";
+  if (title.startsWith("Review scheduled hot item")) triggerLane = "hot_intake";
+  else if (title.startsWith("Review scheduled normal item")) triggerLane = "normal_backfill";
+  else if (title.startsWith("Review event item")) triggerLane = "exact_event";
   else if (/^Review hot (?:ClawSweeper items|target repo)/.test(title)) triggerLane = "hot_intake";
   else if (title.startsWith("Retry failed Codex reviews")) triggerLane = "recovery";
   else if (/^Review (?:target repo|ClawSweeper items)/.test(title)) triggerLane = "normal_backfill";
   else return null;
 
   const command = /\[(?:router-|command:)/i.test(title);
-  const triggerOrigin = command
-    ? "command"
-    : event === "schedule"
-      ? "schedule"
-      : event === "workflow_dispatch"
-        ? "manual"
-        : event === "repository_dispatch"
-          ? "webhook"
-          : "system";
+  const triggerOrigin = title.startsWith("Review scheduled ")
+    ? "schedule"
+    : command
+      ? "command"
+      : event === "schedule"
+        ? "schedule"
+        : event === "workflow_dispatch"
+          ? "manual"
+          : event === "repository_dispatch"
+            ? "webhook"
+            : "system";
   const targetMatch = title.match(
     /\b(?:repo |item |items |for )([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:#|\b)/,
   );
