@@ -436,3 +436,42 @@ test("OpenClaw zai models get built-in Coding Plan endpoint defaults", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("OpenClaw minimax models get built-in provider defaults", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-test-"));
+  const recordPath = join(root, "record.json");
+  const binary = fakeOpenclaw(root);
+  try {
+    const result = runOpenclawProcess({
+      label: "minimax-defaults",
+      prompt: "hi",
+      model: "minimax/MiniMax-M3",
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_OPENCLAW_BIN: binary,
+        CLAWSWEEPER_OPENCLAW_MODEL: "minimax/MiniMax-M3",
+        OPENCLAW_TEST_RECORD: recordPath,
+      },
+      timeoutMs: 60_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const record = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.deepEqual(record.config.models, {
+      mode: "merge",
+      providers: {
+        minimax: {
+          baseUrl: "https://api.minimax.io/v1",
+          apiKey: "${MINIMAX_API_KEY}",
+          api: "openai-completions",
+          models: [
+            { id: "MiniMax-M3", name: "MiniMax-M3", contextWindow: 1000000 },
+            { id: "MiniMax-M2.7", name: "MiniMax-M2.7", contextWindow: 204800 },
+          ],
+        },
+      },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

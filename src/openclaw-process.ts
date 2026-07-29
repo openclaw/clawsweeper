@@ -353,6 +353,19 @@ const BUILTIN_PROVIDERS = {
     api: "openai-completions",
     models: [{ id: "glm-5.2", name: "GLM-5.2", contextWindow: 1000000, maxTokens: 131072 }],
   },
+  // MiniMax serves its text models over a global OpenAI-compatible endpoint;
+  // ship those defaults so `minimax/...` models run without extra provider
+  // config. Context windows are from the MiniMax model catalog (MiniMax-M3 1M,
+  // MiniMax-M2.7 200K).
+  minimax: {
+    baseUrl: "https://api.minimax.io/v1",
+    apiKey: "${MINIMAX_API_KEY}",
+    api: "openai-completions",
+    models: [
+      { id: "MiniMax-M3", name: "MiniMax-M3", contextWindow: 1000000 },
+      { id: "MiniMax-M2.7", name: "MiniMax-M2.7", contextWindow: 204800 },
+    ],
+  },
 } as const;
 
 function builtinProviderBlock(model: string): Record<string, unknown> | undefined {
