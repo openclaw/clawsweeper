@@ -84,6 +84,107 @@ test("publish-main fails closed when canonical tuple publication is rejected", a
   assert.equal(gitPublishes.length, 0);
 });
 
+test("publish-main re-verifies reconciliation conflicts against canonical CURRENT", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-current-source-"));
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-current-state-"));
+  const baseline = closeRecord("source-revision", "baseline");
+  const target = closeRecord("source-revision", "local reconciliation");
+  const current = closeRecord("source-revision", "authority reconciliation");
+  writeText(stateRoot, tupleItemPath, baseline);
+  writeText(root, tupleItemPath, target);
+  const posted: Array<Record<string, unknown>> = [];
+  const deferredPath = path.join(root, ".artifacts/deferred.jsonl");
+
+  assert.equal(
+    await publishMainWithStateAppend(
+      { message: "chore: persist sweep reconciliation", paths: [tupleRoot] },
+      {
+        root,
+        env: appendEnv({
+          CLAWSWEEPER_STATE_DIR: stateRoot,
+          CLAWSWEEPER_CANONICAL_PUBLICATION_KIND: "reconcile",
+          CLAWSWEEPER_RECONCILE_DEFERRED_PATH: deferredPath,
+        }),
+        fetchImpl: (async (_input: string | URL | Request, init?: RequestInit) => {
+          const mutation = JSON.parse(String(init?.body ?? "")) as Record<string, unknown>;
+          posted.push(mutation);
+          if (posted.length === 1) {
+            return conflictResponse(current, "record-reconcile:openclaw-openclaw:42:authority");
+          }
+          const operations = mutation.operations as Array<Record<string, unknown>>;
+          assert.equal(
+            operations[0]?.expectedDigest,
+            createHash("sha256").update(current).digest("hex"),
+          );
+          return Response.json(
+            { ok: true, accepted: true, deduped: false, revision: 3, sequence: 12 },
+            { status: 202 },
+          );
+        }) as typeof fetch,
+        publishGit: () => {
+          throw new Error("git publication must not run");
+        },
+      },
+    ),
+    "appended",
+  );
+  assert.equal(posted.length, 2);
+  assert.match(String(posted[0]?.deliveryId), /^record-reconcile:openclaw-openclaw:42:/);
+  assert.match(String(posted[1]?.deliveryId), /^record-reconcile:openclaw-openclaw:42:/);
+  assert.equal(fs.existsSync(deferredPath), false);
+  assert.equal(fs.readFileSync(path.join(root, tupleItemPath), "utf8"), target);
+});
+
+test("publish-main defers reconciliation conflicts when CURRENT changed source revision", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-defer-source-"));
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-defer-state-"));
+  const baseline = closeRecord("old-source-revision", "baseline");
+  const target = closeRecord("old-source-revision", "local reconciliation");
+  const current = closeRecord("new-source-revision", "new review");
+  writeText(stateRoot, tupleItemPath, baseline);
+  writeText(root, tupleItemPath, target);
+  const deferredPath = path.join(root, ".artifacts/deferred.jsonl");
+
+  assert.equal(
+    await publishMainWithStateAppend(
+      { message: "chore: persist sweep reconciliation", paths: [tupleRoot] },
+      {
+        root,
+        env: appendEnv({
+          CLAWSWEEPER_STATE_DIR: stateRoot,
+          CLAWSWEEPER_CANONICAL_PUBLICATION_KIND: "reconcile",
+          CLAWSWEEPER_RECONCILE_DEFERRED_PATH: deferredPath,
+        }),
+        fetchImpl: (async () =>
+          conflictResponse(
+            current,
+            "record-reconcile:openclaw-openclaw:42:new-review",
+          )) as typeof fetch,
+        publishGit: () => {
+          throw new Error("git publication must not run");
+        },
+      },
+    ),
+    "appended",
+  );
+  assert.equal(fs.readFileSync(path.join(root, tupleItemPath), "utf8"), current);
+  assert.deepEqual(
+    fs
+      .readFileSync(deferredPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line)),
+    [
+      {
+        itemNumber: 42,
+        key: "openclaw-openclaw/42",
+        currentRevision: 2,
+        reason: "canonical CURRENT close verdict or item source revision changed",
+      },
+    ],
+  );
+});
+
 test("publish-main appends sweep status instead of invoking the git publisher", async () => {
   const root = statusFixture();
   const gitPublishes: GitPublishOptions[] = [];
@@ -419,6 +520,48 @@ function routerLedger(): Record<string, unknown> {
 
 function recordMarkdown(reviewedAt: string, body: string): string {
   return `---\nrepo: openclaw/openclaw\nnumber: 42\nreviewed_at: ${reviewedAt}\n---\n\n${body}\n`;
+}
+
+function closeRecord(sourceRevision: string, body: string): string {
+  return [
+    "---",
+    "repo: openclaw/openclaw",
+    "number: 42",
+    "kind: pull_request",
+    "decision: close",
+    "close_reason: duplicate_or_superseded",
+    `item_source_revision: ${sourceRevision}`,
+    "decision_packet_sha256: none",
+    "decision_packet_path: none",
+    "---",
+    "",
+    body,
+    "",
+  ].join("\n");
+}
+
+function conflictResponse(current: string, deliveryId: string): Response {
+  return Response.json(
+    {
+      error: "canonical_record_tuple_conflict",
+      current: {
+        key: "openclaw-openclaw/42",
+        revision: 2,
+        deliveryId,
+        operations: [
+          {
+            path: tupleItemPath,
+            expectedDigest: createHash("sha256").update(current).digest("hex"),
+            contentBase64: Buffer.from(current).toString("base64"),
+          },
+          { path: `${tupleRoot}/closed/42.md`, expectedDigest: null },
+          { path: `${tupleRoot}/plans/42.md`, expectedDigest: null },
+          { path: `${tupleRoot}/decision-packets/42.json`, expectedDigest: null },
+        ],
+      },
+    },
+    { status: 409 },
+  );
 }
 
 function appendEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {

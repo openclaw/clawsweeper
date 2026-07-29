@@ -65,6 +65,54 @@ test("event apply proof marks only live deterministic remain-open guards", () =>
   }
 });
 
+test("apply-decisions defers canonical reconciliation conflicts before live mutation", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    writeFileSync(
+      join(itemsDir, "321.md"),
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        number: 321,
+        type: "pull_request",
+        title: "Reconciled PR",
+        url: "https://github.com/openclaw/openclaw/pull/321",
+        author: "reporter",
+        pull_head_sha: "head-sha",
+      }),
+      "utf8",
+    );
+
+    runApplyDecisionsForTest({
+      targetRepo: "openclaw/openclaw",
+      itemsDir,
+      closedDir,
+      plansDir,
+      reportPath,
+      extraArgs: ["--deferred-item-numbers", "321"],
+    });
+
+    assert.deepEqual(JSON.parse(readText(reportPath)), [
+      {
+        number: 321,
+        action: "skipped_changed_since_review",
+        reason: "canonical record changed during reconciliation; fresh review required",
+      },
+    ]);
+    assert.match(
+      readText(join(itemsDir, "321.md")),
+      /^action_taken: skipped_changed_since_review$/m,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions rejects recorded PR review activity drift before mutations", () => {
   const reviewThreadComment = {
     id: 7003,

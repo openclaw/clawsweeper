@@ -9121,12 +9121,44 @@ test("canonical tuple publication updates Worker authority and appends one proje
   assert.equal(drained.records[0].key, "openclaw-openclaw/42");
   assert.equal(drained.records[0].payload.operations.length, 4);
 
+  const reconciledItem = item.replace(
+    "reviewed_at: 2026-07-26T02:00:00.000Z",
+    "reviewed_at: 2026-07-26T02:00:00.000Z\nreconciled_at: 2026-07-27T02:00:00.000Z",
+  );
+  const reconciliation = structuredClone(mutation);
+  reconciliation.deliveryId = "record-reconcile:openclaw-openclaw:42:authority-fix";
+  reconciliation.operations[0]!.expectedDigest = createHash("sha256").update(item).digest("hex");
+  reconciliation.operations[0]!.contentBase64 = Buffer.from(reconciledItem).toString("base64");
+  const reconciled = await queue.fetch(stateAppendQueueRequest("/records/tuples", reconciliation));
+  assert.equal(reconciled.status, 202);
+  assert.equal((await reconciled.json()).revision, 2);
+
   const conflict = structuredClone(mutation);
   conflict.deliveryId = "record-tuple:run-2:42";
   conflict.operations[0]!.expectedDigest = "0".repeat(64);
   const rejected = await queue.fetch(stateAppendQueueRequest("/records/tuples", conflict));
   assert.equal(rejected.status, 409);
-  assert.equal((await rejected.json()).error, "canonical_record_tuple_conflict");
+  assert.deepEqual(await rejected.json(), {
+    error: "canonical_record_tuple_conflict",
+    current: {
+      key: "openclaw-openclaw/42",
+      revision: 2,
+      deliveryId: reconciliation.deliveryId,
+      operations: [
+        {
+          path: "records/openclaw-openclaw/items/42.md",
+          expectedDigest: createHash("sha256").update(reconciledItem).digest("hex"),
+          contentBase64: Buffer.from(reconciledItem).toString("base64"),
+        },
+        { path: "records/openclaw-openclaw/closed/42.md", expectedDigest: null },
+        { path: "records/openclaw-openclaw/plans/42.md", expectedDigest: null },
+        {
+          path: "records/openclaw-openclaw/decision-packets/42.json",
+          expectedDigest: null,
+        },
+      ],
+    },
+  });
 });
 
 test("canonical tuple failures return stable errors and sanitize server logs", async () => {

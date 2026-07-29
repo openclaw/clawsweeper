@@ -57,8 +57,26 @@ validate_coverage_proof_tree() {
     return 1
   fi
   local proof_files=()
+  local manifest_path="$proof_dir/manifest.json"
+  if [ ! -f "$manifest_path" ]; then
+    echo "Coverage proof artifact is missing manifest.json" >&2
+    return 1
+  fi
+  if ! jq -e '
+    type == "object" and
+    .schemaVersion == 1 and
+    (.targetRepo | type == "string" and test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")) and
+    (.selectedItems | type == "array" and all(.[]; type == "number" and . >= 1 and floor == .)) and
+    (.proofCount | type == "number" and . >= 0 and floor == .)
+  ' "$manifest_path" >/dev/null; then
+    echo "Coverage proof artifact manifest is invalid" >&2
+    return 1
+  fi
   local proof_file
   while IFS= read -r -d '' proof_file; do
+    if [ "$proof_file" = "$manifest_path" ]; then
+      continue
+    fi
     proof_files+=("$proof_file")
   done < <(find "$proof_dir" -mindepth 1 -maxdepth 1 -type f -print0)
   if [ "${#proof_files[@]}" -gt "$max_files" ]; then
@@ -80,10 +98,33 @@ validate_coverage_proof_tree() {
     fi
     total_bytes=$((total_bytes + proof_bytes))
   done
+  if [ "$(jq -r '.proofCount' "$manifest_path")" -ne "${#proof_files[@]}" ]; then
+    echo "Coverage proof artifact manifest count does not match proof files" >&2
+    return 1
+  fi
   if [ "$total_bytes" -gt "$max_total_bytes" ]; then
     echo "Coverage proof artifacts exceed the $max_total_bytes-byte total limit." >&2
     return 1
   fi
+}
+
+write_coverage_proof_manifest() {
+  local proof_dir="$1"
+  local target_repo="$2"
+  local selected_items_csv="${3:-}"
+  mkdir -p "$proof_dir"
+  local proof_count
+  proof_count="$(find "$proof_dir" -mindepth 1 -maxdepth 1 -type f -name '*.proof.json' | wc -l | tr -d ' ')"
+  jq -n \
+    --arg target_repo "$target_repo" \
+    --arg selected_items "$selected_items_csv" \
+    --argjson proof_count "$proof_count" \
+    '{
+      schemaVersion: 1,
+      targetRepo: $target_repo,
+      selectedItems: ($selected_items | split(",") | map(select(length > 0) | tonumber)),
+      proofCount: $proof_count
+    }' > "$proof_dir/manifest.json"
 }
 progress_every=10
 
@@ -140,6 +181,7 @@ publish_reconciled_records() {
   target_slug="$(printf '%s' "$TARGET_REPO" | tr '[:upper:]' '[:lower:]')"
   target_slug="${target_slug//\//-}"
   local publish_paths=()
+  local tuple_count=0
   local record_file
   local number
 
@@ -162,23 +204,47 @@ publish_reconciled_records() {
       "records/${target_slug}/plans/${record_file}"
       "records/${target_slug}/decision-packets/${number}.json"
     )
+    tuple_count=$((tuple_count + 1))
+    if [ "$tuple_count" -ge 50 ]; then
+      CLAWSWEEPER_CANONICAL_PUBLICATION_KIND=reconcile \
+        CLAWSWEEPER_RECONCILE_DEFERRED_PATH=.artifacts/apply-reconcile-deferred.jsonl \
+        publish_changes_with_strategy reconcile-records "$message" "${publish_paths[@]}" || return 1
+      publish_paths=()
+      tuple_count=0
+    fi
   done < <(jq -r '.changedRecordFiles[]' <<<"$reconcile_json")
 
-  if [ "${#publish_paths[@]}" -eq 0 ]; then
+  if [ "${#publish_paths[@]}" -eq 0 ] && [ "$tuple_count" -eq 0 ]; then
+    if [ "$(jq '.changedRecordFiles | length' <<<"$reconcile_json")" -gt 0 ]; then
+      return 0
+    fi
     echo "Reconcile changed no durable record tuples."
     return 0
   fi
   # Reconciliation can move records in either direction. Preserve the newer
   # remote tuple when another publisher changes the same item, while applying
   # non-conflicting tuples independently.
-  publish_changes_with_strategy reconcile-records "$message" "${publish_paths[@]}"
+  CLAWSWEEPER_CANONICAL_PUBLICATION_KIND=reconcile \
+    CLAWSWEEPER_RECONCILE_DEFERRED_PATH=.artifacts/apply-reconcile-deferred.jsonl \
+    publish_changes_with_strategy reconcile-records "$message" "${publish_paths[@]}" || return 1
 }
 
 persist_reconciliation() {
   local reconcile_json
   reconcile_json="$(pnpm run --silent reconcile -- "$@")"
   echo "$reconcile_json"
-  publish_reconciled_records "chore: persist sweep reconciliation" "$reconcile_json"
+  publish_reconciled_records "chore: persist sweep reconciliation" "$reconcile_json" || return 1
+  load_reconciliation_deferred_items
+}
+
+load_reconciliation_deferred_items() {
+  deferred_item_numbers=""
+  if [ -s .artifacts/apply-reconcile-deferred.jsonl ]; then
+    deferred_item_numbers="$(jq -rs 'map(.itemNumber) | unique | join(",")' .artifacts/apply-reconcile-deferred.jsonl)"
+    echo "Deferring canonical conflict items to re-review: $deferred_item_numbers"
+  fi
+  CLAWSWEEPER_RECONCILIATION_DEFERRED_ITEM_NUMBERS="$deferred_item_numbers"
+  export CLAWSWEEPER_RECONCILIATION_DEFERRED_ITEM_NUMBERS
 }
 
 write_apply_health() {

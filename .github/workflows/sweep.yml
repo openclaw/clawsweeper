@@ -4533,9 +4533,22 @@ jobs:
             --report-path .artifacts/apply-proof/apply-report.json \
             --progress-every 1
 
+      - name: Create bound close coverage proof manifest
+        id: proof-manifest
+        if: ${{ always() && !cancelled() && steps.proof-select.outcome == 'success' && (steps.proof-select.outputs.item_numbers == '' || steps.generate-apply-proofs.outcome == 'success') }}
+        env:
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+        run: |
+          set -euo pipefail
+          source scripts/apply-workflow-helpers.sh
+          write_coverage_proof_manifest \
+            ".artifacts/apply-proof/pr-close-coverage-proof" \
+            "$TARGET_REPO" \
+            "${{ steps.proof-select.outputs.item_numbers }}"
+
       - name: Export primary apply proof result
         id: primary-proof-result
-        if: ${{ always() && !cancelled() && steps.proof-select.outcome == 'success' && (steps.proof-select.outputs.item_numbers == '' || steps.generate-apply-proofs.outcome == 'success') }}
+        if: ${{ always() && !cancelled() && steps.proof-select.outcome == 'success' && (steps.proof-select.outputs.item_numbers == '' || steps.generate-apply-proofs.outcome == 'success') && steps.proof-manifest.outcome == 'success' }}
         run: echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Finalize apply proof action ledger
@@ -4552,12 +4565,12 @@ jobs:
           pnpm run --silent finalize-action-events -- "${args[@]}"
 
       - name: Upload bound close coverage proofs
-        if: ${{ always() && steps.proof-select.outputs.item_numbers != '' }}
+        if: ${{ always() && steps.proof-manifest.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.proof-artifact.outputs.name }}
-          path: .artifacts/apply-proof/pr-close-coverage-proof/*.proof.json
-          if-no-files-found: ignore
+          path: .artifacts/apply-proof/pr-close-coverage-proof/*
+          if-no-files-found: error
           retention-days: 1
 
       - name: Upload apply proof action events
@@ -4789,7 +4802,6 @@ jobs:
         continue-on-error: true
 
       - uses: actions/download-artifact@v8
-        continue-on-error: true
         with:
           name: ${{ needs.apply-proof.outputs.artifact_name }}
           path: .artifacts/apply-proof/pr-close-coverage-proof

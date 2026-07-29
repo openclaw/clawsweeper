@@ -141,6 +141,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Reconciled apply backlogs now publish record tuples in bounded batches, re-verify authority-superseded canonical revisions without weakening source/verdict guards, and always carry an explicit coverage-proof artifact manifest under reduced state hydration.
 - Restored close-backlog throughput by keeping apply jobs off the enormous immutable state-blob hydration path, and isolated operator-dispatched sweeps from background concurrency coalescing.
 
 - Prevented exact-review cancellation storms by sparsely checking out Worker-projected state and keeping completed review-generation leases fenced through final publication.

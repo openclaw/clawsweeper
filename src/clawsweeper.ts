@@ -27411,6 +27411,12 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
   const bulkFilerRepositoryPermissionCache: BulkFilerRepositoryPermissionCache = new Map();
   const requestedItemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
   const requestedItemNumberSet = new Set(requestedItemNumbers);
+  const reconciliationDeferredItemNumbers = new Set(
+    itemNumbersArg(
+      args.deferred_item_numbers ?? process.env.CLAWSWEEPER_RECONCILIATION_DEFERRED_ITEM_NUMBERS,
+      undefined,
+    ),
+  );
   const requestedItemOrder = orderedApplyItemNumbers(args.item_numbers, args.item_number);
   const requestedItemOrderIndex = new Map(
     requestedItemOrder.map((number, index) => [number, index]),
@@ -27631,7 +27637,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     return;
   }
   logProgress(
-    `starting apply: files=${files.length} dry_run=${dryRun} apply_kind=${applyKind} min_age=${minAgeDescription} apply_close_reasons=${closeReasonFilterText(applyCloseReasons)} stale_min_age_days=${staleMinAgeDays} close_delay_ms=${closeDelayMs} sync_comments_only=${syncCommentsOnly} suppress_automation_markers=${suppressAutomationMarkers} comment_sync_min_age_days=${commentSyncMinAgeDays} max_runtime_ms=${maxRuntimeMs} item_numbers=${requestedItemNumbers.join(",") || "all"}`,
+    `starting apply: files=${files.length} dry_run=${dryRun} apply_kind=${applyKind} min_age=${minAgeDescription} apply_close_reasons=${closeReasonFilterText(applyCloseReasons)} stale_min_age_days=${staleMinAgeDays} close_delay_ms=${closeDelayMs} sync_comments_only=${syncCommentsOnly} suppress_automation_markers=${suppressAutomationMarkers} comment_sync_min_age_days=${commentSyncMinAgeDays} max_runtime_ms=${maxRuntimeMs} item_numbers=${requestedItemNumbers.join(",") || "all"} reconciliation_deferred=${[...reconciliationDeferredItemNumbers].join(",") || "none"}`,
   );
   // oxfmt-ignore
   for (const entry of fileEntries) {
@@ -27798,6 +27804,17 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       markdown = replaceFrontMatterValue(markdown, "action_taken", actionTaken);
       return recordApplySkipped(actionTaken, reason, liveGuardVerified);
     };
+    if (reconciliationDeferredItemNumbers.has(number)) {
+      if (
+        markApplySkipped(
+          "skipped_changed_since_review",
+          "canonical record changed during reconciliation; fresh review required",
+        )
+      ) {
+        break;
+      }
+      continue;
+    }
     const markLabelSyncAuthSkipped = (labelKind: string): boolean => {
       const reason = `GitHub rejected ${labelKind} label sync with Requires authentication`;
       return staleCanonicalCommentSyncPending

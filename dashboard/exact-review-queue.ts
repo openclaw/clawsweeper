@@ -2298,7 +2298,13 @@ export class ExactReviewQueue {
       } catch (error) {
         if (error instanceof CanonicalRecordTupleConflictError) {
           console.warn(`canonical record tuple conflict: ${sanitizedServerError(error)}`);
-          return json({ error: "canonical_record_tuple_conflict" }, 409);
+          return json(
+            {
+              error: "canonical_record_tuple_conflict",
+              ...(error.current ? { current: error.current } : {}),
+            },
+            409,
+          );
         }
         if (error instanceof DirectPublicationProjectionCapacityError) {
           console.warn(`canonical record tuple capacity rejected: ${sanitizedServerError(error)}`);

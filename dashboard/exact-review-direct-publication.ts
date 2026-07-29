@@ -128,6 +128,13 @@ export type ValidatedCanonicalRecordTupleMutation = {
   fingerprint: string;
 };
 
+export type CanonicalRecordTupleConflictState = {
+  key: string;
+  revision: number;
+  deliveryId: string | null;
+  operations: CanonicalRecordTupleMutationOperation[];
+};
+
 export type RecordExportEntry = {
   repoSlug: string;
   section: RecordSection;
@@ -161,9 +168,12 @@ export class DirectPublicationProjectionCapacityError extends Error {
 }
 
 export class CanonicalRecordTupleConflictError extends Error {
-  constructor(message: string) {
+  readonly current: CanonicalRecordTupleConflictState | null;
+
+  constructor(message: string, current: CanonicalRecordTupleConflictState | null = null) {
     super(message);
     this.name = "CanonicalRecordTupleConflictError";
+    this.current = current;
   }
 }
 
@@ -467,6 +477,7 @@ export class ExactReviewDirectPublicationStore {
         if (currentDigest !== expectedDigest) {
           throw new CanonicalRecordTupleConflictError(
             `canonical record changed before tuple publication: ${operation.path}`,
+            this.canonicalTupleConflictStateSync(mutation.repoSlug, mutation.itemId),
           );
         }
       }
@@ -558,6 +569,38 @@ export class ExactReviewDirectPublicationStore {
       throw new Error(`canonical record byte count mismatch: ${repoSlug}/${section}/${itemId}`);
     }
     return { ...metadata, content };
+  }
+
+  private canonicalTupleConflictStateSync(
+    repoSlug: string,
+    itemId: number,
+  ): CanonicalRecordTupleConflictState | null {
+    const sections = ["items", "closed", "plans", "decision-packets"] as const;
+    const records = sections.map((section) => this.readCanonical(repoSlug, section, itemId));
+    const revisions = new Set(records.flatMap((record) => (record ? [record.revision] : [])));
+    if (records.some((record) => record === null) || revisions.size !== 1) return null;
+    const revision = records[0]!.revision;
+    const receiptPrefix = `record-reconcile:${repoSlug}:${itemId}:`;
+    const deliveryId = Array.from(
+      this.storage.sql.exec(
+        `SELECT delivery_id
+           FROM ${CANONICAL_RECORD_TUPLE_RECEIPT_TABLE}
+          WHERE revision = ?
+          ORDER BY received_at DESC, delivery_id`,
+        revision,
+      ),
+      (row) => String(row.delivery_id),
+    ).find((candidate) => candidate.startsWith(receiptPrefix));
+    return {
+      key: `${repoSlug}/${itemId}`,
+      revision,
+      deliveryId: deliveryId ?? null,
+      operations: records.map((record, index) => ({
+        path: `records/${repoSlug}/${sections[index]}/${itemId}.${sections[index] === "decision-packets" ? "json" : "md"}`,
+        expectedDigest: record!.deleted ? null : record!.digest,
+        ...(record!.content === null ? {} : { contentBase64: base64Text(record!.content) }),
+      })),
+    };
   }
 
   listCanonical(options: {
@@ -1669,6 +1712,13 @@ function stateAppendWindowTotalsSync(storage: DurableStorage) {
 function base64Bytes(value: string) {
   const binary = atob(value);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function base64Text(value: string) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
 
 function byteChunks(content: string, maximumBytes: number) {

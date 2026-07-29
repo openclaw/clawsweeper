@@ -1201,6 +1201,7 @@ test("apply workflow isolates proof Codex and limits mutation Codex to model-gui
   const applyJob = workflow.slice(applyJobStart);
   const applyCondition = applyJob.match(/^\s+if: (.+)$/m)?.[1] ?? "";
   const proofGenerationStart = proofJob.indexOf("- name: Generate bound close coverage proofs");
+  const proofManifestStart = proofJob.indexOf("- name: Create bound close coverage proof manifest");
   const primaryProofResultStart = proofJob.indexOf("- name: Export primary apply proof result");
   const proofFinalizerStart = proofJob.indexOf("- name: Finalize apply proof action ledger");
 
@@ -1219,7 +1220,8 @@ test("apply workflow isolates proof Codex and limits mutation Codex to model-gui
   assert.match(proofJob, /--dry-run/);
   assert.match(proofJob, /--codex-model internal/);
   assert.match(proofJob, /--codex-reasoning-effort high/);
-  assert.match(proofJob, /\*\.proof\.json/);
+  assert.match(proofJob, /write_coverage_proof_manifest/);
+  assert.match(proofJob, /pr-close-coverage-proof\/\*/);
   assert.match(proofJob, /artifact_name: \$\{\{ steps\.proof-artifact\.outputs\.name \}\}/);
   assert.match(
     proofJob,
@@ -1244,11 +1246,12 @@ test("apply workflow isolates proof Codex and limits mutation Codex to model-gui
   assert.match(proofJob, /include-hidden-files: true/);
   assert.match(proofJob, /if-no-files-found: error/);
   assert.ok(proofGenerationStart >= 0);
-  assert.ok(primaryProofResultStart > proofGenerationStart);
+  assert.ok(proofManifestStart > proofGenerationStart);
+  assert.ok(primaryProofResultStart > proofManifestStart);
   assert.ok(proofFinalizerStart > primaryProofResultStart);
   assert.match(
     proofJob,
-    /id: primary-proof-result[\s\S]*if: \$\{\{ always\(\) && !cancelled\(\) && steps\.proof-select\.outcome == 'success' && \(steps\.proof-select\.outputs\.item_numbers == '' \|\| steps\.generate-apply-proofs\.outcome == 'success'\) \}\}[\s\S]*echo "ready=true" >> "\$GITHUB_OUTPUT"/,
+    /id: primary-proof-result[\s\S]*if: \$\{\{ always\(\) && !cancelled\(\) && steps\.proof-select\.outcome == 'success' && \(steps\.proof-select\.outputs\.item_numbers == '' \|\| steps\.generate-apply-proofs\.outcome == 'success'\) && steps\.proof-manifest\.outcome == 'success' \}\}[\s\S]*echo "ready=true" >> "\$GITHUB_OUTPUT"/,
   );
   assert.match(
     proofJob,
@@ -1285,6 +1288,13 @@ test("apply workflow isolates proof Codex and limits mutation Codex to model-gui
   assert.match(applyJob, /Create state token/);
   assert.match(applyJob, /hydrate-state-blobs: "false"/);
   assert.match(applyJob, /actions\/download-artifact@v8/);
+  assert.doesNotMatch(
+    applyJob.slice(
+      applyJob.indexOf("uses: actions/download-artifact@v8"),
+      applyJob.indexOf("uses: actions/download-artifact@v8") + 300,
+    ),
+    /continue-on-error/,
+  );
   assert.match(applyJob, /name: \$\{\{ needs\.apply-proof\.outputs\.artifact_name \}\}/);
   assert.doesNotMatch(applyJob, /action-ledger-proof/);
   assert.match(applyJob, /validate_coverage_proof_tree .* 8 262144 2097152/);
@@ -1370,6 +1380,30 @@ test("reconcile publication expands only exact changed record tuples", () => {
   assert.equal(emptyOutput.trim(), "Reconcile changed no durable record tuples.");
 });
 
+test("reconcile publication batches large corrected tuple sets below exec argument limits", () => {
+  const changedRecordFiles = Array.from({ length: 128 }, (_, index) => `${index + 1}.md`);
+  const reconcileJson = JSON.stringify({ changedItemNumbers: [], changedRecordFiles });
+  const output = execFileSync(
+    "bash",
+    [
+      "-lc",
+      [
+        "source scripts/apply-workflow-helpers.sh",
+        'publish_changes_with_strategy() { printf "call=%s kind=%s deferred=%s\\n" "$#" "$CLAWSWEEPER_CANONICAL_PUBLICATION_KIND" "$CLAWSWEEPER_RECONCILE_DEFERRED_PATH"; }',
+        'TARGET_REPO="openclaw/openclaw"',
+        'publish_reconciled_records "persist reconciliation" "$RECONCILE_JSON"',
+      ].join("\n"),
+    ],
+    { encoding: "utf8", env: { ...process.env, RECONCILE_JSON: reconcileJson } },
+  );
+
+  assert.deepEqual(output.trim().split("\n"), [
+    "call=202 kind=reconcile deferred=.artifacts/apply-reconcile-deferred.jsonl",
+    "call=202 kind=reconcile deferred=.artifacts/apply-reconcile-deferred.jsonl",
+    "call=114 kind=reconcile deferred=.artifacts/apply-reconcile-deferred.jsonl",
+  ]);
+});
+
 test("apply checkpoints split record tuples from auxiliary state", () => {
   const output = execFileSync(
     "bash",
@@ -1422,15 +1456,30 @@ test("apply workflow rejects malformed or oversized coverage proof artifact tree
       ],
       { encoding: "utf8", env: { ...process.env, PROOF_DIR: root } },
     );
+  const writeManifest = (selectedItems = "10,30") =>
+    execFileSync(
+      "bash",
+      [
+        "-lc",
+        'source scripts/apply-workflow-helpers.sh\nwrite_coverage_proof_manifest "$PROOF_DIR" openclaw/openclaw "$SELECTED_ITEMS"',
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, PROOF_DIR: root, SELECTED_ITEMS: selectedItems },
+      },
+    );
 
   try {
     writeFileSync(join(root, "10-20.proof.json"), "{}\n");
     writeFileSync(join(root, "30-40.proof.json"), "{}\n");
+    writeManifest();
     assert.equal(validate(), "");
 
     writeFileSync(join(root, "50-60.proof.json"), "{}\n");
+    writeManifest("10,30,50");
     assert.throws(() => validate(), /maximum is 2/);
     rmSync(join(root, "50-60.proof.json"));
+    writeManifest();
 
     writeFileSync(join(root, "unexpected.json"), "{}\n");
     assert.throws(() => validate(3), /Unexpected coverage proof filename/);
@@ -1442,6 +1491,32 @@ test("apply workflow rejects malformed or oversized coverage proof artifact tree
 
     writeFileSync(join(root, "10-20.proof.json"), "x".repeat(65));
     assert.throws(() => validate(), /exceeds 64 bytes/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("coverage proof manifest preserves an empty reduced-hydration artifact", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          "source scripts/apply-workflow-helpers.sh",
+          'write_coverage_proof_manifest "$PROOF_DIR" openclaw/openclaw "107006,109946"',
+          'validate_coverage_proof_tree "$PROOF_DIR" 8 262144 2097152',
+        ].join("\n"),
+      ],
+      { encoding: "utf8", env: { ...process.env, PROOF_DIR: root } },
+    );
+    assert.deepEqual(JSON.parse(readFileSync(join(root, "manifest.json"), "utf8")), {
+      schemaVersion: 1,
+      targetRepo: "openclaw/openclaw",
+      selectedItems: [107006, 109946],
+      proofCount: 0,
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

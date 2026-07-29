@@ -25,6 +25,23 @@ export type CanonicalRecordTupleMutation = {
   operations: CanonicalRecordTupleOperation[];
 };
 
+export type CanonicalRecordTupleConflictState = {
+  key: string;
+  revision: number;
+  deliveryId: string | null;
+  operations: CanonicalRecordTupleOperation[];
+};
+
+export class CanonicalRecordTupleConflictError extends Error {
+  readonly current: CanonicalRecordTupleConflictState | null;
+
+  constructor(current: CanonicalRecordTupleConflictState | null) {
+    super("POST /internal/state/records/tuples returned 409: canonical_record_tuple_conflict");
+    this.name = "CanonicalRecordTupleConflictError";
+    this.current = current;
+  }
+}
+
 export async function postStateAppend(options: {
   queueUrl: string;
   webhookSecret: string;
@@ -96,12 +113,18 @@ export async function postCanonicalRecordTuple(options: {
       },
     );
     const value = (await response.json().catch(() => null)) as unknown;
-    if (!response.ok || !isRecord(value) || value.ok !== true) {
-      const code = isRecord(value) ? String(value.error || "unknown_error") : "invalid_response";
+    const responseRecord = isRecord(value) ? value : null;
+    if (!response.ok || !responseRecord || responseRecord.ok !== true) {
+      const code = responseRecord
+        ? String(responseRecord.error || "unknown_error")
+        : "invalid_response";
+      if (response.status === 409 && code === "canonical_record_tuple_conflict") {
+        throw new CanonicalRecordTupleConflictError(parseConflictState(responseRecord?.current));
+      }
       throw new Error(`POST /internal/state/records/tuples returned ${response.status}: ${code}`);
     }
-    const revision = Number(value.revision);
-    const sequence = Number(value.sequence);
+    const revision = Number(responseRecord.revision);
+    const sequence = Number(responseRecord.sequence);
     if (
       !Number.isSafeInteger(revision) ||
       revision < 1 ||
@@ -110,10 +133,44 @@ export async function postCanonicalRecordTuple(options: {
     ) {
       throw new Error("POST /internal/state/records/tuples returned an invalid receipt");
     }
-    return { revision, sequence, deduped: value.deduped === true };
+    return { revision, sequence, deduped: responseRecord.deduped === true };
   } catch (error) {
+    if (error instanceof CanonicalRecordTupleConflictError) throw error;
     throw new Error(redactStateAppendSecrets(errorMessage(error)));
   }
+}
+
+function parseConflictState(value: unknown): CanonicalRecordTupleConflictState | null {
+  if (!isRecord(value)) return null;
+  const key = typeof value.key === "string" ? value.key : "";
+  const revision = Number(value.revision);
+  const deliveryId =
+    value.deliveryId === null || typeof value.deliveryId === "string"
+      ? value.deliveryId
+      : undefined;
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\/[1-9]\d*$/.test(key) ||
+    !Number.isSafeInteger(revision) ||
+    revision < 1 ||
+    deliveryId === undefined ||
+    !Array.isArray(value.operations) ||
+    value.operations.length !== 4
+  ) {
+    return null;
+  }
+  const operations: CanonicalRecordTupleOperation[] = [];
+  for (const raw of value.operations) {
+    if (!isRecord(raw) || typeof raw.path !== "string") return null;
+    const expectedDigest = raw.expectedDigest;
+    if (expectedDigest !== null && !/^[a-f0-9]{64}$/.test(String(expectedDigest))) return null;
+    if (raw.contentBase64 !== undefined && typeof raw.contentBase64 !== "string") return null;
+    operations.push({
+      path: raw.path,
+      expectedDigest: expectedDigest === null ? null : String(expectedDigest),
+      ...(typeof raw.contentBase64 === "string" ? { contentBase64: raw.contentBase64 } : {}),
+    });
+  }
+  return { key, revision, deliveryId, operations };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
