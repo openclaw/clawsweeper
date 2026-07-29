@@ -47,7 +47,11 @@ test("state-hydrating sparse repair workflows keep hydration dependencies", () =
     ".github/workflows/spam-scanner.yml",
   ]) {
     const entries = sourceSparseCheckoutEntries(workflowPath);
-    for (const requiredPath of ["scripts/hydrate-state.ts", "scripts/worker-records.ts"]) {
+    for (const requiredPath of [
+      "scripts/hydrate-state.ts",
+      "scripts/prepare-worker-record-cache.ts",
+      "scripts/worker-records.ts",
+    ]) {
       assert.ok(
         sparseEntriesCover(entries, requiredPath),
         `${workflowPath} missing ${requiredPath}`,
