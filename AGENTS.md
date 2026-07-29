@@ -63,6 +63,32 @@ not split reports into issue/PR subtrees.
 - Locked-comment 403s from GitHub are terminal apply skips, not retryable API
   failures.
 
+## PR Validation and Landing
+
+- For code-bearing changes, run focused validation that exercises the changed
+  behavior, then run a fresh Codex `/review` before committing and again on the
+  committed branch against its base before landing. Address every accepted or
+  actionable finding and repeat the relevant proof and review. CI, an older
+  ClawSweeper comment, prior review comments, or manual self-review alone do
+  not replace this loop.
+- Keep real-behavior proof current in the PR body. Tests, mocks, snapshots,
+  lint, typechecks, and CI support the claim but do not by themselves prove a
+  changed runtime, workflow, queue, API, UI, package, or integration path.
+  Use the narrowest meaningful proof first and broaden it for shared or
+  higher-risk behavior. Docs-only changes normally need `git diff --check` and
+  relevant link or command sanity instead.
+- Before merge or automerge, the latest ClawSweeper review must apply to the
+  current PR head and body. Resolve every accepted finding. Apply each
+  applicable `Rank-up moves:` item, or explicitly justify the exception in the
+  PR body; Rank-up moves remain optional and do not by themselves block merge.
+  Do not merge while proof is missing or while the review has an unresolved
+  contributor-facing blocker.
+- Land only after the current review and status evidence is ready for
+  maintainer look, including `proof: sufficient` or `proof: override` when the
+  proof label applies. This does not replace the user's explicit merge approval
+  in the current conversation; agents must not merge or enable/execute
+  automerge without it.
+
 ## Commands
 
 ```bash
