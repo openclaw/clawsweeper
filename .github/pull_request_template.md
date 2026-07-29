@@ -62,4 +62,9 @@ changes when it clarifies the result.
 
 Reviewers will inspect the code, tests, and CI. Use this section to make the
 validation easy to understand, not to restate the diff.
+
+For code-bearing changes, include the current `## Real Behavior Proof` package
+described in [CONTRIBUTING.md](../CONTRIBUTING.md). After review feedback, update
+this main PR body and request a re-review only after the branch, proof, and body
+are current.
 -->

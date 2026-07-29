@@ -2,6 +2,11 @@
 
 Read when changing the ClawSweeper lane that reminds pull request authors to add real behavior proof.
 
+> This is lane-maintenance documentation. A PR author who receives a proof nudge
+> should use the [contributor workflow](../CONTRIBUTING.md): update the main PR
+> body with current proof, then request a re-review only after the branch and
+> relevant checks are current.
+
 ## Scope
 
 The proof-nudge lane is read-mostly triage hygiene. It can post a polite reminder comment when the latest ClawSweeper review still requires real behavior proof, but it does not close pull requests, merge pull requests, change labels, request reviews, or modify review records.

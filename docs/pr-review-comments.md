@@ -4,6 +4,10 @@ Read when: changing issue/PR review comments, ClawSweeper repair dispatch,
 comment-sync behavior, or the trusted marker contract between ClawSweeper review
 and repair lanes.
 
+> This is implementation documentation. PR authors responding to proof or review
+> feedback should follow the public [contributor workflow](../CONTRIBUTING.md)
+> instead of treating comment markers or repair details as author instructions.
+
 ## Purpose
 
 ClawSweeper keeps one durable public Codex review comment per issue or pull

@@ -57,8 +57,6 @@ Repairable states include:
 - `mergeable: CONFLICTING`;
 - `mergeStateStatus: DIRTY`;
 - `mergeStateStatus: BEHIND`;
-- missing `CHANGELOG.md` entry for user-facing OpenClaw `fix`, `feat`, or
-  `perf` PRs;
 - terminal required-check failures such as `FAILURE`, `ERROR`,
   `ACTION_REQUIRED`, `STARTUP_FAILURE`, or `TIMED_OUT`;
 - accepted ClawSweeper repair verdicts or action markers for the exact current
@@ -78,19 +76,24 @@ and generated config checksum conflicts where the replayed commit changed only
 selected checksum entries. That deterministic fast path is only for explicit
 base-sync-only artifacts.
 
-For adopted PR repairs that add only docs or changelog files after the reviewed
-source head, ClawSweeper runs repair-delta validation and skips the internal
-Codex `/review`. The exact-head ClawSweeper review and GitHub checks still gate
-the pushed head before merge.
+For adopted `openclaw/openclaw` contributor-branch repairs that add only docs
+or `CHANGELOG.md` after the reviewed source head, ClawSweeper runs repair-delta
+validation and skips the internal Codex `/review`. The exact-head ClawSweeper
+review and GitHub checks still gate the pushed head before merge. That target's
+`CHANGELOG.md` is release-owned: this validation path does not authorize a
+repair worker to add or update it outside separately authorized release work.
 
 For adopted automerge/autofix PR repairs, the cluster worker skips the
 read-only Codex planning pass after it hydrates the live PR. It writes a generic
 structured `build_fix_artifact` result deterministically: repair the contributor
 branch, keep the source PR credited, rebase onto latest `main`, address PR
-comments/review findings/check failures, add the changelog entry when required,
-and validate. This removes one model round trip from every opted-in repair while
-keeping live evidence, permissions, security boundaries, push, review, checks,
-and merge gating in deterministic code.
+comments/review findings/check failures, preserve release-note context in the PR
+body and commit message, and validate. For an `openclaw/openclaw` target, it
+must not add or update `CHANGELOG.md` outside separately authorized release
+work. Other target repositories retain their own release-note policy, including
+an eligible changelog-only mechanical repair. This removes one model round trip
+from every opted-in repair while keeping live evidence, permissions, security
+boundaries, push, review, checks, and merge gating in deterministic code.
 
 For automerge, failed exact-head checks are repair scope even when the failing
 file is outside the original PR's changed files. The Codex edit pass should
