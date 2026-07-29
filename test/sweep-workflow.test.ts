@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -1373,6 +1374,40 @@ test("reconcile publication expands only exact changed record tuples", () => {
     { encoding: "utf8" },
   );
   assert.equal(emptyOutput.trim(), "Reconcile changed no durable record tuples.");
+});
+
+test("persist reconciliation publishes against its exact captured canonical baseline", () => {
+  const output = execFileSync(
+    "bash",
+    [
+      "-lc",
+      [
+        "source scripts/apply-workflow-helpers.sh",
+        "pnpm() {",
+        "  local previous='' baseline='' argument",
+        '  for argument in "$@"; do',
+        '    if [ "$previous" = "--canonical-record-baseline-dir" ]; then baseline="$argument"; fi',
+        '    previous="$argument"',
+        "  done",
+        '  test -n "$baseline"',
+        '  mkdir -p "$baseline/records/openclaw-openclaw/items"',
+        '  printf "before\\n" > "$baseline/records/openclaw-openclaw/items/42.md"',
+        '  printf \'{"changedItemNumbers":[42],"changedRecordFiles":["42.md"]}\\n\'',
+        "}",
+        "publish_reconciled_records() {",
+        '  test -f "$CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR/records/openclaw-openclaw/items/42.md"',
+        '  printf "baseline=%s\\n" "$CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR"',
+        "}",
+        "load_reconciliation_deferred_items() { :; }",
+        'TARGET_REPO="openclaw/openclaw"',
+        'persist_reconciliation --target-repo "$TARGET_REPO"',
+      ].join("\n"),
+    ],
+    { encoding: "utf8" },
+  );
+  const baseline = /^baseline=(.+)$/m.exec(output)?.[1];
+  assert.ok(baseline);
+  assert.equal(existsSync(baseline), false);
 });
 
 test("reconcile publication batches large corrected tuple sets below exec argument limits", () => {

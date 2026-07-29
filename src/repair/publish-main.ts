@@ -78,12 +78,9 @@ export async function publishMainWithStateAppend(
   const root = runtime.root ?? process.cwd();
   const queueUrl = env.QUEUE_URL ?? "";
   const webhookSecret = env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
-  const canonicalPlan = planCanonicalRecordTuples(
-    options.paths,
-    root,
-    env.CLAWSWEEPER_STATE_DIR,
-    env,
-  );
+  const canonicalBaselineRoot =
+    env.CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR?.trim() || env.CLAWSWEEPER_STATE_DIR;
+  const canonicalPlan = planCanonicalRecordTuples(options.paths, root, canonicalBaselineRoot, env);
   const canonicalItemCount = canonicalPlan.items.length;
   let canonicalResolvedCount = 0;
   let canonicalFailedCount = 0;
@@ -100,7 +97,7 @@ export async function publishMainWithStateAppend(
           webhookSecret,
           mutation: item.mutation,
           root,
-          stateRoot: env.CLAWSWEEPER_STATE_DIR!,
+          stateRoot: canonicalBaselineRoot!,
           env,
           ...(runtime.fetchImpl ? { fetchImpl: runtime.fetchImpl } : {}),
         });

@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
+  copyFileSync,
   existsSync,
   fstatSync,
   mkdirSync,
@@ -31913,6 +31914,8 @@ function reconcileFolders(options: {
   closedDir: string;
   plansDir?: string;
   decisionPacketsDir?: string;
+  canonicalBaselineDir?: string;
+  repositorySlug?: string;
   maxPages?: number;
   dryRun?: boolean;
   fetchClosedAt?: boolean;
@@ -31922,6 +31925,48 @@ function reconcileFolders(options: {
   const dryRun = options.dryRun ?? false;
   const fetchClosedAt = options.fetchClosedAt ?? true;
   const plansDir = options.plansDir ?? defaultPlansDir();
+  if (options.canonicalBaselineDir && !options.repositorySlug) {
+    throw new Error("canonical reconciliation baseline requires a repository slug");
+  }
+  const capturedBaselines = new Set<number>();
+  const captureCanonicalBaseline = (number: number, file: string): void => {
+    if (
+      dryRun ||
+      !options.canonicalBaselineDir ||
+      !options.repositorySlug ||
+      capturedBaselines.has(number)
+    ) {
+      return;
+    }
+    const packetName = `${number}.json`;
+    const copies = [
+      { section: "items", name: file, source: join(options.itemsDir, file) },
+      { section: "closed", name: file, source: join(options.closedDir, file) },
+      { section: "plans", name: file, source: join(plansDir, file) },
+      ...(options.decisionPacketsDir
+        ? [
+            {
+              section: "decision-packets",
+              name: packetName,
+              source: join(options.decisionPacketsDir, packetName),
+            },
+          ]
+        : []),
+    ];
+    for (const copy of copies) {
+      if (!existsSync(copy.source)) continue;
+      const destination = join(
+        options.canonicalBaselineDir,
+        "records",
+        options.repositorySlug,
+        copy.section,
+        copy.name,
+      );
+      ensureDir(dirname(destination));
+      copyFileSync(copy.source, destination);
+    }
+    capturedBaselines.add(number);
+  };
   const syncReconciledDecisionPacket = (
     markdown: string,
     reportPath: string,
@@ -31963,7 +32008,6 @@ function reconcileFolders(options: {
     const planPath = workPlanPathForReport(reportPath, plansDir);
     let changed = existsSync(planPath);
     let nextMarkdown = markdown;
-    if (!dryRun && existsSync(planPath)) unlinkSync(planPath);
 
     const packetPath = options.decisionPacketsDir
       ? join(options.decisionPacketsDir, `${number}.json`)
@@ -31978,6 +32022,8 @@ function reconcileFolders(options: {
         hasPacketReference(packetReference) ||
         hasPacketReference(packetSha)),
     );
+    if (changed || shouldSyncPacket) captureCanonicalBaseline(number, file);
+    if (!dryRun && existsSync(planPath)) unlinkSync(planPath);
     if (shouldSyncPacket && packetPath) {
       if (dryRun) {
         changed = true;
@@ -32021,6 +32067,7 @@ function reconcileFolders(options: {
         );
       }
     }
+    captureCanonicalBaseline(number, file);
     const markdown = syncReconciledDecisionPacket(
       markReconciledState(sourceMarkdown, "closed", { closedAt }),
       destinationPath,
@@ -32044,6 +32091,7 @@ function reconcileFolders(options: {
       cleanAlreadyClosedSidecars(number, file, sourcePath, sourceMarkdown);
       continue;
     }
+    captureCanonicalBaseline(number, file);
     const destinationPath = join(options.itemsDir, file);
     if (existsSync(destinationPath)) {
       if (!dryRun) {
@@ -32086,7 +32134,7 @@ function reconcileFolders(options: {
 }
 
 function reconcileCommand(args: Args): void {
-  repoFromArgs(args);
+  const profile = repoFromArgs(args);
   const itemsDir = resolve(stringArg(args.items_dir, defaultItemsDir()));
   const closedDir = resolve(stringArg(args.closed_dir, defaultClosedDir()));
   const plansDir = resolve(stringArg(args.plans_dir, defaultPlansDir()));
@@ -32095,11 +32143,15 @@ function reconcileCommand(args: Args): void {
   const dryRun = boolArg(args.dry_run);
   const fetchClosedAt = !boolArg(args.skip_closed_at);
   const preserveItemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
+  const canonicalBaselineDir = stringArg(args.canonical_record_baseline_dir, "").trim();
   const result = reconcileFolders({
     itemsDir,
     closedDir,
     plansDir,
     decisionPacketsDir,
+    ...(canonicalBaselineDir
+      ? { canonicalBaselineDir: resolve(canonicalBaselineDir), repositorySlug: profile.slug }
+      : {}),
     maxPages,
     dryRun,
     fetchClosedAt,

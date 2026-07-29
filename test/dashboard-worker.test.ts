@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac, generateKeyPairSync } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { createContext, Script } from "node:vm";
@@ -26,6 +29,7 @@ import {
   TRIAGE_ROUTING_GROUPS,
   triageRoutingGroupsForLabels,
 } from "../dashboard/triage-routing-groups.ts";
+import { publishMainWithStateAppend } from "../dist/repair/publish-main.js";
 
 test("exact-review queue defaults to 64 of the 128 global workers", () => {
   assert.equal(exactReviewQueueCapacity({}), 64);
@@ -9159,6 +9163,133 @@ test("canonical tuple publication updates Worker authority and appends one proje
       ],
     },
   });
+});
+
+test("apply preselect moves a reconciliation-authored canonical tuple from items to closed", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-preselect-source-"));
+  const sparseStateRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "clawsweeper-apply-preselect-state-"),
+  );
+  const canonicalBaselineRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "clawsweeper-apply-preselect-baseline-"),
+  );
+  const itemId = 100078;
+  const tupleRoot = "records/openclaw-openclaw";
+  const itemPath = `${tupleRoot}/items/${itemId}.md`;
+  const closedPath = `${tupleRoot}/closed/${itemId}.md`;
+  const planPath = `${tupleRoot}/plans/${itemId}.md`;
+  const packetPath = `${tupleRoot}/decision-packets/${itemId}.json`;
+  const packet = (state: "open" | "closed", reportPath: string) =>
+    `${JSON.stringify(
+      {
+        version: 1,
+        generatedAt: "2026-07-27T18:00:00.000Z",
+        updatedAt: "2026-07-27T17:00:00.000Z",
+        subject: { repo: "openclaw/openclaw", kind: "issue", number: itemId, state },
+        source: { reportPath, reviewedAt: "2026-07-27T18:00:00.000Z" },
+      },
+      null,
+      2,
+    )}\n`;
+  const primary = (state: "open" | "closed", packetContent: string, reconciledAt: string) =>
+    [
+      "---",
+      `decision_packet_sha256: ${createHash("sha256").update(packetContent).digest("hex")}`,
+      `decision_packet_path: ${packetPath}`,
+      `number: ${itemId}`,
+      "repository: openclaw/openclaw",
+      `current_state: ${state}`,
+      "reviewed_at: 2026-07-27T18:00:00.000Z",
+      `reconciled_at: ${reconciledAt}`,
+      "---",
+      "",
+      "production-shaped canonical record",
+      "",
+    ].join("\n");
+
+  const openPacket = packet("open", itemPath);
+  const openPrimary = primary("open", openPacket, "2026-07-27T19:00:00.000Z");
+  const seeded = await queue.fetch(
+    stateAppendQueueRequest("/records/tuples", {
+      deliveryId: `record-reconcile:openclaw-openclaw:${itemId}:corrective-tuple`,
+      key: `openclaw-openclaw/${itemId}`,
+      operations: [
+        {
+          path: itemPath,
+          expectedDigest: null,
+          contentBase64: Buffer.from(openPrimary).toString("base64"),
+        },
+        { path: closedPath, expectedDigest: null },
+        { path: planPath, expectedDigest: null },
+        {
+          path: packetPath,
+          expectedDigest: null,
+          contentBase64: Buffer.from(openPacket).toString("base64"),
+        },
+      ],
+    }),
+  );
+  assert.equal(seeded.status, 202, await seeded.text());
+
+  const write = (base: string, relativePath: string, content: string) => {
+    const destination = path.join(base, relativePath);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.writeFileSync(destination, content, "utf8");
+  };
+  // Worker hydration writes canonical records to the lane worktree. The state
+  // checkout is sparse and intentionally has no records/ baseline.
+  write(root, itemPath, openPrimary);
+  write(root, packetPath, openPacket);
+  write(canonicalBaselineRoot, itemPath, openPrimary);
+  write(canonicalBaselineRoot, packetPath, openPacket);
+
+  const closedPacket = packet("closed", closedPath);
+  const closedPrimary = primary("closed", closedPacket, "2026-07-28T04:33:00.000Z");
+  fs.unlinkSync(path.join(root, itemPath));
+  write(root, closedPath, closedPrimary);
+  write(root, packetPath, closedPacket);
+
+  const laneResponses: Array<{ status: number; body: Record<string, unknown> }> = [];
+  await publishMainWithStateAppend(
+    {
+      message: "chore: persist sweep reconciliation",
+      paths: [itemPath, closedPath, planPath, packetPath],
+      rebaseStrategy: "reconcile-records",
+    },
+    {
+      root,
+      env: {
+        CLAWSWEEPER_STATE_APPEND_ENABLED: "1",
+        CLAWSWEEPER_STATE_DIR: sparseStateRoot,
+        CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: canonicalBaselineRoot,
+        CLAWSWEEPER_CANONICAL_PUBLICATION_KIND: "reconcile",
+        QUEUE_URL: "https://queue.test",
+        CLAWSWEEPER_WEBHOOK_SECRET: "apply-preselect-test-secret",
+      },
+      fetchImpl: (async (_input: string | URL | Request, init?: RequestInit) => {
+        const mutation = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        const response = await queue.fetch(stateAppendQueueRequest("/records/tuples", mutation));
+        const body = (await response.json()) as Record<string, unknown>;
+        laneResponses.push({ status: response.status, body });
+        return Response.json(body, { status: response.status });
+      }) as typeof fetch,
+      publishGit: () => {
+        throw new Error("canonical reconciliation must not use Git publication");
+      },
+    },
+  );
+
+  assert.equal(laneResponses[0]?.status, 202);
+  const closed = await queue.fetch(
+    new Request(`https://queue/records/openclaw-openclaw/closed/${itemId}`, { method: "GET" }),
+  );
+  assert.equal(
+    closed.status,
+    200,
+    "the legitimate items-to-closed move must reach canonical state",
+  );
+  assert.equal((await closed.json()).content, closedPrimary);
 });
 
 test("canonical tuple failures return stable errors and sanitize server logs", async () => {

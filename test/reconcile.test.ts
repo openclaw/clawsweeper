@@ -13,6 +13,7 @@ test("reconcile reports every changed record tuple and cleans already-closed sid
   const closedDir = join(recordsDir, "closed");
   const plansDir = join(recordsDir, "plans");
   const packetsDir = join(recordsDir, "decision-packets");
+  const canonicalBaselineDir = join(root, "canonical-baseline");
   for (const dir of [itemsDir, closedDir, plansDir, packetsDir]) {
     mkdirSync(dir, { recursive: true });
   }
@@ -85,6 +86,8 @@ if (args[0] === "api" && args[1]?.includes("/issues?state=open")) {
           plansDir,
           "--decision-packets-dir",
           packetsDir,
+          "--canonical-record-baseline-dir",
+          canonicalBaselineDir,
           "--skip-closed-at",
         ],
         { encoding: "utf8" },
@@ -121,6 +124,25 @@ if (args[0] === "api" && args[1]?.includes("/issues?state=open")) {
     assert.match(readFileSync(join(closedDir, "5.md"), "utf8"), /^decision_packet_path: none$/m);
     assert.equal(existsSync(join(closedDir, "6.md")), true);
     assert.equal(existsSync(join(closedDir, "openclaw-openclaw-7.md")), true);
+    assert.equal(
+      readFileSync(join(canonicalBaselineDir, "records/openclaw-openclaw/items/1.md"), "utf8"),
+      report(1, "open"),
+    );
+    assert.equal(
+      readFileSync(join(canonicalBaselineDir, "records/openclaw-openclaw/plans/1.md"), "utf8"),
+      "stale plan for newly closed item\n",
+    );
+    assert.equal(
+      existsSync(join(canonicalBaselineDir, "records/openclaw-openclaw/closed/1.md")),
+      false,
+    );
+    assert.equal(
+      readFileSync(
+        join(canonicalBaselineDir, "records/openclaw-openclaw/decision-packets/5.json"),
+        "utf8",
+      ),
+      '{"subject":{"state":"open"}}\n',
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -188,6 +188,9 @@ test("publish-main fails closed when canonical tuple publication is rejected", a
 test("publish-main refetches CURRENT and retries a conflicted reconciliation move once", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-current-source-"));
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-current-state-"));
+  const sparseStateRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "clawsweeper-canonical-current-sparse-state-"),
+  );
   const baseline = closeRecord("old-source-revision", "baseline", "open");
   const target = closeRecord("old-source-revision", "baseline", "closed");
   const current = closeRecord("new-source-revision", "event-driven review", "open");
@@ -204,7 +207,8 @@ test("publish-main refetches CURRENT and retries a conflicted reconciliation mov
       {
         root,
         env: appendEnv({
-          CLAWSWEEPER_STATE_DIR: stateRoot,
+          CLAWSWEEPER_STATE_DIR: sparseStateRoot,
+          CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: stateRoot,
           CLAWSWEEPER_CANONICAL_PUBLICATION_KIND: "reconcile",
           CLAWSWEEPER_RECONCILE_DEFERRED_PATH: deferredPath,
         }),

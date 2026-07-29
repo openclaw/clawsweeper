@@ -231,9 +231,20 @@ publish_reconciled_records() {
 
 persist_reconciliation() {
   local reconcile_json
-  reconcile_json="$(pnpm run --silent reconcile -- "$@")"
+  local canonical_baseline_dir
+  mkdir -p .artifacts
+  canonical_baseline_dir="$(mktemp -d .artifacts/apply-reconcile-baseline.XXXXXX)"
+  if ! reconcile_json="$(pnpm run --silent reconcile -- "$@" --canonical-record-baseline-dir "$canonical_baseline_dir")"; then
+    rm -rf -- "$canonical_baseline_dir"
+    return 1
+  fi
   echo "$reconcile_json"
-  publish_reconciled_records "chore: persist sweep reconciliation" "$reconcile_json" || return 1
+  if ! CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR="$canonical_baseline_dir" \
+    publish_reconciled_records "chore: persist sweep reconciliation" "$reconcile_json"; then
+    rm -rf -- "$canonical_baseline_dir"
+    return 1
+  fi
+  rm -rf -- "$canonical_baseline_dir"
   load_reconciliation_deferred_items
 }
 
