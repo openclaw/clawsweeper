@@ -84,7 +84,19 @@ require_fix_before_close: true
     runner: "blacksmith-4vcpu-ubuntu-2404",
     execution_runner: "blacksmith-16vcpu-ubuntu-2404",
     model: "internal",
-    selector_summary: { evaluated: 10, rejected: 9, reason_counts: { stale: 4 } },
+    selector_summary: { evaluated: 1, rejected: 0, reason_counts: {} },
+    selector_decision: {
+      rationale: "The cluster is narrow, current, and has a concrete validation path.",
+      assessments: [
+        {
+          cluster_id: 42,
+          decision: "selected",
+          rationale: "The two live reports describe one reproducible defect.",
+          candidate_refs: [420, 421],
+          cluster_refs: [420, 421],
+        },
+      ],
+    },
     jobs: [
       {
         cluster_id: 42,
@@ -184,7 +196,19 @@ require_fix_before_close: true
       runner: "blacksmith-4vcpu-ubuntu-2404",
       execution_runner: "blacksmith-16vcpu-ubuntu-2404",
       model: "internal",
-      selector_summary: { evaluated: 10, rejected: 9, reason_counts: { stale: 4 } },
+      selector_summary: { evaluated: 1, rejected: 0, reason_counts: {} },
+      selector_decision: {
+        rationale: "The cluster is narrow, current, and has a concrete validation path.",
+        assessments: [
+          {
+            cluster_id: clusterId,
+            decision: "selected",
+            rationale: "The live reports describe one reproducible defect.",
+            candidate_refs: [clusterId * 10, clusterId * 10 + 1],
+            cluster_refs: [clusterId * 10, clusterId * 10 + 1],
+          },
+        ],
+      },
       jobs: [
         {
           cluster_id: clusterId,
@@ -268,6 +292,61 @@ test("duplicate intake is idempotent and a completed dispatch never regresses", 
   assert.equal(Object.keys(replayed.clusters).length, 1);
   assert.equal(replayed.clusters["42"].status, "dispatched");
   assert.equal(replayed.stores.length, 1);
+});
+
+test("durable selector decisions preserve rejected clusters even when no job is selected", () => {
+  const proposal = {
+    ...receiptProposal(),
+    selector_summary: { evaluated: 1, rejected: 1, reason_counts: { model_rejected: 1 } },
+    selector_decision: {
+      rationale: "The only cluster is already fixed on main.",
+      assessments: [
+        {
+          cluster_id: 43,
+          decision: "rejected" as const,
+          rationale: "The reported behavior is covered by the current implementation.",
+          candidate_refs: [430],
+          cluster_refs: [430, 431],
+        },
+      ],
+    },
+    jobs: [],
+  };
+  const accepted = acceptClusterIntakeIntent(proposal, receiptSecret);
+  const ledger = clusterIntakeLedger(
+    JSON.parse(JSON.stringify(mergeClusterIntakeLedger(undefined, [accepted]))),
+  );
+
+  assert.equal(ledger.stores[0].outcome, "selector_rejected");
+  assert.deepEqual(ledger.stores[0].selector_decision, proposal.selector_decision);
+});
+
+test("selector decisions must match selected job identities and references", () => {
+  const wrongCluster = receiptProposal();
+  wrongCluster.selector_decision.assessments[0].cluster_id = 43;
+  assert.throws(
+    () => acceptClusterIntakeIntent(wrongCluster, receiptSecret),
+    /does not match selected jobs/,
+  );
+
+  const wrongReferences = receiptProposal();
+  wrongReferences.selector_decision.assessments[0].candidate_refs = [420];
+  assert.throws(
+    () => acceptClusterIntakeIntent(wrongReferences, receiptSecret),
+    /does not match selected job references/,
+  );
+});
+
+test("a cluster with one live candidate and closed context passes durable acceptance", () => {
+  const proposal = receiptProposal();
+  proposal.jobs[0].content = proposal.jobs[0].content.replace(
+    "candidates:\n  - #420\n  - #421",
+    "candidates:\n  - #420",
+  );
+  proposal.jobs[0].digest = createHash("sha256").update(proposal.jobs[0].content).digest("hex");
+  proposal.selector_decision.assessments[0].candidate_refs = [420];
+
+  assert.doesNotThrow(() => acceptClusterIntakeIntent(proposal, receiptSecret));
 });
 
 test("claiming a newer store preserves completed outcomes for older stores", () => {
@@ -405,6 +484,7 @@ test("every accepted job fits a complete workflow dispatch independently", () =>
   const accepted = acceptClusterIntakeIntent(
     {
       ...firstUnsigned,
+      selector_decision: null,
       jobs: [padToLimit(firstUnsigned.jobs[0]), padToLimit(secondUnsigned.jobs[0])],
     },
     receiptSecret,
@@ -1169,6 +1249,12 @@ test("v2 cluster intake ledgers reject unvalidated JSON shapes", () => {
     (value: Record<string, unknown>) => {
       const stores = value.stores as Array<Record<string, unknown>>;
       (stores[0].selector_summary as Record<string, unknown>).evaluated = "10";
+    },
+    (value: Record<string, unknown>) => {
+      const stores = value.stores as Array<Record<string, unknown>>;
+      const decision = stores[0].selector_decision as Record<string, unknown>;
+      const assessments = decision.assessments as Array<Record<string, unknown>>;
+      assessments[0].candidate_refs = [420, 999];
     },
     (value: Record<string, unknown>) => {
       const clusters = value.clusters as Record<string, Record<string, unknown>>;

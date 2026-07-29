@@ -52,6 +52,17 @@ test("cluster history scopes repository-local IDs and reads the durable intake l
     JSON.stringify({
       target_repo: "openclaw/openclaw",
       clusters: { 44: { status: "dispatched" } },
+      stores: [
+        {
+          selector_decision: {
+            rationale: "One useful cluster; one already fixed.",
+            assessments: [
+              { cluster_id: 44, decision: "selected" },
+              { cluster_id: 46, decision: "rejected" },
+            ],
+          },
+        },
+      ],
     }),
   );
   fs.writeFileSync(
@@ -63,7 +74,7 @@ test("cluster history scopes repository-local IDs and reads the durable intake l
     [...existingGitcrawlClusterIds([root], "openclaw/openclaw")].sort(
       (left, right) => left - right,
     ),
-    [42, 44],
+    [42, 44, 46],
   );
 });
 

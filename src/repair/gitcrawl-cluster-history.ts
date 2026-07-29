@@ -55,11 +55,23 @@ export function existingGitcrawlClusterIds(
         const ledger = JSON.parse(fs.readFileSync(file, "utf8")) as {
           target_repo?: unknown;
           clusters?: unknown;
+          stores?: unknown;
         };
-        if (ledger.target_repo !== targetRepo || !isRecord(ledger.clusters)) continue;
-        for (const clusterId of Object.keys(ledger.clusters)) {
-          const number = Number(clusterId);
-          if (Number.isSafeInteger(number) && number > 0) ids.add(number);
+        if (ledger.target_repo !== targetRepo) continue;
+        if (isRecord(ledger.clusters)) {
+          for (const clusterId of Object.keys(ledger.clusters)) {
+            addPositiveInteger(ids, clusterId);
+          }
+        }
+        if (Array.isArray(ledger.stores)) {
+          for (const store of ledger.stores) {
+            if (!isRecord(store) || !isRecord(store.selector_decision)) continue;
+            const assessments = store.selector_decision.assessments;
+            if (!Array.isArray(assessments)) continue;
+            for (const assessment of assessments) {
+              if (isRecord(assessment)) addPositiveInteger(ids, assessment.cluster_id);
+            }
+          }
         }
       } catch {
         // A malformed or unrelated JSON file is not authoritative history.
@@ -67,6 +79,11 @@ export function existingGitcrawlClusterIds(
     }
   }
   return ids;
+}
+
+function addPositiveInteger(values: Set<number>, value: unknown): void {
+  const number = Number(value);
+  if (Number.isSafeInteger(number) && number > 0) values.add(number);
 }
 
 function frontmatterRepo(frontmatter: string): string {

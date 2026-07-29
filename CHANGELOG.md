@@ -9,6 +9,9 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Added
 
+- Persisted model cluster-selection decisions and rationale in durable intake
+  history so rejected clusters are not repeatedly reconsidered, while allowing
+  the model to evaluate one-live-candidate clusters with useful closed context.
 - Cut cluster repair intake over to durable state publication: intake appends an authenticated intent (exact job bytes, digest, store identity, selector report) and hydrates with a read-only non-persisted state credential; result publication mints its target-read token for the validated worker target repositories, projects exact changed state paths, and publisher-rerun failures no longer block subsequent self-heal. Thanks @RomneyDa! (#873)
 - Added authenticated Worker blob endpoints (`/internal/state/blobs/*`) that serve the `ledger/v1` and `assets` state trees from R2 with create-only immutable ledger writes, a cursor-resumable `migrate-state-blobs` workflow with digest verification, and an opt-in `CLAWSWEEPER_LEDGER_SOURCE=worker` dual-read in `hydrate-state` (default stays git).
 

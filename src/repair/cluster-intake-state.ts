@@ -22,6 +22,17 @@ export type ClusterIntakeJob = ClusterIntakeJobProposal & {
   accepted_intent_receipt: string;
 };
 
+export type ClusterSelectorDecision = {
+  rationale: string;
+  assessments: Array<{
+    cluster_id: number;
+    decision: "selected" | "rejected";
+    rationale: string;
+    candidate_refs: number[];
+    cluster_refs: number[];
+  }>;
+};
+
 export type ClusterIntakeProposal = {
   schema: typeof CLUSTER_INTAKE_SCHEMA;
   target_repo: string;
@@ -35,6 +46,7 @@ export type ClusterIntakeProposal = {
   execution_runner: string;
   model: string;
   selector_summary: { evaluated: number; rejected: number; reason_counts: Record<string, number> };
+  selector_decision: ClusterSelectorDecision | null;
   jobs: ClusterIntakeJobProposal[];
 };
 
@@ -77,6 +89,7 @@ type StoreLedgerEntry = {
     | "dispatched";
   generated_jobs: string[];
   selector_summary: ClusterIntakeIntent["selector_summary"];
+  selector_decision?: ClusterSelectorDecision | null;
 };
 
 export type ClusterIntakeLedger = {
@@ -220,6 +233,7 @@ export function clusterIntakeProposal(value: unknown): ClusterIntakeProposal {
   }
   const seenClusters = new Set<number>();
   const seenPaths = new Set<string>();
+  const jobReferences = new Map<number, { candidates: string[]; clusterRefs: string[] }>();
   const jobs = value.jobs.map((raw): ClusterIntakeJobProposal => {
     if (!isRecord(raw)) throw new Error("cluster intake job must be an object");
     const clusterId = Number(raw.cluster_id);
@@ -247,7 +261,7 @@ export function clusterIntakeProposal(value: unknown): ClusterIntakeProposal {
     ) {
       throw new Error(`invalid cluster intake job fence: ${path || clusterId}`);
     }
-    validateClusterJobContent(content, targetRepo, clusterId);
+    jobReferences.set(clusterId, validateClusterJobContent(content, targetRepo, clusterId));
     seenClusters.add(clusterId);
     seenPaths.add(path);
     const job = { cluster_id: clusterId, path, content, digest, dispatch_key: dispatchKey };
@@ -259,6 +273,28 @@ export function clusterIntakeProposal(value: unknown): ClusterIntakeProposal {
     });
     return job;
   });
+  const selectorDecision = selectorDecisionFrom(
+    value.selector_decision,
+    selectorSummary,
+    jobs.map((job) => job.cluster_id),
+  );
+  for (const assessment of selectorDecision?.assessments ?? []) {
+    if (assessment.decision !== "selected") continue;
+    const references = jobReferences.get(assessment.cluster_id);
+    if (
+      !references ||
+      !sameStringSet(
+        references.candidates,
+        assessment.candidate_refs.map((number) => `#${number}`),
+      ) ||
+      !sameStringSet(
+        references.clusterRefs,
+        assessment.cluster_refs.map((number) => `#${number}`),
+      )
+    ) {
+      throw new Error("cluster selector decision does not match selected job references");
+    }
+  }
   const intent: ClusterIntakeProposal = {
     schema: CLUSTER_INTAKE_SCHEMA,
     target_repo: targetRepo,
@@ -272,6 +308,7 @@ export function clusterIntakeProposal(value: unknown): ClusterIntakeProposal {
     execution_runner: executionRunner,
     model,
     selector_summary: selectorSummary,
+    selector_decision: selectorDecision,
     jobs,
   };
   if (Buffer.byteLength(JSON.stringify(intent)) > CLUSTER_INTAKE_MAX_RECORD_BYTES) {
@@ -472,6 +509,7 @@ export function mergeClusterIntakeLedger(
       outcome,
       generated_jobs: generatedJobs,
       selector_summary: intent.selector_summary,
+      selector_decision: intent.selector_decision,
     });
   }
   const latestStore = [...stores.values()]
@@ -590,7 +628,7 @@ export function validateClusterJobContent(
   content: string,
   targetRepo: string,
   clusterId: number,
-): void {
+): { candidates: string[]; clusterRefs: string[] } {
   const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!match) throw new Error("cluster intake job is missing YAML frontmatter");
   let frontmatter: ReturnType<typeof parseSimpleYaml>;
@@ -639,17 +677,18 @@ export function validateClusterJobContent(
   const candidates = Array.isArray(frontmatter.candidates)
     ? frontmatter.candidates.map(String)
     : [];
-  const clusterRefs = new Set(
+  const clusterRefs = new Set<string>(
     Array.isArray(frontmatter.cluster_refs) ? frontmatter.cluster_refs.map(String) : [],
   );
   const canonical = Array.isArray(frontmatter.canonical) ? frontmatter.canonical.map(String) : [];
   if (
-    candidates.length < 2 ||
+    candidates.length === 0 ||
     canonical.length !== 1 ||
     [...canonical, ...candidates].some((ref) => !clusterRefs.has(ref))
   ) {
     throw new Error("cluster intake job reference policy mismatch");
   }
+  return { candidates, clusterRefs: [...clusterRefs] };
 }
 
 export function clusterJobTargetRepository(content: string): string {
@@ -776,6 +815,7 @@ function strictStoreLedgerEntry(value: unknown, targetRepo: string): StoreLedger
       "outcome",
       "generated_jobs",
       "selector_summary",
+      "selector_decision",
     ],
     "cluster intake ledger store",
   );
@@ -789,6 +829,15 @@ function strictStoreLedgerEntry(value: unknown, targetRepo: string): StoreLedger
   if (!outcomes.has(value.outcome as StoreLedgerEntry["outcome"])) {
     throw new Error("invalid cluster intake ledger store outcome");
   }
+  const generatedJobs = strictJobPaths(
+    value.generated_jobs,
+    targetRepo,
+    "cluster intake ledger store generated jobs",
+  );
+  const selectorSummary = strictSelectorSummary(value.selector_summary);
+  const selectorDecision = Object.hasOwn(value, "selector_decision")
+    ? selectorDecisionFrom(value.selector_decision, selectorSummary)
+    : undefined;
   return {
     store_sha256: strictDigest(value.store_sha256, "cluster intake ledger store SHA"),
     store_exported_at: strictIso(
@@ -798,12 +847,9 @@ function strictStoreLedgerEntry(value: unknown, targetRepo: string): StoreLedger
     accepted_at: strictIso(value.accepted_at, "cluster intake ledger store accepted_at"),
     run_url: strictGithubUrl(value.run_url, "cluster intake ledger store run URL"),
     outcome: value.outcome as StoreLedgerEntry["outcome"],
-    generated_jobs: strictJobPaths(
-      value.generated_jobs,
-      targetRepo,
-      "cluster intake ledger store generated jobs",
-    ),
-    selector_summary: strictSelectorSummary(value.selector_summary),
+    generated_jobs: generatedJobs,
+    selector_summary: selectorSummary,
+    ...(selectorDecision !== undefined ? { selector_decision: selectorDecision } : {}),
   };
 }
 
@@ -1009,6 +1055,78 @@ function selectorSummaryFrom(value: unknown): ClusterIntakeIntent["selector_summ
   };
 }
 
+function selectorDecisionFrom(
+  value: unknown,
+  summary: ClusterIntakeIntent["selector_summary"],
+  selectedClusterIds?: readonly number[],
+): ClusterSelectorDecision | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value) || !Array.isArray(value.assessments)) {
+    throw new Error("invalid cluster selector decision");
+  }
+  exactKeys(value, ["rationale", "assessments"], "cluster selector decision");
+  const assessments = value.assessments.map(
+    (entry): ClusterSelectorDecision["assessments"][number] => {
+      if (!isRecord(entry)) throw new Error("invalid cluster selector assessment");
+      exactKeys(
+        entry,
+        ["cluster_id", "decision", "rationale", "candidate_refs", "cluster_refs"],
+        "cluster selector assessment",
+      );
+      const clusterId = strictPositiveInteger(entry.cluster_id, "cluster selector cluster ID");
+      const decision = entry.decision;
+      if (decision !== "selected" && decision !== "rejected") {
+        throw new Error("invalid cluster selector assessment decision");
+      }
+      const candidateRefs = strictPositiveIntegerList(
+        entry.candidate_refs,
+        "cluster selector candidate refs",
+      );
+      const clusterRefs = strictPositiveIntegerList(
+        entry.cluster_refs,
+        "cluster selector cluster refs",
+      );
+      if (
+        candidateRefs.length === 0 ||
+        candidateRefs.some((candidate) => !clusterRefs.includes(candidate))
+      ) {
+        throw new Error("cluster selector assessment reference mismatch");
+      }
+      return {
+        cluster_id: clusterId,
+        decision,
+        rationale: strictString(entry.rationale, "cluster selector assessment rationale"),
+        candidate_refs: candidateRefs,
+        cluster_refs: clusterRefs,
+      };
+    },
+  );
+  if (
+    assessments.length !== summary.evaluated ||
+    new Set(assessments.map((entry) => entry.cluster_id)).size !== assessments.length ||
+    assessments.filter((entry) => entry.decision === "rejected").length !== summary.rejected
+  ) {
+    throw new Error("cluster selector decision count mismatch");
+  }
+  if (selectedClusterIds) {
+    const selected = assessments
+      .filter((entry) => entry.decision === "selected")
+      .map((entry) => entry.cluster_id)
+      .sort((left, right) => left - right);
+    const expectedSelected = [...selectedClusterIds].sort((left, right) => left - right);
+    if (
+      selected.length !== expectedSelected.length ||
+      selected.some((clusterId, index) => clusterId !== expectedSelected[index])
+    ) {
+      throw new Error("cluster selector decision does not match selected jobs");
+    }
+  }
+  return {
+    rationale: strictString(value.rationale, "cluster selector rationale"),
+    assessments,
+  };
+}
+
 function strictSelectorSummary(value: unknown): ClusterIntakeIntent["selector_summary"] {
   if (!isRecord(value) || !isRecord(value.reason_counts)) {
     throw new Error("invalid cluster intake ledger selector summary");
@@ -1119,6 +1237,13 @@ function strictPositiveInteger(value: unknown, label: string): number {
 
 function optionalPositiveInteger(value: unknown, label: string): number | undefined {
   return value === undefined ? undefined : strictPositiveInteger(value, label);
+}
+
+function strictPositiveIntegerList(value: unknown, label: string): number[] {
+  if (!Array.isArray(value)) throw new Error(`invalid ${label}`);
+  const integers = value.map((entry) => strictPositiveInteger(entry, label));
+  if (new Set(integers).size !== integers.length) throw new Error(`duplicate ${label}`);
+  return integers;
 }
 
 function strictJobPaths(value: unknown, targetRepo: string, label: string): string[] {

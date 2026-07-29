@@ -373,6 +373,10 @@ jobs:
               rejected: Number(selection.rejected || 0),
               reason_counts: selection.reason_counts || {},
             },
+            selector_decision: selection.decision === null ? null : {
+              rationale: selection.decision,
+              assessments: selection.assessments,
+            },
             jobs,
           };
           fs.writeFileSync(".artifacts/cluster-repair-intake/intent.json", `${JSON.stringify(intent, null, 2)}\n`);

@@ -42,12 +42,10 @@ test("gitcrawl cluster intake delegates candidate quality to the selector model"
   assert.match(repairDocs, /selector model compares/);
 });
 
-test("gitcrawl cluster intake only offers clusters that satisfy the acceptance contract", () => {
+test("gitcrawl cluster intake offers every cluster with a live candidate to the model", () => {
   const source = readFileSync("src/repair/import-gitcrawl-clusters.ts", "utf8");
-  // Durable acceptance requires >= 2 candidate refs (cluster-intake-state
-  // reference policy); a single-candidate offer fails the whole intake run.
-  assert.equal(source.match(/having open_count >= 2/g)?.length, 2);
-  assert.match(source, /skip single-candidate cluster/);
+  assert.equal(source.match(/having open_count > 0/g)?.length, 2);
+  assert.doesNotMatch(source, /open_count >= 2|skip single-candidate cluster/);
 });
 
 test("scheduled cluster repair intake follows gitcrawl-store freshness cadence", () => {
@@ -61,6 +59,7 @@ test("scheduled cluster repair intake follows gitcrawl-store freshness cadence",
   assert.match(workflow, /last_processed_store_sha256/);
   assert.match(workflow, /CLAWSWEEPER_CLUSTER_REPAIR_CANDIDATE_BATCH \|\| '8'/);
   assert.match(workflow, /repair:select-cluster-candidate/);
+  assert.match(workflow, /selector_decision: selection\.decision === null/);
   assert.match(workflow, /repair:publish-cluster-intake/);
   assert.match(workflow, /owner: \$\{\{ steps\.target\.outputs\.owner \}\}/);
   assert.match(workflow, /repositories: \$\{\{ steps\.target\.outputs\.name \}\}/);

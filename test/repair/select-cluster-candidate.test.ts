@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   assertSelectedCandidateStillOpen,
   collectClusterSelectionEvidence,
+  durableClusterSelectionDecision,
   selectClusterCandidateWithModel,
   validateClusterSelectionDecision,
 } from "../../dist/repair/select-cluster-candidate.js";
@@ -94,6 +95,69 @@ test("structured selector may reject the entire batch", () => {
     [pathValue],
   );
   assert.equal(decision.selected_path, null);
+});
+
+test("selector decision becomes durable without relying on generated job paths", () => {
+  const pathValue = "jobs/openclaw/inbox/gitcrawl-42-a.md";
+  const evidence = [
+    {
+      path: pathValue,
+      cluster_id: "gitcrawl-42-a",
+      members: [
+        {
+          number: 420,
+          role: "candidate" as const,
+          kind: "issue" as const,
+          state: "open",
+          title: "Live bug",
+          body: "Reproduction",
+          url: "https://github.com/openclaw/openclaw/issues/420",
+          author_association: "NONE",
+          created_at: "2026-07-27T00:00:00Z",
+          updated_at: "2026-07-27T01:00:00Z",
+          closed_at: null,
+          labels: [],
+          pull_request: null,
+        },
+        {
+          number: 421,
+          role: "context" as const,
+          kind: "issue" as const,
+          state: "closed",
+          title: "Prior fix",
+          body: "Fixed earlier",
+          url: "https://github.com/openclaw/openclaw/issues/421",
+          author_association: "NONE",
+          created_at: "2026-07-20T00:00:00Z",
+          updated_at: "2026-07-26T00:00:00Z",
+          closed_at: "2026-07-26T00:00:00Z",
+          labels: [],
+          pull_request: null,
+        },
+      ],
+    },
+  ];
+  const decision = validateClusterSelectionDecision(
+    {
+      selected_path: null,
+      rationale: "The prior fix already covers the remaining report.",
+      assessments: [{ path: pathValue, decision: "rejected", rationale: "Already fixed." }],
+    },
+    [pathValue],
+  );
+
+  assert.deepEqual(durableClusterSelectionDecision(decision, evidence), {
+    rationale: "The prior fix already covers the remaining report.",
+    assessments: [
+      {
+        cluster_id: 42,
+        decision: "rejected",
+        rationale: "Already fixed.",
+        candidate_refs: [420],
+        cluster_refs: [420, 421],
+      },
+    ],
+  });
 });
 
 test("structured selector cannot choose unoffered or inconsistently assessed work", () => {
