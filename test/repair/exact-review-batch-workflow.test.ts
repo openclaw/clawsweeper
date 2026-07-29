@@ -63,6 +63,10 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
     publisherSource,
     /if \(options\.batchMutationOutput\)[\s\S]*?writeBatchMutationResult\(options\.batchMutationOutput, \{[\s\S]*?kind: completionKind,[\s\S]*?reasonCode,/,
   );
+  assert.match(
+    publisherSource,
+    /canonicalTargetKey: `\$\{options\.targetRepo\}#\$\{options\.itemNumber\}`,\s*fenceKey: itemKey/,
+  );
   // Keep the fixture from looking like an embedded credential while still
   // proving that artifact downloads use the owner-scoped repository token.
   const ghToken = ["GH", "TOKEN"].join("_");
@@ -71,6 +75,8 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(source, /internal\/exact-review\/enqueue/);
   assert.match(source, /source_drift_requeue/);
   assert.match(source, /\.kind == "superseded" and \.disposition\.requeueLatestExpected == true/);
+  assert.match(source, /state-receipt\.json/);
+  assert.match(source, /\.outcome == "accepted" or \.outcome == "deduped"/);
   assert.match(source, /deferredCloseCoverageExpected == true/);
   assert.match(source, /scheduled proof lane/);
   assert.match(source, /jq '\.postEffectsComplete = true'/);
@@ -183,6 +189,7 @@ test("batch failure cleanup completes manifest fences without a queue fetch", ()
   const releaseSource = /async function release\(\) \{([\s\S]*?)\n\}/.exec(cliSource)?.[1] ?? "";
   assert.match(releaseSource, /manifest\.items\.map/);
   assert.match(releaseSource, /readBatchReceipt\(manifest, false\)/);
+  assert.match(releaseSource, /receipt\?\.outcomes\.get\(member\.itemKey\)/);
   assert.match(releaseSource, /receipt\?\.publishedItemKeys\.has\(member\.itemKey\)/);
   assert.match(releaseSource, /terminalOutcome: "published"/);
   assert.match(releaseSource, /receipt\?\.stateCommitSha/);
@@ -192,7 +199,11 @@ test("batch failure cleanup completes manifest fences without a queue fetch", ()
 
 test("batch commit publishes every prepared tuple to canonical Worker state", () => {
   const commitSource = /async function commit\(\) \{([\s\S]*?)\n\}/.exec(cliSource)?.[1] ?? "";
-  assert.match(commitSource, /await publishCanonicalBatch\(plans\)/);
+  assert.match(commitSource, /await publishCanonicalBatch\(commitCandidates\)/);
+  assert.match(commitSource, /permanentPublicationOutcome\(current, failureFingerprint\(error\)\)/);
+  assert.match(commitSource, /outcomes: publicationOutcomes/);
+  assert.match(cliSource, /canonicalTargetKey/);
+  assert.match(cliSource, /fenceKey/);
   assert.match(cliSource, /postDirectPublicationResult/);
   assert.match(cliSource, /publication-batch-results/);
   assert.match(cliSource, /plan\.operations\.map\(\(operation\) => \(\{ \.\.\.operation \}\)\)/);

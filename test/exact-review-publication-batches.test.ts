@@ -117,19 +117,22 @@ const candidates = [
 ];
 
 function directPlan(
-  itemKey: string,
+  canonicalTargetKey: string,
   revision: number,
   options: {
     path?: string;
     content?: Buffer;
     files?: number;
+    fenceKey?: string;
+    claimGeneration?: number;
   } = {},
 ): DirectPublicationPlan {
   const content = options.content ?? Buffer.from(`result-${revision}`);
   const files = options.files ?? 1;
-  const match = /^([^/]+)\/([^#]+)#(\d+)$/.exec(itemKey)!;
+  const match = /^([^/]+)\/([^#]+)#(\d+)$/.exec(canonicalTargetKey)!;
   const root = `records/${match[1]}-${match[2]}`;
   const number = match[3];
+  const fenceKey = options.fenceKey ?? canonicalTargetKey;
   const tuplePaths = [
     `${root}/items/${number}.md`,
     `${root}/plans/${number}.md`,
@@ -137,9 +140,15 @@ function directPlan(
     `${root}/closed/${number}.md`,
   ];
   return {
-    itemKey,
+    canonicalTargetKey,
+    fenceKey,
     revision,
-    identity: { itemKey, revision, claimGeneration: 1 },
+    identity: {
+      canonicalTargetKey,
+      fenceKey,
+      revision,
+      claimGeneration: options.claimGeneration ?? 1,
+    },
     operations: Array.from({ length: files }, (_, index) => ({
       path: options.path ?? tuplePaths[index]!,
       deleted: false,
@@ -211,6 +220,114 @@ test("direct publication idempotency compares canonical content", async () => {
   assert.equal(store.accept(retry, 1_001).outcome, "deduped");
 });
 
+test("direct publication preserves canonical targets and exact publication fences independently", async () => {
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  const plan = await validateDirectPublicationPlan(
+    directPlan("openclaw/openclaw#22", 1, {
+      fenceKey: "openclaw/openclaw#22@publish:77:3",
+    }),
+  );
+
+  assert.equal(plan.canonicalTargetKey, "openclaw/openclaw#22");
+  assert.equal(plan.fenceKey, "openclaw/openclaw#22@publish:77:3");
+  assert.equal(store.accept(plan, 1_000).outcome, "accepted");
+  assert.equal(store.accept(plan, 1_001).outcome, "deduped");
+  const receipt = store.get(plan.fenceKey, plan.revision);
+  assert.equal(receipt?.canonicalTargetKey, plan.canonicalTargetKey);
+  assert.equal(receipt?.fenceKey, plan.fenceKey);
+  assert.equal(receipt?.identity.canonicalTargetKey, plan.canonicalTargetKey);
+  assert.equal(receipt?.identity.fenceKey, plan.fenceKey);
+  await assert.rejects(
+    validateDirectPublicationPlan({
+      ...plan,
+      identity: { ...plan.identity, fenceKey: "openclaw/openclaw#22@publish:77:4" },
+    }),
+    /invalid direct publication identity/,
+  );
+  await assert.rejects(
+    validateDirectPublicationPlan({ ...plan, canonicalTargetKey: `${plan.canonicalTargetKey} ` }),
+    /canonical target key/,
+  );
+});
+
+test("direct publication dedupes an accepted tuple after its batch fence is reclaimed", async () => {
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  const first = await validateDirectPublicationPlan(
+    directPlan("openclaw/openclaw#23", 1, {
+      fenceKey: "openclaw/openclaw#23@publish:78:3",
+      claimGeneration: 1,
+    }),
+  );
+  assert.equal(store.accept(first, 1_000).outcome, "accepted");
+  const reclaimed = await validateDirectPublicationPlan(
+    directPlan("openclaw/openclaw#23", 1, {
+      fenceKey: "openclaw/openclaw#23@publish:78:3",
+      claimGeneration: 2,
+    }),
+  );
+  assert.equal(store.accept(reclaimed, 1_001).outcome, "deduped");
+  assert.equal(store.readCanonical("openclaw-openclaw", "items", 23)?.content, "result-1");
+});
+
+test("direct publication preserves a reclaimed superseded fence outcome", async () => {
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  const fenceKey = "openclaw/openclaw#24@publish:79:3";
+  assert.equal(
+    store.accept(
+      await validateDirectPublicationPlan(
+        directPlan("openclaw/openclaw#24", 2, { fenceKey, claimGeneration: 1 }),
+      ),
+      1_000,
+    ).outcome,
+    "accepted",
+  );
+  const stale = await validateDirectPublicationPlan(
+    directPlan("openclaw/openclaw#24", 1, { fenceKey, claimGeneration: 1 }),
+  );
+  assert.equal(store.accept(stale, 1_001).outcome, "superseded");
+  const reclaimed = await validateDirectPublicationPlan(
+    directPlan("openclaw/openclaw#24", 1, { fenceKey, claimGeneration: 2 }),
+  );
+  assert.equal(store.accept(reclaimed, 1_002).outcome, "superseded");
+});
+
+test("direct publication does not order independent fences by their local revisions", async () => {
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  assert.equal(
+    store.accept(
+      await validateDirectPublicationPlan(
+        directPlan("openclaw/openclaw#25", 2, {
+          fenceKey: "openclaw/openclaw#25@publish:80:1",
+          content: Buffer.from("older-fence"),
+        }),
+      ),
+      1_000,
+    ).outcome,
+    "accepted",
+  );
+  assert.equal(
+    store.accept(
+      await validateDirectPublicationPlan(
+        directPlan("openclaw/openclaw#25", 1, {
+          fenceKey: "openclaw/openclaw#25@publish:81:1",
+          content: Buffer.from("later-fence"),
+        }),
+      ),
+      1_001,
+    ).outcome,
+    "accepted",
+  );
+  assert.equal(store.readCanonical("openclaw-openclaw", "items", 25)?.content, "later-fence");
+});
+
 test("direct publication chunks large canonical values without projection rows", async () => {
   const storage = new TestStorage();
   const store = new ExactReviewDirectPublicationStore(storage);
@@ -252,9 +369,9 @@ test("direct publication replaces a retired pending plan with canonical state", 
         operations_json, total_bytes, file_count, state, attempts, created_at, updated_at,
         next_attempt_at, commit_sha, failure_reason)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, 1000, 1000, 1000, NULL, NULL)`,
-    legacy.itemKey,
+    legacy.fenceKey,
     legacy.revision,
-    legacy.identity.itemKey,
+    legacy.identity.fenceKey,
     legacy.identity.revision,
     legacy.identity.claimGeneration,
     JSON.stringify(legacy.operations),

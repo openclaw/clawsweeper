@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import fs from "node:fs";
 
 import type {
+  BatchPublicationIdentity,
   PreparedStateMutationOperation,
   PreparedStateMutationPlan,
 } from "./state-publication-mutation.js";
@@ -14,9 +15,10 @@ export type DirectPublicationOperation = PreparedStateMutationOperation & {
 };
 
 export type DirectPublicationPayload = {
-  itemKey: string;
+  canonicalTargetKey: string;
+  fenceKey: string;
   revision: number;
-  identity: PreparedStateMutationPlan["identity"];
+  identity: BatchPublicationIdentity & PreparedStateMutationPlan["identity"];
   operations: DirectPublicationOperation[];
   totalBytes: number;
 };
@@ -30,14 +32,18 @@ export function exactReviewDirectPublicationEnabled(value: string | undefined) {
 }
 
 export function prepareDirectPublicationPayload(options: {
-  itemKey: string;
   revision: number;
   plan: PreparedStateMutationPlan;
 }): DirectPublicationPayload {
+  const publication = options.plan.publication ?? {
+    canonicalTargetKey: options.plan.identity.itemKey,
+    fenceKey: options.plan.identity.itemKey,
+  };
   return {
-    itemKey: options.itemKey,
+    canonicalTargetKey: publication.canonicalTargetKey,
+    fenceKey: publication.fenceKey,
     revision: options.revision,
-    identity: { ...options.plan.identity },
+    identity: { ...publication, ...options.plan.identity },
     operations: options.plan.operations.map((operation) => ({ ...operation })),
     totalBytes: options.plan.totalBytes,
   };
@@ -135,7 +141,6 @@ export async function runExactReviewDirectPublicationFromEnv() {
     return;
   }
   const payload = prepareDirectPublicationPayload({
-    itemKey: requiredEnv("EXACT_REVIEW_DIRECT_ITEM_KEY"),
     revision: positiveInteger(requiredEnv("EXACT_REVIEW_DIRECT_REVISION"), "revision"),
     plan: outcome.plan,
   });

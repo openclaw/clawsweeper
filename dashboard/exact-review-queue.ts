@@ -2398,24 +2398,65 @@ export class ExactReviewQueue {
       try {
         const validated = await validateDirectPublicationPlan(plan);
         const state = this.readStateSync();
-        const owned = state.items[validated.itemKey];
-        const existing = this.directPublicationStore.get(validated.itemKey, validated.revision);
-        const validFence =
+        const owned = state.items[validated.fenceKey];
+        const existing = this.directPublicationStore.get(validated.fenceKey, validated.revision);
+        const now = Date.now();
+        const targetMatchesFence =
+          owned &&
+          `${owned.decision.targetRepo}#${owned.decision.itemNumber}` ===
+            validated.canonicalTargetKey;
+        const directlyOwned =
+          targetMatchesFence &&
           owned &&
           owned.revision === validated.revision &&
           exactReviewClaimGeneration(owned.claimGeneration) ===
             validated.identity.claimGeneration &&
-          validated.identity.itemKey === validated.itemKey &&
+          validated.identity.canonicalTargetKey === validated.canonicalTargetKey &&
+          validated.identity.fenceKey === validated.fenceKey &&
           validated.identity.revision === validated.revision &&
           (owned.state === "leased" ||
             (owned.state === "parked" && owned.parkedReason === "direct_publication"));
+        const batchOwned =
+          deferredBatchCompletion &&
+          targetMatchesFence &&
+          owned &&
+          owned.revision === validated.revision &&
+          this.batchStore.ownsActiveFence(
+            {
+              itemKey: validated.fenceKey,
+              revision: validated.revision,
+              claimGeneration: validated.identity.claimGeneration,
+            },
+            now,
+          );
+        const publicationRevision = owned && exactReviewPublicationRevision(owned.decision);
+        const staleBatchFence =
+          batchOwned &&
+          publicationRevision &&
+          publicationRevision.sourceRevision <
+            this.publicationHeadRevisionSync(publicationRevision.targetKey);
+        if (staleBatchFence) {
+          return json(
+            {
+              ok: true,
+              accepted: false,
+              deduped: false,
+              superseded: true,
+              superseded_revisions: [],
+              canonical_target_key: validated.canonicalTargetKey,
+              fence_key: validated.fenceKey,
+              state_commit_sha: null,
+            },
+            202,
+          );
+        }
+        const validFence = directlyOwned || batchOwned;
         if (!validFence && !existing) {
           return json(
             { error: "direct_publication_fence_not_owned", fallback_required: true },
             409,
           );
         }
-        const now = Date.now();
         const accepted = this.directPublicationStore.accept(validated, now);
         if (owned && validFence && !deferredBatchCompletion) {
           const producerDecision = owned.decision.publication
@@ -2435,7 +2476,7 @@ export class ExactReviewQueue {
             producerRunId,
             producerRunAttempt,
             sourceSha: EXACT_REVIEW_DIRECT_PUBLICATION_SOURCE_SHA,
-            itemKey: validated.itemKey,
+            itemKey: validated.fenceKey,
             protocolVersion: 2,
             leaseRevision: validated.revision,
             claimGeneration: validated.identity.claimGeneration,
@@ -2488,6 +2529,8 @@ export class ExactReviewQueue {
             deduped: accepted.outcome === "deduped",
             superseded: accepted.outcome === "superseded",
             superseded_revisions: accepted.supersededRevisions,
+            canonical_target_key: accepted.row.canonicalTargetKey,
+            fence_key: accepted.row.fenceKey,
             state_commit_sha: accepted.row.commitSha,
           },
           202,

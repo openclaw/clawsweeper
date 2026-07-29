@@ -30,6 +30,7 @@ import {
   TRIAGE_ROUTING_GROUPS,
   triageRoutingGroupsForLabels,
 } from "../dashboard/triage-routing-groups.ts";
+import { ExactReviewPublicationBatchStore } from "../dashboard/exact-review-publication-batches.ts";
 import { captureCanonicalRecordBaseline } from "../dist/repair/canonical-record-baseline.js";
 import { publishMainWithStateAppend } from "../dist/repair/publish-main.js";
 
@@ -2270,9 +2271,15 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
     EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
   };
   const payload = {
-    itemKey: "openclaw/openclaw#701",
+    canonicalTargetKey: "openclaw/openclaw#701",
+    fenceKey: "openclaw/openclaw#701",
     revision: 4,
-    identity: { itemKey: "openclaw/openclaw#701", revision: 4, claimGeneration: 2 },
+    identity: {
+      canonicalTargetKey: "openclaw/openclaw#701",
+      fenceKey: "openclaw/openclaw#701",
+      revision: 4,
+      claimGeneration: 2,
+    },
     operations: [
       {
         path: "records/openclaw-openclaw/items/701.md",
@@ -2309,23 +2316,44 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
       ...expected,
       superseded: false,
       superseded_revisions: [],
+      canonical_target_key: "openclaw/openclaw#701",
+      fence_key: "openclaw/openclaw#701",
       state_commit_sha: "do-revision:4",
     });
   }
 
-  const batchLeased = leasedExactReviewQueueItem(702, "7020");
+  const batchLeased = leasedExactReviewPublicationItem(702, "7020");
   batchLeased.revision = 4;
   batchLeased.leaseRevision = 4;
   batchLeased.claimGeneration = 2;
+  batchLeased.state = "pending";
   const queueState = (await storage.get("exact-review-queue")) as {
     items: Record<string, typeof batchLeased>;
   };
   queueState.items[batchLeased.key] = batchLeased;
   await storage.put("exact-review-queue", queueState);
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+  const batch = batches.claim({
+    batchId: "worker-publication-proof",
+    leaseOwner: "proof-worker",
+    leaseExpiresAt: Date.now() + 60_000,
+    now: Date.now(),
+    maxItems: 1,
+    candidates: [{ itemKey: batchLeased.key, revision: 4 }],
+  });
+  const batchMember = batch?.items[0];
+  assert.ok(batchMember);
   const batchPayload = {
     ...payload,
-    itemKey: "openclaw/openclaw#702",
-    identity: { itemKey: "openclaw/openclaw#702", revision: 4, claimGeneration: 2 },
+    canonicalTargetKey: "openclaw/openclaw#702",
+    fenceKey: batchLeased.key,
+    identity: {
+      canonicalTargetKey: "openclaw/openclaw#702",
+      fenceKey: batchLeased.key,
+      revision: 4,
+      claimGeneration: batchMember.claimGeneration,
+    },
     operations: [
       {
         ...payload.operations[0],
@@ -2333,6 +2361,32 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
       },
     ],
   };
+  const targetMismatchPayload = {
+    ...batchPayload,
+    canonicalTargetKey: "openclaw/openclaw#703",
+    identity: { ...batchPayload.identity, canonicalTargetKey: "openclaw/openclaw#703" },
+    operations: [
+      {
+        ...batchPayload.operations[0],
+        path: "records/openclaw-openclaw/items/703.md",
+      },
+    ],
+  };
+  const targetMismatchBody = JSON.stringify(targetMismatchPayload);
+  const targetMismatchSignature = `sha256=${createHmac("sha256", "test-secret").update(targetMismatchBody).digest("hex")}`;
+  const targetMismatch = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/publication-batch-results", {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": targetMismatchSignature },
+      body: targetMismatchBody,
+    }),
+    env,
+  );
+  assert.equal(targetMismatch.status, 409);
+  assert.deepEqual(await targetMismatch.json(), {
+    error: "direct_publication_fence_not_owned",
+    fallback_required: true,
+  });
   const batchBody = JSON.stringify(batchPayload);
   const batchSignature = `sha256=${createHmac("sha256", "test-secret").update(batchBody).digest("hex")}`;
   const batchResponse = await worker.fetch(
@@ -2344,9 +2398,73 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
     env,
   );
   assert.equal(batchResponse.status, 202);
-  assert.equal((await batchResponse.json()).accepted, true);
+  assert.deepEqual(await batchResponse.json(), {
+    ok: true,
+    accepted: true,
+    deduped: false,
+    superseded: false,
+    superseded_revisions: [],
+    canonical_target_key: "openclaw/openclaw#702",
+    fence_key: batchLeased.key,
+    state_commit_sha: "do-revision:4",
+  });
+  const repeatedBatch = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/publication-batch-results", {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": batchSignature },
+      body: batchBody,
+    }),
+    env,
+  );
+  assert.equal((await repeatedBatch.json()).deduped, true);
+  const wrongFencePayload = {
+    ...batchPayload,
+    fenceKey: "openclaw/openclaw#702",
+    identity: { ...batchPayload.identity, fenceKey: "openclaw/openclaw#702" },
+  };
+  const wrongFenceBody = JSON.stringify(wrongFencePayload);
+  const wrongFenceSignature = `sha256=${createHmac("sha256", "test-secret").update(wrongFenceBody).digest("hex")}`;
+  const wrongFence = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/publication-batch-results", {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": wrongFenceSignature },
+      body: wrongFenceBody,
+    }),
+    env,
+  );
+  assert.equal(wrongFence.status, 409);
+  assert.deepEqual(await wrongFence.json(), {
+    error: "direct_publication_fence_not_owned",
+    fallback_required: true,
+  });
+  storage.sql.exec(
+    `INSERT INTO exact_review_publication_heads (target_key, source_revision, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(target_key) DO UPDATE SET source_revision = excluded.source_revision`,
+    "openclaw/openclaw#702",
+    2,
+    Date.now(),
+  );
+  const staleBatch = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/publication-batch-results", {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": batchSignature },
+      body: batchBody,
+    }),
+    env,
+  );
+  assert.deepEqual(await staleBatch.json(), {
+    ok: true,
+    accepted: false,
+    deduped: false,
+    superseded: true,
+    superseded_revisions: [],
+    canonical_target_key: "openclaw/openclaw#702",
+    fence_key: batchLeased.key,
+    state_commit_sha: null,
+  });
   const afterBatch = (await storage.get("exact-review-queue")) as typeof queueState;
-  assert.equal(afterBatch.items[batchLeased.key]?.state, "leased");
+  assert.equal(afterBatch.items[batchLeased.key]?.state, "pending");
 
   const recordUrl =
     "https://clawsweeper.openclaw.ai/internal/state/records/openclaw-openclaw/items/701";
@@ -2474,9 +2592,15 @@ test("canonical commit records and tuples export with one monotonic revision", a
   });
 
   const publication = {
-    itemKey: "openclaw/openclaw#711",
+    canonicalTargetKey: "openclaw/openclaw#711",
+    fenceKey: "openclaw/openclaw#711",
     revision: 4,
-    identity: { itemKey: "openclaw/openclaw#711", revision: 4, claimGeneration: 2 },
+    identity: {
+      canonicalTargetKey: "openclaw/openclaw#711",
+      fenceKey: "openclaw/openclaw#711",
+      revision: 4,
+      claimGeneration: 2,
+    },
     operations: [
       {
         path: "records/openclaw-openclaw/items/711.md",

@@ -29,8 +29,19 @@ type BatchManifest = {
 type BatchReceipt = {
   batchId: string;
   publishedItemKeys: Set<string>;
+  outcomes: Map<string, BatchPublicationOutcome>;
   stateCommitSha?: string;
   stateWriter?: StateWriterOperation;
+};
+
+type BatchPublicationOutcome = {
+  canonicalTargetKey: string;
+  fenceKey: string;
+  revision: number;
+  claimGeneration: number;
+  outcome: "accepted" | "deduped" | "superseded" | "retryable" | "permanent";
+  reasonCode?: "tuple_protocol_invalid" | "unknown_failure";
+  errorFingerprint?: string;
 };
 
 const command = process.argv[2];
@@ -163,8 +174,11 @@ async function commit() {
   });
   const active = new Map(fetched.items.map((item) => [item.itemKey, item]));
   const superseded: ExactReviewBatchCompletion[] = [];
-  const commitMembers: ExactReviewBatchQueueItem[] = [];
-  const plans: PreparedStateMutationPlan[] = [];
+  const commitCandidates: Array<{
+    member: ExactReviewBatchQueueItem;
+    plan: PreparedStateMutationPlan;
+  }> = [];
+  const publicationOutcomes: BatchPublicationOutcome[] = [];
   for (const manifestItem of manifest.items) {
     const current = active.get(manifestItem.itemKey);
     if (!current || !existsSync(manifestItem.outcomePath)) continue;
@@ -172,24 +186,35 @@ async function commit() {
     if (outcome.kind === "superseded") {
       if (optionalObjectValue(outcome.disposition).requeueLatestExpected !== true) {
         superseded.push({ ...current, terminalOutcome: "superseded" });
+        publicationOutcomes.push(supersededPublicationOutcome(current));
       }
       continue;
     }
     if (outcome.kind !== "eligible") continue;
-    const [plan] = validatePreparedStateMutationPlans([
-      outcome.plan as PreparedStateMutationPlan,
-    ]).plans;
-    if (
-      !plan ||
-      plan.identity.itemKey !== current.itemKey ||
-      plan.identity.revision !== current.revision ||
-      plan.identity.claimGeneration !== current.claimGeneration
-    ) {
-      throw new Error(`Batch outcome identity does not match ${current.itemKey}`);
+    try {
+      const [plan] = validatePreparedStateMutationPlans([
+        outcome.plan as PreparedStateMutationPlan,
+      ]).plans;
+      const publication = plan?.publication;
+      const canonicalTargetKey = canonicalTargetKeyForMember(current);
+      if (
+        !plan ||
+        !publication ||
+        plan.identity.itemKey !== current.itemKey ||
+        plan.identity.revision !== current.revision ||
+        plan.identity.claimGeneration !== current.claimGeneration ||
+        publication.canonicalTargetKey !== canonicalTargetKey ||
+        publication.fenceKey !== current.itemKey
+      ) {
+        throw new Error(`Batch outcome identity does not match ${current.itemKey}`);
+      }
+      commitCandidates.push({ member: current, plan });
+    } catch (error) {
+      publicationOutcomes.push(permanentPublicationOutcome(current, failureFingerprint(error)));
     }
-    commitMembers.push(current);
-    plans.push(plan);
   }
+
+  const plans = commitCandidates.map((candidate) => candidate.plan);
 
   let stateWriter: StateWriterOperation | undefined;
   const progressObserver = exactReviewBatchStateWriterProgressReporter({
@@ -209,38 +234,15 @@ async function commit() {
         ...(progressObserver ? { observer: progressObserver } : {}),
       })
     : null;
-  try {
-    if (plans.length) {
-      await publishCanonicalBatch(plans);
-      recorder?.recordMaterializedCommit(plans.length);
-      recorder?.finalize("materialized");
-      stateWriter = recorder?.toTerminalObject() ?? undefined;
-    }
-  } catch (error) {
-    recorder?.finalize("failed");
+  if (plans.length) {
+    const published = await publishCanonicalBatch(commitCandidates);
+    publicationOutcomes.push(...published);
+    const materialized = published.filter(
+      (outcome) => outcome.outcome === "accepted" || outcome.outcome === "deduped",
+    ).length;
+    if (materialized) recorder?.recordMaterializedCommit(materialized);
+    recorder?.finalize(materialized ? "materialized" : "failed");
     stateWriter = recorder?.toTerminalObject() ?? undefined;
-    const fingerprint = failureFingerprint(error);
-    const reasonCode = "unknown_failure";
-    const retryable = commitMembers.map((member) => ({
-      ...member,
-      terminalOutcome: "retryable_failure" as const,
-      reasonCode,
-      errorFingerprint: fingerprint,
-    }));
-    try {
-      await acknowledge(
-        manifest,
-        [...superseded, ...retryable],
-        undefined,
-        fingerprint,
-        stateWriter,
-      );
-    } catch (releaseError) {
-      console.error(
-        `Failed to release batch after commit error: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}`,
-      );
-    }
-    throw error;
   }
   const receiptPath = batchReceiptPath();
   mkdirSync(dirname(receiptPath), { recursive: true });
@@ -250,7 +252,12 @@ async function commit() {
       {
         batchId: manifest.batchId,
         stateCommitSha: null,
-        publishedItemKeys: plans.map((plan) => plan.identity.itemKey),
+        // Retained for pre-envelope receipt readers. New completion logic uses
+        // the per-member outcomes below, including both identities.
+        publishedItemKeys: publicationOutcomes
+          .filter((outcome) => outcome.outcome === "accepted" || outcome.outcome === "deduped")
+          .map((outcome) => outcome.fenceKey),
+        outcomes: publicationOutcomes,
         stateWriter: stateWriter ?? null,
       },
       null,
@@ -263,39 +270,42 @@ async function commit() {
       ok: true,
       batch_id: manifest.batchId,
       state_commit_sha: null,
-      materialized: plans.length,
+      materialized: publicationOutcomes.filter(
+        (outcome) => outcome.outcome === "accepted" || outcome.outcome === "deduped",
+      ).length,
       quarantined: 0,
       superseded: superseded.length,
     }),
   );
 }
 
-async function publishCanonicalBatch(plans: readonly PreparedStateMutationPlan[]): Promise<void> {
-  for (const plan of plans) {
+async function publishCanonicalBatch(
+  candidates: ReadonlyArray<{ member: ExactReviewBatchQueueItem; plan: PreparedStateMutationPlan }>,
+): Promise<BatchPublicationOutcome[]> {
+  const outcomes: BatchPublicationOutcome[] = [];
+  for (const { member, plan } of candidates) {
+    const publication = plan.publication!;
     const operations = plan.operations.map((operation) => ({ ...operation }));
-    const result = await postDirectPublicationResult({
-      baseUrl: env("EXACT_REVIEW_QUEUE_URL"),
-      webhookSecret: env("CLAWSWEEPER_WEBHOOK_SECRET"),
-      path: "/internal/exact-review/publication-batch-results",
-      payload: {
-        itemKey: plan.identity.itemKey,
-        revision: plan.identity.revision,
-        identity: { ...plan.identity },
-        operations,
-        totalBytes: plan.totalBytes,
-      },
-    });
-    if (result.kind !== "accepted") {
-      throw new Error(
-        `Canonical exact-review publication failed for ${plan.identity.itemKey}: ${result.reason}`,
-      );
-    }
-    if (result.response.superseded === true) {
-      throw new Error(
-        `Canonical exact-review publication was superseded: ${plan.identity.itemKey}`,
-      );
+    try {
+      const result = await postDirectPublicationResult({
+        baseUrl: env("EXACT_REVIEW_QUEUE_URL"),
+        webhookSecret: env("CLAWSWEEPER_WEBHOOK_SECRET"),
+        path: "/internal/exact-review/publication-batch-results",
+        payload: {
+          canonicalTargetKey: publication.canonicalTargetKey,
+          fenceKey: publication.fenceKey,
+          revision: plan.identity.revision,
+          identity: { ...publication, ...plan.identity },
+          operations,
+          totalBytes: plan.totalBytes,
+        },
+      });
+      outcomes.push(publicationOutcomeFromResult(member, publication, result));
+    } catch (error) {
+      outcomes.push(retryablePublicationOutcome(member, publication, failureFingerprint(error)));
     }
   }
+  return outcomes;
 }
 
 async function complete() {
@@ -328,6 +338,11 @@ async function complete() {
     const failure = failureCompletion(current, outcome);
     if (failure) {
       completions.push(failure);
+      continue;
+    }
+    const publicationOutcome = receipt.outcomes.get(current.itemKey);
+    if (publicationOutcome) {
+      completions.push(publicationCompletion(current, publicationOutcome, outcome));
       continue;
     }
     if (outcome.kind !== "eligible" || !receipt.publishedItemKeys.has(current.itemKey)) {
@@ -377,6 +392,8 @@ async function release() {
       }
       const failure = failureCompletion(member, outcome);
       if (failure) return failure;
+      const publicationOutcome = receipt?.outcomes.get(member.itemKey);
+      if (publicationOutcome) return publicationCompletion(member, publicationOutcome, outcome);
       // A receipt proves the state mutation committed. A member is safe to
       // acknowledge as published only after every required post-commit effect
       // is also durable; otherwise requeueing preserves that unfinished work.
@@ -462,6 +479,192 @@ function retryableCompletion(
   };
 }
 
+function publicationOutcomeFromResult(
+  member: ExactReviewBatchQueueItem,
+  publication: NonNullable<PreparedStateMutationPlan["publication"]>,
+  result: Awaited<ReturnType<typeof postDirectPublicationResult>>,
+): BatchPublicationOutcome {
+  const identity = publicationOutcomeIdentity(member, publication);
+  if (result.kind === "accepted") {
+    if (result.response.superseded === true) return { ...identity, outcome: "superseded" };
+    if (result.response.deduped === true) return { ...identity, outcome: "deduped" };
+    return { ...identity, outcome: "accepted" };
+  }
+  const fingerprint = failureFingerprint(new Error(result.reason));
+  if (result.reason === "direct_publication_fence_not_owned") {
+    return {
+      ...identity,
+      outcome: "retryable",
+      reasonCode: "unknown_failure",
+      errorFingerprint: fingerprint,
+    };
+  }
+  if (result.status === 400 || result.status === 413) {
+    return {
+      ...identity,
+      outcome: "permanent",
+      reasonCode: "tuple_protocol_invalid",
+      errorFingerprint: fingerprint,
+    };
+  }
+  return {
+    ...identity,
+    outcome: "retryable",
+    reasonCode: "unknown_failure",
+    errorFingerprint: fingerprint,
+  };
+}
+
+function supersededPublicationOutcome(member: ExactReviewBatchQueueItem): BatchPublicationOutcome {
+  return { ...publicationOutcomeIdentity(member), outcome: "superseded" };
+}
+
+function permanentPublicationOutcome(
+  member: ExactReviewBatchQueueItem,
+  errorFingerprint: string,
+): BatchPublicationOutcome {
+  return {
+    ...publicationOutcomeIdentity(member),
+    outcome: "permanent",
+    reasonCode: "tuple_protocol_invalid",
+    errorFingerprint,
+  };
+}
+
+function retryablePublicationOutcome(
+  member: ExactReviewBatchQueueItem,
+  publication: NonNullable<PreparedStateMutationPlan["publication"]>,
+  errorFingerprint: string,
+): BatchPublicationOutcome {
+  return {
+    ...publicationOutcomeIdentity(member, publication),
+    outcome: "retryable",
+    reasonCode: "unknown_failure",
+    errorFingerprint,
+  };
+}
+
+function publicationOutcomeIdentity(
+  member: ExactReviewBatchQueueItem,
+  publication?: NonNullable<PreparedStateMutationPlan["publication"]>,
+): Pick<
+  BatchPublicationOutcome,
+  "canonicalTargetKey" | "fenceKey" | "revision" | "claimGeneration"
+> {
+  const canonicalTargetKey = canonicalTargetKeyForMember(member);
+  if (
+    publication &&
+    (publication.canonicalTargetKey !== canonicalTargetKey ||
+      publication.fenceKey !== member.itemKey)
+  ) {
+    throw new Error(`Batch publication identity does not match ${member.itemKey}`);
+  }
+  return {
+    canonicalTargetKey,
+    fenceKey: member.itemKey,
+    revision: member.revision,
+    claimGeneration: member.claimGeneration,
+  };
+}
+
+function canonicalTargetKeyForMember(member: ExactReviewBatchQueueItem): string {
+  const decision = objectValue(member.decision);
+  const targetRepo = targetRepoFromDecision(decision);
+  const itemNumber = positiveInteger(decision.itemNumber);
+  return `${targetRepo}#${itemNumber}`;
+}
+
+function publicationOutcomeMatchesMember(
+  publication: BatchPublicationOutcome,
+  member: ExactReviewBatchQueueItem,
+): boolean {
+  return (
+    publication.fenceKey === member.itemKey &&
+    publication.revision === member.revision &&
+    publication.claimGeneration === member.claimGeneration &&
+    publication.canonicalTargetKey === canonicalTargetKeyForMember(member)
+  );
+}
+
+function publicationOutcomeMatchesManifest(
+  publication: BatchPublicationOutcome,
+  manifest: BatchManifest,
+): boolean {
+  const member = manifest.items.find((item) => item.itemKey === publication.fenceKey);
+  return !!member && publicationOutcomeMatchesMember(publication, member);
+}
+
+function batchPublicationOutcome(value: unknown): BatchPublicationOutcome {
+  const outcome = objectValue(value);
+  const canonicalTargetKey = exactIdentityValue(outcome.canonicalTargetKey, "canonicalTargetKey");
+  if (!/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)#([1-9]\d*)$/.test(canonicalTargetKey)) {
+    throw new Error("Invalid batch receipt canonical target key");
+  }
+  const fenceKey = exactIdentityValue(outcome.fenceKey, "fenceKey");
+  const terminal = String(outcome.outcome || "");
+  if (
+    !(["accepted", "deduped", "superseded", "retryable", "permanent"] as string[]).includes(
+      terminal,
+    )
+  ) {
+    throw new Error("Invalid batch receipt publication outcome");
+  }
+  const reasonCode =
+    outcome.reasonCode === undefined
+      ? undefined
+      : exactIdentityValue(outcome.reasonCode, "reasonCode");
+  if (reasonCode && reasonCode !== "tuple_protocol_invalid" && reasonCode !== "unknown_failure") {
+    throw new Error("Invalid batch receipt publication reason code");
+  }
+  const errorFingerprint =
+    outcome.errorFingerprint === undefined
+      ? undefined
+      : exactIdentityValue(outcome.errorFingerprint, "errorFingerprint");
+  if (errorFingerprint && !/^[a-f0-9]{64}$/.test(errorFingerprint)) {
+    throw new Error("Invalid batch receipt publication error fingerprint");
+  }
+  const parsed: BatchPublicationOutcome = {
+    canonicalTargetKey,
+    fenceKey,
+    revision: positiveInteger(outcome.revision),
+    claimGeneration: positiveInteger(outcome.claimGeneration),
+    outcome: terminal as BatchPublicationOutcome["outcome"],
+  };
+  if (reasonCode) {
+    parsed.reasonCode = reasonCode as NonNullable<BatchPublicationOutcome["reasonCode"]>;
+  }
+  if (errorFingerprint) parsed.errorFingerprint = errorFingerprint;
+  return parsed;
+}
+
+function publicationCompletion(
+  member: ExactReviewBatchQueueItem,
+  publication: BatchPublicationOutcome,
+  outcome: Record<string, unknown>,
+): ExactReviewBatchCompletion {
+  if (!publicationOutcomeMatchesMember(publication, member)) {
+    return retryableCompletion(member, "unknown_failure", publication.errorFingerprint);
+  }
+  if (publication.outcome === "superseded") {
+    return { ...member, terminalOutcome: "superseded" };
+  }
+  if (publication.outcome === "retryable") {
+    return retryableCompletion(member, "unknown_failure", publication.errorFingerprint);
+  }
+  if (publication.outcome === "permanent") {
+    return {
+      ...member,
+      terminalOutcome: "permanent_failure",
+      reasonCode: "tuple_protocol_invalid",
+      ...(publication.errorFingerprint ? { errorFingerprint: publication.errorFingerprint } : {}),
+    };
+  }
+  if (outcome.kind !== "eligible" || hasPendingPostEffects(outcome)) {
+    return retryableCompletion(member, "unknown_failure", publication.errorFingerprint);
+  }
+  return { ...member, terminalOutcome: "published" };
+}
+
 function hasPendingPostEffects(outcome: Record<string, unknown>): boolean {
   const disposition = optionalObjectValue(outcome.disposition);
   const requiresPostEffects =
@@ -513,6 +716,17 @@ function readBatchReceipt(manifest: BatchManifest, required: boolean): BatchRece
       ? receipt.publishedItemKeys.map((value) => stringValue(value, "publishedItemKey"))
       : [],
   );
+  const outcomes = new Map<string, BatchPublicationOutcome>();
+  if (Array.isArray(receipt.outcomes)) {
+    for (const value of receipt.outcomes) {
+      const parsed = batchPublicationOutcome(value);
+      if (!publicationOutcomeMatchesManifest(parsed, manifest)) {
+        throw new Error("Batch receipt outcome identity mismatch");
+      }
+      if (outcomes.has(parsed.fenceKey)) throw new Error("Batch receipt repeats a fence key");
+      outcomes.set(parsed.fenceKey, parsed);
+    }
+  }
   const stateCommitSha =
     typeof receipt.stateCommitSha === "string" && receipt.stateCommitSha
       ? receipt.stateCommitSha
@@ -524,6 +738,7 @@ function readBatchReceipt(manifest: BatchManifest, required: boolean): BatchRece
   return {
     batchId,
     publishedItemKeys,
+    outcomes,
     ...(stateCommitSha ? { stateCommitSha } : {}),
     ...(stateWriter ? { stateWriter } : {}),
   };
@@ -591,6 +806,14 @@ function optionalObjectValue(value: unknown): Record<string, unknown> {
 function stringValue(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`Invalid ${name}`);
   return value;
+}
+
+function exactIdentityValue(value: unknown, name: string): string {
+  const text = stringValue(value, name);
+  if (text !== text.trim() || text.includes("\0") || /[\r\n]/.test(text)) {
+    throw new Error(`Invalid exact ${name}`);
+  }
+  return text;
 }
 
 function positiveInteger(value: unknown): number {

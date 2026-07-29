@@ -58,14 +58,17 @@ test("shared commit failure leaves only commit candidates retryable", async () =
 
 test("direct producer retries bounded failures then requests legacy enqueue fallback", async () => {
   let calls = 0;
+  const requests: Array<{ url: string; body: unknown }> = [];
+  const payload = directPayload();
   const result = await postDirectPublicationResult({
     baseUrl: "https://clawsweeper.openclaw.ai",
     webhookSecret: "test-secret",
-    payload: directPayload(),
+    payload,
     attempts: 3,
     sleep: async () => undefined,
-    fetch: async () => {
+    fetch: async (url, init) => {
       calls += 1;
+      requests.push({ url: String(url), body: JSON.parse(String(init?.body)) });
       return new Response(JSON.stringify({ error: "worker_unavailable" }), {
         status: 503,
         headers: { "content-type": "application/json" },
@@ -73,6 +76,13 @@ test("direct producer retries bounded failures then requests legacy enqueue fall
     },
   });
   assert.equal(calls, 3);
+  assert.deepEqual(
+    requests,
+    Array.from({ length: 3 }, () => ({
+      url: "https://clawsweeper.openclaw.ai/internal/exact-review/publication-results",
+      body: payload,
+    })),
+  );
   assert.deepEqual(result, {
     kind: "fallback",
     attempts: 3,
@@ -127,9 +137,14 @@ function plan(member: (typeof members)[number]) {
 
 function directPayload() {
   return {
-    itemKey: "openclaw/openclaw#1",
+    canonicalTargetKey: "openclaw/openclaw#1",
+    fenceKey: "openclaw/openclaw#1",
     revision: 1,
-    identity: members[0]!,
+    identity: {
+      canonicalTargetKey: "openclaw/openclaw#1",
+      fenceKey: "openclaw/openclaw#1",
+      ...members[0]!,
+    },
     operations: [
       {
         path: "records/openclaw-openclaw/items/1.md",

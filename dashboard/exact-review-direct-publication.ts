@@ -49,9 +49,15 @@ export type DirectPublicationOperation = {
 };
 
 export type DirectPublicationPlan = {
-  itemKey: string;
+  canonicalTargetKey: string;
+  fenceKey: string;
   revision: number;
-  identity: { itemKey: string; revision: number; claimGeneration: number };
+  identity: {
+    canonicalTargetKey: string;
+    fenceKey: string;
+    revision: number;
+    claimGeneration: number;
+  };
   operations: DirectPublicationOperation[];
   totalBytes: number;
 };
@@ -178,6 +184,8 @@ export class ExactReviewDirectPublicationStore {
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE} (
          item_key TEXT NOT NULL,
+         canonical_target_key TEXT NOT NULL DEFAULT '',
+         fence_key TEXT NOT NULL DEFAULT '',
          revision INTEGER NOT NULL CHECK (revision >= 1),
          identity_item_key TEXT NOT NULL,
          identity_revision INTEGER NOT NULL CHECK (identity_revision >= 1),
@@ -196,6 +204,42 @@ export class ExactReviewDirectPublicationStore {
          failure_reason TEXT,
          PRIMARY KEY (item_key, revision)
        ) STRICT`,
+    );
+    const directPublicationColumns = new Set(
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}')`,
+        ),
+      ).map((row) => String(row.name || "")),
+    );
+    if (!directPublicationColumns.has("canonical_target_key")) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+           ADD COLUMN canonical_target_key TEXT NOT NULL DEFAULT ''`,
+      );
+    }
+    if (!directPublicationColumns.has("fence_key")) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+           ADD COLUMN fence_key TEXT NOT NULL DEFAULT ''`,
+      );
+    }
+    // Every pre-envelope receipt used its sole item key for both roles. Keep
+    // those completed receipts dedupe-compatible while all new writes preserve
+    // the explicit dual identity below.
+    this.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+          SET canonical_target_key = item_key
+        WHERE canonical_target_key = ''`,
+    );
+    this.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+          SET fence_key = item_key
+        WHERE fence_key = ''`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_direct_publication_target_revision
+         ON ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE} (canonical_target_key, revision)`,
     );
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${CANONICAL_RECORD_TUPLE_RECEIPT_TABLE} (
@@ -317,29 +361,34 @@ export class ExactReviewDirectPublicationStore {
     const canonicalOperations = canonicalTupleOperations(plan);
     return this.storage.transactionSync(() => {
       this.pruneTerminalSync(now);
-      const existing = this.readSync(plan.itemKey, plan.revision);
+      const existing = this.readSync(plan.fenceKey, plan.revision);
       if (existing) {
         if (["pending", "committing", "retryable"].includes(existing.state)) {
           this.storage.sql.exec(
             `DELETE FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
               WHERE item_key = ? AND revision = ?`,
-            plan.itemKey,
+            plan.fenceKey,
             plan.revision,
           );
         } else {
           if (canonicalStoredPlan(existing) !== canonicalIncomingPlan(plan, storedOperations)) {
             throw new Error("conflicting direct publication retry");
           }
-          return { outcome: "deduped" as const, row: existing, supersededRevisions: [] };
+          return {
+            outcome:
+              existing.state === "superseded" ? ("superseded" as const) : ("deduped" as const),
+            row: existing,
+            supersededRevisions: [],
+          };
         }
       }
 
       const newer = Array.from(
         this.storage.sql.exec(
           `SELECT revision FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-            WHERE item_key = ? AND revision > ?
+            WHERE fence_key = ? AND revision > ?
             ORDER BY revision DESC LIMIT 1`,
-          plan.itemKey,
+          plan.fenceKey,
           plan.revision,
         ),
       )[0];
@@ -429,9 +478,15 @@ export class ExactReviewDirectPublicationStore {
 
       const revision = this.nextTupleRevisionSync(mutation.repoSlug, mutation.itemId);
       const plan: CanonicalDirectPublicationPlan = {
-        itemKey: mutation.key,
+        canonicalTargetKey: mutation.key,
+        fenceKey: mutation.key,
         revision,
-        identity: { itemKey: mutation.key, revision, claimGeneration: 1 },
+        identity: {
+          canonicalTargetKey: mutation.key,
+          fenceKey: mutation.key,
+          revision,
+          claimGeneration: 1,
+        },
         operations: mutation.operations,
         totalBytes: mutation.operations.reduce((sum, operation) => sum + operation.bytes, 0),
       };
@@ -961,7 +1016,7 @@ export class ExactReviewDirectPublicationStore {
       chunks.length,
       operation.content === null ? 1 : 0,
       revision,
-      plan.itemKey,
+      plan.canonicalTargetKey,
       plan.identity.claimGeneration,
       now,
     );
@@ -1192,13 +1247,16 @@ export class ExactReviewDirectPublicationStore {
   private insertSync(row: DirectPublicationRow) {
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-       (item_key, revision, identity_item_key, identity_revision, claim_generation,
+       (item_key, canonical_target_key, fence_key, revision,
+        identity_item_key, identity_revision, claim_generation,
         operations_json, total_bytes, file_count, state, attempts, created_at, updated_at,
         next_attempt_at, commit_sha, failure_reason)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      row.itemKey,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      row.fenceKey,
+      row.canonicalTargetKey,
+      row.fenceKey,
       row.revision,
-      row.identity.itemKey,
+      row.identity.fenceKey,
       row.identity.revision,
       row.identity.claimGeneration,
       JSON.stringify(row.operations),
@@ -1225,7 +1283,9 @@ function canonicalTupleOperations(
       operation.content !== null,
   );
   if (primaryWrites.length > 1) {
-    throw new Error(`direct publication tuple writes both primary sections: ${plan.itemKey}`);
+    throw new Error(
+      `direct publication tuple writes both primary sections: ${plan.canonicalTargetKey}`,
+    );
   }
   const primaryWrite = primaryWrites[0];
   const first = operations[0]!;
@@ -1260,7 +1320,7 @@ function canonicalTupleOperations(
     addDelete("decision-packets");
   }
   if (operations.length > EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILES) {
-    throw new Error(`canonical record tuple exceeds its file limit: ${plan.itemKey}`);
+    throw new Error(`canonical record tuple exceeds its file limit: ${plan.canonicalTargetKey}`);
   }
   return operations;
 }
@@ -1465,16 +1525,19 @@ export async function validateDirectPublicationPlan(
   value: DirectPublicationPlan,
 ): Promise<CanonicalDirectPublicationPlan> {
   const plan = value && typeof value === "object" ? value : ({} as DirectPublicationPlan);
-  const itemKey = boundedItemKey(plan.itemKey);
-  const itemIdentity = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)#([1-9]\d*)$/.exec(itemKey);
-  if (!itemIdentity) throw new Error("invalid direct publication item key");
+  const canonicalTargetKey = boundedItemKey(plan.canonicalTargetKey);
+  const itemIdentity = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)#([1-9]\d*)$/.exec(canonicalTargetKey);
+  if (!itemIdentity) throw new Error("invalid direct publication canonical target key");
+  const fenceKey = boundedItemKey(plan.fenceKey);
+  if (!fenceKey) throw new Error("invalid direct publication fence key");
   if (!Number.isSafeInteger(plan.revision) || plan.revision < 1) {
     throw new Error("invalid direct publication revision");
   }
   const identity = plan.identity;
   if (
     !identity ||
-    boundedItemKey(identity.itemKey) !== itemKey ||
+    boundedItemKey(identity.canonicalTargetKey) !== canonicalTargetKey ||
+    boundedItemKey(identity.fenceKey) !== fenceKey ||
     identity.revision !== plan.revision ||
     !Number.isSafeInteger(identity.claimGeneration) ||
     identity.claimGeneration < 1
@@ -1546,9 +1609,15 @@ export async function validateDirectPublicationPlan(
     throw new Error("direct publication plan exceeds the per-POST byte limit");
   }
   return {
-    itemKey,
+    canonicalTargetKey,
+    fenceKey,
     revision: plan.revision,
-    identity: { itemKey, revision: plan.revision, claimGeneration: identity.claimGeneration },
+    identity: {
+      canonicalTargetKey,
+      fenceKey,
+      revision: plan.revision,
+      claimGeneration: identity.claimGeneration,
+    },
     operations,
     totalBytes,
   };
@@ -1574,7 +1643,8 @@ function directPublicationRowFromPlan(options: {
   failureReason: string | null;
 }): DirectPublicationRow {
   return {
-    itemKey: options.plan.itemKey,
+    canonicalTargetKey: options.plan.canonicalTargetKey,
+    fenceKey: options.plan.fenceKey,
     revision: options.plan.revision,
     identity: options.plan.identity,
     operations: options.operations,
@@ -1591,10 +1661,12 @@ function directPublicationRowFromPlan(options: {
 
 function directPublicationRow(row: Record<string, unknown>): DirectPublicationRow {
   return {
-    itemKey: String(row.item_key),
+    canonicalTargetKey: String(row.canonical_target_key),
+    fenceKey: String(row.fence_key),
     revision: Number(row.revision),
     identity: {
-      itemKey: String(row.identity_item_key),
+      canonicalTargetKey: String(row.canonical_target_key),
+      fenceKey: String(row.fence_key),
       revision: Number(row.identity_revision),
       claimGeneration: Number(row.claim_generation),
     },
@@ -1615,9 +1687,13 @@ function canonicalIncomingPlan(
   operations: DirectPublicationStoredOperation[],
 ) {
   return JSON.stringify({
-    itemKey: plan.itemKey,
+    canonicalTargetKey: plan.canonicalTargetKey,
+    fenceKey: plan.fenceKey,
     revision: plan.revision,
-    identity: plan.identity,
+    // The claim generation fences completion ownership, not the immutable
+    // state tuple. A reclaimed batch must be able to dedupe an accepted tuple
+    // after its prior worker died before completion.
+    identity: stablePublicationIdentity(plan.identity),
     operations,
     totalBytes: plan.totalBytes,
   });
@@ -1625,12 +1701,21 @@ function canonicalIncomingPlan(
 
 function canonicalStoredPlan(plan: DirectPublicationRow) {
   return JSON.stringify({
-    itemKey: plan.itemKey,
+    canonicalTargetKey: plan.canonicalTargetKey,
+    fenceKey: plan.fenceKey,
     revision: plan.revision,
-    identity: plan.identity,
+    identity: stablePublicationIdentity(plan.identity),
     operations: plan.operations,
     totalBytes: plan.totalBytes,
   });
+}
+
+function stablePublicationIdentity(identity: DirectPublicationPlan["identity"]) {
+  return {
+    canonicalTargetKey: identity.canonicalTargetKey,
+    fenceKey: identity.fenceKey,
+    revision: identity.revision,
+  };
 }
 
 function canonicalTuplePath(path: string) {
@@ -1645,8 +1730,10 @@ function canonicalTuplePath(path: string) {
 }
 
 function boundedItemKey(value: unknown) {
-  const text = String(value || "").trim();
-  return text && text.length <= 500 && !text.includes("\0") && !/[\r\n]/.test(text) ? text : "";
+  if (typeof value !== "string" || value !== value.trim()) return "";
+  return value && value.length <= 500 && !value.includes("\0") && !/[\r\n]/.test(value)
+    ? value
+    : "";
 }
 
 function canonicalPath(value: unknown) {

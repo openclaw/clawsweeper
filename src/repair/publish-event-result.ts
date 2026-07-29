@@ -359,6 +359,10 @@ function prepareBatchMutation({
       revision: positiveEnvInteger("EXACT_REVIEW_BATCH_REVISION"),
       claimGeneration: positiveEnvInteger("EXACT_REVIEW_BATCH_CLAIM_GENERATION"),
     },
+    {
+      canonicalTargetKey: `${options.targetRepo}#${options.itemNumber}`,
+      fenceKey: envValue("EXACT_REVIEW_BATCH_ITEM_KEY"),
+    },
     "Batch",
   );
   // These expectations are emitted with the plan so the batch workflow can run
@@ -382,6 +386,7 @@ function prepareTupleMutationPlan(
   paths: EventRecordPaths,
   contentRoot: string,
   identity: StateMutationIdentity,
+  publication: PreparedStateMutationPlan["publication"] | undefined,
   label: string,
 ): PreparedStateMutationPlan {
   const commitPaths = [
@@ -405,7 +410,11 @@ function prepareTupleMutationPlan(
   if (!operations.length) {
     throw new Error(`${label} mutation for ${paths.targetSlug} is empty`);
   }
-  return prepareStateMutationPlan({ identity, operations });
+  return prepareStateMutationPlan({
+    identity,
+    ...(publication ? { publication } : {}),
+    operations,
+  });
 }
 
 function runApplyDecisions(options: EventOptions, paths: EventRecordPaths): void {
@@ -593,6 +602,10 @@ async function publishSnapshot({
         revision,
         claimGeneration: positiveEnvInteger("EXACT_REVIEW_CLAIM_GENERATION"),
       },
+      {
+        canonicalTargetKey: `${options.targetRepo}#${options.itemNumber}`,
+        fenceKey: itemKey,
+      },
       "Exact event",
     );
     const publication = await postDirectPublicationResult({
@@ -600,7 +613,6 @@ async function publishSnapshot({
       webhookSecret: envValue("CLAWSWEEPER_WEBHOOK_SECRET"),
       path: "/internal/exact-review/publication-batch-results",
       payload: prepareDirectPublicationPayload({
-        itemKey,
         revision,
         plan,
       }),

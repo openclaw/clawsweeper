@@ -12,6 +12,17 @@ export type StateMutationIdentity = {
   claimGeneration: number;
 };
 
+/**
+ * The canonical record target and the queue ownership key have different
+ * responsibilities.  Keep them explicit when a prepared mutation is carried
+ * through the batch-publication boundary: the former names the tuple, while
+ * the latter is the exact fenced queue member allowed to publish it.
+ */
+export type BatchPublicationIdentity = {
+  canonicalTargetKey: string;
+  fenceKey: string;
+};
+
 export type StateMutationSourceOperation =
   | { path: string; content: string | Uint8Array; mode?: "100644" }
   | { path: string; delete: true };
@@ -26,6 +37,7 @@ export type PreparedStateMutationOperation = {
 
 export type PreparedStateMutationPlan = {
   identity: StateMutationIdentity;
+  publication?: BatchPublicationIdentity;
   operations: readonly PreparedStateMutationOperation[];
   totalBytes: number;
 };
@@ -39,9 +51,11 @@ export const STATE_MUTATION_MAX_PATH_BYTES = 1024;
 
 export function prepareStateMutationPlan(options: {
   identity: StateMutationIdentity;
+  publication?: BatchPublicationIdentity;
   operations: readonly StateMutationSourceOperation[];
 }): PreparedStateMutationPlan {
   validateIdentity(options.identity);
+  if (options.publication) validateBatchPublicationIdentity(options.publication, options.identity);
   if (options.operations.length === 0) throw new Error("A state mutation plan must change a path");
   if (options.operations.length > EXACT_REVIEW_BUNDLE_MAX_FILES) {
     throw new Error("A state mutation plan exceeds the exact-review file limit");
@@ -69,7 +83,12 @@ export function prepareStateMutationPlan(options: {
       bytes: content.byteLength,
     };
   });
-  return { identity: { ...options.identity }, operations, totalBytes };
+  return {
+    identity: { ...options.identity },
+    ...(options.publication ? { publication: { ...options.publication } } : {}),
+    operations,
+    totalBytes,
+  };
 }
 
 export function validatePreparedStateMutationPlans(
@@ -78,6 +97,7 @@ export function validatePreparedStateMutationPlans(
   let batchBytes = 0;
   const validated = plans.map((plan): PreparedStateMutationPlan => {
     validateIdentity(plan.identity);
+    if (plan.publication) validateBatchPublicationIdentity(plan.publication, plan.identity);
     if (!Array.isArray(plan.operations) || plan.operations.length === 0) {
       throw new Error("A prepared state mutation plan must change a path");
     }
@@ -124,7 +144,12 @@ export function validatePreparedStateMutationPlans(
       throw new Error(`Prepared state mutation total is invalid for ${plan.identity.itemKey}`);
     }
     batchBytes += totalBytes;
-    return { identity: { ...plan.identity }, operations, totalBytes };
+    return {
+      identity: { ...plan.identity },
+      ...(plan.publication ? { publication: { ...plan.publication } } : {}),
+      operations,
+      totalBytes,
+    };
   });
   return { plans: validated, totalBytes: batchBytes };
 }
@@ -143,6 +168,25 @@ function validateIdentity(identity: StateMutationIdentity): void {
   }
   if (!Number.isSafeInteger(identity.claimGeneration) || identity.claimGeneration < 1) {
     throw new Error("State mutation claim generations must be positive safe integers");
+  }
+}
+
+function validateBatchPublicationIdentity(
+  publication: BatchPublicationIdentity,
+  identity: StateMutationIdentity,
+): void {
+  if (
+    !publication.canonicalTargetKey ||
+    publication.canonicalTargetKey !== publication.canonicalTargetKey.trim() ||
+    publication.canonicalTargetKey.includes("\0") ||
+    /[\r\n]/.test(publication.canonicalTargetKey) ||
+    !publication.fenceKey ||
+    publication.fenceKey !== publication.fenceKey.trim() ||
+    publication.fenceKey.includes("\0") ||
+    /[\r\n]/.test(publication.fenceKey) ||
+    publication.fenceKey !== identity.itemKey
+  ) {
+    throw new Error("Batch publication identities must retain the exact fenced mutation key");
   }
 }
 

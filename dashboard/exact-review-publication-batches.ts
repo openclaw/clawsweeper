@@ -364,6 +364,34 @@ export class ExactReviewPublicationBatchStore {
     });
   }
 
+  ownsActiveFence(
+    fence: { itemKey: string; revision: number; claimGeneration: number },
+    now: number,
+  ): boolean {
+    return this.storage.transactionSync(() => {
+      this.reclaimExpiredSync(now);
+      return Boolean(
+        Array.from(
+          this.storage.sql.exec(
+            `SELECT 1
+               FROM ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE} AS membership
+               JOIN ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE} AS batch
+                 ON batch.batch_id = membership.batch_id
+              WHERE batch.state = 'leased'
+                AND membership.terminal_outcome IS NULL
+                AND membership.item_key = ?
+                AND membership.revision = ?
+                AND membership.claim_generation = ?
+              LIMIT 1`,
+            fence.itemKey,
+            fence.revision,
+            fence.claimGeneration,
+          ),
+        )[0],
+      );
+    });
+  }
+
   recordObservation(
     batchId: string,
     leaseOwner: string,

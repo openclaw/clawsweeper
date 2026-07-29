@@ -161,12 +161,21 @@ jobs:
 
           pnpm run --silent repair:exact-review-batch commit
           test ! -f "$heartbeat_failed"
+          receipt_path="$(dirname "$EXACT_REVIEW_BATCH_MANIFEST")/state-receipt.json"
           jq -c '.items[]' "$EXACT_REVIEW_BATCH_MANIFEST" | while IFS= read -r item; do
             test ! -f "$heartbeat_failed"
             outcome_path="$(jq -r '.outcomePath' <<<"$item")"
             [ -f "$outcome_path" ] || continue
             if ! jq -e '.kind == "eligible" or (.kind == "superseded" and .disposition.requeueLatestExpected == true)' "$outcome_path" >/dev/null; then
               continue
+            fi
+            if jq -e '.kind == "eligible"' "$outcome_path" >/dev/null; then
+              fence_key="$(jq -r '.itemKey' <<<"$item")"
+              if ! jq -e --arg fence_key "$fence_key" \
+                'any(.outcomes[]?; .fenceKey == $fence_key and (.outcome == "accepted" or .outcome == "deduped"))' \
+                "$receipt_path" >/dev/null; then
+                continue
+              fi
             fi
             target_repo="$(jq -r '.decision.targetRepo' <<<"$item")"
             target_branch="$(jq -r '.decision.targetBranch' <<<"$item")"
