@@ -2553,6 +2553,66 @@ test("workflow utilities advance fast and coverage-proof cursors from the exact 
   assert.equal(cursor.coverage_proof_cursor.next_after_number, 40);
 });
 
+test("runtime-budget cursor resumes the next candidate without rescanning the completed prefix", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const cursorPath = path.join(root, "results/apply-cursors/openclaw-openclaw.json");
+  const reportPath = path.join(root, "apply-report.json");
+  const tracePath = path.join(root, "apply-cursor-trace.json");
+  const options = {
+    targetRepo: "openclaw/openclaw",
+    applyKind: "all",
+    applyCloseReasons: "all",
+    staleMinAgeDays: 60,
+    minAgeDays: 0,
+    minAgeMinutes: null,
+    batchSize: 5,
+    cursorPath,
+  };
+  try {
+    for (const [number, day] of [
+      [10, "01"],
+      [20, "02"],
+      [30, "03"],
+      [40, "04"],
+      [50, "05"],
+    ] as const) {
+      writeProposedRecord(
+        root,
+        number,
+        "issue",
+        "proposed_close",
+        "implemented_on_main",
+        "2024-01-01T00:00:00Z",
+        { applyCheckedAt: `2026-01-${day}T00:00:00Z` },
+      );
+    }
+    assert.deepEqual(
+      withCwd(root, () => proposedItemNumbers(options)),
+      [10, 20, 30, 40, 50],
+    );
+    write(reportPath, JSON.stringify([{ number: 0, action: "skipped_runtime_budget" }]));
+    write(tracePath, JSON.stringify({ schema_version: 1, examined_item_numbers: [10, 20] }));
+
+    withCwd(root, () =>
+      writeApplyCursor(
+        cursorPath,
+        reportPath,
+        "openclaw/openclaw",
+        "10,20,30,40,50",
+        "",
+        tracePath,
+      ),
+    );
+
+    assert.deepEqual(
+      withCwd(root, () => proposedItemNumbers({ ...options, batchSize: 3 })),
+      [30, 40, 50],
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("workflow utilities count records advanced by the apply cursor", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
   const reportPath = path.join(root, "apply-report.json");

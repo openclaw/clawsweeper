@@ -74,6 +74,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Treat apply runtime-budget exhaustion as a successful resumable yield, preserve the safe next-cycle cursor, and stage immutable action events safely from sparse state checkouts.
 - The `migrate-state-blobs` workflow uploads with bounded concurrency (default 12, input-configurable) instead of strictly sequential per-file round trips, reports a contiguous-prefix resume cursor that stays valid under out-of-order completion, and backs off adaptively on 429/5xx pressure; three prior runs had hit the job timeout before finishing the ledger tree.
 - Bound durable cluster dispatch recovery to a verifiable accepted-intent receipt and strictly validated v2 intake ledgers. Thanks @RomneyDa! (#883)
 - Prioritized durable cluster intake without starving sweep, router, proof, or canonical tuple rows during sustained intake. Thanks @RomneyDa! (#882)

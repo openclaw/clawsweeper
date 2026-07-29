@@ -448,7 +448,10 @@ export function stagePaths(paths: readonly string[]): void {
     });
     skippedMissing += batch.length - stageable.length;
     if (stageable.length > 0) {
-      runGit(["add", "-A", "--", ...stageable.map(({ gitPath }) => gitPath)]);
+      const sparseArgs = stageable.every(({ gitPath }) => isActionEventPublishPath(gitPath))
+        ? ["--sparse"]
+        : [];
+      runGit(["add", "-A", ...sparseArgs, "--", ...stageable.map(({ gitPath }) => gitPath)]);
     }
   }
   if (skippedMissing > 0) {

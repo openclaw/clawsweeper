@@ -293,6 +293,28 @@ test("stagePaths normalizes tracked deletion pathspecs", () => {
   assert.equal(run("git", ["diff", "--cached", "--name-only"], root), `${file}\n`);
 });
 
+test("stagePaths stages immutable action events outside a sparse checkout", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-stage-sparse-ledger-"));
+  const eventPath =
+    "ledger/v1/events/2026/07/29/apply/apply-existing/00000000-0000-4000-8000-000000000001.jsonl";
+  try {
+    run("git", ["init"], root);
+    configureUser(root);
+    write(path.join(root, "results/keep.txt"), "tracked\n");
+    run("git", ["add", "."], root);
+    run("git", ["commit", "-m", "initial"], root);
+    run("git", ["sparse-checkout", "init", "--no-cone"], root);
+    run("git", ["sparse-checkout", "set", "--no-cone", "/results/"], root);
+    write(path.join(root, eventPath), '{"event":"yielded"}\n');
+
+    withCwd(root, () => stagePaths([eventPath]));
+
+    assert.equal(run("git", ["diff", "--cached", "--name-only"], root), `${eventPath}\n`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("publishMainCommit commits selected paths and restores volatile tracked files", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-publish-"));
   const origin = path.join(root, "origin.git");

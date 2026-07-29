@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
@@ -38,13 +39,14 @@ function assertRuntimeYield(
 ) {
   const report = JSON.parse(readFileSync(fixture.reportPath, "utf8"));
   const cursorTrace = JSON.parse(readFileSync(fixture.cursorTracePath, "utf8"));
-  assert.deepEqual(report, [
-    {
-      number: 0,
-      action: "skipped_runtime_budget",
-      reason: report[0]?.reason,
-    },
-  ]);
+  assert.equal(report.length, 2);
+  assert.ok(report[0]?.number > 0);
+  assert.equal(report[0]?.action, "skipped_runtime_budget");
+  assert.deepEqual(report[1], {
+    number: 0,
+    action: "skipped_runtime_budget",
+    reason: report[0]?.reason,
+  });
   assert.match(report[0]?.reason ?? "", new RegExp(`max runtime ${maxRuntimeMs}ms reached`));
   assert.deepEqual(cursorTrace, { schema_version: 1, examined_item_numbers: [] });
 }
@@ -142,15 +144,37 @@ test("apply-decisions bounds a hung GitHub command and writes a resumable runtim
   try {
     const startedAt = Date.now();
     withMockGh(fixture.root, "setTimeout(() => {}, 10_000);", () => {
-      runApplyDecisionsForTest({
-        ...fixture,
-        extraArgs: [
+      const result = spawnSync(
+        process.execPath,
+        [
+          "dist/clawsweeper.js",
+          "apply-decisions",
+          "--target-repo",
+          "openclaw/clawsweeper",
+          "--items-dir",
+          fixture.itemsDir,
+          "--closed-dir",
+          fixture.closedDir,
+          "--plans-dir",
+          fixture.plansDir,
+          "--report-path",
+          fixture.reportPath,
+          "--limit",
+          "10",
+          "--processed-limit",
+          "1",
+          "--close-delay-ms",
+          "0",
           "--max-runtime-ms",
           String(maxRuntimeMs),
           "--cursor-trace",
           fixture.cursorTracePath,
         ],
-      });
+        { encoding: "utf8", env: process.env },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /budget stop, resume next cycle:/);
+      assert.doesNotMatch(result.stderr, /failed apply/);
     });
 
     assert.ok(Date.now() - startedAt < 4_000, "hung gh command exceeded the apply runtime bound");

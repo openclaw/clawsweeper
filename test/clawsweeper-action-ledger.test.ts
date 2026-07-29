@@ -559,9 +559,11 @@ test("apply receipts start per item and persist mutation observation before fina
     yieldStart,
     source.indexOf("if (fileEntries.length === 0", yieldStart),
   );
-  assert.match(yieldHandler, /const interruptedItem = resumeCurrent && activeApplyItem !== null/);
-  assert.match(yieldHandler, /finishApply\(\s*interruptedItem,/);
-  assert.doesNotMatch(yieldHandler, /finishApply\(\);/);
+  assert.match(yieldHandler, /const interruptedItem = resumeCurrent \? activeApplyItem : null/);
+  assert.match(yieldHandler, /applyRuntimeBudgetYieldResults\(interruptedItem\.number, reason\)/);
+  assert.match(yieldHandler, /budget stop, resume next cycle/);
+  assert.match(yieldHandler, /finishApply\(\);/);
+  assert.doesNotMatch(yieldHandler, /finishApply\(\s*true/);
 });
 
 test("apply mutation receipts bind every GitHub request attempt and preserve no-op truth", () => {

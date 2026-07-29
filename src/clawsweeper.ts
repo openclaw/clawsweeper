@@ -27657,17 +27657,24 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
   };
   runtimeBudget.onYield = (reason: string, resumeCurrent = true): void => {
     releaseActiveApplyMutationLease();
-    const interruptedItem = resumeCurrent && activeApplyItem !== null;
-    const currentNumber = examinedItemNumbers.at(-1);
-    if (resumeCurrent && currentNumber !== undefined) {
-      removeCurrentCursorTraceItem(examinedItemNumbers, currentNumber);
+    const interruptedItem = resumeCurrent ? activeApplyItem : null;
+    if (interruptedItem) {
+      removeCurrentCursorTraceItem(examinedItemNumbers, interruptedItem.number);
     }
-    results.push({ number: 0, action: "skipped_runtime_budget", reason });
-    logProgress(`stopping apply: ${reason}`);
-    finishApply(
-      interruptedItem,
-      interruptedItem ? new GitHubRuntimeBudgetError(reason) : undefined,
-    );
+    for (const result of interruptedItem
+      ? applyRuntimeBudgetYieldResults(interruptedItem.number, reason)
+      : [{ number: 0, action: "skipped_runtime_budget" as const, reason }]) {
+      if (
+        !results.some(
+          (existing) =>
+            existing.number === result.number && existing.action === "skipped_runtime_budget",
+        )
+      ) {
+        results.push(result);
+      }
+    }
+    logProgress(`budget stop, resume next cycle: ${reason}`);
+    finishApply();
   };
   if (fileEntries.length === 0 && !existsSync(itemsDir)) {
     console.log("No items directory.");
@@ -27685,13 +27692,8 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     if (runtimeBudgetExceeded(startedAtMs, maxRuntimeMs, Date.now())) {
       const reason =
         runtimeBudget.limitReason ?? `max runtime ${maxRuntimeMs}ms reached`;
-      results.push({
-        number: 0,
-        action: "skipped_runtime_budget",
-        reason,
-      });
-      logProgress(`stopping apply: ${reason}`);
-      break;
+      runtimeBudget.onYield?.(reason, false);
+      return;
     }
     let markdown = entry.markdown;
     const repo = entry.repo;
@@ -28535,7 +28537,7 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       }
       removeCurrentCursorTraceItem(examinedItemNumbers, number);
       results.push(...applyRuntimeBudgetYieldResults(number, reason));
-      logProgress(`stopping apply: ${reason}`);
+      logProgress(`budget stop, resume next cycle: ${reason}`);
     };
     const sameAuthorPairStartCloseable = new Map<string, boolean>();
     const currentCloseGatesPassed = (): boolean => {
