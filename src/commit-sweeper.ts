@@ -894,11 +894,9 @@ function dispatchFindingsCommand(args: Args): void {
     "report_repo",
     process.env.GITHUB_REPOSITORY || "openclaw/clawsweeper",
   );
-  const reportBaseUrl = argString(
-    args,
-    "report_base_url",
-    `https://github.com/${reportRepo}/blob/main`,
-  );
+  const reportUrl = process.env.GITHUB_RUN_ID
+    ? `${process.env.GITHUB_SERVER_URL || "https://github.com"}/${process.env.GITHUB_REPOSITORY || "openclaw/clawsweeper"}/actions/runs/${process.env.GITHUB_RUN_ID}`
+    : "https://clawsweeper.openclaw.ai/";
   const dryRun = argBool(args, "dry_run");
   const dispatches: CommitFindingDispatch[] = [];
 
@@ -915,7 +913,7 @@ function dispatchFindingsCommand(args: Args): void {
       sha: sha.toLowerCase(),
       targetRepo,
       reportPath,
-      reportUrl: `${reportBaseUrl.replace(/\/$/, "")}/${reportPath}`,
+      reportUrl,
       highestSeverity: frontMatter.highest_severity ?? "unknown",
       checkConclusion: frontMatter.check_conclusion ?? "neutral",
     });

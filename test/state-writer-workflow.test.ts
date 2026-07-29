@@ -10,393 +10,144 @@ type WorkflowStep = {
   run?: string;
   env?: Record<string, unknown>;
   with?: Record<string, unknown>;
-  "continue-on-error"?: boolean;
 };
 
-type WorkflowJob = {
-  env?: Record<string, unknown>;
-  "runs-on"?: unknown;
-  steps?: WorkflowStep[];
-};
-
-type WorkflowDocument = {
-  jobs?: Record<string, WorkflowJob>;
-};
+type WorkflowJob = { env?: Record<string, unknown>; steps?: WorkflowStep[] };
+type WorkflowDocument = { jobs?: Record<string, WorkflowJob> };
 
 const workflowDirectory = ".github/workflows";
-const coordinatorGate = "${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}";
-const coordinatorUrl =
+const workerUrl =
   "${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}";
-const publicationEntryPoints = [
-  /repair:publish-main\b/,
-  /repair:publish-event-result\b/,
-  /repair:publish-cluster-intake\b/,
-  /repair:exact-review-batch commit\b/,
-  /scripts\/prepare-exact-review-batch\.mjs\b/,
-  /dist\/repair\/state-materializer\.js\b/,
-  /repair:conflict-self-heal\b(?![^\n]*--verify-job-head)/,
-  /\bpublish-action-event-paths\b/,
-  /\b(?:persist_reconciliation|publish_changes|publish_status)\b/,
-];
+const workerSecret = "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}";
 
-test("every generated-state checkout receives the explicit coordinator migration gate", () => {
-  const setups: Array<{ file: string; job: string; step: WorkflowStep }> = [];
+test("every state hydration uses the canonical Worker with an explicit git-state decision", () => {
+  const setups: Array<{ site: string; step: WorkflowStep }> = [];
   for (const { file, workflow } of workflows()) {
-    for (const [job, definition] of Object.entries(workflow.jobs ?? {})) {
-      for (const step of definition.steps ?? []) {
-        if (isSetupState(step)) setups.push({ file, job, step });
+    for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+      for (const step of job.steps ?? []) {
+        if (isSetupState(step)) setups.push({ site: `${file}:${jobName}`, step });
       }
     }
   }
 
-  assert.equal(setups.length, 31, "new state checkouts must join the repo-wide boundary");
-  for (const { file, job, step } of setups) {
-    assert.equal(step.with?.["coordinator-enabled"], coordinatorGate, `${file}:${job}`);
-    assert.equal(step.with?.["coordinator-url"], coordinatorUrl, `${file}:${job}`);
+  assert.equal(setups.length, 25, "setup-state site count is an audited invariant");
+  for (const { site, step } of setups) {
+    assert.equal(step.with?.["records-url"], workerUrl, site);
+    assert.equal(step.with?.["records-secret"], workerSecret, site);
+    assert.equal(step.with?.["records-source"], undefined, site);
+    assert.equal(step.with?.["ledger-source"], undefined, site);
+    assert.equal(step.with?.["coordinator-enabled"], undefined, site);
   }
+  assert.deepEqual(
+    setups
+      .filter(({ step }) => step.with?.["hydrate-git-state"] === "false")
+      .map(({ site }) => site),
+    [
+      ".github/workflows/commit-review.yml:plan",
+      ".github/workflows/commit-review.yml:review",
+      ".github/workflows/commit-review.yml:publish",
+      ".github/workflows/exact-review-batch-publish.yml:publish",
+      ".github/workflows/sweep.yml:event-review-apply",
+      ".github/workflows/sweep.yml:event-review-publish",
+    ],
+  );
 });
 
-test("hydrating checkouts follow the records/ledger-source flips while git-lane tooling stays pinned", () => {
-  // These call sites seed, verify, or reconcile the Worker store *from* git;
-  // flipping them to the Worker transport would be circular.
-  const pinnedGitLane = [
-    ".github/workflows/backfill-worker-records.yml:backfill",
-    ".github/workflows/migrate-state-blobs.yml:migrate",
-    ".github/workflows/worker-records-ops.yml:reconcile",
-    ".github/workflows/worker-records-ops.yml:verify",
-  ];
-  const recordsGate = "${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}";
-  const ledgerGate = "${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'worker' }}";
-  const recordsSecret = "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}";
-  const pinned: string[] = [];
-  for (const { file, workflow } of workflows()) {
-    for (const [job, definition] of Object.entries(workflow.jobs ?? {})) {
-      for (const step of definition.steps ?? []) {
-        if (!isSetupState(step)) continue;
-        const site = `${file}:${job}`;
-        if (step.with?.["records-source"] === "git") {
-          pinned.push(site);
-          assert.equal(step.with?.["ledger-source"], "git", site);
-          assert.equal(step.with?.["records-url"], undefined, site);
-          assert.equal(step.with?.["records-secret"], undefined, site);
-          continue;
-        }
-        assert.equal(step.with?.["records-source"], recordsGate, site);
-        assert.equal(step.with?.["ledger-source"], ledgerGate, site);
-        assert.equal(step.with?.["records-url"], coordinatorUrl, site);
-        assert.equal(step.with?.["records-secret"], recordsSecret, site);
-      }
-    }
-  }
-  assert.deepEqual(pinned.sort(), pinnedGitLane);
-});
-
-test("the setup action exports no long-lived coordinator credential", () => {
-  const actionPath = ".github/actions/setup-state/action.yml";
-  const source = readFileSync(actionPath, "utf8");
+test("setup-state checks out only the remaining operational git tree", () => {
+  const source = readFileSync(".github/actions/setup-state/action.yml", "utf8");
   const action = parse(source) as {
-    inputs?: Record<string, { default?: unknown }>;
-  };
-
-  assert.equal(action.inputs?.["coordinator-enabled"]?.default, "false");
-  assert.equal(action.inputs?.["coordinator-url"]?.default, "https://clawsweeper.openclaw.ai");
-  assert.equal(action.inputs?.["coordinator-class"]?.default, "ordinary");
-  assert.doesNotMatch(source, /coordinator-secret|CLAWSWEEPER_WEBHOOK_SECRET/);
-  assert.match(source, /CLAWSWEEPER_STATE_COORDINATOR_ENABLED=\$coordinator_enabled/);
-  assert.match(source, /CLAWSWEEPER_STATE_COORDINATOR_URL=\$STATE_COORDINATOR_URL/);
-  assert.match(source, /CLAWSWEEPER_STATE_COORDINATOR_CLASS=\$\{\{ inputs\.coordinator-class \}\}/);
-});
-
-test("worker-projected state skips the transported git trees", () => {
-  const actionPath = ".github/actions/setup-state/action.yml";
-  const action = parse(readFileSync(actionPath, "utf8")) as {
+    inputs?: Record<string, unknown>;
     runs?: { steps?: WorkflowStep[] };
   };
-  const checkouts = (action.runs?.steps ?? []).filter(
-    (step) => step.uses === "actions/checkout@v7",
-  );
-  assert.equal(checkouts.length, 2);
-
-  const worker = checkouts.find((step) => step.name === "Check out Worker-projected state");
-  assert.ok(worker);
-  assert.match(String((worker as WorkflowStep & { if?: string }).if), /records-source == 'worker'/);
-  assert.match(String((worker as WorkflowStep & { if?: string }).if), /ledger-source == 'worker'/);
-  assert.equal(worker.with?.filter, "${{ inputs.filter || 'blob:none' }}");
-  assert.equal(worker.with?.["sparse-checkout-cone-mode"], false);
-  const sparse = String(worker.with?.["sparse-checkout"] || "");
-  for (const required of ["/jobs/", "/results/", "/notifications/"]) {
-    assert.match(sparse, new RegExp(required.replaceAll("/", "\\/")));
+  assert.equal(action.inputs?.["records-source"], undefined);
+  assert.equal(action.inputs?.["ledger-source"], undefined);
+  assert.equal(action.inputs?.["coordinator-enabled"], undefined);
+  assert.ok(action.inputs?.["hydrate-git-state"]);
+  assert.match(source, /CLAWSWEEPER_STATE_COORDINATOR_ENABLED=1/);
+  const checkout = action.runs?.steps?.find((step) => step.name === "Check out operational state");
+  const sparse = String(checkout?.with?.["sparse-checkout"] ?? "");
+  for (const retained of ["/jobs/", "/results/", "/notifications/", "/apply-report.json"]) {
+    assert.match(sparse, new RegExp(retained.replaceAll("/", "\\/")));
   }
-  for (const transported of ["records", "ledger", "assets"]) {
-    assert.doesNotMatch(sparse, new RegExp(`/${transported}/`));
+  for (const canonical of ["records", "ledger", "assets"]) {
+    assert.doesNotMatch(sparse, new RegExp(`/${canonical}/`));
   }
-
-  const git = checkouts.find((step) => step.name === "Check out git-projected state");
-  assert.ok(git);
-  assert.match(String((git as WorkflowStep & { if?: string }).if), /records-source != 'worker'/);
-  assert.match(String((git as WorkflowStep & { if?: string }).if), /ledger-source != 'worker'/);
-  assert.equal(git.with?.["sparse-checkout"], "${{ inputs.sparse-checkout }}");
-
-  const restoreBlobCache = (action.runs?.steps ?? []).find(
-    (step) => step.name === "Restore Worker blob cache",
-  ) as (WorkflowStep & { if?: string }) | undefined;
-  assert.ok(restoreBlobCache);
-  assert.match(String(restoreBlobCache.if), /inputs\.hydrate-state-blobs == 'true'/);
-  const hydrate = (action.runs?.steps ?? []).find(
-    (step) => step.name === "Hydrate generated state",
-  );
-  assert.ok(hydrate);
-  assert.equal(hydrate.env?.HYDRATE_STATE_BLOBS, "${{ inputs.hydrate-state-blobs }}");
-  assert.match(hydrate.run ?? "", /--skip-state-blobs/);
+  assert.match(source, /--skip-git-state/);
 });
 
-test("exact-review direct publication partial-clones generated state", () => {
-  const sweep = workflows().find(({ file }) => file === ".github/workflows/sweep.yml")?.workflow;
-  const publisher = sweep?.jobs?.["event-review-apply"];
-  const setup = publisher?.steps?.find((step) => step.uses === "./.github/actions/setup-state");
-
-  assert.ok(setup, "event-review-apply setup-state step");
-  assert.equal(setup.with?.filter, "blob:none");
-  assert.equal(setup.with?.["fetch-depth"], 1);
-});
-
-test("state materializer and apply publishers enable model-guided recovery with the existing Codex key", () => {
-  const expectedKey = "${{ secrets.OPENAI_API_KEY }}";
-  const expectedModel = "${{ secrets.CLAWSWEEPER_MODEL }}";
-  const expectedJobs = [
-    [".github/workflows/state-materializer.yml", "materialize", ["Materialize queued state"]],
-    [".github/workflows/sweep.yml", "apply-proof", ["Generate bound close coverage proofs"]],
-    [
-      ".github/workflows/sweep.yml",
-      "apply-existing",
-      [
-        "Reconcile before apply preselect",
-        "Apply unchanged proposed decisions with checkpoints",
-        "Retry final apply status publication",
-      ],
-    ],
-  ] as const;
-  const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
-
-  for (const [file, jobName, recoverySteps] of expectedJobs) {
-    const job = byFile.get(file)?.jobs?.[jobName];
-    assert.ok(job, `${file}:${jobName}`);
-    assert.equal(job.env?.CLAWSWEEPER_MODEL_RECOVERY_ENABLED, "1", `${file}:${jobName}`);
-    assert.equal(job.env?.OPENAI_API_KEY, undefined, `${file}:${jobName}: key must be step-scoped`);
-    const setupCodex = job.steps?.find((step) =>
-      step.uses?.endsWith("/.github/actions/setup-codex"),
-    );
-    assert.ok(setupCodex, `${file}:${jobName}: setup-codex`);
-    assert.equal(setupCodex.env?.OPENAI_API_KEY, expectedKey, `${file}:${jobName}`);
-    assert.equal(setupCodex.env?.CLAWSWEEPER_INTERNAL_MODEL, expectedModel, `${file}:${jobName}`);
-    if (jobName !== "apply-proof") {
-      assert.equal(setupCodex["continue-on-error"], true, `${file}:${jobName}: optional setup`);
-    }
-    for (const stepName of recoverySteps) {
-      const step = job.steps?.find((candidate) => candidate.name === stepName);
-      assert.ok(step, `${file}:${jobName}:${stepName}`);
-      assert.equal(step.env?.OPENAI_API_KEY, expectedKey, `${file}:${jobName}:${stepName}`);
-    }
-  }
-  const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
-  const recoveryPublisher = materializer?.steps?.find(
-    (step) => step.name === "Publish materializer recovery action events",
-  );
-  assert.equal(
-    recoveryPublisher?.env?.CLAWSWEEPER_STATE_REPO_TOKEN,
-    "${{ steps.state-token.outputs.token }}",
-  );
-  assert.equal(recoveryPublisher?.env?.CLAWSWEEPER_MODEL_RECOVERY_ENABLED, "0");
-  assert.equal(recoveryPublisher?.env?.CLAWSWEEPER_STATE_APPEND_ENABLED, "1");
-  assert.equal(recoveryPublisher?.env?.OPENAI_API_KEY, undefined);
-
-  const sweep = byFile.get(".github/workflows/sweep.yml");
-  const proofPublisher = sweep?.jobs?.["publish-apply-proof-action-ledger"];
-  assert.equal(proofPublisher?.env?.CLAWSWEEPER_MODEL_RECOVERY_ENABLED, "0");
-  const applyEventPublisher = sweep?.jobs?.["apply-existing"]?.steps?.find(
-    (step) => step.name === "Publish apply action events",
-  );
-  assert.equal(applyEventPublisher?.env?.CLAWSWEEPER_MODEL_RECOVERY_ENABLED, "0");
-  assert.equal(applyEventPublisher?.env?.OPENAI_API_KEY, undefined);
-});
-
-test("state materializer uses an available GitHub-hosted runner", () => {
-  const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
-  const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
-  assert.equal(materializer?.["runs-on"], "ubuntu-latest");
-});
-
-test("state materializer checks out a recovery-sized state history window", () => {
-  const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
-  const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
-  const setupState = materializer?.steps?.find(isSetupState);
-  assert.equal(setupState?.with?.filter, "blob:none");
-  assert.equal(setupState?.with?.["fetch-depth"], 512);
-});
-
-test("state materializer self-dedupes superseded scheduled runs", () => {
-  const source = readFileSync(join(workflowDirectory, "state-materializer.yml"), "utf8");
-  const workflow = parse(source) as WorkflowDocument & { concurrency?: unknown };
-  // The drain slot must be job-scoped: workflow-level concurrency left
-  // superseded runs "pending" with no job created, where the dedupe job could
-  // never execute.
-  assert.equal(workflow.concurrency, undefined);
-  const materialize = workflow.jobs?.materialize as
-    | (WorkflowJob & { concurrency?: Record<string, unknown> })
-    | undefined;
-  assert.equal(materialize?.concurrency?.group, "clawsweeper-state-materializer");
-  assert.equal(materialize?.concurrency?.["cancel-in-progress"], false);
-
-  const dedupe = workflow.jobs?.dedupe as
-    | (WorkflowJob & { permissions?: Record<string, unknown>; needs?: unknown })
-    | undefined;
-  assert.ok(dedupe, "dedupe job");
-  assert.equal(dedupe.needs, undefined, "dedupe must start immediately on every trigger");
-  assert.deepEqual(dedupe.permissions, { actions: "write" });
-  const cancelStep = dedupe.steps?.find((step) => String(step.run || "").includes("/cancel"));
-  assert.ok(cancelStep, "cancel step");
-  const command = String(cancelStep.run);
-  // Only schedule-triggered runs are dedupe candidates; workflow_dispatch runs
-  // may carry explicit inputs and must survive.
-  assert.match(command, /\/runs\?event=schedule/);
-  assert.match(command, /run_number < \$GITHUB_RUN_NUMBER/);
-});
-
-test("state materializer bounds its coordinator acquire below the job timeout", () => {
-  const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
-  const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
-  const budgetMs = Number(materializer?.env?.CLAWSWEEPER_STATE_COORDINATOR_ACQUIRE_TIMEOUT_MS);
-  assert.equal(budgetMs, 2_100_000);
-  // A late grant still needs room inside the job window to publish one batch
-  // and run the finalize steps.
-  assert.equal(budgetMs + 15 * 60_000 <= Number(materializer?.["timeout-minutes"]) * 60_000, true);
-});
-
-test("only bounded publication owners request priority admission", () => {
-  const byFile = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
-  const prioritySetups: string[] = [];
-  for (const { file, workflow } of workflows()) {
-    for (const [job, definition] of Object.entries(workflow.jobs ?? {})) {
-      for (const step of definition.steps ?? []) {
-        if (
-          isSetupState(step) &&
-          String(step.with?.["coordinator-class"] || "").includes("publication_batch")
-        ) {
-          prioritySetups.push(`${file}:${job}`);
-        }
-      }
-    }
-  }
-  assert.deepEqual(prioritySetups, [
-    ".github/workflows/exact-review-batch-publish.yml:publish",
-    ".github/workflows/repair-publish-results.yml:publish",
-    ".github/workflows/state-materializer.yml:materialize",
-  ]);
-  const materializer = byFile.get(".github/workflows/state-materializer.yml")?.jobs?.materialize;
-  const setup = materializer?.steps?.find(isSetupState);
-  assert.match(String(setup?.with?.["coordinator-class"]), /cluster_intake/);
-});
-
-test("trusted generated-state mutation steps receive a step-scoped coordinator credential", () => {
+test("all remaining git publishers join setup-state and receive a step-scoped coordinator secret", () => {
+  const patterns = [
+    /repair:publish-main\b/,
+    /repair:publish-cluster-intake\b/,
+    /repair:conflict-self-heal\b(?![^\n]*--verify-job-head)/,
+    /\b(?:persist_reconciliation|publish_changes|publish_status)\b/,
+  ];
   let publishers = 0;
   for (const { file, workflow } of workflows()) {
     for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
-      const steps = job.steps ?? [];
-      const setupIndex = steps.findIndex(isSetupState);
-      if (setupIndex >= 0) {
-        assert.equal(
-          job.env?.CLAWSWEEPER_WEBHOOK_SECRET,
-          undefined,
-          `${file}:${jobName}: coordinator credential must not be job-scoped`,
-        );
-      }
-      for (const [index, step] of steps.entries()) {
-        const command = String(step.run || "");
-        if (!publicationEntryPoints.some((pattern) => pattern.test(command))) continue;
+      const setupIndex = (job.steps ?? []).findIndex(isSetupState);
+      for (const [index, step] of (job.steps ?? []).entries()) {
+        if (!patterns.some((pattern) => pattern.test(String(step.run ?? "")))) continue;
         publishers += 1;
         assert.ok(setupIndex >= 0 && setupIndex < index, `${file}:${jobName}:${step.name}`);
         assert.equal(
-          step.env?.CLAWSWEEPER_WEBHOOK_SECRET,
-          "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}",
+          step.env?.CLAWSWEEPER_WEBHOOK_SECRET ?? step.env?.CLAWSWEEPER_STATE_COORDINATOR_SECRET,
+          workerSecret,
           `${file}:${jobName}:${step.name}`,
         );
       }
     }
   }
-  assert.equal(
-    publishers,
-    37,
-    "new or removed generated-state publication surfaces require an explicit credential audit",
-  );
+  assert.equal(publishers, 24, "git publisher count is an audited invariant");
 });
 
-test("apply preselect reconciliation receives canonical record publication inputs", () => {
-  const sweep = workflows().find(({ file }) => file === ".github/workflows/sweep.yml")?.workflow;
-  const job = sweep?.jobs?.["apply-existing"];
-  const step = job?.steps?.find(
-    (candidate) => candidate.name === "Reconcile before apply preselect",
-  );
-
-  assert.ok(job, "apply-existing job");
-  assert.ok(step, "apply preselect reconciliation step");
-  assert.equal(job.env?.CLAWSWEEPER_STATE_APPEND_ENABLED, "1");
-  assert.equal(step.env?.CLAWSWEEPER_WEBHOOK_SECRET, "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}");
-  assert.equal(step.env?.QUEUE_URL, coordinatorUrl);
-  assert.match(step.run ?? "", /persist_reconciliation/);
-});
-
-test("apply and sweep record publishers leave Git tuple projection to the materializer", () => {
-  const publisher = readFileSync("src/repair/publish-event-result.ts", "utf8");
-  const publishMain = readFileSync("src/repair/publish-main.ts", "utf8");
-
-  assert.match(publisher, /postDirectPublicationResult/);
-  assert.match(publisher, /\/internal\/exact-review\/publication-batch-results/);
-  assert.doesNotMatch(publisher, /\bstagePaths\b|\bpushSingleRecordTupleCommit\b/);
-  assert.match(publishMain, /if \(isRecordTupleProjectionPath\(normalized\)\) return \[\];/);
-  assert.match(
-    publishMain,
-    /return coveredChanges\.filter\(\(path\) => !isRecordTupleProjectionPath\(path\)\);/,
-  );
-});
-
-test("every immutable action-event publisher uses the state append window", () => {
+test("every immutable action-event publisher targets R2 without a state-repo token", () => {
   const publishers: string[] = [];
   for (const { file, workflow } of workflows()) {
     for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
       for (const step of job.steps ?? []) {
-        if (!String(step.run || "").includes("publish-action-event-paths")) continue;
+        if (!String(step.run ?? "").includes("publish-action-event-paths")) continue;
         publishers.push(`${file}:${jobName}:${step.name}`);
-        assert.equal(
-          step.env?.CLAWSWEEPER_STATE_APPEND_ENABLED ?? job.env?.CLAWSWEEPER_STATE_APPEND_ENABLED,
-          "1",
-          `${file}:${jobName}:${step.name}`,
+        assert.equal(step.env?.CLAWSWEEPER_WEBHOOK_SECRET, workerSecret);
+        assert.equal(step.env?.QUEUE_URL, workerUrl);
+        assert.doesNotMatch(
+          String(step.run),
+          /repair:publish-main|CLAWSWEEPER_STATE_DIR|--message/,
         );
       }
     }
   }
-  assert.equal(publishers.length, 7);
+  assert.equal(publishers.length, 8);
 });
 
-test("state compaction remains an explicitly separate main-branch writer", () => {
-  const source = readFileSync(join(workflowDirectory, "state-compaction.yml"), "utf8");
-  assert.match(source, /repository: openclaw\/clawsweeper-state/);
-  assert.match(source, /ref: main/);
-  assert.doesNotMatch(source, /\.github\/actions\/setup-state/);
+test("the materializer is a bounded window compactor with no git output", () => {
+  const source = readFileSync(".github/workflows/state-materializer.yml", "utf8");
+  const implementation = readFileSync("src/repair/state-materializer.ts", "utf8");
+  assert.match(source, /name: Compact queued state/);
+  assert.match(source, /Compact queued state/);
+  assert.doesNotMatch(source, /setup-state|create-state-token|state-token|setup-codex/);
+  assert.doesNotMatch(source, /git push|publish-action-event|CLAWSWEEPER_STATE_LEASE/);
+  assert.match(implementation, /\/internal\/state\/drain/);
+  assert.match(implementation, /\/internal\/state\/ack/);
+  assert.doesNotMatch(implementation, /git-publish|publishMainCommit|writeFileSync|records\//);
 });
 
-test("the rollout scans 50 and grants four concurrent size-8 preparations", () => {
-  const workflow = readFileSync(join(workflowDirectory, "exact-review-batch-publish.yml"), "utf8");
-  const worker = readFileSync("dashboard/wrangler.toml", "utf8");
-  assert.match(workflow, /EXACT_REVIEW_BATCH_MAX_ITEMS: "50"/);
-  assert.match(worker, /EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "8"/);
-  assert.match(worker, /EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT = "4"/);
-  assert.match(worker, /EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED = "1"/);
-  assert.match(worker, /EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS = "2"/);
-  assert.match(worker, /EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS = "900000"/);
-  assert.match(worker, /EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS = "60000"/);
-  assert.match(worker, /EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED = "1"/);
-  assert.match(worker, /EXACT_REVIEW_STATE_REPO = "openclaw\/clawsweeper-state"/);
-  assert.match(worker, /EXACT_REVIEW_STATE_REF = "state"/);
+test("retired migration and Git recovery surfaces stay deleted", () => {
+  const allSource = [
+    readFileSync("src/repair/git-publish.ts", "utf8"),
+    readFileSync(".github/actions/setup-state/action.yml", "utf8"),
+    ...workflows().map(({ file }) => readFileSync(file, "utf8")),
+  ].join("\n");
+  assert.doesNotMatch(allSource, /clawsweeper-publish-lease|CLAWSWEEPER_STATE_LEASE/);
+  assert.doesNotMatch(allSource, /CLAWSWEEPER_RECORDS_SOURCE|CLAWSWEEPER_LEDGER_SOURCE/);
+  for (const retired of [
+    ".github/workflows/backfill-worker-records.yml",
+    ".github/workflows/migrate-state-blobs.yml",
+    "src/repair/state-publication-batch.ts",
+    "src/repair/recovery-advisor.ts",
+  ]) {
+    assert.throws(() => readFileSync(retired, "utf8"));
+  }
 });
 
 function workflows(): Array<{ file: string; workflow: WorkflowDocument }> {

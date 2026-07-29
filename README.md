@@ -31,7 +31,8 @@ At a high level ClawSweeper:
   eligible public `openclaw/*` and `steipete/*` projects outside
   `openclaw/openclaw` and `openclaw/clawhub`
 - can manually review selected code-bearing commits on target `main` branches
-- publishes dashboard, audit, repair, and activity state to
+- publishes canonical review records to the Cloudflare Worker, action ledgers
+  and assets to R2, and the remaining operational state to
   `openclaw/clawsweeper-state`
 
 For the complete architecture and operator guide covering issue-to-PR work, PR
@@ -99,14 +100,13 @@ packets; labels and report prose do not reconstruct the decision. Pass
 `--decision-packets-dir` to write those packet files somewhere other than the
 profile's default records directory.
 
-Generated state lives on the `state` branch of `openclaw/clawsweeper-state`:
-durable `records/`, `jobs/`, `results/`, audit output, workflow status JSON,
-repair ledgers, and the rendered dashboard. The state repo `main` branch is the
-dashboard renderer source, so a checkout on `main` intentionally does not show
-`records/`. Hydrate this repo with `git -C ../clawsweeper-state switch state &&
-node scripts/hydrate-state.ts --state-dir ../clawsweeper-state` when local
-commands need generated records. This repository stays focused on source,
-workflows, docs, and tests.
+Canonical review records live in the Cloudflare Durable Object store and are
+snapshotted to R2. Immutable `ledger/v1/` action events and published `assets/`
+also live in R2. The `state` branch of `openclaw/clawsweeper-state` now retains
+only `jobs/`, `results/`, `notifications/`, `apply-report.json`, and
+`repair-apply-report.json`; its `main` branch remains the dashboard renderer
+source. `scripts/hydrate-state.ts` combines those sources for local commands.
+See [`docs/state-storage.md`](docs/state-storage.md) for the ownership table.
 
 ### Repair and Automerge
 
@@ -464,9 +464,9 @@ least 60 days old unless a manual run explicitly changes the threshold. A stale
 issue also stays open when a non-bot comment was posted in the last 60 days.
 
 The external state dashboard is fleet-scoped. Each configured repository gets
-its own record folder, status JSON, audit state, cadence counts, and recent
-activity section. The state repo aggregates those repository snapshots so event
-runs from one repo do not hide the state of another.
+its own canonical record collection, status JSON, audit state, cadence counts,
+and recent activity section, so event runs from one repo do not hide the state
+of another.
 
 There is still one deterministic apply path for writes. Review can propose and
 sync stale public review comments, but closing remains guarded by apply so a
@@ -861,8 +861,8 @@ Token flow:
 - Commit review passes Codex only a read-scoped target token as `GH_TOKEN` for
   issue/PR/workflow/commit hydration, then creates write/check credentials only
   after Codex exits.
-- The ClawSweeper GitHub App commits generated reports back to
-  `openclaw/clawsweeper-state`.
+- The ClawSweeper GitHub App commits only the remaining operational paths to
+  `openclaw/clawsweeper-state`; reports publish to the canonical Worker store.
 
 Required `clawsweeper` app permissions:
 

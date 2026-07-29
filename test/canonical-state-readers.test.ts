@@ -1,0 +1,55 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import { parse } from "yaml";
+
+test("hydrate-state has no records or ledger git fallback", () => {
+  const source = readFileSync("scripts/hydrate-state.ts", "utf8");
+  assert.match(source, /discoverWorkerRecordRepoSlugs/);
+  assert.match(source, /materializeWorkerRecords/);
+  assert.match(source, /materializeStateBlobs/);
+  assert.doesNotMatch(
+    source,
+    /parseRecordsSource|CLAWSWEEPER_RECORDS_SOURCE|CLAWSWEEPER_LEDGER_SOURCE|FALLING BACK TO GIT/,
+  );
+  assert.doesNotMatch(source, /copyGeneratedPath\([^\n]+"records"/);
+  assert.doesNotMatch(source, /copyGeneratedPath\([^\n]+"ledger"/);
+  assert.doesNotMatch(source, /copyGeneratedPath\([^\n]+"assets"/);
+});
+
+test("setup-state checks out only remaining git-backed operational paths", () => {
+  const source = readFileSync(".github/actions/setup-state/action.yml", "utf8");
+  const action = parse(source) as {
+    inputs?: Record<string, unknown>;
+    runs?: { steps?: Array<{ name?: string; uses?: string; with?: Record<string, unknown> }> };
+  };
+  assert.equal(action.inputs?.["records-source"], undefined);
+  assert.equal(action.inputs?.["ledger-source"], undefined);
+  assert.ok(action.inputs?.["hydrate-git-state"]);
+  const checkout = action.runs?.steps?.find((step) => step.name === "Check out operational state");
+  assert.equal(checkout?.uses, "actions/checkout@v7");
+  const sparse = String(checkout?.with?.["sparse-checkout"] ?? "");
+  for (const path of ["/jobs/", "/results/", "/notifications/", "/apply-report.json"]) {
+    assert.match(sparse, new RegExp(path.replaceAll("/", "\\/")));
+  }
+  for (const retired of ["records", "ledger", "assets"]) {
+    assert.doesNotMatch(sparse, new RegExp(`/${retired}/`));
+  }
+});
+
+test("canonical record operations retain snapshot only", () => {
+  const workflow = parse(readFileSync(".github/workflows/worker-records-ops.yml", "utf8")) as {
+    on?: { workflow_dispatch?: { inputs?: Record<string, unknown> } };
+    jobs?: Record<string, unknown>;
+  };
+  assert.deepEqual(Object.keys(workflow.jobs ?? {}), ["snapshot"]);
+  assert.equal(workflow.on?.workflow_dispatch?.inputs?.action, undefined);
+  assert.equal("verify" in (workflow.jobs ?? {}), false);
+  assert.equal("reconcile" in (workflow.jobs ?? {}), false);
+  for (const retiredWorkflow of [
+    ".github/workflows/backfill-worker-records.yml",
+    ".github/workflows/migrate-state-blobs.yml",
+  ]) {
+    assert.throws(() => readFileSync(retiredWorkflow, "utf8"));
+  }
+});

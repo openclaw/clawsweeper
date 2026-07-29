@@ -1,9 +1,10 @@
 name: Setup ClawSweeper state
-description: Checkout generated state and hydrate it into the ClawSweeper worktree.
+description: Hydrate canonical Worker state and the remaining git-backed operational paths.
 inputs:
   token:
-    description: GitHub token with contents read/write access to the state repo.
-    required: true
+    description: GitHub token for the remaining git-backed state paths.
+    required: false
+    default: ""
   state-path:
     description: Checkout path for the generated state repository.
     required: false
@@ -19,71 +20,59 @@ inputs:
   filter:
     description: Git partial clone filter for the generated state repository.
     required: false
-    default: ""
+    default: blob:none
   fetch-depth:
-    description: Git fetch depth for the generated state repository. Publish retries fetch the remote tip before rebasing.
+    description: Git fetch depth for the generated state repository.
     required: false
     default: "1"
   sparse-checkout:
-    description: Optional newline-separated state paths to hydrate.
+    description: Optional newline-separated git-backed operational state paths.
     required: false
     default: ""
   persist-credentials:
-    description: Persist the checkout token in local git config for later state publication.
+    description: Persist the checkout token for later operational-state publication.
+    required: false
+    default: "true"
+  hydrate-git-state:
+    description: Check out jobs/results/notifications/report state from git.
     required: false
     default: "true"
   coordinator-url:
-    description: Durable FIFO coordinator used before any generated-state mutation.
+    description: Durable FIFO coordinator used before a git-backed state mutation.
     required: false
     default: https://clawsweeper.openclaw.ai
-  coordinator-enabled:
-    description: Enable durable FIFO admission; false is the explicit legacy-fence rollback mode.
-    required: false
-    default: "false"
   coordinator-class:
     description: Durable state-writer scheduling class
     required: false
     default: ordinary
-  records-source:
-    description: Record transport used by hydrate-state (git or worker).
-    required: false
-    default: git
   records-url:
-    description: Worker base URL used when records-source is worker.
+    description: Canonical Worker base URL.
     required: false
     default: https://clawsweeper.openclaw.ai
   records-repo-slugs:
-    description: Optional comma/newline-separated record repository slugs; defaults to the Worker record store's slug list.
+    description: Optional comma/newline-separated record repository slugs.
     required: false
     default: ""
   records-secret:
-    description: HMAC secret used only when records-source is worker.
+    description: HMAC secret used for canonical Worker hydration.
     required: false
     default: ""
-  ledger-source:
-    description: Ledger/assets blob transport used by hydrate-state (git or worker). Worker mode reuses records-url and records-secret.
-    required: false
-    default: git
   hydrate-state-blobs:
-    description: Hydrate the ledger/assets blob trees. Set false for jobs that only need canonical records and mutable state.
+    description: Hydrate the canonical ledger/assets R2 trees.
     required: false
     default: "true"
 runs:
   using: composite
   steps:
-    # Worker transport owns the three enormous generated trees. Do not make every
-    # hydrator materialize the 42 GB git projection before replacing those trees
-    # from the Worker. An explicit sparse checkout still wins, and either git
-    # source keeps the full checkout as the deliberate rollback path.
-    - name: Check out Worker-projected state
-      if: ${{ inputs.sparse-checkout == '' && inputs.records-source == 'worker' && inputs.ledger-source == 'worker' }}
+    - name: Check out operational state
+      if: ${{ inputs.hydrate-git-state == 'true' && inputs.sparse-checkout == '' }}
       uses: actions/checkout@v7
       with:
         repository: openclaw/clawsweeper-state
         ref: state
         path: ${{ inputs.state-path }}
         token: ${{ inputs.token }}
-        filter: ${{ inputs.filter || 'blob:none' }}
+        filter: ${{ inputs.filter }}
         fetch-depth: ${{ inputs.fetch-depth }}
         sparse-checkout: |
           /jobs/
@@ -94,8 +83,8 @@ runs:
         sparse-checkout-cone-mode: false
         persist-credentials: ${{ inputs.persist-credentials }}
 
-    - name: Check out git-projected state
-      if: ${{ inputs.sparse-checkout != '' || inputs.records-source != 'worker' || inputs.ledger-source != 'worker' }}
+    - name: Check out selected operational state
+      if: ${{ inputs.hydrate-git-state == 'true' && inputs.sparse-checkout != '' }}
       uses: actions/checkout@v7
       with:
         repository: openclaw/clawsweeper-state
@@ -107,25 +96,14 @@ runs:
         sparse-checkout: ${{ inputs.sparse-checkout }}
         persist-credentials: ${{ inputs.persist-credentials }}
 
-    - name: Export state root
+    - name: Export state configuration
       shell: bash
       env:
-        STATE_COORDINATOR_ENABLED: ${{ inputs.coordinator-enabled }}
         STATE_COORDINATOR_URL: ${{ inputs.coordinator-url }}
-      # Keep immutable ledger server merges dormant until state publishers can
-      # fetch a merge-heavy shallow branch without hydrating its ancestry.
-      # The repository variable is the migration/rollback boundary. Once it is
-      # enabled, the publisher itself fails closed if its step-scoped credential
-      # or this URL is missing; checkout-only jobs never receive that credential.
       run: |
-        case "$STATE_COORDINATOR_ENABLED" in
-          true) coordinator_enabled=1 ;;
-          false) coordinator_enabled=0 ;;
-          *) echo "coordinator-enabled must be true or false" >&2; exit 2 ;;
-        esac
         {
           echo "CLAWSWEEPER_STATE_DIR=$GITHUB_WORKSPACE/${{ inputs.state-path }}"
-          echo "CLAWSWEEPER_STATE_COORDINATOR_ENABLED=$coordinator_enabled"
+          echo "CLAWSWEEPER_STATE_COORDINATOR_ENABLED=1"
           echo "CLAWSWEEPER_STATE_COORDINATOR_URL=$STATE_COORDINATOR_URL"
           echo "CLAWSWEEPER_STATE_COORDINATOR_CLASS=${{ inputs.coordinator-class }}"
         } >> "$GITHUB_ENV"
@@ -134,9 +112,8 @@ runs:
       with:
         node-version: ${{ inputs.node-version }}
 
-    - name: Resolve Worker record snapshot cache key
+    - name: Resolve canonical record snapshot cache key
       id: records-snapshot
-      if: ${{ inputs.records-source == 'worker' }}
       shell: bash
       env:
         CLAWSWEEPER_STATE_DIR: ${{ inputs.state-path }}
@@ -145,21 +122,18 @@ runs:
         CLAWSWEEPER_RECORDS_SECRET: ${{ inputs.records-secret }}
       run: node "${{ inputs.worktree-path }}/scripts/prepare-worker-record-cache.ts"
 
-    - name: Restore Worker record snapshot
-      if: ${{ inputs.records-source == 'worker' && steps.records-snapshot.outputs.available == 'true' }}
+    - name: Restore canonical record snapshot
+      if: ${{ steps.records-snapshot.outputs.available == 'true' }}
       uses: actions/cache@v6
       with:
         path: ${{ inputs.worktree-path }}/.artifacts/worker-records-cache
         key: clawsweeper-records-${{ runner.os }}-${{ steps.records-snapshot.outputs.cache-key }}
 
-    - name: Restore Worker blob cache
-      if: ${{ inputs.ledger-source == 'worker' && inputs.hydrate-state-blobs == 'true' }}
+    - name: Restore canonical blob cache
+      if: ${{ inputs.hydrate-state-blobs == 'true' }}
       uses: actions/cache@v6
       with:
         path: ${{ inputs.worktree-path }}/.artifacts/worker-blobs-cache
-        # Blob cache entries are digest-addressed and immutable, so any prior
-        # cache is a valid warm start; the run-unique key makes every run save
-        # its grown cache for the next one to restore by prefix.
         key: clawsweeper-blobs-${{ runner.os }}-${{ github.run_id }}
         restore-keys: |
           clawsweeper-blobs-${{ runner.os }}-
@@ -168,14 +142,13 @@ runs:
       shell: bash
       env:
         CLAWSWEEPER_STATE_DIR: ${{ inputs.state-path }}
-        CLAWSWEEPER_RECORDS_SOURCE: ${{ inputs.records-source }}
         CLAWSWEEPER_RECORDS_URL: ${{ inputs.records-url }}
         CLAWSWEEPER_RECORDS_REPO_SLUGS: ${{ inputs.records-repo-slugs }}
         CLAWSWEEPER_RECORDS_SECRET: ${{ inputs.records-secret }}
         CLAWSWEEPER_RECORDS_CACHE_DIR: ${{ inputs.worktree-path }}/.artifacts/worker-records-cache
-        CLAWSWEEPER_LEDGER_SOURCE: ${{ inputs.ledger-source }}
         CLAWSWEEPER_BLOBS_CACHE_DIR: ${{ inputs.worktree-path }}/.artifacts/worker-blobs-cache
         HYDRATE_STATE_BLOBS: ${{ inputs.hydrate-state-blobs }}
+        HYDRATE_GIT_STATE: ${{ inputs.hydrate-git-state }}
       run: |
         hydrate_args=(
           --state-dir "${{ inputs.state-path }}"
@@ -185,5 +158,10 @@ runs:
           true) ;;
           false) hydrate_args+=(--skip-state-blobs) ;;
           *) echo "hydrate-state-blobs must be true or false" >&2; exit 2 ;;
+        esac
+        case "$HYDRATE_GIT_STATE" in
+          true) ;;
+          false) hydrate_args+=(--skip-git-state) ;;
+          *) echo "hydrate-git-state must be true or false" >&2; exit 2 ;;
         esac
         node "${{ inputs.worktree-path }}/scripts/hydrate-state.ts" "${hydrate_args[@]}"

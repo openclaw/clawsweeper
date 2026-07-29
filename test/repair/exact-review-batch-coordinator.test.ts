@@ -392,10 +392,10 @@ function plan(item: (typeof queueItems)[number]) {
     operations: [
       {
         path: `records/openclaw-openclaw/items/${item.itemKey.at(-1)}.md`,
-        expectedOid: null,
-        targetOid: "a".repeat(40),
+        deleted: false,
         mode: "100644" as const,
         bytes: 1,
+        contentBase64: "eA==",
       },
     ],
     totalBytes: 1,

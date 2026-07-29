@@ -121,8 +121,6 @@ function directPlan(
   revision: number,
   options: {
     path?: string;
-    expectedOid?: string | null;
-    targetOid?: string | null;
     content?: Buffer;
     files?: number;
   } = {},
@@ -144,8 +142,7 @@ function directPlan(
     identity: { itemKey, revision, claimGeneration: 1 },
     operations: Array.from({ length: files }, (_, index) => ({
       path: options.path ?? tuplePaths[index]!,
-      expectedOid: options.expectedOid ?? null,
-      targetOid: options.targetOid === undefined ? "a".repeat(40) : options.targetOid,
+      deleted: false,
       mode: "100644" as const,
       bytes: content.byteLength,
       contentBase64: content.toString("base64"),
@@ -154,40 +151,19 @@ function directPlan(
   };
 }
 
-const projectionLimits = {
-  maxRecordBytes: 256 * 1024,
-  maxPendingRows: 50_000,
-  maxPendingBytes: 100 * 1024 * 1024,
-};
-
-function ensureProjectionSchema(storage: TestStorage) {
-  storage.exec(`CREATE TABLE state_append_window (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind TEXT NOT NULL,
-    record_key TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    payload_bytes INTEGER NOT NULL,
-    produced_at TEXT NOT NULL,
-    delivery_id TEXT NOT NULL,
-    drain_token TEXT
-  ) STRICT`);
-}
-
-test("direct publication canonically stores, projects, dedupes, and ratchets revisions", async () => {
+test("direct publication canonically stores, dedupes, and ratchets revisions", async () => {
   const storage = new TestStorage();
-  ensureProjectionSchema(storage);
   const store = new ExactReviewDirectPublicationStore(storage);
   store.ensureSchemaSync();
 
   const first = await validateDirectPublicationPlan(directPlan("openclaw/openclaw#1", 1));
-  const accepted = store.accept(first, 1_000, projectionLimits);
+  const accepted = store.accept(first, 1_000);
   assert.equal(accepted.outcome, "accepted");
-  assert.match(accepted.row.commitSha || "", /^do-txn:\d+$/);
-  assert.equal(store.accept(first, 1_001, projectionLimits).outcome, "deduped");
+  assert.equal(accepted.row.commitSha, "do-revision:1");
+  assert.equal(store.accept(first, 1_001).outcome, "deduped");
   const newer = store.accept(
     await validateDirectPublicationPlan(directPlan("openclaw/openclaw#1", 2)),
     1_002,
-    projectionLimits,
   );
   assert.equal(newer.outcome, "accepted");
 
@@ -195,7 +171,6 @@ test("direct publication canonically stores, projects, dedupes, and ratchets rev
   assert.equal(record?.content, "result-2");
   assert.equal(record?.revision, 2);
   assert.match(record?.digest || "", /^[a-f0-9]{64}$/);
-  assert.equal(storage.scalar("SELECT COUNT(*) AS value FROM state_append_window"), 2);
   assert.deepEqual(
     store.list().map((row) => [row.revision, row.state]),
     [
@@ -207,14 +182,9 @@ test("direct publication canonically stores, projects, dedupes, and ratchets rev
 
 test("direct publication makes section moves canonical with sibling and stale-sidecar tombstones", async () => {
   const storage = new TestStorage();
-  ensureProjectionSchema(storage);
   const store = new ExactReviewDirectPublicationStore(storage);
   store.ensureSchemaSync();
-  store.accept(
-    await validateDirectPublicationPlan(directPlan("openclaw/openclaw#11", 1)),
-    1_000,
-    projectionLimits,
-  );
+  store.accept(await validateDirectPublicationPlan(directPlan("openclaw/openclaw#11", 1)), 1_000);
   store.accept(
     await validateDirectPublicationPlan(
       directPlan("openclaw/openclaw#11", 2, {
@@ -223,62 +193,33 @@ test("direct publication makes section moves canonical with sibling and stale-si
       }),
     ),
     1_001,
-    projectionLimits,
   );
 
   assert.equal(store.readCanonical("openclaw-openclaw", "closed", 11)?.content, "closed-result");
   assert.equal(store.readCanonical("openclaw-openclaw", "items", 11)?.deleted, true);
   assert.equal(store.readCanonical("openclaw-openclaw", "plans", 11)?.deleted, true);
   assert.equal(store.readCanonical("openclaw-openclaw", "decision-packets", 11)?.deleted, true);
-  const projection = JSON.parse(
-    String(
-      Array.from(
-        storage.sql.exec("SELECT payload_json FROM state_append_window ORDER BY seq DESC LIMIT 1"),
-      )[0]?.payload_json,
-    ),
-  );
-  assert.deepEqual(
-    projection.operations.map((operation) => [operation.section, operation.deleted]),
-    [
-      ["closed", false],
-      ["items", true],
-      ["plans", true],
-      ["decision-packets", true],
-    ],
-  );
 });
 
-test("direct publication idempotency compares canonical digests instead of Git OIDs", async () => {
+test("direct publication idempotency compares canonical content", async () => {
   const storage = new TestStorage();
-  ensureProjectionSchema(storage);
   const store = new ExactReviewDirectPublicationStore(storage);
   store.ensureSchemaSync();
-  const first = await validateDirectPublicationPlan(
-    directPlan("openclaw/openclaw#2", 1, {
-      expectedOid: "b".repeat(40),
-      targetOid: "c".repeat(40),
-    }),
-  );
-  store.accept(first, 1_000, projectionLimits);
-  const retry = await validateDirectPublicationPlan(
-    directPlan("openclaw/openclaw#2", 1, {
-      expectedOid: "d".repeat(40),
-      targetOid: "e".repeat(40),
-    }),
-  );
-  assert.equal(store.accept(retry, 1_001, projectionLimits).outcome, "deduped");
+  const first = await validateDirectPublicationPlan(directPlan("openclaw/openclaw#2", 1));
+  store.accept(first, 1_000);
+  const retry = await validateDirectPublicationPlan(directPlan("openclaw/openclaw#2", 1));
+  assert.equal(store.accept(retry, 1_001).outcome, "deduped");
 });
 
-test("direct publication marks tuple projections oversize and chunks canonical values", async () => {
+test("direct publication chunks large canonical values without projection rows", async () => {
   const storage = new TestStorage();
-  ensureProjectionSchema(storage);
   const store = new ExactReviewDirectPublicationStore(storage);
   store.ensureSchemaSync();
   const content = Buffer.alloc(EXACT_REVIEW_CANONICAL_INLINE_BYTES + 1, "x");
   const plan = await validateDirectPublicationPlan(
     directPlan("openclaw/openclaw#3", 1, { content }),
   );
-  store.accept(plan, 1_000, { ...projectionLimits, maxRecordBytes: 1024 });
+  store.accept(plan, 1_000);
   const row = store.readCanonical("openclaw-openclaw", "items", 3);
   assert.equal(row?.content?.length, content.length);
   assert.equal(row?.revision, 1);
@@ -288,32 +229,20 @@ test("direct publication marks tuple projections oversize and chunks canonical v
     ) > 1,
     true,
   );
-  assert.equal(
-    storage.scalar(
-      `SELECT COUNT(*) AS value FROM state_append_window WHERE payload_json LIKE '%"oversize":true%'`,
-    ),
-    1,
-  );
 });
 
 test("direct publication prunes terminal plan receipts after seven days but keeps records", async () => {
   const storage = new TestStorage();
-  ensureProjectionSchema(storage);
   const store = new ExactReviewDirectPublicationStore(storage);
   store.ensureSchemaSync();
-  store.accept(
-    await validateDirectPublicationPlan(directPlan("openclaw/openclaw#4", 1)),
-    1_000,
-    projectionLimits,
-  );
+  store.accept(await validateDirectPublicationPlan(directPlan("openclaw/openclaw#4", 1)), 1_000);
   assert.equal(store.pruneTerminalSync(1_000 + EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS), 1);
   assert.equal(store.list().length, 0);
   assert.equal(store.readCanonical("openclaw-openclaw", "items", 4)?.content, "result-1");
 });
 
-test("direct publication migrates a pre-deployment pending plan into the canonical store", async () => {
+test("direct publication replaces a retired pending plan with canonical state", async () => {
   const storage = new TestStorage();
-  ensureProjectionSchema(storage);
   const store = new ExactReviewDirectPublicationStore(storage);
   store.ensureSchemaSync();
   const legacy = directPlan("openclaw/openclaw#5", 1);
@@ -333,17 +262,11 @@ test("direct publication migrates a pre-deployment pending plan into the canonic
     legacy.operations.length,
   );
 
-  const pending = store.legacyPendingPlans();
-  assert.equal(pending.length, 1);
-  const accepted = store.accept(
-    await validateDirectPublicationPlan(pending[0]!),
-    2_000,
-    projectionLimits,
-  );
+  const accepted = store.accept(await validateDirectPublicationPlan(legacy), 2_000);
 
   assert.equal(accepted.outcome, "accepted");
   assert.equal(store.readCanonical("openclaw-openclaw", "items", 5)?.content, "result-1");
-  assert.equal(store.legacyPendingPlans().length, 0);
+  assert.equal(store.list()[0]?.state, "published");
 });
 
 test("direct publication validates tuple and per-file size caps", async () => {

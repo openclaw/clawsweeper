@@ -5,7 +5,6 @@ import {
   EXACT_REVIEW_BUNDLE_MAX_FILE_BYTES,
   EXACT_REVIEW_BUNDLE_MAX_TOTAL_BYTES,
 } from "./exact-review-bundle.js";
-import { runGit } from "./git-publish.js";
 
 export type StateMutationIdentity = {
   itemKey: string;
@@ -14,13 +13,13 @@ export type StateMutationIdentity = {
 };
 
 export type StateMutationSourceOperation =
-  | { path: string; expectedOid: string | null; content: string | Uint8Array; mode?: "100644" }
-  | { path: string; expectedOid: string | null; delete: true };
+  | { path: string; content: string | Uint8Array; mode?: "100644" }
+  | { path: string; delete: true };
 
 export type PreparedStateMutationOperation = {
   path: string;
-  expectedOid: string | null;
-  targetOid: string | null;
+  deleted: boolean;
+  contentBase64?: string;
   mode: "100644";
   bytes: number;
 };
@@ -36,7 +35,6 @@ export type ValidatedStateMutationPlans = {
   totalBytes: number;
 };
 
-const GIT_OID_PATTERN = /^[a-f0-9]{40,64}$/;
 export const STATE_MUTATION_MAX_PATH_BYTES = 1024;
 
 export function prepareStateMutationPlan(options: {
@@ -48,24 +46,13 @@ export function prepareStateMutationPlan(options: {
   if (options.operations.length > EXACT_REVIEW_BUNDLE_MAX_FILES) {
     throw new Error("A state mutation plan exceeds the exact-review file limit");
   }
-
   const paths = new Set<string>();
   let totalBytes = 0;
   const operations = options.operations.map((operation): PreparedStateMutationOperation => {
     const path = validateMutationPath(operation.path);
     if (paths.has(path)) throw new Error(`A state mutation plan repeats path ${path}`);
     paths.add(path);
-    validateExpectedOid(operation.expectedOid, path);
-    if ("delete" in operation) {
-      return {
-        path,
-        expectedOid: operation.expectedOid,
-        targetOid: null,
-        mode: "100644",
-        bytes: 0,
-      };
-    }
-
+    if ("delete" in operation) return { path, deleted: true, mode: "100644", bytes: 0 };
     const content = Buffer.from(operation.content);
     if (content.byteLength > EXACT_REVIEW_BUNDLE_MAX_FILE_BYTES) {
       throw new Error(`State mutation content exceeds the per-file limit: ${path}`);
@@ -74,29 +61,22 @@ export function prepareStateMutationPlan(options: {
     if (totalBytes > EXACT_REVIEW_BUNDLE_MAX_TOTAL_BYTES) {
       throw new Error("A state mutation plan exceeds the exact-review total byte limit");
     }
-    const targetOid = runGit(["hash-object", "-w", "--stdin"], {
-      input: content,
-      quiet: true,
-    }).trim();
-    if (!GIT_OID_PATTERN.test(targetOid)) {
-      throw new Error(`Git did not return a valid object id for ${path}`);
-    }
     return {
       path,
-      expectedOid: operation.expectedOid,
-      targetOid,
+      deleted: false,
+      contentBase64: content.toString("base64"),
       mode: operation.mode ?? "100644",
       bytes: content.byteLength,
     };
   });
-
   return { identity: { ...options.identity }, operations, totalBytes };
 }
 
 export function validatePreparedStateMutationPlans(
   plans: readonly PreparedStateMutationPlan[],
 ): ValidatedStateMutationPlans {
-  const normalized = plans.map((plan) => {
+  let batchBytes = 0;
+  const validated = plans.map((plan): PreparedStateMutationPlan => {
     validateIdentity(plan.identity);
     if (!Array.isArray(plan.operations) || plan.operations.length === 0) {
       throw new Error("A prepared state mutation plan must change a path");
@@ -104,8 +84,8 @@ export function validatePreparedStateMutationPlans(
     if (plan.operations.length > EXACT_REVIEW_BUNDLE_MAX_FILES) {
       throw new Error("A prepared state mutation plan exceeds the exact-review file limit");
     }
-
     const paths = new Set<string>();
+    let totalBytes = 0;
     const operations = plan.operations.map((operation): PreparedStateMutationOperation => {
       const path = validateMutationPath(operation.path);
       if (path !== operation.path) {
@@ -113,92 +93,40 @@ export function validatePreparedStateMutationPlans(
       }
       if (paths.has(path)) throw new Error(`A prepared state mutation plan repeats path ${path}`);
       paths.add(path);
-      validateExpectedOid(operation.expectedOid, path);
-      if (operation.targetOid !== null) validateExpectedOid(operation.targetOid, path);
-      if (operation.mode !== "100644") {
+      if (operation.mode !== "100644")
         throw new Error(`Invalid prepared state mutation mode for ${path}`);
-      }
       if (!Number.isSafeInteger(operation.bytes) || operation.bytes < 0) {
         throw new Error(`Invalid prepared state mutation byte count for ${path}`);
       }
-      if (operation.targetOid === null && operation.bytes !== 0) {
-        throw new Error(`Deleted state mutation paths must have zero bytes: ${path}`);
+      if (operation.deleted) {
+        if (operation.bytes !== 0 || operation.contentBase64 !== undefined) {
+          throw new Error(`Deleted state mutation paths must not carry content: ${path}`);
+        }
+        return { path, deleted: true, mode: "100644", bytes: 0 };
       }
+      if (typeof operation.contentBase64 !== "string") {
+        throw new Error(`Prepared state mutation content is missing: ${path}`);
+      }
+      const content = Buffer.from(operation.contentBase64, "base64");
+      if (
+        content.toString("base64") !== operation.contentBase64 ||
+        content.byteLength !== operation.bytes
+      ) {
+        throw new Error(`Prepared state mutation content does not match its byte count: ${path}`);
+      }
+      if (content.byteLength > EXACT_REVIEW_BUNDLE_MAX_FILE_BYTES) {
+        throw new Error(`Prepared state mutation content exceeds the per-file limit: ${path}`);
+      }
+      totalBytes += content.byteLength;
       return { ...operation, path };
     });
-    if (!Number.isSafeInteger(plan.totalBytes) || plan.totalBytes < 0) {
-      throw new Error(`Invalid prepared state mutation total for ${plan.identity.itemKey}`);
+    if (totalBytes !== plan.totalBytes || totalBytes > EXACT_REVIEW_BUNDLE_MAX_TOTAL_BYTES) {
+      throw new Error(`Prepared state mutation total is invalid for ${plan.identity.itemKey}`);
     }
-    return { identity: { ...plan.identity }, operations, totalBytes: plan.totalBytes };
+    batchBytes += totalBytes;
+    return { identity: { ...plan.identity }, operations, totalBytes };
   });
-
-  const targetOids = [
-    ...new Set(
-      normalized.flatMap((plan) =>
-        plan.operations.flatMap((operation) =>
-          operation.targetOid === null ? [] : [operation.targetOid],
-        ),
-      ),
-    ),
-  ];
-  const sizeByOid = inspectBlobSizes(targetOids);
-  let batchBytes = 0;
-  const validatedPlans = normalized.map((plan): PreparedStateMutationPlan => {
-    let planBytes = 0;
-    const operations = plan.operations.map((operation): PreparedStateMutationOperation => {
-      if (operation.targetOid === null) return operation;
-      const bytes = sizeByOid.get(operation.targetOid);
-      if (bytes === undefined) {
-        throw new Error(`Prepared state mutation target is not a Git blob: ${operation.path}`);
-      }
-      if (bytes > EXACT_REVIEW_BUNDLE_MAX_FILE_BYTES) {
-        throw new Error(
-          `Prepared state mutation content exceeds the per-file limit: ${operation.path}`,
-        );
-      }
-      if (operation.bytes !== bytes) {
-        throw new Error(
-          `Prepared state mutation byte count does not match its Git blob: ${operation.path}`,
-        );
-      }
-      planBytes += bytes;
-      return { ...operation, bytes };
-    });
-    if (planBytes > EXACT_REVIEW_BUNDLE_MAX_TOTAL_BYTES) {
-      throw new Error("A prepared state mutation plan exceeds the exact-review total byte limit");
-    }
-    if (plan.totalBytes !== planBytes) {
-      throw new Error(
-        `Prepared state mutation total does not match its Git blobs: ${plan.identity.itemKey}`,
-      );
-    }
-    batchBytes += planBytes;
-    return { identity: plan.identity, operations, totalBytes: planBytes };
-  });
-
-  return { plans: validatedPlans, totalBytes: batchBytes };
-}
-
-function inspectBlobSizes(oids: readonly string[]): Map<string, number> {
-  if (oids.length === 0) return new Map();
-  const output = runGit(["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"], {
-    input: `${oids.join("\n")}\n`,
-    quiet: true,
-  });
-  const lines = output.trim().split("\n");
-  if (lines.length !== oids.length) {
-    throw new Error("Git returned incomplete prepared state mutation metadata");
-  }
-  const result = new Map<string, number>();
-  for (let index = 0; index < oids.length; index += 1) {
-    const match = /^([a-f0-9]{40,64}) blob ([0-9]+)$/.exec(lines[index]!);
-    const bytes = match ? Number(match[2]) : Number.NaN;
-    if (match?.[1] !== oids[index] || !Number.isSafeInteger(bytes)) {
-      throw new Error(`Prepared state mutation target is not a Git blob: ${oids[index]}`);
-    }
-    result.set(oids[index]!, bytes);
-  }
-  return result;
+  return { plans: validated, totalBytes: batchBytes };
 }
 
 function validateIdentity(identity: StateMutationIdentity): void {
@@ -235,10 +163,4 @@ function validateMutationPath(value: string): string {
     throw new Error(`State mutation path exceeds ${STATE_MUTATION_MAX_PATH_BYTES} bytes`);
   }
   return path;
-}
-
-function validateExpectedOid(oid: string | null, path: string): void {
-  if (oid !== null && !GIT_OID_PATTERN.test(oid)) {
-    throw new Error(`Invalid expected object id for ${path}`);
-  }
 }

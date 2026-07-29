@@ -2094,10 +2094,8 @@ test("issue implementation workflow lets job intent choose dispatch capacity", (
   assert.match(workflow, /MODEL: internal/);
   assert.match(workflow, /echo "target_slug=\$target_slug"/);
   assert.match(workflow, /sed -E 's\/\[\^a-z0-9_\.-\]\+\/-\/g;/);
-  assert.match(
-    workflow,
-    /sparse-checkout: \|\n\s+records\/\$\{\{ steps\.target\.outputs\.target_slug \}\}\n\s+jobs\n\s+results/,
-  );
+  assert.match(workflow, /sparse-checkout: \|\n\s+jobs\n\s+results/);
+  assert.doesNotMatch(workflow, /sparse-checkout:[\s\S]{0,120}records\//);
 });
 
 test("repair workers hydrate only durable jobs from generated state", () => {
@@ -2110,7 +2108,7 @@ test("repair workers hydrate only durable jobs from generated state", () => {
   assert.match(requeue, /"requeue=true"/);
   assert.equal(workflow.match(/uses: \.\/\.github\/actions\/setup-state/g)?.length, 2);
   assert.match(workflow, /sparse-checkout: jobs/);
-  assert.match(workflow, /sparse-checkout: \|\n\s+jobs\n\s+ledger/);
+  assert.doesNotMatch(workflow, /sparse-checkout: \|\n\s+jobs\n\s+ledger/);
   assert.match(workflow, /CLAWSWEEPER_STEERABLE_CODEX/);
   assert.match(workflow, /actions\/cache\/restore@v6/);
   assert.match(workflow, /actions\/cache\/save@v6/);
@@ -2502,26 +2500,26 @@ test("repair workflows preserve existing dispatch while scheduled cluster intake
   assert.doesNotMatch(importLowSignal, /CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED/);
 });
 
-test("cluster intake durably accepts selected work before materialization", () => {
+test("cluster intake directly publishes git-only jobs before dispatch", () => {
   const workflow = readText(".github/workflows/repair-cluster-intake.yml");
   const stateTokenIndex = workflow.indexOf("uses: ./.github/actions/create-state-token");
   const setupStateIndex = workflow.indexOf("uses: ./.github/actions/setup-state");
   const importIndex = workflow.indexOf("- name: Prepare unprocessed cluster candidates");
   const publishIndex = workflow.indexOf("- name: Durably accept cluster intake");
-  const materializeIndex = workflow.indexOf("- name: Request immediate state materialization");
+  const recoverIndex = workflow.indexOf("- name: Recover pending cluster dispatches");
 
   assert.notEqual(stateTokenIndex, -1);
   assert.notEqual(setupStateIndex, -1);
   assert.notEqual(importIndex, -1);
   assert.notEqual(publishIndex, -1);
-  assert.notEqual(materializeIndex, -1);
+  assert.notEqual(recoverIndex, -1);
   assert.ok(stateTokenIndex < setupStateIndex, "state token must be created before setup-state");
-  assert.ok(setupStateIndex < importIndex, "state repo must be hydrated before job import");
+  assert.ok(setupStateIndex < recoverIndex, "state repo must be hydrated before recovery");
+  assert.ok(recoverIndex < importIndex, "pending dispatch recovery must precede new intake");
   assert.ok(importIndex < publishIndex, "selection must finish before durable acceptance");
-  assert.ok(publishIndex < materializeIndex, "durable acceptance must precede materialization");
   assert.match(workflow, /repair:publish-cluster-intake/);
-  assert.match(workflow, /gh workflow run state-materializer\.yml --ref "\$GITHUB_REF_NAME"/);
-  assert.doesNotMatch(workflow, /repair:publish-main|pnpm run repair:dispatch/);
+  assert.match(workflow, /CLAWSWEEPER_DISPATCH_REF: \$\{\{ github\.ref_name \}\}/);
+  assert.doesNotMatch(workflow, /state-materializer\.yml|pnpm run repair:dispatch/);
 });
 
 test("conflict self-heal publishes exact-head jobs before worker dispatch", () => {

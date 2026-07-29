@@ -110,22 +110,18 @@ test("exact-review producer uses direct publication with bounded legacy fallback
   assert.match(source, /name: Claim one durable publication batch/);
 });
 
-test("batch workflow uses owner-scoped mutation credentials and isolated state checkout", () => {
+test("batch workflow uses owner-scoped mutation credentials and canonical Worker hydration", () => {
   assert.match(source, /owner: \$\{\{ steps\.batch\.outputs\.target_owner \}\}/);
   assert.match(source, /repositories: \$\{\{ steps\.batch\.outputs\.target_repositories \}\}/);
-  assert.match(source, /uses: \.\/\.github\/actions\/create-state-token/);
+  assert.doesNotMatch(source, /uses: \.\/\.github\/actions\/create-state-token/);
   assert.match(source, /uses: \.\/\.github\/actions\/setup-state/);
+  assert.match(source, /hydrate-git-state: "false"/);
   assert.doesNotMatch(source, /permissions:\n(?:.*\n)*?\s+issues: write/);
-  assert.match(prepareSource, /"clone",[\s\S]*?"--shared",[\s\S]*?"--no-checkout"/);
-  assert.match(prepareSource, /http\\\.\.\*\\\.extraheader/);
-  assert.match(prepareSource, /CLAWSWEEPER_STATE_DIR: stateClone/);
+  assert.match(prepareSource, /cpSync\(recordsSource, join\(root, "records"\)/);
+  assert.doesNotMatch(prepareSource, /stateClone|CLAWSWEEPER_STATE_DIR|"clone"/);
   assert.match(prepareSource, /CLAWSWEEPER_CODE_ROOT: workspace/);
   assert.match(prepareSource, /EXACT_REVIEW_WORK_ROOT: root/);
   assert.match(prepareSource, /publish-event-result\.js"\)\], \{\s*cwd: root,\s*env:/);
-  assert.match(
-    prepareSource,
-    /await importObjects\(\(\) =>\s*importPreparedMutationObjects\(\{[\s\S]*?stateRoot,[\s\S]*?stateClone,[\s\S]*?outcomePath,/,
-  );
   assert.match(publisherSource, /codeRoot: resolve\(process\.env\.CLAWSWEEPER_CODE_ROOT/);
   assert.match(publisherSource, /const cli = join\(options\.codeRoot, "dist\/clawsweeper\.js"\)/);
   assert.match(
@@ -151,16 +147,8 @@ test("batch preparation is bounded, heartbeat-fenced, and deterministically aggr
   assert.match(prepareSource, /EXACT_REVIEW_BATCH_HEARTBEAT_FAILURE_PATH/);
   assert.match(prepareSource, /DEFAULT_ITEM_TIMEOUT_MS/);
   assert.match(prepareSource, /DEFAULT_TOTAL_TIMEOUT_MS/);
-  assert.match(prepareSource, /const MAX_OUTCOME_BYTES = 2 \* 1024 \* 1024/);
   assert.match(prepareSource, /Math\.min\(itemTimeoutMs, remainingTimeout\(deadline\)\)/);
-  assert.match(prepareSource, /timeoutMs: importTimeout\(deadline\)/);
-  assert.match(prepareSource, /const importObjects = createSerialTaskQueue\(\)/);
-  assert.match(prepareSource, /await importObjects\(\(\) =>\s*importPreparedMutationObjects\(/);
-  assert.match(prepareSource, /"pack-objects", "--stdout", "--revs", "--no-reuse-object"/);
-  assert.match(
-    prepareSource,
-    /catch \(error\) \{[\s\S]*?writeFailure\(outcomePath, "retryable_failure", "unknown_failure"\);[\s\S]*?console\.error/,
-  );
+  assert.doesNotMatch(prepareSource, /importPreparedMutationObjects|pack-objects|targetOid/);
   assert.match(prepareSource, /terminate\("SIGKILL"\)/);
   assert.match(prepareSource, /prepare-telemetry\.json/);
 });
@@ -204,7 +192,8 @@ test("batch commit publishes every prepared tuple to canonical Worker state", ()
   assert.match(commitSource, /await publishCanonicalBatch\(plans\)/);
   assert.match(cliSource, /postDirectPublicationResult/);
   assert.match(cliSource, /publication-batch-results/);
-  assert.match(cliSource, /runGit\(\["cat-file", "blob", operation\.targetOid\]/);
+  assert.match(cliSource, /plan\.operations\.map\(\(operation\) => \(\{ \.\.\.operation \}\)\)/);
+  assert.doesNotMatch(cliSource, /runGit|targetOid/);
   assert.doesNotMatch(cliSource, /commitPreparedStateBatch/);
   assert.doesNotMatch(cliSource, /state-publication-batch/);
 });

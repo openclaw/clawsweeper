@@ -140,24 +140,13 @@ jobs:
           permission-issues: read
           permission-pull-requests: read
 
-      - name: Create state token
-        id: state-token
-        uses: ./clawsweeper/.github/actions/create-state-token
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-
       - uses: ./clawsweeper/.github/actions/setup-state
         with:
-          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          ledger-source: ${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'worker' }}
-          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          token: ${{ steps.state-token.outputs.token }}
           worktree-path: clawsweeper
-          fetch-depth: 1
+          hydrate-git-state: "false"
 
       - uses: ./clawsweeper/.github/actions/setup-pnpm
         with:
@@ -417,24 +406,13 @@ jobs:
           permission-issues: read
           permission-pull-requests: read
 
-      - name: Create state token
-        id: state-token
-        uses: ./clawsweeper/.github/actions/create-state-token
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-
       - uses: ./clawsweeper/.github/actions/setup-state
         with:
-          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          ledger-source: ${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'worker' }}
-          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          token: ${{ steps.state-token.outputs.token }}
           worktree-path: clawsweeper
-          fetch-depth: 1
+          hydrate-git-state: "false"
 
       - uses: ./clawsweeper/.github/actions/setup-pnpm
         with:
@@ -544,22 +522,12 @@ jobs:
           filter: blob:none
           fetch-depth: 0
 
-      - name: Create state token
-        id: state-token
-        uses: ./.github/actions/create-state-token
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-
       - uses: ./.github/actions/setup-state
         with:
-          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          ledger-source: ${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'worker' }}
-          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          token: ${{ steps.state-token.outputs.token }}
+          hydrate-git-state: "false"
 
       - uses: ./.github/actions/setup-pnpm
         with:
@@ -585,9 +553,11 @@ jobs:
           set -euo pipefail
           git pull --rebase --autostash
           node dist/commit-sweeper.js copy-artifacts --artifact-dir commit-artifacts --records-dir records
+          target_slug="${{ needs.plan.outputs.target_repo }}"
+          target_slug="${target_slug//\//-}"
           pnpm run repair:publish-main -- \
             --message "chore: update commit review reports" \
-            --path records \
+            --path "records/${target_slug}/commits" \
             --rebase-strategy theirs
 
       - name: Create repair dispatch token

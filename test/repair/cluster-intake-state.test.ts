@@ -23,10 +23,9 @@ import {
 import {
   dispatchClusterIntakes,
   observeClusterDispatch,
-  planStateMaterialization,
   recoverPendingClusterIntakes,
   reserveClusterCapacity,
-} from "../../dist/repair/state-materializer.js";
+} from "../../dist/repair/cluster-intake-dispatch.js";
 import { restoreClusterIntakeJob } from "../../dist/repair/restore-cluster-intake-job.js";
 
 const dispatchSecret = "cluster-dispatch-test-secret";
@@ -265,47 +264,6 @@ function writeDurableIntents(root: string, intents: ReturnType<typeof intent>[])
   return ledgerPath;
 }
 
-test("cluster intake materializes exact paths without deleting unrelated jobs", () => {
-  const value = intent();
-  const unrelated = "jobs/openclaw/inbox/unrelated.md";
-  const plan = planStateMaterialization(
-    [
-      {
-        seq: 1,
-        kind: "cluster_intake",
-        key: `openclaw-openclaw/${value.store_sha256}`,
-        payload: value,
-        produced_at: value.accepted_at,
-        delivery_id: "delivery",
-      },
-    ],
-    new Map([[unrelated, "keep me"]]),
-  );
-  assert.deepEqual(plan.deletes, []);
-  assert.deepEqual(
-    plan.publishPaths.sort(),
-    [
-      value.jobs[0].path,
-      "results/cluster-repair-intake/openclaw-openclaw.json",
-      "results/cluster-repair-intake/openclaw-openclaw.selector-decisions-v1.json",
-    ].sort(),
-  );
-  const dispatchLedger = JSON.parse(
-    plan.writes.find(
-      (write) => write.path === "results/cluster-repair-intake/openclaw-openclaw.json",
-    )!.content,
-  ) as { stores: Array<Record<string, unknown>> };
-  assert.equal(Object.hasOwn(dispatchLedger.stores[0], "selector_decision"), false);
-  const selectorLedger = JSON.parse(
-    plan.writes.find((write) => write.path.endsWith(".selector-decisions-v1.json"))!.content,
-  ) as { stores: Array<{ selector_decision: { assessments: Array<Record<string, unknown>> } }> };
-  assert.equal(selectorLedger.stores[0].selector_decision.assessments[0].decision, "selected");
-  assert.equal(
-    plan.writes.some((write) => write.path === unrelated),
-    false,
-  );
-});
-
 test("duplicate intake is idempotent and a completed dispatch never regresses", () => {
   const value = intent();
   const first = mergeClusterIntakeLedger(undefined, [value]);
@@ -428,30 +386,9 @@ test("a newer store cannot overwrite or redispatch an already accepted cluster",
   assert.equal(merged.clusters["42"].job, current.clusters["42"].job);
   assert.equal(merged.stores.at(-1).outcome, "duplicate_skipped");
   assert.deepEqual(merged.stores.at(-1).generated_jobs, []);
-  const plan = planStateMaterialization(
-    [
-      {
-        seq: 2,
-        kind: "cluster_intake",
-        key: `openclaw-openclaw/${replacement.store_sha256}`,
-        payload: replacement,
-        produced_at: replacement.accepted_at,
-        delivery_id: "replacement",
-      },
-    ],
-    new Map([
-      ["results/cluster-repair-intake/openclaw-openclaw.json", `${JSON.stringify(current)}\n`],
-      [current.clusters["42"].job, intent().jobs[0].content],
-    ]),
-  );
-  assert.equal(plan.publishPaths.includes(replacement.jobs[0].path), false);
-  assert.equal(
-    plan.writes.some((write) => write.path === replacement.jobs[0].path),
-    false,
-  );
 });
 
-test("same-path conflicting intents materialize only the ledger-accepted digest", () => {
+test("same-path conflicting intents keep only the ledger-accepted digest", () => {
   const accepted = intent(42, "a".repeat(64));
   const conflictingDraft = intent(42, "b".repeat(64));
   conflictingDraft.jobs[0].content = conflictingDraft.jobs[0].content.replace(
@@ -462,32 +399,9 @@ test("same-path conflicting intents materialize only the ledger-accepted digest"
     .update(conflictingDraft.jobs[0].content)
     .digest("hex");
   const conflicting = resignIntent(conflictingDraft);
-  const plan = planStateMaterialization([
-    {
-      seq: 1,
-      kind: "cluster_intake",
-      key: `openclaw-openclaw/${accepted.store_sha256}`,
-      payload: accepted,
-      produced_at: accepted.accepted_at,
-      delivery_id: "accepted",
-    },
-    {
-      seq: 2,
-      kind: "cluster_intake",
-      key: `openclaw-openclaw/${conflicting.store_sha256}`,
-      payload: conflicting,
-      produced_at: conflicting.accepted_at,
-      delivery_id: "conflicting",
-    },
-  ]);
-  assert.equal(
-    plan.writes.find((write) => write.path === accepted.jobs[0].path)?.content,
-    accepted.jobs[0].content,
-  );
-  assert.doesNotMatch(
-    plan.writes.find((write) => write.path === accepted.jobs[0].path)?.content ?? "",
-    /later snapshot/,
-  );
+  const ledger = mergeClusterIntakeLedger(undefined, [accepted, conflicting]);
+  assert.equal(ledger.clusters["42"].digest, accepted.jobs[0].digest);
+  assert.equal(ledger.stores.at(-1)?.outcome, "duplicate_skipped");
 });
 
 test("oversize durable jobs are rejected before workflow dispatch", () => {

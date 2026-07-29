@@ -42,7 +42,7 @@ try {
   writeOutput("available", "false");
   writeOutput("cache-key", "snapshot-unavailable");
   console.error(
-    `[worker-record-cache] SNAPSHOT CACHE UNAVAILABLE (${error.reason}${error.detailText ? `: ${error.detailText}` : ""}); HYDRATION WILL FALL BACK TO GIT`,
+    `[worker-record-cache] SNAPSHOT CACHE UNAVAILABLE (${error.reason}${error.detailText ? `: ${error.detailText}` : ""}); HYDRATION WILL REPLAY THE CANONICAL JOURNAL`,
   );
 }
 

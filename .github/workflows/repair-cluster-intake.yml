@@ -152,31 +152,36 @@ jobs:
         with:
           build-script: build:repair
 
-      # Intake never publishes state directly: acceptance goes through the
-      # authenticated durable append and the state materializer owns every
-      # write. The hydration credential is read-only and never persisted.
+      # Cluster jobs/results remain git-backed until their own migration. This
+      # lane owns their narrow publication and dispatch recovery directly.
       - name: Create state token
         id: state-token
         uses: ./.github/actions/create-state-token
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          contents-permission: read
-          actions-permission: read
 
       - uses: ./.github/actions/setup-state
         with:
-          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          ledger-source: ${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'worker' }}
-          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           # Intake reads jobs and results only; ledger/assets hydration is unrelated and unbounded.
           hydrate-state-blobs: "false"
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1
-          persist-credentials: "false"
+          persist-credentials: "true"
+
+      - name: Recover pending cluster dispatches
+        env:
+          GH_TOKEN: ${{ steps.central-token.outputs.token }}
+          CLAWSWEEPER_STATE_COORDINATOR_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          CLAWSWEEPER_REPO: openclaw/clawsweeper
+          CLAWSWEEPER_DISPATCH_REF: ${{ github.ref_name }}
+          CLAWSWEEPER_WORKER_RUNNER: ${{ vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+          CLAWSWEEPER_EXECUTION_RUNNER: ${{ vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
+        run: pnpm run repair:publish-cluster-intake -- --recover
 
       - uses: actions/checkout@v7
         with:
@@ -387,17 +392,13 @@ jobs:
       - name: Durably accept cluster intake
         if: ${{ steps.prepare.outputs.should_import == 'true' }}
         env:
+          GH_TOKEN: ${{ steps.central-token.outputs.token }}
+          CLAWSWEEPER_STATE_COORDINATOR_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_REPO: openclaw/clawsweeper
+          CLAWSWEEPER_DISPATCH_REF: ${{ github.ref_name }}
+          CLAWSWEEPER_WORKER_RUNNER: ${{ vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+          CLAWSWEEPER_EXECUTION_RUNNER: ${{ vars.CLAWSWEEPER_EXECUTION_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
         run: |
           set -euo pipefail
           pnpm run repair:publish-cluster-intake -- .artifacts/cluster-repair-intake/intent.json
-
-      # The wake targets the intake's own ref so intake and materializer run
-      # the same revision (identical to `main` for scheduled production runs;
-      # a branch dispatch proves the branch end-to-end before merge).
-      - name: Request immediate state materialization
-        if: ${{ steps.prepare.outputs.should_import == 'true' }}
-        env:
-          GH_TOKEN: ${{ steps.central-token.outputs.token }}
-        run: gh workflow run state-materializer.yml --ref "$GITHUB_REF_NAME" -f intake_priority=true

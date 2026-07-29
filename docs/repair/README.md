@@ -61,6 +61,8 @@ The default workflow is proposal-first. It does not comment or close unless a jo
 contain historical run text and audit evidence. Active code, prompts, workflows,
 docs, schemas, and tests are covered by `pnpm run check:active-surface`, which
 rejects retired project names and old token variables before the full gate runs.
+Review records are canonical in the Cloudflare Worker; action ledgers and assets
+are canonical in R2. See [`../state-storage.md`](../state-storage.md).
 
 ## Dashboard
 
@@ -277,22 +279,20 @@ pnpm run repair:import-gitcrawl -- --from-gitcrawl --limit 40 --mode autonomous 
 # through the two-worker cluster_repair lane. Clusters with one live candidate
 # and useful closed context remain eligible for model evaluation. Intake appends
 # the selected job, store identity, model rationale and per-cluster decisions,
-# and stable dispatch key to the Cloudflare durable window before dispatch.
-# Decisions materialize into a versioned sidecar, leaving the strict v2 dispatch
+# and stable dispatch key directly to the coordinator-guarded operational Git
+# state before dispatch. Decisions persist in a versioned sidecar, leaving the strict v2 dispatch
 # ledger readable by in-flight older workers. Rejected cluster IDs are remembered
-# instead of being offered again on the next snapshot; the state materializer
-# projects only selected job paths and recovers pending dispatch without
-# duplicating completed work.
+# instead of being offered again on the next snapshot. The intake workflow
+# recovers pending dispatch before selecting new work.
 #
 # Durable intake dispatch guarantee: at-least-once workflow creation with
 # exactly-once worker execution intent. GitHub workflow_dispatch has no atomic
-# run receipt, so the materializer publishes a durable dispatch claim before
+# run receipt, so the intake owner publishes a durable dispatch claim before
 # dispatching; a crash between claim publication and dispatch (or between
 # dispatch and observing the run) may create another workflow run, and the
 # worker-side dispatch receipt gate skips the duplicate planning pass.
-# Recovery never treats git ledger/job files as dispatch authority: it only
-# redispatches ledger entries whose HMAC accepted-intent receipt (minted when
-# the durable append was accepted) verifies against the webhook secret.
+# Recovery redispatches only ledger entries whose HMAC accepted-intent receipt
+# verifies against the webhook secret.
 
 # Dispatch reviewed jobs. Dispatch derives its default live-worker cap from the
 # job's job_intent and config/automation-limits.json. Existing repair lanes

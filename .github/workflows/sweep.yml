@@ -1189,28 +1189,14 @@ jobs:
             echo "generation_attempt=$GITHUB_RUN_ATTEMPT"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Create direct publication state token
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.create-exact-review-bundle.outcome == 'success' && steps.live-item.outputs.proceed == 'true' && (vars.EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED || '1') == '1' }}
-        id: direct-state-token
-        uses: ./.github/actions/create-state-token
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-
       - uses: ./.github/actions/setup-state
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-state-token.outcome == 'success' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.create-exact-review-bundle.outcome == 'success' && steps.live-item.outputs.proceed == 'true' && (vars.EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED || '1') == '1' }}
         id: direct-setup-state
         with:
-          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          ledger-source: ${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'worker' }}
-          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          token: ${{ steps.direct-state-token.outputs.token }}
-          filter: blob:none
-          fetch-depth: 1
-          persist-credentials: false
+          hydrate-git-state: "false"
 
       - name: Deliver GitHub effects and prepare direct state mutation
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-setup-state.outcome == 'success' }}
@@ -1800,26 +1786,14 @@ jobs:
           permission-pull-requests: write
           permission-statuses: read
 
-      - name: Create state token
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
-        id: state-token
-        uses: ./.github/actions/create-state-token
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-
       - uses: ./.github/actions/setup-state
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
         id: setup-state
         with:
-          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          ledger-source: ${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'worker' }}
-          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          token: ${{ steps.state-token.outputs.token }}
-          fetch-depth: 1
+          hydrate-git-state: "false"
 
       - name: Publish event result and apply safe close
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
@@ -2440,10 +2414,7 @@ jobs:
 
       - uses: ./.github/actions/setup-state
         with:
-          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          ledger-source: ${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'worker' }}
-          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           token: ${{ steps.state-token.outputs.token }}
@@ -2587,10 +2558,7 @@ jobs:
 
       - uses: ./clawsweeper/.github/actions/setup-state
         with:
-          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          ledger-source: ${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'worker' }}
-          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           token: ${{ steps.state-token.outputs.token }}
@@ -2607,7 +2575,6 @@ jobs:
         continue-on-error: true
         working-directory: clawsweeper
         env:
-          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
@@ -2906,7 +2873,7 @@ jobs:
           node scripts/prepare-review-runtime.mjs \
             --output .artifacts/review-runtime \
             --plan plan.json \
-            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --state-root . \
             --records-path "records/${target_slug}/items"
           tar -czf .artifacts/review-runtime.tar.gz -C .artifacts/review-runtime .
 
@@ -2923,7 +2890,6 @@ jobs:
         continue-on-error: true
         working-directory: clawsweeper
         env:
-          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ github.token }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -3339,10 +3305,7 @@ jobs:
       - uses: ./.github/actions/setup-state
         id: setup-publish-state
         with:
-          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          ledger-source: ${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'worker' }}
-          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           token: ${{ steps.state-token.outputs.token }}
@@ -3381,32 +3344,24 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          test -n "${CLAWSWEEPER_STATE_DIR:-}"
           mkdir -p .artifacts
           : > .artifacts/action-ledger-paths.txt
           pnpm run --silent publish-action-events -- \
             --source-root .clawsweeper-repair/action-ledger-download \
-            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --state-root . \
             --expected-producer-job review |
             jq -r '.paths[]?' >> .artifacts/action-ledger-paths.txt
           pnpm run --silent publish-action-events -- \
             --source-root "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT" \
-            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --state-root . \
             --expected-producer-job "$GITHUB_JOB" |
             jq -r '.paths[]?' >> .artifacts/action-ledger-paths.txt
           sort -u -o .artifacts/action-ledger-paths.txt .artifacts/action-ledger-paths.txt
-          while IFS= read -r event_path; do
-            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
-            test -f "$durable_event_path"
-            mkdir -p "$(dirname "$event_path")"
-            cp "$durable_event_path" "$event_path"
-          done < .artifacts/action-ledger-paths.txt
 
       - name: Publish immutable review action ledger
         if: ${{ always() && steps.import-review-action-ledger.outcome == 'success' }}
         continue-on-error: true
         env:
-          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
@@ -3415,8 +3370,7 @@ jobs:
             exit 0
           fi
           node dist/clawsweeper.js publish-action-event-paths \
-            --paths-file .artifacts/action-ledger-paths.txt \
-            --message "chore: append review action ledger"
+            --paths-file .artifacts/action-ledger-paths.txt
 
       - name: Sync before applying artifacts
         id: sync-review-artifacts
@@ -3473,12 +3427,10 @@ jobs:
       - name: Publish review artifact action ledger
         if: ${{ always() && steps.apply-review-artifacts.outputs.artifacts_applied == 'true' }}
         env:
-          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
-          test -n "${CLAWSWEEPER_STATE_DIR:-}"
           source_root="$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT"
           if [ ! -d "$source_root/ledger" ]; then
             echo "No review artifact action event shards were finalized."
@@ -3488,7 +3440,7 @@ jobs:
           mkdir -p .artifacts
           pnpm run --silent publish-action-events -- \
             --source-root "$source_root" \
-            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --state-root . \
             --expected-producer-job "$GITHUB_JOB" |
             jq -r '.paths[]?' |
             sort -u > "$event_paths_file"
@@ -3496,22 +3448,14 @@ jobs:
             echo "Review artifact action event shards existed but no paths were imported." >&2
             exit 1
           fi
-          while IFS= read -r event_path; do
-            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
-            test -f "$durable_event_path"
-            mkdir -p "$(dirname "$event_path")"
-            cp "$durable_event_path" "$event_path"
-          done < "$event_paths_file"
           node dist/clawsweeper.js publish-action-event-paths \
-            --paths-file "$event_paths_file" \
-            --message "chore: append review artifact action ledger"
+            --paths-file "$event_paths_file"
 
       - name: Commit review records
         id: commit-review-records
         if: ${{ always() && !cancelled() && steps.apply-review-artifacts.outputs.artifacts_applied == 'true' }}
         env:
           CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: .artifacts/review-canonical-baseline
-          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           EXACT_ITEM: ${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
           GH_TOKEN: ${{ github.token }}
@@ -3532,7 +3476,7 @@ jobs:
           pnpm run repair:publish-main -- \
             --message "chore: update sweep records" \
             --path "records/${target_slug}" \
-            --rebase-strategy reconcile-records
+            --rebase-strategy normal
           echo "records_published=true" >> "$GITHUB_OUTPUT"
           pnpm run repair:publish-main -- \
             --message "chore: update sweep status" \
@@ -3729,7 +3673,6 @@ jobs:
         if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && ((github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep') || github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '') }}
         timeout-minutes: 15
         env:
-          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -3782,7 +3725,7 @@ jobs:
           pnpm run repair:publish-main -- \
             --message "chore: sync selected review comments" \
             --path "records/${target_slug}" \
-            --rebase-strategy reconcile-records
+            --rebase-strategy normal
           pnpm run repair:publish-main -- \
             --message "chore: publish selected review comment status" \
             --path apply-report.json \
@@ -3809,12 +3752,10 @@ jobs:
       - name: Publish selected review comment action ledger
         if: ${{ always() && steps.sync-selected-review-comments.outcome != 'skipped' && steps.finalize-selected-review-comment-action-ledger.outcome == 'success' }}
         env:
-          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
-          test -n "${CLAWSWEEPER_STATE_DIR:-}"
           if [ ! -d "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT/ledger" ]; then
             echo "No selected review comment action shards were finalized."
             exit 0
@@ -3823,7 +3764,7 @@ jobs:
           mkdir -p .artifacts
           pnpm run --silent publish-action-events -- \
             --source-root "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT" \
-            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --state-root . \
             --expected-producer-job "$GITHUB_JOB" |
             jq -r '.paths[]?' |
             sort -u > "$event_paths_file"
@@ -3831,15 +3772,8 @@ jobs:
             echo "Selected review comment action shards existed but no paths were imported." >&2
             exit 1
           fi
-          while IFS= read -r event_path; do
-            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
-            test -f "$durable_event_path"
-            mkdir -p "$(dirname "$event_path")"
-            cp "$durable_event_path" "$event_path"
-          done < "$event_paths_file"
           node dist/clawsweeper.js publish-action-event-paths \
-            --paths-file "$event_paths_file" \
-            --message "chore: append selected review comment action ledger"
+            --paths-file "$event_paths_file"
 
       - name: Dispatch selected safe close proposals to isolated apply
         if: ${{ always() && !cancelled() && steps.sync-selected-review-comments.outputs.sync_succeeded == 'true' && steps.target-write-token.outputs.token != '' && github.event.inputs.apply_after_review == 'true' }}
@@ -4072,10 +4006,7 @@ jobs:
 
       - uses: ./.github/actions/setup-state
         with:
-          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          ledger-source: ${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'worker' }}
-          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           token: ${{ steps.state-token.outputs.token }}
@@ -4151,12 +4082,10 @@ jobs:
       - name: Publish failed-review retry action ledger
         if: ${{ always() }}
         env:
-          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
-          test -n "${CLAWSWEEPER_STATE_DIR:-}"
           source_root="$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT"
           if [ ! -d "$source_root/ledger" ]; then
             echo "No failed-review retry action event shards were finalized."
@@ -4166,7 +4095,7 @@ jobs:
           mkdir -p .artifacts
           pnpm run --silent publish-action-events -- \
             --source-root "$source_root" \
-            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --state-root . \
             --expected-producer-job "$GITHUB_JOB" |
             jq -r '.paths[]?' |
             sort -u > "$event_paths_file"
@@ -4174,15 +4103,8 @@ jobs:
             echo "Failed-review retry action shards existed but no paths were imported." >&2
             exit 1
           fi
-          while IFS= read -r event_path; do
-            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
-            test -f "$durable_event_path"
-            mkdir -p "$(dirname "$event_path")"
-            cp "$durable_event_path" "$event_path"
-          done < "$event_paths_file"
           node dist/clawsweeper.js publish-action-event-paths \
-            --paths-file "$event_paths_file" \
-            --message "chore: append failed review retry action ledger"
+            --paths-file "$event_paths_file"
 
       - uses: actions/upload-artifact@v7
         if: ${{ always() }}
@@ -4276,10 +4198,7 @@ jobs:
 
       - uses: ./.github/actions/setup-state
         with:
-          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          ledger-source: ${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'worker' }}
-          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           token: ${{ steps.state-token.outputs.token }}
@@ -4324,7 +4243,6 @@ jobs:
       - name: Commit Audit Health
         env:
           CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: .artifacts/audit-canonical-baseline
-          CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -4334,7 +4252,7 @@ jobs:
           pnpm run repair:publish-main -- \
             --message "chore: update sweep audit state" \
             --path "records/${target_slug}" \
-            --rebase-strategy reconcile-records
+            --rebase-strategy normal
           pnpm run repair:publish-main -- \
             --message "chore: publish sweep audit status" \
             --path README.md \
@@ -4361,10 +4279,6 @@ jobs:
       issues: read
       pull-requests: read
     env:
-      CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "1"
-      CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
-      CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
-      CLAWSWEEPER_STATE_LEASE_PRIORITY: "1"
       CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
       CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED || 'false' }}
       CLAWSWEEPER_IDEA_REVIVAL_REACTIONS: ${{ vars.CLAWSWEEPER_IDEA_REVIVAL_REACTIONS || '5' }}
@@ -4406,10 +4320,7 @@ jobs:
 
       - uses: ./.github/actions/setup-state
         with:
-          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          ledger-source: ${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'worker' }}
-          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           hydrate-state-blobs: "false"
@@ -4604,11 +4515,6 @@ jobs:
 
   publish-apply-proof-action-ledger:
     name: Publish immutable apply proof action ledger
-    env:
-      CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "0"
-      CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
-      CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
-      CLAWSWEEPER_STATE_LEASE_PRIORITY: "1"
     needs: apply-proof
     if: ${{ always() && needs.apply-proof.result != 'skipped' }}
     runs-on: ubuntu-latest
@@ -4626,28 +4532,6 @@ jobs:
           name: ${{ needs.apply-proof.outputs.action_ledger_artifact_name }}
           path: .clawsweeper-repair/action-ledger-proof
 
-      - name: Create state token
-        if: ${{ needs.apply-proof.outputs.action_ledger_artifact_name != '' }}
-        id: state-token
-        uses: ./.github/actions/create-state-token
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-
-      - uses: ./.github/actions/setup-state
-        if: ${{ needs.apply-proof.outputs.action_ledger_artifact_name != '' }}
-        with:
-          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
-          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          ledger-source: ${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'worker' }}
-          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}
-          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          hydrate-state-blobs: "false"
-          token: ${{ steps.state-token.outputs.token }}
-          filter: blob:none
-          fetch-depth: 1
-
       - uses: ./.github/actions/setup-pnpm
         if: ${{ needs.apply-proof.outputs.action_ledger_artifact_name != '' }}
         with:
@@ -4660,7 +4544,6 @@ jobs:
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
-          test -n "${CLAWSWEEPER_STATE_DIR:-}"
           source_root=".clawsweeper-repair/action-ledger-proof"
           if [ ! -d "$source_root/ledger" ]; then
             echo "The uploaded apply proof artifact did not contain action event shards." >&2
@@ -4670,7 +4553,7 @@ jobs:
           mkdir -p .artifacts
           pnpm run --silent publish-action-events -- \
             --source-root "$source_root" \
-            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --state-root . \
             --expected-producer-job apply-proof |
             jq -r '.paths[]?' |
             sort -u > "$event_paths_file"
@@ -4678,15 +4561,8 @@ jobs:
             echo "Apply proof action event shards existed but no paths were imported." >&2
             exit 1
           fi
-          while IFS= read -r event_path; do
-            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
-            test -f "$durable_event_path"
-            mkdir -p "$(dirname "$event_path")"
-            cp "$durable_event_path" "$event_path"
-          done < "$event_paths_file"
           node dist/clawsweeper.js publish-action-event-paths \
-            --paths-file "$event_paths_file" \
-            --message "chore: append apply proof action ledger"
+            --paths-file "$event_paths_file"
 
   apply-existing:
     name: Apply close proposals
@@ -4705,10 +4581,6 @@ jobs:
       cancel-in-progress: false
       queue: max
     env:
-      CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "1"
-      CLAWSWEEPER_STATE_APPEND_ENABLED: "1"
-      CLAWSWEEPER_STATE_LEASE_ACQUIRE_TIMEOUT_MS: "900000"
-      CLAWSWEEPER_STATE_LEASE_PRIORITY: "1"
       CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
       CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED || 'false' }}
       CLAWSWEEPER_IDEA_REVIVAL_REACTIONS: ${{ vars.CLAWSWEEPER_IDEA_REVIVAL_REACTIONS || '5' }}
@@ -4789,10 +4661,7 @@ jobs:
 
       - uses: ./.github/actions/setup-state
         with:
-          coordinator-enabled: ${{ vars.CLAWSWEEPER_STATE_COORDINATOR_ENABLED || 'false' }}
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          ledger-source: ${{ vars.CLAWSWEEPER_LEDGER_SOURCE || 'worker' }}
-          records-source: ${{ vars.CLAWSWEEPER_RECORDS_SOURCE || 'worker' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           hydrate-state-blobs: "false"
@@ -4801,15 +4670,6 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
         with:
           build-script: build:all
-
-      - uses: ./.github/actions/setup-codex
-        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' }}
-        continue-on-error: true
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
-        with:
-          auth-mode: login
 
       - uses: ./.github/actions/setup-openclaw
         continue-on-error: true
@@ -4828,7 +4688,6 @@ jobs:
 
       - name: Reconcile before apply preselect
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -4850,7 +4709,6 @@ jobs:
         id: apply-existing-run
         timeout-minutes: 70
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           CLAWSWEEPER_APPLY_TOKEN_MINTED_AT_MS: ${{ steps.target-write-token.outputs.minted-at-ms }}
@@ -5253,7 +5111,6 @@ jobs:
         id: retry-final-apply-status-publication
         if: ${{ always() && !cancelled() && steps.primary-apply-result.outputs.succeeded == 'true' }}
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
@@ -5266,18 +5123,16 @@ jobs:
           pnpm run repair:publish-main -- \
             --message "chore: mark sweep apply finished" \
             --path "results/sweep-status/${target_slug}.json" \
-            --rebase-strategy apply-records
+            --rebase-strategy theirs
 
       - name: Publish apply action events
         id: publish-apply-action-events
         if: ${{ always() }}
         env:
-          CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "0"
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
-          test -n "${CLAWSWEEPER_STATE_DIR:-}"
           source_root="$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT"
           if [ ! -d "$source_root/ledger" ]; then
             echo "No apply action event shards were finalized."
@@ -5287,7 +5142,7 @@ jobs:
           mkdir -p .artifacts
           pnpm run --silent publish-action-events -- \
             --source-root "$source_root" \
-            --state-root "$CLAWSWEEPER_STATE_DIR" \
+            --state-root . \
             --expected-producer-job "$GITHUB_JOB" |
             jq -r '.paths[]?' |
             sort -u > "$event_paths_file"
@@ -5295,15 +5150,8 @@ jobs:
             echo "Apply action event shards existed but no paths were imported." >&2
             exit 1
           fi
-          while IFS= read -r event_path; do
-            durable_event_path="$CLAWSWEEPER_STATE_DIR/$event_path"
-            test -f "$durable_event_path"
-            mkdir -p "$(dirname "$event_path")"
-            cp "$durable_event_path" "$event_path"
-          done < "$event_paths_file"
           node dist/clawsweeper.js publish-action-event-paths \
-            --paths-file "$event_paths_file" \
-            --message "chore: append apply action ledger"
+            --paths-file "$event_paths_file"
 
       - name: Continue apply sweep
         if: ${{ always() && !cancelled() && steps.primary-apply-result.outputs.succeeded == 'true' }}

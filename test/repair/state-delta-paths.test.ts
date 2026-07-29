@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { changedStatePaths } from "../../dist/repair/state-delta-paths.js";
+import { hydrateGitOperationalState } from "../../scripts/hydrate-state.ts";
 
 test("result publication selects exact changes and preserves unrelated remote jobs", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-state-delta-"));
@@ -35,13 +35,7 @@ test("state hydration preserves state-only notification receipts before result d
   fs.mkdirSync(worktree, { recursive: true });
   fs.writeFileSync(path.join(state, receipt), '{"notifications":[{"id":"unrelated"}]}\n');
 
-  const hydrated = spawnSync(
-    process.execPath,
-    ["scripts/hydrate-state.ts", "--state-dir", state, "--worktree", worktree],
-    { encoding: "utf8" },
-  );
-
-  assert.equal(hydrated.status, 0, hydrated.stderr);
+  hydrateGitOperationalState(state, worktree);
   assert.equal(
     fs.readFileSync(path.join(worktree, receipt), "utf8"),
     fs.readFileSync(path.join(state, receipt), "utf8"),

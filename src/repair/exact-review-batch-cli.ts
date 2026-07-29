@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { Buffer } from "node:buffer";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -9,7 +8,6 @@ import {
   ExactReviewBatchQueueClient,
   type ExactReviewBatchQueueItem,
 } from "./exact-review-batch-queue-client.js";
-import { runGit, setStatePublishTelemetryObserver } from "./git-publish.js";
 import { exactReviewBatchStateWriterProgressReporter } from "./exact-review-batch-state-writer-progress.js";
 import { postDirectPublicationResult } from "./exact-review-direct-publication.js";
 import { StateWriterTelemetryRecorder } from "./state-writer-telemetry-recorder.js";
@@ -206,7 +204,6 @@ async function commit() {
         ...(progressObserver ? { observer: progressObserver } : {}),
       })
     : null;
-  const resetTelemetry = recorder ? setStatePublishTelemetryObserver(recorder) : () => undefined;
   try {
     if (plans.length) {
       await publishCanonicalBatch(plans);
@@ -239,8 +236,6 @@ async function commit() {
       );
     }
     throw error;
-  } finally {
-    resetTelemetry();
   }
   const receiptPath = batchReceiptPath();
   mkdirSync(dirname(receiptPath), { recursive: true });
@@ -272,14 +267,7 @@ async function commit() {
 
 async function publishCanonicalBatch(plans: readonly PreparedStateMutationPlan[]): Promise<void> {
   for (const plan of plans) {
-    const operations = plan.operations.map((operation) => {
-      if (operation.targetOid === null) return { ...operation };
-      const content = runGit(["cat-file", "blob", operation.targetOid], { quiet: true });
-      if (Buffer.byteLength(content) !== operation.bytes) {
-        throw new Error(`Prepared blob size changed for ${operation.path}`);
-      }
-      return { ...operation, contentBase64: Buffer.from(content).toString("base64") };
-    });
+    const operations = plan.operations.map((operation) => ({ ...operation }));
     const result = await postDirectPublicationResult({
       baseUrl: env("EXACT_REVIEW_QUEUE_URL"),
       webhookSecret: env("CLAWSWEEPER_WEBHOOK_SECRET"),

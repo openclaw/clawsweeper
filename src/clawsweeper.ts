@@ -224,7 +224,7 @@ import {
   workflowActionProducer,
 } from "./action-ledger-runtime.js";
 import { isActionEventPublishPath } from "./action-ledger-paths.js";
-import { publishMainWithStateAppend } from "./repair/publish-main.js";
+import { publishStateBlob } from "./state-blob-client.js";
 
 export {
   codexEnv,
@@ -33446,11 +33446,9 @@ export function actionEventPublishPathsForTest(content: string): string[] {
 
 async function publishActionEventPathsCommand(args: Args): Promise<void> {
   const pathsFile = resolve(stringArg(args.paths_file, ""));
-  const message = stringArg(args.message, "");
   if (!pathsFile || pathsFile === ROOT) {
     throw new UserFacingCommandError("--paths-file is required");
   }
-  if (!message) throw new UserFacingCommandError("--message is required");
   const stat = statSync(pathsFile);
   if (!stat.isFile())
     throw new Error(`action event publish path manifest is not a file: ${pathsFile}`);
@@ -33471,12 +33469,23 @@ async function publishActionEventPathsCommand(args: Args): Promise<void> {
       throw new Error(`action event publish path is not a regular file: ${path}`);
     }
   }
-  const result = await publishMainWithStateAppend({
-    message,
-    paths,
-    rebaseStrategy: "normal",
-  });
-  console.log(JSON.stringify({ result, path_count: paths.length }));
+  const baseUrl = process.env.QUEUE_URL ?? process.env.CLAWSWEEPER_RECORDS_URL ?? "";
+  const webhookSecret = process.env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
+  let uploaded = 0;
+  let unchanged = 0;
+  for (const path of paths) {
+    const result = await publishStateBlob({
+      baseUrl,
+      webhookSecret,
+      path,
+      content: readFileSync(resolve(ROOT, path)),
+    });
+    if (result.unchanged) unchanged += 1;
+    else uploaded += 1;
+  }
+  console.log(
+    JSON.stringify({ result: "published", path_count: paths.length, uploaded, unchanged }),
+  );
 }
 
 function isExplicitActionLedgerCommand(command: string): boolean {

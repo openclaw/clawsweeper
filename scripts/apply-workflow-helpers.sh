@@ -159,10 +159,10 @@ publish_changes() {
     fi
   done
   if [ "${#record_paths[@]}" -gt 0 ]; then
-    publish_changes_with_strategy reconcile-records "$message" "${record_paths[@]}" || return 1
+    publish_changes_with_strategy normal "$message" "${record_paths[@]}" || return 1
   fi
   if [ "${#other_paths[@]}" -gt 0 ]; then
-    publish_changes_with_strategy apply-records "$message" "${other_paths[@]}" || return 1
+    publish_changes_with_strategy theirs "$message" "${other_paths[@]}" || return 1
   fi
 }
 
@@ -221,7 +221,7 @@ publish_reconciled_records() {
     if [ "$tuple_count" -ge 50 ]; then
       CLAWSWEEPER_CANONICAL_PUBLICATION_KIND=reconcile \
         CLAWSWEEPER_RECONCILE_DEFERRED_PATH=.artifacts/apply-reconcile-deferred.jsonl \
-        publish_changes_with_strategy reconcile-records "$message" "${publish_paths[@]}" || return 1
+        publish_changes_with_strategy normal "$message" "${publish_paths[@]}" || return 1
       publish_paths=()
       tuple_count=0
     fi
@@ -239,7 +239,7 @@ publish_reconciled_records() {
   # non-conflicting tuples independently.
   CLAWSWEEPER_CANONICAL_PUBLICATION_KIND=reconcile \
     CLAWSWEEPER_RECONCILE_DEFERRED_PATH=.artifacts/apply-reconcile-deferred.jsonl \
-    publish_changes_with_strategy reconcile-records "$message" "${publish_paths[@]}" || return 1
+    publish_changes_with_strategy normal "$message" "${publish_paths[@]}" || return 1
 }
 
 persist_reconciliation() {

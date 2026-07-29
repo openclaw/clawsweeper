@@ -119,7 +119,9 @@ export function publishCheckFromReport(options: PublishCheckOptions): void {
   const markdown = readFileSync(options.reportPath, "utf8");
   const { frontMatter } = splitFrontMatter(markdown);
   const conclusion = checkConclusionForFrontMatter(frontMatter);
-  const reportUrl = `https://github.com/${options.reportRepo}/blob/main/${options.reportRelativePath}`;
+  const reportUrl = process.env.GITHUB_RUN_ID
+    ? `${process.env.GITHUB_SERVER_URL || "https://github.com"}/${process.env.GITHUB_REPOSITORY || "openclaw/clawsweeper"}/actions/runs/${process.env.GITHUB_RUN_ID}`
+    : "https://clawsweeper.openclaw.ai/";
   const payload = {
     name: options.checkName,
     head_sha: options.sha,
@@ -130,7 +132,7 @@ export function publishCheckFromReport(options: PublishCheckOptions): void {
     output: {
       title: reportTitle(frontMatter),
       summary: reportSummary(markdown, frontMatter),
-      text: `Report: ${reportUrl}`,
+      text: `Canonical report: ${reportUrl}`,
     },
   };
   const payloadPath = join(

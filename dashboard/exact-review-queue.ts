@@ -19,19 +19,18 @@ import {
 } from "./exact-review-publication-batches.ts";
 import {
   CanonicalRecordTupleConflictError,
-  DirectPublicationProjectionCapacityError,
   EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES,
   ExactReviewDirectPublicationStore,
   sha256Hex,
   validateCanonicalRecordTupleMutation,
-  validateDirectPublicationBlobOids,
+  validateDirectPublicationPlan,
   validateRecordId,
   validateRecordSection,
   validateRepoSlug,
   validateTupleRecordSection,
   type DirectPublicationPlan,
   type CanonicalRecordTupleMutation,
-  type RecordBackfillInput,
+  type CanonicalCommitRecordInput,
   type RecordSection,
 } from "./exact-review-direct-publication.ts";
 import {
@@ -2198,11 +2197,14 @@ export class ExactReviewQueue {
       }
     }
 
-    if (request.method === "POST" && url.pathname === "/records/ingest") {
+    if (request.method === "POST" && url.pathname === "/records/commits") {
       const bodyText = await request.text();
       if (new TextEncoder().encode(bodyText).byteLength > RECORD_INGEST_MAX_REQUEST_BYTES) {
         return json(
-          { error: "canonical_record_ingest_too_large", maxBytes: RECORD_INGEST_MAX_REQUEST_BYTES },
+          {
+            error: "canonical_commit_records_too_large",
+            maxBytes: RECORD_INGEST_MAX_REQUEST_BYTES,
+          },
           413,
         );
       }
@@ -2210,27 +2212,27 @@ export class ExactReviewQueue {
       try {
         parsedBody = JSON.parse(bodyText || "null");
       } catch {
-        return json({ error: "invalid_canonical_record_ingest" }, 400);
+        return json({ error: "invalid_canonical_commit_records" }, 400);
       }
       const body = objectValue(parsedBody);
-      const repoSlug = validateRepoSlug(body.repoSlug);
+      const repoSlug = validateRepoSlug(body.repo_slug);
       if (
         !repoSlug ||
         !Array.isArray(body.records) ||
         body.records.length < 1 ||
         body.records.length > RECORD_INGEST_MAX_RECORDS
       ) {
-        return json({ error: "invalid_canonical_record_ingest" }, 400);
+        return json({ error: "invalid_canonical_commit_records" }, 400);
       }
-      const records: RecordBackfillInput[] = [];
+      const records: CanonicalCommitRecordInput[] = [];
       for (const value of body.records) {
         const record = objectValue(value);
-        const section = validateRecordSection(record.section);
-        const id = section ? validateRecordId(section, record.id) : null;
+        const section = "commits" as const;
+        const id = validateRecordId(section, record.sha);
         const content = typeof record.content === "string" ? record.content : null;
         const digest = String(record.digest || "").toLowerCase();
         if (!section || !id || content === null || !/^[0-9a-f]{64}$/.test(digest)) {
-          return json({ error: "invalid_canonical_record_ingest" }, 400);
+          return json({ error: "invalid_canonical_commit_records" }, 400);
         }
         const bytes = new TextEncoder().encode(content);
         if (bytes.byteLength > RECORD_INGEST_MAX_FILE_BYTES) {
@@ -2250,11 +2252,18 @@ export class ExactReviewQueue {
         records.push({ section, id, content, digest, bytes: bytes.byteLength });
       }
       try {
-        const ingested = this.directPublicationStore.ingestBackfill(repoSlug, records, Date.now());
-        return json({ ok: true, repoSlug, ...ingested }, 202);
+        const published = this.directPublicationStore.publishCanonicalCommits(
+          repoSlug,
+          records,
+          Date.now(),
+        );
+        return json({ ok: true, repo_slug: repoSlug, ...published }, 202);
       } catch (error) {
-        if (error instanceof Error && error.message.startsWith("conflicting revision-0 backfill")) {
-          return json({ error: "canonical_record_backfill_conflict" }, 409);
+        if (
+          error instanceof Error &&
+          error.message.startsWith("conflicting canonical commit record")
+        ) {
+          return json({ error: "canonical_commit_record_conflict" }, 409);
         }
         throw error;
       }
@@ -2279,11 +2288,6 @@ export class ExactReviewQueue {
         const accepted = this.directPublicationStore.acceptCanonicalTupleMutation(
           validated,
           Date.now(),
-          {
-            maxRecordBytes: stateAppendMaxRecordBytes(this.env),
-            maxPendingRows: stateAppendMaxPendingRows(this.env),
-            maxPendingBytes: stateAppendMaxPendingBytes(this.env),
-          },
         );
         return json(
           {
@@ -2291,7 +2295,6 @@ export class ExactReviewQueue {
             accepted: accepted.outcome === "accepted",
             deduped: accepted.outcome === "deduped",
             revision: accepted.revision,
-            sequence: accepted.sequence,
           },
           202,
         );
@@ -2305,10 +2308,6 @@ export class ExactReviewQueue {
             },
             409,
           );
-        }
-        if (error instanceof DirectPublicationProjectionCapacityError) {
-          console.warn(`canonical record tuple capacity rejected: ${sanitizedServerError(error)}`);
-          return json({ error: "canonical_record_tuple_capacity" }, 429);
         }
         console.warn(`canonical record tuple rejected: ${sanitizedServerError(error)}`);
         return json({ error: "invalid_canonical_record_tuple" }, 400);
@@ -2345,7 +2344,7 @@ export class ExactReviewQueue {
         return json({ error: "invalid_direct_publication_json" }, 400);
       }
       try {
-        const validated = await validateDirectPublicationBlobOids(plan);
+        const validated = await validateDirectPublicationPlan(plan);
         const state = this.readStateSync();
         const owned = state.items[validated.itemKey];
         const existing = this.directPublicationStore.get(validated.itemKey, validated.revision);
@@ -2365,11 +2364,7 @@ export class ExactReviewQueue {
           );
         }
         const now = Date.now();
-        const accepted = this.directPublicationStore.accept(validated, now, {
-          maxRecordBytes: stateAppendMaxRecordBytes(this.env),
-          maxPendingRows: stateAppendMaxPendingRows(this.env),
-          maxPendingBytes: stateAppendMaxPendingBytes(this.env),
-        });
+        const accepted = this.directPublicationStore.accept(validated, now);
         if (owned && validFence && !deferredBatchCompletion) {
           const producerDecision = owned.decision.publication
             ? owned.decision.publication.producerDecision
@@ -2446,16 +2441,6 @@ export class ExactReviewQueue {
           202,
         );
       } catch (error) {
-        if (error instanceof DirectPublicationProjectionCapacityError) {
-          console.warn(`direct publication projection rejected: ${sanitizedServerError(error)}`);
-          return json(
-            {
-              error: "direct_publication_projection_capacity",
-              fallback_required: true,
-            },
-            429,
-          );
-        }
         console.warn(`direct publication plan rejected: ${sanitizedServerError(error)}`);
         return json(
           {
@@ -5544,58 +5529,6 @@ export class ExactReviewQueue {
     this.storage.transactionSync(() => {
       this.backfillPublicationHeadsSync(this.readStateSync(), Date.now());
     });
-    await this.migrateLegacyDirectPublications();
-  }
-
-  private async migrateLegacyDirectPublications() {
-    const plans = this.directPublicationStore.legacyPendingPlans();
-    if (!plans.length) return;
-    const now = Date.now();
-    const state = this.readStateSync();
-    let completed = 0;
-    let published = 0;
-    let superseded = 0;
-    for (const plan of plans) {
-      try {
-        const validated = await validateDirectPublicationBlobOids(plan);
-        const accepted = this.directPublicationStore.accept(validated, now, {
-          maxRecordBytes: stateAppendMaxRecordBytes(this.env),
-          maxPendingRows: stateAppendMaxPendingRows(this.env),
-          maxPendingBytes: stateAppendMaxPendingBytes(this.env),
-        });
-        const item = state.items[validated.itemKey];
-        if (!item || !exactReviewQueueIsPublication(item) || item.revision !== validated.revision) {
-          continue;
-        }
-        const completion =
-          accepted.outcome === "superseded"
-            ? ({ kind: "superseded", reasonCode: "remote_newer_tuple" } as const)
-            : ({ kind: "published", reasonCode: "publication_applied" } as const);
-        const terminal = finishExactReviewPublicationQueueItem({
-          state,
-          item,
-          now,
-          completion,
-          ownedRevision: validated.revision,
-          deadLetterCapacityAvailable: true,
-          env: this.env,
-        });
-        if (!terminal.requeued && !terminal.parked) completed += 1;
-        if (!terminal.requeued && completion.kind === "published") published += 1;
-        if (!terminal.requeued && completion.kind === "superseded") superseded += 1;
-      } catch (error) {
-        console.warn(
-          `legacy direct publication migration deferred for ${plan.itemKey}@${plan.revision}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-    if (completed || published || superseded) {
-      await this.writeState(state, {
-        publicationCompleted: completed,
-        publicationPublished: published,
-        publicationSuperseded: superseded,
-      });
-    }
   }
 
   private ensureStorageSchemaSync() {

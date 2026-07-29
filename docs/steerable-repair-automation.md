@@ -38,9 +38,8 @@ credentials.
 flowchart LR
   A[GitHub issue, PR, comment, or schedule] --> B[ClawSweeper intake]
   G[GitCrawl store snapshot] --> B
-  B --> Q[Authenticated durable intake queue]
-  Q --> S[Prioritized state materializer]
-  S --> C[Exact job and ledger paths in clawsweeper-state]
+  B --> C[Coordinator-guarded jobs and results in clawsweeper-state]
+  B --> R[Canonical records and R2 action ledgers]
   C --> D[GitHub Actions repair worker]
   D --> E[Codex app-server thread]
   D --> F[CrabFleet action session]
@@ -64,8 +63,11 @@ Ownership boundaries:
 - **CrabFleet** owns the durable action-session registry, browser terminal
   relay, work-state timeline, terminal archives, and operator steering
   transport.
-- **`openclaw/clawsweeper-state`** owns generated operational state: jobs,
-  reports, results, intake ledgers, notifications, and dashboard source data.
+- **The Cloudflare Worker and R2** own review records, action ledgers, and
+  published assets.
+- **`openclaw/clawsweeper-state`** retains generated operational state: jobs,
+  results, intake ledgers, notifications, apply reports, and dashboard source
+  data.
 - **GitCrawl** groups related GitHub items. ClawSweeper consumes a published
   SQLite snapshot; it does not crawl GitHub during cluster intake.
 
@@ -174,14 +176,11 @@ The `repair-cluster-intake.yml` workflow:
 6. Gives a bounded batch of hydrated live GitHub evidence to the selector model.
    The model chooses one narrow, actionable cluster or rejects the batch; quality
    is not decided by word lists, scores, or semantic thresholds.
-7. Appends one authenticated `cluster_intake` intent containing the exact job
-   bytes, digest, store identity, and selector report to the durable Cloudflare
-   state queue. An accepted append is the recovery boundary; the workflow does
-   not publish from its checkout.
-8. Wakes the prioritized state materializer. It projects only the accepted job
-   and ledger paths, preserving unrelated generated state, and keeps
-   capacity-blocked or publication-failed intent durable for a later cycle.
-9. Publishes a durable dispatch claim for each stable dispatch key, then starts
+7. Publishes the exact accepted job and intake-ledger paths through the durable
+   state-writer coordinator. Unrelated generated state remains untouched.
+8. Recovers any prior pending dispatch claims before accepting the new store,
+   then publishes a durable dispatch claim for each stable dispatch key.
+9. Starts
    the `repair_cluster` worker and records the matching planning-job receipt.
    Workflow creation is at-least-once: `workflow_dispatch` has no atomic run
    receipt, so a crash inside the dispatch window can create another workflow
@@ -624,14 +623,18 @@ terminal grid and focused session URL.
 
 ### Durable State
 
-Generated operational state is stored on the `state` branch of
-`openclaw/clawsweeper-state`, including:
+Generated state has explicit owners:
 
 - `jobs/`: queued and closed job markdown;
-- `records/`: issue, PR, and commit review reports;
 - `results/`: repair, intake, router, and run ledgers;
 - `notifications/`: notification idempotency state;
-- workflow status and dashboard data.
+- apply reports, workflow status, and dashboard data remain on the `state`
+  branch of `openclaw/clawsweeper-state`;
+- `records/` lives in the canonical Cloudflare record store;
+- `ledger/v1/` and `assets/` live in R2.
+
+See [`state-storage.md`](state-storage.md) for hydration and publication
+boundaries.
 
 Raw Codex transcripts and debug files remain GitHub Actions artifacts. The
 committed state keeps sanitized summaries and mutation evidence.

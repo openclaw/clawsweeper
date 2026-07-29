@@ -15,7 +15,6 @@ import {
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { isActionEventPublishPath } from "../action-ledger-paths.js";
 import { capturedCanonicalRecordBaselineKeys } from "./canonical-record-baseline.js";
 import {
   publishMainCommit,
@@ -27,12 +26,11 @@ import { recordTuplePaths, validateRecordTuple, type RecordTupleContents } from 
 import {
   CanonicalRecordTupleConflictError,
   CanonicalRecordTupleRequestError,
+  postCanonicalCommitRecords,
   postCanonicalRecordTuple,
-  postStateAppend,
+  type CanonicalCommitRecord,
   type CanonicalRecordTupleConflictState,
   type CanonicalRecordTupleMutation,
-  type StateAppendInputRecord,
-  type StateAppendResult,
 } from "./state-append-client.js";
 
 type Args = {
@@ -52,11 +50,6 @@ type PublishMainRuntime = {
   root?: string;
 };
 
-type StateAppendPlan = {
-  consumedPaths: Set<string>;
-  records: StateAppendInputRecord[];
-};
-
 type CanonicalRecordPlan = {
   items: Array<
     | { key: string; mutation: CanonicalRecordTupleMutation; error?: never }
@@ -64,11 +57,6 @@ type CanonicalRecordPlan = {
   >;
   remainingPaths: string[];
 };
-
-const SWEEP_STATUS_DIRECTORY = "results/sweep-status";
-const SWEEP_STATUS_FILE_PATTERN = /^results\/sweep-status\/([A-Za-z0-9][A-Za-z0-9_.-]*)\.json$/;
-const COMMENT_ROUTER_LEDGER_PATH = "results/comment-router.json";
-const STATE_APPEND_MAX_RECORD_BYTES = 256 * 1024;
 
 export async function publishMainWithStateAppend(
   options: GitPublishOptions,
@@ -86,7 +74,7 @@ export async function publishMainWithStateAppend(
   let canonicalResolvedCount = 0;
   let canonicalFailedCount = 0;
   if (canonicalItemCount > 0) {
-    if (env.CLAWSWEEPER_STATE_APPEND_ENABLED !== "1" || !queueUrl || !webhookSecret) {
+    if (!queueUrl || !webhookSecret) {
       throw new Error("canonical record publication is required for record tuple changes");
     }
     const isolateFailures = env.CLAWSWEEPER_CANONICAL_PUBLICATION_KIND === "reconcile";
@@ -120,62 +108,66 @@ export async function publishMainWithStateAppend(
       );
     }
   }
-  const canonicalAppended = canonicalResolvedCount > 0;
-  const publicationOptions = { ...options, paths: canonicalPlan.remainingPaths };
+  const commitPlan = planCanonicalCommitRecords(canonicalPlan.remainingPaths, root);
+  if (commitPlan.recordsByRepository.size > 0 && (!queueUrl || !webhookSecret)) {
+    throw new Error("canonical record publication is required for commit records");
+  }
+  for (const [repoSlug, records] of commitPlan.recordsByRepository) {
+    for (let index = 0; index < records.length; index += 50) {
+      await postCanonicalCommitRecords({
+        queueUrl,
+        webhookSecret,
+        repoSlug,
+        records: records.slice(index, index + 50),
+        ...(runtime.fetchImpl ? { fetchImpl: runtime.fetchImpl } : {}),
+      });
+    }
+  }
+  const publicationOptions = { ...options, paths: commitPlan.remainingPaths };
   if (publicationOptions.paths.length === 0) {
     console.log(`Resolved ${canonicalResolvedCount} canonical record tuple(s)`);
     return "appended";
   }
-  if (env.CLAWSWEEPER_STATE_APPEND_ENABLED !== "1" || !queueUrl || !webhookSecret) {
-    return publishGit(publicationOptions);
+  const retiredGitPath = publicationOptions.paths
+    .map(normalizedPath)
+    .find(
+      (path) =>
+        path === "ledger" ||
+        path.startsWith("ledger/") ||
+        path === "assets" ||
+        path.startsWith("assets/"),
+    );
+  if (retiredGitPath) {
+    throw new Error(`refusing retired git state publication for ${retiredGitPath}`);
   }
+  return publishGit(publicationOptions);
+}
 
-  let plan: StateAppendPlan;
-  try {
-    plan = planStateAppend(publicationOptions.paths, root, env.CLAWSWEEPER_STATE_DIR, runtime.now);
-  } catch {
-    console.warn("state-append shed/failed; falling back to git publish");
-    return publishGit(publicationOptions);
+const COMMIT_RECORD_PATH = /^records\/([A-Za-z0-9][A-Za-z0-9_.-]*)\/commits\/([a-f0-9]{40})\.md$/;
+
+function planCanonicalCommitRecords(requestedPaths: readonly string[], root: string) {
+  const recordsByRepository = new Map<string, CanonicalCommitRecord[]>();
+  const remainingPaths: string[] = [];
+  for (const requestedPath of requestedPaths) {
+    const normalized = normalizedPath(requestedPath);
+    if (!isRecordsPath(normalized)) {
+      remainingPaths.push(requestedPath);
+      continue;
+    }
+    for (const [path, content] of collectRequestedRecordFiles(root, [normalized])) {
+      const match = COMMIT_RECORD_PATH.exec(path);
+      if (!match?.[1] || !match[2]) {
+        throw new Error(`record publication path is not canonically addressable: ${path}`);
+      }
+      const records = recordsByRepository.get(match[1]) ?? [];
+      records.push({ sha: match[2], content, digest: sha256(content) });
+      recordsByRepository.set(match[1], records);
+    }
   }
-  if (plan.records.length === 0) return publishGit(publicationOptions);
-
-  const remainingPaths = publicationOptions.paths.filter((path) => !plan.consumedPaths.has(path));
-  // Router replay is crash-recoverable through deterministic job paths, stable
-  // dispatch keys, and live-run/status reconciliation. Publish those outputs
-  // first so an interrupted append is retried instead of suppressing missing work.
-  const publishRemainingFirst =
-    remainingPaths.length > 0 && plan.records.some((record) => record.kind === "comment_router");
-  const remainingResult = publishRemainingFirst
-    ? publishGit({ ...publicationOptions, paths: remainingPaths })
-    : undefined;
-  const contentHash = stateAppendContentHash(plan.records);
-  const deliveryId = `router:${stateAppendLane(plan.records)}-${deliveryPart(env.GITHUB_RUN_ID, "local")}-${deliveryPart(env.GITHUB_RUN_ATTEMPT, "1")}-${contentHash}`;
-
-  let appendResult: StateAppendResult;
-  try {
-    appendResult = await postStateAppend({
-      queueUrl,
-      webhookSecret,
-      deliveryId,
-      records: plan.records,
-      ...(runtime.fetchImpl ? { fetchImpl: runtime.fetchImpl } : {}),
-    });
-  } catch {
-    console.warn("state-append shed/failed; falling back to git publish");
-    return publishGit(publicationOptions);
+  for (const records of recordsByRepository.values()) {
+    records.sort((left, right) => left.sha.localeCompare(right.sha));
   }
-  if (!appendResult.ok || appendResult.shed) {
-    console.warn("state-append shed/failed; falling back to git publish");
-    return publishGit(publicationOptions);
-  }
-
-  if (remainingResult) return remainingResult;
-  if (remainingPaths.length > 0)
-    return publishGit({ ...publicationOptions, paths: remainingPaths });
-  console.log(
-    `Appended ${plan.records.length} state record(s) and ${canonicalAppended ? canonicalResolvedCount : 0} canonical tuple(s) to durable state`,
-  );
-  return "appended";
+  return { recordsByRepository, remainingPaths };
 }
 
 const RECORD_TUPLE_PATH =
@@ -190,6 +182,9 @@ function planCanonicalRecordTuples(
 ): CanonicalRecordPlan {
   const recordRequests = requestedPaths.filter((path) => isRecordsPath(normalizedPath(path)));
   if (recordRequests.length === 0) {
+    return { items: [], remainingPaths: [...requestedPaths] };
+  }
+  if (recordRequests.every((path) => isCommitRecordRequest(normalizedPath(path)))) {
     return { items: [], remainingPaths: [...requestedPaths] };
   }
   if (!stateRoot) throw new Error("record publication requires a hydrated state checkout");
@@ -290,6 +285,10 @@ function planCanonicalRecordTuples(
     return coveredChanges.filter((path) => !isRecordTupleProjectionPath(path));
   });
   return { items, remainingPaths: [...new Set(remainingPaths)] };
+}
+
+function isCommitRecordRequest(path: string): boolean {
+  return /^records\/[A-Za-z0-9][A-Za-z0-9_.-]*\/commits(?:\/|$)/.test(path);
 }
 
 function isRecordTupleProjectionPath(path: string): boolean {
@@ -664,143 +663,6 @@ function sha256(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-function planStateAppend(
-  paths: readonly string[],
-  root: string,
-  stateRoot: string | undefined,
-  now: (() => Date) | undefined,
-): StateAppendPlan {
-  const fallbackProducedAt = (now ?? (() => new Date()))().toISOString();
-  const plans = [
-    planSweepStatusAppend(paths, root, stateRoot, fallbackProducedAt),
-    planCommentRouterAppend(paths, root, fallbackProducedAt),
-    planApplyProofAppend(paths, root, fallbackProducedAt),
-  ];
-  return {
-    consumedPaths: new Set(plans.flatMap((plan) => [...plan.consumedPaths])),
-    records: plans.flatMap((plan) => plan.records),
-  };
-}
-
-function planSweepStatusAppend(
-  paths: readonly string[],
-  root: string,
-  stateRoot: string | undefined,
-  fallbackProducedAt: string,
-): StateAppendPlan {
-  const consumedPaths = new Set<string>();
-  const files = new Set<string>();
-  for (const originalPath of paths) {
-    const path = normalizedPath(originalPath);
-    if (SWEEP_STATUS_FILE_PATTERN.test(path)) {
-      const absolute = resolve(root, path);
-      if (existsSync(absolute) && statSync(absolute).isFile()) {
-        consumedPaths.add(originalPath);
-        files.add(path);
-      }
-      continue;
-    }
-    if (path !== SWEEP_STATUS_DIRECTORY) continue;
-    const absolute = resolve(root, path);
-    if (!existsSync(absolute) || !statSync(absolute).isDirectory()) continue;
-    if (!stateRoot) throw new Error("cannot prove sweep status directory append is lossless");
-    const stateDirectory = resolve(stateRoot, path);
-    if (!existsSync(stateDirectory) || !statSync(stateDirectory).isDirectory()) {
-      throw new Error("cannot compare sweep status directory with state checkout");
-    }
-    const sourceNames = sweepStatusDirectoryNames(absolute);
-    const stateNames = sweepStatusDirectoryNames(stateDirectory);
-    if (stateNames.some((name) => !sourceNames.includes(name))) {
-      throw new Error("sweep status directory contains a deletion that requires git publish");
-    }
-    const directoryFiles = sourceNames.map((name) => `${SWEEP_STATUS_DIRECTORY}/${name}`);
-    if (directoryFiles.length === 0) continue;
-    consumedPaths.add(originalPath);
-    for (const file of directoryFiles) files.add(file);
-  }
-
-  const records = [...files].sort().map((path): StateAppendInputRecord => {
-    const match = SWEEP_STATUS_FILE_PATTERN.exec(path);
-    if (!match) throw new Error(`invalid sweep status path: ${path}`);
-    const payload = JSON.parse(readContainedRegularFile(root, path)) as unknown;
-    if (!isRecord(payload) || payload.slug !== match[1]) {
-      throw new Error(`sweep status payload slug does not match ${path}`);
-    }
-    const updatedAt = typeof payload.updated_at === "string" ? payload.updated_at : "";
-    return {
-      kind: "sweep_status",
-      key: path,
-      payload,
-      produced_at: Number.isFinite(Date.parse(updatedAt)) ? updatedAt : fallbackProducedAt,
-    };
-  });
-  return { consumedPaths, records };
-}
-
-function planCommentRouterAppend(
-  paths: readonly string[],
-  root: string,
-  fallbackProducedAt: string,
-): StateAppendPlan {
-  const consumedPaths = new Set<string>();
-  const records: StateAppendInputRecord[] = [];
-  for (const originalPath of paths) {
-    const path = normalizedPath(originalPath);
-    if (path !== COMMENT_ROUTER_LEDGER_PATH) continue;
-    const absolute = resolve(root, path);
-    if (!existsSync(absolute) || !statSync(absolute).isFile()) continue;
-    const payload = JSON.parse(readContainedRegularFile(root, path)) as unknown;
-    if (!isRecord(payload)) throw new Error("comment router ledger must be a JSON object");
-    const payloadText = JSON.stringify(payload);
-    const updatedAt = typeof payload.updated_at === "string" ? payload.updated_at : "";
-    consumedPaths.add(originalPath);
-    records.push({
-      kind: "comment_router",
-      key: createHash("sha256").update(payloadText).digest("hex"),
-      payload,
-      produced_at: Number.isFinite(Date.parse(updatedAt)) ? updatedAt : fallbackProducedAt,
-    });
-  }
-  return { consumedPaths, records };
-}
-
-function planApplyProofAppend(
-  paths: readonly string[],
-  root: string,
-  producedAt: string,
-): StateAppendPlan {
-  const consumedPaths = new Set<string>();
-  const records: StateAppendInputRecord[] = [];
-  for (const originalPath of paths) {
-    const path = normalizedPath(originalPath);
-    if (!isActionEventPublishPath(path)) continue;
-    const absolute = resolve(root, path);
-    if (!existsSync(absolute) || !statSync(absolute).isFile()) continue;
-    const payload = readContainedRegularFile(root, path);
-    if (Buffer.byteLength(JSON.stringify(payload)) > STATE_APPEND_MAX_RECORD_BYTES) {
-      console.warn(
-        `State append apply-proof record ${path} exceeds ${STATE_APPEND_MAX_RECORD_BYTES} bytes; using git fallback`,
-      );
-      continue;
-    }
-    consumedPaths.add(originalPath);
-    records.push({ kind: "apply_proof", key: path, payload, produced_at: producedAt });
-  }
-  return { consumedPaths, records };
-}
-
-function sweepStatusDirectoryNames(directory: string): string[] {
-  const entries = readdirSync(directory, { withFileTypes: true });
-  if (
-    entries.some(
-      (entry) => !entry.isFile() || !/^[A-Za-z0-9][A-Za-z0-9_.-]*\.json$/.test(entry.name),
-    )
-  ) {
-    throw new Error("sweep status directory contains an unrepresentable entry");
-  }
-  return entries.map((entry) => entry.name).sort();
-}
-
 function readContainedRegularFile(root: string, path: string): string {
   const realRoot = realpathSync(root);
   const candidate = resolve(realRoot, path);
@@ -827,21 +689,6 @@ function deliveryPart(value: string | undefined, fallback: string): string {
     .trim()
     .replace(/[^A-Za-z0-9_.-]/g, "-");
   return normalized || fallback;
-}
-
-function stateAppendContentHash(records: readonly StateAppendInputRecord[]): string {
-  return createHash("sha256")
-    .update(JSON.stringify(records.map(({ kind, key, payload }) => ({ kind, key, payload }))))
-    .digest("hex");
-}
-
-function stateAppendLane(records: readonly StateAppendInputRecord[]): string {
-  const kinds = [...new Set(records.map((record) => record.kind))];
-  return kinds.length === 1 ? kinds[0]!.replaceAll("_", "-") : "mixed";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function parseArgs(argv: readonly string[]): Args {
@@ -879,14 +726,8 @@ function parsePositiveInt(value: string, flag: string): number {
 }
 
 function parseRebaseStrategy(value: string): RebaseStrategy {
-  if (
-    value === "normal" ||
-    value === "theirs" ||
-    value === "apply-records" ||
-    value === "reconcile-records"
-  )
-    return value;
-  throw new Error("--rebase-strategy must be normal, theirs, apply-records, or reconcile-records");
+  if (value === "normal" || value === "theirs") return value;
+  throw new Error("--rebase-strategy must be normal or theirs");
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
@@ -896,8 +737,8 @@ if (invokedPath && invokedPath === fileURLToPath(import.meta.url)) {
     message: args.message,
     paths: args.paths,
     restorePaths: args.restorePaths,
-    maxAttempts: args.maxAttempts,
-    pushAttempts: args.pushAttempts,
-    rebaseStrategy: args.rebaseStrategy,
+    ...(args.maxAttempts ? { maxAttempts: args.maxAttempts } : {}),
+    ...(args.pushAttempts ? { pushAttempts: args.pushAttempts } : {}),
+    ...(args.rebaseStrategy ? { rebaseStrategy: args.rebaseStrategy } : {}),
   });
 }

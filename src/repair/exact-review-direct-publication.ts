@@ -1,6 +1,5 @@
 import { createHmac } from "node:crypto";
 import fs from "node:fs";
-import path from "node:path";
 
 import type {
   PreparedStateMutationOperation,
@@ -34,21 +33,12 @@ export function prepareDirectPublicationPayload(options: {
   itemKey: string;
   revision: number;
   plan: PreparedStateMutationPlan;
-  stateRoot: string;
 }): DirectPublicationPayload {
-  const operations = options.plan.operations.map((operation): DirectPublicationOperation => {
-    if (operation.targetOid === null) return { ...operation };
-    const content = fs.readFileSync(path.join(options.stateRoot, operation.path));
-    if (content.byteLength !== operation.bytes) {
-      throw new Error(`Prepared blob size changed for ${operation.path}`);
-    }
-    return { ...operation, contentBase64: content.toString("base64") };
-  });
   return {
     itemKey: options.itemKey,
     revision: options.revision,
     identity: { ...options.plan.identity },
-    operations,
+    operations: options.plan.operations.map((operation) => ({ ...operation })),
     totalBytes: options.plan.totalBytes,
   };
 }
@@ -148,7 +138,6 @@ export async function runExactReviewDirectPublicationFromEnv() {
     itemKey: requiredEnv("EXACT_REVIEW_DIRECT_ITEM_KEY"),
     revision: positiveInteger(requiredEnv("EXACT_REVIEW_DIRECT_REVISION"), "revision"),
     plan: outcome.plan,
-    stateRoot: requiredEnv("CLAWSWEEPER_STATE_DIR"),
   });
   const result = await postDirectPublicationResult({
     baseUrl: requiredEnv("EXACT_REVIEW_QUEUE_URL"),
@@ -160,7 +149,7 @@ export async function runExactReviewDirectPublicationFromEnv() {
   writeGithubOutput("attempts", String(result.attempts));
   if (result.kind === "fallback") {
     writeGithubOutput("reason", result.reason.replace(/[\r\n]/g, " ").slice(0, 500));
-    console.warn(`Direct exact-review publication fell back to the legacy queue: ${result.reason}`);
+    console.warn(`Direct exact-review publication deferred to the durable queue: ${result.reason}`);
   }
 }
 

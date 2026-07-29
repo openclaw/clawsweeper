@@ -22,16 +22,6 @@ import {
   exactEventRoutingDeferred,
   type EventApplyAction,
 } from "./event-apply-proof.js";
-import {
-  captureStatePublishBaseline,
-  configureGitUser,
-  GitCommandTimeoutError,
-  hardResetToRemoteMain,
-  publishRoot,
-  refreshSourceAfterStatePublish,
-  runGit,
-  setTokenOrigin,
-} from "./git-publish.js";
 import { isJsonObject } from "./json-types.js";
 import { RecordTupleError } from "./record-tuple.js";
 import {
@@ -104,16 +94,13 @@ const options = eventOptionsFromEnv();
 try {
   await publishEventResult(options);
 } catch (error) {
-  const retryableFailure = error instanceof GitCommandTimeoutError;
-  const completionKind = retryableFailure ? "retryable_failure" : "permanent_failure";
+  const completionKind = "permanent_failure";
   const reasonCode =
-    error instanceof GitCommandTimeoutError
-      ? "github_transient"
-      : error instanceof PublicationResultError
-        ? error.reasonCode
-        : error instanceof RecordTupleError
-          ? "tuple_protocol_invalid"
-          : "unknown_failure";
+    error instanceof PublicationResultError
+      ? error.reasonCode
+      : error instanceof RecordTupleError
+        ? "tuple_protocol_invalid"
+        : "unknown_failure";
   const fingerprint = errorFingerprint(error);
   if (options.batchMutationOutput) {
     writeBatchMutationResult(options.batchMutationOutput, {
@@ -129,23 +116,13 @@ try {
 async function publishEventResult(options: EventOptions): Promise<void> {
   validateTargetRepo(options.targetRepo);
   validateItemNumber(options.itemNumber);
-  const repository = process.env.GITHUB_REPOSITORY;
-  const repoToken = process.env.REPO_TOKEN;
-  if (!publishRoot() && repository && repoToken) setTokenOrigin(repoToken, repository);
-  configureGitUser();
-
   const recordStore = {
     targetRepo: options.targetRepo,
     itemNumber: options.itemNumber,
     snapshotDir: options.snapshotDir,
   };
-  const stateRoot = publishRoot();
-
   resetEventSnapshot(recordStore);
-  const recordPaths = captureEventBaseSnapshot(
-    recordStore,
-    stateRoot ? { sourceRoot: stateRoot } : {},
-  );
+  const recordPaths = captureEventBaseSnapshot(recordStore, { sourceRoot: options.workRoot });
   fs.rmSync(options.reportPath, { force: true });
 
   runClawsweeper(options, [
@@ -164,11 +141,9 @@ async function publishEventResult(options: EventOptions): Promise<void> {
   // A stale event must be rejected before apply-decisions can comment, label,
   // or close anything on GitHub.
   captureEventSnapshot(recordStore);
-  hardResetToRemoteMain();
-  const stateBaseCommit = captureStatePublishBaseline();
   const preflightResult = applyEventSnapshotIfCurrent(
     recordPaths,
-    stateRoot ? { remoteRoot: stateRoot } : {},
+    { remoteRoot: options.workRoot },
     () => runApplyDecisions(options, recordPaths),
   );
   if (
@@ -179,15 +154,6 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     const disposition = staleEventDisposition(preflightResult);
     console.log(
       `Skipping stale event apply for ${options.targetRepo}#${options.itemNumber}: ${disposition.detail}`,
-    );
-    refreshSourceAfterStatePublish(
-      [
-        recordPaths.itemRecord,
-        recordPaths.closedRecord,
-        recordPaths.planRecord,
-        recordPaths.decisionPacket,
-      ],
-      stateBaseCommit,
     );
     writeSummary({
       targetRepo: options.targetRepo,
@@ -301,7 +267,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     const prepared = prepareBatchMutation({
       paths: recordPaths,
       options,
-      stateBaseCommit,
+      stateBaseCommit: null,
       guardedOpenAction,
       requeueLatestExpected,
       routableSyncExpected,
@@ -375,10 +341,7 @@ function prepareBatchMutation({
   terminalClosedExpected: boolean;
   terminalMissingExpected: boolean;
 }) {
-  const stateRoot = publishRoot();
-  if (!stateRoot) throw new Error("Batch mutation preparation requires an isolated state root");
-  hardResetToRemoteMain();
-  const snapshotResult = applyEventSnapshot(paths, { remoteRoot: stateRoot });
+  const snapshotResult = applyEventSnapshot(paths, { remoteRoot: options.workRoot });
   if (snapshotResult === "remote-closed" || snapshotResult === "remote-newer") {
     return { kind: "superseded" as const };
   }
@@ -429,18 +392,13 @@ function prepareTupleMutationPlan(
   ];
   const operations: StateMutationSourceOperation[] = [];
   for (const path of commitPaths) {
-    const expectedOid = runGit(["rev-parse", "--verify", `HEAD:${path}`], {
-      allowFailure: true,
-      quiet: true,
-    }).trim();
     const contentPath = join(contentRoot, path);
     if (!fs.existsSync(contentPath)) {
-      if (expectedOid) operations.push({ path, expectedOid, delete: true });
+      operations.push({ path, delete: true });
       continue;
     }
     operations.push({
       path,
-      expectedOid: expectedOid || null,
       content: fs.readFileSync(contentPath),
     });
   }
@@ -605,9 +563,7 @@ async function publishSnapshot({
     return published;
   };
   try {
-    hardResetToRemoteMain();
-    const stateRoot = publishRoot();
-    const snapshotResult = applyEventSnapshot(paths, stateRoot ? { remoteRoot: stateRoot } : {});
+    const snapshotResult = applyEventSnapshot(paths, { remoteRoot: options.workRoot });
     if (snapshotResult === "remote-closed") {
       console.log(
         `Remote already has closed record for ${paths.targetSlug}#${options.itemNumber}; skipping open-record publish`,
@@ -647,7 +603,6 @@ async function publishSnapshot({
         itemKey,
         revision,
         plan,
-        stateRoot: options.workRoot,
       }),
     });
     if (publication.kind === "fallback") {
@@ -659,7 +614,6 @@ async function publishSnapshot({
     return complete(true);
   } catch (error) {
     if (
-      error instanceof GitCommandTimeoutError ||
       error instanceof RecordTupleError ||
       error instanceof GuardedOpenPublishRaceError ||
       error instanceof RoutableSyncPublishRaceError ||

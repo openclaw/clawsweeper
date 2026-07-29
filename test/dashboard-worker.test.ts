@@ -2130,8 +2130,7 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
     operations: [
       {
         path: "records/openclaw-openclaw/items/701.md",
-        expectedOid: null,
-        targetOid: "c1b0730e0133447badcfd47fd144e254807b06e1",
+        deleted: false,
         mode: "100644",
         bytes: 1,
         contentBase64: "eA==",
@@ -2164,7 +2163,7 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
       ...expected,
       superseded: false,
       superseded_revisions: [],
-      state_commit_sha: "do-txn:1",
+      state_commit_sha: "do-revision:4",
     });
   }
 
@@ -2275,7 +2274,7 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
   });
 });
 
-test("record backfill and export authenticate, page, increment, dedupe, and preserve live revisions", async () => {
+test("canonical commit records and tuples export with one monotonic revision", async () => {
   const storage = new MemoryDurableStorage();
   const leased = leasedExactReviewQueueItem(711, "7110");
   leased.revision = 4;
@@ -2290,15 +2289,14 @@ test("record backfill and export authenticate, page, increment, dedupe, and pres
   };
   const commitId = "a".repeat(40);
   const seedRecords = [
-    { section: "items", id: "711", content: "legacy-item" },
-    { section: "plans", id: "712", content: "legacy-plan" },
-    { section: "commits", id: commitId, content: "legacy-commit" },
-  ].map((record) => ({
-    ...record,
-    digest: createHash("sha256").update(record.content).digest("hex"),
-  }));
-  const ingestPayload = { repoSlug: "openclaw-openclaw", records: seedRecords };
-  const ingestPath = "/internal/state/records/ingest";
+    {
+      sha: commitId,
+      content: "canonical-commit",
+      digest: createHash("sha256").update("canonical-commit").digest("hex"),
+    },
+  ];
+  const ingestPayload = { repo_slug: "openclaw-openclaw", records: seedRecords };
+  const ingestPath = "/internal/state/records/commits";
   const unsigned = await worker.fetch(
     stateAppendQueueRequest(ingestPath, ingestPayload, "https://clawsweeper.openclaw.ai"),
     env,
@@ -2312,11 +2310,10 @@ test("record backfill and export authenticate, page, increment, dedupe, and pres
   assert.equal(first.status, 202);
   assert.deepEqual(await first.json(), {
     ok: true,
-    repoSlug: "openclaw-openclaw",
-    inserted: 3,
+    repo_slug: "openclaw-openclaw",
+    inserted: 1,
     unchanged: 0,
-    skippedNewer: 0,
-    watermark: 3,
+    watermark: 1,
   });
   const repeated = await worker.fetch(
     signedStateAppendRequest(ingestPath, ingestPayload, secret),
@@ -2324,11 +2321,10 @@ test("record backfill and export authenticate, page, increment, dedupe, and pres
   );
   assert.deepEqual(await repeated.json(), {
     ok: true,
-    repoSlug: "openclaw-openclaw",
+    repo_slug: "openclaw-openclaw",
     inserted: 0,
-    unchanged: 3,
-    skippedNewer: 0,
-    watermark: 3,
+    unchanged: 1,
+    watermark: 1,
   });
 
   const publication = {
@@ -2338,8 +2334,7 @@ test("record backfill and export authenticate, page, increment, dedupe, and pres
     operations: [
       {
         path: "records/openclaw-openclaw/items/711.md",
-        expectedOid: null,
-        targetOid: "b".repeat(40),
+        deleted: false,
         mode: "100644",
         bytes: 4,
         contentBase64: Buffer.from("live").toString("base64"),
@@ -2360,15 +2355,11 @@ test("record backfill and export authenticate, page, increment, dedupe, and pres
   assert.equal(published.status, 202);
 
   const guarded = await worker.fetch(
-    signedStateAppendRequest(
-      ingestPath,
-      { repoSlug: "openclaw-openclaw", records: [seedRecords[0]] },
-      secret,
-    ),
+    signedStateAppendRequest(ingestPath, ingestPayload, secret),
     env,
   );
   assert.equal(guarded.status, 202);
-  assert.equal((await guarded.json()).skippedNewer, 1);
+  assert.equal((await guarded.json()).unchanged, 1);
 
   const exportPath = "/internal/state/records/export";
   const pageOnePayload = {
@@ -2388,7 +2379,7 @@ test("record backfill and export authenticate, page, increment, dedupe, and pres
   assert.equal(pageOneResponse.status, 200);
   const pageOne = await pageOneResponse.json();
   assert.equal(pageOne.records.length, 1);
-  assert.equal(pageOne.nextCursor, 3);
+  assert.equal(pageOne.nextCursor, 1);
   const pageTwo = await (
     await worker.fetch(
       signedStateAppendRequest(
@@ -2400,7 +2391,7 @@ test("record backfill and export authenticate, page, increment, dedupe, and pres
     )
   ).json();
   assert.equal(pageTwo.records.length, 1);
-  assert.equal(pageTwo.nextCursor, 4);
+  assert.equal(pageTwo.nextCursor, 2);
   const terminalPage = await (
     await worker.fetch(
       signedStateAppendRequest(
@@ -2419,7 +2410,7 @@ test("record backfill and export authenticate, page, increment, dedupe, and pres
     content: "live",
     digest: createHash("sha256").update("live").digest("hex"),
     revision: 4,
-    storeRevision: 4,
+    storeRevision: 2,
     updatedAt: pageTwo.records[0].updatedAt,
     deleted: false,
   });
@@ -2427,7 +2418,7 @@ test("record backfill and export authenticate, page, increment, dedupe, and pres
     await worker.fetch(
       signedStateAppendRequest(
         exportPath,
-        { repoSlug: "openclaw-openclaw", sections: ["items"], sinceRevision: 3 },
+        { repoSlug: "openclaw-openclaw", sections: ["items"], sinceRevision: 1 },
         secret,
       ),
       env,
@@ -2435,16 +2426,15 @@ test("record backfill and export authenticate, page, increment, dedupe, and pres
   ).json();
   assert.deepEqual(incremental.records, pageTwo.records);
 
-  const conflictingContent = "changed-plan";
+  const conflictingContent = "changed-commit";
   const conflict = await worker.fetch(
     signedStateAppendRequest(
       ingestPath,
       {
-        repoSlug: "openclaw-openclaw",
+        repo_slug: "openclaw-openclaw",
         records: [
           {
-            section: "plans",
-            id: "712",
+            sha: commitId,
             content: conflictingContent,
             digest: createHash("sha256").update(conflictingContent).digest("hex"),
           },
@@ -2455,7 +2445,7 @@ test("record backfill and export authenticate, page, increment, dedupe, and pres
     env,
   );
   assert.equal(conflict.status, 409);
-  assert.deepEqual(await conflict.json(), { error: "canonical_record_backfill_conflict" });
+  assert.deepEqual(await conflict.json(), { error: "canonical_commit_record_conflict" });
 });
 
 test("record slug discovery authenticates and lists per-repository revisions", async () => {
@@ -2477,22 +2467,21 @@ test("record slug discovery authenticates and lists per-repository revisions", a
   assert.equal(empty.status, 200);
   assert.deepEqual(await empty.json(), { ok: true, repositories: [] });
 
-  const seed = (slug: string, id: string, content: string) => ({
-    repoSlug: slug,
+  const seed = (slug: string, sha: string, content: string) => ({
+    repo_slug: slug,
     records: [
       {
-        section: "items",
-        id,
+        sha,
         content,
         digest: createHash("sha256").update(content).digest("hex"),
       },
     ],
   });
-  const ingestPath = "/internal/state/records/ingest";
+  const ingestPath = "/internal/state/records/commits";
   for (const payload of [
-    seed("zz-later", "1", "later-first"),
-    seed("aa-early", "2", "early"),
-    seed("zz-later", "3", "later-second"),
+    seed("zz-later", "a".repeat(40), "later-first"),
+    seed("aa-early", "b".repeat(40), "early"),
+    seed("zz-later", "c".repeat(40), "later-second"),
   ]) {
     const ingested = await worker.fetch(signedStateAppendRequest(ingestPath, payload, secret), env);
     assert.equal(ingested.status, 202);
@@ -2543,16 +2532,16 @@ test("record snapshots authenticate, stream multipart R2 objects, serve ranges, 
     EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
   };
   const records = [
-    { section: "items", id: "901", content: "snapshot item\n" },
-    { section: "decision-packets", id: "901", content: '{"decision":"snapshot"}\n' },
+    { sha: "d".repeat(40), content: "snapshot commit one\n" },
+    { sha: "e".repeat(40), content: "snapshot commit two\n" },
   ].map((record) => ({
     ...record,
     digest: createHash("sha256").update(record.content).digest("hex"),
   }));
   const ingest = await worker.fetch(
     signedStateAppendRequest(
-      "/internal/state/records/ingest",
-      { repoSlug: "openclaw-openclaw", records },
+      "/internal/state/records/commits",
+      { repo_slug: "openclaw-openclaw", records },
       secret,
     ),
     env,
@@ -2605,9 +2594,9 @@ test("record snapshots authenticate, stream multipart R2 objects, serve ranges, 
     `bytes 0-${latestSnapshot.bytes - 1}/${latestSnapshot.bytes}`,
   );
   const tar = gunzipSync(Buffer.from(await chunk.arrayBuffer()));
-  assert.match(tar.toString("utf8"), /items\/901\.md/);
-  assert.match(tar.toString("utf8"), /snapshot item/);
-  assert.match(tar.toString("utf8"), /decision-packets\/901\.json/);
+  assert.match(tar.toString("utf8"), new RegExp(`commits/${"d".repeat(40)}\\.md`));
+  assert.match(tar.toString("utf8"), /snapshot commit one/);
+  assert.match(tar.toString("utf8"), new RegExp(`commits/${"e".repeat(40)}\\.md`));
 });
 
 test("exact-review queue counts only work that successfully leaves each lane", async () => {
@@ -9075,7 +9064,7 @@ test("state append is idempotent by delivery and reports bounded-window stats", 
   });
 });
 
-test("canonical tuple publication updates Worker authority and appends one projection", async () => {
+test("canonical tuple publication updates Worker authority without a git projection row", async () => {
   const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
   const item =
     "---\nrepo: openclaw/openclaw\nnumber: 42\nreviewed_at: 2026-07-26T02:00:00.000Z\n---\n\nreview\n";
@@ -9101,7 +9090,6 @@ test("canonical tuple publication updates Worker authority and appends one proje
     accepted: true,
     deduped: false,
     revision: 1,
-    sequence: 1,
   });
   const duplicate = await queue.fetch(stateAppendQueueRequest("/records/tuples", mutation));
   assert.equal(duplicate.status, 202);
@@ -9121,10 +9109,7 @@ test("canonical tuple publication updates Worker authority and appends one proje
       stateAppendQueueRequest("/state/drain", { max_rows: 10, max_bytes: 1024 * 1024 }),
     )
   ).json();
-  assert.equal(drained.records.length, 1);
-  assert.equal(drained.records[0].kind, "record_tuple");
-  assert.equal(drained.records[0].key, "openclaw-openclaw/42");
-  assert.equal(drained.records[0].payload.operations.length, 4);
+  assert.deepEqual(drained.records, []);
 
   const reconciledItem = item.replace(
     "reviewed_at: 2026-07-26T02:00:00.000Z",
@@ -9274,12 +9259,11 @@ test("apply preselect and checkpoint publish captured canonical tuple baselines"
     {
       message: "chore: persist sweep reconciliation",
       paths: [itemPath, closedPath, planPath, packetPath],
-      rebaseStrategy: "reconcile-records",
+      rebaseStrategy: "normal",
     },
     {
       root,
       env: {
-        CLAWSWEEPER_STATE_APPEND_ENABLED: "1",
         CLAWSWEEPER_STATE_DIR: sparseStateRoot,
         CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: canonicalBaselineRoot,
         CLAWSWEEPER_CANONICAL_PUBLICATION_KIND: "reconcile",
@@ -9388,12 +9372,11 @@ test("apply preselect and checkpoint publish captured canonical tuple baselines"
     {
       message: "chore: apply sweep decisions checkpoint 1",
       paths: [tupleRoot],
-      rebaseStrategy: "reconcile-records",
+      rebaseStrategy: "normal",
     },
     {
       root,
       env: {
-        CLAWSWEEPER_STATE_APPEND_ENABLED: "1",
         CLAWSWEEPER_STATE_DIR: sparseStateRoot,
         CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: applyBaselineRoot,
         QUEUE_URL: "https://queue.test",
@@ -9425,7 +9408,7 @@ test("canonical tuple failures return stable errors and sanitize server logs", a
   const queue = new ExactReviewQueue({ storage }, {});
   const secret = "canonical-storage-secret";
   storage.failNextSql(
-    /INSERT INTO state_append_window/,
+    /INSERT INTO exact_review_canonical_records/,
     new Error(
       `database unavailable at https://operator:${secret}@storage.example/records?token=${secret}`,
     ),
@@ -9908,7 +9891,7 @@ test("continuous cluster intake cannot starve ordinary state append rows", async
     "cluster_intake",
     "apply_proof",
     "cluster_intake",
-    "record_tuple",
+    "cluster_intake",
   ]);
 });
 
@@ -13543,7 +13526,7 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
     stateWriterHtml,
     /Serialization queue<\/span><strong>0 active · 0 queued · 1 writer max/,
   );
-  assert.match(stateWriterHtml, /Git crash fence<\/span><strong>free/);
+  assert.doesNotMatch(stateWriterHtml, /Git crash fence/);
   assert.match(stateWriterHtml, /Coordinator turns<\/dt><dd>16 completed · 16 admitted/);
   assert.match(stateWriterHtml, /Coordinator wait<\/dt><dd>last 0s · max 5m/);
   assert.match(stateWriterHtml, /Queue history<\/dt><dd>collecting samples/);

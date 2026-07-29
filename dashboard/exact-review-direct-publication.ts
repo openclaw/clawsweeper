@@ -15,7 +15,6 @@ export const EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1
 
 const DIRECT_PUBLICATION_TERMINAL_PRUNE_LIMIT = 256;
 const MAX_PATH_BYTES = 1024;
-const STATE_APPEND_WINDOW_TABLE = "state_append_window";
 const RECORD_SECTIONS = new Set<RecordSection>([
   "items",
   "closed",
@@ -38,8 +37,7 @@ export type ExactReviewTupleRecordSection = Exclude<RecordSection, "commits">;
 
 export type DirectPublicationOperation = {
   path: string;
-  expectedOid: string | null;
-  targetOid: string | null;
+  deleted: boolean;
   mode: "100644";
   bytes: number;
   contentBase64?: string;
@@ -87,12 +85,6 @@ export type DirectPublicationAcceptResult = {
   outcome: "accepted" | "deduped" | "superseded";
   row: DirectPublicationRow;
   supersededRevisions: number[];
-};
-
-export type DirectPublicationProjectionLimits = {
-  maxRecordBytes: number;
-  maxPendingRows: number;
-  maxPendingBytes: number;
 };
 
 export type CanonicalRecord = {
@@ -147,8 +139,8 @@ export type RecordExportEntry = {
   deleted: boolean;
 };
 
-export type RecordBackfillInput = {
-  section: RecordSection;
+export type CanonicalCommitRecordInput = {
+  section: "commits";
   id: string;
   content: string;
   digest: string;
@@ -159,13 +151,6 @@ export type RecordSnapshotIdentity = {
   section: RecordSection;
   id: string;
 };
-
-export class DirectPublicationProjectionCapacityError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "DirectPublicationProjectionCapacityError";
-  }
-}
 
 export class CanonicalRecordTupleConflictError extends Error {
   readonly current: CanonicalRecordTupleConflictState | null;
@@ -322,11 +307,7 @@ export class ExactReviewDirectPublicationStore {
     this.seedExportIndexFromCanonicalSync();
   }
 
-  accept(
-    plan: CanonicalDirectPublicationPlan,
-    now: number,
-    limits: DirectPublicationProjectionLimits,
-  ): DirectPublicationAcceptResult {
+  accept(plan: CanonicalDirectPublicationPlan, now: number): DirectPublicationAcceptResult {
     const storedOperations = storedOperationsFrom(plan.operations);
     const canonicalOperations = canonicalTupleOperations(plan);
     return this.storage.transactionSync(() => {
@@ -334,9 +315,6 @@ export class ExactReviewDirectPublicationStore {
       const existing = this.readSync(plan.itemKey, plan.revision);
       if (existing) {
         if (["pending", "committing", "retryable"].includes(existing.state)) {
-          if (!legacyPlanMatches(existing, plan)) {
-            throw new Error("conflicting legacy direct publication retry");
-          }
           this.storage.sql.exec(
             `DELETE FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
               WHERE item_key = ? AND revision = ?`,
@@ -381,47 +359,14 @@ export class ExactReviewDirectPublicationStore {
         ),
       );
 
-      const projection = recordTupleProjection(
-        { ...plan, operations: canonicalOperations },
-        limits.maxRecordBytes,
-        canonicalRevision,
-      );
-      const totals = stateAppendWindowTotalsSync(this.storage);
-      if (
-        totals.pendingRows + 1 > limits.maxPendingRows ||
-        totals.pendingBytes + projection.payloadBytes > limits.maxPendingBytes
-      ) {
-        throw new DirectPublicationProjectionCapacityError(
-          `record tuple projection capacity exceeded: rows=${totals.pendingRows}/${limits.maxPendingRows} bytes=${totals.pendingBytes}/${limits.maxPendingBytes} incoming=${projection.payloadBytes}`,
-        );
-      }
-
       for (const operation of canonicalOperations)
         this.writeCanonicalOperationSync(operation, plan, now, canonicalRevision);
-      const inserted = Array.from(
-        this.storage.sql.exec(
-          `INSERT INTO ${STATE_APPEND_WINDOW_TABLE}
-             (kind, record_key, payload_json, payload_bytes, produced_at, delivery_id)
-           VALUES ('record_tuple', ?, ?, ?, ?, ?)
-           RETURNING seq`,
-          projection.key,
-          projection.payloadJson,
-          projection.payloadBytes,
-          new Date(now).toISOString(),
-          `record-tuple:${plan.itemKey}:${plan.revision}:${plan.identity.claimGeneration}`,
-        ) as Iterable<{ seq: number }>,
-      )[0];
-      const sequence = Number(inserted?.seq);
-      if (!Number.isSafeInteger(sequence) || sequence < 1) {
-        throw new Error("record tuple projection failed to allocate a sequence");
-      }
-      const receipt = `do-txn:${sequence}`;
       const row = directPublicationRowFromPlan({
         plan,
         operations: storedOperations,
         state: "published",
         now,
-        commitSha: receipt,
+        commitSha: `do-revision:${canonicalRevision}`,
         failureReason: null,
       });
       this.insertSync(row);
@@ -429,11 +374,7 @@ export class ExactReviewDirectPublicationStore {
     });
   }
 
-  acceptCanonicalTupleMutation(
-    mutation: ValidatedCanonicalRecordTupleMutation,
-    now: number,
-    limits: DirectPublicationProjectionLimits,
-  ) {
+  acceptCanonicalTupleMutation(mutation: ValidatedCanonicalRecordTupleMutation, now: number) {
     return this.storage.transactionSync(() => {
       this.storage.sql.exec(
         `DELETE FROM ${CANONICAL_RECORD_TUPLE_RECEIPT_TABLE}
@@ -462,7 +403,6 @@ export class ExactReviewDirectPublicationStore {
         return {
           outcome: "deduped" as const,
           revision: Number(receipt.revision),
-          sequence: Number(receipt.sequence),
         };
       }
 
@@ -490,35 +430,8 @@ export class ExactReviewDirectPublicationStore {
         operations: mutation.operations,
         totalBytes: mutation.operations.reduce((sum, operation) => sum + operation.bytes, 0),
       };
-      const projection = recordTupleProjection(plan, limits.maxRecordBytes, revision);
-      const totals = stateAppendWindowTotalsSync(this.storage);
-      if (
-        totals.pendingRows + 1 > limits.maxPendingRows ||
-        totals.pendingBytes + projection.payloadBytes > limits.maxPendingBytes
-      ) {
-        throw new DirectPublicationProjectionCapacityError(
-          `record tuple projection capacity exceeded: rows=${totals.pendingRows}/${limits.maxPendingRows} bytes=${totals.pendingBytes}/${limits.maxPendingBytes} incoming=${projection.payloadBytes}`,
-        );
-      }
       for (const operation of mutation.operations) {
         this.writeCanonicalOperationSync(operation, plan, now, revision);
-      }
-      const inserted = Array.from(
-        this.storage.sql.exec(
-          `INSERT INTO ${STATE_APPEND_WINDOW_TABLE}
-             (kind, record_key, payload_json, payload_bytes, produced_at, delivery_id)
-           VALUES ('record_tuple', ?, ?, ?, ?, ?)
-           RETURNING seq`,
-          projection.key,
-          projection.payloadJson,
-          projection.payloadBytes,
-          new Date(now).toISOString(),
-          mutation.deliveryId,
-        ) as Iterable<{ seq: number }>,
-      )[0];
-      const sequence = Number(inserted?.seq);
-      if (!Number.isSafeInteger(sequence) || sequence < 1) {
-        throw new Error("canonical tuple publication failed to allocate a sequence");
       }
       this.storage.sql.exec(
         `INSERT INTO ${CANONICAL_RECORD_TUPLE_RECEIPT_TABLE}
@@ -527,10 +440,10 @@ export class ExactReviewDirectPublicationStore {
         mutation.deliveryId,
         mutation.fingerprint,
         revision,
-        sequence,
+        revision,
         now,
       );
-      return { outcome: "accepted" as const, revision, sequence };
+      return { outcome: "accepted" as const, revision };
     });
   }
 
@@ -694,9 +607,13 @@ export class ExactReviewDirectPublicationStore {
     };
   }
 
-  ingestBackfill(repoSlug: string, records: readonly RecordBackfillInput[], now: number) {
+  publishCanonicalCommits(
+    repoSlug: string,
+    records: readonly CanonicalCommitRecordInput[],
+    now: number,
+  ) {
     return this.storage.transactionSync(() => {
-      const result = { inserted: 0, unchanged: 0, skippedNewer: 0 };
+      const result = { inserted: 0, unchanged: 0 };
       for (const record of records) {
         const existing = Array.from(
           this.storage.sql.exec(
@@ -709,17 +626,12 @@ export class ExactReviewDirectPublicationStore {
           ),
         )[0];
         if (existing) {
-          const revision = Number(existing.revision);
-          if (revision > 0 || String(existing.source) === "canonical") {
-            result.skippedNewer += 1;
-            continue;
-          }
           if (Number(existing.deleted) === 0 && String(existing.digest) === record.digest) {
             result.unchanged += 1;
             continue;
           }
           throw new Error(
-            `conflicting revision-0 backfill for ${repoSlug}/${record.section}/${record.id}`,
+            `conflicting canonical commit record for ${repoSlug}/${record.section}/${record.id}`,
           );
         }
         this.writeBackfillRecordSync(repoSlug, record, now);
@@ -728,7 +640,7 @@ export class ExactReviewDirectPublicationStore {
           `INSERT INTO ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
              (repo_slug, section, record_id, digest, deleted, revision, store_revision,
               source, updated_at)
-           VALUES (?, ?, ?, ?, 0, 0, ?, 'backfill', ?)`,
+           VALUES (?, ?, ?, ?, 0, 1, ?, 'canonical', ?)`,
           repoSlug,
           record.section,
           record.id,
@@ -783,29 +695,6 @@ export class ExactReviewDirectPublicationStore {
         `SELECT * FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE} ORDER BY item_key, revision`,
       ),
       directPublicationRow,
-    );
-  }
-
-  legacyPendingPlans(): DirectPublicationPlan[] {
-    return Array.from(
-      this.storage.sql.exec(
-        `SELECT item_key, revision, identity_item_key, identity_revision, claim_generation,
-                operations_json, total_bytes
-           FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
-          WHERE state IN ('pending', 'committing', 'retryable')
-          ORDER BY created_at, item_key, revision`,
-      ),
-      (row) => ({
-        itemKey: String(row.item_key),
-        revision: Number(row.revision),
-        identity: {
-          itemKey: String(row.identity_item_key),
-          revision: Number(row.identity_revision),
-          claimGeneration: Number(row.claim_generation),
-        },
-        operations: JSON.parse(String(row.operations_json)) as DirectPublicationOperation[],
-        totalBytes: Number(row.total_bytes),
-      }),
     );
   }
 
@@ -1040,9 +929,9 @@ export class ExactReviewDirectPublicationStore {
     const deleted = Number(row.deleted) === 1;
     let content: string | null = null;
     if (!deleted) {
-      if (String(row.source) === "canonical") {
+      if (String(row.source) === "canonical" && section !== "commits") {
         const itemId = Number(id);
-        if (section === "commits" || !Number.isSafeInteger(itemId) || itemId < 1) {
+        if (!Number.isSafeInteger(itemId) || itemId < 1) {
           throw new Error(`invalid canonical export identity: ${repoSlug}/${section}/${id}`);
         }
         const canonical = this.readCanonical(repoSlug, section, itemId);
@@ -1067,7 +956,11 @@ export class ExactReviewDirectPublicationStore {
     };
   }
 
-  private writeBackfillRecordSync(repoSlug: string, record: RecordBackfillInput, now: number) {
+  private writeBackfillRecordSync(
+    repoSlug: string,
+    record: CanonicalCommitRecordInput,
+    now: number,
+  ) {
     const chunked = record.bytes > EXACT_REVIEW_CANONICAL_INLINE_BYTES;
     const chunks = chunked ? byteChunks(record.content, EXACT_REVIEW_CANONICAL_CHUNK_BYTES) : [];
     this.storage.sql.exec(
@@ -1182,8 +1075,7 @@ function canonicalTupleOperations(
     const extension = section === "decision-packets" ? "json" : "md";
     operations.push({
       path: `records/${first.repoSlug}/${section}/${first.itemId}.${extension}`,
-      expectedOid: null,
-      targetOid: null,
+      deleted: true,
       mode: "100644",
       bytes: 0,
       repoSlug: first.repoSlug,
@@ -1296,8 +1188,7 @@ export async function validateCanonicalRecordTupleMutation(
     if (operation.contentBase64 === undefined) {
       operations.push({
         path: operation.path,
-        expectedOid: null,
-        targetOid: null,
+        deleted: true,
         mode: "100644",
         bytes: 0,
         ...tuple,
@@ -1326,8 +1217,7 @@ export async function validateCanonicalRecordTupleMutation(
     }
     operations.push({
       path: operation.path,
-      expectedOid: null,
-      targetOid: "canonical",
+      deleted: false,
       mode: "100644",
       bytes: bytes.byteLength,
       contentBase64: operation.contentBase64,
@@ -1462,7 +1352,7 @@ export async function validateDirectPublicationPlan(
     ) {
       throw new Error(`invalid mutation byte count for ${path}`);
     }
-    if (operation.targetOid === null) {
+    if (operation.deleted === true) {
       if (operation.bytes !== 0 || operation.contentBase64 !== undefined) {
         throw new Error(`deleted mutation paths must not carry content: ${path}`);
       }
@@ -1503,58 +1393,6 @@ export async function validateDirectPublicationPlan(
     operations,
     totalBytes,
   };
-}
-
-// Kept as a compatibility export for callers deployed with the former validator name.
-// The direct path now derives SHA-256 content digests and deliberately ignores Git blob OIDs.
-export const validateDirectPublicationBlobOids = validateDirectPublicationPlan;
-
-function recordTupleProjection(
-  plan: CanonicalDirectPublicationPlan,
-  maxRecordBytes: number,
-  revision = plan.revision,
-) {
-  const operationJson = (operation: CanonicalDirectPublicationOperation, inline: boolean) => ({
-    path: operation.path,
-    repoSlug: operation.repoSlug,
-    section: operation.section,
-    itemId: operation.itemId,
-    digest: operation.digest,
-    revision,
-    bytes: operation.bytes,
-    deleted: operation.content === null,
-    ...(operation.content === null
-      ? {}
-      : inline
-        ? { content: operation.content, oversize: false }
-        : { oversize: true }),
-  });
-  const base = {
-    itemKey: plan.itemKey,
-    revision,
-    claimGeneration: plan.identity.claimGeneration,
-    operations: plan.operations.map((operation) => operationJson(operation, true)),
-  };
-  let payloadJson = JSON.stringify(base);
-  let payloadBytes = new TextEncoder().encode(payloadJson).byteLength;
-  if (payloadBytes > maxRecordBytes) {
-    const oversize = {
-      ...base,
-      operations: plan.operations.map((operation) => operationJson(operation, false)),
-    };
-    payloadJson = JSON.stringify(oversize);
-    payloadBytes = new TextEncoder().encode(payloadJson).byteLength;
-    console.warn(
-      `record tuple projection uses canonical fetch: ${plan.itemKey}@${plan.revision} inline_bytes=${new TextEncoder().encode(JSON.stringify(base)).byteLength} limit=${maxRecordBytes}`,
-    );
-  }
-  if (payloadBytes > maxRecordBytes) {
-    throw new Error(
-      `record tuple projection metadata exceeds append limit: bytes=${payloadBytes} limit=${maxRecordBytes}`,
-    );
-  }
-  const first = plan.operations[0]!;
-  return { key: `${first.repoSlug}/${first.itemId}`, payloadJson, payloadBytes };
 }
 
 function storedOperationsFrom(
@@ -1636,32 +1474,6 @@ function canonicalStoredPlan(plan: DirectPublicationRow) {
   });
 }
 
-function legacyPlanMatches(
-  existing: DirectPublicationRow,
-  incoming: CanonicalDirectPublicationPlan,
-): boolean {
-  const operations = existing.operations as DirectPublicationOperation[];
-  return (
-    existing.itemKey === incoming.itemKey &&
-    existing.revision === incoming.revision &&
-    JSON.stringify(existing.identity) === JSON.stringify(incoming.identity) &&
-    existing.totalBytes === incoming.totalBytes &&
-    JSON.stringify(operations) ===
-      JSON.stringify(
-        incoming.operations.map(
-          ({
-            repoSlug: _repoSlug,
-            section: _section,
-            itemId: _itemId,
-            content: _content,
-            digest: _digest,
-            ...operation
-          }) => operation,
-        ),
-      )
-  );
-}
-
 function canonicalTuplePath(path: string) {
   const match =
     /^records\/([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\/(items|closed|plans|decision-packets)\/([1-9]\d*)\.(md|json)$/.exec(
@@ -1694,19 +1506,6 @@ function canonicalPath(value: unknown) {
     throw new Error(`invalid bounded state mutation path: ${String(value)}`);
   }
   return path;
-}
-
-function stateAppendWindowTotalsSync(storage: DurableStorage) {
-  const row = Array.from(
-    storage.sql.exec(
-      `SELECT COUNT(*) AS pending_rows, COALESCE(SUM(payload_bytes), 0) AS pending_bytes
-         FROM ${STATE_APPEND_WINDOW_TABLE}`,
-    ),
-  )[0];
-  return {
-    pendingRows: Number(row?.pending_rows || 0),
-    pendingBytes: Number(row?.pending_bytes || 0),
-  };
 }
 
 function base64Bytes(value: string) {

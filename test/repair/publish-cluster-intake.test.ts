@@ -5,10 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { clusterIntakeIntent } from "../../dist/repair/cluster-intake-state.js";
 import { publishClusterIntake } from "../../dist/repair/publish-cluster-intake.js";
 
-test("cluster intake publication exposes a repeated durable delivery", async () => {
+test("cluster intake publication writes git-only operational state directly", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-cluster-publish-"));
   const intentPath = path.join(root, "intent.json");
   fs.writeFileSync(
@@ -29,32 +28,33 @@ test("cluster intake publication exposes a repeated durable delivery", async () 
       jobs: [],
     }),
   );
-  let requests = 0;
-  const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
-    requests += 1;
-    const body = JSON.parse(String(init?.body)) as {
-      delivery_id: string;
-      records: Array<{ payload: unknown }>;
-    };
-    assert.equal(body.delivery_id, `cluster-intake:openclaw-openclaw:${"a".repeat(64)}`);
-    const accepted = clusterIntakeIntent(body.records[0].payload);
-    assert.deepEqual(accepted.jobs, []);
-    return Response.json(requests === 1 ? { ok: true, appended: 1 } : { ok: true, deduped: true }, {
-      status: 202,
-    });
-  }) as typeof fetch;
+  const publishes: string[][] = [];
 
   try {
     const options = {
       env: {
-        QUEUE_URL: "https://queue.test",
         CLAWSWEEPER_WEBHOOK_SECRET: "publish-cluster-test-secret",
       },
-      fetchImpl,
+      root,
+      publishGit: (input: { paths: readonly string[] }) => {
+        publishes.push([...input.paths]);
+        return "committed" as const;
+      },
     };
-    assert.deepEqual(await publishClusterIntake(intentPath, options), { deduped: false });
-    assert.deepEqual(await publishClusterIntake(intentPath, options), { deduped: true });
-    assert.equal(requests, 2);
+    assert.deepEqual(await publishClusterIntake(intentPath, options), {
+      deduped: false,
+      pending: false,
+    });
+    assert.deepEqual(await publishClusterIntake(intentPath, options), {
+      deduped: true,
+      pending: false,
+    });
+    assert.equal(publishes.length, 2);
+    assert.deepEqual(publishes[0], ["results/cluster-repair-intake/openclaw-openclaw.json"]);
+    assert.equal(
+      fs.existsSync(path.join(root, "results/cluster-repair-intake/openclaw-openclaw.json")),
+      true,
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

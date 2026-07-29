@@ -3,19 +3,11 @@ import { createHmac } from "node:crypto";
 import test from "node:test";
 
 import {
+  postCanonicalCommitRecords,
   postCanonicalRecordTuple,
-  postStateAppend,
 } from "../../dist/repair/state-append-client.js";
 
-const webhookSecret = "state-append-test-secret";
-const records = [
-  {
-    kind: "sweep_status" as const,
-    key: "results/sweep-status/openclaw-openclaw.json",
-    payload: { slug: "openclaw-openclaw", updated_at: "2026-07-21T12:00:00.000Z" },
-    produced_at: "2026-07-21T12:00:00.000Z",
-  },
-];
+const webhookSecret = "canonical-state-test-secret";
 
 test("postCanonicalRecordTuple signs the canonical tuple endpoint", async () => {
   const mutation = {
@@ -41,7 +33,7 @@ test("postCanonicalRecordTuple signs the canonical tuple endpoint", async () => 
       `sha256=${createHmac("sha256", webhookSecret).update(body).digest("hex")}`,
     );
     return Response.json(
-      { ok: true, accepted: true, deduped: false, revision: 3, sequence: 9 },
+      { ok: true, accepted: true, deduped: false, revision: 3 },
       { status: 202 },
     );
   }) as typeof fetch;
@@ -53,93 +45,47 @@ test("postCanonicalRecordTuple signs the canonical tuple endpoint", async () => 
       mutation,
       fetchImpl,
     }),
-    { revision: 3, sequence: 9, deduped: false },
+    { revision: 3, deduped: false },
   );
 });
 
-test("postStateAppend signs and posts the exact append body", async () => {
+test("postCanonicalCommitRecords signs immutable commit records", async () => {
+  const records = [{ sha: "a".repeat(40), content: "commit report\n", digest: "b".repeat(64) }];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-    assert.equal(input.toString(), "https://queue.test/internal/state/append");
+    assert.equal(input.toString(), "https://queue.test/internal/state/records/commits");
     assert.equal(init?.method, "POST");
     const body = String(init?.body ?? "");
-    assert.deepEqual(JSON.parse(body), { delivery_id: "delivery-1", records });
+    assert.deepEqual(JSON.parse(body), { repo_slug: "openclaw-openclaw", records });
     assert.equal(
       new Headers(init?.headers).get("x-clawsweeper-exact-review-signature"),
       `sha256=${createHmac("sha256", webhookSecret).update(body).digest("hex")}`,
     );
-    return Response.json({ ok: true, appended: 1 }, { status: 202 });
+    return Response.json({ ok: true, inserted: 1, unchanged: 0 }, { status: 202 });
   }) as typeof fetch;
 
   assert.deepEqual(
-    await postStateAppend({
+    await postCanonicalCommitRecords({
       queueUrl: "https://queue.test/",
       webhookSecret,
-      deliveryId: "delivery-1",
+      repoSlug: "openclaw-openclaw",
       records,
       fetchImpl,
     }),
-    { ok: true, shed: false, deduped: false },
+    { inserted: 1, unchanged: 0 },
   );
 });
 
-test("postStateAppend propagates an idempotent delivery receipt", async () => {
-  const fetchImpl = (async () =>
-    Response.json({ ok: true, deduped: true }, { status: 202 })) as typeof fetch;
-
-  assert.deepEqual(
-    await postStateAppend({
-      queueUrl: "https://queue.test",
-      webhookSecret,
-      deliveryId: "delivery-duplicate",
-      records,
-      fetchImpl,
-    }),
-    { ok: true, shed: false, deduped: true },
-  );
-});
-
-test("postStateAppend reports a shed response without throwing", async () => {
-  const fetchImpl = (async () =>
-    Response.json({ ok: false, shed: true, reason: "capacity" }, { status: 429 })) as typeof fetch;
-
-  assert.deepEqual(
-    await postStateAppend({
-      queueUrl: "https://queue.test",
-      webhookSecret,
-      deliveryId: "delivery-shed",
-      records,
-      fetchImpl,
-    }),
-    { ok: false, shed: true, deduped: false },
-  );
-});
-
-test("postStateAppend preserves an explicit unsuccessful response as a fallback signal", async () => {
-  const fetchImpl = (async () => Response.json({ ok: false }, { status: 202 })) as typeof fetch;
-
-  assert.deepEqual(
-    await postStateAppend({
-      queueUrl: "https://queue.test",
-      webhookSecret,
-      deliveryId: "delivery-failed",
-      records,
-      fetchImpl,
-    }),
-    { ok: false, shed: false, deduped: false },
-  );
-});
-
-test("postStateAppend redacts the webhook secret from client errors", async () => {
+test("canonical commit publication redacts the webhook secret from client errors", async () => {
   const fetchImpl = (async () => {
     throw new Error(`request leaked ${webhookSecret}`);
   }) as typeof fetch;
 
   await assert.rejects(
-    postStateAppend({
+    postCanonicalCommitRecords({
       queueUrl: "https://queue.test",
       webhookSecret,
-      deliveryId: "delivery-error",
-      records,
+      repoSlug: "openclaw-openclaw",
+      records: [{ sha: "a".repeat(40), content: "report", digest: "b".repeat(64) }],
       fetchImpl,
     }),
     (error: Error) => {

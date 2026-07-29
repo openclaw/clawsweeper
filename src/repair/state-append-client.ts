@@ -1,18 +1,5 @@
 import { createHmac } from "node:crypto";
 
-export type StateAppendInputRecord = {
-  kind: "sweep_status" | "comment_router" | "apply_proof" | "cluster_intake";
-  key: string;
-  payload: unknown;
-  produced_at: string;
-};
-
-export type StateAppendResult = {
-  ok: boolean;
-  shed: boolean;
-  deduped: boolean;
-};
-
 export type CanonicalRecordTupleOperation = {
   path: string;
   expectedDigest: string | null;
@@ -30,6 +17,12 @@ export type CanonicalRecordTupleConflictState = {
   revision: number;
   deliveryId: string | null;
   operations: CanonicalRecordTupleOperation[];
+};
+
+export type CanonicalCommitRecord = {
+  sha: string;
+  content: string;
+  digest: string;
 };
 
 export class CanonicalRecordTupleConflictError extends Error {
@@ -54,56 +47,12 @@ export class CanonicalRecordTupleRequestError extends Error {
   }
 }
 
-export async function postStateAppend(options: {
-  queueUrl: string;
-  webhookSecret: string;
-  deliveryId: string;
-  records: readonly StateAppendInputRecord[];
-  fetchImpl?: typeof fetch;
-}): Promise<StateAppendResult> {
-  registerStateAppendSecretForRedaction(options.webhookSecret);
-  try {
-    const queueUrl = options.queueUrl.replace(/\/+$/, "");
-    if (!queueUrl) throw new Error("state append queue URL is required");
-    if (!options.webhookSecret) throw new Error("state append webhook secret is required");
-    if (!options.deliveryId) throw new Error("state append delivery ID is required");
-    if (options.records.length === 0) throw new Error("state append records are required");
-
-    const body = JSON.stringify({
-      delivery_id: options.deliveryId,
-      records: options.records,
-    });
-    const signature = `sha256=${createHmac("sha256", options.webhookSecret)
-      .update(body)
-      .digest("hex")}`;
-    const response = await (options.fetchImpl ?? fetch)(`${queueUrl}/internal/state/append`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-clawsweeper-exact-review-signature": signature,
-      },
-      body,
-    });
-    const value = (await response.json().catch(() => null)) as unknown;
-    if (isRecord(value) && value.shed === true) return { ok: false, shed: true, deduped: false };
-    if (!response.ok) {
-      throw new Error(`POST /internal/state/append returned ${response.status}`);
-    }
-    if (!isRecord(value) || typeof value.ok !== "boolean") {
-      throw new Error("POST /internal/state/append returned an invalid response");
-    }
-    return { ok: value.ok, shed: false, deduped: value.deduped === true };
-  } catch (error) {
-    throw new Error(redactStateAppendSecrets(errorMessage(error)));
-  }
-}
-
 export async function postCanonicalRecordTuple(options: {
   queueUrl: string;
   webhookSecret: string;
   mutation: CanonicalRecordTupleMutation;
   fetchImpl?: typeof fetch;
-}): Promise<{ revision: number; sequence: number; deduped: boolean }> {
+}): Promise<{ revision: number; deduped: boolean }> {
   registerStateAppendSecretForRedaction(options.webhookSecret);
   try {
     const queueUrl = options.queueUrl.replace(/\/+$/, "");
@@ -136,16 +85,10 @@ export async function postCanonicalRecordTuple(options: {
       throw new CanonicalRecordTupleRequestError(response.status, code);
     }
     const revision = Number(responseRecord.revision);
-    const sequence = Number(responseRecord.sequence);
-    if (
-      !Number.isSafeInteger(revision) ||
-      revision < 1 ||
-      !Number.isSafeInteger(sequence) ||
-      sequence < 1
-    ) {
+    if (!Number.isSafeInteger(revision) || revision < 1) {
       throw new Error("POST /internal/state/records/tuples returned an invalid receipt");
     }
-    return { revision, sequence, deduped: responseRecord.deduped === true };
+    return { revision, deduped: responseRecord.deduped === true };
   } catch (error) {
     if (
       error instanceof CanonicalRecordTupleConflictError ||
@@ -153,6 +96,56 @@ export async function postCanonicalRecordTuple(options: {
     ) {
       throw error;
     }
+    throw new Error(redactStateAppendSecrets(errorMessage(error)));
+  }
+}
+
+export async function postCanonicalCommitRecords(options: {
+  queueUrl: string;
+  webhookSecret: string;
+  repoSlug: string;
+  records: readonly CanonicalCommitRecord[];
+  fetchImpl?: typeof fetch;
+}): Promise<{ inserted: number; unchanged: number }> {
+  registerStateAppendSecretForRedaction(options.webhookSecret);
+  try {
+    const queueUrl = options.queueUrl.replace(/\/+$/, "");
+    if (!queueUrl) throw new Error("canonical record queue URL is required");
+    if (!options.webhookSecret) throw new Error("canonical record webhook secret is required");
+    if (!options.records.length) throw new Error("canonical commit records are required");
+    const body = JSON.stringify({ repo_slug: options.repoSlug, records: options.records });
+    const signature = `sha256=${createHmac("sha256", options.webhookSecret)
+      .update(body)
+      .digest("hex")}`;
+    const response = await (options.fetchImpl ?? fetch)(
+      `${queueUrl}/internal/state/records/commits`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature": signature,
+        },
+        body,
+      },
+    );
+    const value = (await response.json().catch(() => null)) as unknown;
+    if (!response.ok || !isRecord(value) || value.ok !== true) {
+      const code = isRecord(value) ? String(value.error || "unknown_error") : "invalid_response";
+      throw new Error(`POST /internal/state/records/commits returned ${response.status}: ${code}`);
+    }
+    const inserted = Number(value.inserted);
+    const unchanged = Number(value.unchanged);
+    if (
+      !Number.isSafeInteger(inserted) ||
+      inserted < 0 ||
+      !Number.isSafeInteger(unchanged) ||
+      unchanged < 0 ||
+      inserted + unchanged !== options.records.length
+    ) {
+      throw new Error("POST /internal/state/records/commits returned an invalid receipt");
+    }
+    return { inserted, unchanged };
+  } catch (error) {
     throw new Error(redactStateAppendSecrets(errorMessage(error)));
   }
 }

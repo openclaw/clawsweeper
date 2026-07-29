@@ -131,12 +131,12 @@ test("result publication mints its reader token from resolved targets, not a fix
   assert.doesNotMatch(workflow, /permission-contents: write/);
 });
 
-test("intake hydrates state with a read-only, non-persisted credential", () => {
+test("intake owns its remaining git-backed jobs and results publication", () => {
   const workflow = fs.readFileSync(".github/workflows/repair-cluster-intake.yml", "utf8");
-  assert.match(workflow, /contents-permission: read/);
-  assert.match(workflow, /actions-permission: read/);
-  assert.match(workflow, /persist-credentials: "false"/);
-  assert.doesNotMatch(workflow, /permission-contents: write/);
+  assert.doesNotMatch(workflow, /contents-permission: read|actions-permission: read/);
+  assert.match(workflow, /persist-credentials: "true"/);
+  assert.match(workflow, /Recover pending cluster dispatches/);
+  assert.match(workflow, /CLAWSWEEPER_STATE_COORDINATOR_SECRET:/);
 });
 
 test("intake target validation honors the owner-list contract and version-coherent refs", () => {
@@ -146,10 +146,9 @@ test("intake target validation honors the owner-list contract and version-cohere
   assert.match(intake, /comma- or whitespace-separated owner/);
   assert.match(intake, /owner_allowed=1/);
   assert.doesNotMatch(intake, /\[ "\$target_owner" != "\$ALLOWED_OWNER" \]/);
-  // The materializer wake and worker dispatch stay on the invoking revision.
-  assert.match(intake, /gh workflow run state-materializer\.yml --ref "\$GITHUB_REF_NAME"/);
-  const materializer = fs.readFileSync(".github/workflows/state-materializer.yml", "utf8");
-  assert.match(materializer, /CLAWSWEEPER_DISPATCH_REF: \$\{\{ github\.ref_name \}\}/);
+  assert.doesNotMatch(intake, /state-materializer\.yml/);
+  assert.match(intake, /CLAWSWEEPER_DISPATCH_REF: \$\{\{ github\.ref_name \}\}/);
+  assert.match(intake, /repair:publish-cluster-intake -- --recover/);
 });
 
 test("self-heal treats a failed publisher rerun as non-blocking", () => {

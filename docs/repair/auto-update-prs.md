@@ -424,9 +424,8 @@ Run-local diagnostics:
 
 - `results/comment-router-latest.json`
 
-The router ledger uses the state append/materializer lane. The workflow
-publishes `jobs/` through the serialized Git writer only when a command changed
-durable repair work.
+The router ledger and changed `jobs/` use the coordinator-guarded operational
+Git writer. Immutable command action events publish directly to R2.
 
 Important knobs:
 

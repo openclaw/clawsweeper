@@ -385,7 +385,7 @@ test("scheduled review shards receive the compiler-backed runtime artifact", () 
 
   assert.match(
     planJob,
-    /node scripts\/prepare-review-runtime\.mjs[\s\S]*--output \.artifacts\/review-runtime[\s\S]*--plan plan\.json[\s\S]*--state-root "\$CLAWSWEEPER_STATE_DIR"[\s\S]*--records-path "records\/\$\{target_slug\}\/items"/,
+    /node scripts\/prepare-review-runtime\.mjs[\s\S]*--output \.artifacts\/review-runtime[\s\S]*--plan plan\.json[\s\S]*--state-root \.[\s\S]*--records-path "records\/\$\{target_slug\}\/items"/,
   );
   assert.ok(
     planJob.indexOf("id: select") < planJob.indexOf("name: Prepare review runtime artifact"),
@@ -734,13 +734,8 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(publisherSource, /await postDirectPublicationResult/);
   assert.match(publisherSource, /\/internal\/exact-review\/publication-batch-results/);
   assert.doesNotMatch(publisherSource, /\bstagePaths\b|\bpushSingleRecordTupleCommit\b/);
-  assert.match(publisherSource, /GitCommandTimeoutError/);
-  assert.match(publisherSource, /retryable_failure/);
-  assert.match(publisherSource, /error instanceof GitCommandTimeoutError/);
-  assert.match(
-    publisherSource,
-    /const completionKind = retryableFailure \? "retryable_failure" : "permanent_failure"/,
-  );
+  assert.doesNotMatch(publisherSource, /GitCommandTimeoutError|publishRoot|hardResetToRemoteMain/);
+  assert.match(publisherSource, /const completionKind = "permanent_failure"/);
   assert.match(
     publisherSource,
     /writePublicationCompletionOutputs\(completionKind, reasonCode, fingerprint\);/,
@@ -1155,7 +1150,7 @@ test("broad record publishers isolate tuple reconciliation from status and auxil
     const nextStep = workflow.indexOf("\n      - ", start + 1);
     const block = workflow.slice(start, nextStep === -1 ? undefined : nextStep);
     const recordsPath = block.indexOf('--path "records/${target_slug}"');
-    const tupleStrategy = block.indexOf("--rebase-strategy reconcile-records", recordsPath);
+    const tupleStrategy = block.indexOf("--rebase-strategy normal", recordsPath);
     const secondPublish = block.indexOf("pnpm run repair:publish-main", tupleStrategy);
     const statusPath = block.indexOf("results/sweep-status/${target_slug}.json", secondPublish);
     const statusStrategy = block.indexOf("--rebase-strategy theirs", statusPath);
@@ -1222,7 +1217,7 @@ test("every sweep tuple mutator hands publish-main a captured canonical baseline
   );
 });
 
-test("apply workflow isolates proof Codex and limits mutation Codex to model-guided recovery", () => {
+test("apply workflow isolates proof Codex and keeps mutation free of Git recovery Codex", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const workflowConcurrency = workflow.slice(
     workflow.indexOf("\nconcurrency:"),
@@ -1309,7 +1304,7 @@ test("apply workflow isolates proof Codex and limits mutation Codex to model-gui
   );
   assert.match(proofPublisherJob, /path: \.clawsweeper-repair\/action-ledger-proof/);
   assert.match(proofPublisherJob, /Publish apply proof action events/);
-  assert.match(proofPublisherJob, /hydrate-state-blobs: "false"/);
+  assert.doesNotMatch(proofPublisherJob, /setup-state|create-state-token|CLAWSWEEPER_STATE_DIR/);
   assert.doesNotMatch(proofPublisherJob, /github\.run_attempt/);
 
   assert.match(applyJob, /needs: \[apply-proof, publish-apply-proof-action-ledger\]/);
@@ -1319,10 +1314,8 @@ test("apply workflow isolates proof Codex and limits mutation Codex to model-gui
   );
   assert.doesNotMatch(applyCondition, /needs\.apply-proof\.result/);
   assert.doesNotMatch(applyCondition, /needs\.publish-apply-proof-action-ledger/);
-  assert.match(applyJob, /CLAWSWEEPER_MODEL_RECOVERY_ENABLED: "1"/);
-  assert.match(applyJob, /OPENAI_API_KEY: \$\{\{ secrets\.OPENAI_API_KEY \}\}/);
-  assert.match(applyJob, /uses: \.\/\.github\/actions\/setup-codex/);
-  assert.match(applyJob, /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ secrets\.CLAWSWEEPER_MODEL \}\}/);
+  assert.doesNotMatch(applyJob, /CLAWSWEEPER_MODEL_RECOVERY_ENABLED|OPENAI_API_KEY/);
+  assert.doesNotMatch(applyJob, /uses: \.\/\.github\/actions\/setup-codex/);
   assert.doesNotMatch(applyJob, /--codex-model|--codex-reasoning-effort/);
   assert.match(applyJob, /Create target write token/);
   assert.match(applyJob, /Create state token/);
@@ -1392,7 +1385,7 @@ test("reconcile publication expands only exact changed record tuples", () => {
     { encoding: "utf8", env: { ...process.env, RECONCILE_JSON: reconcileJson } },
   );
   assert.deepEqual(output.trim().split("\n"), [
-    "reconcile-records",
+    "normal",
     "persist reconciliation",
     "records/openclaw-openclaw/items/7.md",
     "records/openclaw-openclaw/closed/7.md",
@@ -1493,10 +1486,10 @@ test("apply checkpoints split record tuples from auxiliary state", () => {
     { encoding: "utf8" },
   );
   assert.deepEqual(output.trim().split("\n"), [
-    "reconcile-records",
+    "normal",
     "apply checkpoint",
     "records/openclaw-openclaw",
-    "apply-records",
+    "theirs",
     "apply checkpoint",
     "apply-report.json",
     "results/sweep-status",
@@ -1509,14 +1502,14 @@ test("apply checkpoints split record tuples from auxiliary state", () => {
       "-lc",
       [
         "source scripts/apply-workflow-helpers.sh",
-        'publish_changes_with_strategy() { printf "%s\\n" "$1"; [ "$1" != reconcile-records ]; }',
+        'publish_changes_with_strategy() { printf "%s\\n" "$1"; [ "$1" != normal ]; }',
         'TARGET_REPO="openclaw/openclaw"',
         'publish_changes "apply checkpoint" records apply-report.json || true',
       ].join("\n"),
     ],
     { encoding: "utf8" },
   );
-  assert.equal(failedOutput.trim(), "reconcile-records");
+  assert.equal(failedOutput.trim(), "normal");
 });
 
 test("best-effort apply status publishes one sparse-safe file without noisy restore", () => {
@@ -1928,17 +1921,16 @@ test("apply workflow finalization retries only target status after checkpointed 
     [...finalStatusStep.matchAll(/--path\s+("?[^\\\s]+"?)/g)].map((match) => match[1]),
     ['"results/sweep-status/${target_slug}.json"'],
   );
-  assert.match(finalStatusStep, /--rebase-strategy apply-records/);
+  assert.match(finalStatusStep, /--rebase-strategy theirs/);
   assert.doesNotMatch(finalStatusStep, /--path\s+"?records(?:\/|\s)/);
   assert.doesNotMatch(finalStatusStep, /apply-report\.json/);
   assert.doesNotMatch(finalStatusStep, /results\/(?:apply|comment-sync)-cursors/);
   assert.match(actionLedgerStep, /publish-action-events/);
   assert.doesNotMatch(actionLedgerStep, /action-ledger-proof/);
   assert.match(actionLedgerStep, /CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT/);
-  assert.match(actionLedgerStep, /--state-root "\$CLAWSWEEPER_STATE_DIR"/);
+  assert.match(actionLedgerStep, /--state-root \./);
   assert.match(actionLedgerStep, /--expected-producer-job "\$GITHUB_JOB"/);
-  assert.match(actionLedgerStep, /cp "\$durable_event_path" "\$event_path"/);
-  assert.match(actionLedgerStep, /--message "chore: append apply action ledger"/);
+  assert.doesNotMatch(actionLedgerStep, /durable_event_path|--message|CLAWSWEEPER_STATE_DIR/);
   assert.match(actionLedgerStep, /publish-action-event-paths/);
   assert.match(actionLedgerStep, /--paths-file "\$event_paths_file"/);
   assert.doesNotMatch(actionLedgerStep, /repair:publish-main/);
@@ -2964,8 +2956,7 @@ test("setup-state defaults to an auth-safe shallow checkout", () => {
   const filterBlock = action.slice(action.indexOf("filter:"), action.indexOf("fetch-depth:"));
   const fetchDepthBlock = action.slice(action.indexOf("fetch-depth:"), action.indexOf("runs:"));
 
-  assert.match(filterBlock, /default: ""/);
-  assert.doesNotMatch(filterBlock, /default: blob:none/);
+  assert.match(filterBlock, /default: blob:none/);
   assert.match(action, /filter: \$\{\{ inputs\.filter \}\}/);
   assert.match(fetchDepthBlock, /default: "1"/);
   assert.doesNotMatch(fetchDepthBlock, /default: "0"/);

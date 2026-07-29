@@ -224,16 +224,10 @@ jobs:
           TARGET_REPO: openclaw/openclaw
         run: node dist/review-placeholder-recovery.js
 
-      - name: Clean scratch state branches and report repository size
+      - name: Report remaining state repository size
         continue-on-error: true
         env:
           CLAWSWEEPER_STATE_REPO_TOKEN: ${{ steps.state-token.outputs.token }}
-          GH_TOKEN: ${{ github.token }}
-          STATE_BRANCH_MAX_AGE_HOURS: ${{ vars.STATE_BRANCH_MAX_AGE_HOURS || '24' }}
-          STATE_BRANCH_MAX_DELETIONS: ${{ vars.STATE_BRANCH_MAX_DELETIONS || '50' }}
-          STATE_BRANCH_RUN_REPOSITORY: openclaw/clawsweeper
           STATE_REPOSITORY: openclaw/clawsweeper-state
           STATE_REPO_SIZE_WARN_GB: ${{ vars.STATE_REPO_SIZE_WARN_GB || '5' }}
-        run: |
-          node dist/repair/state-branch-janitor.js
-          node dist/repair/state-repo-size.js
+        run: node dist/repair/state-repo-size.js

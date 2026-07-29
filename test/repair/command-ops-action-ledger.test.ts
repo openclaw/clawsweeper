@@ -52,7 +52,8 @@ test("direct repair requeues forward a stable dispatch receipt and publish it", 
   assert.match(workflow, /- name: Create state token/);
   assert.match(workflow, /uses: \.\/\.github\/actions\/setup-action-ledger/);
   assert.match(workflow, /execute:[\s\S]*?permissions:\n\s+actions: read/);
-  assert.match(workflow, /sparse-checkout: \|\n\s+jobs\n\s+ledger/);
+  assert.match(workflow, /sparse-checkout: \|\n\s+jobs/);
+  assert.doesNotMatch(workflow, /sparse-checkout: \|\n\s+jobs\n\s+ledger/);
   assert.ok(executeFixStart < ledgerSetupStart && ledgerSetupStart < requeueStart);
   assert.ok(finalizeStart >= 0);
   assert.ok(publishStart > finalizeStart);
@@ -69,7 +70,8 @@ test("direct repair requeues forward a stable dispatch receipt and publish it", 
   assertCommandPublisherUsesCanonicalRoot(publishStep);
   assert.match(finalizeStep, /--lane repair-requeue/);
   assert.match(publishStep, /--lane repair-requeue/);
-  assert.match(publishStep, /--message "chore: append repair requeue action ledger"/);
+  assert.match(publishStep, /publish-action-event-paths/);
+  assert.doesNotMatch(publishStep, /repair:publish-main|--message/);
   assert.match(workflow, /CLUSTER_JOB_PATH: \$\{\{ inputs\.job \}\}/);
   assert.match(workflow, /CLUSTER_REQUEUE_DEPTH: \$\{\{ inputs\.requeue_depth \}\}/);
   assert.match(workflow, /pnpm run repair:requeue -- "\$CLUSTER_JOB_PATH"/);
@@ -112,6 +114,7 @@ function assertCommandPublisherUsesCanonicalRoot(step: string): void {
   assert.match(step, /--lane [a-z0-9-]+/);
   assert.match(step, /--manifest "\$manifest_file"/);
   assert.match(step, /--source-root "\$source_root"/);
+  assert.match(step, /--state-root \./);
   assert.match(
     step,
     /jq -e --slurpfile manifest "\$manifest_file"[\s\S]*?'\.eventPaths == \$manifest\[0\]\.event_paths'/,

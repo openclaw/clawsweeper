@@ -42,16 +42,18 @@ Important source files:
   and the conservative `openclaw/*` exact-review fallback
 - `docs/target-repositories.md`: target onboarding and rollout checklist
 - `src/repair/workflow-utils.ts`: GitHub Actions output shaping for plans
-- `results/sweep-status/<repo-slug>.json`: generated state consumed by the
-  dashboard
-- `records/<repo-slug>/items/<number>.md`: open item reports
-- `records/<repo-slug>/closed/<number>.md`: archived closed reports
+- `results/sweep-status/<repo-slug>.json`: Git-backed operational state consumed
+  by the dashboard
+- `records/<repo-slug>/items/<number>.md`: open item reports in the canonical
+  Worker store
+- `records/<repo-slug>/closed/<number>.md`: archived item reports in the
+  canonical Worker store
 
-Generated state is published to the `state` branch of
-`openclaw/clawsweeper-state`. Its `main` branch contains dashboard renderer
-source only. For local record inspection, switch that checkout to `state` or run
-`scripts/hydrate-state.ts` from a `state`-branch checkout before using
-`records/`.
+The canonical Worker owns `records/**`, while R2 owns `ledger/v1/**` and
+`assets/**`. The `state` branch of `openclaw/clawsweeper-state` retains only the
+operational `jobs/**`, `results/**`, `notifications/**`, and apply-report paths.
+See [State storage](state-storage.md) for the ownership boundary and local
+hydration commands.
 
 Broad normal and hot review workflows use run-scoped concurrency groups, so a
 new wave can overlap an older wave that has reached its long-tail or publish
@@ -441,14 +443,14 @@ so the scheduler is a throttle, not a distributed lock.
 Planning status intentionally does not run `pnpm run reconcile`. Reconciliation
 can scan many live GitHub pages and has delayed review shard startup. The
 critical path records the planned counts and publishes only
-`results/sweep-status/`; publish, apply, and audit still reconcile records before
-their state mutations where folder placement matters.
+`results/sweep-status/`; publish, apply, and audit still reconcile canonical
+records where folder placement matters.
 
-Read-only plan jobs hydrate generated state from a shallow `fetch-depth: 1`
-checkout. Review shard jobs skip generated-state hydration because the plan
-matrix already contains exact item numbers. Generated-state publish, apply, and
-audit jobs keep a full checkout because they may need to rebase and push state
-updates.
+Read-only plan jobs hydrate canonical records plus the Git-backed operational
+paths they consume. Review shard jobs skip state hydration because the plan
+matrix already contains exact item numbers. Publish, apply, and audit jobs
+hydrate only the operational Git paths they still read or write; record
+publication goes directly to the Worker.
 
 ## Apply
 
@@ -546,9 +548,9 @@ context collection milliseconds, and Codex review milliseconds. These fields are
 intended for scheduler and prompt-budget experiments, so later throughput work
 can compare time and token proxies without scraping transient workflow logs.
 
-The generated state checkout uses a blobless partial clone, but it intentionally
-keeps full commit history by default. Publish jobs rebase and retry state writes
-after races, and shallow state history can make those retries less reliable.
+The remaining operational state checkout uses a blobless shallow clone. Git
+publication is serialized by the Durable Object state-writer coordinator and
+uses one ordinary fetch, commit, and push.
 
 ## Audit
 
@@ -566,22 +568,22 @@ public read-only API access so dashboard rows do not remain `unknown` just
 because mutating scheduled work is still gated.
 
 Before calculating audit health, audit also runs the folder reconciler against
-live open GitHub state. This is target-read-only and only mutates generated state:
-records for items no longer open move from `records/<repo>/items/` to
-`records/<repo>/closed/`, reopened archived records move back to `items/`, and
-duplicate closed copies are removed. GitHub Actions uses the fast reconciliation
-mode that does not fetch each closed item individually for `closed_at`; large
-cleanup runs therefore avoid hundreds of per-item GitHub API subprocesses. The
-local reconciler still fetches `closed_at` by default for operator runs; pass
-`--skip-closed-at` for fast state-only cleanup.
+live open GitHub state. This is target-read-only and mutates only canonical
+Worker records: reports for items no longer open move from `items/` to `closed/`,
+reopened archived reports move back to `items/`, and duplicate closed copies are
+removed. GitHub Actions uses the fast reconciliation mode that does not fetch
+each closed item individually for `closed_at`; large cleanup runs therefore avoid
+hundreds of per-item GitHub API subprocesses. The local reconciler still fetches
+`closed_at` by default for operator runs; pass `--skip-closed-at` for fast
+canonical cleanup.
 
 Review publishing applies newly generated artifacts first, then runs the same
 fast reconciler once before committing records. It does not run the slower
 artifact-apply reconciler and the explicit publish reconciler back to back.
 
-After publishing audit state and reconciled records, audit dispatches the
-`openclaw/clawsweeper-state` dashboard renderer; that repository's 15-minute
-schedule remains the fallback if dispatch is delayed.
+After publishing Git-backed audit results and reconciling canonical records,
+audit dispatches the `openclaw/clawsweeper-state` dashboard renderer; that
+repository's 15-minute schedule remains the fallback if dispatch is delayed.
 
 ## Monitoring
 

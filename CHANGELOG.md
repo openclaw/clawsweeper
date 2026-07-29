@@ -7,6 +7,10 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+### Changed
+
+- Completed the Cloudflare-canonical state migration: records publish only to the Durable Object, action ledgers and assets publish only to R2, canonical-only workflows no longer check out `clawsweeper-state`, the former materializer only compacts the legacy append window, and the remaining `jobs`/`results`/`notifications`/apply-report Git writers use the Durable Object coordinator without Git lease refs or rebuild recovery.
+
 ### Added
 
 - Cut cluster repair intake over to durable state publication: intake appends an authenticated intent (exact job bytes, digest, store identity, selector report) and hydrates with a read-only non-persisted state credential; result publication mints its target-read token for the validated worker target repositories, projects exact changed state paths, and publisher-rerun failures no longer block subsequent self-heal. Thanks @RomneyDa! (#873)

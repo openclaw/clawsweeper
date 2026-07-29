@@ -12,9 +12,8 @@ import {
   repoRoot,
   validateJob,
 } from "./lib.js";
-import { ghErrorText, ghText } from "./github-cli.js";
+import { ghText } from "./github-cli.js";
 import {
-  isMissingGithubContentError,
   missingCommitFindingReport,
   type CommitFindingReportReadResult,
 } from "./commit-finding-report.js";
@@ -40,7 +39,9 @@ function prepare() {
     "report-path",
     stringArg("report_path", `records/${repoSlug(targetRepo)}/commits/${sha}.md`),
   );
-  const defaultReportUrl = `https://github.com/${reportRepo}/blob/main/${reportPath}`;
+  const defaultReportUrl = process.env.GITHUB_RUN_ID
+    ? `${process.env.GITHUB_SERVER_URL || "https://github.com"}/${process.env.GITHUB_REPOSITORY || "openclaw/clawsweeper"}/actions/runs/${process.env.GITHUB_RUN_ID}`
+    : "https://clawsweeper.openclaw.ai/";
   const dispatchReportUrl = stringArg("report-url", stringArg("report_url", ""));
   const reportUrl = isGithubUrl(dispatchReportUrl) ? dispatchReportUrl : defaultReportUrl;
   const active = truthy(enabled);
@@ -417,28 +418,23 @@ function readReport({ reportRepo, reportPath }: LooseRecord): CommitFindingRepor
   if (typeof local === "string") {
     return { ok: true, markdown: fs.readFileSync(path.resolve(local), "utf8") };
   }
+  const root = repoRoot();
+  const candidate = path.resolve(root, String(reportPath));
+  const relativePath = path.relative(root, candidate);
+  if (
+    relativePath === ".." ||
+    relativePath.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativePath)
+  ) {
+    die("commit finding report path escapes the hydrated canonical state");
+  }
   try {
-    const content = ghText([
-      "api",
-      `repos/${reportRepo}/contents/${reportPath}`,
-      "--method",
-      "GET",
-      "-f",
-      "ref=main",
-      "--jq",
-      ".content",
-    ]);
-    return {
-      ok: true,
-      markdown: Buffer.from(content.replace(/\s+/g, ""), "base64").toString("utf8"),
-    };
+    return { ok: true, markdown: fs.readFileSync(candidate, "utf8") };
   } catch (error) {
-    const message = ghErrorText(error) || `failed to fetch ${reportRepo}:${reportPath}`;
-    if (isMissingGithubContentError(message)) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return missingCommitFindingReport(String(reportRepo), String(reportPath));
     }
-    die(message);
-    throw new Error(message);
+    throw error;
   }
 }
 
