@@ -50,6 +50,7 @@ test("state-hydrating sparse repair workflows keep hydration dependencies", () =
     for (const requiredPath of [
       "scripts/hydrate-state.ts",
       "scripts/prepare-worker-record-cache.ts",
+      "scripts/worker-blobs.ts",
       "scripts/worker-records.ts",
     ]) {
       assert.ok(
