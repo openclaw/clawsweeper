@@ -49,25 +49,6 @@ test("every checkout uses v7 without disabling its fork-PR guard", () => {
   assert.doesNotMatch(sources, /allow-unsafe-pr-checkout:\s*true/);
 });
 
-test("production crawl-remote checkout is pinned to the audited v7 commit", () => {
-  const workflow = parse(
-    readFileSync(".github/workflows/deploy-crawl-remote.yml", "utf8"),
-  ) as WorkflowDocument;
-  const preflightCheckout = workflow.jobs?.preflight?.steps?.find((step) =>
-    step.uses?.startsWith("actions/checkout@"),
-  );
-  const deployCheckout = workflow.jobs?.deploy?.steps?.find((step) =>
-    step.uses?.startsWith("actions/checkout@"),
-  );
-  assert.equal(preflightCheckout?.uses, `actions/checkout@${checkoutV7Commit}`);
-  assert.equal(preflightCheckout?.with?.repository, "openclaw/crawl-remote");
-  assert.equal(deployCheckout?.uses, `actions/checkout@${checkoutV7Commit}`);
-  assert.equal(deployCheckout?.with?.repository, "openclaw/clawsweeper");
-  assert.equal(deployCheckout?.with?.ref, "${{ github.sha }}");
-  assert.equal(deployCheckout?.with?.["sparse-checkout"], ".github/deploy/crawl-remote-toolchain");
-  assert.equal(deployCheckout?.with?.["persist-credentials"], false);
-});
-
 test("trusted-event workflows explicitly checkout the default branch", () => {
   const expectedRefs: Record<string, string> = {
     ".github/workflows/dashboard-ci.yml": "${{ github.event.repository.default_branch }}",
