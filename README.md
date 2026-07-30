@@ -143,27 +143,17 @@ the target repository `VISION.md`, are small enough for one focused PR, and have
 clear repair shape can use the same PR-only implementation path without
 weakening the strict bug gate.
 
-### Commit Reviews
+### Commit Reviews (retired)
 
-Automatic push-triggered commit review is disabled. Maintainers can still run
-`.github/workflows/commit-review.yml` manually for selected commits or ranges.
-The workflow expands the selected range, skips non-code-only commits cheaply,
-starts one Codex worker per code-bearing commit, and writes
-`records/<repo-slug>/commits/<sha>.md`.
-
-Commit reports are the source of truth. Optional target commit Check Runs are
-disabled by default and can be enabled per run or repository. Reports with
-`result: findings` can dispatch to repair intake when the finding is narrow,
-non-security, and still relevant on latest `main`.
+The push/manual commit-review lane was retired in July 2026. Use
+`pnpm local-review` for offline branch reviews.
 
 ### Operations
 
 Repository-specific rules live in `src/repository-profiles.ts`, so OpenClaw,
 ClawHub, and ClawSweeper can share the same engine while keeping different apply
 limits. Both review and repair lanes support manual workflow dispatch, reruns,
-and backfills. `pnpm commit-reports -- --since 24h`, `--findings`,
-`--non-clean`, `--repo`, and `--author` query flat per-SHA commit storage
-without date buckets.
+and backfills.
 
 ## Guardrails
 
@@ -332,12 +322,6 @@ URL, deliberately absent from dashboard navigation, and adds no browser-to-GitHu
 requests or new GitHub query path. See
 [`docs/openclaw-bay-demo.md`](docs/openclaw-bay-demo.md).
 
-The optional proof-nudge lane can dry-run or post polite reminder comments for
-open PRs that remain blocked on `triage: needs-real-behavior-proof`. It uses
-comment-body cooldown markers, never closes PRs, and keeps scheduled operation
-behind default-off repository variables. See
-[`docs/proof-nudges.md`](docs/proof-nudges.md).
-
 The default-off unconfirmed product-direction policy can propose closure for a
 strictly bounded class of technically correct, well-proven external feature PRs
 that still lack maintainer-confirmed direction. Live maintainer signals and
@@ -360,9 +344,6 @@ ClawSweeper is split into four operational lanes:
   publishing
 - repair lane: maintainer-command routing, autofix, automerge, issue
   implementation PRs, and repair result publishing
-- commit review lane: main-branch commit dispatch, cheap code/non-code
-  classification, one Codex review worker per code-bearing commit, and optional
-  target commit checks
 
 ### Scheduler
 
@@ -530,47 +511,11 @@ The production automerge command chain can be validated before merge with the
 local-container, CI, and Crabbox harness in
 [`docs/repair/automerge-e2e.md`](docs/repair/automerge-e2e.md).
 
-### Commit Review Lane
+### Commit Review Lane (retired)
 
-Commit review is intentionally separate from issue/PR cleanup. It never closes
-items, writes comments, or fixes code.
-
-- Target repositories forward `push` events from `main` with
-  `repository_dispatch` only when the lane is re-enabled; the production
-  receiver currently accepts manual dispatch only.
-- Manual runs can pass `commit_sha`, optional `before_sha`, optional
-  `additional_prompt`, `enabled`, and `create_checks`.
-- The receiver verifies the selected commits are reachable from `origin/main`.
-- Before selecting and reviewing commits, the receiver waits 60 seconds by
-  default (`CLAWSWEEPER_COMMIT_REVIEW_SETTLE_SECONDS=60`) so a push range has
-  time to settle across GitHub and the runner.
-- The plan job expands ranges, pages large backfills at GitHub's matrix limit,
-  and classifies each commit before Codex starts.
-- Pure documentation, changelog, README/license, and asset-only commits get a
-  skipped report without spending Codex time.
-- Mixed commits and code-bearing commits start one Codex worker per commit. The
-  worker checks out current target `main` and reviews the selected commit by
-  SHA/range instead of detaching the whole repository at that commit.
-- Codex is prompted to read beyond the diff: changed files, callers/callees,
-  runtime entry points, adjacent tests/docs, dependency manifests, release
-  notes, advisories, web sources, and focused live tests when useful.
-- Each commit writes exactly one report at
-  `records/<repo-slug>/commits/<40-char-sha>.md`.
-- Reruns overwrite the same report, including reruns with an
-  `additional_prompt`.
-- Report results are `nothing_found`, `findings`, `inconclusive`, `failed`, or
-  `skipped_non_code`.
-- Optional GitHub Checks use the `ClawSweeper Commit Review` name on the target
-  commit. Clean or skipped reports are green; high-confidence high/critical
-  findings fail; lower-severity, inconclusive, and failed reviews are neutral.
-- Finding reports are dispatched to the repair intake when
-  `CLAWSWEEPER_COMMIT_FINDINGS_ENABLED` is not `false`. ClawSweeper owns
-  the audit log and any repair PR.
-
-Use `pnpm commit-reports -- --since 24h` to review recent reports and add
-`--findings`, `--non-clean`, `--repo`, or `--author` to narrow the list. The
-storage stays flat so a rerun can overwrite exactly one file for a commit
-without rediscovering a date bucket.
+The hosted commit-review lane was retired in July 2026 (zero successful runs in
+its final month). The offline review engine survives as `pnpm local-review`;
+see [docs/commit-sweeper.md](docs/commit-sweeper.md).
 
 ### Safety Model
 
@@ -731,34 +676,6 @@ corepack enable
 pnpm run apply-decisions -- --target-repo openclaw/openclaw --sync-comments-only --comment-sync-min-age-days 7 --processed-limit 1000 --limit 0 --skip-dashboard
 ```
 
-List commit reports:
-
-```bash
-source ~/.profile
-corepack enable
-pnpm run build
-pnpm commit-reports -- --since 24h
-pnpm commit-reports -- --since 24h --findings
-pnpm commit-reports -- --repo openclaw/openclaw --author steipete --since 7d
-```
-
-Manually rerun commit review through GitHub Actions:
-
-```bash
-gh workflow run commit-review.yml \
-  --repo openclaw/clawsweeper \
-  --ref main \
-  -f target_repo=openclaw/openclaw \
-  -f commit_sha=<commit-sha> \
-  -f before_sha=<parent-or-range-start-sha> \
-  -f create_checks=false \
-  -f enabled=true \
-  -f additional_prompt='Optional extra review focus.'
-```
-
-Omit `before_sha` for a single-commit review. Pass `before_sha` to review the
-historic range `before_sha..commit_sha`.
-
 Manual review runs are proposal-only. Use `apply_existing=true` to apply unchanged
 proposals later. Scheduled apply runs process both issues and pull requests by
 default, subject to the selected repository profile; pass `target_repo`,
@@ -772,7 +689,7 @@ records. `openclaw/clawsweeper` has a scheduled read-only audit row and is
 available for manual and event self-review smoke tests. Broad hot-intake sweeps
 cap scheduled fan-out at 44 one-item shards per run when quiet; manual normal
 backfill can use up to 89 shards, while exact event reviews still use one shard.
-Normal review, hot intake, and commit review are
+Normal review and hot intake are
 background lanes, so they shrink automatically while repair or exact-item work
 is active. Throughput defaults live in
 [docs/limits.md](docs/limits.md) and `config/automation-limits.json`.
@@ -785,12 +702,11 @@ This is a Codex worker budget, not a GitHub Actions runner limit. Deterministic
 exact-review publishers, comment routers, and lease reconcilers are
 control-plane workflows and do not consume these 128 slots.
 Lane limits are derived from that number: normal review defaults to 89 shards
-for manual/backstop and scheduled runs, hot intake up to 44 shards, commit
-review 6 commits per page, and existing repair/issue implementation lanes use
-40% of `workers.max`, currently 51 live
-workers. Imported gitcrawl cluster repair allows 2 live workers by default.
+for manual/backstop and scheduled runs, hot intake up to 44 shards, and
+existing repair/issue implementation lanes use 40% of `workers.max`, currently
+51 live workers. Imported gitcrawl cluster repair allows 2 live workers by default.
 Exact-item review, repair, and issue implementation are priority work; normal
-review, hot intake, and commit review are background work and automatically
+review and hot intake are background work and automatically
 yield when priority work is active. Exact-item runs use a durable Worker queue
 that coalesces item deliveries, leases at most 128 concurrent reviews, and admits
 up to 120 active exact reviews per target repository. Other lanes retain the
@@ -809,9 +725,6 @@ target repo and exact item number; ClawSweeper then runs one event job that
 reviews, comments, and checks immediate safe apply instead of waiting for the
 next hot-intake cron or bulk publish lane.
 
-Main-branch commit review is manual-only in production. See
-[docs/commit-dispatcher.md](docs/commit-dispatcher.md) for the historical target
-dispatcher shape if automatic push-range review is re-enabled later.
 
 ## Checks
 
@@ -846,9 +759,8 @@ Required secrets:
   Currently `Iv23liOECG0slfuhz093`.
 - `CLAWSWEEPER_APP_PRIVATE_KEY`: private key for `clawsweeper`; plan/review
   jobs use a short-lived GitHub App installation token for read-heavy target API
-  calls, commit review uses a read-scoped target token while Codex runs, and
-  apply/comment-sync/check jobs use the app token for comments, closes, and
-  optional checks.
+  calls, and apply/comment-sync/check jobs use the app token for comments,
+  closes, and optional checks.
   Keep App credentials scoped to the `actions/create-github-app-token` step.
   Review shards run Codex over attacker-controlled issue/PR text, so
   `codexEnv()` also strips these App variables before spawning Codex.
@@ -884,7 +796,7 @@ Required `clawsweeper` app permissions:
 - Workflows: write, for adopted automerge repairs that need to rebase or update
   source branches containing `.github/workflows/*` changes.
 - Actions: read/write on `openclaw/clawsweeper`, for run cancellation, manual
-  dispatch, self-heal, and commit-review continuations.
+  dispatch, and self-heal.
 - Checks: read/write on target repositories, for structural cache state and
   commit Check Run publication.
 - Commit statuses: read on target repositories, for structural cache state.
@@ -912,13 +824,6 @@ Target repository setup:
 - install the issue/PR dispatcher from
   [docs/target-dispatcher.md](docs/target-dispatcher.md) for exact item event
   reviews
-- install the commit dispatcher from
-  [docs/commit-dispatcher.md](docs/commit-dispatcher.md) for `main` commit
-  reviews
-- set `CLAWSWEEPER_COMMIT_REVIEW_ENABLED=false` to disable commit dispatch
-  without code changes
-- set `CLAWSWEEPER_COMMIT_REVIEW_CREATE_CHECKS=true` only if commit Check Runs
-  should be published
 - optionally set `CLAWSWEEPER_COMMIT_REVIEW_SETTLE_SECONDS=0` for manual
   backfills where the target commit range is already settled; the default is
   `60`

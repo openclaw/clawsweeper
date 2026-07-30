@@ -7,6 +7,15 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+### Removed
+
+- Deleted the retired append-window compactor end to end: the `state-materializer.yml` workflow (a runner every 20 minutes to drain zero rows), its drain module, and the producer-free `/internal/state/{append,drain,ack,dispose}` Worker endpoints plus the five `state_append_*` Durable Object tables, which are dropped on upgrade.
+- Deleted the commit-review lane (`commit-review.yml`, the hosted commit sweeper CLI commands, classifier/check publishing, and the `repair-commit-finding-intake.yml` intake) after zero successful runs in its final 20 attempts; the offline `pnpm local-review` engine and existing `commit_finding` repair jobs remain.
+- Deleted the crawl-remote production deployment system (`deploy-crawl-remote.yml`, its pinned Wrangler toolchain, and CI integration job) after three runs ever with no success.
+- Deleted the dormant `repair-finalize-open-prs.yml` dispatch workflow (last success April 29); the finalizer report module stays because `repair-publish-results.yml` still writes it after every worker-result publish.
+- Deleted the proof-nudge lane (`proof-nudges.yml`, the `proof-nudges`/`bot-proof` CLI commands, and their eligibility/rendering policy); historical proof-nudge comment markers still count as dated proof requests in the stalled-unproven close policy.
+- Deleted the monthly `state-compaction.yml` history rewrite of `openclaw/clawsweeper-state`, removing one of the last writers ahead of that repository's retirement.
+
 ### Changed
 
 - Repaired legacy exact-review decisions whose empty branch was shifted to the string `0`, resolved invalid queued branches from the target repository default, and requeued temporary branch-resolution failures without spending the eight-attempt review-failure budget.

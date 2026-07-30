@@ -222,42 +222,14 @@ limit is `50`; set it to `0` only for a deliberately uncapped execution window.
 Common changelog and release-note files are ignored for this backpressure check
 because they are shared support files rather than a meaningful repair area.
 
-## ClawSweeper Commit Findings
+## ClawSweeper Commit Findings (retired intake)
 
-Workflow: `.github/workflows/repair-commit-finding-intake.yml`
-Script: `scripts/commit-finding-intake.ts`
-
-ClawSweeper can dispatch `clawsweeper_commit_finding` when a main-branch commit
-review report has `result: findings`. ClawSweeper treats that report as a source
-finding, not as an order to open a PR.
-
-The intake step fetches the report from latest `openclaw/clawsweeper@main`,
-writes one audit file, and then decides whether an automatic repair PR is
-allowed:
-
-- audit path: `results/commit-findings/<repo-slug>/<sha>.md`
-- job path: `jobs/<owner>/inbox/clawsweeper-commit-<repo-slug>-<shortsha>.md`
-- branch: `clawsweeper/clawsweeper-commit-<repo-slug>-<shortsha>`
-
-Non-finding, disabled, security/privacy/supply-chain, and broad findings stop
-at the audit record. Eligible ordinary bug/regression/reliability findings get a
-deterministic synthetic ClawSweeper result and fix artifact. That skips the normal
-cluster-planning Codex pass and sends the report straight to
-`execute-fix-artifact`, where Codex is used for the repair loop against latest
-target `main`. The executor handles trivial branch-refresh work before asking
-Codex to edit: a clean rebase that changes only commit ancestry skips the edit
-pass, and an isolated `CHANGELOG.md` rebase conflict is merged mechanically by
-preserving both sides before validation continues. Generated config checksum
-conflicts are also merged mechanically by keeping replayed checksum entries and
-current-main entries that the replayed commit did not touch.
-
-Commit-finding fix artifacts set `allow_no_pr: true`. If the repair loop
-verifies the report but produces no target-repo diff, ClawSweeper records a clean
-skipped no-PR outcome instead of failing the workflow.
-
-The generated job uses `source: clawsweeper_commit` and may have no issue/PR
-`candidates`. The fix artifact uses `repair_strategy: new_fix_pr`; merge and
-close actions remain blocked.
+The commit-review lane and its `repair-commit-finding-intake.yml` workflow were
+retired in July 2026, so no new `clawsweeper_commit_finding` dispatches occur.
+Existing jobs with `source: clawsweeper_commit` and `job_intent: commit_finding`
+remain executable through the ordinary cluster worker; their fix artifacts keep
+`allow_no_pr: true` and `repair_strategy: new_fix_pr`, with merge and close
+actions blocked.
 
 ## Issue Implementation Commands
 
@@ -372,8 +344,12 @@ for duplicate or superseded items covered by that fix.
 
 ## Open PR Finalizer
 
-Workflow: `.github/workflows/finalize-open-prs.yml`
-Script: `scripts/finalize-open-prs.ts`
+Script: `src/repair/finalize-open-prs.ts`
+
+The finalizer report runs with `--write-report` inside
+`repair-publish-results.yml` after every worker-result publish. The dedicated
+dispatch workflow was retired (dormant since April 2026); repair dispatch now
+happens only through the cluster lanes.
 
 The finalizer scans open ClawSweeper PRs in the target repo. It finds PRs by the
 `clawsweeper/*` branch prefix. It classifies blockers:

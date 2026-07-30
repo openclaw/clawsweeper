@@ -2299,72 +2299,6 @@ test("sweep target review token can post pull request review leases", () => {
   assert.match(targetReviewToken ?? "", /permission-pull-requests: write/);
 });
 
-test("proof nudge workflow is manual-first and scheduled behind repo vars", () => {
-  const sweepWorkflow = readText(".github/workflows/sweep.yml");
-  const workflow = readText(".github/workflows/proof-nudges.yml");
-  const job = workflow.slice(workflow.indexOf("  proof-nudges:"), workflow.length);
-  const concurrency = workflow.slice(workflow.indexOf("concurrency:"), workflow.indexOf("\njobs:"));
-
-  assert.doesNotMatch(sweepWorkflow, /proof_nudges/);
-  assert.match(workflow, /execute:[\s\S]*?default: "false"/);
-  assert.match(workflow, /cron: "0 10 \* \* \*"/);
-  assert.doesNotMatch(workflow, /cron: "0 11 \* \* \*"/);
-  assert.match(concurrency, /clawsweeper-proof-nudges/);
-  assert.doesNotMatch(job, /Check scheduled Central time/);
-  assert.doesNotMatch(job, /PROOF_NUDGES_SCHEDULE_TZ/);
-  assert.doesNotMatch(job, /PROOF_NUDGES_EVENT_SCHEDULE/);
-  assert.doesNotMatch(job, /steps\.central-time\.outputs\.should_run == 'true'/);
-  assert.match(job, /github\.event_name == 'workflow_dispatch'/);
-  assert.match(job, /vars\.CLAWSWEEPER_PROOF_NUDGES_SCHEDULED == '1'/);
-  assert.match(job, /vars\.CLAWSWEEPER_BOT_PROOF_SCHEDULED == '1'/);
-  assert.match(job, /vars\.CLAWSWEEPER_PROOF_NUDGES_EXECUTE == '1'/);
-  assert.match(job, /vars\.CLAWSWEEPER_BOT_PROOF_EXECUTE == '1'/);
-  assert.match(
-    job,
-    /github\.event_name == 'schedule' && \(vars\.CLAWSWEEPER_PROOF_NUDGES_SCHEDULED == '1' \|\| vars\.CLAWSWEEPER_BOT_PROOF_SCHEDULED == '1'\)/,
-  );
-  assert.match(job, /TARGET_REPO_INPUT:/);
-  assert.match(job, /target_repo must be owner\/repo/);
-  assert.match(job, /PROOF_NUDGES_ITEM_NUMBERS:/);
-  assert.match(job, /item_numbers must be a comma-separated list/);
-  assert.match(job, /PROOF_NUDGES_LIMIT:/);
-  assert.match(job, /PROOF_NUDGES_PROCESSED_LIMIT:/);
-  assert.match(job, /PROOF_NUDGES_PROCESSED_LIMIT must be a positive integer/);
-  assert.match(job, /PROOF_NUDGES_MIN_AGE_DAYS:/);
-  assert.match(job, /PROOF_NUDGES_COOLDOWN_DAYS:/);
-  assert.match(job, /permission-pull-requests: write/);
-  assert.match(
-    job,
-    /numeric_input in PROOF_NUDGES_LIMIT PROOF_NUDGES_MIN_AGE_DAYS PROOF_NUDGES_COOLDOWN_DAYS/,
-  );
-  assert.match(job, /execute_arg=\(\)/);
-  assert.match(job, /if \[ "\$PROOF_NUDGES_EXECUTE" = "true" \]/);
-  assert.match(job, /processed_limit_arg=\(\)/);
-  assert.match(job, /--processed-limit "\$PROOF_NUDGES_PROCESSED_LIMIT"/);
-  assert.match(job, /--cursor-path "results\/proof-nudge-cursors\/\$\{target_slug\}\.json"/);
-  assert.match(job, /--cursor-path "results\/bot-proof-cursors\/\$\{target_slug\}\.json"/);
-  assert.match(job, /pnpm run proof-nudges/);
-  assert.match(job, /vars\.CLAWSWEEPER_PROOF_NUDGES_LIMIT/);
-  assert.match(job, /vars\.CLAWSWEEPER_PROOF_NUDGES_PROCESSED_LIMIT/);
-  assert.match(job, /repair:publish-main/);
-  assert.match(job, /results\/proof-nudge-cursors/);
-  assert.match(job, /results\/bot-proof-cursors/);
-});
-
-test("proof nudge workflow publishes exact cursor files only for executed lanes", () => {
-  const workflow = readFileSync(".github/workflows/proof-nudges.yml", "utf8");
-  const job = workflow.slice(workflow.indexOf("  proof-nudges:"), workflow.length);
-  assert.match(job, /proof_cursor_path="results\/proof-nudge-cursors\/\$\{target_slug\}\.json"/);
-  assert.match(job, /bot_cursor_path="results\/bot-proof-cursors\/\$\{target_slug\}\.json"/);
-  assert.match(job, /if \[ "\$PROOF_NUDGES_EXECUTE" = "true" \] && \[ -f "\$proof_cursor_path" \]/);
-  assert.match(job, /if \[ "\$BOT_PROOF_EXECUTE" = "true" \] && \[ -f "\$bot_cursor_path" \]/);
-  assert.match(job, /cursor_publish_args\+=\(--path "\$(?:proof|bot)_cursor_path"\)/);
-  assert.doesNotMatch(
-    job,
-    /cursor_publish_args\+=\(--path results\/(?:proof-nudge|bot-proof)-cursors\)/,
-  );
-});
-
 test(
   "read-only checkout mode restores file modes and leaves git metadata writable",
   {
@@ -2836,13 +2770,7 @@ test("review capacity probes use REST actions run listing", () => {
     sweepWorkflow.indexOf("- id: mode"),
     sweepWorkflow.indexOf("- id: select"),
   );
-  const commitWorkflow = readText(".github/workflows/commit-review.yml");
-  const commitBlock = commitWorkflow.slice(
-    commitWorkflow.indexOf("- name: Select commits"),
-    commitWorkflow.indexOf('if [ "$ENABLED" = "false" ]'),
-  );
-
-  for (const block of [sweepBlock, commitBlock]) {
+  for (const block of [sweepBlock]) {
     assert.match(block, /active_runs_json\(\)/);
     assert.match(block, /actions\/runs\?per_page=100/);
     assert.match(block, /--paginate/);
@@ -2864,12 +2792,6 @@ test("background review capacity reserves expanding matrices and caps broad manu
     workflow.indexOf("- id: mode"),
     workflow.indexOf("- id: select"),
   );
-  const commitWorkflow = readText(".github/workflows/commit-review.yml");
-  const commitBlock = commitWorkflow.slice(
-    commitWorkflow.indexOf("- name: Select commits"),
-    commitWorkflow.indexOf('if [ "$ENABLED" = "false" ]'),
-  );
-
   assert.match(modeBlock, /limit review_shards\.hot_intake_default/);
   assert.match(modeBlock, /limit review_shards\.normal_default/);
   assert.match(modeBlock, /STALE_QUEUED_CUTOFF/);
@@ -2884,19 +2806,6 @@ test("background review capacity reserves expanding matrices and caps broad manu
   assert.match(modeBlock, /lane_shard_cap="\$normal_shards"/);
   assert.match(modeBlock, /lane_shard_cap="\$hot_intake_shards"/);
   assert.match(modeBlock, /Capping broad background review shards/);
-  assert.match(commitBlock, /limit review_shards\.hot_intake_default/);
-  assert.match(commitBlock, /limit review_shards\.normal_default/);
-  assert.match(commitBlock, /STALE_QUEUED_CUTOFF/);
-  assert.match(commitBlock, /updatedAt:\.updated_at/);
-  assert.match(commitBlock, /workflowPath == "\.github\/workflows\/sweep\.yml"/);
-  assert.match(commitBlock, /\.displayTitle \| startswith\("Review event items "\)/);
-  assert.match(commitBlock, /WORKFLOW_PATH="\$1"/);
-  assert.doesNotMatch(commitBlock, /workflowName == "ClawSweeper"/);
-  assert.doesNotMatch(commitBlock, /WORKFLOW_NAME="\$1"/);
-  assert.match(commitBlock, /total_shards/);
-  assert.match(commitBlock, /limit review_shards\.hard_cap/);
-  assert.match(commitBlock, /reserved_shards="\$requested_shards"/);
-  assert.match(commitBlock, /reserved_shards="\$item_count"/);
 });
 
 test("background planners fetch exact-review queue pressure once and pass its level", () => {
@@ -2905,13 +2814,7 @@ test("background planners fetch exact-review queue pressure once and pass its le
     sweepWorkflow.indexOf("- id: mode"),
     sweepWorkflow.indexOf("- id: select"),
   );
-  const commitWorkflow = readText(".github/workflows/commit-review.yml");
-  const commitBlock = commitWorkflow.slice(
-    commitWorkflow.indexOf("- name: Select commits"),
-    commitWorkflow.indexOf('if [ "$ENABLED" = "false" ]'),
-  );
-
-  for (const block of [sweepBlock, commitBlock]) {
+  for (const block of [sweepBlock]) {
     assert.match(
       block,
       /QUEUE_URL: \$\{\{ vars\.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL \|\| 'https:\/\/clawsweeper\.openclaw\.ai' \}\}/,
@@ -2934,7 +2837,6 @@ test("background planners fetch exact-review queue pressure once and pass its le
   );
   assert.match(sweepBlock, /hot_intake \$hot_intake_unpressured->\$hot_intake_shards/);
   assert.match(sweepBlock, /normal_review \$normal_unpressured->\$normal_shards/);
-  assert.match(commitBlock, /commit_review \$unpressured_page_size->\$PAGE_SIZE/);
 });
 
 test("review backstops identify sweep runs by stable workflow path", () => {

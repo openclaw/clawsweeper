@@ -2327,10 +2327,8 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
   const localCheck = readText("scripts/check-local-codex.mjs");
   const workflows = [
     ".github/workflows/assist.yml",
-    ".github/workflows/commit-review.yml",
     ".github/workflows/maintainer-activity-report.yml",
     ".github/workflows/repair-cluster-worker.yml",
-    ".github/workflows/repair-commit-finding-intake.yml",
     ".github/workflows/sweep.yml",
   ].map((file) => readText(file));
 
@@ -2368,9 +2366,7 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
   assert.match(openclawAction, /CLAWSWEEPER_OPENCLAW_BIN=\$launcher/);
   const runnerWorkflowFiles = [
     ".github/workflows/assist.yml",
-    ".github/workflows/commit-review.yml",
     ".github/workflows/repair-cluster-worker.yml",
-    ".github/workflows/repair-commit-finding-intake.yml",
     ".github/workflows/spam-scanner.yml",
     ".github/workflows/sweep.yml",
   ];
@@ -2455,30 +2451,21 @@ test("repair workflows preserve existing dispatch while scheduled cluster intake
   const cluster = readText(".github/workflows/repair-cluster-worker.yml");
   const clusterIntake = readText(".github/workflows/repair-cluster-intake.yml");
   const router = readText(".github/workflows/repair-comment-router.yml");
-  const finalizer = readText(".github/workflows/repair-finalize-open-prs.yml");
   const selfHeal = readText(".github/workflows/repair-self-heal.yml");
   const sweep = readText(".github/workflows/sweep.yml");
   const dispatchJobs = readText("src/repair/dispatch-jobs.ts");
   const importGitcrawl = readText("src/repair/import-gitcrawl-clusters.ts");
   const importLowSignal = readText("src/repair/import-gitcrawl-low-signal-prs.ts");
   const issueImplementation = readText(".github/workflows/repair-issue-implementation-intake.yml");
-  const commitFinding = readText(".github/workflows/repair-commit-finding-intake.yml");
-  const existingRepairWorkflows = [
-    cluster,
-    router,
-    finalizer,
-    selfHeal,
-    sweep,
-    issueImplementation,
-    commitFinding,
-  ].join("\n");
+  const existingRepairWorkflows = [cluster, router, selfHeal, sweep, issueImplementation].join(
+    "\n",
+  );
 
   assert.doesNotMatch(existingRepairWorkflows, /CLAWSWEEPER_FEATURE_REPAIR_ENABLED/);
   assert.match(sweep, /gh workflow run repair-comment-router\.yml/);
   assert.doesNotMatch(sweep, /pnpm run repair:comment-router -- \\\n[\s\S]*--execute/);
   assert.match(router, /\{ \[ "\$\{\{ github\.event_name \}\}" = "repository_dispatch" \]; \}/);
   assert.match(issueImplementation, /ENABLED: \$\{\{ github\.event\.inputs\.enabled/);
-  assert.match(commitFinding, /ENABLED: \$\{\{ github\.event\.inputs\.enabled/);
   assert.match(clusterIntake, /SCHEDULE_ENABLED/);
   assert.match(clusterIntake, /CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED/);
   const intakeJobHeader = clusterIntake.slice(
@@ -2585,19 +2572,6 @@ test("review prompts require reproduction and solution assessment details", () =
   assert.match(commitPrompt, /The checkout is current target\s+`main`, not the commit snapshot/);
   assert.match(commitPrompt, /Do we have a high-confidence way to reproduce the issue\?/);
   assert.match(commitPrompt, /Is this the best way to solve the issue\?/);
-});
-
-test("commit review workflow settles and reviews from target main", () => {
-  const workflow = readText(".github/workflows/commit-review.yml");
-
-  assert.doesNotMatch(workflow, /clawsweeper_commit_review/);
-  assert.match(workflow, /workflow_dispatch:/);
-  assert.match(workflow, /gh workflow run commit-review\.yml/);
-  assert.match(workflow, /CLAWSWEEPER_COMMIT_REVIEW_SETTLE_SECONDS \|\| '60'/);
-  assert.match(workflow, /sleep "\$SETTLE_SECONDS"/);
-  assert.match(workflow, /Check out target main/);
-  assert.match(workflow, /checkout -B main refs\/remotes\/origin\/main/);
-  assert.doesNotMatch(workflow, /checkout --detach "\$COMMIT_SHA"/);
 });
 
 test("sweep target write tokens can merge pull requests", () => {

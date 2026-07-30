@@ -31,7 +31,7 @@ test("every state hydration uses the canonical Worker with an explicit git-state
     }
   }
 
-  assert.equal(setups.length, 25, "setup-state site count is an audited invariant");
+  assert.equal(setups.length, 19, "setup-state site count is an audited invariant");
   for (const { site, step } of setups) {
     assert.equal(step.with?.["records-url"], workerUrl, site);
     assert.equal(step.with?.["records-secret"], workerSecret, site);
@@ -44,9 +44,6 @@ test("every state hydration uses the canonical Worker with an explicit git-state
       .filter(({ step }) => step.with?.["hydrate-git-state"] === "false")
       .map(({ site }) => site),
     [
-      ".github/workflows/commit-review.yml:plan",
-      ".github/workflows/commit-review.yml:review",
-      ".github/workflows/commit-review.yml:publish",
       ".github/workflows/exact-review-batch-publish.yml:publish",
       ".github/workflows/sweep.yml:event-review-apply",
       ".github/workflows/sweep.yml:event-review-publish",
@@ -70,14 +67,9 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
       .filter(({ step }) => step.with?.["records-repo-slugs"] !== undefined)
       .map(({ site }) => site),
     [
-      ".github/workflows/commit-review.yml:plan",
-      ".github/workflows/commit-review.yml:review",
-      ".github/workflows/commit-review.yml:publish",
       ".github/workflows/exact-review-batch-publish.yml:publish",
-      ".github/workflows/proof-nudges.yml:proof-nudges",
       ".github/workflows/repair-cluster-intake.yml:intake",
       ".github/workflows/repair-comment-router.yml:route-comments",
-      ".github/workflows/repair-commit-finding-intake.yml:intake",
       ".github/workflows/repair-conflict-self-heal.yml:self-heal",
       ".github/workflows/repair-issue-implementation-intake.yml:intake",
       ".github/workflows/spam-scanner.yml:scan",
@@ -97,7 +89,6 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
     [
       ".github/workflows/repair-cluster-worker.yml:cluster",
       ".github/workflows/repair-cluster-worker.yml:execute",
-      ".github/workflows/repair-finalize-open-prs.yml:finalize",
       ".github/workflows/repair-publish-results.yml:publish",
       ".github/workflows/repair-self-heal.yml:self-heal",
       ".github/workflows/sweep.yml:target-fanout",
@@ -155,7 +146,7 @@ test("all remaining git publishers join setup-state and receive a step-scoped co
       }
     }
   }
-  assert.equal(publishers, 23, "git publisher count is an audited invariant");
+  assert.equal(publishers, 19, "git publisher count is an audited invariant");
 });
 
 test("post-side-effect git bookkeeping is non-fatal while durability fences stay strict", () => {
@@ -176,7 +167,6 @@ test("post-side-effect git bookkeeping is non-fatal while durability fences stay
       "Commit conflict self-heal ledger",
     ],
     [".github/workflows/repair-self-heal.yml", "self-heal", "Commit self-heal ledger"],
-    [".github/workflows/repair-finalize-open-prs.yml", "finalize", "Commit finalizer ledger"],
     [".github/workflows/sweep.yml", "retry-failed-reviews", "Publish failed-review retry state"],
     [".github/workflows/sweep.yml", "apply-existing", "Retry final apply status publication"],
   ]) {
@@ -189,7 +179,6 @@ test("post-side-effect git bookkeeping is non-fatal while durability fences stay
       "route-comments",
       "Commit comment router ledger",
     ],
-    [".github/workflows/repair-commit-finding-intake.yml", "intake", "Commit intake ledger"],
     [".github/workflows/repair-issue-implementation-intake.yml", "intake", "Commit intake ledger"],
     [".github/workflows/repair-publish-results.yml", "publish", "Commit result ledger"],
   ]) {
@@ -199,10 +188,6 @@ test("post-side-effect git bookkeeping is non-fatal while durability fences stay
   assert.match(
     readFileSync("scripts/apply-workflow-helpers.sh", "utf8"),
     /Operational state publish failed.*Canonical work remains valid/,
-  );
-  assert.match(
-    readFileSync(".github/workflows/proof-nudges.yml", "utf8"),
-    /Proof cursor publish failed.*Proof handling completed/,
   );
 });
 
@@ -225,18 +210,6 @@ test("every immutable action-event publisher targets R2 without a state-repo tok
   assert.equal(publishers.length, 8);
 });
 
-test("the materializer is a bounded window compactor with no git output", () => {
-  const source = readFileSync(".github/workflows/state-materializer.yml", "utf8");
-  const implementation = readFileSync("src/repair/state-materializer.ts", "utf8");
-  assert.match(source, /name: Compact queued state/);
-  assert.match(source, /Compact queued state/);
-  assert.doesNotMatch(source, /setup-state|create-state-token|state-token|setup-codex/);
-  assert.doesNotMatch(source, /git push|publish-action-event|CLAWSWEEPER_STATE_LEASE/);
-  assert.match(implementation, /\/internal\/state\/drain/);
-  assert.match(implementation, /\/internal\/state\/ack/);
-  assert.doesNotMatch(implementation, /git-publish|publishMainCommit|writeFileSync|records\//);
-});
-
 test("retired migration and Git recovery surfaces stay deleted", () => {
   const allSource = [
     readFileSync("src/repair/git-publish.ts", "utf8"),
@@ -248,7 +221,16 @@ test("retired migration and Git recovery surfaces stay deleted", () => {
   for (const retired of [
     ".github/workflows/backfill-worker-records.yml",
     ".github/workflows/migrate-state-blobs.yml",
+    ".github/workflows/commit-review.yml",
+    ".github/workflows/deploy-crawl-remote.yml",
+    ".github/workflows/proof-nudges.yml",
+    ".github/workflows/repair-commit-finding-intake.yml",
+    ".github/workflows/repair-finalize-open-prs.yml",
+    ".github/workflows/state-compaction.yml",
+    ".github/workflows/state-materializer.yml",
     "src/repair/state-publication-batch.ts",
+    "src/repair/state-materializer.ts",
+    "src/repair/state-compaction.ts",
     "src/repair/recovery-advisor.ts",
   ]) {
     assert.throws(() => readFileSync(retired, "utf8"));
