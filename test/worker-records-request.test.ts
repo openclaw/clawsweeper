@@ -60,8 +60,12 @@ test("signedPost includes a body snippet for non-JSON error bodies", async () =>
   );
 });
 
-test("signedPost throws invalid_json_body for a 2xx response with an empty body", async () => {
-  const { calls, fetchImpl } = fetchStub([jsonResponse(200, "")]);
+test("signedPost throws invalid_json_body for persistently empty 2xx bodies", async () => {
+  const { calls, fetchImpl } = fetchStub([
+    jsonResponse(200, ""),
+    jsonResponse(200, ""),
+    jsonResponse(200, ""),
+  ]);
   await assert.rejects(
     signedPost({ baseUrl, path: "/internal/test", webhookSecret, body: {}, fetch: fetchImpl }),
     (error: Error & { status?: number; code?: string; bodySnippet?: string }) => {
@@ -72,11 +76,26 @@ test("signedPost throws invalid_json_body for a 2xx response with an empty body"
       return true;
     },
   );
-  assert.equal(calls.length, 1, "2xx must not retry");
+  assert.equal(calls.length, 3, "transient blank 2xx bodies retry within the bounded budget");
+});
+
+test("signedPost recovers when a blank 2xx body clears on retry", async () => {
+  const { calls, fetchImpl } = fetchStub([jsonResponse(200, ""), jsonResponse(200, { ok: true })]);
+  const value = await signedPost<{ ok: boolean }>({
+    baseUrl,
+    path: "/internal/test",
+    webhookSecret,
+    body: {},
+    fetch: fetchImpl,
+  });
+  assert.deepEqual(value, { ok: true });
+  assert.equal(calls.length, 2);
 });
 
 test("signedPost throws invalid_json_body with a snippet for a 2xx HTML body", async () => {
   const { fetchImpl } = fetchStub([
+    jsonResponse(200, "<html><body>maintenance page</body></html>", "text/html"),
+    jsonResponse(200, "<html><body>maintenance page</body></html>", "text/html"),
     jsonResponse(200, "<html><body>maintenance page</body></html>", "text/html"),
   ]);
   await assert.rejects(
@@ -94,7 +113,11 @@ test("signedPost throws invalid_json_body with a snippet for a 2xx HTML body", a
 });
 
 test("signedPost throws invalid_json_body for a 2xx response with a literal null body", async () => {
-  const { calls, fetchImpl } = fetchStub([jsonResponse(200, "null")]);
+  const { calls, fetchImpl } = fetchStub([
+    jsonResponse(200, "null"),
+    jsonResponse(200, "null"),
+    jsonResponse(200, "null"),
+  ]);
   await assert.rejects(
     signedPost({ baseUrl, path: "/internal/test", webhookSecret, body: {}, fetch: fetchImpl }),
     (error: Error & { status?: number; code?: string; bodySnippet?: string }) => {
@@ -105,7 +128,7 @@ test("signedPost throws invalid_json_body for a 2xx response with a literal null
       return true;
     },
   );
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 3);
 });
 
 test("signedPost resends the full JSON request body on a retry after a 502", async () => {

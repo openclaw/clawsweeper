@@ -734,29 +734,36 @@ export async function signedPost<T>(options: {
   body: unknown;
   fetch?: typeof globalThis.fetch;
 }): Promise<T> {
-  const response = await signedRequest(options);
-  // Read the body exactly once; a Response body is a one-shot stream and a
-  // later clone() of a consumed response throws, masking the real failure.
-  const bodyText = await response.text().catch(() => "");
-  if (!response.ok) throw workerRequestError(response.status, bodyText);
-  let value: unknown;
-  try {
-    value = JSON.parse(bodyText);
-  } catch {
-    value = undefined;
+  for (let attempt = 1; ; attempt += 1) {
+    const response = await signedRequest(options);
+    // Read the body exactly once; a Response body is a one-shot stream and a
+    // later clone() of a consumed response throws, masking the real failure.
+    const bodyText = await response.text().catch(() => "");
+    if (!response.ok) throw workerRequestError(response.status, bodyText);
+    let value: unknown;
+    try {
+      value = JSON.parse(bodyText);
+    } catch {
+      value = undefined;
+    }
+    // A 2xx whose body is empty, non-JSON, or a JSON null/primitive (e.g. a
+    // literal "null" page) is a protocol violation — every endpoint returns an
+    // object envelope. The edge occasionally serves such bodies transiently
+    // (observed as blank 200s), so retry within the bounded budget before
+    // failing loudly with the status and a body snippet.
+    if (typeof value !== "object" || value === null) {
+      if (attempt < SIGNED_REQUEST_MAX_ATTEMPTS) {
+        await signedRequestBackoff(attempt);
+        continue;
+      }
+      throw new WorkerRecordRequestError(
+        response.status,
+        "invalid_json_body",
+        bodyText.trim().slice(0, 200),
+      );
+    }
+    return value as T;
   }
-  // A 2xx whose body is empty, non-JSON, or a JSON null/primitive (e.g. a
-  // literal "null" page) is a protocol violation — every endpoint returns an
-  // object envelope. Returning it would crash callers far from the request;
-  // fail loudly with the status and a body snippet instead.
-  if (typeof value !== "object" || value === null) {
-    throw new WorkerRecordRequestError(
-      response.status,
-      "invalid_json_body",
-      bodyText.trim().slice(0, 200),
-    );
-  }
-  return value as T;
 }
 
 const SIGNED_REQUEST_MAX_ATTEMPTS = 3;
