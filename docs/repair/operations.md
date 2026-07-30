@@ -46,12 +46,6 @@ pnpm run status -- \
   --bot-owned-proof-dispatches 0
 ```
 
-For commit-review findings, ClawSweeper dispatches
-`clawsweeper_commit_finding` to this repository. ClawSweeper fetches the latest
-markdown report, writes `results/commit-findings/<repo-slug>/<sha>.md`, and
-only opens a PR when the finding is an ordinary narrow bug/regression candidate.
-Security/privacy/supply-chain and broad findings are audit-only.
-
 ## Batch Flow
 
 1. Create or export cluster job markdown files under `jobs/<repo>/`.

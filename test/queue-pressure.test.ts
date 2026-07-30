@@ -193,7 +193,7 @@ test("queue pressure fetch fails closed for background admission on errors, time
 });
 
 test("worker limits scale every background lane and leave priority lanes unchanged", () => {
-  const backgroundLanes: WorkerLane[] = ["normal_review", "hot_intake", "commit_review"];
+  const backgroundLanes: WorkerLane[] = ["normal_review", "hot_intake"];
   for (const lane of backgroundLanes) {
     const normalBudget = workerLimit(lane, { pressureLevel: "none" });
     assert.equal(workerLimit(lane, { pressureLevel: "soft" }), Math.ceil(normalBudget * 0.5));

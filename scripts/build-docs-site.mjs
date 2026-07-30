@@ -16,7 +16,6 @@ const sections = [
     "Lanes",
     [
       "commit-sweeper.md",
-      "commit-dispatcher.md",
       "target-dispatcher.md",
       "pr-review-comments.md",
       "openclaw-event-hooks.md",
@@ -558,9 +557,9 @@ function landingBody() {
       desc: 'Bounded "review, fix, re-review, merge" loop for opted-in PRs and strict generated bug PRs.',
     },
     {
-      name: "Commit Review Lane",
+      name: "Local Branch Review",
       href: "commit-sweeper.html",
-      desc: "Reviews code-bearing commits on <code>main</code>. Skips non-code commits cheaply. Optional Check Runs.",
+      desc: "Offline pre-PR self-review of a branch's committed range. Never contacts GitHub.",
     },
   ];
   const laneCards = lanes

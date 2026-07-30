@@ -6,11 +6,9 @@ events with `repository_dispatch` so ClawSweeper can run a single-job exact
 one-item review, sync the durable review comment, and immediately apply a safe
 close proposal for that same item.
 
-This document covers issue and PR item dispatch. Commit review dispatch is
-documented separately in [commit-dispatcher.md](commit-dispatcher.md). A target
-repository can keep the two lanes in separate workflow files or combine them in
-one `.github/workflows/clawsweeper-dispatch.yml`; `openclaw/openclaw` uses the
-combined form.
+This document covers issue and PR item dispatch via
+`.github/workflows/clawsweeper-dispatch.yml`; `openclaw/openclaw` uses this
+form. The separate commit-review dispatch lane was retired in July 2026.
 
 General GitHub activity can also be forwarded to the OpenClaw-backed activity
 ingest lane with `repository_dispatch` type `github_activity`. That lane does

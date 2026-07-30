@@ -4,7 +4,7 @@
 
 ClawSweeper is a conservative OpenClaw maintainer tool for one-cluster issue and PR cleanup.
 
-It takes a curated GitHub issue/PR cluster, asks a Codex worker to classify the items, and applies only narrow, auditable cleanup actions when the evidence is strong. It shares the same ClawSweeper repo and GitHub App as the commit and backlog sweepers, but runs as a separate repair lane with stricter mutation gates.
+It takes a curated GitHub issue/PR cluster, asks a Codex worker to classify the items, and applies only narrow, auditable cleanup actions when the evidence is strong. It shares the same ClawSweeper repo and GitHub App as the backlog sweeper, but runs as a separate repair lane with stricter mutation gates.
 
 For the canonical repair `job_intent` contract and workflow/TypeScript boundary,
 see [`docs/orchestration.md`](../orchestration.md).
@@ -101,11 +101,9 @@ dispatches repair and another exact-head review. A clean review waits for
 required checks to appear and settle green, then removes the repair-loop label
 and leaves the PR open; generated issue PRs never automerge.
 
-ClawSweeper commit findings have a separate intake lane. A
-`clawsweeper_commit_finding` dispatch fetches the latest markdown commit report,
-writes an audit record under `results/commit-findings/`, and only sends the
-finding into the PR executor when the issue is narrow, non-security, and still
-worth repairing on latest `main`.
+The commit-finding intake lane was retired with the commit-review lane in July
+2026; existing `commit_finding` jobs remain executable through the cluster
+worker.
 
 Each cluster job:
 

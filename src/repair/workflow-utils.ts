@@ -340,7 +340,6 @@ function requiredWorkerLane(value: string): WorkerLane {
   const allowed = new Set<WorkerLane>([
     "normal_review",
     "hot_intake",
-    "commit_review",
     "repair",
     "automerge_repair",
     "issue_implementation",

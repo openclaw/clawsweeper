@@ -1,6 +1,6 @@
 # Automation Limits
 
-Read when changing ClawSweeper throughput, Codex fan-out, commit review paging,
+Read when changing ClawSweeper throughput, Codex fan-out,
 or repair dispatch capacity.
 
 `config/automation-limits.json` is the source of truth for the global worker
@@ -45,7 +45,7 @@ The mental model:
 - GitHub Actions workflows that only route comments, publish exact-review results,
   or reconcile leases do not execute Codex and do not consume that budget.
 - Priority lanes are repair, issue implementation, and exact-item review.
-- Background lanes are normal review, hot intake, and commit review.
+- Background lanes are normal review and hot intake.
 - Assist has a small fixed cap because it is lightweight maintainer Q&A, not a
   derived review or repair lane.
 - Background lanes shrink when priority work is already active.
@@ -67,10 +67,9 @@ The mental model:
 
 ## Derived Limits
 
-Review, commit, and existing repair limits are intentionally percentages of
+Review and existing repair limits are intentionally percentages of
 `workers.max`; imported cluster repair has its own lane knob. With
-`workers.max = 128`, normal review can use 89 workers, hot intake can use 44,
-commit review can use 6 commits per page, existing repair lanes dispatch 51
+`workers.max = 128`, normal review can use 89 workers, hot intake can use 44, existing repair lanes dispatch 51
 live workers by default, and imported cluster repair dispatches two live workers
 by default.
 
@@ -84,8 +83,6 @@ by default.
 | `review_shards.hot_intake_default`                  |      44 | Quiet-system broad hot-intake review shard ceiling.                                   |
 | `review_shards.exact_item_default`                  |       1 | Exact-item hot-intake shard count.                                                    |
 | `review_shards.hard_cap`                            |     128 | Maximum accepted review shard count.                                                  |
-| `commit_review.page_size_default`                   |       6 | Commits selected per commit-review page.                                              |
-| `commit_review.page_size_hard_cap`                  |     128 | Maximum commit-review page size.                                                      |
 | `repair_live_runs.default`                          |      51 | Default live repair workflow run cap for manual dispatch/requeue/self-heal.           |
 | `repair_live_runs.hard_cap`                         |     128 | Absolute live repair run cap accepted by explicit CLI/env overrides with this config. |
 | `repair_live_runs.automerge_default`                |      51 | Live repair run cap for automerge comment-router dispatches.                          |
@@ -98,17 +95,16 @@ Formula summary:
 - normal review: 70% of `workers.max`
 - normal active floor: 30% of `workers.max`
 - hot intake: 35% of `workers.max`
-- commit review page size: 5% of `workers.max`
 - repair, automerge repair, and issue implementation: 40% of `workers.max`
 - imported cluster repair: `lanes.repair.cluster_max_live_runs`, clamped to
   `workers.max`
 - issue implementation dispatches per sweep: 4% of `workers.max`
-- review/commit hard caps: `workers.max`
+- review hard caps: `workers.max`
 - repair hard cap: `workers.max`
 
 ## Dynamic Scheduling
 
-Manual normal review, manual hot intake, and commit review are background lanes.
+Manual normal review and manual hot intake are background lanes.
 Before they dispatch, the workflow asks
 `pnpm run workflow -- worker-limit <lane>` for the current allowance. Automated
 normal and hot cycles enqueue exact-review work instead, so the Durable Object's
@@ -119,8 +115,8 @@ The scheduler does this for background lanes:
 1. start with `workers.max`
 2. subtract active priority work, currently repair workers plus exact-item sweep
    runs
-3. subtract active background work already known to the workflow, including
-   commit-review pages and other active normal/hot sweep runs
+3. subtract active background work already known to the workflow, meaning
+   other active normal/hot sweep runs
 4. reserve `workers.reserve_for_interactive`
 5. reserve `workers.expansion_reserve` for independently planned matrix waves
 6. cap the result at the lane's derived quiet-system ceiling
@@ -152,7 +148,7 @@ unset, empty, or invalid values use the defaults.
 | `CLAWSWEEPER_QUEUE_PRESSURE_SOFT_AGE_MS`  | 1800000 |
 | `CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS`  | 7200000 |
 
-Only manual normal review, manual hot intake, and commit review use this pressure
+Only manual normal review and manual hot intake use this pressure
 multiplier. Scheduled review uses the queue's 600-item soft limit and 600/hour
 admission target. Repair, assist, issue implementation, cluster repair, and
 exact-item review keep their existing priority budgets.
@@ -180,7 +176,7 @@ workflow at once; the default is 128. `EXACT_REVIEW_TARGET_MAX_CONCURRENT` bound
 how many of those slots one target repository may consume; production sets it
 to 120 so other target repositories retain eight global slots during an OpenClaw
 backlog drain. Exact capacity is consumed only while queue work is pending. As
-those priority workers start, normal, hot-intake, and commit-review planners
+those priority workers start, normal and hot-intake planners
 count them and reduce their next background wave.
 
 `EXACT_REVIEW_ACTIONS_BUDGET` is deliberately separate from the 128-slot Codex
@@ -288,8 +284,6 @@ Examples with the current config:
 - 4 active repair workers and 96 active background workers: normal review gets
   4 because `128 - 16 interactive reserve - 8 expansion reserve - 4 priority
   - 96 background = 4`.
-- 105 active priority workers: commit review gets 1, so commit review yields but
-  does not fully stall.
 
 Use these commands to inspect the effective values from a checkout:
 
@@ -297,12 +291,11 @@ Use these commands to inspect the effective values from a checkout:
 pnpm run --silent workflow -- worker-config
 pnpm run --silent workflow -- limit review_shards.normal_default
 pnpm run --silent workflow -- worker-limit normal_review
-pnpm run --silent workflow -- worker-limit commit_review --active-critical 88
 ```
 
 Change `workers.max` first when tuning review-side rate-limit pressure. For
-example, setting `workers.max` to `40` automatically makes normal review `28`,
-hot intake `14`, and commit review `2`. Existing repair lanes keep their
+example, setting `workers.max` to `40` automatically makes normal review `28`
+and hot intake `14`. Existing repair lanes keep their
 40% derived caps, while imported cluster repair remains separately bounded until
 `lanes.repair.cluster_max_live_runs` is raised.
 
@@ -351,8 +344,6 @@ hot intake `14`, and commit review `2`. Existing repair lanes keep their
 - `EXACT_REVIEW_HEARTBEAT_GRACE_MS` overrides the 1,200,000 ms exact-review worker heartbeat
   grace. It is clamped to at least 420,000 ms so a configured grace can never dip
   near the one-minute worker heartbeat interval during scheduler or network stalls.
-- `CLAWSWEEPER_COMMIT_REVIEW_PAGE_SIZE` overrides
-  `commit_review.page_size_default`.
 - `CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED=1` enables the scheduled
   `repair-cluster-intake.yml` imported-cluster intake. Direct repair import and
   dispatch commands are not blocked by this variable; they keep the existing

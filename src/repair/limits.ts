@@ -39,10 +39,6 @@ export type AutomationLimits = {
     exact_item_default: number;
     hard_cap: number;
   };
-  commit_review: {
-    page_size_default: number;
-    page_size_hard_cap: number;
-  };
   repair_live_runs: {
     default: number;
     hard_cap: number;
@@ -58,7 +54,6 @@ export type AutomationLimits = {
 export type WorkerLane =
   | "normal_review"
   | "hot_intake"
-  | "commit_review"
   | "repair"
   | "automerge_repair"
   | "issue_implementation"
@@ -98,10 +93,6 @@ export function deriveAutomationLimits(config: WorkerConfig): AutomationLimits {
       exact_item_default: 1,
       hard_cap: max,
     },
-    commit_review: {
-      page_size_default: percent(max, 5),
-      page_size_hard_cap: max,
-    },
     repair_live_runs: {
       default: percent(max, 40),
       hard_cap: max,
@@ -140,12 +131,6 @@ export function workerLimit(
     return priorityLimit(limits.repair_live_runs.issue_implementation_default, activeCritical);
   if (lane === "cluster_repair")
     return priorityLimit(limits.repair_live_runs.cluster_default, activeCritical);
-  if (lane === "commit_review")
-    return backgroundLimit(
-      limits.commit_review.page_size_default,
-      activeCritical,
-      activeBackground,
-    );
   if (lane === "hot_intake")
     return backgroundLimit(
       limits.review_shards.hot_intake_default,

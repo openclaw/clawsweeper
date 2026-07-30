@@ -251,7 +251,7 @@ review shard jobs, not `batch_size * shard_count`.
 
 Capacity also has priority. Exact-item review, repair, automerge repair, and
 issue implementation are priority work because they unblock a specific PR,
-issue, or maintainer command. Normal review, hot intake, and commit review are
+issue, or maintainer command. Normal review and hot intake are
 background work because they keep the backlog fresh but can safely slow down
 when priority work is busy. The workflow asks the central worker scheduler for a
 lane limit before dispatching background work; see
@@ -314,7 +314,7 @@ so overlapping core and fanout cycles fill only the residual of the configured
 
 The manual quiet-system ceiling is not a promise that every operator run dispatches
 that many shards. The `mode` step checks active repair workers, exact-item sweep
-runs, commit-review pages, and live normal/hot review shard jobs, then asks
+runs and live normal/hot review shard jobs, then asks
 `worker-limit normal_review` or `worker-limit hot_intake` for the current
 allowance. Planning, queued, and not-yet-expanded background runs reserve their
 whole quiet-system lane. A run with completed shard jobs and no active shard
@@ -323,7 +323,7 @@ to refill the lane. If
 repair/automerge is busy, background sweep dispatches fewer shards and leaves
 capacity for the specific work that is closest to a merge or maintainer request.
 Background lanes also subtract an 8-worker expansion reserve so independently
-planned exact-item and commit-review runs have room to start without pushing the
+planned exact-item runs have room to start without pushing the
 live Codex count past the global budget.
 
 The manual active floor is not a separate lane and does not change close/apply safety.
@@ -485,8 +485,7 @@ count, inspect active review shard jobs on the current workflow run.
 
 The live scheduler estimate happens before planning and is intentionally coarse:
 it counts active repair-cluster workflow runs as priority work, active exact-item
-sweep runs as priority work, active commit-review workflow runs as background
-work weighted by the configured commit page size, and other active normal/hot
+sweep runs as priority work, and other active normal/hot
 sweep runs by their live active `Review shard` jobs. Runs that are planning,
 queued, or waiting for matrix expansion reserve their quiet lane. Runs whose
 shards have completed and are only publishing count as zero Codex workers.

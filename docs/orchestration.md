@@ -25,7 +25,8 @@ Current intents:
 - `repair_cluster`: ordinary manually or scheduler-created repair work
 - `automerge_pr`: maintainer-approved PR repair/automerge loop
 - `implement_issue`: ClawSweeper-generated issue implementation PR lane
-- `commit_finding`: repair job created from a ClawSweeper commit finding
+- `commit_finding`: repair job created by the retired commit-review lane (kept
+  so existing jobs stay executable)
 - `low_signal_pr_cleanup`: narrow stale/low-signal PR cleanup
 
 Older `source` values remain for compatibility, but new code should make

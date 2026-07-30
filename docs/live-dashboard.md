@@ -131,7 +131,7 @@ is absent or a cache event lands in another Cloudflare colo.
   and the latest failure per target marked as unresolved or recovered by a later
   successful run
 - active pipeline rows grouped as automerge, repair, exact review, hot review,
-  apply, commit review, or background review
+  apply, or background review
 - CI state for active PR rows when available
 - recent automerge command-to-merge timing samples
 - explicit workflow status events posted to the ingest API when KV ingest is

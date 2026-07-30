@@ -224,8 +224,6 @@ test("worker scheduler lets background lanes yield to active work", () => {
     }),
     1,
   );
-  assert.equal(workerLimit("commit_review"), AUTOMATION_LIMITS.commit_review.page_size_default);
-  assert.equal(workerLimit("commit_review", { activeCritical: quietBackgroundCapacity }), 1);
   assert.equal(workerLimit("repair"), AUTOMATION_LIMITS.repair_live_runs.default);
   assert.equal(
     workerLimit("automerge_repair"),
@@ -250,7 +248,7 @@ test("worker scheduler keeps 104 slots available for steady background work", ()
 });
 
 test("workflow worker scheduler applies queue pressure only to background lanes", () => {
-  for (const lane of ["normal_review", "hot_intake", "commit_review"] as const) {
+  for (const lane of ["normal_review", "hot_intake"] as const) {
     const normalBudget = workerLimit(lane);
     assert.equal(workerLimit(lane, { pressureLevel: "soft" }), Math.ceil(normalBudget * 0.5));
     assert.equal(
