@@ -135,8 +135,8 @@ Target fanout dispatches review batches through `repository_dispatch` so each
 selected repository can carry its inventory default branch without consuming
 manual workflow inputs. Scheduled fanout uses:
 
-- hot intake: `4/15 * * * *`, 20 target repositories per cursor step
-- normal review: `41 * * * *`, 12 target repositories per cursor step
+- hot intake: `4/5 * * * *`, 20 target repositories per cursor step
+- normal review: `41/10 * * * *`, 12 target repositories per cursor step
 - audit: `37 */6 * * *`, 12 target repositories per cursor step
 
 Each mode's cursor lives in the authenticated ExactReviewQueue Durable Object,
@@ -152,6 +152,12 @@ repository, keeps the largest untracked backlog in each cycle, and apportions
 the remaining candidate volume by backlog share. The rotating slice is
 dispatched first, so one large repository can fill otherwise-idle capacity
 without permanently consuming smaller repositories' scheduled-feed budget.
+
+Worker hydration also records the exact item identities present in the modern
+canonical tuple store. Normal fanout and each target planner use those identities
+for the same `untracked_open` boundary as the coverage endpoint. A hydrated
+legacy backfill report remains review context, but it does not count as coverage
+or yield a planner slot to a canonical re-review until a modern tuple exists.
 
 The six-hour audit fanout also writes a GitHub Actions summary with canonical
 open-item reports reviewed in the trailing seven days versus batched live open

@@ -115,6 +115,30 @@ test("review fanout gives a single repository enough candidates to saturate free
   assert.deepEqual(allocateReviewCandidateCapacity([huge], 128), new Map([[huge.targetRepo, 128]]));
 });
 
+test("review planning counts canonical coverage instead of legacy report files", () => {
+  const repositories = [
+    {
+      targetRepo: "openclaw/openclaw",
+      defaultBranch: "main",
+      visibility: "PUBLIC",
+    },
+  ];
+  const planned = reviewPlanningRepositories({
+    repositories,
+    openCounts: new Map([["openclaw/openclaw", { issues: 3_000, pullRequests: 20 }]]),
+    coverageTrackedCounts: new Map([["openclaw-openclaw", 20]]),
+  });
+
+  assert.deepEqual(planned, [
+    {
+      ...repositories[0],
+      openItems: 3_020,
+      trackedRecords: 20,
+      untrackedOpen: 3_000,
+    },
+  ]);
+});
+
 test("dominant review backlog stays hot while all other 137 repositories rotate without starvation", () => {
   const dominant = planningRepository("openclaw/openclaw", 3_084);
   const small = Array.from({ length: 137 }, (_, index) =>

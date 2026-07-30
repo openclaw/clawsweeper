@@ -2525,6 +2525,7 @@ jobs:
             --workflow sweep.yml \
             --ref main \
             --cursor-store-url "$REVIEW_COVERAGE_URL" \
+            --coverage-tracked-items-manifest .artifacts/worker-records-manifest.json \
             --publish-url "$REVIEW_COVERAGE_URL"
 
       - name: Summarize trailing weekly review coverage
@@ -2972,6 +2973,7 @@ jobs:
             --codex-sandbox read-only \
             --min-active-shards "$MIN_ACTIVE_SHARDS" \
             --min-backfill-review-age-minutes "$MIN_BACKFILL_REVIEW_AGE_MINUTES" \
+            --coverage-tracked-items-manifest .artifacts/worker-records-manifest.json \
             "${hot_intake_arg[@]}" \
             "${item_arg[@]}" > plan.json
           pnpm run --silent workflow -- plan-output \

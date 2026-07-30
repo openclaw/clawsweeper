@@ -2603,12 +2603,20 @@ test("scheduled reviews feed the durable queue instead of one-item matrix worker
     workflow.indexOf("- name: Enqueue scheduled review candidates"),
     workflow.indexOf("\n      - name: Prepare review runtime artifact"),
   );
+  const selectBlock = workflow.slice(
+    workflow.indexOf("- id: select"),
+    workflow.indexOf("- name: Enqueue scheduled review candidates"),
+  );
 
   assert.match(modeBlock, /queue_feed=.*clawsweeper_target_sweep/);
   assert.match(modeBlock, /requested_batch_size=.*client_payload\.batch_size/);
   assert.match(modeBlock, /requested_batch_size="\$queue_candidate_capacity"/);
   assert.match(modeBlock, /batch_size="\$requested_batch_size"[\s\S]*shard_count="1"/);
   assert.match(enqueueBlock, /repair:scheduled-review-enqueue/);
+  assert.match(
+    selectBlock,
+    /--coverage-tracked-items-manifest \.artifacts\/worker-records-manifest\.json/,
+  );
   assert.match(enqueueBlock, /Scheduled review funnel/);
   assert.match(workflow, /Review scheduled hot item/);
   assert.match(workflow, /Review scheduled normal item/);
@@ -2634,6 +2642,10 @@ test("target fanout uses the canonical cursor store without a git publisher", ()
 
   assert.match(fanoutBlock, /hydrate-git-state: "false"/);
   assert.match(fanoutBlock, /--cursor-store-url "\$REVIEW_COVERAGE_URL"/);
+  assert.match(
+    fanoutBlock,
+    /--coverage-tracked-items-manifest \.artifacts\/worker-records-manifest\.json/,
+  );
   assert.doesNotMatch(fanoutBlock, /Create state token/);
   assert.doesNotMatch(fanoutBlock, /repair:publish-main/);
   assert.doesNotMatch(fanoutBlock, /results\/target-fanout-cursors/);

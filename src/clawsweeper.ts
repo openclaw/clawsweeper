@@ -54,6 +54,7 @@ import {
 } from "./github-retry.js";
 import { parseGhJson, parseGhJsonLinesWithRetry, parseGhJsonWithRetry } from "./github-json.js";
 import { stableJson } from "./stable-json.js";
+import { coverageTrackedItemIdsFromManifest } from "./review-coverage-manifest.js";
 import {
   LEGACY_FIXED_CLOSE_SKIP_ACTIONS,
   LIVE_RECHECK_CLOSE_GUARD_ACTIONS,
@@ -1145,6 +1146,7 @@ interface PlanCandidateResult {
 interface PlanSelectionTelemetry {
   itemNumber: number;
   bucket: SchedulerDueCandidate["bucket"];
+  coverageTracked: boolean;
   lastReviewedAt: string | null;
   ageMs: number;
   nextDueAt: string;
@@ -8485,15 +8487,20 @@ function dueCandidate(
   now = Date.now(),
   reviewPolicy?: string,
   reviewIndex?: ExistingReviewIndex,
+  coverageTrackedItemIds?: ReadonlySet<number>,
 ): DueCandidate | null {
   const review = indexedExistingReview(item, itemsDir, reviewIndex);
-  if (!shouldReviewItem(item, review, now, reviewPolicy)) return null;
+  const coverageTracked = coverageTrackedItemIds
+    ? coverageTrackedItemIds.has(item.number)
+    : review !== null;
+  if (coverageTracked && !shouldReviewItem(item, review, now, reviewPolicy)) return null;
   return {
     item,
     review,
+    coverageTracked,
     priority: reviewPriority(item, review, now, reviewPolicy),
     reviewedAt: reviewedAtMs(review) ?? 0,
-    nextDueAt: nextReviewDueAtMs(item, review, now, reviewPolicy),
+    nextDueAt: coverageTracked ? nextReviewDueAtMs(item, review, now, reviewPolicy) : 0,
     bucket: schedulerBucket(item, review, now),
   };
 }
@@ -9043,7 +9050,11 @@ function oldestUnreviewedAt(candidates: readonly DueCandidate[]): string | undef
   let oldest: string | undefined;
   let oldestMs = Number.POSITIVE_INFINITY;
   for (const candidate of candidates) {
-    if (candidate.review) continue;
+    const coverageTracked =
+      candidate.coverageTracked === undefined
+        ? candidate.review !== null
+        : candidate.coverageTracked;
+    if (coverageTracked) continue;
     const createdAtMs = Date.parse(candidate.item.createdAt);
     if (!Number.isFinite(createdAtMs) || createdAtMs >= oldestMs) continue;
     oldestMs = createdAtMs;
@@ -9087,6 +9098,10 @@ function planSelectionTelemetry(
     return {
       itemNumber: candidate.item.number,
       bucket: candidate.bucket,
+      coverageTracked:
+        candidate.coverageTracked === undefined
+          ? candidate.review !== null
+          : candidate.coverageTracked,
       lastReviewedAt: candidate.review?.reviewedAt ?? null,
       ageMs: Number.isFinite(referenceAt) ? Math.max(0, now - referenceAt) : 0,
       nextDueAt: new Date(candidate.nextDueAt).toISOString(),
@@ -9105,6 +9120,7 @@ function planCandidates(options: {
   hotIntake?: boolean;
   minimumActiveShards?: number;
   minimumBackfillReviewAgeMs?: number;
+  coverageTrackedItemIds?: ReadonlySet<number>;
 }): PlanCandidateResult {
   const shardCount = planShardCount(options.shardCount);
   const batchSize = Math.max(1, options.batchSize);
@@ -9175,6 +9191,7 @@ function planCandidates(options: {
         now,
         options.reviewPolicy,
         reviewIndex,
+        options.coverageTrackedItemIds,
       );
       if (candidate) due.push(candidate);
     }
@@ -9218,6 +9235,7 @@ function planCandidates(options: {
         now,
         options.reviewPolicy,
         reviewIndex,
+        options.coverageTrackedItemIds,
       );
       if (candidate) {
         due.push(candidate);
@@ -22697,6 +22715,10 @@ function planCommand(args: Args): void {
   const sandboxMode = stringArg(args.codex_sandbox, "read-only");
   const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
   const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
+  const coverageManifest = stringArg(args.coverage_tracked_items_manifest, "").trim();
+  const coverageTrackedItemIds = coverageManifest
+    ? coverageTrackedItemIdsFromManifest(resolve(coverageManifest), targetProfile().slug)
+    : undefined;
   const planOptions: Parameters<typeof planCandidates>[0] = {
     batchSize,
     maxPages,
@@ -22705,6 +22727,7 @@ function planCommand(args: Args): void {
     reviewPolicy,
     minimumActiveShards,
     minimumBackfillReviewAgeMs,
+    ...(coverageTrackedItemIds ? { coverageTrackedItemIds } : {}),
   };
   if (hasItemNumbersInput || itemNumbers.length > 0) planOptions.itemNumbers = itemNumbers;
   if (hotIntake) planOptions.hotIntake = true;

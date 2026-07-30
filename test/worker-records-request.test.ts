@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { exportWorkerRecords, signedPost } from "../scripts/worker-records.ts";
+import {
+  exportWorkerRecords,
+  fetchWorkerCanonicalItemIds,
+  signedPost,
+} from "../scripts/worker-records.ts";
 
 const baseUrl = "http://127.0.0.1:8787";
 const webhookSecret = "test-secret";
@@ -219,4 +223,39 @@ test("exportWorkerRecords rides out a transient 502 during export", async () => 
   assert.equal(snapshot.revision, 7);
   assert.deepEqual(snapshot.records, []);
   assert.equal(calls.length, 2);
+});
+
+test("fetchWorkerCanonicalItemIds pages the exact coverage identity set", async () => {
+  const requests: Array<Record<string, unknown>> = [];
+  const responses = [
+    jsonResponse(200, {
+      repoSlug: "openclaw-openclaw",
+      section: "items",
+      records: [{ id: 1 }, { id: 500 }],
+      nextCursor: 500,
+    }),
+    jsonResponse(200, {
+      repoSlug: "openclaw-openclaw",
+      section: "items",
+      records: [{ id: 501 }, { id: 3_020 }],
+      nextCursor: null,
+    }),
+  ];
+  const ids = await fetchWorkerCanonicalItemIds({
+    baseUrl,
+    webhookSecret,
+    repoSlug: "openclaw-openclaw",
+    fetch: async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      const response = responses.shift();
+      if (!response) throw new Error("fetch stub exhausted");
+      return response;
+    },
+  });
+
+  assert.deepEqual(ids, [1, 500, 501, 3_020]);
+  assert.deepEqual(
+    requests.map((request) => request.cursor),
+    [0, 500],
+  );
 });

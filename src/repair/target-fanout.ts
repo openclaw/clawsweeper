@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveCommand } from "../command.js";
 import { fetchExactReviewQueuePressure } from "../queue-pressure.js";
+import { coverageTrackedCountsFromManifest } from "../review-coverage-manifest.js";
 import { parseArgs, repoRoot } from "./lib.js";
 
 type JsonRecord = Record<string, unknown>;
@@ -187,7 +188,15 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
           );
         }
       }
-      planningRepositories = reviewPlanningRepositories({ repositories, openCounts });
+      const coverageManifestPath = stringArg(args["coverage-tracked-items-manifest"], "");
+      const coverageTrackedCounts = coverageManifestPath
+        ? coverageTrackedCountsFromManifest(coverageManifestPath)
+        : undefined;
+      planningRepositories = reviewPlanningRepositories({
+        repositories,
+        openCounts,
+        ...(coverageTrackedCounts ? { coverageTrackedCounts } : {}),
+      });
     } else {
       planningRepositories = repositoriesWithOpenItems(repositories, openCounts);
     }
@@ -368,6 +377,7 @@ export function reviewPlanningRepositories(options: {
   repositories: readonly SelectedRepository[];
   openCounts: ReadonlyMap<string, RepositoryOpenCounts>;
   recordsRoot?: string;
+  coverageTrackedCounts?: ReadonlyMap<string, number>;
 }): ReviewPlanningRepository[] {
   const recordsRoot = options.recordsRoot ?? join(repoRoot(), "records");
   return options.repositories
@@ -382,11 +392,14 @@ export function reviewPlanningRepositories(options: {
         repository.targetRepo.toLowerCase().replace("/", "-"),
         "items",
       );
-      const trackedRecords = existsSync(itemsDir)
-        ? readdirSync(itemsDir, { withFileTypes: true }).filter(
-            (entry) => entry.isFile() && entry.name.endsWith(".md"),
-          ).length
-        : 0;
+      const repoSlug = repository.targetRepo.toLowerCase().replace("/", "-");
+      const trackedRecords = options.coverageTrackedCounts
+        ? (options.coverageTrackedCounts.get(repoSlug) ?? 0)
+        : existsSync(itemsDir)
+          ? readdirSync(itemsDir, { withFileTypes: true }).filter(
+              (entry) => entry.isFile() && entry.name.endsWith(".md"),
+            ).length
+          : 0;
       return {
         ...repository,
         openItems,

@@ -40,6 +40,7 @@ export interface SchedulerDueCandidate<
   reviewedAt: number;
   nextDueAt: number;
   bucket: SchedulerBucket;
+  coverageTracked?: boolean | undefined;
 }
 
 const HOT_REVIEW_DAYS = 7;
@@ -267,6 +268,13 @@ function weeklyCoverageReferenceMs(candidate: SchedulerDueCandidate): number {
   return Number.isFinite(createdAt) ? createdAt : 0;
 }
 
+function isCoverageUntracked(candidate: SchedulerDueCandidate): boolean {
+  return (
+    candidate.coverageTracked === false ||
+    (candidate.coverageTracked === undefined && candidate.review === null)
+  );
+}
+
 const SCHEDULER_BUCKET_WEIGHTS: ReadonlyArray<readonly [SchedulerBucket, number]> = [
   ["hot_issue", 4],
   ["hot_pull_request", 2],
@@ -327,12 +335,11 @@ export function selectDueCandidates<
     }
   };
 
-  // A missing canonical record means the live GitHub item has never had a
-  // review. Fill first-review coverage before renewing tracked records, while
-  // retaining the weekly-coverage and weighted bucket ordering within that
-  // cohort.
-  const neverReviewed = due.filter((candidate) => candidate.review === null);
-  const neverReviewedCoverageDue = neverReviewed
+  // A legacy backfill report can be useful review context without satisfying
+  // the canonical tuple coverage tracked by the Worker. Fill that operational
+  // coverage gap before renewing already-canonical records.
+  const coverageUntracked = due.filter(isCoverageUntracked);
+  const untrackedCoverageDue = coverageUntracked
     .filter(
       (candidate) =>
         weeklyCoverageReferenceMs(candidate) + WEEKLY_COVERAGE_REVIEW_DAYS * DAY_MS <= now,
@@ -343,9 +350,9 @@ export function selectDueCandidates<
         weeklyCoverageReferenceMs(left) - weeklyCoverageReferenceMs(right) ||
         compare(left, right),
     );
-  for (const candidate of neverReviewedCoverageDue) take(candidate);
+  for (const candidate of untrackedCoverageDue) take(candidate);
   takeWeighted(
-    neverReviewed.filter(
+    coverageUntracked.filter(
       (candidate) =>
         !selectedKeys.has(schedulerItemKey(candidate.item.repo, candidate.item.number)),
     ),
@@ -357,7 +364,7 @@ export function selectDueCandidates<
   const weeklyCoverageDue = due
     .filter(
       (candidate) =>
-        candidate.review !== null &&
+        !isCoverageUntracked(candidate) &&
         weeklyCoverageReferenceMs(candidate) + WEEKLY_COVERAGE_REVIEW_DAYS * DAY_MS <= now,
     )
     .sort(

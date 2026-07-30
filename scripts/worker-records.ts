@@ -16,6 +16,8 @@ import {
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+import { WORKER_RECORDS_MANIFEST_SCHEMA_VERSION } from "../src/review-coverage-manifest.ts";
+
 export const RECORD_SECTIONS = ["items", "closed", "plans", "decision-packets", "commits"] as const;
 export type RecordSection = (typeof RECORD_SECTIONS)[number];
 
@@ -229,6 +231,7 @@ export async function materializeWorkerRecords(options: {
       snapshotCache: "hit" | "miss" | "cold";
       deltaRecords: number;
       recordCount: number;
+      coverageTrackedItemIds: number[];
     }
   > = {};
   try {
@@ -294,6 +297,12 @@ export async function materializeWorkerRecords(options: {
           throw error;
         });
         applyWorkerRecords(stagedRepoRoot, journal.records);
+        const coverageTrackedItemIds = await fetchWorkerCanonicalItemIds({
+          baseUrl: options.baseUrl,
+          webhookSecret: options.webhookSecret,
+          repoSlug,
+          fetch: options.fetch,
+        });
         repositories[repoSlug] = {
           revision: journal.revision,
           snapshotRevision: storedSnapshot?.revisionWatermark ?? 0,
@@ -301,12 +310,13 @@ export async function materializeWorkerRecords(options: {
           snapshotCache,
           deltaRecords: journal.records.length,
           recordCount: countMaterializedRecords(stagingRoot, repoSlug),
+          coverageTrackedItemIds,
         };
         const entry = repositories[repoSlug];
         log(
           storedSnapshot
-            ? `[worker-records] snapshot hydrated repo=${repoSlug} revision=${entry.revision} snapshotRevision=${entry.snapshotRevision} snapshotBytes=${entry.snapshotBytes} cache=${entry.snapshotCache} deltaRecords=${entry.deltaRecords} records=${entry.recordCount}`
-            : `[worker-records] COLD HYDRATION repo=${repoSlug}: no stored snapshot, replayed the full journal from revision 0 (revision=${entry.revision} journalRecords=${entry.deltaRecords} records=${entry.recordCount} bound=${COLD_HYDRATION_MAX_RECORDS}); trigger a snapshot sweep to make future hydrations incremental`,
+            ? `[worker-records] snapshot hydrated repo=${repoSlug} revision=${entry.revision} snapshotRevision=${entry.snapshotRevision} snapshotBytes=${entry.snapshotBytes} cache=${entry.snapshotCache} deltaRecords=${entry.deltaRecords} records=${entry.recordCount} coverageTrackedItems=${entry.coverageTrackedItemIds.length}`
+            : `[worker-records] COLD HYDRATION repo=${repoSlug}: no stored snapshot, replayed the full journal from revision 0 (revision=${entry.revision} journalRecords=${entry.deltaRecords} records=${entry.recordCount} coverageTrackedItems=${entry.coverageTrackedItemIds.length} bound=${COLD_HYDRATION_MAX_RECORDS}); trigger a snapshot sweep to make future hydrations incremental`,
         );
       } catch (error) {
         // Re-wrap so the refusal that aborts a multi-slug hydration names the
@@ -334,7 +344,7 @@ export async function materializeWorkerRecords(options: {
   mkdirSync(path.dirname(manifestPath), { recursive: true });
   writeFileSync(
     manifestPath,
-    `${JSON.stringify({ schemaVersion: 2, source: "worker", repositories }, null, 2)}\n`,
+    `${JSON.stringify({ schemaVersion: WORKER_RECORDS_MANIFEST_SCHEMA_VERSION, source: "worker", repositories }, null, 2)}\n`,
     "utf8",
   );
   return { recordsRoot, manifestPath, repositories };
@@ -463,6 +473,60 @@ export async function discoverWorkerRecordRepoSlugs(options: {
     return { repoSlug: entry.repoSlug, revision: entry.revision as number };
   });
   return repositories.sort((left, right) => left.repoSlug.localeCompare(right.repoSlug));
+}
+
+export async function fetchWorkerCanonicalItemIds(options: {
+  baseUrl: string;
+  webhookSecret: string;
+  repoSlug: string;
+  fetch?: typeof globalThis.fetch;
+}): Promise<number[]> {
+  const itemIds: number[] = [];
+  const seen = new Set<number>();
+  let nextCursor: number | null = 0;
+  while (nextCursor !== null) {
+    const cursor = nextCursor;
+    const page = await signedPost<{
+      repoSlug: string;
+      section: string;
+      records: Array<{ id: number }>;
+      nextCursor: number | null;
+    }>({
+      baseUrl: options.baseUrl,
+      path: "/internal/state/records/list",
+      webhookSecret: options.webhookSecret,
+      body: { repoSlug: options.repoSlug, section: "items", cursor, limit: 500 },
+      fetch: options.fetch,
+    });
+    if (
+      page.repoSlug !== options.repoSlug ||
+      page.section !== "items" ||
+      !Array.isArray(page.records)
+    ) {
+      throw new Error("Worker returned an invalid canonical item listing");
+    }
+    for (const record of page.records) {
+      const itemId = Number(record?.id);
+      if (!Number.isSafeInteger(itemId) || itemId <= cursor || seen.has(itemId)) {
+        throw new Error("Worker returned an invalid canonical item identity");
+      }
+      seen.add(itemId);
+      itemIds.push(itemId);
+    }
+    if (page.nextCursor === null) {
+      nextCursor = null;
+      continue;
+    }
+    if (
+      !Number.isSafeInteger(page.nextCursor) ||
+      page.nextCursor <= cursor ||
+      page.nextCursor !== itemIds.at(-1)
+    ) {
+      throw new Error("Worker returned an invalid canonical item cursor");
+    }
+    nextCursor = page.nextCursor;
+  }
+  return itemIds;
 }
 
 function countMaterializedRecords(root: string, repoSlug: string): number {

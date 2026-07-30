@@ -3,6 +3,62 @@ import { createHmac } from "node:crypto";
 import test from "node:test";
 
 import { enqueueScheduledReviewPlan } from "../../dist/repair/scheduled-review-enqueue.js";
+import { selectDueCandidates } from "../../dist/scheduler-policy.js";
+
+test("coverage-untracked plans reach queue admission before canonical refreshes", async () => {
+  const repo = "openclaw/openclaw";
+  const candidate = (number: number, coverageTracked: boolean, reviewedAt: string) => ({
+    item: {
+      repo,
+      number,
+      kind: "issue" as const,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    },
+    review: { reviewStatus: "complete", reviewedAt },
+    bucket: "weekly_issue" as const,
+    priority: 6,
+    reviewedAt: Date.parse(reviewedAt),
+    nextDueAt: 0,
+    coverageTracked,
+  });
+  const due = [
+    ...Array.from({ length: 3_000 }, (_, index) =>
+      candidate(index + 1, false, "2026-06-10T00:00:00Z"),
+    ),
+    ...Array.from({ length: 20 }, (_, index) =>
+      candidate(3_001 + index, true, "2026-06-01T00:00:00Z"),
+    ),
+  ];
+  const selected = selectDueCandidates(due, 128, undefined, Date.parse("2026-07-30T12:00:00Z"));
+  const queuedNumbers: number[] = [];
+  const summary = await enqueueScheduledReviewPlan({
+    plan: {
+      candidates: selected.map(({ item }) => item),
+      selection: selected.map(() => ({ ageMs: 0 })),
+    },
+    lane: "normal_backfill",
+    targetRepo: repo,
+    targetBranch: "main",
+    queueUrl: "https://queue.example",
+    secret: "secret",
+    deliveryPrefix: "scheduled:coverage:1",
+    fetchImpl: async (_input, init) => {
+      if (!init?.method) {
+        return Response.json({ scheduled_feed: { target_rate_per_hour: 600 } });
+      }
+      const body = JSON.parse(String(init.body)) as { decision: { itemNumber: number } };
+      queuedNumbers.push(body.decision.itemNumber);
+      return Response.json({ ok: true, queued: true }, { status: 202 });
+    },
+  });
+
+  assert.equal(summary.queued, 128);
+  assert.equal(
+    queuedNumbers.every((number) => number <= 3_000),
+    true,
+  );
+});
 
 test("scheduled review enqueue reports the full selection-to-queue funnel and stops on rate limit", async () => {
   const secret = "scheduled-review-test-secret";

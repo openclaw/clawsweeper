@@ -18,6 +18,9 @@ function schedulerCandidate(candidate) {
     reviewedAt: candidate.reviewedAt ?? 0,
     nextDueAt: candidate.nextDueAt ?? 0,
     bucket: candidate.bucket,
+    ...(candidate.coverageTracked === undefined
+      ? {}
+      : { coverageTracked: candidate.coverageTracked }),
   };
 }
 
@@ -567,6 +570,49 @@ test("one repository's untracked backlog fills the queue-sized candidate limit",
   const selected = selectedNumbers(due, 128, now);
   assert.equal(selected.length, 128);
   assert.equal(new Set(selected).size, 128);
+});
+
+test("legacy reports missing canonical coverage win every slot before tracked refreshes", () => {
+  const now = Date.parse("2026-07-30T12:00:00Z");
+  const legacyUntracked = Array.from({ length: 3_000 }, (_, index) => ({
+    item: item({
+      number: index + 1,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    }),
+    review: { reviewStatus: "complete", reviewedAt: "2026-06-10T00:00:00Z" },
+    bucket: "weekly_issue",
+    priority: 6,
+    reviewedAt: Date.parse("2026-06-10T00:00:00Z"),
+    nextDueAt: 0,
+    coverageTracked: false,
+  }));
+  const tracked = Array.from({ length: 20 }, (_, index) => ({
+    item: item({
+      number: 3_001 + index,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    }),
+    review: { reviewStatus: "complete", reviewedAt: "2026-06-01T00:00:00Z" },
+    bucket: "weekly_issue",
+    priority: 6,
+    reviewedAt: Date.parse("2026-06-01T00:00:00Z"),
+    nextDueAt: 0,
+    coverageTracked: true,
+  }));
+
+  const selected = selectDueCandidates(
+    [...legacyUntracked, ...tracked].map(schedulerCandidate),
+    128,
+    undefined,
+    now,
+  );
+
+  assert.equal(selected.length, 128);
+  assert.equal(
+    selected.every((candidate) => candidate.coverageTracked === false),
+    true,
+  );
 });
 
 test("weekly freshness preselection still fills remaining scheduler capacity", () => {
