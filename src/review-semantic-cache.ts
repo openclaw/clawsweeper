@@ -6,6 +6,7 @@ import { createVirtualFileSystem, type FileSystem } from "typescript/unstable/fs
 import { API } from "typescript/unstable/sync";
 
 import { REVIEW_CACHE_MAX_AGE_DAYS } from "./scheduler-policy.js";
+import { reviewPullChecksDigestParts } from "./review-checks-digest.js";
 import { stableJsonCodeUnit as stableJson } from "./stable-json.js";
 
 export const REVIEW_SEMANTIC_CACHE_VERSION = 10;
@@ -782,7 +783,7 @@ function semanticContext(input: ReviewSemanticInput): {
     reviewComments:
       input.context.pullReviewCommentsRevision ??
       normalizedComments(input.context.pullReviewComments),
-    checks: input.context.pullChecks ?? null,
+    checks: reviewPullChecksDigestParts(input.context.pullChecks ?? null),
     completeness: {
       commentsTruncated: input.context.counts?.commentsTruncated ?? null,
       timelineTruncated: input.context.counts?.timelineTruncated ?? null,

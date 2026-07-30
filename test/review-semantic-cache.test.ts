@@ -1079,6 +1079,22 @@ test("changed discussion, reviews, checks, or target context busts the context d
   }
 });
 
+test("duplicate compacted check runs do not perturb the semantic context digest", () => {
+  const prior = record();
+  const checkRuns = input().context.pullChecks.checkRuns;
+  const repeated = record({
+    context: {
+      pullChecks: {
+        ...input().context.pullChecks,
+        checkRuns: [...checkRuns, ...checkRuns],
+      },
+    },
+  });
+
+  assert.equal(prior.contextDigest, repeated.contextDigest);
+  assert.equal(decision({ priorRecord: prior, currentRecord: repeated }).reason, "hit");
+});
+
 test("head SHA churn alone does not perturb semantic or context digests", () => {
   const prior = record();
   const rebased = record({

@@ -294,6 +294,101 @@ test("content digest busts when bounded PR check state changes", () => {
   assert.notEqual(passing, failing);
 });
 
+test("content digest ignores duplicate compacted PR check runs", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const notify = {
+    name: "notify",
+    status: "completed",
+    conclusion: "success",
+    app: "github-actions",
+  };
+  const once = itemContentDigestForTest(
+    pull,
+    pullContext({
+      pullChecks: {
+        complete: true,
+        checkRuns: [notify],
+        checkRunsTruncated: false,
+        statuses: [],
+        statusesTruncated: false,
+      },
+    }),
+  );
+  const repeated = itemContentDigestForTest(
+    pull,
+    pullContext({
+      pullChecks: {
+        complete: true,
+        checkRuns: [notify, notify],
+        checkRunsTruncated: false,
+        statuses: [],
+        statusesTruncated: false,
+      },
+    }),
+  );
+
+  assert.equal(once, repeated);
+});
+
+test("content digest keeps check runs that differ only in name or app", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const check = {
+    name: "smoke",
+    status: "completed",
+    conclusion: "success",
+    app: "github-actions",
+  };
+  const digest = (checkRuns) =>
+    itemContentDigestForTest(
+      pull,
+      pullContext({
+        pullChecks: {
+          complete: true,
+          checkRuns,
+          checkRunsTruncated: false,
+          statuses: [],
+          statusesTruncated: false,
+        },
+      }),
+    );
+
+  const alone = digest([check]);
+  const byName = digest([check, { ...check, name: "smoke (windows)" }]);
+  const byApp = digest([check, { ...check, app: "blacksmith-sh" }]);
+
+  assert.notEqual(alone, byName);
+  assert.notEqual(alone, byApp);
+  assert.notEqual(byName, byApp);
+});
+
+test("content digest busts when one of several repeated check runs newly fails", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const notify = {
+    name: "notify",
+    status: "completed",
+    conclusion: "success",
+    app: "github-actions",
+  };
+  const digest = (checkRuns) =>
+    itemContentDigestForTest(
+      pull,
+      pullContext({
+        pullChecks: {
+          complete: true,
+          checkRuns,
+          checkRunsTruncated: false,
+          statuses: [],
+          statusesTruncated: false,
+        },
+      }),
+    );
+
+  const allPassing = digest([notify, notify, notify]);
+  const oneFailing = digest([notify, notify, { ...notify, conclusion: "failure" }]);
+
+  assert.notEqual(allPassing, oneFailing);
+});
+
 test("review comment revision covers comments outside the bounded prompt window", () => {
   const comments = Array.from({ length: 81 }, (_, index) => ({
     id: index + 1,
@@ -351,6 +446,48 @@ function cacheHit(overrides = {}) {
 
 test("cache hits when content is unchanged, fresh, complete, and policy matches", () => {
   assert.equal(cacheHit(), true);
+});
+
+test("cache hits after an equivalent check run is repeated on an unchanged head", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const notify = {
+    name: "notify",
+    status: "completed",
+    conclusion: "success",
+    app: "github-actions",
+  };
+  const priorDigest = itemContentDigestForTest(
+    pull,
+    pullContext({
+      pullChecks: {
+        complete: true,
+        checkRuns: [notify],
+        checkRunsTruncated: false,
+        statuses: [],
+        statusesTruncated: false,
+      },
+    }),
+  );
+  const currentDigest = itemContentDigestForTest(
+    pull,
+    pullContext({
+      pullChecks: {
+        complete: true,
+        checkRuns: [notify, notify],
+        checkRunsTruncated: false,
+        statuses: [],
+        statusesTruncated: false,
+      },
+    }),
+  );
+
+  assert.equal(
+    cacheHit({
+      review: freshReview({ contentDigest: priorDigest }),
+      contentDigest: currentDigest,
+    }),
+    true,
+  );
 });
 
 test("cache misses when the content digest differs", () => {

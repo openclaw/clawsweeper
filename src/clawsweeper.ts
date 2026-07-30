@@ -54,6 +54,7 @@ import {
 } from "./github-retry.js";
 import { parseGhJson, parseGhJsonLinesWithRetry, parseGhJsonWithRetry } from "./github-json.js";
 import { stableJson } from "./stable-json.js";
+import { reviewPullChecksDigestParts } from "./review-checks-digest.js";
 import { coverageTrackedItemIdsFromManifest } from "./review-coverage-manifest.js";
 import {
   LEGACY_FIXED_CLOSE_SKIP_ACTIONS,
@@ -3184,7 +3185,7 @@ function itemContentDigest(item: Item, context: ItemContext, git?: GitInfo): str
         ? (context.pullReviewCommentsRevision ??
           reviewCommentDigestParts(context.pullReviewComments))
         : null,
-      checks: isPull ? (context.pullChecks ?? null) : null,
+      checks: isPull ? reviewPullChecksDigestParts(context.pullChecks ?? null) : null,
     }),
   );
 }
@@ -9165,7 +9166,7 @@ function fetchReviewStructuralRecord(options: {
     if (!headSha) return null;
     const pullChecks = pullChecksContext(options.item.number, headSha);
     if (!completePullChecksContext(pullChecks)) return null;
-    pullChecksDigest = sha256(stableJson(pullChecks));
+    pullChecksDigest = sha256(stableJson(reviewPullChecksDigestParts(pullChecks)));
   }
   return reviewStructuralRecordFromGraphql({
     response,

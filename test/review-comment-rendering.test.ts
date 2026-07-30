@@ -166,7 +166,10 @@ test("structural cache probes before hydration but acquires a lease before carry
     source.indexOf("function collectItemContext"),
   );
   assert.match(structuralProbeSource, /pullChecksContext\(options\.item\.number, headSha\)/);
-  assert.match(structuralProbeSource, /pullChecksDigest = sha256\(stableJson\(pullChecks\)\)/);
+  assert.match(
+    structuralProbeSource,
+    /pullChecksDigest = sha256\(stableJson\(reviewPullChecksDigestParts\(pullChecks\)\)\)/,
+  );
   assert.match(structuralProbeSource, /if \(!options\.git\.releaseStateComplete\) return null/);
   const gitInfoBlock = source.slice(
     source.indexOf("function gitInfo("),
