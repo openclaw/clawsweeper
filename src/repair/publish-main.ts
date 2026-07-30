@@ -73,6 +73,7 @@ export async function publishMainWithStateAppend(
   const canonicalItemCount = canonicalPlan.items.length;
   let canonicalResolvedCount = 0;
   let canonicalFailedCount = 0;
+  let canonicalSkippedCount = 0;
   if (canonicalItemCount > 0) {
     if (!queueUrl || !webhookSecret) {
       throw new Error("canonical record publication is required for record tuple changes");
@@ -81,7 +82,7 @@ export async function publishMainWithStateAppend(
     for (const item of canonicalPlan.items) {
       try {
         if ("error" in item) throw item.error;
-        await postCanonicalRecordTupleWithRecovery({
+        const outcome = await postCanonicalRecordTupleWithRecovery({
           queueUrl,
           webhookSecret,
           mutation: item.mutation,
@@ -90,7 +91,8 @@ export async function publishMainWithStateAppend(
           env,
           ...(runtime.fetchImpl ? { fetchImpl: runtime.fetchImpl } : {}),
         });
-        canonicalResolvedCount += 1;
+        if (outcome === "skipped") canonicalSkippedCount += 1;
+        else canonicalResolvedCount += 1;
       } catch (error) {
         if (!isolateFailures || isCanonicalInfrastructureError(error)) throw error;
         canonicalFailedCount += 1;
@@ -102,9 +104,19 @@ export async function publishMainWithStateAppend(
         `Canonical reconciliation failed for all ${canonicalItemCount} item(s); see per-item errors above`,
       );
     }
+    if (canonicalSkippedCount === canonicalItemCount) {
+      throw new Error(
+        `Canonical publication conflicted for all ${canonicalItemCount} item(s); see per-item warnings above`,
+      );
+    }
     if (canonicalFailedCount > 0) {
       console.warn(
         `[canonical reconcile] continued after ${canonicalFailedCount} of ${canonicalItemCount} item(s) failed`,
+      );
+    }
+    if (canonicalSkippedCount > 0) {
+      console.warn(
+        `[canonical publish] continued after ${canonicalSkippedCount} of ${canonicalItemCount} conflicted item(s) were skipped`,
       );
     }
   }
@@ -297,7 +309,9 @@ function isRecordTupleProjectionPath(path: string): boolean {
   );
 }
 
-async function postCanonicalRecordTupleWithRecovery(options: {
+type CanonicalPublicationOutcome = "published" | "skipped";
+
+type CanonicalPublicationOptions = {
   queueUrl: string;
   webhookSecret: string;
   mutation: CanonicalRecordTupleMutation;
@@ -305,16 +319,18 @@ async function postCanonicalRecordTupleWithRecovery(options: {
   stateRoot: string;
   env: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
-}): Promise<void> {
+};
+
+async function postCanonicalRecordTupleWithRecovery(
+  options: CanonicalPublicationOptions,
+): Promise<CanonicalPublicationOutcome> {
   try {
     await postCanonicalRecordTuple(options);
-    return;
+    return "published";
   } catch (error) {
-    if (
-      !(error instanceof CanonicalRecordTupleConflictError) ||
-      options.env.CLAWSWEEPER_CANONICAL_PUBLICATION_KIND !== "reconcile"
-    ) {
-      throw error;
+    if (!(error instanceof CanonicalRecordTupleConflictError)) throw error;
+    if (options.env.CLAWSWEEPER_CANONICAL_PUBLICATION_KIND !== "reconcile") {
+      return recoverNonReconcilePublicationConflict(options, error);
     }
     const current = currentTupleFromConflict(error.current, options.mutation.key);
     if (!current) throw error;
@@ -331,7 +347,7 @@ async function postCanonicalRecordTupleWithRecovery(options: {
       console.warn(
         `Skipped ${options.mutation.key}: canonical CURRENT revision ${current.state.revision} already has ${targetLocation ?? "deleted"} placement`,
       );
-      return;
+      return "published";
     }
     if (
       baselineLocation === targetLocation ||
@@ -342,7 +358,7 @@ async function postCanonicalRecordTupleWithRecovery(options: {
       console.warn(
         `Skipped ${options.mutation.key}: canonical CURRENT revision ${current.state.revision} made the reconcile move obsolete`,
       );
-      return;
+      return "published";
     }
 
     const rebasedTarget = rebaseReconciliationMove({ baseline, target, current: current.tuple });
@@ -378,7 +394,7 @@ async function postCanonicalRecordTupleWithRecovery(options: {
         console.warn(
           `Skipped ${options.mutation.key} after retry conflict with invalid CURRENT state: ${publishErrorMessage(parseError)}`,
         );
-        return;
+        return "published";
       }
       if (retryCurrent) {
         syncTupleToRoot(options.root, retryCurrent.tuple);
@@ -394,13 +410,133 @@ async function postCanonicalRecordTupleWithRecovery(options: {
       console.warn(
         `Skipped ${options.mutation.key}: canonical CURRENT changed again during the single retry`,
       );
-      return;
+      return "published";
     }
     syncTupleToRoot(options.root, rebasedTarget);
     console.warn(
       `Retried ${options.mutation.key} against canonical CURRENT revision ${current.state.revision}`,
     );
+    return "published";
   }
+}
+
+// Non-reconcile publications (apply checkpoints, comment sync, review artifacts)
+// race the ~70 concurrent review workers that continuously bump canonical record
+// revisions, so a 409 is routine rather than exceptional. Recover by rebasing only
+// the sections this publication changed onto canonical CURRENT; anything murkier
+// is skipped per item so one contested tuple cannot kill the whole run.
+async function recoverNonReconcilePublicationConflict(
+  options: CanonicalPublicationOptions,
+  error: CanonicalRecordTupleConflictError,
+): Promise<CanonicalPublicationOutcome> {
+  const current = currentTupleFromConflict(error.current, options.mutation.key);
+  if (!current) throw error;
+  const [repoSlug, itemNumber] = options.mutation.key.split("/");
+  if (!repoSlug || !itemNumber) throw error;
+  const paths = recordTuplePaths({ repository: repoSlug, number: itemNumber });
+  const target = tupleFromMutation(options.mutation, paths);
+  const baselineDigests = new Map(
+    options.mutation.operations.map((operation) => [operation.path, operation.expectedDigest]),
+  );
+  // Sections this publication changed: the mutation's content differs from the
+  // state-baseline digest the mutation asserted for that section.
+  const changedPaths = RECORD_TUPLE_SECTIONS.map((section) =>
+    tuplePathForSection(paths, section),
+  ).filter(
+    (path) => contentDigest(tupleContentForPath(target, path)) !== baselineDigests.get(path),
+  );
+  const conflictingPaths = changedPaths.filter(
+    (path) => tupleContentForPath(current.tuple, path) !== tupleContentForPath(target, path),
+  );
+  if (conflictingPaths.length === 0) {
+    syncTupleToRoot(options.root, current.tuple);
+    console.warn(
+      `Skipped ${options.mutation.key}: canonical CURRENT revision ${current.state.revision} already contains this publication`,
+    );
+    return "published";
+  }
+  // GitHub-side effects for this item already happened (capture-before-mutate), so
+  // a skipped publication may repeat the action next cycle. Comment idempotency
+  // fences and the unchanged-edit dedupe (#857) make that repeat a no-op; never
+  // weaken those fences to compensate here.
+  if (
+    conflictingPaths.some(
+      (path) =>
+        contentDigest(tupleContentForPath(current.tuple, path)) !== baselineDigests.get(path),
+    )
+  ) {
+    syncTupleToRoot(options.root, current.tuple);
+    console.warn(
+      `Skipped ${options.mutation.key}: canonical CURRENT revision ${current.state.revision} concurrently changed a section this publication also changed`,
+    );
+    return "skipped";
+  }
+  const changed = new Set(changedPaths);
+  const rebasedContent = (path: string) =>
+    changed.has(path)
+      ? tupleContentForPath(target, path)
+      : tupleContentForPath(current.tuple, path);
+  const rebased: RecordTupleContents = {
+    paths,
+    item: rebasedContent(paths.item),
+    closed: rebasedContent(paths.closed),
+    plan: rebasedContent(paths.plan),
+    packet: rebasedContent(paths.packet),
+  };
+  try {
+    validateRecordTuple(rebased, "rebased canonical publication tuple");
+  } catch (validationError) {
+    syncTupleToRoot(options.root, current.tuple);
+    console.warn(
+      `Skipped ${options.mutation.key}: rebase onto canonical CURRENT revision ${current.state.revision} is invalid: ${publishErrorMessage(validationError)}`,
+    );
+    return "skipped";
+  }
+  const operations = current.state.operations.map((operation) => {
+    const content = tupleContentForPath(rebased, operation.path);
+    return {
+      path: operation.path,
+      expectedDigest: operation.expectedDigest,
+      ...(content === null ? {} : { contentBase64: Buffer.from(content).toString("base64") }),
+    };
+  });
+  const contentHash = createHash("sha256")
+    .update(JSON.stringify({ key: options.mutation.key, operations }))
+    .digest("hex");
+  const retryMutation: CanonicalRecordTupleMutation = {
+    ...options.mutation,
+    deliveryId: `record-tuple-rebase:${deliveryPart(options.env.GITHUB_RUN_ID, "local")}:${deliveryPart(options.env.GITHUB_RUN_ATTEMPT, "1")}:${contentHash}`,
+    operations,
+  };
+  try {
+    await postCanonicalRecordTuple({
+      queueUrl: options.queueUrl,
+      webhookSecret: options.webhookSecret,
+      mutation: retryMutation,
+      ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    });
+  } catch (retryError) {
+    if (!(retryError instanceof CanonicalRecordTupleConflictError)) throw retryError;
+    try {
+      const retryCurrent = currentTupleFromConflict(retryError.current, options.mutation.key);
+      if (retryCurrent) syncTupleToRoot(options.root, retryCurrent.tuple);
+    } catch {
+      // Keep the single-retry skip even when the retry CURRENT payload is unusable.
+    }
+    console.warn(
+      `Skipped ${options.mutation.key}: canonical CURRENT changed again during the single rebase retry`,
+    );
+    return "skipped";
+  }
+  syncTupleToRoot(options.root, rebased);
+  console.warn(
+    `Rebased ${options.mutation.key} onto canonical CURRENT revision ${current.state.revision}`,
+  );
+  return "published";
+}
+
+function contentDigest(content: string | null): string | null {
+  return content === null ? null : sha256(content);
 }
 
 function currentTupleFromConflict(

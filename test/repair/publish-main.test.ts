@@ -362,6 +362,190 @@ test("publish-main isolates a poison reconciliation tuple and publishes its sibl
   assert.deepEqual(warnings, ["[canonical reconcile] continued after 1 of 2 item(s) failed"]);
 });
 
+test("publish-main resolves a non-reconcile conflict whose CURRENT already contains the change", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-equivalent-source-"));
+  const stateRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "clawsweeper-canonical-equivalent-state-"),
+  );
+  const before = recordMarkdown("2026-07-26T01:00:00.000Z", "before");
+  const after = recordMarkdown("2026-07-26T02:00:00.000Z", "after");
+  const concurrentPlan = "concurrent work plan\n";
+  writeText(stateRoot, tupleItemPath, before);
+  writeText(root, tupleItemPath, after);
+  const warnings: string[] = [];
+  let posts = 0;
+  t.mock.method(console, "warn", (message: string) => warnings.push(message));
+
+  assert.equal(
+    await publishMainWithStateAppend(
+      { message: "chore: update sweep records", paths: [tupleRoot] },
+      {
+        root,
+        env: appendEnv({ CLAWSWEEPER_STATE_DIR: stateRoot }),
+        fetchImpl: (async () => {
+          posts += 1;
+          return tupleConflictResponse({ item: after, plan: concurrentPlan });
+        }) as typeof fetch,
+        publishGit: () => {
+          throw new Error("git publication must not run");
+        },
+      },
+    ),
+    "appended",
+  );
+  assert.equal(posts, 1);
+  assert.equal(fs.readFileSync(path.join(root, tupleItemPath), "utf8"), after);
+  assert.equal(
+    fs.readFileSync(path.join(root, `${tupleRoot}/plans/42.md`), "utf8"),
+    concurrentPlan,
+  );
+  assert.deepEqual(warnings, [
+    "Skipped openclaw-openclaw/42: canonical CURRENT revision 2 already contains this publication",
+  ]);
+});
+
+test("publish-main rebases a non-reconcile conflict on an unrelated section and retries once", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-rebase-source-"));
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-rebase-state-"));
+  const before = recordMarkdown("2026-07-26T01:00:00.000Z", "before");
+  const after = recordMarkdown("2026-07-26T02:00:00.000Z", "after");
+  const concurrentPlan = "concurrent work plan\n";
+  writeText(stateRoot, tupleItemPath, before);
+  writeText(root, tupleItemPath, after);
+  const warnings: string[] = [];
+  const posted: Array<Record<string, unknown>> = [];
+  t.mock.method(console, "warn", (message: string) => warnings.push(message));
+
+  assert.equal(
+    await publishMainWithStateAppend(
+      { message: "chore: update sweep records", paths: [tupleRoot] },
+      {
+        root,
+        env: appendEnv({ CLAWSWEEPER_STATE_DIR: stateRoot }),
+        fetchImpl: (async (_input: string | URL | Request, init?: RequestInit) => {
+          const mutation = JSON.parse(String(init?.body ?? "")) as Record<string, unknown>;
+          posted.push(mutation);
+          if (posted.length === 1) {
+            return tupleConflictResponse({ item: before, plan: concurrentPlan });
+          }
+          return Response.json(
+            { ok: true, accepted: true, deduped: false, revision: 3, sequence: 12 },
+            { status: 202 },
+          );
+        }) as typeof fetch,
+        publishGit: () => {
+          throw new Error("git publication must not run");
+        },
+      },
+    ),
+    "appended",
+  );
+  assert.equal(posted.length, 2);
+  assert.match(String(posted[0]?.deliveryId), /^record-tuple:1234:2:[a-f0-9]{64}$/);
+  assert.match(String(posted[1]?.deliveryId), /^record-tuple-rebase:1234:2:[a-f0-9]{64}$/);
+  const retryOperations = posted[1]?.operations as Array<Record<string, unknown>>;
+  assert.equal(
+    retryOperations[0]?.expectedDigest,
+    createHash("sha256").update(before).digest("hex"),
+  );
+  assert.equal(
+    Buffer.from(String(retryOperations[0]?.contentBase64), "base64").toString("utf8"),
+    after,
+  );
+  assert.equal(
+    retryOperations[2]?.expectedDigest,
+    createHash("sha256").update(concurrentPlan).digest("hex"),
+  );
+  assert.equal(
+    Buffer.from(String(retryOperations[2]?.contentBase64), "base64").toString("utf8"),
+    concurrentPlan,
+  );
+  assert.equal(fs.readFileSync(path.join(root, tupleItemPath), "utf8"), after);
+  assert.equal(
+    fs.readFileSync(path.join(root, `${tupleRoot}/plans/42.md`), "utf8"),
+    concurrentPlan,
+  );
+  assert.deepEqual(warnings, ["Rebased openclaw-openclaw/42 onto canonical CURRENT revision 2"]);
+});
+
+test("publish-main skips a non-reconcile conflict on its own section and publishes its sibling", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-own-source-"));
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-own-state-"));
+  const before = recordMarkdown("2026-07-26T01:00:00.000Z", "before");
+  const after = recordMarkdown("2026-07-26T02:00:00.000Z", "after");
+  const concurrent = recordMarkdown("2026-07-26T03:00:00.000Z", "concurrent review");
+  writeText(stateRoot, tupleItemPath, before);
+  writeText(root, tupleItemPath, after);
+  const siblingItemPath = `${tupleRoot}/items/43.md`;
+  writeText(stateRoot, siblingItemPath, before.replace("number: 42", "number: 43"));
+  writeText(root, siblingItemPath, after.replace("number: 42", "number: 43"));
+  const warnings: string[] = [];
+  const postedKeys: string[] = [];
+  t.mock.method(console, "warn", (message: string) => warnings.push(message));
+
+  assert.equal(
+    await publishMainWithStateAppend(
+      { message: "chore: update sweep records", paths: [tupleRoot] },
+      {
+        root,
+        env: appendEnv({ CLAWSWEEPER_STATE_DIR: stateRoot }),
+        fetchImpl: (async (_input: string | URL | Request, init?: RequestInit) => {
+          const mutation = JSON.parse(String(init?.body ?? "")) as { key: string };
+          postedKeys.push(mutation.key);
+          if (mutation.key === "openclaw-openclaw/42") {
+            return tupleConflictResponse({ item: concurrent });
+          }
+          return Response.json(
+            { ok: true, accepted: true, deduped: false, revision: 7, sequence: 11 },
+            { status: 202 },
+          );
+        }) as typeof fetch,
+        publishGit: () => {
+          throw new Error("git publication must not run");
+        },
+      },
+    ),
+    "appended",
+  );
+  assert.deepEqual(postedKeys, ["openclaw-openclaw/42", "openclaw-openclaw/43"]);
+  assert.equal(fs.readFileSync(path.join(root, tupleItemPath), "utf8"), concurrent);
+  assert.equal(
+    fs.readFileSync(path.join(root, siblingItemPath), "utf8"),
+    after.replace("number: 42", "number: 43"),
+  );
+  assert.deepEqual(warnings, [
+    "Skipped openclaw-openclaw/42: canonical CURRENT revision 2 concurrently changed a section this publication also changed",
+    "[canonical publish] continued after 1 of 2 conflicted item(s) were skipped",
+  ]);
+});
+
+test("publish-main fails when every non-reconcile item conflicts on its own section", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-allskip-source-"));
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-canonical-allskip-state-"));
+  const before = recordMarkdown("2026-07-26T01:00:00.000Z", "before");
+  const after = recordMarkdown("2026-07-26T02:00:00.000Z", "after");
+  const concurrent = recordMarkdown("2026-07-26T03:00:00.000Z", "concurrent review");
+  writeText(stateRoot, tupleItemPath, before);
+  writeText(root, tupleItemPath, after);
+  t.mock.method(console, "warn", () => {});
+
+  await assert.rejects(
+    publishMainWithStateAppend(
+      { message: "chore: update sweep records", paths: [tupleRoot] },
+      {
+        root,
+        env: appendEnv({ CLAWSWEEPER_STATE_DIR: stateRoot }),
+        fetchImpl: (async () => tupleConflictResponse({ item: concurrent })) as typeof fetch,
+        publishGit: () => {
+          throw new Error("git publication must not run");
+        },
+      },
+    ),
+    /Canonical publication conflicted for all 1 item\(s\)/,
+  );
+  assert.equal(fs.readFileSync(path.join(root, tupleItemPath), "utf8"), concurrent);
+});
+
 test("publish-main keeps sweep status on the git-backed operational lane", async () => {
   const root = statusFixture();
   const gitPublishes: GitPublishOptions[] = [];
@@ -566,6 +750,37 @@ function conflictResponse(
             : { path: `${tupleRoot}/closed/42.md`, expectedDigest: null },
           { path: `${tupleRoot}/plans/42.md`, expectedDigest: null },
           { path: `${tupleRoot}/decision-packets/42.json`, expectedDigest: null },
+        ],
+      },
+    },
+    { status: 409 },
+  );
+}
+
+function tupleConflictResponse(
+  contents: { item?: string; closed?: string; plan?: string; packet?: string },
+  revision = 2,
+): Response {
+  const operation = (operationPath: string, content?: string) =>
+    content === undefined
+      ? { path: operationPath, expectedDigest: null }
+      : {
+          path: operationPath,
+          expectedDigest: createHash("sha256").update(content).digest("hex"),
+          contentBase64: Buffer.from(content).toString("base64"),
+        };
+  return Response.json(
+    {
+      error: "canonical_record_tuple_conflict",
+      current: {
+        key: "openclaw-openclaw/42",
+        revision,
+        deliveryId: "record-tuple:concurrent-run:1",
+        operations: [
+          operation(tupleItemPath, contents.item),
+          operation(`${tupleRoot}/closed/42.md`, contents.closed),
+          operation(`${tupleRoot}/plans/42.md`, contents.plan),
+          operation(`${tupleRoot}/decision-packets/42.json`, contents.packet),
         ],
       },
     },
