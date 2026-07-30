@@ -47,6 +47,10 @@ export async function enqueueScheduledReviewPlan(
   options: EnqueueOptions,
 ): Promise<ScheduledReviewEnqueueSummary> {
   const fetchImpl = options.fetchImpl ?? fetch;
+  const targetBranch = options.targetBranch.trim();
+  if (!isPlausibleTargetBranch(targetBranch)) {
+    throw new Error("scheduled review target branch is invalid");
+  }
   for (const candidate of options.plan.candidates) validateCandidate(candidate, options.targetRepo);
   const queueUrl = options.queueUrl.replace(/\/$/, "");
   const capabilityResponse = await fetchImpl(`${queueUrl}/api/exact-review-queue`, {
@@ -96,7 +100,7 @@ export async function enqueueScheduledReviewPlan(
       delivery_id: `${options.deliveryPrefix}:${index}:${candidate.number}`,
       decision: {
         targetRepo: options.targetRepo,
-        targetBranch: options.targetBranch,
+        targetBranch,
         itemNumber: candidate.number,
         itemKind: candidate.kind,
         sourceEvent: candidate.kind === "pull_request" ? "pull_request" : "issues",
@@ -140,6 +144,10 @@ export async function enqueueScheduledReviewPlan(
   }
 
   return summary;
+}
+
+function isPlausibleTargetBranch(value: string): boolean {
+  return /^[A-Za-z0-9_./-]+$/.test(value) && !/^\d+$/.test(value) && !value.includes("..");
 }
 
 function validateCandidate(candidate: PlanCandidate, targetRepo: string): void {

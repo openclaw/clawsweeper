@@ -119,9 +119,28 @@ test("scheduled review enqueue reports the full selection-to-queue funnel and st
     );
   }
   const second = JSON.parse(requests[1]!.body);
+  assert.equal(second.decision.targetBranch, "main");
   assert.equal(second.decision.sourceAction, "scheduled_normal_backfill");
   assert.equal(second.decision.sourceEvent, "pull_request");
   assert.equal(second.decision.supersedesInProgress, false);
+});
+
+test("scheduled review enqueue rejects numeric target branches before queue admission", async () => {
+  await assert.rejects(
+    enqueueScheduledReviewPlan({
+      plan: { candidates: [] },
+      lane: "normal_backfill",
+      targetRepo: "openclaw/openclaw",
+      targetBranch: "0",
+      queueUrl: "https://queue.example",
+      secret: "secret",
+      deliveryPrefix: "scheduled:100:1",
+      fetchImpl: async () => {
+        throw new Error("fetch must not run");
+      },
+    }),
+    /target branch is invalid/,
+  );
 });
 
 test("scheduled review enqueue fails closed until the queue advertises pacing", async () => {

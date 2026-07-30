@@ -9045,7 +9045,7 @@ test("exact-review automatic parked recovery remains bounded", async () => {
   assert.equal(await storage.getAlarm(), null);
 });
 
-test("exact-review requeue_latest and publication completions ignore the review ceiling", async () => {
+test("exact-review admission requeue_latest resets failures instead of parking at the review ceiling", async () => {
   const storage = new MemoryDurableStorage();
   const review = leasedExactReviewQueueItem(113_342, "9130");
   const publication = leasedExactReviewPublicationItem(113_343, "9131");

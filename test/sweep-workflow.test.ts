@@ -375,6 +375,72 @@ test("review execution tokens can read check runs and commit statuses", () => {
   );
 });
 
+test("exact event branch guard resolves empty and numeric claims to the repository default", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: Array<{ name?: string; run?: string }> }>;
+  };
+  const run = workflow.jobs["event-review-apply"]?.steps.find(
+    (candidate) => candidate.name === "Check live target item state",
+  )?.run;
+  assert.ok(run);
+
+  const temporary = mkdtempSync(tmpPrefix);
+  try {
+    const fakeBin = join(temporary, "bin");
+    mkdirSync(fakeBin);
+    const fakeGh = join(fakeBin, "gh");
+    writeFileSync(
+      fakeGh,
+      `#!/usr/bin/env bash
+set -euo pipefail
+case "\${2:-}" in
+  repos/openclaw/openclaw)
+    printf 'trunk\\n'
+    ;;
+  repos/openclaw/openclaw/issues/42)
+    printf '{"state":"closed","locked":false}\\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+`,
+    );
+    chmodSync(fakeGh, 0o755);
+
+    for (const branch of ["", "0"]) {
+      const outputPath = join(temporary, branch ? `output-${branch}` : "output-empty");
+      execFileSync("bash", ["-c", run], {
+        env: {
+          ...process.env,
+          CLAIM_DECISION: JSON.stringify({ targetBranch: branch }),
+          CLAIM_TARGET_BRANCH: branch,
+          GH_TOKEN: "test-token",
+          GITHUB_OUTPUT: outputPath,
+          ITEM_NUMBER: "42",
+          PATH: `${fakeBin}:${process.env.PATH}`,
+          TARGET_REPO: "openclaw/openclaw",
+        },
+      });
+      const outputs = Object.fromEntries(
+        readFileSync(outputPath, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => {
+            const separator = line.indexOf("=");
+            return [line.slice(0, separator), line.slice(separator + 1)];
+          }),
+      );
+      assert.equal(outputs.target_branch, "trunk");
+      assert.equal(outputs.admission_retry, "false");
+      assert.equal(outputs.terminal_noop, "true");
+      assert.equal(JSON.parse(outputs.decision ?? "{}").targetBranch, "trunk");
+    }
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
 test("manual review shards receive the compiler-backed runtime artifact", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const planJobStart = workflow.indexOf("\n  plan:");
@@ -480,6 +546,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     "${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}",
   );
   const resolvePayload = step(reviewer, "Resolve event payload");
+  const liveItem = step(reviewer, "Check live target item state");
   assert.match(resolvePayload.run ?? "", /maxExactReviewCodexTimeoutMs = 2_700_000/);
   assert.match(
     resolvePayload.run ?? "",
@@ -489,6 +556,18 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     resolvePayload.run ?? "",
     /codex_timeout_ms: Math\.min\(\s*maxExactReviewCodexTimeoutMs/,
   );
+  assert.equal(
+    liveItem.env?.CLAIM_DECISION,
+    "${{ steps.claim-exact-review-queue.outputs.decision }}",
+  );
+  assert.match(liveItem.run ?? "", /grep -Eq '\^\[0-9\]\+\$'/);
+  assert.match(
+    liveItem.run ?? "",
+    /gh api "repos\/\$TARGET_REPO" --jq '\.default_branch \/\/ empty'/,
+  );
+  assert.match(liveItem.run ?? "", /Resolved invalid queued target branch/);
+  assert.match(liveItem.run ?? "", /admission_retry=true/);
+  assert.match(liveItem.run ?? "", /decision\.targetBranch = process\.env\.TARGET_BRANCH/);
   assert.match(
     step(reviewer, "Review exact event item").if ?? "",
     /reserve-exact-review-lease\.outputs\.status == 'posted'/,
@@ -510,6 +589,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   const upload = step(reviewer, "Upload exact review artifact bundle");
   const queuePublication = step(reviewer, "Queue durable exact review publication");
   const complete = step(reviewer, "Complete exact-review queue lease");
+  const generationResult = step(reviewer, "Export exact review generation result");
   const deferHeldReview = step(reviewer, "Defer exact review while same-head lease is held");
   const failGeneration = step(reviewer, "Fail unsuccessful exact review generation");
   const releaseGeneration = step(reviewer, "Release unsuccessful workflow-owned review lease");
@@ -517,10 +597,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(create.if ?? "", /review-exact-event-item\.outputs\.retry_at == ''/);
   assert.match(create.if ?? "", /review-exact-event-item\.outputs\.superseded != 'true'/);
   assert.equal(create.env?.EXACT_REVIEW_PRODUCER_JOB, "event-review-apply");
-  assert.equal(
-    create.env?.EXACT_REVIEW_DECISION,
-    "${{ steps.claim-exact-review-queue.outputs.decision }}",
-  );
+  assert.equal(create.env?.EXACT_REVIEW_DECISION, "${{ steps.live-item.outputs.decision }}");
   assert.match(create.run ?? "", /mkdir -p \.artifacts/);
   assert.ok(
     (create.run ?? "").indexOf("mkdir -p .artifacts") <
@@ -537,7 +614,17 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.equal(upload.with?.["retention-days"], 90);
   assert.match(queuePublication.run ?? "", /for attempt in 1 2 3/);
   assert.match(queuePublication.run ?? "", /\.queued == true or \.deduped == true/);
+  assert.equal(queuePublication.env?.CLAIM_DECISION, "${{ steps.live-item.outputs.decision }}");
+  assert.equal(
+    generationResult.env?.ADMISSION_RETRY,
+    "${{ steps.live-item.outputs.admission_retry }}",
+  );
+  assert.match(generationResult.run ?? "", /ADMISSION_RETRY.*true[\s\S]*outcome=success/);
+  assert.match(generationResult.run ?? "", /requeue_latest=true/);
   assert.match(complete.env?.PRIMARY_OUTCOME ?? "", /exact-review-generation-result/);
+  assert.match(complete.env?.REQUEUE_LATEST ?? "", /exact-review-generation-result/);
+  assert.match(complete.env?.RETRY_AT ?? "", /live-item\.outputs\.retry_at/);
+  assert.match(complete.run ?? "", /requeue_latest: true/);
   assert.match(deferHeldReview.if ?? "", /reserve-exact-review-lease\.outputs\.status == 'held'/);
   assert.match(deferHeldReview.run ?? "", /retry deferred/);
   assert.match(failGeneration.if ?? "", /reserve-exact-review-lease\.outputs\.status != 'held'/);
@@ -2613,6 +2700,12 @@ test("scheduled reviews feed the durable queue instead of one-item matrix worker
   assert.match(modeBlock, /requested_batch_size="\$queue_candidate_capacity"/);
   assert.match(modeBlock, /batch_size="\$requested_batch_size"[\s\S]*shard_count="1"/);
   assert.match(enqueueBlock, /repair:scheduled-review-enqueue/);
+  assert.match(enqueueBlock, /gh api "repos\/\$target_repo" --jq '\.default_branch \/\/ empty'/);
+  assert.match(enqueueBlock, /--target-branch "\$target_branch"/);
+  assert.doesNotMatch(
+    enqueueBlock,
+    /--target-branch "\$\{\{ steps\.target\.outputs\.target_branch \}\}"/,
+  );
   assert.match(
     selectBlock,
     /--coverage-tracked-items-manifest \.artifacts\/worker-records-manifest\.json/,

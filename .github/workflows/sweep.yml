@@ -696,6 +696,7 @@ jobs:
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.target_enabled == 'true' }}
         id: live-item
         env:
+          CLAIM_DECISION: ${{ steps.claim-exact-review-queue.outputs.decision }}
           GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
@@ -704,11 +705,47 @@ jobs:
           set -euo pipefail
           test -n "$GH_TOKEN"
           target_branch="$CLAIM_TARGET_BRANCH"
-          if ! printf '%s' "$target_branch" | grep -Eq '^[A-Za-z0-9_.\/-]+$'; then
-            echo "Invalid target branch for $TARGET_REPO: $target_branch" >&2
-            exit 1
+          branch_is_usable() {
+            local branch="$1"
+            [ -n "$branch" ] &&
+              printf '%s' "$branch" | grep -Eq '^[A-Za-z0-9_.\/-]+$' &&
+              ! printf '%s' "$branch" | grep -Eq '^[0-9]+$' &&
+              [[ "$branch" != *".."* ]]
+          }
+          if ! branch_is_usable "$target_branch"; then
+            queued_target_branch="$target_branch"
+            branch_error="$(mktemp)"
+            if ! target_branch="$(gh api "repos/$TARGET_REPO" --jq '.default_branch // empty' 2>"$branch_error")" ||
+              ! branch_is_usable "$target_branch"; then
+              echo "::warning::Unable to resolve a usable default branch for $TARGET_REPO after queued target branch '$queued_target_branch' was rejected; releasing the claim for retry."
+              cat "$branch_error" >&2
+              rm -f "$branch_error"
+              retry_at="$(node -e 'process.stdout.write(new Date(Date.now() + 5 * 60_000).toISOString())')"
+              {
+                echo "admission_retry=true"
+                echo "retry_at=$retry_at"
+                echo "proceed=false"
+                echo "terminal_noop=false"
+                echo "terminal_missing=false"
+                echo "guarded_open=false"
+                echo "guarded_open_action="
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            rm -f "$branch_error"
+            echo "::warning::Resolved invalid queued target branch '$queued_target_branch' to default branch '$target_branch' for $TARGET_REPO."
           fi
-          echo "target_branch=$target_branch" >> "$GITHUB_OUTPUT"
+          effective_decision="$(CLAIM_DECISION="$CLAIM_DECISION" TARGET_BRANCH="$target_branch" node <<'NODE'
+          const decision = JSON.parse(process.env.CLAIM_DECISION || "{}");
+          decision.targetBranch = process.env.TARGET_BRANCH;
+          process.stdout.write(JSON.stringify(decision));
+          NODE
+          )"
+          {
+            echo "admission_retry=false"
+            echo "target_branch=$target_branch"
+            echo "decision=$effective_decision"
+          } >> "$GITHUB_OUTPUT"
           live_item_error="$(mktemp)"
           if ! live_item="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER" 2>"$live_item_error")"; then
             if grep -Eqi 'HTTP 404|Not Found' "$live_item_error" && gh api "repos/$TARGET_REPO" >/dev/null; then
@@ -760,7 +797,7 @@ jobs:
           esac
 
       - name: Create target write token
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.admission_retry != 'true' }}
         id: target-write-token
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -777,7 +814,7 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         id: setup-pnpm
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.admission_retry != 'true' }}
         with:
           build-script: ${{ steps.live-item.outputs.proceed == 'true' && 'build:all' || 'build:repair' }}
 
@@ -1208,12 +1245,12 @@ jobs:
 
       - name: Create exact review artifact bundle
         id: create-exact-review-bundle
-        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.target.outputs.target_enabled == 'true' && steps.live-item.outcome == 'success' && steps.setup-pnpm.outcome == 'success' && steps.review-exact-event-item.outputs.superseded != 'true' && (steps.live-item.outputs.proceed != 'true' || (steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.retry_at == '')) }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.target.outputs.target_enabled == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.admission_retry != 'true' && steps.setup-pnpm.outcome == 'success' && steps.review-exact-event-item.outputs.superseded != 'true' && (steps.live-item.outputs.proceed != 'true' || (steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.retry_at == '')) }}
         env:
           EXACT_REVIEW_ACTION_LEDGER_ROOT: ${{ env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT }}
           EXACT_REVIEW_BUNDLE_DIR: .artifacts/exact-review-bundle
           EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
-          EXACT_REVIEW_DECISION: ${{ steps.claim-exact-review-queue.outputs.decision }}
+          EXACT_REVIEW_DECISION: ${{ steps.live-item.outputs.decision }}
           EXACT_REVIEW_GENERATION_ATTEMPT: ${{ github.run_attempt }}
           EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
           EXACT_REVIEW_ITEM_KIND: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).itemKind }}
@@ -1297,7 +1334,7 @@ jobs:
         if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.upload-exact-review-bundle.outcome == 'success' }}
         env:
           ARTIFACT_NAME: ${{ steps.create-exact-review-bundle.outputs.artifact_name }}
-          CLAIM_DECISION: ${{ steps.claim-exact-review-queue.outputs.decision }}
+          CLAIM_DECISION: ${{ steps.live-item.outputs.decision }}
           CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
           ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
           LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
@@ -1443,6 +1480,7 @@ jobs:
         id: exact-review-generation-result
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && always() }}
         env:
+          ADMISSION_RETRY: ${{ steps.live-item.outputs.admission_retry }}
           TARGET_ENABLED: ${{ steps.target.outputs.target_enabled }}
           LIVE_OUTCOME: ${{ steps.live-item.outcome }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
@@ -1452,7 +1490,11 @@ jobs:
           DIRECT_PUBLICATION_ACCEPTED: ${{ steps.direct-exact-review-publication.outputs.accepted }}
         run: |
           outcome=failure
-          if [ "$TARGET_ENABLED" = "false" ]; then
+          requeue_latest=false
+          if [ "$ADMISSION_RETRY" = "true" ]; then
+            outcome=success
+            requeue_latest=true
+          elif [ "$TARGET_ENABLED" = "false" ]; then
             outcome=success
           elif [ "$RESERVATION_STATUS" = "superseded" ] || [ "$REVIEW_SUPERSEDED" = "true" ]; then
             outcome=success
@@ -1462,6 +1504,7 @@ jobs:
             outcome=success
           fi
           echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
+          echo "requeue_latest=$requeue_latest" >> "$GITHUB_OUTPUT"
 
       - name: Complete exact-review queue lease
         id: complete-exact-review-queue
@@ -1475,7 +1518,8 @@ jobs:
           QUEUE_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
           QUEUE_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          RETRY_AT: ${{ steps.reserve-exact-review-lease.outputs.retry_at || steps.review-exact-event-item.outputs.retry_at }}
+          REQUEUE_LATEST: ${{ steps.exact-review-generation-result.outputs.requeue_latest }}
+          RETRY_AT: ${{ steps.live-item.outputs.retry_at || steps.reserve-exact-review-lease.outputs.retry_at || steps.review-exact-event-item.outputs.retry_at }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
@@ -1500,6 +1544,7 @@ jobs:
             const outcome = ["success", "cancelled", "failure"].includes(primaryOutcome)
               ? primaryOutcome
               : "failure";
+            const requeueLatest = process.env.REQUEUE_LATEST === "true";
             const retryAt = String(process.env.RETRY_AT || "").trim();
             process.stdout.write(JSON.stringify({
               lease_id: process.env.QUEUE_LEASE_ID,
@@ -1513,6 +1558,7 @@ jobs:
               run_id: process.env.GITHUB_RUN_ID,
               run_attempt: runAttempt,
               outcome,
+              ...(requeueLatest ? { requeue_latest: true } : {}),
               ...(retryAt ? { retry_at: retryAt } : {}),
             }));
           ')"
@@ -2988,6 +3034,7 @@ jobs:
         working-directory: clawsweeper
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          GH_TOKEN: ${{ steps.target-read-token.outputs.token || github.token }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
@@ -2995,11 +3042,21 @@ jobs:
           if [ "${{ steps.mode.outputs.hot_intake }}" = "true" ]; then
             lane="hot_intake"
           fi
+          target_repo="${{ steps.target.outputs.target_repo }}"
+          target_branch="$(gh api "repos/$target_repo" --jq '.default_branch // empty')"
+          if [ -z "$target_branch" ] ||
+            ! printf '%s' "$target_branch" | grep -Eq '^[A-Za-z0-9_.\/-]+$' ||
+            printf '%s' "$target_branch" | grep -Eq '^[0-9]+$' ||
+            [[ "$target_branch" == *".."* ]]; then
+            echo "Invalid default branch for scheduled target $target_repo: $target_branch" >&2
+            exit 1
+          fi
+          echo "::notice::Scheduled review payloads will use default branch '$target_branch' for $target_repo."
           result="$(pnpm run --silent repair:scheduled-review-enqueue -- \
             --plan plan.json \
             --lane "$lane" \
-            --target-repo "${{ steps.target.outputs.target_repo }}" \
-            --target-branch "${{ steps.target.outputs.target_branch }}" \
+            --target-repo "$target_repo" \
+            --target-branch "$target_branch" \
             --queue-url "$QUEUE_URL" \
             --delivery-prefix "scheduled:${{ github.run_id }}:${{ github.run_attempt }}")"
           jq -e '.offered >= .attempted and .attempted >= (.queued + .deduped + .shed + .rejected)' <<<"$result" >/dev/null

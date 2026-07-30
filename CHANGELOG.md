@@ -9,6 +9,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Repaired legacy exact-review decisions whose empty branch was shifted to the string `0`, resolved invalid queued branches from the target repository default, and requeued temporary branch-resolution failures without spending the eight-attempt review-failure budget.
 - Made scheduled exact reviews immediately ready after fleet admission, automatically retried recoverable parked reviews on a bounded 5/10/20-minute cycle, and exposed backoff/park reason counts in queue status and the dashboard.
 - Aligned normal fanout and planner priority with the dashboard's canonical tuple coverage identities, so legacy backfill reports no longer hide untracked open items behind canonical re-reviews.
 - Sized scheduled candidate batches from live free review capacity, apportioned fleet fanout by untracked backlog while retaining round-robin fairness, and skipped empty repositories before both normal and hot fanout so a dominant backlog can fill idle review slots without starving smaller targets.
