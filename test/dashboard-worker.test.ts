@@ -54,8 +54,9 @@ test("production doubles exact review claims and canonical publication batches",
   assert.match(wrangler, /EXACT_REVIEW_ACTIONS_BUDGET = "194"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "8"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT = "8"/);
-  assert.match(wrangler, /EXACT_REVIEW_TARGET_RATE_PER_HOUR = "200"/);
-  assert.match(wrangler, /EXACT_REVIEW_TARGET_BURST = "50"/);
+  assert.match(wrangler, /EXACT_REVIEW_TARGET_RATE_PER_HOUR = "600"/);
+  assert.match(wrangler, /EXACT_REVIEW_TARGET_BURST = "120"/);
+  assert.match(wrangler, /EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"/);
 });
 
 test("full exact-review admission preserves production verdict publication capacity", () => {

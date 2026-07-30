@@ -63,9 +63,14 @@ EXACT_REVIEW_HEARTBEAT_GRACE_MS = "1200000"
 EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = "60000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = "90000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "180000"
-EXACT_REVIEW_PENDING_SOFT_LIMIT = "300"
-EXACT_REVIEW_TARGET_RATE_PER_HOUR = "200"
-EXACT_REVIEW_TARGET_BURST = "50"
+EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"
+# 200/h only sustained ~14 concurrent reviews against a 128-slot pool; with the
+# review/publication lane split (#953) the queue drains to zero pending while
+# 3,306 items have never been reviewed at all (42.9% weekly coverage). 600/h at
+# the measured 4.1-minute service time targets ~41 concurrent, clearing the
+# first-pass backlog in hours instead of days. Model spend scales with this dial.
+EXACT_REVIEW_TARGET_RATE_PER_HOUR = "600"
+EXACT_REVIEW_TARGET_BURST = "120"
 # Keep each mutation lease at 8 while allowing four isolated workflows to prepare
 # concurrently. Final commits still cross the single state-writer coordinator.
 # A full-window publish moves ~2k paths and observed ~40 min; the drain lease
