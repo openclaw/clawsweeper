@@ -358,31 +358,6 @@ type ExactReviewQueueMetricDelta = {
   publicationDeadLettered?: number;
   publicationRefreshed?: number;
 };
-type StateAppendKind =
-  | "sweep_status"
-  | "comment_router"
-  | "apply_proof"
-  | "record_tuple"
-  | "cluster_intake";
-type StateAppendRecord = {
-  kind: StateAppendKind;
-  key: string;
-  payloadJson: string;
-  payloadBytes: number;
-  producedAt: string;
-};
-type StateAppendWindowRow = {
-  seq: number;
-  kind: StateAppendKind;
-  record_key: string;
-  payload_json: string;
-  payload_bytes: number;
-  produced_at: string;
-  delivery_id: string;
-  materialization_attempts: number;
-  materialization_first_failed_at: number | null;
-  materialization_last_error: string | null;
-};
 type ExactReviewSupersessionAudit = {
   auditId: string;
   itemKey: string;
@@ -497,25 +472,6 @@ const EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE = "exact_review_queue_metric_bucket
 const EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE = "exact_review_queue_supersessions";
 const EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE = "exact_review_queue_dead_letters";
 const EXACT_REVIEW_PUBLICATION_HEAD_TABLE = "exact_review_publication_heads";
-const STATE_APPEND_WINDOW_TABLE = "state_append_window";
-const STATE_APPEND_RECEIPT_TABLE = "state_append_receipts";
-const STATE_APPEND_DRAIN_TABLE = "state_append_drains";
-const STATE_APPEND_META_TABLE = "state_append_meta";
-const STATE_APPEND_DEAD_LETTER_TABLE = "state_append_dead_letters";
-const STATE_APPEND_KINDS = new Set<StateAppendKind>([
-  "sweep_status",
-  "comment_router",
-  "apply_proof",
-  "cluster_intake",
-]);
-const DEFAULT_STATE_APPEND_MAX_PENDING_ROWS = 50_000;
-const DEFAULT_STATE_APPEND_MAX_PENDING_BYTES = 100 * 1024 * 1024;
-const DEFAULT_STATE_APPEND_MAX_RECORD_BYTES = 256 * 1024;
-// Must outlast a worst-case materializer publish (observed 17 min under
-// residual lease contention during the #738 transition).
-const DEFAULT_STATE_APPEND_DRAIN_LEASE_MS = 30 * 60 * 1000;
-const STATE_APPEND_MATERIALIZATION_RETRY_LIMIT = 3;
-const STATE_APPEND_MAX_CONSECUTIVE_INTAKE_ONLY_DRAINS = 1;
 const EXACT_REVIEW_REVIEW_TELEMETRY_TABLE = "exact_review_review_telemetry";
 const EXACT_REVIEW_RUN_TELEMETRY_TABLE = "exact_review_run_telemetry";
 const EXACT_REVIEW_STATE_WRITER_OPERATION_TABLE = "exact_review_state_writer_operations";
@@ -729,249 +685,6 @@ export class ExactReviewQueue {
       await this.scheduleNext(this.readStateSync(), Date.now());
       return json({ ok: true, completed: result === "completed" });
     }
-    if (request.method === "POST" && url.pathname === "/state/append") {
-      const body = objectValue(await request.json().catch(() => null));
-      const deliveryId = String(body.delivery_id || "").trim();
-      if (!deliveryId) return json({ error: "missing_delivery_id" }, 400);
-      const normalized = stateAppendRecords(body.records, stateAppendMaxRecordBytes(this.env));
-      if (!normalized.ok) return json({ error: normalized.error }, 400);
-
-      const now = Date.now();
-      const appended = this.storage.transactionSync(() => {
-        this.pruneStateAppendReceiptsSync(now);
-        this.storage.sql.exec(
-          `DELETE FROM ${STATE_APPEND_RECEIPT_TABLE}
-            WHERE delivery_id = ? AND received_at <= ?`,
-          deliveryId,
-          now - EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS,
-        );
-        const existingReceipt = Array.from(
-          this.storage.sql.exec(
-            `SELECT delivery_id FROM ${STATE_APPEND_RECEIPT_TABLE} WHERE delivery_id = ?`,
-            deliveryId,
-          ),
-        ).length;
-        if (existingReceipt) return { kind: "deduped" as const };
-
-        const window = this.stateAppendWindowTotalsSync();
-        const appendedBytes = normalized.records.reduce(
-          (sum, record) => sum + record.payloadBytes,
-          0,
-        );
-        if (
-          window.pendingRows + normalized.records.length > stateAppendMaxPendingRows(this.env) ||
-          window.pendingBytes + appendedBytes > stateAppendMaxPendingBytes(this.env)
-        ) {
-          this.storage.sql.exec(
-            `UPDATE ${STATE_APPEND_META_TABLE}
-                SET shed_since_reset = shed_since_reset + 1
-              WHERE singleton_id = 1`,
-          );
-          return { kind: "shed" as const };
-        }
-
-        this.storage.sql.exec(
-          `INSERT INTO ${STATE_APPEND_RECEIPT_TABLE} (delivery_id, received_at) VALUES (?, ?)`,
-          deliveryId,
-          now,
-        );
-        let firstSeq: number | null = null;
-        let lastSeq: number | null = null;
-        for (const record of normalized.records) {
-          const inserted = Array.from(
-            this.storage.sql.exec(
-              `INSERT INTO ${STATE_APPEND_WINDOW_TABLE}
-                 (kind, record_key, payload_json, payload_bytes, produced_at, delivery_id)
-               VALUES (?, ?, ?, ?, ?, ?)
-               RETURNING seq`,
-              record.kind,
-              record.key,
-              record.payloadJson,
-              record.payloadBytes,
-              record.producedAt,
-              deliveryId,
-            ) as Iterable<{ seq: number }>,
-          )[0];
-          const seq = Number(inserted?.seq);
-          if (!Number.isSafeInteger(seq) || seq < 1) {
-            throw new Error("state append failed to allocate a sequence");
-          }
-          if (firstSeq === null) firstSeq = seq;
-          lastSeq = seq;
-        }
-        return {
-          kind: "appended" as const,
-          appended: normalized.records.length,
-          firstSeq,
-          lastSeq,
-        };
-      });
-      if (appended.kind === "deduped") return json({ ok: true, deduped: true }, 202);
-      if (appended.kind === "shed") {
-        return json({ ok: false, shed: true, reason: "capacity" }, 429);
-      }
-      return json(
-        {
-          ok: true,
-          appended: appended.appended,
-          first_seq: appended.firstSeq,
-          last_seq: appended.lastSeq,
-        },
-        202,
-      );
-    }
-
-    if (request.method === "POST" && url.pathname === "/state/drain") {
-      const body = objectValue(await request.json().catch(() => null));
-      const maxRows = stateAppendDrainLimit(body.max_rows);
-      const maxBytes = stateAppendDrainLimit(body.max_bytes);
-      if (maxRows === null || maxBytes === null) {
-        return json({ error: "invalid_drain_limits" }, 400);
-      }
-      const drain = this.storage.transactionSync(() =>
-        this.drainStateAppendWindowSync(
-          Math.min(maxRows, stateAppendMaxPendingRows(this.env)),
-          Math.min(maxBytes, stateAppendMaxPendingBytes(this.env)),
-          Date.now(),
-        ),
-      );
-      return json({
-        ok: true,
-        drain_token: drain.token,
-        lease_expires_at: drain.expiresAt === null ? null : new Date(drain.expiresAt).toISOString(),
-        records: drain.rows.map(stateAppendWindowRowJson),
-      });
-    }
-
-    if (request.method === "POST" && url.pathname === "/state/ack") {
-      const body = objectValue(await request.json().catch(() => null));
-      const drainToken = String(body.drain_token || "").trim();
-      if (!drainToken) return json({ error: "missing_drain_token" }, 400);
-      const acked = this.storage.transactionSync(() => {
-        const now = Date.now();
-        this.reclaimExpiredStateAppendDrainsSync(now);
-        const active = Array.from(
-          this.storage.sql.exec(
-            `SELECT drain_token FROM ${STATE_APPEND_DRAIN_TABLE} WHERE drain_token = ?`,
-            drainToken,
-          ),
-        ).length;
-        if (!active) return 0;
-        const deleted = Array.from(
-          this.storage.sql.exec(
-            `DELETE FROM ${STATE_APPEND_WINDOW_TABLE}
-              WHERE drain_token = ?
-            RETURNING seq`,
-            drainToken,
-          ),
-        ).length;
-        this.storage.sql.exec(
-          `DELETE FROM ${STATE_APPEND_DRAIN_TABLE} WHERE drain_token = ?`,
-          drainToken,
-        );
-        return deleted;
-      });
-      return json({ ok: true, acked });
-    }
-
-    if (request.method === "POST" && url.pathname === "/state/dispose") {
-      const body = objectValue(await request.json().catch(() => null));
-      const drainToken = String(body.drain_token || "").trim();
-      const failures = stateAppendMaterializationFailures(body.failures);
-      if (!drainToken) return json({ error: "missing_drain_token" }, 400);
-      if (failures === null) return json({ error: "invalid_materialization_failures" }, 400);
-      const disposition = this.storage.transactionSync(() => {
-        const now = Date.now();
-        this.reclaimExpiredStateAppendDrainsSync(now);
-        const active = Array.from(
-          this.storage.sql.exec(
-            `SELECT drain_token FROM ${STATE_APPEND_DRAIN_TABLE} WHERE drain_token = ?`,
-            drainToken,
-          ),
-        ).length;
-        if (!active) return { acked: 0, retried: 0, deadLettered: 0 };
-
-        const rows = new Map(
-          this.stateAppendRowsForDrainSync(drainToken).map((row) => [Number(row.seq), row]),
-        );
-        if (failures.some((failure) => !rows.has(failure.seq))) {
-          throw new Error("state materialization failure is outside its drain");
-        }
-
-        let retried = 0;
-        let deadLettered = 0;
-        for (const failure of failures) {
-          const row = rows.get(failure.seq)!;
-          const attempts = Number(row.materialization_attempts || 0) + 1;
-          const firstFailedAt = Number(row.materialization_first_failed_at || now);
-          if (failure.retryable && attempts < STATE_APPEND_MATERIALIZATION_RETRY_LIMIT) {
-            this.storage.sql.exec(
-              `UPDATE ${STATE_APPEND_WINDOW_TABLE}
-                  SET drain_token = NULL,
-                      materialization_attempts = ?,
-                      materialization_first_failed_at = ?,
-                      materialization_last_error = ?
-                WHERE seq = ? AND drain_token = ?`,
-              attempts,
-              firstFailedAt,
-              failure.reason,
-              failure.seq,
-              drainToken,
-            );
-            retried += 1;
-            continue;
-          }
-          this.storage.sql.exec(
-            `INSERT INTO ${STATE_APPEND_DEAD_LETTER_TABLE}
-               (dead_letter_id, seq, kind, record_key, payload_json, produced_at, delivery_id,
-                reason, attempts, first_failed_at, last_failed_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(dead_letter_id) DO UPDATE SET
-               reason = excluded.reason,
-               attempts = excluded.attempts,
-               last_failed_at = excluded.last_failed_at`,
-            `state-append:${row.delivery_id}:${row.seq}`,
-            row.seq,
-            row.kind,
-            row.record_key,
-            row.payload_json,
-            row.produced_at,
-            row.delivery_id,
-            failure.reason,
-            attempts,
-            firstFailedAt,
-            now,
-          );
-          this.storage.sql.exec(
-            `DELETE FROM ${STATE_APPEND_WINDOW_TABLE} WHERE seq = ? AND drain_token = ?`,
-            failure.seq,
-            drainToken,
-          );
-          deadLettered += 1;
-        }
-
-        const acknowledged = Array.from(
-          this.storage.sql.exec(
-            `DELETE FROM ${STATE_APPEND_WINDOW_TABLE}
-              WHERE drain_token = ?
-            RETURNING seq`,
-            drainToken,
-          ),
-        ).length;
-        this.storage.sql.exec(
-          `DELETE FROM ${STATE_APPEND_DRAIN_TABLE} WHERE drain_token = ?`,
-          drainToken,
-        );
-        return { acked: acknowledged + deadLettered, retried, deadLettered };
-      });
-      return json({
-        ok: true,
-        acked: disposition.acked,
-        retried: disposition.retried,
-        dead_lettered: disposition.deadLettered,
-      });
-    }
-
     if (request.method === "POST" && url.pathname === "/state-writer/acquire") {
       const input = stateWriterTicketInput(await request.json().catch(() => null));
       if (!input) return json({ error: "invalid_state_writer_ticket" }, 400);
@@ -2775,8 +2488,6 @@ export class ExactReviewQueue {
       const snapshot = this.storage.transactionSync(() => {
         this.pruneDeliveryReceiptsSync(now);
         this.pruneEditedSemanticInputsSync(now);
-        this.pruneStateAppendReceiptsSync(now);
-        this.reclaimExpiredStateAppendDrainsSync(now);
         this.pruneQueueTelemetrySync(now);
         this.pruneReviewTelemetrySync(now);
         this.reconcileStoredReviewRunsSync(now);
@@ -2801,7 +2512,6 @@ export class ExactReviewQueue {
           // Full review observability scans up to 10k durable records. Keep it on
           // the diagnostic endpoint so the frequently-polled status path stays bounded.
           stateWriter: this.stateWriterSummarySync(now),
-          stateAppend: this.stateAppendStatsSync(),
         };
       });
       const {
@@ -2812,7 +2522,6 @@ export class ExactReviewQueue {
         deadLetters,
         reviewTelemetryHealth,
         stateWriter,
-        stateAppend,
       } = snapshot;
       // Coordinator methods own their SQLite transaction. Keep this adjacent to
       // the queue snapshot without nesting transactionSync calls.
@@ -2963,11 +2672,6 @@ export class ExactReviewQueue {
         review_telemetry_health: reviewTelemetryHealth,
         reservation_claim_observability: reservationClaimObservability,
         state_writer: { ...stateWriter, coordinator: stateWriterCoordinator },
-        state_append: {
-          ...stateAppend,
-          max_pending_rows: stateAppendMaxPendingRows(this.env),
-          max_pending_bytes: stateAppendMaxPendingBytes(this.env),
-        },
         storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
         legacy_rollback_available:
           !this.legacyMirrorDisabled &&
@@ -3044,9 +2748,7 @@ export class ExactReviewQueue {
     await this.processSourceAuthorityReservations(startedAt);
     this.storage.transactionSync(() => {
       this.pruneDeliveryReceiptsSync(startedAt);
-      this.pruneStateAppendReceiptsSync(startedAt);
       this.directPublicationStore.pruneTerminalSync(startedAt);
-      this.reclaimExpiredStateAppendDrainsSync(startedAt);
       this.reconcileStoredReviewRunsSync(startedAt);
       this.syncLegacyCompatibilitySync(this.readStateSync());
     });
@@ -5818,151 +5520,18 @@ export class ExactReviewQueue {
          updated_at INTEGER NOT NULL
        ) STRICT`,
     );
-    this.storage.sql.exec(
-      `CREATE TABLE IF NOT EXISTS ${STATE_APPEND_WINDOW_TABLE} (
-         seq INTEGER PRIMARY KEY AUTOINCREMENT,
-         kind TEXT NOT NULL CHECK (kind IN ('sweep_status', 'comment_router', 'apply_proof', 'record_tuple', 'cluster_intake')),
-         record_key TEXT NOT NULL,
-         payload_json TEXT NOT NULL,
-         payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0),
-         produced_at TEXT NOT NULL,
-         delivery_id TEXT NOT NULL,
-         drain_token TEXT,
-         materialization_attempts INTEGER NOT NULL DEFAULT 0 CHECK (materialization_attempts >= 0),
-         materialization_first_failed_at INTEGER,
-         materialization_last_error TEXT
-       ) STRICT`,
-    );
-    // Durable Objects can skip intermediate deployments. Normalize columns
-    // introduced by the retry-history migration before rebuilding an older
-    // kind constraint, because the copy below preserves those values.
-    for (const [column, definition] of [
-      [
-        "materialization_attempts",
-        "INTEGER NOT NULL DEFAULT 0 CHECK (materialization_attempts >= 0)",
-      ],
-      ["materialization_first_failed_at", "INTEGER"],
-      ["materialization_last_error", "TEXT"],
+    // The retired append-window projection (drained by the deleted
+    // state-materializer workflow) kept five bounded tables. All producers are
+    // gone, so drop them outright on upgrade.
+    for (const retiredTable of [
+      "state_append_window",
+      "state_append_receipts",
+      "state_append_drains",
+      "state_append_meta",
+      "state_append_dead_letters",
     ]) {
-      const present = Array.from(
-        this.storage.sql.exec(
-          `SELECT name FROM pragma_table_info('${STATE_APPEND_WINDOW_TABLE}') WHERE name = ?`,
-          column,
-        ),
-      ).length;
-      if (!present) {
-        this.storage.sql.exec(
-          `ALTER TABLE ${STATE_APPEND_WINDOW_TABLE} ADD COLUMN ${column} ${definition}`,
-        );
-      }
+      this.storage.sql.exec(`DROP TABLE IF EXISTS ${retiredTable}`);
     }
-    const stateAppendTableRow = Array.from(
-      this.storage.sql.exec(
-        `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`,
-        STATE_APPEND_WINDOW_TABLE,
-      ),
-    )[0] as { sql?: string } | undefined;
-    const stateAppendTableSql = String(stateAppendTableRow?.sql || "");
-    if (!stateAppendTableSql.includes("'cluster_intake'")) {
-      this.storage.transactionSync(() => {
-        this.storage.sql.exec(
-          `CREATE TABLE state_append_window_v2 (
-             seq INTEGER PRIMARY KEY AUTOINCREMENT,
-             kind TEXT NOT NULL CHECK (kind IN ('sweep_status', 'comment_router', 'apply_proof', 'record_tuple', 'cluster_intake')),
-             record_key TEXT NOT NULL,
-             payload_json TEXT NOT NULL,
-             payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0),
-             produced_at TEXT NOT NULL,
-             delivery_id TEXT NOT NULL,
-             drain_token TEXT,
-             materialization_attempts INTEGER NOT NULL DEFAULT 0 CHECK (materialization_attempts >= 0),
-             materialization_first_failed_at INTEGER,
-             materialization_last_error TEXT
-           ) STRICT`,
-        );
-        this.storage.sql.exec(
-          `INSERT INTO state_append_window_v2
-             (seq, kind, record_key, payload_json, payload_bytes, produced_at, delivery_id, drain_token,
-              materialization_attempts, materialization_first_failed_at, materialization_last_error)
-           SELECT seq, kind, record_key, payload_json, payload_bytes, produced_at, delivery_id, drain_token,
-                  materialization_attempts, materialization_first_failed_at, materialization_last_error
-             FROM ${STATE_APPEND_WINDOW_TABLE}`,
-        );
-        this.storage.sql.exec(`DROP TABLE ${STATE_APPEND_WINDOW_TABLE}`);
-        this.storage.sql.exec(
-          `ALTER TABLE state_append_window_v2 RENAME TO ${STATE_APPEND_WINDOW_TABLE}`,
-        );
-      });
-    }
-    this.storage.sql.exec(
-      `CREATE INDEX IF NOT EXISTS state_append_window_drain_seq
-         ON ${STATE_APPEND_WINDOW_TABLE} (drain_token, seq)`,
-    );
-    this.storage.sql.exec(
-      `CREATE TABLE IF NOT EXISTS ${STATE_APPEND_RECEIPT_TABLE} (
-         delivery_id TEXT PRIMARY KEY,
-         received_at INTEGER NOT NULL
-       ) STRICT`,
-    );
-    this.storage.sql.exec(
-      `CREATE INDEX IF NOT EXISTS state_append_receipts_received_at
-         ON ${STATE_APPEND_RECEIPT_TABLE} (received_at, delivery_id)`,
-    );
-    this.storage.sql.exec(
-      `CREATE TABLE IF NOT EXISTS ${STATE_APPEND_DRAIN_TABLE} (
-         drain_token TEXT PRIMARY KEY,
-         leased_at INTEGER NOT NULL,
-         expires_at INTEGER NOT NULL
-       ) STRICT`,
-    );
-    this.storage.sql.exec(
-      `CREATE INDEX IF NOT EXISTS state_append_drains_expiry
-         ON ${STATE_APPEND_DRAIN_TABLE} (expires_at, drain_token)`,
-    );
-    this.storage.sql.exec(
-      `CREATE TABLE IF NOT EXISTS ${STATE_APPEND_META_TABLE} (
-         singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-         shed_since_reset INTEGER NOT NULL DEFAULT 0 CHECK (shed_since_reset >= 0),
-         consecutive_intake_only_drains INTEGER NOT NULL DEFAULT 0
-           CHECK (consecutive_intake_only_drains >= 0)
-       ) STRICT`,
-    );
-    const intakeDrainBudgetPresent = Array.from(
-      this.storage.sql.exec(
-        `SELECT name FROM pragma_table_info('${STATE_APPEND_META_TABLE}')
-          WHERE name = 'consecutive_intake_only_drains'`,
-      ),
-    ).length;
-    if (!intakeDrainBudgetPresent) {
-      this.storage.sql.exec(
-        `ALTER TABLE ${STATE_APPEND_META_TABLE}
-           ADD COLUMN consecutive_intake_only_drains INTEGER NOT NULL DEFAULT 0
-             CHECK (consecutive_intake_only_drains >= 0)`,
-      );
-    }
-    this.storage.sql.exec(
-      `INSERT OR IGNORE INTO ${STATE_APPEND_META_TABLE} (singleton_id) VALUES (1)`,
-    );
-    this.storage.sql.exec(
-      `CREATE TABLE IF NOT EXISTS ${STATE_APPEND_DEAD_LETTER_TABLE} (
-         dead_letter_id TEXT PRIMARY KEY,
-         seq INTEGER NOT NULL CHECK (seq >= 1),
-         kind TEXT NOT NULL,
-         record_key TEXT NOT NULL,
-         payload_json TEXT NOT NULL,
-         produced_at TEXT NOT NULL,
-         delivery_id TEXT NOT NULL,
-         reason TEXT NOT NULL,
-         attempts INTEGER NOT NULL CHECK (attempts >= 1),
-         first_failed_at INTEGER NOT NULL,
-         last_failed_at INTEGER NOT NULL,
-         status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved'))
-       ) STRICT`,
-    );
-    this.storage.sql.exec(
-      `CREATE INDEX IF NOT EXISTS state_append_dead_letters_status
-         ON ${STATE_APPEND_DEAD_LETTER_TABLE} (status, last_failed_at, dead_letter_id)`,
-    );
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_INGRESS_TABLE} (
          fingerprint TEXT NOT NULL,
@@ -7617,188 +7186,6 @@ export class ExactReviewQueue {
       items,
       dispatcherJson: this.readStorageMetaSync()?.dispatcher_json ?? null,
     };
-  }
-
-  private stateAppendWindowTotalsSync() {
-    const row = Array.from(
-      this.storage.sql.exec(
-        `SELECT COUNT(*) AS pending_rows,
-                COALESCE(SUM(payload_bytes), 0) AS pending_bytes
-           FROM ${STATE_APPEND_WINDOW_TABLE}`,
-      ),
-    )[0] as { pending_rows?: number; pending_bytes?: number } | undefined;
-    return {
-      pendingRows: Number(row?.pending_rows || 0),
-      pendingBytes: Number(row?.pending_bytes || 0),
-    };
-  }
-
-  private stateAppendStatsSync() {
-    const totals = this.stateAppendWindowTotalsSync();
-    const oldest = Array.from(
-      this.storage.sql.exec(
-        `SELECT produced_at
-           FROM ${STATE_APPEND_WINDOW_TABLE}
-          ORDER BY seq
-          LIMIT 1`,
-      ),
-    )[0] as { produced_at?: string } | undefined;
-    const meta = Array.from(
-      this.storage.sql.exec(
-        `SELECT shed_since_reset FROM ${STATE_APPEND_META_TABLE} WHERE singleton_id = 1`,
-      ),
-    )[0] as { shed_since_reset?: number } | undefined;
-    const receipts = Array.from(
-      this.storage.sql.exec(`SELECT COUNT(*) AS receipt_count FROM ${STATE_APPEND_RECEIPT_TABLE}`),
-    )[0] as { receipt_count?: number } | undefined;
-    return {
-      pending_rows: totals.pendingRows,
-      pending_bytes: totals.pendingBytes,
-      oldest_produced_at: oldest?.produced_at || null,
-      sheds_since_reset: Number(meta?.shed_since_reset || 0),
-      delivery_receipts: Number(receipts?.receipt_count || 0),
-    };
-  }
-
-  private reclaimExpiredStateAppendDrainsSync(now: number) {
-    this.storage.sql.exec(
-      `UPDATE ${STATE_APPEND_WINDOW_TABLE}
-          SET drain_token = NULL
-        WHERE drain_token IN (
-          SELECT drain_token
-            FROM ${STATE_APPEND_DRAIN_TABLE}
-           WHERE expires_at <= ?
-        )`,
-      now,
-    );
-    this.storage.sql.exec(`DELETE FROM ${STATE_APPEND_DRAIN_TABLE} WHERE expires_at <= ?`, now);
-  }
-
-  private drainStateAppendWindowSync(maxRows: number, maxBytes: number, now: number) {
-    this.reclaimExpiredStateAppendDrainsSync(now);
-    const active = Array.from(
-      this.storage.sql.exec(
-        `SELECT drain_token, expires_at
-           FROM ${STATE_APPEND_DRAIN_TABLE}
-          ORDER BY leased_at, drain_token
-          LIMIT 1`,
-      ),
-    )[0] as { drain_token?: string; expires_at?: number } | undefined;
-    if (active?.drain_token) {
-      return {
-        token: active.drain_token,
-        expiresAt: Number(active.expires_at),
-        rows: this.stateAppendRowsForDrainSync(active.drain_token),
-      };
-    }
-
-    const appendMeta = Array.from(
-      this.storage.sql.exec(
-        `SELECT consecutive_intake_only_drains
-           FROM ${STATE_APPEND_META_TABLE}
-          WHERE singleton_id = 1`,
-      ),
-    )[0] as { consecutive_intake_only_drains?: number } | undefined;
-    const prioritizeOrdinary =
-      Number(appendMeta?.consecutive_intake_only_drains || 0) >=
-      STATE_APPEND_MAX_CONSECUTIVE_INTAKE_ONLY_DRAINS;
-    const candidates = Array.from(
-      this.storage.sql.exec(
-        `SELECT seq, kind, record_key, payload_json, payload_bytes, produced_at, delivery_id,
-                materialization_attempts, materialization_first_failed_at, materialization_last_error
-           FROM ${STATE_APPEND_WINDOW_TABLE}
-          WHERE drain_token IS NULL
-          ORDER BY CASE WHEN kind = 'cluster_intake' THEN ? ELSE ? END, seq
-          LIMIT ?`,
-        prioritizeOrdinary ? 1 : 0,
-        prioritizeOrdinary ? 0 : 1,
-        maxRows,
-      ) as Iterable<StateAppendWindowRow>,
-    );
-    const rows: StateAppendWindowRow[] = [];
-    let bytes = 0;
-    for (const row of candidates) {
-      if (bytes + Number(row.payload_bytes) > maxBytes) break;
-      rows.push(row);
-      bytes += Number(row.payload_bytes);
-    }
-    if (!rows.length) return { token: null, expiresAt: null, rows };
-
-    const intakeOnly = rows.every((row) => row.kind === "cluster_intake");
-    this.storage.sql.exec(
-      `UPDATE ${STATE_APPEND_META_TABLE}
-          SET consecutive_intake_only_drains = CASE
-                WHEN ? THEN MIN(consecutive_intake_only_drains + 1, ?)
-                ELSE 0
-              END
-        WHERE singleton_id = 1`,
-      intakeOnly ? 1 : 0,
-      STATE_APPEND_MAX_CONSECUTIVE_INTAKE_ONLY_DRAINS,
-    );
-
-    const token = crypto.randomUUID();
-    const expiresAt = now + stateAppendDrainLeaseMs(this.env);
-    this.storage.sql.exec(
-      `INSERT INTO ${STATE_APPEND_DRAIN_TABLE}
-         (drain_token, leased_at, expires_at) VALUES (?, ?, ?)`,
-      token,
-      now,
-      expiresAt,
-    );
-    const selectedSequences = rows.map((row) => Number(row.seq));
-    for (
-      let offset = 0;
-      offset < selectedSequences.length;
-      offset += EXACT_REVIEW_QUEUE_SQL_BINDING_ROW_BATCH
-    ) {
-      const batch = selectedSequences.slice(
-        offset,
-        offset + EXACT_REVIEW_QUEUE_SQL_BINDING_ROW_BATCH,
-      );
-      const placeholders = batch.map(() => "?").join(",");
-      this.storage.sql.exec(
-        `UPDATE ${STATE_APPEND_WINDOW_TABLE}
-            SET drain_token = ?
-          WHERE drain_token IS NULL AND seq IN (${placeholders})`,
-        token,
-        ...batch,
-      );
-    }
-    return { token, expiresAt, rows };
-  }
-
-  private stateAppendRowsForDrainSync(drainToken: string) {
-    return Array.from(
-      this.storage.sql.exec(
-        `SELECT seq, kind, record_key, payload_json, payload_bytes, produced_at, delivery_id,
-                materialization_attempts, materialization_first_failed_at, materialization_last_error
-           FROM ${STATE_APPEND_WINDOW_TABLE}
-          WHERE drain_token = ?
-          ORDER BY seq`,
-        drainToken,
-      ) as Iterable<StateAppendWindowRow>,
-    );
-  }
-
-  private pruneStateAppendReceiptsSync(now: number) {
-    const cutoff = now - EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS;
-    for (let batch = 0; batch < EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_MAX_BATCHES; batch += 1) {
-      const deleted = Array.from(
-        this.storage.sql.exec(
-          `DELETE FROM ${STATE_APPEND_RECEIPT_TABLE}
-            WHERE delivery_id IN (
-              SELECT delivery_id
-                FROM ${STATE_APPEND_RECEIPT_TABLE}
-               WHERE received_at <= ?
-               ORDER BY received_at, delivery_id
-               LIMIT ${EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_BATCH}
-            )
-          RETURNING delivery_id`,
-          cutoff,
-        ),
-      );
-      if (deleted.length < EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_BATCH) break;
-    }
   }
 
   private pruneDeliveryReceiptsSync(now: number) {
@@ -11124,52 +10511,6 @@ function exactReviewScheduledBurst(env, lane: ExactReviewScheduledBucket) {
   return lane === "hot_intake" ? hot : total - hot;
 }
 
-function stateAppendMaxPendingRows(env) {
-  return Math.max(
-    1,
-    Math.min(
-      1_000_000,
-      Math.floor(
-        numberFrom(env.STATE_APPEND_MAX_PENDING_ROWS, DEFAULT_STATE_APPEND_MAX_PENDING_ROWS),
-      ),
-    ),
-  );
-}
-
-function stateAppendMaxPendingBytes(env) {
-  return Math.max(
-    1,
-    Math.min(
-      512 * 1024 * 1024,
-      Math.floor(
-        numberFrom(env.STATE_APPEND_MAX_PENDING_BYTES, DEFAULT_STATE_APPEND_MAX_PENDING_BYTES),
-      ),
-    ),
-  );
-}
-
-function stateAppendMaxRecordBytes(env) {
-  return Math.max(
-    1,
-    Math.min(
-      10 * 1024 * 1024,
-      Math.floor(
-        numberFrom(env.STATE_APPEND_MAX_RECORD_BYTES, DEFAULT_STATE_APPEND_MAX_RECORD_BYTES),
-      ),
-    ),
-  );
-}
-
-function stateAppendDrainLeaseMs(env) {
-  return Math.max(
-    1_000,
-    Math.min(
-      24 * 60 * 60 * 1000,
-      Math.floor(numberFrom(env.STATE_APPEND_DRAIN_LEASE_MS, DEFAULT_STATE_APPEND_DRAIN_LEASE_MS)),
-    ),
-  );
-}
-
 function stateWriterCoordinatorLeaseMs(env) {
   return Math.max(
     30_000,
@@ -11263,93 +10604,6 @@ function boundedStateWriterMetadata(value: unknown): string | null {
     !normalized.includes("\u0000")
     ? normalized
     : null;
-}
-
-function stateAppendDrainLimit(value: unknown) {
-  const limit = Number(value);
-  return Number.isSafeInteger(limit) && limit > 0 ? limit : null;
-}
-
-function stateAppendRecords(value: unknown, maxRecordBytes: number) {
-  if (!Array.isArray(value) || value.length === 0) {
-    return { ok: false as const, error: "invalid_state_append_records" };
-  }
-  const records: StateAppendRecord[] = [];
-  for (const valueRecord of value) {
-    const record = objectValue(valueRecord);
-    const kind = String(record.kind || "").trim() as StateAppendKind;
-    if (!STATE_APPEND_KINDS.has(kind)) {
-      return { ok: false as const, error: "invalid_state_append_kind" };
-    }
-    const key = String(record.key || "").trim();
-    if (!key || key.length > 2_048) {
-      return { ok: false as const, error: "invalid_state_append_key" };
-    }
-    const producedAt = String(record.produced_at || "").trim();
-    if (!producedAt || !Number.isFinite(Date.parse(producedAt))) {
-      return { ok: false as const, error: "invalid_state_append_produced_at" };
-    }
-    if (!Object.hasOwn(record, "payload")) {
-      return { ok: false as const, error: "missing_state_append_payload" };
-    }
-    let payloadJson: string;
-    try {
-      payloadJson = JSON.stringify(record.payload);
-    } catch {
-      return { ok: false as const, error: "invalid_state_append_payload" };
-    }
-    if (payloadJson === undefined) {
-      return { ok: false as const, error: "invalid_state_append_payload" };
-    }
-    const payloadBytes = new TextEncoder().encode(payloadJson).byteLength;
-    if (payloadBytes > maxRecordBytes) {
-      return { ok: false as const, error: "state_append_payload_too_large" };
-    }
-    records.push({ kind, key, payloadJson, payloadBytes, producedAt });
-  }
-  return { ok: true as const, records };
-}
-
-function stateAppendWindowRowJson(row: StateAppendWindowRow) {
-  return {
-    seq: Number(row.seq),
-    kind: row.kind,
-    key: row.record_key,
-    payload: JSON.parse(row.payload_json),
-    produced_at: row.produced_at,
-    delivery_id: row.delivery_id,
-    materialization_attempts: Number(row.materialization_attempts || 0),
-    ...(row.materialization_last_error
-      ? { materialization_last_error: row.materialization_last_error }
-      : {}),
-  };
-}
-
-function stateAppendMaterializationFailures(value: unknown) {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 100_000) return null;
-  const seen = new Set<number>();
-  const failures: Array<{ seq: number; reason: string; retryable: boolean }> = [];
-  for (const entry of value) {
-    const record = objectValue(entry);
-    const seq = Number(record.seq);
-    const reason = String(record.reason || "").trim();
-    if (
-      !Number.isSafeInteger(seq) ||
-      seq < 1 ||
-      seen.has(seq) ||
-      !reason ||
-      reason.length > 2_000 ||
-      reason.includes("\u0000") ||
-      reason.includes("\r") ||
-      reason.includes("\n") ||
-      typeof record.retryable !== "boolean"
-    ) {
-      return null;
-    }
-    seen.add(seq);
-    failures.push({ seq, reason, retryable: record.retryable });
-  }
-  return failures;
 }
 
 async function exactReviewDispatchToken(env) {

@@ -39,11 +39,11 @@ publication remains mandatory where it is still the durability fence before a
 dispatch, notably `jobs/**` intake and comment-router claims, and in the
 dedicated cluster-result publisher whose failure must stay visible for retry.
 
-The former state materializer is retained only as a bounded append-window
-compactor. It drains and acknowledges legacy projection rows so the Durable
-Object's receipt and capacity windows remain bounded; it does not check out,
-read, write, commit, or push Git state. New canonical record and action-ledger
-writes do not enqueue projection rows.
+The state materializer and its append-window projection are fully retired. All
+producers were removed in the canonical-record cutover, the drain workflow was
+deleted after a week of zero-row runs, and the Durable Object drops the legacy
+`state_append_*` tables on upgrade. Canonical record and action-ledger writes go
+directly to the Worker and R2.
 
 Cluster intake is the one ownership transfer required by that decision. Its
 workflow directly publishes the still-git `jobs/` and `results/` paths under the
