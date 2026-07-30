@@ -276,6 +276,7 @@ export function runPrCloseCoverageProofModel(options: {
   mkdirSync(options.runtime.workDir, { recursive: true });
   const prefix = `${options.source.number}-${options.covering.number}`;
   const outputPath = join(options.runtime.workDir, `${prefix}.model.json`);
+  const promptPath = join(options.runtime.workDir, `${prefix}.prompt.md`);
   const prompt = buildPrCloseCoverageProofPrompt({
     source: options.source,
     covering: options.covering,
@@ -283,8 +284,17 @@ export function runPrCloseCoverageProofModel(options: {
     relationshipSignalSnippets: options.relationshipSignalSnippets,
     promptTemplate: options.runtime.promptTemplate,
   });
-  writeFileSync(join(options.runtime.workDir, `${prefix}.prompt.md`), prompt, "utf8");
+  writeFileSync(promptPath, prompt, "utf8");
   if (existsSync(outputPath)) unlinkSync(outputPath);
+  // workDir doubles as the uploaded proof-artifact tree, whose downstream
+  // validator only admits N-M.proof.json plus manifest.json — scratch files
+  // must never survive a successful proof run.
+  const readValidatedOutputAndCleanUp = (): PrCloseCoverageProofModelResult => {
+    const proof = readPrCloseCoverageProofModelOutput(outputPath);
+    unlinkSync(outputPath);
+    unlinkSync(promptPath);
+    return proof;
+  };
   const codexConfig = [codexLoginConfig(), 'approval_policy="never"'];
   if (options.runtime.serviceTier) {
     codexConfig.unshift(`service_tier="${options.runtime.serviceTier}"`);
@@ -320,7 +330,7 @@ export function runPrCloseCoverageProofModel(options: {
   if (result.status !== 0) {
     if (existsSync(outputPath)) {
       try {
-        return readPrCloseCoverageProofModelOutput(outputPath);
+        return readValidatedOutputAndCleanUp();
       } catch (error) {
         throw new Error(
           `Codex PR close coverage proof failed for #${options.source.number} with exit ${
@@ -340,7 +350,7 @@ export function runPrCloseCoverageProofModel(options: {
   if (!existsSync(outputPath)) {
     throw new Error(`Codex PR close coverage proof did not write ${outputPath}.`);
   }
-  return readPrCloseCoverageProofModelOutput(outputPath);
+  return readValidatedOutputAndCleanUp();
 }
 
 export function prCloseCoverageProofEnvelopePath(
