@@ -2514,8 +2514,10 @@ jobs:
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: ${{ steps.openclaw-token.outputs.token }}
           CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: ${{ steps.steipete-token.outputs.token || '__public__' }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           FANOUT_MODE: ${{ github.event.schedule == '41 * * * *' && 'normal-review' || (github.event.schedule == '37 */6 * * *' && 'audit' || 'hot-intake') }}
           FANOUT_LIMIT: ${{ github.event.schedule == '41 * * * *' && '12' || (github.event.schedule == '37 */6 * * *' && '12' || '20') }}
+          REVIEW_COVERAGE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
           pnpm run target-fanout -- \
@@ -2523,7 +2525,8 @@ jobs:
             --limit "$FANOUT_LIMIT" \
             --repo "$GITHUB_REPOSITORY" \
             --workflow sweep.yml \
-            --ref main
+            --ref main \
+            --publish-url "$REVIEW_COVERAGE_URL"
 
       - name: Summarize trailing weekly review coverage
         # Also runs for operator dispatches of the audit lane: the signed live
@@ -2887,9 +2890,9 @@ jobs:
           fi
           if [ "$queue_feed" = "true" ] && [ -z "$exact_item" ]; then
             # The Durable Object turns every selected item into an independent exact-review
-            # workflow. Plan a bounded feed batch here; the Worker owns the global 200/hour
+            # workflow. Plan a bounded feed batch here; the Worker owns the global 600/hour
             # admission target and queue backpressure across overlapping target sweeps.
-            batch_size="20"
+            batch_size="50"
             shard_count="1"
             min_active_shards="0"
           fi

@@ -2584,7 +2584,7 @@ test("scheduled reviews feed the durable queue instead of one-item matrix worker
   );
 
   assert.match(modeBlock, /queue_feed=.*clawsweeper_target_sweep/);
-  assert.match(modeBlock, /batch_size="20"[\s\S]*shard_count="1"/);
+  assert.match(modeBlock, /batch_size="50"[\s\S]*shard_count="1"/);
   assert.match(enqueueBlock, /repair:scheduled-review-enqueue/);
   assert.match(enqueueBlock, /Scheduled review funnel/);
   assert.match(workflow, /Review scheduled hot item/);
@@ -2845,7 +2845,7 @@ test("target review queues coalesce background work without delaying exact plann
   assert.match(planHeader, /cancel-in-progress: false/);
 });
 
-test("scheduled normal review offers a 20-item queue batch on one planner shard", () => {
+test("scheduled normal review offers a 50-item queue batch on one planner shard", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const modeBlock = workflow.slice(
     workflow.indexOf("- id: mode"),
@@ -2853,7 +2853,7 @@ test("scheduled normal review offers a 20-item queue batch on one planner shard"
   );
 
   assert.match(modeBlock, /if \[ "\$queue_feed" = "true" \] && \[ -z "\$exact_item" \]; then/);
-  assert.match(modeBlock, /batch_size="20"[\s\S]*shard_count="1"/);
+  assert.match(modeBlock, /batch_size="50"[\s\S]*shard_count="1"/);
   assert.match(modeBlock, /min_active_shards="0"/);
 });
 
@@ -3002,6 +3002,7 @@ test("sweep issue and PR event reviews and target fanout avoid storm amplificati
     /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '41 \* \* \* \*' && '12' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '20'\) \}\}/,
   );
   assert.match(fanoutBlock, /Summarize trailing weekly review coverage/);
+  assert.match(fanoutBlock, /--publish-url "\$REVIEW_COVERAGE_URL"/);
   assert.match(fanoutBlock, /target-fanout -- coverage --window-days 7/);
   assert.match(fanoutBlock, /GITHUB_STEP_SUMMARY/);
 });

@@ -139,6 +139,12 @@ manual workflow inputs. Scheduled fanout uses:
 - normal review: `41 * * * *`, 12 target repositories per cursor step
 - audit: `37 */6 * * *`, 12 target repositories per cursor step
 
+Normal fanout refreshes the same signed live-open inventory consumed by
+`GET /api/review-coverage`, skips repositories with no open items, and visits
+repositories whose live count exceeds their canonical-record count before
+tracked-only repositories. The cursor still rotates within that bounded set;
+one large repository does not receive multiple slots in one fanout step.
+
 The six-hour audit fanout also writes a GitHub Actions summary with canonical
 open-item reports reviewed in the trailing seven days versus batched live open
 issue and PR totals across the complete dynamic inventory.
@@ -241,17 +247,17 @@ Current defaults:
 
 - exact event review: 1 shard, 1 item
 - exact manual hot intake: 1 shard, 1 item
-- scheduled hot intake and normal backfill: select up to 20 due items per target
+- scheduled hot intake and normal backfill: select up to 50 due items per target
   cycle, then enqueue each item through the durable exact-review queue; every
   admitted item receives its own parallel workflow
-- total review admission target: 200 items/hour across the fleet; organic work
+- total review admission target: 600 items/hour across the fleet; organic work
   consumes the budget first and scheduled backfill fills the remainder, split
-  35% hot intake and 65% normal backfill, with a 50-item burst
+  35% hot intake and 65% normal backfill, with a 120-item burst
 - review admission and pressure are computed independently from publication;
   top-level queue health describes reviews while `lanes.publication` retains
   publication backlog, retry, DLQ, and health telemetry
 - fleet fanout: 20 hot targets every 15 minutes and 12 normal targets hourly;
-  each target cycle can offer up to 20 due items to the shared admission budget
+  each target cycle can offer up to 50 due items to the shared admission budget
 - manual broad hot intake: up to 44 shards when quiet
 - manual normal backfill: defaults to 89 shards, batch size 3, and scans up to
   250 GitHub pages unless overridden
@@ -287,9 +293,10 @@ because they may rebase and push generated records.
 
 Normal backfill runs every 5 minutes for `openclaw/openclaw`. Its planner
 serializes per target repository, selects globally before sharding, and offers
-the oldest due candidates to the durable queue. Queue admission is fleet-wide,
+never-reviewed candidates before the oldest due tracked candidates to the
+durable queue. Queue admission is fleet-wide,
 so overlapping core and fanout cycles fill only the residual of the configured
-200/hour model-spend target after organic review demand.
+600/hour model-spend target after organic review demand.
 
 The manual quiet-system ceiling is not a promise that every operator run dispatches
 that many shards. The `mode` step checks active repair workers, exact-item sweep
@@ -319,19 +326,20 @@ run-summary funnel for selected, attempted, enqueued, deduped, shed, and deferre
 items. The queue exposes the configured rate, burst, and currently available
 token balance under `scheduled_feed` in `GET /api/exact-review-queue`. It also
 exposes backpressure and scheduled-rate shed counts separately so an operator
-can distinguish a full review queue from intentional 200/hour pacing.
+can distinguish a full review queue from intentional 600/hour pacing.
 The producer probes that field before its first enqueue and fails closed while
 an older Worker is still deployed, preventing a workflow-first rollout from
 bypassing the rate limiter.
 
-At the configured target, the installation-token estimate is
-`200 reviews/hour * 30 calls/review = 6,000 calls/hour`. That is half of the
-roughly 12,000-call or 400-review/hour ceiling, leaving equivalent headroom for
-planning, retries, publication, and traffic variance. At a 4.1-minute mean
-service time, 200/hour needs about `200 * 4.1 / 60 = 13.7` concurrent review
-workers, well below the 120 per-target and 128 global claim limits. Model usage
-is nevertheless about five times a 40-review/hour baseline; lower
-`EXACT_REVIEW_TARGET_RATE_PER_HOUR` to dial spend down.
+Each hourly normal-fanout step can offer
+`50 items/target * 12 targets = 600 items/hour`. The direct five-minute hot and
+normal schedules can each offer `50 * 12 = 600 items/hour`, so either lane has
+enough candidates to keep its token bucket fed despite dedupe or uneven fleet
+distribution. At a 4.1-minute mean service time, 600/hour needs about
+`600 * 4.1 / 60 = 41` concurrent review workers, below the 120 per-target and
+128 global claim limits. The target rate, burst, and pending limit are explicit
+spend and GitHub API dials; lower them together when sustained traffic warrants
+more headroom.
 
 On saturated queues, normal planning reads the complete bounded open-item scan
 before selecting candidates. For the current largest repository this is about
@@ -382,13 +390,15 @@ older issue backlog forever. The normal scheduler cycles through:
 - weekly older issues
 
 Within each bucket, earlier due times and older reviews win before item number.
-The weekly coverage lane becomes eligible after six days of review age, then
-selects the oldest latest-review timestamp (or creation time when never
-reviewed) across all buckets before hot-item churn. Normal planning completes
-its bounded open-item scan before applying that ordering, so a saturated
-item-number prefix cannot hide older review timestamps. The weighted mix
-applies to remaining capacity; the extra day is operational headroom before
-the seven-day freshness deadline.
+The live open-item scan is compared with the canonical record index first.
+Items with no canonical record consume capacity before any re-review. Within
+that never-reviewed cohort, six-day coverage ordering and the existing weighted
+bucket mix still apply. Once first-review candidates are exhausted, tracked
+items enter the six-day coverage lane in oldest-`reviewed_at` order across all
+buckets before hot-item churn. Normal planning completes its bounded scan before
+applying that ordering, so a saturated item-number prefix cannot hide either
+untracked items or older review timestamps. The extra day is operational
+headroom before the seven-day freshness deadline.
 
 ## Planning
 

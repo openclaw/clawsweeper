@@ -147,6 +147,23 @@ test("weekly coverage becomes due at six days to preserve deadline headroom", ()
   assert.equal(shouldReviewItem(oldIssue, review, reviewedAt + 6 * 86_400_000, "current"), true);
 });
 
+test("never-reviewed items are due while fresh tracked items stay excluded", () => {
+  const now = Date.parse("2026-07-30T12:00:00Z");
+  const candidate = item({
+    createdAt: "2026-07-29T12:00:00Z",
+    updatedAt: "2026-07-29T12:00:00Z",
+  });
+  const freshReview = {
+    reviewedAt: "2026-07-30T11:00:00Z",
+    itemUpdatedAt: "2026-07-29T12:00:00Z",
+    reviewStatus: "complete",
+    reviewPolicy: "current",
+  };
+
+  assert.equal(shouldReviewItem(candidate, null, now, "current"), true);
+  assert.equal(shouldReviewItem(candidate, freshReview, now, "current"), false);
+});
+
 test("scheduler keeps ambiguous post-sync activity due after review", () => {
   const reviewedAt = "2026-04-30T12:52:57Z";
   const review = {
@@ -467,6 +484,7 @@ test("normal scheduler prioritizes oldest weekly-coverage timestamps before hot 
         kind: "issue",
         createdAt: "2026-06-13T00:00:00Z",
       }),
+      review: { reviewStatus: "complete", reviewedAt: "2026-06-08T11:00:00Z" },
       bucket: "hot_issue",
       priority: 0,
       reviewedAt: Date.parse("2026-06-08T11:00:00Z"),
@@ -478,6 +496,7 @@ test("normal scheduler prioritizes oldest weekly-coverage timestamps before hot 
         kind: "pull_request",
         createdAt: "2026-06-01T00:00:00Z",
       }),
+      review: { reviewStatus: "complete", reviewedAt: "2026-06-07T12:00:00Z" },
       bucket: "daily_pull_request",
       priority: 3,
       reviewedAt: Date.parse("2026-06-07T12:00:00Z"),
@@ -489,6 +508,7 @@ test("normal scheduler prioritizes oldest weekly-coverage timestamps before hot 
         kind: "issue",
         createdAt: "2026-05-01T00:00:00Z",
       }),
+      review: { reviewStatus: "complete", reviewedAt: "2026-06-06T12:00:00Z" },
       bucket: "weekly_issue",
       priority: 6,
       reviewedAt: Date.parse("2026-06-06T12:00:00Z"),
@@ -499,34 +519,35 @@ test("normal scheduler prioritizes oldest weekly-coverage timestamps before hot 
   assert.deepEqual(selectedNumbers(due, 3, now), [3, 2, 1]);
 });
 
-test("weekly coverage renews overdue canonical records before growing the unseen backlog", () => {
+test("normal scheduling ranks untracked items above stale records, then oldest review first", () => {
   const now = Date.parse("2026-06-14T12:00:00Z");
   const due = [
     {
-      item: item({ number: 1, createdAt: "2020-01-01T00:00:00Z" }),
-      bucket: "weekly_issue",
-      priority: 6,
+      item: item({ number: 1, createdAt: "2026-06-13T00:00:00Z" }),
+      bucket: "hot_issue",
+      priority: 0,
       reviewedAt: 0,
       nextDueAt: 0,
     },
     {
-      item: item({ number: 2, createdAt: "2021-01-01T00:00:00Z" }),
-      bucket: "weekly_issue",
-      priority: 6,
-      reviewedAt: 0,
-      nextDueAt: 0,
-    },
-    {
-      item: item({ number: 3, createdAt: "2026-01-01T00:00:00Z" }),
+      item: item({ number: 2, createdAt: "2026-01-01T00:00:00Z" }),
       review: { reviewStatus: "complete", reviewedAt: "2026-06-07T12:00:00Z" },
       bucket: "weekly_issue",
       priority: 6,
       reviewedAt: Date.parse("2026-06-07T12:00:00Z"),
       nextDueAt: 0,
     },
+    {
+      item: item({ number: 3, createdAt: "2026-01-01T00:00:00Z" }),
+      review: { reviewStatus: "complete", reviewedAt: "2026-06-06T12:00:00Z" },
+      bucket: "weekly_issue",
+      priority: 6,
+      reviewedAt: Date.parse("2026-06-06T12:00:00Z"),
+      nextDueAt: 0,
+    },
   ];
 
-  assert.deepEqual(selectedNumbers(due, 2, now), [3, 1]);
+  assert.deepEqual(selectedNumbers(due, 3, now), [1, 3, 2]);
 });
 
 test("weekly freshness preselection still fills remaining scheduler capacity", () => {

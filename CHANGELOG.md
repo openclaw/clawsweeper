@@ -10,8 +10,8 @@ checkpoint, and status-only commits are intentionally omitted.
 ### Changed
 
 - Isolated review admission, pressure, and backpressure accounting from the publication lane so stale publication work cannot throttle review throughput, made top-level queue health review-specific, and added durable shed counters by reason.
-- Made exact-review reservation races and mid-generation supersession successful no-ops with bounded jittered retries, surfaced provider throttling separately from content/output failures, renewed overdue canonical records ahead of unseen backlog, and based dashboard coverage on signed live open-item inventory with explicit expired, untracked, protected, and unmanaged cohorts.
-- Routed scheduled review through the durable exact-review queue, raised each target plan from one to 20 candidates, and added oldest-age funnel telemetry plus a fleet-wide 200-review/hour admission budget with duplicate, backlog, and lease-safe backpressure.
+- Made exact-review reservation races and mid-generation supersession successful no-ops with bounded jittered retries, surfaced provider throttling separately from content/output failures, prioritized never-reviewed open items before oldest-reviewed canonical refreshes, and based dashboard coverage on signed live open-item inventory with explicit expired, untracked, protected, and unmanaged cohorts.
+- Routed scheduled review through the durable exact-review queue, raised each target plan from one to 50 candidates, and added oldest-age funnel telemetry plus a fleet-wide 600-review/hour admission budget with duplicate, backlog, and lease-safe backpressure.
 - Scoped per-target canonical record hydration to the selected repository and skipped unused ledger/assets downloads in workflow lanes, preventing exact-item review publication from collapsing under concurrent full-fleet state setup.
 - Doubled exact-review admission to 128 global and 120 per target with a separate 194-slot Actions budget that preserves verdict publication at full review load, doubled scheduled fleet review fanout and canonical publication batch preparation, prioritized six-day oldest-review coverage before hot-item churn, exposed a six-hour fleet coverage summary, and raised automatic apply to 40 closes with proportional scan/runtime budgets without changing close eligibility.
 - Completed the Cloudflare-canonical state migration: records publish only to the Durable Object, action ledgers and assets publish only to R2, canonical-only workflows no longer check out `clawsweeper-state`, the former materializer only compacts the legacy append window, and the remaining `jobs`/`results`/`notifications`/apply-report Git writers use the Durable Object coordinator without Git lease refs or rebuild recovery.
@@ -152,6 +152,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Prevented weekly coverage from endlessly refreshing tracked records while never-reviewed live items remained invisible behind a full candidate batch; normal fanout now refreshes and consumes the signed live inventory, skips empty repositories, and prioritizes repositories with untracked work.
 - Reconciled apply backlogs now publish record tuples in bounded batches, re-verify authority-superseded canonical revisions without weakening source/verdict guards, and always carry an explicit coverage-proof artifact manifest under reduced state hydration.
 - Restored close-backlog throughput by keeping apply jobs off the enormous immutable state-blob hydration path, and isolated operator-dispatched sweeps from background concurrency coalescing.
 

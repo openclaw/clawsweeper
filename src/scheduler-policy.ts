@@ -51,9 +51,11 @@ export const WEEKLY_COVERAGE_REVIEW_DAYS = 6;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const BULK_FILED_LABEL = "clawsweeper:bulk-filed";
 
+function isBulkFiled(item: SchedulerItem): boolean {
+  return item.labels?.some((label) => label.toLowerCase() === BULK_FILED_LABEL) ?? false;
+}
+
 function bulkFiledComparison(left: SchedulerDueCandidate, right: SchedulerDueCandidate): number {
-  const isBulkFiled = (item: SchedulerItem): boolean =>
-    item.labels?.some((label) => label.toLowerCase() === BULK_FILED_LABEL) ?? false;
   return Number(isBulkFiled(left.item)) - Number(isBulkFiled(right.item));
 }
 
@@ -303,10 +305,34 @@ export function selectDueCandidates<
     selected.push(candidate);
   };
 
-  // Weekly freshness is the outer SLO. Start the coverage lane one day before
-  // the deadline, then select the oldest last-review timestamps across every
-  // cadence bucket before spending capacity on hot-item churn.
-  const weeklyCoverageDue = due
+  const takeWeighted = (candidates: Array<SchedulerDueCandidate<ItemT, ReviewT>>): void => {
+    const cohort = new Map<SchedulerBucket, Array<SchedulerDueCandidate<ItemT, ReviewT>>>();
+    for (const [bucket] of SCHEDULER_BUCKET_WEIGHTS) cohort.set(bucket, []);
+    for (const candidate of candidates) cohort.get(candidate.bucket)?.push(candidate);
+    for (const bucketCandidates of cohort.values()) bucketCandidates.sort(compare);
+    while (selected.length < capacity) {
+      const before = selected.length;
+      for (const [bucket, weight] of SCHEDULER_BUCKET_WEIGHTS) {
+        const bucketCandidates = cohort.get(bucket);
+        if (!bucketCandidates?.length) continue;
+        for (
+          let index = 0;
+          index < weight && bucketCandidates.length && selected.length < capacity;
+          index += 1
+        ) {
+          take(bucketCandidates.shift());
+        }
+      }
+      if (selected.length === before) break;
+    }
+  };
+
+  // A missing canonical record means the live GitHub item has never had a
+  // review. Fill first-review coverage before renewing tracked records, while
+  // retaining the weekly-coverage and weighted bucket ordering within that
+  // cohort.
+  const neverReviewed = due.filter((candidate) => candidate.review === null);
+  const neverReviewedCoverageDue = neverReviewed
     .filter(
       (candidate) =>
         weeklyCoverageReferenceMs(candidate) + WEEKLY_COVERAGE_REVIEW_DAYS * DAY_MS <= now,
@@ -317,13 +343,29 @@ export function selectDueCandidates<
         weeklyCoverageReferenceMs(left) - weeklyCoverageReferenceMs(right) ||
         compare(left, right),
     );
-  // A never-reviewed backlog can contain years-old items. If all of those sort
-  // ahead of an already-tracked record, the rolling coverage set never gets
-  // refreshed even though the scheduler is busy. Renew overdue canonical
-  // records first; unseen items still consume every remaining coverage slot.
-  for (const candidate of weeklyCoverageDue) {
-    if (candidate.review != null) take(candidate);
-  }
+  for (const candidate of neverReviewedCoverageDue) take(candidate);
+  takeWeighted(
+    neverReviewed.filter(
+      (candidate) =>
+        !selectedKeys.has(schedulerItemKey(candidate.item.repo, candidate.item.number)),
+    ),
+  );
+
+  // Weekly freshness remains the outer SLO for canonical records. Start the
+  // coverage lane one day before the deadline, then select the oldest
+  // last-review timestamps across every cadence bucket before hot-item churn.
+  const weeklyCoverageDue = due
+    .filter(
+      (candidate) =>
+        candidate.review !== null &&
+        weeklyCoverageReferenceMs(candidate) + WEEKLY_COVERAGE_REVIEW_DAYS * DAY_MS <= now,
+    )
+    .sort(
+      (left, right) =>
+        bulkFiledComparison(left, right) ||
+        weeklyCoverageReferenceMs(left) - weeklyCoverageReferenceMs(right) ||
+        compare(left, right),
+    );
   for (const candidate of weeklyCoverageDue) take(candidate);
   for (const [bucket, candidates] of buckets) {
     buckets.set(

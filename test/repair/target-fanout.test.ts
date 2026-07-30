@@ -7,11 +7,13 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  SCHEDULED_REVIEW_PLAN_BATCH_SIZE,
   defaultLimit,
   filterEligibleRepositories,
   publishReviewCoverageInventory,
   renderFleetReviewCoverage,
   reviewCoverageInventorySnapshot,
+  reviewPlanningRepositories,
   selectRepositories,
   summarizeFleetReviewCoverage,
   type InventoryConfig,
@@ -32,6 +34,73 @@ test("target fanout defaults match the scheduled cursor batch sizes", () => {
   assert.equal(defaultLimit("hot-intake"), "20");
   assert.equal(defaultLimit("normal-review"), "12");
   assert.equal(defaultLimit("audit"), "12");
+});
+
+test("scheduled normal fanout can offer the configured hourly review target", () => {
+  const wrangler = readFileSync("dashboard/wrangler.toml", "utf8");
+  const configuredRate = Number(
+    wrangler.match(/^EXACT_REVIEW_TARGET_RATE_PER_HOUR = "(\d+)"$/m)?.[1],
+  );
+  const offersPerHour = SCHEDULED_REVIEW_PLAN_BATCH_SIZE * Number(defaultLimit("normal-review"));
+
+  assert.equal(configuredRate, 600);
+  assert.equal(SCHEDULED_REVIEW_PLAN_BATCH_SIZE, 50);
+  assert.equal(offersPerHour, 600);
+  assert.ok(offersPerHour >= configuredRate);
+});
+
+test("normal fanout prioritizes repositories with untracked live items and skips empty repos", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-planning-inventory-"));
+  const repositories = [
+    { targetRepo: "openclaw/empty", defaultBranch: "main", visibility: "PUBLIC" },
+    { targetRepo: "openclaw/huge", defaultBranch: "main", visibility: "PUBLIC" },
+    { targetRepo: "openclaw/tracked", defaultBranch: "main", visibility: "PUBLIC" },
+    { targetRepo: "steipete/small", defaultBranch: "main", visibility: "PUBLIC" },
+  ];
+  try {
+    const hugeItems = join(root, "openclaw-huge", "items");
+    const trackedItems = join(root, "openclaw-tracked", "items");
+    mkdirSync(hugeItems, { recursive: true });
+    mkdirSync(trackedItems, { recursive: true });
+    writeFileSync(join(hugeItems, "1.md"), "---\nreview_status: complete\n---\n");
+    writeFileSync(join(trackedItems, "1.md"), "---\nreview_status: complete\n---\n");
+    writeFileSync(join(trackedItems, "2.md"), "---\nreview_status: complete\n---\n");
+
+    assert.deepEqual(
+      reviewPlanningRepositories({
+        repositories,
+        recordsRoot: root,
+        openCounts: new Map([
+          ["openclaw/empty", { issues: 0, pullRequests: 0 }],
+          ["openclaw/huge", { issues: 100, pullRequests: 1 }],
+          ["openclaw/tracked", { issues: 1, pullRequests: 1 }],
+          ["steipete/small", { issues: 1, pullRequests: 0 }],
+        ]),
+      }),
+      [
+        {
+          ...repositories[1],
+          openItems: 101,
+          trackedRecords: 1,
+          untrackedOpen: 100,
+        },
+        {
+          ...repositories[3],
+          openItems: 1,
+          trackedRecords: 0,
+          untrackedOpen: 1,
+        },
+        {
+          ...repositories[2],
+          openItems: 2,
+          trackedRecords: 2,
+          untrackedOpen: 0,
+        },
+      ],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("target fanout summarizes trailing weekly coverage from canonical open records", () => {
@@ -402,8 +471,8 @@ process.exit(2);
   assert.deepEqual(
     calls.filter((call) => call.args[0] === "api").map((call) => call.args.join(" ")),
     [
-      "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=openclaw/b -f client_payload[target_branch]=main -f client_payload[hot_intake]=true -f client_payload[batch_size]=20 -f client_payload[shard_count]=1",
-      "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=steipete/a -f client_payload[target_branch]=master -f client_payload[hot_intake]=true -f client_payload[batch_size]=20 -f client_payload[shard_count]=1",
+      "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=openclaw/b -f client_payload[target_branch]=main -f client_payload[hot_intake]=true -f client_payload[batch_size]=50 -f client_payload[shard_count]=1",
+      "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=steipete/a -f client_payload[target_branch]=master -f client_payload[hot_intake]=true -f client_payload[batch_size]=50 -f client_payload[shard_count]=1",
     ],
   );
 });

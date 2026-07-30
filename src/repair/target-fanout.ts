@@ -65,6 +65,12 @@ export interface ReviewCoverageInventorySnapshot {
   }>;
 }
 
+export interface ReviewPlanningRepository extends SelectedRepository {
+  openItems: number;
+  trackedRecords: number;
+  untrackedOpen: number;
+}
+
 interface SelectionResult {
   repositories: SelectedRepository[];
   cursor: number;
@@ -84,7 +90,7 @@ interface FanoutOptions {
 
 const DEFAULT_CURSOR_DIR = join(repoRoot(), "results", "target-fanout-cursors");
 const PUBLIC_INVENTORY_TOKEN = "__public__";
-export const SCHEDULED_REVIEW_PLAN_BATCH_SIZE = 20;
+export const SCHEDULED_REVIEW_PLAN_BATCH_SIZE = 50;
 
 export async function runTargetFanout(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
@@ -121,14 +127,6 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
     process.stdout.write(renderFleetReviewCoverage(coverage));
     return;
   }
-  const selection = selectRepositories(repositories, {
-    limit: options.limit,
-    cursor: readCursor(options.cursorPath),
-  });
-
-  const commands = selection.repositories.map((repository) =>
-    workflowDispatchArgs(repository, options),
-  );
 
   if (args._[0] === "list") {
     process.stdout.write(
@@ -136,6 +134,32 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
     );
     return;
   }
+
+  let planningRepositories: readonly SelectedRepository[] = repositories;
+  if (mode === "normal-review") {
+    const openCounts = loadRepositoryOpenCounts(repositories);
+    const now = Date.now();
+    const publishUrl = stringArg(args["publish-url"], "");
+    if (publishUrl) {
+      await publishReviewCoverageInventory({
+        baseUrl: publishUrl,
+        webhookSecret: stringValue(
+          process.env.CLAWSWEEPER_WEBHOOK_SECRET,
+          "CLAWSWEEPER_WEBHOOK_SECRET",
+        ),
+        snapshot: reviewCoverageInventorySnapshot(repositories, openCounts, now),
+      });
+    }
+    planningRepositories = reviewPlanningRepositories({ repositories, openCounts });
+  }
+  const selection = selectRepositories(planningRepositories, {
+    limit: options.limit,
+    cursor: readCursor(options.cursorPath),
+  });
+
+  const commands = selection.repositories.map((repository) =>
+    workflowDispatchArgs(repository, options),
+  );
 
   if (args._[0] === "plan") {
     process.stdout.write(`${JSON.stringify({ ...selection, commands }, null, 2)}\n`);
@@ -243,6 +267,44 @@ export function selectRepositories(
     cursor: (start + limit) % repositories.length,
     total: repositories.length,
   };
+}
+
+export function reviewPlanningRepositories(options: {
+  repositories: readonly SelectedRepository[];
+  openCounts: ReadonlyMap<string, RepositoryOpenCounts>;
+  recordsRoot?: string;
+}): ReviewPlanningRepository[] {
+  const recordsRoot = options.recordsRoot ?? join(repoRoot(), "records");
+  return options.repositories
+    .map((repository) => {
+      const counts = options.openCounts.get(repository.targetRepo) ?? {
+        issues: 0,
+        pullRequests: 0,
+      };
+      const openItems = counts.issues + counts.pullRequests;
+      const itemsDir = join(
+        recordsRoot,
+        repository.targetRepo.toLowerCase().replace("/", "-"),
+        "items",
+      );
+      const trackedRecords = existsSync(itemsDir)
+        ? readdirSync(itemsDir, { withFileTypes: true }).filter(
+            (entry) => entry.isFile() && entry.name.endsWith(".md"),
+          ).length
+        : 0;
+      return {
+        ...repository,
+        openItems,
+        trackedRecords,
+        untrackedOpen: Math.max(0, openItems - trackedRecords),
+      };
+    })
+    .filter((repository) => repository.openItems > 0)
+    .sort(
+      (left, right) =>
+        Number(right.untrackedOpen > 0) - Number(left.untrackedOpen > 0) ||
+        left.targetRepo.localeCompare(right.targetRepo),
+    );
 }
 
 function listOwnerRepositories(owner: string): ListedRepository[] {

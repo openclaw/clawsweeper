@@ -153,7 +153,7 @@ unset, empty, or invalid values use the defaults.
 | `CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS`  | 7200000 |
 
 Only manual normal review, manual hot intake, and commit review use this pressure
-multiplier. Scheduled review uses the queue's 300-item soft limit and 200/hour
+multiplier. Scheduled review uses the queue's 600-item soft limit and 600/hour
 admission target. Repair, assist, issue implementation, cluster repair, and
 exact-item review keep their existing priority budgets.
 
@@ -206,14 +206,14 @@ on the lease claim tuple, so they cannot terminate the sole valid owner. An olde
 unclaimed workflow cannot pass the replacement lease tuple and exits before
 review compute. Explicit command work and publication work bypass the delay.
 When pending depth reaches
-`EXACT_REVIEW_PENDING_SOFT_LIMIT` (300 by default), new recovery and scheduled
+`EXACT_REVIEW_PENDING_SOFT_LIMIT` (600 by default), new recovery and scheduled
 feed work is shed; this threshold counts review work only, so publication
 backlog cannot consume review admission capacity. Existing items, webhook
 events, commands, and publications remain admitted. The queue reports shed
 counts under `lanes.review.shed_reasons_since_reset` and the rolling flow by
 `backpressure` versus `scheduled_rate`; pre-migration totals remain
-`unattributed`. All newly queued review work debits a durable 200-review/hour
-budget with a 50-item burst. Organic work is always admitted and consumes the
+`unattributed`. All newly queued review work debits a durable 600-review/hour
+budget with a 120-item burst. Organic work is always admitted and consumes the
 budget first; scheduled work fills the remainder and is split 35% hot intake and
 65% normal backfill so hot churn cannot starve oldest-first coverage. Re-offering an item
 that is already pending, dispatching, or leased is a semantic dedupe: it does not
