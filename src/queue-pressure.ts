@@ -11,7 +11,6 @@ export type ExactReviewQueuePressure =
       ok: true;
       pendingCount: number;
       oldestPendingAgeMs: number;
-      publicationStatus?: "degraded" | "critical";
     }
   | {
       ok: false;
@@ -40,19 +39,10 @@ export async function fetchExactReviewQueuePressure({
 
     const body: unknown = await response.json();
     if (!isRecord(body)) return malformedPressure();
-    // Review backlog controls the normal capacity thresholds. Publication
-    // health can still elevate pressure because producing decisions faster
-    // than they can be published compounds durable queue debt.
+    // Review and publication have independent capacity and durable ownership.
+    // Only review backlog may throttle review producers.
     const reviewLane =
       isRecord(body.lanes) && isRecord(body.lanes.review) ? body.lanes.review : null;
-    const publicationLane =
-      isRecord(body.lanes) && isRecord(body.lanes.publication) ? body.lanes.publication : null;
-    const publicationHealth =
-      publicationLane && isRecord(publicationLane.health) ? publicationLane.health : null;
-    const publicationStatus =
-      publicationHealth?.status === "critical" || publicationHealth?.status === "degraded"
-        ? publicationHealth.status
-        : undefined;
     const pendingCount =
       reviewLane && isNonNegativeInteger(reviewLane.pending) ? reviewLane.pending : body.pending;
     const oldestPendingAgeSeconds =
@@ -65,7 +55,6 @@ export async function fetchExactReviewQueuePressure({
         ok: true,
         pendingCount,
         oldestPendingAgeMs: 0,
-        ...(publicationStatus ? { publicationStatus } : {}),
       };
     }
     // A null age with a positive backlog is inconsistent data — fail open
@@ -78,7 +67,6 @@ export async function fetchExactReviewQueuePressure({
       ok: true,
       pendingCount,
       oldestPendingAgeMs,
-      ...(publicationStatus ? { publicationStatus } : {}),
     };
   } catch (error) {
     return {
@@ -95,7 +83,6 @@ export function queuePressureLevel(pressure: ExactReviewQueuePressure): QueuePre
   // Background admission must retain a bounded capacity until the next healthy
   // probe, while exact-item work keeps its independent interactive reservation.
   if (!pressure.ok) return "unknown";
-  if (pressure.publicationStatus === "critical") return "hard";
   const hardPending = envThreshold(
     "CLAWSWEEPER_QUEUE_PRESSURE_HARD_PENDING",
     QUEUE_PRESSURE_HARD_PENDING,
@@ -107,8 +94,6 @@ export function queuePressureLevel(pressure: ExactReviewQueuePressure): QueuePre
   if (pressure.pendingCount >= hardPending || pressure.oldestPendingAgeMs >= hardAgeMs) {
     return "hard";
   }
-  if (pressure.publicationStatus === "degraded") return "soft";
-
   const softPending = envThreshold(
     "CLAWSWEEPER_QUEUE_PRESSURE_SOFT_PENDING",
     QUEUE_PRESSURE_SOFT_PENDING,

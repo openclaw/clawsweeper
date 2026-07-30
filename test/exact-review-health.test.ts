@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  elevateExactReviewPressureForPublication,
   summarizeExactReviewHandoff,
+  summarizeExactReviewPublicationHealth,
   summarizeExactReviewPressure,
 } from "../dashboard/exact-review-health.ts";
 
@@ -272,37 +272,16 @@ test("exact-review pressure preserves non-dispatchable and unknown states", () =
   );
 });
 
-test("publication health elevates an otherwise idle review pressure signal", () => {
-  const idle = summarizeExactReviewPressure({
-    pending: 1,
-    readyPending: 1,
-    admissiblePending: 1,
-    dispatching: 0,
-    leased: 1,
-    capacity: 64,
-    dispatcherState: "active",
-    handoffStatus: "healthy",
-  });
-
-  assert.deepEqual(elevateExactReviewPressureForPublication(idle, { status: "degraded" }), {
-    ...idle,
-    status: "congested",
-    reason: "publication_degraded",
-  });
-  assert.deepEqual(elevateExactReviewPressureForPublication(idle, { status: "critical" }), {
-    ...idle,
-    status: "saturated",
-    reason: "publication_critical",
-  });
-  assert.deepEqual(elevateExactReviewPressureForPublication(idle, { status: "healthy" }), idle);
-
-  const saturated = {
-    ...idle,
-    status: "saturated" as const,
-    reason: "capacity_full_with_backlog" as const,
-  };
-  assert.deepEqual(
-    elevateExactReviewPressureForPublication(saturated, { status: "critical" }),
-    saturated,
+test("idle publication activity is healthy regardless of retired writer history", () => {
+  const idle = summarizeExactReviewPublicationHealth(
+    { pending: 0, active: 0, parked: 0, oldest_pending_age_seconds: null },
+    { last_15_minutes: { net_drain_rate_per_hour: -100 } },
   );
+  assert.deepEqual(idle, { status: "idle", reason: null });
+
+  const delayed = summarizeExactReviewPublicationHealth(
+    { pending: 1, active: 0, parked: 0, oldest_pending_age_seconds: 3_601 },
+    { last_15_minutes: { net_drain_rate_per_hour: 10 } },
+  );
+  assert.deepEqual(delayed, { status: "degraded", reason: "oldest_pending_over_1h" });
 });

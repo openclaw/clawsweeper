@@ -9787,11 +9787,7 @@ function renderExactReviewHandoff(queue) {
   const pressureStatus = ["idle", "congested", "saturated", "unknown"].includes(pressure?.status)
     ? pressure.status
     : "unknown";
-  const pressureLabel = pressure?.reason === "publication_critical"
-    ? "publication critical"
-    : pressure?.reason === "publication_degraded"
-      ? "publication degraded"
-      : "pressure " + pressureStatus;
+  const pressureLabel = "pressure " + pressureStatus;
   const labels = {
     pending: ["Pending", "waiting for admission"],
     dispatching: ["Dispatching", "waiting for run claim"],

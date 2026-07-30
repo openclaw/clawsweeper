@@ -874,7 +874,7 @@ test("queue batch claim defaults off and additive schema keeps the legacy versio
   assert.equal(stats.lanes.publication.batches.leased, 0);
 });
 
-test("queue pressure cannot stay idle while publication health is critical", async () => {
+test("critical publication health does not override review pressure", async () => {
   const originalNow = Date.now;
   let now = 1_000_000;
   Date.now = () => now;
@@ -888,8 +888,8 @@ test("queue pressure cannot stay idle while publication health is critical", asy
       status: "critical",
       reason: "oldest_pending_over_6h",
     });
-    assert.equal(stats.pressure.status, "saturated");
-    assert.equal(stats.pressure.reason, "publication_critical");
+    assert.equal(stats.pressure.status, "idle");
+    assert.equal(stats.pressure.reason, "no_ready_backlog");
   } finally {
     Date.now = originalNow;
   }

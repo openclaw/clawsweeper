@@ -1869,19 +1869,25 @@ test("exact-review queue sheds only new recovery work above the pending soft lim
   const stats = await (
     await restarted.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
   ).json();
-  assert.equal(stats.pending, 4);
+  assert.equal(stats.pending, 3);
   assert.equal(stats.shed_since_reset, 3);
-  assert.equal(stats.handoff_health.pending_depth, 4);
+  assert.equal(stats.handoff_health.pending_depth, 3);
   assert.equal(stats.handoff_health.shed_since_reset, 3);
   assert.equal(stats.lanes.review.pending_depth, 3);
   assert.equal(stats.lanes.review.shed_since_reset, 3);
   assert.equal(stats.lanes.review.enqueued_total, 3);
+  assert.deepEqual(stats.lanes.review.shed_reasons_since_reset, {
+    backpressure: 3,
+    scheduled_rate: 0,
+    unattributed: 0,
+  });
   assert.deepEqual(stats.lanes.review.flow.last_15_minutes, {
     window_minutes: 15,
     arrival: 6,
     successful: 0,
     retried: 0,
     shed: 3,
+    shed_reasons: { backpressure: 3, scheduled_rate: 0 },
     arrival_rate_per_hour: 24,
     successful_rate_per_hour: 0,
     retried_rate_per_hour: 0,
@@ -1998,6 +2004,46 @@ test("scheduled review feed stops at the pending soft limit", async () => {
     buildExactReviewQueueRequest("scheduled-pending-2", 811, "scheduled_hot_intake"),
   );
   assert.deepEqual(await shed.json(), { ok: true, shed: true, reason: "backpressure" });
+});
+
+test("publication backlog does not consume the review pending soft limit", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    { EXACT_REVIEW_PENDING_SOFT_LIMIT: "1", EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "600000" },
+  );
+  const publication = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "publication-before-review-limit",
+      812,
+      "exact_review_artifact_publish",
+      "issue",
+      undefined,
+      exactReviewPublicationOverrides(812, "8120"),
+    ),
+  );
+  assert.equal((await publication.json()).queued, true);
+
+  const admitted = await queue.fetch(
+    buildExactReviewQueueRequest("scheduled-with-publication-backlog", 813, "scheduled_hot_intake"),
+  );
+  assert.equal((await admitted.json()).queued, true);
+
+  const shed = await queue.fetch(
+    buildExactReviewQueueRequest("scheduled-over-review-limit", 814, "scheduled_hot_intake"),
+  );
+  assert.deepEqual(await shed.json(), { ok: true, shed: true, reason: "backpressure" });
+
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.pending, 1);
+  assert.equal(stats.lanes.publication.pending, 1);
+  assert.deepEqual(stats.lanes.review.shed_reasons_since_reset, {
+    backpressure: 1,
+    scheduled_rate: 0,
+    unattributed: 0,
+  });
 });
 
 test("exact-review queue does not count work for a disabled target", async () => {
@@ -3068,6 +3114,45 @@ test("exact-review queue admits and wakes up to 24 publishers", () => {
   );
 });
 
+test("publish-keyed backlog cannot block review admission from filling capacity", () => {
+  const now = 1_000_000;
+  const publication = {
+    key: "openclaw/openclaw#1@publish:100:1",
+    state: "pending",
+    createdAt: now - 60_000,
+    updatedAt: now - 60_000,
+    nextAttemptAt: now,
+    attempts: 0,
+    revision: 1,
+    decision: {
+      sourceAction: "exact_review_artifact_publish",
+      targetRepo: "openclaw/openclaw",
+      itemNumber: 1,
+    },
+  };
+  const reviews = Array.from({ length: 200 }, (_, index) => ({
+    key: `openclaw/openclaw#${index + 2}`,
+    state: "pending",
+    createdAt: now - 30_000 + index,
+    updatedAt: now - 30_000 + index,
+    nextAttemptAt: now,
+    attempts: 0,
+    revision: 1,
+    decision: {
+      sourceAction: "scheduled_normal_backfill",
+      targetRepo: "openclaw/openclaw",
+      itemNumber: index + 2,
+    },
+  }));
+  const state = {
+    items: Object.fromEntries([publication, ...reviews].map((item) => [item.key, item])),
+  } as never;
+
+  const admitted = exactReviewQueueAdmittedItems(state, now, 128, 128, 0);
+  assert.equal(admitted.length, 128);
+  assert.ok(admitted.every((item) => !item.key.includes("@publish:")));
+});
+
 test("dashboard status reads the exact-review handoff model from the durable queue", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" });
@@ -3115,7 +3200,7 @@ test("dashboard status reads the exact-review handoff model from the durable que
   assert.equal(status.ready_pending, 2);
   assert.equal(status.admissible_pending, 2);
   assert.equal(status.dispatching, 0);
-  assert.equal(status.leased, 2);
+  assert.equal(status.leased, 1);
   assert.equal(status.handoff_health.status, "healthy");
   assert.equal(status.handoff_health.phases.pending.count, 3);
   assert.equal(status.lanes.review.enqueued_total, 4);
@@ -5957,6 +6042,49 @@ test("exact-review queue terminalizes every admitted ordinary publication before
   }
 });
 
+test("terminal publication cleanup does not block review admission in the same alarm", async () => {
+  const publicationNumber = 9220;
+  const reviewNumber = 9221;
+  const harness = createExactReviewAdmissionHarness(
+    (_targetRepo, itemNumber) =>
+      jsonResponse({ state: itemNumber === publicationNumber ? "closed" : "open" }),
+    {
+      maxConcurrent: "1",
+      publicationBatching: true,
+      publicationBatchSize: "1",
+      captureBatchDispatch: true,
+    },
+  );
+  try {
+    await harness.queue.fetch(
+      buildExactReviewQueueRequest(
+        "terminal-publication-ahead-of-review",
+        publicationNumber,
+        "exact_review_artifact_publish",
+        "issue",
+        "openclaw/gogcli",
+        exactReviewPublicationOverrides(publicationNumber, "92200"),
+      ),
+    );
+    await harness.queue.fetch(
+      buildExactReviewQueueRequest("review-behind-terminal-publication", reviewNumber, "opened"),
+    );
+
+    await harness.queue.alarm();
+
+    assert.equal(harness.batchDispatches, 0);
+    assert.equal(harness.dispatched.length, 1);
+    assert.equal(harness.dispatched[0]?.client_payload.item_number, reviewNumber);
+    const stats = await (
+      await harness.queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(stats.lanes.publication.completed_total, 1);
+    assert.equal(stats.lanes.review.dispatching, 1);
+  } finally {
+    harness.restore();
+  }
+});
+
 test("publication reconcile terminalizes a completed protocol-v1 publication after its target closes", async () => {
   let liveChecks = 0;
   const harness = createExactReviewAdmissionHarness(() => {
@@ -7639,6 +7767,7 @@ test("exact-review queue upgrades flow metrics without losing publication comple
     successful: 0,
     retried: 0,
     shed: 0,
+    shed_reasons: { backpressure: 0, scheduled_rate: 0 },
     arrival_rate_per_hour: 0,
     successful_rate_per_hour: 0,
     retried_rate_per_hour: 0,
@@ -14246,7 +14375,7 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   status.recent.apply_health.items = [];
   status.exact_review_queue.handoff_health.status = "stalled";
   status.exact_review_queue.pressure.status = "saturated";
-  status.exact_review_queue.pressure.reason = "publication_critical";
+  status.exact_review_queue.pressure.reason = "capacity_full_with_backlog";
   status.exact_review_queue.handoff_health.message =
     "A dispatched review has not been claimed within the expected handoff window.";
   context.renderDashboard(status, "");
@@ -14254,7 +14383,7 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.equal(elementFor("hero-dot").className, "hero-dot red");
   assert.match(elementFor("hero-headline").textContent, /^Needs attention/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /health-badge stalled/);
-  assert.match(elementFor("exact-review-handoff").innerHTML, /publication critical/);
+  assert.match(elementFor("exact-review-handoff").innerHTML, /pressure saturated/);
 
   Object.assign(status, { exact_review_queue: null });
   status.diagnostics.exact_review_queue_error = "exact-review queue timed out";

@@ -247,6 +247,9 @@ Current defaults:
 - total review admission target: 200 items/hour across the fleet; organic work
   consumes the budget first and scheduled backfill fills the remainder, split
   35% hot intake and 65% normal backfill, with a 50-item burst
+- review admission and pressure are computed independently from publication;
+  top-level queue health describes reviews while `lanes.publication` retains
+  publication backlog, retry, DLQ, and health telemetry
 - fleet fanout: 20 hot targets every 15 minutes and 12 normal targets hourly;
   each target cycle can offer up to 20 due items to the shared admission budget
 - manual broad hot intake: up to 44 shards when quiet
@@ -314,7 +317,9 @@ Scheduled planning does not use the active-floor backfill. It selects only due
 items, records each candidate's previous-review age in `plan.json`, and writes a
 run-summary funnel for selected, attempted, enqueued, deduped, shed, and deferred
 items. The queue exposes the configured rate, burst, and currently available
-token balance under `scheduled_feed` in `GET /api/exact-review-queue`.
+token balance under `scheduled_feed` in `GET /api/exact-review-queue`. It also
+exposes backpressure and scheduled-rate shed counts separately so an operator
+can distinguish a full review queue from intentional 200/hour pacing.
 The producer probes that field before its first enqueue and fails closed while
 an older Worker is still deployed, preventing a workflow-first rollout from
 bypassing the rate limiter.

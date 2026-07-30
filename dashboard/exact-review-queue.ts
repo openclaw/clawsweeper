@@ -6,10 +6,9 @@ import {
   type StateWriterOperation,
 } from "../src/state-writer-telemetry.ts";
 import {
-  elevateExactReviewPressureForPublication,
+  summarizeExactReviewPublicationHealth,
   summarizeExactReviewHandoff,
   summarizeExactReviewPressure,
-  type ExactReviewPublicationHealth,
 } from "./exact-review-health.ts";
 import {
   ExactReviewPublicationBatchStore,
@@ -295,7 +294,15 @@ type ExactReviewQueueStorageMeta = {
   shed_since_reset?: number;
 };
 type ExactReviewQueueMetricTotals = {
-  review: { enqueued: number; completed: number; superseded: number; semanticDeduped: number };
+  review: {
+    enqueued: number;
+    completed: number;
+    superseded: number;
+    semanticDeduped: number;
+    shed: number;
+    shedBackpressure: number;
+    shedScheduledRate: number;
+  };
   publication: {
     enqueued: number;
     completed: number;
@@ -331,6 +338,8 @@ type ExactReviewQueueMetricDelta = {
   reviewSemanticDeduped?: number;
   reviewRetried?: number;
   reviewShed?: number;
+  reviewShedBackpressure?: number;
+  reviewShedScheduledRate?: number;
   publicationEnqueued?: number;
   publicationCompleted?: number;
   publicationPublished?: number;
@@ -1391,11 +1400,14 @@ export class ExactReviewQueue {
           if (
             !decision.publication &&
             (isLowPriorityExactReviewDecision(decision) || exactReviewScheduledLane(decision)) &&
-            exactReviewQueuePendingCount(state) >= exactReviewPendingSoftLimit(this.env)
+            exactReviewQueuePendingReviewCount(state) >= exactReviewPendingSoftLimit(this.env)
           ) {
             state.shedSinceReset = exactReviewShedSinceReset(state) + 1;
             this.writeStateSync(state);
-            this.incrementQueueMetricsSync({ reviewShed: 1 });
+            this.incrementQueueMetricsSync({ reviewShed: 1, reviewShedBackpressure: 1 });
+            console.warn(
+              `exact-review admission shed: reason=backpressure item=${key} review_pending=${exactReviewQueuePendingReviewCount(state)} limit=${exactReviewPendingSoftLimit(this.env)}`,
+            );
             return { shed: true as const, reason: "backpressure" as const };
           }
           if (
@@ -1404,7 +1416,10 @@ export class ExactReviewQueue {
           ) {
             state.shedSinceReset = exactReviewShedSinceReset(state) + 1;
             this.writeStateSync(state);
-            this.incrementQueueMetricsSync({ reviewShed: 1 });
+            this.incrementQueueMetricsSync({ reviewShed: 1, reviewShedScheduledRate: 1 });
+            console.warn(
+              `exact-review admission shed: reason=scheduled_rate item=${key} lane=${exactReviewScheduledLane(decision)}`,
+            );
             return { shed: true as const, reason: "scheduled_rate" as const };
           }
           if (!decision.publication && !exactReviewScheduledLane(decision)) {
@@ -2805,10 +2820,9 @@ export class ExactReviewQueue {
         legacyExcludedItemKeys,
         publicationBatches.nextLeaseExpiresAt,
       );
-      const publicationHealth = exactReviewPublicationHealth(
+      const publicationHealth = summarizeExactReviewPublicationHealth(
         stats.lanes.publication,
         publicationFlow,
-        deadLetters,
       );
       const reservationClaimObservability = exactReviewReservationClaimObservability({
         now,
@@ -2821,7 +2835,6 @@ export class ExactReviewQueue {
       });
       return json({
         ...stats,
-        pressure: elevateExactReviewPressureForPublication(stats.pressure, publicationHealth),
         bay_projection: exactReviewQueueBayProjection(
           Object.values(state.items),
           bayPriorityKeys,
@@ -2834,6 +2847,11 @@ export class ExactReviewQueue {
             completed_total: metrics.review.completed,
             superseded_total: metrics.review.superseded,
             semantic_deduped_total: metrics.review.semanticDeduped,
+            shed_reasons_since_reset: {
+              backpressure: metrics.review.shedBackpressure,
+              scheduled_rate: metrics.review.shedScheduledRate,
+              unattributed: Math.max(0, exactReviewShedSinceReset(state) - metrics.review.shed),
+            },
             flow: reviewFlow,
           },
           publication: {
@@ -3009,17 +3027,13 @@ export class ExactReviewQueue {
     let batchTerminalPreflightReady = false;
     if (snapshotBatchDeparture?.due && !snapshotDispatcherBackoffActive) {
       const batchTerminalProbe = exactReviewPublicationBatchCandidateProbe(snapshotBatchCandidates);
-      const terminalized = await this.terminalizePublicationCandidates(
+      await this.terminalizePublicationCandidates(
         snapshotBatchCandidates.map((item) => ({
           key: item.key,
           revision: item.revision,
           decision: item.decision,
         })),
       );
-      if (terminalized.length) {
-        await this.scheduleNext(this.readStateSync(), Date.now());
-        return;
-      }
 
       // Target reads release the Durable Object input gate. Recompute the
       // departure and admit a workflow only when its exact eventual claim is
@@ -5893,6 +5907,11 @@ export class ExactReviewQueue {
            CHECK (review_superseded_total >= 0),
          review_semantic_deduped_total INTEGER NOT NULL DEFAULT 0
            CHECK (review_semantic_deduped_total >= 0),
+         review_shed_total INTEGER NOT NULL DEFAULT 0 CHECK (review_shed_total >= 0),
+         review_shed_backpressure_total INTEGER NOT NULL DEFAULT 0
+           CHECK (review_shed_backpressure_total >= 0),
+         review_shed_scheduled_rate_total INTEGER NOT NULL DEFAULT 0
+           CHECK (review_shed_scheduled_rate_total >= 0),
          publication_enqueued_total INTEGER NOT NULL DEFAULT 0
            CHECK (publication_enqueued_total >= 0),
          publication_completed_total INTEGER NOT NULL CHECK (publication_completed_total >= 0)
@@ -5903,6 +5922,9 @@ export class ExactReviewQueue {
       "review_completed_total",
       "review_superseded_total",
       "review_semantic_deduped_total",
+      "review_shed_total",
+      "review_shed_backpressure_total",
+      "review_shed_scheduled_rate_total",
       "publication_enqueued_total",
       "publication_published_total",
       "publication_superseded_total",
@@ -6053,6 +6075,10 @@ export class ExactReviewQueue {
          review_superseded INTEGER NOT NULL DEFAULT 0 CHECK (review_superseded >= 0),
          review_retried INTEGER NOT NULL DEFAULT 0 CHECK (review_retried >= 0),
          review_shed INTEGER NOT NULL DEFAULT 0 CHECK (review_shed >= 0),
+         review_shed_backpressure INTEGER NOT NULL DEFAULT 0
+           CHECK (review_shed_backpressure >= 0),
+         review_shed_scheduled_rate INTEGER NOT NULL DEFAULT 0
+           CHECK (review_shed_scheduled_rate >= 0),
          publication_enqueued INTEGER NOT NULL DEFAULT 0 CHECK (publication_enqueued >= 0),
          publication_resolved INTEGER NOT NULL DEFAULT 0 CHECK (publication_resolved >= 0),
          publication_published INTEGER NOT NULL DEFAULT 0 CHECK (publication_published >= 0),
@@ -6070,6 +6096,8 @@ export class ExactReviewQueue {
       "review_superseded",
       "review_retried",
       "review_shed",
+      "review_shed_backpressure",
+      "review_shed_scheduled_rate",
       "publication_semantic_deduped",
     ]) {
       const present = Array.from(
@@ -6636,7 +6664,8 @@ export class ExactReviewQueue {
     const row = Array.from(
       this.storage.sql.exec(
         `SELECT review_enqueued_total, review_completed_total, review_superseded_total,
-                review_semantic_deduped_total,
+                review_semantic_deduped_total, review_shed_total,
+                review_shed_backpressure_total, review_shed_scheduled_rate_total,
                 publication_enqueued_total, publication_completed_total,
                 publication_published_total, publication_superseded_total,
                 publication_semantic_deduped_total,
@@ -6651,6 +6680,9 @@ export class ExactReviewQueue {
           review_completed_total?: number;
           review_superseded_total?: number;
           review_semantic_deduped_total?: number;
+          review_shed_total?: number;
+          review_shed_backpressure_total?: number;
+          review_shed_scheduled_rate_total?: number;
           publication_enqueued_total?: number;
           publication_completed_total?: number;
           publication_published_total?: number;
@@ -6667,6 +6699,9 @@ export class ExactReviewQueue {
         completed: exactReviewMetricTotal(row?.review_completed_total),
         superseded: exactReviewMetricTotal(row?.review_superseded_total),
         semanticDeduped: exactReviewMetricTotal(row?.review_semantic_deduped_total),
+        shed: exactReviewMetricTotal(row?.review_shed_total),
+        shedBackpressure: exactReviewMetricTotal(row?.review_shed_backpressure_total),
+        shedScheduledRate: exactReviewMetricTotal(row?.review_shed_scheduled_rate_total),
       },
       publication: {
         enqueued: exactReviewMetricTotal(row?.publication_enqueued_total),
@@ -6688,6 +6723,8 @@ export class ExactReviewQueue {
     const reviewSemanticDeduped = exactReviewMetricDelta(delta.reviewSemanticDeduped);
     const reviewRetried = exactReviewMetricDelta(delta.reviewRetried);
     const reviewShed = exactReviewMetricDelta(delta.reviewShed);
+    const reviewShedBackpressure = exactReviewMetricDelta(delta.reviewShedBackpressure);
+    const reviewShedScheduledRate = exactReviewMetricDelta(delta.reviewShedScheduledRate);
     const publicationEnqueued = exactReviewMetricDelta(delta.publicationEnqueued);
     const publicationCompleted = exactReviewMetricDelta(delta.publicationCompleted);
     const publicationPublished = exactReviewMetricDelta(delta.publicationPublished);
@@ -6703,6 +6740,8 @@ export class ExactReviewQueue {
       !reviewSemanticDeduped &&
       !reviewRetried &&
       !reviewShed &&
+      !reviewShedBackpressure &&
+      !reviewShedScheduledRate &&
       !publicationEnqueued &&
       !publicationCompleted &&
       !publicationPublished &&
@@ -6720,6 +6759,9 @@ export class ExactReviewQueue {
               review_completed_total = review_completed_total + ?,
               review_superseded_total = review_superseded_total + ?,
               review_semantic_deduped_total = review_semantic_deduped_total + ?,
+              review_shed_total = review_shed_total + ?,
+              review_shed_backpressure_total = review_shed_backpressure_total + ?,
+              review_shed_scheduled_rate_total = review_shed_scheduled_rate_total + ?,
               publication_enqueued_total = publication_enqueued_total + ?,
               publication_completed_total = publication_completed_total + ?,
               publication_published_total = publication_published_total + ?,
@@ -6733,6 +6775,9 @@ export class ExactReviewQueue {
       reviewCompleted,
       reviewSuperseded,
       reviewSemanticDeduped,
+      reviewShed,
+      reviewShedBackpressure,
+      reviewShedScheduledRate,
       publicationEnqueued,
       publicationCompleted,
       publicationPublished,
@@ -6748,6 +6793,8 @@ export class ExactReviewQueue {
       reviewSuperseded,
       reviewRetried,
       reviewShed,
+      reviewShedBackpressure,
+      reviewShedScheduledRate,
       publicationEnqueued,
       publicationCompleted,
       publicationPublished,
@@ -6764,6 +6811,8 @@ export class ExactReviewQueue {
     reviewSuperseded,
     reviewRetried,
     reviewShed,
+    reviewShedBackpressure,
+    reviewShedScheduledRate,
     publicationEnqueued,
     publicationCompleted,
     publicationPublished,
@@ -6777,6 +6826,8 @@ export class ExactReviewQueue {
     reviewSuperseded: number;
     reviewRetried: number;
     reviewShed: number;
+    reviewShedBackpressure: number;
+    reviewShedScheduledRate: number;
     publicationEnqueued: number;
     publicationCompleted: number;
     publicationPublished: number;
@@ -6791,6 +6842,8 @@ export class ExactReviewQueue {
       !reviewSuperseded &&
       !reviewRetried &&
       !reviewShed &&
+      !reviewShedBackpressure &&
+      !reviewShedScheduledRate &&
       !publicationEnqueued &&
       !publicationCompleted &&
       !publicationPublished &&
@@ -6807,17 +6860,21 @@ export class ExactReviewQueue {
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE}
          (bucket_start, review_enqueued, review_completed, review_superseded, review_retried,
-          review_shed,
+          review_shed, review_shed_backpressure, review_shed_scheduled_rate,
           publication_enqueued, publication_resolved, publication_published,
           publication_superseded, publication_semantic_deduped,
           publication_retried, publication_dead_lettered)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(bucket_start) DO UPDATE SET
          review_enqueued = review_enqueued + excluded.review_enqueued,
          review_completed = review_completed + excluded.review_completed,
          review_superseded = review_superseded + excluded.review_superseded,
          review_retried = review_retried + excluded.review_retried,
          review_shed = review_shed + excluded.review_shed,
+         review_shed_backpressure =
+           review_shed_backpressure + excluded.review_shed_backpressure,
+         review_shed_scheduled_rate =
+           review_shed_scheduled_rate + excluded.review_shed_scheduled_rate,
          publication_enqueued = publication_enqueued + excluded.publication_enqueued,
          publication_resolved = publication_resolved + excluded.publication_resolved,
          publication_published = publication_published + excluded.publication_published,
@@ -6833,6 +6890,8 @@ export class ExactReviewQueue {
       reviewSuperseded,
       reviewRetried,
       reviewShed,
+      reviewShedBackpressure,
+      reviewShedScheduledRate,
       publicationEnqueued,
       publicationCompleted,
       publicationPublished,
@@ -6995,7 +7054,9 @@ export class ExactReviewQueue {
         `SELECT COALESCE(SUM(review_enqueued), 0) AS enqueued,
                 COALESCE(SUM(review_completed), 0) AS completed,
                 COALESCE(SUM(review_retried), 0) AS retried,
-                COALESCE(SUM(review_shed), 0) AS shed
+                COALESCE(SUM(review_shed), 0) AS shed,
+                COALESCE(SUM(review_shed_backpressure), 0) AS shed_backpressure,
+                COALESCE(SUM(review_shed_scheduled_rate), 0) AS shed_scheduled_rate
            FROM ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE}
           WHERE bucket_start >= ?`,
         now - windowMs,
@@ -7006,6 +7067,8 @@ export class ExactReviewQueue {
     const successful = Number(row?.completed || 0);
     const retried = Number(row?.retried || 0);
     const shed = Number(row?.shed || 0);
+    const shedBackpressure = Number(row?.shed_backpressure || 0);
+    const shedScheduledRate = Number(row?.shed_scheduled_rate || 0);
     const arrival = enqueued + shed;
     return {
       last_15_minutes: {
@@ -7014,6 +7077,10 @@ export class ExactReviewQueue {
         successful,
         retried,
         shed,
+        shed_reasons: {
+          backpressure: shedBackpressure,
+          scheduled_rate: shedScheduledRate,
+        },
         arrival_rate_per_hour: Math.round(arrival * multiplier * 10) / 10,
         successful_rate_per_hour: Math.round(successful * multiplier * 10) / 10,
         retried_rate_per_hour: Math.round(retried * multiplier * 10) / 10,
@@ -9335,8 +9402,10 @@ function isLowPriorityExactReviewDecision(decision: ExactReviewDecision) {
   return EXACT_REVIEW_LOW_PRIORITY_SOURCE_ACTIONS.has(decision.sourceAction);
 }
 
-function exactReviewQueuePendingCount(state: ExactReviewQueueState) {
-  return Object.values(state.items).filter((item) => item.state === "pending").length;
+function exactReviewQueuePendingReviewCount(state: ExactReviewQueueState) {
+  return Object.values(state.items).filter(
+    (item) => item.state === "pending" && !exactReviewQueueIsPublication(item),
+  ).length;
 }
 
 function exactReviewShedSinceReset(state: Pick<ExactReviewQueueState, "shedSinceReset">) {
@@ -9755,28 +9824,33 @@ export function exactReviewQueueAdmittedItems(
     const target = item.decision.targetRepo;
     activeTargets.set(target, (activeTargets.get(target) || 0) + 1);
   }
-  const admitted: ExactReviewQueueItem[] = [];
-  const admittedPublicationItems = new Set<string>();
-  let admittedReviews = 0;
   const pending = Object.values(state.items)
     .filter(
       (item) =>
         item.state === "pending" && item.nextAttemptAt <= now && !excludedItemKeys.has(item.key),
     )
     .sort((left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key));
-  const prioritizedPublications = exactReviewPrioritizePublicationItems(
+  const pendingReviews = pending.filter((item) => !exactReviewQueueIsPublication(item));
+  const pendingPublications = exactReviewPrioritizePublicationItems(
     pending.filter(exactReviewQueueIsPublication),
     freshPublicationItemKeys,
     freshPublicationReserve,
   );
-  let publicationIndex = 0;
-  const ordered = pending.map((item) =>
-    exactReviewQueueIsPublication(item) ? prioritizedPublications[publicationIndex++]! : item,
-  );
-  for (const item of ordered) {
-    const publication = exactReviewQueueIsPublication(item);
-    if (publication) {
-      if (publicationAdmissionBlocked) continue;
+  const admittedReviews: ExactReviewQueueItem[] = [];
+  for (const item of pendingReviews) {
+    if (admittedReviews.length >= reviewSlots) break;
+    const target = item.decision.targetRepo;
+    const active = activeTargets.get(target) || 0;
+    if (active >= targetCapacity) continue;
+    activeTargets.set(target, active + 1);
+    admittedReviews.push(item);
+  }
+
+  const admittedPublications: ExactReviewQueueItem[] = [];
+  const admittedPublicationItems = new Set<string>();
+  if (!publicationAdmissionBlocked) {
+    for (const item of pendingPublications) {
+      if (activePublishers >= publicationCapacity) break;
       // Distinct publication events may target the same durable record path. A batch
       // must serialize those events across commits or their prepared mutations can
       // disagree even though their queue keys and fencing revisions are independent.
@@ -9784,21 +9858,15 @@ export function exactReviewQueueAdmittedItems(
         ? `${item.decision.targetRepo.toLowerCase()}#${item.decision.itemNumber}`
         : "";
       if (uniquePublicationItems && admittedPublicationItems.has(publicationItem)) continue;
-      if (activePublishers >= publicationCapacity) continue;
       activePublishers += 1;
       if (uniquePublicationItems) admittedPublicationItems.add(publicationItem);
-      admitted.push(item);
-      continue;
+      admittedPublications.push(item);
     }
-    if (admittedReviews >= reviewSlots) continue;
-    const target = item.decision.targetRepo;
-    const active = activeTargets.get(target) || 0;
-    if (active >= targetCapacity) continue;
-    activeTargets.set(target, active + 1);
-    admittedReviews += 1;
-    admitted.push(item);
   }
-  return admitted;
+
+  // Review admission owns its capacity and is intentionally ordered first.
+  // A blocked or slow publication key cannot delay an available review slot.
+  return [...admittedReviews, ...admittedPublications];
 }
 
 function sumFor(rows: Array<Record<string, number | string | null>>, field: string) {
@@ -9836,7 +9904,7 @@ function exactReviewQueueStats(
   const items = Object.values(state.items);
   const handoffItems = items.filter(
     (item): item is ExactReviewQueueItem & { state: "pending" | "dispatching" | "leased" } =>
-      item.state !== "parked",
+      item.state !== "parked" && !exactReviewQueueIsPublication(item),
   );
   const handoffHealth = summarizeExactReviewHandoff({
     // Parked poison items are reported by publication health and cannot take a
@@ -9927,9 +9995,6 @@ function exactReviewQueueStats(
       publicationCapacity,
     ),
   };
-  const readyPending = items.filter(
-    (item) => item.state === "pending" && item.nextAttemptAt <= now,
-  ).length;
   const admissibleItems = exactReviewQueueAdmittedItems(
     state,
     now,
@@ -9939,7 +10004,6 @@ function exactReviewQueueStats(
     excludedItemKeys,
     publicationBlockedUntil !== null && publicationBlockedUntil > now,
   );
-  const admissiblePending = admissibleItems.length;
   const reviewAdmissiblePending = admissibleItems.filter(
     (item) => !exactReviewQueueIsPublication(item),
   ).length;
@@ -9955,9 +10019,9 @@ function exactReviewQueueStats(
   });
   return {
     generated_at: handoffHealth.observed_at,
-    pending: handoffHealth.phases.pending.count,
-    ready_pending: readyPending,
-    admissible_pending: admissiblePending,
+    pending: lanes.review.pending,
+    ready_pending: lanes.review.ready,
+    admissible_pending: reviewAdmissiblePending,
     shed_since_reset: exactReviewShedSinceReset(state),
     dispatching: handoffHealth.phases.dispatching.count,
     leased: handoffHealth.phases.leased.count,
@@ -10054,36 +10118,6 @@ function exactReviewQueueLaneStats(
       oldestBackoffAt === null ? null : Math.max(0, Math.floor((now - oldestBackoffAt) / 1_000)),
     next_attempt_at: nextAttemptAt === null ? null : new Date(nextAttemptAt).toISOString(),
   };
-}
-
-function exactReviewPublicationHealth(
-  lane: ReturnType<typeof exactReviewQueueLaneStats>,
-  flow: { last_15_minutes: { net_drain_rate_per_hour: number } },
-  deadLetters: { open: number },
-): ExactReviewPublicationHealth & { reason: string | null } {
-  const oldestAge = Number(lane.oldest_pending_age_seconds || 0);
-  if (lane.parked > 0 || oldestAge >= 6 * 60 * 60) {
-    return {
-      status: "critical",
-      reason: lane.parked > 0 ? "dead_letter_capacity" : "oldest_pending_over_6h",
-    };
-  }
-  if (
-    deadLetters.open > 0 ||
-    oldestAge >= 60 * 60 ||
-    (lane.pending >= 100 && flow.last_15_minutes.net_drain_rate_per_hour <= 0)
-  ) {
-    return {
-      status: "degraded",
-      reason:
-        deadLetters.open > 0
-          ? "open_dead_letters"
-          : oldestAge >= 60 * 60
-            ? "oldest_pending_over_1h"
-            : "not_draining",
-    };
-  }
-  return { status: lane.pending || lane.active ? "healthy" : "idle", reason: null };
 }
 
 export function exactReviewQueueNextWakeAt(

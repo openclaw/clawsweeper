@@ -128,9 +128,12 @@ The scheduler does this for background lanes:
 
 The normal result is then reduced when the exact-review queue is under pressure.
 Each planner reads the public, unauthenticated `GET /api/exact-review-queue`
-endpoint once and uses its top-level pending count and oldest-pending age. A
-failed, timed-out, or malformed response is treated as no pressure so a dashboard
-outage cannot stall reviews.
+endpoint once and uses its review-lane pending count and oldest-pending age. The
+top-level pending, ready, admissible, handoff, and pressure fields are aliases
+for that review lane; publication health and backlog remain under
+`lanes.publication` and never throttle review producers. A failed, timed-out, or
+malformed response uses the conservative unavailable-pressure budget until the
+next healthy probe.
 
 | Tier | Trigger, either condition                                     | Background budget                            |
 | ---- | ------------------------------------------------------------- | -------------------------------------------- |
@@ -204,8 +207,12 @@ unclaimed workflow cannot pass the replacement lease tuple and exits before
 review compute. Explicit command work and publication work bypass the delay.
 When pending depth reaches
 `EXACT_REVIEW_PENDING_SOFT_LIMIT` (300 by default), new recovery and scheduled
-feed work is shed; existing items, webhook events, commands, and publications
-remain admitted. All newly queued review work debits a durable 200-review/hour
+feed work is shed; this threshold counts review work only, so publication
+backlog cannot consume review admission capacity. Existing items, webhook
+events, commands, and publications remain admitted. The queue reports shed
+counts under `lanes.review.shed_reasons_since_reset` and the rolling flow by
+`backpressure` versus `scheduled_rate`; pre-migration totals remain
+`unattributed`. All newly queued review work debits a durable 200-review/hour
 budget with a 50-item burst. Organic work is always admitted and consumes the
 budget first; scheduled work fills the remainder and is split 35% hot intake and
 65% normal backfill so hot churn cannot starve oldest-first coverage. Re-offering an item

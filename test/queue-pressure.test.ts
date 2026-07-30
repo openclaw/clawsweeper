@@ -69,7 +69,7 @@ test("queue pressure fetch reads public aggregate stats", async () => {
   assert.deepEqual(empty, { ok: true, pendingCount: 0, oldestPendingAgeMs: 0 });
 });
 
-test("queue pressure uses review thresholds and elevates unhealthy publication", async () => {
+test("queue pressure uses review thresholds and ignores independent publication health", async () => {
   const healthyPublication = await fetchExactReviewQueuePressure({
     queueUrl: "https://clawsweeper.example",
     fetchImpl: async () =>
@@ -107,22 +107,8 @@ test("queue pressure uses review thresholds and elevates unhealthy publication",
         },
       }),
   });
-  assert.deepEqual(criticalPublication, {
-    ok: true,
-    pendingCount: 0,
-    oldestPendingAgeMs: 0,
-    publicationStatus: "critical",
-  });
-  assert.equal(queuePressureLevel(criticalPublication), "hard");
-  assert.equal(
-    queuePressureLevel({
-      ok: true,
-      pendingCount: QUEUE_PRESSURE_HARD_PENDING,
-      oldestPendingAgeMs: 0,
-      publicationStatus: "degraded",
-    }),
-    "hard",
-  );
+  assert.deepEqual(criticalPublication, { ok: true, pendingCount: 0, oldestPendingAgeMs: 0 });
+  assert.equal(queuePressureLevel(criticalPublication), "none");
 
   const emptyReviewLane = await fetchExactReviewQueuePressure({
     queueUrl: "https://clawsweeper.example",

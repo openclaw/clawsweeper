@@ -53,9 +53,7 @@ export type ExactReviewPressureSummary = {
     | "no_admissible_backlog"
     | "dispatcher_inactive"
     | "handoff_unknown"
-    | "capacity_full_with_backlog"
-    | "publication_degraded"
-    | "publication_critical";
+    | "capacity_full_with_backlog";
   capacity: number;
   active: number;
   pending: number;
@@ -65,6 +63,13 @@ export type ExactReviewPressureSummary = {
 
 export type ExactReviewPublicationHealth = {
   status?: "idle" | "healthy" | "degraded" | "critical";
+};
+
+export type ExactReviewPublicationLaneSummary = {
+  pending: number;
+  active: number;
+  parked: number;
+  oldest_pending_age_seconds: number | null;
 };
 
 const PHASES: ExactReviewPhase[] = ["pending", "dispatching", "leased"];
@@ -252,17 +257,36 @@ export function summarizeExactReviewPressure({
   };
 }
 
-export function elevateExactReviewPressureForPublication(
-  pressure: ExactReviewPressureSummary,
-  publication: ExactReviewPublicationHealth,
-): ExactReviewPressureSummary {
-  if (publication.status === "critical" && pressure.status !== "saturated") {
-    return { ...pressure, status: "saturated", reason: "publication_critical" };
+export function summarizeExactReviewPublicationHealth(
+  lane: ExactReviewPublicationLaneSummary,
+  flow: { last_15_minutes: { net_drain_rate_per_hour: number } },
+): ExactReviewPublicationHealth & { reason: string | null } {
+  const pending = nonNegativeInteger(lane.pending);
+  const active = nonNegativeInteger(lane.active);
+  const parked = nonNegativeInteger(lane.parked);
+  const oldestAge = nonNegativeInteger(lane.oldest_pending_age_seconds);
+
+  // Dead letters and retired state-writer history are reported independently.
+  // Neither is current publication demand, so an empty lane must stay idle.
+  if (pending === 0 && active === 0 && parked === 0) {
+    return { status: "idle", reason: null };
   }
-  if (publication.status === "degraded" && pressure.status === "idle") {
-    return { ...pressure, status: "congested", reason: "publication_degraded" };
+  if (parked > 0 || oldestAge >= 6 * 60 * 60) {
+    return {
+      status: "critical",
+      reason: parked > 0 ? "dead_letter_capacity" : "oldest_pending_over_6h",
+    };
   }
-  return pressure;
+  if (
+    oldestAge >= 60 * 60 ||
+    (pending >= 100 && flow.last_15_minutes.net_drain_rate_per_hour <= 0)
+  ) {
+    return {
+      status: "degraded",
+      reason: oldestAge >= 60 * 60 ? "oldest_pending_over_1h" : "not_draining",
+    };
+  }
+  return { status: "healthy", reason: null };
 }
 
 function exactReviewPhaseStartedAt(
