@@ -289,6 +289,15 @@ workflow state, check time, and retry time so an intentional pause cannot look
 like occupied executor capacity. Re-enabling the workflow does not require a
 queue mutation; the next status check resumes normal admission.
 
+Scheduled hot and normal-backfill decisions have already passed the queue's
+fleet-wide rate and burst controls, so they skip the webhook-churn debounce and
+become ready immediately unless the dispatcher itself is paused or blocked.
+Review items parked after retry exhaustion or a permanent dispatch rejection
+retry automatically after 5, 10, and 20 minutes. A successful newer decision
+resets that recovery budget; after three unsuccessful recovery cycles the item
+stays parked for operator inspection. Publication dead-letter-capacity parks
+retain their separate operator-controlled recovery path.
+
 The same endpoint exposes `generated_at`, `ready_pending`,
 `admissible_pending`, `pressure`, `handoff_health`, and oldest timestamps and
 ages for the pending, dispatching, and leased phases. `ready_pending` excludes
@@ -318,8 +327,10 @@ making the otherwise-current fleet snapshot eligible for stale fallback.
 For capacity displays, `/api/exact-review-queue` also exposes compatible
 `lanes.review` and `lanes.publication` objects. Each lane reports its own
 pending, ready, backoff, dispatching, leased, capacity, active, available-slot,
-oldest-pending, and next-attempt values. The existing top-level aggregate fields
-remain available for older consumers. Both lanes additionally report
+oldest-pending, and next-attempt values. `backoff_reasons` and `parked_reasons`
+count the causes represented by those lane totals, and the dashboard renders
+the same breakdown beside the lane counts. The existing top-level aggregate
+fields remain available for older consumers. Both lanes additionally report
 `enqueued_total` and `completed_total`; the review lane's existing
 `shed_since_reset` supplies overload demand. Publication also exposes
 `capacity_control` with the adaptive base, maximum, current ceiling, cooldown,

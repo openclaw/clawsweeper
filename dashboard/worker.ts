@@ -9789,6 +9789,15 @@ function renderExactReviewLanes(queue) {
       ? " · DLQ " + fmt.format(deadLetters.open || 0) +
         (deadLetters.oldest_failed_at ? " · oldest DLQ " + since(deadLetters.oldest_failed_at) : "")
       : "";
+    const reasonSummary = (label, reasons) => {
+      const values = Object.entries(reasons || {})
+        .filter(([, count]) => Number(count) > 0)
+        .sort((left, right) => Number(right[1]) - Number(left[1]) || left[0].localeCompare(right[0]))
+        .map(([reason, count]) => reason.replaceAll("_", " ") + " " + fmt.format(Number(count)));
+      return values.length ? " · " + label + ": " + values.join(", ") : "";
+    };
+    const queueReasonNote = reasonSummary("backoff", lane.backoff_reasons) +
+      reasonSummary("parked", lane.parked_reasons);
     return '<div class="exact-lane"><div class="exact-lane-head"><strong>' + esc(label) + '</strong><span>' + fmt.format(active) + ' of ' + fmt.format(capacity) + ' active</span></div>' +
       '<div class="lane-count"><span>Pending</span><strong>' + fmt.format(lane.pending || 0) + '</strong></div>' +
       exactReviewTrend(samples, label) +
@@ -9798,9 +9807,10 @@ function renderExactReviewLanes(queue) {
       '<div class="lane-count"><span>Ready</span><strong>' + fmt.format(lane.ready || 0) + '</strong></div>' +
       '<div class="lane-count"><span>Backoff</span><strong>' + fmt.format(lane.backoff || 0) + '</strong></div>' +
       '<div class="lane-count"><span>Dispatching</span><strong>' + fmt.format(lane.dispatching || 0) + '</strong></div>' +
-      '<div class="lane-count"><span>Leased</span><strong>' + fmt.format(lane.leased || 0) + '</strong></div></div>' +
+      '<div class="lane-count"><span>Leased</span><strong>' + fmt.format(lane.leased || 0) + '</strong></div>' +
+      '<div class="lane-count"><span>Parked</span><strong>' + fmt.format(lane.parked || 0) + '</strong></div></div>' +
       '<div class="lane-bar"><i style="width:' + used + '%"></i></div>' +
-      '<div class="lane-foot">' + fmt.format(lane.available_slots || 0) + ' ' + esc(label.toLowerCase()) + ' slots open' + esc(oldest + oldestReady + oldestBackoff + capacityNote + cooldown + deadLetterNote) + '</div></div>';
+      '<div class="lane-foot">' + fmt.format(lane.available_slots || 0) + ' ' + esc(label.toLowerCase()) + ' slots open' + esc(oldest + oldestReady + oldestBackoff + capacityNote + cooldown + deadLetterNote + queueReasonNote) + '</div></div>';
   }).join("");
 }
 function renderExactReviewHandoff(queue) {

@@ -123,6 +123,17 @@ export type ExactReviewIngress = {
   route: "direct_webhook" | "target_dispatcher";
   fingerprint: string;
 };
+type ExactReviewBackoffReason =
+  | "dispatch_debounce"
+  | "dispatcher_backoff"
+  | "admission_retry"
+  | "review_retry"
+  | "publication_retry";
+type ExactReviewParkedReason =
+  | "dead_letter_capacity"
+  | "dispatch_rejected"
+  | "review_retry_exhausted"
+  | "direct_publication";
 export type ExactReviewQueueItem = {
   key: string;
   decision: ExactReviewDecision;
@@ -134,6 +145,7 @@ export type ExactReviewQueueItem = {
   createdAt: number;
   updatedAt: number;
   nextAttemptAt: number;
+  backoffReason?: ExactReviewBackoffReason;
   attempts: number;
   leaseId?: string;
   leaseRevision?: number;
@@ -146,11 +158,8 @@ export type ExactReviewQueueItem = {
   claimProtocolVersion?: 1 | 2;
   dispatchedAt?: number;
   claimedAt?: number;
-  parkedReason?:
-    | "dead_letter_capacity"
-    | "dispatch_rejected"
-    | "review_retry_exhausted"
-    | "direct_publication";
+  parkedReason?: ExactReviewParkedReason;
+  parkedRecoveryAttempts?: number;
   dispatchFailureStatus?: number;
   dispatchFailureClass?: ExactReviewDispatchFailureClass;
   dispatchFailureAt?: number;
@@ -438,6 +447,9 @@ const EXACT_REVIEW_PUBLICATION_PERMANENT_RETRY_LIMIT = 3;
 const EXACT_REVIEW_PUBLICATION_UNKNOWN_RETRY_LIMIT = 5;
 const EXACT_REVIEW_PUBLICATION_ARTIFACT_RETRY_LIMIT = 3;
 const EXACT_REVIEW_RETRY_LIMIT = 8;
+const EXACT_REVIEW_PARKED_RECOVERY_LIMIT = 3;
+const EXACT_REVIEW_PARKED_RECOVERY_BASE_MS = 5 * 60_000;
+const EXACT_REVIEW_PARKED_RECOVERY_MAX_MS = 30 * 60_000;
 const EXACT_REVIEW_RECONCILE_RUN_LIMIT = 128;
 const EXACT_REVIEW_RECONCILE_CLAIM_MATCH_LIMIT = EXACT_REVIEW_RECONCILE_RUN_LIMIT * 2;
 export const EXACT_REVIEW_RECONCILE_CONCURRENCY = 8;
@@ -1389,18 +1401,22 @@ export class ExactReviewQueue {
             // Immediacy must come from the merged decision: a pending explicit command
             // keeps its command marker through the merge, and a later plain webhook
             // event must not re-debounce it.
-            current.nextAttemptAt = mergeable
-              ? exactReviewQueueDebouncedAttemptAt(
-                  state,
-                  current.decision,
-                  now,
-                  current.createdAt,
-                  this.env,
-                )
-              : exactReviewQueueEnqueueAttemptAt(state, now);
+            Object.assign(
+              current,
+              mergeable
+                ? exactReviewQueueDebouncedAttempt(
+                    state,
+                    current.decision,
+                    now,
+                    current.createdAt,
+                    this.env,
+                  )
+                : exactReviewQueueEnqueueAttempt(state, now),
+            );
             if (mergeable) {
               current.state = "pending";
               current.parkedReason = undefined;
+              current.parkedRecoveryAttempts = 0;
               clearExactReviewDispatchFailure(current);
               current.attempts = 0;
               current.publicationFailureAttempts = 0;
@@ -1448,7 +1464,7 @@ export class ExactReviewQueue {
             revision: this.nextExactReviewItemRevisionSync(key),
             createdAt: now,
             updatedAt: now,
-            nextAttemptAt: exactReviewQueueDebouncedAttemptAt(state, decision, now, now, this.env),
+            ...exactReviewQueueDebouncedAttempt(state, decision, now, now, this.env),
             attempts: 0,
             ...(exactReviewSourceAuthorityWatermark(decision)
               ? { sourceAuthorityWatermark: exactReviewSourceAuthorityWatermark(decision)! }
@@ -2640,6 +2656,7 @@ export class ExactReviewQueue {
       ) {
         return json({ error: "invalid_item_identity" }, 400);
       }
+      const now = Date.now();
       const state = this.readStateSync();
       const matches = Object.values(state.items).filter(
         (item) =>
@@ -2649,6 +2666,11 @@ export class ExactReviewQueue {
         lane: exactReviewQueueLane(item),
         state: item.state,
         parked_reason: item.parkedReason ?? null,
+        parked_recovery_attempts: item.parkedRecoveryAttempts ?? 0,
+        backoff_reason:
+          item.state === "pending" && item.nextAttemptAt > now
+            ? exactReviewQueueBackoffReason(item, state, now)
+            : null,
         revision: item.revision,
         attempts: item.attempts,
         dispatch_failure_status: item.dispatchFailureStatus ?? null,
@@ -2665,7 +2687,7 @@ export class ExactReviewQueue {
           (candidate) =>
             exactReviewQueueLane(candidate) === exactReviewQueueLane(item) &&
             candidate.state === "pending" &&
-            candidate.nextAttemptAt <= Date.now() &&
+            candidate.nextAttemptAt <= now &&
             (candidate.createdAt < item.createdAt ||
               (candidate.createdAt === item.createdAt && candidate.key < item.key)),
         ).length,
@@ -3036,8 +3058,9 @@ export class ExactReviewQueue {
       exactReviewPublicationDispatchLeaseMs(this.env),
       exactReviewHeartbeatGraceMs(this.env),
     );
+    const recoveredParkedSnapshot = recoverParkedExactReviewItems(snapshot, startedAt);
     const expiredSnapshot = expireExactReviewPublicationItems(snapshot, startedAt, this.env);
-    let snapshotChanged = reclaimedSnapshot || expiredSnapshot;
+    let snapshotChanged = reclaimedSnapshot || recoveredParkedSnapshot > 0 || expiredSnapshot;
     if (
       snapshot.dispatcher?.publicationBatchTerminalProbe &&
       Number(snapshot.dispatcher.publicationBatchDispatchPendingUntil || 0) <= startedAt
@@ -3468,8 +3491,9 @@ export class ExactReviewQueue {
           item.decision = exactReviewDecisionAtLiveHead(item.decision, candidate.state.headSha);
           item.revision += 1;
           item.updatedAt = checkedAt;
-          item.nextAttemptAt = exactReviewQueueEnqueueAttemptAt(checkedState, checkedAt);
+          Object.assign(item, exactReviewQueueEnqueueAttempt(checkedState, checkedAt));
           item.parkedReason = undefined;
+          item.parkedRecoveryAttempts = 0;
           item.attempts = 0;
           item.publicationFailureAttempts = 0;
           item.reviewFailureAttempts = 0;
@@ -3494,6 +3518,7 @@ export class ExactReviewQueue {
         if (failureAttempts >= EXACT_REVIEW_RETRY_LIMIT) {
           item.state = "parked";
           item.parkedReason = "review_retry_exhausted";
+          item.backoffReason = undefined;
           item.updatedAt = checkedAt;
           continue;
         }
@@ -3501,6 +3526,10 @@ export class ExactReviewQueue {
           exactReviewQueueEnqueueAttemptAt(checkedState, checkedAt),
           checkedAt + exactReviewRetryDelayMs(item.attempts),
         );
+        item.backoffReason =
+          exactReviewQueueEnqueueAttemptAt(checkedState, checkedAt) >= item.nextAttemptAt
+            ? "dispatcher_backoff"
+            : "admission_retry";
         item.updatedAt = checkedAt;
       }
     }
@@ -3695,9 +3724,11 @@ export class ExactReviewQueue {
       if (failure.attempted && failure.failure.scope === "item") {
         item.state = "parked";
         item.parkedReason = "dispatch_rejected";
+        item.backoffReason = undefined;
       } else {
         item.state = "pending";
         item.nextAttemptAt = completedAt;
+        item.backoffReason = undefined;
       }
       item.updatedAt = completedAt;
       currentChanged = true;
@@ -3984,6 +4015,8 @@ export class ExactReviewQueue {
         clearExactReviewLease(item);
         item.state = "pending";
         item.parkedReason = undefined;
+        item.parkedRecoveryAttempts = 0;
+        item.backoffReason = undefined;
         item.attempts = 0;
         item.publicationFailureAttempts = 0;
         item.firstFailureAt = undefined;
@@ -4087,13 +4120,7 @@ export class ExactReviewQueue {
           revision: this.nextExactReviewItemRevisionSync(recovery.key),
           createdAt: now,
           updatedAt: now,
-          nextAttemptAt: exactReviewQueueDebouncedAttemptAt(
-            state,
-            recovery.decision,
-            now,
-            now,
-            this.env,
-          ),
+          ...exactReviewQueueDebouncedAttempt(state, recovery.decision, now, now, this.env),
           attempts: 0,
         };
         this.storage.sql.exec(
@@ -9010,6 +9037,13 @@ function finishExactReviewPublicationQueueItem({
     item.firstFailureAt = undefined;
     item.lastFailureReason = undefined;
     item.nextAttemptAt = Math.max(exactReviewQueueEnqueueAttemptAt(state, now), requestedRetryAt);
+    item.backoffReason =
+      item.nextAttemptAt > now
+        ? requestedRetryAt >= item.nextAttemptAt
+          ? "publication_retry"
+          : "dispatcher_backoff"
+        : undefined;
+    item.parkedRecoveryAttempts = 0;
     item.updatedAt = now;
     return {
       requeued: true,
@@ -9072,6 +9106,7 @@ function finishExactReviewPublicationQueueItem({
     clearExactReviewLease(item);
     item.state = "parked";
     item.parkedReason = "dead_letter_capacity";
+    item.backoffReason = undefined;
     item.attempts = attempt;
     item.publicationFailureAttempts = attempt;
     item.firstFailureAt = firstFailureAt;
@@ -9092,6 +9127,10 @@ function finishExactReviewPublicationQueueItem({
     now + exactReviewPublicationRetryDelayMs(item.key, completion, attempt),
     requestedRetryAt,
   );
+  item.backoffReason =
+    exactReviewQueueEnqueueAttemptAt(state, now) >= item.nextAttemptAt
+      ? "dispatcher_backoff"
+      : "publication_retry";
   item.updatedAt = now;
   return { requeued: true, retried: true, refreshed: false, parked: false };
 }
@@ -9212,6 +9251,7 @@ function finishExactReviewQueueItem(
       if (failureAttempts >= EXACT_REVIEW_RETRY_LIMIT) {
         item.state = "parked";
         item.parkedReason = "review_retry_exhausted";
+        item.backoffReason = undefined;
         item.updatedAt = now;
         return { requeued: false, parked: true };
       }
@@ -9221,11 +9261,16 @@ function finishExactReviewQueueItem(
       now + exactReviewRetryDelayMs(item.attempts),
       hasNewerRevision ? 0 : requestedRetryAt,
     );
+    item.backoffReason =
+      exactReviewQueueEnqueueAttemptAt(state, now) >= item.nextAttemptAt
+        ? "dispatcher_backoff"
+        : "review_retry";
   } else {
-    item.nextAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
+    Object.assign(item, exactReviewQueueEnqueueAttempt(state, now));
     item.attempts = 0;
     item.reviewFailureAttempts = 0;
     item.parkedReason = undefined;
+    item.parkedRecoveryAttempts = 0;
   }
   item.updatedAt = now;
   return { requeued: true, parked: false };
@@ -9358,6 +9403,7 @@ function reclaimExpiredExactReviewLease(
   clearExactReviewLease(item);
   item.state = "pending";
   item.nextAttemptAt = now;
+  item.backoffReason = undefined;
   if (hasNewerRevision) {
     item.attempts = 0;
     item.publicationFailureAttempts = 0;
@@ -9367,6 +9413,48 @@ function reclaimExpiredExactReviewLease(
   }
   item.updatedAt = now;
   return true;
+}
+
+function exactReviewParkedRecoveryAt(item: ExactReviewQueueItem) {
+  if (
+    item.state !== "parked" ||
+    exactReviewQueueIsPublication(item) ||
+    (item.parkedReason !== "dispatch_rejected" && item.parkedReason !== "review_retry_exhausted")
+  ) {
+    return null;
+  }
+  const recoveries = exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts);
+  if (recoveries >= EXACT_REVIEW_PARKED_RECOVERY_LIMIT) return null;
+  const delay = Math.min(
+    EXACT_REVIEW_PARKED_RECOVERY_MAX_MS,
+    EXACT_REVIEW_PARKED_RECOVERY_BASE_MS * 2 ** recoveries,
+  );
+  return item.updatedAt + delay;
+}
+
+function recoverParkedExactReviewItems(state: ExactReviewQueueState, now: number) {
+  let recovered = 0;
+  for (const item of Object.values(state.items)) {
+    const retryAt = exactReviewParkedRecoveryAt(item);
+    if (retryAt === null || retryAt > now) continue;
+    item.state = "pending";
+    item.parkedReason = undefined;
+    item.parkedRecoveryAttempts =
+      exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts) + 1;
+    item.nextAttemptAt = now;
+    item.backoffReason = undefined;
+    item.attempts = 0;
+    item.reviewFailureAttempts = 0;
+    item.updatedAt = now;
+    clearExactReviewDispatchFailure(item);
+    recovered += 1;
+  }
+  return recovered;
+}
+
+function exactReviewParkedRecoveryAttempts(value: unknown) {
+  const attempts = Number(value || 0);
+  return Number.isSafeInteger(attempts) && attempts > 0 ? attempts : 0;
 }
 
 function expireExactReviewPublicationItems(state: ExactReviewQueueState, now: number, env) {
@@ -9410,17 +9498,15 @@ function refreshExactReviewPublicationItem(
       current.decision = mergePendingExactReviewDecision(current.decision, decision);
       current.state = "pending";
       current.parkedReason = undefined;
+      current.parkedRecoveryAttempts = 0;
     } else {
       return;
     }
     current.revision += 1;
     current.updatedAt = now;
-    current.nextAttemptAt = exactReviewQueueDebouncedAttemptAt(
-      state,
-      current.decision,
-      now,
-      current.createdAt,
-      env,
+    Object.assign(
+      current,
+      exactReviewQueueDebouncedAttempt(state, current.decision, now, current.createdAt, env),
     );
     current.attempts = 0;
     current.publicationFailureAttempts = 0;
@@ -9438,8 +9524,17 @@ function refreshExactReviewPublicationItem(
     revision: 1,
     createdAt: now,
     updatedAt: now,
-    nextAttemptAt: exactReviewQueueDebouncedAttemptAt(state, decision, now, now, env),
+    ...exactReviewQueueDebouncedAttempt(state, decision, now, now, env),
     attempts: 0,
+  };
+}
+
+function exactReviewQueueEnqueueAttempt(state: ExactReviewQueueState, now: number) {
+  const nextAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
+  return {
+    nextAttemptAt,
+    backoffReason:
+      nextAttemptAt > now ? ("dispatcher_backoff" as ExactReviewBackoffReason) : undefined,
   };
 }
 
@@ -9451,7 +9546,7 @@ function exactReviewQueueEnqueueAttemptAt(state: ExactReviewQueueState, now: num
     : now;
 }
 
-function exactReviewQueueDebouncedAttemptAt(
+function exactReviewQueueDebouncedAttempt(
   state: ExactReviewQueueState,
   decision: ExactReviewDecision,
   now: number,
@@ -9459,16 +9554,27 @@ function exactReviewQueueDebouncedAttemptAt(
   env,
 ) {
   const baseAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
-  if (isImmediateExactReviewDecision(decision)) return baseAttemptAt;
+  if (isImmediateExactReviewDecision(decision)) return exactReviewQueueEnqueueAttempt(state, now);
   const debounceAt = Math.min(
     now + exactReviewDispatchDebounceMs(env),
     firstEnqueuedAt + exactReviewDispatchDebounceMaxMs(env),
   );
-  return Math.max(baseAttemptAt, debounceAt);
+  const nextAttemptAt = Math.max(baseAttemptAt, debounceAt);
+  return {
+    nextAttemptAt,
+    backoffReason:
+      nextAttemptAt > now
+        ? ((baseAttemptAt >= debounceAt
+            ? "dispatcher_backoff"
+            : "dispatch_debounce") as ExactReviewBackoffReason)
+        : undefined,
+  };
 }
 
 function isImmediateExactReviewDecision(decision: ExactReviewDecision) {
-  return Boolean(decision.commandStatusMarker || decision.publication);
+  return Boolean(
+    decision.commandStatusMarker || decision.publication || exactReviewScheduledLane(decision),
+  );
 }
 
 function isLowPriorityExactReviewDecision(decision: ExactReviewDecision) {
@@ -10061,11 +10167,14 @@ function exactReviewQueueStats(
       now,
       capacity,
       exactReviewShedSinceReset(state),
+      state,
     ),
     publication: exactReviewQueueLaneStats(
       items.filter(exactReviewQueueIsPublication),
       now,
       publicationCapacity,
+      0,
+      state,
     ),
   };
   const admissibleItems = exactReviewQueueAdmittedItems(
@@ -10138,6 +10247,7 @@ function exactReviewQueueLaneStats(
   now: number,
   capacity: number,
   shedSinceReset = 0,
+  state: ExactReviewQueueState = { items: {} },
 ) {
   const pendingItems = items.filter((item) => item.state === "pending");
   const readyItems = pendingItems.filter((item) => item.nextAttemptAt <= now);
@@ -10173,9 +10283,15 @@ function exactReviewQueueLaneStats(
     shed_since_reset: shedSinceReset,
     ready: readyItems.length,
     backoff: backoffItems.length,
+    backoff_reasons: exactReviewQueueReasonCounts(
+      backoffItems.map((item) => exactReviewQueueBackoffReason(item, state, now)),
+    ),
     dispatching: dispatchingItems.length,
     leased: leasedItems.length,
     parked: parkedItems.length,
+    parked_reasons: exactReviewQueueReasonCounts(
+      parkedItems.map((item) => item.parkedReason || "unknown"),
+    ),
     capacity,
     active,
     available_slots: Math.max(0, capacity - active),
@@ -10191,6 +10307,34 @@ function exactReviewQueueLaneStats(
       oldestBackoffAt === null ? null : Math.max(0, Math.floor((now - oldestBackoffAt) / 1_000)),
     next_attempt_at: nextAttemptAt === null ? null : new Date(nextAttemptAt).toISOString(),
   };
+}
+
+function exactReviewQueueBackoffReason(
+  item: ExactReviewQueueItem,
+  state: ExactReviewQueueState,
+  now: number,
+) {
+  if (item.backoffReason) return item.backoffReason;
+  if (item.publicationFailureAttempts || (exactReviewQueueIsPublication(item) && item.attempts)) {
+    return "publication_retry";
+  }
+  if (item.reviewFailureAttempts || item.attempts) return "retry_backoff";
+  const retryAt = Number(state.dispatcher?.retryAt || 0);
+  if (
+    (state.dispatcher?.state === "paused" || state.dispatcher?.state === "blocked") &&
+    retryAt > now &&
+    item.nextAttemptAt >= retryAt
+  ) {
+    return "dispatcher_backoff";
+  }
+  return "dispatch_debounce";
+}
+
+function exactReviewQueueReasonCounts(reasons: string[]) {
+  return reasons.reduce<Record<string, number>>((counts, reason) => {
+    counts[reason] = (counts[reason] || 0) + 1;
+    return counts;
+  }, {});
 }
 
 export function exactReviewQueueNextWakeAt(
@@ -10294,6 +10438,10 @@ export function exactReviewQueueNextWakeAt(
           capacityBlockedUntil.length ? Math.min(...capacityBlockedUntil) : item.nextAttemptAt,
         ),
       ];
+    }
+    if (item.state === "parked") {
+      const recoveryAt = exactReviewParkedRecoveryAt(item);
+      return recoveryAt === null ? [] : [recoveryAt];
     }
     const leaseExpiresAt = exactReviewEffectiveLeaseExpiresAt(
       item,

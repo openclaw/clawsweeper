@@ -9,6 +9,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Made scheduled exact reviews immediately ready after fleet admission, automatically retried recoverable parked reviews on a bounded 5/10/20-minute cycle, and exposed backoff/park reason counts in queue status and the dashboard.
 - Aligned normal fanout and planner priority with the dashboard's canonical tuple coverage identities, so legacy backfill reports no longer hide untracked open items behind canonical re-reviews.
 - Sized scheduled candidate batches from live free review capacity, apportioned fleet fanout by untracked backlog while retaining round-robin fairness, and skipped empty repositories before both normal and hot fanout so a dominant backlog can fill idle review slots without starving smaller targets.
 - Isolated review admission, pressure, and backpressure accounting from the publication lane so stale publication work cannot throttle review throughput, made top-level queue health review-specific, and added durable shed counters by reason.
