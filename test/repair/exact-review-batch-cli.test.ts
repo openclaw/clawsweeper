@@ -137,6 +137,179 @@ globalThis.fetch = async (url, init) => {
   }
 });
 
+test("batch release retains a committed eligible member until lifecycle post-effects complete", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-batch-cli-release-"));
+  try {
+    const member = batchMember("openclaw/openclaw#803@publish:8030:1", 803);
+    const outcomePath = join(root, "eligible.json");
+    const manifestPath = join(root, "manifest.json");
+    const receiptPath = join(root, "receipt.json");
+    const completionPath = join(root, "completion.json");
+    const preloadPath = join(root, "fetch-preload.cjs");
+    writeFileSync(outcomePath, JSON.stringify({ kind: "eligible", plan: mutationPlan(member) }));
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        batchId: "batch-release-proof",
+        leaseOwner: "proof-worker",
+        configuredBatchSize: 1,
+        batchWaitMs: 0,
+        items: [{ ...member, outcomePath }],
+      }),
+    );
+    writeFileSync(
+      receiptPath,
+      JSON.stringify({
+        batchId: "batch-release-proof",
+        publishedItemKeys: [member.itemKey],
+        outcomes: [],
+      }),
+    );
+    writeFileSync(
+      preloadPath,
+      `const fs = require("node:fs");
+const response = (value) => new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
+globalThis.fetch = async (url, init) => {
+  if (!String(url).endsWith("/publication-batches/complete")) throw new Error("unexpected mock fetch target: " + url);
+  fs.writeFileSync(process.env.BATCH_CLI_COMPLETION, init.body);
+  return response({
+    accepted: 1,
+    skipped: 0,
+    batch: {
+      batch_id: "batch-release-proof",
+      lease_owner: "proof-worker",
+      lease_expires_at: "2026-08-01T00:00:00.000Z",
+      items: [],
+    },
+  });
+};
+`,
+    );
+    const result = spawnSync(
+      process.execPath,
+      ["--require", preloadPath, "dist/repair/exact-review-batch-cli.js", "release"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
+          EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
+          EXACT_REVIEW_BATCH_MANIFEST: manifestPath,
+          EXACT_REVIEW_BATCH_RECEIPT: receiptPath,
+          BATCH_CLI_COMPLETION: completionPath,
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const completion = JSON.parse(readFileSync(completionPath, "utf8")) as {
+      items: Array<{ terminal_outcome: string; reason_code: string }>;
+    };
+    assert.deepEqual(completion.items, [
+      {
+        item_key: member.itemKey,
+        revision: member.revision,
+        claim_generation: member.claimGeneration,
+        terminal_outcome: "retryable_failure",
+        reason_code: "workflow_cancelled",
+      },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("batch release preserves a permanent canonical receipt before lifecycle post-effects", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-batch-cli-permanent-"));
+  try {
+    const member = batchMember("openclaw/openclaw#804@publish:8040:1", 804);
+    const outcomePath = join(root, "eligible.json");
+    const manifestPath = join(root, "manifest.json");
+    const receiptPath = join(root, "receipt.json");
+    const completionPath = join(root, "completion.json");
+    const preloadPath = join(root, "fetch-preload.cjs");
+    const fingerprint = "a".repeat(64);
+    writeFileSync(outcomePath, JSON.stringify({ kind: "eligible", plan: mutationPlan(member) }));
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        batchId: "batch-permanent-proof",
+        leaseOwner: "proof-worker",
+        configuredBatchSize: 1,
+        batchWaitMs: 0,
+        items: [{ ...member, outcomePath }],
+      }),
+    );
+    writeFileSync(
+      receiptPath,
+      JSON.stringify({
+        batchId: "batch-permanent-proof",
+        publishedItemKeys: [],
+        outcomes: [
+          {
+            canonicalTargetKey: "openclaw/openclaw#804",
+            fenceKey: member.itemKey,
+            revision: member.revision,
+            claimGeneration: member.claimGeneration,
+            outcome: "permanent",
+            reasonCode: "tuple_protocol_invalid",
+            errorFingerprint: fingerprint,
+          },
+        ],
+      }),
+    );
+    writeFileSync(
+      preloadPath,
+      `const fs = require("node:fs");
+const response = (value) => new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
+globalThis.fetch = async (url, init) => {
+  if (!String(url).endsWith("/publication-batches/complete")) throw new Error("unexpected mock fetch target: " + url);
+  fs.writeFileSync(process.env.BATCH_CLI_COMPLETION, init.body);
+  return response({
+    accepted: 1,
+    skipped: 0,
+    batch: {
+      batch_id: "batch-permanent-proof",
+      lease_owner: "proof-worker",
+      lease_expires_at: "2026-08-01T00:00:00.000Z",
+      items: [],
+    },
+  });
+};
+`,
+    );
+    const result = spawnSync(
+      process.execPath,
+      ["--require", preloadPath, "dist/repair/exact-review-batch-cli.js", "release"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
+          EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
+          EXACT_REVIEW_BATCH_MANIFEST: manifestPath,
+          EXACT_REVIEW_BATCH_RECEIPT: receiptPath,
+          BATCH_CLI_COMPLETION: completionPath,
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(completionPath, "utf8")).items, [
+      {
+        item_key: member.itemKey,
+        revision: member.revision,
+        claim_generation: member.claimGeneration,
+        terminal_outcome: "permanent_failure",
+        reason_code: "tuple_protocol_invalid",
+        error_fingerprint: fingerprint,
+      },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function batchMember(itemKey: string, itemNumber: number) {
   return {
     itemKey,

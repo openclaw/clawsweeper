@@ -58,6 +58,12 @@ import {
   SnapshotStoreUnavailableError,
   type RecordSnapshot,
 } from "./record-snapshots.ts";
+import {
+  commandAcknowledgementState,
+  ExactReviewLifecycleProjectionStore,
+  lifecycleState,
+  type LifecycleTerminalDisposition,
+} from "./exact-review-lifecycle.ts";
 import { sanitizedServerError } from "./error-safety.ts";
 
 type GithubAppJsonOptions = { method?: string; body?: BodyInit; errorLabel?: string };
@@ -137,6 +143,7 @@ type ExactReviewParkedReason =
 export type ExactReviewQueueItem = {
   key: string;
   decision: ExactReviewDecision;
+  admissionDeliveryId?: string;
   ingressFingerprint?: string;
   leaseDecision?: ExactReviewDecision;
   sourceAuthorityWatermark?: { sequence: number; updatedAt?: string };
@@ -531,6 +538,7 @@ export class ExactReviewQueue {
   private directPublicationStore;
   private recordSnapshotStore;
   private stateWriterCoordinator;
+  private lifecycleProjectionStore;
   private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
   private reviewCoverageCache: { at: number; summary: ReviewCoverageSummary } | null = null;
 
@@ -545,6 +553,7 @@ export class ExactReviewQueue {
       env.STATE_SNAPSHOTS,
     );
     this.stateWriterCoordinator = new StateWriterCoordinator(this.storage);
+    this.lifecycleProjectionStore = new ExactReviewLifecycleProjectionStore(this.storage);
     const initialize = () => this.initializeStorage();
     this.ready =
       typeof state.blockConcurrencyWhile === "function"
@@ -1110,6 +1119,7 @@ export class ExactReviewQueue {
                 ? mergePendingExactReviewDecision(current.decision, decision)
                 : decision;
             current.revision = nextRevision;
+            current.admissionDeliveryId = deliveryId;
             current.updatedAt = now;
             // Immediacy must come from the merged decision: a pending explicit command
             // keeps its command marker through the merge, and a later plain webhook
@@ -1172,6 +1182,7 @@ export class ExactReviewQueue {
           state.items[key] = {
             key,
             decision,
+            admissionDeliveryId: deliveryId,
             ...(ingress ? { ingressFingerprint: ingress.fingerprint } : {}),
             state: "pending",
             revision: this.nextExactReviewItemRevisionSync(key),
@@ -1361,6 +1372,7 @@ export class ExactReviewQueue {
           item.leaseExpiresAt = now + exactReviewExecutionLeaseMs(this.env);
           item.updatedAt = now;
           await this.writeState(state);
+          this.recordLifecycleClaim(item, now);
           await this.scheduleNext(state, now);
           return json(exactReviewClaimResponse(item, claimProtocolVersion, claimGeneration));
         }
@@ -1380,6 +1392,7 @@ export class ExactReviewQueue {
           item.claimProtocolVersion = claimProtocolVersion;
           await this.writeState(state);
         }
+        this.recordLifecycleClaim(item, now);
         return json(exactReviewClaimResponse(item, claimProtocolVersion, claimGeneration));
       }
 
@@ -1393,6 +1406,7 @@ export class ExactReviewQueue {
       item.claimedAt = now;
       item.updatedAt = now;
       await this.writeState(state);
+      this.recordLifecycleClaim(item, now);
       await this.scheduleNext(state, now);
       return json(exactReviewClaimResponse(item, claimProtocolVersion, item.claimGeneration));
     }
@@ -1556,6 +1570,13 @@ export class ExactReviewQueue {
       if (body.requeue_latest !== undefined && typeof body.requeue_latest !== "boolean") {
         return json({ error: "invalid_requeue_latest" }, 400);
       }
+      const lifecycleTerminal =
+        body.lifecycle_terminal_disposition === undefined
+          ? undefined
+          : exactReviewLifecycleTerminalDisposition(body.lifecycle_terminal_disposition);
+      if (body.lifecycle_terminal_disposition !== undefined && !lifecycleTerminal) {
+        return json({ error: "invalid_lifecycle_terminal_disposition" }, 400);
+      }
       if (requeueLatest && outcome !== "success") {
         return json({ error: "invalid_requeue_latest_outcome" }, 400);
       }
@@ -1709,6 +1730,22 @@ export class ExactReviewQueue {
           : undefined,
         completionResult.deadLetter,
       );
+      this.recordLifecycleCompletion({
+        item,
+        revision: tupleCompletion ? leaseRevision : (item.leaseRevision ?? item.revision),
+        claimGeneration: tupleCompletion
+          ? claimGeneration
+          : exactReviewClaimGeneration(item.claimGeneration),
+        runId,
+        runAttempt,
+        outcome,
+        publicationCompletion,
+        requeued,
+        parked: Boolean(completionResult.parked),
+        deadLetter: Boolean(completionResult.deadLetter),
+        lifecycleTerminal,
+        now,
+      });
       await this.scheduleNext(state, now);
       return json({ ok: true, requeued });
     }
@@ -2217,7 +2254,8 @@ export class ExactReviewQueue {
           );
         }
         const accepted = this.directPublicationStore.accept(validated, now);
-        if (owned && validFence && !deferredBatchCompletion) {
+        this.recordLifecycleDirectPublication({ validated, owned, accepted, now });
+        if (owned && validFence && !deferredBatchCompletion && !owned.decision.publication) {
           const producerDecision = owned.decision.publication
             ? owned.decision.publication.producerDecision
             : (owned.leaseDecision ?? owned.decision);
@@ -2253,31 +2291,13 @@ export class ExactReviewQueue {
           };
           owned.decision = publicationDecision;
           owned.leaseDecision = publicationDecision;
-          const completionKind =
-            accepted.outcome === "superseded" ? ("superseded" as const) : ("published" as const);
-          const terminal = finishExactReviewPublicationQueueItem({
-            state,
-            item: owned,
-            now,
-            completion: {
-              kind: completionKind,
-              reasonCode:
-                completionKind === "published" ? "publication_applied" : "remote_newer_tuple",
-            },
-            ownedRevision: validated.revision,
-            deadLetterCapacityAvailable: true,
-            env: this.env,
-          });
+          // The canonical record is durable, but its router handoff and guarded
+          // command-status edit are separate lifecycle post-effects. Keep this
+          // converted publication lease recoverable until that finalizer reports
+          // a structured publication completion.
           await this.writeState(state, {
             reviewCompleted: 1,
             publicationEnqueued: 1,
-            ...(!terminal.requeued && !terminal.parked ? { publicationCompleted: 1 } : {}),
-            ...(completionKind === "published" && !terminal.requeued
-              ? { publicationPublished: 1 }
-              : {}),
-            ...(completionKind === "superseded" && !terminal.requeued
-              ? { publicationSuperseded: 1 }
-              : {}),
           });
         }
         await this.scheduleNext(this.readStateSync(), Date.now());
@@ -2304,6 +2324,30 @@ export class ExactReviewQueue {
           400,
         );
       }
+    }
+
+    if (request.method === "POST" && url.pathname === "/lifecycle/canonical-receipt") {
+      return this.recordLifecycleCanonicalReceipt(await request.json().catch(() => null));
+    }
+
+    if (request.method === "POST" && url.pathname === "/lifecycle/router-receipt") {
+      return this.recordLifecycleRouterReceipt(await request.json().catch(() => null));
+    }
+
+    if (request.method === "POST" && url.pathname === "/lifecycle/terminal-disposition") {
+      return this.recordLifecycleTerminalDisposition(await request.json().catch(() => null));
+    }
+
+    if (request.method === "POST" && url.pathname === "/lifecycle/command-ack/attempt") {
+      return this.authorizeLifecycleCommandAcknowledgement(await request.json().catch(() => null));
+    }
+
+    if (request.method === "POST" && url.pathname === "/lifecycle/command-ack/observed") {
+      return this.observeLifecycleCommandAcknowledgement(await request.json().catch(() => null));
+    }
+
+    if (request.method === "POST" && url.pathname === "/lifecycle/command-ack/failed") {
+      return this.releaseLifecycleCommandAcknowledgement(await request.json().catch(() => null));
     }
 
     if (request.method === "POST" && url.pathname === "/review-telemetry") {
@@ -5000,6 +5044,7 @@ export class ExactReviewQueue {
     // requiring a terminal probe for a newer departure.
     const existingBatch = this.batchStore.fetch(claimId, leaseOwner, now);
     if (existingBatch?.state === "leased") {
+      this.recordLifecycleBatchClaim(existingBatch, state, now);
       await this.scheduleNext(state, now);
       const oldestCandidateAt = existingBatch.items.reduce(
         (oldest, membership) =>
@@ -5124,6 +5169,7 @@ export class ExactReviewQueue {
         effective_max_items: leaseSize,
       });
     }
+    this.recordLifecycleBatchClaim(batch, state, now);
     await this.scheduleNext(state, now);
     const oldestCandidateAt = batch.items.reduce(
       (oldest, membership) =>
@@ -5171,11 +5217,25 @@ export class ExactReviewQueue {
         terminalOutcome: "superseded",
       }));
     if (stale.length) {
+      const lifecycleTerminals: Array<{
+        canonicalTargetKey: string;
+        fenceKey: string;
+        revision: number;
+        kind: LifecycleTerminalDisposition;
+      }> = [];
       batch = this.batchStore.complete(batchId, leaseOwner, stale, now, {}, (accepted) => {
         const current = this.readStateSync();
         let superseded = 0;
         for (const completion of accepted) {
           const item = current.items[completion.itemKey];
+          if (item) {
+            lifecycleTerminals.push({
+              canonicalTargetKey: `${item.decision.targetRepo}#${item.decision.itemNumber}`,
+              fenceKey: completion.itemKey,
+              revision: completion.revision,
+              kind: "superseded",
+            });
+          }
           const publicationRevision = item ? exactReviewPublicationRevision(item.decision) : null;
           if (
             !item ||
@@ -5206,6 +5266,9 @@ export class ExactReviewQueue {
         });
       });
       if (!batch) return json({ error: "batch_lease_not_active" }, 409);
+      for (const terminal of lifecycleTerminals) {
+        this.recordLifecycleTerminal(terminal, now);
+      }
       state = this.readStateSync();
       await this.scheduleNext(state, now);
     }
@@ -5326,6 +5389,12 @@ export class ExactReviewQueue {
       ),
     );
     const now = Date.now();
+    const lifecycleTerminals: Array<{
+      canonicalTargetKey: string;
+      fenceKey: string;
+      revision: number;
+      kind: LifecycleTerminalDisposition;
+    }> = [];
     let batch = this.batchStore.complete(
       batchId,
       leaseOwner,
@@ -5367,6 +5436,14 @@ export class ExactReviewQueue {
           ) {
             continue;
           }
+          if (completion.terminalOutcome === "superseded") {
+            lifecycleTerminals.push({
+              canonicalTargetKey: `${item.decision.targetRepo}#${item.decision.itemNumber}`,
+              fenceKey: completion.itemKey,
+              revision: completion.revision,
+              kind: "superseded",
+            });
+          }
           if (requested.publicationCompletion) {
             const result = finishExactReviewPublicationQueueItem({
               state,
@@ -5382,6 +5459,19 @@ export class ExactReviewQueue {
             if (result.deadLetter) {
               this.insertDeadLetterSync(result.deadLetter);
               deadLettered += 1;
+            }
+            const lifecycleTerminal = result.deadLetter
+              ? "dead_letter"
+              : result.requeued || result.parked || result.refreshed
+                ? "requeue"
+                : null;
+            if (lifecycleTerminal) {
+              lifecycleTerminals.push({
+                canonicalTargetKey: `${item.decision.targetRepo}#${item.decision.itemNumber}`,
+                fenceKey: completion.itemKey,
+                revision: completion.revision,
+                kind: lifecycleTerminal,
+              });
             }
             if (!result.requeued && !result.parked) completed += 1;
             if (result.retried) retried += 1;
@@ -5416,6 +5506,9 @@ export class ExactReviewQueue {
       },
     );
     if (!batch) return json({ error: "batch_lease_not_active" }, 409);
+    for (const terminal of lifecycleTerminals) {
+      this.recordLifecycleTerminal(terminal, now);
+    }
     if (stateWriter?.commit_count === 1) {
       batch =
         this.batchStore.recordObservation(
@@ -5440,6 +5533,486 @@ export class ExactReviewQueue {
       skipped: completions.length - acceptedCount,
       batch: exactReviewPublicationBatchJson(batch),
     });
+  }
+
+  private recordLifecycleClaim(item: ExactReviewQueueItem, now: number) {
+    if (!exactReviewQueueIsPublication(item) || !item.claimedRunId) return;
+    const revision = item.leaseRevision ?? item.revision;
+    const sourceDecision =
+      item.decision.publication?.producerDecision ?? item.leaseDecision ?? item.decision;
+    const identity = {
+      canonicalTargetKey: `${item.decision.targetRepo}#${item.decision.itemNumber}`,
+      fenceKey: item.key,
+      revision,
+    };
+    const existing = this.lifecycleProjectionStore.read(
+      identity.canonicalTargetKey,
+      identity.fenceKey,
+      identity.revision,
+    );
+    if (existing && existing.fenceKey !== identity.fenceKey) {
+      throw new Error("conflicting lifecycle projection identity");
+    }
+    if (!existing) {
+      const commandOriginated = Boolean(
+        sourceDecision.commandStatusMarker || sourceDecision.statusCommentId,
+      );
+      this.lifecycleProjectionStore.recordAdmission({
+        ...identity,
+        deliveryId: item.admissionDeliveryId ?? `claim:${item.leaseId}:${revision}`,
+        sourceAction: sourceDecision.sourceAction,
+        commandOriginated,
+        statusMarker: sourceDecision.commandStatusMarker ?? null,
+        statusCommentId: sourceDecision.statusCommentId ?? null,
+        observedAt: now,
+      });
+    }
+    this.lifecycleProjectionStore.recordClaim({
+      ...identity,
+      claimGeneration: exactReviewClaimGeneration(item.claimGeneration),
+      runId: item.claimedRunId,
+      runAttempt: exactReviewRunAttempt(item.claimedRunAttempt),
+      observedAt: now,
+    });
+  }
+
+  private recordLifecycleBatchClaim(batch, state: ExactReviewQueueState, now: number) {
+    if (
+      !batch.runnerRunId ||
+      !Number.isSafeInteger(batch.runnerRunAttempt) ||
+      batch.runnerRunAttempt < 1
+    ) {
+      return;
+    }
+    for (const membership of batch.items) {
+      const item = state.items[membership.itemKey];
+      if (!item || !exactReviewQueueIsPublication(item) || item.revision !== membership.revision) {
+        continue;
+      }
+      const sourceDecision =
+        item.decision.publication?.producerDecision ?? item.leaseDecision ?? item.decision;
+      const identity = {
+        canonicalTargetKey: `${item.decision.targetRepo}#${item.decision.itemNumber}`,
+        fenceKey: item.key,
+        revision: membership.revision,
+      };
+      const existing = this.lifecycleProjectionStore.read(
+        identity.canonicalTargetKey,
+        identity.fenceKey,
+        identity.revision,
+      );
+      if (!existing) {
+        this.lifecycleProjectionStore.recordAdmission({
+          ...identity,
+          deliveryId:
+            item.admissionDeliveryId ?? `publication:${membership.itemKey}:${membership.revision}`,
+          sourceAction: sourceDecision.sourceAction,
+          commandOriginated: Boolean(
+            sourceDecision.commandStatusMarker || sourceDecision.statusCommentId,
+          ),
+          statusMarker: sourceDecision.commandStatusMarker ?? null,
+          statusCommentId: sourceDecision.statusCommentId ?? null,
+          observedAt: now,
+        });
+      }
+      this.lifecycleProjectionStore.recordClaim({
+        ...identity,
+        claimGeneration: membership.claimGeneration,
+        runId: batch.runnerRunId,
+        runAttempt: batch.runnerRunAttempt,
+        observedAt: now,
+      });
+      // Batch publication begins only after the source review is materialized;
+      // keep that immutable result even if this publication is later superseded.
+      this.lifecycleProjectionStore.recordReviewResult({
+        ...identity,
+        claimGeneration: membership.claimGeneration,
+        runId: batch.runnerRunId,
+        runAttempt: batch.runnerRunAttempt,
+        outcome: "completed",
+        observedAt: now,
+      });
+    }
+  }
+
+  private recordLifecycleTerminal(
+    identity: {
+      canonicalTargetKey: string;
+      fenceKey: string;
+      revision: number;
+      kind: LifecycleTerminalDisposition;
+    },
+    now: number,
+  ) {
+    if (
+      !this.lifecycleProjectionStore.read(
+        identity.canonicalTargetKey,
+        identity.fenceKey,
+        identity.revision,
+      )
+    ) {
+      return;
+    }
+    this.lifecycleProjectionStore.recordTerminalDisposition({
+      ...identity,
+      kind: identity.kind,
+      observedAt: now,
+    });
+  }
+
+  private recordLifecycleDirectPublication({ validated, owned, accepted, now }) {
+    const sourceDecision = owned?.decision.publication
+      ? owned.decision.publication.producerDecision
+      : (owned?.leaseDecision ?? owned?.decision);
+    const commandOriginated = Boolean(
+      sourceDecision?.commandStatusMarker || sourceDecision?.statusCommentId,
+    );
+    const identity = {
+      canonicalTargetKey: validated.canonicalTargetKey,
+      fenceKey: validated.fenceKey,
+      revision: validated.revision,
+    };
+    const existingProjection = this.lifecycleProjectionStore.read(
+      identity.canonicalTargetKey,
+      identity.fenceKey,
+      identity.revision,
+    );
+    if (existingProjection && existingProjection.fenceKey !== identity.fenceKey) {
+      throw new Error("conflicting lifecycle projection identity");
+    }
+    const statusMarker = sourceDecision?.commandStatusMarker ?? null;
+    const statusCommentId = sourceDecision?.statusCommentId ?? null;
+    if (!existingProjection) {
+      this.lifecycleProjectionStore.recordAdmission({
+        ...identity,
+        deliveryId:
+          owned?.admissionDeliveryId ?? `publication:${validated.fenceKey}:${validated.revision}`,
+        sourceAction: sourceDecision?.sourceAction ?? "exact_review_publication",
+        commandOriginated,
+        statusMarker,
+        statusCommentId,
+        observedAt: now,
+      });
+    }
+    const recordedClaim = existingProjection?.claims.find(
+      (claim) => claim.claimGeneration === validated.identity.claimGeneration,
+    );
+    const runId = recordedClaim?.runId ?? String(owned?.claimedRunId || "");
+    const runAttempt = recordedClaim?.runAttempt ?? exactReviewRunAttempt(owned?.claimedRunAttempt);
+    if (/^\d+$/.test(runId)) {
+      const claimGeneration = recordedClaim?.claimGeneration ?? validated.identity.claimGeneration;
+      this.lifecycleProjectionStore.recordClaim({
+        ...identity,
+        claimGeneration,
+        runId,
+        runAttempt,
+        observedAt: now,
+      });
+      this.lifecycleProjectionStore.recordReviewResult({
+        ...identity,
+        claimGeneration,
+        runId,
+        runAttempt,
+        outcome: "completed",
+        observedAt: now,
+      });
+    }
+    const effect = exactReviewGithubEffect(validated.operations);
+    if (effect)
+      this.lifecycleProjectionStore.recordGithubEffect({ ...identity, ...effect, observedAt: now });
+    this.lifecycleProjectionStore.recordCanonicalReceipt({
+      ...identity,
+      outcome: accepted.outcome,
+      receiptId: `direct:${validated.fenceKey}:${validated.revision}:${accepted.outcome}`,
+      observedAt: now,
+    });
+    if (accepted.outcome === "superseded") {
+      this.lifecycleProjectionStore.recordTerminalDisposition({
+        ...identity,
+        kind: "superseded",
+        observedAt: now,
+      });
+    }
+  }
+
+  private recordLifecycleCompletion({
+    item,
+    revision,
+    claimGeneration,
+    runId,
+    runAttempt,
+    outcome,
+    publicationCompletion,
+    requeued,
+    parked,
+    deadLetter,
+    lifecycleTerminal,
+    now,
+  }) {
+    const identity = {
+      canonicalTargetKey: `${item.decision.targetRepo}#${item.decision.itemNumber}`,
+      fenceKey: item.key,
+      revision,
+    };
+    const projection = this.lifecycleProjectionStore.read(
+      identity.canonicalTargetKey,
+      identity.fenceKey,
+      identity.revision,
+    );
+    if (!projection || projection.fenceKey !== identity.fenceKey) return;
+    this.lifecycleProjectionStore.recordReviewResult({
+      ...identity,
+      claimGeneration,
+      runId,
+      runAttempt,
+      outcome: outcome === "success" ? "completed" : outcome === "failure" ? "failed" : outcome,
+      observedAt: now,
+    });
+    const disposition: LifecycleTerminalDisposition | null = deadLetter
+      ? "dead_letter"
+      : requeued || parked
+        ? "requeue"
+        : (lifecycleTerminal ??
+          (publicationCompletion?.kind === "superseded"
+            ? publicationCompletion.reasonCode === "remote_closed"
+              ? "target_closed"
+              : "superseded"
+            : publicationCompletion?.kind === "permanent_failure"
+              ? "failure"
+              : publicationCompletion?.kind === "deferred" &&
+                  publicationCompletion.reasonCode === "close_coverage_deferred" &&
+                  projection.routerReceipt?.outcome === "durable"
+                ? "review_completed_routed"
+                : publicationCompletion?.kind === "retryable_failure" ||
+                    publicationCompletion?.kind === "refresh_required" ||
+                    publicationCompletion?.kind === "deferred"
+                  ? "requeue"
+                  : outcome === "failure" || outcome === "cancelled"
+                    ? "failure"
+                    : null));
+    if (disposition) {
+      this.lifecycleProjectionStore.recordTerminalDisposition({
+        ...identity,
+        kind: disposition,
+        observedAt: now,
+      });
+    }
+  }
+
+  private recordLifecycleCanonicalReceipt(value: unknown) {
+    const body = objectValue(value);
+    const identity = exactReviewLifecycleIdentity(body);
+    const receiptId = typeof body.receipt_id === "string" ? body.receipt_id : "";
+    const outcome = body.outcome;
+    if (
+      !identity ||
+      !receiptId ||
+      (outcome !== "accepted" && outcome !== "deduped" && outcome !== "superseded")
+    ) {
+      return json({ error: "invalid_lifecycle_canonical_receipt" }, 400);
+    }
+    try {
+      const projection = this.lifecycleProjectionStore.recordCanonicalReceipt({
+        ...identity,
+        outcome,
+        receiptId,
+        observedAt: Date.now(),
+      });
+      return json({
+        ok: true,
+        lifecycle_state: lifecycleState(projection),
+        version: projection.version,
+      });
+    } catch (error) {
+      console.warn(`lifecycle canonical receipt rejected: ${sanitizedServerError(error)}`);
+      return json({ error: "invalid_lifecycle_canonical_receipt" }, 409);
+    }
+  }
+
+  private recordLifecycleRouterReceipt(value: unknown) {
+    const body = objectValue(value);
+    const identity = exactReviewLifecycleIdentity(body);
+    const receiptId = typeof body.receipt_id === "string" ? body.receipt_id : "";
+    const outcome = body.outcome === undefined ? "durable" : body.outcome;
+    if (!identity || !receiptId || (outcome !== "durable" && outcome !== "not_required")) {
+      return json({ error: "invalid_lifecycle_router_receipt" }, 400);
+    }
+    try {
+      const projection = this.lifecycleProjectionStore.recordRouterReceipt({
+        ...identity,
+        outcome,
+        receiptId,
+        observedAt: Date.now(),
+      });
+      const completed = this.lifecycleProjectionStore.recordTerminalDisposition({
+        ...identity,
+        kind: "review_completed_routed",
+        observedAt: Date.now(),
+      });
+      return json({
+        ok: true,
+        lifecycle_state: lifecycleState(completed),
+        version: projection.version,
+      });
+    } catch (error) {
+      console.warn(`lifecycle router receipt rejected: ${sanitizedServerError(error)}`);
+      return json({ error: "invalid_lifecycle_router_receipt" }, 409);
+    }
+  }
+
+  private authorizeLifecycleCommandAcknowledgement(value: unknown) {
+    const body = objectValue(value);
+    const identity = exactReviewLifecycleIdentity(body);
+    const statusMarker =
+      body.status_marker === undefined || body.status_marker === null
+        ? null
+        : typeof body.status_marker === "string"
+          ? body.status_marker
+          : "";
+    const statusCommentId =
+      body.status_comment_id === undefined || body.status_comment_id === null
+        ? null
+        : Number(body.status_comment_id);
+    if (
+      !identity ||
+      (statusMarker !== null && !statusMarker) ||
+      (statusCommentId !== null && (!Number.isSafeInteger(statusCommentId) || statusCommentId < 1))
+    ) {
+      return json({ error: "invalid_lifecycle_acknowledgement_attempt" }, 400);
+    }
+    try {
+      const result = this.lifecycleProjectionStore.authorizeCommandAcknowledgement({
+        ...identity,
+        statusMarker,
+        statusCommentId,
+        observedAt: Date.now(),
+      });
+      return json({
+        ok: true,
+        allowed: result.allowed,
+        lifecycle_state: result.lifecycle,
+        acknowledgement_state: result.acknowledgement,
+        ...(result.attemptId ? { attempt_id: result.attemptId } : {}),
+        version: result.projection.version,
+      });
+    } catch (error) {
+      console.warn(`lifecycle acknowledgement rejected: ${sanitizedServerError(error)}`);
+      return json({ error: "invalid_lifecycle_acknowledgement_attempt" }, 409);
+    }
+  }
+
+  private observeLifecycleCommandAcknowledgement(value: unknown) {
+    const body = objectValue(value);
+    const canonicalTargetKey =
+      typeof body.canonical_target_key === "string" ? body.canonical_target_key : "";
+    const statusMarker =
+      body.status_marker === undefined || body.status_marker === null
+        ? null
+        : typeof body.status_marker === "string"
+          ? body.status_marker
+          : "";
+    const commandCommentId = Number(body.command_comment_id);
+    const completionCommentId = Number(body.completion_comment_id);
+    const observedAt = Number(body.observed_at);
+    if (
+      !canonicalTargetKey ||
+      (statusMarker !== null && !statusMarker) ||
+      !Number.isSafeInteger(commandCommentId) ||
+      commandCommentId < 1 ||
+      !Number.isSafeInteger(completionCommentId) ||
+      completionCommentId < 1 ||
+      !Number.isSafeInteger(observedAt) ||
+      observedAt < 1
+    ) {
+      return json({ error: "invalid_lifecycle_acknowledgement_receipt" }, 400);
+    }
+    try {
+      const result = this.lifecycleProjectionStore.observeCommandAcknowledgement({
+        canonicalTargetKey,
+        statusMarker,
+        commandCommentId,
+        completionCommentId,
+        observedAt,
+      });
+      return json({
+        ok: true,
+        accepted: result.accepted,
+        lifecycle_state: result.state,
+        acknowledgement_state: result.acknowledgement,
+        ...(result.projection ? { version: result.projection.version } : {}),
+      });
+    } catch (error) {
+      console.warn(`lifecycle acknowledgement receipt rejected: ${sanitizedServerError(error)}`);
+      return json({ error: "invalid_lifecycle_acknowledgement_receipt" }, 409);
+    }
+  }
+
+  private releaseLifecycleCommandAcknowledgement(value: unknown) {
+    const body = objectValue(value);
+    const identity = exactReviewLifecycleIdentity(body);
+    const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : "";
+    const statusMarker =
+      body.status_marker === undefined || body.status_marker === null
+        ? null
+        : typeof body.status_marker === "string"
+          ? body.status_marker
+          : "";
+    const statusCommentId =
+      body.status_comment_id === undefined || body.status_comment_id === null
+        ? null
+        : Number(body.status_comment_id);
+    if (
+      !identity ||
+      !/^ack:[1-9]\d*$/.test(attemptId) ||
+      (statusMarker !== null && !statusMarker) ||
+      (statusCommentId !== null && (!Number.isSafeInteger(statusCommentId) || statusCommentId < 1))
+    ) {
+      return json({ error: "invalid_lifecycle_acknowledgement_failure" }, 400);
+    }
+    try {
+      const result = this.lifecycleProjectionStore.recordCommandAcknowledgementFailure({
+        ...identity,
+        attemptId,
+        statusMarker,
+        statusCommentId,
+        observedAt: Date.now(),
+      });
+      return json({
+        ok: true,
+        released: result.released,
+        lifecycle_state: lifecycleState(result.projection),
+        acknowledgement_state: commandAcknowledgementState(result.projection),
+        version: result.projection.version,
+      });
+    } catch (error) {
+      console.warn(`lifecycle acknowledgement release rejected: ${sanitizedServerError(error)}`);
+      return json({ error: "invalid_lifecycle_acknowledgement_failure" }, 409);
+    }
+  }
+
+  private recordLifecycleTerminalDisposition(value: unknown) {
+    const body = objectValue(value);
+    const identity = exactReviewLifecycleIdentity(body);
+    const kind = exactReviewLifecycleTerminalDisposition(body.kind);
+    if (!identity || !kind) {
+      return json({ error: "invalid_lifecycle_terminal_disposition" }, 400);
+    }
+    try {
+      const projection = this.lifecycleProjectionStore.recordTerminalDisposition({
+        ...identity,
+        kind,
+        observedAt: Date.now(),
+      });
+      return json({
+        ok: true,
+        lifecycle_state: lifecycleState(projection),
+        acknowledgement_state: commandAcknowledgementState(projection),
+        version: projection.version,
+      });
+    } catch (error) {
+      console.warn(`lifecycle terminal disposition rejected: ${sanitizedServerError(error)}`);
+      return json({ error: "invalid_lifecycle_terminal_disposition" }, 409);
+    }
   }
 
   private publicationHeadRevisionSync(targetKey: string): number {
@@ -5510,6 +6083,7 @@ export class ExactReviewQueue {
     this.directPublicationStore.ensureSchemaSync();
     this.recordSnapshotStore.ensureSchemaSync();
     this.stateWriterCoordinator.ensureSchemaSync();
+    this.lifecycleProjectionStore.ensureSchemaSync();
     let meta = this.readStorageMetaSync();
     let migratedLegacy = false;
     const legacy = this.storage.kv.get(EXACT_REVIEW_QUEUE_STATE_KEY) as
@@ -8354,6 +8928,59 @@ function exactReviewPublicationCompletion(
 function exactReviewRunAttempt(value): number | null {
   const runAttempt = Number(value);
   return Number.isInteger(runAttempt) && runAttempt > 0 ? runAttempt : null;
+}
+
+function exactReviewLifecycleIdentity(value: Record<string, unknown>) {
+  const canonicalTargetKey = value.canonical_target_key;
+  const fenceKey = value.fence_key;
+  const revision = Number(value.revision);
+  if (
+    typeof canonicalTargetKey !== "string" ||
+    typeof fenceKey !== "string" ||
+    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d*$/.test(canonicalTargetKey) ||
+    !fenceKey ||
+    fenceKey.length > 512 ||
+    /[\r\n]/.test(fenceKey) ||
+    !Number.isSafeInteger(revision) ||
+    revision < 1
+  ) {
+    return null;
+  }
+  return { canonicalTargetKey, fenceKey, revision };
+}
+
+function exactReviewGithubEffect(
+  operations: ReadonlyArray<{ section: string; content: string | null }>,
+) {
+  for (const operation of operations) {
+    if (operation.section !== "items" || operation.content === null) continue;
+    const commentId = /^review_comment_id:\s*([1-9]\d*)\s*$/m.exec(operation.content)?.[1];
+    const digest = /^review_comment_sha256:\s*([0-9a-f]{64})\s*$/m.exec(operation.content)?.[1];
+    if (!commentId || !digest) continue;
+    const parsedCommentId = Number(commentId);
+    if (Number.isSafeInteger(parsedCommentId) && parsedCommentId > 0) {
+      return { commentId: parsedCommentId, digest };
+    }
+  }
+  return null;
+}
+
+function exactReviewLifecycleTerminalDisposition(
+  value: unknown,
+): LifecycleTerminalDisposition | null {
+  return [
+    "review_completed_routed",
+    "superseded",
+    "requeue",
+    "dead_letter",
+    "target_closed",
+    "target_missing",
+    "policy_noop",
+    "guarded_open",
+    "failure",
+  ].includes(value as LifecycleTerminalDisposition)
+    ? (value as LifecycleTerminalDisposition)
+    : null;
 }
 
 function exactReviewDeadLetterIds(value): string[] | null {

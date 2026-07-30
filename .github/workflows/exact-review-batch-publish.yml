@@ -137,6 +137,7 @@ jobs:
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ github.token }}
+          TARGET_GH_TOKEN: ${{ steps.target-token.outputs.token }}
           AUTO_IMPLEMENT_ISSUES: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES }}
           MAX_DISPATCH: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}
           CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
@@ -179,21 +180,29 @@ jobs:
             test ! -f "$heartbeat_failed"
             outcome_path="$(jq -r '.outcomePath' <<<"$item")"
             [ -f "$outcome_path" ] || continue
-            if ! jq -e '.kind == "eligible" or (.kind == "superseded" and .disposition.requeueLatestExpected == true)' "$outcome_path" >/dev/null; then
-              continue
-            fi
-            if jq -e '.kind == "eligible"' "$outcome_path" >/dev/null; then
-              fence_key="$(jq -r '.itemKey' <<<"$item")"
-              if ! jq -e --arg fence_key "$fence_key" \
-                'any(.outcomes[]?; .fenceKey == $fence_key and (.outcome == "accepted" or .outcome == "deduped"))' \
-                "$receipt_path" >/dev/null; then
+            outcome_kind="$(jq -r '.kind // empty' "$outcome_path")"
+            fence_key="$(jq -r '.itemKey' <<<"$item")"
+            receipt_outcome="$(jq -r --arg fence_key "$fence_key" \
+              '[.outcomes[]? | select(.fenceKey == $fence_key) | .outcome] | last // empty' \
+              "$receipt_path")"
+            if [ "$outcome_kind" = "eligible" ]; then
+              if [ "$receipt_outcome" != "accepted" ] && [ "$receipt_outcome" != "deduped" ] && \
+                [ "$receipt_outcome" != "superseded" ] && [ "$receipt_outcome" != "permanent" ]; then
                 continue
               fi
+            elif [ "$outcome_kind" != "superseded" ] && [ "$outcome_kind" != "permanent_failure" ]; then
+              continue
             fi
             target_repo="$(jq -r '.decision.targetRepo' <<<"$item")"
             target_branch="$(jq -r '.decision.targetBranch' <<<"$item")"
             item_number="$(jq -r '.decision.itemNumber' <<<"$item")"
             source_action="$(jq -r '.decision.publication.producerDecision.sourceAction' <<<"$item")"
+            fence_key="$(jq -r '.itemKey' <<<"$item")"
+            revision="$(jq -r '.revision' <<<"$item")"
+            export TARGET_REPO="$target_repo" ITEM_NUMBER="$item_number" FENCE_KEY="$fence_key" REVISION="$revision"
+            lifecycle_terminal=""
+            lifecycle_router_outcome=""
+            lifecycle_deferred_coverage="false"
             if jq -e '.disposition.requeueLatestExpected == true' "$outcome_path" >/dev/null; then
               delivery_id="publisher-source-drift:$(jq -r '.itemKey' <<<"$item"):$(jq -r '.revision' <<<"$item")"
               producer_decision="$(jq -c '.decision.publication.producerDecision' <<<"$item")"
@@ -216,11 +225,23 @@ jobs:
                 --data "$payload" \
                 "${EXACT_REVIEW_QUEUE_URL%/}/internal/exact-review/enqueue")"
               jq -e '.ok == true and (.queued == true or .deduped == true or .shed == true)' <<<"$response" >/dev/null
-            elif jq -e '.disposition.deferredCloseCoverageExpected == true' "$outcome_path" >/dev/null; then
-              # The committed tuple is the durable input consumed by the bounded
-              # scheduled proof lane; no immediate mutation workflow is dispatched.
-              :
-            elif jq -e '.disposition.routableSyncExpected == true' "$outcome_path" >/dev/null && [ "$source_action" != "failed_review_shard_recovery" ]; then
+              lifecycle_terminal="requeue"
+            elif jq -e '.disposition.terminalMissingExpected == true' "$outcome_path" >/dev/null; then
+              lifecycle_terminal="target_missing"
+            elif jq -e '.disposition.terminalClosedExpected == true' "$outcome_path" >/dev/null; then
+              lifecycle_terminal="target_closed"
+            elif jq -e '.disposition.guardedOpenAction != null and .disposition.guardedOpenAction != ""' "$outcome_path" >/dev/null; then
+              lifecycle_terminal="guarded_open"
+            elif [ "$outcome_kind" = "permanent_failure" ] || [ "$receipt_outcome" = "permanent" ]; then
+              # A permanent publisher result remains retryable until the durable
+              # queue decides whether it requeues or reaches dead-letter. The
+              # later guarded acknowledgement reads that terminal projection.
+              continue
+            elif [ "$outcome_kind" = "superseded" ] || [ "$receipt_outcome" = "superseded" ]; then
+              lifecycle_terminal="superseded"
+            elif [ "$source_action" = "failed_review_shard_recovery" ]; then
+              lifecycle_router_outcome="not_required"
+            elif jq -e '.disposition.routableSyncExpected == true' "$outcome_path" >/dev/null; then
               github_apply_error="$(mktemp)"
               if gh workflow run repair-comment-router.yml \
                 --repo "$GITHUB_REPOSITORY" \
@@ -243,7 +264,73 @@ jobs:
                 rm -f "$github_apply_error"
                 exit "$github_apply_status"
               fi
+              lifecycle_router_outcome="durable"
+            elif jq -e '.disposition.deferredCloseCoverageExpected == true' "$outcome_path" >/dev/null; then
+              # Target closure remains a later proof-lane concern, while the
+              # durable handoff completes this review lifecycle.
+              lifecycle_router_outcome="durable"
+              lifecycle_deferred_coverage="true"
+            else
+              lifecycle_terminal="policy_noop"
             fi
+            if [ -n "$lifecycle_router_outcome" ] || [ -n "$lifecycle_terminal" ]; then
+              temporary="${outcome_path}.tmp"
+              jq '.postEffectsRequired = true' "$outcome_path" > "$temporary"
+              mv "$temporary" "$outcome_path"
+            fi
+            if [ -n "$lifecycle_router_outcome" ]; then
+              export LIFECYCLE_ROUTER_OUTCOME="$lifecycle_router_outcome"
+              export LIFECYCLE_DEFERRED_COVERAGE="$lifecycle_deferred_coverage"
+              lifecycle_payload="$(node -e '
+                const crypto = require("node:crypto");
+                const revision = Number(process.env.REVISION);
+                if (!Number.isInteger(revision) || revision < 1 || !process.env.FENCE_KEY) process.exit(1);
+                const receiptFence = crypto.createHash("sha256").update(process.env.FENCE_KEY).digest("hex").slice(0, 24);
+                const prefix = process.env.LIFECYCLE_DEFERRED_COVERAGE === "true"
+                  ? "router-batch-proof"
+                  : process.env.LIFECYCLE_ROUTER_OUTCOME === "not_required"
+                    ? "router-batch-not-required"
+                    : "router-batch";
+                process.stdout.write(JSON.stringify({
+                  canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
+                  fence_key: process.env.FENCE_KEY,
+                  revision,
+                  outcome: process.env.LIFECYCLE_ROUTER_OUTCOME,
+                  receipt_id: `${prefix}:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}:${receiptFence}`,
+                }));
+              ')"
+              lifecycle_signature="$(PAYLOAD="$lifecycle_payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
+              lifecycle_response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+                --request POST \
+                --header "content-type: application/json" \
+                --header "x-clawsweeper-exact-review-signature: $lifecycle_signature" \
+                --data "$lifecycle_payload" \
+                "${EXACT_REVIEW_QUEUE_URL%/}/internal/exact-review/lifecycle/router-receipt")"
+              jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
+            elif [ -n "$lifecycle_terminal" ]; then
+              export LIFECYCLE_TERMINAL="$lifecycle_terminal"
+              lifecycle_payload="$(node -e '
+                const revision = Number(process.env.REVISION);
+                if (!Number.isInteger(revision) || revision < 1 || !process.env.FENCE_KEY || !process.env.LIFECYCLE_TERMINAL) process.exit(1);
+                process.stdout.write(JSON.stringify({
+                  canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
+                  fence_key: process.env.FENCE_KEY,
+                  revision,
+                  kind: process.env.LIFECYCLE_TERMINAL,
+                }));
+              ')"
+              lifecycle_signature="$(PAYLOAD="$lifecycle_payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
+              lifecycle_response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+                --request POST \
+                --header "content-type: application/json" \
+                --header "x-clawsweeper-exact-review-signature: $lifecycle_signature" \
+                --data "$lifecycle_payload" \
+                "${EXACT_REVIEW_QUEUE_URL%/}/internal/exact-review/lifecycle/terminal-disposition")"
+              jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
+            fi
+            # The optional implementation lane consumes only a durable lifecycle
+            # receipt or terminal handoff. It is deliberately outside the
+            # command-status acknowledgement path below.
             if [ "$AUTO_IMPLEMENT_ISSUES" = "1" ] &&
               [ "$remaining_implementations" -gt 0 ] &&
               [ "$target_repo" = "openclaw/openclaw" ] &&
@@ -269,6 +356,77 @@ jobs:
                 fi
               fi
             fi
+            command_status_marker="$(jq -r '.decision.publication.producerDecision.commandStatusMarker // empty' <<<"$item")"
+            status_comment_id="$(jq -r '.decision.publication.producerDecision.statusCommentId // empty' <<<"$item")"
+            if [ -n "$command_status_marker" ] || [ -n "$status_comment_id" ]; then
+              test -n "$TARGET_GH_TOKEN"
+              export COMMAND_STATUS_MARKER="$command_status_marker" STATUS_COMMENT_ID="$status_comment_id"
+              acknowledgement_payload="$(node -e '
+                const revision = Number(process.env.REVISION);
+                const statusMarker = process.env.COMMAND_STATUS_MARKER || null;
+                const statusCommentId = process.env.STATUS_COMMENT_ID
+                  ? Number(process.env.STATUS_COMMENT_ID)
+                  : null;
+                if (!Number.isInteger(revision) || revision < 1 || !process.env.FENCE_KEY || (!statusMarker && statusCommentId === null)) process.exit(1);
+                if (statusCommentId !== null && (!Number.isSafeInteger(statusCommentId) || statusCommentId < 1)) process.exit(1);
+                process.stdout.write(JSON.stringify({
+                  canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
+                  fence_key: process.env.FENCE_KEY,
+                  revision,
+                  ...(statusMarker === null ? {} : { status_marker: statusMarker }),
+                  ...(statusCommentId === null ? {} : { status_comment_id: statusCommentId }),
+                }));
+              ')"
+              acknowledgement_signature="$(PAYLOAD="$acknowledgement_payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
+              acknowledgement="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+                --request POST \
+                --header "content-type: application/json" \
+                --header "x-clawsweeper-exact-review-signature: $acknowledgement_signature" \
+                --data "$acknowledgement_payload" \
+                "${EXACT_REVIEW_QUEUE_URL%/}/internal/exact-review/lifecycle/command-ack/attempt")"
+              if jq -e '.ok == true and .allowed == true and .acknowledgement_state == "pending"' <<<"$acknowledgement" >/dev/null; then
+                attempt_id="$(jq -r '.attempt_id // empty' <<<"$acknowledgement")"
+                test -n "$attempt_id"
+                detail="The exact review reached a terminal outcome."
+                if [ "$lifecycle_deferred_coverage" = "true" ]; then
+                  detail="The durable review handoff is complete; the separate close-proof lane owns any later target closure."
+                elif [ "$lifecycle_router_outcome" = "durable" ]; then
+                  detail="The durable review comment was published and its verdict was queued for target-serialized routing."
+                elif [ "$lifecycle_router_outcome" = "not_required" ]; then
+                  detail="The failed-shard recovery published a durable review comment without close routing."
+                elif [ "$lifecycle_terminal" = "target_closed" ]; then
+                  detail="The item is closed; no stale verdict was published."
+                elif [ "$lifecycle_terminal" = "target_missing" ]; then
+                  detail="The repository is accessible but the item is missing; no stale verdict was published."
+                elif [ "$lifecycle_terminal" = "guarded_open" ]; then
+                  detail="A deterministic remain-open guard blocked publication of a stale close verdict."
+                elif [ "$lifecycle_terminal" = "policy_noop" ]; then
+                  detail="The exact review reached a deterministic policy veto; no action was taken."
+                fi
+                set +e
+                GH_TOKEN="$TARGET_GH_TOKEN" pnpm run repair:update-command-status -- \
+                  --repo "$TARGET_REPO" \
+                  --item-number "$ITEM_NUMBER" \
+                  --marker "$COMMAND_STATUS_MARKER" \
+                  --status-comment-id "$STATUS_COMMENT_ID" \
+                  --state "Complete" \
+                  --detail "$detail" \
+                  --run-url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+                update_status="$?"
+                set -e
+                if [ "$update_status" -ne 0 ]; then
+                  acknowledgement_failure_payload="$(PAYLOAD="$acknowledgement_payload" ATTEMPT_ID="$attempt_id" node -e 'const payload=JSON.parse(process.env.PAYLOAD); payload.attempt_id=process.env.ATTEMPT_ID; process.stdout.write(JSON.stringify(payload))')"
+                  acknowledgement_failure_signature="$(PAYLOAD="$acknowledgement_failure_payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
+                  curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+                    --request POST \
+                    --header "content-type: application/json" \
+                    --header "x-clawsweeper-exact-review-signature: $acknowledgement_failure_signature" \
+                    --data "$acknowledgement_failure_payload" \
+                    "${EXACT_REVIEW_QUEUE_URL%/}/internal/exact-review/lifecycle/command-ack/failed" >/dev/null
+                  exit "$update_status"
+                fi
+              fi
+            fi
             temporary="${outcome_path}.tmp"
             jq '.postEffectsComplete = true' "$outcome_path" > "$temporary"
             mv "$temporary" "$outcome_path"
@@ -277,6 +435,92 @@ jobs:
           EXACT_REVIEW_BATCH_OBSERVATION=final_github_apply \
             pnpm run --silent repair:exact-review-batch observe || true
           pnpm run --silent repair:exact-review-batch complete
+
+      - name: Acknowledge terminal batch command lifecycle status
+        if: ${{ success() && steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          TARGET_GH_TOKEN: ${{ steps.target-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          receipt_path="$(dirname "$EXACT_REVIEW_BATCH_MANIFEST")/state-receipt.json"
+          queue_url="${EXACT_REVIEW_QUEUE_URL%/}"
+          jq -c '.items[]' "$EXACT_REVIEW_BATCH_MANIFEST" | while IFS= read -r item; do
+            outcome_path="$(jq -r '.outcomePath' <<<"$item")"
+            [ -f "$outcome_path" ] || continue
+            outcome_kind="$(jq -r '.kind // empty' "$outcome_path")"
+            fence_key="$(jq -r '.itemKey' <<<"$item")"
+            receipt_outcome="$(jq -r --arg fence_key "$fence_key" \
+              '[.outcomes[]? | select(.fenceKey == $fence_key) | .outcome] | last // empty' \
+              "$receipt_path")"
+            if [ "$outcome_kind" != "permanent_failure" ] && [ "$receipt_outcome" != "permanent" ]; then
+              continue
+            fi
+            command_status_marker="$(jq -r '.decision.publication.producerDecision.commandStatusMarker // empty' <<<"$item")"
+            status_comment_id="$(jq -r '.decision.publication.producerDecision.statusCommentId // empty' <<<"$item")"
+            if [ -z "$command_status_marker" ] && [ -z "$status_comment_id" ]; then
+              continue
+            fi
+            target_repo="$(jq -r '.decision.targetRepo' <<<"$item")"
+            item_number="$(jq -r '.decision.itemNumber' <<<"$item")"
+            revision="$(jq -r '.revision' <<<"$item")"
+            export FENCE_KEY="$fence_key" REVISION="$revision" TARGET_REPO="$target_repo" ITEM_NUMBER="$item_number"
+            export COMMAND_STATUS_MARKER="$command_status_marker" STATUS_COMMENT_ID="$status_comment_id"
+            acknowledgement_payload="$(node -e '
+              const revision = Number(process.env.REVISION);
+              const statusMarker = process.env.COMMAND_STATUS_MARKER || null;
+              const statusCommentId = process.env.STATUS_COMMENT_ID
+                ? Number(process.env.STATUS_COMMENT_ID)
+                : null;
+              if (!Number.isInteger(revision) || revision < 1 || !process.env.FENCE_KEY || (!statusMarker && statusCommentId === null)) process.exit(1);
+              if (statusCommentId !== null && (!Number.isSafeInteger(statusCommentId) || statusCommentId < 1)) process.exit(1);
+              process.stdout.write(JSON.stringify({
+                canonical_target_key: process.env.TARGET_REPO + "#" + process.env.ITEM_NUMBER,
+                fence_key: process.env.FENCE_KEY,
+                revision,
+                ...(statusMarker === null ? {} : { status_marker: statusMarker }),
+                ...(statusCommentId === null ? {} : { status_comment_id: statusCommentId }),
+              }));
+            ')"
+            acknowledgement_signature="$(PAYLOAD="$acknowledgement_payload" node -e 'const crypto=require("node:crypto"); process.stdout.write("sha256="+crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex"))')"
+            acknowledgement="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+              --request POST \
+              --header "content-type: application/json" \
+              --header "x-clawsweeper-exact-review-signature: $acknowledgement_signature" \
+              --data "$acknowledgement_payload" \
+              "$queue_url/internal/exact-review/lifecycle/command-ack/attempt")"
+            if jq -e '.ok == true and .allowed == true and .acknowledgement_state == "pending" and (.lifecycle_state == "dead_letter" or .lifecycle_state == "failed")' <<<"$acknowledgement" >/dev/null; then
+              attempt_id="$(jq -r '.attempt_id // empty' <<<"$acknowledgement")"
+              lifecycle_state="$(jq -r '.lifecycle_state' <<<"$acknowledgement")"
+              test -n "$attempt_id"
+              detail="The review artifact was captured, but durable publication ended in a terminal failure."
+              if [ "$lifecycle_state" = "dead_letter" ]; then
+                detail="Durable publication exhausted its retry budget and was retained for operator dead-letter recovery."
+              fi
+              set +e
+              GH_TOKEN="$TARGET_GH_TOKEN" pnpm run repair:update-command-status -- \
+                --repo "$TARGET_REPO" \
+                --item-number "$ITEM_NUMBER" \
+                --marker "$COMMAND_STATUS_MARKER" \
+                --status-comment-id "$STATUS_COMMENT_ID" \
+                --state "Failed" \
+                --detail "$detail" \
+                --run-url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+              update_status="$?"
+              set -e
+              if [ "$update_status" -ne 0 ]; then
+                acknowledgement_failure_payload="$(PAYLOAD="$acknowledgement_payload" ATTEMPT_ID="$attempt_id" node -e 'const payload=JSON.parse(process.env.PAYLOAD); payload.attempt_id=process.env.ATTEMPT_ID; process.stdout.write(JSON.stringify(payload))')"
+                acknowledgement_failure_signature="$(PAYLOAD="$acknowledgement_failure_payload" node -e 'const crypto=require("node:crypto"); process.stdout.write("sha256="+crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex"))')"
+                curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+                  --request POST \
+                  --header "content-type: application/json" \
+                  --header "x-clawsweeper-exact-review-signature: $acknowledgement_failure_signature" \
+                  --data "$acknowledgement_failure_payload" \
+                  "$queue_url/internal/exact-review/lifecycle/command-ack/failed" >/dev/null
+                exit "$update_status"
+              fi
+            fi
+          done
 
       - name: Release unfinished batch members
         if: ${{ always() && steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}

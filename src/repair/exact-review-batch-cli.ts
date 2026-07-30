@@ -326,10 +326,7 @@ async function complete() {
     }
     const outcome = objectValue(JSON.parse(readFileSync(manifestItem.outcomePath, "utf8")));
     if (outcome.kind === "superseded") {
-      if (
-        optionalObjectValue(outcome.disposition).requeueLatestExpected === true &&
-        outcome.postEffectsComplete !== true
-      ) {
+      if (hasPendingPostEffects(outcome)) {
         continue;
       }
       completions.push({ ...current, terminalOutcome: "superseded" });
@@ -383,11 +380,7 @@ async function release() {
   const completions: ExactReviewBatchCompletion[] = manifest.items.map((member) => {
     if (existsSync(member.outcomePath)) {
       const outcome = objectValue(JSON.parse(readFileSync(member.outcomePath, "utf8")));
-      if (
-        outcome.kind === "superseded" &&
-        (optionalObjectValue(outcome.disposition).requeueLatestExpected !== true ||
-          outcome.postEffectsComplete === true)
-      ) {
+      if (outcome.kind === "superseded" && !hasPendingPostEffects(outcome)) {
         return { ...member, terminalOutcome: "superseded" };
       }
       const failure = failureCompletion(member, outcome);
@@ -453,6 +446,7 @@ function failureCompletion(
   ) {
     return null;
   }
+  if (hasPendingPostEffects(outcome)) return retryableCompletion(member, "unknown_failure");
   const reasonCode = stringValue(outcome.reasonCode, "outcome.reasonCode");
   const errorFingerprint =
     typeof outcome.errorFingerprint === "string" && outcome.errorFingerprint
@@ -645,12 +639,6 @@ function publicationCompletion(
   if (!publicationOutcomeMatchesMember(publication, member)) {
     return retryableCompletion(member, "unknown_failure", publication.errorFingerprint);
   }
-  if (publication.outcome === "superseded") {
-    return { ...member, terminalOutcome: "superseded" };
-  }
-  if (publication.outcome === "retryable") {
-    return retryableCompletion(member, "unknown_failure", publication.errorFingerprint);
-  }
   if (publication.outcome === "permanent") {
     return {
       ...member,
@@ -658,6 +646,15 @@ function publicationCompletion(
       reasonCode: "tuple_protocol_invalid",
       ...(publication.errorFingerprint ? { errorFingerprint: publication.errorFingerprint } : {}),
     };
+  }
+  if (hasPendingPostEffects(outcome)) {
+    return retryableCompletion(member, "unknown_failure", publication.errorFingerprint);
+  }
+  if (publication.outcome === "superseded") {
+    return { ...member, terminalOutcome: "superseded" };
+  }
+  if (publication.outcome === "retryable") {
+    return retryableCompletion(member, "unknown_failure", publication.errorFingerprint);
   }
   if (outcome.kind !== "eligible" || hasPendingPostEffects(outcome)) {
     return retryableCompletion(member, "unknown_failure", publication.errorFingerprint);
@@ -668,10 +665,18 @@ function publicationCompletion(
 function hasPendingPostEffects(outcome: Record<string, unknown>): boolean {
   const disposition = optionalObjectValue(outcome.disposition);
   const requiresPostEffects =
+    // Every accepted eligible member needs a router or terminal lifecycle
+    // receipt before its canonical commit can be considered fully delivered.
+    // Infer that requirement from the durable outcome so an interruption
+    // between commit and the workflow marker cannot release it as published.
+    outcome.kind === "eligible" ||
     disposition.requeueLatestExpected === true ||
     disposition.deferredCloseCoverageExpected === true ||
     disposition.routableSyncExpected === true;
-  return requiresPostEffects && outcome.postEffectsComplete !== true;
+  return (
+    (requiresPostEffects || outcome.postEffectsRequired === true) &&
+    outcome.postEffectsComplete !== true
+  );
 }
 
 function readManifest(): BatchManifest {

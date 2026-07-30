@@ -645,6 +645,31 @@ export default {
       request.method === "POST"
     )
       return authenticatedExactReviewQueueRequest(request, env, "/publication-batch-results");
+    if (
+      url.pathname === "/internal/exact-review/lifecycle/router-receipt" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/lifecycle/router-receipt");
+    if (
+      url.pathname === "/internal/exact-review/lifecycle/canonical-receipt" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/lifecycle/canonical-receipt");
+    if (
+      url.pathname === "/internal/exact-review/lifecycle/terminal-disposition" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/lifecycle/terminal-disposition");
+    if (
+      url.pathname === "/internal/exact-review/lifecycle/command-ack/attempt" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/lifecycle/command-ack/attempt");
+    if (
+      url.pathname === "/internal/exact-review/lifecycle/command-ack/failed" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/lifecycle/command-ack/failed");
     if (url.pathname === "/internal/exact-review/review-telemetry" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/review-telemetry");
     if (url.pathname === "/internal/exact-review/review-run-telemetry" && request.method === "POST")
@@ -1096,8 +1121,14 @@ async function githubWebhook(request, env, ctx) {
 
   const completion = bayJourneyCompletionFromGithubWebhook({ event, payload, env });
   if (completion) {
+    await recordLifecycleCommandAcknowledgement(env, completion);
     await recordBayJourneyTelemetry(env, ctx, [], [completion]);
     return json({ ok: true, accepted: false, reason: "recorded Bay journey completion" }, 202);
+  }
+  const acknowledgement = lifecycleCommandAcknowledgementFromGithubWebhook({ event, payload, env });
+  if (acknowledgement) {
+    await recordLifecycleCommandAcknowledgement(env, acknowledgement);
+    return json({ ok: true, accepted: false, reason: "recorded lifecycle acknowledgement" }, 202);
   }
 
   const decision = classifyGithubWebhook({ event, payload });
@@ -1276,30 +1307,41 @@ function bayJourneyTriggerFromGithubWebhook({ decision, payload, deliveryId }) {
 }
 
 function bayJourneyCompletionFromGithubWebhook({ event, payload, env }) {
+  const completion = lifecycleCommandAcknowledgementFromGithubWebhook({ event, payload, env });
+  return completion?.status_marker ? completion : null;
+}
+
+function lifecycleCommandAcknowledgementFromGithubWebhook({ event, payload, env }) {
   if (event !== "issue_comment") return null;
   const comment = objectValue(payload?.comment);
   if (!clawsweeperBotLogins(env).has(normalizedLogin(objectValue(comment.user).login))) return null;
   const issue = objectValue(payload?.issue);
   const repo = objectValue(payload?.repository);
   if (!isEligibleGithubWebhookRepository(repo)) return null;
-  const repository = String(repo.full_name || "").toLowerCase();
+  const canonicalRepository = String(repo.full_name || "");
+  const repository = canonicalRepository.toLowerCase();
   const number = Number(issue.number);
   const body = String(comment.body || "");
   const sourceCommentId = Number(body.match(/<!--\s*clawsweeper-command-ack:(\d+)\s*-->/i)?.[1]);
   const status = body.match(/<!--\s*clawsweeper-command-status:(\d+):(review|re_review):[^>]*-->/i);
   const completedAt = exactWebhookTimestamp(comment.updated_at || comment.created_at);
-  const completed =
-    /<!--\s*clawsweeper-command-progress:start\s*-->[\s\S]*?^- State:\s*Complete\s*$[\s\S]*?<!--\s*clawsweeper-command-progress:end\s*-->/im.test(
+  const progress =
+    /<!--\s*clawsweeper-command-progress:start\s*-->([\s\S]*?)<!--\s*clawsweeper-command-progress:end\s*-->/i.exec(
       body,
-    );
+    )?.[1];
+  const completed =
+    /^- State:\s*Complete\s*$/im.test(progress || "") ||
+    (/- State:\s*Failed\s*$/im.test(progress || "") &&
+      /- Detail:\s*(?:The review artifact was captured, but durable publication ended in a terminal failure\.|Durable publication exhausted its retry budget and was retained for operator dead-letter recovery\.)\s*$/im.test(
+        progress || "",
+      ));
   if (
     !repository ||
     !Number.isInteger(number) ||
     number <= 0 ||
     !Number.isSafeInteger(sourceCommentId) ||
     sourceCommentId <= 0 ||
-    !status ||
-    Number(status[1]) !== number ||
+    (status && Number(status[1]) !== number) ||
     !completedAt ||
     !completed
   ) {
@@ -1307,11 +1349,13 @@ function bayJourneyCompletionFromGithubWebhook({ event, payload, env }) {
   }
   return {
     repository,
+    canonical_repository: canonicalRepository,
     number,
     source_comment_id: sourceCommentId,
     completed_at: completedAt,
     completion_kind: "final_command_status",
     completion_comment_id: Number(comment.id),
+    status_marker: status?.[0] ?? null,
   };
 }
 
@@ -1613,6 +1657,26 @@ function exactReviewQueueNamespace(env): DurableObjectNamespace | null {
 function exactReviewQueueStub(env): DurableObjectStub | null {
   const namespace = exactReviewQueueNamespace(env);
   return namespace ? namespace.get(namespace.idFromName(EXACT_REVIEW_QUEUE_NAME)) : null;
+}
+
+async function recordLifecycleCommandAcknowledgement(env, completion) {
+  const queue = exactReviewQueueStub(env);
+  if (!queue) return;
+  const observedAt = Date.parse(String(completion.completed_at || ""));
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/lifecycle/command-ack/observed", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        canonical_target_key: `${completion.canonical_repository ?? completion.repository}#${completion.number}`,
+        status_marker: completion.status_marker,
+        command_comment_id: completion.source_comment_id,
+        completion_comment_id: completion.completion_comment_id,
+        observed_at: Number.isFinite(observedAt) ? observedAt : Date.now(),
+      }),
+    }),
+  );
+  if (!response.ok) throw new Error("lifecycle acknowledgement receipt unavailable");
 }
 
 async function reserveExactReviewSourceAuthority(

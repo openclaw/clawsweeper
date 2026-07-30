@@ -152,6 +152,10 @@ export async function runExactReviewDirectPublicationFromEnv() {
   writeGithubOutput("accepted", result.kind === "accepted" ? "true" : "false");
   writeGithubOutput("fallback", result.kind === "fallback" ? "true" : "false");
   writeGithubOutput("attempts", String(result.attempts));
+  writeGithubOutput(
+    "superseded",
+    result.kind === "accepted" && result.response.superseded === true ? "true" : "false",
+  );
   if (result.kind === "fallback") {
     writeGithubOutput("reason", result.reason.replace(/[\r\n]/g, " ").slice(0, 500));
     console.warn(`Direct exact-review publication deferred to the durable queue: ${result.reason}`);

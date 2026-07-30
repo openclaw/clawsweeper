@@ -12,6 +12,7 @@ import {
   validateDirectPublicationPlan,
   type DirectPublicationPlan,
 } from "../dashboard/exact-review-direct-publication.ts";
+import { EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE } from "../dashboard/exact-review-lifecycle.ts";
 import { ExactReviewQueue } from "../dashboard/exact-review-queue.ts";
 import worker from "../dashboard/worker.ts";
 
@@ -854,6 +855,107 @@ function batchRequest(path: string, body: unknown) {
   });
 }
 
+test("batch claims retain lifecycle identity until canonical routing is durable", async () => {
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  );
+  await queue.fetch(publicationRequest("lifecycle-batch", 735, "2735"));
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "lifecycle-batch-735",
+        lease_owner: "worker-lifecycle",
+        max_items: 1,
+        runner_run_id: "9735",
+        runner_run_attempt: 2,
+        runner_started_at: "2026-07-30T12:00:00.000Z",
+      }),
+    )
+  ).json();
+  assert.equal(claim.claimed, true, JSON.stringify(claim));
+  const member = claim.batch.items[0] as {
+    item_key: string;
+    revision: number;
+    claim_generation: number;
+  };
+  const plan = directPlan("openclaw/openclaw#735", member.revision, {
+    fenceKey: member.item_key,
+    claimGeneration: member.claim_generation,
+  });
+  const published = await queue.fetch(
+    new Request("https://queue/publication-batch-results", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(plan),
+    }),
+  );
+  assert.equal(published.status, 202);
+  const routed = await queue.fetch(
+    batchRequest("/lifecycle/router-receipt", {
+      canonical_target_key: "openclaw/openclaw#735",
+      fence_key: member.item_key,
+      revision: member.revision,
+      receipt_id: "router-batch:9735:2:735",
+    }),
+  );
+  assert.equal(routed.status, 200);
+  const row = Array.from(
+    storage.sql.exec(
+      `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+        WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+      "openclaw/openclaw#735",
+      member.item_key,
+      member.revision,
+    ),
+  )[0] as { projection_json: string };
+  const projection = JSON.parse(row.projection_json) as {
+    admission: { deliveryId: string };
+    claims: Array<{ claimGeneration: number; runId: string; runAttempt: number }>;
+    reviewResults: Array<{
+      claimGeneration: number;
+      runId: string;
+      runAttempt: number;
+      outcome: string;
+    }>;
+    canonicalReceipts: Array<{ outcome: string }>;
+    routerReceipts: Array<{ receiptId: string }>;
+    terminalDisposition: { kind: string } | null;
+  };
+  assert.equal(projection.admission.deliveryId, "lifecycle-batch");
+  assert.deepEqual(
+    projection.claims.map(({ claimGeneration, runId, runAttempt }) => ({
+      claimGeneration,
+      runId,
+      runAttempt,
+    })),
+    [{ claimGeneration: member.claim_generation, runId: "9735", runAttempt: 2 }],
+  );
+  assert.deepEqual(
+    projection.reviewResults.map(({ claimGeneration, runId, runAttempt, outcome }) => ({
+      claimGeneration,
+      runId,
+      runAttempt,
+      outcome,
+    })),
+    [
+      {
+        claimGeneration: member.claim_generation,
+        runId: "9735",
+        runAttempt: 2,
+        outcome: "completed",
+      },
+    ],
+  );
+  assert.equal(projection.canonicalReceipts[0]?.outcome, "accepted");
+  assert.deepEqual(
+    projection.routerReceipts.map((receipt) => receipt.receiptId),
+    ["router-batch:9735:2:735"],
+  );
+  assert.equal(projection.terminalDisposition?.kind, "review_completed_routed");
+});
+
 test("queue batch claim defaults off and additive schema keeps the legacy version", async () => {
   const queue = new ExactReviewQueue({ storage: new TestStorage() }, {});
   await queue.fetch(publicationRequest("delivery-1", 101, "1001"));
@@ -1064,8 +1166,9 @@ test("batch claim serializes distinct publication events for the same durable it
   const originalNow = Date.now;
   Date.now = () => 6_000_000;
   try {
+    const storage = new TestStorage();
     const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
+      { storage },
       { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
     );
     await queue.fetch(publicationRequest("delivery-duplicate-old", 108676, "2001"));
@@ -2292,6 +2395,9 @@ test("queue fetch terminalizes a stale batch revision before dispatch", async ()
           claim_id: "claim-stale-revision-1",
           lease_owner: "worker-1",
           max_items: 1,
+          runner_run_id: "91002",
+          runner_run_attempt: 1,
+          runner_started_at: "2026-07-30T12:00:00.000Z",
         }),
       )
     ).json();
@@ -2341,6 +2447,21 @@ test("queue fetch terminalizes a stale batch revision before dispatch", async ()
     assert.equal(fetched.batch.state, "completed");
     assert.equal(fetched.batch.items[0].terminal_outcome, "superseded");
     assert.equal(storage.scheduledAlarm(), 1_060_000);
+    const lifecycleRow = Array.from(
+      storage.sql.exec(
+        `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+        "openclaw/openclaw#102",
+        claim.batch.items[0].item_key,
+        1,
+      ),
+    )[0] as { projection_json: string };
+    const lifecycle = JSON.parse(lifecycleRow.projection_json) as {
+      terminalDisposition: { kind: string } | null;
+      reviewResults: Array<{ outcome: string }>;
+    };
+    assert.equal(lifecycle.terminalDisposition?.kind, "superseded");
+    assert.equal(lifecycle.reviewResults[0]?.outcome, "completed");
 
     const retriedFetch = await (
       await queue.fetch(
@@ -2988,8 +3109,9 @@ test("retryable batch completion releases ownership and preserves queue retry po
   let now = 2_000_000;
   Date.now = () => now;
   try {
+    const storage = new TestStorage();
     const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
+      { storage },
       { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
     );
     await queue.fetch(publicationRequest("delivery-retryable", 123, "1023"));
@@ -2999,6 +3121,9 @@ test("retryable batch completion releases ownership and preserves queue retry po
           claim_id: "claim-retryable",
           lease_owner: "worker-1",
           max_items: 1,
+          runner_run_id: "9123",
+          runner_run_attempt: 1,
+          runner_started_at: "2026-07-30T12:00:00.000Z",
         }),
       )
     ).json();
@@ -3041,6 +3166,16 @@ test("retryable batch completion releases ownership and preserves queue retry po
     assert.equal(completion.accepted, 1, JSON.stringify(completion));
     assert.equal(completion.batch.state, "completed");
     assert.equal(completion.batch.items[0].terminal_outcome, "lease_expired");
+    const lifecycleRow = Array.from(
+      storage.sql.exec(
+        `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+        "openclaw/openclaw#123",
+        member.item_key,
+        member.revision,
+      ),
+    )[0] as { projection_json: string };
+    assert.equal(JSON.parse(lifecycleRow.projection_json).terminalDisposition?.kind, "requeue");
 
     const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
     assert.equal(stats.lanes.publication.pending, 1);
