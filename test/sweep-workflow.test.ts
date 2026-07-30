@@ -3040,7 +3040,7 @@ test("sweep issue and PR event reviews and target fanout avoid storm amplificati
   assert.match(legacyIntakeBlock, /additionalPrompt: payload\.additional_prompt/);
   assert.match(
     fanoutBlock,
-    /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '41 \* \* \* \*' && '12' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '20'\) \}\}/,
+    /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '41\/10 \* \* \* \*' && '12' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '20'\) \}\}/,
   );
   assert.match(fanoutBlock, /Summarize trailing weekly review coverage/);
   assert.match(fanoutBlock, /--cursor-store-url "\$REVIEW_COVERAGE_URL"/);
