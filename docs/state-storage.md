@@ -8,6 +8,7 @@ operational paths that have not migrated yet.
 | Logical paths | Canonical owner | Git state status |
 | --- | --- | --- |
 | `records/**` | Durable Object record store with R2 snapshots | Never checked out or written |
+| fanout cursor per mode | ExactReviewQueue Durable Object KV | Never checked out or written |
 | `ledger/v1/**` | R2 immutable blobs | Never checked out or written |
 | `assets/**` | R2 mutable blobs | Never checked out or written |
 | `jobs/**` | `clawsweeper-state` `state` branch | Retained until its own migration |
@@ -24,6 +25,19 @@ Remaining Git writers use the Durable Object state-writer coordinator and one
 ordinary fetch/commit/push. The former Git lease refs, atomic multi-ref pushes,
 shallow-history deepening, remote-head rebuilds, record reconciliation, and
 immutable-ledger scratch branches no longer exist.
+
+Target fanout reads and updates `/internal/state/cursors/<mode>` with the same
+HMAC authentication as canonical record operations. Each record carries a
+monotonic revision so concurrent writers cannot silently overwrite one another.
+Cursor reads and writes are fail-open: an unavailable store emits a prominent
+warning, but repository dispatch continues so bookkeeping cannot block fleet
+coverage.
+
+Git-backed reports, dashboard status, and post-dispatch cursors are best-effort
+after their productive side effect or canonical publication succeeds. Git
+publication remains mandatory where it is still the durability fence before a
+dispatch, notably `jobs/**` intake and comment-router claims, and in the
+dedicated cluster-result publisher whose failure must stay visible for retry.
 
 The former state materializer is retained only as a bounded append-window
 compactor. It drains and acknowledges legacy projection rows so the Durable

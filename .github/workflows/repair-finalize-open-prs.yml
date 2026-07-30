@@ -101,6 +101,7 @@ jobs:
           pnpm run repair:publish-result -- --skip-dashboard
 
       - name: Commit finalizer ledger
+        continue-on-error: true
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |

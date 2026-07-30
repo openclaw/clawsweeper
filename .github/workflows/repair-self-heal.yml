@@ -133,6 +133,7 @@ jobs:
 
       - name: Commit self-heal ledger
         if: ${{ always() && ((github.event_name == 'workflow_dispatch' && inputs.execute) || (github.event_name == 'schedule' && vars.CLAWSWEEPER_SELF_HEAL_EXECUTE == '1')) }}
+        continue-on-error: true
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |

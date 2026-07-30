@@ -139,6 +139,12 @@ manual workflow inputs. Scheduled fanout uses:
 - normal review: `41 * * * *`, 12 target repositories per cursor step
 - audit: `37 */6 * * *`, 12 target repositories per cursor step
 
+Each mode's cursor lives in the authenticated ExactReviewQueue Durable Object,
+not generated Git state. Reads and writes use a monotonic revision. If the
+canonical cursor endpoint is unavailable, fanout warns and continues dispatch
+from a safe default; cursor persistence failure after dispatch never fails the
+productive lane.
+
 Normal fanout refreshes the same signed live-open inventory consumed by
 `GET /api/review-coverage`, skips repositories with no open items, and visits
 repositories whose live count exceeds their canonical-record count before

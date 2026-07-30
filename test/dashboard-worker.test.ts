@@ -2585,6 +2585,68 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
   });
 });
 
+test("authenticated fanout cursors round-trip through durable storage", async () => {
+  const storage = new MemoryDurableStorage();
+  const secret = "fanout-cursor-secret";
+  let queue = new ExactReviewQueue({ storage }, {});
+  let env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const path = "/internal/state/cursors/normal-review";
+  const request = (method: "GET" | "PUT", payload?: unknown, signed = true) => {
+    const body = method === "PUT" ? JSON.stringify(payload) : "";
+    return new Request(`https://clawsweeper.openclaw.ai${path}`, {
+      method,
+      headers: signed
+        ? {
+            "content-type": "application/json",
+            "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+          }
+        : undefined,
+      ...(method === "PUT" ? { body } : {}),
+    });
+  };
+
+  assert.equal((await worker.fetch(request("GET", undefined, false), env)).status, 401);
+  assert.deepEqual(await (await worker.fetch(request("GET"), env)).json(), {
+    ok: true,
+    mode: "normal-review",
+    next_cursor: 0,
+    revision: 0,
+    updated_at: null,
+  });
+
+  const writtenResponse = await worker.fetch(
+    request("PUT", { next_cursor: 12, expected_revision: 0 }),
+    env,
+  );
+  assert.equal(writtenResponse.status, 202);
+  const written = await writtenResponse.json();
+  assert.deepEqual(written, {
+    ok: true,
+    mode: "normal-review",
+    next_cursor: 12,
+    revision: 1,
+    updated_at: written.updated_at,
+  });
+  assert.equal(Number.isFinite(Date.parse(written.updated_at)), true);
+
+  const conflict = await worker.fetch(
+    request("PUT", { next_cursor: 24, expected_revision: 0 }),
+    env,
+  );
+  assert.equal(conflict.status, 409);
+  assert.equal((await conflict.json()).error, "fanout_cursor_revision_conflict");
+
+  queue = new ExactReviewQueue({ storage }, {});
+  env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  assert.deepEqual(await (await worker.fetch(request("GET"), env)).json(), written);
+});
+
 test("canonical commit records and tuples export with one monotonic revision", async () => {
   const storage = new MemoryDurableStorage();
   const leased = leasedExactReviewQueueItem(711, "7110");

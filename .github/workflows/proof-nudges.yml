@@ -205,10 +205,12 @@ jobs:
             fi
           fi
           if [ ${#cursor_publish_args[@]} -gt 0 ]; then
-            pnpm run repair:publish-main -- \
+            if ! pnpm run repair:publish-main -- \
               --message "chore: update proof handling cursors" \
               --rebase-strategy theirs \
-              "${cursor_publish_args[@]}"
+              "${cursor_publish_args[@]}"; then
+              echo "::warning title=Proof cursor publish failed::Proof handling completed; continuing without the best-effort Git cursor update."
+            fi
           fi
 
       - uses: actions/upload-artifact@v7

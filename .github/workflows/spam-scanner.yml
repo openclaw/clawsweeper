@@ -189,6 +189,7 @@ jobs:
 
       - name: Commit spam scanner audit
         if: always()
+        continue-on-error: true
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |

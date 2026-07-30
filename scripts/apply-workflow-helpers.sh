@@ -162,7 +162,9 @@ publish_changes() {
     publish_changes_with_strategy normal "$message" "${record_paths[@]}" || return 1
   fi
   if [ "${#other_paths[@]}" -gt 0 ]; then
-    publish_changes_with_strategy theirs "$message" "${other_paths[@]}" || return 1
+    if ! publish_changes_with_strategy theirs "$message" "${other_paths[@]}"; then
+      echo "::warning title=Operational state publish failed::Canonical work remains valid; continuing after best-effort Git bookkeeping failed: $message" >&2
+    fi
   fi
 }
 

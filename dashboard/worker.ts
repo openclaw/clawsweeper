@@ -549,6 +549,15 @@ export default {
       return authenticatedExactReviewQueueRequest(request, env, "/source-authority");
     if (url.pathname === "/internal/review-coverage/inventory" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/review-coverage/inventory");
+    const fanoutCursorPath = /^\/internal\/state\/cursors\/(hot-intake|normal-review|audit)$/.exec(
+      url.pathname,
+    );
+    if (fanoutCursorPath && (request.method === "GET" || request.method === "PUT"))
+      return authenticatedExactReviewQueueCursorRequest(
+        request,
+        env,
+        url.pathname.slice("/internal/state".length),
+      );
     const canonicalRecordPath =
       request.method === "GET"
         ? /^\/internal\/state\/records\/[^/]+\/(?:items|closed|plans|decision-packets)\/[1-9]\d*$/.exec(
@@ -1765,6 +1774,26 @@ async function authenticatedExactReviewQueueRead(request, env, path: string) {
     env,
     path,
     new Request(`https://clawsweeper-exact-review-queue${path}`, { method: "GET" }),
+  );
+}
+
+async function authenticatedExactReviewQueueCursorRequest(request, env, path: string) {
+  const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
+  if (!secret) return json({ error: "webhook_not_configured" }, 503);
+  const body = await request.text();
+  const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
+  if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText: body }))) {
+    return json({ error: "invalid_signature" }, 401);
+  }
+  const init: RequestInit = {
+    method: request.method,
+    headers: { "content-type": "application/json" },
+  };
+  if (request.method === "PUT") init.body = body;
+  return exactReviewQueueRequest(
+    env,
+    path,
+    new Request(`https://clawsweeper-exact-review-queue${path}`, init),
   );
 }
 

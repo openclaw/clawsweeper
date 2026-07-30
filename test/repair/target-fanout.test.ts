@@ -9,8 +9,12 @@ import test from "node:test";
 import {
   SCHEDULED_REVIEW_PLAN_BATCH_SIZE,
   defaultLimit,
+  fetchFanoutCursor,
   filterEligibleRepositories,
+  loadFanoutCursor,
+  persistFanoutCursorFailOpen,
   publishReviewCoverageInventory,
+  putFanoutCursor,
   renderFleetReviewCoverage,
   reviewCoverageInventorySnapshot,
   reviewPlanningRepositories,
@@ -241,7 +245,6 @@ test("target fanout filters eligible repositories conservatively", () => {
 test("target fanout skips owners without minted inventory tokens in Actions", () => {
   const dir = mkdtempSync(join(tmpdir(), "clawsweeper-fanout-"));
   const logPath = join(dir, "gh.log");
-  const cursorPath = join(dir, "cursor.json");
   const ghPath = join(dir, "gh.js");
   writeFileSync(
     ghPath,
@@ -269,8 +272,6 @@ process.exit(2);
       "hot-intake",
       "--limit",
       "2",
-      "--cursor-path",
-      cursorPath,
       "--repo",
       "openclaw/clawsweeper",
     ],
@@ -283,6 +284,7 @@ process.exit(2);
         ...mockGhBinEnv(ghPath),
         GH_TOKEN: "workflow-token",
         CLAWSWEEPER_DISPATCH_TOKEN: "dispatch-token",
+        CLAWSWEEPER_WEBHOOK_SECRET: "cursor-secret",
         CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: "inventory-openclaw",
         CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: "",
       },
@@ -305,7 +307,6 @@ process.exit(2);
 test("target fanout can use anonymous public inventory in Actions", () => {
   const dir = mkdtempSync(join(tmpdir(), "clawsweeper-fanout-"));
   const logPath = join(dir, "gh.log");
-  const cursorPath = join(dir, "cursor.json");
   const ghPath = join(dir, "gh.js");
   writeFileSync(
     ghPath,
@@ -335,8 +336,6 @@ process.exit(2);
       "hot-intake",
       "--limit",
       "2",
-      "--cursor-path",
-      cursorPath,
       "--repo",
       "openclaw/clawsweeper",
     ],
@@ -394,10 +393,88 @@ test("target fanout selection advances cursor with wraparound", () => {
   });
 });
 
-test("target fanout CLI lists repos and dispatches selected workflow runs", () => {
+test("target fanout advances across canonical cursor-store cycles", async () => {
+  let stored = { next_cursor: 0, revision: 0, updated_at: null as string | null };
+  const requests: Array<{ method: string; body: string; signature: string }> = [];
+  const fetchImpl: typeof fetch = async (_input, init) => {
+    const method = String(init?.method || "GET");
+    const body = String(init?.body || "");
+    const signature = new Headers(init?.headers).get("x-clawsweeper-exact-review-signature")!;
+    requests.push({ method, body, signature });
+    if (method === "PUT") {
+      const update = JSON.parse(body) as { next_cursor: number; expected_revision: number };
+      assert.equal(update.expected_revision, stored.revision);
+      stored = {
+        next_cursor: update.next_cursor,
+        revision: stored.revision + 1,
+        updated_at: "2026-07-30T12:00:00.000Z",
+      };
+    }
+    return Response.json({ ok: true, mode: "hot-intake", ...stored });
+  };
+  const store = {
+    baseUrl: "https://queue.example",
+    webhookSecret: "cursor-secret",
+    mode: "hot-intake" as const,
+    fetchImpl,
+  };
+  const repositories = [
+    { targetRepo: "openclaw/a", defaultBranch: "main", visibility: "PUBLIC" },
+    { targetRepo: "openclaw/b", defaultBranch: "main", visibility: "PUBLIC" },
+    { targetRepo: "openclaw/c", defaultBranch: "main", visibility: "PUBLIC" },
+  ];
+
+  const firstCursor = await fetchFanoutCursor(store);
+  const first = selectRepositories(repositories, { limit: 2, cursor: firstCursor.nextCursor });
+  assert.deepEqual(first.repositories, [repositories[0], repositories[1]]);
+  assert.equal((await putFanoutCursor(store, first.cursor, firstCursor.revision)).revision, 1);
+
+  const secondCursor = await fetchFanoutCursor(store);
+  const second = selectRepositories(repositories, { limit: 2, cursor: secondCursor.nextCursor });
+  assert.deepEqual(second.repositories, [repositories[2], repositories[0]]);
+  assert.equal((await putFanoutCursor(store, second.cursor, secondCursor.revision)).revision, 2);
+  assert.deepEqual(stored, {
+    next_cursor: 1,
+    revision: 2,
+    updated_at: "2026-07-30T12:00:00.000Z",
+  });
+  for (const request of requests) {
+    assert.equal(
+      request.signature,
+      `sha256=${createHmac("sha256", "cursor-secret").update(request.body).digest("hex")}`,
+    );
+  }
+});
+
+test("target fanout cursor-store outage fails open", async () => {
+  const warnings: string[] = [];
+  const originalError = console.error;
+  console.error = (...values) => warnings.push(values.join(" "));
+  try {
+    const store = {
+      baseUrl: "unavailable",
+      webhookSecret: "cursor-secret",
+      mode: "normal-review" as const,
+    };
+    assert.deepEqual(await loadFanoutCursor(store), {
+      mode: "normal-review",
+      nextCursor: 0,
+      revision: 0,
+      updatedAt: null,
+      loaded: false,
+    });
+    assert.equal(await persistFanoutCursorFailOpen(store, 12, 0), false);
+    assert.equal(warnings.length, 2);
+    assert.match(warnings[0]!, /continuing dispatch from cursor 0/);
+    assert.match(warnings[1]!, /dispatched work remains valid/);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test("normal target fanout dispatches even when canonical storage is unavailable", () => {
   const dir = mkdtempSync(join(tmpdir(), "clawsweeper-fanout-"));
   const logPath = join(dir, "gh.log");
-  const cursorPath = join(dir, "cursor.json");
   const ghPath = join(dir, "gh.js");
   writeFileSync(
     ghPath,
@@ -418,6 +495,13 @@ if (args[0] === "repo" && args[1] === "list") {
   process.stdout.write(JSON.stringify(data));
   process.exit(0);
 }
+if (args[0] === "api" && args[1] === "graphql") {
+  process.stdout.write(JSON.stringify({data:{
+    r0:{issues:{totalCount:1},pullRequests:{totalCount:0}},
+    r1:{issues:{totalCount:1},pullRequests:{totalCount:0}}
+  }}));
+  process.exit(0);
+}
 if ((args[0] === "workflow" && args[1] === "run") || (args[0] === "api" && args[1].endsWith("/dispatches"))) process.exit(0);
 process.exit(2);
 `,
@@ -429,11 +513,13 @@ process.exit(2);
     [
       "dist/repair/target-fanout.js",
       "--mode",
-      "hot-intake",
+      "normal-review",
       "--limit",
       "2",
-      "--cursor-path",
-      cursorPath,
+      "--cursor-store-url",
+      "unavailable",
+      "--publish-url",
+      "unavailable",
       "--repo",
       "openclaw/clawsweeper",
     ],
@@ -445,16 +531,21 @@ process.exit(2);
         ...mockGhBinEnv(ghPath),
         GH_TOKEN: "workflow-token",
         CLAWSWEEPER_DISPATCH_TOKEN: "dispatch-token",
+        CLAWSWEEPER_WEBHOOK_SECRET: "cursor-secret",
         CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: "inventory-openclaw",
         CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: "inventory-steipete",
       },
     },
   );
 
-  const summary = JSON.parse(output) as { dispatched: string[]; next_cursor: number };
+  const summary = JSON.parse(output) as {
+    dispatched: string[];
+    next_cursor: number;
+    cursor_persisted: boolean;
+  };
   assert.deepEqual(summary.dispatched, ["openclaw/b", "steipete/a"]);
   assert.equal(summary.next_cursor, 0);
-  assert.match(readFileSync(cursorPath, "utf8"), /"next_cursor": 0/);
+  assert.equal(summary.cursor_persisted, false);
 
   const calls = readFileSync(logPath, "utf8")
     .trim()
@@ -465,24 +556,26 @@ process.exit(2);
     ["inventory-openclaw", "inventory-steipete"],
   );
   assert.deepEqual(
-    calls.filter((call) => call.args[0] === "api").map((call) => call.ghToken),
+    calls
+      .filter((call) => call.args[0] === "api" && call.args[1]?.endsWith("/dispatches"))
+      .map((call) => call.ghToken),
     ["dispatch-token", "dispatch-token"],
   );
   assert.deepEqual(
-    calls.filter((call) => call.args[0] === "api").map((call) => call.args.join(" ")),
+    calls
+      .filter((call) => call.args[0] === "api" && call.args[1]?.endsWith("/dispatches"))
+      .map((call) => call.args.join(" ")),
     [
-      "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=openclaw/b -f client_payload[target_branch]=main -f client_payload[hot_intake]=true -f client_payload[batch_size]=50 -f client_payload[shard_count]=1",
-      "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=steipete/a -f client_payload[target_branch]=master -f client_payload[hot_intake]=true -f client_payload[batch_size]=50 -f client_payload[shard_count]=1",
+      "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=openclaw/b -f client_payload[target_branch]=main -f client_payload[hot_intake]=false -f client_payload[batch_size]=50 -f client_payload[shard_count]=1",
+      "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=steipete/a -f client_payload[target_branch]=master -f client_payload[hot_intake]=false -f client_payload[batch_size]=50 -f client_payload[shard_count]=1",
     ],
   );
 });
 
-test("target fanout dry-run does not advance cursor", () => {
+test("target fanout dry-run does not persist its selected cursor", () => {
   const dir = mkdtempSync(join(tmpdir(), "clawsweeper-fanout-"));
   const logPath = join(dir, "gh.log");
-  const cursorPath = join(dir, "cursor.json");
   const ghPath = join(dir, "gh.js");
-  writeFileSync(cursorPath, `${JSON.stringify({ next_cursor: 1 }, null, 2)}\n`);
   writeFileSync(
     ghPath,
     `#!/usr/bin/env node
@@ -510,8 +603,8 @@ process.exit(2);
       "hot-intake",
       "--limit",
       "1",
-      "--cursor-path",
-      cursorPath,
+      "--cursor-store-url",
+      "unavailable",
       "--dry-run",
       "--owners",
       "openclaw",
@@ -529,11 +622,10 @@ process.exit(2);
 
   const summary = JSON.parse(output.slice(output.indexOf("{\n"))) as {
     dispatched: string[];
-    cursor_written: boolean;
+    cursor_persisted: boolean;
   };
-  assert.deepEqual(summary.dispatched, ["openclaw/b"]);
-  assert.equal(summary.cursor_written, false);
-  assert.match(readFileSync(cursorPath, "utf8"), /"next_cursor": 1/);
+  assert.deepEqual(summary.dispatched, ["openclaw/a"]);
+  assert.equal(summary.cursor_persisted, false);
   const calls = readFileSync(logPath, "utf8")
     .trim()
     .split("\n")

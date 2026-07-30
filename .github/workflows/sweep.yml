@@ -2472,20 +2472,13 @@ jobs:
           filter: blob:none
           fetch-depth: 0
 
-      - name: Create state token
-        id: state-token
-        uses: ./.github/actions/create-state-token
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-
       - uses: ./.github/actions/setup-state
         with:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          hydrate-git-state: "false"
           hydrate-state-blobs: "false"
-          token: ${{ steps.state-token.outputs.token }}
 
       - uses: ./.github/actions/setup-pnpm
         with:
@@ -2526,6 +2519,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --workflow sweep.yml \
             --ref main \
+            --cursor-store-url "$REVIEW_COVERAGE_URL" \
             --publish-url "$REVIEW_COVERAGE_URL"
 
       - name: Summarize trailing weekly review coverage
@@ -2542,15 +2536,6 @@ jobs:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           REVIEW_COVERAGE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: pnpm run target-fanout -- coverage --window-days 7 --publish-url "$REVIEW_COVERAGE_URL" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Publish fanout cursor
-        env:
-          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-        run: |
-          pnpm run repair:publish-main -- \
-            --message "chore: update target fanout cursor" \
-            --path results/target-fanout-cursors \
-            --rebase-strategy theirs
 
   plan:
     name: Plan review candidates
@@ -3630,10 +3615,12 @@ jobs:
             --path "records/${target_slug}" \
             --rebase-strategy normal
           echo "records_published=true" >> "$GITHUB_OUTPUT"
-          pnpm run repair:publish-main -- \
+          if ! pnpm run repair:publish-main -- \
             --message "chore: update sweep status" \
             --path "results/sweep-status/${target_slug}.json" \
-            --rebase-strategy theirs
+            --rebase-strategy theirs; then
+            echo "::warning title=Sweep status publish failed::Review records are canonical; continuing without the best-effort Git dashboard update."
+          fi
 
       - name: Dispatch reproducible bug implementation candidates
         if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && needs.plan.outputs.target_repo == 'openclaw/openclaw' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS == '1' }}
@@ -3878,11 +3865,13 @@ jobs:
             --message "chore: sync selected review comments" \
             --path "records/${target_slug}" \
             --rebase-strategy normal
-          pnpm run repair:publish-main -- \
+          if ! pnpm run repair:publish-main -- \
             --message "chore: publish selected review comment status" \
             --path apply-report.json \
             --path "results/sweep-status/${target_slug}.json" \
-            --rebase-strategy theirs
+            --rebase-strategy theirs; then
+            echo "::warning title=Selected-comment bookkeeping failed::Canonical comment records are published; continuing without the best-effort Git report update."
+          fi
 
       - name: Finalize selected review comment action ledger
         id: finalize-selected-review-comment-action-ledger
@@ -4225,6 +4214,7 @@ jobs:
 
       - name: Publish failed-review retry state
         if: ${{ always() && vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_ENABLED == '1' && hashFiles('results/failed-review-retries/openclaw-openclaw/*.json') != '' }}
+        continue-on-error: true
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
@@ -4408,12 +4398,14 @@ jobs:
             --message "chore: update sweep audit state" \
             --path "records/${target_slug}" \
             --rebase-strategy normal
-          pnpm run repair:publish-main -- \
+          if ! pnpm run repair:publish-main -- \
             --message "chore: publish sweep audit status" \
             --path README.md \
             --path "results/audit/${target_slug}.json" \
             --path "results/sweep-status/${target_slug}.json" \
-            --rebase-strategy theirs
+            --rebase-strategy theirs; then
+            echo "::warning title=Audit dashboard publish failed::Canonical reconciliation is complete; continuing without the best-effort Git dashboard update."
+          fi
 
       - name: Refresh state dashboard
         env:
@@ -5275,6 +5267,7 @@ jobs:
       - name: Retry final apply status publication
         id: retry-final-apply-status-publication
         if: ${{ always() && !cancelled() && steps.primary-apply-result.outputs.succeeded == 'true' }}
+        continue-on-error: true
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}

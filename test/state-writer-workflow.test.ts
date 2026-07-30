@@ -8,6 +8,7 @@ type WorkflowStep = {
   name?: string;
   uses?: string;
   run?: string;
+  "continue-on-error"?: boolean;
   env?: Record<string, unknown>;
   with?: Record<string, unknown>;
 };
@@ -49,6 +50,7 @@ test("every state hydration uses the canonical Worker with an explicit git-state
       ".github/workflows/exact-review-batch-publish.yml:publish",
       ".github/workflows/sweep.yml:event-review-apply",
       ".github/workflows/sweep.yml:event-review-publish",
+      ".github/workflows/sweep.yml:target-fanout",
     ],
   );
 });
@@ -153,7 +155,55 @@ test("all remaining git publishers join setup-state and receive a step-scoped co
       }
     }
   }
-  assert.equal(publishers, 24, "git publisher count is an audited invariant");
+  assert.equal(publishers, 23, "git publisher count is an audited invariant");
+});
+
+test("post-side-effect git bookkeeping is non-fatal while durability fences stay strict", () => {
+  const documents = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
+  const step = (file: string, job: string, name: string) => {
+    const found = documents
+      .get(file)
+      ?.jobs?.[job]?.steps?.find((candidate) => candidate.name === name);
+    assert.ok(found, `${file}:${job}:${name}`);
+    return found;
+  };
+
+  for (const [file, job, name] of [
+    [".github/workflows/spam-scanner.yml", "scan", "Commit spam scanner audit"],
+    [
+      ".github/workflows/repair-conflict-self-heal.yml",
+      "self-heal",
+      "Commit conflict self-heal ledger",
+    ],
+    [".github/workflows/repair-self-heal.yml", "self-heal", "Commit self-heal ledger"],
+    [".github/workflows/repair-finalize-open-prs.yml", "finalize", "Commit finalizer ledger"],
+    [".github/workflows/sweep.yml", "retry-failed-reviews", "Publish failed-review retry state"],
+    [".github/workflows/sweep.yml", "apply-existing", "Retry final apply status publication"],
+  ]) {
+    assert.equal(step(file, job, name)["continue-on-error"], true, `${file}:${job}:${name}`);
+  }
+
+  for (const [file, job, name] of [
+    [
+      ".github/workflows/repair-comment-router.yml",
+      "route-comments",
+      "Commit comment router ledger",
+    ],
+    [".github/workflows/repair-commit-finding-intake.yml", "intake", "Commit intake ledger"],
+    [".github/workflows/repair-issue-implementation-intake.yml", "intake", "Commit intake ledger"],
+    [".github/workflows/repair-publish-results.yml", "publish", "Commit result ledger"],
+  ]) {
+    assert.notEqual(step(file, job, name)["continue-on-error"], true, `${file}:${job}:${name}`);
+  }
+
+  assert.match(
+    readFileSync("scripts/apply-workflow-helpers.sh", "utf8"),
+    /Operational state publish failed.*Canonical work remains valid/,
+  );
+  assert.match(
+    readFileSync(".github/workflows/proof-nudges.yml", "utf8"),
+    /Proof cursor publish failed.*Proof handling completed/,
+  );
 });
 
 test("every immutable action-event publisher targets R2 without a state-repo token", () => {

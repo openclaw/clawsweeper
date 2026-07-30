@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveCommand } from "../command.js";
 import { parseArgs, repoRoot } from "./lib.js";
@@ -77,10 +77,26 @@ interface SelectionResult {
   total: number;
 }
 
+export interface FanoutCursorSnapshot {
+  mode: FanoutMode;
+  nextCursor: number;
+  revision: number;
+  updatedAt: string | null;
+}
+
+export type FanoutCursorStoreOptions = {
+  baseUrl: string;
+  webhookSecret: string;
+  mode: FanoutMode;
+  attempts?: number;
+  fetchImpl?: typeof globalThis.fetch;
+  sleep?: (milliseconds: number) => Promise<void>;
+};
+
 interface FanoutOptions {
   mode: FanoutMode;
   limit: number;
-  cursorPath: string;
+  cursorStoreUrl: string;
   dispatchRepo: string;
   workflow: string;
   ref: string;
@@ -88,7 +104,6 @@ interface FanoutOptions {
   owners: readonly string[] | undefined;
 }
 
-const DEFAULT_CURSOR_DIR = join(repoRoot(), "results", "target-fanout-cursors");
 const PUBLIC_INVENTORY_TOKEN = "__public__";
 export const SCHEDULED_REVIEW_PLAN_BATCH_SIZE = 50;
 
@@ -99,7 +114,10 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   const options: FanoutOptions = {
     mode,
     limit: positiveNumber(stringArg(args.limit, defaultLimit(mode)), "limit"),
-    cursorPath: stringArg(args["cursor-path"], join(DEFAULT_CURSOR_DIR, `${mode}.json`)),
+    cursorStoreUrl: stringArg(
+      args["cursor-store-url"],
+      process.env.CLAWSWEEPER_CURSOR_STORE_URL ?? stringArg(args["publish-url"], ""),
+    ),
     dispatchRepo: stringArg(args.repo, process.env.GITHUB_REPOSITORY ?? "openclaw/clawsweeper"),
     workflow: stringArg(args.workflow, "sweep.yml"),
     ref: stringArg(args.ref, "main"),
@@ -115,14 +133,20 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
     const coverage = summarizeFleetReviewCoverage({ repositories, openCounts, windowDays, now });
     const publishUrl = stringArg(args["publish-url"], "");
     if (publishUrl) {
-      await publishReviewCoverageInventory({
-        baseUrl: publishUrl,
-        webhookSecret: stringValue(
-          process.env.CLAWSWEEPER_WEBHOOK_SECRET,
-          "CLAWSWEEPER_WEBHOOK_SECRET",
-        ),
-        snapshot: reviewCoverageInventorySnapshot(repositories, openCounts, now),
-      });
+      try {
+        await publishReviewCoverageInventory({
+          baseUrl: publishUrl,
+          webhookSecret: stringValue(
+            process.env.CLAWSWEEPER_WEBHOOK_SECRET,
+            "CLAWSWEEPER_WEBHOOK_SECRET",
+          ),
+          snapshot: reviewCoverageInventorySnapshot(repositories, openCounts, now),
+        });
+      } catch (error) {
+        console.error(
+          `[target-fanout] WARNING: live review inventory did not publish; continuing without blocking scheduled fanout work: ${errorMessage(error)}`,
+        );
+      }
     }
     process.stdout.write(renderFleetReviewCoverage(coverage));
     return;
@@ -141,20 +165,31 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
     const now = Date.now();
     const publishUrl = stringArg(args["publish-url"], "");
     if (publishUrl) {
-      await publishReviewCoverageInventory({
-        baseUrl: publishUrl,
-        webhookSecret: stringValue(
-          process.env.CLAWSWEEPER_WEBHOOK_SECRET,
-          "CLAWSWEEPER_WEBHOOK_SECRET",
-        ),
-        snapshot: reviewCoverageInventorySnapshot(repositories, openCounts, now),
-      });
+      try {
+        await publishReviewCoverageInventory({
+          baseUrl: publishUrl,
+          webhookSecret: stringValue(
+            process.env.CLAWSWEEPER_WEBHOOK_SECRET,
+            "CLAWSWEEPER_WEBHOOK_SECRET",
+          ),
+          snapshot: reviewCoverageInventorySnapshot(repositories, openCounts, now),
+        });
+      } catch (error) {
+        console.error(
+          `[target-fanout] WARNING: live review inventory did not publish; continuing without blocking scheduled fanout work: ${errorMessage(error)}`,
+        );
+      }
     }
     planningRepositories = reviewPlanningRepositories({ repositories, openCounts });
   }
+  const cursor = await loadFanoutCursor({
+    baseUrl: options.cursorStoreUrl,
+    webhookSecret: process.env.CLAWSWEEPER_WEBHOOK_SECRET ?? "",
+    mode,
+  });
   const selection = selectRepositories(planningRepositories, {
     limit: options.limit,
-    cursor: readCursor(options.cursorPath),
+    cursor: cursor.nextCursor,
   });
 
   const commands = selection.repositories.map((repository) =>
@@ -178,9 +213,17 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
     dispatched.push(repository.targetRepo);
   }
 
-  if (!options.dryRun) {
-    writeCursor(options.cursorPath, selection.cursor);
-  }
+  const cursorPersisted = options.dryRun
+    ? false
+    : await persistFanoutCursorFailOpen(
+        {
+          baseUrl: options.cursorStoreUrl,
+          webhookSecret: process.env.CLAWSWEEPER_WEBHOOK_SECRET ?? "",
+          mode,
+        },
+        selection.cursor,
+        cursor.revision,
+      );
   process.stdout.write(
     `${JSON.stringify(
       {
@@ -189,7 +232,8 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
         dispatched,
         next_cursor: selection.cursor,
         dry_run: options.dryRun,
-        cursor_written: !options.dryRun,
+        cursor_loaded: cursor.loaded,
+        cursor_persisted: cursorPersisted,
       },
       null,
       2,
@@ -381,23 +425,112 @@ function workflowDispatchArgs(repository: SelectedRepository, options: FanoutOpt
   return args;
 }
 
-function readCursor(cursorPath: string): number {
-  if (!existsSync(cursorPath)) return 0;
-  const parsed = JSON.parse(readFileSync(cursorPath, "utf8")) as unknown;
-  const cursor = record(parsed, "cursor");
-  return typeof cursor.next_cursor === "number" && Number.isInteger(cursor.next_cursor)
-    ? cursor.next_cursor
-    : 0;
+export async function fetchFanoutCursor(
+  options: FanoutCursorStoreOptions,
+): Promise<FanoutCursorSnapshot> {
+  const payload = await fanoutCursorRequest(options, "GET", "");
+  if (payload.mode !== options.mode) throw new Error("fanout cursor response mode mismatch");
+  return {
+    mode: options.mode,
+    nextCursor: nonNegativeNumber(payload.next_cursor, "fanout cursor next_cursor"),
+    revision: nonNegativeNumber(payload.revision, "fanout cursor revision"),
+    updatedAt:
+      payload.updated_at === null || typeof payload.updated_at === "string"
+        ? payload.updated_at
+        : null,
+  };
 }
 
-function writeCursor(cursorPath: string, cursor: number): void {
-  writeFileSyncWithDirs(cursorPath, `${JSON.stringify({ next_cursor: cursor }, null, 2)}\n`);
+export async function putFanoutCursor(
+  options: FanoutCursorStoreOptions,
+  nextCursor: number,
+  expectedRevision: number,
+): Promise<FanoutCursorSnapshot> {
+  const body = JSON.stringify({
+    next_cursor: nonNegativeNumber(nextCursor, "fanout cursor next_cursor"),
+    expected_revision: nonNegativeNumber(expectedRevision, "fanout cursor expected_revision"),
+  });
+  const payload = await fanoutCursorRequest(options, "PUT", body);
+  if (payload.mode !== options.mode) throw new Error("fanout cursor response mode mismatch");
+  return {
+    mode: options.mode,
+    nextCursor: nonNegativeNumber(payload.next_cursor, "fanout cursor next_cursor"),
+    revision: nonNegativeNumber(payload.revision, "fanout cursor revision"),
+    updatedAt: typeof payload.updated_at === "string" ? payload.updated_at : null,
+  };
 }
 
-function writeFileSyncWithDirs(filePath: string, content: string): void {
-  const dir = dirname(filePath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(filePath, content);
+export async function loadFanoutCursor(
+  options: FanoutCursorStoreOptions,
+): Promise<FanoutCursorSnapshot & { loaded: boolean }> {
+  try {
+    return { ...(await fetchFanoutCursor(options)), loaded: true };
+  } catch (error) {
+    console.error(
+      `[target-fanout] WARNING: canonical ${options.mode} cursor is unavailable; continuing dispatch from cursor 0 without blocking productive work: ${errorMessage(error)}`,
+    );
+    return { mode: options.mode, nextCursor: 0, revision: 0, updatedAt: null, loaded: false };
+  }
+}
+
+export async function persistFanoutCursorFailOpen(
+  options: FanoutCursorStoreOptions,
+  nextCursor: number,
+  expectedRevision: number,
+): Promise<boolean> {
+  try {
+    await putFanoutCursor(options, nextCursor, expectedRevision);
+    return true;
+  } catch (error) {
+    console.error(
+      `[target-fanout] WARNING: canonical ${options.mode} cursor did not persist after dispatch; dispatched work remains valid and the next cycle will retry: ${errorMessage(error)}`,
+    );
+    return false;
+  }
+}
+
+async function fanoutCursorRequest(
+  options: FanoutCursorStoreOptions,
+  method: "GET" | "PUT",
+  body: string,
+): Promise<JsonRecord> {
+  const baseUrl = options.baseUrl.replace(/\/$/, "");
+  if (!baseUrl.startsWith("https://")) {
+    throw new Error("fanout cursor store URL must use HTTPS");
+  }
+  if (!options.webhookSecret) throw new Error("fanout cursor webhook secret is required");
+  const signature = `sha256=${createHmac("sha256", options.webhookSecret).update(body).digest("hex")}`;
+  const attempts = Math.max(1, Math.min(5, Math.floor(options.attempts ?? 3)));
+  const request = options.fetchImpl ?? globalThis.fetch;
+  const sleep =
+    options.sleep ??
+    ((milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  let lastFailure = "fanout cursor request failed";
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const init: RequestInit = {
+        method,
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature": signature,
+        },
+        signal: AbortSignal.timeout(5_000),
+      };
+      if (method === "PUT") init.body = body;
+      const response = await request(
+        `${baseUrl}/internal/state/cursors/${encodeURIComponent(options.mode)}`,
+        init,
+      );
+      const payload = record(await response.json().catch(() => ({})), "fanout cursor response");
+      if (response.ok && payload.ok === true) return payload;
+      lastFailure = String(payload.error || `http_${response.status}`);
+      if (response.status >= 400 && response.status < 500 && response.status !== 429) break;
+    } catch (error) {
+      lastFailure = errorMessage(error);
+    }
+    if (attempt < attempts) await sleep(attempt * 1_000);
+  }
+  throw new Error(`${method} fanout cursor failed: ${lastFailure}`);
 }
 
 function runGh(args: readonly string[], env: NodeJS.ProcessEnv): string {
@@ -631,6 +764,12 @@ function nonNegativeNumber(value: unknown, label: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${label} must be non-negative`);
   return parsed;
+}
+
+function errorMessage(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error))
+    .replace(/[\r\n]+/g, " ")
+    .slice(0, 300);
 }
 
 function positiveNumber(value: string, label: string): number {

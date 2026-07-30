@@ -61,7 +61,8 @@ Batch rollout should use target fanout:
 - use `pnpm run target-fanout -- plan --mode hot-intake --limit 10 --dry-run`
   to inspect the current owner inventory and selected dispatch commands
 - let the scheduled fanout cursor dispatch small batches across
-  `target_inventory.owners`
+  `target_inventory.owners`; the cursor is stored in the authenticated
+  ExactReviewQueue Durable Object rather than `clawsweeper-state`
 - fanout passes each repository's default branch as `target_branch`, so repos
   that use `master` or another branch do not fall back to `main`
 - add config entries only for repos that need repo-specific guidance or broader

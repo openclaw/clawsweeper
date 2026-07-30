@@ -1522,6 +1522,27 @@ test("apply checkpoints split record tuples from auxiliary state", () => {
     { encoding: "utf8" },
   );
   assert.equal(failedOutput.trim(), "normal");
+
+  const auxiliaryFailure = execFileSync(
+    "bash",
+    [
+      "-lc",
+      [
+        "source scripts/apply-workflow-helpers.sh",
+        'publish_changes_with_strategy() { printf "%s\\n" "$1"; [ "$1" != theirs ]; }',
+        'TARGET_REPO="openclaw/openclaw"',
+        'publish_changes "apply checkpoint" records apply-report.json results/apply-cursors 2>&1',
+        'printf "exit=%s\\n" "$?"',
+      ].join("\n"),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.deepEqual(auxiliaryFailure.trim().split("\n"), [
+    "normal",
+    "theirs",
+    "::warning title=Operational state publish failed::Canonical work remains valid; continuing after best-effort Git bookkeeping failed: apply checkpoint",
+    "exit=0",
+  ]);
 });
 
 test("best-effort apply status publishes one sparse-safe file without noisy restore", () => {
@@ -2596,10 +2617,25 @@ test("fleet coverage publishes live open inventory to the dashboard worker", () 
   const workflow = readText(".github/workflows/sweep.yml");
   const coverageStep = workflow.slice(
     workflow.indexOf("- name: Summarize trailing weekly review coverage"),
-    workflow.indexOf("\n      - name: Publish fanout cursor"),
+    workflow.indexOf("\n  plan:"),
   );
   assert.match(coverageStep, /CLAWSWEEPER_WEBHOOK_SECRET/);
   assert.match(coverageStep, /--publish-url "\$REVIEW_COVERAGE_URL"/);
+});
+
+test("target fanout uses the canonical cursor store without a git publisher", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const fanoutBlock = workflow.slice(
+    workflow.indexOf("\n  target-fanout:"),
+    workflow.indexOf("\n  plan:"),
+  );
+
+  assert.match(fanoutBlock, /hydrate-git-state: "false"/);
+  assert.match(fanoutBlock, /--cursor-store-url "\$REVIEW_COVERAGE_URL"/);
+  assert.doesNotMatch(fanoutBlock, /Create state token/);
+  assert.doesNotMatch(fanoutBlock, /repair:publish-main/);
+  assert.doesNotMatch(fanoutBlock, /results\/target-fanout-cursors/);
+  assert.doesNotMatch(workflow, /Publish fanout cursor/);
 });
 
 test("review git info follows checked-out target branch", () => {
@@ -3002,6 +3038,7 @@ test("sweep issue and PR event reviews and target fanout avoid storm amplificati
     /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '41 \* \* \* \*' && '12' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '20'\) \}\}/,
   );
   assert.match(fanoutBlock, /Summarize trailing weekly review coverage/);
+  assert.match(fanoutBlock, /--cursor-store-url "\$REVIEW_COVERAGE_URL"/);
   assert.match(fanoutBlock, /--publish-url "\$REVIEW_COVERAGE_URL"/);
   assert.match(fanoutBlock, /target-fanout -- coverage --window-days 7/);
   assert.match(fanoutBlock, /GITHUB_STEP_SUMMARY/);
