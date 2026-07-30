@@ -22944,9 +22944,15 @@ function reserveReviewLeaseCommand(args: Args): void {
     item.kind === "pull_request" &&
     queueAuthority.sourceHeadSha !== currentRevision
   ) {
-    throw new UserFacingCommandError(
-      "Exact-review queue authority source head does not match the current pull request.",
+    // The PR moved past the queued head. The push that moved it enqueues its
+    // own exact-head event (and the scheduled sweep backstops a lost webhook),
+    // so this stale entry completes as a superseded no-op instead of burning
+    // the item's review-failure budget.
+    console.error(
+      `Exact-review queue authority source head ${queueAuthority.sourceHeadSha} does not match the current pull request head ${currentRevision}; completing as superseded.`,
     );
+    console.log(JSON.stringify({ status: "superseded", reason: "source_head_drift" }));
+    return;
   }
   const reservationAuthority =
     queueAuthority && item.kind === "pull_request" && !queueAuthority.sourceHeadSha

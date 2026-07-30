@@ -276,6 +276,93 @@ process.stdout.write("200");
   }
 });
 
+test("reserve-review-lease completes as superseded when the PR head drifted past the queue authority", () => {
+  const root = mkdtempSync(join(tmpdir(), "cmd-reserve-lease-drift-"));
+  const binDir = join(root, "bin");
+  const ghPath = join(binDir, "gh.js");
+  const leasePath = join(root, "lease.json");
+  const headSha = "0123456789abcdef0123456789abcdef01234567";
+  const queuedHeadSha = "f".repeat(40);
+  try {
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(
+      ghPath,
+      `
+const { readFileSync, writeFileSync } = require("node:fs");
+const leasePath = ${JSON.stringify(leasePath)};
+const headSha = ${JSON.stringify(headSha)};
+const args = process.argv.slice(2);
+const path = args[1] || "";
+if (args[0] === "api" && path === "repos/openclaw/openclaw/issues/357") {
+  console.log(JSON.stringify({
+    number: 357,
+    title: "Reserve durable exact review lease",
+    html_url: "https://github.com/openclaw/openclaw/pull/357",
+    created_at: "2026-07-15T00:00:00Z",
+    updated_at: "2026-07-15T00:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "reporter" },
+    labels: [],
+    pull_request: {}
+  }));
+} else if (args[0] === "api" && path === "repos/openclaw/openclaw/pulls/357") {
+  console.log(JSON.stringify({ head: { sha: headSha } }));
+} else if (args[0] === "api" && path === "repos/openclaw/openclaw/issues/357/comments" && args.includes("--method")) {
+  writeFileSync(leasePath, readFileSync(args[args.indexOf("--input") + 1], "utf8"));
+  console.log(JSON.stringify({ id: 9992 }));
+} else if (args[0] === "api" && path.startsWith("repos/openclaw/openclaw/issues/357/comments")) {
+  console.log(JSON.stringify(args.includes("--slurp") ? [[]] : []));
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`,
+      "utf8",
+    );
+    const result = spawnSync(
+      process.execPath,
+      [
+        CLI,
+        "reserve-review-lease",
+        "--target-repo",
+        "openclaw/openclaw",
+        "--item-number",
+        "357",
+        "--review-timeout-ms",
+        "600000",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          ...mockGhBinEnv(ghPath, binDir),
+          GITHUB_RUN_ID: "999",
+          GITHUB_RUN_ATTEMPT: "1",
+          EXACT_REVIEW_QUEUE_URL: "https://queue.example.invalid",
+          EXACT_REVIEW_ITEM_KEY: "openclaw/openclaw#357",
+          EXACT_REVIEW_LEASE_ID: "lease-357",
+          EXACT_REVIEW_LEASE_REVISION: "1",
+          EXACT_REVIEW_CLAIM_GENERATION: "1",
+          EXACT_REVIEW_SOURCE_HEAD_SHA: queuedHeadSha,
+        },
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const reservation = JSON.parse(result.stdout);
+    assert.equal(reservation.status, "superseded");
+    assert.equal(reservation.reason, "source_head_drift");
+    assert.match(result.stderr, /does not match the current pull request head/);
+    assert.equal(existsSync(leasePath), false, "no lease comment may be posted on drift");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("reserve-review-lease stale A preserves newer-head lease B", () => {
   const root = mkdtempSync(join(tmpdir(), "cmd-reserve-lease-race-"));
   const binDir = join(root, "bin");

@@ -18,6 +18,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Exact reviews whose pull request head moved past the queued authority now complete as superseded no-ops (the newer push owns its own review) instead of failing and burning the item's review-failure budget.
 - Close-coverage proof runs now remove their model scratch files (`N-M.model.json`, `N-M.prompt.md`) from the proof artifact tree, which the apply-lane validator was correctly rejecting and failing every apply run.
 - Repaired legacy exact-review decisions whose empty branch was shifted to the string `0`, resolved invalid queued branches from the target repository default, and requeued temporary branch-resolution failures without spending the eight-attempt review-failure budget.
 - Made scheduled exact reviews immediately ready after fleet admission, automatically retried recoverable parked reviews on a bounded 5/10/20-minute cycle, and exposed backoff/park reason counts in queue status and the dashboard.
