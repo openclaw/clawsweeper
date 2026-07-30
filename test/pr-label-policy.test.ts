@@ -733,7 +733,7 @@ test("ClawSweeper maturity labels remove stale owned labels and preserve unrelat
     {
       name: "maturity:stable",
       color: "1F883D",
-      description: "Issue affects a taxonomy feature currently scored M4/M5.",
+      description: "Issue's primary taxonomy surface is currently scored M4/M5.",
     },
   ]);
   assert.deepEqual(maturityLabelsForTest(["bug"], ["maturity:stable"]), ["bug", "maturity:stable"]);

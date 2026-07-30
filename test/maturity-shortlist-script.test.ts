@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-test("maturity shortlist script emits only M4+ surfaces", () => {
+test("maturity shortlist script distinguishes eligible primary surfaces from exclusions", () => {
   const dir = mkdtempSync(join(tmpdir(), "clawsweeper-maturity-"));
   try {
     const scorecard = join(dir, "maturity-scores.yaml");
@@ -38,9 +38,12 @@ test("maturity shortlist script emits only M4+ surfaces", () => {
       scorecard,
     ]).toString();
 
+    assert.match(output, /Primary-surface rule:/);
+    assert.match(output, /M4\+ primary surfaces \(eligible for maturity:stable\):/);
     assert.match(output, /gateway-runtime \| Gateway runtime \| M4 Stable \| q81 c89/);
     assert.match(output, /categories: HTTP APIs/);
-    assert.doesNotMatch(output, /agent-runtime/);
+    assert.match(output, /Below-M4 primary surfaces \(not eligible for maturity:stable\):/);
+    assert.match(output, /agent-runtime \| Agent runtime \| M3 Beta/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

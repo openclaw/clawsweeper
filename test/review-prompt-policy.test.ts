@@ -436,7 +436,9 @@ test("review prompt uses token-light maturity shortlist helper", () => {
   );
 
   assert.match(prompt, /maturity-stable-shortlist\.mjs/);
-  assert.match(prompt, /compare the issue against the M4\+ shortlist/);
+  assert.match(prompt, /Identify exactly one primary owner surface/);
+  assert.match(prompt, /Shared\s+Gateway\/CLI transit/);
+  assert.match(prompt, /feature proposal does\s+not qualify/);
   assert.match(
     runtimePrompt,
     /node "\$CLAWSWEEPER_PROOF_SCRATCH_DIR\/maturity-stable-shortlist\.mjs"/,

@@ -218,12 +218,18 @@ Prefer `impact:ux-release-blocker` over `impact:ux-friction` when the same
 evidence supports both.
 
 Set `maturityLabels` for issues only; use `[]` for PRs or unsupported matches.
-`maturity:stable`: Issue affects a taxonomy feature currently scored M4/M5.
+`maturity:stable`: The issue's primary taxonomy surface is currently scored M4/M5.
 First run `node "$CLAWSWEEPER_PROOF_SCRATCH_DIR/maturity-stable-shortlist.mjs"`
-from the target checkout and compare the issue against the M4+ shortlist. Read
+from the target checkout. Identify exactly one primary owner surface from the
+broken or missing product behavior and the source owner boundary. Shared
+Gateway/CLI transit, APIs, hosting, diagnostics, or implementation plumbing do
+not qualify an issue whose primary owner is below M4. A feature proposal does
+not qualify merely because implementing it would modify a stable surface.
+The helper lists both eligible M4+ surfaces and below-M4 exclusions. Read
 `taxonomy.yaml`, the full checked-out `qa/maturity-scores.yaml`, or
-`docs/maturity/` only if the shortlist is ambiguous. Select `maturity:stable`
-only for M4/M5 matches. Cite the feature id/name and score in `evidence` and
+`docs/maturity/` when the primary owner or category is ambiguous. Select
+`maturity:stable` only when that primary surface is M4/M5. Cite the primary
+surface id/name/code and the matching category in `evidence` and
 `labelJustifications`.
 Stable maturity supports priority, but does not automatically escalate it.
 

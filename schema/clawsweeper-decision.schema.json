@@ -311,7 +311,7 @@
         "type": "string",
         "enum": ["maturity:stable"]
       },
-      "description": "Issue-only labels for mature taxonomy matches. Use [] for PRs. Select maturity:stable only when an active matched feature is currently M4/M5 in qa/maturity-scores.yaml."
+      "description": "Issue-only labels for mature taxonomy matches. Use [] for PRs. Select maturity:stable only when the issue's primary owner surface is currently M4/M5 in qa/maturity-scores.yaml; incidental Gateway/CLI transit or implementation plumbing does not qualify a lower-maturity surface."
     },
     "mergeRiskOptions": {
       "type": "array",

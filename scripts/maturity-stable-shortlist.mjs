@@ -14,19 +14,34 @@ console.log(stableShortlist(readFileSync(scorecardPath, "utf8")));
 function stableShortlist(text) {
   const scorecard = parse(text);
   const surfaces = Array.isArray(scorecard?.surfaces) ? scorecard.surfaces : [];
-  const rows = surfaces
-    .map(surfaceSummary)
-    .filter((surface) => Number(surface.code.replace(/^M/, "")) >= 4);
+  const rows = surfaces.map(surfaceSummary);
+  const stableRows = rows.filter((surface) => maturityCode(surface) >= 4);
+  const nonStableRows = rows.filter((surface) => maturityCode(surface) < 4);
 
-  if (rows.length === 0) return "No M4+ maturity scorecard surfaces found.";
-  return rows
-    .map((surface) => {
-      const categories = surface.categories.length
-        ? ` | categories: ${surface.categories.join("; ")}`
-        : "";
-      return `${surface.id} | ${surface.name} | ${surface.code} ${surface.label} | q${surface.quality} c${surface.completeness}${categories}`;
-    })
-    .join("\n");
+  return [
+    "Primary-surface rule: classify the issue by the product surface that owns the broken or missing behavior. Shared Gateway/CLI transit, APIs, hosting, or diagnostics do not make a lower-maturity owner eligible.",
+    "",
+    "M4+ primary surfaces (eligible for maturity:stable):",
+    ...(stableRows.length > 0
+      ? stableRows.map((surface) => {
+          const categories = surface.categories.length
+            ? ` | categories: ${surface.categories.join("; ")}`
+            : "";
+          return `${surface.id} | ${surface.name} | ${surface.code} ${surface.label} | q${surface.quality} c${surface.completeness}${categories}`;
+        })
+      : ["No M4+ maturity scorecard surfaces found."]),
+    "",
+    "Below-M4 primary surfaces (not eligible for maturity:stable):",
+    ...(nonStableRows.length > 0
+      ? nonStableRows.map(
+          (surface) => `${surface.id} | ${surface.name} | ${surface.code} ${surface.label}`,
+        )
+      : ["No below-M4 maturity scorecard surfaces found."]),
+  ].join("\n");
+}
+
+function maturityCode(surface) {
+  return Number(surface.code.replace(/^M/, ""));
 }
 
 function surfaceSummary(surface) {

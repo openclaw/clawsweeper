@@ -1802,7 +1802,7 @@ const MATURITY_LABELS = [
   {
     name: "maturity:stable",
     color: "1F883D",
-    description: "Issue affects a taxonomy feature currently scored M4/M5.",
+    description: "Issue's primary taxonomy surface is currently scored M4/M5.",
   },
 ] as const satisfies readonly {
   name: MaturityLabelName;
