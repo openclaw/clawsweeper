@@ -588,10 +588,7 @@ function landingBody() {
 <span class="comment"># records/openclaw-openclaw/items/812.md</span>
 <span class="comment"># durable comment marker: clawsweeper:review</span>
 <span class="prompt">$</span> pnpm run apply-decisions -- --target-repo openclaw/openclaw --limit 40
-<span class="comment"># guarded close/comment mutations only after live re-fetch</span>
-<span class="prompt">$</span> pnpm commit-reports -- --since 24h --findings
-<span class="comment"># 6 commits reviewed - 1 finding (non-security)</span>
-<span class="comment"># dispatched to repair intake</span></code></pre>
+<span class="comment"># guarded close/comment mutations only after live re-fetch</span></code></pre>
         </section>
         <section class="lanes-row" aria-label="The lanes">
           <h2>Four lanes, one engine</h2>
