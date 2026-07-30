@@ -40,9 +40,9 @@ Apply additionally verifies live state:
   maintainer comment/review/inline comment.
 
 The close comment names the missing proof kind and invites reopening with a
-live run, logs, or a reproducible validation transcript. The
-[proof-nudge lane](proof-nudges.md) remains the polite warning step and still
-never closes anything itself.
+live run, logs, or a reproducible validation transcript. Historical proof-nudge
+comments still count as dated proof requests; the proof-nudge lane itself was
+retired in July 2026.
 
 ## `abandoned_pr`
 
