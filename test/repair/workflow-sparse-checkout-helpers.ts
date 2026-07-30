@@ -42,3 +42,50 @@ export function sourceSparseCheckoutEntries(workflowPath: string): string[] {
 export function sparseEntriesCover(entries: readonly string[], requiredPath: string): boolean {
   return entries.some((entry) => requiredPath === entry || requiredPath.startsWith(`${entry}/`));
 }
+
+// `build` compiles tsconfig.json to dist/clawsweeper.js and `build:repair` compiles
+// tsconfig.repair.json; neither emits the other's entry point. Resolve a build-script
+// through package.json instead of restating which script names cover which bundle, so
+// a job that gains a bundle invocation cannot keep a build that omits it.
+function packageScripts(): Record<string, string> {
+  const manifest = JSON.parse(readFileSync("package.json", "utf8")) as {
+    scripts?: Record<string, string>;
+  };
+  return manifest.scripts ?? {};
+}
+
+function resolveScriptClosure(script: string): Set<string> {
+  const scripts = packageScripts();
+  const value = script.trim().replace(/^["']|["']$/g, "");
+  const pending = /^\/(.+)\/$/.exec(value)
+    ? Object.keys(scripts).filter((name) => new RegExp(/^\/(.+)\/$/.exec(value)![1]!).test(name))
+    : [value];
+  const closure = new Set<string>();
+  while (pending.length > 0) {
+    const name = pending.pop();
+    if (!name || closure.has(name)) continue;
+    const body = scripts[name];
+    if (body === undefined) continue;
+    closure.add(name);
+    for (const match of body.matchAll(/pnpm run (?:--silent )?([\w:.-]+)/g)) {
+      if (match[1]) pending.push(match[1]);
+    }
+  }
+  return closure;
+}
+
+export function buildScriptEmitsMainBundle(script: string): boolean {
+  return resolveScriptClosure(script).has("build");
+}
+
+export function buildScriptEmitsRepairBundle(script: string): boolean {
+  return resolveScriptClosure(script).has("build:repair");
+}
+
+export function workflowBuildScripts(workflowPath: string): string[] {
+  const workflow = parse(readFileSync(workflowPath, "utf8")) as Workflow;
+  return Object.values(workflow.jobs ?? {})
+    .flatMap((job) => job.steps ?? [])
+    .filter((step) => String(step.uses ?? "").includes("actions/setup-pnpm"))
+    .map((step) => String(step.with?.["build-script"] ?? ""));
+}

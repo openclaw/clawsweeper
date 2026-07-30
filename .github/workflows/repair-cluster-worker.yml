@@ -566,7 +566,10 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
         id: execute-setup-pnpm
         with:
-          build-script: build:repair
+          # This job publishes the action ledger with dist/clawsweeper.js, which
+          # only the main build emits, so build both Node bundles and skip the
+          # dashboard leg the job never runs.
+          build-script: build:node
 
       - name: Restore durable intake job
         if: ${{ inputs.job_payload != '' }}

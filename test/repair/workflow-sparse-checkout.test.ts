@@ -2,10 +2,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 
+import { parse } from "yaml";
+
 import { readText } from "../helpers.ts";
 import {
+  buildScriptEmitsMainBundle,
+  buildScriptEmitsRepairBundle,
   sourceSparseCheckoutEntries,
   sparseEntriesCover,
+  workflowBuildScripts,
   SPARSE_REPAIR_BUILD_WORKFLOWS,
 } from "./workflow-sparse-checkout-helpers.ts";
 
@@ -20,10 +25,16 @@ const REPAIR_RUNTIME_PATHS = [
   "tsconfig.repair.json",
 ] as const;
 
+const MAIN_BUNDLE = "dist/clawsweeper.js";
+const RUNTIME_DIST_ARTIFACT = "clawsweeper-runtime-dist";
+
 test("sparse repair build workflows include runtime dependencies", () => {
   for (const workflowPath of SPARSE_REPAIR_BUILD_WORKFLOWS) {
-    const workflow = readText(workflowPath);
-    assert.match(workflow, /build-script: build:repair/);
+    const buildScripts = workflowBuildScripts(workflowPath);
+    assert.ok(
+      buildScripts.some(buildScriptEmitsRepairBundle),
+      `${workflowPath} must build the repair bundle, got ${JSON.stringify(buildScripts)}`,
+    );
 
     const entries = sourceSparseCheckoutEntries(workflowPath);
     assert.ok(entries.includes("src"), `${workflowPath} must checkout the complete src tree`);
@@ -39,6 +50,64 @@ test("sparse repair build workflows include runtime dependencies", () => {
       );
     }
   }
+});
+
+test("every workflow job that runs the main bundle directly obtains it", () => {
+  const audited: string[] = [];
+  for (const workflowPath of fs.globSync(".github/workflows/*.yml").sort()) {
+    const text = fs.readFileSync(workflowPath, "utf8");
+    if (!text.includes(MAIN_BUNDLE)) continue;
+    const workflow = parse(text) as {
+      jobs?: Record<
+        string,
+        { steps?: { uses?: unknown; run?: unknown; with?: Record<string, unknown> }[] }
+      >;
+    };
+    for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+      const steps = job.steps ?? [];
+      // Direct invocations only. A job that reaches the bundle through a package
+      // script is not audited here, because build-script values can be GitHub
+      // expressions that only a live run resolves.
+      if (!steps.some((step) => String(step.run ?? "").includes(MAIN_BUNDLE))) continue;
+      const site = `${workflowPath}:${jobName}`;
+      audited.push(site);
+
+      // A job may restore the compiled runtime instead of building it, as sweep's
+      // review shard does. Only that exact artifact counts: other jobs download
+      // unrelated artifacts and still have to build the bundle themselves.
+      const restoresRuntime = steps.some(
+        (step) =>
+          String(step.uses ?? "").startsWith("actions/download-artifact@") &&
+          String(step.with?.["name"] ?? "") === RUNTIME_DIST_ARTIFACT,
+      );
+      if (restoresRuntime) continue;
+
+      const buildScripts = steps
+        .filter((step) => String(step.uses ?? "").includes("actions/setup-pnpm"))
+        .map((step) => String(step.with?.["build-script"] ?? ""));
+      assert.ok(
+        buildScripts.some(buildScriptEmitsMainBundle),
+        `${site} runs ${MAIN_BUNDLE} but no build-script emits it: ${JSON.stringify(buildScripts)}`,
+      );
+
+      // The main build reads tsconfig.json, so a curated checkout has to carry it.
+      const checkout = steps.find((step) =>
+        String(step.uses ?? "").startsWith("actions/checkout@"),
+      );
+      const sparseCheckout = checkout?.with?.["sparse-checkout"];
+      if (typeof sparseCheckout === "string") {
+        const entries = sparseCheckout
+          .split(/\r?\n/)
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+        assert.ok(
+          sparseEntriesCover(entries, "tsconfig.json"),
+          `${site} builds ${MAIN_BUNDLE} from a sparse checkout that omits tsconfig.json`,
+        );
+      }
+    }
+  }
+  assert.ok(audited.length > 0, `no job invoking ${MAIN_BUNDLE} was audited`);
 });
 
 test("state-hydrating sparse repair workflows keep hydration dependencies", () => {
