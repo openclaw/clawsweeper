@@ -294,6 +294,86 @@ test("content digest busts when bounded PR check state changes", () => {
   assert.notEqual(passing, failing);
 });
 
+function checksContext(checkRuns: unknown[]) {
+  return {
+    complete: true,
+    checkRuns,
+    checkRunsTruncated: false,
+    statuses: [],
+    statusesTruncated: false,
+  };
+}
+
+const CI_RUN = {
+  name: "pnpm check",
+  status: "completed",
+  conclusion: "success",
+  app: "github-actions",
+};
+const BOT_RUN = {
+  name: "notify",
+  status: "completed",
+  conclusion: "success",
+  app: "github-actions",
+};
+
+test("content digest ignores repeated ClawSweeper automation check runs", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const a = itemContentDigestForTest(
+    pull,
+    pullContext({ pullChecks: checksContext([CI_RUN, BOT_RUN]) }),
+  );
+  const b = itemContentDigestForTest(
+    pull,
+    pullContext({ pullChecks: checksContext([CI_RUN, BOT_RUN, BOT_RUN, BOT_RUN]) }),
+  );
+  assert.equal(a, b);
+});
+
+test("content digest still busts when a repeated check run newly fails", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const a = itemContentDigestForTest(
+    pull,
+    pullContext({ pullChecks: checksContext([CI_RUN, BOT_RUN, BOT_RUN]) }),
+  );
+  const b = itemContentDigestForTest(
+    pull,
+    pullContext({
+      pullChecks: checksContext([CI_RUN, BOT_RUN, { ...BOT_RUN, conclusion: "failure" }]),
+    }),
+  );
+  assert.notEqual(a, b);
+});
+
+test("content digest keeps check runs that differ in name or app", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const a = itemContentDigestForTest(pull, pullContext({ pullChecks: checksContext([CI_RUN]) }));
+  const byName = itemContentDigestForTest(
+    pull,
+    pullContext({ pullChecks: checksContext([CI_RUN, { ...CI_RUN, name: "pnpm check (win)" }]) }),
+  );
+  const byApp = itemContentDigestForTest(
+    pull,
+    pullContext({ pullChecks: checksContext([CI_RUN, { ...CI_RUN, app: "blacksmith-sh" }]) }),
+  );
+  assert.notEqual(a, byName);
+  assert.notEqual(a, byApp);
+  assert.notEqual(byName, byApp);
+});
+
+test("content digest still tracks check payloads without a run array", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const a = itemContentDigestForTest(
+    pull,
+    pullContext({ pullChecks: { complete: false, checkRunsTruncated: true } }),
+  );
+  const b = itemContentDigestForTest(
+    pull,
+    pullContext({ pullChecks: { complete: false, checkRunsTruncated: false } }),
+  );
+  assert.notEqual(a, b);
+});
+
 test("review comment revision covers comments outside the bounded prompt window", () => {
   const comments = Array.from({ length: 81 }, (_, index) => ({
     id: index + 1,

@@ -3146,6 +3146,26 @@ function reviewTimelineDigestParts(entries: unknown): unknown {
     }));
 }
 
+function reviewCheckDigestParts(value: unknown): unknown {
+  if (value === undefined || value === null) return null;
+  const checks = asRecord(value);
+  if (!Array.isArray(checks.checkRuns)) return value;
+  // compactCheckRun() reduces a run to {name,status,conclusion,app}, so a repeat of
+  // that tuple reports no check state the first one did not. ClawSweeper's own review
+  // writes retrigger its dispatch and notify workflows, which append such repeats to
+  // the head on every cycle; digesting them expires this item's review content cache
+  // and re-reviews an unchanged head. A run that newly fails still differs in
+  // conclusion, so it keeps its own entry and still busts the cache.
+  const seen = new Set<string>();
+  const checkRuns = checks.checkRuns.filter((run) => {
+    const key = stableJson(run);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return { ...checks, checkRuns };
+}
+
 function itemContentDigest(item: Item, context: ItemContext, git?: GitInfo): string {
   const isPull = item.kind === "pull_request";
   const pull = asRecord(context.pullRequest);
@@ -3184,7 +3204,7 @@ function itemContentDigest(item: Item, context: ItemContext, git?: GitInfo): str
         ? (context.pullReviewCommentsRevision ??
           reviewCommentDigestParts(context.pullReviewComments))
         : null,
-      checks: isPull ? (context.pullChecks ?? null) : null,
+      checks: isPull ? reviewCheckDigestParts(context.pullChecks) : null,
     }),
   );
 }
