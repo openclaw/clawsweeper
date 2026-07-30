@@ -18,6 +18,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Exact reviews of items that closed after enqueue now complete as superseded no-ops, and GitHub-throttled reservations defer as held retries — neither spends the item's review-failure budget.
+- Trimmed the exact-review feed rate from 600/h to 450/h after the resumed apply and comment-sync lanes pushed the shared GitHub App installation token into rate-limit 403s.
 - Exact reviews whose pull request head moved past the queued authority now complete as superseded no-ops (the newer push owns its own review) instead of failing and burning the item's review-failure budget.
 - Close-coverage proof runs now remove their model scratch files (`N-M.model.json`, `N-M.prompt.md`) from the proof artifact tree, which the apply-lane validator was correctly rejecting and failing every apply run.
 - Repaired legacy exact-review decisions whose empty branch was shifted to the string `0`, resolved invalid queued branches from the target repository default, and requeued temporary branch-resolution failures without spending the eight-attempt review-failure budget.

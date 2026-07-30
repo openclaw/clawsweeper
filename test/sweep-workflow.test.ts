@@ -532,6 +532,12 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(reserveLease.run ?? "", /RANDOM % 4/);
   assert.match(reserveLease.run ?? "", /status.*superseded/);
   assert.match(reserveLease.run ?? "", /successful no-op/);
+  assert.match(
+    reserveLease.run ?? "",
+    /rate limit exceeded\|secondary rate limit\|HTTP 429/,
+    "throttled reservations must defer as held instead of failing",
+  );
+  assert.match(reserveLease.run ?? "", /\\"status\\":\\"held\\",\\"retryAt\\":\\"\$retry_at\\"/);
   assert.match(source, /Review exact item \{0\} rev \{1\} head \{2\}/);
   assert.equal(
     reserveLease.env?.EXACT_REVIEW_ITEM_KEY,

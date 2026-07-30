@@ -22924,9 +22924,14 @@ function reserveReviewLeaseCommand(args: Args): void {
   }
   const { item, state } = fetchItem(itemNumber);
   if (state !== "open") {
-    throw new UserFacingCommandError(
-      `Cannot reserve a review lease for #${itemNumber}: state is ${state}.`,
+    // The item was closed between enqueue and review (typically by the apply
+    // lane or its author). The stale entry completes as a superseded no-op
+    // rather than burning the item's review-failure budget.
+    console.error(
+      `Item #${itemNumber} is ${state}; completing the reservation as a superseded no-op.`,
     );
+    console.log(JSON.stringify({ status: "superseded", reason: "item_not_open", state }));
+    return;
   }
   const queueAuthority = exactReviewQueueAuthorityFromEnv();
   const expectedItemKey = `${targetRepo()}#${itemNumber}`.toLowerCase();

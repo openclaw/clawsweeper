@@ -963,6 +963,12 @@ jobs:
             else
               reserve_exit=$?
             fi
+            if grep -Eqi 'rate limit exceeded|secondary rate limit|HTTP 429' "$reservation_error"; then
+              retry_at="$(date -u -d "@$(( $(date -u +%s) + 1200 ))" +%Y-%m-%dT%H:%M:%SZ)"
+              echo "::notice::GitHub throttled the exact-review reservation; deferring until $retry_at so the durable queue retries without spending failure budget."
+              reservation="{\"status\":\"held\",\"retryAt\":\"$retry_at\"}"
+              break
+            fi
             if ! grep -Eqi '(exact-review queue authority changed|review revision changed|could not (confirm|identify).+review lease).+retry required' "$reservation_error"; then
               cat "$reservation_error" >&2
               exit "$reserve_exit"
