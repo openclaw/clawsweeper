@@ -37,7 +37,7 @@ not split reports into issue/PR subtrees.
   store; the Worker/R2 pair is authoritative for records, ledger, and assets.
   Check current Actions and the canonical owner before trusting local generated
   timestamps.
-- When Peter asks about PRs outside `openclaw/clawsweeper`, treat the task as
+- When asked about PRs outside `openclaw/clawsweeper`, treat the task as
   monitoring/debugging how ClawSweeper workflows operate on that PR. Do not fix
   foreign PR branches directly; ClawSweeper repair/automerge workflows own those
   branch edits.
