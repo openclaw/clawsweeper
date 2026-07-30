@@ -8,16 +8,19 @@ import test from "node:test";
 
 import {
   SCHEDULED_REVIEW_PLAN_BATCH_SIZE,
+  allocateReviewCandidateCapacity,
   defaultLimit,
   fetchFanoutCursor,
   filterEligibleRepositories,
   loadFanoutCursor,
   persistFanoutCursorFailOpen,
+  planReviewFanout,
   publishReviewCoverageInventory,
   putFanoutCursor,
   renderFleetReviewCoverage,
   reviewCoverageInventorySnapshot,
   reviewPlanningRepositories,
+  repositoriesWithOpenItems,
   selectRepositories,
   summarizeFleetReviewCoverage,
   type InventoryConfig,
@@ -40,17 +43,8 @@ test("target fanout defaults match the scheduled cursor batch sizes", () => {
   assert.equal(defaultLimit("audit"), "12");
 });
 
-test("scheduled normal fanout can offer the configured hourly review target", () => {
-  const wrangler = readFileSync("dashboard/wrangler.toml", "utf8");
-  const configuredRate = Number(
-    wrangler.match(/^EXACT_REVIEW_TARGET_RATE_PER_HOUR = "(\d+)"$/m)?.[1],
-  );
-  const offersPerHour = SCHEDULED_REVIEW_PLAN_BATCH_SIZE * Number(defaultLimit("normal-review"));
-
-  assert.equal(configuredRate, 600);
+test("scheduled fanout retains a bounded fallback when queue capacity is unavailable", () => {
   assert.equal(SCHEDULED_REVIEW_PLAN_BATCH_SIZE, 50);
-  assert.equal(offersPerHour, 600);
-  assert.ok(offersPerHour >= configuredRate);
 });
 
 test("normal fanout prioritizes repositories with untracked live items and skips empty repos", () => {
@@ -105,6 +99,75 @@ test("normal fanout prioritizes repositories with untracked live items and skips
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("review fanout gives a single repository enough candidates to saturate free capacity", () => {
+  const huge = planningRepository("openclaw/openclaw", 3_084);
+  const plan = planReviewFanout([huge], {
+    limit: 12,
+    cursor: 0,
+    candidateCapacity: 128,
+  });
+
+  assert.equal(plan.repositories.length, 1);
+  assert.equal(plan.repositories[0]?.targetRepo, huge.targetRepo);
+  assert.equal(plan.repositories[0]?.candidateCapacity, 128);
+  assert.deepEqual(allocateReviewCandidateCapacity([huge], 128), new Map([[huge.targetRepo, 128]]));
+});
+
+test("dominant review backlog stays hot while all other 137 repositories rotate without starvation", () => {
+  const dominant = planningRepository("openclaw/openclaw", 3_084);
+  const small = Array.from({ length: 137 }, (_, index) =>
+    planningRepository(`openclaw/small-${String(index).padStart(3, "0")}`, 1),
+  );
+  const repositories = [dominant, ...small];
+  const seenSmall = new Set<string>();
+  let cursor = 0;
+  const cyclesNeeded = Math.ceil(small.length / (Number(defaultLimit("normal-review")) - 1));
+
+  for (let cycle = 0; cycle < cyclesNeeded; cycle += 1) {
+    const plan = planReviewFanout(repositories, {
+      limit: Number(defaultLimit("normal-review")),
+      cursor,
+      candidateCapacity: 128,
+    });
+    cursor = plan.cursor;
+    const dominantDispatch = plan.repositories.find(
+      (repository) => repository.targetRepo === dominant.targetRepo,
+    );
+    assert.ok(dominantDispatch);
+    assert.equal(dominantDispatch.candidateCapacity, 117);
+    for (const repository of plan.repositories) {
+      if (repository.targetRepo === dominant.targetRepo) continue;
+      seenSmall.add(repository.targetRepo);
+      assert.equal(repository.candidateCapacity, 1);
+    }
+    assert.equal(
+      plan.repositories.reduce((total, repository) => total + repository.candidateCapacity, 0),
+      128,
+    );
+  }
+
+  assert.equal(cyclesNeeded, 13);
+  assert.equal(seenSmall.size, 137);
+  assert.ok(cyclesNeeded < 7 * 24, "the hourly cursor covers every small repo within a week");
+});
+
+test("hot fanout drops repositories with no live open items before cursor selection", () => {
+  const repositories = [
+    { targetRepo: "openclaw/empty", defaultBranch: "main", visibility: "PUBLIC" },
+    { targetRepo: "openclaw/live", defaultBranch: "main", visibility: "PUBLIC" },
+  ];
+  assert.deepEqual(
+    repositoriesWithOpenItems(
+      repositories,
+      new Map([
+        ["openclaw/empty", { issues: 0, pullRequests: 0 }],
+        ["openclaw/live", { issues: 1, pullRequests: 0 }],
+      ]),
+    ),
+    [repositories[1]],
+  );
 });
 
 test("target fanout summarizes trailing weekly coverage from canonical open records", () => {
@@ -258,6 +321,10 @@ if (args[0] === "repo" && args[1] === "list") {
   ]));
   process.exit(0);
 }
+if (args[0] === "api" && args[1] === "graphql") {
+  process.stdout.write(JSON.stringify({data:{r0:{issues:{totalCount:1},pullRequests:{totalCount:0}}}}));
+  process.exit(0);
+}
 if (args[0] === "api" && args[1].endsWith("/dispatches")) process.exit(0);
 process.exit(2);
 `,
@@ -320,6 +387,13 @@ if (args[0] === "repo" && args[1] === "list") {
     ? [{nameWithOwner:"openclaw/B",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}]
     : [{nameWithOwner:"steipete/A",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}];
   process.stdout.write(JSON.stringify(data));
+  process.exit(0);
+}
+if (args[0] === "api" && args[1] === "graphql") {
+  process.stdout.write(JSON.stringify({data:{
+    r0:{issues:{totalCount:1},pullRequests:{totalCount:0}},
+    r1:{issues:{totalCount:1},pullRequests:{totalCount:0}}
+  }}));
   process.exit(0);
 }
 if (args[0] === "api" && args[1].endsWith("/dispatches")) process.exit(0);
@@ -542,10 +616,14 @@ process.exit(2);
     dispatched: string[];
     next_cursor: number;
     cursor_persisted: boolean;
+    review_candidate_capacity: number;
+    candidate_batches: Record<string, number>;
   };
-  assert.deepEqual(summary.dispatched, ["openclaw/b", "steipete/a"]);
+  assert.deepEqual(summary.dispatched, ["steipete/a", "openclaw/b"]);
   assert.equal(summary.next_cursor, 0);
   assert.equal(summary.cursor_persisted, false);
+  assert.equal(summary.review_candidate_capacity, 100);
+  assert.deepEqual(summary.candidate_batches, { "steipete/a": 1, "openclaw/b": 1 });
 
   const calls = readFileSync(logPath, "utf8")
     .trim()
@@ -566,8 +644,8 @@ process.exit(2);
       .filter((call) => call.args[0] === "api" && call.args[1]?.endsWith("/dispatches"))
       .map((call) => call.args.join(" ")),
     [
-      "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=openclaw/b -f client_payload[target_branch]=main -f client_payload[hot_intake]=false -f client_payload[batch_size]=50 -f client_payload[shard_count]=1",
-      "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=steipete/a -f client_payload[target_branch]=master -f client_payload[hot_intake]=false -f client_payload[batch_size]=50 -f client_payload[shard_count]=1",
+      "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=steipete/a -f client_payload[target_branch]=master -f client_payload[hot_intake]=false -f client_payload[batch_size]=1 -f client_payload[shard_count]=1",
+      "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=openclaw/b -f client_payload[target_branch]=main -f client_payload[hot_intake]=false -f client_payload[batch_size]=1 -f client_payload[shard_count]=1",
     ],
   );
 });
@@ -587,6 +665,13 @@ if (args[0] === "repo" && args[1] === "list") {
     {nameWithOwner:"openclaw/A",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}},
     {nameWithOwner:"openclaw/B",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}
   ]));
+  process.exit(0);
+}
+if (args[0] === "api" && args[1] === "graphql") {
+  process.stdout.write(JSON.stringify({data:{
+    r0:{issues:{totalCount:1},pullRequests:{totalCount:0}},
+    r1:{issues:{totalCount:0},pullRequests:{totalCount:0}}
+  }}));
   process.exit(0);
 }
 if ((args[0] === "workflow" && args[1] === "run") || (args[0] === "api" && args[1].endsWith("/dispatches"))) process.exit(0);
@@ -630,7 +715,8 @@ process.exit(2);
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line) as string[]);
-  assert.equal(calls.filter((call) => call[0] === "api").length, 0);
+  assert.equal(calls.filter((call) => call[0] === "api" && call[1] === "graphql").length, 1);
+  assert.equal(calls.filter((call) => call[1]?.endsWith("/dispatches")).length, 0);
 });
 
 function repo(nameWithOwner: string, overrides: Partial<ListedRepository> = {}): ListedRepository {
@@ -643,5 +729,16 @@ function repo(nameWithOwner: string, overrides: Partial<ListedRepository> = {}):
     visibility: "PUBLIC",
     defaultBranch: "main",
     ...overrides,
+  };
+}
+
+function planningRepository(targetRepo: string, untrackedOpen: number) {
+  return {
+    targetRepo,
+    defaultBranch: "main",
+    visibility: "PUBLIC",
+    openItems: untrackedOpen,
+    trackedRecords: 0,
+    untrackedOpen,
   };
 }

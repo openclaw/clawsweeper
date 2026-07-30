@@ -11,6 +11,9 @@ export type ExactReviewQueuePressure =
       ok: true;
       pendingCount: number;
       oldestPendingAgeMs: number;
+      activeCount?: number;
+      capacity?: number;
+      availableCandidateCapacity?: number;
     }
   | {
       ok: false;
@@ -50,11 +53,25 @@ export async function fetchExactReviewQueuePressure({
         ? reviewLane.oldest_pending_age_seconds
         : body.oldest_pending_age_seconds;
     if (!isNonNegativeInteger(pendingCount)) return malformedPressure();
+    const capacityFields =
+      reviewLane &&
+      isNonNegativeInteger(reviewLane.active) &&
+      isNonNegativeInteger(reviewLane.capacity)
+        ? {
+            activeCount: reviewLane.active,
+            capacity: reviewLane.capacity,
+            availableCandidateCapacity: Math.max(
+              0,
+              reviewLane.capacity - reviewLane.active - pendingCount,
+            ),
+          }
+        : {};
     if (pendingCount === 0) {
       return {
         ok: true,
         pendingCount,
         oldestPendingAgeMs: 0,
+        ...capacityFields,
       };
     }
     // A null age with a positive backlog is inconsistent data — fail open
@@ -67,6 +84,7 @@ export async function fetchExactReviewQueuePressure({
       ok: true,
       pendingCount,
       oldestPendingAgeMs,
+      ...capacityFields,
     };
   } catch (error) {
     return {

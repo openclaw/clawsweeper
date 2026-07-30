@@ -550,6 +550,25 @@ test("normal scheduling ranks untracked items above stale records, then oldest r
   assert.deepEqual(selectedNumbers(due, 3, now), [1, 3, 2]);
 });
 
+test("one repository's untracked backlog fills the queue-sized candidate limit", () => {
+  const now = Date.parse("2026-07-30T12:00:00Z");
+  const due = Array.from({ length: 3_084 }, (_, index) => ({
+    item: item({
+      number: index + 1,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    }),
+    bucket: "weekly_issue",
+    priority: 6,
+    reviewedAt: 0,
+    nextDueAt: 0,
+  }));
+
+  const selected = selectedNumbers(due, 128, now);
+  assert.equal(selected.length, 128);
+  assert.equal(new Set(selected).size, 128);
+});
+
 test("weekly freshness preselection still fills remaining scheduler capacity", () => {
   const now = Date.parse("2026-06-14T12:00:00Z");
   const due = Array.from({ length: 5 }, (_, index) => ({

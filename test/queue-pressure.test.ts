@@ -122,6 +122,32 @@ test("queue pressure uses review thresholds and ignores independent publication 
   assert.deepEqual(emptyReviewLane, { ok: true, pendingCount: 0, oldestPendingAgeMs: 0 });
 });
 
+test("queue pressure exposes free candidate capacity after active and pending review work", async () => {
+  const result = await fetchExactReviewQueuePressure({
+    queueUrl: "https://clawsweeper.example",
+    fetchImpl: async () =>
+      Response.json({
+        lanes: {
+          review: {
+            pending: 5,
+            active: 3,
+            capacity: 128,
+            oldest_pending_age_seconds: 30,
+          },
+        },
+      }),
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    pendingCount: 5,
+    oldestPendingAgeMs: 30_000,
+    activeCount: 3,
+    capacity: 128,
+    availableCandidateCapacity: 120,
+  });
+});
+
 test("queue pressure fetch fails closed for background admission on errors, timeouts, and malformed bodies", async () => {
   const failed = await fetchExactReviewQueuePressure({
     queueUrl: "https://clawsweeper.example",

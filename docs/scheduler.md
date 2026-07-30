@@ -146,10 +146,12 @@ from a safe default; cursor persistence failure after dispatch never fails the
 productive lane.
 
 Normal fanout refreshes the same signed live-open inventory consumed by
-`GET /api/review-coverage`, skips repositories with no open items, and visits
-repositories whose live count exceeds their canonical-record count before
-tracked-only repositories. The cursor still rotates within that bounded set;
-one large repository does not receive multiple slots in one fanout step.
+`GET /api/review-coverage`, and both normal and hot fanout skip repositories
+with no open items. Normal fanout reserves a rotating slot for every selected
+repository, keeps the largest untracked backlog in each cycle, and apportions
+the remaining candidate volume by backlog share. The rotating slice is
+dispatched first, so one large repository can fill otherwise-idle capacity
+without permanently consuming smaller repositories' scheduled-feed budget.
 
 The six-hour audit fanout also writes a GitHub Actions summary with canonical
 open-item reports reviewed in the trailing seven days versus batched live open
@@ -656,9 +658,10 @@ can be newer than local files.
 
 To change review spend, set
 `EXACT_REVIEW_TARGET_RATE_PER_HOUR`; the Worker applies the fleet-wide rate
-while the workflow's 20-item plan batch keeps enough candidates available. To
-change manual normal Codex sessions, update the worker limits and workflow
-defaults together.
+while scheduled planners size their candidate batch to free review capacity.
+Target fanout divides that capacity by untracked backlog after reserving its
+round-robin fairness slice. To change manual normal Codex sessions, update the
+worker limits and workflow defaults together.
 
 To change review cadence, update the cadence constants and the scheduler bucket
 logic in `src/clawsweeper.ts`, then update dashboard labels and this document.

@@ -344,6 +344,10 @@ hot intake `14`, and commit review `2`. Existing repair lanes keep their
   the scheduled remainder is split 35/65 between hot intake and normal backfill.
 - `EXACT_REVIEW_TARGET_BURST` bounds the scheduled admission burst; the
   default is 50 and uses the same lane split.
+- Scheduled planners subtract active and pending review work from the 128-slot
+  review capacity before selecting candidates. Target fanout gives every
+  cursor-selected repository a one-candidate floor, then apportions the
+  remaining free capacity by untracked backlog.
 - `EXACT_REVIEW_HEARTBEAT_GRACE_MS` overrides the 1,200,000 ms exact-review worker heartbeat
   grace. It is clamped to at least 420,000 ms so a configured grace can never dip
   near the one-minute worker heartbeat interval during scheduler or network stalls.

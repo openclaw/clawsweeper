@@ -2819,6 +2819,7 @@ jobs:
           active_background_workers="$(( $(active_run_count ".github/workflows/commit-review.yml") * commit_page_size + $(active_sweep_background_workers) ))"
           exact_item="${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}"
           pressure_level="unknown"
+          queue_candidate_capacity="50"
           hot_intake_unpressured="$(worker_limit hot_intake --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
           normal_unpressured="$(worker_limit normal_review --active-critical "$active_critical_workers" --active-background "$active_background_workers")"
           if [ -z "$exact_item" ]; then
@@ -2828,11 +2829,17 @@ jobs:
             if ! pressure_level="$(printf '%s' "$pressure_json" | jq -er '.level | select(. == "none" or . == "soft" or . == "hard" or . == "unknown")' 2>/dev/null)"; then
               pressure_level="unknown"
             fi
+            if ! queue_candidate_capacity="$(printf '%s' "$pressure_json" | jq -er '.availableCandidateCapacity | select(type == "number" and floor == . and . >= 0)' 2>/dev/null)"; then
+              queue_candidate_capacity="50"
+            fi
+            if [ "$queue_candidate_capacity" -lt 1 ]; then
+              queue_candidate_capacity="1"
+            fi
           fi
           hot_intake_shards="$(worker_limit hot_intake --active-critical "$active_critical_workers" --active-background "$active_background_workers" --pressure-level "$pressure_level")"
           normal_shards="$(worker_limit normal_review --active-critical "$active_critical_workers" --active-background "$active_background_workers" --pressure-level "$pressure_level")"
           if [ -z "$exact_item" ]; then
-            pressure_numbers="$(printf '%s' "$pressure_json" | jq -r 'if .ok then "pending=\(.pendingCount), oldest=\((.oldestPendingAgeMs / 3600000 * 10 | round) / 10)h" else "unavailable=\(.reason)" end' 2>/dev/null || printf 'unavailable=probe_failed')"
+            pressure_numbers="$(printf '%s' "$pressure_json" | jq -r 'if .ok then "pending=\(.pendingCount), active=\(.activeCount // "unknown")/\(.capacity // "unknown"), candidate-capacity=\(.availableCandidateCapacity // "unknown"), oldest=\((.oldestPendingAgeMs / 3600000 * 10 | round) / 10)h" else "unavailable=\(.reason)" end' 2>/dev/null || printf 'unavailable=probe_failed')"
             echo "queue pressure: $pressure_level ($pressure_numbers) — hot_intake $hot_intake_unpressured->$hot_intake_shards, normal_review $normal_unpressured->$normal_shards"
           fi
           hot_intake="${{ ((github.event_name == 'repository_dispatch' && github.event.client_payload.hot_intake == 'true') || (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'true' || 'false' }}"
@@ -2875,9 +2882,20 @@ jobs:
           fi
           if [ "$queue_feed" = "true" ] && [ -z "$exact_item" ]; then
             # The Durable Object turns every selected item into an independent exact-review
-            # workflow. Plan a bounded feed batch here; the Worker owns the global 600/hour
-            # admission target and queue backpressure across overlapping target sweeps.
-            batch_size="50"
+            # workflow. Direct schedules use current free queue capacity; target fanout may
+            # request a smaller backlog-weighted share. The Worker remains the final owner of
+            # the fleet-wide 600/hour admission target and queue backpressure.
+            requested_batch_size="${{ github.event.client_payload.batch_size || '' }}"
+            if ! [[ "$requested_batch_size" =~ ^[0-9]+$ ]] || [ "$requested_batch_size" -lt 1 ]; then
+              requested_batch_size="$queue_candidate_capacity"
+            fi
+            if [ "$requested_batch_size" -gt "$queue_candidate_capacity" ]; then
+              requested_batch_size="$queue_candidate_capacity"
+            fi
+            if [ "$requested_batch_size" -gt "$hard_shard_cap" ]; then
+              requested_batch_size="$hard_shard_cap"
+            fi
+            batch_size="$requested_batch_size"
             shard_count="1"
             min_active_shards="0"
           fi

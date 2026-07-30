@@ -2605,7 +2605,9 @@ test("scheduled reviews feed the durable queue instead of one-item matrix worker
   );
 
   assert.match(modeBlock, /queue_feed=.*clawsweeper_target_sweep/);
-  assert.match(modeBlock, /batch_size="50"[\s\S]*shard_count="1"/);
+  assert.match(modeBlock, /requested_batch_size=.*client_payload\.batch_size/);
+  assert.match(modeBlock, /requested_batch_size="\$queue_candidate_capacity"/);
+  assert.match(modeBlock, /batch_size="\$requested_batch_size"[\s\S]*shard_count="1"/);
   assert.match(enqueueBlock, /repair:scheduled-review-enqueue/);
   assert.match(enqueueBlock, /Scheduled review funnel/);
   assert.match(workflow, /Review scheduled hot item/);
@@ -2881,7 +2883,7 @@ test("target review queues coalesce background work without delaying exact plann
   assert.match(planHeader, /cancel-in-progress: false/);
 });
 
-test("scheduled normal review offers a 50-item queue batch on one planner shard", () => {
+test("scheduled normal review sizes one planner shard to live candidate capacity", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const modeBlock = workflow.slice(
     workflow.indexOf("- id: mode"),
@@ -2889,7 +2891,10 @@ test("scheduled normal review offers a 50-item queue batch on one planner shard"
   );
 
   assert.match(modeBlock, /if \[ "\$queue_feed" = "true" \] && \[ -z "\$exact_item" \]; then/);
-  assert.match(modeBlock, /batch_size="50"[\s\S]*shard_count="1"/);
+  assert.match(modeBlock, /availableCandidateCapacity/);
+  assert.match(modeBlock, /requested_batch_size=.*client_payload\.batch_size/);
+  assert.match(modeBlock, /if \[ "\$requested_batch_size" -gt "\$queue_candidate_capacity" \]/);
+  assert.match(modeBlock, /batch_size="\$requested_batch_size"[\s\S]*shard_count="1"/);
   assert.match(modeBlock, /min_active_shards="0"/);
 });
 

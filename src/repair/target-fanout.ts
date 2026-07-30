@@ -5,6 +5,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveCommand } from "../command.js";
+import { fetchExactReviewQueuePressure } from "../queue-pressure.js";
 import { parseArgs, repoRoot } from "./lib.js";
 
 type JsonRecord = Record<string, unknown>;
@@ -71,10 +72,14 @@ export interface ReviewPlanningRepository extends SelectedRepository {
   untrackedOpen: number;
 }
 
-interface SelectionResult {
-  repositories: SelectedRepository[];
+interface SelectionResult<RepositoryT extends SelectedRepository = SelectedRepository> {
+  repositories: RepositoryT[];
   cursor: number;
   total: number;
+}
+
+export interface ReviewFanoutRepository extends ReviewPlanningRepository {
+  candidateCapacity: number;
 }
 
 export interface FanoutCursorSnapshot {
@@ -160,40 +165,61 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   }
 
   let planningRepositories: readonly SelectedRepository[] = repositories;
-  if (mode === "normal-review") {
+  let reviewCandidateCapacity: number | null = null;
+  if (mode === "normal-review" || mode === "hot-intake") {
     const openCounts = loadRepositoryOpenCounts(repositories);
     const now = Date.now();
-    const publishUrl = stringArg(args["publish-url"], "");
-    if (publishUrl) {
-      try {
-        await publishReviewCoverageInventory({
-          baseUrl: publishUrl,
-          webhookSecret: stringValue(
-            process.env.CLAWSWEEPER_WEBHOOK_SECRET,
-            "CLAWSWEEPER_WEBHOOK_SECRET",
-          ),
-          snapshot: reviewCoverageInventorySnapshot(repositories, openCounts, now),
-        });
-      } catch (error) {
-        console.error(
-          `[target-fanout] WARNING: live review inventory did not publish; continuing without blocking scheduled fanout work: ${errorMessage(error)}`,
-        );
+    if (mode === "normal-review") {
+      const publishUrl = stringArg(args["publish-url"], "");
+      if (publishUrl) {
+        try {
+          await publishReviewCoverageInventory({
+            baseUrl: publishUrl,
+            webhookSecret: stringValue(
+              process.env.CLAWSWEEPER_WEBHOOK_SECRET,
+              "CLAWSWEEPER_WEBHOOK_SECRET",
+            ),
+            snapshot: reviewCoverageInventorySnapshot(repositories, openCounts, now),
+          });
+        } catch (error) {
+          console.error(
+            `[target-fanout] WARNING: live review inventory did not publish; continuing without blocking scheduled fanout work: ${errorMessage(error)}`,
+          );
+        }
       }
+      planningRepositories = reviewPlanningRepositories({ repositories, openCounts });
+    } else {
+      planningRepositories = repositoriesWithOpenItems(repositories, openCounts);
     }
-    planningRepositories = reviewPlanningRepositories({ repositories, openCounts });
   }
   const cursor = await loadFanoutCursor({
     baseUrl: options.cursorStoreUrl,
     webhookSecret: process.env.CLAWSWEEPER_WEBHOOK_SECRET ?? "",
     mode,
   });
-  const selection = selectRepositories(planningRepositories, {
-    limit: options.limit,
-    cursor: cursor.nextCursor,
-  });
+  let selection: SelectionResult;
+  if (mode === "normal-review") {
+    const fallbackCapacity =
+      SCHEDULED_REVIEW_PLAN_BATCH_SIZE * Math.min(options.limit, planningRepositories.length);
+    const pressure = await fetchExactReviewQueuePressure({ queueUrl: options.cursorStoreUrl });
+    reviewCandidateCapacity =
+      pressure.ok && pressure.availableCandidateCapacity !== undefined
+        ? pressure.availableCandidateCapacity
+        : fallbackCapacity;
+    selection = planReviewFanout(planningRepositories as readonly ReviewPlanningRepository[], {
+      limit: options.limit,
+      cursor: cursor.nextCursor,
+      candidateCapacity: reviewCandidateCapacity,
+    });
+  } else {
+    selection = selectRepositories(planningRepositories, {
+      limit: options.limit,
+      cursor: cursor.nextCursor,
+    });
+  }
 
   const commands = selection.repositories.map((repository) =>
-    workflowDispatchArgs(repository, options),
+    workflowDispatchArgs(repository, options, candidateCapacityFor(repository)),
   );
 
   if (args._[0] === "plan") {
@@ -234,11 +260,26 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
         dry_run: options.dryRun,
         cursor_loaded: cursor.loaded,
         cursor_persisted: cursorPersisted,
+        review_candidate_capacity: reviewCandidateCapacity,
+        candidate_batches: Object.fromEntries(
+          selection.repositories.flatMap((repository) =>
+            candidateCapacityFor(repository) === undefined
+              ? []
+              : [[repository.targetRepo, candidateCapacityFor(repository)] as const],
+          ),
+        ),
       },
       null,
       2,
     )}\n`,
   );
+}
+
+function candidateCapacityFor(repository: SelectedRepository): number | undefined {
+  if (!("candidateCapacity" in repository)) return undefined;
+  return typeof repository.candidateCapacity === "number"
+    ? repository.candidateCapacity
+    : undefined;
 }
 
 export function readInventoryConfig(
@@ -295,22 +336,32 @@ export function filterEligibleRepositories(
     }));
 }
 
-export function selectRepositories(
-  repositories: readonly SelectedRepository[],
+export function selectRepositories<RepositoryT extends SelectedRepository>(
+  repositories: readonly RepositoryT[],
   options: { limit: number; cursor: number },
-): SelectionResult {
+): SelectionResult<RepositoryT> {
   if (repositories.length === 0) return { repositories: [], cursor: 0, total: 0 };
   const limit = Math.max(1, Math.min(options.limit, repositories.length));
   const start = normalizeCursor(options.cursor, repositories.length);
-  const selected: SelectedRepository[] = [];
+  const selected: RepositoryT[] = [];
   for (let offset = 0; offset < limit; offset += 1) {
-    selected.push(repositories[(start + offset) % repositories.length] as SelectedRepository);
+    selected.push(repositories[(start + offset) % repositories.length] as RepositoryT);
   }
   return {
     repositories: selected,
     cursor: (start + limit) % repositories.length,
     total: repositories.length,
   };
+}
+
+export function repositoriesWithOpenItems<RepositoryT extends SelectedRepository>(
+  repositories: readonly RepositoryT[],
+  openCounts: ReadonlyMap<string, RepositoryOpenCounts>,
+): RepositoryT[] {
+  return repositories.filter((repository) => {
+    const counts = openCounts.get(repository.targetRepo);
+    return Boolean(counts && counts.issues + counts.pullRequests > 0);
+  });
 }
 
 export function reviewPlanningRepositories(options: {
@@ -349,6 +400,111 @@ export function reviewPlanningRepositories(options: {
         Number(right.untrackedOpen > 0) - Number(left.untrackedOpen > 0) ||
         left.targetRepo.localeCompare(right.targetRepo),
     );
+}
+
+export function planReviewFanout(
+  repositories: readonly ReviewPlanningRepository[],
+  options: { limit: number; cursor: number; candidateCapacity: number },
+): SelectionResult<ReviewFanoutRepository> {
+  if (repositories.length === 0) return { repositories: [], cursor: 0, total: 0 };
+  const limit = Math.max(1, Math.min(options.limit, repositories.length));
+  const dominant = repositories.reduce<ReviewPlanningRepository | null>((largest, repository) => {
+    if (repository.untrackedOpen < 1) return largest;
+    if (!largest || repository.untrackedOpen > largest.untrackedOpen) return repository;
+    if (
+      repository.untrackedOpen === largest.untrackedOpen &&
+      repository.targetRepo.localeCompare(largest.targetRepo) < 0
+    ) {
+      return repository;
+    }
+    return largest;
+  }, null);
+  const fairnessPool = dominant
+    ? repositories.filter((repository) => repository.targetRepo !== dominant.targetRepo)
+    : repositories;
+  const fairnessLimit = dominant ? limit - 1 : limit;
+  const fairness =
+    fairnessLimit > 0 && fairnessPool.length > 0
+      ? selectRepositories(fairnessPool, { limit: fairnessLimit, cursor: options.cursor })
+      : { repositories: [] as ReviewPlanningRepository[], cursor: 0, total: fairnessPool.length };
+  // Dispatch the rotating fairness slice first so a dominant repository cannot
+  // consume every scheduled-feed token before smaller planners reach enqueue.
+  const selected = dominant ? [...fairness.repositories, dominant] : fairness.repositories;
+  const allocations = allocateReviewCandidateCapacity(selected, options.candidateCapacity);
+  return {
+    repositories: selected.map((repository) => ({
+      ...repository,
+      candidateCapacity: allocations.get(repository.targetRepo) ?? 1,
+    })),
+    cursor: fairness.cursor,
+    total: repositories.length,
+  };
+}
+
+export function allocateReviewCandidateCapacity(
+  repositories: readonly ReviewPlanningRepository[],
+  candidateCapacity: number,
+): Map<string, number> {
+  if (repositories.length === 0) return new Map();
+  // One candidate per selected repository is the fairness reservation. If the
+  // live queue has fewer free slots, the bounded over-offer is intentional: the
+  // Worker remains the final admission owner and the cursor still makes progress.
+  const budget = Math.max(repositories.length, Math.floor(Math.max(0, candidateCapacity)));
+  const allocations = new Map(repositories.map((repository) => [repository.targetRepo, 1]));
+  const remainingDemand = new Map(
+    repositories.map((repository) => [
+      repository.targetRepo,
+      Math.max(0, Math.max(1, repository.untrackedOpen) - 1),
+    ]),
+  );
+  let available = budget - repositories.length;
+  while (available > 0) {
+    const active = repositories.filter(
+      (repository) => (remainingDemand.get(repository.targetRepo) ?? 0) > 0,
+    );
+    if (active.length === 0) break;
+    const totalDemand = active.reduce(
+      (total, repository) => total + (remainingDemand.get(repository.targetRepo) ?? 0),
+      0,
+    );
+    const roundCapacity = available;
+    const remainders: Array<{ repository: ReviewPlanningRepository; remainder: number }> = [];
+    let assigned = 0;
+    for (const repository of active) {
+      const demand = remainingDemand.get(repository.targetRepo) ?? 0;
+      const quota = (roundCapacity * demand) / totalDemand;
+      const extra = Math.min(demand, Math.floor(quota));
+      if (extra > 0) {
+        allocations.set(
+          repository.targetRepo,
+          (allocations.get(repository.targetRepo) ?? 0) + extra,
+        );
+        remainingDemand.set(repository.targetRepo, demand - extra);
+        assigned += extra;
+      }
+      remainders.push({ repository, remainder: quota - Math.floor(quota) });
+    }
+    available -= assigned;
+    if (available <= 0) break;
+    remainders.sort(
+      (left, right) =>
+        right.remainder - left.remainder ||
+        right.repository.untrackedOpen - left.repository.untrackedOpen ||
+        left.repository.targetRepo.localeCompare(right.repository.targetRepo),
+    );
+    let remainderAssigned = 0;
+    for (const { repository } of remainders) {
+      if (available <= 0) break;
+      const demand = remainingDemand.get(repository.targetRepo) ?? 0;
+      if (demand <= 0) continue;
+      allocations.set(repository.targetRepo, (allocations.get(repository.targetRepo) ?? 0) + 1);
+      remainingDemand.set(repository.targetRepo, demand - 1);
+      available -= 1;
+      remainderAssigned += 1;
+    }
+    if (assigned === 0 && remainderAssigned === 0) break;
+  }
+  return allocations;
 }
 
 function listOwnerRepositories(owner: string): ListedRepository[] {
@@ -391,7 +547,11 @@ function listedRepository(value: unknown, label: string): ListedRepository {
   };
 }
 
-function workflowDispatchArgs(repository: SelectedRepository, options: FanoutOptions): string[] {
+function workflowDispatchArgs(
+  repository: SelectedRepository,
+  options: FanoutOptions,
+  candidateCapacity = SCHEDULED_REVIEW_PLAN_BATCH_SIZE,
+): string[] {
   if (options.mode !== "audit") {
     return [
       "api",
@@ -405,7 +565,7 @@ function workflowDispatchArgs(repository: SelectedRepository, options: FanoutOpt
       "-f",
       `client_payload[hot_intake]=${options.mode === "hot-intake" ? "true" : "false"}`,
       "-f",
-      `client_payload[batch_size]=${SCHEDULED_REVIEW_PLAN_BATCH_SIZE}`,
+      `client_payload[batch_size]=${candidateCapacity}`,
       "-f",
       "client_payload[shard_count]=1",
     ];
