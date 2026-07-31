@@ -108,6 +108,10 @@ test("automatic issue implementation joins the priority intake state-writer lane
   const stateSetup = workflow.jobs?.intake?.steps?.find(isSetupState);
 
   assert.equal(stateSetup?.with?.["coordinator-class"], "cluster_intake");
+  assert.equal(
+    stateSetup?.with?.["records-item-number"],
+    "${{ github.event.inputs.item_number || github.event.client_payload.item_number }}",
+  );
   assert.equal(source.match(/for attempt in 1 2 3; do/g)?.length, 2);
   assert.match(source, /sleep "\$\(\(attempt \* 3\)\)"/);
 });
@@ -122,6 +126,15 @@ test("setup-state checks out only the remaining operational git tree", () => {
   assert.equal(action.inputs?.["ledger-source"], undefined);
   assert.equal(action.inputs?.["coordinator-enabled"], undefined);
   assert.ok(action.inputs?.["hydrate-git-state"]);
+  assert.ok(action.inputs?.["records-item-number"]);
+  const snapshot = action.runs?.steps?.find(
+    (step) => step.name === "Resolve canonical record snapshot cache key",
+  );
+  assert.equal(
+    (snapshot as WorkflowStep & { if?: string })?.if,
+    "${{ inputs.records-item-number == '' }}",
+  );
+  assert.match(source, /--records-item-number "\$RECORDS_ITEM_NUMBER"/);
   assert.match(source, /CLAWSWEEPER_STATE_COORDINATOR_ENABLED=1/);
   const checkout = action.runs?.steps?.find((step) => step.name === "Check out operational state");
   const sparse = String(checkout?.with?.["sparse-checkout"] ?? "");

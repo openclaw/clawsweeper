@@ -336,18 +336,107 @@ export async function materializeWorkerRecords(options: {
   } finally {
     rmSync(stagingRoot, { force: true, recursive: true });
   }
-  const manifestPath = path.join(
-    options.worktreeRoot,
-    ".artifacts",
-    "worker-records-manifest.json",
+  const manifestPath = writeWorkerRecordsManifest(options.worktreeRoot, repositories);
+  return { recordsRoot, manifestPath, repositories };
+}
+
+export async function materializeWorkerRecord(options: {
+  worktreeRoot: string;
+  baseUrl: string;
+  webhookSecret: string;
+  repoSlug: string;
+  itemNumber: number;
+  fetch?: typeof globalThis.fetch;
+}) {
+  validateRepoSlug(options.repoSlug);
+  if (!Number.isSafeInteger(options.itemNumber) || options.itemNumber < 1) {
+    throw new Error("Worker record item number must be a positive safe integer");
+  }
+
+  const record = await signedGet<unknown>({
+    baseUrl: options.baseUrl,
+    path: `/internal/state/records/${options.repoSlug}/items/${options.itemNumber}`,
+    webhookSecret: options.webhookSecret,
+    fetch: options.fetch,
+  });
+  if (
+    !record ||
+    typeof record !== "object" ||
+    typeof (record as { content?: unknown }).content !== "string" ||
+    typeof (record as { digest?: unknown }).digest !== "string" ||
+    !Number.isSafeInteger((record as { revision?: unknown }).revision) ||
+    Number((record as { revision?: unknown }).revision) < 1
+  ) {
+    throw new Error("Worker returned an invalid single-record envelope");
+  }
+  const { content, digest, revision } = record as {
+    content: string;
+    digest: string;
+    revision: number;
+  };
+  if (createHash("sha256").update(content).digest("hex") !== digest) {
+    throw new Error("Worker single-record digest does not match its content");
+  }
+
+  mkdirSync(options.worktreeRoot, { recursive: true });
+  const recordsRoot = path.join(options.worktreeRoot, "records");
+  const stagingRoot = mkdtempSync(path.join(options.worktreeRoot, ".worker-records-stage-"));
+  const stagedRecordsRoot = path.join(stagingRoot, "records");
+  const previousRecordsRoot = path.join(stagingRoot, "previous-records");
+  const itemPath = path.join(
+    stagedRecordsRoot,
+    options.repoSlug,
+    "items",
+    `${options.itemNumber}.md`,
   );
+  let replacementInstalled = false;
+  let previousRecordsMoved = false;
+  try {
+    mkdirSync(path.dirname(itemPath), { recursive: true });
+    writeFileSync(itemPath, content, "utf8");
+    if (existsSync(recordsRoot)) {
+      renameSync(recordsRoot, previousRecordsRoot);
+      previousRecordsMoved = true;
+    }
+    try {
+      renameSync(stagedRecordsRoot, recordsRoot);
+      replacementInstalled = true;
+    } catch (error) {
+      if (previousRecordsMoved) renameSync(previousRecordsRoot, recordsRoot);
+      throw error;
+    }
+  } finally {
+    if (!previousRecordsMoved || replacementInstalled || existsSync(recordsRoot)) {
+      rmSync(stagingRoot, { force: true, recursive: true });
+    }
+  }
+  const repositories = {
+    [options.repoSlug]: {
+      revision,
+      snapshotRevision: 0,
+      snapshotBytes: 0,
+      snapshotCache: "direct" as const,
+      deltaRecords: 1,
+      recordCount: 1,
+      coverageTrackedItemIds: [options.itemNumber],
+    },
+  };
+  const manifestPath = writeWorkerRecordsManifest(options.worktreeRoot, repositories);
+  console.error(
+    `[worker-records] direct record hydrated repo=${options.repoSlug} item=${options.itemNumber} revision=${revision}`,
+  );
+  return { recordsRoot, manifestPath, repositories };
+}
+
+function writeWorkerRecordsManifest(worktreeRoot: string, repositories: Record<string, unknown>) {
+  const manifestPath = path.join(worktreeRoot, ".artifacts", "worker-records-manifest.json");
   mkdirSync(path.dirname(manifestPath), { recursive: true });
   writeFileSync(
     manifestPath,
     `${JSON.stringify({ schemaVersion: WORKER_RECORDS_MANIFEST_SCHEMA_VERSION, source: "worker", repositories }, null, 2)}\n`,
     "utf8",
   );
-  return { recordsRoot, manifestPath, repositories };
+  return manifestPath;
 }
 
 export async function fetchWorkerStoredSnapshot(options: {
@@ -766,6 +855,37 @@ export async function signedPost<T>(options: {
   }
 }
 
+async function signedGet<T>(options: {
+  baseUrl: string;
+  path: string;
+  webhookSecret: string;
+  fetch?: typeof globalThis.fetch;
+}): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    const response = await signedRequest({ ...options, method: "GET", body: undefined });
+    const bodyText = await response.text().catch(() => "");
+    if (!response.ok) throw workerRequestError(response.status, bodyText);
+    let value: unknown;
+    try {
+      value = JSON.parse(bodyText);
+    } catch {
+      value = undefined;
+    }
+    if (typeof value !== "object" || value === null) {
+      if (attempt < SIGNED_REQUEST_MAX_ATTEMPTS) {
+        await signedRequestBackoff(attempt);
+        continue;
+      }
+      throw new WorkerRecordRequestError(
+        response.status,
+        "invalid_json_body",
+        bodyText.trim().slice(0, 200),
+      );
+    }
+    return value as T;
+  }
+}
+
 const SIGNED_REQUEST_MAX_ATTEMPTS = 3;
 const SIGNED_REQUEST_RETRY_BASE_MS = 250;
 
@@ -774,6 +894,7 @@ export async function signedRequest(options: {
   path: string;
   webhookSecret: string;
   body: unknown;
+  method?: "GET" | "POST";
   fetch?: typeof globalThis.fetch;
 }) {
   const baseUrl = options.baseUrl.replace(/\/$/, "");
@@ -781,7 +902,8 @@ export async function signedRequest(options: {
     throw new Error("Worker record URL must use HTTPS");
   }
   if (!options.webhookSecret) throw new Error("Worker records HMAC secret is required");
-  const body = JSON.stringify(options.body);
+  const method = options.method ?? "POST";
+  const body = method === "GET" ? "" : JSON.stringify(options.body);
   const signature = `sha256=${createHmac("sha256", options.webhookSecret).update(body).digest("hex")}`;
   const performFetch = options.fetch ?? globalThis.fetch;
   // Bounded retry for transient failures: 5xx responses and network errors
@@ -791,12 +913,12 @@ export async function signedRequest(options: {
     let response: Response;
     try {
       response = await performFetch(`${baseUrl}${options.path}`, {
-        method: "POST",
+        method,
         headers: {
-          "content-type": "application/json",
+          ...(method === "POST" ? { "content-type": "application/json" } : {}),
           "x-clawsweeper-exact-review-signature": signature,
         },
-        body,
+        ...(method === "POST" ? { body } : {}),
       });
     } catch (error) {
       if (attempt >= SIGNED_REQUEST_MAX_ATTEMPTS) throw error;

@@ -53,6 +53,10 @@ inputs:
     description: Optional comma/newline-separated record repository slugs.
     required: false
     default: ""
+  records-item-number:
+    description: Hydrate only this canonical issue record instead of the complete repository snapshot.
+    required: false
+    default: ""
   records-secret:
     description: HMAC secret used for canonical Worker hydration.
     required: false
@@ -113,6 +117,7 @@ runs:
         node-version: ${{ inputs.node-version }}
 
     - name: Resolve canonical record snapshot cache key
+      if: ${{ inputs.records-item-number == '' }}
       id: records-snapshot
       shell: bash
       env:
@@ -123,7 +128,7 @@ runs:
       run: node "${{ inputs.worktree-path }}/scripts/prepare-worker-record-cache.ts"
 
     - name: Restore canonical record snapshot
-      if: ${{ steps.records-snapshot.outputs.available == 'true' }}
+      if: ${{ inputs.records-item-number == '' && steps.records-snapshot.outputs.available == 'true' }}
       uses: actions/cache@v6
       with:
         path: ${{ inputs.worktree-path }}/.artifacts/worker-records-cache
@@ -145,6 +150,7 @@ runs:
         CLAWSWEEPER_RECORDS_URL: ${{ inputs.records-url }}
         CLAWSWEEPER_RECORDS_REPO_SLUGS: ${{ inputs.records-repo-slugs }}
         CLAWSWEEPER_RECORDS_SECRET: ${{ inputs.records-secret }}
+        RECORDS_ITEM_NUMBER: ${{ inputs.records-item-number }}
         CLAWSWEEPER_RECORDS_CACHE_DIR: ${{ inputs.worktree-path }}/.artifacts/worker-records-cache
         CLAWSWEEPER_BLOBS_CACHE_DIR: ${{ inputs.worktree-path }}/.artifacts/worker-blobs-cache
         HYDRATE_STATE_BLOBS: ${{ inputs.hydrate-state-blobs }}
@@ -164,4 +170,7 @@ runs:
           false) hydrate_args+=(--skip-git-state) ;;
           *) echo "hydrate-git-state must be true or false" >&2; exit 2 ;;
         esac
+        if [ -n "$RECORDS_ITEM_NUMBER" ]; then
+          hydrate_args+=(--records-item-number "$RECORDS_ITEM_NUMBER")
+        fi
         node "${{ inputs.worktree-path }}/scripts/hydrate-state.ts" "${hydrate_args[@]}"
