@@ -31,6 +31,53 @@ import { restoreClusterIntakeJob } from "../../dist/repair/restore-cluster-intak
 const dispatchSecret = "cluster-dispatch-test-secret";
 const receiptSecret = "cluster-accepted-intent-test-secret";
 
+function mockGhBinEnv(bin: string): NodeJS.ProcessEnv {
+  return {
+    GH_BIN: process.execPath,
+    GH_BIN_ARGS: JSON.stringify([path.join(bin, "gh.mjs")]),
+  };
+}
+
+function writeGhMock(bin: string, source: string) {
+  fs.writeFileSync(path.join(bin, "gh.mjs"), source, { mode: 0o755 });
+}
+
+function ghExit(status: number) {
+  return `process.exit(${status});\n`;
+}
+
+function ghCallLog(calls: string) {
+  return [
+    'import { appendFileSync } from "node:fs";',
+    `appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(" ") + "\\n");`,
+  ].join("\n");
+}
+
+function ghEvent(events: string, event: string) {
+  return [
+    'import { appendFileSync } from "node:fs";',
+    `appendFileSync(${JSON.stringify(events)}, ${JSON.stringify(`${event}\n`)});`,
+  ].join("\n");
+}
+
+function ghFailsOnCall(counter: string, calls: string, failedCall: number) {
+  return [
+    'import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";',
+    `const counter = ${JSON.stringify(counter)};`,
+    'const count = (existsSync(counter) ? Number(readFileSync(counter, "utf8")) : 0) + 1;',
+    "writeFileSync(counter, `${count}\\n`);",
+    `appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(" ") + "\\n");`,
+    `process.exit(count === ${failedCall} ? 1 : 0);`,
+  ].join("\n");
+}
+
+function ghObservation(runs: string, jobs: string) {
+  return [
+    "const args = process.argv.slice(2);",
+    `process.stdout.write(args.includes("list") ? ${JSON.stringify(`${runs}\n`)} : ${JSON.stringify(`${jobs}\n`)});`,
+  ].join("\n");
+}
+
 function receiptProposal() {
   const content = `---
 repo: openclaw/openclaw
@@ -486,11 +533,11 @@ test("dispatch recovery retries pending intent and completed dispatch is idempot
   fs.mkdirSync(bin, { recursive: true });
   const value = intent();
   const ledgerPath = writeDurableIntents(root, [value]);
-  const gh = path.join(bin, "gh");
-  fs.writeFileSync(gh, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  const gh = path.join(bin, "gh.mjs");
+  fs.writeFileSync(gh, ghExit(1), { mode: 0o755 });
   const env = {
     ...process.env,
-    PATH: `${bin}:${process.env.PATH}`,
+    ...mockGhBinEnv(bin),
     CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   const capacity = () => ({ active: 0, max_live_workers: 2 });
@@ -506,7 +553,7 @@ test("dispatch recovery retries pending intent and completed dispatch is idempot
   );
 
   const calls = path.join(root, "calls.txt");
-  fs.writeFileSync(gh, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n`, { mode: 0o755 });
+  fs.writeFileSync(gh, ghCallLog(calls), { mode: 0o755 });
   assert.deepEqual(
     dispatchClusterIntakes([value], root, env, capacity, () => ({
       action: "dispatch",
@@ -575,12 +622,10 @@ test("cluster dispatch persists an available subset and recovers the remainder",
   const second = intent(43, "b".repeat(64));
   const ledgerPath = writeDurableIntents(root, [first, second]);
   const calls = path.join(root, "calls.txt");
-  fs.writeFileSync(path.join(bin, "gh"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n`, {
-    mode: 0o755,
-  });
+  writeGhMock(bin, ghCallLog(calls));
   const env = {
     ...process.env,
-    PATH: `${bin}:${process.env.PATH}`,
+    ...mockGhBinEnv(bin),
     CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   const partial = dispatchClusterIntakes([first, second], root, env, () => ({
@@ -633,12 +678,10 @@ test("simultaneous conflicting snapshots dispatch the ledger-accepted job once",
   const conflicting = resignIntent(conflictingDraft);
   writeDurableIntents(root, [accepted, conflicting]);
   const calls = path.join(root, "calls.txt");
-  fs.writeFileSync(path.join(bin, "gh"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n`, {
-    mode: 0o755,
-  });
+  writeGhMock(bin, ghCallLog(calls));
   const env = {
     ...process.env,
-    PATH: `${bin}:${process.env.PATH}`,
+    ...mockGhBinEnv(bin),
     CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   dispatchClusterIntakes([accepted, conflicting], root, env, () => ({
@@ -672,12 +715,10 @@ test("a capacity-blocked intake recovers from its durable ledger without the que
   );
 
   const calls = path.join(root, "calls.txt");
-  fs.writeFileSync(path.join(bin, "gh"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n`, {
-    mode: 0o755,
-  });
+  writeGhMock(bin, ghCallLog(calls));
   const env = {
     ...process.env,
-    PATH: `${bin}:${process.env.PATH}`,
+    ...mockGhBinEnv(bin),
     CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   assert.deepEqual(
@@ -714,12 +755,10 @@ test("failed or invisible worker claims retry without terminalizing durable inte
   const value = intent();
   const ledgerPath = writeDurableIntents(root, [value]);
   const calls = path.join(root, "calls.txt");
-  fs.writeFileSync(path.join(bin, "gh"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n`, {
-    mode: 0o755,
-  });
+  writeGhMock(bin, ghCallLog(calls));
   const env = {
     ...process.env,
-    PATH: `${bin}:${process.env.PATH}`,
+    ...mockGhBinEnv(bin),
     CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   const capacity = () => ({ active: 0, max_live_workers: 2 });
@@ -752,12 +791,10 @@ test("recovery rediscovers a successful worker when the claim publication was lo
   const ledgerPath = writeDurableIntents(root, [value]);
   const durablePending = fs.readFileSync(path.join(ledgerPath, "openclaw-openclaw.json"), "utf8");
   const calls = path.join(root, "calls.txt");
-  fs.writeFileSync(path.join(bin, "gh"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n`, {
-    mode: 0o755,
-  });
+  writeGhMock(bin, ghCallLog(calls));
   const env = {
     ...process.env,
-    PATH: `${bin}:${process.env.PATH}`,
+    ...mockGhBinEnv(bin),
     CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   dispatchClusterIntakes([value], root, env, () => ({ active: 0, max_live_workers: 2 }));
@@ -792,12 +829,10 @@ test("the durable claim is published before the workflow dispatch side effect", 
   const value = intent();
   writeDurableIntents(root, [value]);
   const events = path.join(root, "events.txt");
-  fs.writeFileSync(path.join(bin, "gh"), `#!/bin/sh\nprintf 'dispatch\\n' >> '${events}'\n`, {
-    mode: 0o755,
-  });
+  writeGhMock(bin, ghEvent(events, "dispatch"));
   const env = {
     ...process.env,
-    PATH: `${bin}:${process.env.PATH}`,
+    ...mockGhBinEnv(bin),
     CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   const persistedStatuses: string[] = [];
@@ -824,13 +859,13 @@ test("a crash between claim publication and dispatch redispatches exactly one wo
   fs.mkdirSync(bin, { recursive: true });
   const value = intent();
   const ledgerPath = writeDurableIntents(root, [value]);
-  const gh = path.join(bin, "gh");
+  const gh = path.join(bin, "gh.mjs");
   // The dispatch side effect never happens, exactly like a runner crash right
   // after the durable claim publication.
-  fs.writeFileSync(gh, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  fs.writeFileSync(gh, ghExit(1), { mode: 0o755 });
   const env = {
     ...process.env,
-    PATH: `${bin}:${process.env.PATH}`,
+    ...mockGhBinEnv(bin),
     CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   const capacity = () => ({ active: 0, max_live_workers: 2 });
@@ -858,7 +893,7 @@ test("a crash between claim publication and dispatch redispatches exactly one wo
   );
 
   const calls = path.join(root, "calls.txt");
-  fs.writeFileSync(gh, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n`, { mode: 0o755 });
+  fs.writeFileSync(gh, ghCallLog(calls), { mode: 0o755 });
   const recovered = recoverPendingClusterIntakes(root, env, capacity, () => ({
     action: "dispatch",
     run: null,
@@ -888,9 +923,7 @@ test("recovery refuses git state without a verifiable accepted-intent receipt", 
   const value = intent();
   const ledgerPath = writeDurableIntents(root, [value]);
   const calls = path.join(root, "calls.txt");
-  fs.writeFileSync(path.join(bin, "gh"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n`, {
-    mode: 0o755,
-  });
+  writeGhMock(bin, ghCallLog(calls));
   const capacity = () => ({ active: 0, max_live_workers: 2 });
   const observer = () => ({ action: "dispatch" as const, run: null });
 
@@ -899,7 +932,7 @@ test("recovery refuses git state without a verifiable accepted-intent receipt", 
   // before any dispatch instead of blessing it with a fresh signature.
   const wrongSecretEnv = {
     ...process.env,
-    PATH: `${bin}:${process.env.PATH}`,
+    ...mockGhBinEnv(bin),
     CLAWSWEEPER_WEBHOOK_SECRET: "not-the-accepting-secret",
   };
   assert.throws(
@@ -916,7 +949,7 @@ test("recovery refuses git state without a verifiable accepted-intent receipt", 
   // instead of becoming dispatch authority.
   const env = {
     ...process.env,
-    PATH: `${bin}:${process.env.PATH}`,
+    ...mockGhBinEnv(bin),
     CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   const ledgerFile = path.join(ledgerPath, "openclaw-openclaw.json");
@@ -939,14 +972,10 @@ test("a later batch dispatch failure does not hide the earlier successful worker
   const ledgerPath = writeDurableIntents(root, [first, second]);
   const calls = path.join(root, "calls.txt");
   const counter = path.join(root, "counter.txt");
-  fs.writeFileSync(
-    path.join(bin, "gh"),
-    `#!/bin/sh\ncount=0\nif test -f '${counter}'; then count="$(cat '${counter}')"; fi\ncount=$((count + 1))\nprintf '%s\\n' "$count" > '${counter}'\nprintf '%s\\n' "$*" >> '${calls}'\nif test "$count" -eq 2; then exit 1; fi\n`,
-    { mode: 0o755 },
-  );
+  writeGhMock(bin, ghFailsOnCall(counter, calls, 2));
   const env = {
     ...process.env,
-    PATH: `${bin}:${process.env.PATH}`,
+    ...mockGhBinEnv(bin),
     CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
   };
   const capacity = () => ({ active: 0, max_live_workers: 2 });
@@ -1006,13 +1035,9 @@ test("dispatch observation terminalizes only a successful planning worker", () =
       { name: "Plan and review cluster", conclusion: "success" },
     ],
   });
-  const gh = path.join(bin, "gh");
-  fs.writeFileSync(
-    gh,
-    `#!/bin/sh\ncase "$*" in\n  *"run list"*) printf '%s\\n' '${runs}' ;;\n  *) printf '%s\\n' '${successfulJobs}' ;;\nesac\n`,
-    { mode: 0o755 },
-  );
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+  const gh = path.join(bin, "gh.mjs");
+  fs.writeFileSync(gh, ghObservation(runs, successfulJobs), { mode: 0o755 });
+  const env = { ...process.env, ...mockGhBinEnv(bin) };
   assert.deepEqual(observeClusterDispatch(entry, env), {
     action: "recover",
     run: { ...JSON.parse(runs)[0], dispatch_execution_verified: true },
@@ -1024,11 +1049,7 @@ test("dispatch observation terminalizes only a successful planning worker", () =
       conclusion: "failure",
     },
   ]);
-  fs.writeFileSync(
-    gh,
-    `#!/bin/sh\ncase "$*" in\n  *"run list"*) printf '%s\\n' '${mixedResultRuns}' ;;\n  *) printf '%s\\n' '${successfulJobs}' ;;\nesac\n`,
-    { mode: 0o755 },
-  );
+  fs.writeFileSync(gh, ghObservation(mixedResultRuns, successfulJobs), { mode: 0o755 });
   assert.deepEqual(observeClusterDispatch(entry, env), {
     action: "recover",
     run: { ...JSON.parse(mixedResultRuns)[0], dispatch_execution_verified: true },
@@ -1040,11 +1061,7 @@ test("dispatch observation terminalizes only a successful planning worker", () =
       { name: "Plan and review cluster", conclusion: "skipped" },
     ],
   });
-  fs.writeFileSync(
-    gh,
-    `#!/bin/sh\ncase "$*" in\n  *"run list"*) printf '%s\\n' '${runs}' ;;\n  *) printf '%s\\n' '${receiptOnlyJobs}' ;;\nesac\n`,
-    { mode: 0o755 },
-  );
+  fs.writeFileSync(gh, ghObservation(runs, receiptOnlyJobs), { mode: 0o755 });
   assert.deepEqual(observeClusterDispatch(entry, env), { action: "wait", run: null });
 });
 
@@ -1075,7 +1092,11 @@ test("worker restores only an authenticated semantically valid durable job", () 
   restoreClusterIntakeJob(options);
   const restored = path.join(root, job.path);
   assert.equal(fs.readFileSync(restored, "utf8"), job.content);
-  assert.equal(fs.statSync(restored).mode & 0o777, 0o600);
+  // Windows does not expose the POSIX mode requested by openSync, but Linux
+  // workers must keep restored intake jobs private.
+  if (process.platform !== "win32") {
+    assert.equal(fs.statSync(restored).mode & 0o777, 0o600);
+  }
 
   // CLAWSWEEPER_ALLOWED_OWNER is a comma/whitespace-separated owner list in
   // production (e.g. "openclaw,steipete"); membership must be honored.

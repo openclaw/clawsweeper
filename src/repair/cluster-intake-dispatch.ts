@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 
+import { resolveSpawnCommand } from "../command.js";
 import type { LooseRecord } from "./json-types.js";
 import {
   dispatchClaimDecision,
@@ -278,7 +279,7 @@ function dispatchClusterLedger(
       model: job.model,
       jobAuth: jobAuthentication,
     });
-    const result = spawnSync(
+    const invocation = resolveSpawnCommand(
       "gh",
       [
         "workflow",
@@ -290,8 +291,15 @@ function dispatchClusterLedger(
         env.CLAWSWEEPER_DISPATCH_REF || "main",
         ...Object.entries(dispatchInputs).flatMap(([key, value]) => ["-f", `${key}=${value}`]),
       ],
-      { cwd: root, encoding: "utf8", env, stdio: "pipe" },
+      { cwd: root, env },
     );
+    const result = spawnSync(invocation.command, invocation.args, {
+      cwd: root,
+      encoding: "utf8",
+      env,
+      stdio: "pipe",
+      ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+    });
     if (result.status !== 0) {
       throw new Error(
         `cluster intake dispatch failed for ${ledger.target_repo} cluster ${job.cluster_id}: ${result.stderr || result.stdout || result.status}`,

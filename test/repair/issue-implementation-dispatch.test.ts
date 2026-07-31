@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,23 +13,37 @@ test("automatic issue dispatcher filters exact issues and preserves bounded back
     const bin = join(root, "bin");
     const log = join(root, "dispatch.log");
     mkdirSync(bin);
-    writeExecutable(
-      join(bin, "pnpm"),
-      `#!/bin/sh
-if [ "$3" = "workflow" ]; then printf '2\\n'; exit 0; fi
-printf '%s\\n' '{"candidates":[{"item_number":41,"report_path":"records/openclaw-openclaw/items/41.md","report_url":"https://example.test/41"},{"item_number":42,"report_path":"records/openclaw-openclaw/items/42.md","report_url":"https://example.test/42"},{"item_number":43,"report_path":"records/openclaw-openclaw/items/43.md","report_url":"https://example.test/43"}]}'
-`,
+    const pnpm = join(bin, "pnpm.mjs");
+    const gh = join(bin, "gh.mjs");
+    writeFileSync(
+      pnpm,
+      [
+        "const args = process.argv.slice(2);",
+        'if (args[2] === "workflow") {',
+        '  process.stdout.write("2\\n");',
+        "  process.exit(0);",
+        "}",
+        "process.stdout.write(JSON.stringify({ candidates: [",
+        '  { item_number: 41, report_path: "records/openclaw-openclaw/items/41.md", report_url: "https://example.test/41" },',
+        '  { item_number: 42, report_path: "records/openclaw-openclaw/items/42.md", report_url: "https://example.test/42" },',
+        '  { item_number: 43, report_path: "records/openclaw-openclaw/items/43.md", report_url: "https://example.test/43" },',
+        '] }) + "\\n");',
+      ].join("\n"),
     );
-    writeExecutable(
-      join(bin, "gh"),
-      `#!/bin/sh
-printf '%s\\n' "$*" >> "$DISPATCH_LOG"
-if [ "$FAIL_GH" = "1" ]; then exit 9; fi
-`,
+    writeFileSync(
+      gh,
+      [
+        'import { appendFileSync } from "node:fs";',
+        'appendFileSync(process.env.DISPATCH_LOG, process.argv.slice(2).join(" ") + "\\n");',
+        'process.exit(process.env.FAIL_GH === "1" ? 9 : 0);',
+      ].join("\n"),
     );
     const env = {
       ...process.env,
-      PATH: `${bin}:${process.env.PATH}`,
+      GH_BIN: process.execPath,
+      GH_BIN_ARGS: JSON.stringify([gh]),
+      PNPM_BIN: process.execPath,
+      PNPM_BIN_ARGS: JSON.stringify([pnpm]),
       DISPATCH_LOG: log,
       GITHUB_REPOSITORY: "openclaw/clawsweeper",
     };
@@ -95,8 +109,3 @@ test("automatic issue dispatcher rejects unsafe repositories and unbounded limit
     assert.match(result.stderr, /\[issue-implementation-dispatch\]/);
   }
 });
-
-function writeExecutable(path: string, content: string) {
-  writeFileSync(path, content, "utf8");
-  chmodSync(path, 0o755);
-}

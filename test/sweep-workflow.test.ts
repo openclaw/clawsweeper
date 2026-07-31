@@ -10,7 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import YAML from "yaml";
 
@@ -494,7 +494,7 @@ esac
           GH_TOKEN: "test-token",
           GITHUB_OUTPUT: outputPath,
           ITEM_NUMBER: "42",
-          PATH: `${fakeBin}:${process.env.PATH}`,
+          PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
           TARGET_REPO: "openclaw/openclaw",
         },
       });

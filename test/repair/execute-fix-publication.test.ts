@@ -33,15 +33,31 @@ test("execute-fix CLI defers outcome publication until fresh-token invocation", 
       actions: [],
     })}\n`,
   );
-  const ghPath = path.join(binDir, "gh");
+  const ghPath = path.join(binDir, "gh.mjs");
   fs.writeFileSync(
     ghPath,
-    `#!/bin/sh\nset -eu\ncase "$*" in\n  *"issues/494/comments?per_page=100"*) printf '[]\\n' ;;\n  "pr view 494 "*) printf '{"state":"CLOSED","headRefOid":"%s","statusCheckRollup":[]}\\n' "${"a".repeat(40)}" ;;\n  *"issues/494/comments --method POST"*) printf '%s\\n' "\${GH_TOKEN:-}" >> "$TOKEN_LOG" ;;\n  *) printf 'unexpected gh args: %s\\n' "$*" >&2; exit 1 ;;\nesac\n`,
+    [
+      "#!/usr/bin/env node",
+      'import { appendFileSync } from "node:fs";',
+      "const args = process.argv.slice(2);",
+      'const rendered = args.join(" ");',
+      'if (rendered.includes("issues/494/comments?per_page=100")) {',
+      '  process.stdout.write("[]\\n");',
+      '} else if (args[0] === "pr" && args[1] === "view" && args[2] === "494") {',
+      `  process.stdout.write(${JSON.stringify(`{"state":"CLOSED","headRefOid":"${"a".repeat(40)}","statusCheckRollup":[]}\n`)});`,
+      '} else if (rendered.includes("issues/494/comments") && args.includes("POST")) {',
+      '  appendFileSync(process.env.TOKEN_LOG, `${process.env.GH_TOKEN ?? ""}\\n`);',
+      "} else {",
+      "  process.stderr.write(`unexpected gh args: ${rendered}\\n`);",
+      "  process.exit(1);",
+      "}",
+    ].join("\n"),
     { mode: 0o755 },
   );
   const baseEnv = {
     ...process.env,
-    PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    GH_BIN: process.execPath,
+    GH_BIN_ARGS: JSON.stringify([ghPath]),
     CLAWSWEEPER_ALLOW_EXECUTE: "1",
     CLAWSWEEPER_ALLOWED_OWNER: "openclaw",
     CLAWSWEEPER_MODEL: "fixture-model",

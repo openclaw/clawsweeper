@@ -118,13 +118,35 @@ function parseArgs(argv) {
 }
 
 function run(command, args) {
-  const result = spawnSync(command, args, { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  const invocation = resolveCommand(command, args);
+  const result = spawnSync(invocation.command, invocation.args, {
+    encoding: "utf8",
+    maxBuffer: 8 * 1024 * 1024,
+  });
   if (result.error) fail(`${command} failed: ${result.error.message}`);
   if (result.status !== 0) {
     if (result.stderr) process.stderr.write(result.stderr);
     fail(`${command} exited ${result.status ?? "without a status"}`);
   }
   return result.stdout.trim();
+}
+
+function resolveCommand(command, args) {
+  const key = command.replace(/[^A-Za-z0-9]/g, "_").toUpperCase();
+  const configured = process.env[`${key}_BIN`]?.trim();
+  if (!configured) return { command, args };
+  const configuredArgs = process.env[`${key}_BIN_ARGS`];
+  if (!configuredArgs) return { command: configured, args };
+  let parsed;
+  try {
+    parsed = JSON.parse(configuredArgs);
+  } catch {
+    fail(`${key}_BIN_ARGS must be a JSON array`);
+  }
+  if (!Array.isArray(parsed) || parsed.some((value) => typeof value !== "string")) {
+    fail(`${key}_BIN_ARGS must be a JSON array`);
+  }
+  return { command: configured, args: [...parsed, ...args] };
 }
 
 function fail(message) {

@@ -44,8 +44,9 @@ test("run-worker starts Codex in the target checkout when one is available", () 
   fs.mkdirSync(fakeBin, { recursive: true });
   fs.mkdirSync(targetCheckout, { recursive: true });
   fs.writeFileSync(path.join(targetCheckout, "target-marker.txt"), "target\n");
+  const ghPath = path.join(fakeBin, "gh.mjs");
   fs.writeFileSync(
-    path.join(fakeBin, "gh"),
+    ghPath,
     [
       "#!/usr/bin/env node",
       "const args = process.argv.slice(2);",
@@ -125,7 +126,9 @@ test("run-worker starts Codex in the target checkout when one is available", () 
         CLAWSWEEPER_CODEX_STDIO_MAX_BUFFER_MB: "1",
         CLAWSWEEPER_CODEX_PLANNER_SANDBOX: "danger-full-access",
         CLAWSWEEPER_STEERABLE_CODEX: "0",
-        PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}`,
+        CODEX_BIN: path.join(fakeBin, "codex"),
+        GH_BIN: process.execPath,
+        GH_BIN_ARGS: JSON.stringify([ghPath]),
       },
       stdio: "pipe",
     });
