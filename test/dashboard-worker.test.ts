@@ -4545,6 +4545,7 @@ test("canonical commit records and tuples export with one monotonic revision", a
     canonicalTargetKey: "openclaw/openclaw#711",
     fenceKey: "openclaw/openclaw#711",
     revision: 4,
+    sourceSha: "d".repeat(40),
     identity: {
       canonicalTargetKey: "openclaw/openclaw#711",
       fenceKey: "openclaw/openclaw#711",

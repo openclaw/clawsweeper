@@ -80,18 +80,27 @@ test("direct repair requeues forward a stable dispatch receipt and publish it", 
   assert.match(workflow, /--max-requeue-depth 1/);
 });
 
-test("exact review publisher bypasses the legacy action ledger", () => {
+test("exact review publisher bypasses the legacy action ledger and finalizes through the fenced acknowledgement", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const publisherJob = workflow.indexOf("\n  event-review-publish:");
-  const statusMutation = workflow.indexOf("- name: Mark re-review complete", publisherJob);
-  const ledgerPublish = workflow.indexOf(
-    "- name: Publish exact review action ledger",
-    publisherJob,
-  );
-
+  const finalizationJob = workflow.indexOf("\n  event-review-terminal-finalization:");
+  const finalizationEnd = workflow.indexOf("\n  target-fanout:", finalizationJob);
   assert.ok(publisherJob >= 0);
-  assert.ok(statusMutation > publisherJob);
-  assert.equal(ledgerPublish, -1);
+  assert.ok(finalizationJob > publisherJob);
+  assert.ok(finalizationEnd > finalizationJob);
+  const publisher = workflow.slice(publisherJob, finalizationJob);
+  const finalizer = workflow.slice(finalizationJob, finalizationEnd);
+  const acknowledgement = finalizer.indexOf("- name: Begin fenced terminal acknowledgement");
+  const statusMutation = finalizer.indexOf("- name: Update final command status once");
+
+  assert.doesNotMatch(publisher, /Mark re-review complete/);
+  assert.doesNotMatch(publisher, /Publish exact review action ledger/);
+  assert.ok(acknowledgement >= 0);
+  assert.ok(statusMutation > acknowledgement);
+  assert.match(
+    finalizer.slice(statusMutation, statusMutation + 320),
+    /if: \$\{\{ steps\.terminal-acknowledgement\.outputs\.allowed == 'true' \}\}/,
+  );
 });
 
 function assertCommandFinalizerUsesCanonicalRoot(step: string): void {

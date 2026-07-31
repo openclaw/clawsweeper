@@ -2575,18 +2575,38 @@ test("review prompts require reproduction and solution assessment details", () =
   assert.match(commitPrompt, /Is this the best way to solve the issue\?/);
 });
 
-test("sweep target write tokens can merge pull requests", () => {
+test("sweep target write tokens retain merge and terminal acknowledgement scopes", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const targetWriteTokenBlocks = workflow
     .split("- name: Create target write token")
     .slice(1)
     .map((block) => block.split("\n      - ")[0]);
+  const finalizationStart = workflow.indexOf("\n  event-review-terminal-finalization:");
+  const finalizationEnd = workflow.indexOf("\n  target-fanout:", finalizationStart);
+  assert.ok(finalizationStart >= 0);
+  assert.ok(finalizationEnd > finalizationStart);
+  const finalizationJob = workflow.slice(finalizationStart, finalizationEnd);
+  const finalizationTokens = finalizationJob
+    .split("- name: Create target write token")
+    .slice(1)
+    .map((block) => block.split("\n      - ")[0]);
 
-  assert.equal(targetWriteTokenBlocks.length, 4);
+  assert.equal(targetWriteTokenBlocks.length, 5);
+  assert.equal(finalizationTokens.length, 1);
+  const finalizationToken = finalizationTokens[0];
+  assert.ok(finalizationToken);
+  assert.match(finalizationToken, /permission-issues: write/);
+  assert.match(finalizationToken, /permission-pull-requests: write/);
+  assert.doesNotMatch(finalizationToken, /permission-contents: write/);
+
+  const contentWritingTokenBlocks = targetWriteTokenBlocks.filter(
+    (block) => block !== finalizationToken,
+  );
+  assert.equal(contentWritingTokenBlocks.length, 4);
   const compositeAction = readText(".github/actions/create-target-write-token/action.yml");
   assert.match(compositeAction, /permission-contents: write/);
   assert.match(compositeAction, /permission-pull-requests: write/);
-  for (const block of targetWriteTokenBlocks) {
+  for (const block of contentWritingTokenBlocks) {
     if (block.includes("uses: ./.github/actions/create-target-write-token")) continue;
     assert.match(block, /permission-contents: write/);
     assert.match(block, /permission-pull-requests: write/);
