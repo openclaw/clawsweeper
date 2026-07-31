@@ -8037,7 +8037,13 @@ function hasBlockedLocalCheckoutAccess(markdown: string): boolean {
 }
 
 function hasVerifiedLocalCheckoutAccess(markdown: string): boolean {
-  return frontMatterValue(markdown, "local_checkout_access") === "verified";
+  // The front-matter value is written unconditionally by the review writer, so on its own it
+  // only records that the reviewer was expected to have a checkout. When the review reports
+  // that its read-only inspection never ran, that expectation did not hold.
+  return (
+    frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+    !hasBlockedLocalCheckoutAccess(markdown)
+  );
 }
 
 function effectiveReviewStatus(markdown: string): string {
