@@ -510,14 +510,6 @@ function eligibilityDecision({
     if (fm.work_confidence !== "high")
       blockers.push(`work confidence is ${fm.work_confidence || "unknown"}`);
   }
-  if (
-    candidateKind !== "viable" &&
-    frontMatterStringArray(fm.work_cluster_refs).some((reference) =>
-      /(?:^|\/)pull\/\d+(?:\b|$)/i.test(reference),
-    )
-  ) {
-    blockers.push("review report already references a pull request");
-  }
   if (candidateKind === "strict_bug") {
     const sourceProvenBug = fm.reproduction_status === "source_reproducible";
     if (
@@ -600,10 +592,24 @@ function eligibilityDecision({
     if (Array.isArray(live.clusterExistingPrs) && live.clusterExistingPrs.length > 0) {
       blockers.push("open PR already covers a related issue in this work cluster");
     }
+    const explicitPullReferences = referencedPullRequestCoordinates({
+      targetRepo,
+      itemNumber,
+      references: frontMatterStringArray(fm.work_cluster_refs),
+    }).filter((reference) => reference.knownPullRequest);
     if (
-      candidateKind === "viable" &&
-      Array.isArray(live.referencedPrs) &&
-      live.referencedPrs.some((pullRequest: JsonValue) => asRecord(pullRequest).state !== "closed")
+      (explicitPullReferences.length > 0 &&
+        (!Array.isArray(live.referencedPrs) ||
+          explicitPullReferences.some(
+            (reference) =>
+              !live.referencedPrs.some((pullRequest: JsonValue) =>
+                verifiedClosedPullReference(pullRequest, reference),
+              ),
+          ))) ||
+      (Array.isArray(live.referencedPrs) &&
+        live.referencedPrs.some(
+          (pullRequest: JsonValue) => asRecord(pullRequest).state !== "closed",
+        ))
     ) {
       blockers.push("review report references an open or unverifiable pull request");
     }
@@ -1065,10 +1071,15 @@ export function referencedPullRequestCoordinates({
     )) {
       add(match[1] ?? "", match[2] ?? "", Number(match[3]), true);
     }
-    const shorthandReference = reference.replace(
-      /\[[^\]]*\]\((?:https?:\/\/)?github\.com\/[^)\s]+\)/gi,
-      " ",
-    );
+    for (const match of reference.matchAll(
+      /(?:^|[^A-Za-z0-9_.-])([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)\b/gi,
+    )) {
+      add(match[1] ?? "", match[2] ?? "", Number(match[3]), true);
+    }
+    for (const match of reference.matchAll(/(?:^|[\s[(])(?:\.\.?\/)*\/?pull\/(\d+)\b/gi)) {
+      add(targetOwner, targetName, Number(match[1]), true);
+    }
+    const shorthandReference = reference.replace(/\[[^\]]*\]\([^\s)]+\)/gi, " ");
     for (const match of shorthandReference.matchAll(
       /\b([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)#(\d+)\b/g,
     )) {
@@ -1079,6 +1090,29 @@ export function referencedPullRequestCoordinates({
     }
   }
   return [...pulls.values()];
+}
+
+function verifiedClosedPullReference(
+  value: JsonValue,
+  reference: { owner: string; name: string; number: number },
+): boolean {
+  const pullRequest = asRecord(value);
+  if (
+    pullRequest.is_pull !== true ||
+    pullRequest.state !== "closed" ||
+    Number(pullRequest.number) !== reference.number
+  ) {
+    return false;
+  }
+  const url = String(pullRequest.url ?? pullRequest.html_url ?? "");
+  const match = /(?:https?:\/\/)?github\.com\/([^/\s]+)\/([^/\s]+)\/(?:pull|issues)\/\d+/i.exec(
+    url,
+  );
+  return (
+    match !== null &&
+    (match[1] ?? "").toLowerCase() === reference.owner.toLowerCase() &&
+    (match[2] ?? "").toLowerCase() === reference.name.toLowerCase()
+  );
 }
 
 export function referencedIssueNumbers({
@@ -1093,15 +1127,26 @@ export function referencedIssueNumbers({
   const escapedRepo = targetRepo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const numbers = new Set<number>();
   for (const reference of references) {
+    const shorthandReference = reference.replace(/\[[^\]]*\]\([^\s)]+\)/gi, " ");
     for (const match of reference.matchAll(
       new RegExp(`(?:https?:\\/\\/)?github\\.com\\/${escapedRepo}\\/issues\\/(\\d+)`, "gi"),
     )) {
       numbers.add(Number(match[1]));
     }
-    for (const match of reference.matchAll(new RegExp(`\\b${escapedRepo}#(\\d+)\\b`, "gi"))) {
+    for (const match of reference.matchAll(/(?:^|[\s[(])(?:\.\.?\/)*\/?issues\/(\d+)\b/gi)) {
       numbers.add(Number(match[1]));
     }
-    for (const match of reference.matchAll(/(?:^|[^\w/])#(\d+)\b/g)) {
+    for (const match of reference.matchAll(
+      new RegExp(`(?:^|[\\s[(])(?:\\.\\.?\\/)*\\/?${escapedRepo}\\/issues\\/(\\d+)\\b`, "gi"),
+    )) {
+      numbers.add(Number(match[1]));
+    }
+    for (const match of shorthandReference.matchAll(
+      new RegExp(`\\b${escapedRepo}#(\\d+)\\b`, "gi"),
+    )) {
+      numbers.add(Number(match[1]));
+    }
+    for (const match of shorthandReference.matchAll(/(?:^|[^\w/])#(\d+)\b/g)) {
       numbers.add(Number(match[1]));
     }
   }

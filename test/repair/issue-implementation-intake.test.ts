@@ -183,6 +183,132 @@ test("source-proven bugs retain duplicate-PR and protected-label safeguards", ()
   }
 });
 
+test("source-proven bugs admit closed historical PRs but reject open or unverifiable PRs", () => {
+  const markdown = report({
+    reproduction_status: "source_reproducible",
+    implementation_complexity: "small",
+    auto_implementation_candidate: "strict_bug",
+    work_cluster_refs: JSON.stringify(["https://github.com/openclaw/openclaw/pull/98326"]),
+  });
+  const parsed = parseReviewReport(markdown);
+  const baseLive = {
+    issue: { state: "open", locked: false, labels: [], title: "Bug", body: "" },
+    existingPrs: [],
+    existingBranchPrs: [],
+    clusterExistingPrs: [],
+  };
+
+  assert.equal(
+    reportOnlyDecision({
+      targetRepo: "openclaw/openclaw",
+      report: parsed,
+      reportMarkdown: markdown,
+    }).shouldRepair,
+    true,
+  );
+  assert.equal(
+    reportOnlyDecision({
+      targetRepo: "openclaw/openclaw",
+      report: parsed,
+      reportMarkdown: markdown,
+      live: {
+        ...baseLive,
+        referencedPrs: [
+          {
+            number: 98326,
+            state: "closed",
+            is_pull: true,
+            url: "https://github.com/openclaw/openclaw/pull/98326",
+          },
+        ],
+      },
+    }).shouldRepair,
+    true,
+  );
+
+  for (const referencedPrs of [
+    [{ state: "open" }],
+    [{ state: "unknown" }],
+    [],
+    [{ number: 98326, state: "closed", is_pull: false }],
+    [
+      {
+        number: 98327,
+        state: "closed",
+        is_pull: true,
+        url: "https://github.com/openclaw/openclaw/pull/98327",
+      },
+    ],
+    undefined,
+  ]) {
+    const blocked = reportOnlyDecision({
+      targetRepo: "openclaw/openclaw",
+      report: parsed,
+      reportMarkdown: markdown,
+      live: { ...baseLive, ...(referencedPrs ? { referencedPrs } : {}) },
+    });
+    assert.equal(blocked.shouldRepair, false);
+    assert.match(blocked.reason, /open or unverifiable pull request/);
+  }
+});
+
+test("source-proven bug intake verifies relative and every explicit historical PR reference", () => {
+  const baseLive = {
+    issue: { state: "open", locked: false, labels: [], title: "Bug", body: "" },
+    existingPrs: [],
+    existingBranchPrs: [],
+    clusterExistingPrs: [],
+  };
+  for (const reference of [
+    "/pull/98326",
+    "../pull/98326",
+    "./pull/98326",
+    "openclaw/openclaw/pull/98326",
+  ]) {
+    const markdown = report({
+      reproduction_status: "source_reproducible",
+      implementation_complexity: "small",
+      auto_implementation_candidate: "strict_bug",
+      work_cluster_refs: JSON.stringify([reference]),
+    });
+    const rejected = reportOnlyDecision({
+      targetRepo: "openclaw/openclaw",
+      report: parseReviewReport(markdown),
+      reportMarkdown: markdown,
+      live: { ...baseLive, referencedPrs: [] },
+    });
+    assert.equal(rejected.shouldRepair, false);
+    assert.match(rejected.reason, /open or unverifiable pull request/);
+  }
+
+  const markdown = report({
+    reproduction_status: "source_reproducible",
+    implementation_complexity: "small",
+    auto_implementation_candidate: "strict_bug",
+    work_cluster_refs: JSON.stringify([
+      "https://github.com/openclaw/openclaw/pull/98326",
+      "https://github.com/openclaw/openclaw/pull/98327",
+    ]),
+  });
+  const missingSecond = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+    live: {
+      ...baseLive,
+      referencedPrs: [
+        {
+          number: 98326,
+          state: "closed",
+          is_pull: true,
+          url: "https://github.com/openclaw/openclaw/pull/98326",
+        },
+      ],
+    },
+  });
+  assert.equal(missingSecond.shouldRepair, false);
+});
+
 test("automatic implementation refuses report and live bulk-filer signals", () => {
   for (const overrides of [
     { bulk_filer_detected: "true" },
@@ -495,7 +621,14 @@ test("viable review routing resolves pull request context during live intake", (
       issue: { state: "open", locked: false, labels: [], title: "Feature", body: "" },
       existingPrs: [],
       existingBranchPrs: [],
-      referencedPrs: [{ state: "closed" }],
+      referencedPrs: [
+        {
+          number: 12,
+          state: "closed",
+          is_pull: true,
+          url: "https://github.com/other/project/pull/12",
+        },
+      ],
     },
   });
 
@@ -519,6 +652,10 @@ test("viable review routing resolves full and shorthand pull request references"
         "https://github.com/other/project/pull/12",
         "https://github.com/steipete/oracle/issues/218",
         "Superseded by [PR #13](https://github.com/other/project/pull/13)",
+        "/pull/14",
+        "another/project/pull/15",
+        "[PR #16](/another/project/pull/16)",
+        "[PR #17](../pull/17)",
       ],
     }),
     [
@@ -526,6 +663,10 @@ test("viable review routing resolves full and shorthand pull request references"
       { owner: "steipete", name: "oracle", number: 217, knownPullRequest: false },
       { owner: "other", name: "project", number: 12, knownPullRequest: true },
       { owner: "other", name: "project", number: 13, knownPullRequest: true },
+      { owner: "steipete", name: "oracle", number: 14, knownPullRequest: true },
+      { owner: "another", name: "project", number: 15, knownPullRequest: true },
+      { owner: "another", name: "project", number: 16, knownPullRequest: true },
+      { owner: "steipete", name: "oracle", number: 17, knownPullRequest: true },
     ],
   );
 });
@@ -541,9 +682,15 @@ test("issue implementation deduplicates work across related issue references", (
         "See steipete/oracle#217",
         "https://github.com/steipete/oracle/issues/218",
         "https://github.com/other/project/issues/219",
+        "[PR #220](/another/project/pull/220)",
+        "[Issue #221](https://github.com/steipete/oracle/issues/221)",
+        "[Issue #222](/issues/222)",
+        "[Issue #223](/steipete/oracle/issues/223)",
+        "[Issue #224](../issues/224)",
+        "[Issue #225](/another/project/issues/225)",
       ],
     }),
-    [216, 217, 218],
+    [216, 217, 218, 221, 222, 223, 224],
   );
 
   const markdown = report();
@@ -694,6 +841,37 @@ test("bug candidate discovery includes legacy small source-proven OpenClaw revie
             "https://github.com/openclaw/clawsweeper-state/blob/state/records/openclaw-openclaw/items/123.md",
         },
       ],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bug candidate discovery admits a source-proven issue whose previous fix PR was closed", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "clawsweeper-closed-pr-bug-"));
+  try {
+    const reportDir = path.join(root, "records", "openclaw-openclaw", "items");
+    mkdirSync(reportDir, { recursive: true });
+    writeFileSync(
+      path.join(reportDir, "123.md"),
+      report({
+        reproduction_status: "source_reproducible",
+        implementation_complexity: "small",
+        auto_implementation_candidate: "strict_bug",
+        work_cluster_refs: JSON.stringify(["https://github.com/openclaw/openclaw/pull/98326"]),
+      }),
+    );
+
+    assert.deepEqual(
+      discoverImplementationCandidates({
+        enabled: true,
+        candidateKind: "strict_bug",
+        targetRepo: "openclaw/openclaw",
+        reportRepo: "openclaw/clawsweeper-state",
+        sourceDirs: [reportDir],
+        jobRoot: root,
+      }).map(({ item_number }) => item_number),
+      [123],
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
