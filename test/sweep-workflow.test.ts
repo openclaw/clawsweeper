@@ -2605,7 +2605,7 @@ test("wrapped cursor resets when every remaining boundary record disappears", ()
           'cursor_path="$CURSOR_PATH"',
           "item_numbers=6,7",
           "prepare_comment_sync_batch",
-          'printf "selected=%s\\nwrapped=%s\\nhas_cycle=%s\\n" "$item_numbers" "$comment_sync_cycle_wrapped" "$(jq -r \'has(\"cycle_wrapped\")\' "$cursor_path")"',
+          'printf "selected=%s\\nwrapped=%s\\nhas_cycle=%s\\n" "$item_numbers" "$comment_sync_cycle_wrapped" "$(jq -r \'has("cycle_wrapped")\' "$cursor_path")"',
         ].join("\n"),
       ],
       {
