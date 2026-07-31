@@ -4949,9 +4949,21 @@ export class ExactReviewQueue {
         state.dispatcher.publicationBatchTerminalProbe === candidateProbe &&
         dispatchMatchesReservation);
     if (!probeMatches) {
-      // Leave the current fence intact. This request may belong to a delayed
-      // workflow from an earlier departure; clearing here could let the current
-      // workflow claim an unprobed, newer selection.
+      // Only the workflow holding this exact departure may retire its stale
+      // probe. A newer item can change the selection before that workflow
+      // starts; otherwise the stale reservation blocks every publisher for
+      // its full ten-minute lifetime even though no batch was claimed.
+      if (
+        dispatch &&
+        dispatchReservationActive &&
+        dispatch.id === state.dispatcher?.publicationBatchDispatchId
+      ) {
+        const dispatcher = { ...state.dispatcher };
+        delete dispatcher.publicationBatchDispatchPendingUntil;
+        delete dispatcher.publicationBatchTerminalProbe;
+        state.dispatcher = dispatcher;
+        this.writeStateSync(state);
+      }
       await this.scheduleNext(state, now);
       return json({
         ok: true,

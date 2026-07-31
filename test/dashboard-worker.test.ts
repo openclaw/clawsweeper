@@ -7170,6 +7170,103 @@ test("exact-review batch claims keep a newer departure fence when an older workf
   }
 });
 
+test("matching stale batch departures release their own fence and redispatch current work", async () => {
+  const originalNow = Date.now;
+  let now = Date.parse("2026-07-25T14:00:00.000Z");
+  Date.now = () => now;
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    publicationBatching: true,
+    publicationBatchSize: "2",
+    publicationFreshLane: true,
+    captureBatchDispatch: true,
+  });
+  try {
+    for (const [deliveryId, itemNumber] of [
+      ["stale-departure-first", 9251],
+      ["stale-departure-second", 9252],
+    ] as const) {
+      assert.equal(
+        (
+          await harness.queue.fetch(
+            buildExactReviewQueueRequest(
+              deliveryId,
+              itemNumber,
+              "exact_review_artifact_publish",
+              "issue",
+              "openclaw/gogcli",
+              exactReviewPublicationOverrides(itemNumber, String(itemNumber * 10)),
+            ),
+          )
+        ).status,
+        202,
+      );
+    }
+    now += 16 * 60_000;
+    await harness.queue.alarm();
+    assert.equal(harness.batchDispatches, 1);
+
+    const reserved = (await harness.storage.get("exact-review-queue")) as {
+      dispatcher: {
+        publicationBatchDispatchId: string;
+        publicationBatchDispatchedAt: number;
+        publicationBatchDispatchPendingUntil?: number;
+        publicationBatchTerminalProbe?: string;
+      };
+    };
+    const firstDispatch = reserved.dispatcher;
+    assert.ok(firstDispatch.publicationBatchTerminalProbe);
+
+    assert.equal(
+      (
+        await harness.queue.fetch(
+          buildExactReviewQueueRequest(
+            "stale-departure-fresh",
+            9253,
+            "exact_review_artifact_publish",
+            "issue",
+            "openclaw/gogcli",
+            exactReviewPublicationOverrides(9253, "92530"),
+          ),
+        )
+      ).status,
+      202,
+    );
+
+    const stale = await (
+      await harness.queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/publication-batches/claim", {
+          method: "POST",
+          body: JSON.stringify({
+            claim_id: "matching-stale-departure",
+            lease_owner: "matching-stale-worker",
+            dispatch_id: firstDispatch.publicationBatchDispatchId,
+            dispatched_at: new Date(firstDispatch.publicationBatchDispatchedAt).toISOString(),
+          }),
+        }),
+      )
+    ).json();
+    assert.equal(stale.claimed, false);
+    assert.equal(stale.preflight_required, true);
+
+    const released = (await harness.storage.get("exact-review-queue")) as typeof reserved;
+    assert.equal(released.dispatcher.publicationBatchDispatchPendingUntil, undefined);
+    assert.equal(released.dispatcher.publicationBatchTerminalProbe, undefined);
+
+    now += 60_000;
+    await harness.queue.alarm();
+    assert.equal(harness.batchDispatches, 2);
+    const refreshed = (await harness.storage.get("exact-review-queue")) as typeof reserved;
+    assert.notEqual(
+      refreshed.dispatcher.publicationBatchDispatchId,
+      firstDispatch.publicationBatchDispatchId,
+    );
+    assert.ok(refreshed.dispatcher.publicationBatchTerminalProbe);
+  } finally {
+    Date.now = originalNow;
+    harness.restore();
+  }
+});
+
 test("exact-review batch claim retries resume their existing leased batch", async () => {
   const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
     publicationBatching: true,
