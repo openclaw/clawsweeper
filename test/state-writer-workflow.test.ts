@@ -103,12 +103,13 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
 });
 
 test("automatic issue implementation joins the priority intake state-writer lane", () => {
-  const workflow = parse(
-    readFileSync(".github/workflows/repair-issue-implementation-intake.yml", "utf8"),
-  ) as WorkflowDocument;
+  const source = readFileSync(".github/workflows/repair-issue-implementation-intake.yml", "utf8");
+  const workflow = parse(source) as WorkflowDocument;
   const stateSetup = workflow.jobs?.intake?.steps?.find(isSetupState);
 
   assert.equal(stateSetup?.with?.["coordinator-class"], "cluster_intake");
+  assert.equal(source.match(/for attempt in 1 2 3; do/g)?.length, 2);
+  assert.match(source, /sleep "\$\(\(attempt \* 3\)\)"/);
 });
 
 test("setup-state checks out only the remaining operational git tree", () => {

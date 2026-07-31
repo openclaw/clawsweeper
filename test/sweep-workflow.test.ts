@@ -25,7 +25,10 @@ test("sweep keeps optional media tooling out of review startup", () => {
 
 test("automatic OpenClaw bug dispatch uses one gate across direct and deferred publication", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
-    jobs: Record<string, { steps: Array<{ name?: string; if?: string; run?: string }> }>;
+    jobs: Record<
+      string,
+      { steps: Array<{ name?: string; if?: string; run?: string; env?: Record<string, string> }> }
+    >;
   };
   for (const [jobName, stepName] of [
     ["event-review-apply", "Dispatch exact high-confidence bug implementation"],
@@ -37,6 +40,10 @@ test("automatic OpenClaw bug dispatch uses one gate across direct and deferred p
     assert.match(step.if ?? "", /vars\.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1'/);
     assert.doesNotMatch(step.if ?? "", /CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS/);
     assert.match(step.run ?? "", /dispatch-issue-implementation-candidates\.mjs/);
+    assert.equal(
+      step.env?.MAX_DISPATCH,
+      "${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}",
+    );
   }
 });
 

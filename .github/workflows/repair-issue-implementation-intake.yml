@@ -211,12 +211,18 @@ jobs:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
           set -euo pipefail
-          pnpm run repair:publish-main -- \
-            --message "chore: record issue implementation intake" \
-            --path jobs \
-            --path results \
-            --max-attempts 12 \
-            --push-attempts 4
+          for attempt in 1 2 3; do
+            if pnpm run repair:publish-main -- \
+              --message "chore: record issue implementation intake" \
+              --path jobs \
+              --path results \
+              --max-attempts 12 \
+              --push-attempts 4; then
+              exit 0
+            fi
+            [ "$attempt" -lt 3 ] || exit 1
+            sleep "$((attempt * 3))"
+          done
 
       - name: Publish automatic implementation queue status
         if: ${{ steps.prepare.outputs.should_repair == 'true' }}
@@ -268,8 +274,14 @@ jobs:
           pnpm run repair:issue-implementation-intake -- mark-dispatched \
             --audit-path "$AUDIT_PATH" \
             --job-path "$JOB_PATH"
-          pnpm run repair:publish-main -- \
-            --message "chore: record issue implementation worker dispatch" \
-            --path "$AUDIT_PATH" \
-            --max-attempts 12 \
-            --push-attempts 4
+          for attempt in 1 2 3; do
+            if pnpm run repair:publish-main -- \
+              --message "chore: record issue implementation worker dispatch" \
+              --path "$AUDIT_PATH" \
+              --max-attempts 12 \
+              --push-attempts 4; then
+              exit 0
+            fi
+            [ "$attempt" -lt 3 ] || exit 1
+            sleep "$((attempt * 3))"
+          done

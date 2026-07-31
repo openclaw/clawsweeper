@@ -77,7 +77,21 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
     /AUTO_IMPLEMENT_ISSUES: \$\{\{ vars\.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES \}\}/,
   );
   assert.match(source, /node scripts\/dispatch-issue-implementation-candidates\.mjs/);
-  assert.match(source, /if ! node scripts\/dispatch-issue-implementation-candidates\.mjs/);
+  assert.match(
+    source,
+    /MAX_DISPATCH: \$\{\{ vars\.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP \|\| '' \}\}/,
+  );
+  assert.match(source, /remaining_implementations="\$MAX_DISPATCH"/);
+  assert.match(source, /\[ "\$remaining_implementations" -gt 0 \]/);
+  assert.match(source, /--max-dispatch "\$remaining_implementations"/);
+  assert.match(
+    source,
+    /remaining_implementations=\$\(\(remaining_implementations - dispatched\)\)/,
+  );
+  assert.match(
+    source,
+    /if implementation_output="\$\(node scripts\/dispatch-issue-implementation-candidates\.mjs/,
+  );
   assert.match(
     source,
     /Automatic issue implementation dispatch failed; scheduled backfill will retry/,

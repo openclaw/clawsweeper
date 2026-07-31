@@ -243,7 +243,7 @@ export function discoverImplementationCandidates({
       number: number;
       reportPath: string;
       repository: string;
-      reviewedAt: number;
+      freshness: readonly [number, number];
     }
   >();
   for (const sourceDir of sourceDirs) {
@@ -259,30 +259,26 @@ export function discoverImplementationCandidates({
       const canonicalMarkdown = fs.existsSync(canonicalReportPath)
         ? fs.readFileSync(canonicalReportPath, "utf8")
         : null;
-      const canonicalReviewedAt = Date.parse(
-        canonicalMarkdown
-          ? (parseReviewReport(canonicalMarkdown).frontmatter.reviewed_at ?? "")
-          : "",
-      );
-      const sourceReviewedAt = Date.parse(sourceReport.frontmatter.reviewed_at ?? "");
+      const canonicalFreshness = canonicalMarkdown
+        ? reviewFreshness(parseReviewReport(canonicalMarkdown))
+        : null;
+      const sourceFreshness = reviewFreshness(sourceReport);
       // Publication hydrates records before reviewing, so its accepted artifact can
       // be newer than the runner's local snapshot of authoritative Worker state.
       const markdown =
         canonicalMarkdown !== null &&
-        (!Number.isFinite(sourceReviewedAt) ||
-          (Number.isFinite(canonicalReviewedAt) && canonicalReviewedAt >= sourceReviewedAt))
+        canonicalFreshness !== null &&
+        compareReviewFreshness(canonicalFreshness, sourceFreshness) >= 0
           ? canonicalMarkdown
           : sourceMarkdown;
       const canonical = markdown === canonicalMarkdown;
-      const reviewedAt = canonical ? canonicalReviewedAt : sourceReviewedAt;
+      const freshness = canonical && canonicalFreshness ? canonicalFreshness : sourceFreshness;
       const key = `${repository.toLowerCase()}#${number}`;
       const existing = reviewsByIssue.get(key);
-      if (
-        existing &&
-        ((Number.isFinite(existing.reviewedAt) &&
-          (!Number.isFinite(reviewedAt) || existing.reviewedAt > reviewedAt)) ||
-          (existing.reviewedAt === reviewedAt && existing.canonical && !canonical))
-      ) {
+      const relativeFreshness = existing
+        ? compareReviewFreshness(existing.freshness, freshness)
+        : -1;
+      if (relativeFreshness > 0 || (relativeFreshness === 0 && existing?.canonical && !canonical)) {
         continue;
       }
       reviewsByIssue.set(key, {
@@ -291,11 +287,11 @@ export function discoverImplementationCandidates({
         number,
         reportPath,
         repository,
-        reviewedAt,
+        freshness,
       });
     }
   }
-  const candidates: { candidate: LooseRecord; existingJob: boolean }[] = [];
+  const candidates: { candidate: LooseRecord; existingJob: boolean; retryDue: boolean }[] = [];
   for (const { markdown, number, reportPath, repository } of reviewsByIssue.values()) {
     const decision = reportOnlyDecision({
       targetRepo,
@@ -306,8 +302,10 @@ export function discoverImplementationCandidates({
     if (!decision.shouldRepair) continue;
     const jobPath = path.join(jobRoot, issueImplementationJobPath(repository, number));
     const existingJob = fs.existsSync(jobPath);
+    const previousAudit = existingJob
+      ? intakeAudit({ root: jobRoot, repo: repository, number })
+      : null;
     if (existingJob) {
-      const previousAudit = intakeAudit({ root: jobRoot, repo: repository, number });
       if (intakeAuditRetryDeferred(previousAudit, markdown)) continue;
       if (
         !intakeAuditAwaitsWorkerDispatch(previousAudit) &&
@@ -322,6 +320,7 @@ export function discoverImplementationCandidates({
     }
     candidates.push({
       existingJob,
+      retryDue: intakeAuditRetryDue(previousAudit),
       candidate: {
         item_number: number,
         report_path: reportPath,
@@ -329,13 +328,37 @@ export function discoverImplementationCandidates({
       },
     });
   }
-  return candidates
-    .sort(
-      (left, right) =>
-        Number(left.existingJob) - Number(right.existingJob) ||
-        Number(left.candidate.item_number) - Number(right.candidate.item_number),
-    )
-    .map(({ candidate }) => candidate);
+  const byIssueNumber = (left: (typeof candidates)[number], right: (typeof candidates)[number]) =>
+    Number(left.candidate.item_number) - Number(right.candidate.item_number);
+  const dueRetries = candidates.filter(({ retryDue }) => retryDue).sort(byIssueNumber);
+  const fresh = candidates.filter(({ existingJob }) => !existingJob).sort(byIssueNumber);
+  const remaining = candidates
+    .filter(({ existingJob, retryDue }) => existingJob && !retryDue)
+    .sort(byIssueNumber);
+  return [...dueRetries.slice(0, 1), ...fresh, ...dueRetries.slice(1), ...remaining].map(
+    ({ candidate }) => candidate,
+  );
+}
+
+function reviewFreshness(report: ReviewReport): readonly [number, number] {
+  const value = (...keys: string[]) => {
+    const timestamps = keys
+      .map((key) => Date.parse(report.frontmatter[key] ?? ""))
+      .filter(Number.isFinite);
+    return timestamps.length ? Math.max(...timestamps) : Number.NEGATIVE_INFINITY;
+  };
+  return [
+    value("item_updated_at", "current_item_updated_at", "current_item_closed_at"),
+    value("reviewed_at", "last_full_review_at"),
+  ];
+}
+
+function compareReviewFreshness(left: readonly number[], right: readonly number[]) {
+  for (const [index, timestamp] of left.entries()) {
+    if (timestamp > (right[index] ?? Number.NEGATIVE_INFINITY)) return 1;
+    if (timestamp < (right[index] ?? Number.NEGATIVE_INFINITY)) return -1;
+  }
+  return 0;
 }
 
 export function parseReviewReport(markdown: string): ReviewReport {
@@ -838,6 +861,11 @@ function intakeAuditRetryDeferred(audit: ReviewReport | null, reportMarkdown: st
   );
 }
 
+function intakeAuditRetryDue(audit: ReviewReport | null) {
+  const retryAfter = Date.parse(audit?.frontmatter.worker_retry_after ?? "");
+  return Number.isFinite(retryAfter) && retryAfter <= Date.now();
+}
+
 function existingIssueImplementationJobRevision(audit: ReviewReport | null) {
   if (!audit) return "";
   if (audit.frontmatter.job_report_revision_sha256) {
@@ -1130,6 +1158,13 @@ function inspectReferencedPullRequests({
 function readReport({ reportRepo, reportPath }: { reportRepo: string; reportPath: string }) {
   const local = args["report-file"] ?? args.report_file;
   if (typeof local === "string") return fs.readFileSync(path.resolve(local), "utf8");
+  const canonicalPath = path.join(repoRoot(), reportPath);
+  if (
+    reportRepo.trim().toLowerCase() === "openclaw/clawsweeper-state" &&
+    fs.existsSync(canonicalPath)
+  ) {
+    return fs.readFileSync(canonicalPath, "utf8");
+  }
   const content = ghJsonWithRetry<{ content?: string }>([
     "api",
     `repos/${reportRepo}/contents/${reportPath}`,

@@ -138,6 +138,7 @@ jobs:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ github.token }}
           AUTO_IMPLEMENT_ISSUES: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES }}
+          MAX_DISPATCH: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}
           CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
           CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
         run: |
@@ -163,6 +164,17 @@ jobs:
           pnpm run --silent repair:exact-review-batch commit
           test ! -f "$heartbeat_failed"
           receipt_path="$(dirname "$EXACT_REVIEW_BATCH_MANIFEST")/state-receipt.json"
+          remaining_implementations="$MAX_DISPATCH"
+          if [ -z "$remaining_implementations" ]; then
+            if ! remaining_implementations="$(pnpm run --silent workflow -- limit issue_implementation.dispatches_per_sweep_default)"; then
+              echo "::warning::Unable to resolve the automatic issue implementation dispatch limit; scheduled backfill will retry."
+              remaining_implementations=0
+            fi
+          fi
+          if ! [[ "$remaining_implementations" =~ ^[0-9]+$ ]] || [ "$remaining_implementations" -gt 100 ]; then
+            echo "::warning::Invalid automatic issue implementation dispatch limit; scheduled backfill will retry."
+            remaining_implementations=0
+          fi
           jq -c '.items[]' "$EXACT_REVIEW_BATCH_MANIFEST" | while IFS= read -r item; do
             test ! -f "$heartbeat_failed"
             outcome_path="$(jq -r '.outcomePath' <<<"$item")"
@@ -233,15 +245,26 @@ jobs:
               fi
             fi
             if [ "$AUTO_IMPLEMENT_ISSUES" = "1" ] &&
+              [ "$remaining_implementations" -gt 0 ] &&
               [ "$target_repo" = "openclaw/openclaw" ] &&
               [ "$(jq -r '.decision.itemKind' <<<"$item")" = "issue" ] &&
               jq -e '.kind == "eligible"' "$outcome_path" >/dev/null; then
               report_path="${outcome_path%.json}.report.md"
               if [ -f "$report_path" ]; then
-                if ! node scripts/dispatch-issue-implementation-candidates.mjs \
+                if implementation_output="$(node scripts/dispatch-issue-implementation-candidates.mjs \
                   --target-repo "$target_repo" \
                   --item-number "$item_number" \
-                  --artifact-dir "$(dirname "$report_path")"; then
+                  --artifact-dir "$(dirname "$report_path")" \
+                  --max-dispatch "$remaining_implementations")"; then
+                  printf '%s\n' "$implementation_output"
+                  if dispatched="$(printf '%s\n' "$implementation_output" | tail -n 1 | jq -er '.dispatched')" &&
+                    [[ "$dispatched" =~ ^[01]$ ]]; then
+                    remaining_implementations=$((remaining_implementations - dispatched))
+                  else
+                    echo "::warning::Automatic issue implementation returned an invalid dispatch count; stopping batch dispatch."
+                    remaining_implementations=0
+                  fi
+                else
                   echo "::warning::Automatic issue implementation dispatch failed; scheduled backfill will retry."
                 fi
               fi

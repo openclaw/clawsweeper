@@ -772,6 +772,26 @@ test("accepted newer review artifacts supersede stale hydrated canonical snapsho
       discoverImplementationCandidates({ ...options, sourceDirs: [recordDir, artifactDir] }),
       [],
     );
+
+    writeFileSync(
+      path.join(recordDir, "123.md"),
+      report({
+        decision: "close",
+        item_updated_at: "2026-07-31T10:09:00.000Z",
+        reviewed_at: "2026-07-31T10:07:00.000Z",
+      }),
+    );
+    writeFileSync(
+      path.join(artifactDir, "123.md"),
+      report({
+        item_updated_at: "2026-07-31T10:08:00.000Z",
+        reviewed_at: "2026-07-31T10:10:00.000Z",
+      }),
+    );
+    assert.deepEqual(
+      discoverImplementationCandidates({ ...options, sourceDirs: [artifactDir, recordDir] }),
+      [],
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -901,8 +921,40 @@ decision: not_eligible
     assert.equal(discoverImplementationCandidates(options).length, 1);
 
     writeFileSync(
+      auditPath,
+      `---
+repo: steipete/summarize
+number: 244
+report_revision_sha256: ${reportRevisionSha256(readFileSync(report244Path, "utf8"))}
+decision: not_eligible
+worker_dispatched: false
+worker_retry_after: ${new Date(Date.now() - 60_000).toISOString()}
+---
+`,
+    );
+    writeFileSync(
       path.join(reportDir, "245.md"),
       report({ number: "245", repository: "steipete/summarize" }),
+    );
+    writeFileSync(
+      path.join(reportDir, "246.md"),
+      report({ number: "246", repository: "steipete/summarize" }),
+    );
+    assert.deepEqual(
+      discoverImplementationCandidates(options).map(({ item_number }) => item_number),
+      [244, 245, 246],
+    );
+    rmSync(path.join(reportDir, "246.md"));
+    writeFileSync(
+      auditPath,
+      `---
+repo: steipete/summarize
+number: 244
+report_revision_sha256: ${reportRevisionSha256(readFileSync(report244Path, "utf8"))}
+decision: queued_for_repair
+worker_dispatched: false
+---
+`,
     );
     assert.deepEqual(
       discoverImplementationCandidates(options).map((candidate) => candidate.item_number),
@@ -1090,6 +1142,8 @@ test("issue implementation intake checks generated branches through REST", () =>
   assert.match(source, /repos\/\$\{owner\}\/\$\{name\}\/issues\/\$\{number\}/);
   assert.match(source, /"search\/issues",\s+"--method",\s+"GET"/);
   assert.doesNotMatch(source, /"pr", "list"/);
+  assert.match(source, /reportRepo\.trim\(\)\.toLowerCase\(\) === "openclaw\/clawsweeper-state"/);
+  assert.match(source, /fs\.existsSync\(canonicalPath\)/);
 });
 
 test("repair executor uses retryable blobless target checkout", () => {

@@ -1331,6 +1331,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          MAX_DISPATCH: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}
         run: |
           node scripts/dispatch-issue-implementation-candidates.mjs \
             --target-repo "$TARGET_REPO" \
@@ -2105,6 +2106,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
+          MAX_DISPATCH: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}
         run: |
           node scripts/dispatch-issue-implementation-candidates.mjs \
             --target-repo "$TARGET_REPO" \
