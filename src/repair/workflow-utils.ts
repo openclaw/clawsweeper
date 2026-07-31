@@ -2206,6 +2206,7 @@ function commentSyncCandidates(targetRepo: string, applyKind: string): number[] 
         actionTaken !== "kept_open" &&
         actionTaken !== "proposed_close" &&
         actionTaken !== "skipped_pr_close_coverage_proof" &&
+        actionTaken !== "retry_pr_close_coverage_proof" &&
         actionTaken !== "retry_stale_canonical_comment_sync" &&
         !changedDuplicateClose
       ) {

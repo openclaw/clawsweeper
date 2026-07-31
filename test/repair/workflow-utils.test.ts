@@ -2642,6 +2642,7 @@ test("workflow utilities select cursor-based PR comment sync batches", () => {
     reviewCommentUrl: "https://github.com/openclaw/openclaw/pull/34#issuecomment-9034",
   });
   writeCommentSyncRecord(root, 35, "pull_request", "retry_stale_canonical_comment_sync");
+  writeCommentSyncRecord(root, 39, "pull_request", "retry_pr_close_coverage_proof");
   writeCommentSyncRecord(root, 36, "pull_request", "corrected_stale_canonical_comment");
   writeCommentSyncRecord(root, 37, "pull_request", "skipped_changed_since_review", {
     decision: "close",
@@ -2684,10 +2685,10 @@ test("workflow utilities select cursor-based PR comment sync batches", () => {
       }),
     ),
     {
-      item_numbers: "30,34,35",
-      count: "3",
+      item_numbers: "30,34,35,39",
+      count: "4",
       cursor: "20",
-      next_cursor: "35",
+      next_cursor: "39",
       wrapped: "false",
     },
   );

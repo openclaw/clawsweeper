@@ -44,6 +44,225 @@ report_apply_token_budget_stop() {
   fi
 }
 
+normalize_comment_sync_mode() {
+  if [ "${sync_open_pr_batch:-false}" != "true" ]; then
+    return 0
+  fi
+  sync_comments_only=true
+  if [ "${scheduled_comment_sync:-false}" = "true" ]; then
+    apply_kind="pull_request"
+    comment_sync_min_age_days=0
+  fi
+}
+
+prepare_comment_sync_batch() {
+  comment_sync_pending_items=""
+  comment_sync_cursor_advance_count=0
+  comment_sync_initial_cursor=0
+  comment_sync_cycle_start=0
+  comment_sync_cycle_wrapped=false
+  if [ "${sync_comments_only:-false}" != "true" ]; then
+    return 0
+  fi
+  if [ -z "${item_numbers:-}" ] &&
+    [ "${scheduled_comment_sync:-false}" != "true" ] &&
+    { [ "${apply_kind:-all}" != "pull_request" ] ||
+      [ "${comment_sync_min_age_days:-0}" != "0" ]; }; then
+    cursor_path="results/comment-sync-cursors/${target_slug}-${apply_kind:-all}-age${comment_sync_min_age_days:-0}.json"
+  fi
+  if [ -f "${cursor_path:-}" ]; then
+    comment_sync_initial_cursor="$(jq -er '
+      if (.next_after_number | type) == "number" and .next_after_number >= 0 and
+         (.next_after_number | floor) == .next_after_number
+      then .next_after_number
+      else error("comment sync cursor is invalid")
+      end
+    ' "$cursor_path")"
+    comment_sync_cycle_start="$(jq -er --argjson cursor "$comment_sync_initial_cursor" '
+      .cycle_start_after_number // $cursor
+      | if type == "number" and . >= 0 and floor == . then .
+        else error("comment sync cycle start is invalid") end
+    ' "$cursor_path")"
+    comment_sync_cycle_wrapped="$(jq -r '
+      .cycle_wrapped // false
+      | if type == "boolean" then . else error("comment sync cycle state is invalid") end
+    ' "$cursor_path")"
+  fi
+  if [ "$sync_batch_size" -le 0 ]; then
+    sync_batch_size="$comment_sync_processed_limit"
+  fi
+  if [ "$sync_batch_size" -gt "$comment_sync_processed_limit" ]; then
+    echo "Capping comment sync batch at $comment_sync_processed_limit items."
+    sync_batch_size="$comment_sync_processed_limit"
+  fi
+  if [ -z "${item_numbers:-}" ] && [ "${sync_open_pr_batch:-false}" != "true" ]; then
+    mkdir -p .artifacts
+    local batch_env
+    batch_env="$(mktemp .artifacts/comment-sync-all.XXXXXX)"
+    cursor_path="${cursor_path:-results/comment-sync-cursors/${target_slug}.json}"
+    pnpm run --silent workflow -- comment-sync-batch \
+      --target-repo "$TARGET_REPO" \
+      --apply-kind "$apply_kind" \
+      --batch-size "$comment_sync_processed_limit" \
+      --cursor-path "$cursor_path" > "$batch_env"
+    item_numbers="$(awk -F= '$1 == "item_numbers" { print $2 }' "$batch_env")"
+    next_cursor="$(awk -F= '$1 == "next_cursor" { print $2 }' "$batch_env")"
+    sync_open_pr_batch=true
+    sync_batch_size="$comment_sync_processed_limit"
+  fi
+  if [ -n "${item_numbers:-}" ]; then
+    local requested_item_numbers="$item_numbers"
+    item_numbers="$(jq -nr --arg selected "$item_numbers" '
+      reduce (
+        $selected | split(",")[] | gsub("^\\s+|\\s+$"; "")
+        | select(length > 0) | tonumber?
+        | select(. > 0 and . == floor)
+      ) as $item ([]; if index($item) == null then . + [$item] else . end)
+      | sort | map(tostring) | join(",")
+    ')"
+    if [ -z "$item_numbers" ]; then
+      echo "Comment sync request contains no valid positive item numbers: $requested_item_numbers" >&2
+      return 1
+    fi
+    local requested_items
+    IFS=, read -r -a requested_items <<<"$item_numbers"
+    if [ "${#requested_items[@]}" -gt "$comment_sync_processed_limit" ]; then
+      comment_sync_pending_items="$(IFS=,; printf '%s' "${requested_items[*]:comment_sync_processed_limit}")"
+      item_numbers="$(IFS=,; printf '%s' "${requested_items[*]:0:comment_sync_processed_limit}")"
+      echo "Splitting comment sync into $comment_sync_processed_limit-item checkpoints."
+    fi
+  fi
+}
+
+complete_comment_sync_batch() {
+  local report_path="$1"
+  local trace_path="$2"
+  local completed_csv
+  if ! completed_csv="$(jq -er --arg selected "${item_numbers:-}" '
+    .examined_item_numbers as $examined
+    | ($selected | if . == "" then [] else split(",") | map(tonumber) end) as $selected
+    | if .schema_version == 1 and
+        ($examined | type) == "array" and
+        (($selected | length) == 0 or
+          (all($examined[]; . as $number | $selected | index($number) != null) and
+            ($examined | unique | length) == ($examined | length)))
+      then $examined | join(",")
+      else error("comment sync trace contains invalid or unselected items")
+      end
+  ' "$trace_path")"; then
+    echo "::warning::Comment sync trace could not be trusted; preserving the canonical checkpoint without cursor advancement."
+    completed_csv=""
+  fi
+  local selected_items=()
+  if [ -n "${item_numbers:-}" ]; then
+    IFS=, read -r -a selected_items <<<"$item_numbers"
+  fi
+  local completed_count=0
+  local cursor_count=0
+  local safe_cursor=""
+  local blocked_prefix=false
+  local unfinished_items=()
+  local selected_item
+  for selected_item in "${selected_items[@]}"; do
+    case ",$completed_csv," in
+      *",$selected_item,"*)
+        completed_count=$((completed_count + 1))
+        if [ "$blocked_prefix" != "true" ]; then
+          safe_cursor="$selected_item"
+          cursor_count=$((cursor_count + 1))
+        fi
+        ;;
+      *)
+        blocked_prefix=true
+        unfinished_items+=("$selected_item")
+        ;;
+    esac
+  done
+  if [ "${#selected_items[@]}" -eq 0 ] && [ -n "$completed_csv" ]; then
+    completed_count="$(awk -F, '{ print NF }' <<<"$completed_csv")"
+  fi
+  comment_sync_cursor_advance_count="$cursor_count"
+
+  if [ "$sync_open_pr_batch" = "true" ]; then
+    if [ "$cursor_count" -eq 0 ]; then
+      echo "Comment sync made no cursor progress; the next scheduled batch retries it."
+      next_cursor=""
+      return 0
+    fi
+    next_cursor="$safe_cursor"
+    pnpm run workflow -- write-comment-sync-cursor \
+      --cursor-path "$cursor_path" \
+      --next-cursor "$next_cursor" \
+      --target-repo "$TARGET_REPO"
+    if [ "$TARGET_REPO" != "openclaw/openclaw" ] ||
+      [ "${apply_kind:-pull_request}" != "pull_request" ] ||
+      [ "${comment_sync_min_age_days:-0}" != "0" ]; then
+      local initial_cursor="${comment_sync_initial_cursor:-0}"
+      local cycle_start="${comment_sync_cycle_start:-0}"
+      local cycle_wrapped="${comment_sync_cycle_wrapped:-false}"
+      if [ "${#selected_items[@]}" -gt 0 ] &&
+        [ "${selected_items[0]}" -le "$initial_cursor" ] &&
+        [ "$initial_cursor" -gt 0 ]; then
+        cycle_wrapped=true
+      fi
+      local lookahead_env
+      lookahead_env="$(mktemp .artifacts/comment-sync-lookahead.XXXXXX)"
+      pnpm run --silent workflow -- comment-sync-batch \
+        --target-repo "$TARGET_REPO" \
+        --apply-kind "$apply_kind" \
+        --batch-size "$sync_batch_size" \
+        --cursor-path "$cursor_path" > "$lookahead_env"
+      local lookahead_wrapped
+      lookahead_wrapped="$(awk -F= '$1 == "wrapped" { print $2 }' "$lookahead_env")"
+      local lookahead_count
+      lookahead_count="$(awk -F= '$1 == "count" { print $2 }' "$lookahead_env")"
+      if [ "$lookahead_wrapped" = "true" ]; then
+        if [ "$cycle_start" -gt 0 ] && [ "$cycle_wrapped" != "true" ]; then
+          cycle_wrapped=true
+        else
+          lookahead_count=0
+        fi
+      fi
+      if [ "$cycle_wrapped" = "true" ] &&
+        [ "${#selected_items[@]}" -gt 0 ] &&
+        [ "${selected_items[0]}" -le "$cycle_start" ] &&
+        [ "$safe_cursor" -ge "$cycle_start" ]; then
+        lookahead_count=0
+      fi
+      if [ "$lookahead_count" -gt 0 ]; then
+        local cycle_cursor_path
+        cycle_cursor_path="$(mktemp "${cursor_path}.cycle.XXXXXX")"
+        jq --argjson start "$cycle_start" \
+          --argjson wrapped "$cycle_wrapped" \
+          '. + {cycle_start_after_number: $start, cycle_wrapped: $wrapped}' \
+          "$cursor_path" > "$cycle_cursor_path"
+        mv "$cycle_cursor_path" "$cursor_path"
+        item_numbers="__cursor__"
+        continue_apply=true
+        echo "Queued the next bounded comment-sync window outside scheduled maintenance coverage."
+        return 0
+      fi
+    fi
+    echo "Comment synchronization yielded its bounded cursor window to scheduled maintenance."
+    return 0
+  fi
+
+  if [ "${#unfinished_items[@]}" -gt 0 ]; then
+    local unfinished
+    unfinished="$(IFS=,; printf '%s' "${unfinished_items[*]}")"
+    comment_sync_pending_items="${unfinished}${comment_sync_pending_items:+,$comment_sync_pending_items}"
+  fi
+  if [ -n "$comment_sync_pending_items" ] && [ "$completed_count" -gt 0 ]; then
+    item_numbers="$comment_sync_pending_items"
+    continue_apply=true
+    echo "Queued the unfinished durable comment-sync checkpoint for continuation."
+  elif [ -n "$comment_sync_pending_items" ]; then
+    echo "Comment sync made no progress; stopping instead of occupying the apply lane with an endless retry."
+  elif jq -e 'any(.[]; .action == "skipped_runtime_budget")' "$report_path" >/dev/null; then
+    echo "Comment sync reached its runtime budget after its selected records completed."
+  fi
+}
+
 validate_coverage_proof_tree() {
   local proof_dir="$1"
   local max_files="${2:-2}"
@@ -148,6 +367,7 @@ publish_changes() {
   target_slug="${target_slug//\//-}"
   local record_paths=()
   local other_paths=()
+  local publishes_comment_sync_cursor=false
   local path
   for path in "$@"; do
     if [ "$path" = "records" ]; then
@@ -156,6 +376,10 @@ publish_changes() {
       record_paths+=("$path")
     else
       other_paths+=("$path")
+      if [ "$path" = "results/comment-sync-cursors" ] ||
+        [[ "$path" = results/comment-sync-cursors/* ]]; then
+        publishes_comment_sync_cursor=true
+      fi
     fi
   done
   if [ "${#record_paths[@]}" -gt 0 ]; then
@@ -164,6 +388,12 @@ publish_changes() {
   if [ "${#other_paths[@]}" -gt 0 ]; then
     if ! publish_changes_with_strategy theirs "$message" "${other_paths[@]}"; then
       echo "::warning title=Operational state publish failed::Canonical work remains valid; continuing after best-effort Git bookkeeping failed: $message" >&2
+      if [ "$publishes_comment_sync_cursor" = "true" ] &&
+        [ "${sync_open_pr_batch:-false}" = "true" ] &&
+        [ "${continue_apply:-false}" = "true" ]; then
+        continue_apply=false
+        echo "Stopping comment-sync continuation because its cursor was not published."
+      fi
     fi
   fi
 }
@@ -310,6 +540,14 @@ write_apply_health() {
     health_args+=(--cursor-advance-count "$health_cursor_advance_count")
   fi
   pnpm run --silent workflow -- summarize-apply-report "${health_args[@]}" > "$output_path"
+}
+
+write_comment_sync_health() {
+  write_apply_health "$1" "$2" "comment_sync" \
+    "$comment_sync_health_processed_limit" \
+    "$comment_sync_health_cursor_path" \
+    "$comment_sync_health_cursor_required" "" "" \
+    "$comment_sync_cursor_advance_count"
 }
 
 apply_checkpoint_examined_count() {

@@ -1909,8 +1909,21 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
     `apply run expression is ${runBody.length} characters; keep margin below GitHub's 21,000-character limit`,
   );
   assert.match(applyStep, /processed-limit "\$close_processed_limit"/);
-  assert.match(applyStep, /comment_sync_processed_limit=1000/);
+  assert.match(applyStep, /comment_sync_processed_limit=40/);
   assert.match(applyStep, /--processed-limit "\$comment_sync_processed_limit"/);
+  assert.match(applyStep, /prepare_comment_sync_batch/);
+  const commentSyncBranch = applyStep.slice(
+    applyStep.indexOf('if [ "$sync_comments_only" = "true" ]; then\n            checkpoint=1'),
+    applyStep.indexOf('\n          while [ "$closed_total" -lt "$limit" ]; do'),
+  );
+  assert.match(commentSyncBranch, /--max-runtime-ms 300000/);
+  assert.match(commentSyncBranch, /complete_comment_sync_batch/);
+  assert.match(
+    commentSyncBranch,
+    /--cursor-trace "\.artifacts\/comment-sync-trace-\$checkpoint\.json"/,
+  );
+  assert.match(commentSyncBranch, /write_comment_sync_health/);
+  assert.match(applyHelper, /"\$comment_sync_cursor_advance_count"/);
   const applyFlagInit = applyStep.indexOf('explicit_item_numbers="$item_numbers"');
   assert.ok(applyFlagInit > applyStep.indexOf('item_numbers="${{'));
   assert.ok(applyFlagInit < applyStep.indexOf("auto_selected_apply_batch=true"));
@@ -2127,6 +2140,842 @@ test("apply workflow finalization retries only target status after checkpointed 
   assert.doesNotMatch(actionLedgerStep, /repair:publish-main/);
   assert.doesNotMatch(actionLedgerStep, /continue-on-error: true/);
   assert.match(actionLedgerStep, /no paths were imported[\s\S]*exit 1/i);
+});
+
+test("comment synchronization splits oversized explicit requests into durable checkpoints", () => {
+  const oversizedItems = Array.from({ length: 41 }, (_, index) => index + 1).join(",");
+  const output = execFileSync(
+    "bash",
+    [
+      "-lc",
+      [
+        "source scripts/apply-workflow-helpers.sh",
+        "comment_sync_processed_limit=40",
+        "sync_batch_size=75",
+        "sync_comments_only=false",
+        "item_numbers=",
+        "prepare_comment_sync_batch",
+        'printf "close_batch=%s\\n" "$sync_batch_size"',
+        "sync_comments_only=true",
+        "item_numbers=1",
+        "sync_open_pr_batch=false",
+        "prepare_comment_sync_batch",
+        'printf "comment_batch=%s\\n" "$sync_batch_size"',
+        'item_numbers="$OVERSIZED_ITEMS"',
+        "prepare_comment_sync_batch",
+        'printf "selected=%s\\n" "$item_numbers"',
+        'printf "remaining=%s\\n" "$comment_sync_pending_items"',
+      ].join("\n"),
+    ],
+    { encoding: "utf8", env: { ...process.env, OVERSIZED_ITEMS: oversizedItems } },
+  );
+
+  assert.match(output, /^close_batch=75$/m);
+  assert.match(output, /^comment_batch=40$/m);
+  assert.match(output, /^selected=1,2,3,4,5,6,7,8,9,10,/m);
+  assert.match(output, /^selected=.*39,40$/m);
+  assert.match(output, /^remaining=41$/m);
+});
+
+test("comment synchronization normalizes only valid positive explicit item numbers", () => {
+  const output = execFileSync(
+    "bash",
+    [
+      "-lc",
+      [
+        "source scripts/apply-workflow-helpers.sh",
+        "comment_sync_processed_limit=40",
+        "sync_batch_size=40",
+        "sync_comments_only=true",
+        "sync_open_pr_batch=false",
+        'item_numbers="3, 0, 02, -4, 2, 1.5, invalid, 001,,"',
+        "prepare_comment_sync_batch",
+        'printf "selected=%s\\n" "$item_numbers"',
+      ].join("\n"),
+    ],
+    { encoding: "utf8" },
+  );
+
+  assert.match(output, /^selected=1,2,3$/m);
+});
+
+test("comment synchronization rejects explicit requests without valid item numbers", () => {
+  assert.throws(
+    () =>
+      execFileSync(
+        "bash",
+        [
+          "-lc",
+          [
+            "set -euo pipefail",
+            "source scripts/apply-workflow-helpers.sh",
+            "comment_sync_processed_limit=40",
+            "sync_batch_size=40",
+            "sync_comments_only=true",
+            "sync_open_pr_batch=false",
+            'item_numbers="0,-4,1.5,invalid,,"',
+            "prepare_comment_sync_batch",
+          ].join("\n"),
+        ],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+      ),
+    (error: Error & { stderr?: Buffer | string }) =>
+      /contains no valid positive item numbers/.test(String(error.stderr)),
+  );
+});
+
+test("scheduled comment sync broadens only its own maintenance filters", () => {
+  const output = execFileSync(
+    "bash",
+    [
+      "-lc",
+      [
+        "source scripts/apply-workflow-helpers.sh",
+        "sync_open_pr_batch=true",
+        "sync_comments_only=true",
+        "scheduled_comment_sync=false",
+        "apply_kind=issue",
+        "comment_sync_min_age_days=9",
+        "normalize_comment_sync_mode",
+        'printf "manual=%s|%s\\n" "$apply_kind" "$comment_sync_min_age_days"',
+        "scheduled_comment_sync=true",
+        "normalize_comment_sync_mode",
+        'printf "scheduled=%s|%s\\n" "$apply_kind" "$comment_sync_min_age_days"',
+      ].join("\n"),
+    ],
+    { encoding: "utf8" },
+  );
+
+  assert.match(output, /^manual=issue\|9$/m);
+  assert.match(output, /^scheduled=pull_request\|0$/m);
+});
+
+test("cursor synchronization replaces a zero-item operator limit with its bounded default", () => {
+  const output = execFileSync(
+    "bash",
+    [
+      "-lc",
+      [
+        "source scripts/apply-workflow-helpers.sh",
+        "comment_sync_processed_limit=40",
+        "sync_batch_size=0",
+        "sync_comments_only=true",
+        "sync_open_pr_batch=true",
+        "item_numbers=10",
+        "prepare_comment_sync_batch",
+        'printf "batch=%s\\n" "$sync_batch_size"',
+      ].join("\n"),
+    ],
+    { encoding: "utf8" },
+  );
+
+  assert.match(output, /^batch=40$/m);
+});
+
+test("uncursored synchronization continues repositories without scheduled maintenance", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const records = join(root, "records", "openclaw-clawhub", "items");
+  mkdirSync(records, { recursive: true });
+  for (let number = 1; number <= 41; number += 1) {
+    writeFileSync(
+      join(records, `openclaw-clawhub-${number}.md`),
+      `---\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+    );
+  }
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          'export PATH="$NODE_BIN_DIR:$PATH"',
+          'pnpm() { while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; [ "$#" -gt 0 ] && shift; node "$WORKFLOW_UTILS_PATH" "$@"; }',
+          'source "$APPLY_HELPER_PATH"',
+          "comment_sync_processed_limit=40",
+          "sync_batch_size=40",
+          "sync_comments_only=true",
+          "sync_open_pr_batch=false",
+          "continue_apply=false",
+          'TARGET_REPO="openclaw/clawhub"',
+          "target_slug=openclaw-clawhub",
+          "apply_kind=all",
+          "item_numbers=",
+          "prepare_comment_sync_batch",
+          'printf "selected=%s\\n" "$item_numbers"',
+          'jq -n --arg selected "$item_numbers" \'{schema_version:1,examined_item_numbers:($selected|split(",")|map(tonumber))}\' > trace.json',
+          "printf '[]' > report.json",
+          "complete_comment_sync_batch report.json trace.json",
+          'printf "continue=%s\\nnext=%s\\ncursor=%s\\n" "$continue_apply" "$item_numbers" "$(jq -r .next_after_number "$cursor_path")"',
+        ].join("\n"),
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          NODE_BIN_DIR: dirname(process.execPath),
+          APPLY_HELPER_PATH: join(process.cwd(), "scripts/apply-workflow-helpers.sh"),
+          WORKFLOW_UTILS_PATH: join(process.cwd(), "dist/repair/workflow-utils.js"),
+        },
+      },
+    );
+
+    assert.match(output, /^continue=true$/m);
+    assert.match(output, /^selected=1,2,3,/m);
+    assert.match(output, /^next=__cursor__$/m);
+    assert.match(output, /^cursor=40$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("manual OpenClaw issue synchronization continues beyond scheduled PR coverage", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const records = join(root, "records", "openclaw-openclaw", "items");
+  mkdirSync(records, { recursive: true });
+  for (let number = 1; number <= 41; number += 1) {
+    writeFileSync(
+      join(records, `openclaw-openclaw-${number}.md`),
+      `---\nrepository: openclaw/openclaw\ntype: issue\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+    );
+  }
+  const sharedCursor = join(root, "results", "comment-sync-cursors", "openclaw-openclaw.json");
+  mkdirSync(dirname(sharedCursor), { recursive: true });
+  writeFileSync(sharedCursor, '{"next_after_number":50}\n');
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          'export PATH="$NODE_BIN_DIR:$PATH"',
+          'pnpm() { while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; [ "$#" -gt 0 ] && shift; node "$WORKFLOW_UTILS_PATH" "$@"; }',
+          'source "$APPLY_HELPER_PATH"',
+          "comment_sync_processed_limit=40",
+          "sync_batch_size=40",
+          "sync_comments_only=true",
+          "sync_open_pr_batch=false",
+          "scheduled_comment_sync=false",
+          "continue_apply=false",
+          'TARGET_REPO="openclaw/openclaw"',
+          "target_slug=openclaw-openclaw",
+          "apply_kind=issue",
+          "comment_sync_min_age_days=9",
+          "item_numbers=",
+          "prepare_comment_sync_batch",
+          'printf "selected=%s\\n" "$item_numbers"',
+          'jq -n --arg selected "$item_numbers" \'{schema_version:1,examined_item_numbers:($selected|split(",")|map(tonumber))}\' > trace.json',
+          "printf '[]' > report.json",
+          "complete_comment_sync_batch report.json trace.json",
+          'printf "continue=%s\\nnext=%s\\ncursor=%s\\n" "$continue_apply" "$item_numbers" "$(jq -r .next_after_number "$cursor_path")"',
+        ].join("\n"),
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          NODE_BIN_DIR: dirname(process.execPath),
+          APPLY_HELPER_PATH: join(process.cwd(), "scripts/apply-workflow-helpers.sh"),
+          WORKFLOW_UTILS_PATH: join(process.cwd(), "dist/repair/workflow-utils.js"),
+        },
+      },
+    );
+
+    assert.match(output, /^continue=true$/m);
+    assert.match(output, /^selected=1,2,3,/m);
+    assert.match(output, /^next=__cursor__$/m);
+    assert.match(output, /^cursor=40$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unscheduled cursor synchronization continues lower-numbered records after wraparound", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const records = join(root, "records", "openclaw-clawhub", "items");
+  mkdirSync(records, { recursive: true });
+  for (const number of [5, 21]) {
+    writeFileSync(
+      join(records, `openclaw-clawhub-${number}.md`),
+      `---\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+    );
+  }
+  const scopedCursor = join(
+    root,
+    "results",
+    "comment-sync-cursors",
+    "openclaw-clawhub-all-age0.json",
+  );
+  mkdirSync(dirname(scopedCursor), { recursive: true });
+  writeFileSync(scopedCursor, '{"next_after_number":20}\n');
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          'export PATH="$NODE_BIN_DIR:$PATH"',
+          'pnpm() { while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; [ "$#" -gt 0 ] && shift; node "$WORKFLOW_UTILS_PATH" "$@"; }',
+          'source "$APPLY_HELPER_PATH"',
+          "comment_sync_processed_limit=40",
+          "sync_batch_size=40",
+          "sync_comments_only=true",
+          "sync_open_pr_batch=false",
+          "scheduled_comment_sync=false",
+          "continue_apply=false",
+          'TARGET_REPO="openclaw/clawhub"',
+          "target_slug=openclaw-clawhub",
+          "apply_kind=all",
+          "comment_sync_min_age_days=0",
+          "item_numbers=",
+          "prepare_comment_sync_batch",
+          'printf "selected=%s\\n" "$item_numbers"',
+          'jq -n --arg selected "$item_numbers" \'{schema_version:1,examined_item_numbers:($selected|split(",")|map(tonumber))}\' > trace.json',
+          "printf '[]' > report.json",
+          "complete_comment_sync_batch report.json trace.json",
+          'printf "continue=%s\\nnext=%s\\ncursor=%s\\n" "$continue_apply" "$item_numbers" "$(jq -r .next_after_number "$cursor_path")"',
+        ].join("\n"),
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          NODE_BIN_DIR: dirname(process.execPath),
+          APPLY_HELPER_PATH: join(process.cwd(), "scripts/apply-workflow-helpers.sh"),
+          WORKFLOW_UTILS_PATH: join(process.cwd(), "dist/repair/workflow-utils.js"),
+        },
+      },
+    );
+
+    assert.match(output, /^selected=21$/m);
+    assert.match(output, /^continue=true$/m);
+    assert.match(output, /^next=__cursor__$/m);
+    assert.match(output, /^cursor=21$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unscheduled wrapped synchronization drains every bounded window and then stops", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const records = join(root, "records", "openclaw-clawhub", "items");
+  mkdirSync(records, { recursive: true });
+  for (let number = 1; number <= 7; number += 1) {
+    writeFileSync(
+      join(records, `openclaw-clawhub-${number}.md`),
+      `---\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+    );
+  }
+  const scopedCursor = join(
+    root,
+    "results",
+    "comment-sync-cursors",
+    "openclaw-clawhub-all-age0.json",
+  );
+  mkdirSync(dirname(scopedCursor), { recursive: true });
+  writeFileSync(scopedCursor, '{"next_after_number":5}\n');
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          'export PATH="$NODE_BIN_DIR:$PATH"',
+          'pnpm() { while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; [ "$#" -gt 0 ] && shift; node "$WORKFLOW_UTILS_PATH" "$@"; }',
+          'source "$APPLY_HELPER_PATH"',
+          "comment_sync_processed_limit=2",
+          "sync_batch_size=2",
+          "sync_comments_only=true",
+          "sync_open_pr_batch=false",
+          "scheduled_comment_sync=false",
+          "continue_apply=false",
+          'TARGET_REPO="openclaw/clawhub"',
+          "target_slug=openclaw-clawhub",
+          "apply_kind=all",
+          "comment_sync_min_age_days=0",
+          "item_numbers=",
+          "prepare_comment_sync_batch",
+          "while :; do",
+          '  printf "window=%s\\n" "$item_numbers"',
+          '  jq -n --arg selected "$item_numbers" \'{schema_version:1,examined_item_numbers:($selected|split(",")|map(tonumber))}\' > trace.json',
+          "  printf '[]' > report.json",
+          "  continue_apply=false",
+          "  complete_comment_sync_batch report.json trace.json",
+          '  if [ "$continue_apply" != "true" ]; then break; fi',
+          "  item_numbers=",
+          "  sync_open_pr_batch=true",
+          "  prepare_comment_sync_batch",
+          '  pnpm run --silent workflow -- comment-sync-batch --target-repo "$TARGET_REPO" --apply-kind "$apply_kind" --batch-size "$sync_batch_size" --cursor-path "$cursor_path" > next.env',
+          "  item_numbers=$(awk -F= '$1 == \"item_numbers\" { print $2 }' next.env)",
+          "done",
+          'printf "continue=%s\\ncursor=%s\\n" "$continue_apply" "$(jq -r .next_after_number "$cursor_path")"',
+        ].join("\n"),
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          NODE_BIN_DIR: dirname(process.execPath),
+          APPLY_HELPER_PATH: join(process.cwd(), "scripts/apply-workflow-helpers.sh"),
+          WORKFLOW_UTILS_PATH: join(process.cwd(), "dist/repair/workflow-utils.js"),
+        },
+      },
+    );
+
+    assert.match(output, /^window=6,7$/m);
+    assert.match(output, /^window=1,2$/m);
+    assert.match(output, /^window=3,4$/m);
+    assert.match(output, /^window=5,6$/m);
+    assert.match(output, /^continue=false$/m);
+    assert.match(output, /^cursor=6$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unscheduled cursor synchronization stops after its final full batch", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const records = join(root, "records", "openclaw-clawhub", "items");
+  mkdirSync(records, { recursive: true });
+  for (let number = 1; number <= 40; number += 1) {
+    writeFileSync(
+      join(records, `openclaw-clawhub-${number}.md`),
+      `---\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+    );
+  }
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          'export PATH="$NODE_BIN_DIR:$PATH"',
+          'pnpm() { while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; [ "$#" -gt 0 ] && shift; node "$WORKFLOW_UTILS_PATH" "$@"; }',
+          'source "$APPLY_HELPER_PATH"',
+          "comment_sync_processed_limit=40",
+          "sync_batch_size=40",
+          "sync_comments_only=true",
+          "sync_open_pr_batch=false",
+          "continue_apply=false",
+          'TARGET_REPO="openclaw/clawhub"',
+          "target_slug=openclaw-clawhub",
+          "apply_kind=all",
+          "item_numbers=",
+          "prepare_comment_sync_batch",
+          'jq -n --arg selected "$item_numbers" \'{schema_version:1,examined_item_numbers:($selected|split(",")|map(tonumber))}\' > trace.json',
+          "printf '[]' > report.json",
+          "complete_comment_sync_batch report.json trace.json",
+          'printf "continue=%s\\ncursor=%s\\n" "$continue_apply" "$(jq -r .next_after_number "$cursor_path")"',
+        ].join("\n"),
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          NODE_BIN_DIR: dirname(process.execPath),
+          APPLY_HELPER_PATH: join(process.cwd(), "scripts/apply-workflow-helpers.sh"),
+          WORKFLOW_UTILS_PATH: join(process.cwd(), "dist/repair/workflow-utils.js"),
+        },
+      },
+    );
+
+    assert.match(output, /^continue=false$/m);
+    assert.match(output, /^cursor=40$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("uncursored comment synchronization selects and continues the full eligible inventory", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const records = join(root, "records", "openclaw-openclaw", "items");
+  mkdirSync(records, { recursive: true });
+  for (let number = 1; number <= 1002; number += 1) {
+    writeFileSync(
+      join(records, `openclaw-openclaw-${number}.md`),
+      `---\nrepository: openclaw/openclaw\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: ${number === 1002 ? "retry_pr_close_coverage_proof" : "kept_open"}\n---\n`,
+    );
+  }
+  writeFileSync(
+    join(records, "openclaw-openclaw-1003.md"),
+    "---\nrepository: openclaw/openclaw\ntype: pull_request\nreview_status: failed\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n",
+  );
+  writeFileSync(
+    join(records, "openclaw-openclaw-1004.md"),
+    "---\nrepository: openclaw/openclaw\ntype: pull_request\nreview_status: complete\naction_taken: kept_open\n---\n",
+  );
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          'export PATH="$NODE_BIN_DIR:$PATH"',
+          'pnpm() { while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; [ "$#" -gt 0 ] && shift; node "$WORKFLOW_UTILS_PATH" "$@"; }',
+          'source "$APPLY_HELPER_PATH"',
+          "comment_sync_processed_limit=40",
+          "sync_batch_size=40",
+          "sync_comments_only=true",
+          "sync_open_pr_batch=false",
+          'TARGET_REPO="openclaw/openclaw"',
+          "target_slug=openclaw-openclaw",
+          "apply_kind=all",
+          "item_numbers=",
+          "prepare_comment_sync_batch",
+          'printf "selected=%s\\ncursor_path=%s\\n" "$item_numbers" "$cursor_path"',
+          'mkdir -p "$(dirname "$cursor_path")"',
+          'printf \'{"next_after_number":980}\\n\' > "$cursor_path"',
+          "item_numbers=",
+          "sync_open_pr_batch=false",
+          "prepare_comment_sync_batch",
+          'printf "resumed=%s\\n" "$item_numbers"',
+        ].join("\n"),
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          NODE_BIN_DIR: dirname(process.execPath),
+          APPLY_HELPER_PATH: join(process.cwd(), "scripts/apply-workflow-helpers.sh"),
+          WORKFLOW_UTILS_PATH: join(process.cwd(), "dist/repair/workflow-utils.js"),
+        },
+      },
+    );
+
+    assert.match(output, /^selected=1,2,3,/m);
+    assert.match(output, /^selected=.*39,40$/m);
+    assert.match(output, /^resumed=981,982,/m);
+    assert.match(output, /^resumed=.*1001,1002$/m);
+    assert.doesNotMatch(output, /^resumed=.*1003/m);
+    assert.doesNotMatch(output, /^resumed=.*1004/m);
+    assert.match(output, /results\/comment-sync-cursors\/openclaw-openclaw-all-age0\.json/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("comment synchronization checkpoints only completed records after a runtime yield", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const completeReport = join(root, "complete.json");
+  const partialReport = join(root, "partial.json");
+  const untouchedReport = join(root, "untouched.json");
+  const completeTrace = join(root, "complete-trace.json");
+  const partialTrace = join(root, "partial-trace.json");
+  const untouchedTrace = join(root, "untouched-trace.json");
+  const invalidTrace = join(root, "invalid-trace.json");
+  const cursorPath = join(root, "comment-sync-cursor.json");
+  writeFileSync(completeReport, JSON.stringify([{ number: 50, action: "review_comment_synced" }]));
+  writeFileSync(
+    partialReport,
+    JSON.stringify([
+      { number: 10, action: "review_comment_synced" },
+      { number: 20, action: "skipped_stale_review_comment_sync" },
+      { number: 30, action: "skipped_runtime_budget" },
+      { number: 0, action: "skipped_runtime_budget" },
+    ]),
+  );
+  writeFileSync(
+    untouchedReport,
+    JSON.stringify([
+      { number: 10, action: "skipped_runtime_budget" },
+      { number: 0, action: "skipped_runtime_budget" },
+    ]),
+  );
+  writeFileSync(
+    completeTrace,
+    JSON.stringify({ schema_version: 1, examined_item_numbers: [10, 20, 30, 40, 50] }),
+  );
+  writeFileSync(
+    partialTrace,
+    JSON.stringify({ schema_version: 1, examined_item_numbers: [10, 20] }),
+  );
+  writeFileSync(untouchedTrace, JSON.stringify({ schema_version: 1, examined_item_numbers: [] }));
+  writeFileSync(invalidTrace, JSON.stringify({ schema_version: 1, examined_item_numbers: [30] }));
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          'export PATH="$NODE_BIN_DIR:$PATH"',
+          'pnpm() { while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; [ "$#" -gt 0 ] && shift; node "$WORKFLOW_UTILS_PATH" "$@"; }',
+          "source scripts/apply-workflow-helpers.sh",
+          'TARGET_REPO="openclaw/openclaw"',
+          'cursor_path="$CURSOR_PATH"',
+          "sync_open_pr_batch=true",
+          "comment_sync_pending_items=",
+          "continue_apply=false",
+          "item_numbers=10,20,30,40,50",
+          "next_cursor=50",
+          'complete_comment_sync_batch "$COMPLETE_REPORT" "$COMPLETE_TRACE"',
+          'printf "complete=%s|count=%s\\n" "$(jq -r .next_after_number "$cursor_path")" "$comment_sync_cursor_advance_count"',
+          "next_cursor=50",
+          'complete_comment_sync_batch "$PARTIAL_REPORT" "$PARTIAL_TRACE"',
+          'printf "partial=%s|count=%s\\n" "$(jq -r .next_after_number "$cursor_path")" "$comment_sync_cursor_advance_count"',
+          "next_cursor=50",
+          'complete_comment_sync_batch "$UNTOUCHED_REPORT" "$UNTOUCHED_TRACE"',
+          'printf "untouched=%s|next=%s\\n" "$(jq -r .next_after_number "$cursor_path")" "$next_cursor"',
+          'if complete_comment_sync_batch "$PARTIAL_REPORT" "$INVALID_TRACE" 2>/dev/null; then echo missing_prefix_published; else echo missing_prefix_rejected; fi',
+          'printf "missing_prefix_cursor=%s\\n" "$(jq -r .next_after_number "$cursor_path")"',
+        ].join("\n"),
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          NODE_BIN_DIR: dirname(process.execPath),
+          WORKFLOW_UTILS_PATH: join(process.cwd(), "dist/repair/workflow-utils.js"),
+          COMPLETE_REPORT: completeReport,
+          PARTIAL_REPORT: partialReport,
+          UNTOUCHED_REPORT: untouchedReport,
+          COMPLETE_TRACE: completeTrace,
+          PARTIAL_TRACE: partialTrace,
+          UNTOUCHED_TRACE: untouchedTrace,
+          INVALID_TRACE: invalidTrace,
+          CURSOR_PATH: cursorPath,
+        },
+      },
+    );
+
+    assert.match(output, /^complete=50\|count=5$/m);
+    assert.match(output, /^partial=20\|count=2$/m);
+    assert.match(output, /^untouched=20\|next=$/m);
+    assert.match(output, /^missing_prefix_published$/m);
+    assert.match(output, /^missing_prefix_cursor=20$/m);
+    assert.doesNotMatch(output, /^missing_prefix_rejected$/m);
+    assert.doesNotMatch(output, /^partial=30$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("explicit comment synchronization stops an unproductive continuation before it can loop", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const reportPath = join(root, "report.json");
+  const tracePath = join(root, "trace.json");
+  writeFileSync(reportPath, JSON.stringify([{ number: 0, action: "skipped_runtime_budget" }]));
+  writeFileSync(tracePath, JSON.stringify({ schema_version: 1, examined_item_numbers: [] }));
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          "source scripts/apply-workflow-helpers.sh",
+          "sync_open_pr_batch=false",
+          "comment_sync_pending_items=",
+          "continue_apply=false",
+          "item_numbers=42",
+          'complete_comment_sync_batch "$REPORT_PATH" "$TRACE_PATH"',
+          'printf "continue=%s\\nremaining=%s\\n" "$continue_apply" "$item_numbers"',
+        ].join("\n"),
+      ],
+      { encoding: "utf8", env: { ...process.env, REPORT_PATH: reportPath, TRACE_PATH: tracePath } },
+    );
+
+    assert.match(output, /^continue=false$/m);
+    assert.match(output, /^remaining=42$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("cursor-based comment synchronization never continues after operational publication fails", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const reportPath = join(root, "report.json");
+  const tracePath = join(root, "trace.json");
+  const cursorPath = join(root, "comment-sync-cursor.json");
+  writeFileSync(reportPath, JSON.stringify([{ number: 10, action: "review_comment_synced" }]));
+  writeFileSync(tracePath, JSON.stringify({ schema_version: 1, examined_item_numbers: [10] }));
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          'export PATH="$NODE_BIN_DIR:$PATH"',
+          'pnpm() { while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; [ "$#" -gt 0 ] && shift; node "$WORKFLOW_UTILS_PATH" "$@"; }',
+          "source scripts/apply-workflow-helpers.sh",
+          'TARGET_REPO="openclaw/openclaw"',
+          'cursor_path="$CURSOR_PATH"',
+          "sync_open_pr_batch=true",
+          "comment_sync_pending_items=",
+          "continue_apply=false",
+          "item_numbers=10,20",
+          'complete_comment_sync_batch "$REPORT_PATH" "$TRACE_PATH"',
+          'publish_changes_with_strategy() { [ "$1" = normal ]; }',
+          'publish_changes "test cursor publication" records results/comment-sync-cursors',
+          'printf "continue=%s\\ncursor=%s\\n" "$continue_apply" "$(jq -r .next_after_number "$cursor_path")"',
+        ].join("\n"),
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          NODE_BIN_DIR: dirname(process.execPath),
+          WORKFLOW_UTILS_PATH: join(process.cwd(), "dist/repair/workflow-utils.js"),
+          REPORT_PATH: reportPath,
+          TRACE_PATH: tracePath,
+          CURSOR_PATH: cursorPath,
+        },
+      },
+    );
+
+    assert.match(output, /^continue=false$/m);
+    assert.match(output, /^cursor=10$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unscheduled cursor synchronization never continues after cursor publication fails", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const records = join(root, "records", "openclaw-clawhub", "items");
+  mkdirSync(records, { recursive: true });
+  for (const number of [10, 20]) {
+    writeFileSync(
+      join(records, `openclaw-clawhub-${number}.md`),
+      `---\nrepository: openclaw/clawhub\ntype: pull_request\nreview_status: complete\nitem_snapshot_hash: abc123\naction_taken: kept_open\n---\n`,
+    );
+  }
+  const reportPath = join(root, "report.json");
+  const tracePath = join(root, "trace.json");
+  writeFileSync(reportPath, JSON.stringify([{ number: 10, action: "review_comment_synced" }]));
+  writeFileSync(tracePath, JSON.stringify({ schema_version: 1, examined_item_numbers: [10] }));
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          'export PATH="$NODE_BIN_DIR:$PATH"',
+          'pnpm() { while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; [ "$#" -gt 0 ] && shift; node "$WORKFLOW_UTILS_PATH" "$@"; }',
+          'source "$APPLY_HELPER_PATH"',
+          'TARGET_REPO="openclaw/clawhub"',
+          "target_slug=openclaw-clawhub",
+          "apply_kind=all",
+          'cursor_path="results/comment-sync-cursors/openclaw-clawhub.json"',
+          "sync_open_pr_batch=true",
+          "sync_batch_size=1",
+          "comment_sync_pending_items=",
+          "continue_apply=false",
+          "item_numbers=10",
+          "mkdir -p .artifacts",
+          'complete_comment_sync_batch "$REPORT_PATH" "$TRACE_PATH"',
+          'printf "before=%s\\n" "$continue_apply"',
+          'publish_changes_with_strategy() { [ "$1" = normal ]; }',
+          'publish_changes "test cursor publication" records results/comment-sync-cursors',
+          'printf "after=%s\\n" "$continue_apply"',
+        ].join("\n"),
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          NODE_BIN_DIR: dirname(process.execPath),
+          APPLY_HELPER_PATH: join(process.cwd(), "scripts/apply-workflow-helpers.sh"),
+          WORKFLOW_UTILS_PATH: join(process.cwd(), "dist/repair/workflow-utils.js"),
+          REPORT_PATH: reportPath,
+          TRACE_PATH: tracePath,
+        },
+      },
+    );
+
+    assert.match(output, /^before=true$/m);
+    assert.match(output, /^after=false$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("explicit item continuation survives unrelated cursor bookkeeping failure", () => {
+  const output = execFileSync(
+    "bash",
+    [
+      "-lc",
+      [
+        "source scripts/apply-workflow-helpers.sh",
+        'TARGET_REPO="openclaw/clawhub"',
+        "sync_open_pr_batch=false",
+        "continue_apply=true",
+        'publish_changes_with_strategy() { [ "$1" = normal ]; }',
+        'publish_changes "test cursor publication" records results/comment-sync-cursors',
+        'printf "continue=%s\\n" "$continue_apply"',
+      ].join("\n"),
+    ],
+    { encoding: "utf8" },
+  );
+
+  assert.match(output, /^continue=true$/m);
+});
+
+test("explicit comment synchronization preserves all unfinished items after a runtime yield", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const reportPath = join(root, "report.json");
+  const tracePath = join(root, "trace.json");
+  const selected = Array.from({ length: 43 }, (_, index) => index + 1).join(",");
+  writeFileSync(
+    reportPath,
+    JSON.stringify([
+      { number: 1, action: "review_comment_synced" },
+      { number: 2, action: "review_comment_synced" },
+      { number: 3, action: "skipped_runtime_budget" },
+      { number: 0, action: "skipped_runtime_budget" },
+    ]),
+  );
+  writeFileSync(tracePath, JSON.stringify({ schema_version: 1, examined_item_numbers: [1, 2] }));
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          "source scripts/apply-workflow-helpers.sh",
+          "comment_sync_processed_limit=40",
+          "sync_batch_size=43",
+          "sync_comments_only=true",
+          "sync_open_pr_batch=false",
+          "continue_apply=false",
+          'item_numbers="$SELECTED_ITEMS"',
+          "prepare_comment_sync_batch",
+          'complete_comment_sync_batch "$REPORT_PATH" "$TRACE_PATH"',
+          'printf "continue=%s\\nremaining=%s\\ncount=%s\\n" "$continue_apply" "$item_numbers" "$comment_sync_cursor_advance_count"',
+        ].join("\n"),
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          SELECTED_ITEMS: selected,
+          REPORT_PATH: reportPath,
+          TRACE_PATH: tracePath,
+        },
+      },
+    );
+
+    assert.match(output, /^continue=true$/m);
+    assert.match(output, /^remaining=3,4,5,/m);
+    assert.match(output, /^remaining=.*40,41,42,43$/m);
+    assert.match(output, /^count=2$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("apply workflow does not queue runtime-yield continuation without cursor progress", () => {
@@ -2622,6 +3471,7 @@ test("sweep workflow publishes target-scoped state paths", () => {
 
 test("sweep workflow schedules cursor-based PR comment sync batches", () => {
   const workflow = readText(".github/workflows/sweep.yml");
+  const applyHelper = readText("scripts/apply-workflow-helpers.sh");
 
   assert.match(workflow, /cron: "6,21,36,51 \* \* \* \*"/);
   assert.doesNotMatch(workflow, /apply_sync_open_pr_batch:/);
@@ -2631,10 +3481,17 @@ test("sweep workflow schedules cursor-based PR comment sync batches", () => {
   );
   assert.match(workflow, /\$item_numbers" = "__cursor__"/);
   assert.match(workflow, /comment-sync-batch/);
-  assert.match(workflow, /write-comment-sync-cursor/);
+  assert.match(workflow, /complete_comment_sync_batch/);
+  assert.match(applyHelper, /write-comment-sync-cursor/);
   assert.match(workflow, /results\/comment-sync-cursors\/\$\{target_slug\}\.json/);
+  assert.match(workflow, /normalize_comment_sync_mode/);
+  assert.match(applyHelper, /sync_open_pr_batch:-false.*[\s\S]*?apply_kind="pull_request"/);
   assert.match(workflow, /APPLY_SYNC_OPEN_PR_BATCH/);
   assert.match(workflow, /github\.event\.schedule == '6,21,36,51 \* \* \* \*'/);
+  assert.match(
+    applyHelper,
+    /if \[ "\$\{scheduled_comment_sync:-false\}" = "true" \]; then\s+apply_kind="pull_request"\s+comment_sync_min_age_days=0\s+fi/,
+  );
 });
 
 test("sweep target checkouts retry without cached references", () => {

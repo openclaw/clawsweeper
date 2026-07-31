@@ -4961,13 +4961,14 @@ jobs:
           stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
           close_delay_ms="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_delay_ms || '2000' }}"
           checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '40' }}"
-          comment_sync_processed_limit=1000
+          comment_sync_processed_limit=40
           base_close_processed_limit=600
           close_processed_limit="$base_close_processed_limit"
           adaptive_apply_scan_reason="base_window"
           sync_batch_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '25' }}"
           item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
-          sync_open_pr_batch="${{ github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *' && 'true' || 'false' }}"
+          scheduled_comment_sync="${{ github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *' && 'true' || 'false' }}"
+          sync_open_pr_batch="$scheduled_comment_sync"
           if [ "$item_numbers" = "__cursor__" ]; then
             sync_open_pr_batch="true"
             item_numbers=""
@@ -5011,11 +5012,8 @@ jobs:
           candidate_counts_json=""
           cursor_advance_count=""
           coverage_proof_item_numbers=""
-          if [ "$sync_open_pr_batch" = "true" ]; then
-            sync_comments_only="true"
-            apply_kind="pull_request"
-            comment_sync_min_age_days="0"
-          fi
+          normalize_comment_sync_mode
+          prepare_comment_sync_batch
           sync_comments_arg=()
           if [ "$sync_comments_only" = "true" ]; then
             sync_comments_arg=(--sync-comments-only)
@@ -5123,18 +5121,16 @@ jobs:
               --close-delay-ms "$close_delay_ms" \
               --progress-every "$progress_every" \
               --processed-limit "$comment_sync_processed_limit" \
+              --max-runtime-ms 300000 \
+              --cursor-trace ".artifacts/comment-sync-trace-$checkpoint.json" \
               --comment-sync-min-age-days "$comment_sync_min_age_days" \
               "${item_numbers_arg[@]}" \
               "${sync_comments_arg[@]}"
             cp apply-report.json ".artifacts/apply-reports/apply-report-$checkpoint.json"
             result_count="$(pnpm run --silent workflow -- count-report --report ".artifacts/apply-reports/apply-report-$checkpoint.json")"
             synced_count="$(pnpm run --silent workflow -- count-actions --report ".artifacts/apply-reports/apply-report-$checkpoint.json" --action review_comment_synced)"
-            if [ "$sync_open_pr_batch" = "true" ]; then
-              pnpm run workflow -- write-comment-sync-cursor \
-                --cursor-path "$cursor_path" \
-                --next-cursor "$next_cursor" \
-                --target-repo "$TARGET_REPO"
-            fi
+            comment_sync_checkpoint_items="$item_numbers"
+            complete_comment_sync_batch ".artifacts/apply-reports/apply-report-$checkpoint.json" ".artifacts/comment-sync-trace-$checkpoint.json"
             publish_changes "chore: sync sweep review comments checkpoint $checkpoint" records apply-report.json results/comment-sync-cursors
             comment_sync_health_cursor_path=""
             comment_sync_health_cursor_required="false"
@@ -5144,11 +5140,11 @@ jobs:
               comment_sync_health_cursor_required="true"
               comment_sync_health_processed_limit="$sync_batch_size"
             fi
-            write_apply_health ".artifacts/apply-reports/apply-report-$checkpoint.json" ".artifacts/apply-health-$checkpoint.json" "comment_sync" "$comment_sync_health_processed_limit" "$comment_sync_health_cursor_path" "$comment_sync_health_cursor_required" "" "" ""
+            write_comment_sync_health ".artifacts/apply-reports/apply-report-$checkpoint.json" ".artifacts/apply-health-$checkpoint.json"
             pnpm run status -- \
               --target-repo "$TARGET_REPO" \
               --state "Apply comments synced" \
-              --detail "Comment-only apply checkpoint $checkpoint finished. Synced durable review comments: $synced_count. Result records: $result_count. Item numbers: ${item_numbers:-all}. Next cursor: ${next_cursor:-none}." \
+              --detail "Comment-only apply checkpoint $checkpoint finished. Synced durable review comments: $synced_count. Result records: $result_count. Item numbers: ${comment_sync_checkpoint_items:-all}. Next cursor: ${next_cursor:-none}." \
               --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
               --apply-health-file ".artifacts/apply-health-$checkpoint.json"
             publish_status "chore: update sweep comment sync status"
@@ -5281,6 +5277,7 @@ jobs:
               final_health_cursor_path="$cursor_path"
               final_health_cursor_required="true"
               final_health_processed_limit="$sync_batch_size"
+              final_health_cursor_advance_count="$comment_sync_cursor_advance_count"
             fi
           fi
           write_apply_health "apply-report.json" ".artifacts/apply-health-final.json" "$final_health_mode" "$final_health_processed_limit" "$final_health_cursor_path" "$final_health_cursor_required" "$final_health_candidate_count" "$final_health_scheduled_interval_minutes" "$final_health_cursor_advance_count" "$final_health_candidate_counts_json"
@@ -5397,11 +5394,6 @@ jobs:
             echo "Apply checkpoint has no continuation work; not queueing another apply run."
             exit 0
           fi
-          if [ "${APPLY_SYNC_COMMENTS_ONLY:-false}" = "true" ]; then
-            echo "Comment-only apply run finished; not queueing another apply run."
-            exit 0
-          fi
-
           can_share_apply_continuation=false
           if [ "${APPLY_AUTO_SELECTED_BATCH:-false}" = "true" ] &&
             [ -z "${APPLY_ITEM_NUMBERS:-}" ] &&
