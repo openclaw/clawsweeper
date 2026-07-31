@@ -239,8 +239,7 @@ const defaultCodexWriteSandbox =
 const codexWriteSandbox = String(
   process.env.CLAWSWEEPER_CODEX_WRITE_SANDBOX ?? defaultCodexWriteSandbox,
 );
-const defaultCodexReviewSandbox =
-  process.env.GITHUB_ACTIONS === "true" ? "danger-full-access" : "read-only";
+const defaultCodexReviewSandbox = "read-only";
 const codexReviewSandbox = String(
   process.env.CLAWSWEEPER_CODEX_REVIEW_SANDBOX ?? defaultCodexReviewSandbox,
 );
@@ -3166,6 +3165,8 @@ function runCodexReview({
     "",
     "Validation policy:",
     "- `pnpm check:changed` plus git diff checks is sufficient local proof for OpenClaw changed-surface fixes;",
+    "- the changed-surface validation commands listed below have already passed; do not rerun them or start nested autoreview helpers;",
+    "- this review is strictly read-only: do not modify tracked files, ignored artifacts, dependency caches, or Git metadata;",
     "- do not require full CI, full test suites, e2e/live/docker lanes, or unrelated flaky main checks to pass;",
     "- block only when the changed-lane proof fails or the current diff plausibly caused the failure.",
     "- repository policy overrides fix artifact credit wording: for openclaw/openclaw changelog entries, do not require or re-add forbidden `Thanks @codex`, `Thanks @openclaw`, or `Thanks @steipete` attribution; PR body/history/source links are acceptable credit for those source authors.",

@@ -28,6 +28,24 @@ test("repair workflow and executor share coherent production timeout defaults", 
   assert.match(workflow, /name: Execute credited fix artifact[\s\S]*timeout-minutes: 70/);
 });
 
+test("repair review preserves the checkout accepted by changed-surface validation", () => {
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  const reviewStart = source.indexOf("function runCodexReview({");
+  const reviewEnd = source.indexOf("function extractCodexReviewFromJsonl(", reviewStart);
+  const review = source.slice(reviewStart, reviewEnd);
+
+  assert.match(source, /const defaultCodexReviewSandbox = "read-only";/);
+  assert.match(review, /"--sandbox",\s*codexReviewSandbox/);
+  assert.match(review, /validation commands listed below have already passed/);
+  assert.match(review, /do not rerun them or start nested autoreview helpers/);
+  assert.match(
+    review,
+    /do not modify tracked files, ignored artifacts, dependency caches, or Git metadata/,
+  );
+  assert.match(review, /Validation commands actually run:/);
+  assert.doesNotMatch(review, /process\.env\.GITHUB_ACTIONS.*danger-full-access/);
+});
+
 test("no-op automerge repair updates outcome and re-enters router before exit", () => {
   const sourcePath = path.join(process.cwd(), "src/repair/execute-fix-artifact.ts");
   const source = readText(sourcePath);

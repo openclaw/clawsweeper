@@ -110,7 +110,6 @@ import {
   selectDueCandidates,
   shouldReviewItem,
   WEEKLY_COVERAGE_REVIEW_DAYS,
-  type SchedulerDueCandidate,
 } from "./scheduler-policy.js";
 import {
   isUserFacingCommandError,
@@ -140,10 +139,8 @@ import {
 import {
   AUTOMERGE_LABEL,
   AUTOFIX_LABEL,
-  CLOSE_PROTECTED_LABEL_NAMES,
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
-  PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES,
 } from "./repair/exact-review-guard-labels.js";
 import { captureCanonicalRecordBaseline } from "./repair/canonical-record-baseline.js";
 import {
@@ -164,7 +161,6 @@ import {
   runPrCloseCoverageProofModel,
   validatePrCloseCoverageProofEnvelopeBinding,
   writePrCloseCoverageProofEnvelope,
-  type PrCloseCoverageProofModelResult,
   type PrCloseCoverageProofPullRequestView,
   type PrCloseCoverageProofRuntime,
 } from "./pr-close-coverage-proof.js";
@@ -182,7 +178,6 @@ import {
   emptyMaintainerDecision,
   maintainerDecisionBlocksClose,
   maintainerDecisionFromReport,
-  parseMaintainerDecision,
   renderDecisionPacketPublicBlock,
   syncDecisionPacketRecord,
   type DecisionPacketSubjectState,
@@ -194,7 +189,6 @@ import {
   parseReviewHistory,
   renderReviewHistorySection,
   reviewHistoryCycleFromCommentBody,
-  type ReviewHistoryCycle,
   type ReviewHistoryLedger,
 } from "./review-history.js";
 import { trailingHtmlComments } from "./review-comment-markers.js";
@@ -227,6 +221,297 @@ import {
 } from "./action-ledger-runtime.js";
 import { isActionEventPublishPath } from "./action-ledger-paths.js";
 import { publishStateBlob } from "./state-blob-client.js";
+import { dispatchCommand, type CommandHandler } from "./clawsweeper-command-dispatch.js";
+import { createDecisionParser } from "./clawsweeper-decision-parser.js";
+import { createPullRequestReferenceParser } from "./clawsweeper-pr-references.js";
+import {
+  derivedPrRating,
+  hasShinyProof,
+  nextPrRatingLabels,
+  normalizePrRating,
+  normalizeRealBehaviorProof,
+  ratingLabelForTier,
+  themedRatingName,
+} from "./clawsweeper-rating.js";
+
+import { completeActivityContextSymbol } from "./clawsweeper-types.js";
+import type {
+  AcquiredReviewStartLease,
+  Action,
+  ActionTaken,
+  AgentsPolicyStatus,
+  AgentsPolicyStatusKind,
+  ApplyActionLedger,
+  ApplyItemBusinessIdempotencyIdentity,
+  ApplyKind,
+  ApplyLedgerItem,
+  ApplyMutationAttempt,
+  ApplyMutationBusinessIdempotencyIdentity,
+  ApplyPhaseCursor,
+  ApplyResult,
+  AssistSourceCommentSnapshot,
+  AuditFinding,
+  AuditRecord,
+  AuditRecordLocation,
+  AuditResult,
+  AuthorPrBudgetApplyGate,
+  AuthorPrBudgetApplyState,
+  AutoImplementationCandidate,
+  BulkFilerCountCache,
+  BulkFilerDetectionOptions,
+  BulkFilerDetectionResult,
+  BulkFilerRepositoryPermissionCache,
+  CanonicalPullRequestCommentSyncBlock,
+  CloseReason,
+  ClosingPullRequestReference,
+  CompleteActivityContext,
+  Confidence,
+  ConfigSurfaceChange,
+  ContextHydration,
+  DashboardActivityBucket,
+  DashboardActivityStats,
+  DashboardCadenceBucket,
+  DashboardClosedItem,
+  DashboardItem,
+  DashboardKindStats,
+  DashboardStats,
+  DataModelChange,
+  Decision,
+  DecisionNormalizationItem,
+  DueCandidate,
+  Evidence,
+  ExactEventReviewLeaseDisposition,
+  ExactReviewQueueAuthority,
+  ExistingReview,
+  ExistingReviewIndex,
+  ExpectedIssueSourceRevisionOptions,
+  FailedReviewRetryAction,
+  FailedReviewRetryResult,
+  FailedReviewRetryRevision,
+  FailedReviewRetryRevisionKind,
+  FailedReviewRetryState,
+  FailedReviewRetryStatus,
+  FeatureShowcase,
+  FeatureShowcaseStatus,
+  FileModeSnapshot,
+  FixedPullRequest,
+  GitcrawlClusterSource,
+  GithubContextWindowPlan,
+  GitHubDispatchOutcome,
+  GitHubIssueListItem,
+  GithubPageWithHeaders,
+  GitHubRetryOptions,
+  GitHubRuntimeBudget,
+  GitHubUser,
+  GitInfo,
+  GitTreeEntry,
+  GoodFirstIssueHumanLabelState,
+  ImpactLabelName,
+  ImplementationComplexity,
+  IssueAdvisoryLabelState,
+  Item,
+  ItemCategory,
+  ItemContext,
+  ItemKind,
+  LabelJustification,
+  LabelTransitionJustification,
+  LatestRelease,
+  LikelyOwner,
+  LinkedPullRequestSupersession,
+  LinkedPullRequestSupersessionResolution,
+  LiveAssistBinding,
+  LocalPullMetadata,
+  LocalRelatedTitleEntry,
+  ManagedLocalReviewCheckoutOptions,
+  MantisRecommendation,
+  MantisRecommendationScenario,
+  MantisRecommendationStatus,
+  MaturityLabelName,
+  MediaProofCommandRunner,
+  MergeRiskLabelName,
+  MergeRiskOption,
+  MergeRiskOptionCategory,
+  MissingOpenReason,
+  MutationRunner,
+  OpenItemCounts,
+  OverallCorrectness,
+  PlanCandidateResult,
+  PlanSelectionTelemetry,
+  PlanShard,
+  PrCloseCoverageProofCoveringWitness,
+  PrCloseCoverageProofGateBlock,
+  PrCloseCoverageProofGateResult,
+  PrCloseCoverageRuntimeBudget,
+  PreparedMediaProof,
+  PreparedMediaProofArtifact,
+  PreviousClawSweeperReview,
+  PrRating,
+  PrRatingTier,
+  PrStatusLabelKind,
+  PublicBeforeMergeItem,
+  PublicPriority,
+  PullRequestClosePromotion,
+  PullRequestLiveActivity,
+  PullRequestRef,
+  RealBehaviorProof,
+  RealBehaviorProofEvidenceKind,
+  RealBehaviorProofStatus,
+  ReconcileResult,
+  RepoDashboardSnapshot,
+  RepoOpenCountsQuery,
+  ReportEntry,
+  ReproductionStatus,
+  ReviewActionLedger,
+  ReviewArtifactDestination,
+  ReviewCheckout,
+  ReviewCommentRenderOptions,
+  ReviewContextLedgerEntry,
+  ReviewFinding,
+  ReviewGitInfoOptions,
+  ReviewLedgerItem,
+  ReviewMetric,
+  ReviewMutationAttempt,
+  ReviewPromptBuild,
+  ReviewPromptRuntimeHints,
+  ReviewPromptTelemetry,
+  ReviewRetryActionLedger,
+  ReviewRuntime,
+  ReviewStartStatusCommentOptions,
+  ReviewStartStatusCommentResult,
+  RootCauseClusterAssessment,
+  SecurityConcern,
+  SecurityConcernSeverity,
+  SecurityReview,
+  SecurityReviewStatus,
+  StalePullRequestReviewHead,
+  TelegramVisibleProof,
+  TelegramVisibleProofStatus,
+  TriagePriority,
+  VisionFitStatus,
+  WorkCandidateKind,
+  WorkflowStatusSummary,
+} from "./clawsweeper-types.js";
+import {
+  ABANDONED_PR_MIN_AGE_DAYS,
+  ABANDONED_PR_MIN_INACTIVE_DAYS,
+  AGENTS_POLICY_STATUSES,
+  ALL_REASONS,
+  ALLOWED_REASONS,
+  APPLY_PROTECTED_LABELS,
+  AUTHOR_PR_BUDGET_MIN_AGE_DAYS,
+  AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS,
+  AUTO_IMPLEMENTATION_CANDIDATES,
+  BULK_FILED_LABEL,
+  BULK_FILED_LABEL_DEFINITION,
+  BULK_FILER_SEARCH_TIMEOUT_MS,
+  CLOSED_STATE_PROBE_ACTIONS,
+  CONFIDENCES,
+  DAILY_REVIEW_DAYS,
+  DAY_MS,
+  DEFAULT_AUTHOR_PR_BUDGET,
+  DEFAULT_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN,
+  DEFAULT_BACKFILL_REVIEW_AGE_MINUTES,
+  DEFAULT_BULK_FILER_THRESHOLD,
+  DEFAULT_BULK_FILER_WINDOW_DAYS,
+  DEFAULT_CODEX_FALLBACK_MIN_BUDGET_MS,
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_REASONING_EFFORT,
+  DEFAULT_REVIEW_CODEX_TIMEOUT_MS,
+  DEFAULT_SERVICE_TIER,
+  EVENT_GUARDED_OPEN_ACTIONS,
+  FEATURE_SHOWCASE_LABEL,
+  FEATURE_SHOWCASE_LABEL_COLOR,
+  FEATURE_SHOWCASE_LABEL_DESCRIPTION,
+  FEATURE_SHOWCASE_STATUSES,
+  FRESH_DAYS,
+  GOOD_FIRST_ISSUE_LABEL,
+  GOOD_FIRST_ISSUE_LABEL_DEFINITION,
+  HOT_REVIEW_DAYS,
+  IDEA_ARCHIVE_LABEL_COLOR,
+  IDEA_ARCHIVE_LABEL_DESCRIPTION,
+  IMPACT_LABEL_NAMES,
+  IMPACT_LABELS,
+  IMPLEMENTATION_COMPLEXITIES,
+  ISSUE_ADVISORY_LABEL_NAMES,
+  ISSUE_ADVISORY_LABELS,
+  ISSUE_STALE_PROTECTION_LABEL,
+  LOW_SIGNAL_UNMERGEABLE_PR_MIN_INACTIVE_DAYS,
+  MANTIS_RECOMMENDATION_SCENARIOS,
+  MANTIS_RECOMMENDATION_STATUSES,
+  MATURITY_LABEL_NAMES,
+  MATURITY_LABELS,
+  MERGE_READY_LABEL,
+  MERGE_RISK_LABEL_NAMES,
+  MERGE_RISK_LABELS,
+  NO_STALE_LABEL,
+  OBSOLETE_FIX_PR_MAX_CHANGED_FILES,
+  OBSOLETE_FIX_PR_MIN_AGE_DAYS,
+  OBSOLETE_FIX_PR_MIN_INACTIVE_DAYS,
+  OVERALL_CORRECTNESS_VALUES,
+  PAIR_BLOCKED_CLOSE_ACTIONS,
+  PR_AUTO_CLOSE_EXEMPT_LABELS,
+  PR_CLOSE_COVERAGE_PROOF_SECTION,
+  PR_RATING_LABEL_NAMES,
+  PR_RATING_LABELS,
+  PR_RATING_TIERS,
+  PR_STATUS_LABEL_NAMES,
+  PR_STATUS_LABELS,
+  PRIORITY_LABEL_NAMES,
+  PRIORITY_LABELS,
+  PROOF_MEDIA_LABEL_NAMES,
+  PROOF_MEDIA_LABELS,
+  PROOF_NUDGE_MARKER_PREFIX,
+  PROOF_OVERRIDE_LABEL,
+  PROOF_SUFFICIENT_LABEL,
+  PROOF_SUFFICIENT_LABEL_COLOR,
+  PROOF_SUFFICIENT_LABEL_DESCRIPTION,
+  PROTECTED_LABELS,
+  QUEUEABLE_FIX_LABEL,
+  REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS,
+  REAL_BEHAVIOR_PROOF_STATUSES,
+  RECENT_ISSUE_DAYS,
+  RECENT_MISSING_OPEN_MS,
+  REVIEW_COMMENT_MARKER_PREFIX,
+  REVIEW_POLICY_VERSION,
+  REVIEW_SECTIONS,
+  REVIEW_START_STATUS_MARKER_PREFIX,
+  SECURITY_CONCERN_SEVERITIES,
+  SECURITY_REVIEW_STATUSES,
+  STALE_INSUFFICIENT_INFO_MIN_AGE_DAYS,
+  STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS,
+  STALE_LABEL,
+  STALE_VERSION_BUG_MIN_AGE_DAYS,
+  STALE_VERSION_BUG_MIN_INACTIVE_DAYS,
+  STALLED_UNPROVEN_PR_MIN_AGE_DAYS,
+  STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS,
+  TELEGRAM_VISIBLE_PROOF_LABEL,
+  TELEGRAM_VISIBLE_PROOF_LABEL_COLOR,
+  TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION,
+  TELEGRAM_VISIBLE_PROOF_STATUSES,
+  TRIAGE_PRIORITIES,
+  UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS,
+  UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS,
+  UNSPONSORED_FEATURE_MIN_AGE_DAYS,
+  UNSPONSORED_FEATURE_MIN_INACTIVE_DAYS,
+  VISION_FIT_STATUSES,
+  WAITING_ON_AUTHOR_LABEL,
+} from "./clawsweeper-policy.js";
+import {
+  filterReviewComments,
+  latestClawSweeperReview,
+  latestClawSweeperReviewFromHydration,
+  rawCommentBody,
+  timestampValueMs,
+} from "./clawsweeper-review-comments.js";
+export type {
+  BulkFilerDetectionResult,
+  BulkFilerReviewContext,
+  ContextHydration,
+  GitHubDispatchOutcome,
+  GithubPageWithHeaders,
+  LabelJustification,
+  ReviewStartStatusCommentOptions,
+} from "./clawsweeper-types.js";
 
 export {
   codexEnv,
@@ -255,184 +540,6 @@ export {
   isLockedConversationCommentError,
   shouldRetryGh,
 } from "./github-retry.js";
-type ItemKind = "issue" | "pull_request";
-type ApplyKind = ItemKind | "all";
-type DecisionKind = "close" | "keep_open";
-type WorkCandidateKind = "none" | "manual_review" | "queue_fix_pr";
-type FailedReviewRetryRevisionKind = "pull_head_sha" | "item_source_revision";
-interface FailedReviewRetryRevision {
-  kind: FailedReviewRetryRevisionKind;
-  value: string;
-}
-type FailedReviewRetryStatus = "dispatching" | "dispatched" | "dispatch_failed" | "exhausted";
-type FailedReviewRetryAction =
-  | "dispatched_failed_review_retry"
-  | "planned_failed_review_retry"
-  | "marked_failed_review_retry_exhausted"
-  | "skipped_retry_already_exhausted"
-  | "skipped_not_failed_review"
-  | "skipped_not_open"
-  | "skipped_locked_conversation"
-  | "skipped_not_pull_request"
-  | "skipped_missing_report_head"
-  | "skipped_missing_live_head"
-  | "skipped_stale_head"
-  | "skipped_missing_report_revision"
-  | "skipped_missing_live_revision"
-  | "skipped_stale_revision"
-  | "skipped_non_infrastructure_failure"
-  | "skipped_retry_cooldown"
-  | "skipped_retry_exhausted"
-  | "skipped_live_fetch_failed"
-  | "skipped_dispatch_failed"
-  | "skipped_retry_dispatch_uncertain"
-  | "skipped_runtime_budget";
-type TriagePriority = "P0" | "P1" | "P2" | "P3" | "none";
-type ImpactLabelName =
-  | "impact:data-loss"
-  | "impact:security"
-  | "impact:crash-loop"
-  | "impact:message-loss"
-  | "impact:session-state"
-  | "impact:auth-provider"
-  | "impact:ux-release-blocker"
-  | "impact:ux-friction"
-  | "impact:other";
-type MergeRiskLabelName =
-  | "merge-risk: 🚨 compatibility"
-  | "merge-risk: 🚨 message-delivery"
-  | "merge-risk: 🚨 session-state"
-  | "merge-risk: 🚨 auth-provider"
-  | "merge-risk: 🚨 security-boundary"
-  | "merge-risk: 🚨 availability"
-  | "merge-risk: 🚨 automation"
-  | "merge-risk: 🚨 other";
-type MaturityLabelName = "maturity:stable";
-type MergeRiskOptionCategory = "fix_before_merge" | "accept_risk" | "pause_or_close";
-type ReviewLabelName =
-  | Exclude<TriagePriority, "none">
-  | ImpactLabelName
-  | MergeRiskLabelName
-  | MaturityLabelName;
-type ItemCategory =
-  | "bug"
-  | "regression"
-  | "feature"
-  | "skill"
-  | "docs"
-  | "cleanup"
-  | "support"
-  | "admin"
-  | "security"
-  | "unclear";
-type ReproductionStatus =
-  | "reproduced"
-  | "source_reproducible"
-  | "not_reproduced"
-  | "unclear"
-  | "not_applicable";
-type OverallCorrectness = "patch is correct" | "patch is incorrect" | "not a patch";
-type AgentsPolicyStatusKind =
-  | "found_applied"
-  | "found_not_applicable"
-  | "not_found"
-  | "conflict_not_applied"
-  | "unreadable_or_unclear";
-type SecurityReviewStatus = "cleared" | "needs_attention" | "not_applicable";
-type SecurityConcernSeverity = "high" | "medium" | "low";
-type RealBehaviorProofStatus =
-  | "sufficient"
-  | "missing"
-  | "mock_only"
-  | "insufficient"
-  | "not_applicable"
-  | "override";
-type RealBehaviorProofEvidenceKind =
-  | "screenshot"
-  | "recording"
-  | "terminal"
-  | "logs"
-  | "live_output"
-  | "linked_artifact"
-  | "none"
-  | "not_applicable";
-type PrRatingTier = "S" | "A" | "B" | "C" | "D" | "F" | "NA";
-type PrStatusLabelKind =
-  | "automerge_armed"
-  | "re_review_loop"
-  | "actively_grinding"
-  | "needs_proof"
-  | "needs_maintainer_proof_decision"
-  | "waiting_on_author"
-  | "ready_for_maintainer_look";
-type FeatureShowcaseStatus = "showcase" | "none";
-type TelegramVisibleProofStatus = "needed" | "not_needed";
-type MantisRecommendationStatus = "recommended" | "not_recommended";
-type MantisRecommendationScenario =
-  | "none"
-  | "telegram_live"
-  | "telegram_desktop_proof"
-  | "discord_status_reactions"
-  | "discord_thread_attachment"
-  | "web_ui_chat_proof"
-  | "slack_desktop_smoke"
-  | "visual_task";
-type VisionFitStatus = "aligned" | "rejected" | "unclear" | "not_applicable";
-type ImplementationComplexity = "small" | "medium" | "large" | "unclear" | "not_applicable";
-type AutoImplementationCandidate = "none" | "strict_bug" | "vision_fit";
-type RootCauseRelationship =
-  | "canonical"
-  | "duplicate"
-  | "same_root_cause"
-  | "partial_overlap"
-  | "adjacent_distinct"
-  | "superseded"
-  | "fixed_by_candidate"
-  | "independent"
-  | "security_route"
-  | "needs_human";
-type CloseReason =
-  | "implemented_on_main"
-  | "mostly_implemented_on_main"
-  | "cannot_reproduce"
-  | "clawhub"
-  | "duplicate_or_superseded"
-  | "low_signal_unmergeable_pr"
-  | "stalled_unproven_pr"
-  | "abandoned_pr"
-  | "unconfirmed_product_direction"
-  | "unsponsored_feature_request"
-  | "author_pr_budget_exceeded"
-  | "stale_version_bug"
-  | "obsolete_fix_pr"
-  | "not_actionable_in_repo"
-  | "incoherent"
-  | "stale_insufficient_info"
-  | "none";
-type Confidence = "high" | "medium" | "low";
-type ActionTaken =
-  | "closed"
-  | "kept_open"
-  | "proposed_close"
-  | "review_comment_synced"
-  | "corrected_stale_canonical_comment"
-  | "skipped_comment_auth"
-  | "skipped_locked_conversation"
-  | "skipped_changed_since_review"
-  | "skipped_stale_review_comment_sync"
-  | "skipped_open_closing_pr"
-  | "skipped_same_author_pair"
-  | "skipped_already_closed"
-  | "skipped_maintainer_authored"
-  | "skipped_protected_label"
-  | "skipped_close_exempt_label"
-  | "skipped_low_signal_live_guard"
-  | "skipped_pr_close_coverage_proof"
-  | "retry_pr_close_coverage_proof"
-  | "retry_stale_canonical_comment_sync"
-  | "skipped_invalid_decision"
-  | "skipped_missing_record"
-  | "skipped_runtime_budget";
 
 const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 // The bulk-filer policy is intentionally narrower than the general maintainer
@@ -444,103 +551,6 @@ const BULK_FILER_EXEMPT_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER"]);
 // narrow, independently readable fallback for that case; ordinary write
 // collaborators remain subject to the bulk-filer policy.
 const BULK_FILER_EXEMPT_REPOSITORY_PERMISSIONS = new Set(["admin", "maintain"]);
-
-interface GitHubUser {
-  login?: string;
-}
-
-interface GitHubIssueListItem {
-  number: number;
-  title: string;
-  html_url: string;
-  created_at: string;
-  updated_at: string;
-  closed_at?: string | null;
-  author_association?: string;
-  user?: GitHubUser;
-  labels?: string[];
-  pull_request?: unknown;
-}
-
-interface Item {
-  repo: string;
-  number: number;
-  kind: ItemKind;
-  title: string;
-  url: string;
-  createdAt: string;
-  updatedAt: string;
-  closedAt?: string | null | undefined;
-  author: string;
-  authorAssociation: string;
-  labels: string[];
-  locked?: boolean;
-  activeLockReason?: string | null;
-}
-
-export interface BulkFilerReviewContext {
-  detected: true;
-  issueCount: number;
-  threshold: number;
-  windowDays: number;
-  windowStart: string;
-  label: typeof BULK_FILED_LABEL;
-}
-
-export interface BulkFilerDetectionResult {
-  context: BulkFilerReviewContext | null;
-  labelPending: boolean;
-  labelApplied: boolean;
-}
-
-type BulkFilerCountCache = Map<string, number | null>;
-type BulkFilerRepositoryPermissionCache = Map<string, string | null>;
-
-interface BulkFilerDetectionOptions {
-  item: Pick<Item, "author" | "authorAssociation" | "createdAt" | "kind" | "labels" | "number">;
-  cache: BulkFilerCountCache;
-  now: number;
-  env?: Record<string, string | undefined>;
-  searchCount: (options: { author: string; windowStart: string }) => number;
-  onSearchError?: (error: unknown) => void;
-}
-
-export interface ReviewStartStatusCommentOptions {
-  number: number;
-  kind: string;
-  title: string;
-  headSha?: string;
-  startedAt?: string;
-  leaseExpiresAt?: string;
-  leaseOwner?: string;
-  position?: number;
-  total?: number;
-  shardIndex?: number;
-  shardCount?: number;
-  purpose?: "review" | "apply";
-}
-
-type AcquiredReviewStartLease = {
-  owner: string;
-  commentId: number;
-  headSha: string;
-  comment?: Record<string, unknown>;
-};
-
-type ExactReviewQueueAuthority = {
-  queueUrl: string;
-  itemKey: string;
-  leaseId: string;
-  leaseRevision: number;
-  claimGeneration: number;
-  runId: string;
-  runAttempt: number;
-  sourceHeadSha: string | null;
-};
-
-type ReviewStartStatusCommentResult =
-  | { status: "posted"; lease: AcquiredReviewStartLease; didMutate: true }
-  | { status: "held"; lease: null; retryAt: string; didMutate: boolean };
 
 function suppliedReviewStartLeaseFromArgs(
   args: Args,
@@ -603,698 +613,9 @@ export function heldReviewStartStatusCommentResultForTest(
   return heldReviewStartStatusCommentResult(retryAt, didMutate);
 }
 
-interface ExistingReview {
-  path: string;
-  markdown: string;
-  reviewedAt: string | undefined;
-  itemUpdatedAt: string | undefined;
-  reviewCommentSyncedAt: string | undefined;
-  labelsSyncedAt: string | undefined;
-  decision: string | undefined;
-  reviewStatus: string | undefined;
-  reviewPolicy: string | undefined;
-  reviewModel: string | undefined;
-  itemSourceRevision: string | undefined;
-  contentDigest: string | undefined;
-  lastFullReviewAt: string | undefined;
-  lastFullReviewDecision: string | undefined;
-  structuralRecord: ReviewStructuralRecord | null;
-  semanticRecord: ReviewSemanticRecord | null;
-}
-
-interface LatestRelease {
-  tagName?: string;
-  name?: string;
-  publishedAt?: string;
-  isLatest?: boolean;
-  targetCommitish?: string;
-  sha?: string | null;
-}
-
-interface GitInfo {
-  mainSha: string;
-  releaseStateComplete: boolean;
-  latestRelease: LatestRelease | null;
-}
-
-interface Evidence {
-  label: string;
-  detail: string;
-  file: string | null;
-  line: number | null;
-  command: string | null;
-  sha: string | null;
-}
-
-interface LikelyOwner {
-  person: string;
-  role: string;
-  reason: string;
-  commits: string[];
-  files: string[];
-  confidence: Confidence;
-}
-
-interface ReviewFinding {
-  title: string;
-  body: string;
-  priority: 0 | 1 | 2 | 3;
-  confidenceScore: number;
-  file: string;
-  lineStart: number;
-  lineEnd: number;
-  lateFinding?: boolean;
-}
-
-interface SecurityConcern {
-  title: string;
-  body: string;
-  severity: SecurityConcernSeverity;
-  confidenceScore: number;
-  file: string | null;
-  line: number | null;
-}
-
-interface SecurityReview {
-  status: SecurityReviewStatus;
-  summary: string;
-  concerns: SecurityConcern[];
-}
-
-interface RealBehaviorProof {
-  status: RealBehaviorProofStatus;
-  summary: string;
-  evidenceKind: RealBehaviorProofEvidenceKind;
-  needsContributorAction: boolean;
-}
-
-interface PrRating {
-  proofTier: PrRatingTier;
-  patchTier: PrRatingTier;
-  overallTier: PrRatingTier;
-  summary: string;
-  nextSteps: string[];
-}
-
-interface TelegramVisibleProof {
-  status: TelegramVisibleProofStatus;
-  summary: string;
-}
-
-interface MantisRecommendation {
-  status: MantisRecommendationStatus;
-  scenario: MantisRecommendationScenario;
-  reason: string;
-  maintainerComment: string;
-}
-
-interface FeatureShowcase {
-  status: FeatureShowcaseStatus;
-  reason: string;
-}
-
-interface RootCauseClusterMember {
-  ref: string;
-  relationship: RootCauseRelationship;
-  reason: string;
-}
-
-interface RootCauseClusterAssessment {
-  confidence: Confidence;
-  canonicalRef: string | null;
-  currentItemRelationship: RootCauseRelationship;
-  summary: string;
-  members: RootCauseClusterMember[];
-}
-
-interface FixedPullRequest {
-  repo: string;
-  number: number;
-  url: string;
-  title: string;
-  mergedAt: string | null;
-  sha: string | null;
-  confidence: Confidence;
-  source: string;
-}
-
-interface MergeRiskOption {
-  title: string;
-  body: string;
-  category: MergeRiskOptionCategory;
-  recommended: boolean;
-  automergeInstruction: string;
-}
-
-export interface LabelJustification {
-  label: string;
-  reason: string;
-}
-
-interface LabelTransitionJustification {
-  action: "add" | "remove";
-  label: string;
-  reason: string;
-}
-
-interface ReviewMetric {
-  label: string;
-  value: string;
-  reason: string;
-}
-
-interface ReviewCommentRenderOptions {
-  prStatusKind?: PrStatusLabelKind | null;
-  previousLabels?: readonly string[];
-  hasOpenLinkedPullRequest?: boolean;
-  previousReviewCommentBody?: string;
-  suppressAutomationMarkers?: boolean;
-}
-
-interface Decision {
-  decision: DecisionKind;
-  closeReason: CloseReason;
-  confidence: Confidence;
-  summary: string;
-  changeSummary: string;
-  systemContext: string;
-  architectureDiagram: string;
-  evidence: Evidence[];
-  likelyOwners: LikelyOwner[];
-  risks: string[];
-  bestSolution: string;
-  maintainerDecision: MaintainerDecision;
-  triagePriority: TriagePriority;
-  impactLabels: ImpactLabelName[];
-  mergeRiskLabels: MergeRiskLabelName[];
-  maturityLabels: MaturityLabelName[];
-  mergeRiskOptions: MergeRiskOption[];
-  reviewMetrics: ReviewMetric[];
-  labelJustifications: LabelJustification[];
-  itemCategory: ItemCategory;
-  reproductionStatus: ReproductionStatus;
-  reproductionConfidence: Confidence;
-  requiresNewFeature: boolean;
-  requiresNewConfigOption: boolean;
-  requiresProductDecision: boolean;
-  reproductionAssessment: string;
-  solutionAssessment: string;
-  visionFit: VisionFitStatus;
-  visionFitReason: string;
-  visionFitEvidence: string[];
-  implementationComplexity: ImplementationComplexity;
-  autoImplementationCandidate: AutoImplementationCandidate;
-  rootCauseCluster: RootCauseClusterAssessment;
-  agentsPolicyStatus: AgentsPolicyStatus;
-  reviewFindings: ReviewFinding[];
-  securityReview: SecurityReview;
-  realBehaviorProof: RealBehaviorProof;
-  prRating: PrRating;
-  telegramVisibleProof: TelegramVisibleProof;
-  mantisRecommendation: MantisRecommendation;
-  featureShowcase: FeatureShowcase;
-  overallCorrectness: OverallCorrectness;
-  overallConfidenceScore: number;
-  codexTerminalFailure?: boolean;
-  fixedRelease?: string | null;
-  fixedSha?: string | null;
-  fixedAt?: string | null;
-  fixedPullRequest?: FixedPullRequest | null;
-  closeComment: string;
-  workCandidate: WorkCandidateKind;
-  workConfidence: Confidence;
-  workPriority: Confidence;
-  workReason: string;
-  workPrompt: string;
-  workClusterRefs: string[];
-  workValidation: string[];
-  workLikelyFiles: string[];
-}
-
-interface AgentsPolicyStatus {
-  found: boolean;
-  readFully: boolean;
-  applied: boolean;
-  status: AgentsPolicyStatusKind;
-  summary: string;
-}
-
-type GoodFirstIssueHumanLabelState = "removed" | "added" | "unknown";
-
-const completeActivityContextSymbol = Symbol("completeActivityContext");
-
-interface CompleteActivityContext {
-  comments: unknown[];
-  timeline: unknown[];
-  pullReviewComments: unknown[];
-}
-
-interface ItemContext {
-  [completeActivityContextSymbol]?: CompleteActivityContext;
-  issue: unknown;
-  comments: unknown[];
-  timeline: unknown[];
-  structuralItemStateDigest?: string;
-  goodFirstIssueHumanLabelState?: GoodFirstIssueHumanLabelState;
-  sourceRevision?: string;
-  timelineRevision?: string;
-  previousClawSweeperReview?: unknown;
-  closingPullRequests?: unknown[];
-  referencingMergedPullRequests?: unknown[];
-  relatedItems?: unknown[];
-  pullRequest?: unknown;
-  pullFiles?: unknown[];
-  semanticPullFiles?: unknown[];
-  pullCommits?: unknown[];
-  pullCommitsRevision?: string;
-  pullReviewComments?: unknown[];
-  pullReviewCommentsRevision?: string;
-  pullReviewActivityCursor?: string;
-  pullChecks?: unknown;
-  bulkFiler?: BulkFilerReviewContext;
-  counts?: {
-    comments: number;
-    commentsHydrated?: number;
-    commentsTruncated?: boolean;
-    commentsIncluded?: number;
-    commentsFiltered?: number;
-    timeline: number;
-    timelineHydrated?: number;
-    timelineTruncated?: boolean;
-    closingPullRequests?: number;
-    referencingMergedPullRequests?: number;
-    relatedItems?: number;
-    pullFiles?: number;
-    pullFilesHydrated?: number;
-    pullFilesTruncated?: boolean;
-    pullCommits?: number;
-    pullCommitsHydrated?: number;
-    pullCommitsTruncated?: boolean;
-    pullReviewComments?: number;
-    pullReviewCommentsHydrated?: number;
-    pullReviewCommentsTruncated?: boolean;
-    pullReviewCommentsIncluded?: number;
-    pullReviewCommentsFiltered?: number;
-  };
-}
-
-interface GitTreeEntry {
-  mode: string;
-  type: string;
-}
-
-interface LocalRelatedTitleEntry {
-  number: number;
-  kind: ItemKind | undefined;
-  title: string;
-  url: string | undefined;
-  author: string | undefined;
-  location: AuditRecordLocation;
-  path: string;
-  decision: string | undefined;
-  closeReason: string | undefined;
-  action: string | undefined;
-  reviewStatus: string;
-  summary: string;
-}
-
-interface Action {
-  actionTaken: ActionTaken;
-  closeComment: string;
-}
-
-interface ReviewRuntime {
-  model: string;
-  reasoningEffort: string;
-  sandboxMode?: string;
-  serviceTier?: string;
-  promptChars?: number;
-  staticPromptChars?: number;
-  contextChars?: number;
-  schemaChars?: number;
-  additionalPromptChars?: number;
-  contextElapsedMs?: number;
-  codexElapsedMs?: number;
-}
-
-interface ReviewPromptTelemetry {
-  promptChars: number;
-  staticPromptChars: number;
-  contextChars: number;
-  schemaChars: number;
-  additionalPromptChars: number;
-}
-
-interface ReviewPromptBuild {
-  text: string;
-  telemetry: ReviewPromptTelemetry;
-}
-
-interface PreparedMediaProofArtifact {
-  kind: "image" | "video";
-  url: string;
-  downloadedPath: string | null;
-  metadataPath: string | null;
-  contactSheetPath: string | null;
-  status: "prepared" | "failed";
-  detail: string;
-}
-
-interface PreparedMediaProof {
-  manifestPath: string | null;
-  summaryPath: string | null;
-  artifacts: PreparedMediaProofArtifact[];
-}
-
-interface ReviewContextLedgerEntry {
-  section: string;
-  label: string;
-  entries: number;
-  chars: number;
-  total?: number;
-  hydrated?: number;
-  truncated?: boolean;
-}
-
-interface ReviewPromptRuntimeHints {
-  proofScratchDir?: string;
-  mediaProofManifestPath?: string;
-  mediaProofSummary?: string;
-}
-
-interface DashboardItem {
-  repo: string;
-  number: number;
-  kind: ItemKind;
-  title: string;
-  reviewedAt: string | undefined;
-  decision: string;
-  action: string;
-  reviewStatus: string;
-  reportPath: string;
-  planPath?: string | undefined;
-  workCandidate: string;
-  workPriority: string;
-  workStatus: string;
-}
-
-interface DashboardClosedItem {
-  repo: string;
-  number: number;
-  kind: ItemKind;
-  title: string;
-  closedAt?: string | undefined;
-  appliedAt: string | undefined;
-  closeReason: string | undefined;
-  reportPath: string;
-}
-
-interface RepoOpenCountsQuery {
-  data?: {
-    repository?: {
-      issues?: {
-        totalCount?: number;
-      };
-      pullRequests?: {
-        totalCount?: number;
-      };
-    };
-  };
-}
-
-interface OpenItemCounts {
-  issues: number;
-  pullRequests: number;
-  total: number;
-}
-
-interface DashboardKindStats {
-  total: number;
-  fresh: number;
-  proposedClose: number;
-}
-
-interface DashboardCadenceBucket {
-  total: number;
-  current: number;
-  proposedClose: number;
-}
-
-interface DashboardCadenceStats {
-  hourlyHotItems: DashboardCadenceBucket;
-  dailyPullRequests: DashboardCadenceBucket;
-  dailyNewIssues: DashboardCadenceBucket;
-  weeklyOlderIssues: DashboardCadenceBucket;
-  hourly: DashboardCadenceBucket;
-  daily: DashboardCadenceBucket;
-  weekly: DashboardCadenceBucket;
-  unreviewedOpen: number;
-  due: number;
-}
-
-interface DashboardActivityBucket {
-  reviews: number;
-  closeDecisions: number;
-  keepOpenDecisions: number;
-  failedOrStaleReviews: number;
-  closes: number;
-  commentSyncs: number;
-  applySkips: number;
-  inheritedLabelCleanups: number;
-  selfHealConflictRepairs: number;
-  failedReviewRetries: number;
-  failedReviewRetryExhaustions: number;
-  botOwnedProofDecisionsRequested: number;
-  botOwnedProofDispatches: number;
-}
-
-interface DashboardActivityStats {
-  last15Minutes: DashboardActivityBucket;
-  lastHour: DashboardActivityBucket;
-  last24Hours: DashboardActivityBucket;
-  latestReviewAt: string | undefined;
-  latestCloseAt: string | undefined;
-  latestCommentSyncAt: string | undefined;
-}
-
-interface DashboardStats {
-  open: OpenItemCounts;
-  fresh: number;
-  todo: number;
-  files: number;
-  proposedClose: number;
-  closed: number;
-  archivedFiles: number;
-  failed: number;
-  stale: number;
-  workCandidates: number;
-  byKind: Record<ItemKind, DashboardKindStats>;
-  cadence: DashboardCadenceStats;
-  activity: DashboardActivityStats;
-  recent: DashboardItem[];
-  workQueue: DashboardItem[];
-  recentClosed: DashboardClosedItem[];
-}
-
-interface WorkflowStatusSummary {
-  updatedAt: string | undefined;
-  state: string;
-  detail: string;
-  runUrl: string | undefined;
-  applyHealth: Record<string, unknown> | undefined;
-  lastCloseApplyHealth: Record<string, unknown> | undefined;
-  plannedCount: number | undefined;
-  plannedCapacity: number | undefined;
-  plannedShards: number | undefined;
-  activeCodex: number | undefined;
-  dueBacklog: number | undefined;
-  oldestUnreviewedAt: string | undefined;
-  capacityReason: string | undefined;
-  inheritedLabelCleanups: number | undefined;
-  selfHealConflictRepairs: number | undefined;
-  failedReviewRetries: number | undefined;
-  failedReviewRetryExhaustions: number | undefined;
-  botOwnedProofDecisionsRequested: number | undefined;
-  botOwnedProofDispatches: number | undefined;
-}
-
-interface RepoDashboardSnapshot {
-  profile: RepositoryProfile;
-  stats: DashboardStats;
-  status: string;
-  statusSummary: WorkflowStatusSummary;
-  auditHealth: string;
-}
-
-interface PlanShard {
-  shard: number;
-  itemNumbers: number[];
-}
-
-interface PlanCandidateResult {
-  shards: PlanShard[];
-  scannedPages: number;
-  candidates: Item[];
-  capacity: number;
-  dueBacklog: number;
-  activeCodexTarget: number;
-  oldestUnreviewedAt: string | undefined;
-  capacityReason: string;
-  floorBackfill: number;
-  selection: PlanSelectionTelemetry[];
-}
-
-interface PlanSelectionTelemetry {
-  itemNumber: number;
-  bucket: SchedulerDueCandidate["bucket"];
-  coverageTracked: boolean;
-  lastReviewedAt: string | null;
-  ageMs: number;
-  nextDueAt: string;
-}
-
 const DEFAULT_PLAN_BATCH_SIZE = 3;
 const DEFAULT_PLAN_SHARD_COUNT = AUTOMATION_LIMITS.review_shards.normal_default;
 const MAX_PLAN_SHARD_COUNT = AUTOMATION_LIMITS.review_shards.hard_cap;
-
-type DueCandidate = SchedulerDueCandidate<Item, ExistingReview>;
-
-interface ApplyResult {
-  repo?: string;
-  number: number;
-  action: ActionTaken;
-  reason: string;
-  mutationOccurred?: boolean;
-  commentMutationOccurred?: boolean;
-  durableReviewSynced?: boolean;
-  terminalMissingVerified?: boolean;
-  terminalStateVerified?: boolean;
-  guardedOpenStateVerified?: boolean;
-  activeReviewLeaseVerified?: boolean;
-  activeReviewLeaseExpiresAt?: string;
-  terminalPolicyNoopVerified?: boolean;
-  sourceDriftVerified?: boolean;
-}
-
-interface FailedReviewRetryResult {
-  repo?: string | undefined;
-  number: number;
-  action: FailedReviewRetryAction;
-  reason: string;
-  headSha?: string | undefined;
-  revisionKind?: FailedReviewRetryRevisionKind | undefined;
-  revision?: string | undefined;
-  attempts?: number | undefined;
-  reportPath?: string | undefined;
-  dispatchUrl?: string | undefined;
-}
-
-interface FailedReviewRetryState {
-  schema_version: 1;
-  repo: string;
-  number: number;
-  status: FailedReviewRetryStatus;
-  revision_kind: FailedReviewRetryRevisionKind;
-  revision: string;
-  attempts: number;
-  max_attempts: number;
-  last_at: string;
-  reason: string;
-  dispatch_url?: string | undefined;
-}
-
-interface ReconcileResult {
-  openItemsSeen: number;
-  pagesScanned: number;
-  movedToClosed: number;
-  movedToItems: number;
-  removedStaleClosedCopies: number;
-  fetchedClosedAt: number;
-  changedItemNumbers: number[];
-  changedRecordFiles: string[];
-}
-
-type AuditRecordLocation = "items" | "closed";
-type MissingOpenReason =
-  | "eligible"
-  | "maintainer_authored"
-  | "protected_label"
-  | "recently_created";
-
-interface AuditRecord {
-  repo: string;
-  number: number;
-  location: AuditRecordLocation;
-  path: string;
-  kind: ItemKind | undefined;
-  title: string;
-  labels: string[];
-  decision: string | undefined;
-  closeReason: string | undefined;
-  confidence?: string | undefined;
-  reviewedAt?: string | undefined;
-  action: string | undefined;
-  reviewStatus: string;
-  currentState: string | undefined;
-}
-
-interface AuditFinding {
-  number: number;
-  kind?: ItemKind;
-  title?: string;
-  labels?: string[];
-  authorAssociation?: string;
-  createdAt?: string;
-  updatedAt?: string;
-  missingReason?: MissingOpenReason;
-  itemPath?: string;
-  closedPath?: string;
-  action?: string;
-  decision?: string;
-  closeReason?: string;
-  confidence?: string;
-  reviewedAt?: string;
-  reviewStatus?: string;
-  currentState?: string;
-}
-
-interface AuditResult {
-  generatedAt: string;
-  targetRepo: string;
-  scan: {
-    complete: boolean;
-    pagesScanned: number;
-    openItemsSeen: number;
-  };
-  counts: {
-    itemRecords: number;
-    closedRecords: number;
-    missingOpen: number;
-    missingEligibleOpen: number;
-    missingMaintainerOpen: number;
-    missingProtectedOpen: number;
-    missingRecentOpen: number;
-    openArchived: number;
-    staleItemRecords: number;
-    duplicateRecords: number;
-    protectedProposed: number;
-    autoCloseOpen: number;
-    staleReviews: number;
-  };
-  findings: {
-    missingOpen: AuditFinding[];
-    missingEligibleOpen: AuditFinding[];
-    missingMaintainerOpen: AuditFinding[];
-    missingProtectedOpen: AuditFinding[];
-    missingRecentOpen: AuditFinding[];
-    openArchived: AuditFinding[];
-    staleItemRecords: AuditFinding[];
-    duplicateRecords: AuditFinding[];
-    protectedProposed: AuditFinding[];
-    autoCloseOpen: AuditFinding[];
-    staleReviews: AuditFinding[];
-  };
-}
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPORT_REPO = "openclaw/clawsweeper";
@@ -1302,50 +623,6 @@ const RECORDS_ROOT = join(ROOT, "records");
 let activeRepositoryProfile = repositoryProfileFor(
   process.env.CLAWSWEEPER_TARGET_REPO ?? DEFAULT_TARGET_REPO,
 );
-const FRESH_DAYS = 7;
-const HOT_REVIEW_DAYS = 7;
-const RECENT_ISSUE_DAYS = 30;
-const DEFAULT_BACKFILL_REVIEW_AGE_MINUTES = 360;
-const DAILY_REVIEW_DAYS = 1;
-const STALE_INSUFFICIENT_INFO_MIN_AGE_DAYS = 60;
-const STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS = 60;
-const UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS = 14;
-const UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS = 7;
-const UNSPONSORED_FEATURE_MIN_AGE_DAYS = 90;
-const UNSPONSORED_FEATURE_MIN_INACTIVE_DAYS = 60;
-const AUTHOR_PR_BUDGET_MIN_AGE_DAYS = 7;
-const AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS = 7;
-const STALE_VERSION_BUG_MIN_AGE_DAYS = 120;
-const STALE_VERSION_BUG_MIN_INACTIVE_DAYS = 90;
-const OBSOLETE_FIX_PR_MIN_AGE_DAYS = 90;
-const OBSOLETE_FIX_PR_MIN_INACTIVE_DAYS = 30;
-const OBSOLETE_FIX_PR_MAX_CHANGED_FILES = 5;
-const DEFAULT_AUTHOR_PR_BUDGET = 15;
-const DEFAULT_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN = 5;
-const DEFAULT_BULK_FILER_THRESHOLD = 10;
-const DEFAULT_BULK_FILER_WINDOW_DAYS = 7;
-const BULK_FILER_SEARCH_TIMEOUT_MS = 15_000;
-const BULK_FILED_LABEL = "clawsweeper:bulk-filed";
-const BULK_FILED_LABEL_DEFINITION = {
-  name: BULK_FILED_LABEL,
-  color: "6E7781",
-  description: "ClawSweeper detected a high recent issue-filing volume from this author.",
-} as const;
-const STALLED_UNPROVEN_PR_MIN_AGE_DAYS = 14;
-const STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS = 14;
-const ABANDONED_PR_MIN_AGE_DAYS = 30;
-const ABANDONED_PR_MIN_INACTIVE_DAYS = 30;
-const LOW_SIGNAL_UNMERGEABLE_PR_MIN_INACTIVE_DAYS = 30;
-const DAY_MS = 24 * 60 * 60 * 1000;
-const RECENT_MISSING_OPEN_MS = DAY_MS;
-const DEFAULT_CODEX_MODEL = PUBLIC_CODEX_MODEL;
-const DEFAULT_REASONING_EFFORT = "high";
-// Priority service tier for Codex calls (maintainer decision 2026-07-17:
-// "gpt 5.6 sol high fast"). Latency-only; excluded from review-policy hashing.
-const DEFAULT_SERVICE_TIER = "fast";
-const DEFAULT_REVIEW_CODEX_TIMEOUT_MS = 1_200_000;
-const DEFAULT_CODEX_FALLBACK_MIN_BUDGET_MS = 120_000;
-const REVIEW_POLICY_VERSION = "2026-07-09-policy-v24";
 const REVIEW_ITEM_PROMPT_PATH = join(ROOT, "prompts", "review-item.md");
 const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(ROOT, "schema", "clawsweeper-decision.schema.json");
 const MATURITY_STABLE_SHORTLIST_SCRIPT_PATH = join(
@@ -1359,510 +636,6 @@ const PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH = join(
   "schema",
   "clawsweeper-pr-close-coverage-proof.schema.json",
 );
-const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
-const REVIEW_START_STATUS_MARKER_PREFIX = "<!-- clawsweeper-review-status";
-const MERGE_READY_LABEL = "clawsweeper:merge-ready";
-const PR_AUTO_CLOSE_EXEMPT_LABELS = new Set<string>(PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES);
-const WAITING_ON_AUTHOR_LABEL = "status: ⏳ waiting on author";
-const PROOF_OVERRIDE_LABEL = "proof: override";
-const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
-const PROOF_NUDGE_MARKER_PREFIX = "<!-- clawsweeper-proof-nudge";
-const PROOF_SUFFICIENT_LABEL_COLOR = "1A7F37";
-const PROOF_SUFFICIENT_LABEL_DESCRIPTION = "Contributor real behavior proof is sufficient.";
-const FEATURE_SHOWCASE_LABEL = "feature: ✨ showcase";
-const FEATURE_SHOWCASE_LABEL_COLOR = "A371F7";
-const FEATURE_SHOWCASE_LABEL_DESCRIPTION =
-  "ClawSweeper spotlight: unusually compelling feature idea for maintainer attention.";
-const IDEA_ARCHIVE_LABEL_COLOR = "8250DF";
-const IDEA_ARCHIVE_LABEL_DESCRIPTION =
-  "Parked feature idea eligible for automatic community or maintainer revival.";
-const PROOF_MEDIA_LABELS = [
-  {
-    evidenceKind: "screenshot",
-    name: "proof: 📸 screenshot",
-    color: "0969DA",
-    description: "Contributor real behavior proof includes screenshot evidence.",
-  },
-  {
-    evidenceKind: "recording",
-    name: "proof: 🎥 video",
-    color: "8250DF",
-    description: "Contributor real behavior proof includes video or recording evidence.",
-  },
-] as const satisfies readonly {
-  evidenceKind: RealBehaviorProofEvidenceKind;
-  name: string;
-  color: string;
-  description: string;
-}[];
-const PROOF_MEDIA_LABEL_NAMES = new Set<string>(PROOF_MEDIA_LABELS.map((label) => label.name));
-const PR_RATING_LABELS = [
-  {
-    tier: "S",
-    name: "rating: 🦀 challenger crab",
-    color: "1F883D",
-    description: "Exceptional PR readiness: strong proof, clean patch, and convincing validation.",
-  },
-  {
-    tier: "A",
-    name: "rating: 🦞 diamond lobster",
-    color: "0969DA",
-    description: "Very strong PR readiness with only minor maintainer review expected.",
-  },
-  {
-    tier: "B",
-    name: "rating: 🐚 platinum hermit",
-    color: "0F766E",
-    description: "Good normal PR readiness with ordinary maintainer review expected.",
-  },
-  {
-    tier: "C",
-    name: "rating: 🦐 gold shrimp",
-    color: "B7791F",
-    description: "Decent PR readiness signal, but merge confidence is limited.",
-  },
-  {
-    tier: "D",
-    name: "rating: 🦪 silver shellfish",
-    color: "7A828E",
-    description: "Thin PR readiness signal; proof, validation, or implementation needs work.",
-  },
-  {
-    tier: "F",
-    name: "rating: 🧂 unranked krab",
-    color: "8C2F39",
-    description: "Not merge-ready due to missing proof or serious correctness/safety concerns.",
-  },
-  {
-    tier: "NA",
-    name: "rating: 🌊 off-meta tidepool",
-    color: "6E7781",
-    description: "PR readiness rating does not apply to this item.",
-  },
-] as const satisfies readonly {
-  tier: PrRatingTier;
-  name: string;
-  color: string;
-  description: string;
-}[];
-const PR_RATING_LABEL_NAMES = new Set<string>(PR_RATING_LABELS.map((label) => label.name));
-const PR_STATUS_LABELS = [
-  {
-    kind: "automerge_armed",
-    name: "status: 🚀 automerge armed",
-    color: "0E8A16",
-    description: "This PR is in ClawSweeper's automerge lane.",
-  },
-  {
-    kind: "re_review_loop",
-    name: "status: 🔁 re-review loop",
-    color: "8250DF",
-    description: "A fresh ClawSweeper review was explicitly requested after the latest review.",
-  },
-  {
-    kind: "actively_grinding",
-    name: "status: 🛠️ actively grinding",
-    color: "0969DA",
-    description: "The PR author has acted after the latest ClawSweeper review and work remains.",
-  },
-  {
-    kind: "needs_proof",
-    name: "status: 📣 needs proof",
-    color: "D93F0B",
-    description:
-      "The PR needs real behavior proof before ClawSweeper can clear the contributor ask.",
-  },
-  {
-    kind: "needs_maintainer_proof_decision",
-    name: "status: needs maintainer proof decision",
-    color: "D93F0B",
-    description: "A ClawSweeper-authored PR needs a maintainer proof capture or override decision.",
-  },
-  {
-    kind: "waiting_on_author",
-    name: "status: ⏳ waiting on author",
-    color: "FBCA04",
-    description: "ClawSweeper has contributor-facing work open and is waiting for author action.",
-  },
-  {
-    kind: "ready_for_maintainer_look",
-    name: "status: 👀 ready for maintainer look",
-    color: "2DA44E",
-    description: "ClawSweeper has no concrete contributor-facing blocker left for this PR.",
-  },
-] as const satisfies readonly {
-  kind: PrStatusLabelKind;
-  name: string;
-  color: string;
-  description: string;
-}[];
-const PR_STATUS_LABEL_NAMES = new Set<string>(PR_STATUS_LABELS.map((label) => label.name));
-const TELEGRAM_VISIBLE_PROOF_LABEL = "mantis: telegram-visible-proof";
-const TELEGRAM_VISIBLE_PROOF_LABEL_COLOR = "57606A";
-const TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION = "Mantis should capture Telegram visible proof.";
-const PRIORITY_LABELS = [
-  {
-    priority: 0,
-    triagePriority: "P0",
-    name: "P0",
-    color: "B60205",
-    description: "Emergency: data loss, security bypass, crash loop, or unusable core runtime.",
-  },
-  {
-    priority: 1,
-    triagePriority: "P1",
-    name: "P1",
-    color: "D93F0B",
-    description: "Urgent regression or broken agent/channel workflow affecting real users now.",
-  },
-  {
-    priority: 2,
-    triagePriority: "P2",
-    name: "P2",
-    color: "FBCA04",
-    description: "Normal priority bug or improvement with limited blast radius.",
-  },
-  {
-    priority: 3,
-    triagePriority: "P3",
-    name: "P3",
-    color: "8C959F",
-    description: "Low-risk cleanup, docs, polish, ergonomics, or speculative feature.",
-  },
-] as const;
-const PRIORITY_LABEL_NAMES: ReadonlySet<string> = new Set(
-  PRIORITY_LABELS.map((label) => label.name),
-);
-const IMPACT_LABELS = [
-  {
-    name: "impact:data-loss",
-    color: "B60205",
-    description:
-      "This issue is about lost, corrupted, or silently dropped user/session/config data.",
-  },
-  {
-    name: "impact:security",
-    color: "B60205",
-    description:
-      "This issue is about security boundaries, credentials, authz, sandboxing, or sensitive data.",
-  },
-  {
-    name: "impact:crash-loop",
-    color: "D93F0B",
-    description:
-      "This issue is about crashes, hangs, restart loops, or process-level availability.",
-  },
-  {
-    name: "impact:message-loss",
-    color: "D93F0B",
-    description: "This issue is about lost, duplicated, misrouted, or suppressed channel messages.",
-  },
-  {
-    name: "impact:session-state",
-    color: "F9D65C",
-    description: "This issue is about session, memory, transcript, context, or agent state drift.",
-  },
-  {
-    name: "impact:auth-provider",
-    color: "F9D65C",
-    description:
-      "This issue is about auth, provider routing, model choice, or SecretRef resolution.",
-  },
-  {
-    name: "impact:ux-release-blocker",
-    color: "B60205",
-    description: "A non-technical user is blocked without terminal, logs, config, or support.",
-  },
-  {
-    name: "impact:ux-friction",
-    color: "FBCA04",
-    description:
-      "User-facing flow adds avoidable confusion or support burden without fully blocking progress.",
-  },
-  {
-    name: "impact:other",
-    color: "C5DEF5",
-    description: "This issue has meaningful maintainer-visible impact outside the owned taxonomy.",
-  },
-] as const satisfies readonly {
-  name: ImpactLabelName;
-  color: string;
-  description: string;
-}[];
-const IMPACT_LABEL_NAMES: ReadonlySet<string> = new Set(IMPACT_LABELS.map((label) => label.name));
-const MERGE_RISK_LABELS = [
-  {
-    name: "merge-risk: 🚨 compatibility",
-    color: "D1242F",
-    description:
-      "🚨 Merging this PR could break existing users, config, migrations, defaults, or upgrades.",
-  },
-  {
-    name: "merge-risk: 🚨 message-delivery",
-    color: "D1242F",
-    description:
-      "🚨 Merging this PR could drop, duplicate, misroute, suppress, or wrongly target messages.",
-  },
-  {
-    name: "merge-risk: 🚨 session-state",
-    color: "F97316",
-    description:
-      "🚨 Merging this PR could lose, corrupt, stale, or mis-associate session or agent state.",
-  },
-  {
-    name: "merge-risk: 🚨 auth-provider",
-    color: "F97316",
-    description:
-      "🚨 Merging this PR could break OAuth, tokens, provider routing, model choice, or credentials.",
-  },
-  {
-    name: "merge-risk: 🚨 security-boundary",
-    color: "B60205",
-    description:
-      "🚨 Merging this PR could weaken sandboxing, authorization, credentials, or sensitive data.",
-  },
-  {
-    name: "merge-risk: 🚨 availability",
-    color: "D93F0B",
-    description:
-      "🚨 Merging this PR could cause crashes, hangs, restart loops, stalls, or process outages.",
-  },
-  {
-    name: "merge-risk: 🚨 automation",
-    color: "FBCA04",
-    description:
-      "🚨 Merging this PR could break CI, automerge, proof capture, label sync, or automation.",
-  },
-  {
-    name: "merge-risk: 🚨 other",
-    color: "C5DEF5",
-    description: "🚨 Merging this PR has meaningful risk outside the owned taxonomy.",
-  },
-] as const satisfies readonly {
-  name: MergeRiskLabelName;
-  color: string;
-  description: string;
-}[];
-const MERGE_RISK_LABEL_NAMES: ReadonlySet<string> = new Set(
-  MERGE_RISK_LABELS.map((label) => label.name),
-);
-const MATURITY_LABELS = [
-  {
-    name: "maturity:stable",
-    color: "1F883D",
-    description: "Issue's primary taxonomy surface is currently scored M4/M5.",
-  },
-] as const satisfies readonly {
-  name: MaturityLabelName;
-  color: string;
-  description: string;
-}[];
-const MATURITY_LABEL_NAMES: ReadonlySet<string> = new Set(
-  MATURITY_LABELS.map((label) => label.name),
-);
-const GOOD_FIRST_ISSUE_LABEL = "good first issue";
-const GOOD_FIRST_ISSUE_LABEL_DEFINITION = {
-  name: GOOD_FIRST_ISSUE_LABEL,
-  color: "7057FF",
-  description: "Good for newcomers",
-} as const;
-const ISSUE_ADVISORY_LABELS = [
-  {
-    name: "issue-rating: 🦀 challenger crab",
-    color: "1F883D",
-    description:
-      "Exceptional issue quality: high-confidence current-main reproduction and actionable evidence.",
-  },
-  {
-    name: "issue-rating: 🦞 diamond lobster",
-    color: "0969DA",
-    description:
-      "Very strong issue quality with high-confidence source-level or clear reproduction.",
-  },
-  {
-    name: "issue-rating: 🐚 platinum hermit",
-    color: "0F766E",
-    description: "Good issue quality with a plausible reproduction path needing some confirmation.",
-  },
-  {
-    name: "issue-rating: 🦐 gold shrimp",
-    color: "B7791F",
-    description: "Decent issue quality, but reproduction details are still incomplete.",
-  },
-  {
-    name: "issue-rating: 🦪 silver shellfish",
-    color: "7A828E",
-    description: "Thin issue quality; more reproduction proof or environment detail is needed.",
-  },
-  {
-    name: "issue-rating: 🧂 unranked krab",
-    color: "8C2F39",
-    description: "Issue quality is currently too unclear to act on safely.",
-  },
-  {
-    name: "issue-rating: 🌊 off-meta tidepool",
-    color: "6E7781",
-    description: "Issue quality rating does not apply to this item.",
-  },
-  {
-    name: "clawsweeper:current-main-repro",
-    color: "0A3069",
-    description: "ClawSweeper found a high-confidence current-main issue reproduction.",
-  },
-  {
-    name: "clawsweeper:source-repro",
-    color: "0A3069",
-    description: "ClawSweeper found a high-confidence source-level issue reproduction.",
-  },
-  {
-    name: "clawsweeper:not-repro-on-main",
-    color: "2DA44E",
-    description:
-      "ClawSweeper found high-confidence evidence that this issue no longer reproduces on main.",
-  },
-  {
-    name: "clawsweeper:needs-live-repro",
-    color: "FBCA04",
-    description:
-      "ClawSweeper needs live local, crabbox, or manual validation to confirm this issue.",
-  },
-  {
-    name: "clawsweeper:needs-info",
-    color: "6E7781",
-    description: "ClawSweeper needs more reporter information before it can verify this issue.",
-  },
-  {
-    name: "clawsweeper:linked-pr-open",
-    color: "57606A",
-    description: "ClawSweeper found an open linked pull request for this issue.",
-  },
-  {
-    name: "clawsweeper:no-new-fix-pr",
-    color: "8C959F",
-    description: "ClawSweeper does not recommend queueing a new automated fix PR for this issue.",
-  },
-  {
-    name: "clawsweeper:queueable-fix",
-    color: "0E8A16",
-    description: "ClawSweeper marked this issue as an existing queue_fix_pr work candidate.",
-  },
-  {
-    name: "clawsweeper:fix-shape-clear",
-    color: "1A7F37",
-    description: "ClawSweeper found a clear likely implementation shape for this issue.",
-  },
-  {
-    name: "clawsweeper:needs-maintainer-review",
-    color: "FBCA04",
-    description: "ClawSweeper marked this issue as needing maintainer review before automation.",
-  },
-  {
-    name: "clawsweeper:needs-product-decision",
-    color: "FBCA04",
-    description: "ClawSweeper marked this issue as needing a product or behavior decision.",
-  },
-  {
-    name: "clawsweeper:needs-security-review",
-    color: "B60205",
-    description: "ClawSweeper marked this issue as needing security-sensitive review.",
-  },
-] as const;
-const ISSUE_ADVISORY_LABEL_NAMES = new Set(
-  ISSUE_ADVISORY_LABELS.map((label) => label.name.toLowerCase()),
-);
-const STALE_LABEL = "stale";
-const NO_STALE_LABEL = "no-stale";
-const QUEUEABLE_FIX_LABEL = "clawsweeper:queueable-fix";
-const ISSUE_STALE_PROTECTION_LABEL = {
-  name: NO_STALE_LABEL,
-  color: "6E7781",
-  description: "Exempts this issue from stale automation.",
-} as const;
-const PROTECTED_LABELS = new Set<string>(CLOSE_PROTECTED_LABEL_NAMES);
-const APPLY_PROTECTED_LABELS = new Set<string>([
-  ...CLOSE_PROTECTED_LABEL_NAMES,
-  "clawsweeper:needs-security-review",
-  "clawsweeper:needs-maintainer-review",
-  "clawsweeper:needs-product-decision",
-]);
-const ALLOWED_REASONS = new Set<CloseReason>([
-  "implemented_on_main",
-  "mostly_implemented_on_main",
-  "cannot_reproduce",
-  "clawhub",
-  "duplicate_or_superseded",
-  "low_signal_unmergeable_pr",
-  "stalled_unproven_pr",
-  "abandoned_pr",
-  "unconfirmed_product_direction",
-  "unsponsored_feature_request",
-  "author_pr_budget_exceeded",
-  "stale_version_bug",
-  "obsolete_fix_pr",
-  "not_actionable_in_repo",
-  "incoherent",
-  "stale_insufficient_info",
-]);
-const ALL_REASONS = new Set<CloseReason>([...ALLOWED_REASONS, "none"]);
-const DECISIONS = new Set<DecisionKind>(["close", "keep_open"]);
-const WORK_CANDIDATES = new Set<WorkCandidateKind>(["none", "manual_review", "queue_fix_pr"]);
-const VISION_FIT_STATUSES = new Set<VisionFitStatus>([
-  "aligned",
-  "rejected",
-  "unclear",
-  "not_applicable",
-]);
-const IMPLEMENTATION_COMPLEXITIES = new Set<ImplementationComplexity>([
-  "small",
-  "medium",
-  "large",
-  "unclear",
-  "not_applicable",
-]);
-const AUTO_IMPLEMENTATION_CANDIDATES = new Set<AutoImplementationCandidate>([
-  "none",
-  "strict_bug",
-  "vision_fit",
-]);
-const TRIAGE_PRIORITIES = new Set<TriagePriority>(["P0", "P1", "P2", "P3", "none"]);
-const ITEM_CATEGORIES = new Set<ItemCategory>([
-  "bug",
-  "regression",
-  "feature",
-  "skill",
-  "docs",
-  "cleanup",
-  "support",
-  "admin",
-  "security",
-  "unclear",
-]);
-const PAIR_BLOCKED_CLOSE_ACTIONS = new Set<string>([
-  "skipped_open_closing_pr",
-  "skipped_same_author_pair",
-]);
-const CLOSED_STATE_PROBE_ACTIONS = new Set<string>([
-  "skipped_already_closed",
-  "skipped_changed_since_review",
-  "skipped_maintainer_authored",
-  "skipped_protected_label",
-  "skipped_close_exempt_label",
-  "skipped_pr_close_coverage_proof",
-  "skipped_invalid_decision",
-  "skipped_open_closing_pr",
-  "skipped_same_author_pair",
-  "skipped_locked_conversation",
-  "retry_stale_canonical_comment_sync",
-]);
-const EVENT_GUARDED_OPEN_ACTIONS = new Set<string>([
-  "skipped_locked_conversation",
-  "skipped_maintainer_authored",
-  "skipped_open_closing_pr",
-  "skipped_protected_label",
-  "skipped_close_exempt_label",
-  "skipped_low_signal_live_guard",
-  "skipped_same_author_pair",
-]);
 
 export function guardedOpenApplyProofFields(
   actionTaken: string,
@@ -1874,262 +647,6 @@ export function guardedOpenApplyProofFields(
     ? { guardedOpenStateVerified: true }
     : {};
 }
-const REPRODUCTION_STATUSES = new Set<ReproductionStatus>([
-  "reproduced",
-  "source_reproducible",
-  "not_reproduced",
-  "unclear",
-  "not_applicable",
-]);
-const SECURITY_REVIEW_STATUSES = new Set<SecurityReviewStatus>([
-  "cleared",
-  "needs_attention",
-  "not_applicable",
-]);
-const SECURITY_CONCERN_SEVERITIES = new Set<SecurityConcernSeverity>(["high", "medium", "low"]);
-const IMPACT_LABEL_VALUES = new Set<ImpactLabelName>(IMPACT_LABELS.map((label) => label.name));
-const MERGE_RISK_LABEL_VALUES = new Set<MergeRiskLabelName>(
-  MERGE_RISK_LABELS.map((label) => label.name),
-);
-const MATURITY_LABEL_VALUES = new Set<MaturityLabelName>(
-  MATURITY_LABELS.map((label) => label.name),
-);
-const REVIEW_LABEL_VALUES = new Set<ReviewLabelName>([
-  "P0",
-  "P1",
-  "P2",
-  "P3",
-  ...IMPACT_LABELS.map((label) => label.name),
-  ...MERGE_RISK_LABELS.map((label) => label.name),
-  ...MATURITY_LABELS.map((label) => label.name),
-]);
-const REAL_BEHAVIOR_PROOF_STATUSES = new Set<RealBehaviorProofStatus>([
-  "sufficient",
-  "missing",
-  "mock_only",
-  "insufficient",
-  "not_applicable",
-  "override",
-]);
-const PR_RATING_TIERS = new Set<PrRatingTier>(["S", "A", "B", "C", "D", "F", "NA"]);
-const REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS = new Set<RealBehaviorProofEvidenceKind>([
-  "screenshot",
-  "recording",
-  "terminal",
-  "logs",
-  "live_output",
-  "linked_artifact",
-  "none",
-  "not_applicable",
-]);
-const TELEGRAM_VISIBLE_PROOF_STATUSES = new Set<TelegramVisibleProofStatus>([
-  "needed",
-  "not_needed",
-]);
-const MANTIS_RECOMMENDATION_STATUSES = new Set<MantisRecommendationStatus>([
-  "recommended",
-  "not_recommended",
-]);
-const MANTIS_RECOMMENDATION_SCENARIOS = new Set<MantisRecommendationScenario>([
-  "none",
-  "telegram_live",
-  "telegram_desktop_proof",
-  "discord_status_reactions",
-  "discord_thread_attachment",
-  "web_ui_chat_proof",
-  "slack_desktop_smoke",
-  "visual_task",
-]);
-const FEATURE_SHOWCASE_STATUSES = new Set<FeatureShowcaseStatus>(["showcase", "none"]);
-const OVERALL_CORRECTNESS_VALUES = new Set<OverallCorrectness>([
-  "patch is correct",
-  "patch is incorrect",
-  "not a patch",
-]);
-
-type ReviewArtifactDestination = "items" | "closed" | "skip_closed";
-const CONFIDENCES = new Set<Confidence>(["high", "medium", "low"]);
-const AGENTS_POLICY_STATUSES = new Set<AgentsPolicyStatusKind>([
-  "found_applied",
-  "found_not_applicable",
-  "not_found",
-  "conflict_not_applied",
-  "unreadable_or_unclear",
-]);
-const MERGE_RISK_OPTION_CATEGORIES = new Set<MergeRiskOptionCategory>([
-  "fix_before_merge",
-  "accept_risk",
-  "pause_or_close",
-]);
-const ROOT_CAUSE_RELATIONSHIPS = new Set<RootCauseRelationship>([
-  "canonical",
-  "duplicate",
-  "same_root_cause",
-  "partial_overlap",
-  "adjacent_distinct",
-  "superseded",
-  "fixed_by_candidate",
-  "independent",
-  "security_route",
-  "needs_human",
-]);
-const DECISION_SCHEMA_KEYS = new Set([
-  "decision",
-  "closeReason",
-  "confidence",
-  "summary",
-  "changeSummary",
-  "systemContext",
-  "architectureDiagram",
-  "evidence",
-  "likelyOwners",
-  "risks",
-  "bestSolution",
-  "maintainerDecision",
-  "triagePriority",
-  "impactLabels",
-  "mergeRiskLabels",
-  "maturityLabels",
-  "mergeRiskOptions",
-  "reviewMetrics",
-  "labelJustifications",
-  "itemCategory",
-  "reproductionStatus",
-  "reproductionConfidence",
-  "requiresNewFeature",
-  "requiresNewConfigOption",
-  "requiresProductDecision",
-  "reproductionAssessment",
-  "solutionAssessment",
-  "visionFit",
-  "visionFitReason",
-  "visionFitEvidence",
-  "implementationComplexity",
-  "autoImplementationCandidate",
-  "rootCauseCluster",
-  "agentsPolicyStatus",
-  "reviewFindings",
-  "securityReview",
-  "realBehaviorProof",
-  "prRating",
-  "telegramVisibleProof",
-  "mantisRecommendation",
-  "featureShowcase",
-  "overallCorrectness",
-  "overallConfidenceScore",
-  "fixedRelease",
-  "fixedSha",
-  "fixedAt",
-  "closeComment",
-  "workCandidate",
-  "workConfidence",
-  "workPriority",
-  "workReason",
-  "workPrompt",
-  "workClusterRefs",
-  "workValidation",
-  "workLikelyFiles",
-]);
-const EVIDENCE_SCHEMA_KEYS = new Set(["label", "detail", "file", "line", "command", "sha"]);
-const SECURITY_REVIEW_SCHEMA_KEYS = new Set(["status", "summary", "concerns"]);
-const REAL_BEHAVIOR_PROOF_SCHEMA_KEYS = new Set([
-  "status",
-  "summary",
-  "evidenceKind",
-  "needsContributorAction",
-]);
-const PR_RATING_SCHEMA_KEYS = new Set([
-  "proofTier",
-  "patchTier",
-  "overallTier",
-  "summary",
-  "nextSteps",
-]);
-const TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS = new Set(["status", "summary"]);
-const MANTIS_RECOMMENDATION_SCHEMA_KEYS = new Set([
-  "status",
-  "scenario",
-  "reason",
-  "maintainerComment",
-]);
-const FEATURE_SHOWCASE_SCHEMA_KEYS = new Set(["status", "reason"]);
-const ROOT_CAUSE_CLUSTER_SCHEMA_KEYS = new Set([
-  "confidence",
-  "canonicalRef",
-  "currentItemRelationship",
-  "summary",
-  "members",
-]);
-const ROOT_CAUSE_CLUSTER_MEMBER_SCHEMA_KEYS = new Set(["ref", "relationship", "reason"]);
-const AGENTS_POLICY_STATUS_SCHEMA_KEYS = new Set([
-  "found",
-  "readFully",
-  "applied",
-  "status",
-  "summary",
-]);
-const MERGE_RISK_OPTION_SCHEMA_KEYS = new Set([
-  "title",
-  "body",
-  "category",
-  "recommended",
-  "automergeInstruction",
-]);
-const REVIEW_METRIC_SCHEMA_KEYS = new Set(["label", "value", "reason"]);
-const LABEL_JUSTIFICATION_SCHEMA_KEYS = new Set(["label", "reason"]);
-const SECURITY_CONCERN_SCHEMA_KEYS = new Set([
-  "title",
-  "body",
-  "severity",
-  "confidenceScore",
-  "file",
-  "line",
-]);
-const REVIEW_FINDING_SCHEMA_KEYS = new Set([
-  "title",
-  "body",
-  "priority",
-  "confidenceScore",
-  "file",
-  "lineStart",
-  "lineEnd",
-  "lateFinding",
-]);
-const LIKELY_OWNER_SCHEMA_KEYS = new Set([
-  "person",
-  "role",
-  "reason",
-  "commits",
-  "files",
-  "confidence",
-]);
-const REVIEW_SECTIONS = {
-  summary: "Summary",
-  changeSummary: "What This Changes",
-  systemContext: "System Context",
-  architectureDiagram: "Architecture Diagram",
-  bestSolution: "Best Possible Solution",
-  maintainerDecision: "Maintainer Decision",
-  reproductionAssessment: "Reproduction Assessment",
-  solutionAssessment: "Solution Assessment",
-  visionFit: "Vision Fit",
-  rootCauseCluster: "Root-Cause Cluster",
-  reviewFindings: "Review Findings",
-  securityReview: "Security Review",
-  realBehaviorProof: "Real Behavior Proof",
-  prRating: "PR Rating",
-  telegramVisibleProof: "Telegram Visible Proof",
-  mantisRecommendation: "Mantis Recommendation",
-  featureShowcase: "Feature Showcase",
-  agentsPolicyStatus: "AGENTS.md Policy Status",
-  workCandidate: "Work Candidate",
-  repairWorkPrompt: "Repair Work Prompt",
-  evidence: "Evidence",
-  likelyOwners: "Likely Related People",
-  risks: "Risks / Open Questions",
-  closeComment: "Close Comment",
-} as const;
-const PR_CLOSE_COVERAGE_PROOF_SECTION = "PR Close Coverage Proof";
 
 type ReviewSection = keyof typeof REVIEW_SECTIONS;
 
@@ -2402,15 +919,6 @@ function run(
 
 const GITHUB_RUNTIME_REPORT_FLUSH_RESERVE_MS = 1_000;
 
-interface GitHubRuntimeBudget {
-  startedAtMs: number;
-  maxRuntimeMs: number;
-  limitReason?: string;
-  onYield?: (reason: string, resumeCurrent?: boolean) => void;
-  onFailure?: (error: unknown) => void;
-  yieldReason?: string;
-}
-
 class GitHubRuntimeBudgetError extends Error {
   constructor(readonly reason: string) {
     super(reason);
@@ -2623,11 +1131,6 @@ function maybePublishThrottleHeartbeat(options: {
   }
 }
 
-type GitHubRetryOptions = {
-  request?: ((args: string[], attempt: number) => string) | undefined;
-  sleepBeforeRetry?: ((waitMs: number) => void) | undefined;
-};
-
 function ghWithRetry(args: string[], attempts = 12, options: GitHubRetryOptions = {}): string {
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -2655,14 +1158,6 @@ function ghWithRetry(args: string[], attempts = 12, options: GitHubRetryOptions 
   }
   throw lastError;
 }
-
-type MutationRunner = <T>(options: {
-  identity: string;
-  idempotencyIdentity: string;
-  operation: () => T;
-  didMutate?: ((result: T) => boolean) | undefined;
-  knownNoMutation?: ((error: unknown) => boolean) | undefined;
-}) => T;
 
 class ApplyMutationReviewGuardError extends Error {
   constructor(reason: string) {
@@ -2800,11 +1295,6 @@ export function observedGitHubMutationAttemptsForTest(
   }
   return receipts;
 }
-
-export type GitHubDispatchOutcome =
-  | "definitely_not_dispatched"
-  | "ambiguous_transport"
-  | "accepted";
 
 class GitHubDispatchError extends Error {
   readonly outcome: Exclude<GitHubDispatchOutcome, "accepted">;
@@ -3231,803 +1721,22 @@ function reviewPolicyHash(options: {
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
-
-function requireRecord(value: unknown, path: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error(`${path} must be an object`);
-  return value as Record<string, unknown>;
-}
-
-function rejectUnexpectedKeys(
-  record: Record<string, unknown>,
-  allowedKeys: Set<string>,
-  path: string,
-): void {
-  const unexpected = Object.keys(record).filter((key) => !allowedKeys.has(key));
-  if (unexpected.length) throw new Error(`${path} has unexpected keys: ${unexpected.join(", ")}`);
-}
-
-function requireString(value: unknown, path: string): string {
-  if (typeof value !== "string") throw new Error(`${path} must be a string`);
-  return value;
-}
-
-function requireNullableString(value: unknown, path: string): string | null {
-  if (value === null || typeof value === "string") return value;
-  throw new Error(`${path} must be a string or null`);
-}
-
-function requireNullableInteger(value: unknown, path: string): number | null {
-  if (value === null) return value;
-  if (typeof value === "number" && Number.isInteger(value)) return value;
-  throw new Error(`${path} must be an integer or null`);
-}
-
-function requireInteger(value: unknown, path: string): number {
-  if (typeof value === "number" && Number.isInteger(value)) return value;
-  throw new Error(`${path} must be an integer`);
-}
-
-function requireNumber(value: unknown, path: string): number {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  throw new Error(`${path} must be a finite number`);
-}
-
-function requireBoolean(value: unknown, path: string): boolean {
-  if (typeof value === "boolean") return value;
-  throw new Error(`${path} must be a boolean`);
-}
-
-function requireConfidenceScore(value: unknown, path: string): number {
-  const score = requireNumber(value, path);
-  if (score < 0 || score > 1) throw new Error(`${path} must be between 0 and 1`);
-  return score;
-}
-
-function requirePriority(value: unknown, path: string): ReviewFinding["priority"] {
-  const priority = requireInteger(value, path);
-  if (priority === 0 || priority === 1 || priority === 2 || priority === 3) return priority;
-  throw new Error(`${path} must be 0, 1, 2, or 3`);
-}
-
-function requireStringArray(value: unknown, path: string): string[] {
-  if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
-  return value.map((entry, index) => requireString(entry, `${path}[${index}]`));
-}
-
-function requireEnumArray<T extends string>(value: unknown, allowed: Set<T>, path: string): T[] {
-  return requireStringArray(value, path).map((entry, index) =>
-    requireEnum(entry, allowed, `${path}[${index}]`),
-  );
-}
-
-function requireImpactLabels(value: unknown): ImpactLabelName[] {
-  const labels = requireEnumArray(value, IMPACT_LABEL_VALUES, "decision.impactLabels");
-  if (labels.length > 3) throw new Error("decision.impactLabels must contain at most 3 labels");
-  if (new Set(labels).size !== labels.length) {
-    throw new Error("decision.impactLabels must not contain duplicates");
-  }
-  return labels;
-}
-
-function requireMergeRiskLabels(value: unknown): MergeRiskLabelName[] {
-  const labels = requireEnumArray(value, MERGE_RISK_LABEL_VALUES, "decision.mergeRiskLabels");
-  if (labels.length > 3) throw new Error("decision.mergeRiskLabels must contain at most 3 labels");
-  if (new Set(labels).size !== labels.length) {
-    throw new Error("decision.mergeRiskLabels must not contain duplicates");
-  }
-  return labels;
-}
-
-function requireMaturityLabels(value: unknown): MaturityLabelName[] {
-  const labels = requireEnumArray(value, MATURITY_LABEL_VALUES, "decision.maturityLabels");
-  if (labels.length > 1) throw new Error("decision.maturityLabels must contain at most 1 label");
-  return labels;
-}
-
-function parseMergeRiskOption(value: unknown, path: string): MergeRiskOption {
-  const record = requireRecord(value, path);
-  rejectUnexpectedKeys(record, MERGE_RISK_OPTION_SCHEMA_KEYS, path);
-  return {
-    title: requireString(record.title, `${path}.title`).trim(),
-    body: requireString(record.body, `${path}.body`).trim(),
-    category: requireEnum(record.category, MERGE_RISK_OPTION_CATEGORIES, `${path}.category`),
-    recommended: requireBoolean(record.recommended, `${path}.recommended`),
-    automergeInstruction: requireString(
-      record.automergeInstruction,
-      `${path}.automergeInstruction`,
-    ).trim(),
-  };
-}
-
-function requireMergeRiskOptions(value: unknown): MergeRiskOption[] {
-  if (value === undefined) return [];
-  if (!Array.isArray(value)) throw new Error("decision.mergeRiskOptions must be an array");
-  const options = value.map((entry, index) =>
-    parseMergeRiskOption(entry, `decision.mergeRiskOptions[${index}]`),
-  );
-  if (options.length > 3)
-    throw new Error("decision.mergeRiskOptions must contain at most 3 options");
-  const recommended = options.filter((option) => option.recommended);
-  if (recommended.length > 1) {
-    throw new Error("decision.mergeRiskOptions must not contain more than one recommended option");
-  }
-  for (const [index, option] of options.entries()) {
-    if (!option.title)
-      throw new Error(`decision.mergeRiskOptions[${index}].title must not be empty`);
-    if (!option.body) throw new Error(`decision.mergeRiskOptions[${index}].body must not be empty`);
-    if (option.automergeInstruction && option.category !== "fix_before_merge") {
-      throw new Error(
-        `decision.mergeRiskOptions[${index}].automergeInstruction requires fix_before_merge category`,
-      );
-    }
-    if (option.automergeInstruction && !option.recommended) {
-      throw new Error(
-        `decision.mergeRiskOptions[${index}].automergeInstruction requires a recommended option`,
-      );
-    }
-  }
-  return options;
-}
-
-function parseReviewMetric(value: unknown, path: string): ReviewMetric {
-  const record = requireRecord(value, path);
-  rejectUnexpectedKeys(record, REVIEW_METRIC_SCHEMA_KEYS, path);
-  const metric = {
-    label: requireString(record.label, `${path}.label`).trim(),
-    value: requireString(record.value, `${path}.value`).trim(),
-    reason: requireString(record.reason, `${path}.reason`).trim(),
-  };
-  if (!metric.label) throw new Error(`${path}.label must not be empty`);
-  if (!metric.value) throw new Error(`${path}.value must not be empty`);
-  if (!metric.reason) throw new Error(`${path}.reason must not be empty`);
-  return metric;
-}
-
-function requireReviewMetrics(value: unknown): ReviewMetric[] {
-  if (!Array.isArray(value)) throw new Error("decision.reviewMetrics must be an array");
-  return value.map((entry, index) => parseReviewMetric(entry, `decision.reviewMetrics[${index}]`));
-}
-
-function validateMergeRiskOptions(
-  decision: Pick<Decision, "mergeRiskLabels" | "mergeRiskOptions">,
-): void {
-  if (decision.mergeRiskLabels.length === 0 && decision.mergeRiskOptions.length > 0) {
-    throw new Error("decision.mergeRiskOptions must be empty when mergeRiskLabels is empty");
-  }
-  if (decision.mergeRiskLabels.length > 0 && decision.mergeRiskOptions.length === 0) {
-    throw new Error(
-      "decision.mergeRiskOptions must include 1-3 options when mergeRiskLabels is not empty",
-    );
-  }
-}
-
-function validateMaintainerDecisionOwner(
-  decision: Pick<Decision, "maintainerDecision" | "likelyOwners">,
-): void {
-  if (!decision.maintainerDecision.required) return;
-  const selected = decision.maintainerDecision.likelyOwner.person;
-  if (!decision.likelyOwners.some((owner) => owner.person === selected)) {
-    throw new Error(
-      "decision.maintainerDecision.likelyOwner.person must match decision.likelyOwners",
-    );
-  }
-}
-
-function parseLabelJustification(value: unknown, path: string): LabelJustification {
-  const record = requireRecord(value, path);
-  rejectUnexpectedKeys(record, LABEL_JUSTIFICATION_SCHEMA_KEYS, path);
-  const label = requireEnum(record.label, REVIEW_LABEL_VALUES, `${path}.label`);
-  const reason = requireString(record.reason, `${path}.reason`).trim();
-  if (!reason) throw new Error(`${path}.reason must not be empty`);
-  return { label, reason };
-}
-
-function requireLabelJustifications(value: unknown): LabelJustification[] {
-  if (!Array.isArray(value)) throw new Error("decision.labelJustifications must be an array");
-  const justifications = value.map((entry, index) =>
-    parseLabelJustification(entry, `decision.labelJustifications[${index}]`),
-  );
-  const labels = justifications.map((entry) => entry.label);
-  if (new Set(labels).size !== labels.length) {
-    throw new Error("decision.labelJustifications must not contain duplicate labels");
-  }
-  return justifications;
-}
-
-function selectedReviewLabels(
-  decision: Pick<
-    Decision,
-    "triagePriority" | "impactLabels" | "mergeRiskLabels" | "maturityLabels"
-  >,
-): ReviewLabelName[] {
-  return [
-    ...(decision.triagePriority === "none" ? [] : [decision.triagePriority]),
-    ...decision.impactLabels,
-    ...decision.mergeRiskLabels,
-    ...decision.maturityLabels,
-  ];
-}
-
-function validateLabelJustifications(
-  decision: Pick<
-    Decision,
-    "triagePriority" | "impactLabels" | "mergeRiskLabels" | "maturityLabels" | "labelJustifications"
-  >,
-): void {
-  const selected = new Set<string>(selectedReviewLabels(decision));
-  const justified = new Set(decision.labelJustifications.map((entry) => entry.label));
-  const missing = [...selected].filter((label) => !justified.has(label));
-  if (missing.length) {
-    throw new Error(`decision.labelJustifications missing selected labels: ${missing.join(", ")}`);
-  }
-  const extra = [...justified].filter((label) => !selected.has(label));
-  if (extra.length) {
-    throw new Error(`decision.labelJustifications contains unselected labels: ${extra.join(", ")}`);
-  }
-}
-
-function isEnvironmentAccessCaveat(value: string): boolean {
-  return /(?:GH_TOKEN|GITHUB_TOKEN|authenticated gh|gh (?:was |is )?unavailable|unauthenticated gh|shallow clone|GitHub auth(?:entication)? (?:was |is )?unavailable|could not use authenticated GitHub)/i.test(
-    value,
-  );
-}
-
-function parseEvidence(value: unknown, path: string): Evidence {
-  const record = requireRecord(value, path);
-  rejectUnexpectedKeys(record, EVIDENCE_SCHEMA_KEYS, path);
-  return {
-    label: requireString(record.label, `${path}.label`),
-    detail: requireString(record.detail, `${path}.detail`),
-    file: requireNullableString(record.file, `${path}.file`),
-    line: requireNullableInteger(record.line, `${path}.line`),
-    command: requireNullableString(record.command, `${path}.command`),
-    sha: requireNullableString(record.sha, `${path}.sha`),
-  };
-}
-
-function parseLikelyOwner(value: unknown, path: string): LikelyOwner {
-  const record = requireRecord(value, path);
-  rejectUnexpectedKeys(record, LIKELY_OWNER_SCHEMA_KEYS, path);
-  return {
-    person: requireString(record.person, `${path}.person`),
-    role: requireString(record.role, `${path}.role`),
-    reason: requireString(record.reason, `${path}.reason`),
-    commits: requireStringArray(record.commits, `${path}.commits`),
-    files: requireStringArray(record.files, `${path}.files`),
-    confidence: requireEnum(record.confidence, CONFIDENCES, `${path}.confidence`),
-  };
-}
-
-function parseReviewFinding(value: unknown, path: string): ReviewFinding {
-  const record = requireRecord(value, path);
-  rejectUnexpectedKeys(record, REVIEW_FINDING_SCHEMA_KEYS, path);
-  const lineStart = requireInteger(record.lineStart, `${path}.lineStart`);
-  const lineEnd = requireInteger(record.lineEnd, `${path}.lineEnd`);
-  if (lineStart <= 0) throw new Error(`${path}.lineStart must be positive`);
-  if (lineEnd < lineStart) throw new Error(`${path}.lineEnd must be >= lineStart`);
-  const finding: ReviewFinding = {
-    title: requireString(record.title, `${path}.title`),
-    body: requireString(record.body, `${path}.body`),
-    priority: requirePriority(record.priority, `${path}.priority`),
-    confidenceScore: requireConfidenceScore(record.confidenceScore, `${path}.confidenceScore`),
-    file: requireString(record.file, `${path}.file`),
-    lineStart,
-    lineEnd,
-  };
-  if (record.lateFinding !== undefined) {
-    finding.lateFinding = requireBoolean(record.lateFinding, `${path}.lateFinding`);
-  }
-  return finding;
-}
-
-type DecisionNormalizationItem = Pick<Item, "repo" | "number" | "kind" | "authorAssociation">;
-type RootCauseNormalizationItem = Pick<Item, "repo" | "number" | "kind">;
-
-function defaultRootCauseCluster(): RootCauseClusterAssessment {
-  return {
-    confidence: "low",
-    canonicalRef: null,
-    currentItemRelationship: "independent",
-    summary: "No evidence-backed root-cause cluster was established.",
-    members: [],
-  };
-}
-
-const CHANGELOG_ENTRY_REVIEW_PATTERN = /\b(?:changelog\.md|changelog\s+entry|release[- ]?note)\b/i;
-const MISSING_CHANGELOG_ACTION_PATTERN =
-  /\b(?:add|include|missing|no|lacks?|needs?|requires?|required|without)\b/i;
-const CHANGELOG_TOOLING_PATTERN =
-  /\b(?:coverage|duplicate|generator|malformed|parser|validation|validator|wrong\s+section)\b/i;
-
-function isOpenClawContributorPullRequest(item: DecisionNormalizationItem | undefined): boolean {
-  return (
-    item !== undefined &&
-    normalizeRepo(item.repo) === DEFAULT_TARGET_REPO &&
-    item.kind === "pull_request" &&
-    !isMaintainerAuthorAssociation(item.authorAssociation)
-  );
-}
-
-function isContributorChangelogEntryFinding(
-  item: DecisionNormalizationItem | undefined,
-  finding: ReviewFinding,
-): boolean {
-  const text = `${finding.title}\n${finding.body}`;
-  return (
-    isOpenClawContributorPullRequest(item) &&
-    CHANGELOG_ENTRY_REVIEW_PATTERN.test(text) &&
-    MISSING_CHANGELOG_ACTION_PATTERN.test(text) &&
-    !CHANGELOG_TOOLING_PATTERN.test(text)
-  );
-}
-
-const CLEAN_OPENCLAW_PR_REVIEW_NEXT_STEP =
-  "Continue normal maintainer review; ClawSweeper found no patch-correctness issue.";
-
-function normalizeDecisionForItem(
-  decision: Decision,
-  item: DecisionNormalizationItem | undefined,
-): Decision {
-  const reviewFindings = decision.reviewFindings.filter(
-    (finding) => !isContributorChangelogEntryFinding(item, finding),
-  );
-  if (reviewFindings.length === decision.reviewFindings.length) return decision;
-  if (reviewFindings.length > 0) return { ...decision, reviewFindings };
-  const overallCorrectness =
-    decision.overallCorrectness === "patch is incorrect"
-      ? "patch is correct"
-      : decision.overallCorrectness;
-
-  return {
-    ...decision,
-    reviewFindings,
-    bestSolution: CLEAN_OPENCLAW_PR_REVIEW_NEXT_STEP,
-    triagePriority: decision.triagePriority,
-    mergeRiskOptions: decision.mergeRiskOptions,
-    labelJustifications: decision.labelJustifications,
-    overallCorrectness,
-    prRating: derivedPrRating({
-      isPullRequest: item?.kind === "pull_request",
-      proof: decision.realBehaviorProof,
-      findings: reviewFindings,
-      securityReview: decision.securityReview,
-      overallCorrectness,
-      overallConfidenceScore: decision.overallConfidenceScore,
-    }),
-    workCandidate: "none",
-    workConfidence: "low",
-    workPriority: "low",
-    workReason: "",
-    workPrompt: "",
-    workClusterRefs: [],
-    workValidation: [],
-    workLikelyFiles: [],
-  };
-}
-
-function parseSecurityConcern(value: unknown, path: string): SecurityConcern {
-  const record = requireRecord(value, path);
-  rejectUnexpectedKeys(record, SECURITY_CONCERN_SCHEMA_KEYS, path);
-  const line = requireNullableInteger(record.line, `${path}.line`);
-  if (line !== null && line <= 0) throw new Error(`${path}.line must be positive`);
-  return {
-    title: requireString(record.title, `${path}.title`),
-    body: requireString(record.body, `${path}.body`),
-    severity: requireEnum(record.severity, SECURITY_CONCERN_SEVERITIES, `${path}.severity`),
-    confidenceScore: requireConfidenceScore(record.confidenceScore, `${path}.confidenceScore`),
-    file: requireNullableString(record.file, `${path}.file`),
-    line,
-  };
-}
-
-function parseSecurityReview(value: unknown, path: string): SecurityReview {
-  const record = requireRecord(value, path);
-  rejectUnexpectedKeys(record, SECURITY_REVIEW_SCHEMA_KEYS, path);
-  const concerns = Array.isArray(record.concerns)
-    ? record.concerns.map((entry, index) =>
-        parseSecurityConcern(entry, `${path}.concerns[${index}]`),
-      )
-    : (() => {
-        throw new Error(`${path}.concerns must be an array`);
-      })();
-  return {
-    status: requireEnum(record.status, SECURITY_REVIEW_STATUSES, `${path}.status`),
-    summary: requireString(record.summary, `${path}.summary`),
-    concerns,
-  };
-}
-
-function parseRealBehaviorProof(value: unknown, path: string): RealBehaviorProof {
-  const record = requireRecord(value, path);
-  rejectUnexpectedKeys(record, REAL_BEHAVIOR_PROOF_SCHEMA_KEYS, path);
-  return {
-    status: requireEnum(record.status, REAL_BEHAVIOR_PROOF_STATUSES, `${path}.status`),
-    summary: requireString(record.summary, `${path}.summary`),
-    evidenceKind: requireEnum(
-      record.evidenceKind,
-      REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS,
-      `${path}.evidenceKind`,
-    ),
-    needsContributorAction: requireBoolean(
-      record.needsContributorAction,
-      `${path}.needsContributorAction`,
-    ),
-  };
-}
-
-function parsePrRating(value: unknown, path: string): PrRating {
-  const record = requireRecord(value, path);
-  rejectUnexpectedKeys(record, PR_RATING_SCHEMA_KEYS, path);
-  return normalizePrRating({
-    proofTier: requireEnum(record.proofTier, PR_RATING_TIERS, `${path}.proofTier`),
-    patchTier: requireEnum(record.patchTier, PR_RATING_TIERS, `${path}.patchTier`),
-    overallTier: requireEnum(record.overallTier, PR_RATING_TIERS, `${path}.overallTier`),
-    summary: requireString(record.summary, `${path}.summary`),
-    nextSteps: requireStringArray(record.nextSteps, `${path}.nextSteps`).slice(0, 3),
-  });
-}
-
-function parseTelegramVisibleProof(value: unknown, path: string): TelegramVisibleProof {
-  const record = requireRecord(value, path);
-  rejectUnexpectedKeys(record, TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS, path);
-  return {
-    status: requireEnum(record.status, TELEGRAM_VISIBLE_PROOF_STATUSES, `${path}.status`),
-    summary: requireString(record.summary, `${path}.summary`),
-  };
-}
-
-function parseMantisRecommendation(value: unknown, path: string): MantisRecommendation {
-  const record = requireRecord(value, path);
-  rejectUnexpectedKeys(record, MANTIS_RECOMMENDATION_SCHEMA_KEYS, path);
-  return {
-    status: requireEnum(record.status, MANTIS_RECOMMENDATION_STATUSES, `${path}.status`),
-    scenario: requireEnum(record.scenario, MANTIS_RECOMMENDATION_SCENARIOS, `${path}.scenario`),
-    reason: requireString(record.reason, `${path}.reason`),
-    maintainerComment: requireString(record.maintainerComment, `${path}.maintainerComment`),
-  };
-}
-
-function parseFeatureShowcase(value: unknown, path: string): FeatureShowcase {
-  const record = requireRecord(value, path);
-  rejectUnexpectedKeys(record, FEATURE_SHOWCASE_SCHEMA_KEYS, path);
-  return {
-    status: requireEnum(record.status, FEATURE_SHOWCASE_STATUSES, `${path}.status`),
-    reason: requireString(record.reason, `${path}.reason`),
-  };
-}
-
-interface ParsedGitHubItemRef {
-  repo: string;
-  kind: ItemKind;
-  number: number;
-  url: string;
-}
-
-function parseGitHubItemRef(value: string, path: string): ParsedGitHubItemRef {
-  const match = value.match(
-    /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/(issues|pull)\/([1-9][0-9]*)$/,
-  );
-  if (!match) throw new Error(`${path} must be a full GitHub issue or pull request URL`);
-  const repo = normalizeRepo(`${match[1]}/${match[2]}`);
-  const kind = match[3] === "pull" ? "pull_request" : "issue";
-  const number = Number(match[4]);
-  return {
-    repo,
-    kind,
-    number,
-    url: `https://github.com/${repo}/${kind === "pull_request" ? "pull" : "issues"}/${number}`,
-  };
-}
-
-function decisionItemUrl(item: RootCauseNormalizationItem): string {
-  const segment = item.kind === "pull_request" ? "pull" : "issues";
-  return `https://github.com/${normalizeRepo(item.repo)}/${segment}/${item.number}`;
-}
-
-function parseRootCauseClusterMember(value: unknown, path: string): RootCauseClusterMember {
-  const record = requireRecord(value, path);
-  rejectUnexpectedKeys(record, ROOT_CAUSE_CLUSTER_MEMBER_SCHEMA_KEYS, path);
-  const reason = requireString(record.reason, `${path}.reason`).trim();
-  if (!reason) throw new Error(`${path}.reason must not be empty`);
-  if (reason.length > 300) throw new Error(`${path}.reason must be at most 300 characters`);
-  const ref = parseGitHubItemRef(requireString(record.ref, `${path}.ref`), `${path}.ref`).url;
-  return {
-    ref,
-    relationship: requireEnum(
-      record.relationship,
-      ROOT_CAUSE_RELATIONSHIPS,
-      `${path}.relationship`,
-    ),
-    reason,
-  };
-}
-
-function parseRootCauseCluster(
-  value: unknown,
-  path: string,
-  item?: RootCauseNormalizationItem,
-): RootCauseClusterAssessment {
-  const record = requireRecord(value, path);
-  rejectUnexpectedKeys(record, ROOT_CAUSE_CLUSTER_SCHEMA_KEYS, path);
-  const summary = requireString(record.summary, `${path}.summary`).trim();
-  if (!summary) throw new Error(`${path}.summary must not be empty`);
-  if (summary.length > 500) throw new Error(`${path}.summary must be at most 500 characters`);
-  if (!Array.isArray(record.members)) throw new Error(`${path}.members must be an array`);
-  if (record.members.length > 12) throw new Error(`${path}.members must contain at most 12 items`);
-
-  const members = record.members.map((entry, index) =>
-    parseRootCauseClusterMember(entry, `${path}.members[${index}]`),
-  );
-  const parsedMembers = members.map((member, index) => ({
-    member,
-    parsed: parseGitHubItemRef(member.ref, `${path}.members[${index}].ref`),
-  }));
-  const seenRefs = new Set<string>();
-  for (const { member, parsed } of parsedMembers) {
-    if (seenRefs.has(member.ref)) throw new Error(`${path}.members contains duplicate refs`);
-    seenRefs.add(member.ref);
-    if (item && normalizeRepo(parsed.repo) !== normalizeRepo(item.repo)) {
-      throw new Error(`${path}.members must stay within ${item.repo}`);
-    }
-    if (item && member.ref === decisionItemUrl(item)) {
-      throw new Error(`${path}.members must not repeat the current item`);
-    }
-  }
-
-  const rawCanonicalRef = requireNullableString(record.canonicalRef, `${path}.canonicalRef`);
-  const parsedCanonical = rawCanonicalRef
-    ? parseGitHubItemRef(rawCanonicalRef, `${path}.canonicalRef`)
-    : null;
-  const canonicalRef = parsedCanonical?.url ?? null;
-  if (item && parsedCanonical && normalizeRepo(parsedCanonical.repo) !== normalizeRepo(item.repo)) {
-    throw new Error(`${path}.canonicalRef must stay within ${item.repo}`);
-  }
-  const currentItemRelationship = requireEnum(
-    record.currentItemRelationship,
-    ROOT_CAUSE_RELATIONSHIPS,
-    `${path}.currentItemRelationship`,
-  );
-  const canonicalMembers = members.filter((member) => member.relationship === "canonical");
-  if (canonicalMembers.length > 1)
-    throw new Error(`${path} must have at most one canonical member`);
-
-  const currentUrl = item ? decisionItemUrl(item) : null;
-  if (!canonicalRef) {
-    if (currentItemRelationship === "canonical" || canonicalMembers.length > 0) {
-      throw new Error(`${path}.canonicalRef is required for canonical relationships`);
-    }
-  } else if (currentItemRelationship === "canonical") {
-    if (currentUrl && canonicalRef !== currentUrl) {
-      throw new Error(`${path}.canonicalRef must identify the canonical current item`);
-    }
-    if (canonicalMembers.length > 0) {
-      throw new Error(`${path} cannot mark both the current item and a member canonical`);
-    }
-  } else if (canonicalMembers.length !== 1 || canonicalMembers[0]?.ref !== canonicalRef) {
-    throw new Error(`${path}.canonicalRef must identify exactly one canonical member`);
-  }
-
-  const requiresCanonical = new Set<RootCauseRelationship>([
-    "duplicate",
-    "same_root_cause",
-    "superseded",
-    "fixed_by_candidate",
-  ]);
-  if (requiresCanonical.has(currentItemRelationship) && !canonicalRef) {
-    throw new Error(`${path}.currentItemRelationship requires a canonical ref`);
-  }
-  if (
-    ["independent", "security_route", "needs_human"].includes(currentItemRelationship) &&
-    canonicalRef
-  ) {
-    throw new Error(`${path}.currentItemRelationship cannot claim a canonical ref`);
-  }
-  for (const { member, parsed } of parsedMembers) {
-    if (requiresCanonical.has(member.relationship) && !canonicalRef) {
-      throw new Error(`${path} relationship ${member.relationship} requires a canonical ref`);
-    }
-    if (
-      member.relationship === "fixed_by_candidate" &&
-      parsed.kind !== "pull_request" &&
-      parsedCanonical?.kind !== "pull_request"
-    ) {
-      throw new Error(`${path} fixed_by_candidate requires the member or canonical ref to be a PR`);
-    }
-  }
-  if (
-    currentItemRelationship === "fixed_by_candidate" &&
-    item?.kind !== "pull_request" &&
-    parsedCanonical?.kind !== "pull_request"
-  ) {
-    throw new Error(
-      `${path}.currentItemRelationship fixed_by_candidate requires the current item or canonical ref to be a PR`,
-    );
-  }
-
-  return {
-    confidence: requireEnum(record.confidence, CONFIDENCES, `${path}.confidence`),
-    canonicalRef,
-    currentItemRelationship,
-    summary,
-    members,
-  };
-}
-
-function parseRootCauseClusterOrDefault(
-  value: unknown,
-  path: string,
-  item?: RootCauseNormalizationItem,
-): RootCauseClusterAssessment {
-  try {
-    return parseRootCauseCluster(value, path, item);
-  } catch {
-    return defaultRootCauseCluster();
-  }
-}
-
-function parseAgentsPolicyStatus(value: unknown, path: string): AgentsPolicyStatus {
-  const record = requireRecord(value, path);
-  rejectUnexpectedKeys(record, AGENTS_POLICY_STATUS_SCHEMA_KEYS, path);
-  return {
-    found: requireBoolean(record.found, `${path}.found`),
-    readFully: requireBoolean(record.readFully, `${path}.readFully`),
-    applied: requireBoolean(record.applied, `${path}.applied`),
-    status: requireEnum(record.status, AGENTS_POLICY_STATUSES, `${path}.status`),
-    summary: requireString(record.summary, `${path}.summary`),
-  };
-}
-
-function requireEnum<T extends string>(value: unknown, allowed: Set<T>, path: string): T {
-  if (typeof value === "string" && allowed.has(value as T)) return value as T;
-  throw new Error(`${path} has invalid value`);
-}
+const decisionParser = createDecisionParser({
+  isMaintainerAuthorAssociation,
+  neutralizeOwnedSectionSpoofing,
+  sanitizeArchitectureDiagram,
+});
+const {
+  defaultRootCauseCluster,
+  parseGitHubItemRef,
+  parseLabelJustification,
+  parseMergeRiskOption,
+  parseRootCauseCluster,
+  selectedReviewLabels,
+} = decisionParser;
 
 export function parseDecision(value: unknown, item?: DecisionNormalizationItem): Decision {
-  const record = requireRecord(value, "decision");
-  rejectUnexpectedKeys(record, DECISION_SCHEMA_KEYS, "decision");
-  const evidence = Array.isArray(record.evidence)
-    ? record.evidence.map((entry, index) => parseEvidence(entry, `decision.evidence[${index}]`))
-    : (() => {
-        throw new Error("decision.evidence must be an array");
-      })();
-  const likelyOwners = Array.isArray(record.likelyOwners)
-    ? record.likelyOwners.map((entry, index) =>
-        parseLikelyOwner(entry, `decision.likelyOwners[${index}]`),
-      )
-    : (() => {
-        throw new Error("decision.likelyOwners must be an array");
-      })();
-  if (likelyOwners.length === 0) throw new Error("decision.likelyOwners must not be empty");
-  const reviewFindings = Array.isArray(record.reviewFindings)
-    ? record.reviewFindings.map((entry, index) =>
-        parseReviewFinding(entry, `decision.reviewFindings[${index}]`),
-      )
-    : (() => {
-        throw new Error("decision.reviewFindings must be an array");
-      })();
-  const decision: Decision = {
-    decision: requireEnum(record.decision, DECISIONS, "decision.decision"),
-    closeReason: requireEnum(record.closeReason, ALL_REASONS, "decision.closeReason"),
-    confidence: requireEnum(record.confidence, CONFIDENCES, "decision.confidence"),
-    summary: requireString(record.summary, "decision.summary"),
-    changeSummary: requireString(record.changeSummary, "decision.changeSummary"),
-    systemContext: neutralizeOwnedSectionSpoofing(
-      requireString(record.systemContext, "decision.systemContext"),
-    ),
-    architectureDiagram: sanitizeArchitectureDiagram(
-      requireString(record.architectureDiagram, "decision.architectureDiagram"),
-    ),
-    evidence,
-    likelyOwners,
-    risks: requireStringArray(record.risks, "decision.risks").filter(
-      (risk) => !isEnvironmentAccessCaveat(risk),
-    ),
-    bestSolution: requireString(record.bestSolution, "decision.bestSolution"),
-    maintainerDecision: parseMaintainerDecision(
-      record.maintainerDecision,
-      "decision.maintainerDecision",
-    ),
-    triagePriority: requireEnum(
-      record.triagePriority,
-      TRIAGE_PRIORITIES,
-      "decision.triagePriority",
-    ),
-    impactLabels: requireImpactLabels(record.impactLabels),
-    mergeRiskLabels: requireMergeRiskLabels(record.mergeRiskLabels),
-    maturityLabels: requireMaturityLabels(record.maturityLabels),
-    mergeRiskOptions: requireMergeRiskOptions(record.mergeRiskOptions),
-    reviewMetrics: requireReviewMetrics(record.reviewMetrics),
-    labelJustifications: requireLabelJustifications(record.labelJustifications),
-    itemCategory: requireEnum(record.itemCategory, ITEM_CATEGORIES, "decision.itemCategory"),
-    reproductionStatus: requireEnum(
-      record.reproductionStatus,
-      REPRODUCTION_STATUSES,
-      "decision.reproductionStatus",
-    ),
-    reproductionConfidence: requireEnum(
-      record.reproductionConfidence,
-      CONFIDENCES,
-      "decision.reproductionConfidence",
-    ),
-    requiresNewFeature: requireBoolean(record.requiresNewFeature, "decision.requiresNewFeature"),
-    requiresNewConfigOption: requireBoolean(
-      record.requiresNewConfigOption,
-      "decision.requiresNewConfigOption",
-    ),
-    requiresProductDecision: requireBoolean(
-      record.requiresProductDecision,
-      "decision.requiresProductDecision",
-    ),
-    reproductionAssessment: requireString(
-      record.reproductionAssessment,
-      "decision.reproductionAssessment",
-    ),
-    solutionAssessment: requireString(record.solutionAssessment, "decision.solutionAssessment"),
-    visionFit: requireEnum(record.visionFit, VISION_FIT_STATUSES, "decision.visionFit"),
-    visionFitReason: requireString(record.visionFitReason, "decision.visionFitReason"),
-    visionFitEvidence: requireStringArray(record.visionFitEvidence, "decision.visionFitEvidence"),
-    implementationComplexity: requireEnum(
-      record.implementationComplexity,
-      IMPLEMENTATION_COMPLEXITIES,
-      "decision.implementationComplexity",
-    ),
-    autoImplementationCandidate: requireEnum(
-      record.autoImplementationCandidate,
-      AUTO_IMPLEMENTATION_CANDIDATES,
-      "decision.autoImplementationCandidate",
-    ),
-    rootCauseCluster: parseRootCauseClusterOrDefault(
-      record.rootCauseCluster,
-      "decision.rootCauseCluster",
-      item,
-    ),
-    agentsPolicyStatus: parseAgentsPolicyStatus(
-      record.agentsPolicyStatus,
-      "decision.agentsPolicyStatus",
-    ),
-    reviewFindings,
-    securityReview: parseSecurityReview(record.securityReview, "decision.securityReview"),
-    realBehaviorProof: parseRealBehaviorProof(
-      record.realBehaviorProof,
-      "decision.realBehaviorProof",
-    ),
-    prRating: parsePrRating(record.prRating, "decision.prRating"),
-    telegramVisibleProof: parseTelegramVisibleProof(
-      record.telegramVisibleProof,
-      "decision.telegramVisibleProof",
-    ),
-    mantisRecommendation: parseMantisRecommendation(
-      record.mantisRecommendation,
-      "decision.mantisRecommendation",
-    ),
-    featureShowcase: parseFeatureShowcase(record.featureShowcase, "decision.featureShowcase"),
-    overallCorrectness: requireEnum(
-      record.overallCorrectness,
-      OVERALL_CORRECTNESS_VALUES,
-      "decision.overallCorrectness",
-    ),
-    overallConfidenceScore: requireConfidenceScore(
-      record.overallConfidenceScore,
-      "decision.overallConfidenceScore",
-    ),
-    fixedRelease: requireNullableString(record.fixedRelease, "decision.fixedRelease"),
-    fixedSha: requireNullableString(record.fixedSha, "decision.fixedSha"),
-    fixedAt: requireNullableString(record.fixedAt, "decision.fixedAt"),
-    closeComment: requireString(record.closeComment, "decision.closeComment"),
-    workCandidate: requireEnum(record.workCandidate, WORK_CANDIDATES, "decision.workCandidate"),
-    workConfidence: requireEnum(record.workConfidence, CONFIDENCES, "decision.workConfidence"),
-    workPriority: requireEnum(record.workPriority, CONFIDENCES, "decision.workPriority"),
-    workReason: requireString(record.workReason, "decision.workReason"),
-    workPrompt: requireString(record.workPrompt, "decision.workPrompt"),
-    workClusterRefs: requireStringArray(record.workClusterRefs, "decision.workClusterRefs"),
-    workValidation: requireStringArray(record.workValidation, "decision.workValidation"),
-    workLikelyFiles: requireStringArray(record.workLikelyFiles, "decision.workLikelyFiles"),
-  };
-  validateMergeRiskOptions(decision);
-  validateMaintainerDecisionOwner(decision);
-  validateLabelJustifications(decision);
-  return normalizeDecisionForItem(decision, item);
+  return decisionParser.parseDecision(value, item);
 }
 
 function login(value: unknown): string | undefined {
@@ -4712,20 +2421,6 @@ function pullRequestHumanEngagementBlockReason(
   return null;
 }
 
-interface PullRequestLiveActivity {
-  state: string;
-  createdAt: string;
-  draft: boolean;
-  headSha: string;
-  changedFiles: number | null;
-  requestedReviewers: unknown[];
-  requestedTeams: unknown[];
-  headActivityAtMs: number | null;
-  headStatusActivityAtMs: number | null;
-  headChecksFailing: boolean;
-  headConflicted: boolean;
-}
-
 const FAILING_CHECK_RUN_CONCLUSIONS = new Set(["failure", "timed_out"]);
 
 // Commit dates are author-controlled and a force-push can reuse an old SHA.
@@ -5176,16 +2871,6 @@ function obsoleteFixPrApplyBlockReasonSafe(
   }
 }
 
-interface AuthorPrBudgetApplyState {
-  author: string;
-  openPrCount: number;
-  budget: number;
-}
-
-type AuthorPrBudgetApplyGate =
-  | { allowed: true; state: AuthorPrBudgetApplyState }
-  | { allowed: false; reason: string };
-
 function authorPrBudgetSignalBlockReason(markdown: string): string | null {
   const proof = reportRealBehaviorProof(markdown);
   const rating = reportPrRating(markdown);
@@ -5403,407 +3088,27 @@ const CLAWSWEEPER_BOT_AUTHORS = new Set(
     .filter((login): login is string => typeof login === "string" && login.length > 0)
     .map((login) => login.toLowerCase()),
 );
-const CLAWSWEEPER_COMMAND_ONLY_PATTERN = /^@clawsweeper\s+(?:re-review|re-run|review)\s*$/i;
-
-interface PreviousClawSweeperReview {
-  status: string;
-  verdictDigest: string;
-  reviewedAt: string | null;
-  reviewedSha: string | null;
-  verdictMarker: string | null;
-  actionMarker: string | null;
-  summary: string;
-  proofStatus: string;
-  rating: string;
-  nextStep: string;
-  findings: Array<{ priority: string; title: string }>;
-  earlierReviewCycles: ReviewHistoryCycle[];
-  completedReviewCycles: number;
-  commentId: unknown;
-  commentUrl: unknown;
-  commentUpdatedAt: unknown;
-}
-
-function rawCommentBody(value: unknown): string {
-  const body = asRecord(value).body;
-  return typeof body === "string" ? body : "";
-}
-
-function timestampValueMs(value: unknown): number {
-  return typeof value === "string" ? Date.parse(value) || 0 : 0;
-}
-
-function commentTimestampMs(value: unknown): number {
-  const comment = asRecord(value);
-  return timestampValueMs(comment.updated_at) || timestampValueMs(comment.created_at);
-}
-
 function isClawSweeperComment(value: unknown): boolean {
   return CLAWSWEEPER_BOT_AUTHORS.has((login(asRecord(value).user) ?? "").toLowerCase());
 }
 
-function isClawSweeperDurableReviewComment(value: unknown, number: number): boolean {
-  return (
-    isClawSweeperComment(value) &&
-    rawCommentBody(value).includes(`${REVIEW_COMMENT_MARKER_PREFIX} item=${number} -->`)
-  );
-}
-
-function isClawSweeperNoiseComment(value: unknown, number: number): boolean {
-  const body = rawCommentBody(value);
-  if (!body.trim() || !isClawSweeperComment(value)) return false;
-  if (isClawSweeperDurableReviewComment(value, number)) return true;
-  if (/clawsweeper-pr-egg-hatch:/i.test(body)) return true;
-  if (/clawsweeper-assist:/i.test(body)) return true;
-  if (/clawsweeper-visual\s+item=/i.test(body)) return true;
-  if (/clawsweeper-command(?:-status|-ack)?:/i.test(body)) return true;
-  if (/clawsweeper-review-status:/i.test(body)) return true;
-  if (/clawsweeper-close-applied\s+item=/i.test(body)) return true;
-  if (/clawsweeper-repair:close:/i.test(body)) return true;
-  if (/^ClawSweeper status: review started\./i.test(body)) return true;
-  return false;
-}
-
-function isClawSweeperCommandOnlyComment(value: unknown): boolean {
-  return CLAWSWEEPER_COMMAND_ONLY_PATTERN.test(rawCommentBody(value).trim());
-}
-
-function shouldIncludeReviewContextComment(value: unknown, number: number): boolean {
-  if (isClawSweeperNoiseComment(value, number)) return false;
-  if (isClawSweeperCommandOnlyComment(value)) return false;
-  return true;
-}
+const reviewCommentContext = {
+  isClawSweeperComment,
+  reviewCommentBodyDigest,
+};
 
 function filterReviewContextComments(
   comments: readonly unknown[],
   number: number,
 ): { included: unknown[]; filtered: number } {
-  const included = comments.filter((comment) => shouldIncludeReviewContextComment(comment, number));
-  return { included, filtered: comments.length - included.length };
-}
-
-function markdownFenceDelimiter(line: string): string | null {
-  return line.trimStart().match(/^(?:`{3,}|~{3,})/)?.[0] ?? null;
-}
-
-function markdownFenceStateAfterLine(fence: string | null, line: string): string | null {
-  const trimmed = line.trim();
-  const delimiter = trimmed.match(/^(?:`{3,}|~{3,})/)?.[0];
-  if (!delimiter) return fence;
-  if (!fence) return delimiter;
-  // Only a bare matching delimiter (same character, at least the opening length, no
-  // trailing info text) closes the fence; anything else is fence content.
-  const closes =
-    delimiter[0] === fence[0] &&
-    delimiter.length >= fence.length &&
-    trimmed.slice(delimiter.length).trim() === "";
-  return closes ? null : fence;
-}
-
-// Fence-aware so heading-shaped lines inside fenced blocks (for example the Mermaid
-// architecture diagram) can never open or terminate a section.
-function markdownSection(body: string, heading: string): string {
-  return markdownSectionInternal(body, heading, false);
-}
-
-// Renderer-owned scan-first sections always precede the collapsed details block, so
-// lookups for them stop at the first top-level <details> boundary; model text inside
-// the collapsed block can never supply them.
-function markdownTopLevelSection(body: string, heading: string): string {
-  return markdownSectionInternal(body, heading, true);
-}
-
-function markdownSectionInternal(body: string, heading: string, topLevelOnly: boolean): string {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const headingPattern = new RegExp(
-    `^(?:\\*\\*${escaped}\\*\\*|#{1,6}[ \\t]+${escaped})[ \\t]*$`,
-    "i",
-  );
-  const boundaryPattern =
-    /^(?:\*\*[^*\n]+\*\*[ \t]*$|#{1,6}[ \t]+\S.*$|<details>|<\/details>|<!--)/;
-  const lines = body.split("\n").map((line) => line.replace(/\r$/, ""));
-  let fence: string | null = null;
-  let contentStart = -1;
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
-    const delimiter = markdownFenceDelimiter(line);
-    if (delimiter) {
-      fence = markdownFenceStateAfterLine(fence, line);
-      continue;
-    }
-    if (!fence && topLevelOnly && /^<details(?:\s|>)/i.test(line.trim())) break;
-    if (!fence && headingPattern.test(line)) {
-      contentStart = index + 1;
-      break;
-    }
-  }
-  if (contentStart < 0) return "";
-  const section: string[] = [];
-  fence = null;
-  for (let index = contentStart; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
-    const delimiter = markdownFenceDelimiter(line);
-    if (delimiter) {
-      fence = markdownFenceStateAfterLine(fence, line);
-      section.push(line);
-      continue;
-    }
-    if (!fence && boundaryPattern.test(line)) break;
-    section.push(line);
-  }
-  return section.join("\n").trim();
-}
-
-function firstLineAfterPrefix(body: string, prefix: string): string {
-  const lowerBody = body.toLowerCase();
-  const lowerPrefix = prefix.toLowerCase();
-  const index = lowerBody.indexOf(lowerPrefix);
-  if (index < 0) return "";
-  const start = index + prefix.length;
-  const end = body.indexOf("\n", start);
-  return body.slice(start, end < 0 ? undefined : end).trim();
-}
-
-function htmlMarkerWithPrefix(body: string, prefix: string): string | null {
-  const lowerPrefix = prefix.toLowerCase();
-  let searchFrom = 0;
-  while (searchFrom < body.length) {
-    const start = body.indexOf("<!--", searchFrom);
-    if (start < 0) return null;
-    const end = body.indexOf("-->", start + 4);
-    if (end < 0) return null;
-    const marker = body.slice(start, end + 3);
-    const inner = body
-      .slice(start + 4, end)
-      .trim()
-      .toLowerCase();
-    if (inner.startsWith(lowerPrefix)) return marker;
-    searchFrom = end + 3;
-  }
-  return null;
-}
-
-function markerAttribute(marker: string | null, name: string): string | null {
-  if (!marker) return null;
-  const inner = marker.slice(4, -3).trim();
-  for (const part of inner.split(/\s+/)) {
-    const separator = part.indexOf("=");
-    if (separator <= 0) continue;
-    if (part.slice(0, separator).toLowerCase() === name.toLowerCase()) {
-      return part.slice(separator + 1) || null;
-    }
-  }
-  return null;
-}
-
-function firstNonEmptyLine(value: string): string {
-  return (
-    value
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ?? ""
-  );
-}
-
-function markdownTableCells(line: string): string[] {
-  const value = line.trim();
-  if (!value.startsWith("|") || !value.endsWith("|")) return [];
-  const cells: string[] = [];
-  let cell = "";
-  for (let index = 1; index < value.length - 1; index += 1) {
-    const character = value[index];
-    if (character === "|" && value[index - 1] !== "\\") {
-      cells.push(cell.trim().replace(/\\\|/g, "|"));
-      cell = "";
-      continue;
-    }
-    cell += character;
-  }
-  cells.push(cell.trim().replace(/\\\|/g, "|"));
-  return cells;
-}
-
-// Decision-only reviews render an empty Before merge checklist while the
-// outstanding maintainer question lives under "Decision needed"; surface that
-// question as the remaining action.
-function firstDecisionNeededQuestion(body: string): string {
-  const section = markdownTopLevelSection(body, "Decision needed");
-  if (!section) return "";
-  for (const line of section.split(/\r?\n/)) {
-    const cells = markdownTableCells(line);
-    if (cells.length < 2) continue;
-    if (cells.every((cell) => /^:?-{3,}:?$/.test(cell))) continue;
-    const label = cells[0]?.trim().toLowerCase() ?? "";
-    if (label === "question") continue;
-    if (cells[0]) return cells[0];
-  }
-  return firstNonEmptyLine(section);
-}
-
-function firstBeforeMergeAction(body: string): string {
-  const section = markdownTopLevelSection(body, "Before merge");
-  // "None." is the no-action sentinel; a checked task is finished work, not a
-  // remaining action.
-  if (!section || /^none[.!]?$/i.test(section.trim())) {
-    return firstDecisionNeededQuestion(body);
-  }
-  let sawTask = false;
-  for (const line of section.split(/\r?\n/)) {
-    if (/^- \[[xX]\]/.test(line)) {
-      sawTask = true;
-      continue;
-    }
-    const task = line.match(/^- \[ \][ \t]+(?:\*\*(?:\\.|[^*\\\n])+\*\*[ \t]+-[ \t]+)?(\S.*)$/);
-    if (task?.[1]) return task[1].trim();
-    if (line.startsWith("- [")) sawTask = true;
-    const cells = markdownTableCells(line);
-    if (cells.length < 2) continue;
-    if (cells.every((cell) => /^:?-{3,}:?$/.test(cell))) continue;
-    const labels = cells.map((cell) =>
-      cell
-        .replace(/^\*\*|\*\*$/g, "")
-        .trim()
-        .toLowerCase(),
-    );
-    if (labels[0] === "needed" && labels[1] === "why") continue;
-    if (cells[1]) return cells[1];
-  }
-  // A checklist whose tasks are all checked has no remaining checklist action, but
-  // an outstanding maintainer decision still is one.
-  return sawTask ? firstDecisionNeededQuestion(body) : firstNonEmptyLine(section);
-}
-
-function previousReviewStatus(body: string): string {
-  const status = firstLineAfterPrefix(body, "Codex review:");
-  const reviewedIndex = status.toLowerCase().indexOf("_reviewed ");
-  return (reviewedIndex < 0 ? status : status.slice(0, reviewedIndex)).trim();
-}
-
-function previousReviewReviewedAt(body: string): string | null {
-  const value = firstLineAfterPrefix(body, "**Latest ClawSweeper review:**");
-  if (value) return value.replace(/\.$/, "").trim();
-  const firstLine = body.split(/\r?\n/, 1)[0] ?? "";
-  const lowerFirstLine = firstLine.toLowerCase();
-  const prefix = "_reviewed ";
-  const start = lowerFirstLine.indexOf(prefix);
-  if (start < 0) return null;
-  const valueStart = start + prefix.length;
-  const end = firstLine.indexOf("._", valueStart);
-  const inline = firstLine.slice(valueStart, end < 0 ? undefined : end).trim();
-  return inline || null;
-}
-
-function sectionLabeledValue(body: string, heading: string, prefix: string): string {
-  const section = markdownTopLevelSection(body, heading);
-  if (!section) return "";
-  const lowerPrefix = prefix.toLowerCase();
-  const plain = section
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line.toLowerCase().startsWith(lowerPrefix));
-  if (plain) return plain;
-  const label = prefix.replace(/:$/, "");
-  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const tableRow = section.match(
-    new RegExp(`^\\|\\s*\\*\\*${escaped}\\*\\*\\s*\\|\\s*(.*?)\\s*\\|`, "im"),
-  );
-  return tableRow?.[1] ? `${label}: ${tableRow[1]}` : "";
-}
-
-function firstMergeReadinessLine(body: string, prefix: string): string {
-  return sectionLabeledValue(body, "Merge readiness", prefix);
-}
-
-function previousReviewRating(body: string): string {
-  // Prefer the renderer-owned score table; the free-form legacy blocks can contain
-  // model text that merely starts with the legacy label.
-  return (
-    sectionLabeledValue(body, "Review scores", "Overall readiness:") ||
-    firstNonEmptyLine(markdownSection(body, "PR rating")) ||
-    firstMergeReadinessLine(body, "Overall:")
-  );
-}
-
-function previousReviewProofStatus(body: string): string {
-  // Prefer the renderer-owned tables; the free-form legacy blocks can contain model
-  // text that merely starts with the legacy label.
-  const fromNewSections =
-    sectionLabeledValue(body, "Review scores", "Proof confidence:") ||
-    sectionLabeledValue(body, "Verification", "Real behavior:");
-  if (fromNewSections) return fromNewSections;
-  const oldProofStatus = firstNonEmptyLine(markdownSection(body, "Real behavior proof"));
-  if (oldProofStatus) return oldProofStatus;
-  const readiness = markdownSection(body, "Merge readiness");
-  if (!readiness) return "";
-  const lines = readiness.split(/\r?\n/);
-  const proofGuidanceIndex = lines.findIndex(
-    (line) => line.trim().toLowerCase() === "proof guidance:",
-  );
-  if (proofGuidanceIndex >= 0) {
-    const guidance = lines
-      .slice(proofGuidanceIndex + 1)
-      .map((line) => line.trim())
-      .find(Boolean);
-    if (guidance) return guidance;
-  }
-  return firstMergeReadinessLine(body, "Proof:");
-}
-
-function reviewHistoryFindings(
-  cycle: ReviewHistoryCycle | undefined,
-): Array<{ priority: string; title: string }> {
-  if (!cycle) return [];
-  return cycle.findings.flatMap((finding) => {
-    const match = finding.match(/^\[(P[0-3])\]\s+(.+)$/);
-    return match?.[1] && match[2] ? [{ priority: match[1], title: match[2] }] : [];
-  });
+  return filterReviewComments(comments, number, reviewCommentContext);
 }
 
 function extractLatestClawSweeperReview(
   comments: readonly unknown[],
   number: number,
 ): PreviousClawSweeperReview | null {
-  const latest = comments
-    .filter((comment) => isClawSweeperDurableReviewComment(comment, number))
-    .sort((left, right) => commentTimestampMs(right) - commentTimestampMs(left))[0];
-  if (!latest) return null;
-  const comment = asRecord(latest);
-  const body = rawCommentBody(latest);
-  const verdictMarker = htmlMarkerWithPrefix(body, "clawsweeper-verdict:");
-  const actionMarker = htmlMarkerWithPrefix(body, "clawsweeper-action:");
-  const history = parseReviewHistory(body);
-  const currentCycle = reviewHistoryCycleFromCommentBody(body);
-  const latestCompletedCycle = currentCycle ?? history.cycles.at(-1);
-  const earlierReviewCycles = currentCycle ? history.cycles : history.cycles.slice(0, -1);
-  return {
-    status: previousReviewStatus(body),
-    verdictDigest: reviewCommentBodyDigest(body),
-    reviewedAt: previousReviewReviewedAt(body) ?? latestCompletedCycle?.reviewedAt ?? null,
-    reviewedSha:
-      markerAttribute(verdictMarker, "sha") ??
-      markerAttribute(actionMarker, "sha") ??
-      latestCompletedCycle?.sha ??
-      null,
-    verdictMarker,
-    actionMarker,
-    summary:
-      firstNonEmptyLine(markdownSection(body, "What this changes")) ||
-      firstNonEmptyLine(markdownSection(body, "Summary")),
-    proofStatus: previousReviewProofStatus(body),
-    rating: previousReviewRating(body),
-    // A present Before merge section is authoritative; legacy next-step headings are
-    // consulted only for comments that predate the scan-first layout.
-    nextStep: markdownTopLevelSection(body, "Before merge")
-      ? firstBeforeMergeAction(body)
-      : firstNonEmptyLine(markdownSection(body, "Next step before merge")) ||
-        firstNonEmptyLine(markdownSection(body, "Next step")),
-    findings: reviewHistoryFindings(latestCompletedCycle),
-    earlierReviewCycles,
-    completedReviewCycles: history.totalCompletedCycles + (currentCycle ? 1 : 0),
-    commentId: comment.id,
-    commentUrl: comment.html_url,
-    commentUpdatedAt: comment.updated_at,
-  };
+  return latestClawSweeperReview(comments, number, reviewCommentContext);
 }
 
 export function filterReviewContextCommentsForTest(
@@ -5825,9 +3130,11 @@ function extractLatestClawSweeperReviewFromHydration(
   completeComments: readonly unknown[],
   number: number,
 ): PreviousClawSweeperReview | null {
-  return extractLatestClawSweeperReview(
-    commentsWindow.truncated ? completeComments : commentsWindow.items,
+  return latestClawSweeperReviewFromHydration(
+    commentsWindow,
+    completeComments,
     number,
+    reviewCommentContext,
   );
 }
 
@@ -6041,11 +3348,6 @@ function completePullChecksContext(value: unknown): boolean {
   );
 }
 
-interface ClosingPullRequestReference {
-  repo: string;
-  number: number;
-}
-
 export function closingPullRequestReferenceTarget(
   reference: unknown,
   fallbackRepo = targetRepo(),
@@ -6256,7 +3558,6 @@ const RELATED_TITLE_STOP_WORDS = new Set([
 ]);
 
 let localRelatedTitleIndexCache: { repo: string; entries: LocalRelatedTitleEntry[] } | null = null;
-type GitcrawlClusterSource = "legacy" | "portable";
 let gitcrawlClusterSourceCache: { dbPath: string; source: GitcrawlClusterSource | null } | null =
   null;
 const RELATED_ITEMS_LIMIT = 12;
@@ -7432,21 +4733,9 @@ function fetchReviewedPrActivityCursor(
   return createReviewedPrActivityCursor({ reviews, inlineComments, reviewThreads });
 }
 
-export interface ContextHydration<T> {
-  items: T[];
-  total: number;
-  hydrated: number;
-  truncated: boolean;
-}
-
 function ghPage<T>(path: string, page: number): T[] {
   const items = ghJson<unknown[]>(["api", githubPagePath(path, page)]);
   return Array.isArray(items) ? (items as T[]) : [];
-}
-
-export interface GithubPageWithHeaders<T> {
-  items: T[];
-  lastPageNumber: number | null;
 }
 
 export function githubLinkLastPageNumber(header: string | undefined): number | null {
@@ -7488,14 +4777,6 @@ function githubCount(value: unknown): number | null {
     typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
   if (!Number.isFinite(count) || count < 0) return null;
   return Math.floor(count);
-}
-
-interface GithubContextWindowPlan {
-  keepStart: number;
-  keepEnd: number;
-  tailFirstPageNumber: number;
-  lastPageNumber: number;
-  tailOffset: number;
 }
 
 export function githubContextWindowPlan(
@@ -7793,12 +5074,6 @@ function replaceFrontMatterValue(markdown: string, key: string, value: string): 
   return markdown.replace(/^---\n/, `---\n${line}\n`);
 }
 
-type ExactEventReviewLeaseDisposition =
-  | { status: "current" }
-  | { status: "legacy_tupleless"; reason: string }
-  | { status: "source_drift"; reportRevision: string; liveRevision: string }
-  | { status: "invalid"; reason: string };
-
 function exactEventReviewLeaseDisposition(
   markdown: string,
   liveRevision: string,
@@ -7976,10 +5251,6 @@ function existingReview(
     structuralRecord: reviewStructuralRecordFromMarkdown(markdown),
     semanticRecord: reviewSemanticRecordFromMarkdown(markdown),
   };
-}
-
-interface ExistingReviewIndex {
-  byKey: Map<string, ExistingReview>;
 }
 
 function existingReviewKey(repo: string, number: number): string {
@@ -9473,10 +6744,6 @@ function collectItemContext(
   return context;
 }
 
-type ReviewGitInfoOptions = {
-  targetBranch?: string;
-};
-
 function gitInfo(openclawDir: string, options: ReviewGitInfoOptions = {}): GitInfo {
   const targetBranch = options.targetBranch ?? reviewTargetBranch(openclawDir);
   requireSafeGitBranchName(targetBranch, "target branch");
@@ -9545,10 +6812,6 @@ function requireSafeGitBranchName(branch: string, label: string): string {
   throw new UserFacingCommandError(`Invalid ${label}: ${branch}`);
 }
 
-type LocalPullMetadata = {
-  baseRef: string;
-};
-
 function localPullMetadata(itemNumber: number): LocalPullMetadata {
   try {
     const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${itemNumber}`]));
@@ -9571,12 +6834,6 @@ function tryLocalPullBaseBranch(itemNumber: number): string | undefined {
     return undefined;
   }
 }
-
-type ReviewCheckout = {
-  mode: "managed" | "supplied" | "default";
-  openclawDir: string;
-  gitTargetBranch?: string;
-};
 
 function hasExplicitReviewTargetDir(args: Args): boolean {
   return typeof args.target_dir === "string" || typeof args.openclaw_dir === "string";
@@ -9671,15 +6928,6 @@ function resolveReviewCheckout(options: {
   }
   return { mode: explicitTargetDir ? "supplied" : "default", openclawDir };
 }
-
-type ManagedLocalReviewCheckoutOptions = {
-  baseBranch: string;
-  cloneUrl?: string;
-  itemNumber: number;
-  targetDir: string;
-  targetRepo: string;
-  verbose?: boolean | undefined;
-};
 
 function prepareManagedLocalReviewCheckout(options: ManagedLocalReviewCheckoutOptions): void {
   const { baseBranch, cloneUrl, itemNumber, targetDir, targetRepo, verbose } = options;
@@ -9784,16 +7032,6 @@ function contextJsonForPrompt(context: ItemContext): string {
   const { semanticPullFiles: _, pullCommitsRevision: __, ...promptContext } = context;
   return JSON.stringify(promptContext, null, 2);
 }
-
-type MediaProofCommandRunner = (
-  command: string,
-  args: readonly string[],
-) => {
-  status: number | null;
-  stdout?: string | Buffer;
-  stderr?: string | Buffer;
-  error?: Error;
-};
 
 const IMAGE_PROOF_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".bmp"]);
 const VIDEO_PROOF_EXTENSIONS = new Set([".mov", ".mp4", ".m4v", ".webm", ".avi", ".mkv"]);
@@ -10455,11 +7693,6 @@ function openclawDirtyStatus(openclawDir: string): string {
     cwd: openclawDir,
     env: { GIT_OPTIONAL_LOCKS: "0" },
   });
-}
-
-interface FileModeSnapshot {
-  path: string;
-  mode: number;
 }
 
 function makeTreeReadOnly(path: string, snapshots: FileModeSnapshot[] = []): FileModeSnapshot[] {
@@ -11888,8 +9121,6 @@ function priorityLabel(priority: ReviewFinding["priority"]): string {
   return `P${priority}`;
 }
 
-type PublicPriority = "P0" | "P1" | "P2";
-
 function publicPriorityFromText(text: string, fallback: PublicPriority): PublicPriority {
   if (/\b(?:outage|data loss|security exposure|release blocker|widespread)\b/i.test(text)) {
     return "P0";
@@ -13156,198 +10387,6 @@ function reportVisionFit(markdown: string): {
   };
 }
 
-function screenshotProofNeedsRuntimeOutput(summary: string): boolean {
-  if (
-    /\b(?:no|without|absence of|zero|none)\b[^.]{0,120}\b(?:visible\s+)?(?:console|network|error|warning|violation|csp|cors)\b/i.test(
-      summary,
-    )
-  ) {
-    return true;
-  }
-  if (
-    !/\b(?:csp|content[- ]security[- ]policy|connect-src|script-src|style-src|img-src|cors)\b/i.test(
-      summary,
-    )
-  ) {
-    return false;
-  }
-  return !/\b(?:devtools|developer tools|console output|console panel|network trace|network panel|network tab|terminal|logs?|live output|request|response|status code|har)\b/i.test(
-    summary,
-  );
-}
-
-function normalizeRealBehaviorProof(proof: RealBehaviorProof): RealBehaviorProof {
-  if (
-    proof.status === "sufficient" &&
-    proof.evidenceKind === "screenshot" &&
-    screenshotProofNeedsRuntimeOutput(proof.summary)
-  ) {
-    return {
-      status: "insufficient",
-      summary:
-        "The screenshot proof is not enough for browser runtime or security behavior; include console, network, terminal, live output, or logs showing the changed behavior after the fix.",
-      evidenceKind: "screenshot",
-      needsContributorAction: true,
-    };
-  }
-  return proof;
-}
-
-function ratingIndex(tier: PrRatingTier): number {
-  return ["S", "A", "B", "C", "D", "F", "NA"].indexOf(tier);
-}
-
-function lowerRatingTier(a: PrRatingTier, b: PrRatingTier): PrRatingTier {
-  if (a === "NA") return b;
-  if (b === "NA") return a;
-  return ratingIndex(a) >= ratingIndex(b) ? a : b;
-}
-
-function proofTierFromRealBehaviorProof(proof: RealBehaviorProof): PrRatingTier {
-  switch (proof.status) {
-    case "sufficient":
-      if (
-        proof.evidenceKind === "recording" ||
-        proof.evidenceKind === "screenshot" ||
-        proof.evidenceKind === "linked_artifact"
-      ) {
-        return "S";
-      }
-      return "A";
-    case "override":
-      return "A";
-    case "insufficient":
-    case "mock_only":
-      return "D";
-    case "missing":
-      return "F";
-    case "not_applicable":
-      return "NA";
-  }
-}
-
-function patchTierFromReview(options: {
-  isPullRequest: boolean;
-  findings: readonly ReviewFinding[];
-  securityReview: SecurityReview;
-  overallCorrectness: OverallCorrectness;
-  overallConfidenceScore: number;
-}): PrRatingTier {
-  if (!options.isPullRequest || options.overallCorrectness === "not a patch") return "NA";
-  if (options.securityReview.status === "needs_attention") return "F";
-  const highestPriority = Math.min(...options.findings.map((finding) => finding.priority), 4);
-  if (options.overallCorrectness === "patch is incorrect") {
-    if (highestPriority <= 1) return "F";
-    if (highestPriority === 2) return "D";
-    return "C";
-  }
-  if (highestPriority <= 1) return "D";
-  if (highestPriority === 2) return "C";
-  if (highestPriority === 3) return "B";
-  if (options.overallConfidenceScore >= 0.95) return "S";
-  if (options.overallConfidenceScore >= 0.8) return "A";
-  if (options.overallConfidenceScore >= 0.6) return "B";
-  return "C";
-}
-
-function ratingLabelForTier(tier: PrRatingTier): (typeof PR_RATING_LABELS)[number] {
-  const label = PR_RATING_LABELS.find((candidate) => candidate.tier === tier);
-  if (label) return label;
-  return PR_RATING_LABELS[6];
-}
-
-function themedRatingName(tier: PrRatingTier): string {
-  return ratingLabelForTier(tier).name.replace(/^rating:\s*/, "");
-}
-
-function hasShinyProof(proof: Pick<RealBehaviorProof, "status" | "evidenceKind">): boolean {
-  return (
-    proof.status === "sufficient" &&
-    (proof.evidenceKind === "recording" ||
-      proof.evidenceKind === "screenshot" ||
-      proof.evidenceKind === "linked_artifact")
-  );
-}
-
-function defaultRatingNextSteps(options: {
-  proof: RealBehaviorProof;
-  findings: readonly ReviewFinding[];
-  securityReview: SecurityReview;
-  overallCorrectness: OverallCorrectness;
-  overallTier: PrRatingTier;
-}): string[] {
-  if (options.overallTier === "S" || options.overallTier === "A" || options.overallTier === "NA") {
-    return [];
-  }
-  const steps: string[] = [];
-  if (
-    options.proof.status === "missing" ||
-    options.proof.status === "mock_only" ||
-    options.proof.status === "insufficient"
-  ) {
-    steps.push(
-      "Add after-fix proof from a real setup, such as a short recording, terminal output, linked artifact, or redacted logs.",
-    );
-  }
-  if (options.securityReview.status === "needs_attention") {
-    steps.push("Resolve the security review concern or explain why the changed path is safe.");
-  }
-  const highestPriority = Math.min(...options.findings.map((finding) => finding.priority), 4);
-  if (options.overallCorrectness === "patch is incorrect" || highestPriority <= 2) {
-    steps.push(
-      "Address the highest-priority review finding and re-run the changed-surface validation.",
-    );
-  }
-  if (!steps.length) {
-    steps.push(
-      "Tighten the PR description with what changed, how it was validated, and any remaining risk.",
-    );
-  }
-  return steps.slice(0, 3);
-}
-
-function normalizePrRating(rating: PrRating): PrRating {
-  if (rating.overallTier === "S" || rating.overallTier === "A" || rating.overallTier === "NA") {
-    return { ...rating, nextSteps: [] };
-  }
-  return { ...rating, nextSteps: rating.nextSteps.slice(0, 3) };
-}
-
-function derivedPrRating(options: {
-  isPullRequest: boolean;
-  proof: RealBehaviorProof;
-  findings: readonly ReviewFinding[];
-  securityReview: SecurityReview;
-  overallCorrectness: OverallCorrectness;
-  overallConfidenceScore: number;
-}): PrRating {
-  const proofTier = proofTierFromRealBehaviorProof(options.proof);
-  const patchTier = patchTierFromReview(options);
-  const overallTier =
-    proofTier === "NA" && patchTier === "NA" ? "NA" : lowerRatingTier(proofTier, patchTier);
-  return normalizePrRating({
-    proofTier,
-    patchTier,
-    overallTier,
-    summary:
-      overallTier === "NA"
-        ? "PR readiness rating is not applicable to this item."
-        : "PR readiness rating was derived from proof quality, review findings, security review, and reviewer confidence.",
-    nextSteps: defaultRatingNextSteps({ ...options, overallTier }),
-  });
-}
-
-function nextPrRatingLabels(
-  labels: readonly string[],
-  rating: Pick<PrRating, "overallTier">,
-  reviewFailed = false,
-): string[] {
-  const nextLabels = labels.filter((label) => !PR_RATING_LABEL_NAMES.has(label));
-  if (reviewFailed) return nextLabels;
-  nextLabels.push(ratingLabelForTier(rating.overallTier).name);
-  return nextLabels;
-}
-
 function shouldApplyFeatureShowcaseLabel(options: {
   isPullRequest: boolean;
   itemCategory: string | undefined;
@@ -13685,11 +10724,6 @@ function pullRequestFilePathsFromReport(markdown: string): string[] {
   return frontMatterStringArray(markdown, "pull_files");
 }
 
-interface ConfigSurfaceChange {
-  change: boolean;
-  keys: string[];
-}
-
 function configSurfaceChangeFromContext(repo: string, context: ItemContext): ConfigSurfaceChange {
   if (repo !== "openclaw/openclaw") {
     return { change: false, keys: [] };
@@ -13749,11 +10783,6 @@ export function configSurfaceChangeFromPullFilesForTest(options: {
   };
   if (options.pullFiles !== undefined) context.pullFiles = options.pullFiles;
   return configSurfaceChangeFromContext(options.repo ?? "openclaw/openclaw", context);
-}
-
-interface DataModelChange {
-  change: boolean;
-  surfaces: string[];
 }
 
 function dataModelChangeFromContext(repo: string, context: ItemContext): DataModelChange {
@@ -14663,28 +11692,6 @@ function ensureMergeRiskLabel(name: MergeRiskLabelName, onMutation?: () => void)
   } catch (error) {
     if (!labelAlreadyExistsError(error)) throw error;
   }
-}
-
-interface IssueAdvisoryLabelState {
-  type: string | undefined;
-  itemCategory: string | undefined;
-  reproductionStatus: string | undefined;
-  reproductionConfidence: string | undefined;
-  requiresNewFeature: boolean;
-  requiresNewConfigOption: boolean;
-  requiresProductDecision: boolean;
-  implementationComplexity: string | undefined;
-  autoImplementationCandidate: string | undefined;
-  securityReviewStatus: string | undefined;
-  workCandidate: string | undefined;
-  workStatus: string | undefined;
-  workConfidence: string | undefined;
-  hasWorkShape: boolean;
-  hasWorkPrompt: boolean;
-  hasWorkValidation: boolean;
-  goodFirstIssueOptedOut: boolean;
-  locked: boolean;
-  hasOpenLinkedPullRequest: boolean;
 }
 
 function isIssueAdvisoryLabel(label: string): boolean {
@@ -15955,33 +12962,6 @@ function upgradeNoDiffPullRequestReport(markdown: string, item: Item): string {
   return upgraded;
 }
 
-interface PullRequestClosePromotion {
-  closeReason: CloseReason;
-  summary: string;
-  bestSolution: string;
-  evidence: string;
-  closeComment: string;
-  coverageProofFallbackRefs: boolean;
-}
-
-interface LinkedPullRequestSupersession {
-  number: number;
-  title: string;
-  url: string;
-  state: string;
-  mergedAt: string | null;
-  mergeableState: string | null;
-  draft: boolean;
-  labels: string[];
-  files: string[];
-  filesKnown: boolean;
-}
-
-interface LinkedPullRequestSupersessionResolution {
-  candidate: LinkedPullRequestSupersession | null;
-  unsafeReason: string | null;
-}
-
 function upgradePullRequestClosePromotionReport(
   markdown: string,
   item: Item,
@@ -16169,242 +13149,26 @@ export function contextHasNonAutomationActivityAfterForTest(options: {
       : { ignoreTimelineCommentsThroughMs: options.ignoreTimelineCommentsThroughMs }),
   });
 }
-
-function pullRequestUrlForNumber(number: number): string {
-  return repoUrlFor(targetRepo(), `/pull/${number}`);
-}
-
-function sameRepoPullRequestRefRegex(): RegExp | null {
-  const [owner, repo] = targetRepo().split("/");
-  if (!owner || !repo) return null;
-  const escapedRepo = `${escapeRegExp(owner)}\\/${escapeRegExp(repo)}`;
-  return new RegExp(
-    [
-      `https:\\/\\/github\\.com\\/${escapedRepo}\\/pull\\/(\\d+)\\b`,
-      `(?:^|[^\\w/.-])${escapedRepo}#(\\d+)\\b`,
-      "(?:^|[^\\w/#-])#(\\d+)\\b",
-    ].join("|"),
-    "gi",
-  );
-}
-
-function sameRepoPullRequestUrlRegex(): RegExp | null {
-  const [owner, repo] = targetRepo().split("/");
-  if (!owner || !repo) return null;
-  const escapedRepo = `${escapeRegExp(owner)}\\/${escapeRegExp(repo)}`;
-  return new RegExp(`^https:\\/\\/github\\.com\\/${escapedRepo}\\/pull\\/\\d+\\b`, "i");
-}
-
-function markdownLinkRegex(): RegExp {
-  return /\[([^\]\n]{1,200})\]\(([^\s)]{1,1000})\)/gi;
-}
-
-const PULL_REQUEST_LINK_LABEL_START = "__clawsweeper_pr_link_label_start__";
-const PULL_REQUEST_LINK_LABEL_END = "__clawsweeper_pr_link_label_end__";
-
-function pullRequestLinkLabel(label: string): string {
-  const refRegex = sameRepoPullRequestRefRegex();
-  const trimmed = (refRegex ? label.replace(refRegex, " ") : label).trim();
-  return trimmed
-    ? `${PULL_REQUEST_LINK_LABEL_START} ${trimmed} ${PULL_REQUEST_LINK_LABEL_END} `
-    : "";
-}
-
-function stripLeadingPullRequestLinkLabels(value: string): string {
-  const pattern = new RegExp(
-    `^\\s*${escapeRegExp(PULL_REQUEST_LINK_LABEL_START)}[\\s\\S]*?${escapeRegExp(
-      PULL_REQUEST_LINK_LABEL_END,
-    )}\\s*`,
-  );
-  let remaining = value;
-  while (pattern.test(remaining)) {
-    remaining = remaining.replace(pattern, "");
-  }
-  return remaining;
-}
-
-function normalizePullRequestMarkdownLinks(value: string): string {
-  const sameRepoPullRequestUrl = sameRepoPullRequestUrlRegex();
-  if (!sameRepoPullRequestUrl) return value;
-  return value.replace(markdownLinkRegex(), (_link: string, label: string, target: string) =>
-    sameRepoPullRequestUrl.test(target) ? `${pullRequestLinkLabel(label)}${target}` : " ",
-  );
-}
-
-type PullRequestRefKind = "pull_url" | "same_repo_shorthand" | "bare";
-
-interface PullRequestRef {
-  number: number;
-  kind: PullRequestRefKind;
-}
-
-function pullRequestRefFromMatch(match: RegExpMatchArray): PullRequestRef | null {
-  const number = Number(match[1] ?? match[2] ?? match[3]);
-  if (!Number.isInteger(number) || number <= 0) return null;
-  if (match[1]) return { number, kind: "pull_url" };
-  if (match[2]) return { number, kind: "same_repo_shorthand" };
-  return { number, kind: "bare" };
-}
-
-function pullRequestRefKindRank(kind: PullRequestRefKind): number {
-  if (kind === "pull_url") return 3;
-  if (kind === "same_repo_shorthand") return 2;
-  return 1;
-}
-
-function setStrongestPullRequestRef(refs: Map<number, PullRequestRef>, ref: PullRequestRef): void {
-  const existing = refs.get(ref.number);
-  if (!existing || pullRequestRefKindRank(ref.kind) > pullRequestRefKindRank(existing.kind)) {
-    refs.set(ref.number, ref);
-  }
-}
-
-function pullRequestRefMatchIndex(match: RegExpMatchArray): number {
-  const matchStart = match.index ?? 0;
-  const matchedText = match[0] ?? "";
-  if (match[1]) return matchStart;
-  if (match[2]) {
-    const needle = `${targetRepo()}#${match[2]}`;
-    const offset = matchedText.toLowerCase().indexOf(needle.toLowerCase());
-    return matchStart + (offset >= 0 ? offset : Math.max(0, matchedText.length - needle.length));
-  }
-  if (match[3]) {
-    const needle = `#${match[3]}`;
-    const offset = matchedText.indexOf(needle);
-    return matchStart + (offset >= 0 ? offset : Math.max(0, matchedText.length - needle.length));
-  }
-  return matchStart;
-}
-
-function linkedPullRequestRefsFromText(text: string, currentNumber: number): PullRequestRef[] {
-  const regex = sameRepoPullRequestRefRegex();
-  if (!regex) return [];
-  const normalizedText = normalizePullRequestMarkdownLinks(text);
-  const refs = new Map<number, PullRequestRef>();
-  for (const match of normalizedText.matchAll(regex)) {
-    const ref = pullRequestRefFromMatch(match);
-    if (ref && ref.number !== currentNumber) setStrongestPullRequestRef(refs, ref);
-  }
-  return [...refs.values()];
-}
-
-function relationshipClauseContainingIndex(text: string, index: number): string {
-  const lineStart = text.lastIndexOf("\n", Math.max(0, index - 1)) + 1;
-  const lineEnd = text.indexOf("\n", index);
-  const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
-  const relativeIndex = Math.max(0, index - lineStart);
-  let start = 0;
-  let end = line.length;
-  const boundary = /[;,|]|\.(?=\s|$)|\s+(?:and|but|while)\s+/gi;
-
-  for (const match of line.matchAll(boundary)) {
-    const boundaryStart = match.index ?? 0;
-    const boundaryEnd = boundaryStart + match[0].length;
-    if (relationshipBoundaryContinuesPullRequestRefList(line, boundaryStart, boundaryEnd)) {
-      continue;
-    }
-    if (boundaryEnd <= relativeIndex) {
-      start = boundaryEnd;
-      continue;
-    }
-    if (boundaryStart > relativeIndex) {
-      end = boundaryStart;
-      break;
-    }
-  }
-
-  return line.slice(start, end).trim();
-}
-
-function relationshipBoundaryContinuesPullRequestRefList(
-  line: string,
-  boundaryStart: number,
-  boundaryEnd: number,
-): boolean {
-  const boundaryText = line.slice(boundaryStart, boundaryEnd).trim().toLowerCase();
-  if (!["and", ",", ";"].includes(boundaryText)) return false;
-  if (!textEndsWithPullRequestRef(line.slice(0, boundaryStart))) return false;
-  return textStartsWithStandalonePullRequestRef(line.slice(boundaryEnd));
-}
-
-function textEndsWithPullRequestRef(value: string): boolean {
-  const regex = sameRepoPullRequestRefRegex();
-  if (!regex) return false;
-  const normalized = normalizePullRequestMarkdownLinks(value);
-  let lastRefEnd = -1;
-  for (const match of normalized.matchAll(regex)) {
-    lastRefEnd = (match.index ?? 0) + (match[0]?.length ?? 0);
-  }
-  return lastRefEnd >= 0 && /^[\s,;]*$/.test(normalized.slice(lastRefEnd));
-}
-
-function textStartsWithStandalonePullRequestRef(value: string): boolean {
-  const regex = sameRepoPullRequestRefRegex();
-  if (!regex) return false;
-  let remaining = stripLeadingPullRequestLinkLabels(
-    normalizePullRequestMarkdownLinks(value)
-      .trimStart()
-      .replace(/^and\s+/i, ""),
-  );
-  let sawRef = false;
-  while (remaining) {
-    regex.lastIndex = 0;
-    const match = regex.exec(remaining);
-    if (!match || pullRequestRefMatchIndex(match) !== 0) return false;
-    sawRef = true;
-    remaining = stripLeadingPullRequestLinkLabels(
-      remaining.slice((match.index ?? 0) + (match[0]?.length ?? 0)).trimStart(),
-    );
-    if (!remaining || /^[\s,;.)\]]+$/.test(remaining)) return true;
-    const separator = remaining.match(/^(?:[,;]\s*(?:and\s+)?|and\s+)/i);
-    if (!separator) return false;
-    remaining = stripLeadingPullRequestLinkLabels(remaining.slice(separator[0].length).trimStart());
-  }
-  return sawRef;
-}
-
-function linkedPullRequestSignalContextsFromText(
-  text: string,
-  currentNumber: number,
-  linkedNumber: number,
-): string[] {
-  const regex = sameRepoPullRequestRefRegex();
-  if (!regex) return [];
-  const normalizedText = normalizePullRequestMarkdownLinks(text);
-  const contexts: string[] = [];
-  for (const match of normalizedText.matchAll(regex)) {
-    const ref = pullRequestRefFromMatch(match);
-    if (!ref || ref.number !== linkedNumber || ref.number === currentNumber) continue;
-    contexts.push(
-      relationshipClauseContainingIndex(normalizedText, pullRequestRefMatchIndex(match)),
-    );
-  }
-  return contexts;
-}
-
-function linkedPullRequestRefsFromReport(
-  markdown: string,
-  currentNumber: number,
-): PullRequestRef[] {
-  const texts = [
-    ...frontMatterStringArray(markdown, "work_cluster_refs"),
-    ...mergeRiskOptionsFromReport(markdown).flatMap((option) => [option.title, option.body]),
-    reviewSectionValue(markdown, "bestSolution"),
-    reviewSectionValue(markdown, "evidence"),
-    reviewSectionValue(markdown, "closeComment"),
-  ];
-  const refs = new Map<number, PullRequestRef>();
-  for (const text of texts) {
-    for (const ref of linkedPullRequestRefsFromText(text, currentNumber)) {
-      setStrongestPullRequestRef(refs, ref);
-    }
-  }
-  return [...refs.values()];
-}
-
-function linkedPullRequestNumbersFromReport(markdown: string, currentNumber: number): number[] {
-  return linkedPullRequestRefsFromReport(markdown, currentNumber).map((ref) => ref.number);
-}
+const pullRequestReferenceParser = createPullRequestReferenceParser({
+  targetRepo,
+  repoUrlFor,
+  reportReferenceTexts(markdown) {
+    return [
+      ...frontMatterStringArray(markdown, "work_cluster_refs"),
+      ...mergeRiskOptionsFromReport(markdown).flatMap((option) => [option.title, option.body]),
+      reviewSectionValue(markdown, "bestSolution"),
+      reviewSectionValue(markdown, "evidence"),
+      reviewSectionValue(markdown, "closeComment"),
+    ];
+  },
+});
+const {
+  linkedPullRequestNumbersFromReport,
+  linkedPullRequestRefsFromReport,
+  linkedPullRequestRefsFromText,
+  linkedPullRequestSignalContextsFromText,
+  pullRequestUrlForNumber,
+} = pullRequestReferenceParser;
 
 function linkedPullRequestHasSupersessionSignal(
   markdown: string,
@@ -16698,12 +13462,6 @@ function possibleCanonicalPullRequestRefsFromReport(
   return possiblePullRequestRefs.length === 1 ? possiblePullRequestRefs : [];
 }
 
-interface CanonicalPullRequestCommentSyncBlock {
-  kind: "closed_unmerged" | "unreadable";
-  number: number;
-  reason: string;
-}
-
 function canonicalPullRequestCommentSyncBlock(
   markdown: string,
   item: Item,
@@ -16732,29 +13490,6 @@ function canonicalPullRequestCommentSyncBlock(
     }
   }
   return null;
-}
-
-interface PrCloseCoverageProofGateBlock {
-  actionTaken: ActionTaken;
-  reason: string;
-}
-
-interface PrCloseCoverageProofCoveringWitness {
-  number: number;
-  provedAtMs: number;
-  updatedAt: string | null;
-  url: string;
-  proof: PrCloseCoverageProofModelResult;
-}
-
-type PrCloseCoverageProofGateResult =
-  | { status: "allowed"; covering: PrCloseCoverageProofCoveringWitness }
-  | { status: "blocked"; block: PrCloseCoverageProofGateBlock }
-  | null;
-
-interface PrCloseCoverageRuntimeBudget {
-  startedAtMs: number;
-  maxRuntimeMs: number;
 }
 
 function prCloseCoverageRuntimeBudgetBlock(
@@ -18218,11 +14953,6 @@ function isRoutineBeforeMergeStep(value: string): boolean {
   return !isActionablePriorityText(text);
 }
 
-interface PublicBeforeMergeItem {
-  label: string;
-  detail: string;
-}
-
 function publicBeforeMergeItems(options: {
   reviewFailed: boolean;
   proof: RealBehaviorProof;
@@ -19610,12 +16340,6 @@ function reviewLeaseRevisionFromReport(markdown: string): string | null {
   const value = frontMatterValue(markdown, "item_source_revision");
   return value && value !== "unknown" ? value : null;
 }
-
-type StalePullRequestReviewHead = {
-  reportHeadSha: string;
-  liveHeadSha: string;
-  reason: string;
-};
 
 function stalePullRequestReviewHead(
   markdown: string,
@@ -22230,42 +18954,6 @@ const ACTION_LEDGER_DROPPED_FIELDS = [
   "prompt",
 ] as const;
 
-type ReviewLedgerItem = {
-  item: Item;
-  index: number;
-  started: boolean;
-  startedAtMs: number | null;
-  startEventId: string | null;
-  lastEventId: string | null;
-  logPublication: boolean;
-  mutationAttemptCount: number;
-  mutationObserved: boolean;
-  uncertainMutationObserved: boolean;
-  terminal: boolean;
-};
-
-type ReviewActionLedger = {
-  operationIdentity: {
-    repository: string;
-    reviewPolicy: string;
-    shardIndex: number;
-    shardCount: number;
-    candidateSnapshots: Array<{
-      repository: string;
-      number: number;
-      kind: ItemKind;
-      updatedAt: string;
-    }>;
-  };
-  batchStartEventId: string | null;
-  items: Map<string, ReviewLedgerItem>;
-  nextPhaseSeq: number;
-  mutationObserved: boolean;
-  uncertainMutationObserved: boolean;
-  startedAtMs: number;
-  terminal: boolean;
-};
-
 function actionLedgerItemKey(item: Pick<Item, "repo" | "number">): string {
   return `${item.repo}#${item.number}`;
 }
@@ -22452,21 +19140,6 @@ function startReviewActionLedgerItem(ledger: ReviewActionLedger, item: Item): Ac
   state.lastEventId = state.startEventId;
   return start;
 }
-
-type ReviewMutationAttempt = {
-  state: ReviewLedgerItem;
-  eventId: string | null;
-  idempotencyIdentity: {
-    operation: "review";
-    slot: "coordination_mutation";
-    repository: string;
-    number: number;
-    itemUpdatedAt: string;
-    mutationIdentitySha256: string;
-  };
-  mutationIndex: number;
-  receiptIdentitySha256: string;
-};
 
 function startReviewMutationAttempt(
   ledger: ReviewActionLedger,
@@ -24464,15 +21137,6 @@ function reviewCommand(args: Args): void {
 
 const SOURCE_REVISION_MISMATCH_MARKER = "source-revision-mismatch.json";
 
-interface ExpectedIssueSourceRevisionOptions {
-  expectedSourceRevision: string;
-  itemKind: "issue" | "pull_request";
-  repo: string;
-  number: number;
-  sourceRevision: string | undefined;
-  artifactDir: string;
-}
-
 function enforceExpectedIssueSourceRevision(options: ExpectedIssueSourceRevisionOptions): void {
   if (options.itemKind !== "issue") {
     throw new UserFacingCommandError(
@@ -24870,25 +21534,6 @@ function dispatchFailedReviewRetry(options: {
   if (dispatch.outcome !== "accepted") throw new Error("GitHub dispatch was not accepted");
   return dispatchUrl;
 }
-
-type ReviewRetryActionLedger = {
-  operationIdentity: {
-    repository: string;
-    requestedItemNumbers: number[];
-    reportPath: string;
-  };
-  batchStartEventId: string | null;
-  dispatchAttempts: Map<
-    string,
-    {
-      eventId: string | null;
-      phaseSeq: number;
-    }
-  >;
-  nextDispatchPhaseSeq: number;
-  startedAtMs: number;
-  terminal: boolean;
-};
 
 function startFailedReviewRetryLedger(options: {
   requestedItemNumbers: readonly number[];
@@ -25705,64 +22350,6 @@ function recordFailedReviewRetryEvents(options: {
   options.ledger.terminal = true;
 }
 
-type ApplyItemBusinessIdempotencyIdentity = {
-  operation: "apply";
-  slot: "apply_item" | "apply_mutation" | "review_comment";
-  repository: string;
-  number: number;
-  sourceRevision: string;
-  reviewContentDigest: string;
-  decisionPacketSha256: string;
-};
-
-type ApplyMutationBusinessIdempotencyIdentity = ApplyItemBusinessIdempotencyIdentity & {
-  slot: "apply_mutation";
-  mutationIdentitySha256: string;
-};
-
-type ApplyLedgerItem = {
-  entry: ReportEntry;
-  index: number;
-  started: boolean;
-  startEventId: string | null;
-  lastEventId: string | null;
-  mutationObserved: boolean;
-  uncertainMutationObserved: boolean;
-  mutationEventId: string | null;
-  mutationAttemptCount: number;
-  terminal: boolean;
-  businessIdentity: Omit<ApplyItemBusinessIdempotencyIdentity, "slot">;
-};
-
-type ApplyActionLedger = {
-  operationIdentity: {
-    repository: string;
-    applyKind: ApplyKind;
-    closeReasons: string[];
-    dryRun: boolean;
-    syncCommentsOnly: boolean;
-    requestedItemNumbers: number[];
-    reportPath: string;
-    checkpoint: string;
-    candidateRevisions: Array<{
-      repository: string;
-      number: number;
-      sourceRevision: string;
-      reviewContentDigest: string;
-      decisionPacketSha256: string;
-    }>;
-  };
-  batchStartEventId: string | null;
-  items: Map<string, ApplyLedgerItem>;
-  startedAtMs: number;
-  nextPhaseSeq: number;
-  terminal: boolean;
-};
-
-type ApplyPhaseCursor = {
-  nextPhaseSeq: number;
-};
-
 function nextApplyPhaseSeq(cursor: ApplyPhaseCursor): number {
   const phaseSeq = cursor.nextPhaseSeq;
   cursor.nextPhaseSeq += 1;
@@ -25968,14 +22555,6 @@ function startApplyActionLedgerItem(
   state.lastEventId = state.startEventId;
   return state;
 }
-
-type ApplyMutationAttempt = {
-  state: ApplyLedgerItem;
-  eventId: string | null;
-  idempotencyIdentity: ApplyMutationBusinessIdempotencyIdentity;
-  mutationIndex: number;
-  receiptIdentitySha256: string;
-};
 
 function startApplyMutationAttempt(
   ledger: ApplyActionLedger,
@@ -30298,14 +26877,6 @@ function markdownFiles(dir: string): string[] {
     : [];
 }
 
-interface ReportEntry {
-  name: string;
-  number: number;
-  path: string;
-  repo: string;
-  markdown: string;
-}
-
 function reportEntriesForDir(dir: string): ReportEntry[] {
   return markdownFiles(dir).map((name) => {
     const path = join(dir, name);
@@ -31783,21 +28354,6 @@ function applyHealthStatusArg(args: Args): Record<string, unknown> | undefined {
   return parsed as Record<string, unknown>;
 }
 
-interface AssistSourceCommentSnapshot {
-  id: string;
-  issueUrl: string;
-  htmlUrl: string;
-  author: string;
-  body: string;
-  updatedAt: string;
-}
-
-interface LiveAssistBinding {
-  item: Item;
-  context: ItemContext;
-  sourceComment: AssistSourceCommentSnapshot | null;
-}
-
 function assistResolveTargetCommand(args: Args): void {
   const profile = repoFromArgs(args);
   const [owner, repository, ...extra] = profile.targetRepo.split("/");
@@ -32236,6 +28792,58 @@ function isExplicitActionLedgerCommand(command: string): boolean {
   );
 }
 
+function dashboardCommand(args: Args): void {
+  repoFromArgs(args);
+  updateDashboard(
+    resolve(stringArg(args.items_dir, defaultItemsDir())),
+    resolve(stringArg(args.closed_dir, defaultClosedDir())),
+  );
+}
+
+function finalizeActionEventsCommand(args: Args): void {
+  if (!boolArg(args.interrupt_open_attempts)) return;
+  const reason = stringArg(args.reason, ACTION_EVENT_REASON_CODES.timeout);
+  if (
+    reason !== ACTION_EVENT_REASON_CODES.timeout &&
+    reason !== ACTION_EVENT_REASON_CODES.cancelled &&
+    reason !== ACTION_EVENT_REASON_CODES.workflowFailed
+  ) {
+    throw new UserFacingCommandError(
+      `Unsupported --reason for interrupted action events: ${reason}`,
+    );
+  }
+  const interrupted = interruptOpenWorkflowActionEvents(ROOT, { reasonCode: reason });
+  if (interrupted > 0) {
+    console.error(
+      `[action-ledger] recorded ${interrupted} ${reason} terminal event${
+        interrupted === 1 ? "" : "s"
+      }`,
+    );
+  }
+}
+
+const COMMAND_HANDLERS: Readonly<Record<string, CommandHandler<Args>>> = {
+  plan: planCommand,
+  "reserve-review-lease": reserveReviewLeaseCommand,
+  review: reviewCommand,
+  "retry-failed-reviews": retryFailedReviewsCommand,
+  "apply-artifacts": applyArtifactsCommand,
+  "apply-decisions": applyDecisionsCommand,
+  "publish-action-events": publishActionEventsCommand,
+  "publish-action-event-paths": publishActionEventPathsCommand,
+  audit: auditCommand,
+  reconcile: reconcileCommand,
+  dashboard: dashboardCommand,
+  status: statusCommand,
+  "assist-target": assistResolveTargetCommand,
+  assist: assistGenerateCommand,
+  "assist-generate": assistGenerateCommand,
+  "assist-validate": assistValidateArtifactCommand,
+  "assist-publish": assistPublishCommand,
+  check: checkCommand,
+  "finalize-action-events": finalizeActionEventsCommand,
+};
+
 export async function main(
   argv = process.argv.slice(2),
   dependencies: {
@@ -32254,52 +28862,7 @@ export async function main(
   let commandFailed = false;
   let commandError: unknown;
   try {
-    if (command === "plan") planCommand(args);
-    else if (command === "reserve-review-lease") reserveReviewLeaseCommand(args);
-    else if (command === "review") reviewCommand(args);
-    else if (command === "retry-failed-reviews") retryFailedReviewsCommand(args);
-    else if (command === "apply-artifacts") applyArtifactsCommand(args);
-    else if (command === "apply-decisions") applyDecisionsCommand(args);
-    else if (command === "publish-action-events") publishActionEventsCommand(args);
-    else if (command === "publish-action-event-paths") await publishActionEventPathsCommand(args);
-    else if (command === "audit") auditCommand(args);
-    else if (command === "reconcile") reconcileCommand(args);
-    else if (command === "dashboard") {
-      repoFromArgs(args);
-      updateDashboard(
-        resolve(stringArg(args.items_dir, defaultItemsDir())),
-        resolve(stringArg(args.closed_dir, defaultClosedDir())),
-      );
-    } else if (command === "status") statusCommand(args);
-    else if (command === "assist-target") assistResolveTargetCommand(args);
-    else if (command === "assist" || command === "assist-generate") assistGenerateCommand(args);
-    else if (command === "assist-validate") assistValidateArtifactCommand(args);
-    else if (command === "assist-publish") assistPublishCommand(args);
-    else if (command === "check") checkCommand();
-    else if (command === "finalize-action-events") {
-      if (boolArg(args.interrupt_open_attempts)) {
-        const reason = stringArg(args.reason, ACTION_EVENT_REASON_CODES.timeout);
-        if (
-          reason !== ACTION_EVENT_REASON_CODES.timeout &&
-          reason !== ACTION_EVENT_REASON_CODES.cancelled &&
-          reason !== ACTION_EVENT_REASON_CODES.workflowFailed
-        ) {
-          throw new UserFacingCommandError(
-            `Unsupported --reason for interrupted action events: ${reason}`,
-          );
-        }
-        const interrupted = interruptOpenWorkflowActionEvents(ROOT, {
-          reasonCode: reason,
-        });
-        if (interrupted > 0) {
-          console.error(
-            `[action-ledger] recorded ${interrupted} ${reason} terminal event${
-              interrupted === 1 ? "" : "s"
-            }`,
-          );
-        }
-      }
-    } else throw new UserFacingCommandError(`Unknown command: ${command}`);
+    await dispatchCommand(command, args, COMMAND_HANDLERS);
   } catch (error) {
     commandFailed = true;
     commandError = error;
