@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { setTimeout as sleep } from "node:timers/promises";
+import { appendFileSync } from "node:fs";
 import { ghJsonWithRetry, ghPagedWithRetry, ghText } from "./github-cli.js";
+import { isLockedConversationCommentError } from "../github-retry.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { repoRoot } from "./paths.js";
 import { DEFAULT_TRUSTED_BOTS } from "./config.js";
@@ -32,14 +34,18 @@ type Options = {
   detail: string;
   runUrl: string;
   waitMs: number;
+  requireMutation: boolean;
+  lockedConversationTerminalSkip: boolean;
 };
+
+type CommandStatusUpdateOutcome = "completed" | "unchanged" | "skipped" | "locked_conversation";
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const options = parseOptions(process.argv.slice(2));
   await runCommandStatusUpdate(options);
 }
 
-async function updateCommandStatus(options: Options) {
+async function updateCommandStatus(options: Options): Promise<CommandStatusUpdateOutcome> {
   const lifecycle = commandStatusLifecycle(options);
   if (!options.marker && !options.statusCommentId) {
     recordCommandProgress(lifecycle, {
@@ -47,11 +53,19 @@ async function updateCommandStatus(options: Options) {
       status: "skipped",
       mutation: false,
     });
-    return;
+    if (options.requireMutation)
+      throw new Error("command status mutation required but no address was provided");
+    return "skipped";
   }
   validateRepo(options.repo);
   validateItemNumber(options.itemNumber);
-  const comment = await findCommandStatusComment(options, lifecycle);
+  let comment: LooseRecord | null;
+  try {
+    comment = await findCommandStatusComment(options, lifecycle);
+  } catch (error) {
+    if (!recordTerminalLockedConversationSkip(options, lifecycle, error)) throw error;
+    return "locked_conversation";
+  }
   if (!comment?.id || typeof comment.body !== "string") {
     console.warn(`No command status comment found for ${options.repo}#${options.itemNumber}.`);
     recordCommandProgress(lifecycle, {
@@ -59,7 +73,9 @@ async function updateCommandStatus(options: Options) {
       status: "skipped",
       mutation: false,
     });
-    return;
+    if (options.requireMutation)
+      throw new Error("command status mutation required but no comment was found");
+    return "skipped";
   }
   const body = mergeCommandProgressSection(comment.body, options);
   if (body === comment.body) {
@@ -68,38 +84,45 @@ async function updateCommandStatus(options: Options) {
       status: "unchanged",
       mutation: false,
     });
-    return;
+    return "unchanged";
   }
   const payload = writePayload(repoRoot(), `command-status-progress-${comment.id}`, { body });
-  runCommandLifecycleMutation(lifecycle, {
-    kind: "status_comment_update",
-    identity: {
-      repository: options.repo,
-      commentId: comment.id,
-      bodySha256: commentBodySha256(body),
-    },
-    component: "command_status",
-    operation: () =>
-      ghText([
-        "api",
-        `repos/${options.repo}/issues/comments/${comment.id}`,
-        "--method",
-        "PATCH",
-        "--input",
-        payload,
-      ]),
-  });
+  try {
+    runCommandLifecycleMutation(lifecycle, {
+      kind: "status_comment_update",
+      identity: {
+        repository: options.repo,
+        commentId: comment.id,
+        bodySha256: commentBodySha256(body),
+      },
+      component: "command_status",
+      operation: () =>
+        ghText([
+          "api",
+          `repos/${options.repo}/issues/comments/${comment.id}`,
+          "--method",
+          "PATCH",
+          "--input",
+          payload,
+        ]),
+    });
+  } catch (error) {
+    if (!recordTerminalLockedConversationSkip(options, lifecycle, error)) throw error;
+    return "locked_conversation";
+  }
   recordCommandProgress(lifecycle, {
     state: options.state,
     status: "completed",
     mutation: true,
   });
+  return "completed";
 }
 
 async function runCommandStatusUpdate(options: Options) {
   let commandError: unknown = null;
+  let outcome: CommandStatusUpdateOutcome | null = null;
   try {
-    await updateCommandStatus(options);
+    outcome = await updateCommandStatus(options);
   } catch (error) {
     commandError = error;
     recordCommandLifecycleFailure(commandStatusLifecycle(options), {
@@ -120,7 +143,32 @@ async function runCommandStatusUpdate(options: Options) {
       commandError = error;
     }
   }
+  if (!commandError && outcome === "locked_conversation" && process.env.GITHUB_OUTPUT) {
+    appendFileSync(process.env.GITHUB_OUTPUT, "locked_conversation=true\n");
+  }
   if (commandError) throw commandError;
+}
+
+export function terminalLockedConversationSkip(
+  options: Pick<Options, "lockedConversationTerminalSkip">,
+  error: unknown,
+) {
+  return options.lockedConversationTerminalSkip && isLockedConversationCommentError(error);
+}
+
+function recordTerminalLockedConversationSkip(
+  options: Options,
+  lifecycle: CommandLifecycleInput,
+  error: unknown,
+) {
+  if (!terminalLockedConversationSkip(options, error)) return false;
+  console.warn("Command status update skipped because the conversation is locked.");
+  recordCommandProgress(lifecycle, {
+    state: "locked_conversation",
+    status: "skipped",
+    mutation: false,
+  });
+  return true;
 }
 
 function commandStatusLifecycle(options: Options): CommandLifecycleInput {
@@ -382,6 +430,12 @@ export function parseOptions(argv: string[]): Options {
     detail: args.detail ?? process.env.COMMAND_STATUS_DETAIL ?? "",
     runUrl: args["run-url"] ?? process.env.RUN_URL ?? "",
     waitMs: Number.parseInt(args["wait-ms"] ?? process.env.COMMAND_STATUS_WAIT_MS ?? "0", 10) || 0,
+    requireMutation:
+      (args["require-mutation"] ?? process.env.COMMAND_STATUS_REQUIRE_MUTATION ?? "") === "true",
+    lockedConversationTerminalSkip:
+      (args["locked-conversation-terminal-skip"] ??
+        process.env.COMMAND_STATUS_LOCKED_CONVERSATION_TERMINAL_SKIP ??
+        "") === "true",
   };
 }
 

@@ -5,7 +5,9 @@ import {
   mergeCommandProgressSection,
   parseOptions,
   selectCommandStatusComment,
+  terminalLockedConversationSkip,
 } from "../../dist/repair/update-command-status.js";
+import { readText } from "../helpers.ts";
 
 function withEnv(values: Record<string, string | undefined>, run: () => void) {
   const previous = new Map<string, string | undefined>();
@@ -44,6 +46,56 @@ test("parseOptions preserves empty string arguments", () => {
 
   assert.equal(options.marker, "");
   assert.equal(options.statusCommentId, null);
+  assert.equal(options.requireMutation, false);
+});
+
+test("parseOptions requires a status mutation only when explicitly requested", () => {
+  const options = parseOptions([
+    "--repo",
+    "openclaw/openclaw",
+    "--item-number",
+    "81564",
+    "--require-mutation",
+  ]);
+
+  assert.equal(options.requireMutation, true);
+});
+
+test("parseOptions enables the terminal locked-conversation skip only when requested", () => {
+  const options = parseOptions([
+    "--repo",
+    "openclaw/openclaw",
+    "--item-number",
+    "81564",
+    "--locked-conversation-terminal-skip",
+  ]);
+
+  assert.equal(options.lockedConversationTerminalSkip, true);
+  assert.equal(
+    terminalLockedConversationSkip(options, {
+      stderr: "gh: Unable to update comment because issue is locked. (HTTP 403)",
+    }),
+    true,
+  );
+  assert.equal(
+    terminalLockedConversationSkip(options, {
+      stderr: "gh: Resource not accessible by integration (HTTP 403)",
+    }),
+    false,
+  );
+});
+
+test("terminal locked-conversation skip covers status selection and duplicate cleanup", () => {
+  const source = readText("src/repair/update-command-status.ts");
+  const selection = source.indexOf("comment = await findCommandStatusComment(options, lifecycle)");
+  const caught = source.indexOf(
+    "recordTerminalLockedConversationSkip(options, lifecycle, error)",
+    selection,
+  );
+
+  assert.ok(selection >= 0);
+  assert.ok(caught > selection);
+  assert.match(source.slice(selection, caught), /catch \(error\)/);
 });
 
 test("parseOptions reads STATUS_COMMENT_ID env fallback", () => {

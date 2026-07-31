@@ -669,6 +669,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   const prepareDirect = step(reviewer, "Deliver GitHub effects and prepare direct state mutation");
   const postDirect = step(reviewer, "Post direct exact review publication result");
   const finalizeDirect = step(reviewer, "Finalize direct exact review lifecycle");
+  const directImplementationDispatch = step(
+    reviewer,
+    "Dispatch exact high-confidence bug implementation",
+  );
   const upload = step(reviewer, "Upload exact review artifact bundle");
   const queuePublication = step(reviewer, "Queue durable exact review publication");
   const complete = step(reviewer, "Complete exact-review queue lease");
@@ -708,24 +712,26 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(finalizeDirect.run ?? "", /lifecycle\/terminal-disposition/);
   assert.match(finalizeDirect.run ?? "", /router-direct-proof/);
   assert.match(finalizeDirect.run ?? "", /lifecycle_deferred_coverage="true"/);
-  const directAcknowledgementGuard = (finalizeDirect.run ?? "").indexOf("command-ack/attempt");
-  const directStatusEdit = (finalizeDirect.run ?? "").indexOf(
-    "pnpm run repair:update-command-status",
+  const directLifecycleHandoff = Math.max(
+    (finalizeDirect.run ?? "").indexOf("lifecycle/router-receipt"),
+    (finalizeDirect.run ?? "").indexOf("lifecycle/terminal-disposition"),
   );
-  assert.ok(directAcknowledgementGuard >= 0 && directAcknowledgementGuard < directStatusEdit);
-  assert.match(finalizeDirect.run ?? "", /lifecycle\/command-ack\/failed/);
+  assert.ok(directLifecycleHandoff >= 0);
   assert.match(
-    finalizeDirect.run ?? "",
-    /if \[ -z "\$command_status_marker" \] && \[ -z "\$status_comment_id" \]; then/,
-  );
-  assert.match(
-    finalizeDirect.run ?? "",
-    /const statusMarker = process\.env\.COMMAND_STATUS_MARKER \|\| null/,
+    directImplementationDispatch.run ?? "",
+    /dispatch-issue-implementation-candidates\.mjs/,
   );
   assert.match(
-    finalizeDirect.run ?? "",
-    /statusCommentId === null \? \{\} : \{ status_comment_id: statusCommentId \}/,
+    directImplementationDispatch.if ?? "",
+    /finalize-direct-exact-review-lifecycle\.outcome == 'success'/,
   );
+  assert.ok(
+    reviewer.steps.indexOf(finalizeDirect) < reviewer.steps.indexOf(directImplementationDispatch),
+  );
+  assert.ok(reviewer.steps.indexOf(directImplementationDispatch) < reviewer.steps.indexOf(upload));
+  assert.doesNotMatch(finalizeDirect.run ?? "", /lifecycle\/command-ack\/attempt/);
+  assert.doesNotMatch(finalizeDirect.run ?? "", /repair:update-command-status/);
+  assert.match(reviewer.if ?? "", /source_action != 'exact_review_command_acknowledgement'/);
   assert.match(upload.if ?? "", /direct-exact-review-publication\.outputs\.accepted != 'true'/);
   assert.equal(upload.with?.["retention-days"], 90);
   assert.match(queuePublication.run ?? "", /for attempt in 1 2 3/);
@@ -861,19 +867,6 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(drift.run ?? "", /decision\.sourceAction === "failed_review_shard_recovery"/);
   assert.match(drift.run ?? "", /\.queued == true or \.deduped == true or \.shed == true/);
   assert.match(drift.run ?? "", /Source-drift recovery shed by exact-review queue backpressure/);
-  const status = step(publisher, "Mark re-review complete");
-  assert.equal(status.env?.LIVE_TERMINAL_MISSING, undefined);
-  assert.equal(status.env?.LIVE_GUARDED_OPEN, undefined);
-  assert.match(status.env?.PUBLISH_COMPLETION_KIND ?? "", /publish-event-result/);
-  assert.match(status.if ?? "", /reason_code == 'review_lease_active'/);
-  assert.match(status.run ?? "", /PUBLISH_COMPLETION_KIND.*superseded/);
-  const commandComplete = step(publisher, "Mark re-review complete");
-  assert.doesNotMatch(commandComplete.if ?? "", /completion_kind != 'deferred'/);
-  assert.match(commandComplete.run ?? "", /state="Complete"/);
-  assert.match(commandComplete.run ?? "", /independent bounded read-only proof check/);
-  assert.doesNotMatch(commandComplete.run ?? "", /Close coverage proof pending/);
-  assert.match(status.run ?? "", /stale result was superseded/);
-  assert.doesNotMatch(status.run ?? "", /LIVE_TERMINAL_MISSING|LIVE_GUARDED_OPEN/);
   const reaction = step(publisher, "React to target item completion");
   assert.match(reaction.if ?? "", /requeue_latest != 'true'/);
   assert.doesNotMatch(reaction.if ?? "", /publication-context.*live_guarded_open/);
@@ -995,7 +988,7 @@ test("exact event publication derives lifecycle receipt and final command acknow
     run?: string;
   };
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
-    jobs: Record<string, { steps: Step[] }>;
+    jobs: Record<string, { if?: string; steps: Step[] }>;
   };
   const steps = workflow.jobs["event-review-publish"]!.steps;
   const step = (name: string) => {
@@ -1034,32 +1027,11 @@ test("exact event publication derives lifecycle receipt and final command acknow
   assert.match(noRouter.run ?? "", /outcome: "not_required"/);
   assert.match(noRouter.run ?? "", /internal\/exact-review\/lifecycle\/router-receipt/);
 
-  const commandStatus = step("Mark re-review complete");
-  assert.match(commandStatus.if ?? "", /has_command_context == 'true'/);
-  assert.match(commandStatus.run ?? "", /internal\/exact-review\/lifecycle\/command-ack\/attempt/);
-  assert.match(commandStatus.run ?? "", /internal\/exact-review\/lifecycle\/command-ack\/failed/);
-  assert.match(
-    commandStatus.run ?? "",
-    /if \[ -z "\$COMMAND_STATUS_MARKER" \] && \[ -z "\$STATUS_COMMENT_ID" \]; then/,
-  );
-  assert.match(
-    commandStatus.run ?? "",
-    /\.ok == true and \.allowed == true and \.acknowledgement_state == "pending"/,
-  );
-  assert.match(commandStatus.run ?? "", /internal\/exact-review\/lifecycle\/terminal-disposition/);
-  assert.match(commandStatus.run ?? "", /"retryable_failure"/);
-  assert.doesNotMatch(
-    commandStatus.run ?? "",
-    /terminal_disposition="failure"/,
-    "the pre-completion command path must not consume acknowledgement for a retryable failure",
-  );
-  assert.match(
-    commandStatus.run ?? "",
-    /PUBLISH_COMPLETION_KIND" = "deferred" \] && \[ "\$PUBLISH_REASON_CODE" = "close_coverage_deferred" \]; then\s*:/,
-  );
-  const acknowledgementGuard = (commandStatus.run ?? "").indexOf("command-ack/attempt");
-  const statusEdit = (commandStatus.run ?? "").indexOf("pnpm run repair:update-command-status");
-  assert.ok(acknowledgementGuard >= 0 && acknowledgementGuard < statusEdit);
+  const deferredDispatch = step("Dispatch deferred high-confidence bug implementation");
+  assert.match(deferredDispatch.run ?? "", /dispatch-issue-implementation-candidates\.mjs/);
+  assert.ok(steps.indexOf(canonical) < steps.indexOf(deferredDispatch));
+  assert.ok(steps.indexOf(router) < steps.indexOf(deferredDispatch));
+  assert.ok(steps.indexOf(noRouter) < steps.indexOf(deferredDispatch));
 
   const complete = step("Complete durable exact review publication");
   assert.match(
@@ -1067,15 +1039,50 @@ test("exact event publication derives lifecycle receipt and final command acknow
     /\["retryable_failure", "refresh_required"\]\.includes\(completionKind\)/,
   );
   assert.doesNotMatch(complete.run ?? "", /outcome !== "success"\s*\?\s*"failure"/);
-
-  const terminalStatus = step("Finalize terminal command lifecycle status");
-  assert.match(terminalStatus.if ?? "", /complete-exact-review-publication\.outcome == 'success'/);
-  assert.doesNotMatch(terminalStatus.if ?? "", /completion_kind == 'permanent_failure'/);
-  assert.match(terminalStatus.run ?? "", /dead_letter\|failed/);
-  assert.match(terminalStatus.run ?? "", /lifecycle_state/);
   assert.match(complete.run ?? "", /completionKind === "permanent_failure"\s*\? "failure"/);
-  assert.match(terminalStatus.run ?? "", /internal\/exact-review\/lifecycle\/command-ack\/attempt/);
-  assert.match(terminalStatus.run ?? "", /internal\/exact-review\/lifecycle\/command-ack\/failed/);
+  const finalizer = workflow.jobs["event-review-terminal-finalization"]!;
+  const finalizationClaim = finalizer.steps.find(
+    (candidate) => candidate.name === "Claim committed terminal finalization",
+  );
+  const acknowledgement = finalizer.steps.find(
+    (candidate) => candidate.name === "Begin fenced terminal acknowledgement",
+  );
+  const statusEdit = finalizer.steps.find(
+    (candidate) => candidate.name === "Update final command status once",
+  );
+  const retry = finalizer.steps.find(
+    (candidate) => candidate.name === "Requeue unobserved terminal acknowledgement",
+  );
+  const lockedSkip = finalizer.steps.find(
+    (candidate) => candidate.name === "Complete locked terminal acknowledgement skip",
+  );
+  assert.ok(finalizationClaim && acknowledgement && statusEdit && lockedSkip && retry);
+  assert.match(finalizer.if ?? "", /exact_review_command_acknowledgement/);
+  assert.match(finalizationClaim.run ?? "", /terminal_finalization/);
+  assert.match(finalizationClaim.run ?? "", /response\.item_key !== process\.env\.ITEM_KEY/);
+  assert.doesNotMatch(finalizationClaim.run ?? "", /expectedItemKey/);
+  assert.match(finalizationClaim.run ?? "", /lease_not_active/);
+  assert.match(finalizationClaim.run ?? "", /lease_already_claimed/);
+  assert.match(
+    finalizationClaim.run ?? "",
+    /Skipping terminal finalization because lease claim lost safely/,
+  );
+  assert.match(acknowledgement.run ?? "", /terminal-finalization\/attempt/);
+  assert.match(statusEdit.if ?? "", /terminal-acknowledgement\.outputs\.allowed == 'true'/);
+  assert.match(statusEdit.run ?? "", /--require-mutation/);
+  assert.match(statusEdit.run ?? "", /--locked-conversation-terminal-skip/);
+  assert.match(statusEdit.run ?? "", /command-ack\/failed/);
+  assert.match(lockedSkip.if ?? "", /locked_conversation == 'true'/);
+  assert.match(lockedSkip.run ?? "", /terminal-finalization\/skip/);
+  assert.match(lockedSkip.run ?? "", /locked_conversation/);
+  assert.match(retry.run ?? "", /terminal-finalization\/retry/);
+  assert.match(retry.run ?? "", /response_status/);
+  assert.match(retry.run ?? "", /lease_not_active/);
+  const workflowSource = readText(".github/workflows/sweep.yml");
+  assert.ok(
+    workflowSource.indexOf("Complete durable exact review publication") <
+      workflowSource.indexOf("Claim committed terminal finalization"),
+  );
 });
 
 test("exact event workflow binds all work to the canonical queue claim", () => {
@@ -1223,7 +1230,7 @@ test("exact-review lease competition skips only known conflicts and gates both o
     assert.match(claimRun, /returned an invalid success payload/, jobName);
     assert.doesNotMatch(claimRun, /curl --fail/, jobName);
 
-    for (const step of steps.slice(1)) {
+    for (const step of steps.slice(1).filter((candidate) => candidate.if !== "${{ false }}")) {
       assert.match(step.if ?? "", new RegExp(gate.replaceAll(".", "\\.")), step.name ?? step.uses);
     }
   }

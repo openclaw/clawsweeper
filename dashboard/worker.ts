@@ -613,6 +613,21 @@ export default {
       return exactReviewQueueRequest(env, "/state-writer-progress", request);
     if (url.pathname === "/internal/exact-review/complete" && request.method === "POST")
       return exactReviewQueueRequest(env, "/complete", request);
+    if (
+      url.pathname === "/internal/exact-review/terminal-finalization/attempt" &&
+      request.method === "POST"
+    )
+      return exactReviewQueueRequest(env, "/terminal-finalization/attempt", request);
+    if (
+      url.pathname === "/internal/exact-review/terminal-finalization/retry" &&
+      request.method === "POST"
+    )
+      return exactReviewQueueRequest(env, "/terminal-finalization/retry", request);
+    if (
+      url.pathname === "/internal/exact-review/terminal-finalization/skip" &&
+      request.method === "POST"
+    )
+      return exactReviewQueueRequest(env, "/terminal-finalization/skip", request);
     if (url.pathname === "/internal/exact-review/claimed-runs" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/claimed-runs");
     if (url.pathname === "/internal/exact-review/dead-letters/list" && request.method === "POST")
@@ -1332,7 +1347,7 @@ function lifecycleCommandAcknowledgementFromGithubWebhook({ event, payload, env 
   const completed =
     /^- State:\s*Complete\s*$/im.test(progress || "") ||
     (/- State:\s*Failed\s*$/im.test(progress || "") &&
-      /- Detail:\s*(?:The review artifact was captured, but durable publication ended in a terminal failure\.|Durable publication exhausted its retry budget and was retained for operator dead-letter recovery\.)\s*$/im.test(
+      /- Detail:\s*(?:The review artifact was captured, but durable publication ended in a terminal failure\.|Durable publication exhausted its retry budget and was retained for operator dead-letter recovery\.|The exact review reached a durable terminal failure and needs operator attention\.)\s*$/im.test(
         progress || "",
       ));
   if (

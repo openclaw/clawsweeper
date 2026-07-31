@@ -25,6 +25,7 @@ export type LifecycleState =
   | "pending"
   | "completed"
   | "acknowledgement_pending"
+  | "acknowledgement_skipped"
   | "superseded"
   | "requeue"
   | "dead_letter"
@@ -34,7 +35,12 @@ export type LifecycleState =
   | "guarded_open"
   | "failed";
 
-export type CommandAcknowledgementState = "not_required" | "pending" | "observed" | "unavailable";
+export type CommandAcknowledgementState =
+  | "not_required"
+  | "pending"
+  | "observed"
+  | "skipped_locked"
+  | "unavailable";
 
 type LifecycleClaimFact = {
   fenceKey: string;
@@ -56,6 +62,7 @@ type LifecycleAcknowledgementAttempt = {
   attemptedAt: number;
   failedAt?: number;
   expiredAt?: number;
+  terminalSkip?: { reason: "locked_conversation"; observedAt: number };
 };
 
 export type ExactReviewLifecycleProjection = {
@@ -408,13 +415,17 @@ export class ExactReviewLifecycleProjectionStore {
           if (
             attempt.failedAt === undefined &&
             attempt.expiredAt === undefined &&
+            attempt.terminalSkip === undefined &&
             input.observedAt - attempt.attemptedAt >= EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS
           ) {
             attempt.expiredAt = input.observedAt;
           }
         }
         const activeAttempt = projection.acknowledgement.attempts.some(
-          (attempt) => attempt.failedAt === undefined && attempt.expiredAt === undefined,
+          (attempt) =>
+            attempt.failedAt === undefined &&
+            attempt.expiredAt === undefined &&
+            attempt.terminalSkip === undefined,
         );
         if (activeAttempt) {
           return { projection, allowed: false, lifecycle, acknowledgement, attemptId: null };
@@ -428,7 +439,13 @@ export class ExactReviewLifecycleProjectionStore {
         });
         projection.updatedAt = input.observedAt;
         this.writeSync(projection);
-        return { projection, allowed: true, lifecycle, acknowledgement, attemptId };
+        return {
+          projection,
+          allowed: true,
+          lifecycle,
+          acknowledgement,
+          attemptId,
+        };
       },
       false,
     );
@@ -455,6 +472,7 @@ export class ExactReviewLifecycleProjectionStore {
             (candidate) =>
               candidate.failedAt === undefined &&
               candidate.expiredAt === undefined &&
+              candidate.terminalSkip === undefined &&
               candidate.attemptId === input.attemptId &&
               candidate.statusMarker === input.statusMarker &&
               candidate.statusCommentId === input.statusCommentId,
@@ -466,6 +484,51 @@ export class ExactReviewLifecycleProjectionStore {
         projection.updatedAt = input.observedAt;
         this.writeSync(projection);
         return { projection, released: true };
+      },
+      false,
+    );
+  }
+
+  recordCommandAcknowledgementTerminalSkip(
+    input: ProjectionIdentity & {
+      attemptId: string;
+      statusMarker: string | null;
+      statusCommentId: number | null;
+      reason: "locked_conversation";
+      observedAt: number;
+    },
+  ) {
+    this.validateIdentity(input);
+    if (!/^ack:[1-9]\d*$/.test(input.attemptId))
+      throw new Error("invalid lifecycle acknowledgement attempt");
+    validateAcknowledgementAddress(input.statusMarker, input.statusCommentId);
+    return this.mutate(
+      input,
+      (projection) => {
+        const attempt = [...projection.acknowledgement.attempts]
+          .reverse()
+          .find(
+            (candidate) =>
+              candidate.attemptId === input.attemptId &&
+              candidate.statusMarker === input.statusMarker &&
+              candidate.statusCommentId === input.statusCommentId,
+          );
+        if (!attempt || projection.acknowledgement.observed) {
+          return { projection, skipped: false };
+        }
+        if (attempt.terminalSkip) {
+          return {
+            projection,
+            skipped: attempt.terminalSkip.reason === input.reason,
+          };
+        }
+        if (attempt.failedAt !== undefined || attempt.expiredAt !== undefined) {
+          return { projection, skipped: false };
+        }
+        attempt.terminalSkip = { reason: input.reason, observedAt: input.observedAt };
+        projection.updatedAt = input.observedAt;
+        this.writeSync(projection);
+        return { projection, skipped: true };
       },
       false,
     );
@@ -640,7 +703,9 @@ export function lifecycleState(projection: ExactReviewLifecycleProjection): Life
         return "pending";
       }
       if (projection.acknowledgement.required && !projection.acknowledgement.observed) {
-        return "acknowledgement_pending";
+        return commandAcknowledgementTerminalSkip(projection)
+          ? "acknowledgement_skipped"
+          : "acknowledgement_pending";
       }
       return "completed";
     default:
@@ -653,11 +718,18 @@ export function commandAcknowledgementState(
 ): CommandAcknowledgementState {
   if (!projection.acknowledgement.required) return "not_required";
   if (projection.acknowledgement.observed) return "observed";
+  if (commandAcknowledgementTerminalSkip(projection)) return "skipped_locked";
   if (projection.terminalDisposition?.kind === "review_completed_routed") {
     return lifecycleState(projection) === "acknowledgement_pending" ? "pending" : "unavailable";
   }
   if (projection.terminalDisposition?.kind === "requeue") return "unavailable";
   return projection.terminalDisposition ? "pending" : "unavailable";
+}
+
+function commandAcknowledgementTerminalSkip(projection: ExactReviewLifecycleProjection) {
+  return projection.acknowledgement.attempts.some(
+    (attempt) => attempt.terminalSkip?.reason === "locked_conversation",
+  );
 }
 
 function projectionFromRow(value: string): ExactReviewLifecycleProjection {

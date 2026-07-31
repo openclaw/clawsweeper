@@ -108,28 +108,17 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(source, /lifecycle_terminal="target_missing"/);
   assert.match(source, /lifecycle_terminal="superseded"/);
   assert.doesNotMatch(source, /lifecycle_terminal="failure"/);
-  assert.match(source, /TARGET_GH_TOKEN: \$\{\{ steps\.target-token\.outputs\.token \}\}/);
-  const acknowledgementGuard = source.indexOf("lifecycle/command-ack/attempt");
-  const statusEdit = source.indexOf("pnpm run repair:update-command-status");
-  assert.ok(acknowledgementGuard >= 0 && acknowledgementGuard < statusEdit);
-  assert.match(source, /lifecycle\/command-ack\/failed/);
-  assert.match(
-    source,
-    /if \[ -n "\$command_status_marker" \] \|\| \[ -n "\$status_comment_id" \]; then/,
+  const lifecycleHandoff = source.indexOf("internal/exact-review/lifecycle/terminal-disposition");
+  const implementationDispatch = source.indexOf("dispatch-issue-implementation-candidates.mjs");
+  const postEffectsComplete = source.indexOf(".postEffectsComplete = true");
+  assert.ok(
+    lifecycleHandoff >= 0 &&
+      lifecycleHandoff < implementationDispatch &&
+      implementationDispatch < postEffectsComplete,
   );
-  assert.match(
-    source,
-    /if \[ -z "\$command_status_marker" \] && \[ -z "\$status_comment_id" \]; then/,
-  );
-  assert.match(source, /const statusMarker = process\.env\.COMMAND_STATUS_MARKER \|\| null/);
-  assert.match(
-    source,
-    /statusCommentId === null \? \{\} : \{ status_comment_id: statusCommentId \}/,
-  );
-  assert.doesNotMatch(
-    source,
-    /\[ -n "\$command_status_marker" \] && \[ -n "\$status_comment_id" \]/,
-  );
+  assert.doesNotMatch(source, /TARGET_GH_TOKEN/);
+  assert.doesNotMatch(source, /lifecycle\/command-ack\/attempt/);
+  assert.doesNotMatch(source, /repair:update-command-status/);
   assert.match(source, /internal\/exact-review\/enqueue/);
   assert.match(source, /source_drift_requeue/);
   assert.match(source, /state-receipt\.json/);
@@ -156,27 +145,17 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   const healthyMembers = workflow.jobs.publish!.steps.find(
     (step) => step.name === "Finalize healthy members under a fenced heartbeat",
   );
-  const terminalAcknowledgement = workflow.jobs.publish!.steps.find(
-    (step) => step.name === "Acknowledge terminal batch command lifecycle status",
-  );
   assert.ok(healthyMembers, "missing healthy member finalizer");
-  assert.ok(terminalAcknowledgement, "missing terminal command acknowledgement");
   assert.match(
     healthyMembers.run ?? "",
     /permanent publisher result remains retryable until the durable/,
   );
   assert.match(healthyMembers.run ?? "", /\[ "\$outcome_kind" = "permanent_failure" \].*continue/s);
-  assert.match(terminalAcknowledgement.if ?? "", /success\(\)/);
-  assert.match(terminalAcknowledgement.run ?? "", /receipt_outcome.*"permanent"/s);
-  assert.match(
-    terminalAcknowledgement.run ?? "",
-    /lifecycle_state == "dead_letter" or \.lifecycle_state == "failed"/,
-  );
-  assert.match(terminalAcknowledgement.run ?? "", /--state "Failed"/);
-  assert.match(terminalAcknowledgement.run ?? "", /lifecycle\/command-ack\/failed/);
-  assert.ok(
-    source.indexOf("pnpm run --silent repair:exact-review-batch complete") <
-      source.indexOf("Acknowledge terminal batch command lifecycle status"),
+  assert.equal(
+    workflow.jobs.publish!.steps.some(
+      (step) => step.name === "Acknowledge terminal batch command lifecycle status",
+    ),
+    false,
   );
 });
 

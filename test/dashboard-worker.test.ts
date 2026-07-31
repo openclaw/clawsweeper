@@ -3219,6 +3219,96 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
   });
 });
 
+test("direct command publication retains its terminal acknowledgement driver after durable handoff", async () => {
+  const storage = new MemoryDurableStorage();
+  const leased = leasedExactReviewQueueItem(787, "7870");
+  leased.revision = 4;
+  leased.leaseRevision = 4;
+  leased.claimGeneration = 2;
+  const marker = "<!-- clawsweeper-command-status:787:re_review:direct -->";
+  Object.assign(leased.decision, { commandStatusMarker: marker, statusCommentId: 7871 });
+  Object.assign(leased.leaseDecision!, { commandStatusMarker: marker, statusCommentId: 7871 });
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [leased.key]: leased } });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: "direct-command-secret",
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const publication = {
+    canonicalTargetKey: "openclaw/openclaw#787",
+    fenceKey: leased.key,
+    revision: 4,
+    identity: {
+      canonicalTargetKey: "openclaw/openclaw#787",
+      fenceKey: leased.key,
+      revision: 4,
+      claimGeneration: 2,
+    },
+    operations: [
+      {
+        path: "records/openclaw-openclaw/items/787.md",
+        deleted: false,
+        mode: "100644",
+        bytes: 1,
+        contentBase64: "eA==",
+      },
+    ],
+    totalBytes: 1,
+  };
+  const body = JSON.stringify(publication);
+  const signature = `sha256=${createHmac("sha256", "direct-command-secret").update(body).digest("hex")}`;
+  const published = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/publication-results", {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": signature },
+      body,
+    }),
+    env,
+  );
+  assert.equal(published.status, 202);
+  const routed = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/lifecycle/router-receipt", {
+      method: "POST",
+      body: JSON.stringify({
+        canonical_target_key: publication.canonicalTargetKey,
+        fence_key: publication.fenceKey,
+        revision: publication.revision,
+        outcome: "durable",
+        receipt_id: "direct-command:787:router",
+      }),
+    }),
+  );
+  assert.equal(routed.status, 200);
+  const completed = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: leased.leaseId,
+        item_key: leased.key,
+        lease_revision: 4,
+        claim_generation: 2,
+        run_id: leased.claimedRunId,
+        run_attempt: leased.claimedRunAttempt,
+        outcome: "success",
+        completion_kind: "published",
+        reason_code: "publication_applied",
+      }),
+    }),
+  );
+  assert.deepEqual(await completed.json(), {
+    ok: true,
+    requeued: false,
+    terminal_finalization: true,
+  });
+  const driver = storage.sql.readNormalizedQueue().items[leased.key]!;
+  assert.equal(driver.state, "pending");
+  assert.deepEqual(driver.terminalFinalization, {
+    disposition: "review_completed_routed",
+    statusState: "Complete",
+    statusDetail: "The durable review result and its route handoff completed.",
+  });
+});
+
 test("authenticated fanout cursors round-trip through durable storage", async () => {
   const storage = new MemoryDurableStorage();
   const secret = "fanout-cursor-secret";
@@ -3677,6 +3767,698 @@ test("Worker lifecycle keeps retryable publication work ineligible for final ack
     acknowledgement_state: "unavailable",
     version: 1,
   });
+});
+
+test("Worker retains a committed terminal command acknowledgement for fenced retries", async () => {
+  const storage = new MemoryDurableStorage();
+  const leased = leasedExactReviewPublicationItem(782, "7820");
+  leased.revision = 1;
+  leased.leaseRevision = 1;
+  leased.claimedRunId = undefined;
+  leased.claimedRunAttempt = undefined;
+  leased.claimGeneration = undefined;
+  leased.admissionDeliveryId = "publication-delivery:782";
+  const marker = "<!-- clawsweeper-command-status:782:re_review:terminal -->";
+  Object.assign(leased.decision.publication!.producerDecision, {
+    sourceAction: "re_review",
+    commandStatusMarker: marker,
+    statusCommentId: 7821,
+  });
+  Object.assign(leased.leaseDecision!.publication!.producerDecision, {
+    sourceAction: "re_review",
+    commandStatusMarker: marker,
+    statusCommentId: 7821,
+  });
+  Object.assign(leased.decision, { commandStatusMarker: marker, statusCommentId: 7821 });
+  Object.assign(leased.leaseDecision!, { commandStatusMarker: marker, statusCommentId: 7821 });
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [leased.key]: leased } });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const env = { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) };
+  await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/claim", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: leased.leaseId,
+        item_key: leased.key,
+        lease_revision: 1,
+        run_id: "7820",
+        run_attempt: 1,
+      }),
+    }),
+  );
+  const claimedState = storage.sql.readNormalizedQueue() as {
+    items: Record<string, { publicationFailureAttempts?: number; firstFailureAt?: number }>;
+  };
+  claimedState.items[leased.key]!.publicationFailureAttempts = 11;
+  claimedState.items[leased.key]!.firstFailureAt = Date.now();
+  storage.sql.replaceNormalizedQueue(claimedState);
+  const committed = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: leased.leaseId,
+        item_key: leased.key,
+        lease_revision: 1,
+        claim_generation: 1,
+        run_id: "7820",
+        run_attempt: 1,
+        outcome: "failure",
+        failure_kind: "github_transient",
+        completion_kind: "retryable_failure",
+        reason_code: "github_transient",
+      }),
+    }),
+  );
+  assert.deepEqual(await committed.json(), {
+    ok: true,
+    requeued: false,
+    terminal_finalization: true,
+  });
+  const committedState = storage.sql.readNormalizedQueue() as {
+    items: Record<string, Record<string, unknown>>;
+  };
+  const finalizer = committedState.items[leased.key]!;
+  assert.equal(finalizer.state, "pending");
+  assert.deepEqual(finalizer.terminalFinalization, {
+    disposition: "dead_letter",
+    statusState: "Failed",
+    statusDetail:
+      "Durable publication exhausted its retry budget and was retained for operator dead-letter recovery.",
+  });
+  const newerMarker = "<!-- clawsweeper-command-status:782:re_review:newer -->";
+  const newerPublicationDecision = exactReviewPublicationOverrides(
+    782,
+    "7821",
+    "re_review",
+    2,
+    "openclaw/openclaw",
+  );
+  Object.assign(newerPublicationDecision.publication.producerDecision, {
+    commandStatusMarker: newerMarker,
+    statusCommentId: 7822,
+  });
+  const newerPublication = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "publication-after-terminal-finalization",
+      782,
+      "exact_review_artifact_publish",
+      "issue",
+      "openclaw/openclaw",
+      {
+        commandStatusMarker: newerMarker,
+        statusCommentId: 7822,
+        ...newerPublicationDecision,
+      },
+    ),
+  );
+  assert.deepEqual(await newerPublication.json(), {
+    ok: true,
+    queued: true,
+    item_key: "openclaw/openclaw#782@publish:7821:1",
+    superseded_publications: 0,
+  });
+  const stateAfterNewPublication = storage.sql.readNormalizedQueue() as {
+    items: Record<string, Record<string, unknown>>;
+  };
+  const retainedFinalizer = stateAfterNewPublication.items[leased.key]!;
+  assert.deepEqual(retainedFinalizer.terminalFinalization, finalizer.terminalFinalization);
+  Object.assign(retainedFinalizer, {
+    state: "dispatching",
+    leaseId: "terminal-finalization-lease",
+    leaseRevision: 1,
+    leaseDecision: retainedFinalizer.decision,
+    leaseExpiresAt: Date.now() + 60_000,
+    claimedRunId: undefined,
+    claimedRunAttempt: undefined,
+    claimGeneration: undefined,
+  });
+  storage.sql.replaceNormalizedQueue(stateAfterNewPublication);
+  const finalizationClaim = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/claim", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: "terminal-finalization-lease",
+        item_key: leased.key,
+        lease_revision: 1,
+        run_id: "7821",
+        run_attempt: 1,
+      }),
+    }),
+  );
+  const finalizationClaimBody = await finalizationClaim.json();
+  assert.equal(finalizationClaimBody.terminal_finalization?.disposition, "dead_letter");
+  const staleClaim = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/terminal-finalization/attempt",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: "terminal-finalization-lease",
+          item_key: leased.key,
+          lease_revision: 1,
+          claim_generation: 2,
+          run_id: "7821",
+          run_attempt: 1,
+          status_marker: marker,
+          status_comment_id: 7821,
+        }),
+      },
+    ),
+    env,
+  );
+  assert.equal(staleClaim.status, 409);
+  const expiredState = storage.sql.readNormalizedQueue() as {
+    items: Record<string, Record<string, unknown>>;
+  };
+  expiredState.items[leased.key]!.leaseExpiresAt = Date.now() - 1;
+  storage.sql.replaceNormalizedQueue(expiredState);
+  const expiredLease = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/terminal-finalization/attempt",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: "terminal-finalization-lease",
+          item_key: leased.key,
+          lease_revision: 1,
+          claim_generation: 1,
+          run_id: "7821",
+          run_attempt: 1,
+          status_marker: marker,
+          status_comment_id: 7821,
+        }),
+      },
+    ),
+    env,
+  );
+  assert.equal(expiredLease.status, 409);
+  const restoredState = storage.sql.readNormalizedQueue() as {
+    items: Record<string, Record<string, unknown>>;
+  };
+  restoredState.items[leased.key]!.leaseExpiresAt = Date.now() + 60_000;
+  storage.sql.replaceNormalizedQueue(restoredState);
+  const acknowledgement = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/terminal-finalization/attempt",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: "terminal-finalization-lease",
+          item_key: leased.key,
+          lease_revision: 1,
+          claim_generation: 1,
+          run_id: "7821",
+          run_attempt: 1,
+          status_marker: marker,
+          status_comment_id: 7821,
+        }),
+      },
+    ),
+    env,
+  );
+  assert.deepEqual(await acknowledgement.json(), {
+    ok: true,
+    allowed: true,
+    lifecycle_state: "dead_letter",
+    acknowledgement_state: "pending",
+    terminal_disposition: "dead_letter",
+    status_state: "Failed",
+    status_detail:
+      "Durable publication exhausted its retry budget and was retained for operator dead-letter recovery.",
+    attempt_id: "ack:1",
+    version: 1,
+  });
+  const released = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/lifecycle/command-ack/failed", {
+      method: "POST",
+      body: JSON.stringify({
+        canonical_target_key: "openclaw/openclaw#782",
+        fence_key: leased.key,
+        revision: 1,
+        attempt_id: "ack:1",
+        status_marker: marker,
+        status_comment_id: 7821,
+      }),
+    }),
+  );
+  assert.equal((await released.json()).released, true);
+  const requeued = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/terminal-finalization/retry",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: "terminal-finalization-lease",
+          item_key: leased.key,
+          lease_revision: 1,
+          claim_generation: 1,
+          run_id: "7821",
+          run_attempt: 1,
+        }),
+      },
+    ),
+    env,
+  );
+  assert.deepEqual(await requeued.json(), { ok: true, requeued: true });
+  const retryState = storage.sql.readNormalizedQueue() as {
+    items: Record<string, Record<string, unknown>>;
+  };
+  Object.assign(retryState.items[leased.key]!, {
+    state: "dispatching",
+    leaseId: "terminal-finalization-retry",
+    leaseRevision: 1,
+    leaseDecision: retryState.items[leased.key]!.decision,
+    leaseExpiresAt: Date.now() + 60_000,
+    claimedRunId: undefined,
+    claimedRunAttempt: undefined,
+    claimGeneration: undefined,
+  });
+  storage.sql.replaceNormalizedQueue(retryState);
+  await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/claim", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: "terminal-finalization-retry",
+        item_key: leased.key,
+        lease_revision: 1,
+        run_id: "7822",
+        run_attempt: 1,
+      }),
+    }),
+  );
+  const retriedAcknowledgement = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/terminal-finalization/attempt",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: "terminal-finalization-retry",
+          item_key: leased.key,
+          lease_revision: 1,
+          claim_generation: 1,
+          run_id: "7822",
+          run_attempt: 1,
+          status_marker: marker,
+          status_comment_id: 7821,
+        }),
+      },
+    ),
+    env,
+  );
+  assert.equal((await retriedAcknowledgement.json()).attempt_id, "ack:2");
+  const observed = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/lifecycle/command-ack/observed", {
+      method: "POST",
+      body: JSON.stringify({
+        canonical_target_key: "openclaw/openclaw#782",
+        status_marker: marker,
+        command_comment_id: 7820,
+        completion_comment_id: 7821,
+        observed_at: Date.now(),
+      }),
+    }),
+  );
+  assert.equal(observed.status, 200);
+  assert.equal(storage.sql.readNormalizedQueue().items[leased.key], undefined);
+  const projection = new ExactReviewLifecycleProjectionStore(storage).read(
+    "openclaw/openclaw#782",
+    leased.key,
+    1,
+  );
+  assert.equal(commandAcknowledgementState(projection!), "observed");
+});
+
+test("newer shared command status supersedes a pending terminal finalizer", async () => {
+  const storage = new MemoryDurableStorage();
+  const finalizer = leasedExactReviewPublicationItem(785, "7850");
+  const marker = "<!-- clawsweeper-command-status:785:re_review:na -->";
+  Object.assign(finalizer.decision.publication!.producerDecision, {
+    sourceAction: "re_review",
+    commandStatusMarker: marker,
+    statusCommentId: 7851,
+  });
+  Object.assign(finalizer.decision, { commandStatusMarker: marker, statusCommentId: 7851 });
+  Object.assign(finalizer, {
+    state: "pending",
+    terminalFinalization: {
+      disposition: "failure",
+      statusState: "Failed",
+      statusDetail:
+        "The exact review reached a durable terminal failure and needs operator attention.",
+    },
+  });
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [finalizer.key]: finalizer },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const successor = exactReviewPublicationOverrides(
+    785,
+    "7851",
+    "re_review",
+    2,
+    "openclaw/openclaw",
+  );
+  Object.assign(successor.publication.producerDecision, {
+    commandStatusMarker: marker,
+    statusCommentId: 7851,
+  });
+  const response = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "publication-shared-command-status",
+      785,
+      "exact_review_artifact_publish",
+      "issue",
+      "openclaw/openclaw",
+      { commandStatusMarker: marker, statusCommentId: 7851, ...successor },
+    ),
+  );
+
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    queued: true,
+    item_key: "openclaw/openclaw#785@publish:7851:1",
+    superseded_publications: 1,
+  });
+  assert.equal(storage.sql.readNormalizedQueue().items[finalizer.key], undefined);
+});
+
+test("Worker completes a locked terminal acknowledgement as a projection-backed skip", async () => {
+  const storage = new MemoryDurableStorage();
+  const leased = leasedExactReviewPublicationItem(786, "7860");
+  const marker = "<!-- clawsweeper-command-status:786:re_review:locked -->";
+  Object.assign(leased.decision.publication!.producerDecision, {
+    sourceAction: "re_review",
+    commandStatusMarker: marker,
+    statusCommentId: 7861,
+  });
+  Object.assign(leased.decision, { commandStatusMarker: marker, statusCommentId: 7861 });
+  Object.assign(leased, {
+    terminalFinalization: {
+      disposition: "review_completed_routed",
+      statusState: "Complete",
+      statusDetail: "The durable review result and its route handoff completed.",
+    },
+  });
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [leased.key]: leased } });
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  lifecycle.ensureSchemaSync();
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#786",
+    fenceKey: leased.key,
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "terminal-locked:786",
+    sourceAction: "re_review",
+    commandOriginated: true,
+    statusMarker: marker,
+    statusCommentId: 7861,
+    observedAt: Date.now(),
+  });
+  lifecycle.recordCanonicalReceipt({
+    ...identity,
+    outcome: "accepted",
+    receiptId: "terminal-locked:786:canonical",
+    observedAt: Date.now(),
+  });
+  lifecycle.recordRouterReceipt({
+    ...identity,
+    outcome: "durable",
+    receiptId: "terminal-locked:786:router",
+    observedAt: Date.now(),
+  });
+  lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: Date.now(),
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const env = { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) };
+  const tuple = {
+    lease_id: leased.leaseId,
+    item_key: leased.key,
+    lease_revision: 1,
+    claim_generation: 1,
+    run_id: "7860",
+    run_attempt: 1,
+    status_marker: marker,
+    status_comment_id: 7861,
+  };
+  const attempted = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/terminal-finalization/attempt",
+      {
+        method: "POST",
+        body: JSON.stringify(tuple),
+      },
+    ),
+    env,
+  );
+  assert.equal((await attempted.json()).attempt_id, "ack:1");
+  const skipped = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/terminal-finalization/skip",
+      {
+        method: "POST",
+        body: JSON.stringify({ ...tuple, attempt_id: "ack:1", reason: "locked_conversation" }),
+      },
+    ),
+    env,
+  );
+  assert.deepEqual(await skipped.json(), {
+    ok: true,
+    completed: true,
+    lifecycle_state: "acknowledgement_skipped",
+    acknowledgement_state: "skipped_locked",
+    version: 1,
+  });
+  assert.equal(storage.sql.readNormalizedQueue().items[leased.key], undefined);
+  const projection = lifecycle.read(
+    identity.canonicalTargetKey,
+    identity.fenceKey,
+    identity.revision,
+  )!;
+  assert.equal(lifecycleState(projection), "acknowledgement_skipped");
+  assert.equal(commandAcknowledgementState(projection), "skipped_locked");
+  assert.equal(
+    lifecycle.authorizeCommandAcknowledgement({
+      ...identity,
+      statusMarker: marker,
+      statusCommentId: 7861,
+      observedAt: Date.now(),
+    }).allowed,
+    false,
+  );
+});
+
+test("Worker observes the generic durable terminal failure acknowledgement", async () => {
+  const storage = new MemoryDurableStorage();
+  const leased = leasedExactReviewPublicationItem(784, "7840");
+  const marker = "<!-- clawsweeper-command-status:784:re_review:terminal-failure -->";
+  Object.assign(leased.decision.publication!.producerDecision, {
+    sourceAction: "re_review",
+    commandStatusMarker: marker,
+    statusCommentId: 7841,
+  });
+  Object.assign(leased.leaseDecision!.publication!.producerDecision, {
+    sourceAction: "re_review",
+    commandStatusMarker: marker,
+    statusCommentId: 7841,
+  });
+  Object.assign(leased.decision, { commandStatusMarker: marker, statusCommentId: 7841 });
+  Object.assign(leased.leaseDecision!, { commandStatusMarker: marker, statusCommentId: 7841 });
+  Object.assign(leased, {
+    terminalFinalization: {
+      disposition: "failure",
+      statusState: "Failed",
+      statusDetail:
+        "The exact review reached a durable terminal failure and needs operator attention.",
+    },
+  });
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [leased.key]: leased } });
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  lifecycle.ensureSchemaSync();
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#784",
+    fenceKey: leased.key,
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "terminal-failure:784",
+    sourceAction: "re_review",
+    commandOriginated: true,
+    statusMarker: marker,
+    statusCommentId: 7841,
+    observedAt: Date.now(),
+  });
+  lifecycle.recordTerminalDisposition({ ...identity, kind: "failure", observedAt: Date.now() });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: "terminal-failure-secret",
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    STATUS_STORE: new MemoryKv(),
+  };
+  const attempted = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/terminal-finalization/attempt",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: leased.leaseId,
+          item_key: leased.key,
+          lease_revision: 1,
+          claim_generation: 1,
+          run_id: "7840",
+          run_attempt: 1,
+          status_marker: marker,
+          status_comment_id: 7841,
+        }),
+      },
+    ),
+    env,
+  );
+  assert.equal((await attempted.json()).attempt_id, "ack:1");
+  const observed = await worker.fetch(
+    signedGithubWebhookRequest({
+      event: "issue_comment",
+      secret: "terminal-failure-secret",
+      payload: {
+        action: "edited",
+        repository: {
+          full_name: "openclaw/openclaw",
+          private: false,
+          archived: false,
+          fork: false,
+          has_issues: true,
+        },
+        issue: { number: 784 },
+        comment: {
+          id: 7842,
+          body: [
+            "<!-- clawsweeper-command-ack:7840 -->",
+            marker,
+            "<!-- clawsweeper-command-progress:start -->",
+            "Re-review progress:",
+            "- State: Failed",
+            "- Detail: The exact review reached a durable terminal failure and needs operator attention.",
+            "<!-- clawsweeper-command-progress:end -->",
+          ].join("\n"),
+          created_at: "2026-07-31T00:00:00.000Z",
+          updated_at: "2026-07-31T00:01:00.000Z",
+          user: { login: "clawsweeper[bot]" },
+        },
+      },
+    }),
+    env,
+  );
+  assert.equal(observed.status, 202);
+  assert.equal(storage.sql.readNormalizedQueue().items[leased.key], undefined);
+  assert.equal(
+    commandAcknowledgementState(
+      lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)!,
+    ),
+    "observed",
+  );
+});
+
+test("batch completion dispatches its terminal command acknowledgement outside batching", async () => {
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    publicationBatching: true,
+    publicationBatchSize: "1",
+    captureBatchDispatch: true,
+  });
+  try {
+    const itemNumber = 783;
+    const marker = "<!-- clawsweeper-command-status:783:re_review:batch-terminal -->";
+    const publication = exactReviewPublicationOverrides(itemNumber, "7830");
+    Object.assign(publication.publication.producerDecision, {
+      sourceAction: "re_review",
+      commandStatusMarker: marker,
+      statusCommentId: 7831,
+    });
+    await harness.queue.fetch(
+      buildExactReviewQueueRequest(
+        "batch-terminal-acknowledgement",
+        itemNumber,
+        "exact_review_artifact_publish",
+        "issue",
+        undefined,
+        { commandStatusMarker: marker, statusCommentId: 7831, ...publication },
+      ),
+    );
+    const claim = await (
+      await harness.queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/publication-batches/claim", {
+          method: "POST",
+          body: JSON.stringify({
+            claim_id: "terminal-acknowledgement-batch",
+            lease_owner: "terminal-acknowledgement-owner",
+            max_items: 1,
+            runner_run_id: "7830",
+            runner_run_attempt: 1,
+            runner_started_at: new Date().toISOString(),
+          }),
+        }),
+      )
+    ).json();
+    assert.equal(claim.claimed, true);
+    const member = claim.batch.items[0]!;
+    const itemKey = member.item_key as string;
+    const revision = member.revision as number;
+    const claimGeneration = member.claim_generation as number;
+    const routed = await harness.queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/lifecycle/router-receipt", {
+        method: "POST",
+        body: JSON.stringify({
+          canonical_target_key: `openclaw/gogcli#${itemNumber}`,
+          fence_key: itemKey,
+          revision,
+          receipt_id: "batch-terminal-router",
+          outcome: "durable",
+        }),
+      }),
+    );
+    assert.equal(routed.status, 200);
+    const completed = await harness.queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/publication-batches/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          batch_id: "terminal-acknowledgement-batch",
+          lease_owner: "terminal-acknowledgement-owner",
+          items: [
+            {
+              item_key: itemKey,
+              revision,
+              claim_generation: claimGeneration,
+              terminal_outcome: "published",
+            },
+          ],
+        }),
+      }),
+    );
+    assert.equal(completed.status, 200);
+    const committed = harness.storage.sql.readNormalizedQueue() as {
+      items: Record<string, Record<string, unknown>>;
+    };
+    assert.deepEqual(committed.items[itemKey]?.terminalFinalization, {
+      disposition: "review_completed_routed",
+      statusState: "Complete",
+      statusDetail: "The durable review result and its route handoff completed.",
+    });
+
+    await harness.queue.alarm();
+    assert.equal(harness.batchDispatches, 0);
+    assert.equal(harness.dispatched.length, 1);
+    assert.equal(
+      harness.dispatched[0]?.client_payload?.source_action,
+      "exact_review_command_acknowledgement",
+    );
+  } finally {
+    harness.restore();
+  }
 });
 
 test("canonical commit records and tuples export with one monotonic revision", async () => {
