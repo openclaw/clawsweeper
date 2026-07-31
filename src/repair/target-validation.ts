@@ -69,6 +69,8 @@ export type TargetValidationOptions = {
   setupTimeoutMs?: number;
   validationTimeoutMs?: number;
   pinnedBaseRef?: string;
+  /** Trusted upstream override for deterministic local integration fixtures. */
+  pinnedBaseRemoteUrl?: string;
   /**
    * Optional override of the per-repo toolchain (package manager, base validation
    * commands, changed gate). If omitted, it is resolved from
@@ -231,8 +233,86 @@ export function reproduceValidationFailureAtPinnedBase({
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-base-validation-"));
   const checkout = path.join(root, "target");
   try {
-    run("git", ["clone", "--shared", "--no-checkout", targetDir, checkout]);
-    run("git", ["checkout", "--detach", options.pinnedBaseRef], { cwd: checkout });
+    try {
+      const pinnedBaseSha = run(
+        "git",
+        ["rev-parse", "--verify", `${options.pinnedBaseRef}^{commit}`],
+        {
+          cwd: targetDir,
+        },
+      ).trim();
+      const sourceGitDir = path.resolve(
+        targetDir,
+        run("git", ["rev-parse", "--git-common-dir"], { cwd: targetDir }).trim(),
+      );
+      const sourceObjectDir = fs.realpathSync(path.join(sourceGitDir, "objects"));
+      if (/[\r\n]/.test(sourceObjectDir)) return null;
+      const sourceObjectFormat = run("git", ["rev-parse", "--show-object-format"], {
+        cwd: targetDir,
+      }).trim();
+      if (sourceObjectFormat !== "sha1" && sourceObjectFormat !== "sha256") return null;
+      let sourceBaseSha = pinnedBaseSha;
+      try {
+        sourceBaseSha = run("git", ["rev-parse", "--verify", `refs/heads/${baseBranch}^{commit}`], {
+          cwd: targetDir,
+        }).trim();
+      } catch {
+        // Detached-only source checkouts have no local default branch to mirror.
+      }
+      if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(options.targetRepo)) return null;
+      const remoteUrl =
+        options.pinnedBaseRemoteUrl ?? `https://github.com/${options.targetRepo}.git`;
+
+      run("git", ["init", "--quiet", `--object-format=${sourceObjectFormat}`, checkout]);
+      const checkoutGitDir = path.join(checkout, ".git");
+      fs.mkdirSync(path.join(checkoutGitDir, "objects", "info"), { recursive: true });
+      fs.writeFileSync(
+        path.join(checkoutGitDir, "objects", "info", "alternates"),
+        `${sourceObjectDir}\n`,
+      );
+      const sourceShallowPath = path.join(sourceGitDir, "shallow");
+      if (fs.existsSync(sourceShallowPath)) {
+        fs.copyFileSync(sourceShallowPath, path.join(checkoutGitDir, "shallow"));
+      }
+      run("git", ["remote", "add", "origin", remoteUrl], { cwd: checkout });
+      let partialCloneFilter = "";
+      try {
+        const promisor = run(
+          "git",
+          ["config", "--local", "--no-includes", "--get", "remote.origin.promisor"],
+          { cwd: targetDir },
+        ).trim();
+        if (/^(?:1|on|true|yes)$/i.test(promisor)) {
+          partialCloneFilter = run(
+            "git",
+            ["config", "--local", "--no-includes", "--get", "remote.origin.partialclonefilter"],
+            { cwd: targetDir },
+          ).trim();
+        }
+      } catch {
+        // Ordinary non-promisor checkouts do not need lazy object hydration.
+      }
+      if (partialCloneFilter) {
+        if (!/^[A-Za-z0-9][A-Za-z0-9%:+=._/@{}^~,-]*$/.test(partialCloneFilter)) return null;
+        run("git", ["config", "--local", "remote.origin.promisor", "true"], { cwd: checkout });
+        run("git", ["config", "--local", "remote.origin.partialclonefilter", partialCloneFilter], {
+          cwd: checkout,
+        });
+      }
+      run("git", ["update-ref", `refs/remotes/origin/${baseBranch}`, sourceBaseSha], {
+        cwd: checkout,
+      });
+      run("git", ["checkout", "--quiet", "--detach", pinnedBaseSha], {
+        cwd: checkout,
+        timeoutMs: targetValidationTimeoutMs(
+          "CLAWSWEEPER_TARGET_SETUP_TIMEOUT_MS",
+          options.setupTimeoutMs ?? DEFAULT_TARGET_SETUP_TIMEOUT_MS,
+          options.setupTimeoutMs,
+        ),
+      });
+    } catch {
+      return null;
+    }
     try {
       prepareTargetToolchain(checkout, options);
     } catch {

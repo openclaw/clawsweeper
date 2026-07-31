@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   assertTargetCheckoutBinding,
@@ -2025,6 +2026,234 @@ test("pinned-base validation reproduction proves the same base failure", () => {
   });
 
   assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
+});
+
+test("pinned-base reproduction avoids fetching unrelated missing partial-clone history", () => {
+  const source = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.mkdirSync(path.join(source, "src"));
+  fs.writeFileSync(
+    path.join(source, "check.js"),
+    [
+      "const fs = require('node:fs');",
+      "if (!fs.existsSync('.git/shallow')) throw new Error('shallow boundary was not preserved');",
+      "console.error('src/base.ts:1: lint failed');",
+      "process.exit(1);",
+      "",
+    ].join("\n"),
+  );
+  fs.writeFileSync(path.join(source, "src/base.ts"), "export const base = true;\n");
+  fs.writeFileSync(path.join(source, "historical.txt"), "omitted historical blob\n");
+  git(source, "add", ".");
+  git(source, "commit", "-m", "historical base");
+  const omittedHistoricalBlob = git(source, "rev-parse", "HEAD:historical.txt");
+  git(source, "rm", "historical.txt");
+  git(source, "commit", "-m", "current base");
+  const pinnedBaseRef = git(source, "rev-parse", "HEAD");
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-validation-promisor-"));
+  const remote = path.join(root, "origin.git");
+  const target = path.join(root, "target");
+  git(root, "init", "--bare", remote);
+  git(remote, "config", "uploadpack.allowFilter", "true");
+  git(source, "push", remote, "main:main");
+  git(
+    root,
+    "clone",
+    "--filter=blob:none",
+    "--depth=2",
+    "--branch",
+    "main",
+    pathToFileURL(remote).href,
+    target,
+  );
+  const missingObjects = execFileSync("git", ["rev-list", "--objects", "--missing=print", "HEAD"], {
+    cwd: target,
+    encoding: "utf8",
+    env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+  });
+  assert.match(missingObjects, new RegExp(`^\\?${omittedHistoricalBlob}$`, "m"));
+  git(target, "remote", "set-url", "origin", "https://invalid.invalid/offline.git");
+
+  const baseError = reproduceValidationFailureAtPinnedBase({
+    commands: ["pnpm check:changed"],
+    targetDir: target,
+    options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+  });
+
+  assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
+  assert.match(
+    execFileSync("git", ["rev-list", "--objects", "--missing=print", "HEAD"], {
+      cwd: target,
+      encoding: "utf8",
+      env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+    }),
+    new RegExp(`^\\?${omittedHistoricalBlob}$`, "m"),
+  );
+});
+
+test("pinned-base reproduction preserves the source comparison branch for changed gates", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.mkdirSync(path.join(cwd, "src"));
+  fs.writeFileSync(
+    path.join(cwd, "check.js"),
+    [
+      "const { execFileSync } = require('node:child_process');",
+      "const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();",
+      "if (git('rev-parse', 'origin/main') === git('rev-parse', 'HEAD')) process.exit(0);",
+      "console.error('src/base.ts:1: lint failed');",
+      "process.exit(1);",
+      "",
+    ].join("\n"),
+  );
+  fs.writeFileSync(path.join(cwd, "src/base.ts"), "export const base = 1;\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "local main");
+  const sourceMainSha = git(cwd, "rev-parse", "HEAD");
+  git(cwd, "checkout", "-b", "advanced");
+  fs.writeFileSync(path.join(cwd, "src/base.ts"), "export const base = 2;\n");
+  git(cwd, "commit", "-am", "advanced upstream base");
+  const pinnedBaseRef = git(cwd, "rev-parse", "HEAD");
+  git(cwd, "checkout", "main");
+  git(cwd, "update-ref", "refs/remotes/origin/main", pinnedBaseRef);
+  assert.notEqual(sourceMainSha, pinnedBaseRef);
+
+  const baseError = reproduceValidationFailureAtPinnedBase({
+    commands: ["pnpm check:changed"],
+    targetDir: cwd,
+    options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+  });
+
+  assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
+});
+
+test("pinned-base reproduction hydrates blobs required by the older pinned snapshot", () => {
+  const source = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.mkdirSync(path.join(source, "src"));
+  fs.writeFileSync(
+    path.join(source, "check.js"),
+    "console.error('src/base.ts:1: lint failed'); process.exit(1);\n",
+  );
+  fs.writeFileSync(path.join(source, "src/base.ts"), "export const base = true;\n");
+  fs.writeFileSync(path.join(source, "historical.txt"), "required pinned-base blob\n");
+  git(source, "add", ".");
+  git(source, "commit", "-m", "older pinned base");
+  const pinnedBaseRef = git(source, "rev-parse", "HEAD");
+  const requiredBlob = git(source, "rev-parse", "HEAD:historical.txt");
+  git(source, "rm", "historical.txt");
+  git(source, "commit", "-m", "current checkout");
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-validation-pinned-blob-"));
+  const remote = path.join(root, "origin.git");
+  const target = path.join(root, "target");
+  git(root, "init", "--bare", remote);
+  git(remote, "config", "uploadpack.allowFilter", "true");
+  git(remote, "config", "uploadpack.allowAnySHA1InWant", "true");
+  git(source, "push", remote, "main:main");
+  git(
+    root,
+    "clone",
+    "--filter=blob:none",
+    "--depth=2",
+    "--branch",
+    "main",
+    pathToFileURL(remote).href,
+    target,
+  );
+  assert.match(
+    execFileSync("git", ["rev-list", "--objects", "--missing=print", pinnedBaseRef], {
+      cwd: target,
+      encoding: "utf8",
+      env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+    }),
+    new RegExp(`^\\?${requiredBlob}$`, "m"),
+  );
+
+  const baseError = reproduceValidationFailureAtPinnedBase({
+    commands: ["pnpm check:changed"],
+    targetDir: target,
+    options: validationOptions("openclaw/openclaw", {
+      pinnedBaseRef,
+      pinnedBaseRemoteUrl: pathToFileURL(remote).href,
+    }),
+  });
+
+  assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
+});
+
+test("pinned-base reproduction preserves the source SHA-256 object format", () => {
+  const cwd = packageFixture({ "check:changed": "node check.js" });
+  fs.writeFileSync(path.join(cwd, ".gitignore"), "node_modules/\n");
+  git(cwd, "init", "--object-format=sha256", "-b", "main");
+  git(cwd, "config", "user.email", "clawsweeper@example.invalid");
+  git(cwd, "config", "user.name", "ClawSweeper Test");
+  fs.mkdirSync(path.join(cwd, "src"));
+  fs.writeFileSync(
+    path.join(cwd, "check.js"),
+    "console.error('src/base.ts:1: lint failed'); process.exit(1);\n",
+  );
+  fs.writeFileSync(path.join(cwd, "src/base.ts"), "export const base = true;\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "sha256 base");
+  const pinnedBaseRef = git(cwd, "rev-parse", "HEAD");
+  assert.equal(pinnedBaseRef.length, 64);
+
+  const baseError = reproduceValidationFailureAtPinnedBase({
+    commands: ["pnpm check:changed"],
+    targetDir: cwd,
+    options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+  });
+
+  assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
+});
+
+test("pinned-base reproduction bounds checkout and possible promisor fetches", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.writeFileSync(path.join(cwd, "check.js"), "process.exit(1);\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "base");
+  const pinnedBaseRef = git(cwd, "rev-parse", "HEAD");
+  const startedAt = Date.now();
+
+  assert.equal(
+    reproduceValidationFailureAtPinnedBase({
+      commands: ["pnpm check:changed"],
+      targetDir: cwd,
+      options: validationOptions("openclaw/openclaw", { pinnedBaseRef, setupTimeoutMs: 1 }),
+    }),
+    null,
+  );
+  assert.ok(Date.now() - startedAt < 2_000);
+});
+
+test("pinned-base reproduction does not inherit target-controlled checkout hooks", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.mkdirSync(path.join(cwd, "src"));
+  fs.writeFileSync(
+    path.join(cwd, "check.js"),
+    "console.error('src/base.ts:1: lint failed'); process.exit(1);\n",
+  );
+  fs.writeFileSync(path.join(cwd, "src/base.ts"), "export const base = true;\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "base");
+  const pinnedBaseRef = git(cwd, "rev-parse", "HEAD");
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-validation-hooks-"));
+  const hooks = path.join(root, "hooks");
+  const marker = path.join(root, "post-checkout-ran");
+  fs.mkdirSync(hooks);
+  fs.writeFileSync(path.join(hooks, "post-checkout"), `#!/bin/sh\nprintf ran > '${marker}'\n`, {
+    mode: 0o755,
+  });
+  git(cwd, "config", "core.hooksPath", hooks);
+
+  const baseError = reproduceValidationFailureAtPinnedBase({
+    commands: ["pnpm check:changed"],
+    targetDir: cwd,
+    options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+  });
+
+  assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
+  assert.equal(fs.existsSync(marker), false);
 });
 
 test("pinned-base reproduction fails closed when dependency inputs changed", () => {
