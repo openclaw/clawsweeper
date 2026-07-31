@@ -166,6 +166,57 @@ test("single-issue hydration retries malformed successful edge responses", async
   );
 });
 
+test("single-issue hydration retries malformed Worker record envelopes", async () => {
+  const content = "current canonical report\n";
+  const digest = createHash("sha256").update(content).digest("hex");
+  for (const malformed of [
+    {},
+    [],
+    { content },
+    { content, digest },
+    { content, digest, revision: 0 },
+  ]) {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-focused-envelope-"));
+    let reads = 0;
+    await materializeWorkerRecord({
+      worktreeRoot: root,
+      baseUrl: "https://worker.example.test",
+      webhookSecret,
+      repoSlug,
+      itemNumber,
+      fetch: (async () => {
+        reads += 1;
+        return Response.json(reads === 1 ? malformed : { content, digest, revision: 11 });
+      }) as typeof fetch,
+    });
+    assert.equal(reads, 2, JSON.stringify(malformed));
+    assert.equal(
+      readFileSync(join(root, "records", repoSlug, "items", `${itemNumber}.md`), "utf8"),
+      content,
+    );
+  }
+});
+
+test("single-issue hydration bounds repeated malformed Worker record envelopes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-focused-envelope-failure-"));
+  let reads = 0;
+  await assert.rejects(
+    materializeWorkerRecord({
+      worktreeRoot: root,
+      baseUrl: "https://worker.example.test",
+      webhookSecret,
+      repoSlug,
+      itemNumber,
+      fetch: (async () => {
+        reads += 1;
+        return Response.json({});
+      }) as typeof fetch,
+    }),
+    /invalid_json_body/,
+  );
+  assert.equal(reads, 3);
+});
+
 test("failed staged record installation restores the existing canonical record tree", async () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-focused-rename-"));
   const preservedPath = join(root, "records", repoSlug, "items", "100.md");

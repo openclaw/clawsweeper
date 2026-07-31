@@ -320,7 +320,10 @@ export function discoverImplementationCandidates({
     }
     candidates.push({
       existingJob,
-      retryDue: intakeAuditRetryDue(previousAudit),
+      retryDue:
+        intakeAuditRetryDue(previousAudit) ||
+        (intakeAuditAwaitsWorkerDispatch(previousAudit) &&
+          !Number.isFinite(Date.parse(previousAudit?.frontmatter.worker_retry_after ?? ""))),
       candidate: {
         item_number: number,
         report_path: reportPath,

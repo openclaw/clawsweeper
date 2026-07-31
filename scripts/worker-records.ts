@@ -871,7 +871,19 @@ async function signedGet<T>(options: {
     } catch {
       value = undefined;
     }
-    if (typeof value !== "object" || value === null) {
+    const envelope = value as
+      | { content?: unknown; digest?: unknown; revision?: unknown }
+      | null
+      | undefined;
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      typeof envelope?.content !== "string" ||
+      typeof envelope.digest !== "string" ||
+      !Number.isSafeInteger(envelope.revision) ||
+      Number(envelope.revision) < 1
+    ) {
       if (attempt < SIGNED_REQUEST_MAX_ATTEMPTS) {
         await signedRequestBackoff(attempt);
         continue;

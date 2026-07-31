@@ -944,7 +944,6 @@ worker_retry_after: ${new Date(Date.now() - 60_000).toISOString()}
       discoverImplementationCandidates(options).map(({ item_number }) => item_number),
       [244, 245, 246],
     );
-    rmSync(path.join(reportDir, "246.md"));
     writeFileSync(
       auditPath,
       `---
@@ -956,10 +955,38 @@ worker_dispatched: false
 ---
 `,
     );
+    writeFileSync(
+      path.join(reportDir, "247.md"),
+      report({ number: "247", repository: "steipete/summarize" }),
+    );
     assert.deepEqual(
       discoverImplementationCandidates(options).map((candidate) => candidate.item_number),
-      [245, 244],
+      [244, 245, 246, 247],
     );
+    assert.deepEqual(
+      discoverImplementationCandidates(options)
+        .slice(0, 1)
+        .map((candidate) => candidate.item_number),
+      [244],
+    );
+    writeFileSync(
+      auditPath,
+      `---
+repo: steipete/summarize
+number: 244
+report_revision_sha256: ${reportRevisionSha256(readFileSync(report244Path, "utf8"))}
+decision: queued_for_repair
+worker_dispatched: false
+worker_retry_after: invalid
+---
+`,
+    );
+    assert.deepEqual(
+      discoverImplementationCandidates(options).map((candidate) => candidate.item_number),
+      [244, 245, 246, 247],
+    );
+    rmSync(path.join(reportDir, "246.md"));
+    rmSync(path.join(reportDir, "247.md"));
     writeFileSync(
       path.join(reportDir, "245.md"),
       report({ number: "245", repository: "steipete/summarize", decision: "close" }),
