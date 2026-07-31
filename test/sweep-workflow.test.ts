@@ -195,8 +195,19 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
   assert.match(artifactSync.if ?? "", /setup-publish-pnpm\.outcome == 'success'/);
   assert.match(artifactSync.if ?? "", /download-review-artifacts\.outcome == 'success'/);
   assert.doesNotMatch(artifactSync.if ?? "", /action-ledger/);
+  assert.match(
+    artifactSync.run ?? "",
+    /no such ref was fetched\|couldn.t find remote ref/,
+    "a vanished reviewed branch must complete publication as a superseded no-op",
+  );
+  assert.match(artifactSync.run ?? "", /superseded=true/);
   const artifactApply = step("publish", "Apply review artifacts");
   assert.match(artifactApply.if ?? "", /sync-review-artifacts\.outcome == 'success'/);
+  assert.match(
+    artifactApply.if ?? "",
+    /sync-review-artifacts\.outputs\.superseded != 'true'/,
+    "superseded sync must skip artifact application",
+  );
   assert.match(artifactApply.run ?? "", /review_batch_succeeded=/);
   assert.match(artifactApply.run ?? "", /artifacts_applied=true/);
   const artifactLedger = step("publish", "Publish review artifact action ledger");

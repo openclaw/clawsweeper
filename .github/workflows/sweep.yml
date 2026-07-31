@@ -3599,11 +3599,23 @@ jobs:
       - name: Sync before applying artifacts
         id: sync-review-artifacts
         if: ${{ always() && !cancelled() && steps.setup-publish-state.outcome == 'success' && steps.setup-publish-pnpm.outcome == 'success' && steps.download-review-artifacts.outcome == 'success' }}
-        run: git pull --rebase --autostash
+        run: |
+          if ! pull_output="$(git pull --rebase --autostash 2>&1)"; then
+            printf '%s\n' "$pull_output" >&2
+            # A reviewed PR head branch can vanish mid-review (force-push or
+            # deletion). The newer head triggers its own review event, so this
+            # publication completes as a superseded no-op instead of failing.
+            if grep -qiE "no such ref was fetched|couldn.t find remote ref" <<<"$pull_output"; then
+              echo "::notice::The reviewed branch disappeared upstream; the newer head owns its own review. Skipping artifact publication as a superseded no-op."
+              echo "superseded=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            exit 1
+          fi
 
       - name: Apply review artifacts
         id: apply-review-artifacts
-        if: ${{ always() && !cancelled() && steps.sync-review-artifacts.outcome == 'success' }}
+        if: ${{ always() && !cancelled() && steps.sync-review-artifacts.outcome == 'success' && steps.sync-review-artifacts.outputs.superseded != 'true' }}
         env:
           CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: .artifacts/review-canonical-baseline
           GH_TOKEN: ${{ github.token }}
