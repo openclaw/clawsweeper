@@ -182,7 +182,10 @@ const executionModelArgs = codexModelArgs(model);
 const { codexTimeoutMs, fixStepTimeoutMs, lateWorkerReserveMs } = repairTimeoutBudgetFromEnv(
   process.env,
 );
-const codexReasoningEffort = repairCodexReasoningEffort();
+const codexReasoningEffort = repairCodexReasoningEffort(
+  undefined,
+  /^jobs\/[^/]+\/inbox\/issue-/.test(String(jobPath ?? "")),
+);
 const scriptStartedAt = new Date();
 const codexServiceTier = repairCodexServiceTier();
 const codexHeartbeatMs = Math.max(

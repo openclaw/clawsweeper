@@ -479,7 +479,7 @@
     "autoImplementationCandidate": {
       "type": "string",
       "enum": ["none", "strict_bug", "vision_fit"],
-      "description": "Whether this issue should be eligible for automatic PR intake after review. Use strict_bug only for the existing reproduced-bug lane. Use vision_fit only for high-confidence, VISION.md-aligned, small, queue_fix_pr issue work with clear validation and no security/product-decision blocker. Otherwise use none."
+      "description": "Whether this issue should be eligible for automatic PR intake after review. Use strict_bug for a high-confidence reproduced bug or a small source-proven bug with a clear repair and validation plan. Use vision_fit only for high-confidence, VISION.md-aligned, small, queue_fix_pr issue work with clear validation and no security/product-decision blocker. Otherwise use none."
     },
     "rootCauseCluster": {
       "type": "object",

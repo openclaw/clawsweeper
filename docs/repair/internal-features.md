@@ -253,8 +253,8 @@ of creating duplicates.
 ### Reviewed Reproducible Bug Intake
 
 `repair-issue-implementation-intake.yml` is the automatic version of the issue
-implementation lane. It is enabled only when
-`CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS=1`.
+implementation lane. For OpenClaw, it follows the single
+`CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES=1` master gate.
 
 The review report must be a strict bug candidate:
 
@@ -264,7 +264,8 @@ The review report must be a strict bug candidate:
 - `work_candidate: queue_fix_pr`
 - `work_confidence: high`
 - `item_category: bug`
-- `reproduction_status: reproduced`
+- `reproduction_status: reproduced`, or `source_reproducible` for a small,
+  high-confidence fix
 - `reproduction_confidence: high`
 - `requires_new_feature: false`
 - `requires_new_config_option: false`
@@ -600,8 +601,10 @@ Important defaults:
 - `CLAWSWEEPER_MODEL`: GitHub Actions secret containing the actual worker model.
   Public workflow inputs and generated state use only `internal`.
 - `CLAWSWEEPER_CODEX_REASONING_EFFORT`: model reasoning effort. Repair workers
-  default to `high` and normalize accidental `xhigh` overrides back to `high`
-  to keep automerge repair latency predictable.
+  default to `high`; ordinary planning and repair normalize `xhigh` to `high`.
+- `CLAWSWEEPER_FIX_PR_MODEL` and `CLAWSWEEPER_FIX_PR_REASONING_EFFORT`:
+  automatic issue fix/PR execution defaults to `gpt-5.6-sol` with `xhigh`
+  reasoning without changing the normal planning or automerge repair model.
 - `CLAWSWEEPER_CODEX_SERVICE_TIER`: Codex service tier. Repair workers default
   to `fast`.
 - `CLAWSWEEPER_CODEX_LOGIN_METHOD`: Codex login mode for local runs. Defaults

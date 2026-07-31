@@ -1,0 +1,60 @@
+name: Backfill automatic OpenClaw bug fixes
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "7/10 * * * *"
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: automatic-openclaw-issue-implementation-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    if: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          filter: blob:none
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:repair
+
+      - name: Create state token
+        id: state-token
+        uses: ./.github/actions/create-state-token
+        with:
+          client-id: Iv23liOECG0slfuhz093
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/setup-state
+        with:
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          coordinator-class: cluster_intake
+          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: openclaw-openclaw
+          hydrate-state-blobs: "false"
+          token: ${{ steps.state-token.outputs.token }}
+          sparse-checkout: |
+            jobs
+            results
+
+      - name: Dispatch bounded high-confidence bug candidates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAX_DISPATCH: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}
+        run: |
+          node scripts/dispatch-issue-implementation-candidates.mjs \
+            --target-repo openclaw/openclaw \
+            --report-dir records/openclaw-openclaw/items

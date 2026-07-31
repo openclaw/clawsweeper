@@ -30,6 +30,17 @@ test("review prompt routes PR likely owners through feature history", () => {
   assert.match(prompt, /use names without email addresses/);
 });
 
+test("issue reviews close fixed work and automatically route small source-proven bugs", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  assert.match(prompt, /close it when current `main` or an\s+already-merged PR/);
+  assert.match(prompt, /automatically route\s+a bounded, high-confidence existing-behavior bug/);
+  assert.match(prompt, /`source_reproducible` when `implementationComplexity` is\s+`small`/);
+  assert.match(prompt, /Do not\s+invent a live reproduction for source-proven work/);
+  assert.match(prompt, /report the infrastructure failure\s+explicitly/);
+  assert.doesNotMatch(prompt, /strict_bug"` only for the existing reproduced/);
+});
+
 test("review prompt describes concrete review metrics without vague examples", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 

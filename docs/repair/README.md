@@ -405,8 +405,8 @@ The workflow needs:
   only the public `internal` alias
 - Codex CLI and its responses API proxy install from their latest npm tags on
   every worker run
-- repair workers default to high reasoning on the fast service tier, and
-  accidental `xhigh` reasoning overrides are normalized back to `high`
+- repair planning defaults to high reasoning on the fast service tier;
+  automatic issue fix/PR execution uses `gpt-5.6-sol` with `xhigh` reasoning
 - optional `CLAWSWEEPER_MAX_LIVE_WORKERS` variable for dispatch/requeue/self-heal worker fan-out; dispatch defaults are derived from `job_intent`, cluster-lane classification, `workers.max`, and `lanes.repair.cluster_max_live_runs`
 - optional `CLAWSWEEPER_MAX_ACTIVE_PRS_PER_AREA` variable for replacement PR backpressure; default is `50` open ClawSweeper PRs per touched area, `0` disables the area cap, and common changelog/release-note files are ignored for this check
 - ClawSweeper commit-finding repair PRs are labeled `clawsweeper:commit-finding`

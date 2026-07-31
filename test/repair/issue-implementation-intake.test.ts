@@ -6,6 +6,8 @@ import test from "node:test";
 
 import {
   discoverImplementationCandidates,
+  issueImplementationJobNeedsRefresh,
+  markIssueImplementationDispatched,
   parseReviewReport,
   referencedIssueNumbers,
   referencedPullRequestCoordinates,
@@ -64,6 +66,163 @@ test("strict reproducible bug reports are eligible for implementation intake", (
   assert.equal(decision.status, "queued_for_repair");
 });
 
+test("small source-proven bug reports are eligible for implementation intake", () => {
+  const markdown = report({
+    reproduction_status: "source_reproducible",
+    implementation_complexity: "small",
+    auto_implementation_candidate: "strict_bug",
+  });
+  const decision = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+  });
+
+  assert.equal(decision.shouldRepair, true);
+  assert.equal(decision.status, "queued_for_repair");
+});
+
+test("legacy source-proven reviews remain eligible without an implementation marker", () => {
+  const markdown = report({
+    reproduction_status: "source_reproducible",
+    implementation_complexity: "small",
+    auto_implementation_candidate: "none",
+  });
+  const decision = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+  });
+
+  assert.equal(decision.shouldRepair, true);
+  assert.equal(decision.status, "queued_for_repair");
+});
+
+test("legacy implementation-marker compatibility is limited to source-proven bugs", () => {
+  for (const overrides of [
+    { reproduction_status: "reproduced", auto_implementation_candidate: "none" },
+    {
+      reproduction_status: "source_reproducible",
+      implementation_complexity: "small",
+      auto_implementation_candidate: "vision_fit",
+    },
+  ]) {
+    const markdown = report(overrides);
+    const decision = reportOnlyDecision({
+      targetRepo: "openclaw/openclaw",
+      report: parseReviewReport(markdown),
+      reportMarkdown: markdown,
+    });
+
+    assert.equal(decision.shouldRepair, false);
+    assert.match(decision.reason, /auto implementation candidate/);
+  }
+});
+
+test("source-proven bugs need high confidence and a small repair", () => {
+  for (const overrides of [
+    { implementation_complexity: "" },
+    { implementation_complexity: "medium" },
+    { implementation_complexity: "large" },
+    { implementation_complexity: "unclear" },
+    { reproduction_confidence: "medium" },
+  ]) {
+    const markdown = report({
+      reproduction_status: "source_reproducible",
+      implementation_complexity: "small",
+      ...overrides,
+    });
+    const decision = reportOnlyDecision({
+      targetRepo: "openclaw/openclaw",
+      report: parseReviewReport(markdown),
+      reportMarkdown: markdown,
+    });
+
+    assert.equal(decision.shouldRepair, false);
+  }
+});
+
+test("source-proven bugs retain duplicate-PR and protected-label safeguards", () => {
+  const markdown = report({
+    reproduction_status: "source_reproducible",
+    implementation_complexity: "small",
+    auto_implementation_candidate: "strict_bug",
+  });
+  const reportData = parseReviewReport(markdown);
+
+  for (const live of [
+    {
+      issue: { state: "open", locked: false, labels: [], title: "Bug", body: "" },
+      existingPrs: [{ number: 456, state: "OPEN" }],
+      existingBranchPrs: [],
+      referencedPrs: [],
+      clusterExistingPrs: [],
+    },
+    {
+      issue: {
+        state: "open",
+        locked: false,
+        labels: [{ name: "clawsweeper:human-review" }],
+        title: "Bug",
+        body: "",
+      },
+      existingPrs: [],
+      existingBranchPrs: [],
+      referencedPrs: [],
+      clusterExistingPrs: [],
+    },
+  ]) {
+    const decision = reportOnlyDecision({
+      targetRepo: "openclaw/openclaw",
+      report: reportData,
+      reportMarkdown: markdown,
+      live,
+    });
+
+    assert.equal(decision.shouldRepair, false);
+  }
+});
+
+test("automatic implementation refuses report and live bulk-filer signals", () => {
+  for (const overrides of [
+    { bulk_filer_detected: "true" },
+    { labels: JSON.stringify(["bug", "clawsweeper:bulk-filed"]) },
+  ]) {
+    const markdown = report(overrides);
+    const decision = reportOnlyDecision({
+      targetRepo: "openclaw/openclaw",
+      report: parseReviewReport(markdown),
+      reportMarkdown: markdown,
+    });
+
+    assert.equal(decision.shouldRepair, false);
+    assert.match(decision.reason, /bulk-filed/);
+  }
+
+  const markdown = report();
+  const liveDecision = reportOnlyDecision({
+    targetRepo: "openclaw/openclaw",
+    report: parseReviewReport(markdown),
+    reportMarkdown: markdown,
+    live: {
+      issue: {
+        state: "open",
+        locked: false,
+        labels: [{ name: "clawsweeper:bulk-filed" }],
+        title: "Bug",
+        body: "",
+      },
+      existingPrs: [],
+      existingBranchPrs: [],
+      referencedPrs: [],
+      clusterExistingPrs: [],
+    },
+  });
+
+  assert.equal(liveDecision.shouldRepair, false);
+  assert.match(liveDecision.reason, /bulk-filed/);
+});
+
 test("owner policy admits allowed owners and rejects the rest before durable intake", () => {
   const markdown = report({ repository: "steipete/oracle" });
   const parsed = parseReviewReport(markdown);
@@ -112,7 +271,7 @@ test("implementation intake rejects feature and config-option work", () => {
     { requires_new_feature: "true" },
     { requires_new_config_option: "true" },
     { requires_product_decision: "true" },
-    { reproduction_status: "source_reproducible" },
+    { reproduction_status: "unclear" },
   ]) {
     const markdown = report(overrides);
     const decision = reportOnlyDecision({
@@ -504,7 +663,93 @@ test("viable review routing excludes protected repositories and invalid review i
   }
 });
 
-test("viable candidate discovery backfills durable open reports and skips queued jobs", () => {
+test("bug candidate discovery includes legacy small source-proven OpenClaw reviews", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "clawsweeper-source-proven-bug-"));
+  try {
+    const reportDir = path.join(root, "records", "openclaw-openclaw", "items");
+    mkdirSync(reportDir, { recursive: true });
+    writeFileSync(
+      path.join(reportDir, "123.md"),
+      report({
+        reproduction_status: "source_reproducible",
+        implementation_complexity: "small",
+        auto_implementation_candidate: "none",
+      }),
+    );
+
+    assert.deepEqual(
+      discoverImplementationCandidates({
+        enabled: true,
+        candidateKind: "strict_bug",
+        targetRepo: "openclaw/openclaw",
+        reportRepo: "openclaw/clawsweeper-state",
+        sourceDirs: [reportDir],
+        jobRoot: root,
+      }),
+      [
+        {
+          item_number: 123,
+          report_path: "records/openclaw-openclaw/items/123.md",
+          report_url:
+            "https://github.com/openclaw/clawsweeper-state/blob/state/records/openclaw-openclaw/items/123.md",
+        },
+      ],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("undispatched issue jobs are regenerated when their authoritative review changes", () => {
+  const current = report({ implementation_complexity: "small" });
+  const legacy = parseReviewReport(`---
+decision: queued_for_repair
+report_revision_sha256: old-review-revision
+---
+`);
+  const alreadyDispatched = parseReviewReport(`---
+decision: queued_for_repair
+report_revision_sha256: old-review-revision
+worker_dispatched: true
+---
+`);
+  const temporarilyIneligible = parseReviewReport(`---
+decision: not_eligible
+report_revision_sha256: temporarily-ineligible-review
+worker_dispatched: false
+---
+`);
+  const temporarilyIneligibleAfterChangedReview = parseReviewReport(`---
+decision: not_eligible
+report_revision_sha256: ${reportRevisionSha256(current)}
+job_report_revision_sha256: original-job-review
+worker_dispatched: false
+---
+`);
+  const legacyTemporarilyIneligible = parseReviewReport(`---
+decision: not_eligible
+report_revision_sha256: ${reportRevisionSha256(current)}
+---
+`);
+  const unchanged = parseReviewReport(`---
+decision: queued_for_repair
+report_revision_sha256: ${reportRevisionSha256(current)}
+worker_dispatched: false
+---
+`);
+
+  assert.equal(issueImplementationJobNeedsRefresh(legacy, current), true);
+  assert.equal(issueImplementationJobNeedsRefresh(alreadyDispatched, current), false);
+  assert.equal(issueImplementationJobNeedsRefresh(temporarilyIneligible, current), true);
+  assert.equal(
+    issueImplementationJobNeedsRefresh(temporarilyIneligibleAfterChangedReview, current),
+    true,
+  );
+  assert.equal(issueImplementationJobNeedsRefresh(legacyTemporarilyIneligible, current), true);
+  assert.equal(issueImplementationJobNeedsRefresh(unchanged, current), false);
+});
+
+test("viable candidate discovery backfills reports and recovers undispatched queued jobs", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "clawsweeper-issue-backfill-"));
   try {
     const reportDir = path.join(root, "records", "steipete-summarize", "items");
@@ -566,6 +811,67 @@ decision: not_eligible
     const jobPath = path.join(root, issueImplementationJobPath("steipete/summarize", 244));
     mkdirSync(path.dirname(jobPath), { recursive: true });
     writeFileSync(jobPath, "queued\n");
+    assert.equal(discoverImplementationCandidates(options).length, 1);
+
+    writeFileSync(
+      auditPath,
+      `---
+repo: steipete/summarize
+number: 244
+report_revision_sha256: ${reportRevisionSha256(readFileSync(report244Path, "utf8"))}
+decision: not_eligible
+---
+`,
+    );
+    assert.equal(discoverImplementationCandidates(options).length, 1);
+
+    writeFileSync(
+      auditPath,
+      `---
+repo: steipete/summarize
+number: 244
+report_revision_sha256: ${reportRevisionSha256(readFileSync(report244Path, "utf8"))}
+decision: queued_for_repair
+---
+`,
+    );
+    assert.equal(discoverImplementationCandidates(options).length, 1);
+
+    writeFileSync(report244Path, `${readFileSync(report244Path, "utf8")}\n`);
+    assert.equal(discoverImplementationCandidates(options).length, 1);
+
+    writeFileSync(
+      auditPath,
+      `---
+repo: steipete/summarize
+number: 244
+report_revision_sha256: temporarily-ineligible-review
+decision: not_eligible
+worker_dispatched: false
+---
+`,
+    );
+    assert.equal(discoverImplementationCandidates(options).length, 1);
+
+    writeFileSync(
+      auditPath,
+      `---
+repo: steipete/summarize
+number: 244
+report_revision_sha256: old-review-revision
+decision: queued_for_repair
+worker_dispatched: false
+---
+`,
+    );
+    assert.equal(discoverImplementationCandidates(options).length, 1);
+
+    markIssueImplementationDispatched({
+      root,
+      auditPath: path.relative(root, auditPath),
+      jobPath: path.relative(root, jobPath),
+    });
+    assert.match(readFileSync(auditPath, "utf8"), /worker_dispatched: true/);
     assert.deepEqual(discoverImplementationCandidates(options), []);
   } finally {
     rmSync(root, { recursive: true, force: true });

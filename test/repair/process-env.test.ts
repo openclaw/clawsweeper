@@ -84,11 +84,13 @@ test("repair OpenClaw env preserves provider auth without exposing Codex auth", 
   );
 });
 
-test("repair Codex config keeps repair workers on high fast", () => {
+test("repair Codex config reserves xhigh for explicit issue-fix execution", () => {
   assert.equal(repairCodexReasoningEffort(undefined), "high");
   assert.equal(repairCodexReasoningEffort(""), "high");
   assert.equal(repairCodexReasoningEffort("xhigh"), "high");
   assert.equal(repairCodexReasoningEffort("XHIGH"), "high");
+  assert.equal(repairCodexReasoningEffort("xhigh", true), "xhigh");
+  assert.equal(repairCodexReasoningEffort("XHIGH", true), "xhigh");
   assert.equal(repairCodexReasoningEffort("medium"), "medium");
 
   assert.equal(repairCodexServiceTier(undefined), "fast");

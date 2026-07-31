@@ -31,7 +31,7 @@ test("every state hydration uses the canonical Worker with an explicit git-state
     }
   }
 
-  assert.equal(setups.length, 19, "setup-state site count is an audited invariant");
+  assert.equal(setups.length, 20, "setup-state site count is an audited invariant");
   for (const { site, step } of setups) {
     assert.equal(step.with?.["records-url"], workerUrl, site);
     assert.equal(step.with?.["records-secret"], workerSecret, site);
@@ -71,6 +71,7 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
       ".github/workflows/repair-cluster-intake.yml:intake",
       ".github/workflows/repair-comment-router.yml:route-comments",
       ".github/workflows/repair-conflict-self-heal.yml:self-heal",
+      ".github/workflows/repair-issue-implementation-backfill.yml:backfill",
       ".github/workflows/repair-issue-implementation-intake.yml:intake",
       ".github/workflows/spam-scanner.yml:scan",
       ".github/workflows/sweep.yml:event-review-apply",
@@ -99,6 +100,15 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
   for (const { site, step } of setups) {
     assert.equal(step.with?.["hydrate-state-blobs"], "false", site);
   }
+});
+
+test("automatic issue implementation joins the priority intake state-writer lane", () => {
+  const workflow = parse(
+    readFileSync(".github/workflows/repair-issue-implementation-intake.yml", "utf8"),
+  ) as WorkflowDocument;
+  const stateSetup = workflow.jobs?.intake?.steps?.find(isSetupState);
+
+  assert.equal(stateSetup?.with?.["coordinator-class"], "cluster_intake");
 });
 
 test("setup-state checks out only the remaining operational git tree", () => {
@@ -146,7 +156,7 @@ test("all remaining git publishers join setup-state and receive a step-scoped co
       }
     }
   }
-  assert.equal(publishers, 19, "git publisher count is an audited invariant");
+  assert.equal(publishers, 20, "git publisher count is an audited invariant");
 });
 
 test("post-side-effect git bookkeeping is non-fatal while durability fences stay strict", () => {

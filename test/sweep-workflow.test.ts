@@ -23,6 +23,51 @@ test("sweep keeps optional media tooling out of review startup", () => {
   assert.doesNotMatch(workflow, /setup-media-proof-tools/);
 });
 
+test("automatic OpenClaw bug dispatch uses one gate across direct and deferred publication", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: Array<{ name?: string; if?: string; run?: string }> }>;
+  };
+  for (const [jobName, stepName] of [
+    ["event-review-apply", "Dispatch exact high-confidence bug implementation"],
+    ["event-review-publish", "Dispatch deferred high-confidence bug implementation"],
+    ["publish", "Dispatch high-confidence bug implementation candidates"],
+  ]) {
+    const step = workflow.jobs[jobName]?.steps.find((candidate) => candidate.name === stepName);
+    assert.ok(step, `${jobName}: ${stepName}`);
+    assert.match(step.if ?? "", /vars\.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1'/);
+    assert.doesNotMatch(step.if ?? "", /CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS/);
+    assert.match(step.run ?? "", /dispatch-issue-implementation-candidates\.mjs/);
+  }
+});
+
+test("automatic bug backfill runs independently of queue-fed scheduled sweeps", () => {
+  const workflow = YAML.parse(
+    readText(".github/workflows/repair-issue-implementation-backfill.yml"),
+  ) as {
+    on: { schedule: Array<{ cron: string }>; workflow_dispatch: unknown };
+    permissions: Record<string, string>;
+    jobs: Record<
+      string,
+      {
+        if: string;
+        steps: Array<{ uses?: string; name?: string; run?: string; with?: Record<string, string> }>;
+      }
+    >;
+  };
+  assert.deepEqual(workflow.on.schedule, [{ cron: "7/10 * * * *" }]);
+  assert.ok(Object.hasOwn(workflow.on, "workflow_dispatch"));
+  assert.deepEqual(workflow.permissions, { actions: "write", contents: "read" });
+  assert.match(workflow.jobs.backfill!.if, /CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1'/);
+  const state = workflow.jobs.backfill!.steps.find((step) => step.uses?.endsWith("/setup-state"));
+  assert.equal(state?.with?.["coordinator-class"], "cluster_intake");
+  assert.equal(state?.with?.["records-repo-slugs"], "openclaw-openclaw");
+  const dispatch = workflow.jobs.backfill!.steps.find(
+    (step) => step.name === "Dispatch bounded high-confidence bug candidates",
+  );
+  assert.match(dispatch?.run ?? "", /dispatch-issue-implementation-candidates\.mjs/);
+  assert.match(dispatch?.run ?? "", /--report-dir records\/openclaw-openclaw\/items/);
+});
+
 test("audit uploads its canonical close-verdict inventory before state publication", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const auditStart = workflow.indexOf("\n  audit-dashboard:");
@@ -207,7 +252,7 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
   assert.match(recordPublish.run ?? "", /records_published=true/);
 
   for (const name of [
-    "Dispatch reproducible bug implementation candidates",
+    "Dispatch high-confidence bug implementation candidates",
     "Dispatch vision-fit implementation candidates",
     "Backfill viable open issue implementation candidates",
     "Dispatch background review comment sync",

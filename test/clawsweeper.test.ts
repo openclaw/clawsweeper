@@ -2094,6 +2094,7 @@ test("issue implementation workflow lets job intent choose dispatch capacity", (
   assert.match(workflow, /MODEL: internal/);
   assert.match(workflow, /echo "target_slug=\$target_slug"/);
   assert.match(workflow, /sed -E 's\/\[\^a-z0-9_\.-\]\+\/-\/g;/);
+  assert.match(workflow, /coordinator-class: cluster_intake/);
   assert.match(workflow, /sparse-checkout: \|\n\s+jobs\n\s+results/);
   assert.doesNotMatch(workflow, /sparse-checkout:[\s\S]{0,120}records\//);
 });
@@ -2141,7 +2142,7 @@ test("viable issue implementation stays in the broad durable backfill lane", () 
   assert.match(workflow, /--report-dir "records\/\$target_slug\/items"/);
   assert.equal(workflow.match(/--report-dir "records\/\$target_slug\/items"/g)?.length, 3);
   assert.doesNotMatch(workflow, /CLAWSWEEPER_AUTO_IMPLEMENT_BACKFILL/);
-  assert.equal(workflow.match(/vars\.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1'/g)?.length, 3);
+  assert.ok((workflow.match(/vars\.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1'/g) || []).length >= 5);
 });
 
 test("sweep workflow executes only durable queue leases without runner-side admission", () => {

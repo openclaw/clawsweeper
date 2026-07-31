@@ -134,10 +134,10 @@ enable it. The master gate is:
 CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES=1
 ```
 
-Additional candidate gates select the permitted automatic lane:
+With the master gate enabled, high-confidence reproduced bugs and small,
+high-confidence source-proven bugs automatically enter the OpenClaw bug lane.
+Additional controls select other permitted automatic lanes:
 
-- `CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS=1` for strict, high-confidence
-  reproduced bugs.
 - `CLAWSWEEPER_AUTO_IMPLEMENT_VISION_FIT=1` for small, clearly aligned work
   backed by `VISION.md` evidence.
 - Eligible configured repositories outside the stricter core profiles may use
@@ -786,7 +786,6 @@ Issue implementation controls:
 | Name | Purpose |
 | --- | --- |
 | `CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES` | Master automatic issue-to-PR gate; default off. |
-| `CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS` | Strict reproduced-bug automatic lane. |
 | `CLAWSWEEPER_AUTO_IMPLEMENT_VISION_FIT` | Small vision-aligned automatic lane. |
 | `CLAWSWEEPER_AUTO_IMPLEMENT_MAX_LIVE_WORKERS` | Issue implementation live-worker override. |
 | `CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP` | Per-publish dispatch cap. |

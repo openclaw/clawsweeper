@@ -53,6 +53,7 @@ function main() {
   const command = String(args._[0] ?? "prepare");
   if (command === "prepare") prepare();
   else if (command === "candidates") candidates();
+  else if (command === "mark-dispatched") markDispatched();
   else die(`unknown command: ${command}`);
 }
 
@@ -99,6 +100,13 @@ function prepare() {
         clusterExistingPrs: [],
       };
   const jobPath = path.join(repoRoot(), issueImplementationJobPath(targetRepo, itemNumber));
+  const auditPath = path.join(
+    repoRoot(),
+    "results",
+    "issue-implementation-intake",
+    repoSlug(targetRepo),
+    `${itemNumber}.md`,
+  );
   let decision = intakeDecision({
     enabled,
     targetRepo,
@@ -109,21 +117,27 @@ function prepare() {
     live,
     operatorOverride,
   });
-  if (decision.shouldRepair && fs.existsSync(jobPath) && !operatorOverride) {
-    decision = {
-      status: "already_queued",
-      shouldRepair: false,
-      reason: "issue implementation job already queued",
-      blockers: ["issue implementation job already queued"],
-    };
+  let recoverExistingJob = false;
+  const existingJob = fs.existsSync(jobPath);
+  const previousAudit = existingJob
+    ? intakeAudit({ root: repoRoot(), repo: targetRepo, number: itemNumber })
+    : null;
+  let workerDispatched = previousAudit?.frontmatter.worker_dispatched === "true";
+  if (decision.shouldRepair && existingJob && !operatorOverride) {
+    if (!issueImplementationJobNeedsRefresh(previousAudit, reportMarkdown)) {
+      recoverExistingJob = intakeAuditAwaitsWorkerDispatch(previousAudit);
+      decision = {
+        status: "already_queued",
+        shouldRepair: false,
+        reason: "issue implementation job already queued",
+        blockers: ["issue implementation job already queued"],
+      };
+    }
   }
-  const auditPath = path.join(
-    repoRoot(),
-    "results",
-    "issue-implementation-intake",
-    repoSlug(targetRepo),
-    `${itemNumber}.md`,
-  );
+  if (decision.shouldRepair) workerDispatched = false;
+  const jobReportRevisionSha256 = decision.shouldRepair
+    ? reportRevisionSha256(reportMarkdown)
+    : existingIssueImplementationJobRevision(previousAudit);
   const preparedAt = new Date().toISOString();
   const context = {
     targetRepo,
@@ -141,6 +155,8 @@ function prepare() {
     preparedAt,
     operatorOverride,
     overrideRequestedBy,
+    workerDispatched,
+    jobReportRevisionSha256,
   };
 
   if (decision.shouldRepair) writeJob(context);
@@ -160,6 +176,7 @@ function prepare() {
     report_url: reportUrl,
     audit_path: relative(auditPath),
     job_path: decision.shouldRepair ? relative(jobPath) : "",
+    existing_job_path: recoverExistingJob ? relative(jobPath) : "",
   };
   writeStepOutputs(out);
   console.log(JSON.stringify(out, null, 2));
@@ -229,9 +246,16 @@ export function discoverImplementationCandidates({
       });
       if (!decision.shouldRepair) continue;
       const jobPath = path.join(jobRoot, issueImplementationJobPath(repository, number));
-      if (fs.existsSync(jobPath)) continue;
-      if (
-        matchingIntakeAuditExists({
+      if (fs.existsSync(jobPath)) {
+        const previousAudit = intakeAudit({ root: jobRoot, repo: repository, number });
+        if (
+          !intakeAuditAwaitsWorkerDispatch(previousAudit) &&
+          !issueImplementationJobNeedsRefresh(previousAudit, markdown)
+        ) {
+          continue;
+        }
+      } else if (
+        matchingIntakeAudit({
           root: jobRoot,
           repo: repository,
           number,
@@ -407,14 +431,22 @@ function eligibilityDecision({
     blockers.push("review report already references a pull request");
   }
   if (candidateKind === "strict_bug") {
-    if (fm.auto_implementation_candidate && fm.auto_implementation_candidate !== "strict_bug")
+    const sourceProvenBug = fm.reproduction_status === "source_reproducible";
+    if (
+      fm.auto_implementation_candidate &&
+      fm.auto_implementation_candidate !== "strict_bug" &&
+      !(sourceProvenBug && fm.auto_implementation_candidate === "none")
+    )
       blockers.push(`auto implementation candidate is ${fm.auto_implementation_candidate}`);
     if (fm.item_category !== "bug")
       blockers.push(`item category is ${fm.item_category || "unknown"}`);
-    if (fm.reproduction_status !== "reproduced")
+    if (fm.reproduction_status !== "reproduced" && !sourceProvenBug)
       blockers.push(`reproduction status is ${fm.reproduction_status || "unknown"}`);
     if (fm.reproduction_confidence !== "high")
       blockers.push(`reproduction confidence is ${fm.reproduction_confidence || "unknown"}`);
+    if (sourceProvenBug && fm.implementation_complexity !== "small") {
+      blockers.push(`source-proven fix complexity is ${fm.implementation_complexity || "unknown"}`);
+    }
     if (fm.requires_new_feature === "true") blockers.push("requires a new feature");
     if (fm.requires_new_config_option === "true") blockers.push("requires a new config option");
   } else if (candidateKind === "vision_fit") {
@@ -431,6 +463,12 @@ function eligibilityDecision({
       blockers.push("missing vision-fit evidence");
   }
   const reportLabels = frontMatterStringArray(fm.labels);
+  if (
+    fm.bulk_filer_detected === "true" ||
+    reportLabels.some((label) => label.trim().toLowerCase() === "clawsweeper:bulk-filed")
+  ) {
+    blockers.push("bulk-filed issues are not eligible for automatic implementation");
+  }
   if (reportLabels.some(isProtectedLabel)) blockers.push("protected label present");
   const reportPauseLabels = reportLabels.filter(isAutomaticImplementationPauseLabel);
   if (reportPauseLabels.length > 0)
@@ -449,6 +487,9 @@ function eligibilityDecision({
     if (issue.state !== "open") blockers.push(`live issue state is ${issue.state || "unknown"}`);
     if (issue.locked === true) blockers.push("live issue is locked");
     if (labels.some(isProtectedLabel)) blockers.push("live issue has protected label");
+    if (labels.some((label: string) => label.trim().toLowerCase() === "clawsweeper:bulk-filed")) {
+      blockers.push("live issue is bulk-filed and is not eligible for automatic implementation");
+    }
     const livePauseLabels = labels.filter(isAutomaticImplementationPauseLabel);
     if (livePauseLabels.length > 0)
       blockers.push(`live issue implementation is paused by ${livePauseLabels.join(", ")}`);
@@ -507,7 +548,7 @@ function eligibilityDecision({
       ? "vision-fit issue is eligible for ClawSweeper implementation"
       : candidateKind === "viable"
         ? "review approved this issue for ClawSweeper implementation"
-        : "strict reproducible bug is eligible for ClawSweeper implementation",
+        : "high-confidence bug is eligible for ClawSweeper implementation",
   );
 }
 
@@ -577,7 +618,7 @@ function strictImplementationPrompt(context: LooseRecord) {
   const likelyFiles = frontMatterStringArray(fm.work_likely_files);
   const workPrompt = section(context.report.body, "Repair Work Prompt");
   return [
-    "This was selected by ClawSweeper's strict reproducible-bug lane.",
+    "This was selected by ClawSweeper's high-confidence bug-fix lane.",
     "",
     `Review report: ${context.reportUrl}`,
     `Category: ${fm.item_category}`,
@@ -654,8 +695,10 @@ number: ${context.itemNumber}
 report_repo: ${context.reportRepo}
 report_path: ${context.reportPath}
 report_revision_sha256: ${reportRevisionSha256(context.reportMarkdown)}
+job_report_revision_sha256: ${context.jobReportRevisionSha256 || ""}
 decision: ${context.decision.status}
 prepared_at: ${context.preparedAt}
+worker_dispatched: ${context.workerDispatched === true ? "true" : "false"}
 ---
 
 # Issue Implementation Intake ${context.itemNumber}
@@ -680,7 +723,7 @@ export function reportRevisionSha256(markdown: string) {
   return crypto.createHash("sha256").update(markdown).digest("hex");
 }
 
-function matchingIntakeAuditExists({
+function matchingIntakeAudit({
   root,
   repo,
   number,
@@ -691,6 +734,13 @@ function matchingIntakeAuditExists({
   number: number;
   reportMarkdown: string;
 }) {
+  const audit = intakeAudit({ root, repo, number });
+  return audit?.frontmatter.report_revision_sha256 === reportRevisionSha256(reportMarkdown)
+    ? audit
+    : null;
+}
+
+function intakeAudit({ root, repo, number }: { root: string; repo: string; number: number }) {
   const auditPath = path.join(
     root,
     "results",
@@ -698,9 +748,99 @@ function matchingIntakeAuditExists({
     repoSlug(repo),
     `${number}.md`,
   );
-  if (!fs.existsSync(auditPath)) return false;
-  const audit = parseReviewReport(fs.readFileSync(auditPath, "utf8"));
-  return audit.frontmatter.report_revision_sha256 === reportRevisionSha256(reportMarkdown);
+  if (!fs.existsSync(auditPath)) return null;
+  return parseReviewReport(fs.readFileSync(auditPath, "utf8"));
+}
+
+function intakeAuditAwaitsWorkerDispatch(audit: ReviewReport | null) {
+  return (
+    audit !== null &&
+    audit.frontmatter.worker_dispatched !== "true" &&
+    (audit.frontmatter.worker_dispatched === "false" ||
+      [
+        "queued_for_repair",
+        "already_queued",
+        "override_queued_for_repair",
+        "not_eligible",
+      ].includes(audit.frontmatter.decision ?? ""))
+  );
+}
+
+function existingIssueImplementationJobRevision(audit: ReviewReport | null) {
+  if (!audit) return "";
+  if (audit.frontmatter.job_report_revision_sha256) {
+    return audit.frontmatter.job_report_revision_sha256;
+  }
+  if (
+    ["queued_for_repair", "already_queued", "override_queued_for_repair"].includes(
+      audit.frontmatter.decision ?? "",
+    )
+  ) {
+    return audit.frontmatter.report_revision_sha256 ?? "";
+  }
+  return "";
+}
+
+export function issueImplementationJobNeedsRefresh(
+  audit: ReviewReport | null,
+  reportMarkdown: string,
+) {
+  return (
+    audit !== null &&
+    audit.frontmatter.worker_dispatched !== "true" &&
+    existingIssueImplementationJobRevision(audit) !== reportRevisionSha256(reportMarkdown)
+  );
+}
+
+function markDispatched() {
+  const auditPath = stringArg("audit-path", "");
+  const jobPath = stringArg("job-path", "");
+  if (!auditPath || !jobPath) die("mark-dispatched requires --audit-path and --job-path");
+  markIssueImplementationDispatched({ root: repoRoot(), auditPath, jobPath });
+  console.log(`recorded dispatched issue implementation worker for ${jobPath}`);
+}
+
+export function markIssueImplementationDispatched({
+  root,
+  auditPath,
+  jobPath,
+}: {
+  root: string;
+  auditPath: string;
+  jobPath: string;
+}) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedAudit = path.resolve(resolvedRoot, auditPath);
+  const resolvedJob = path.resolve(resolvedRoot, jobPath);
+  const markdown = fs.readFileSync(resolvedAudit, "utf8");
+  const audit = parseReviewReport(markdown);
+  const repository = audit.frontmatter.repo;
+  const number = Number(audit.frontmatter.number);
+  if (!repository || !Number.isSafeInteger(number) || number < 1) {
+    throw new Error("issue implementation dispatch audit has an invalid target");
+  }
+  const expectedAudit = path.join(
+    resolvedRoot,
+    "results",
+    "issue-implementation-intake",
+    repoSlug(repository),
+    `${number}.md`,
+  );
+  const expectedJob = path.join(resolvedRoot, issueImplementationJobPath(repository, number));
+  if (
+    resolvedAudit !== expectedAudit ||
+    resolvedJob !== expectedJob ||
+    !fs.existsSync(resolvedJob)
+  ) {
+    throw new Error("issue implementation dispatch audit does not match its durable job");
+  }
+  if (!intakeAuditAwaitsWorkerDispatch(audit)) {
+    throw new Error("issue implementation worker is not awaiting dispatch");
+  }
+  const marked = /^worker_dispatched: false$/m.test(markdown)
+    ? markdown.replace(/^worker_dispatched: false$/m, "worker_dispatched: true")
+    : markdown.replace(/\n---\n/, "\nworker_dispatched: true\n---\n");
+  fs.writeFileSync(resolvedAudit, marked);
 }
 
 function liveIssueContext({

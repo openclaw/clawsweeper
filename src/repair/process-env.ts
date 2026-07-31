@@ -29,9 +29,12 @@ export function codexSubprocessEnv(): NodeJS.ProcessEnv {
   return withoutColor(env);
 }
 
-export function repairCodexReasoningEffort(value = process.env.CLAWSWEEPER_CODEX_REASONING_EFFORT) {
+export function repairCodexReasoningEffort(
+  value = process.env.CLAWSWEEPER_CODEX_REASONING_EFFORT,
+  allowExtraHigh = false,
+) {
   const effort = String(value ?? "high").trim() || "high";
-  return effort.toLowerCase() === "xhigh" ? "high" : effort;
+  return effort.toLowerCase() === "xhigh" ? (allowExtraHigh ? "xhigh" : "high") : effort;
 }
 
 export function repairCodexServiceTier(value = process.env.CLAWSWEEPER_CODEX_SERVICE_TIER) {

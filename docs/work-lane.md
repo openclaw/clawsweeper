@@ -18,10 +18,11 @@ Reports store the lane fields in frontmatter:
 - `work_cluster_refs`, `work_validation`, and `work_likely_files`
 
 The dashboard shows fresh `queue_fix_pr` reports whose `work_status` is
-`candidate`. For `openclaw/openclaw` and `openclaw/clawhub`, this remains a
-manual promotion queue. For other configured projects, complete
-high-confidence candidates automatically enter the existing issue
-implementation workflow after the safety gates below pass. For each fresh
+`candidate`. For `openclaw/openclaw`, a complete high-confidence bug report
+automatically enters the guarded issue implementation workflow when
+`CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES=1`. `openclaw/clawhub` remains manual-only.
+Other configured projects can automatically enter the existing viable-issue
+implementation workflow after its safety gates pass. For each fresh
 candidate, apply/reconcile also generates
 `records/<repo-slug>/plans/<number>.md` from the existing report fields. The
 dashboard links both the source report and the generated coding plan so
@@ -90,11 +91,11 @@ them from the source report instead of editing them by hand.
 
 ## Automatic Issue Implementation
 
-The automatic issue implementation lane is disabled for `openclaw/openclaw`
-and `openclaw/clawhub`. In other eligible public `openclaw/*` and `steipete/*`
-projects, newly reviewed issues and existing open issue reports can enter the
-lane after a complete current review when
-`CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES=1`.
+Set `CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES=1` to let complete, current OpenClaw bug
+reviews automatically produce a focused repair PR. In other eligible public
+`openclaw/*` and `steipete/*` projects, newly reviewed issues and existing open
+issue reports can also enter the broader viable-issue implementation lane.
+Automatic issue implementation remains disabled for `openclaw/clawhub`.
 
 - open with a complete current report
 - kept open with no close reason
@@ -116,11 +117,11 @@ per target repository. Existing durable issue jobs, generated PRs, and intake
 receipts for the same report revision suppress duplicate intake. A newly
 published report revision can retry a previously rejected issue.
 
-The older strict bug lane remains available and can create a PR only for
-reviewed issues that are exactly:
+The automatic bug lane can create a PR for reviewed issues that are:
 
 - `item_category: bug`
-- `reproduction_status: reproduced`
+- `reproduction_status: reproduced`, or `source_reproducible` when
+  `implementation_complexity: small`
 - `reproduction_confidence: high`
 - `auto_implementation_candidate: strict_bug` when the report has this newer
   field
@@ -133,7 +134,8 @@ reviewed issues that are exactly:
 This intentionally excludes mixed feature/config/product work. If a fix would
 add a flag, setting, new mode, provider support, broad UX behavior, dependency,
 or maintainer policy choice, the review must not classify it as an automatic
-bug implementation candidate.
+bug implementation candidate. The implementation worker must reproduce or add a
+failing regression for source-proven bugs before opening a PR.
 
 The sibling vision-fit lane is opt-in with
 `CLAWSWEEPER_AUTO_IMPLEMENT_VISION_FIT=1`. It may create a PR only for reviewed
@@ -156,8 +158,10 @@ items remain manual work-lane candidates.
 When enabled, strict-bug and vision-fit sweeps also scan durable open reports,
 so their existing eligible issue backlog enters the same bounded intake.
 
-After review publish, `sweep.yml` scans the just-produced artifacts and durable
-open issue records, then dispatches
+After an exact OpenClaw issue review is accepted, `sweep.yml` immediately
+checks that review and dispatches its high-confidence bug fix. Scheduled
+review publish also scans the just-produced artifacts and durable open issue
+records, then dispatches
 `repair-issue-implementation-intake.yml` for a bounded set of eligible reports.
 The intake workflow re-fetches the live issue, rejects protected, security, or
 locked items, skips issues that already have an open PR reference, durable

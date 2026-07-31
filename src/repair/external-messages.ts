@@ -242,7 +242,11 @@ const postMergeCloseLines = [
 ];
 
 function fishNotes(provenance: LooseRecord) {
-  const reasoning = repairCodexReasoningEffort(provenance?.reasoning);
+  const selectedReasoning = provenance?.reasoning;
+  const reasoning = repairCodexReasoningEffort(
+    selectedReasoning,
+    typeof selectedReasoning === "string" && selectedReasoning.trim().length > 0,
+  );
   const reviewedSha = provenance?.reviewedSha ?? provenance?.reviewed_sha;
   const reviewed = reviewedSha ? `; reviewed against ${String(reviewedSha).slice(0, 12)}` : "";
   return `fish notes: reasoning ${reasoning}${reviewed}.`;
@@ -251,7 +255,10 @@ function fishNotes(provenance: LooseRecord) {
 export function externalMessageProvenance({ model, reasoning, reviewedSha }: LooseRecord = {}) {
   return {
     model: model ?? process.env.CLAWSWEEPER_MODEL ?? "internal",
-    reasoning: repairCodexReasoningEffort(reasoning),
+    reasoning: repairCodexReasoningEffort(
+      reasoning,
+      typeof reasoning === "string" && reasoning.trim().length > 0,
+    ),
     reviewedSha,
   };
 }

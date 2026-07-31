@@ -233,7 +233,10 @@ async function worker(itemPath, root, workspace) {
   if (existsSync(report) && legacyTupleless(readFileSync(report, "utf8"))) {
     return writeFailure(outcomePath, "permanent_failure", "tuple_protocol_invalid");
   }
-  if (existsSync(report)) cpSync(report, join(eventArtifacts, `${itemNumber}.md`));
+  if (existsSync(report)) {
+    cpSync(report, join(eventArtifacts, `${itemNumber}.md`));
+    cpSync(report, outcomePath.replace(/\.json$/, ".report.md"));
+  }
 
   result = await run(process.execPath, [join(workspace, "dist/repair/publish-event-result.js")], {
     cwd: root,

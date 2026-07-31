@@ -1324,6 +1324,19 @@ jobs:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: pnpm run --silent repair:exact-review-direct-publication
 
+      - name: Dispatch exact high-confidence bug implementation
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-exact-review-publication.outputs.accepted == 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && steps.target.outputs.target_repo == 'openclaw/openclaw' && fromJSON(steps.claim-exact-review-queue.outputs.decision).itemKind == 'issue' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+        run: |
+          node scripts/dispatch-issue-implementation-candidates.mjs \
+            --target-repo "$TARGET_REPO" \
+            --item-number "$ITEM_NUMBER" \
+            --artifact-dir artifacts/event
+
       - name: Upload exact review artifact bundle
         id: upload-exact-review-bundle
         if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.create-exact-review-bundle.outcome == 'success' && steps.direct-exact-review-publication.outputs.accepted != 'true' }}
@@ -2084,6 +2097,19 @@ jobs:
             -f item_numbers="$ITEM_NUMBER" \
             -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
             -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS"
+
+      - name: Dispatch deferred high-confidence bug implementation
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && steps.publication-context.outputs.target_repo == 'openclaw/openclaw' && fromJSON(steps.publication-context.outputs.decision).itemKind == 'issue' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
+        run: |
+          node scripts/dispatch-issue-implementation-candidates.mjs \
+            --target-repo "$TARGET_REPO" \
+            --item-number "$ITEM_NUMBER" \
+            --artifact-dir artifacts/event
 
       - name: Queue fresh review after source drift
         id: queue-source-drift-review
@@ -3709,61 +3735,19 @@ jobs:
             echo "::warning title=Sweep status publish failed::Review records are canonical; continuing without the best-effort Git dashboard update."
           fi
 
-      - name: Dispatch reproducible bug implementation candidates
-        if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && needs.plan.outputs.target_repo == 'openclaw/openclaw' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS == '1' }}
+      - name: Dispatch high-confidence bug implementation candidates
+        if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && needs.plan.outputs.target_repo == 'openclaw/openclaw' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
-          ENABLED: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_REPRO_BUGS == '1' && 'true' || 'false' }}
+          ENABLED: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && 'true' || 'false' }}
           MAX_DISPATCH: ${{ vars.CLAWSWEEPER_AUTO_IMPLEMENT_MAX_DISPATCH_PER_SWEEP || '' }}
         run: |
-          set -euo pipefail
           target_slug="${TARGET_REPO//\//-}"
-          if [ -z "$MAX_DISPATCH" ]; then
-            MAX_DISPATCH="$(pnpm run --silent workflow -- limit issue_implementation.dispatches_per_sweep_default)"
-          fi
-          candidate_output="$(pnpm run --silent repair:issue-implementation-intake -- candidates \
-            --enabled "$ENABLED" \
-            --candidate-kind strict_bug \
+          node scripts/dispatch-issue-implementation-candidates.mjs \
             --target-repo "$TARGET_REPO" \
             --artifact-dir artifacts \
-            --report-dir "records/$target_slug/items")"
-          echo "$candidate_output"
-          candidates_json="$(CANDIDATE_OUTPUT="$candidate_output" node <<'NODE'
-          const output = JSON.parse(process.env.CANDIDATE_OUTPUT || "{}");
-          console.log(JSON.stringify(output.candidates || []));
-          NODE
-          )"
-          if [ -z "$candidates_json" ] || [ "$candidates_json" = "[]" ]; then
-            echo "No strict reproducible bug implementation candidates."
-            exit 0
-          fi
-          CANDIDATES_JSON="$candidates_json" MAX_DISPATCH="$MAX_DISPATCH" node <<'NODE' > /tmp/issue-implementation-candidates.tsv
-          const candidates = JSON.parse(process.env.CANDIDATES_JSON || "[]");
-          const limit = Math.max(0, Number(process.env.MAX_DISPATCH || "0"));
-          for (const candidate of candidates.slice(0, limit)) {
-            console.log([
-              candidate.item_number,
-              candidate.report_path,
-              candidate.report_url,
-            ].join("\t"));
-          }
-          NODE
-          if [ ! -s /tmp/issue-implementation-candidates.tsv ]; then
-            echo "No candidates remained after dispatch cap."
-            exit 0
-          fi
-          while IFS=$'\t' read -r item_number report_path report_url; do
-            echo "Dispatching reproducible bug implementation intake for $TARGET_REPO#$item_number"
-            gh workflow run repair-issue-implementation-intake.yml \
-              --ref main \
-              -f enabled=true \
-              -f target_repo="$TARGET_REPO" \
-              -f item_number="$item_number" \
-              -f candidate_kind=strict_bug \
-              -f report_path="$report_path" \
-              -f report_url="$report_url"
-          done < /tmp/issue-implementation-candidates.tsv
+            --report-dir "records/$target_slug/items"
 
       - name: Dispatch vision-fit implementation candidates
         if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && needs.plan.outputs.target_repo == 'openclaw/openclaw' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_VISION_FIT == '1' }}

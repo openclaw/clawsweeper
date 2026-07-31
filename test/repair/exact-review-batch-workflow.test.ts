@@ -72,6 +72,18 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   const ghToken = ["GH", "TOKEN"].join("_");
   assert.match(prepareSource, new RegExp(`${ghToken}: env\\("REPO_TOKEN"\\)`));
   assert.match(source, /gh workflow run repair-comment-router\.yml/);
+  assert.match(
+    source,
+    /AUTO_IMPLEMENT_ISSUES: \$\{\{ vars\.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES \}\}/,
+  );
+  assert.match(source, /node scripts\/dispatch-issue-implementation-candidates\.mjs/);
+  assert.match(source, /if ! node scripts\/dispatch-issue-implementation-candidates\.mjs/);
+  assert.match(
+    source,
+    /Automatic issue implementation dispatch failed; scheduled backfill will retry/,
+  );
+  assert.match(source, /--item-number "\$item_number"/);
+  assert.match(prepareSource, /outcomePath\.replace\(\/\\\.json\$\/, "\.report\.md"\)/);
   assert.match(source, /internal\/exact-review\/enqueue/);
   assert.match(source, /source_drift_requeue/);
   assert.match(source, /\.kind == "superseded" and \.disposition\.requeueLatestExpected == true/);

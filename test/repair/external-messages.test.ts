@@ -217,7 +217,7 @@ test("issueImplementationResultStatusComment reports blocked terminal outcomes",
   assert.doesNotMatch(body, /- PR:/);
 });
 
-test("external message provenance normalizes accidental xhigh reasoning", () => {
+test("external message provenance preserves selected issue-execution xhigh reasoning", () => {
   const provenance = externalMessageProvenance({ model: "model-test", reasoning: "xhigh" });
   const body = automergeRepairOutcomeComment({
     marker: "<!-- marker -->",
@@ -227,8 +227,18 @@ test("external message provenance normalizes accidental xhigh reasoning", () => 
     provenance,
   });
 
-  assert.equal(provenance.reasoning, "high");
-  assert.match(body, /reasoning high/);
+  assert.equal(provenance.reasoning, "xhigh");
+  assert.match(body, /reasoning xhigh/);
   assert.doesNotMatch(body, /model model-test/);
-  assert.doesNotMatch(body, /reasoning xhigh/);
+});
+
+test("external message provenance keeps ordinary implicit reasoning normalized", () => {
+  const previous = process.env.CLAWSWEEPER_CODEX_REASONING_EFFORT;
+  process.env.CLAWSWEEPER_CODEX_REASONING_EFFORT = "xhigh";
+  try {
+    assert.equal(externalMessageProvenance({ model: "model-test" }).reasoning, "high");
+  } finally {
+    if (previous === undefined) delete process.env.CLAWSWEEPER_CODEX_REASONING_EFFORT;
+    else process.env.CLAWSWEEPER_CODEX_REASONING_EFFORT = previous;
+  }
 });

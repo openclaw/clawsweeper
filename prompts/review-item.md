@@ -2,6 +2,16 @@
 
 You are reviewing one open item from the target repository for conservative maintainer cleanup.
 
+For each issue, aim for one useful outcome: close it when current `main` or an
+already-merged PR demonstrably fixes the reported behavior; automatically route
+a bounded, high-confidence existing-behavior bug to a focused repair PR when no
+open PR already owns the fix; otherwise identify the concrete safety, evidence,
+or product-decision blocker. A read-only review need not execute the bug when
+current source already proves a small defect: describe that evidence accurately
+and let the implementation worker establish the failing regression. If local
+repository inspection cannot execute, report the infrastructure failure
+explicitly instead of claiming files or history were inspected.
+
 Work in the checked-out target repository. Before reviewing, read the target
 repository's full `AGENTS.md` file if present. Do not rely only on search
 snippets, `head` output, local excerpts, partial line ranges, or truncated
@@ -158,8 +168,9 @@ high-confidence, `visionFit: "aligned"`, `implementationComplexity: "small"`,
 `workCandidate: "queue_fix_pr"`, `workConfidence: "high"`, has a complete
 `workPrompt`, likely files, validation commands, no security/protected signal,
 no open linked PR, and no product-decision blocker. Set
-`autoImplementationCandidate: "strict_bug"` only for the existing reproduced
-bug lane described below. Otherwise use `none`.
+`autoImplementationCandidate: "strict_bug"` for a high-confidence reproduced
+bug or a small, high-confidence source-proven bug described below. Otherwise
+use `none`.
 
 Set `triagePriority` as ClawSweeper's maintainer-facing priority label for both
 issues and pull requests. This is not the same as `reviewFindings[].priority`
@@ -605,15 +616,19 @@ for the exact tests or checks a fix PR should run, and `workLikelyFiles` for
 probable implementation/test/docs paths.
 
 For issues, `queue_fix_pr` may mark general manual work-lane candidates, but
-automatic implementation is stricter. A report is eligible for automatic
-bug-fix PR creation only when `itemCategory` is exactly `bug`,
-`reproductionStatus` is exactly `reproduced`, `reproductionConfidence` is
-`high`, `workConfidence` is `high`, and `requiresNewFeature`,
-`requiresNewConfigOption`, and `requiresProductDecision` are all `false`.
-Keep the bug boundary narrow in `workPrompt`: fix broken existing behavior,
-add or update regression coverage, and stop if the implementation would add a
+automatic implementation requires a concrete, high-confidence existing-behavior
+bug. A report is eligible for automatic bug-fix PR creation when `itemCategory`
+is exactly `bug`, `reproductionConfidence` and `workConfidence` are both `high`,
+and `requiresNewFeature`, `requiresNewConfigOption`, and
+`requiresProductDecision` are all `false`. `reproductionStatus` may be
+`reproduced`, or `source_reproducible` when `implementationComplexity` is
+`small` and current source establishes the defect and its narrow repair. Do not
+invent a live reproduction for source-proven work: the implementation worker
+must reproduce or establish a failing regression before opening a PR. Keep the
+bug boundary narrow in `workPrompt`: fix broken existing behavior, add or update
+regression coverage, and stop if the implementation would add a
 feature/config/product-policy change. Set `autoImplementationCandidate` to
-`strict_bug` for this strict bug lane.
+`strict_bug` for either high-confidence bug shape.
 
 For pull requests, `workCandidate` is also the automation contract. Use
 `queue_fix_pr` only when there is a concrete, actionable repair that an
