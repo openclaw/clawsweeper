@@ -225,6 +225,9 @@ test("issue implementation rechecks opt-out labels immediately before branch pus
   assert.match(source.slice(pushStart, pushEnd), /assertIssueImplementationNotPaused\(\)/);
   assert.notEqual(helperStart, -1);
   assert.match(source.slice(helperStart, helperEnd), /repairPauseLabel\(issue\.labels\)/);
+  assert.match(source.slice(helperStart, helperEnd), /clawsweeper:bulk-filed/);
+  assert.match(source.slice(helperStart, helperEnd), /operator_override !== true/);
+  assert.match(source.slice(helperStart, helperEnd), /is bulk-filed; refusing to push or open/);
   assert.match(source.slice(helperStart, helperEnd), /refusing to push or open a PR/);
 });
 

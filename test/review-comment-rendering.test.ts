@@ -15,6 +15,7 @@ import {
   shouldPreserveReviewStartLease,
   withReviewStartStatusLease,
 } from "../dist/clawsweeper.js";
+import { issueSourceRevisionSha256 } from "../dist/repair/issue-source-guard.js";
 import { detailsBody, reportFrontMatter } from "./helpers.ts";
 
 function implementedCloseReport(overrides = {}) {
@@ -522,6 +523,12 @@ test("review item source revision ignores advisory labels but tracks protected l
       [],
     ),
     revision,
+  );
+  const bulkFiled = { ...item, labels: [...item.labels, { name: "clawsweeper:bulk-filed" }] };
+  assert.notEqual(itemSourceRevisionSha256ForTest(bulkFiled, []), revision);
+  assert.equal(
+    itemSourceRevisionSha256ForTest(bulkFiled, []),
+    issueSourceRevisionSha256(bulkFiled, []),
   );
   assert.notEqual(
     itemSourceRevisionSha256ForTest(

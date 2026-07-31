@@ -91,7 +91,9 @@ function revisionLabels(labels: JsonValue[]): string[] {
 function isIgnorableAutomationLabel(label: string) {
   return (
     isClawSweeperAdvisoryLabel(label) ||
-    (label.startsWith("clawsweeper:") && !PROTECTED_LABELS.has(label)) ||
+    (label.startsWith("clawsweeper:") &&
+      !PROTECTED_LABELS.has(label) &&
+      label !== "clawsweeper:bulk-filed") ||
     label === "no-stale" ||
     label === "stale"
   );

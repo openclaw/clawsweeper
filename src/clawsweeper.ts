@@ -3040,7 +3040,9 @@ function isIgnorableSourceRevisionLabel(label: string) {
   return (
     isClawSweeperAdvisorySourceRevisionLabel(label) ||
     (label.startsWith("clawsweeper:") &&
-      !["clawsweeper:human-review", "clawsweeper:manual-only"].includes(label)) ||
+      !["clawsweeper:human-review", "clawsweeper:manual-only", "clawsweeper:bulk-filed"].includes(
+        label,
+      )) ||
     label === "no-stale" ||
     label === "stale"
   );

@@ -93,6 +93,13 @@ test("source issue revision ignores automation labels but tracks human labels", 
   );
   assert.notEqual(
     issueSourceRevisionSha256(
+      { ...issue, labels: [...issue.labels, { name: "clawsweeper:bulk-filed" }] },
+      [],
+    ),
+    revision,
+  );
+  assert.notEqual(
+    issueSourceRevisionSha256(
       { ...issue, labels: [...issue.labels, { name: "release-blocker" }] },
       [],
     ),
@@ -138,5 +145,13 @@ test("source issue state blocks drift and protected signals", () => {
       expectedRevision: revision,
     }),
     "source issue has protected label: clawsweeper:human-review",
+  );
+  assert.equal(
+    issueSourceStateBlockReason({
+      issue: { ...issue, labels: [...issue.labels, { name: "clawsweeper:bulk-filed" }] },
+      comments: [],
+      expectedRevision: revision,
+    }),
+    "source issue changed since ClawSweeper queued implementation",
   );
 });

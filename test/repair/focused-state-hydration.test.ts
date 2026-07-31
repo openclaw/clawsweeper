@@ -107,6 +107,55 @@ test("single-issue hydration rejects invalid identifiers before remote reads", a
   assert.equal(reads, 0);
 });
 
+test("single-issue hydration preserves valid issue jobs with no open canonical record", async () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-focused-missing-"));
+  const stalePath = join(root, "records", repoSlug, "items", "999.md");
+  mkdirSync(join(root, "records", repoSlug, "items"), { recursive: true });
+  writeFileSync(stalePath, "stale\n");
+  let reads = 0;
+
+  const result = await hydrateState(
+    [
+      "--worktree",
+      root,
+      "--skip-git-state",
+      "--skip-state-blobs",
+      "--records-item-number",
+      String(itemNumber),
+    ],
+    {
+      CLAWSWEEPER_RECORDS_SECRET: webhookSecret,
+      CLAWSWEEPER_RECORDS_REPO_SLUGS: repoSlug,
+      CLAWSWEEPER_RECORDS_URL: "https://worker.example.test",
+    },
+    (async () => {
+      reads += 1;
+      return Response.json({ error: "record_not_found" }, { status: 404 });
+    }) as typeof fetch,
+  );
+
+  assert.equal(reads, 1);
+  assert.throws(() => readFileSync(stalePath));
+  assert.deepEqual(result.worker[repoSlug]?.coverageTrackedItemIds, []);
+  assert.equal(result.worker[repoSlug]?.recordCount, 0);
+});
+
+test("single-issue hydration refuses unrelated Worker authorization failures", async () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-focused-denied-"));
+  await assert.rejects(
+    materializeWorkerRecord({
+      worktreeRoot: root,
+      baseUrl: "https://worker.example.test",
+      webhookSecret,
+      repoSlug,
+      itemNumber,
+      fetch: (async () =>
+        Response.json({ error: "unauthorized" }, { status: 404 })) as typeof fetch,
+    }),
+    /unauthorized/,
+  );
+});
+
 test("single-issue hydration refuses corrupt Worker content without replacing local records", async () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-focused-corrupt-"));
   const preservedPath = join(root, "records", repoSlug, "items", "100.md");

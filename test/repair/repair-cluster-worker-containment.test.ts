@@ -125,6 +125,24 @@ test("issue PR execution is pinned to sol xhigh without changing planning", () =
   );
 });
 
+test("issue implementation workers hydrate only their canonical issue in both jobs", () => {
+  const focusedHydration = workflow.match(
+    /records-item-number: \$\{\{ steps\.target\.outputs\.records_item_number \|\| '' \}\}/g,
+  );
+  const targetSlugs = workflow.match(
+    /records-repo-slugs: \$\{\{ steps\.target\.outputs\.target_slug \|\| '' \}\}/g,
+  );
+
+  assert.equal(focusedHydration?.length, 2);
+  assert.equal(targetSlugs?.length, 2);
+  assert.equal((workflow.match(/echo "records_item_number=\$item_number"/g) || []).length, 2);
+  assert.equal(
+    (workflow.match(/echo "target_slug=\$\{owner_slug\}-\$\{repository\}"/g) || []).length,
+    2,
+  );
+  assert.equal((workflow.match(/owner_slug="\$\(printf/g) || []).length, 2);
+});
+
 test("execution-gate downgrades complete the planning session without starting execution", () => {
   const runWorkerIndex = workflow.indexOf("- name: Run worker");
   const completionIndex = workflow.indexOf("- name: Record planning completion", runWorkerIndex);
