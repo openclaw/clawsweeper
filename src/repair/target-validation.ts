@@ -1250,12 +1250,20 @@ export function runAllowedValidationCommandsWithBinding(
               validationIdentityProofDeadlineAt(deadlineAt),
             );
           }
-          const restoreRuntimeBuildCache = runtimeBuild
+          const restoreValidationCache = runtimeBuild
             ? prepareDisposableRuntimeBuildCache(cwd, validationEnv, ignoredValidationInputs)
-            : null;
+            : options.targetRepo === "openclaw/openclaw" && isChangedGateCommand(parts, options)
+              ? prepareDisposableRuntimeBuildCache(
+                  cwd,
+                  validationEnv,
+                  ignoredValidationInputs,
+                  "tsgo-cache",
+                  "changed-gate validation",
+                )
+              : null;
           const executionBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
           if (executionBudgetMs < MIN_VALIDATION_COMMAND_BUDGET_MS) {
-            restoreRuntimeBuildCache?.();
+            restoreValidationCache?.();
             throw validationCommandBudgetError(rendered);
           }
           try {
@@ -1266,7 +1274,7 @@ export function runAllowedValidationCommandsWithBinding(
               writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
             });
           } finally {
-            restoreRuntimeBuildCache?.();
+            restoreValidationCache?.();
           }
           if (runtimeBuild) {
             assertGeneratedRuntimeBuildOutput(cwd);
@@ -2644,9 +2652,11 @@ function prepareDisposableRuntimeBuildCache(
   cwd: string,
   validationEnv: NodeJS.ProcessEnv,
   ignoredValidationInputs: readonly string[],
+  cacheName: "build-all-cache" | "tsgo-cache" = "build-all-cache",
+  context = "runtime artifact build",
 ) {
   const artifacts = path.join(cwd, ".artifacts");
-  const cache = path.join(artifacts, "build-all-cache");
+  const cache = path.join(artifacts, cacheName);
   const artifactsStat = fs.lstatSync(artifacts, { throwIfNoEntry: false });
   if (
     artifactsStat &&
@@ -2654,11 +2664,11 @@ function prepareDisposableRuntimeBuildCache(
       !artifactsStat.isDirectory() ||
       artifactsStat.isSymbolicLink())
   ) {
-    throw new Error("runtime artifact build has an unsafe existing artifacts directory");
+    throw new Error(`${context} has an unsafe existing artifacts directory`);
   }
   const cacheStat = fs.lstatSync(cache, { throwIfNoEntry: false });
   if (cacheStat && (!cacheStat.isDirectory() || cacheStat.isSymbolicLink())) {
-    throw new Error("runtime artifact build has an unsafe existing build cache");
+    throw new Error(`${context} has an unsafe existing ${cacheName}`);
   }
   const savedCache = path.join(
     path.dirname(String(validationEnv.HOME)),
@@ -2675,7 +2685,7 @@ function prepareDisposableRuntimeBuildCache(
           (currentArtifactsStat.dev !== artifactsStat.dev ||
             currentArtifactsStat.ino !== artifactsStat.ino)))
     ) {
-      throw new Error("runtime artifact build changed its protected artifacts directory");
+      throw new Error(`${context} changed its protected artifacts directory`);
     }
     fs.rmSync(cache, { recursive: true, force: true });
     if (cacheStat) {

@@ -3990,6 +3990,112 @@ test("changed-gate fallback preserves and protects pending fresh runtime output"
   }
 });
 
+test("OpenClaw changed-gate compiler cache is disposable and preserves existing state", () => {
+  for (const existingCompilerCache of [false, true]) {
+    const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), ".artifacts/\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const artifacts = path.join(cwd, ".artifacts");
+    const compilerCache = path.join(artifacts, "tsgo-cache");
+    fs.mkdirSync(artifacts, { recursive: true });
+    fs.writeFileSync(path.join(artifacts, "stable.txt"), "existing artifact\n");
+    if (existingCompilerCache) {
+      fs.mkdirSync(compilerCache, { recursive: true });
+      fs.writeFileSync(
+        path.join(compilerCache, "test-root.tsbuildinfo"),
+        "trusted previous cache\n",
+      );
+    }
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-tsgo-cache-"));
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      [
+        'const fs = require("node:fs");',
+        'fs.mkdirSync(".artifacts/tsgo-cache", { recursive: true });',
+        'fs.writeFileSync(".artifacts/tsgo-cache/test-root.tsbuildinfo", "generated compiler cache\\n");',
+      ].join("\n"),
+    );
+
+    assert.deepEqual(
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          ["pnpm check:changed"],
+          cwd,
+          validationOptions("openclaw/openclaw", {
+            pinnedBaseRef: "origin/main",
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+            },
+          }),
+        ),
+      ),
+      ["pnpm check:changed"],
+    );
+    assert.equal(
+      fs.readFileSync(path.join(artifacts, "stable.txt"), "utf8"),
+      "existing artifact\n",
+    );
+    if (existingCompilerCache) {
+      assert.equal(
+        fs.readFileSync(path.join(compilerCache, "test-root.tsbuildinfo"), "utf8"),
+        "trusted previous cache\n",
+      );
+    } else {
+      assert.equal(fs.existsSync(compilerCache), false);
+    }
+  }
+});
+
+test("changed-gate compiler cache isolation still rejects unrelated ignored-input poisoning", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+  fs.appendFileSync(path.join(cwd, ".gitignore"), ".artifacts/\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const artifacts = path.join(cwd, ".artifacts");
+  fs.mkdirSync(artifacts, { recursive: true });
+  fs.writeFileSync(path.join(artifacts, "stable.txt"), "existing artifact\n");
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-tsgo-poison-"));
+  writeNodeCommandShim(
+    binDir,
+    "pnpm",
+    [
+      'const fs = require("node:fs");',
+      'fs.mkdirSync(".artifacts/tsgo-cache", { recursive: true });',
+      'fs.writeFileSync(".artifacts/tsgo-cache/test-root.tsbuildinfo", "generated compiler cache\\n");',
+      'fs.writeFileSync(".artifacts/stable.txt", "poisoned artifact\\n");',
+    ].join("\n"),
+  );
+
+  assert.throws(
+    () =>
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          ["pnpm check:changed"],
+          cwd,
+          validationOptions("openclaw/openclaw", {
+            pinnedBaseRef: "origin/main",
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+            },
+          }),
+        ),
+      ),
+    /unsafe validation command mutated checkout identity \(pnpm check:changed\): runtimeInputsSha256/,
+  );
+  assert.equal(fs.existsSync(path.join(artifacts, "tsgo-cache")), false);
+});
+
 test("OpenClaw archive smoke cannot pass by reusing a pre-existing stale build", () => {
   const cwd = gitPackageFixture({ "build:ci-artifacts": "node scripts/build-runtime.mjs" });
   fs.appendFileSync(path.join(cwd, ".gitignore"), "dist/\n");
