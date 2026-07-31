@@ -12029,6 +12029,336 @@ test("exact-review fresh recovery leaves an active review item untouched", async
   assert.equal(guarded.dead_letters[0].fresh_recovery.reason, "fresh_review_already_active");
 });
 
+test("guarded dead-letter recovery atomically rejects transferred active aliases", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(1793, "17930");
+  item.attempts = 2;
+  Object.assign(item, { publicationFailureAttempts: 2 });
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const completed = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "failure",
+        completion_kind: "permanent_failure",
+        reason_code: "invalid_artifact",
+      }),
+    }),
+  );
+  assert.deepEqual(await completed.json(), { ok: true, requeued: false });
+  const listed = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/dead-letters/list", {
+        method: "POST",
+        body: JSON.stringify({ limit: 10 }),
+      }),
+    )
+  ).json();
+  const id = listed.dead_letters[0].dead_letter_id;
+  assert.equal(
+    (
+      await queue.fetch(
+        buildExactReviewQueueRequest("guarded-alias", 19, "opened", "issue", "openclaw/new"),
+      )
+    ).status,
+    202,
+  );
+  const guarded = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/dead-letters/recover-fresh", {
+      method: "POST",
+      body: JSON.stringify({
+        ids: [id],
+        idempotency_key: "operator:1793:guarded",
+        inventory_fingerprint: deadLetterFingerprint([id]),
+        recovery_aliases: [{ id, aliases: ["openclaw/openclaw#1793", "openclaw/new#19"] }],
+        recovery_targets: [{ id, target: "openclaw/new#19" }],
+      }),
+    }),
+  );
+  assert.deepEqual(await guarded.json(), {
+    ok: true,
+    recovered: 0,
+    deduped: 0,
+    skipped: 1,
+    unparked: 0,
+  });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { state: string }>;
+  };
+  assert.equal(state.items["openclaw/openclaw#1793"], undefined);
+  assert.equal(state.items["openclaw/new#19"].state, "pending");
+});
+
+test("guarded dead-letter recovery rejects inventory changes inside its transaction", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(1794, "17940");
+  item.attempts = 2;
+  Object.assign(item, { publicationFailureAttempts: 2 });
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const complete = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "failure",
+        completion_kind: "permanent_failure",
+        reason_code: "invalid_artifact",
+      }),
+    }),
+  );
+  assert.deepEqual(await complete.json(), { ok: true, requeued: false });
+  const listed = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/dead-letters/list", {
+        method: "POST",
+        body: JSON.stringify({ limit: 10 }),
+      }),
+    )
+  ).json();
+  const id = listed.dead_letters[0].dead_letter_id;
+  const guarded = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/dead-letters/recover-fresh", {
+      method: "POST",
+      body: JSON.stringify({
+        ids: [id],
+        idempotency_key: "operator:1794:stale",
+        inventory_fingerprint: deadLetterFingerprint([]),
+        recovery_aliases: [{ id, aliases: ["openclaw/openclaw#1794"] }],
+        recovery_targets: [{ id, target: "openclaw/openclaw#1794" }],
+      }),
+    }),
+  );
+  assert.deepEqual(await guarded.json(), {
+    ok: true,
+    recovered: 0,
+    deduped: 0,
+    skipped: 1,
+    unparked: 0,
+    stale_inventory: true,
+  });
+});
+
+test("guarded dead-letter resolution preserves a concurrently active transferred alias", async () => {
+  const { storage, queue, id } = await guardedDeadLetterFixture(1795);
+  assert.equal(
+    (
+      await queue.fetch(
+        buildExactReviewQueueRequest("resolve-guard-alias", 19, "opened", "issue", "openclaw/new"),
+      )
+    ).status,
+    202,
+  );
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/dead-letters/resolve", {
+      method: "POST",
+      body: JSON.stringify({
+        ids: [id],
+        note: "automatic duplicate cleanup",
+        resolution_aliases: [{ id, aliases: ["openclaw/openclaw#1795", "openclaw/new#19"] }],
+      }),
+    }),
+  );
+  assert.deepEqual(await response.json(), { ok: true, resolved: 0, skipped: 1, unparked: 0 });
+  const listed = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/dead-letters/list", {
+        method: "POST",
+        body: JSON.stringify({ limit: 10 }),
+      }),
+    )
+  ).json();
+  assert.equal(listed.dead_letters[0].dead_letter_id, id);
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { state: string }>;
+  };
+  assert.equal(state.items["openclaw/new#19"].state, "pending");
+});
+
+test("guarded dead-letter recovery retries remain idempotent after inventory changes", async () => {
+  const { queue, id } = await guardedDeadLetterFixture(1796);
+  const payload = {
+    ids: [id],
+    idempotency_key: "operator:1796:idempotent",
+    inventory_fingerprint: deadLetterFingerprint([id]),
+    recovery_aliases: [{ id, aliases: ["openclaw/openclaw#1796"] }],
+    recovery_targets: [{ id, target: "openclaw/openclaw#1796" }],
+  };
+  const recover = () =>
+    queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/dead-letters/recover-fresh", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+    );
+  assert.deepEqual(await (await recover()).json(), {
+    ok: true,
+    recovered: 1,
+    deduped: 0,
+    skipped: 0,
+    unparked: 0,
+  });
+  assert.deepEqual(await (await recover()).json(), {
+    ok: true,
+    recovered: 0,
+    deduped: 1,
+    skipped: 0,
+    unparked: 0,
+  });
+});
+
+test("guarded dead-letter recovery enforces live review capacity transactionally", async () => {
+  const { storage, queue, id } = await guardedDeadLetterFixture(1797, {
+    EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "1",
+  });
+  const state = (await storage.get("exact-review-queue")) as {
+    deliveries: Record<string, unknown>;
+    items: Record<string, ReturnType<typeof leasedExactReviewQueueItem>>;
+  };
+  const active = leasedExactReviewQueueItem(9999, "99990");
+  state.items[active.key] = active;
+  await storage.put("exact-review-queue", state);
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/dead-letters/recover-fresh", {
+      method: "POST",
+      body: JSON.stringify({
+        ids: [id],
+        idempotency_key: "operator:1797:capacity",
+        inventory_fingerprint: deadLetterFingerprint([id]),
+        recovery_aliases: [{ id, aliases: ["openclaw/openclaw#1797"] }],
+        recovery_targets: [{ id, target: "openclaw/openclaw#1797" }],
+      }),
+    }),
+  );
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    recovered: 0,
+    deduped: 0,
+    skipped: 1,
+    unparked: 0,
+  });
+});
+
+test("guarded dead-letter recovery enqueues transferred items at their canonical target", async () => {
+  const { storage, queue, id } = await guardedDeadLetterFixture(1798);
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/dead-letters/recover-fresh", {
+      method: "POST",
+      body: JSON.stringify({
+        ids: [id],
+        idempotency_key: "operator:1798:transferred",
+        inventory_fingerprint: deadLetterFingerprint([id]),
+        recovery_aliases: [{ id, aliases: ["openclaw/openclaw#1798", "openclaw/new#19"] }],
+        recovery_targets: [{ id, target: "openclaw/new#19" }],
+      }),
+    }),
+  );
+
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    recovered: 1,
+    deduped: 0,
+    skipped: 0,
+    unparked: 0,
+  });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { decision: { targetRepo: string; itemNumber: number } }>;
+  };
+  assert.equal(state.items["openclaw/openclaw#1798"], undefined);
+  assert.deepEqual(
+    {
+      targetRepo: state.items["openclaw/new#19"].decision.targetRepo,
+      itemNumber: state.items["openclaw/new#19"].decision.itemNumber,
+    },
+    { targetRepo: "openclaw/new", itemNumber: 19 },
+  );
+});
+
+test("guarded dead-letter recovery rejects canonical targets outside the sibling alias fence", async () => {
+  const { storage, queue, id } = await guardedDeadLetterFixture(1799);
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/dead-letters/recover-fresh", {
+      method: "POST",
+      body: JSON.stringify({
+        ids: [id],
+        idempotency_key: "operator:1799:untrusted-target",
+        inventory_fingerprint: deadLetterFingerprint([id]),
+        recovery_aliases: [{ id, aliases: ["openclaw/openclaw#1799"] }],
+        recovery_targets: [{ id, target: "openclaw/untrusted#19" }],
+      }),
+    }),
+  );
+
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    recovered: 0,
+    deduped: 0,
+    skipped: 1,
+    unparked: 0,
+  });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, unknown>;
+  };
+  assert.equal(state.items["openclaw/untrusted#19"], undefined);
+});
+
+async function guardedDeadLetterFixture(number: number, env: Record<string, string> = {}) {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(number, `${number}0`);
+  item.attempts = 2;
+  Object.assign(item, { publicationFailureAttempts: 2 });
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, env);
+  const complete = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "failure",
+        completion_kind: "permanent_failure",
+        reason_code: "invalid_artifact",
+      }),
+    }),
+  );
+  assert.deepEqual(await complete.json(), { ok: true, requeued: false });
+  const listed = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/dead-letters/list", {
+        method: "POST",
+        body: JSON.stringify({ limit: 10 }),
+      }),
+    )
+  ).json();
+  return { storage, queue, id: listed.dead_letters[0].dead_letter_id as string };
+}
+
+function deadLetterFingerprint(ids: string[]): string {
+  let fingerprint = 2_166_136_261;
+  for (const id of [...ids].sort()) {
+    for (const character of `${id}\n`) {
+      fingerprint = Math.imul(fingerprint ^ character.charCodeAt(0), 16_777_619) >>> 0;
+    }
+  }
+  return `${ids.length}:${fingerprint.toString(16).padStart(8, "0")}`;
+}
+
 test("exact-review publication refreshes an artifact after its third unavailable attempt", async () => {
   const storage = new MemoryDurableStorage();
   const item = leasedExactReviewPublicationItem(783, "7830");

@@ -1,0 +1,95 @@
+name: Automatically reconcile exact-review dead letters
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      max_targets:
+        description: "Maximum canonical targets to inspect (1-100)"
+        required: false
+        type: string
+        default: "25"
+      max_recoveries:
+        description: "Maximum fresh review recoveries (0-10)"
+        required: false
+        type: string
+        default: "5"
+      execute:
+        description: "Resolve terminal rows and enqueue safe fresh reviews"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: exact-review-dead-letter-operator
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: exact-review-operator
+    env:
+      EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: main
+          filter: blob:none
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+
+      - name: Reconcile closed, duplicate, and recoverable dead letters
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}
+          GITHUB_TOKEN: ${{ github.token }}
+          MAX_TARGETS: ${{ github.event.inputs.max_targets || '25' }}
+          MAX_RECOVERIES: ${{ github.event.inputs.max_recoveries || '5' }}
+          EXECUTE: ${{ github.event_name == 'schedule' && 'true' || github.event.inputs.execute }}
+        run: |
+          set -euo pipefail
+          expected_deploy_sha="$(git rev-parse HEAD)"
+          live_deploy_sha="$(curl --fail --silent --show-error "$EXACT_REVIEW_QUEUE_URL/api/health" | jq -er '.deployment_sha')"
+          if [[ "$live_deploy_sha" != "$expected_deploy_sha" ]]; then
+            if ! [[ "$live_deploy_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Live Worker returned an invalid deployment revision; refusing unguarded reconciliation" >&2
+              exit 1
+            fi
+            git fetch --no-tags --depth=1 origin "$live_deploy_sha"
+            expected_guard_blob="$(git rev-parse "${expected_deploy_sha}:dashboard/exact-review-queue.ts")"
+            live_guard_blob="$(git rev-parse "${live_deploy_sha}:dashboard/exact-review-queue.ts")"
+            if [[ "$live_guard_blob" != "$expected_guard_blob" ]]; then
+              echo "Live Worker deployment $live_deploy_sha has incompatible recovery guards; refusing unguarded reconciliation" >&2
+              exit 1
+            fi
+          fi
+          args=(
+            --action reconcile
+            --max-targets "$MAX_TARGETS"
+            --max-recoveries "$MAX_RECOVERIES"
+            --output .artifacts/exact-review-dlq/inventory.json
+          )
+          if [[ "$EXECUTE" == "true" ]]; then
+            args+=(--execute)
+          fi
+          node scripts/exact-review-dead-letter-operator.mjs "${args[@]}"
+
+      - name: Upload sanitized inventory
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: exact-review-dlq-reconcile-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/exact-review-dlq/inventory.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

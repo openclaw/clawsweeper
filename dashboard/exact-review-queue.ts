@@ -3766,9 +3766,54 @@ export class ExactReviewQueue {
     if (!/^[A-Za-z0-9:._-]{1,200}$/.test(recoveryKey)) {
       return json({ error: "invalid_idempotency_key" }, 400);
     }
+    const guarded =
+      body.inventory_fingerprint !== undefined ||
+      body.recovery_aliases !== undefined ||
+      body.recovery_targets !== undefined;
+    const expectedInventory = String(body.inventory_fingerprint || "");
+    const recoveryAliases = exactReviewRecoveryAliases(body.recovery_aliases, ids);
+    const recoveryTargets = exactReviewRecoveryTargets(body.recovery_targets, ids);
+    if (
+      guarded &&
+      (!/^\d+:[0-9a-f]{8}$/.test(expectedInventory) || !recoveryAliases || !recoveryTargets)
+    ) {
+      return json({ error: "invalid_recovery_guard" }, 400);
+    }
     const now = Date.now();
     const result = this.storage.transactionSync(() => {
       const state = this.readStateSync();
+      if (guarded) {
+        const previous = ids.map(
+          (id) =>
+            Array.from(
+              this.storage.sql.exec(
+                `SELECT status, replay_key, resolution_note
+                   FROM ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+                  WHERE dead_letter_id = ?`,
+                id,
+              ),
+            )[0] as { status?: string; replay_key?: string; resolution_note?: string } | undefined,
+        );
+        if (
+          previous.every(
+            (row) =>
+              row?.status === "resolved" &&
+              row.replay_key === recoveryKey &&
+              row.resolution_note === "recovered_fresh",
+          )
+        ) {
+          return { state, recovered: 0, deduped: ids.length, skipped: 0, unparked: 0 };
+        }
+        const currentIds = Array.from(
+          this.storage.sql.exec(
+            `SELECT dead_letter_id FROM ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+              WHERE status = 'open' ORDER BY dead_letter_id`,
+          ),
+        ).map((row: { dead_letter_id?: unknown }) => String(row.dead_letter_id || ""));
+        if (exactReviewDeadLetterInventoryFingerprint(currentIds) !== expectedInventory) {
+          return { state, recovered: 0, deduped: 0, skipped: ids.length, unparked: 0, stale: true };
+        }
+      }
       let recovered = 0;
       let deduped = 0;
       let skipped = 0;
@@ -3802,12 +3847,46 @@ export class ExactReviewQueue {
         }
         const item = exactReviewDeadLetterItem(row.item_json);
         const recovery = item ? exactReviewFreshRecoveryFromPublicationItem(item) : null;
+        const aliases = recoveryAliases?.get(id);
+        const canonicalTarget = recoveryTargets?.get(id);
+        const canonicalDecision =
+          recovery && canonicalTarget
+            ? exactReviewDecisionFrom({
+                ...recovery.decision,
+                targetRepo: canonicalTarget.repo,
+                itemNumber: canonicalTarget.number,
+                ...(canonicalTarget.sourceHeadSha
+                  ? { sourceHeadSha: canonicalTarget.sourceHeadSha }
+                  : {}),
+              })
+            : recovery?.decision;
+        const canonicalKey = canonicalDecision ? exactReviewItemKey(canonicalDecision) : null;
+        const aliasConflict = aliases
+          ? Object.values(state.items).some((active) =>
+              aliases.has(
+                `${active.decision.targetRepo}#${active.decision.itemNumber}`.toLowerCase(),
+              ),
+            )
+          : false;
         if (
           !item ||
           !recovery ||
-          !isExactReviewQueueTargetEnabled(recovery.decision, this.env) ||
+          !canonicalDecision ||
+          !canonicalKey ||
+          (guarded &&
+            (!canonicalTarget ||
+              !aliases?.has(recovery.key.toLowerCase()) ||
+              !aliases.has(canonicalKey.toLowerCase()) ||
+              (Boolean(recovery.decision.sourceHeadSha) &&
+                canonicalTarget.sourceHeadSha !== recovery.decision.sourceHeadSha) ||
+              aliasConflict)) ||
+          (guarded &&
+            exactReviewQueueActiveReviewCount(state) + recovered >=
+              exactReviewQueueCapacity(this.env)) ||
+          !isExactReviewQueueTargetEnabled(canonicalDecision, this.env) ||
           state.items[item.key] ||
-          state.items[recovery.key]
+          state.items[recovery.key] ||
+          state.items[canonicalKey]
         ) {
           skipped += 1;
           continue;
@@ -3815,14 +3894,14 @@ export class ExactReviewQueue {
         // Never replay the immutable publisher artifact. Create exactly one new ordinary
         // review item so the current workflow can gather a new artifact and proof. Existing
         // pending, dispatching, and leased items are all skipped above rather than replaced.
-        state.items[recovery.key] = {
-          key: recovery.key,
-          decision: recovery.decision,
+        state.items[canonicalKey] = {
+          key: canonicalKey,
+          decision: canonicalDecision,
           state: "pending",
-          revision: this.nextExactReviewItemRevisionSync(recovery.key),
+          revision: this.nextExactReviewItemRevisionSync(canonicalKey),
           createdAt: now,
           updatedAt: now,
-          ...exactReviewQueueDebouncedAttempt(state, recovery.decision, now, now, this.env),
+          ...exactReviewQueueDebouncedAttempt(state, canonicalDecision, now, now, this.env),
           attempts: 0,
         };
         this.storage.sql.exec(
@@ -3857,6 +3936,7 @@ export class ExactReviewQueue {
       deduped: result.deduped,
       skipped: result.skipped,
       unparked: result.unparked,
+      ...("stale" in result && result.stale ? { stale_inventory: true } : {}),
     });
   }
 
@@ -3866,10 +3946,43 @@ export class ExactReviewQueue {
     const note = String(body.note || "").trim();
     if (!ids) return json({ error: "invalid_dead_letter_ids" }, 400);
     if (!note || note.length > 500) return json({ error: "invalid_resolution_note" }, 400);
+    const guarded = body.resolution_aliases !== undefined;
+    const resolutionAliases = exactReviewRecoveryAliases(body.resolution_aliases, ids, {
+      maxIds: 20,
+      allowEmpty: true,
+    });
+    if (guarded && !resolutionAliases) return json({ error: "invalid_resolution_guard" }, 400);
     const now = Date.now();
     let resolved = 0;
     let unparked = 0;
     this.storage.transactionSync(() => {
+      if (guarded) {
+        const state = this.readStateSync();
+        const unsafe = ids.some((id) => {
+          const row = Array.from(
+            this.storage.sql.exec(
+              `SELECT status, item_json
+                 FROM ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
+                WHERE dead_letter_id = ?`,
+              id,
+            ),
+          )[0] as { status?: string; item_json?: string } | undefined;
+          if (row?.status !== "open") return true;
+          const item = row.item_json ? exactReviewDeadLetterItem(row.item_json) : null;
+          const recovery = item ? exactReviewFreshRecoveryFromPublicationItem(item) : null;
+          const aliases = resolutionAliases!.get(id)!;
+          if (recovery && !aliases.has(recovery.key.toLowerCase())) return true;
+          return (
+            Boolean(item && state.items[item.key]) ||
+            Object.values(state.items).some((active) =>
+              aliases.has(
+                `${active.decision.targetRepo}#${active.decision.itemNumber}`.toLowerCase(),
+              ),
+            )
+          );
+        });
+        if (unsafe) return;
+      }
       for (const id of ids) {
         const changed = Array.from(
           this.storage.sql.exec(
@@ -8248,6 +8361,81 @@ function exactReviewDeadLetterIds(value): string[] | null {
   const ids = value.map((entry) => String(entry || "").trim());
   if (ids.some((id) => !id || id.length > 500) || new Set(ids).size !== ids.length) return null;
   return ids;
+}
+
+function exactReviewRecoveryAliases(
+  value,
+  ids: string[],
+  options: { maxIds?: number; allowEmpty?: boolean } = {},
+): Map<string, Set<string>> | null {
+  if (value === undefined) return null;
+  if (
+    !Array.isArray(value) ||
+    value.length !== ids.length ||
+    value.length > (options.maxIds ?? 10)
+  ) {
+    return null;
+  }
+  const guards = new Map<string, Set<string>>();
+  for (const raw of value) {
+    const guard = objectValue(raw);
+    const id = String(guard.id || "");
+    if (!ids.includes(id) || guards.has(id) || !Array.isArray(guard.aliases)) return null;
+    if (guard.aliases.length < (options.allowEmpty ? 0 : 1) || guard.aliases.length > 100) {
+      return null;
+    }
+    const aliases = new Set<string>();
+    for (const alias of guard.aliases) {
+      if (typeof alias !== "string" || !/^[^/#\s]+\/[^/#\s]+#[1-9]\d*$/.test(alias)) {
+        return null;
+      }
+      aliases.add(alias.toLowerCase());
+    }
+    guards.set(id, aliases);
+  }
+  return guards;
+}
+
+function exactReviewRecoveryTargets(
+  value,
+  ids: string[],
+): Map<string, { repo: string; number: number; sourceHeadSha: string | null }> | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value) || value.length !== ids.length || value.length > 10) return null;
+  const targets = new Map<string, { repo: string; number: number; sourceHeadSha: string | null }>();
+  for (const raw of value) {
+    const target = objectValue(raw);
+    const id = String(target.id || "");
+    const match = /^([^/#\s]+\/[^/#\s]+)#([1-9]\d*)$/.exec(String(target.target || ""));
+    const sourceHeadSha = target.source_head_sha;
+    if (
+      !ids.includes(id) ||
+      targets.has(id) ||
+      !match ||
+      (sourceHeadSha !== undefined &&
+        (typeof sourceHeadSha !== "string" || !/^[0-9a-f]{40}$/i.test(sourceHeadSha)))
+    ) {
+      return null;
+    }
+    const number = Number(match[2]);
+    if (!Number.isSafeInteger(number)) return null;
+    targets.set(id, {
+      repo: match[1].toLowerCase(),
+      number,
+      sourceHeadSha: typeof sourceHeadSha === "string" ? sourceHeadSha.toLowerCase() : null,
+    });
+  }
+  return targets;
+}
+
+function exactReviewDeadLetterInventoryFingerprint(ids: string[]): string {
+  let fingerprint = 2_166_136_261;
+  for (const id of [...ids].sort()) {
+    for (const character of `${id}\n`) {
+      fingerprint = Math.imul(fingerprint ^ character.charCodeAt(0), 16_777_619) >>> 0;
+    }
+  }
+  return `${ids.length}:${fingerprint.toString(16).padStart(8, "0")}`;
 }
 
 type ExactReviewDeadLetterItem = Pick<ExactReviewQueueItem, "key" | "decision">;

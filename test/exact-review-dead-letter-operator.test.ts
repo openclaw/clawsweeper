@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 const workflowPath = ".github/workflows/exact-review-dead-letter-operator.yml";
 const workflowSource = readFileSync(workflowPath, "utf8");
 const workflow = YAML.parse(workflowSource);
+const reconcileWorkflowPath = ".github/workflows/exact-review-dead-letter-reconcile.yml";
 
 test("dead-letter workflow is manual, serialized, and bounded to safe actions", () => {
   assert.equal(workflow.on.schedule, undefined);
@@ -47,6 +48,1364 @@ test("dead-letter workflow is manual, serialized, and bounded to safe actions", 
   assert.match(operatorStep.run, /operator:\$\{GITHUB_RUN_ID\}/);
   assert.doesNotMatch(operatorStep.run, /GITHUB_RUN_ATTEMPT/);
 });
+
+test("automatic dead-letter reconciliation is scheduled, bounded, and least privileged", () => {
+  const source = readFileSync(reconcileWorkflowPath, "utf8");
+  const scheduled = YAML.parse(source);
+  assert.equal(scheduled.on.schedule[0].cron, "*/10 * * * *");
+  assert.equal(scheduled.concurrency.group, workflow.concurrency.group);
+  assert.equal(scheduled.concurrency["cancel-in-progress"], false);
+  assert.deepEqual(scheduled.permissions, workflow.permissions);
+  assert.equal(scheduled.jobs.reconcile.environment, "exact-review-operator");
+  assert.equal(scheduled.on.workflow_dispatch.inputs.execute.default, false);
+  const step = scheduled.jobs.reconcile.steps.find(
+    (candidate) => candidate.name === "Reconcile closed, duplicate, and recoverable dead letters",
+  );
+  assert.equal(step.env.CLAWSWEEPER_WEBHOOK_SECRET, "${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}");
+  assert.equal(scheduled.jobs.reconcile.env.CLAWSWEEPER_WEBHOOK_SECRET, undefined);
+  assert.match(step.run, /--max-targets "\$MAX_TARGETS"/);
+  assert.match(step.run, /--max-recoveries "\$MAX_RECOVERIES"/);
+  assert.match(step.run, /\/api\/health/);
+  assert.match(step.run, /\.deployment_sha/);
+  assert.match(step.run, /live_deploy_sha.*expected_deploy_sha/);
+  assert.match(step.run, /git fetch --no-tags --depth=1 origin "\$live_deploy_sha"/);
+  assert.match(step.run, /dashboard\/exact-review-queue\.ts/);
+  assert.match(step.run, /live_guard_blob.*expected_guard_blob/);
+  assert.doesNotMatch(source, /dead-letters\/replay/);
+});
+
+test("automatic reconciliation resolves terminal rows and recovers one fresh review per target", async () => {
+  const secret = "test-automatic-dead-letter-secret";
+  const mutations = [];
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    if (request.url === "/api/exact-review-queue") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ pressure: { status: "idle", active: 0, capacity: 128 } }));
+      return;
+    }
+    if (request.url?.startsWith("/repos/openclaw/repo/issues/")) {
+      const number = Number(request.url.split("/").at(-1));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({ node_id: `ISSUE_${number}`, state: number === 2 ? "closed" : "open" }),
+      );
+      return;
+    }
+    const body = Buffer.concat(chunks).toString("utf8");
+    const expected = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+    assert.equal(request.headers["x-clawsweeper-exact-review-signature"], expected);
+    const payload = JSON.parse(body);
+    if (request.url?.endsWith("/list")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          ok: true,
+          dead_letters: [
+            row(
+              "invalid",
+              "publication:invalid",
+              1,
+              "tuple_protocol_invalid",
+              false,
+              "invalid_dead_letter_item",
+              null,
+            ),
+            row(
+              "closed-a",
+              "publication:closed-a",
+              1,
+              "retry_exhausted",
+              true,
+              "eligible",
+              "openclaw/repo#2",
+            ),
+            row(
+              "closed-b",
+              "publication:closed-b",
+              2,
+              "retry_exhausted",
+              true,
+              "eligible",
+              "OpenClaw/Repo#2",
+            ),
+            row(
+              "open-a",
+              "publication:open-a",
+              3,
+              "retry_exhausted",
+              true,
+              "eligible",
+              "openclaw/repo#1",
+            ),
+            row(
+              "open-b",
+              "publication:open-b",
+              4,
+              "retry_exhausted",
+              true,
+              "eligible",
+              "OpenClaw/Repo#1",
+            ),
+            row(
+              "active",
+              "publication:active",
+              5,
+              "retry_exhausted",
+              false,
+              "fresh_review_already_active",
+              "openclaw/repo#3",
+            ),
+          ],
+          next_cursor: null,
+        }),
+      );
+      return;
+    }
+    mutations.push({ url: request.url, payload });
+    response.writeHead(200, { "content-type": "application/json" });
+    if (request.url?.endsWith("/recover-fresh")) {
+      response.end(JSON.stringify({ ok: true, recovered: 1, deduped: 0, skipped: 0, unparked: 0 }));
+    } else {
+      response.end(
+        JSON.stringify({ ok: true, resolved: payload.ids.length, skipped: 0, unparked: 0 }),
+      );
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const directory = await mkdtemp(join(tmpdir(), "clawsweeper-dlq-auto-"));
+  try {
+    const args = [
+      "--action",
+      "reconcile",
+      "--max-targets",
+      "8",
+      "--max-recoveries",
+      "2",
+      "--execute",
+      "--output",
+      join(directory, "inventory.json"),
+    ];
+    const result = await runOperator(args, `http://127.0.0.1:${address.port}`, secret);
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      action: "reconcile",
+      dry_run: false,
+      inventory_complete: true,
+      queue_pressure: "idle",
+      inspected_targets: 2,
+      recovered_targets: 1,
+      resolved_rows: 5,
+      invalid_rows: 1,
+      closed_rows: 2,
+      duplicate_rows: 1,
+      active_review_rows: 0,
+      skipped_targets: 1,
+    });
+    const recovery = mutations.filter((entry) => entry.url?.endsWith("/recover-fresh"));
+    assert.equal(recovery.length, 1);
+    assert.deepEqual(recovery[0].payload.ids, ["open-a"]);
+    assert.match(recovery[0].payload.idempotency_key, /^autoreconcile:[a-f0-9]{64}$/);
+    assert.match(recovery[0].payload.inventory_fingerprint, /^\d+:[a-f0-9]{8}$/);
+    assert.deepEqual(recovery[0].payload.recovery_aliases, [
+      { id: "open-a", aliases: ["openclaw/repo#1"] },
+    ]);
+    assert.deepEqual(recovery[0].payload.recovery_targets, [
+      { id: "open-a", target: "openclaw/repo#1" },
+    ]);
+    assert.equal(
+      mutations.some((entry) => entry.url?.includes("/replay")),
+      false,
+    );
+    assert.ok(mutations.some((entry) => entry.payload.ids.includes("closed-a")));
+    assert.ok(mutations.some((entry) => entry.payload.ids.includes("open-b")));
+    assert.equal(
+      mutations.some((entry) => entry.payload.ids.includes("active")),
+      false,
+    );
+  } finally {
+    server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("automatic reconciliation skips fresh recovery under pressure and enforces hard caps", async () => {
+  const secret = "test-automatic-dead-letter-pressure";
+  let recoveries = 0;
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    response.writeHead(200, { "content-type": "application/json" });
+    if (request.url === "/api/exact-review-queue") {
+      response.end(
+        JSON.stringify({ pressure: { status: "saturated", active: 128, capacity: 128 } }),
+      );
+    } else if (request.url?.startsWith("/repos/")) {
+      response.end(JSON.stringify({ node_id: "ISSUE_1", state: "open" }));
+    } else if (request.url?.endsWith("/recover-fresh")) {
+      recoveries += 1;
+      response.end(JSON.stringify({ ok: true, recovered: 1, deduped: 0, skipped: 0, unparked: 0 }));
+    } else {
+      response.end(
+        JSON.stringify({
+          ok: true,
+          dead_letters: [
+            row(
+              "one",
+              "publication:one",
+              1,
+              "retry_exhausted",
+              true,
+              "eligible",
+              "openclaw/repo#1",
+            ),
+          ],
+          next_cursor: null,
+        }),
+      );
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  try {
+    const result = await runOperator(
+      ["--action", "reconcile", "--execute"],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).queue_pressure, "saturated");
+    assert.equal(JSON.parse(result.stdout).recovered_targets, 0);
+    assert.equal(recoveries, 0);
+    for (const [flag, value] of [
+      ["--max-targets", "0"],
+      ["--max-targets", "101"],
+      ["--max-recoveries", "11"],
+      ["--max-recoveries", "-1"],
+    ]) {
+      const rejected = await runOperator(
+        ["--action", "reconcile", flag, value],
+        `http://127.0.0.1:${address.port}`,
+        secret,
+      );
+      assert.equal(rejected.code, 1);
+      assert.match(rejected.stderr, /must be between/);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test("automatic recovery rechecks authoritative pressure and deduplicates canonical GitHub identities", async () => {
+  const stale = await automaticReconcileScenario({
+    rows: [
+      row("stale", "publication:stale", 1, "retry_exhausted", true, "eligible", "openclaw/repo#1"),
+    ],
+    stalePressure: true,
+  });
+  assert.equal(stale.first.code, 0, stale.first.stderr);
+  assert.equal(stale.recoveries.length, 0);
+  assert.equal(JSON.parse(stale.first.stdout).queue_pressure, "unknown");
+
+  const changingPressure = await automaticReconcileScenario({
+    rows: [
+      row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "openclaw/repo#1"),
+      row(
+        "second",
+        "publication:second",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+    ],
+    pressure: (recoveries) => (recoveries > 0 ? "saturated" : "idle"),
+    nodeId: (number) => `ISSUE_${number}`,
+  });
+  assert.equal(changingPressure.first.code, 0, changingPressure.first.stderr);
+  assert.equal(changingPressure.recoveries.length, 1);
+  assert.equal(JSON.parse(changingPressure.first.stdout).queue_pressure, "idle");
+
+  const aliased = await automaticReconcileScenario({
+    rows: [
+      row("old", "publication:old", 1, "retry_exhausted", true, "eligible", "openclaw/old#7"),
+      row("new", "publication:new", 1, "retry_exhausted", true, "eligible", "openclaw/new#7"),
+    ],
+    nodeId: () => "ISSUE_CANONICAL_7",
+  });
+  assert.equal(aliased.first.code, 0, aliased.first.stderr);
+  assert.equal(aliased.recoveries.length, 1);
+  assert.equal(JSON.parse(aliased.first.stdout).duplicate_rows, 1);
+});
+
+test("duplicate cleanup finishes before target-scoped recovery and safely resumes after failure", async () => {
+  const failedCleanup = await automaticReconcileScenario({
+    rows: [
+      row(
+        "primary",
+        "publication:primary",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#9",
+      ),
+      row(
+        "duplicate",
+        "publication:duplicate",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#9",
+      ),
+    ],
+    failFirstDuplicateCleanup: true,
+    repeat: true,
+  });
+  assert.equal(failedCleanup.first.code, 1);
+  assert.equal(failedCleanup.second?.code, 0, failedCleanup.second?.stderr);
+  assert.equal(failedCleanup.recoveries.length, 1);
+  assert.deepEqual(failedCleanup.recoveries[0]?.ids, ["primary"]);
+
+  const manyDuplicates = await automaticReconcileScenario({
+    rows: Array.from({ length: 23 }, (_, index) =>
+      row(
+        `row-${String(index).padStart(2, "0")}`,
+        `publication:${index}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#10",
+      ),
+    ),
+    repeat: true,
+  });
+  assert.equal(manyDuplicates.first.code, 0, manyDuplicates.first.stderr);
+  assert.equal(JSON.parse(manyDuplicates.first.stdout).recovered_targets, 0);
+  assert.equal(manyDuplicates.second?.code, 0, manyDuplicates.second?.stderr);
+  assert.equal(manyDuplicates.recoveries.length, 1);
+  assert.deepEqual(manyDuplicates.recoveries[0]?.ids, ["row-00"]);
+});
+
+test("automatic recovery rechecks pressure immediately after duplicate cleanup", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "primary",
+        "publication:primary",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+      row(
+        "duplicate",
+        "publication:duplicate",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+    ],
+    pressure: (_recoveries, resolutions) => (resolutions > 0 ? "saturated" : "idle"),
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(JSON.parse(scenario.first.stdout).queue_pressure, "saturated");
+  assert.equal(scenario.resolutions.length, 1);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+test("renamed aliases are grouped before recovery and active siblings block every alias", async () => {
+  const cleanupFailure = await automaticReconcileScenario({
+    rows: [
+      row("old", "publication:old", 1, "retry_exhausted", true, "eligible", "openclaw/old#7"),
+      row("new", "publication:new", 2, "retry_exhausted", true, "eligible", "openclaw/new#7"),
+    ],
+    nodeId: () => "ISSUE_CANONICAL_7",
+    failFirstDuplicateCleanup: true,
+    repeat: true,
+  });
+  assert.equal(cleanupFailure.first.code, 1);
+  assert.equal(cleanupFailure.second?.code, 0, cleanupFailure.second?.stderr);
+  assert.equal(cleanupFailure.recoveries.length, 1);
+  assert.deepEqual(cleanupFailure.recoveries[0]?.ids, ["old"]);
+
+  const activeAlias = await automaticReconcileScenario({
+    rows: [
+      row(
+        "active",
+        "publication:active",
+        1,
+        "retry_exhausted",
+        false,
+        "fresh_review_already_active",
+        "openclaw/old#7",
+      ),
+      row(
+        "eligible",
+        "publication:eligible",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/new#7",
+      ),
+    ],
+    nodeId: () => "ISSUE_CANONICAL_7",
+  });
+  assert.equal(activeAlias.first.code, 0, activeAlias.first.stderr);
+  assert.equal(activeAlias.recoveries.length, 0);
+  assert.equal(JSON.parse(activeAlias.first.stdout).active_review_rows, 0);
+  assert.equal(activeAlias.resolutions.length, 0);
+});
+
+test("active publication siblings block recovery beyond the first resolution page", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: Array.from({ length: 21 }, (_, index) =>
+      row(
+        `row-${String(index).padStart(2, "0")}`,
+        `publication:${index}`,
+        index + 1,
+        "retry_exhausted",
+        index === 20,
+        index === 20 ? "eligible" : "publication_item_active",
+        "openclaw/repo#12",
+      ),
+    ),
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.recoveries.length, 0);
+  assert.equal(JSON.parse(scenario.first.stdout).active_review_rows, 0);
+});
+
+test("automatic recovery refuses aliases omitted by caps or failed GitHub checks", async () => {
+  const capped = await automaticReconcileScenario({
+    rows: [
+      row(
+        "eligible",
+        "publication:eligible",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/old#7",
+      ),
+      row(
+        "active",
+        "publication:active",
+        2,
+        "retry_exhausted",
+        false,
+        "fresh_review_already_active",
+        "openclaw/new#7",
+      ),
+    ],
+    maxTargets: 1,
+    nodeId: () => "ISSUE_CANONICAL_7",
+  });
+  assert.equal(capped.first.code, 0, capped.first.stderr);
+  assert.equal(capped.recoveries.length, 0);
+  assert.equal(capped.resolutions.length, 0);
+
+  const transferred = await automaticReconcileScenario({
+    rows: [
+      row(
+        "eligible",
+        "publication:eligible",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/old#7",
+      ),
+      row(
+        "active",
+        "publication:active",
+        2,
+        "retry_exhausted",
+        false,
+        "fresh_review_already_active",
+        "openclaw/new#19",
+      ),
+    ],
+    maxTargets: 1,
+    nodeId: () => "ISSUE_CANONICAL_TRANSFERRED",
+  });
+  assert.equal(transferred.first.code, 0, transferred.first.stderr);
+  assert.equal(transferred.recoveries.length, 0);
+  assert.equal(transferred.resolutions.length, 0);
+
+  const unresolved = await automaticReconcileScenario({
+    rows: [
+      row(
+        "eligible",
+        "publication:eligible",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/old#7",
+      ),
+      row(
+        "active",
+        "publication:active",
+        2,
+        "retry_exhausted",
+        false,
+        "fresh_review_already_active",
+        "openclaw/new#19",
+      ),
+    ],
+    nodeId: () => "ISSUE_CANONICAL_7",
+    failedRepository: "new",
+  });
+  assert.equal(unresolved.first.code, 0, unresolved.first.stderr);
+  assert.equal(unresolved.recoveries.length, 0);
+  assert.equal(unresolved.resolutions.length, 0);
+});
+
+test("bounded canonical discovery deduplicates transferred eligible aliases", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row("old", "publication:old", 1, "retry_exhausted", true, "eligible", "openclaw/old#7"),
+      row("new", "publication:new", 2, "retry_exhausted", true, "eligible", "openclaw/new#19"),
+    ],
+    maxTargets: 1,
+    nodeId: () => "ISSUE_TRANSFERRED",
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.deepEqual(scenario.resolutions[0]?.ids, ["new"]);
+  assert.deepEqual(scenario.recoveries[0]?.ids, ["old"]);
+});
+
+test("incomplete bounded inventories drain invalid rows without recovering unknown aliases", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "invalid",
+        "publication:invalid",
+        1,
+        "tuple_protocol_invalid",
+        false,
+        "invalid_dead_letter_item",
+        null,
+      ),
+      ...Array.from({ length: 5000 }, (_, index) =>
+        row(
+          `eligible-${index}`,
+          `publication:${index}`,
+          index + 1,
+          "retry_exhausted",
+          true,
+          "eligible",
+          `openclaw/repo#${index + 1}`,
+        ),
+      ),
+    ],
+    maxTargets: 1,
+    pageSize: 20,
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(JSON.parse(scenario.first.stdout).inventory_complete, false);
+  assert.equal(scenario.inventoryRequests, 250);
+  assert.deepEqual(scenario.resolutions[0]?.ids, ["invalid"]);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+test("automatic recovery defers after cleanup unparks previously hidden aliases", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "primary",
+        "publication:primary",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/old#9",
+      ),
+      row(
+        "duplicate",
+        "publication:duplicate",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/old#9",
+      ),
+    ],
+    unparkAliasOnResolve: row(
+      "active-alias",
+      "publication:active-alias",
+      3,
+      "retry_exhausted",
+      false,
+      "fresh_review_already_active",
+      "openclaw/new#9",
+    ),
+    nodeId: () => "ISSUE_CANONICAL_9",
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.resolutions.length, 1);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+test("terminal cleanup stops immediately when it unparks new inventory", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "closed-first",
+        "publication:first",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+      row(
+        "closed-second",
+        "publication:second",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+    ],
+    closedNumbers: [1, 2],
+    unparkAliasOnResolve: row(
+      "active-alias",
+      "publication:active-alias",
+      3,
+      "retry_exhausted",
+      false,
+      "fresh_review_already_active",
+      "openclaw/new#19",
+    ),
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.resolutions.length, 1);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+test("automatic recovery stops after a successful recovery unparks hidden aliases", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "openclaw/repo#1"),
+      row(
+        "second",
+        "publication:second",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+    ],
+    unparkAliasOnRecovery: row(
+      "active-alias",
+      "publication:active-alias",
+      3,
+      "retry_exhausted",
+      false,
+      "fresh_review_already_active",
+      "openclaw/new#2",
+    ),
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(JSON.parse(scenario.first.stdout).recovered_targets, 2);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["first", "second"]],
+  );
+});
+
+test("automatic recovery stops when a skipped recovery unparks a hidden active alias", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "openclaw/repo#1"),
+      row(
+        "second",
+        "publication:second",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+    ],
+    maxRecoveries: 1,
+    skippedFirstRecovery: true,
+    unparkAliasOnRecovery: row(
+      "active-alias",
+      "publication:active-alias",
+      3,
+      "retry_exhausted",
+      false,
+      "fresh_review_already_active",
+      "openclaw/new#19",
+    ),
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(JSON.parse(scenario.first.stdout).recovered_targets, 0);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids[0]),
+    ["first"],
+  );
+});
+
+test("automatic reconciliation preserves every independently active review fence", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: Array.from({ length: 21 }, (_, index) =>
+      row(
+        `active-${String(index).padStart(2, "0")}`,
+        `publication:${index}`,
+        index + 1,
+        "retry_exhausted",
+        false,
+        "fresh_review_already_active",
+        "openclaw/repo#8",
+      ),
+    ),
+    repeat: true,
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.second?.code, 0, scenario.second?.stderr);
+  assert.equal(JSON.parse(scenario.first.stdout).active_review_rows, 0);
+  assert.equal(JSON.parse(scenario.second.stdout).active_review_rows, 0);
+  assert.equal(scenario.recoveries.length, 0);
+  assert.equal(scenario.resolutions.length, 0);
+});
+
+test("singleton active sentinels cannot starve actionable canonical targets", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      ...Array.from({ length: 4 }, (_, index) =>
+        row(
+          `active-${index}`,
+          `publication:active-${index}`,
+          index + 1,
+          "retry_exhausted",
+          false,
+          "fresh_review_already_active",
+          `openclaw/repo#${index + 1}`,
+        ),
+      ),
+      row("fix", "publication:fix", 5, "retry_exhausted", true, "eligible", "openclaw/repo#5"),
+    ],
+    maxTargets: 1,
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(JSON.parse(scenario.first.stdout).inspected_targets, 1);
+  assert.deepEqual(scenario.recoveries[0]?.ids, ["fix"]);
+});
+
+test("permanently ineligible targets cannot starve bounded recoveries", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "disabled",
+        "publication:disabled",
+        1,
+        "retry_exhausted",
+        false,
+        "target_not_enabled",
+        "openclaw/clawhub#1",
+      ),
+      row("fix", "publication:fix", 2, "retry_exhausted", true, "eligible", "openclaw/repo#2"),
+    ],
+    maxTargets: 1,
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(JSON.parse(scenario.first.stdout).inspected_targets, 1);
+  assert.deepEqual(scenario.recoveries[0]?.ids, ["fix"]);
+});
+
+test("distinct active publication and review fences survive transferred aliases", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "publication-fence",
+        "publication:publication-fence",
+        1,
+        "retry_exhausted",
+        false,
+        "publication_item_active",
+        "openclaw/old#7",
+      ),
+      row(
+        "review-fence",
+        "publication:review-fence",
+        2,
+        "retry_exhausted",
+        false,
+        "fresh_review_already_active",
+        "openclaw/new#19",
+      ),
+    ],
+    nodeId: () => "ISSUE_CANONICAL_TRANSFERRED",
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.resolutions.length, 0);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+test("every independently active transferred alias remains fenced", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "old-fence",
+        "publication:old-fence",
+        1,
+        "retry_exhausted",
+        false,
+        "publication_item_active",
+        "openclaw/old#7",
+      ),
+      row(
+        "new-fence",
+        "publication:new-fence",
+        2,
+        "retry_exhausted",
+        false,
+        "publication_item_active",
+        "openclaw/new#19",
+      ),
+    ],
+    nodeId: () => "ISSUE_CANONICAL_TRANSFERRED",
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.resolutions.length, 0);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+test("reconciliation fully inventories more than 2,000 supported dead letters", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: Array.from({ length: 2001 }, (_, index) =>
+      row(
+        `fix-${String(index).padStart(4, "0")}`,
+        `publication:${index}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo#${index + 1}`,
+      ),
+    ),
+    maxTargets: 100,
+    maxRecoveries: 1,
+    pageSize: 20,
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(JSON.parse(scenario.first.stdout).inventory_complete, true);
+  assert.equal(scenario.inventoryRequests, 101);
+  assert.equal(scenario.recoveries[0]?.ids.length, 1);
+});
+
+test("merged GraphQL pull requests are terminal and do not block other targets", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "merged",
+        "publication:merged",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+      row("fix", "publication:fix", 2, "retry_exhausted", true, "eligible", "openclaw/repo#2"),
+    ],
+    maxTargets: 1,
+    mergedNumbers: [1],
+    repeat: true,
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.deepEqual(scenario.resolutions[0]?.ids, ["merged"]);
+  assert.equal(scenario.second?.code, 0, scenario.second?.stderr);
+  assert.deepEqual(scenario.recoveries[0]?.ids, ["fix"]);
+});
+
+test("automatic recovery respects current and shrinking queue capacity", async () => {
+  const rows = Array.from({ length: 3 }, (_, index) =>
+    row(
+      `fix-${index}`,
+      `publication:${index}`,
+      index + 1,
+      "retry_exhausted",
+      true,
+      "eligible",
+      `openclaw/repo#${index + 1}`,
+    ),
+  );
+  const full = await automaticReconcileScenario({
+    rows,
+    pressureDetails: () => ({ active: 2, capacity: 2 }),
+  });
+  assert.equal(full.first.code, 0, full.first.stderr);
+  assert.equal(full.recoveries.length, 0);
+
+  const limited = await automaticReconcileScenario({
+    rows,
+    pressureDetails: () => ({ active: 1, capacity: 2 }),
+  });
+  assert.equal(limited.first.code, 0, limited.first.stderr);
+  assert.equal(limited.recoveries[0]?.ids.length, 1);
+
+  let checks = 0;
+  const shrinking = await automaticReconcileScenario({
+    rows,
+    pressureDetails: () => ({ active: ++checks > 4 ? 2 : 0, capacity: 2 }),
+  });
+  assert.equal(shrinking.first.code, 0, shrinking.first.stderr);
+  assert.equal(shrinking.recoveries.length, 0);
+});
+
+test("capacity-blocked open targets cannot starve later closed-target cleanup", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "blocked",
+        "publication:blocked",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+      row(
+        "closed",
+        "publication:closed",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+    ],
+    maxTargets: 1,
+    closedNumbers: [2],
+    pressureDetails: () => ({ active: 1, capacity: 1 }),
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.deepEqual(scenario.resolutions[0]?.ids, ["closed"]);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+test("automatic recovery includes the authoritative transferred GitHub target alias", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [row("old", "publication:old", 1, "retry_exhausted", true, "eligible", "openclaw/old#7")],
+    canonicalTarget: () => ({ repository: "openclaw/new", number: 19 }),
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.deepEqual(scenario.recoveries[0]?.recovery_aliases, [
+    { id: "old", aliases: ["openclaw/old#7", "openclaw/new#19"] },
+  ]);
+  assert.deepEqual(scenario.recoveries[0]?.recovery_targets, [
+    { id: "old", target: "openclaw/new#19" },
+  ]);
+});
+
+test("automatic recovery preserves the only duplicate matching the current pull-request head", async () => {
+  const stale = row(
+    "stale-primary",
+    "publication:stale-primary",
+    1,
+    "retry_exhausted",
+    true,
+    "eligible",
+    "openclaw/repo#7",
+  );
+  stale.item = {
+    decision: { publication: { producerDecision: { sourceHeadSha: "a".repeat(40) } } },
+  };
+  const current = row(
+    "current-duplicate",
+    "publication:current-duplicate",
+    2,
+    "retry_exhausted",
+    true,
+    "eligible",
+    "openclaw/repo#7",
+  );
+  current.item = {
+    decision: { publication: { producerDecision: { sourceHeadSha: "b".repeat(40) } } },
+  };
+  const scenario = await automaticReconcileScenario({
+    rows: [stale, current],
+    pullRequestHeads: new Map([[7, "b".repeat(40)]]),
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.deepEqual(scenario.resolutions[0]?.ids, ["stale-primary"]);
+  assert.deepEqual(scenario.recoveries[0]?.ids, ["current-duplicate"]);
+  assert.deepEqual(scenario.recoveries[0]?.recovery_targets, [
+    { id: "current-duplicate", target: "openclaw/repo#7", source_head_sha: "b".repeat(40) },
+  ]);
+});
+
+test("duplicate resolution fences every transferred canonical sibling alias", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row("old", "publication:old", 1, "retry_exhausted", true, "eligible", "openclaw/old#7"),
+      row(
+        "intermediate",
+        "publication:intermediate",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/intermediate#11",
+      ),
+      row(
+        "sibling",
+        "publication:sibling",
+        3,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/sibling#12",
+      ),
+    ],
+    nodeId: () => "ISSUE_TRANSFERRED",
+    canonicalTarget: () => ({ repository: "openclaw/new", number: 19 }),
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.resolutions.length, 1);
+  for (const guard of scenario.resolutions[0].resolution_aliases) {
+    assert.deepEqual(
+      new Set(guard.aliases),
+      new Set([
+        "openclaw/old#7",
+        "openclaw/intermediate#11",
+        "openclaw/sibling#12",
+        "openclaw/new#19",
+      ]),
+    );
+  }
+});
+
+test("automatic reconciliation does not resolve a target that has reopened", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "reopened",
+        "publication:reopened",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+      row(
+        "open",
+        "publication:open",
+        2,
+        "retry_exhausted",
+        false,
+        "target_not_enabled",
+        "openclaw/repo#2",
+      ),
+    ],
+    maxTargets: 1,
+    reopenedNumbers: [1],
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.resolutions.length, 0);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+test("inaccessible canonical targets cannot starve independently invalid dead letters", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "invalid-terminal",
+        "publication:invalid-terminal",
+        1,
+        "tuple_protocol_invalid",
+        false,
+        "invalid_dead_letter_item",
+        null,
+      ),
+      row(
+        "inaccessible",
+        "publication:inaccessible",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/missing#1",
+      ),
+    ],
+    failedRepository: "missing",
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.deepEqual(scenario.resolutions[0]?.ids, ["invalid-terminal"]);
+  assert.equal(scenario.recoveries.length, 0);
+  assert.equal(JSON.parse(scenario.first.stdout).invalid_rows, 1);
+});
+
+test("automatic recovery refuses a pull request whose current head has advanced", async () => {
+  const item = row(
+    "stale",
+    "publication:stale",
+    1,
+    "retry_exhausted",
+    true,
+    "eligible",
+    "openclaw/repo#7",
+  );
+  item.item = {
+    decision: { publication: { producerDecision: { sourceHeadSha: "a".repeat(40) } } },
+  };
+  const scenario = await automaticReconcileScenario({
+    rows: [item],
+    pullRequestHeads: new Map([[7, "b".repeat(40)]]),
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+test("automatic recovery revalidates the live GitHub target after cleanup", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "primary",
+        "publication:primary",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#3",
+      ),
+      row(
+        "duplicate",
+        "publication:duplicate",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#3",
+      ),
+    ],
+    closeAfterCleanup: true,
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.resolutions.length, 1);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+async function automaticReconcileScenario(options) {
+  const secret = "automatic-reconcile-scenario-secret";
+  const rows = options.rows.map((entry) => ({ ...entry }));
+  const recoveries = [];
+  const resolutions = [];
+  let inventoryRequests = 0;
+  let duplicateFailurePending = options.failFirstDuplicateCleanup === true;
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    if (request.url === "/api/exact-review-queue") {
+      response.writeHead(200, {
+        "content-type": "application/json",
+        ...(options.stalePressure ? { "x-clawsweeper-cache": "stale" } : {}),
+      });
+      response.end(
+        JSON.stringify({
+          pressure: {
+            status: options.pressure?.(recoveries.length, resolutions.length) ?? "idle",
+            active: 0,
+            capacity: 128,
+            ...options.pressureDetails?.(recoveries.length, resolutions.length),
+          },
+        }),
+      );
+      return;
+    }
+    if (request.url === "/graphql") {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const data = {};
+      for (const match of body.query.matchAll(
+        /target(\d+):repository\(owner:"([^"]+)",name:"([^"]+)"\)\{item:issueOrPullRequest\(number:(\d+)\)/g,
+      )) {
+        const [, index, , repository, value] = match;
+        if (options.failedRepository === repository) {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify({ data, errors: [{ message: "temporary" }] }));
+          return;
+        }
+        const number = Number(value);
+        data[`target${index}`] = {
+          item: {
+            id: options.nodeId?.(number) ?? `ISSUE_${number}`,
+            state: options.reopenedNumbers?.includes(number)
+              ? "CLOSED"
+              : options.mergedNumbers?.includes(number)
+                ? "MERGED"
+                : (options.closeAfterCleanup && resolutions.length) ||
+                    options.closedNumbers?.includes(number)
+                  ? "CLOSED"
+                  : "OPEN",
+            ...(options.canonicalTarget?.(number)
+              ? {
+                  number: options.canonicalTarget(number).number,
+                  repository: { nameWithOwner: options.canonicalTarget(number).repository },
+                }
+              : {}),
+            ...(options.pullRequestHeads?.has(number)
+              ? { headRefOid: options.pullRequestHeads.get(number) }
+              : {}),
+          },
+        };
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ data }));
+      return;
+    }
+    if (request.url?.startsWith("/repos/")) {
+      const number = Number(request.url.split("/").at(-1));
+      if (request.url.includes("/pulls/")) {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            node_id: options.nodeId?.(number) ?? `ISSUE_${number}`,
+            state: "open",
+            head: { sha: options.pullRequestHeads?.get(number) },
+          }),
+        );
+        return;
+      }
+      if (
+        options.failedRepository &&
+        request.url.includes(`/${options.failedRepository}/issues/`)
+      ) {
+        response.writeHead(503, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "temporary" }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          state: options.reopenedNumbers?.includes(number)
+            ? "open"
+            : (options.closeAfterCleanup && resolutions.length) ||
+                options.mergedNumbers?.includes(number) ||
+                options.closedNumbers?.includes(number)
+              ? "closed"
+              : "open",
+          node_id: options.nodeId?.(number) ?? `ISSUE_${number}`,
+          ...(options.canonicalTarget?.(number)
+            ? {
+                number: options.canonicalTarget(number).number,
+                repository_url: `https://api.github.com/repos/${options.canonicalTarget(number).repository}`,
+              }
+            : {}),
+          ...(options.pullRequestHeads?.has(number) ? { number, pull_request: {} } : {}),
+        }),
+      );
+      return;
+    }
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (request.url?.endsWith("/list")) {
+      inventoryRequests += 1;
+      const openRows = rows.filter((entry) => entry.status === "open");
+      const start = options.pageSize ? Number(body.cursor || 0) : 0;
+      const selectedRows = options.pageSize
+        ? openRows.slice(start, start + options.pageSize)
+        : openRows;
+      const next =
+        options.pageSize && start + selectedRows.length < openRows.length
+          ? String(start + selectedRows.length)
+          : null;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          ok: true,
+          dead_letters: selectedRows,
+          next_cursor: next,
+        }),
+      );
+      return;
+    }
+    if (request.url?.endsWith("/resolve") && duplicateFailurePending) {
+      duplicateFailurePending = false;
+      response.writeHead(500, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "temporary" }));
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    if (request.url?.endsWith("/recover-fresh")) {
+      recoveries.push(body);
+      const skipped = options.skippedFirstRecovery === true && recoveries.length === 1;
+      for (const [index, id] of body.ids.entries()) {
+        const selected = rows.find((entry) => entry.dead_letter_id === id);
+        if (selected && !(skipped && index === 0)) selected.status = "resolved";
+      }
+      const unparked = options.unparkAliasOnRecovery && recoveries.length === 1 ? 1 : 0;
+      if (unparked) rows.push({ ...options.unparkAliasOnRecovery });
+      response.end(
+        JSON.stringify({
+          ok: true,
+          recovered: body.ids.length - Number(skipped),
+          deduped: 0,
+          skipped: skipped ? 1 : 0,
+          unparked,
+        }),
+      );
+      return;
+    }
+    resolutions.push(body);
+    for (const id of body.ids) {
+      const selected = rows.find((entry) => entry.dead_letter_id === id);
+      if (selected) selected.status = "resolved";
+    }
+    const unparked = options.unparkAliasOnResolve && resolutions.length === 1 ? 1 : 0;
+    if (unparked) rows.push({ ...options.unparkAliasOnResolve });
+    response.end(JSON.stringify({ ok: true, resolved: body.ids.length, skipped: 0, unparked }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const directory = await mkdtemp(join(tmpdir(), "clawsweeper-dlq-scenario-"));
+  const args = [
+    "--action",
+    "reconcile",
+    "--execute",
+    "--max-targets",
+    String(options.maxTargets ?? 10),
+    "--max-recoveries",
+    String(options.maxRecoveries ?? 10),
+  ];
+  try {
+    const first = await runOperator(
+      [...args, "--output", join(directory, "first.json")],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    const second = options.repeat
+      ? await runOperator(
+          [...args, "--output", join(directory, "second.json")],
+          `http://127.0.0.1:${address.port}`,
+          secret,
+        )
+      : null;
+    return { first, second, recoveries, resolutions, inventoryRequests };
+  } finally {
+    server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+}
 
 test("operator inventories every page, signs requests, and reports unique targets", async () => {
   const secret = "test-dead-letter-secret";
