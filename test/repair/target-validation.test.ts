@@ -5349,7 +5349,8 @@ test("checkpoint plumbing preserves staged CRLF restorations alongside review ed
 });
 
 test("checkpoint plumbing rejects a staged blob that disagrees with unchanged worktree", () => {
-  for (const source of ["source.txt", ":(exclude)*"]) {
+  const sources = process.platform === "win32" ? ["source.txt"] : ["source.txt", ":(exclude)*"];
+  for (const source of sources) {
     const cwd = gitPackageFixture({ check: 'node -e ""' });
     fs.writeFileSync(path.join(cwd, source), "validated content\n");
     git(cwd, "add", ".");
