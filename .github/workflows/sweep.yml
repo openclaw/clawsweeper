@@ -1289,6 +1289,7 @@ jobs:
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           records-repo-slugs: ${{ steps.target.outputs.target_slug }}
+          records-item-number: ${{ steps.target.outputs.item_number }}
           hydrate-git-state: "false"
           hydrate-state-blobs: "false"
 
@@ -2254,6 +2255,7 @@ jobs:
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           records-repo-slugs: ${{ steps.publication-context.outputs.target_slug }}
+          records-item-number: ${{ steps.publication-context.outputs.item_number }}
           hydrate-git-state: "false"
           hydrate-state-blobs: "false"
 

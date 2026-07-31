@@ -170,6 +170,7 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
 
 test("exact-review producer uses direct publication with bounded legacy fallback", () => {
   assert.match(sweepSource, /name: Deliver GitHub effects and prepare direct state mutation/);
+  assert.match(sweepSource, /records-item-number: \$\{\{ steps\.target\.outputs\.item_number \}\}/);
   assert.match(
     sweepSource,
     /EXACT_REVIEW_BATCH_MUTATION_OUTPUT: \.artifacts\/direct-publication-outcome\.json/,

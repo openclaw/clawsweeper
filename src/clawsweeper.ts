@@ -23460,7 +23460,10 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
       applyCheckedAt: number;
     }
   > =>
-    reportEntriesForDir(dir)
+    reportEntriesForDir(
+      dir,
+      filterRequested && requestedItemNumberSet.size > 0 ? requestedItemNumberSet : undefined,
+    )
       .filter(
         (entry) =>
           entry.repo === targetRepo() &&
@@ -23530,7 +23533,12 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
           left.number - right.number,
   );
   const files = fileEntries.map((entry) => entry.name);
-  const allOpenFileEntries = applyReportEntriesForDir(itemsDir, "items", false);
+  const boundedExactSelection = exactEventPublication && requestedItemNumberSet.size > 0;
+  // Exact-event publication handles one leased item and cannot pair-close with
+  // limit=1. Keep unrelated canonical records out of this memory-bounded path.
+  const allOpenFileEntries = boundedExactSelection
+    ? fileEntries
+    : applyReportEntriesForDir(itemsDir, "items", false);
   const openFileEntryByNumber = new Map(allOpenFileEntries.map((entry) => [entry.number, entry]));
   const closedThisRun = new Set<string>();
   const authorPrBudgetClosesThisRun = new Map<string, number>();
@@ -23590,10 +23598,16 @@ function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudg
     } catch (error) {
       publicationError = error;
     }
+    const finalEntryNumbers = boundedExactSelection
+      ? new Set([
+          ...requestedItemNumberSet,
+          ...results.flatMap((result) => (result.number > 0 ? [result.number] : [])),
+        ])
+      : undefined;
     const finalEntries = new Map<number, ReportEntry>();
     for (const finalEntry of [
-      ...reportEntriesForDir(itemsDir),
-      ...reportEntriesForDir(closedDir),
+      ...reportEntriesForDir(itemsDir, finalEntryNumbers),
+      ...reportEntriesForDir(closedDir, finalEntryNumbers),
     ].filter((candidate) => candidate.repo === targetRepo())) {
       finalEntries.set(finalEntry.number, finalEntry);
     }
@@ -26899,18 +26913,20 @@ function markdownFiles(dir: string): string[] {
     : [];
 }
 
-function reportEntriesForDir(dir: string): ReportEntry[] {
-  return markdownFiles(dir).map((name) => {
-    const path = join(dir, name);
-    const markdown = readFileSync(path, "utf8");
-    return {
-      name,
-      number: numberForMarkdownFile(name),
-      path,
-      repo: markdownRepository(markdown, path),
-      markdown,
-    };
-  });
+function reportEntriesForDir(dir: string, itemNumbers?: ReadonlySet<number>): ReportEntry[] {
+  return markdownFiles(dir)
+    .filter((name) => !itemNumbers || itemNumbers.has(numberForMarkdownFile(name)))
+    .map((name) => {
+      const path = join(dir, name);
+      const markdown = readFileSync(path, "utf8");
+      return {
+        name,
+        number: numberForMarkdownFile(name),
+        path,
+        repo: markdownRepository(markdown, path),
+        markdown,
+      };
+    });
 }
 
 function numberForMarkdownFile(file: string): number {

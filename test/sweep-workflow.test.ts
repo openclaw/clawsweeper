@@ -666,6 +666,14 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(step(reviewer, "Review exact event item").run ?? "", /sleep 60/);
 
   const create = step(reviewer, "Create exact review artifact bundle");
+  const directSetupState = reviewer.steps.find(
+    (candidate) => candidate.id === "direct-setup-state",
+  );
+  assert.ok(directSetupState);
+  assert.equal(
+    directSetupState.with?.["records-item-number"],
+    "${{ steps.target.outputs.item_number }}",
+  );
   const prepareDirect = step(reviewer, "Deliver GitHub effects and prepare direct state mutation");
   const postDirect = step(reviewer, "Post direct exact review publication result");
   const finalizeDirect = step(reviewer, "Finalize direct exact review lifecycle");
@@ -843,6 +851,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   const targetWriteStep = step(publisher, "Create target write token");
   const stateSetup = publisher.steps.find((candidate) => candidate.uses?.endsWith("/setup-state"));
   assert.ok(stateSetup);
+  assert.equal(
+    stateSetup.with?.["records-item-number"],
+    "${{ steps.publication-context.outputs.item_number }}",
+  );
   const publisherCheckout = publisher.steps.find(
     (candidate) => candidate.uses === "actions/checkout@v7",
   );

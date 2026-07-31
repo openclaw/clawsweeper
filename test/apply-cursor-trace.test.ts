@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -57,6 +57,51 @@ test("apply-decisions preserves auto-selected order and traces only examined rec
     const trace = JSON.parse(readFileSync(tracePath, "utf8"));
     assert.equal(report[0]?.number, 20);
     assert.deepEqual(trace, { schema_version: 1, examined_item_numbers: [20] });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("exact-event apply does not read unrelated canonical records", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    writeFileSync(
+      join(itemsDir, "20.md"),
+      workPlanCandidateReport({
+        repository: "openclaw/openclaw",
+        number: 20,
+        local_checkout_access: "unverified",
+        decision: "keep_open",
+        action_taken: "kept_open",
+      }),
+      "utf8",
+    );
+    symlinkSync(join(root, "missing-record.md"), join(itemsDir, "999.md"));
+
+    runApplyDecisionsForTest({
+      itemsDir,
+      closedDir,
+      plansDir,
+      reportPath,
+      extraArgs: [
+        "--target-repo",
+        "openclaw/openclaw",
+        "--item-numbers",
+        "20",
+        "--exact-event-publication",
+        "--limit",
+        "1",
+      ],
+    });
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.equal(report[0]?.number, 20);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
