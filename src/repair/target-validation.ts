@@ -1346,20 +1346,35 @@ export function runAllowedValidationCommandsWithBinding(
             let fallbackError: Error | null = null;
             try {
               resetValidationEnvironment(deadlineAt - identityReserveMs);
-              const fallbackBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
-              if (fallbackBudgetMs < MIN_VALIDATION_COMMAND_BUDGET_MS) {
-                throw validationCommandBudgetError(rendered, executionError);
+              const restoreFallbackValidationCache =
+                options.targetRepo === "openclaw/openclaw" &&
+                isChangedGateCommand(fallbackParts, options)
+                  ? prepareDisposableRuntimeBuildCache(
+                      cwd,
+                      validationEnv,
+                      ignoredValidationInputs,
+                      "tsgo-cache",
+                      "changed-gate validation",
+                    )
+                  : null;
+              try {
+                const fallbackBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
+                if (fallbackBudgetMs < MIN_VALIDATION_COMMAND_BUDGET_MS) {
+                  throw validationCommandBudgetError(rendered, executionError);
+                }
+                const executionParts = validationCommandWithDisposableArchive(
+                  validationCommandForExecution(fallbackParts),
+                  validationEnv,
+                );
+                runContainedCommand(executionParts[0]!, executionParts.slice(1), {
+                  cwd,
+                  env: validationEnv,
+                  timeoutMs: fallbackBudgetMs,
+                  writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
+                });
+              } finally {
+                restoreFallbackValidationCache?.();
               }
-              const executionParts = validationCommandWithDisposableArchive(
-                validationCommandForExecution(fallbackParts),
-                validationEnv,
-              );
-              runContainedCommand(executionParts[0]!, executionParts.slice(1), {
-                cwd,
-                env: validationEnv,
-                timeoutMs: fallbackBudgetMs,
-                writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
-              });
             } catch (error) {
               fallbackError = error as Error;
             }

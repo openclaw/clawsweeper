@@ -4096,6 +4096,57 @@ test("changed-gate compiler cache isolation still rejects unrelated ignored-inpu
   assert.equal(fs.existsSync(path.join(artifacts, "tsgo-cache")), false);
 });
 
+test("changed-gate merge-base fallback also isolates its disposable compiler cache", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+  fs.appendFileSync(path.join(cwd, ".gitignore"), ".artifacts/\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const artifacts = path.join(cwd, ".artifacts");
+  fs.mkdirSync(artifacts, { recursive: true });
+  fs.writeFileSync(path.join(artifacts, "stable.txt"), "existing artifact\n");
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-tsgo-fallback-"));
+  const attemptPath = path.join(binDir, "attempt");
+  writeNodeCommandShim(
+    binDir,
+    "pnpm",
+    [
+      'const fs = require("node:fs");',
+      `const attemptPath = ${JSON.stringify(attemptPath)};`,
+      'const attempt = fs.existsSync(attemptPath) ? Number(fs.readFileSync(attemptPath, "utf8")) : 0;',
+      "fs.writeFileSync(attemptPath, String(attempt + 1));",
+      "if (attempt === 0) {",
+      '  console.error("fatal: no merge base");',
+      "  process.exit(1);",
+      "}",
+      'fs.mkdirSync(".artifacts/tsgo-cache", { recursive: true });',
+      'fs.writeFileSync(".artifacts/tsgo-cache/test-root.tsbuildinfo", "generated compiler cache\\n");',
+    ].join("\n"),
+  );
+
+  assert.deepEqual(
+    withPathOnlyPrefix(binDir, () =>
+      runAllowedValidationCommands(
+        ["pnpm check:changed"],
+        cwd,
+        validationOptions("openclaw/openclaw", {
+          pinnedBaseRef: "origin/main",
+          toolchain: {
+            packageManager: "pnpm",
+            baseValidationCommands: [],
+            changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+          },
+        }),
+      ),
+    ),
+    ["pnpm check:changed"],
+  );
+  assert.equal(fs.readFileSync(attemptPath, "utf8"), "2");
+  assert.equal(fs.readFileSync(path.join(artifacts, "stable.txt"), "utf8"), "existing artifact\n");
+  assert.equal(fs.existsSync(path.join(artifacts, "tsgo-cache")), false);
+});
+
 test("OpenClaw archive smoke cannot pass by reusing a pre-existing stale build", () => {
   const cwd = gitPackageFixture({ "build:ci-artifacts": "node scripts/build-runtime.mjs" });
   fs.appendFileSync(path.join(cwd, ".gitignore"), "dist/\n");
