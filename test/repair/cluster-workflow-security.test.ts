@@ -58,6 +58,28 @@ test("generated issue workers can create PRs but never inherit the maintainer me
   );
 });
 
+test("deduplicated issue dispatch preserves the actual existing worker creation time", () => {
+  const source = fs.readFileSync(
+    ".github/workflows/repair-issue-implementation-intake.yml",
+    "utf8",
+  );
+  const workflow = parse(source) as Workflow;
+  const dispatch = workflow.jobs?.intake?.steps?.find(
+    (step) => step.name === "Dispatch repair worker",
+  ) as { id?: string } | undefined;
+  const record = workflow.jobs?.intake?.steps?.find(
+    (step) => step.name === "Record successful repair worker dispatch",
+  );
+
+  assert.equal(dispatch?.id, "dispatch-worker");
+  assert.match(source, /steps\.dispatch-worker\.outputs\.issue_worker_created_at/);
+  assert.match(record?.run ?? "", /--worker-created-at "\$WORKER_CREATED_AT"/);
+  assert.match(
+    fs.readFileSync("src/repair/dispatch-jobs.ts", "utf8"),
+    /issue_worker_created_at=\$\{createdAt\}/,
+  );
+});
+
 test("cluster intake validates one safe repository token before exporting outputs", () => {
   const source = fs.readFileSync(".github/workflows/repair-cluster-intake.yml", "utf8");
   const workflow = parse(source) as Workflow;

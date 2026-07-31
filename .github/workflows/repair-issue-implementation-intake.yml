@@ -241,6 +241,7 @@ jobs:
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Dispatch repair worker
+        id: dispatch-worker
         if: ${{ steps.prepare.outputs.should_repair == 'true' || steps.prepare.outputs.existing_job_path != '' }}
         env:
           GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
@@ -271,11 +272,13 @@ jobs:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           AUDIT_PATH: ${{ steps.prepare.outputs.audit_path }}
           JOB_PATH: ${{ steps.prepare.outputs.job_path || steps.prepare.outputs.existing_job_path }}
+          WORKER_CREATED_AT: ${{ steps.dispatch-worker.outputs.issue_worker_created_at || '' }}
         run: |
           set -euo pipefail
           pnpm run repair:issue-implementation-intake -- mark-dispatched \
             --audit-path "$AUDIT_PATH" \
-            --job-path "$JOB_PATH"
+            --job-path "$JOB_PATH" \
+            --worker-created-at "$WORKER_CREATED_AT"
           for attempt in 1 2 3; do
             if pnpm run repair:publish-main -- \
               --message "chore: record issue implementation worker dispatch" \

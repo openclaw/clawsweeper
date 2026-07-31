@@ -1,6 +1,6 @@
 import { ghJsonWithRetry } from "./github-cli.js";
 import type { LooseRecord } from "./json-types.js";
-import { MAX_LIVE_WORKERS, repairRunNameForJob } from "./live-worker-capacity.js";
+import { repairRunNameForJob } from "./live-worker-capacity.js";
 import { currentProjectRepo } from "./project-repo.js";
 
 export const ISSUE_IMPLEMENTATION_MAX_WORKER_ATTEMPTS = 3;
@@ -14,7 +14,6 @@ const ACTIVE_WORKFLOW_STATUSES = new Set([
   "pending",
 ]);
 const WORKFLOW_RUN_PAGE_SIZE = 100;
-const MAX_WORKFLOW_RUN_PAGES = Math.ceil(MAX_LIVE_WORKERS / WORKFLOW_RUN_PAGE_SIZE) + 1;
 
 export function issueImplementationWorkerAttemptCount(audit: LooseRecord | null): number {
   const recordedCount = String(audit?.frontmatter?.worker_attempt_count ?? "").trim();
@@ -34,7 +33,7 @@ export function dispatchedIssueImplementationWorkerRetryDue({
 }): boolean {
   if (!audit || audit.frontmatter?.worker_dispatched !== "true") return false;
   const queuedJobReview = String(
-    audit.frontmatter.job_report_revision_sha256 ?? audit.frontmatter.report_revision_sha256 ?? "",
+    audit.frontmatter.job_report_revision_sha256 || audit.frontmatter.report_revision_sha256 || "",
   );
   const sameReview = queuedJobReview === reportRevision;
   if (
@@ -56,20 +55,32 @@ export function recoverableIssueImplementationWorker({
   jobPath,
   reportRevision,
   nowMs = Date.now(),
-  fetchRuns = recentIssueImplementationWorkflowRuns,
+  fetchRuns,
+  fetchPage,
 }: {
   audit: LooseRecord | null;
   jobPath: string;
   reportRevision: string;
   nowMs?: number;
   fetchRuns?: () => LooseRecord[];
+  fetchPage?: (args: string[]) => LooseRecord;
 }): boolean {
   if (!dispatchedIssueImplementationWorkerRetryDue({ audit, reportRevision, nowMs })) {
     return false;
   }
 
+  const dispatchGeneration = String(
+    audit?.frontmatter?.worker_dispatched_at || audit?.frontmatter?.prepared_at || "",
+  );
+  const loadRuns =
+    fetchRuns ??
+    (() =>
+      recentIssueImplementationWorkflowRuns({
+        since: dispatchGeneration,
+        ...(fetchPage ? { fetchPage } : {}),
+      }));
   const expectedTitle = repairRunNameForJob(jobPath);
-  const matchingRuns = fetchRuns()
+  const matchingRuns = loadRuns()
     .filter((run) => {
       const title = String(run.display_title ?? run.displayTitle ?? "");
       return title === expectedTitle || title.startsWith(`${expectedTitle} [router-`);
@@ -81,11 +92,9 @@ export function recoverableIssueImplementationWorker({
     return false;
   }
 
-  const dispatchedAt = Date.parse(
-    String(audit?.frontmatter?.worker_dispatched_at ?? audit?.frontmatter?.prepared_at ?? ""),
-  );
+  const dispatchedAt = Date.parse(dispatchGeneration);
   const currentDispatchRuns = Number.isFinite(dispatchedAt)
-    ? matchingRuns.filter((run) => workflowRunCreatedAt(run) >= dispatchedAt)
+    ? matchingRuns.filter((run) => workflowRunTime(run) >= dispatchedAt)
     : matchingRuns;
   if (currentDispatchRuns.length === 0) return false;
 
@@ -99,19 +108,30 @@ export function nextIssueImplementationWorkerRetry(nowMs = Date.now()): string {
 
 export function recentIssueImplementationWorkflowRuns({
   fetchPage,
+  since,
 }: {
   fetchPage?: (args: string[]) => LooseRecord;
+  since?: string;
 } = {}): LooseRecord[] {
   const workflowToken = process.env.CLAWSWEEPER_ISSUE_IMPLEMENTATION_WORKFLOW_TOKEN;
   const env = workflowToken ? { ...process.env, GH_TOKEN: workflowToken } : undefined;
   const readPage =
     fetchPage ?? ((args: string[]) => ghJsonWithRetry<LooseRecord>(args, env ? { env } : {}));
   const runs: LooseRecord[] = [];
-  for (let page = 1; page <= MAX_WORKFLOW_RUN_PAGES; page += 1) {
+  const sinceMs = Date.parse(String(since ?? ""));
+  const createdQuery = Number.isFinite(sinceMs)
+    ? `&created=${encodeURIComponent(`>=${new Date(sinceMs).toISOString()}`)}`
+    : "";
+  let totalPages = Number.POSITIVE_INFINITY;
+  for (let page = 1; page <= totalPages; page += 1) {
     const response = readPage([
       "api",
-      `repos/${currentProjectRepo()}/actions/workflows/repair-cluster-worker.yml/runs?per_page=${WORKFLOW_RUN_PAGE_SIZE}&page=${page}`,
+      `repos/${currentProjectRepo()}/actions/workflows/repair-cluster-worker.yml/runs?per_page=${WORKFLOW_RUN_PAGE_SIZE}&page=${page}${createdQuery}`,
     ]);
+    const totalCount = Number(response?.total_count);
+    if (Number.isSafeInteger(totalCount) && totalCount >= 0) {
+      totalPages = Math.max(1, Math.ceil(totalCount / WORKFLOW_RUN_PAGE_SIZE));
+    }
     const pageRuns = Array.isArray(response?.workflow_runs)
       ? (response.workflow_runs as LooseRecord[])
       : [];
@@ -119,11 +139,6 @@ export function recentIssueImplementationWorkflowRuns({
     if (pageRuns.length < WORKFLOW_RUN_PAGE_SIZE) break;
   }
   return runs;
-}
-
-function workflowRunCreatedAt(run: LooseRecord): number {
-  const createdAt = Date.parse(String(run.created_at ?? run.createdAt ?? ""));
-  return Number.isFinite(createdAt) ? createdAt : workflowRunTime(run);
 }
 
 function workflowRunTime(run: LooseRecord): number {

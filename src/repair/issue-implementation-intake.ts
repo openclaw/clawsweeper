@@ -179,11 +179,13 @@ function prepare() {
         ? nextIssueImplementationWorkerRetry()
         : "";
   const preparedAt = new Date().toISOString();
-  const workerDispatchedAt = workerDispatched
-    ? previousAudit?.frontmatter.worker_dispatched_at ||
-      previousAudit?.frontmatter.prepared_at ||
-      ""
-    : "";
+  const workerDispatchedAt =
+    workerDispatched ||
+    (recoverExistingJob && previousAudit?.frontmatter.worker_dispatched !== "true")
+      ? previousAudit?.frontmatter.worker_dispatched_at ||
+        previousAudit?.frontmatter.prepared_at ||
+        ""
+      : "";
   const context = {
     targetRepo,
     reportRepo,
@@ -951,8 +953,9 @@ export function issueImplementationJobNeedsRefresh(
 function markDispatched() {
   const auditPath = stringArg("audit-path", "");
   const jobPath = stringArg("job-path", "");
+  const workerCreatedAt = stringArg("worker-created-at", "");
   if (!auditPath || !jobPath) die("mark-dispatched requires --audit-path and --job-path");
-  markIssueImplementationDispatched({ root: repoRoot(), auditPath, jobPath });
+  markIssueImplementationDispatched({ root: repoRoot(), auditPath, jobPath, workerCreatedAt });
   console.log(`recorded dispatched issue implementation worker for ${jobPath}`);
 }
 
@@ -960,10 +963,12 @@ export function markIssueImplementationDispatched({
   root,
   auditPath,
   jobPath,
+  workerCreatedAt,
 }: {
   root: string;
   auditPath: string;
   jobPath: string;
+  workerCreatedAt?: string;
 }) {
   const resolvedRoot = path.resolve(root);
   const resolvedAudit = path.resolve(resolvedRoot, auditPath);
@@ -998,7 +1003,8 @@ export function markIssueImplementationDispatched({
     : markdown.replace(/\n---\n/, "\nworker_dispatched: true\n---\n");
   const attempts = issueImplementationWorkerAttemptCount(audit) + 1;
   const dispatchedAt = String(
-    audit.frontmatter.worker_dispatched_at ||
+    (Number.isFinite(Date.parse(String(workerCreatedAt ?? ""))) && workerCreatedAt) ||
+      audit.frontmatter.worker_dispatched_at ||
       audit.frontmatter.prepared_at ||
       new Date().toISOString(),
   );

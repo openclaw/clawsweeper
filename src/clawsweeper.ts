@@ -55,6 +55,7 @@ import {
 import { parseGhJson, parseGhJsonLinesWithRetry, parseGhJsonWithRetry } from "./github-json.js";
 import { stableJson } from "./stable-json.js";
 import { reviewPullChecksDigestParts } from "./review-checks-digest.js";
+import { hydratePullRequestReviewBlobs } from "./clawsweeper-review-blobs.js";
 import { coverageTrackedItemIdsFromManifest } from "./review-coverage-manifest.js";
 import {
   LEGACY_FIXED_CLOSE_SKIP_ACTIONS,
@@ -4602,6 +4603,18 @@ function semanticPullFilesWithTreeIdentity(options: {
       sourceRef: `refs/pull/${options.itemNumber}/head`,
       destinationRef: `refs/clawsweeper/review-cache/head-${options.itemNumber}`,
     });
+
+  if (commitsAvailable) {
+    const hydration = hydratePullRequestReviewBlobs({
+      targetDir: options.targetDir,
+      baseSha,
+      headSha,
+      files: options.files,
+    });
+    if (!hydration.hydrated) {
+      console.warn("pull-request review blobs could not be hydrated before restricted review");
+    }
+  }
 
   return options.files.map((value) => {
     const compact = asRecord(compactSemanticPullFile(value));

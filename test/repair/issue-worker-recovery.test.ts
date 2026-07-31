@@ -153,6 +153,22 @@ test("retry caps follow the actual queued job when intake already observed a new
   );
 });
 
+test("empty legacy job-review metadata still respects the same-review retry cap", () => {
+  const previousAudit = audit({
+    job_report_revision_sha256: "",
+    worker_attempt_count: String(ISSUE_IMPLEMENTATION_MAX_WORKER_ATTEMPTS),
+  });
+
+  assert.equal(
+    dispatchedIssueImplementationWorkerRetryDue({
+      audit: previousAudit,
+      reportRevision,
+      nowMs,
+    }),
+    false,
+  );
+});
+
 test("historical completed runs cannot stand in for a newer worker dispatch", () => {
   const previousAudit = audit({
     prepared_at: "2026-07-31T18:58:00.000Z",
@@ -191,6 +207,60 @@ test("historical completed runs cannot stand in for a newer worker dispatch", ()
   );
 });
 
+test("deduplicated workers remain recoverable when they finish after the intake", () => {
+  const workerCreatedAt = "2026-07-31T18:57:30.000Z";
+  const previousAudit = audit({
+    prepared_at: "2026-07-31T18:58:00.000Z",
+    worker_dispatched_at: workerCreatedAt,
+  });
+
+  assert.equal(
+    recoverableIssueImplementationWorker({
+      audit: previousAudit,
+      jobPath,
+      reportRevision,
+      nowMs,
+      fetchPage: (args) => {
+        const query = new URL(`https://github.test/${args[1]}`).searchParams;
+        assert.equal(query.get("created"), `>=${workerCreatedAt}`);
+        return {
+          total_count: 1,
+          workflow_runs: [
+            run({
+              created_at: workerCreatedAt,
+              updated_at: "2026-07-31T18:58:30.000Z",
+            }),
+          ],
+        };
+      },
+    }),
+    true,
+  );
+});
+
+test("empty legacy dispatch metadata still fences out historical workers", () => {
+  const previousAudit = audit({
+    prepared_at: "2026-07-31T18:58:00.000Z",
+    worker_dispatched_at: "",
+  });
+
+  assert.equal(
+    recoverableIssueImplementationWorker({
+      audit: previousAudit,
+      jobPath,
+      reportRevision,
+      nowMs,
+      fetchRuns: () => [
+        run({
+          created_at: "2026-07-31T16:00:00.000Z",
+          updated_at: "2026-07-31T16:01:00.000Z",
+        }),
+      ],
+    }),
+    false,
+  );
+});
+
 test("issue worker recovery paginates beyond the configured concurrency ceiling", () => {
   const pages: number[] = [];
   const runs = recentIssueImplementationWorkflowRuns({
@@ -207,6 +277,29 @@ test("issue worker recovery paginates beyond the configured concurrency ceiling"
 
   assert.equal(runs.length, 205);
   assert.deepEqual(pages, [1, 2, 3]);
+});
+
+test("issue worker recovery scans all workflows created since the dispatch generation", () => {
+  const pages: number[] = [];
+  const since = "2026-07-31T18:00:00.000Z";
+  const runs = recentIssueImplementationWorkflowRuns({
+    since,
+    fetchPage: (args) => {
+      const query = new URL(`https://github.test/${args[1]}`).searchParams;
+      const page = Number(query.get("page"));
+      pages.push(page);
+      assert.equal(query.get("created"), `>=${since}`);
+      return {
+        total_count: 401,
+        workflow_runs: Array.from({ length: page < 5 ? 100 : 1 }, (_, index) => ({
+          id: (page - 1) * 100 + index,
+        })),
+      };
+    },
+  });
+
+  assert.equal(runs.length, 401);
+  assert.deepEqual(pages, [1, 2, 3, 4, 5]);
 });
 
 test("legacy dispatched issue audits count as one bounded worker attempt", () => {
