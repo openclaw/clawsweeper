@@ -1473,7 +1473,9 @@ jobs:
 
       - name: Upload exact review artifact bundle
         id: upload-exact-review-bundle
-        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.create-exact-review-bundle.outcome == 'success' && steps.direct-exact-review-publication.outputs.accepted != 'true' }}
+        # Keep the artifact if direct publication needs publisher recovery after
+        # its lifecycle handoff fails. A committed handoff owns the final path.
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.create-exact-review-bundle.outcome == 'success' && (steps.direct-exact-review-publication.outputs.accepted != 'true' || steps.finalize-direct-exact-review-lifecycle.outcome != 'success') }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.create-exact-review-bundle.outputs.artifact_name }}
@@ -1893,12 +1895,18 @@ jobs:
                 const decision = response.decision;
                 const publication = decision?.publication;
                 const producerDecision = publication?.producerDecision;
-                const expectedItemKey = `${decision?.targetRepo}#${decision?.itemNumber}@publish:${publication?.producerRunId}:${publication?.producerRunAttempt}`;
+                const directItemKey = `${decision?.targetRepo}#${decision?.itemNumber}`;
+                const expectedDeferredItemKey = `${directItemKey}@publish:${publication?.producerRunId}:${publication?.producerRunAttempt}`;
+                // Direct publication converts its already-leased base item into a
+                // recoverable publication. Deferred publication has its own key.
+                const directLifecycleRecovery =
+                  response.item_key === directItemKey && publication?.itemKey === directItemKey;
+                const deferredPublication = response.item_key === expectedDeferredItemKey;
                 if (
                   response.claimed !== true ||
                   response.protocol_version !== 2 ||
                   response.item_key !== process.env.ITEM_KEY ||
-                  response.item_key !== expectedItemKey ||
+                  (!deferredPublication && !directLifecycleRecovery) ||
                   decision?.sourceAction !== "exact_review_artifact_publish" ||
                   !publication ||
                   !producerDecision ||

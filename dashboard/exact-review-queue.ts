@@ -78,10 +78,6 @@ const EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION = "artifact_retenti
 const EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION = "source_drift_requeue";
 const EXACT_REVIEW_SCHEDULED_HOT_SOURCE_ACTION = "scheduled_hot_intake";
 const EXACT_REVIEW_SCHEDULED_NORMAL_SOURCE_ACTION = "scheduled_normal_backfill";
-// Direct publication synthesizes its receipt inside the Durable Object and does
-// not have a state-batch artifact source SHA. Keep that path out of the
-// historical state-batch reconciliation below.
-const EXACT_REVIEW_DIRECT_PUBLICATION_SOURCE_SHA = "0".repeat(40);
 const EXACT_REVIEW_LOW_PRIORITY_SOURCE_ACTIONS = new Set([
   FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION,
   EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
@@ -2309,6 +2305,12 @@ export class ExactReviewQueue {
             409,
           );
         }
+        if (!deferredBatchCompletion && !validated.sourceSha) {
+          return json(
+            { error: "direct_publication_source_sha_required", fallback_required: true },
+            400,
+          );
+        }
         const accepted = this.directPublicationStore.accept(validated, now);
         this.recordLifecycleDirectPublication({ validated, owned, accepted, now });
         if (owned && validFence && !deferredBatchCompletion && !owned.decision.publication) {
@@ -2324,11 +2326,14 @@ export class ExactReviewQueue {
           ) {
             throw new Error("direct publication source run identity is unavailable");
           }
+          if (!validated.sourceSha) {
+            throw new Error("direct publication source SHA is unavailable");
+          }
           const publication: ExactReviewPublication = {
             artifactName: `exact-review-${producerRunId}-${producerRunAttempt}`,
             producerRunId,
             producerRunAttempt,
-            sourceSha: EXACT_REVIEW_DIRECT_PUBLICATION_SOURCE_SHA,
+            sourceSha: validated.sourceSha,
             itemKey: validated.fenceKey,
             protocolVersion: 2,
             leaseRevision: validated.revision,
@@ -10465,7 +10470,7 @@ function exactReviewLegacyStateBatchTerminalPublicationCandidate(
   if (
     !publication ||
     publication.protocolVersion !== 2 ||
-    publication.sourceSha === EXACT_REVIEW_DIRECT_PUBLICATION_SOURCE_SHA ||
+    item.key === publication.itemKey ||
     !publication.liveProceeded ||
     !revision ||
     !exactReviewQueueIsPublication(item) ||

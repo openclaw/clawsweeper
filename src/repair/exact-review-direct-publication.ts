@@ -18,6 +18,7 @@ export type DirectPublicationPayload = {
   canonicalTargetKey: string;
   fenceKey: string;
   revision: number;
+  sourceSha?: string;
   identity: BatchPublicationIdentity & PreparedStateMutationPlan["identity"];
   operations: DirectPublicationOperation[];
   totalBytes: number;
@@ -34,6 +35,7 @@ export function exactReviewDirectPublicationEnabled(value: string | undefined) {
 export function prepareDirectPublicationPayload(options: {
   revision: number;
   plan: PreparedStateMutationPlan;
+  sourceSha?: string;
 }): DirectPublicationPayload {
   const publication = options.plan.publication ?? {
     canonicalTargetKey: options.plan.identity.itemKey,
@@ -43,6 +45,7 @@ export function prepareDirectPublicationPayload(options: {
     canonicalTargetKey: publication.canonicalTargetKey,
     fenceKey: publication.fenceKey,
     revision: options.revision,
+    ...(options.sourceSha === undefined ? {} : { sourceSha: options.sourceSha }),
     identity: { ...publication, ...options.plan.identity },
     operations: options.plan.operations.map((operation) => ({ ...operation })),
     totalBytes: options.plan.totalBytes,
@@ -143,6 +146,7 @@ export async function runExactReviewDirectPublicationFromEnv() {
   const payload = prepareDirectPublicationPayload({
     revision: positiveInteger(requiredEnv("EXACT_REVIEW_DIRECT_REVISION"), "revision"),
     plan: outcome.plan,
+    sourceSha: requiredExactShaEnv("GITHUB_SHA"),
   });
   const result = await postDirectPublicationResult({
     baseUrl: requiredEnv("EXACT_REVIEW_QUEUE_URL"),
@@ -172,6 +176,14 @@ function boundedAttempts(value: number) {
 function requiredEnv(name: string) {
   const value = String(process.env[name] || "").trim();
   if (!value) throw new Error(`${name} is required`);
+  return value;
+}
+
+function requiredExactShaEnv(name: string) {
+  const value = process.env[name];
+  if (typeof value !== "string" || !/^[a-f0-9]{40}$/.test(value)) {
+    throw new Error(`${name} must be an exact lowercase commit SHA`);
+  }
   return value;
 }
 

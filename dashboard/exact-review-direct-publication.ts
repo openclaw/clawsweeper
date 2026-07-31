@@ -52,6 +52,7 @@ export type DirectPublicationPlan = {
   canonicalTargetKey: string;
   fenceKey: string;
   revision: number;
+  sourceSha?: string;
   identity: {
     canonicalTargetKey: string;
     fenceKey: string;
@@ -1530,6 +1531,10 @@ export async function validateDirectPublicationPlan(
   if (!itemIdentity) throw new Error("invalid direct publication canonical target key");
   const fenceKey = boundedItemKey(plan.fenceKey);
   if (!fenceKey) throw new Error("invalid direct publication fence key");
+  const sourceSha = plan.sourceSha;
+  if (sourceSha !== undefined && !/^[a-f0-9]{40}$/.test(sourceSha)) {
+    throw new Error("invalid direct publication source SHA");
+  }
   if (!Number.isSafeInteger(plan.revision) || plan.revision < 1) {
     throw new Error("invalid direct publication revision");
   }
@@ -1612,6 +1617,7 @@ export async function validateDirectPublicationPlan(
     canonicalTargetKey,
     fenceKey,
     revision: plan.revision,
+    ...(sourceSha === undefined ? {} : { sourceSha }),
     identity: {
       canonicalTargetKey,
       fenceKey,

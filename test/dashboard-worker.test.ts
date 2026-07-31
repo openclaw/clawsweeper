@@ -2894,6 +2894,7 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
     canonicalTargetKey: "openclaw/openclaw#701",
     fenceKey: "openclaw/openclaw#701",
     revision: 4,
+    sourceSha: "b".repeat(40),
     identity: {
       canonicalTargetKey: "openclaw/openclaw#701",
       fenceKey: "openclaw/openclaw#701",
@@ -2917,6 +2918,22 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
   assert.equal(unsigned.status, 401);
 
   const signature = `sha256=${createHmac("sha256", "test-secret").update(body).digest("hex")}`;
+  const { sourceSha: _sourceSha, ...missingSourceSha } = payload;
+  const missingSourceBody = JSON.stringify(missingSourceSha);
+  const missingSourceSignature = `sha256=${createHmac("sha256", "test-secret").update(missingSourceBody).digest("hex")}`;
+  const missingSource = await worker.fetch(
+    new Request(url, {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": missingSourceSignature },
+      body: missingSourceBody,
+    }),
+    env,
+  );
+  assert.equal(missingSource.status, 400);
+  assert.deepEqual(await missingSource.json(), {
+    error: "direct_publication_source_sha_required",
+    fallback_required: true,
+  });
   for (const expected of [
     { accepted: true, deduped: false },
     { accepted: false, deduped: true },
@@ -2947,12 +2964,16 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
     "direct-publication-delivery:701",
   );
   const directState = (await storage.get("exact-review-queue")) as {
-    items: Record<string, { decision: { sourceAction: string } }>;
+    items: Record<
+      string,
+      { decision: { sourceAction: string; publication?: { sourceSha: string } } }
+    >;
   };
   assert.equal(
     directState.items[leased.key]?.decision.sourceAction,
     "exact_review_artifact_publish",
   );
+  assert.equal(directState.items[leased.key]?.decision.publication?.sourceSha, "b".repeat(40));
   assert.deepEqual(
     {
       ...Array.from(
@@ -3238,6 +3259,7 @@ test("direct command publication retains its terminal acknowledgement driver aft
     canonicalTargetKey: "openclaw/openclaw#787",
     fenceKey: leased.key,
     revision: 4,
+    sourceSha: "c".repeat(40),
     identity: {
       canonicalTargetKey: "openclaw/openclaw#787",
       fenceKey: leased.key,

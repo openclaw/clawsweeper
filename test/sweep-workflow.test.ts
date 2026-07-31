@@ -732,7 +732,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.doesNotMatch(finalizeDirect.run ?? "", /lifecycle\/command-ack\/attempt/);
   assert.doesNotMatch(finalizeDirect.run ?? "", /repair:update-command-status/);
   assert.match(reviewer.if ?? "", /source_action != 'exact_review_command_acknowledgement'/);
-  assert.match(upload.if ?? "", /direct-exact-review-publication\.outputs\.accepted != 'true'/);
+  assert.match(
+    upload.if ?? "",
+    /direct-exact-review-publication\.outputs\.accepted != 'true' \|\| steps\.finalize-direct-exact-review-lifecycle\.outcome != 'success'/,
+  );
   assert.equal(upload.with?.["retention-days"], 90);
   assert.match(queuePublication.run ?? "", /for attempt in 1 2 3/);
   assert.match(queuePublication.run ?? "", /\.queued == true or \.deduped == true/);
@@ -801,6 +804,12 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(
     publicationContext.run ?? "",
     /producerDecision\.commandStatusMarker \|\| producerDecision\.statusCommentId/,
+  );
+  assert.match(publicationContext.run ?? "", /directLifecycleRecovery/);
+  assert.match(publicationContext.run ?? "", /deferredPublication/);
+  assert.match(
+    publicationContext.run ?? "",
+    /response\.item_key === directItemKey && publication\?\.itemKey === directItemKey/,
   );
 
   const download = step(publisher, "Download exact review artifact bundle");
