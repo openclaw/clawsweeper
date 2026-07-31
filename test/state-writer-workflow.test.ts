@@ -69,6 +69,8 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
     [
       ".github/workflows/exact-review-batch-publish.yml:publish",
       ".github/workflows/repair-cluster-intake.yml:intake",
+      ".github/workflows/repair-cluster-worker.yml:cluster",
+      ".github/workflows/repair-cluster-worker.yml:execute",
       ".github/workflows/repair-comment-router.yml:route-comments",
       ".github/workflows/repair-conflict-self-heal.yml:self-heal",
       ".github/workflows/repair-issue-implementation-backfill.yml:backfill",
@@ -88,8 +90,6 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
       .filter(({ step }) => step.with?.["records-repo-slugs"] === undefined)
       .map(({ site }) => site),
     [
-      ".github/workflows/repair-cluster-worker.yml:cluster",
-      ".github/workflows/repair-cluster-worker.yml:execute",
       ".github/workflows/repair-publish-results.yml:publish",
       ".github/workflows/repair-self-heal.yml:self-heal",
       ".github/workflows/sweep.yml:target-fanout",
