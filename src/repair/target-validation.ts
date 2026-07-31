@@ -3066,7 +3066,7 @@ function buildRawWorktreeTree(
   const indexEnv = { ...objectEnv, GIT_INDEX_FILE: indexFile };
   git.run(["read-tree", "HEAD"], "raw worktree temporary index", { env: indexEnv });
   const updates: string[] = [];
-  const canonicalEntries: Array<{ mode: string; relativePath: string }> = [];
+  const canonicalEntries: Array<{ mode: string; relativePath: string; sourceOid?: string }> = [];
   const rawEntries: Array<{ mode: string; relativePath: string; sourcePath: string }> = [];
   const worktreeLeafPaths = new Set<string>();
   const zeroOid = "0".repeat(headSha.length);
@@ -3146,7 +3146,11 @@ function buildRawWorktreeTree(
         }
         throw new Error(`unsafe changed target Git ${unsafeAttribute} attribute: ${relativePath}`);
       }
-      canonicalEntries.push({ mode, relativePath });
+      canonicalEntries.push({
+        mode,
+        relativePath,
+        ...(sourceEntry?.mode === mode ? { sourceOid: sourceEntry.oid } : {}),
+      });
       continue;
     }
     rawEntries.push({ mode, relativePath, sourcePath });
@@ -3162,8 +3166,29 @@ function buildRawWorktreeTree(
     if (oids.length !== canonicalEntries.length) {
       throw new Error("canonical worktree hash output did not match target paths");
     }
+    const noncanonicalEntries = canonicalEntries
+      .map((entry, index) => ({ entry, oid: oids[index]! }))
+      .filter(({ entry, oid }) => entry.sourceOid && entry.sourceOid !== oid);
+    const rawOids =
+      noncanonicalEntries.length === 0
+        ? []
+        : hashTargetWorktreeFiles(
+            git,
+            noncanonicalEntries.map(({ entry }) => entry.relativePath),
+            true,
+            "hash noncanonical worktree files",
+            objectEnv,
+          );
+    if (rawOids.length !== noncanonicalEntries.length) {
+      throw new Error("noncanonical worktree hash output did not match target paths");
+    }
+    const matchingRawOids = new Map(
+      noncanonicalEntries.map(({ entry }, index) => [entry.relativePath, rawOids[index]]),
+    );
     for (const [index, entry] of canonicalEntries.entries()) {
-      updates.push(`${entry.mode} ${oids[index]}\t${entry.relativePath}\0`);
+      const rawOid = matchingRawOids.get(entry.relativePath);
+      const oid = rawOid && rawOid === entry.sourceOid ? rawOid : oids[index];
+      updates.push(`${entry.mode} ${oid}\t${entry.relativePath}\0`);
     }
   }
   if (rawEntries.length > 0) {

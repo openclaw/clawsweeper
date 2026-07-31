@@ -5257,6 +5257,127 @@ test("checkpoint plumbing commits raw modified, added, and deleted worktree cont
   assert.equal(result.tree, git(cwd, "rev-parse", "HEAD^{tree}"));
 });
 
+test("checkpoint plumbing preserves a review fix restoring a legacy CRLF blob", () => {
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  const wrapper = "apps/android/gradlew.bat";
+  const wrapperPath = path.join(cwd, wrapper);
+  fs.mkdirSync(path.dirname(wrapperPath), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".gitattributes"), "*.bat text=auto eol=lf\n");
+  fs.writeFileSync(wrapperPath, "@echo off\r\nexit /b 0\r\n");
+  git(cwd, "add", ".");
+  const legacyBlob = git(cwd, "hash-object", "-w", "--no-filters", wrapper);
+  git(cwd, "update-index", "--cacheinfo", `100644,${legacyBlob},${wrapper}`);
+  git(cwd, "commit", "-m", "legacy CRLF base");
+  const base = git(cwd, "rev-parse", "HEAD");
+  const identity = {
+    name: "clawsweeper",
+    email: "274271284+clawsweeper[bot]@users.noreply.github.com",
+  };
+
+  fs.writeFileSync(path.join(cwd, "repair.txt"), "validated repair\n");
+  const initial = createTargetCheckpointWithPlumbing({
+    cwd,
+    messages: ["initial validated repair"],
+    identity,
+  });
+  assert.equal(initial.status, "committed");
+  assert.equal(git(cwd, "rev-parse", `HEAD:${wrapper}`), legacyBlob);
+  git(cwd, "add", "--renormalize", "--", wrapper);
+  git(cwd, "commit", "-m", "simulate previously normalized wrapper");
+  assert.notEqual(git(cwd, "rev-parse", `HEAD:${wrapper}`), legacyBlob);
+
+  git(cwd, "restore", `--source=${base}`, "--staged", "--worktree", "--", wrapper);
+  assert.equal(git(cwd, "status", "--porcelain"), `M  ${wrapper}`);
+
+  const corrected = createTargetCheckpointWithPlumbing({
+    cwd,
+    messages: ["restore unrelated legacy wrapper"],
+    identity,
+  });
+
+  assert.equal(corrected.status, "committed");
+  assert.equal(git(cwd, "rev-parse", `HEAD:${wrapper}`), legacyBlob);
+  assert.equal(git(cwd, "show", "HEAD:repair.txt"), "validated repair");
+  assert.equal(git(cwd, "status", "--porcelain"), "");
+
+  const accepted = captureTargetCheckoutBinding(cwd);
+  assert.equal(captureFinalTargetCheckoutBinding(cwd, accepted, corrected.commit).status, "");
+  const compacted = compactTargetHistoryWithPlumbing({
+    cwd,
+    baseRef: base,
+    messages: ["compact validated repair"],
+    identity,
+  });
+  assert.equal(git(cwd, "rev-parse", `HEAD:${wrapper}`), legacyBlob);
+  assert.equal(captureFinalTargetCheckoutBinding(cwd, accepted, compacted.commit).status, "");
+});
+
+test("checkpoint plumbing preserves staged CRLF restorations alongside review edits", () => {
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  const wrapper = "apps/android/gradlew.bat";
+  const wrapperPath = path.join(cwd, wrapper);
+  fs.mkdirSync(path.dirname(wrapperPath), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".gitattributes"), "*.bat text=auto eol=lf\n");
+  fs.writeFileSync(wrapperPath, "@echo off\r\nexit /b 0\r\n");
+  git(cwd, "add", ".");
+  const legacyBlob = git(cwd, "hash-object", "-w", "--no-filters", wrapper);
+  git(cwd, "update-index", "--cacheinfo", `100644,${legacyBlob},${wrapper}`);
+  git(cwd, "commit", "-m", "legacy CRLF base");
+  const base = git(cwd, "rev-parse", "HEAD");
+  const identity = {
+    name: "clawsweeper",
+    email: "274271284+clawsweeper[bot]@users.noreply.github.com",
+  };
+  fs.writeFileSync(path.join(cwd, "repair.txt"), "initial repair\n");
+  createTargetCheckpointWithPlumbing({ cwd, messages: ["initial repair"], identity });
+  git(cwd, "add", "--renormalize", "--", wrapper);
+  git(cwd, "commit", "-m", "simulate previously normalized wrapper");
+
+  git(cwd, "restore", `--source=${base}`, "--staged", "--worktree", "--", wrapper);
+  fs.writeFileSync(path.join(cwd, "repair.txt"), "review-corrected repair\n");
+
+  const corrected = createTargetCheckpointWithPlumbing({
+    cwd,
+    messages: ["review repair and restore unrelated wrapper"],
+    identity,
+  });
+
+  assert.equal(corrected.status, "committed");
+  assert.equal(git(cwd, "rev-parse", `HEAD:${wrapper}`), legacyBlob);
+  assert.equal(git(cwd, "show", "HEAD:repair.txt"), "review-corrected repair");
+  assert.equal(git(cwd, "status", "--porcelain"), "");
+});
+
+test("checkpoint plumbing rejects a staged blob that disagrees with unchanged worktree", () => {
+  for (const source of ["source.txt", ":(exclude)*"]) {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    fs.writeFileSync(path.join(cwd, source), "validated content\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "validated base");
+    const previousHead = git(cwd, "rev-parse", "HEAD");
+    const poisonedBlob = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+      cwd,
+      input: "poisoned staged content\n",
+      encoding: "utf8",
+    }).trim();
+    git(cwd, "update-index", "--cacheinfo", `100644,${poisonedBlob},${source}`);
+
+    assert.throws(
+      () =>
+        createTargetCheckpointWithPlumbing({
+          cwd,
+          messages: ["reject poisoned index"],
+          identity: {
+            name: "clawsweeper",
+            email: "274271284+clawsweeper[bot]@users.noreply.github.com",
+          },
+        }),
+      /target index differs from unchanged worktree content/,
+    );
+    assert.equal(git(cwd, "rev-parse", "HEAD"), previousHead);
+  }
+});
+
 test("checkpoint plumbing supports replacing a tracked file with a directory", () => {
   const cwd = gitPackageFixture({ check: 'node -e ""' });
   fs.writeFileSync(path.join(cwd, "shape"), "file\n");
