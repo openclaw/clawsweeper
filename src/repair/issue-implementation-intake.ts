@@ -54,6 +54,13 @@ type ReviewReport = {
 };
 
 const args = parseArgs(process.argv.slice(2));
+const OPEN_IMPLEMENTATION_PR_BLOCKERS = [
+  "existing ClawSweeper issue implementation PR is open",
+  "open PR already mentions this issue",
+  "open PR already covers a related issue in this work cluster",
+  "review report references an open or unverifiable pull request",
+];
+const ISSUE_IMPLEMENTATION_BLOCKER_RECHECK_DELAY_MS = 30 * 60_000;
 
 function main() {
   const command = String(args._[0] ?? "prepare");
@@ -130,6 +137,17 @@ function prepare() {
     : null;
   let workerDispatched = previousAudit?.frontmatter.worker_dispatched === "true";
   let workerAttemptCount = issueImplementationWorkerAttemptCount(previousAudit);
+  if (
+    authoritativeReviewOrdering({
+      audit: previousAudit,
+      report,
+      reportRevision: reportRevisionSha256(reportMarkdown),
+    }) < 0
+  ) {
+    die(
+      "local issue review is older than the authoritative intake; refresh records before retrying",
+    );
+  }
   if (decision.shouldRepair && existingJob && !operatorOverride) {
     if (!issueImplementationJobNeedsRefresh(previousAudit, reportMarkdown)) {
       recoverExistingJob = intakeAuditAwaitsWorkerDispatch(previousAudit);
@@ -169,12 +187,15 @@ function prepare() {
   const jobReportRevisionSha256 = decision.shouldRepair
     ? reportRevisionSha256(reportMarkdown)
     : existingIssueImplementationJobRevision(previousAudit);
+  const blockedByOpenImplementationPr = decision.blockers.some((blocker) =>
+    OPEN_IMPLEMENTATION_PR_BLOCKERS.includes(blocker),
+  );
   const workerRetryAfter =
     existingJob &&
     !decision.shouldRepair &&
     decision.status !== "already_queued" &&
-    !workerDispatched
-      ? new Date(Date.now() + 30 * 60_000).toISOString()
+    (!workerDispatched || blockedByOpenImplementationPr)
+      ? new Date(Date.now() + ISSUE_IMPLEMENTATION_BLOCKER_RECHECK_DELAY_MS).toISOString()
       : workerDispatched
         ? nextIssueImplementationWorkerRetry()
         : "";
@@ -335,9 +356,10 @@ export function discoverImplementationCandidates({
   }
   const candidates: { candidate: LooseRecord; existingJob: boolean; retryDue: boolean }[] = [];
   for (const { markdown, number, reportPath, repository } of reviewsByIssue.values()) {
+    const parsedReport = parseReviewReport(markdown);
     const decision = reportOnlyDecision({
       targetRepo,
-      report: parseReviewReport(markdown),
+      report: parsedReport,
       reportMarkdown: markdown,
       candidateKind,
     });
@@ -347,14 +369,32 @@ export function discoverImplementationCandidates({
     const previousAudit = existingJob
       ? intakeAudit({ root: jobRoot, repo: repository, number })
       : null;
+    const reportRevision = reportRevisionSha256(markdown);
+    const reviewOrdering = authoritativeReviewOrdering({
+      audit: previousAudit,
+      report: parsedReport,
+      reportRevision,
+    });
+    const newerReview = reviewOrdering > 0;
+    const blockedByOpenImplementationPr =
+      previousAudit?.frontmatter.decision === "not_eligible" &&
+      previousAudit.frontmatter.worker_dispatched === "true" &&
+      OPEN_IMPLEMENTATION_PR_BLOCKERS.some((blocker) => previousAudit.body.includes(blocker));
+    const blockerRecheckDue =
+      blockedByOpenImplementationPr &&
+      (!Number.isFinite(Date.parse(previousAudit?.frontmatter.worker_retry_after ?? "")) ||
+        intakeAuditRetryDue(previousAudit));
     if (existingJob) {
+      if (reviewOrdering < 0) continue;
       if (intakeAuditRetryDeferred(previousAudit, markdown)) continue;
       if (
+        !newerReview &&
+        !blockerRecheckDue &&
         !intakeAuditAwaitsWorkerDispatch(previousAudit) &&
         !issueImplementationJobNeedsRefresh(previousAudit, markdown) &&
         !dispatchedIssueImplementationWorkerRetryDue({
           audit: previousAudit,
-          reportRevision: reportRevisionSha256(markdown),
+          reportRevision,
         })
       ) {
         continue;
@@ -367,6 +407,8 @@ export function discoverImplementationCandidates({
     candidates.push({
       existingJob,
       retryDue:
+        newerReview ||
+        blockerRecheckDue ||
         intakeAuditRetryDue(previousAudit) ||
         (intakeAuditAwaitsWorkerDispatch(previousAudit) &&
           !Number.isFinite(Date.parse(previousAudit?.frontmatter.worker_retry_after ?? ""))),
@@ -400,6 +442,34 @@ function reviewFreshness(report: ReviewReport): readonly [number, number] {
     value("item_updated_at", "current_item_updated_at", "current_item_closed_at"),
     value("reviewed_at", "last_full_review_at"),
   ];
+}
+
+function authoritativeReviewOrdering({
+  audit,
+  report,
+  reportRevision,
+}: {
+  audit: ReviewReport | null;
+  report: ReviewReport;
+  reportRevision: string;
+}) {
+  if (!audit || audit.frontmatter.report_revision_sha256 === reportRevision) return 0;
+  const incoming = reviewFreshness(report);
+  const audited = [
+    Date.parse(audit.frontmatter.report_item_updated_at ?? ""),
+    Date.parse(audit.frontmatter.report_reviewed_at ?? ""),
+  ].map((value) => (Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY));
+  if (audited.some(Number.isFinite)) {
+    for (const [index, incomingValue] of incoming.entries()) {
+      const auditedValue = audited[index] ?? Number.NEGATIVE_INFINITY;
+      if (!Number.isFinite(incomingValue) || !Number.isFinite(auditedValue)) continue;
+      if (incomingValue !== auditedValue) return incomingValue > auditedValue ? 1 : -1;
+    }
+    return 0;
+  }
+  const preparedAt = Date.parse(audit.frontmatter.prepared_at ?? "");
+  if (!Number.isFinite(incoming[1]) || !Number.isFinite(preparedAt)) return 0;
+  return incoming[1] > preparedAt ? 1 : -1;
 }
 
 function compareReviewFreshness(left: readonly number[], right: readonly number[]) {
@@ -829,12 +899,15 @@ function writeAudit(context: LooseRecord) {
   const jobLine = context.decision.shouldRepair
     ? `- Job: \`${relative(context.jobPath)}\``
     : "- Job: none";
+  const [itemUpdatedAt, reviewedAt] = reviewFreshness(context.report as ReviewReport);
   const body = `---
 repo: ${context.targetRepo}
 number: ${context.itemNumber}
 report_repo: ${context.reportRepo}
 report_path: ${context.reportPath}
 report_revision_sha256: ${reportRevisionSha256(context.reportMarkdown)}
+report_item_updated_at: ${Number.isFinite(itemUpdatedAt) ? new Date(itemUpdatedAt).toISOString() : ""}
+report_reviewed_at: ${Number.isFinite(reviewedAt) ? new Date(reviewedAt).toISOString() : ""}
 job_report_revision_sha256: ${context.jobReportRevisionSha256 || ""}
 decision: ${context.decision.status}
 prepared_at: ${context.preparedAt}

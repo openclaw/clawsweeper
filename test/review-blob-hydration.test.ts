@@ -1,17 +1,23 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { hydratePullRequestReviewBlobs } from "../dist/clawsweeper-review-blobs.js";
+import {
+  githubReviewBlobSizes,
+  hydratePullRequestReviewBlobs,
+} from "../dist/clawsweeper-review-blobs.js";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
 
-function partialCloneFixture() {
+function partialCloneFixture({
+  extraFiles = 0,
+  largeFiles = [],
+}: { extraFiles?: number; largeFiles?: number[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-promisor-"));
   const origin = join(root, "origin.git");
   const source = join(root, "source");
@@ -38,6 +44,12 @@ function partialCloneFixture() {
   mkdirSync(join(source, "nested"));
   writeFileSync(join(source, "nested", "feature[1].txt"), "nested literal\n");
   writeFileSync(join(source, ":(glob)literal.txt"), "pathspec literal\n");
+  for (let index = 0; index < extraFiles; index += 1) {
+    writeFileSync(join(source, `additional-${index}.txt`), `additional ${index}\n`);
+  }
+  for (const [index, bytes] of largeFiles.entries()) {
+    writeFileSync(join(source, `large-${index}.bin`), Buffer.alloc(bytes, index + 1));
+  }
   git(source, "rm", "-q", "removed.txt");
   git(source, "add", ".");
   git(source, "update-index", "--add", "--cacheinfo", `160000,${"2".repeat(40)},vendor/library`);
@@ -66,7 +78,14 @@ function partialCloneFixture() {
     "refs/pull/982/head:refs/clawsweeper/review-cache/head-982",
     "--depth=1",
   );
-  return { root, target, baseSha, headSha, addedBlobSha, changedBlobSha };
+  return { root, source, target, baseSha, headSha, addedBlobSha, changedBlobSha };
+}
+
+function resolveFixtureBlobSizes(source: string) {
+  return (objectIds: readonly string[]) =>
+    new Map(
+      objectIds.map((objectId) => [objectId, Number(git(source, "cat-file", "-s", objectId))]),
+    );
 }
 
 function objectExistsOffline(cwd: string, sha: string): boolean {
@@ -89,6 +108,7 @@ test("restricted PR review can inspect changed blobs from a genuine blobless clo
       targetDir: fixture.target,
       baseSha: fixture.baseSha,
       headSha: fixture.headSha,
+      resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
       files: [
         { filename: "added.txt", status: "added" },
         { filename: "nested/feature[1].txt", status: "added" },
@@ -152,4 +172,97 @@ test("review blob hydration rejects unsafe paths and oversized changes without f
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
+});
+
+test("missing partial-clone objects are fetched in one bounded network request", () => {
+  const fixture = partialCloneFixture({ extraFiles: 12 });
+  const previousTrace = process.env.GIT_TRACE2_EVENT;
+  const trace = join(fixture.root, "git-trace.jsonl");
+  try {
+    process.env.GIT_TRACE2_EVENT = trace;
+    const result = hydratePullRequestReviewBlobs({
+      targetDir: fixture.target,
+      baseSha: fixture.baseSha,
+      headSha: fixture.headSha,
+      resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
+      files: Array.from({ length: 12 }, (_, index) => ({
+        filename: `additional-${index}.txt`,
+        status: "added",
+      })),
+    });
+    if (previousTrace === undefined) delete process.env.GIT_TRACE2_EVENT;
+    else process.env.GIT_TRACE2_EVENT = previousTrace;
+
+    const traceEvents = readFileSync(trace, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { event: string; argv?: string[] });
+    const fetches = traceEvents.filter(
+      (event) => event.event === "start" && event.argv?.includes("fetch"),
+    );
+    assert.deepEqual(result, { hydrated: true, blobs: 12 });
+    assert.equal(fetches.length, 1);
+  } finally {
+    if (previousTrace === undefined) delete process.env.GIT_TRACE2_EVENT;
+    else process.env.GIT_TRACE2_EVENT = previousTrace;
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("review hydration enforces per-review byte limits without fetching oversized blobs", () => {
+  for (const largeFiles of [[5 * 1024 * 1024], [3 * 1024 * 1024, 2 * 1024 * 1024]]) {
+    const fixture = partialCloneFixture({ largeFiles });
+    try {
+      const oversizedBlob = git(
+        fixture.target,
+        "rev-parse",
+        `${fixture.headSha}:large-${largeFiles.length - 1}.bin`,
+      );
+      const result = hydratePullRequestReviewBlobs({
+        targetDir: fixture.target,
+        baseSha: fixture.baseSha,
+        headSha: fixture.headSha,
+        resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
+        files: [
+          { filename: "added.txt", status: "added" },
+          ...largeFiles.map((_, index) => ({ filename: `large-${index}.bin`, status: "added" })),
+        ],
+      });
+
+      assert.equal(result.hydrated, false);
+      assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), true);
+      assert.equal(objectExistsOffline(fixture.target, oversizedBlob), false);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("review blob sizes use one bounded GraphQL metadata request", () => {
+  const objectIds = ["a".repeat(40), "b".repeat(40)];
+  let requests = 0;
+  const result = githubReviewBlobSizes({
+    repository: "openclaw/clawsweeper",
+    objectIds,
+    request: (query) => {
+      requests += 1;
+      assert.match(query, /repository\(owner: "openclaw", name: "clawsweeper"\)/);
+      assert.match(query, /b0: object\(oid:/);
+      assert.match(query, /b1: object\(oid:/);
+      return { data: { repository: { b0: { byteSize: 12 }, b1: { byteSize: 34 } } } };
+    },
+  });
+
+  assert.equal(requests, 1);
+  assert.deepEqual(
+    [...result],
+    [
+      [objectIds[0], 12],
+      [objectIds[1], 34],
+    ],
+  );
+  assert.throws(
+    () => githubReviewBlobSizes({ repository: "../unsafe", objectIds, request: () => ({}) }),
+    /invalid bounded review blob metadata request/,
+  );
 });

@@ -98,10 +98,11 @@ test("issue worker recovery respects review freshness, retry delays, and retry c
   }
 });
 
-test("a newer authoritative review can refresh a completed exhausted worker job", () => {
+test("a newer authoritative review immediately refreshes a completed exhausted worker job", () => {
   const previousAudit = audit({
     report_revision_sha256: "b".repeat(64),
     worker_attempt_count: String(ISSUE_IMPLEMENTATION_MAX_WORKER_ATTEMPTS),
+    worker_retry_after: "2026-07-31T19:30:00.000Z",
   });
 
   assert.equal(

@@ -42,6 +42,7 @@ export function dispatchedIssueImplementationWorkerRetryDue({
   ) {
     return false;
   }
+  if (!sameReview) return true;
   const retryAfter = Date.parse(String(audit.frontmatter.worker_retry_after ?? ""));
   if (Number.isFinite(retryAfter)) return retryAfter <= nowMs;
   const preparedAt = Date.parse(String(audit.frontmatter.prepared_at ?? ""));
