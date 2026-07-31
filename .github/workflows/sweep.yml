@@ -5045,6 +5045,8 @@ jobs:
             item_numbers="$(awk -F= '$1 == "item_numbers" { print $2 }' "$batch_env")"
             next_cursor="$(awk -F= '$1 == "next_cursor" { print $2 }' "$batch_env")"
             batch_count="$(awk -F= '$1 == "count" { print $2 }' "$batch_env")"
+            trim_comment_sync_cycle_batch
+            [ -n "$item_numbers" ] || batch_count=0
             if [ "${batch_count:-0}" -eq 0 ]; then
               pnpm run status -- \
                 --target-repo "$TARGET_REPO" \

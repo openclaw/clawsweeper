@@ -55,6 +55,31 @@ normalize_comment_sync_mode() {
   fi
 }
 
+trim_comment_sync_cycle_batch() {
+  if [ "${comment_sync_cycle_wrapped:-false}" != "true" ] ||
+    [ "${comment_sync_cycle_start:-0}" -le 0 ] ||
+    [ -z "${item_numbers:-}" ]; then
+    return 0
+  fi
+  local untrimmed_items="$item_numbers"
+  item_numbers="$(jq -nr \
+    --arg selected "$item_numbers" \
+    --argjson boundary "$comment_sync_cycle_start" '
+      $selected | split(",")
+      | map(tonumber? | select(. > 0 and . <= $boundary))
+      | unique | sort | map(tostring) | join(",")
+    ')"
+  if [ -z "$item_numbers" ]; then
+    local reset_cursor_path
+    reset_cursor_path="$(mktemp "${cursor_path}.reset.XXXXXX")"
+    jq 'del(.cycle_start_after_number, .cycle_wrapped)' "$cursor_path" > "$reset_cursor_path"
+    mv "$reset_cursor_path" "$cursor_path"
+    comment_sync_cycle_start="${comment_sync_initial_cursor:-0}"
+    comment_sync_cycle_wrapped=false
+    item_numbers="$untrimmed_items"
+  fi
+}
+
 prepare_comment_sync_batch() {
   comment_sync_pending_items=""
   comment_sync_cursor_advance_count=0
@@ -131,6 +156,9 @@ prepare_comment_sync_batch() {
       item_numbers="$(IFS=,; printf '%s' "${requested_items[*]:0:comment_sync_processed_limit}")"
       echo "Splitting comment sync into $comment_sync_processed_limit-item checkpoints."
     fi
+  fi
+  if [ "${sync_open_pr_batch:-false}" = "true" ]; then
+    trim_comment_sync_cycle_batch
   fi
 }
 
@@ -228,6 +256,14 @@ complete_comment_sync_batch() {
         [ "${selected_items[0]}" -le "$cycle_start" ] &&
         [ "$safe_cursor" -ge "$cycle_start" ]; then
         lookahead_count=0
+      fi
+      if [ "$cycle_wrapped" = "true" ] && [ "$lookahead_count" -gt 0 ]; then
+        local lookahead_items
+        lookahead_items="$(awk -F= '$1 == "item_numbers" { print $2 }' "$lookahead_env")"
+        local first_lookahead_item="${lookahead_items%%,*}"
+        if [ "$first_lookahead_item" -gt "$cycle_start" ]; then
+          lookahead_count=0
+        fi
       fi
       if [ "$lookahead_count" -gt 0 ]; then
         local cycle_cursor_path

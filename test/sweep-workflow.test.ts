@@ -2512,6 +2512,7 @@ test("unscheduled wrapped synchronization drains every bounded window and then s
           "  prepare_comment_sync_batch",
           '  pnpm run --silent workflow -- comment-sync-batch --target-repo "$TARGET_REPO" --apply-kind "$apply_kind" --batch-size "$sync_batch_size" --cursor-path "$cursor_path" > next.env',
           "  item_numbers=$(awk -F= '$1 == \"item_numbers\" { print $2 }' next.env)",
+          "  trim_comment_sync_cycle_batch",
           "done",
           'printf "continue=%s\\ncursor=%s\\n" "$continue_apply" "$(jq -r .next_after_number "$cursor_path")"',
         ].join("\n"),
@@ -2531,9 +2532,96 @@ test("unscheduled wrapped synchronization drains every bounded window and then s
     assert.match(output, /^window=6,7$/m);
     assert.match(output, /^window=1,2$/m);
     assert.match(output, /^window=3,4$/m);
-    assert.match(output, /^window=5,6$/m);
+    assert.match(output, /^window=5$/m);
+    assert.doesNotMatch(output, /^window=5,6$/m);
     assert.match(output, /^continue=false$/m);
-    assert.match(output, /^cursor=6$/m);
+    assert.match(output, /^cursor=5$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("wrapped cursor state never widens an explicit comment-sync selection", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const cursor = join(root, "cursor.json");
+  writeFileSync(
+    cursor,
+    '{"next_after_number":2,"cycle_start_after_number":5,"cycle_wrapped":true}\n',
+  );
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          'source "$APPLY_HELPER_PATH"',
+          "comment_sync_processed_limit=40",
+          "sync_batch_size=40",
+          "sync_comments_only=true",
+          "sync_open_pr_batch=false",
+          'cursor_path="$CURSOR_PATH"',
+          "item_numbers=99",
+          "prepare_comment_sync_batch",
+          'printf "selected=%s\\n" "$item_numbers"',
+        ].join("\n"),
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CURSOR_PATH: cursor,
+          APPLY_HELPER_PATH: join(process.cwd(), "scripts/apply-workflow-helpers.sh"),
+        },
+      },
+    );
+
+    assert.match(output, /^selected=99$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("wrapped cursor resets when every remaining boundary record disappears", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const cursor = join(root, "cursor.json");
+  writeFileSync(
+    cursor,
+    '{"next_after_number":2,"cycle_start_after_number":5,"cycle_wrapped":true}\n',
+  );
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          'source "$APPLY_HELPER_PATH"',
+          "comment_sync_processed_limit=40",
+          "sync_batch_size=40",
+          "sync_comments_only=true",
+          "sync_open_pr_batch=true",
+          'cursor_path="$CURSOR_PATH"',
+          "item_numbers=6,7",
+          "prepare_comment_sync_batch",
+          'printf "selected=%s\\nwrapped=%s\\nhas_cycle=%s\\n" "$item_numbers" "$comment_sync_cycle_wrapped" "$(jq -r \'has(\"cycle_wrapped\")\' "$cursor_path")"',
+        ].join("\n"),
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CURSOR_PATH: cursor,
+          APPLY_HELPER_PATH: join(process.cwd(), "scripts/apply-workflow-helpers.sh"),
+        },
+      },
+    );
+
+    assert.match(output, /^selected=6,7$/m);
+    assert.match(output, /^wrapped=false$/m);
+    assert.match(output, /^has_cycle=false$/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
