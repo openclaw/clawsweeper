@@ -3900,6 +3900,96 @@ test("intermediate validation cannot tamper with fresh runtime outputs before ar
   );
 });
 
+test("changed-gate fallback preserves and protects pending fresh runtime output", () => {
+  for (const tamperWithFreshRuntime of [false, true]) {
+    const cwd = gitPackageFixture({
+      "build:ci-artifacts": "node scripts/build-runtime.mjs",
+      "test:serial": "node --test",
+    });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), "dist/\n");
+    const scripts = path.join(cwd, "scripts");
+    fs.mkdirSync(scripts, { recursive: true });
+    fs.writeFileSync(path.join(scripts, "build-runtime.mjs"), "// trusted fixture shim\n");
+    fs.writeFileSync(
+      path.join(scripts, "dist-runtime-build-artifact.mjs"),
+      [
+        'import fs from "node:fs";',
+        'if (fs.readFileSync("dist/runtime.js", "utf8") !== "fresh runtime\\n") process.exit(71);',
+        'const archive = process.argv[process.argv.indexOf("--archive") + 1];',
+        'fs.writeFileSync(archive, "runtime archive proof\\n");',
+        "",
+      ].join("\n"),
+    );
+    fs.mkdirSync(path.join(cwd, "test"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, "test", "example.test.ts"), "export const value = 1;\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+    fs.writeFileSync(path.join(cwd, "test", "example.test.ts"), "export const value = 2;\n");
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-runtime-fallback-"));
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      [
+        'const fs = require("node:fs");',
+        "const args = process.argv.slice(2);",
+        'if (args.includes("build:ci-artifacts")) {',
+        '  fs.mkdirSync("dist", { recursive: true });',
+        '  fs.writeFileSync("dist/runtime.js", "fresh runtime\\n");',
+        "}",
+        'if (args.includes("check:changed")) {',
+        '  console.error("terminating stalled Vitest process");',
+        "  process.exit(1);",
+        "}",
+        ...(tamperWithFreshRuntime
+          ? [
+              'if (args.includes("test:serial")) {',
+              '  fs.writeFileSync("dist/runtime.js", "tampered runtime\\n");',
+              "}",
+            ]
+          : []),
+      ].join("\n"),
+    );
+
+    const smoke =
+      "node scripts/dist-runtime-build-artifact.mjs pack-and-smoke --archive dist-runtime-build.tar.zst";
+    const execute = () =>
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          ["pnpm build:ci-artifacts", "pnpm check:changed", smoke],
+          cwd,
+          validationOptions("openclaw/openclaw", {
+            allowExpensiveValidation: true,
+            pinnedBaseRef: "origin/main",
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+            },
+          }),
+        ),
+      );
+
+    if (tamperWithFreshRuntime) {
+      assert.throws(
+        execute,
+        /unsafe validation command mutated fresh runtime build output \(pnpm test:serial test\/example\.test\.ts\)/,
+      );
+      continue;
+    }
+
+    assert.deepEqual(execute(), [
+      "pnpm build:ci-artifacts",
+      "git diff --check origin/main...HEAD",
+      "pnpm test:serial test/example.test.ts",
+      smoke,
+    ]);
+    assert.equal(fs.readFileSync(path.join(cwd, "dist", "runtime.js"), "utf8"), "fresh runtime\n");
+    assert.equal(fs.existsSync(path.join(cwd, "dist-runtime-build.tar.zst")), false);
+  }
+});
+
 test("OpenClaw archive smoke cannot pass by reusing a pre-existing stale build", () => {
   const cwd = gitPackageFixture({ "build:ci-artifacts": "node scripts/build-runtime.mjs" });
   fs.appendFileSync(path.join(cwd, ".gitignore"), "dist/\n");

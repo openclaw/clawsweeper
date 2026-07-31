@@ -1360,17 +1360,31 @@ export function runAllowedValidationCommandsWithBinding(
                 cwd,
                 ignoredValidationInputs,
                 validationIdentityProofDeadlineAt(deadlineAt),
+                preservedRuntimeRoots,
               );
             } catch (error) {
               fallbackError ??= error as Error;
             }
+            if (!fallbackError && pendingRuntimeBuild) {
+              try {
+                assertRuntimeArtifactBuildOutputBinding(
+                  cwd,
+                  pendingRuntimeBuild,
+                  validationIdentityProofDeadlineAt(deadlineAt),
+                  fallbackRendered,
+                );
+              } catch (error) {
+                fallbackError = error as Error;
+              }
+            }
             assertValidationCheckoutIdentityWithinCommand(
               cwd,
               baseRef,
-              checkoutIdentity,
+              activeRuntimeBuild?.protectedIdentity ?? checkoutIdentity,
               validationIdentityProofDeadlineAt(deadlineAt),
               fallbackRendered,
               fallbackError ?? executionError,
+              preservedRuntimeRoots,
             );
             if (fallbackError) throw fallbackError;
             executed.push(fallbackRendered);
