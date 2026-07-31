@@ -381,6 +381,14 @@ test("review workflow gives Codex a read-only inspection token", () => {
   const stateTokenStart = eventReviewJob.indexOf("- name: Create state token", exactReviewStart);
   const exactReviewStep = eventReviewJob.slice(exactReviewStart, stateTokenStart);
 
+  assert.match(
+    eventReviewJob,
+    /runs-on: \$\{\{ vars\.CLAWSWEEPER_REVIEW_RUNNER \|\| 'ubuntu-latest' \}\}/,
+  );
+  assert.match(
+    reviewJob,
+    /runs-on: \$\{\{ vars\.CLAWSWEEPER_REVIEW_RUNNER \|\| 'ubuntu-latest' \}\}/,
+  );
   assert.match(workflow, /id: codex-inspection-token/);
   assert.match(workflow, /permission-issues: read/);
   assert.match(workflow, /CLAWSWEEPER_PROOF_INSPECTION_TOKEN/);

@@ -97,6 +97,9 @@ test("fix prompt makes Codex own the validation loop", () => {
     /do not refetch, rebase, or rerun validation solely because origin\/main advances/,
   );
   assert.match(prompt, /ClawSweeper performs one deterministic final base sync/);
+  assert.match(prompt, /place generated archives under TMPDIR/);
+  assert.match(prompt, /remove checkout-local temporary archives or incremental validation caches/);
+  assert.match(prompt, /independent validation must preserve the target checkout identity/);
   assert.match(prompt, /use one repair loop against the pinned base/);
   assert.match(prompt, /use the dependency toolchain ClawSweeper already prepared/);
   assert.match(prompt, /never run an unrestricted package-manager install/);

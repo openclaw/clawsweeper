@@ -40,6 +40,7 @@ export function buildFixPrompt({
     "- establish one base snapshot for this Codex edit pass: use the supplied deterministic pre-edit rebase when it already succeeded, otherwise fetch origin/main once and rebase or otherwise sync once;",
     "- pin that base SHA while editing and validating; do not refetch, rebase, or rerun validation solely because origin/main advances during this edit pass;",
     "- after validation passes against the pinned base, return the repair; ClawSweeper performs one deterministic final base sync, then exact-head review and GitHub checks provide the final proof;",
+    "- keep built runtime outputs needed for validation, but place generated archives under TMPDIR and remove checkout-local temporary archives or incremental validation caches you created before returning; independent validation must preserve the target checkout identity;",
     "- run local git status/diff/log/rebase/merge commands needed to reconcile this branch with the pinned base;",
     "- use the dependency toolchain ClawSweeper already prepared; never run an unrestricted package-manager install, hook installer, git config, or git config write; if an installation is unavoidable, use --ignore-scripts and never change core.hooksPath or other Git callback settings;",
     "- when git conflicts exist, resolve every conflict marker and leave the checkout in a normal non-rebasing state;",

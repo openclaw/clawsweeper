@@ -1189,126 +1189,208 @@ export function runAllowedValidationCommandsWithBinding(
         "validation_command_missing: no configured or artifact validation command is available",
       );
     }
-    for (const command of requiredCommands) {
-      const resolvedCommands = resolveAllowedValidationCommands(command, cwd, baseBranch, options);
-      for (const parts of resolvedCommands) {
-        const rendered = parts.join(" ");
-        if (executed.includes(rendered)) continue;
-        assertNoUnsafeBunLifecycleHooks(cwd, parts);
-        const startedAt = Date.now();
-        const deadlineAt = startedAt + validationTimeoutMs;
-        const identityReserveMs = validationIdentityReserveMs(validationTimeoutMs);
-        while (true) {
-          let executionError: Error | null = null;
+    const resolvedValidationCommands = requiredCommands.flatMap((command) =>
+      resolveAllowedValidationCommands(command, cwd, baseBranch, options),
+    );
+    let pendingRuntimeBuild: ValidationRuntimeBuild | null = null;
+    for (const [commandIndex, parts] of resolvedValidationCommands.entries()) {
+      const rendered = parts.join(" ");
+      if (executed.includes(rendered)) continue;
+      assertNoUnsafeBunLifecycleHooks(cwd, parts);
+      const startedAt = Date.now();
+      const deadlineAt = startedAt + validationTimeoutMs;
+      const identityReserveMs = validationIdentityReserveMs(validationTimeoutMs);
+      const runtimeBuild =
+        options.targetRepo === "openclaw/openclaw" &&
+        isRuntimeArtifactBuildCommand(parts) &&
+        resolvedValidationCommands.slice(commandIndex + 1).some(isRuntimeArtifactSmokeCommand)
+          ? (() => {
+              const outputRoots = runtimeArtifactBuildOutputRoots(cwd);
+              return {
+                outputRoots,
+                protectedIdentity: validationCheckoutIdentity(
+                  cwd,
+                  baseRef,
+                  validationIdentityProofDeadlineAt(deadlineAt),
+                  outputRoots,
+                ),
+                outputSha256: "",
+              };
+            })()
+          : null;
+      const runtimeSmoke =
+        pendingRuntimeBuild && isRuntimeArtifactSmokeCommand(parts) ? pendingRuntimeBuild : null;
+      const activeRuntimeBuild = runtimeBuild ?? pendingRuntimeBuild;
+      const preservedRuntimeRoots = activeRuntimeBuild?.outputRoots ?? [];
+      while (true) {
+        let executionError: Error | null = null;
+        try {
+          resetValidationEnvironment(deadlineAt - identityReserveMs);
+          if (!rustToolchainPrepared) {
+            rustToolchainPrepared = true;
+            const rustupToolchainBin = verifiedRustupToolchainBin(deadlineAt, identityReserveMs);
+            if (rustupToolchainBin) prependValidationPath(validationEnv, rustupToolchainBin);
+          }
+          const executionParts = validationCommandWithDisposableArchive(
+            validationCommandForExecution(parts),
+            validationEnv,
+          );
+          if (pendingRuntimeBuild && !runtimeBuild) {
+            assertRuntimeArtifactBuildOutputBinding(
+              cwd,
+              pendingRuntimeBuild,
+              validationIdentityProofDeadlineAt(deadlineAt),
+              rendered,
+            );
+          }
+          if (runtimeBuild) {
+            clearRuntimeArtifactBuildOutput(
+              cwd,
+              runtimeBuild.outputRoots,
+              validationIdentityProofDeadlineAt(deadlineAt),
+            );
+          }
+          const restoreRuntimeBuildCache = runtimeBuild
+            ? prepareDisposableRuntimeBuildCache(cwd, validationEnv, ignoredValidationInputs)
+            : null;
+          const executionBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
+          if (executionBudgetMs < MIN_VALIDATION_COMMAND_BUDGET_MS) {
+            restoreRuntimeBuildCache?.();
+            throw validationCommandBudgetError(rendered);
+          }
           try {
-            resetValidationEnvironment(deadlineAt - identityReserveMs);
-            if (!rustToolchainPrepared) {
-              rustToolchainPrepared = true;
-              const rustupToolchainBin = verifiedRustupToolchainBin(deadlineAt, identityReserveMs);
-              if (rustupToolchainBin) prependValidationPath(validationEnv, rustupToolchainBin);
-            }
-            const executionParts = validationCommandForExecution(parts);
-            const executionBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
-            if (executionBudgetMs < MIN_VALIDATION_COMMAND_BUDGET_MS) {
-              throw validationCommandBudgetError(rendered);
-            }
             runContainedCommand(executionParts[0]!, executionParts.slice(1), {
               cwd,
               env: validationEnv,
               timeoutMs: executionBudgetMs,
               writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
             });
-          } catch (error) {
-            executionError = error as Error;
+          } finally {
+            restoreRuntimeBuildCache?.();
           }
-          try {
-            clearNewIgnoredValidationRuntimePaths(
+          if (runtimeBuild) {
+            assertGeneratedRuntimeBuildOutput(cwd);
+            runtimeBuild.outputSha256 = runtimeArtifactBuildOutputSha256(
               cwd,
-              ignoredValidationInputs,
+              runtimeBuild.outputRoots,
               validationIdentityProofDeadlineAt(deadlineAt),
             );
-          } catch (error) {
-            executionError ??= error as Error;
+          } else if (pendingRuntimeBuild) {
+            assertRuntimeArtifactBuildOutputBinding(
+              cwd,
+              pendingRuntimeBuild,
+              validationIdentityProofDeadlineAt(deadlineAt),
+              rendered,
+            );
           }
-          assertValidationCheckoutIdentityWithinCommand(
-            cwd,
-            baseRef,
-            checkoutIdentity,
-            validationIdentityProofDeadlineAt(deadlineAt),
-            rendered,
-            executionError,
-          );
-          if (!executionError) {
-            executed.push(rendered);
-            break;
-          }
-
-          const fallbackCommands = validationFallbackCommands({
-            parts,
-            error: executionError,
-            cwd,
-            baseBranch,
-            baseRef,
-            options,
-          });
-          if (fallbackCommands.length > 0) {
-            for (const fallbackParts of fallbackCommands) {
-              const fallbackRendered = fallbackParts.join(" ");
-              if (executed.includes(fallbackRendered)) continue;
-              let fallbackError: Error | null = null;
-              try {
-                resetValidationEnvironment(deadlineAt - identityReserveMs);
-                const fallbackBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
-                if (fallbackBudgetMs < MIN_VALIDATION_COMMAND_BUDGET_MS) {
-                  throw validationCommandBudgetError(rendered, executionError);
-                }
-                const executionParts = validationCommandForExecution(fallbackParts);
-                runContainedCommand(executionParts[0]!, executionParts.slice(1), {
-                  cwd,
-                  env: validationEnv,
-                  timeoutMs: fallbackBudgetMs,
-                  writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
-                });
-              } catch (error) {
-                fallbackError = error as Error;
-              }
-              try {
-                clearNewIgnoredValidationRuntimePaths(
-                  cwd,
-                  ignoredValidationInputs,
-                  validationIdentityProofDeadlineAt(deadlineAt),
-                );
-              } catch (error) {
-                fallbackError ??= error as Error;
-              }
-              assertValidationCheckoutIdentityWithinCommand(
-                cwd,
-                baseRef,
-                checkoutIdentity,
-                validationIdentityProofDeadlineAt(deadlineAt),
-                rendered,
-                fallbackError ?? executionError,
-              );
-              if (fallbackError) throw fallbackError;
-              executed.push(fallbackRendered);
-            }
-            break;
-          }
-          const retryBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
-          if (
-            retryBudgetMs >= MIN_VALIDATION_RETRY_BUDGET_MS &&
-            shouldRetryValidationCommand({ parts, error: executionError, attempts, options })
-          ) {
-            continue;
-          }
-          if (retryBudgetMs < MIN_VALIDATION_COMMAND_BUDGET_MS) {
-            throw validationCommandBudgetError(rendered, executionError);
-          }
-          throw new Error(
-            `validation command failed (${rendered}): ${compactText(executionError.message, 12000)}`,
-            { cause: executionError },
-          );
+        } catch (error) {
+          executionError = error as Error;
         }
+        try {
+          clearNewIgnoredValidationRuntimePaths(
+            cwd,
+            ignoredValidationInputs,
+            validationIdentityProofDeadlineAt(deadlineAt),
+            preservedRuntimeRoots,
+          );
+        } catch (error) {
+          executionError ??= error as Error;
+        }
+        assertValidationCheckoutIdentityWithinCommand(
+          cwd,
+          baseRef,
+          activeRuntimeBuild?.protectedIdentity ?? checkoutIdentity,
+          validationIdentityProofDeadlineAt(deadlineAt),
+          rendered,
+          executionError,
+          preservedRuntimeRoots,
+        );
+        if (!executionError) {
+          if (runtimeBuild) pendingRuntimeBuild = runtimeBuild;
+          if (runtimeSmoke) {
+            checkoutIdentity = validationCheckoutIdentity(
+              cwd,
+              baseRef,
+              validationIdentityProofDeadlineAt(deadlineAt),
+            );
+            ignoredValidationInputs = ignoredValidationRuntimePaths(
+              cwd,
+              validationIdentityProofDeadlineAt(deadlineAt),
+            );
+            pendingRuntimeBuild = null;
+          }
+          executed.push(rendered);
+          break;
+        }
+
+        const fallbackCommands = validationFallbackCommands({
+          parts,
+          error: executionError,
+          cwd,
+          baseBranch,
+          baseRef,
+          options,
+        });
+        if (fallbackCommands.length > 0) {
+          for (const fallbackParts of fallbackCommands) {
+            const fallbackRendered = fallbackParts.join(" ");
+            if (executed.includes(fallbackRendered)) continue;
+            let fallbackError: Error | null = null;
+            try {
+              resetValidationEnvironment(deadlineAt - identityReserveMs);
+              const fallbackBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
+              if (fallbackBudgetMs < MIN_VALIDATION_COMMAND_BUDGET_MS) {
+                throw validationCommandBudgetError(rendered, executionError);
+              }
+              const executionParts = validationCommandWithDisposableArchive(
+                validationCommandForExecution(fallbackParts),
+                validationEnv,
+              );
+              runContainedCommand(executionParts[0]!, executionParts.slice(1), {
+                cwd,
+                env: validationEnv,
+                timeoutMs: fallbackBudgetMs,
+                writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
+              });
+            } catch (error) {
+              fallbackError = error as Error;
+            }
+            try {
+              clearNewIgnoredValidationRuntimePaths(
+                cwd,
+                ignoredValidationInputs,
+                validationIdentityProofDeadlineAt(deadlineAt),
+              );
+            } catch (error) {
+              fallbackError ??= error as Error;
+            }
+            assertValidationCheckoutIdentityWithinCommand(
+              cwd,
+              baseRef,
+              checkoutIdentity,
+              validationIdentityProofDeadlineAt(deadlineAt),
+              fallbackRendered,
+              fallbackError ?? executionError,
+            );
+            if (fallbackError) throw fallbackError;
+            executed.push(fallbackRendered);
+          }
+          break;
+        }
+        const retryBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
+        if (
+          retryBudgetMs >= MIN_VALIDATION_RETRY_BUDGET_MS &&
+          shouldRetryValidationCommand({ parts, error: executionError, attempts, options })
+        ) {
+          continue;
+        }
+        if (retryBudgetMs < MIN_VALIDATION_COMMAND_BUDGET_MS) {
+          throw validationCommandBudgetError(rendered, executionError);
+        }
+        throw new Error(
+          `validation command failed (${rendered}): ${compactText(executionError.message, 12000)}`,
+          { cause: executionError },
+        );
       }
     }
     return {
@@ -1567,6 +1649,12 @@ export type TargetCheckoutBinding = ValidationSourceIdentity;
 
 type ValidationCheckoutIdentity = ValidationSourceIdentity & {
   baseSha: string;
+};
+
+type ValidationRuntimeBuild = {
+  outputRoots: string[];
+  outputSha256: string;
+  protectedIdentity: ValidationCheckoutIdentity;
 };
 
 type PreparedTargetPnpmRuntime = {
@@ -2335,7 +2423,11 @@ export function runTargetDiffCheck(
   }
 }
 
-function validationSourceIdentity(cwd: string, deadlineAt: number): ValidationSourceIdentity {
+function validationSourceIdentity(
+  cwd: string,
+  deadlineAt: number,
+  excludedRuntimeRoots: readonly string[] = [],
+): ValidationSourceIdentity {
   assertCallbackFreeGitConfig(cwd, deadlineAt);
   assertNoHiddenIndexEntries(cwd, deadlineAt);
   const headSha = runIdentityGit(cwd, ["rev-parse", "HEAD"], deadlineAt, "source head").trim();
@@ -2356,7 +2448,7 @@ function validationSourceIdentity(cwd: string, deadlineAt: number): ValidationSo
     contentTreeSha,
     gitAdminSha256: gitAdministrativeSha256(cwd, deadlineAt),
     headSha,
-    runtimeInputsSha256: validationRuntimeInputsSha256(cwd, deadlineAt),
+    runtimeInputsSha256: validationRuntimeInputsSha256(cwd, deadlineAt, excludedRuntimeRoots),
     treeSha,
     status,
     worktreeSha256,
@@ -2380,9 +2472,10 @@ function validationCheckoutIdentity(
   cwd: string,
   baseRef: string,
   deadlineAt: number,
+  excludedRuntimeRoots: readonly string[] = [],
 ): ValidationCheckoutIdentity {
   return {
-    ...validationSourceIdentity(cwd, deadlineAt),
+    ...validationSourceIdentity(cwd, deadlineAt, excludedRuntimeRoots),
     baseSha: runIdentityGit(cwd, ["rev-parse", baseRef], deadlineAt, "checkout base").trim(),
   };
 }
@@ -2392,10 +2485,16 @@ function assertValidationCheckoutIdentity(
   baseRef: string,
   expected: ValidationCheckoutIdentity,
   deadlineAt: number,
+  command: string,
+  excludedRuntimeRoots: readonly string[] = [],
 ) {
-  const actual = validationCheckoutIdentity(cwd, baseRef, deadlineAt);
+  const actual = validationCheckoutIdentity(cwd, baseRef, deadlineAt, excludedRuntimeRoots);
   if (!sameValidationSourceIdentity(actual, expected) || actual.baseSha !== expected.baseSha) {
-    throw new Error("unsafe validation command mutated checkout identity");
+    const fields: string[] = validationSourceIdentityMismatchFields(actual, expected);
+    if (actual.baseSha !== expected.baseSha) fields.push("baseSha");
+    throw new Error(
+      `unsafe validation command mutated checkout identity (${command}): ${fields.join(", ")}`,
+    );
   }
 }
 
@@ -2447,9 +2546,17 @@ function assertValidationCheckoutIdentityWithinCommand(
   deadlineAt: number,
   rendered: string,
   cause?: unknown,
+  excludedRuntimeRoots: readonly string[] = [],
 ) {
   try {
-    assertValidationCheckoutIdentity(cwd, baseRef, expected, deadlineAt);
+    assertValidationCheckoutIdentity(
+      cwd,
+      baseRef,
+      expected,
+      deadlineAt,
+      rendered,
+      excludedRuntimeRoots,
+    );
   } catch (error) {
     if (
       /unsafe validation command mutated checkout identity/.test(String((error as Error).message))
@@ -2460,6 +2567,164 @@ function assertValidationCheckoutIdentityWithinCommand(
       `unsafe validation command checkout identity could not be verified (${rendered})`,
       { cause: cause ?? error },
     );
+  }
+}
+
+function validationCommandWithDisposableArchive(
+  parts: string[],
+  validationEnv: NodeJS.ProcessEnv,
+): string[] {
+  const commandParts = stripEnvPrefix(parts);
+  if (!isRuntimeArtifactSmokeCommand(commandParts)) return parts;
+  const prefixLength = parts.length - commandParts.length;
+  return [
+    ...parts.slice(0, prefixLength),
+    ...commandParts.slice(0, 4),
+    path.join(String(validationEnv.TMPDIR), commandParts[4]!),
+  ];
+}
+
+function isRuntimeArtifactBuildCommand(parts: readonly string[]) {
+  const script = packageScriptRequirement(parts);
+  return (
+    script?.packageManager === "pnpm" &&
+    script.name === "build:ci-artifacts" &&
+    !script.workspaceScoped
+  );
+}
+
+function isRuntimeArtifactSmokeCommand(parts: readonly string[] | undefined) {
+  if (!parts) return false;
+  const commandParts = stripEnvPrefix(parts);
+  return (
+    commandParts[0] === "node" &&
+    commandParts[1] === "scripts/dist-runtime-build-artifact.mjs" &&
+    commandParts[2] === "pack-and-smoke" &&
+    commandParts[3] === "--archive" &&
+    commandParts.length === 5 &&
+    /^[A-Za-z0-9_.-]+\.tar\.zst$/.test(commandParts[4] ?? "")
+  );
+}
+
+function assertGeneratedRuntimeBuildOutput(cwd: string) {
+  const output = path.join(cwd, "dist");
+  const stats = fs.lstatSync(output, { throwIfNoEntry: false });
+  if (!stats?.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error("runtime artifact build did not create a safe fresh dist directory");
+  }
+}
+
+function runtimeArtifactBuildOutputRoots(cwd: string): string[] {
+  const roots = ["dist", "dist-runtime"];
+  const packages = path.join(cwd, "packages");
+  if (!fs.existsSync(packages)) return roots;
+  for (const entry of fs.readdirSync(packages, { withFileTypes: true })) {
+    if (entry.isDirectory() && /^[A-Za-z0-9_.-]+$/.test(entry.name)) {
+      roots.push(`packages/${entry.name}/dist`);
+    }
+  }
+  return roots;
+}
+
+function prepareDisposableRuntimeBuildCache(
+  cwd: string,
+  validationEnv: NodeJS.ProcessEnv,
+  ignoredValidationInputs: readonly string[],
+) {
+  const artifacts = path.join(cwd, ".artifacts");
+  const cache = path.join(artifacts, "build-all-cache");
+  const artifactsStat = fs.lstatSync(artifacts, { throwIfNoEntry: false });
+  if (
+    artifactsStat &&
+    (!ignoredValidationInputs.includes(".artifacts") ||
+      !artifactsStat.isDirectory() ||
+      artifactsStat.isSymbolicLink())
+  ) {
+    throw new Error("runtime artifact build has an unsafe existing artifacts directory");
+  }
+  const cacheStat = fs.lstatSync(cache, { throwIfNoEntry: false });
+  if (cacheStat && (!cacheStat.isDirectory() || cacheStat.isSymbolicLink())) {
+    throw new Error("runtime artifact build has an unsafe existing build cache");
+  }
+  const savedCache = path.join(
+    path.dirname(String(validationEnv.HOME)),
+    `build-cache-${randomUUID()}`,
+  );
+  if (cacheStat) moveRuntimeBuildCache(cache, savedCache);
+  return () => {
+    const currentArtifactsStat = fs.lstatSync(artifacts, { throwIfNoEntry: false });
+    if (
+      currentArtifactsStat &&
+      (!currentArtifactsStat.isDirectory() ||
+        currentArtifactsStat.isSymbolicLink() ||
+        (artifactsStat &&
+          (currentArtifactsStat.dev !== artifactsStat.dev ||
+            currentArtifactsStat.ino !== artifactsStat.ino)))
+    ) {
+      throw new Error("runtime artifact build changed its protected artifacts directory");
+    }
+    fs.rmSync(cache, { recursive: true, force: true });
+    if (cacheStat) {
+      fs.mkdirSync(artifacts, { recursive: true });
+      moveRuntimeBuildCache(savedCache, cache);
+    } else if (!artifactsStat && fs.existsSync(artifacts)) {
+      if (fs.readdirSync(artifacts).length === 0) fs.rmdirSync(artifacts);
+    }
+  };
+}
+
+function moveRuntimeBuildCache(source: string, destination: string) {
+  try {
+    fs.renameSync(source, destination);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+    fs.cpSync(source, destination, { recursive: true, verbatimSymlinks: true });
+    fs.rmSync(source, { recursive: true, force: true });
+  }
+}
+
+function clearRuntimeArtifactBuildOutput(
+  cwd: string,
+  outputRoots: readonly string[],
+  deadlineAt: number,
+) {
+  const ignoredRoots = new Set(ignoredValidationRuntimePaths(cwd, deadlineAt));
+  for (const root of outputRoots) {
+    const output = path.join(cwd, root);
+    const stats = fs.lstatSync(output, { throwIfNoEntry: false });
+    if (!stats) continue;
+    if (!ignoredRoots.has(root) || !stats.isDirectory() || stats.isSymbolicLink()) {
+      throw new Error(`runtime artifact build has an unsafe existing output directory: ${root}`);
+    }
+    fs.rmSync(output, { recursive: true, force: true });
+  }
+}
+
+function runtimeArtifactBuildOutputSha256(
+  cwd: string,
+  outputRoots: readonly string[],
+  deadlineAt: number,
+) {
+  const excludedRoots = ignoredValidationRuntimePaths(cwd, deadlineAt).filter(
+    (runtimeRoot) =>
+      !outputRoots.some(
+        (outputRoot) => runtimeRoot === outputRoot || runtimeRoot.startsWith(`${outputRoot}/`),
+      ),
+  );
+  return validationRuntimeInputsSha256(cwd, deadlineAt, excludedRoots);
+}
+
+function assertRuntimeArtifactBuildOutputBinding(
+  cwd: string,
+  runtimeBuild: ValidationRuntimeBuild,
+  deadlineAt: number,
+  command: string,
+) {
+  if (
+    runtimeArtifactBuildOutputSha256(cwd, runtimeBuild.outputRoots, deadlineAt) !==
+    runtimeBuild.outputSha256
+  ) {
+    throw new Error(`unsafe validation command mutated fresh runtime build output (${command})`);
   }
 }
 
@@ -2524,7 +2789,11 @@ function gitFileMode(mode: number) {
   return mode & 0o100 ? 0o100755 : 0o100644;
 }
 
-function validationRuntimeInputsSha256(cwd: string, deadlineAt: number) {
+function validationRuntimeInputsSha256(
+  cwd: string,
+  deadlineAt: number,
+  excludedRuntimeRoots: readonly string[] = [],
+) {
   const hash = createHash("sha256");
   const root = fs.realpathSync(cwd);
   const trackedPaths = new Set(
@@ -2532,7 +2801,13 @@ function validationRuntimeInputsSha256(cwd: string, deadlineAt: number) {
       .split("\0")
       .filter(Boolean),
   );
-  const runtimePaths = validationRuntimeInputPaths(cwd, deadlineAt);
+  const runtimePaths = validationRuntimeInputPaths(cwd, deadlineAt).filter(
+    (relativePath) =>
+      !excludedRuntimeRoots.some(
+        (excludedRoot) =>
+          relativePath === excludedRoot || relativePath.startsWith(`${excludedRoot}/`),
+      ),
+  );
   updateIdentityHash(hash, "runtime-input-paths", runtimePaths.join("\0"));
   const coveredEntries = new Map<string, string>();
   for (const relativePath of runtimePaths) {
@@ -2568,15 +2843,24 @@ function clearNewIgnoredValidationRuntimePaths(
   cwd: string,
   baselinePaths: readonly string[],
   deadlineAt: number,
+  preservedPaths: readonly string[] = [],
 ) {
   const root = fs.realpathSync(cwd);
-  const paths = ignoredValidationRuntimePaths(cwd, deadlineAt).filter(
-    (relativePath) =>
-      !baselinePaths.some(
-        (baselinePath) =>
-          relativePath === baselinePath || relativePath.startsWith(`${baselinePath}/`),
-      ),
-  );
+  const paths = ignoredValidationRuntimePaths(cwd, deadlineAt)
+    .filter(
+      (relativePath) =>
+        !baselinePaths.some(
+          (baselinePath) =>
+            relativePath === baselinePath || relativePath.startsWith(`${baselinePath}/`),
+        ),
+    )
+    .filter(
+      (relativePath) =>
+        !preservedPaths.some(
+          (preservedPath) =>
+            relativePath === preservedPath || relativePath.startsWith(`${preservedPath}/`),
+        ),
+    );
   for (const relativePath of minimalValidationRuntimeRoots(paths)) {
     assertValidationIdentityDeadline(deadlineAt, relativePath);
     const absolutePath = path.resolve(root, relativePath);

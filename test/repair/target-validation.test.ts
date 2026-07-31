@@ -1795,6 +1795,53 @@ test("adopted OpenClaw PR repairs validate changelog-only repair deltas without 
   assert.equal(canSkipInternalCodexReviewForRepairDelta(plan), true);
 });
 
+test("OpenClaw archive smoke preserves its required fresh runtime build", () => {
+  const cwd = packageFixture({ "check:changed": "node check.js" });
+  const smoke =
+    "node scripts/dist-runtime-build-artifact.mjs pack-and-smoke --archive dist-runtime-build.tar.zst";
+
+  const plan = repairDeltaValidationPlan(
+    {
+      fixArtifact: {
+        repair_strategy: "new_fix_pr",
+        validation_commands: [
+          "node scripts/run-vitest.mjs test/scripts/ci-workflow-guards.test.ts",
+          "pnpm build:ci-artifacts",
+          smoke,
+          "pnpm check:changed",
+          "git diff --check",
+        ],
+      },
+      targetDir: cwd,
+    },
+    validationOptions("openclaw/openclaw"),
+  );
+
+  assert.deepEqual(plan.commands, [
+    "node scripts/run-vitest.mjs test/scripts/ci-workflow-guards.test.ts",
+    "pnpm build:ci-artifacts",
+    smoke,
+    "pnpm check:changed",
+    "git diff --check",
+  ]);
+});
+
+test("OpenClaw build validation remains required when archive smoke is absent", () => {
+  const cwd = packageFixture({ "check:changed": "node check.js" });
+  const plan = repairDeltaValidationPlan(
+    {
+      fixArtifact: {
+        repair_strategy: "new_fix_pr",
+        validation_commands: ["pnpm build:ci-artifacts", "pnpm check:changed"],
+      },
+      targetDir: cwd,
+    },
+    validationOptions("openclaw/openclaw"),
+  );
+
+  assert.deepEqual(plan.commands, ["pnpm build:ci-artifacts", "pnpm check:changed"]);
+});
+
 test("adopted OpenClaw PR repairs keep full changed gate for code repair deltas", () => {
   const cwd = gitPackageFixture({ "check:changed": "node check.js" });
   fs.mkdirSync(path.join(cwd, "src"));
@@ -3602,6 +3649,456 @@ if (args.includes("second") && fs.existsSync(".generated-proof")) process.exit(7
     assert.equal(fs.existsSync(path.join(cwd, ".generated-proof")), false);
   },
 );
+
+test("archive smoke writes generated runtime artifacts only to its disposable validation profile", () => {
+  const cwd = gitPackageFixture({});
+  const scriptPath = path.join(cwd, "scripts", "dist-runtime-build-artifact.mjs");
+  fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+  fs.writeFileSync(
+    scriptPath,
+    [
+      'import fs from "node:fs";',
+      'import path from "node:path";',
+      'const archive = process.argv[process.argv.indexOf("--archive") + 1];',
+      "if (!path.isAbsolute(archive) || path.dirname(archive) !== process.env.TMPDIR) process.exit(72);",
+      'fs.writeFileSync(archive, "runtime artifact proof\\n");',
+      "",
+    ].join("\n"),
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const archive =
+    "node scripts/dist-runtime-build-artifact.mjs pack-and-smoke --archive dist-runtime-build.tar.zst";
+  for (const command of [archive, `env CI=true ${archive}`, `CI=true ${archive}`]) {
+    assert.deepEqual(
+      runAllowedValidationCommands(
+        [command],
+        cwd,
+        validationOptions("steipete/example", {
+          toolchain: {
+            packageManager: "pnpm",
+            baseValidationCommands: [],
+            changedGate: null,
+          },
+        }),
+      ),
+      [command.startsWith("CI=") ? `env ${command}` : command],
+    );
+    assert.equal(fs.existsSync(path.join(cwd, "dist-runtime-build.tar.zst")), false);
+  }
+});
+
+test("OpenClaw fresh build outputs survive aliases and intervening checks before archive smoke", () => {
+  for (const scenario of [
+    {
+      existingDist: false,
+      build: "pnpm build:ci-artifacts",
+      between: [],
+      extraOutputs: false,
+      buildCache: false,
+    },
+    {
+      existingDist: true,
+      build: "pnpm build:ci-artifacts",
+      between: [],
+      extraOutputs: false,
+      buildCache: false,
+    },
+    {
+      existingDist: true,
+      build: "pnpm run build:ci-artifacts",
+      between: [],
+      extraOutputs: false,
+      buildCache: false,
+    },
+    {
+      existingDist: false,
+      build: "pnpm build:ci-artifacts",
+      between: ["git diff --check"],
+      extraOutputs: false,
+      buildCache: false,
+    },
+    {
+      existingDist: false,
+      build: "pnpm build:ci-artifacts",
+      between: ["pnpm run build:ci-artifacts"],
+      extraOutputs: false,
+      buildCache: false,
+    },
+    {
+      existingDist: true,
+      build: "pnpm build:ci-artifacts",
+      between: [],
+      extraOutputs: true,
+      buildCache: true,
+    },
+  ]) {
+    const cwd = gitPackageFixture({ "build:ci-artifacts": "node scripts/build-runtime.mjs" });
+    fs.appendFileSync(
+      path.join(cwd, ".gitignore"),
+      "dist/\ndist-runtime/\npackages/*/dist/\n.artifacts/\n",
+    );
+    if (scenario.extraOutputs) {
+      fs.mkdirSync(path.join(cwd, "packages", "fixture"), { recursive: true });
+      fs.writeFileSync(path.join(cwd, "packages", "fixture", "package.json"), "{}\n");
+    }
+    const scripts = path.join(cwd, "scripts");
+    fs.mkdirSync(scripts, { recursive: true });
+    fs.writeFileSync(
+      path.join(scripts, "dist-runtime-build-artifact.mjs"),
+      [
+        'import fs from "node:fs";',
+        'import path from "node:path";',
+        'if (fs.readFileSync("dist/runtime.js", "utf8") !== "fresh runtime\\n") process.exit(71);',
+        ...(scenario.extraOutputs
+          ? [
+              'if (fs.readFileSync("dist-runtime/overlay.js", "utf8") !== "fresh overlay\\n") process.exit(73);',
+              'if (fs.readFileSync("packages/fixture/dist/index.js", "utf8") !== "fresh package\\n") process.exit(74);',
+            ]
+          : []),
+        'const archive = process.argv[process.argv.indexOf("--archive") + 1];',
+        "if (!path.isAbsolute(archive) || path.dirname(archive) !== process.env.TMPDIR) process.exit(72);",
+        'fs.writeFileSync(archive, "runtime archive proof\\n");',
+        "",
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(scripts, "build-runtime.mjs"),
+      "// built by the trusted fixture shim\n",
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+    if (scenario.existingDist) {
+      fs.mkdirSync(path.join(cwd, "dist"), { recursive: true });
+      fs.writeFileSync(path.join(cwd, "dist", "runtime.js"), "stale runtime\n");
+      fs.writeFileSync(path.join(cwd, "dist", "build-stamp.json"), "stale timestamp\n");
+    }
+    if (scenario.extraOutputs) {
+      fs.mkdirSync(path.join(cwd, "dist-runtime"), { recursive: true });
+      fs.writeFileSync(path.join(cwd, "dist-runtime", "overlay.js"), "stale overlay\n");
+      fs.mkdirSync(path.join(cwd, "packages", "fixture", "dist"), { recursive: true });
+      fs.writeFileSync(
+        path.join(cwd, "packages", "fixture", "dist", "index.js"),
+        "stale package\n",
+      );
+    }
+    if (scenario.buildCache) {
+      const cache = path.join(cwd, ".artifacts", "build-all-cache");
+      fs.mkdirSync(cache, { recursive: true });
+      fs.writeFileSync(path.join(cache, "stamp.json"), "previous trusted cache\n");
+    }
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-fresh-runtime-build-"));
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      [
+        'const fs = require("node:fs");',
+        'fs.mkdirSync("dist", { recursive: true });',
+        'fs.writeFileSync("dist/runtime.js", "fresh runtime\\n");',
+        'fs.writeFileSync("dist/build-stamp.json", `${Date.now()}\\n`);',
+        ...(scenario.extraOutputs
+          ? [
+              'fs.mkdirSync("dist-runtime", { recursive: true });',
+              'fs.writeFileSync("dist-runtime/overlay.js", "fresh overlay\\n");',
+              'fs.mkdirSync("packages/fixture/dist", { recursive: true });',
+              'fs.writeFileSync("packages/fixture/dist/index.js", "fresh package\\n");',
+            ]
+          : []),
+        ...(scenario.buildCache
+          ? [
+              'fs.mkdirSync(".artifacts/build-all-cache", { recursive: true });',
+              'fs.writeFileSync(".artifacts/build-all-cache/stamp.json", "new disposable cache\\n");',
+            ]
+          : []),
+      ].join("\n"),
+    );
+    const smoke =
+      "env CI=true node scripts/dist-runtime-build-artifact.mjs pack-and-smoke --archive dist-runtime-build.tar.zst";
+
+    assert.deepEqual(
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          [scenario.build, ...scenario.between, smoke],
+          cwd,
+          validationOptions("openclaw/openclaw", {
+            strictTargetValidation: true,
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+        ),
+      ),
+      [scenario.build, ...scenario.between, smoke],
+    );
+    assert.equal(fs.readFileSync(path.join(cwd, "dist", "runtime.js"), "utf8"), "fresh runtime\n");
+    assert.equal(fs.existsSync(path.join(cwd, "dist-runtime-build.tar.zst")), false);
+    if (scenario.buildCache) {
+      assert.equal(
+        fs.readFileSync(path.join(cwd, ".artifacts", "build-all-cache", "stamp.json"), "utf8"),
+        "previous trusted cache\n",
+      );
+    }
+  }
+});
+
+test("intermediate validation cannot tamper with fresh runtime outputs before archive smoke", () => {
+  const cwd = gitPackageFixture({ "build:ci-artifacts": "node scripts/build-runtime.mjs" });
+  fs.appendFileSync(path.join(cwd, ".gitignore"), "dist/\n");
+  const scripts = path.join(cwd, "scripts");
+  fs.mkdirSync(scripts, { recursive: true });
+  fs.writeFileSync(
+    path.join(scripts, "build-runtime.mjs"),
+    "// built by the trusted fixture shim\n",
+  );
+  fs.writeFileSync(
+    path.join(scripts, "tamper-runtime.mjs"),
+    'import fs from "node:fs"; fs.writeFileSync("dist/runtime.js", "tampered runtime\\n");\n',
+  );
+  fs.writeFileSync(path.join(scripts, "dist-runtime-build-artifact.mjs"), "// never reached\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-runtime-build-tamper-"));
+  writeNodeCommandShim(
+    binDir,
+    "pnpm",
+    [
+      'const fs = require("node:fs");',
+      'fs.mkdirSync("dist", { recursive: true });',
+      'fs.writeFileSync("dist/runtime.js", "fresh runtime\\n");',
+    ].join("\n"),
+  );
+
+  assert.throws(
+    () =>
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          [
+            "pnpm build:ci-artifacts",
+            "node scripts/tamper-runtime.mjs",
+            "node scripts/dist-runtime-build-artifact.mjs pack-and-smoke --archive dist-runtime-build.tar.zst",
+          ],
+          cwd,
+          validationOptions("openclaw/openclaw", {
+            strictTargetValidation: true,
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+        ),
+      ),
+    /unsafe validation command mutated fresh runtime build output \(node scripts\/tamper-runtime\.mjs\)/,
+  );
+});
+
+test("OpenClaw archive smoke cannot pass by reusing a pre-existing stale build", () => {
+  const cwd = gitPackageFixture({ "build:ci-artifacts": "node scripts/build-runtime.mjs" });
+  fs.appendFileSync(path.join(cwd, ".gitignore"), "dist/\n");
+  const scripts = path.join(cwd, "scripts");
+  fs.mkdirSync(scripts, { recursive: true });
+  fs.writeFileSync(
+    path.join(scripts, "build-runtime.mjs"),
+    "// intentionally produces no output\n",
+  );
+  fs.writeFileSync(
+    path.join(scripts, "dist-runtime-build-artifact.mjs"),
+    'import fs from "node:fs"; fs.readFileSync("dist/runtime.js", "utf8");\n',
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  fs.mkdirSync(path.join(cwd, "dist"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "dist", "runtime.js"), "stale runtime\n");
+
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-stale-runtime-build-"));
+  writeNodeCommandShim(
+    binDir,
+    "pnpm",
+    "// intentionally succeeds without producing fresh output\n",
+  );
+
+  assert.throws(
+    () =>
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          [
+            "pnpm build:ci-artifacts",
+            "node scripts/dist-runtime-build-artifact.mjs pack-and-smoke --archive dist-runtime-build.tar.zst",
+          ],
+          cwd,
+          validationOptions("openclaw/openclaw", {
+            strictTargetValidation: true,
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+        ),
+      ),
+    /runtime artifact build did not create a safe fresh dist directory/,
+  );
+});
+
+test("OpenClaw fresh builds still reject ignored dependency poisoning before archive smoke", () => {
+  const cwd = gitPackageFixture({ "build:ci-artifacts": "node scripts/build-runtime.mjs" });
+  fs.appendFileSync(path.join(cwd, ".gitignore"), "dist/\n");
+  const scripts = path.join(cwd, "scripts");
+  fs.mkdirSync(scripts, { recursive: true });
+  fs.writeFileSync(
+    path.join(scripts, "build-runtime.mjs"),
+    "// built by the trusted fixture shim\n",
+  );
+  fs.writeFileSync(
+    path.join(scripts, "dist-runtime-build-artifact.mjs"),
+    'import fs from "node:fs"; fs.writeFileSync("smoke-ran", "unsafe");\n',
+  );
+  const dependency = path.join(cwd, "node_modules", "fixture", "state.js");
+  fs.mkdirSync(path.dirname(dependency), { recursive: true });
+  fs.writeFileSync(dependency, "safe\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-runtime-build-poison-"));
+  writeNodeCommandShim(
+    binDir,
+    "pnpm",
+    [
+      'const fs = require("node:fs");',
+      'fs.mkdirSync("dist", { recursive: true });',
+      'fs.writeFileSync("dist/runtime.js", "fresh runtime\\n");',
+      'fs.writeFileSync("node_modules/fixture/state.js", "poisoned\\n");',
+    ].join("\n"),
+  );
+
+  assert.throws(
+    () =>
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          [
+            "pnpm build:ci-artifacts",
+            "node scripts/dist-runtime-build-artifact.mjs pack-and-smoke --archive dist-runtime-build.tar.zst",
+          ],
+          cwd,
+          validationOptions("openclaw/openclaw", {
+            strictTargetValidation: true,
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+        ),
+      ),
+    /unsafe validation command mutated checkout identity \(pnpm build:ci-artifacts\): runtimeInputsSha256/,
+  );
+  assert.equal(fs.existsSync(path.join(cwd, "smoke-ran")), false);
+});
+
+test(
+  "runtime build cache cleanup never follows a replaced artifacts-root symlink",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ "build:ci-artifacts": "node scripts/build-runtime.mjs" });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), "dist/\n.artifacts/\n");
+    const scripts = path.join(cwd, "scripts");
+    fs.mkdirSync(scripts, { recursive: true });
+    fs.writeFileSync(path.join(scripts, "build-runtime.mjs"), "// built by fixture shim\n");
+    fs.writeFileSync(path.join(scripts, "dist-runtime-build-artifact.mjs"), "// never reached\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+    const trustedCache = path.join(cwd, ".artifacts", "build-all-cache");
+    fs.mkdirSync(trustedCache, { recursive: true });
+    fs.writeFileSync(path.join(trustedCache, "stamp.json"), "trusted\n");
+    const external = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-external-cache-victim-"));
+    const victim = path.join(external, "build-all-cache", "victim");
+    fs.mkdirSync(path.dirname(victim), { recursive: true });
+    fs.writeFileSync(victim, "must survive\n");
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-runtime-cache-escape-"));
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      [
+        'const fs = require("node:fs");',
+        'fs.mkdirSync("dist", { recursive: true });',
+        'fs.writeFileSync("dist/runtime.js", "fresh runtime\\n");',
+        'fs.rmSync(".artifacts", { recursive: true, force: true });',
+        `fs.symlinkSync(${JSON.stringify(external)}, ".artifacts");`,
+      ].join("\n"),
+    );
+
+    assert.throws(
+      () =>
+        withPathOnlyPrefix(binDir, () =>
+          runAllowedValidationCommands(
+            [
+              "pnpm build:ci-artifacts",
+              "node scripts/dist-runtime-build-artifact.mjs pack-and-smoke --archive dist-runtime-build.tar.zst",
+            ],
+            cwd,
+            validationOptions("openclaw/openclaw", {
+              strictTargetValidation: true,
+              toolchain: {
+                packageManager: "pnpm",
+                baseValidationCommands: [],
+                changedGate: null,
+              },
+            }),
+          ),
+        ),
+      (error: Error & { cause?: Error }) =>
+        /runtime artifact build changed its protected artifacts directory/.test(
+          `${error.message} ${error.cause?.message ?? ""}`,
+        ),
+    );
+    assert.equal(fs.readFileSync(victim, "utf8"), "must survive\n");
+  },
+);
+
+test("checkout mutation diagnostics identify the offending command and changed identity", () => {
+  const cwd = gitPackageFixture({});
+  const scriptPath = path.join(cwd, "scripts", "write-archive.mjs");
+  fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+  fs.writeFileSync(
+    scriptPath,
+    'import fs from "node:fs"; fs.writeFileSync(process.argv[2], "unsafe checkout artifact\\n");\n',
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const command = "node scripts/write-archive.mjs generated.tar.zst";
+  assert.throws(
+    () =>
+      runAllowedValidationCommands(
+        [command],
+        cwd,
+        validationOptions("steipete/example", {
+          toolchain: {
+            packageManager: "pnpm",
+            baseValidationCommands: [],
+            changedGate: null,
+          },
+        }),
+      ),
+    (error: Error) =>
+      /unsafe validation command mutated checkout identity/.test(error.message) &&
+      error.message.includes(command) &&
+      error.message.includes("status"),
+  );
+});
 
 test("validation fails closed on unsafe ignored Git path discovery", () => {
   const cwd = gitPackageFixture({ check: 'node -e ""' });
@@ -5629,7 +6126,7 @@ process.exit(1);
           validationOptions("openclaw/openclaw", { pinnedBaseRef: "origin/main" }),
         ),
       ),
-    /unsafe validation command mutated checkout identity/,
+    /unsafe validation command mutated checkout identity \(pnpm test:serial test\/example\.test\.ts\)/,
   );
 });
 
