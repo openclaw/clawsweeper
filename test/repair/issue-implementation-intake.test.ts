@@ -700,6 +700,83 @@ test("bug candidate discovery includes legacy small source-proven OpenClaw revie
   }
 });
 
+test("accepted newer review artifacts supersede stale hydrated canonical snapshots", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "clawsweeper-published-review-"));
+  try {
+    const recordDir = path.join(root, "records", "openclaw-openclaw", "items");
+    const artifactDir = path.join(root, "artifacts");
+    mkdirSync(recordDir, { recursive: true });
+    mkdirSync(artifactDir, { recursive: true });
+    writeFileSync(
+      path.join(recordDir, "123.md"),
+      report({ decision: "close", reviewed_at: "2026-07-31T10:00:00.000Z" }),
+    );
+    const acceptedReview = report({ reviewed_at: "2026-07-31T10:05:00.000Z" });
+    writeFileSync(path.join(artifactDir, "123.md"), acceptedReview);
+
+    const options = {
+      enabled: true,
+      candidateKind: "strict_bug" as const,
+      targetRepo: "openclaw/openclaw",
+      reportRepo: "openclaw/clawsweeper-state",
+      sourceDirs: [artifactDir],
+      jobRoot: root,
+    };
+    assert.deepEqual(
+      discoverImplementationCandidates(options).map(({ item_number }) => item_number),
+      [123],
+    );
+
+    const jobPath = path.join(root, issueImplementationJobPath("openclaw/openclaw", 123));
+    const auditPath = path.join(
+      root,
+      "results",
+      "issue-implementation-intake",
+      "openclaw-openclaw",
+      "123.md",
+    );
+    mkdirSync(path.dirname(jobPath), { recursive: true });
+    mkdirSync(path.dirname(auditPath), { recursive: true });
+    writeFileSync(jobPath, "queued\n");
+    writeFileSync(
+      auditPath,
+      `---\nreport_revision_sha256: ${reportRevisionSha256(acceptedReview)}\ndecision: not_eligible\nworker_dispatched: false\nworker_retry_after: ${new Date(Date.now() + 30 * 60_000).toISOString()}\n---\n`,
+    );
+    assert.deepEqual(discoverImplementationCandidates(options), []);
+
+    writeFileSync(
+      path.join(artifactDir, "123.md"),
+      report({ reviewed_at: "2026-07-31T10:06:00.000Z" }),
+    );
+    assert.equal(discoverImplementationCandidates(options).length, 1);
+
+    writeFileSync(
+      path.join(recordDir, "123.md"),
+      report({ decision: "close", reviewed_at: "2026-07-31T10:07:00.000Z" }),
+    );
+    assert.deepEqual(discoverImplementationCandidates(options), []);
+
+    writeFileSync(
+      path.join(recordDir, "123.md"),
+      report({ reviewed_at: "2026-07-31T10:07:00.000Z" }),
+    );
+    writeFileSync(
+      path.join(artifactDir, "123.md"),
+      report({ decision: "close", reviewed_at: "2026-07-31T10:08:00.000Z" }),
+    );
+    assert.deepEqual(
+      discoverImplementationCandidates({ ...options, sourceDirs: [artifactDir, recordDir] }),
+      [],
+    );
+    assert.deepEqual(
+      discoverImplementationCandidates({ ...options, sourceDirs: [recordDir, artifactDir] }),
+      [],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("undispatched issue jobs are regenerated when their authoritative review changes", () => {
   const current = report({ implementation_complexity: "small" });
   const legacy = parseReviewReport(`---
@@ -805,6 +882,16 @@ decision: not_eligible
 `,
     );
     assert.deepEqual(discoverImplementationCandidates(options), []);
+    const artifactDir = path.join(root, "artifacts");
+    mkdirSync(artifactDir, { recursive: true });
+    writeFileSync(
+      path.join(artifactDir, "244.md"),
+      readFileSync(report244Path, "utf8").replace(/^---\n/, "---\ndecision_packet_path: none\n"),
+    );
+    assert.deepEqual(
+      discoverImplementationCandidates({ ...options, sourceDirs: [artifactDir, reportDir] }),
+      [],
+    );
     writeFileSync(report244Path, `${readFileSync(report244Path, "utf8")}\n`);
     assert.equal(discoverImplementationCandidates(options).length, 1);
 
@@ -812,6 +899,19 @@ decision: not_eligible
     mkdirSync(path.dirname(jobPath), { recursive: true });
     writeFileSync(jobPath, "queued\n");
     assert.equal(discoverImplementationCandidates(options).length, 1);
+
+    writeFileSync(
+      path.join(reportDir, "245.md"),
+      report({ number: "245", repository: "steipete/summarize" }),
+    );
+    assert.deepEqual(
+      discoverImplementationCandidates(options).map((candidate) => candidate.item_number),
+      [245, 244],
+    );
+    writeFileSync(
+      path.join(reportDir, "245.md"),
+      report({ number: "245", repository: "steipete/summarize", decision: "close" }),
+    );
 
     writeFileSync(
       auditPath,
@@ -823,6 +923,26 @@ decision: not_eligible
 ---
 `,
     );
+    assert.equal(discoverImplementationCandidates(options).length, 1);
+
+    writeFileSync(
+      auditPath,
+      `---
+repo: steipete/summarize
+number: 244
+report_revision_sha256: ${reportRevisionSha256(readFileSync(report244Path, "utf8"))}
+decision: not_eligible
+worker_dispatched: false
+worker_retry_after: ${new Date(Date.now() + 30 * 60_000).toISOString()}
+---
+`,
+    );
+    assert.deepEqual(discoverImplementationCandidates(options), []);
+    assert.deepEqual(
+      discoverImplementationCandidates({ ...options, sourceDirs: [artifactDir, reportDir] }),
+      [],
+    );
+    writeFileSync(report244Path, `${readFileSync(report244Path, "utf8")}\n`);
     assert.equal(discoverImplementationCandidates(options).length, 1);
 
     writeFileSync(

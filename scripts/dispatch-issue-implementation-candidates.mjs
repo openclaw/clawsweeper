@@ -25,8 +25,12 @@ const limit = Number(
       "issue_implementation.dispatches_per_sweep_default",
     ]),
 );
-if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-  fail("dispatch limit must be an integer between 1 and 100");
+if (!Number.isSafeInteger(limit) || limit < 0 || limit > 100) {
+  fail("dispatch limit must be an integer between 0 and 100");
+}
+if (limit === 0) {
+  process.stdout.write(`${JSON.stringify({ discovered: 0, dispatched: 0 })}\n`);
+  process.exit(0);
 }
 
 const candidateArgs = [
@@ -67,7 +71,7 @@ for (const candidate of candidates) {
     fail(`candidate ${itemNumber} has an invalid report reference`);
   }
   process.stdout.write(
-    `Dispatching high-confidence bug implementation for ${targetRepo}#${itemNumber}\n`,
+    `Dispatching high-confidence bug implementation for https://github.com/${targetRepo}/issues/${itemNumber}\n`,
   );
   const args = ["workflow", "run", "repair-issue-implementation-intake.yml"];
   if (process.env.GITHUB_REPOSITORY) args.push("--repo", process.env.GITHUB_REPOSITORY);

@@ -48,6 +48,7 @@ if [ "$FAIL_GH" = "1" ]; then exit 9; fi
       { encoding: "utf8", env },
     );
     assert.match(exact, /"dispatched":1/);
+    assert.match(exact, /https:\/\/github\.com\/openclaw\/openclaw\/issues\/42/);
     assert.match(readFileSync(log, "utf8"), /item_number=42/);
     assert.doesNotMatch(readFileSync(log, "utf8"), /item_number=41/);
 
@@ -61,6 +62,15 @@ if [ "$FAIL_GH" = "1" ]; then exit 9; fi
     assert.match(readFileSync(log, "utf8"), /item_number=41/);
     assert.match(readFileSync(log, "utf8"), /item_number=42/);
     assert.doesNotMatch(readFileSync(log, "utf8"), /item_number=43/);
+
+    writeFileSync(log, "");
+    const paused = execFileSync(
+      process.execPath,
+      [script, "--target-repo", "openclaw/openclaw", "--max-dispatch", "0"],
+      { encoding: "utf8", env },
+    );
+    assert.deepEqual(JSON.parse(paused), { discovered: 0, dispatched: 0 });
+    assert.equal(readFileSync(log, "utf8"), "");
 
     const failed = spawnSync(
       process.execPath,

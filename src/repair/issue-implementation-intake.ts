@@ -138,6 +138,13 @@ function prepare() {
   const jobReportRevisionSha256 = decision.shouldRepair
     ? reportRevisionSha256(reportMarkdown)
     : existingIssueImplementationJobRevision(previousAudit);
+  const workerRetryAfter =
+    existingJob &&
+    !decision.shouldRepair &&
+    decision.status !== "already_queued" &&
+    !workerDispatched
+      ? new Date(Date.now() + 30 * 60_000).toISOString()
+      : "";
   const preparedAt = new Date().toISOString();
   const context = {
     targetRepo,
@@ -157,6 +164,7 @@ function prepare() {
     overrideRequestedBy,
     workerDispatched,
     jobReportRevisionSha256,
+    workerRetryAfter,
   };
 
   if (decision.shouldRepair) writeJob(context);
@@ -227,53 +235,107 @@ export function discoverImplementationCandidates({
   jobRoot?: string;
 }): LooseRecord[] {
   if (!enabled) return [];
-  const candidatesByIssue = new Map<string, LooseRecord>();
+  const reviewsByIssue = new Map<
+    string,
+    {
+      canonical: boolean;
+      markdown: string;
+      number: number;
+      reportPath: string;
+      repository: string;
+      reviewedAt: number;
+    }
+  >();
   for (const sourceDir of sourceDirs) {
     if (!fs.existsSync(sourceDir)) continue;
     for (const file of findMarkdownFiles(sourceDir)) {
-      const markdown = fs.readFileSync(file, "utf8");
-      const report = parseReviewReport(markdown);
-      const number = Number(report.frontmatter.number);
-      const repository = report.frontmatter.repository || targetRepo;
+      const sourceMarkdown = fs.readFileSync(file, "utf8");
+      const sourceReport = parseReviewReport(sourceMarkdown);
+      const number = Number(sourceReport.frontmatter.number);
+      const repository = sourceReport.frontmatter.repository || targetRepo;
       if (!Number.isSafeInteger(number) || number <= 0) continue;
       const reportPath = `records/${repoSlug(repository)}/items/${number}.md`;
-      const reportUrl = `https://github.com/${reportRepo}/blob/${reportBranch(reportRepo)}/${reportPath}`;
-      const decision = reportOnlyDecision({
-        targetRepo,
-        report,
-        reportMarkdown: markdown,
-        candidateKind,
-      });
-      if (!decision.shouldRepair) continue;
-      const jobPath = path.join(jobRoot, issueImplementationJobPath(repository, number));
-      if (fs.existsSync(jobPath)) {
-        const previousAudit = intakeAudit({ root: jobRoot, repo: repository, number });
-        if (
-          !intakeAuditAwaitsWorkerDispatch(previousAudit) &&
-          !issueImplementationJobNeedsRefresh(previousAudit, markdown)
-        ) {
-          continue;
-        }
-      } else if (
-        matchingIntakeAudit({
-          root: jobRoot,
-          repo: repository,
-          number,
-          reportMarkdown: markdown,
-        })
+      const canonicalReportPath = path.join(jobRoot, reportPath);
+      const canonicalMarkdown = fs.existsSync(canonicalReportPath)
+        ? fs.readFileSync(canonicalReportPath, "utf8")
+        : null;
+      const canonicalReviewedAt = Date.parse(
+        canonicalMarkdown
+          ? (parseReviewReport(canonicalMarkdown).frontmatter.reviewed_at ?? "")
+          : "",
+      );
+      const sourceReviewedAt = Date.parse(sourceReport.frontmatter.reviewed_at ?? "");
+      // Publication hydrates records before reviewing, so its accepted artifact can
+      // be newer than the runner's local snapshot of authoritative Worker state.
+      const markdown =
+        canonicalMarkdown !== null &&
+        (!Number.isFinite(sourceReviewedAt) ||
+          (Number.isFinite(canonicalReviewedAt) && canonicalReviewedAt >= sourceReviewedAt))
+          ? canonicalMarkdown
+          : sourceMarkdown;
+      const canonical = markdown === canonicalMarkdown;
+      const reviewedAt = canonical ? canonicalReviewedAt : sourceReviewedAt;
+      const key = `${repository.toLowerCase()}#${number}`;
+      const existing = reviewsByIssue.get(key);
+      if (
+        existing &&
+        ((Number.isFinite(existing.reviewedAt) &&
+          (!Number.isFinite(reviewedAt) || existing.reviewedAt > reviewedAt)) ||
+          (existing.reviewedAt === reviewedAt && existing.canonical && !canonical))
       ) {
         continue;
       }
-      candidatesByIssue.set(`${repository.toLowerCase()}#${number}`, {
-        item_number: number,
-        report_path: reportPath,
-        report_url: reportUrl,
+      reviewsByIssue.set(key, {
+        canonical,
+        markdown,
+        number,
+        reportPath,
+        repository,
+        reviewedAt,
       });
     }
   }
-  return [...candidatesByIssue.values()].sort(
-    (left, right) => Number(left.item_number) - Number(right.item_number),
-  );
+  const candidates: { candidate: LooseRecord; existingJob: boolean }[] = [];
+  for (const { markdown, number, reportPath, repository } of reviewsByIssue.values()) {
+    const decision = reportOnlyDecision({
+      targetRepo,
+      report: parseReviewReport(markdown),
+      reportMarkdown: markdown,
+      candidateKind,
+    });
+    if (!decision.shouldRepair) continue;
+    const jobPath = path.join(jobRoot, issueImplementationJobPath(repository, number));
+    const existingJob = fs.existsSync(jobPath);
+    if (existingJob) {
+      const previousAudit = intakeAudit({ root: jobRoot, repo: repository, number });
+      if (intakeAuditRetryDeferred(previousAudit, markdown)) continue;
+      if (
+        !intakeAuditAwaitsWorkerDispatch(previousAudit) &&
+        !issueImplementationJobNeedsRefresh(previousAudit, markdown)
+      ) {
+        continue;
+      }
+    } else if (
+      matchingIntakeAudit({ root: jobRoot, repo: repository, number, reportMarkdown: markdown })
+    ) {
+      continue;
+    }
+    candidates.push({
+      existingJob,
+      candidate: {
+        item_number: number,
+        report_path: reportPath,
+        report_url: `https://github.com/${reportRepo}/blob/${reportBranch(reportRepo)}/${reportPath}`,
+      },
+    });
+  }
+  return candidates
+    .sort(
+      (left, right) =>
+        Number(left.existingJob) - Number(right.existingJob) ||
+        Number(left.candidate.item_number) - Number(right.candidate.item_number),
+    )
+    .map(({ candidate }) => candidate);
 }
 
 export function parseReviewReport(markdown: string): ReviewReport {
@@ -699,6 +761,7 @@ job_report_revision_sha256: ${context.jobReportRevisionSha256 || ""}
 decision: ${context.decision.status}
 prepared_at: ${context.preparedAt}
 worker_dispatched: ${context.workerDispatched === true ? "true" : "false"}
+worker_retry_after: ${context.workerRetryAfter || ""}
 ---
 
 # Issue Implementation Intake ${context.itemNumber}
@@ -763,6 +826,15 @@ function intakeAuditAwaitsWorkerDispatch(audit: ReviewReport | null) {
         "override_queued_for_repair",
         "not_eligible",
       ].includes(audit.frontmatter.decision ?? ""))
+  );
+}
+
+function intakeAuditRetryDeferred(audit: ReviewReport | null, reportMarkdown: string) {
+  const retryAfter = Date.parse(audit?.frontmatter.worker_retry_after ?? "");
+  return (
+    Number.isFinite(retryAfter) &&
+    retryAfter > Date.now() &&
+    audit?.frontmatter.report_revision_sha256 === reportRevisionSha256(reportMarkdown)
   );
 }
 
