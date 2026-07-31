@@ -5733,13 +5733,14 @@ export class ExactReviewQueue {
   }
 
   private recordLifecycleBatchClaim(batch, state: ExactReviewQueueState, now: number) {
-    if (
-      !batch.runnerRunId ||
-      !Number.isSafeInteger(batch.runnerRunAttempt) ||
-      batch.runnerRunAttempt < 1
-    ) {
-      return;
-    }
+    // A batch lease can predate runner telemetry during a rolling deployment.
+    // Its immutable admission still authorizes subsequent terminal handling,
+    // but we must not manufacture a claim or review-result fact without the
+    // runner tuple that identifies it.
+    const hasRunner =
+      Boolean(batch.runnerRunId) &&
+      Number.isSafeInteger(batch.runnerRunAttempt) &&
+      batch.runnerRunAttempt >= 1;
     for (const membership of batch.items) {
       const item = state.items[membership.itemKey];
       if (!item || !exactReviewQueueIsPublication(item) || item.revision !== membership.revision) {
@@ -5771,6 +5772,7 @@ export class ExactReviewQueue {
           observedAt: now,
         });
       }
+      if (!hasRunner) continue;
       this.lifecycleProjectionStore.recordClaim({
         ...identity,
         claimGeneration: membership.claimGeneration,

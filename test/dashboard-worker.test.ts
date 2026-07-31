@@ -4386,7 +4386,7 @@ test("Worker observes the generic durable terminal failure acknowledgement", asy
   );
 });
 
-test("batch completion dispatches its terminal command acknowledgement outside batching", async () => {
+test("runnerless batch completion preserves terminal command acknowledgement during rollout", async () => {
   const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
     publicationBatching: true,
     publicationBatchSize: "1",
@@ -4419,9 +4419,6 @@ test("batch completion dispatches its terminal command acknowledgement outside b
             claim_id: "terminal-acknowledgement-batch",
             lease_owner: "terminal-acknowledgement-owner",
             max_items: 1,
-            runner_run_id: "7830",
-            runner_run_attempt: 1,
-            runner_started_at: new Date().toISOString(),
           }),
         }),
       )
@@ -4431,6 +4428,14 @@ test("batch completion dispatches its terminal command acknowledgement outside b
     const itemKey = member.item_key as string;
     const revision = member.revision as number;
     const claimGeneration = member.claim_generation as number;
+    const projection = new ExactReviewLifecycleProjectionStore(harness.storage).read(
+      `openclaw/gogcli#${itemNumber}`,
+      itemKey,
+      revision,
+    );
+    assert.equal(projection?.admission.commandOriginated, true);
+    assert.deepEqual(projection?.claims, []);
+    assert.deepEqual(projection?.reviewResults, []);
     const routed = await harness.queue.fetch(
       new Request("https://clawsweeper-exact-review-queue/lifecycle/router-receipt", {
         method: "POST",
