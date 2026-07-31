@@ -65,6 +65,11 @@ test("automatic bug backfill runs independently of queue-fed scheduled sweeps", 
   assert.ok(Object.hasOwn(workflow.on, "workflow_dispatch"));
   assert.deepEqual(workflow.permissions, { actions: "write", contents: "read" });
   assert.match(workflow.jobs.backfill!.if, /CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1'/);
+  const checkout = workflow.jobs.backfill!.steps.find((step) =>
+    step.uses?.startsWith("actions/checkout@"),
+  );
+  assert.equal(checkout?.uses, "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0");
+  assert.equal(checkout?.with?.["persist-credentials"], false);
   const state = workflow.jobs.backfill!.steps.find((step) => step.uses?.endsWith("/setup-state"));
   assert.equal(state?.with?.["coordinator-class"], "cluster_intake");
   assert.equal(state?.with?.["records-repo-slugs"], "openclaw-openclaw");
