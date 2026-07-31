@@ -4,7 +4,13 @@ import test from "node:test";
 import { parse } from "yaml";
 
 type Workflow = {
-  jobs?: Record<string, { steps?: Array<{ name?: string; run?: string; env?: unknown }> }>;
+  jobs?: Record<
+    string,
+    {
+      env?: Record<string, string>;
+      steps?: Array<{ name?: string; run?: string; env?: unknown }>;
+    }
+  >;
 };
 
 test("cluster worker passes workflow inputs through environment boundaries", () => {
@@ -28,6 +34,28 @@ test("cluster worker passes workflow inputs through environment boundaries", () 
       source.indexOf("Create GitHub App token"),
   );
   assert.doesNotMatch(source, /restore-durable-intake-job\.sh/);
+});
+
+test("generated issue workers can create PRs but never inherit the maintainer merge gate", () => {
+  const workflow = parse(
+    fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8"),
+  ) as Workflow;
+
+  for (const jobName of ["cluster", "execute"]) {
+    const expression = workflow.jobs?.[jobName]?.env?.CLAWSWEEPER_ALLOW_MERGE;
+    assert.ok(expression, `${jobName} is missing an explicit merge gate`);
+    assert.match(expression, /!contains\(inputs\.job, '\/inbox\/issue-'\)/);
+    assert.match(expression, /\|\| '0'/);
+  }
+
+  assert.match(
+    workflow.jobs?.execute?.env?.CLAWSWEEPER_OPENCLAW_MODEL ?? "",
+    /CLAWSWEEPER_FIX_PR_MODEL \|\| 'gpt-5\.6-sol'/,
+  );
+  assert.match(
+    workflow.jobs?.execute?.env?.CLAWSWEEPER_CODEX_REASONING_EFFORT ?? "",
+    /CLAWSWEEPER_FIX_PR_REASONING_EFFORT \|\| 'xhigh'/,
+  );
 });
 
 test("cluster intake validates one safe repository token before exporting outputs", () => {

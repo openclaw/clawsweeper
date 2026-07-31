@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,14 @@ import {
 
 const GIT = process.env.GIT_BIN ?? "git";
 const CLI = fileURLToPath(new URL("../dist/commit-sweeper.js", import.meta.url));
+
+test("the offline local-review CLI remains available as a package command", () => {
+  const packageJson = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  ) as { scripts?: Record<string, string> };
+
+  assert.equal(packageJson.scripts?.["local-review"], "node dist/commit-sweeper.js local-review");
+});
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync(GIT, args, { cwd, encoding: "utf8" }).trim();

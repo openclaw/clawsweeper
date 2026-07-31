@@ -1015,6 +1015,10 @@ worker_dispatched: false
 
   assert.equal(issueImplementationJobNeedsRefresh(legacy, current), true);
   assert.equal(issueImplementationJobNeedsRefresh(alreadyDispatched, current), false);
+  assert.equal(
+    issueImplementationJobNeedsRefresh(alreadyDispatched, current, { completedWorker: true }),
+    true,
+  );
   assert.equal(issueImplementationJobNeedsRefresh(temporarilyIneligible, current), true);
   assert.equal(
     issueImplementationJobNeedsRefresh(temporarilyIneligibleAfterChangedReview, current),
@@ -1243,12 +1247,61 @@ worker_dispatched: false
     );
     assert.equal(discoverImplementationCandidates(options).length, 1);
 
+    writeFileSync(
+      auditPath,
+      readFileSync(auditPath, "utf8").replace(
+        /^report_revision_sha256:.*$/m,
+        `report_revision_sha256: ${reportRevisionSha256(readFileSync(report244Path, "utf8"))}`,
+      ),
+    );
     markIssueImplementationDispatched({
       root,
       auditPath: path.relative(root, auditPath),
       jobPath: path.relative(root, jobPath),
     });
     assert.match(readFileSync(auditPath, "utf8"), /worker_dispatched: true/);
+    assert.match(readFileSync(auditPath, "utf8"), /worker_dispatched_at: \d{4}-/);
+    assert.match(readFileSync(auditPath, "utf8"), /worker_attempt_count: 1/);
+    assert.deepEqual(discoverImplementationCandidates(options), []);
+
+    writeFileSync(
+      auditPath,
+      readFileSync(auditPath, "utf8").replace(
+        /^worker_retry_after:.*$/m,
+        `worker_retry_after: ${new Date(Date.now() - 60_000).toISOString()}`,
+      ),
+    );
+    assert.deepEqual(
+      discoverImplementationCandidates(options).map((candidate) => candidate.item_number),
+      [244],
+    );
+
+    writeFileSync(
+      auditPath,
+      readFileSync(auditPath, "utf8").replace(
+        /^report_revision_sha256:.*$/m,
+        "report_revision_sha256: old-dispatched-review",
+      ),
+    );
+    assert.deepEqual(
+      discoverImplementationCandidates(options).map((candidate) => candidate.item_number),
+      [244],
+    );
+    writeFileSync(
+      auditPath,
+      readFileSync(auditPath, "utf8").replace(
+        /^report_revision_sha256:.*$/m,
+        `report_revision_sha256: ${reportRevisionSha256(readFileSync(report244Path, "utf8"))}`,
+      ),
+    );
+
+    writeFileSync(
+      auditPath,
+      readFileSync(auditPath, "utf8").replace(
+        /^worker_attempt_count:.*$/m,
+        "worker_attempt_count: 3",
+      ),
+    );
     assert.deepEqual(discoverImplementationCandidates(options), []);
   } finally {
     rmSync(root, { recursive: true, force: true });

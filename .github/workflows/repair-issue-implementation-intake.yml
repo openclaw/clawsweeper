@@ -178,6 +178,7 @@ jobs:
         id: prepare
         env:
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          CLAWSWEEPER_ISSUE_IMPLEMENTATION_WORKFLOW_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           ENABLED: ${{ github.event.inputs.enabled || github.event.client_payload.enabled || vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES || 'false' }}
           TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || 'openclaw/openclaw' }}
           ITEM_NUMBER: ${{ github.event.inputs.item_number || github.event.client_payload.item_number }}

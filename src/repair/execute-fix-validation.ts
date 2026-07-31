@@ -2,6 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import {
+  REVIEW_REPRODUCIBLE_BUG_TRIGGER_SOURCE,
+  REVIEW_VIABLE_ISSUE_TRIGGER_SOURCE,
+  REVIEW_VISION_FIT_TRIGGER_SOURCE,
+} from "./comment-router-core.js";
 import { validateRepairContractShape } from "./repair-contract.js";
 import { GITHUB_PR_TITLE_MAX_LENGTH } from "./pr-title.js";
 import { slug } from "./text-utils.js";
@@ -13,6 +18,11 @@ const REPAIR_STRATEGIES = new Set([
 ]);
 export const HUMAN_REVIEW_LABEL = "clawsweeper:human-review";
 export const MANUAL_ONLY_LABEL = "clawsweeper:manual-only";
+const REVIEWED_ISSUE_TRIGGER_SOURCES = new Set([
+  REVIEW_REPRODUCIBLE_BUG_TRIGGER_SOURCE,
+  REVIEW_VIABLE_ISSUE_TRIGGER_SOURCE,
+  REVIEW_VISION_FIT_TRIGGER_SOURCE,
+]);
 
 export function repairPauseLabel(labels: Iterable<JsonValue> | null | undefined): string | null {
   for (const label of labels ?? []) {
@@ -172,7 +182,7 @@ function isTrustedIssueImplementation({ job, fixArtifact }: LooseRecord): boolea
   if (!Array.isArray(frontmatter.allowed_actions) || !frontmatter.allowed_actions.includes("fix")) {
     return false;
   }
-  if (frontmatter.trigger_source !== "review_viable_issue") return false;
+  if (!REVIEWED_ISSUE_TRIGGER_SOURCES.has(frontmatter.trigger_source)) return false;
   const repo = String(frontmatter.repo ?? "")
     .trim()
     .toLowerCase();
