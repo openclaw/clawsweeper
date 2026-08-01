@@ -8778,6 +8778,12 @@ test("public durable publication event endpoint returns bounded aggregate-only w
     observedAt: Date.now() - 60_000,
   });
   const queue = new ExactReviewQueue({ storage }, {});
+  const exec = storage.sql.exec.bind(storage.sql);
+  let sourceReads = 0;
+  storage.sql.exec = (query: string, ...bindings: unknown[]) => {
+    if (query.includes("SELECT outcome, observed_at")) sourceReads += 1;
+    return exec(query, ...bindings);
+  };
   const response = await worker.fetch(
     new Request("https://clawsweeper.openclaw.ai/api/recent-durable-publication-events?window=6h"),
     { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) },
@@ -8793,6 +8799,12 @@ test("public durable publication event endpoint returns bounded aggregate-only w
   );
   assert.equal(JSON.stringify(body).includes("openclaw/openclaw#898"), false);
   assert.equal(JSON.stringify(body).includes("workflow"), false);
+  const cached = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/recent-durable-publication-events?window=6h"),
+    { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) },
+  );
+  assert.equal(cached.status, 200);
+  assert.equal(sourceReads, 2);
 });
 
 class MemoryR2Bucket {

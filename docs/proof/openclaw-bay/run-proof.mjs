@@ -489,6 +489,54 @@ proofSnapshots.push({
   },
 });
 
+const recentDurablePublicationEvents = {
+  version: 1,
+  captured_at: "2026-07-11T18:00:00.000Z",
+  window: {
+    id: "24h",
+    start_at: "2026-07-10T18:00:00.000Z",
+    end_at: "2026-07-11T18:00:00.000Z",
+    bucket_seconds: 3600,
+    bucket_count: 24,
+  },
+  collection: { state: "complete", complete: true, scan_limit: 10000 },
+  activity: { state: "observed" },
+  direct: {
+    complete: true,
+    rows: 4,
+    latest_observed_at: "2026-07-11T17:59:00.000Z",
+    counts: { accepted: 3, deduped: 1, superseded: 0, fallback: 0 },
+    buckets: Array.from({ length: 24 }, (_, index) => ({
+      index,
+      counts: {
+        accepted: index === 23 ? 3 : 0,
+        deduped: index === 23 ? 1 : 0,
+        superseded: 0,
+        fallback: 0,
+      },
+    })),
+  },
+  batch: {
+    complete: true,
+    rows: 2,
+    latest_observed_at: "2026-07-11T17:58:00.000Z",
+    counts: { superseded: 0, retryable: 2, permanent: 0 },
+    buckets: Array.from({ length: 24 }, (_, index) => ({
+      index,
+      counts: { superseded: 0, retryable: index === 23 ? 2 : 0, permanent: 0 },
+    })),
+  },
+  provenance: {
+    durable_server_observed: true,
+    public_aggregate_only: true,
+    retention_seconds: 604800,
+    omitted: ["canonical_target_key", "fence_key", "revision", "claim_generation", "event_id"],
+  },
+};
+proofSnapshots.forEach((snapshot) => {
+  snapshot.recent_durable_publication_events = structuredClone(recentDurablePublicationEvents);
+});
+
 let fixtureIndex = 0;
 const requests = [];
 const responses = [];
@@ -754,6 +802,8 @@ try {
     "Bay mirrors cached aggregate events, admission, publication, state-writer, and handoff telemetry",
     bayControl.cards === 5 &&
       /Recent durable events/i.test(bayControl.review) &&
+      /ACCEPTED\s*3/.test(bayControl.review) &&
+      /DEDUPED\s*1/.test(bayControl.review) &&
       /Review admission/i.test(bayControl.review) &&
       /Result publication/i.test(bayControl.review) &&
       /State writer/i.test(bayControl.review) &&
