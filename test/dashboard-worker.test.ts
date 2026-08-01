@@ -9525,20 +9525,24 @@ test("optional exact-review telemetry failures do not freeze an idle status snap
   globalThis.fetch = async () => {
     throw new Error("shared snapshot should avoid GitHub requests");
   };
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
   let queueReads = 0;
-  const failingQueue = {
-    fetch: async () => {
+  const queueWithUnavailableAggregate = {
+    fetch: async (request: Request) => {
       queueReads += 1;
-      return new Response(JSON.stringify({ error: "queue_read_failed" }), {
-        status: 503,
-        headers: { "content-type": "application/json" },
-      });
+      if (new URL(request.url).pathname === "/recent-durable-publication-events") {
+        return new Response(JSON.stringify({ error: "queue_read_failed" }), {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return queue.fetch(request);
     },
   };
   const env = {
     CACHE_TTL_SECONDS: "60",
     STATUS_STORE: statusStore,
-    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(failingQueue),
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queueWithUnavailableAggregate),
   };
 
   try {
@@ -9548,10 +9552,10 @@ test("optional exact-review telemetry failures do not freeze an idle status snap
       { waitUntil: () => undefined },
     );
     const status = await response.json();
-    assert.equal(status.exact_review_queue, null);
+    assert.equal(status.exact_review_queue.pending, 0);
     assert.equal(status.recent_durable_publication_events, null);
     assert.deepEqual(status.diagnostics.errors, []);
-    assert.equal(status.diagnostics.exact_review_queue_error, "queue_read_failed");
+    assert.equal(status.diagnostics.exact_review_queue_error, null);
     assert.equal(status.diagnostics.recent_durable_publication_events_error, "queue_read_failed");
 
     const cached = await worker.fetch(
@@ -9560,7 +9564,13 @@ test("optional exact-review telemetry failures do not freeze an idle status snap
       { waitUntil: () => undefined },
     );
     assert.equal(cached.headers.get("x-clawsweeper-cache"), "fresh");
-    assert.equal((await cached.json()).diagnostics.exact_review_queue_error, "queue_read_failed");
+    const cachedStatus = await cached.json();
+    assert.equal(cachedStatus.exact_review_queue.pending, 0);
+    assert.equal(cachedStatus.diagnostics.exact_review_queue_error, null);
+    assert.equal(
+      cachedStatus.diagnostics.recent_durable_publication_events_error,
+      "queue_read_failed",
+    );
     assert.equal(queueReads, 2);
   } finally {
     globalThis.fetch = originalFetch;

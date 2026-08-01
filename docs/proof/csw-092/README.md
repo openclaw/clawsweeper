@@ -7,5 +7,7 @@ local Worker route and Bay page rendering, not production telemetry or
 production performance.
 
 See `proof-summary.json` for the exact current head, environment, assertions,
-request classification, and fixture checksum. `01a-mini-control-board.jpg` is
-a representative current-head frame of the populated aggregate card.
+request classification, and fixture checksum. `runtime-transcript.md` records
+the exercised surfaces, observations, and fixture limits.
+`01a-mini-control-board.jpg` is a representative current-head frame of the
+populated aggregate card.
