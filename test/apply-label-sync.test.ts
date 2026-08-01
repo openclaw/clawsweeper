@@ -776,9 +776,11 @@ const oldBody = ${JSON.stringify(oldLiveComment)};
 const newerBody = ${JSON.stringify(newerComment)};
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
-const path = args[1] || "";
+const path = args[1] === "-i" ? args[2] || "" : args[1] || "";
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
-if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").test(path) && !args.includes("--method")) {
+if (args[0] === "api" && args[1] === "-i" && new RegExp("/issues/${number}/timeline(?:\\\\?|$)").test(path)) {
+  console.log("HTTP/2 200\\n\\n[]");
+} else if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").test(path) && !args.includes("--method")) {
   const count = (existsSync(countPath) ? Number(readFileSync(countPath, "utf8")) : 0) + 1;
   writeFileSync(countPath, String(count));
   const body = count >= 6 ? newerBody : oldBody;
@@ -1397,12 +1399,13 @@ const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
 const path = args[1] || "";
 if (args[0] === "api" && /\\/issues\\/74478$/.test(path)) {
+  const commentWasPosted = readFileSync(logPath, "utf8").includes("posted-comment-body");
   console.log(JSON.stringify({
     number: 74478,
     title: "Record PR label churn",
     html_url: "https://github.com/openclaw/clawsweeper/pull/74478",
     created_at: "2026-05-19T19:00:00Z",
-    updated_at: "2026-05-19T20:00:00Z",
+    updated_at: commentWasPosted ? "2026-05-19T20:00:02Z" : "2026-05-19T20:00:00Z",
     closed_at: null,
     state: "open",
     locked: false,
@@ -1462,6 +1465,7 @@ if (args[0] === "api" && /\\/issues\\/74478$/.test(path)) {
 
     const report = readFileSync(itemPath, "utf8");
     assert.match(report, /^labels_synced_at: /m);
+    assert.match(report, /^automation_item_updated_at: 2026-05-19T20:00:02Z$/m);
     assert.match(report, /proof: sufficient/);
     assert.match(report, /proof: 📸 screenshot/);
     assert.match(report, /rating: 🦞 diamond lobster/);

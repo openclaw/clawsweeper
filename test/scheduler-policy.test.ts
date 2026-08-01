@@ -205,7 +205,8 @@ test("scheduler keeps ambiguous post-sync activity due after review", () => {
         now,
         "current",
       ),
-      false,
+      true,
+      `${syncField} cannot suppress ambiguous activity before its local sync clock`,
     );
     for (let lagSeconds = 1; lagSeconds <= 5; lagSeconds += 1) {
       assert.equal(
@@ -223,6 +224,62 @@ test("scheduler keeps ambiguous post-sync activity due after review", () => {
       );
     }
   }
+});
+
+test("scheduler keeps an exact post-mutation timestamp eligible for structural verification", () => {
+  const reviewedAt = "2026-08-01T14:52:41Z";
+  const automationItemUpdatedAt = "2026-08-01T14:53:29Z";
+  const review = {
+    path: "items/117.md",
+    markdown: "",
+    reviewedAt,
+    itemUpdatedAt: "2026-08-01T12:44:07Z",
+    reviewCommentSyncedAt: "2026-08-01T14:53:28Z",
+    automationItemUpdatedAt,
+    decision: "keep_open",
+    reviewStatus: "complete",
+    reviewPolicy: "current",
+  };
+
+  assert.equal(
+    shouldReviewItem(
+      item({
+        createdAt: "2026-07-24T06:00:00Z",
+        updatedAt: automationItemUpdatedAt,
+      }),
+      review,
+      Date.parse("2026-08-01T16:50:00Z"),
+      "current",
+    ),
+    true,
+    "timestamp equality alone cannot prove that the matching activity belongs to ClawSweeper",
+  );
+  assert.equal(
+    shouldReviewItem(
+      item({
+        createdAt: "2026-07-24T06:00:00Z",
+        updatedAt: "2026-08-01T14:53:30Z",
+      }),
+      review,
+      Date.parse("2026-08-01T16:50:00Z"),
+      "current",
+    ),
+    true,
+    "a later target-side update remains due",
+  );
+  assert.equal(
+    shouldReviewItem(
+      item({
+        createdAt: "2026-07-24T06:00:00Z",
+        updatedAt: reviewedAt,
+      }),
+      { ...review, itemUpdatedAt: reviewedAt },
+      Date.parse("2026-08-01T16:50:00Z"),
+      "current",
+    ),
+    true,
+    "an unchanged item timestamp in the reviewed second remains structurally ambiguous",
+  );
 });
 
 test("hot new item priority is protected from older activity churn", () => {
@@ -725,6 +782,7 @@ test("CSW-088 suppresses only the immediate same-head and same-body hot-intake r
   const sourceRevision = "4055368d78b5997d42460145ba92e74397576bb4b0aaf91bb063725f2f1cb63d";
   const pullStateDigest = "b".repeat(64);
   const reviewActivityCursor = `v1:0:${"c".repeat(64)}`;
+  const unchangedItemUpdatedAt = new Date(Date.parse(reviewedAt) - 1_000).toISOString();
   const sameSnapshot = {
     reviewStatus: "complete",
     reviewedAt,
@@ -736,13 +794,23 @@ test("CSW-088 suppresses only the immediate same-head and same-body hot-intake r
     currentSourceRevision: sourceRevision,
     currentPullStateDigest: pullStateDigest,
     currentReviewActivityCursor: reviewActivityCursor,
-    itemUpdatedAt: reviewedAt,
-    reviewItemUpdatedAt: reviewedAt,
-    currentItemUpdatedAt: reviewedAt,
+    itemUpdatedAt: unchangedItemUpdatedAt,
+    reviewItemUpdatedAt: unchangedItemUpdatedAt,
+    currentItemUpdatedAt: unchangedItemUpdatedAt,
     now,
   };
 
   assert.equal(shouldSkipScheduledHotIntakeExactReviewForTest(sameSnapshot), true);
+  assert.equal(
+    shouldSkipScheduledHotIntakeExactReviewForTest({
+      ...sameSnapshot,
+      itemUpdatedAt: reviewedAt,
+      reviewItemUpdatedAt: reviewedAt,
+      currentItemUpdatedAt: reviewedAt,
+    }),
+    false,
+    "same-second reviewed item activity requires the complete structural path",
+  );
   assert.equal(
     shouldSkipScheduledHotIntakeExactReviewForTest({
       ...sameSnapshot,
@@ -784,7 +852,32 @@ test("CSW-088 suppresses only the immediate same-head and same-body hot-intake r
       currentItemUpdatedAt: new Date(Date.parse(reviewedAt) + 1).toISOString(),
       reviewCommentSyncedAt: new Date(Date.parse(reviewedAt) + 1).toISOString(),
     }),
-    true,
+    false,
+    "a local comment-sync clock cannot suppress same-second target activity",
+  );
+  const automationItemUpdatedAt = new Date(Date.parse(reviewedAt) + 2_000).toISOString();
+  assert.equal(
+    shouldSkipScheduledHotIntakeExactReviewForTest({
+      ...sameSnapshot,
+      itemUpdatedAt: automationItemUpdatedAt,
+      currentItemUpdatedAt: automationItemUpdatedAt,
+      automationItemUpdatedAt,
+      reviewCommentSyncedAt: new Date(Date.parse(reviewedAt) + 1_000).toISOString(),
+    }),
+    false,
+    "hot intake cannot suppress work from an item timestamp without a complete timeline receipt",
+  );
+  assert.equal(
+    shouldSkipScheduledHotIntakeExactReviewForTest({
+      ...sameSnapshot,
+      itemUpdatedAt: automationItemUpdatedAt,
+      currentItemUpdatedAt: automationItemUpdatedAt,
+      automationItemUpdatedAt,
+      reviewCommentSyncedAt: new Date(Date.parse(reviewedAt) + 1_000).toISOString(),
+      currentSourceRevision: "a".repeat(64),
+    }),
+    false,
+    "same-timestamp target activity remains due when the exact source receipt changed",
   );
   assert.equal(
     shouldSkipScheduledHotIntakeExactReviewForTest({

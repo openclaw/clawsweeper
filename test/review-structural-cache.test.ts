@@ -485,6 +485,57 @@ test("owned comment or label synchronization may explain metadata-only activity"
   const priorRecord = record();
   const currentRecord = record(issueSnapshot({ activityUpdatedAt: "2026-07-10T10:02:00Z" }));
   assert.equal(decision({ priorRecord, currentRecord }).hit, true);
+
+  const serverLaggedRecord = record(issueSnapshot({ activityUpdatedAt: "2026-07-10T10:02:01Z" }));
+  assert.equal(
+    decision({
+      priorRecord,
+      currentRecord: serverLaggedRecord,
+      review: review({ automationItemUpdatedAt: "2026-07-10T10:02:01Z" }),
+    }).hit,
+    true,
+  );
+});
+
+test("automation timestamp collisions still require an identical structural receipt", () => {
+  const priorRecord = record();
+  const currentRecord = record(
+    issueSnapshot({
+      activityUpdatedAt: "2026-07-10T10:02:01Z",
+      labels: ["bug", "human-update"],
+    }),
+  );
+  assert.equal(
+    decision({
+      priorRecord,
+      currentRecord,
+      review: review({ automationItemUpdatedAt: "2026-07-10T10:02:01Z" }),
+    }).reason,
+    "source_changed",
+  );
+
+  const timelineChangedRecord = record(
+    issueSnapshot({
+      activityUpdatedAt: "2026-07-10T10:02:01Z",
+      timeline: [
+        ...issueSnapshot().timeline,
+        {
+          type: "AssignedEvent",
+          id: "AE_same_second",
+          createdAt: "2026-07-10T10:02:01Z",
+          author: "maintainer",
+        },
+      ],
+    }),
+  );
+  assert.equal(
+    decision({
+      priorRecord,
+      currentRecord: timelineChangedRecord,
+      review: review({ automationItemUpdatedAt: "2026-07-10T10:02:01Z" }),
+    }).reason,
+    "source_changed",
+  );
 });
 
 test("changed target head forces issue hydration", () => {

@@ -12,6 +12,7 @@ export interface SchedulerItem {
 export interface SchedulerExistingReview {
   reviewedAt?: string | undefined;
   itemUpdatedAt?: string | undefined;
+  automationItemUpdatedAt?: string | undefined;
   reviewCommentSyncedAt?: string | undefined;
   labelsSyncedAt?: string | undefined;
   reviewStatus?: string | undefined;
@@ -88,32 +89,30 @@ function hasActivitySinceReview(
   if (!review) return false;
   const updatedAt = Date.parse(item.updatedAt);
   const reviewedAt = reviewedAtMs(review);
-  const reviewCommentSyncedAt = timestampMs(review.reviewCommentSyncedAt);
-  const labelsSyncedAt = timestampMs(review.labelsSyncedAt);
-  const botOwnedSyncedAt = Math.max(
-    reviewCommentSyncedAt ?? -Infinity,
-    labelsSyncedAt ?? -Infinity,
-  );
+  // GitHub item timestamps have second-level precision. Comment and label
+  // synchronization clocks therefore cannot prove ownership of later item
+  // activity: an independent target update can share the same value. Keep
+  // post-review activity eligible here and let the structural cache verify a
+  // complete item receipt before suppressing the expensive review.
   if (review.itemUpdatedAt) {
-    if (item.updatedAt === review.itemUpdatedAt) return false;
-    if (Number.isFinite(updatedAt) && reviewedAt !== null && updatedAt <= reviewedAt) return false;
-    if (
-      Number.isFinite(updatedAt) &&
-      Number.isFinite(botOwnedSyncedAt) &&
-      updatedAt <= botOwnedSyncedAt
-    ) {
-      return false;
+    if (item.updatedAt === review.itemUpdatedAt) {
+      return (
+        Number.isFinite(updatedAt) &&
+        reviewedAt !== null &&
+        updatedAt === Math.floor(reviewedAt / 1000) * 1000
+      );
     }
-    return true;
+    return (
+      Number.isFinite(updatedAt) &&
+      reviewedAt !== null &&
+      updatedAt >= Math.floor(reviewedAt / 1000) * 1000
+    );
   }
-  if (
+  return (
+    reviewedAt !== null &&
     Number.isFinite(updatedAt) &&
-    Number.isFinite(botOwnedSyncedAt) &&
-    updatedAt <= botOwnedSyncedAt
-  ) {
-    return false;
-  }
-  return reviewedAt !== null && Number.isFinite(updatedAt) && updatedAt > reviewedAt;
+    updatedAt >= Math.floor(reviewedAt / 1000) * 1000
+  );
 }
 
 function isCreatedWithinDays(

@@ -36,7 +36,7 @@ const VERSION_GROUPS = [
   ["reviewed_at", "last_full_review_at"],
   ["reconciled_at"],
   ["applied_at", "apply_checked_at"],
-  ["review_comment_synced_at", "review_comment_checked_at"],
+  ["review_comment_synced_at", "review_comment_checked_at", "automation_item_updated_at"],
   ["labels_synced_at"],
   ["failed_review_retry_last_at"],
 ] as const;

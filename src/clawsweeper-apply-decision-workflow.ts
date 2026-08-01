@@ -11,7 +11,10 @@ import {
 import { evaluateApplyClosePolicy } from "./clawsweeper-apply-close-policies.js";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import { createApplyLeaseGuards } from "./clawsweeper-apply-lease-guards.js";
-import { createApplyProofFreshnessGuards } from "./clawsweeper-apply-proof-freshness.js";
+import {
+  type ApplySelfMutationItemReceipt,
+  createApplyProofFreshnessGuards,
+} from "./clawsweeper-apply-proof-freshness.js";
 import { syncApplyPullRequestLabels } from "./clawsweeper-apply-pull-request-labels.js";
 import { promoteApplyPullRequest } from "./clawsweeper-apply-pull-request-promotion.js";
 import { syncApplyReportLabels } from "./clawsweeper-apply-report-labels.js";
@@ -39,6 +42,7 @@ import {
   STALE_INSUFFICIENT_INFO_MIN_AGE_DAYS,
 } from "./clawsweeper-policy.js";
 import { rawCommentBody } from "./clawsweeper-review-comments.js";
+import { completeActivityContextSymbol } from "./clawsweeper-types.js";
 import type {
   AcquiredReviewStartLease,
   ActionTaken,
@@ -63,7 +67,9 @@ import {
   isLockedConversationCommentError,
 } from "./github-retry.js";
 import { type PrCloseCoverageProofRuntime } from "./pr-close-coverage-proof.js";
+import { isReviewedPrActivityCursor } from "./review-activity-cursor.js";
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
+import { stableJson } from "./stable-json.js";
 
 export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWorkflowDependencies) {
   const {
@@ -94,7 +100,9 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     ensureDir,
     exactEventReviewLeaseDisposition,
     fetchItem,
+    fetchReviewedPrActivityCursor,
     finishApplyMutationAttempt,
+    freshPullRequestReviewHead,
     frontMatterStringArray,
     frontMatterValue,
     ghJson,
@@ -721,14 +729,54 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let currentClosingPullRequests: unknown[] | undefined;
       let clawSweeperLabelsChanged = false;
       let issueAdvisoryLabelsChanged = false;
-      const allowedSelfMutationUpdatedAts = new Set<string>();
+      const selfMutationItemReceipts: ApplySelfMutationItemReceipt[] = [];
       const currentItemContext = (): ItemContext => {
-        currentContext ??= collectItemContext(item, { fullTimelineForRelations: true });
+        currentContext ??= collectItemContext(item, {
+          fullTimelineForRelations: true,
+          reviewCacheDigest: true,
+        });
         return currentContext;
       };
       const markdownBeforeApplyDecisionMutations = markdown;
+      const expectedReviewActivityCursor = frontMatterValue(
+        markdownBeforeApplyDecisionMutations,
+        "review_activity_cursor",
+      );
+      const reviewedSourceRevision = frontMatterValue(
+        markdownBeforeApplyDecisionMutations,
+        "item_source_revision",
+      );
+      const reviewedTimelineRevision = frontMatterValue(
+        markdownBeforeApplyDecisionMutations,
+        "review_timeline_revision",
+      );
+      const reviewHasCompleteActivityIdentity = Boolean(
+        reviewedSourceRevision &&
+          reviewedSourceRevision !== "unknown" &&
+          reviewedTimelineRevision &&
+          /^[0-9a-f]{64}$/.test(reviewedTimelineRevision) &&
+          (item.kind !== "pull_request" ||
+            (frontMatterValue(markdownBeforeApplyDecisionMutations, "pull_head_sha") &&
+              isReviewedPrActivityCursor(expectedReviewActivityCursor))),
+      );
+      const completeReviewActivityReceiptMatches = (context: ItemContext): boolean => {
+        if (!reviewHasCompleteActivityIdentity || !context[completeActivityContextSymbol]) {
+          return false;
+        }
+        if (
+          context.sourceRevision !== reviewedSourceRevision ||
+          context.timelineRevision !== reviewedTimelineRevision
+        ) {
+          return false;
+        }
+        return (
+          item.kind !== "pull_request" ||
+          (freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, context) &&
+            context.pullReviewActivityCursor === expectedReviewActivityCursor)
+        );
+      };
       const currentReviewActivityBlock = createApplyReviewActivityGuard(dependencies, {
-        expectedCursor: frontMatterValue(markdownBeforeApplyDecisionMutations, "review_activity_cursor"),
+        expectedCursor: expectedReviewActivityCursor,
         itemKind: item.kind,
         number,
       });
@@ -869,7 +917,37 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       if (initialCanonicalCommentSyncGuard.stopApply) break;
       if (initialCanonicalCommentSyncGuard.skipCurrentItem) continue;
       const rememberSelfMutationUpdatedAt = (): void => {
-        if (!dryRun) allowedSelfMutationUpdatedAts.add(fetchItem(number).item.updatedAt);
+        if (dryRun) return;
+        const automationItem = fetchItem(number).item;
+        const automationItemUpdatedAt = automationItem.updatedAt;
+        markdown = replaceFrontMatterValue(
+          markdown,
+          "automation_item_updated_at",
+          automationItemUpdatedAt,
+        );
+        // A post-mutation item timestamp is not operation-specific. Admit it
+        // into this apply run only when an immediate structural receipt still
+        // matches the reviewed source, PR head, and review-activity cursor. The
+        // final close gate repeats those checks and verifies that no target-side
+        // activity landed after proof.
+        if (!reviewedSourceRevision || reviewedSourceRevision === "unknown") return;
+        const receiptContext = collectItemContext(automationItem, {
+          fullTimelineForRelations: true,
+          reviewCacheDigest: true,
+        });
+        if (!completeReviewActivityReceiptMatches(receiptContext)) return;
+        const completeActivityContext = receiptContext[completeActivityContextSymbol];
+        if (!completeActivityContext) return;
+        selfMutationItemReceipts.push({
+          updatedAt: automationItemUpdatedAt,
+          sourceRevision: reviewedSourceRevision,
+          activityReceipt: stableJson(completeActivityContext),
+          prHeadMatches:
+            item.kind !== "pull_request" ||
+            freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, receiptContext),
+          reviewActivityCursor:
+            item.kind === "pull_request" ? fetchReviewedPrActivityCursor(number) : null,
+        });
       };
       const candidateGuards = createApplyCandidateGuards(dependencies, {
         authorPrBudgetClosesThisRun,
@@ -1149,9 +1227,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         labelSyncFreshEnough,
         reviewedSourceFresh,
         retryCloseCoverageCommandStatusOnlyUpdate,
+        sameSecondCloseActivityIsAmbiguous,
       } = createApplySourceFreshness(dependencies, {
         action,
-        allowedSelfMutationUpdatedAts,
+        completeReviewActivityReceiptMatches,
         currentItemContext,
         currentState: () => ({ isCloseProposal, markdown, storedUpdatedAt }),
         existingReviewComment,
@@ -1162,6 +1241,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         reportLabelsBeforeApply,
         reportReviewLeaseCommentId,
         reportReviewLeaseOwner,
+        reviewHasCompleteActivityIdentity,
         requiresApplyMutationLease,
         storedHash,
       });
@@ -1361,14 +1441,23 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         createApplyProofFreshnessGuards({
           ...dependencies,
           action,
-          allowedSelfMutationUpdatedAts,
+          automationItemUpdatedAt: frontMatterValue(
+            markdownBeforeApplyDecisionMutations,
+            "automation_item_updated_at",
+          ),
+          completeReviewActivityReceiptMatches,
           currentProofState: () => ({
             ...coverageProofState,
             storedHash,
             storedUpdatedAt,
           }),
+          expectedReviewActivityCursor,
+          itemKind: item.kind,
           number,
+          reviewHasCompleteActivityIdentity,
+          reviewMarkdown: markdownBeforeApplyDecisionMutations,
           retryCloseCoverageCommandStatusOnlyUpdate,
+          selfMutationItemReceipts,
         });
       if (state !== "open") {
         if (item.closedAt) {
@@ -1424,6 +1513,16 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         if (
           markChangedSinceReview({
             reason: stalePrReviewHead.reason,
+            currentUpdatedAt: item.updatedAt,
+          })
+        )
+          break;
+        continue;
+      }
+      if (sameSecondCloseActivityIsAmbiguous) {
+        if (
+          markChangedSinceReview({
+            reason: "same-second activity requires a fresh review",
             currentUpdatedAt: item.updatedAt,
           })
         )
@@ -1779,10 +1878,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                 markedReviewComment,
                 existingReviewComment,
               );
-              const syncedCommentUpdatedAt = commentUpdatedAt(syncedComment);
-              if (syncedCommentUpdatedAt) {
-                allowedSelfMutationUpdatedAts.add(syncedCommentUpdatedAt);
-              }
+              rememberSelfMutationUpdatedAt();
               syncReasons.push("updated durable Codex review comment");
               // The durable review comment is now published, so stale "review
               // started" placeholders from failed earlier attempts are clutter.

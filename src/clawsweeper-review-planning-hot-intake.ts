@@ -129,17 +129,15 @@ export function createReviewPlanningHotIntake(
     const updatedAt = Date.parse(item.updatedAt);
     const reviewedAt = review.reviewedAt ? Date.parse(review.reviewedAt) : Number.NaN;
     if (!Number.isFinite(updatedAt) || !Number.isFinite(reviewedAt)) return true;
-    if (review.itemUpdatedAt && item.updatedAt === review.itemUpdatedAt) return false;
-    if (updatedAt <= reviewedAt) return false;
-    const reviewCommentSyncedAt = review.reviewCommentSyncedAt
-      ? Date.parse(review.reviewCommentSyncedAt)
-      : Number.NaN;
-    const labelsSyncedAt = review.labelsSyncedAt ? Date.parse(review.labelsSyncedAt) : Number.NaN;
-    const botOwnedSyncedAt = Math.max(
-      Number.isFinite(reviewCommentSyncedAt) ? reviewCommentSyncedAt : -Infinity,
-      Number.isFinite(labelsSyncedAt) ? labelsSyncedAt : -Infinity,
-    );
-    return !Number.isFinite(botOwnedSyncedAt) || updatedAt > botOwnedSyncedAt;
+    // Local synchronization clocks are not ownership receipts. GitHub rounds
+    // item activity to seconds, so target-side activity can share a timestamp
+    // with a bot comment or label mutation. Keep all post-review activity hot;
+    // the structural cache can still reuse the prior verdict after comparing a
+    // complete source and timeline receipt.
+    if (review.itemUpdatedAt && item.updatedAt === review.itemUpdatedAt) {
+      return updatedAt === Math.floor(reviewedAt / 1000) * 1000;
+    }
+    return updatedAt >= Math.floor(reviewedAt / 1000) * 1000;
   }
   function shouldSkipScheduledHotIntakeExactReview(
     item: Item,
@@ -180,6 +178,7 @@ export function createReviewPlanningHotIntake(
     currentItemUpdatedAt?: string;
     itemUpdatedAt?: string;
     reviewItemUpdatedAt?: string;
+    automationItemUpdatedAt?: string;
     reviewCommentSyncedAt?: string;
     labelsSyncedAt?: string;
     reviewPolicy?: string;
@@ -193,6 +192,7 @@ export function createReviewPlanningHotIntake(
       itemSourceRevision: options.reviewSourceRevision,
       reviewPolicy: options.reviewPolicy,
       itemUpdatedAt: options.reviewItemUpdatedAt,
+      automationItemUpdatedAt: options.automationItemUpdatedAt,
       reviewCommentSyncedAt: options.reviewCommentSyncedAt,
       labelsSyncedAt: options.labelsSyncedAt,
     } as ExistingReview;

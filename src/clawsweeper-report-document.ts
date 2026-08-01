@@ -587,6 +587,7 @@ review_semantic_eligible: ${options.semanticRecord?.eligible ?? false}
 review_semantic_eligibility_reason: ${options.semanticRecord?.eligibilityReason ?? "unknown"}
 review_semantic_cache_hit: false
 item_source_revision: ${options.context.sourceRevision ?? "unknown"}
+review_timeline_revision: ${options.context.timelineRevision ?? "unknown"}
 review_activity_cursor: ${options.context.pullReviewActivityCursor ?? "unknown"}
 close_comment_sha256: ${options.action.closeComment ? sha256(options.action.closeComment) : "none"}
 review_comment_sha256: none

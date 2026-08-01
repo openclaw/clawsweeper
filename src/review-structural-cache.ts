@@ -122,6 +122,7 @@ export interface ReviewStructuralPriorReview {
   reviewPolicy?: string | undefined;
   reviewModel?: string | undefined;
   itemSourceRevision?: string | undefined;
+  automationItemUpdatedAt?: string | undefined;
   reviewCommentSyncedAt?: string | undefined;
   labelsSyncedAt?: string | undefined;
 }
@@ -1190,6 +1191,11 @@ function activityCoveredByReview(
   review: ReviewStructuralPriorReview,
 ): boolean {
   if (current.activityUpdatedAt === prior.activityUpdatedAt) return true;
+  // Timestamp equality only clears the activity-clock gate. The caller has
+  // already compared the complete structural source revision and still checks
+  // target and pull heads before returning a cache hit, so a same-second target
+  // mutation cannot be attributed to automation by this value alone.
+  if (current.activityUpdatedAt === review.automationItemUpdatedAt) return true;
   const priorActivity = timestampMs(prior.activityUpdatedAt);
   const currentActivity = timestampMs(current.activityUpdatedAt);
   const latestOwnedSync = Math.max(

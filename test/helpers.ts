@@ -465,6 +465,7 @@ export function lowSignalCloseReport(overrides = {}) {
     item_snapshot_hash: "reviewed-snapshot",
     item_created_at: "2026-05-01T00:00:00Z",
     item_updated_at: "2026-05-01T00:00:00Z",
+    review_timeline_revision: sha256ForTest("[]"),
     author_association: "CONTRIBUTOR",
     ...overrides,
   })}\n\n## Evidence\n\n- **branch shape:** PR diff is mostly unrelated provider churn around a tiny possible useful tweak\n\n## Close Comment\n\nClosing this PR because the branch is not a useful landing base.\n`;

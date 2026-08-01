@@ -22,7 +22,7 @@ type ApplySourceFreshnessDependencies = Pick<
 
 interface ApplySourceFreshnessOptions {
   action: string | undefined;
-  allowedSelfMutationUpdatedAts: Set<string>;
+  completeReviewActivityReceiptMatches: (context: ItemContext) => boolean;
   currentItemContext: () => ItemContext;
   currentState: () => {
     isCloseProposal: boolean;
@@ -37,6 +37,7 @@ interface ApplySourceFreshnessOptions {
   reportLabelsBeforeApply: readonly string[];
   reportReviewLeaseCommentId: number;
   reportReviewLeaseOwner: string | undefined;
+  reviewHasCompleteActivityIdentity: boolean;
   requiresApplyMutationLease: boolean;
   storedHash: string | undefined;
 }
@@ -158,7 +159,7 @@ export function createApplySourceFreshness(
   } = dependencies;
   const {
     action,
-    allowedSelfMutationUpdatedAts,
+    completeReviewActivityReceiptMatches,
     currentItemContext,
     currentState,
     existingReviewComment,
@@ -169,13 +170,11 @@ export function createApplySourceFreshness(
     reportLabelsBeforeApply,
     reportReviewLeaseCommentId,
     reportReviewLeaseOwner,
+    reviewHasCompleteActivityIdentity,
     requiresApplyMutationLease,
     storedHash,
   } = options;
   const existingReviewCommentUpdatedAt = commentUpdatedAt(existingReviewComment);
-  if (existingReviewCommentUpdatedAt) {
-    allowedSelfMutationUpdatedAts.add(existingReviewCommentUpdatedAt);
-  }
   const reportOwnedLeaseComments = requiresApplyMutationLease
     ? leaseComments.filter(
         (comment) =>
@@ -183,11 +182,6 @@ export function createApplySourceFreshness(
           reviewStartLeaseOwner(comment) === reportReviewLeaseOwner,
       )
     : [];
-  for (const updatedAt of reportOwnedLeaseComments
-    .map(commentUpdatedAt)
-    .filter((value): value is string => timestampMs(value) !== null)) {
-    allowedSelfMutationUpdatedAts.add(updatedAt);
-  }
   const latestAutomationUpdatedAt = [existingReviewComment, ...reportOwnedLeaseComments]
     .map(commentUpdatedAt)
     .filter((value): value is string => timestampMs(value) !== null)
@@ -209,18 +203,24 @@ export function createApplySourceFreshness(
   const labelSyncOnlyUpdate = Boolean(
     recordedLabelSyncMatches &&
     storedUpdatedAtMs !== null &&
-    !contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs, {
-      truncationCountsAsActivity: true,
-    }),
+    (reviewHasCompleteActivityIdentity
+      ? completeReviewActivityReceiptMatches(currentItemContext())
+      : !contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs - 1, {
+          truncationCountsAsActivity: true,
+          useCompleteActivityContext: true,
+        })),
   );
   const ownedIssueReviewLeaseOnlyUpdate = Boolean(
     item.kind === "issue" &&
     updatedSinceReview &&
     storedUpdatedAtMs !== null &&
     reportOwnedLeaseComments.some((comment) => commentUpdatedAt(comment) === item.updatedAt) &&
-    !contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs, {
-      truncationCountsAsActivity: true,
-    }),
+    (reviewHasCompleteActivityIdentity
+      ? completeReviewActivityReceiptMatches(currentItemContext())
+      : !contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs - 1, {
+          truncationCountsAsActivity: true,
+          useCompleteActivityContext: true,
+        })),
   );
   let statusComments: Record<string, unknown>[] | undefined;
   const reviewedSourceRevision = frontMatterValue(
@@ -251,20 +251,37 @@ export function createApplySourceFreshness(
     const createdAt = comment ? stringOrUndefined(comment.created_at) : undefined;
     return Boolean(
       createdAt &&
-      !contextHasNonAutomationActivityAfter(candidateContext, storedUpdatedAtMs, {
-        truncationCountsAsActivity: true,
-        ignoreTrustedTimelineComment: { authors: CLAWSWEEPER_BOT_AUTHORS, createdAt },
-      }),
+      (reviewHasCompleteActivityIdentity
+        ? completeReviewActivityReceiptMatches(candidateContext)
+        : !contextHasNonAutomationActivityAfter(candidateContext, storedUpdatedAtMs - 1, {
+            truncationCountsAsActivity: true,
+            useCompleteActivityContext: true,
+            ignoreTrustedTimelineComment: { authors: CLAWSWEEPER_BOT_AUTHORS, createdAt },
+          })),
     );
   };
   const commandStatusOnlyUpdate =
     action === "retry_pr_close_coverage_proof" &&
     retryCloseCoverageCommandStatusOnlyUpdate(item, currentItemContext());
-  const automationOnlyUpdate =
-    reviewCommentOnlyUpdate ||
-    labelSyncOnlyUpdate ||
-    ownedIssueReviewLeaseOnlyUpdate ||
-    commandStatusOnlyUpdate;
+  const completeAutomationReceiptMatchesReview = (): boolean =>
+    completeReviewActivityReceiptMatches(currentItemContext());
+  const { isCloseProposal } = currentState();
+  const automationOnlyUpdate = Boolean(
+    (reviewCommentOnlyUpdate ||
+      labelSyncOnlyUpdate ||
+      ownedIssueReviewLeaseOnlyUpdate ||
+      commandStatusOnlyUpdate) &&
+    (!isCloseProposal ||
+      !reviewHasCompleteActivityIdentity ||
+      completeAutomationReceiptMatchesReview()),
+  );
+  const sameSecondCloseActivityIsAmbiguous = Boolean(
+    isCloseProposal &&
+    reviewHasCompleteActivityIdentity &&
+    storedUpdatedAt &&
+    item.updatedAt === storedUpdatedAt &&
+    !completeAutomationReceiptMatchesReview(),
+  );
   const reviewedSourceFresh = (): boolean =>
     storedUpdatedAt
       ? !updatedSinceReview || automationOnlyUpdate
@@ -299,6 +316,7 @@ export function createApplySourceFreshness(
     reviewedSourceFresh,
     retryCloseCoverageCommandStatusOnlyUpdate,
     reviewCommentOnlyUpdate,
+    sameSecondCloseActivityIsAmbiguous,
     updatedSinceReview,
   };
 }

@@ -19,6 +19,7 @@ import {
   prCloseCoverageProofCloseDecision,
   prCloseCoverageProofEnvelopePath,
   prCloseCoverageProofPromptSha256,
+  prCloseCoverageProofSnapshotSha256,
   readPrCloseCoverageProofEnvelope,
   runPrCloseCoverageProofModel,
   validatePrCloseCoverageProofEnvelopeBinding,
@@ -294,12 +295,8 @@ export function createPullRequestCoverageProof(
     };
   }
 
-  function coveringPrCloseCoveragePullRequestUpdatedAt(number: number): string | null {
-    const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
-    const pullUpdatedAt = stringOrUndefined(pull.updated_at);
-    if (pullUpdatedAt) return pullUpdatedAt;
-    const issue = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${number}`]));
-    return stringOrUndefined(issue.updated_at) ?? null;
+  function coveringPrCloseCoveragePullRequestSnapshotSha256(number: number): string {
+    return prCloseCoverageProofSnapshotSha256(coveringPrCloseCoveragePullRequestView(number));
   }
 
   function prCloseCoverageProofSignalSnippets(
@@ -457,6 +454,7 @@ export function createPullRequestCoverageProof(
             covering: {
               number: covering.number,
               provedAtMs: proofStartedAtMs,
+              snapshotSha256: prCloseCoverageProofSnapshotSha256(covering),
               updatedAt: covering.updatedAt,
               url: covering.url,
               proof: closeDecision.proof,
@@ -702,7 +700,7 @@ export function createPullRequestCoverageProof(
     prCloseCoverageRuntime,
     sourcePrCloseCoveragePullRequestView,
     coveringPrCloseCoveragePullRequestView,
-    coveringPrCloseCoveragePullRequestUpdatedAt,
+    coveringPrCloseCoveragePullRequestSnapshotSha256,
     prCloseCoverageProofSignalSnippets,
     prCloseCoverageProofGateResult,
     renderPrCloseCoverageProofReportSection,

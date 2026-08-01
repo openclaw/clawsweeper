@@ -344,6 +344,7 @@ test("apply-decisions records PR coverage proof retry before same-author pair sk
         number: 321,
         title: "Paired PR",
         author: "reporter",
+        item_source_revision: "unknown",
         close_reason: "duplicate_or_superseded",
         action_taken: "proposed_close",
         work_cluster_refs: JSON.stringify([

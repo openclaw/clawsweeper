@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
+import { createApplyProofFreshnessGuards } from "../dist/clawsweeper-apply-proof-freshness.js";
+import { completeActivityContextSymbol } from "../dist/clawsweeper-types.js";
 import {
+  emptyReviewedPrActivityCursor,
   lowSignalCloseReport,
   promotionGhMock,
   reportWithSyncedReviewComment,
@@ -12,6 +16,105 @@ import {
   withMockCodexProof,
   withMockGh,
 } from "./helpers.ts";
+
+test("post-proof freshness accepts a prior-run automation receipt only with a complete match", () => {
+  const automationItemUpdatedAt = "2026-08-01T14:53:29Z";
+  const context = {
+    sourceRevision: "a".repeat(64),
+    timelineRevision: "b".repeat(64),
+    pullReviewActivityCursor: emptyReviewedPrActivityCursor,
+    [completeActivityContextSymbol]: {
+      comments: [],
+      timeline: [],
+      pullReviewComments: [],
+    },
+  };
+  const guard = (completeReceiptMatches: boolean) =>
+    createApplyProofFreshnessGuards({
+      action: undefined,
+      automationItemUpdatedAt,
+      collectItemContext: () => context,
+      completeReviewActivityReceiptMatches: () => completeReceiptMatches,
+      contextHasNonAutomationActivityAfter: () => false,
+      coveringPrCloseCoveragePullRequestSnapshotSha256: () => "c".repeat(64),
+      currentProofState: () => ({
+        cachedPrCloseCoverageProofGateResult: {
+          status: "allowed",
+          covering: {
+            number: 400,
+            provedAtMs: Date.parse("2026-08-01T14:53:30Z"),
+            snapshotSha256: "c".repeat(64),
+            updatedAt: automationItemUpdatedAt,
+            url: "https://github.com/openclaw/openclaw/pull/400",
+            proof: {
+              decision: "covered",
+              reason: "covered",
+              coveredWork: ["same behavior"],
+              uniqueSourceWork: [],
+              reviewerConcerns: [],
+            },
+          },
+        },
+        prCloseCoverageProofGateChecked: true,
+        prCloseCoverageProofStartedAtMs: Date.parse("2026-08-01T14:53:30Z"),
+        storedHash: undefined,
+        storedUpdatedAt: "2026-08-01T14:52:41Z",
+      }),
+      expectedReviewActivityCursor: emptyReviewedPrActivityCursor,
+      fetchItem: () => ({
+        state: "open",
+        item: { kind: "pull_request", updatedAt: automationItemUpdatedAt },
+      }),
+      fetchReviewedPrActivityCursor: () => emptyReviewedPrActivityCursor,
+      freshPullRequestReviewHead: () => true,
+      GitHubRuntimeBudgetError: class extends Error {},
+      itemKind: "pull_request",
+      itemSnapshotHash: () => "d".repeat(64),
+      number: 359,
+      reviewHasCompleteActivityIdentity: true,
+      reviewMarkdown: "---\ntype: pull_request\n---\n",
+      retryCloseCoverageCommandStatusOnlyUpdate: () => false,
+      selfMutationItemReceipts: [],
+    } as never);
+
+  assert.equal(guard(true).postProofFreshnessBlock(), null);
+  assert.match(guard(false).postProofFreshnessBlock()?.reason ?? "", /updated_at changed/);
+});
+
+function sourceRevisionForTest(title: string): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        title,
+        body: "Stale PR body.",
+        labels: [],
+        comments: [],
+      }),
+    )
+    .digest("hex");
+}
+
+function timelineRevisionForTest(
+  events: Array<{
+    id: number;
+    event: string;
+    actor: { login: string };
+    commit_id?: string;
+    label?: { name: string };
+    rename?: unknown;
+  }>,
+): string {
+  const digestParts = events.map((event) => ({
+    actor: event.actor.login,
+    commitId: event.commit_id ?? null,
+    event: event.event,
+    id: event.id,
+    label: event.label?.name ?? null,
+    rename: event.rename ?? null,
+    sourceIssue: null,
+  }));
+  return createHash("sha256").update(JSON.stringify(digestParts)).digest("hex");
+}
 
 function boundDuplicateCloseComment(number: number, canonicalUrl: string): string {
   const markerFields = [
@@ -35,7 +138,7 @@ function boundDuplicateCloseComment(number: number, canonicalUrl: string): strin
   ].join("\n");
 }
 
-test("apply-decisions allows self-synced labels after proof with truncated context", () => {
+test("apply-decisions fails closed when a self-mutation receipt is truncated", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -51,6 +154,8 @@ test("apply-decisions allows self-synced labels after proof with truncated conte
         number: 359,
         title: "Provider route fallback",
         close_reason: "duplicate_or_superseded",
+        item_source_revision: sourceRevisionForTest("Provider route fallback"),
+        pull_head_sha: "head-sha",
         labels: JSON.stringify(["status: 📣 needs proof"]),
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
@@ -121,16 +226,19 @@ test("apply-decisions allows self-synced labels after proof with truncated conte
     }>;
     assert.equal(
       report.some((entry) => entry.action === "closed"),
-      true,
+      false,
+      JSON.stringify(report, null, 2),
     );
     assert.match(readFileSync(labelLogPath, "utf8"), /issue edit 359/);
-    assert.ok(existsSync(join(closedDir, "359.md")));
+    assert.equal(report[0]?.action, "skipped_changed_since_review");
+    assert.match(report[0]?.reason ?? "", /same-second activity requires a fresh review/);
+    assert.equal(existsSync(join(closedDir, "359.md")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("apply-decisions blocks post-proof human activity hidden by self-updates", () => {
+test("apply-decisions blocks same-second human timeline activity hidden by self-updates", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -146,6 +254,8 @@ test("apply-decisions blocks post-proof human activity hidden by self-updates", 
         number: 362,
         title: "Provider route fallback",
         close_reason: "duplicate_or_superseded",
+        item_source_revision: sourceRevisionForTest("Provider route fallback"),
+        pull_head_sha: "head-sha",
         labels: JSON.stringify(["status: 📣 needs proof"]),
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
@@ -165,17 +275,18 @@ test("apply-decisions blocks post-proof human activity hidden by self-updates", 
         number: 362,
         title: "Provider route fallback",
         comment: synced.comment,
-        comments: [
+        timeline: [
           {
             id: 9362,
-            html_url: "https://github.com/openclaw/openclaw/pull/362#issuecomment-9362",
-            created_at: "2099-01-01T00:00:00Z",
-            updated_at: "2099-01-01T00:00:00Z",
-            user: { login: "contributor" },
-            body: "Please do not close this yet.",
+            event: "assigned",
+            created_at: "2026-05-01T00:00:00Z",
+            actor: { login: "maintainer" },
           },
         ],
-        itemUpdatedAtAfterLabelSync: "2026-05-01T00:04:00Z",
+        // GitHub timestamps are second-granular: the human assignment and the
+        // bot-owned label mutation can leave the item timestamp equal to the
+        // reviewed value even though the activity receipt changed.
+        itemUpdatedAtAfterLabelSync: "2026-05-01T00:00:00Z",
         itemUpdatedAtAfterLabelSyncLogPath: labelLogPath,
         linkedPulls: {
           400: {
@@ -228,9 +339,112 @@ test("apply-decisions blocks post-proof human activity hidden by self-updates", 
       false,
     );
     assert.equal(report[0]?.action, "skipped_changed_since_review");
-    assert.match(report[0]?.reason ?? "", /non-automation activity after coverage proof/);
+    assert.match(report[0]?.reason ?? "", /same-second activity requires a fresh review/);
     assert.match(readFileSync(labelLogPath, "utf8"), /issue edit 362/);
     assert.equal(existsSync(join(closedDir, "362.md")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply-decisions accepts same-second human activity already captured by the review", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const proofLogPath = join(root, "proof.log");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const reviewedTimeline = [
+      {
+        id: 9364,
+        event: "assigned",
+        created_at: "2026-05-01T00:00:00Z",
+        actor: { login: "maintainer" },
+      },
+    ];
+    const synced = reportWithSyncedReviewComment(
+      lowSignalCloseReport({
+        number: 364,
+        title: "Provider route fallback",
+        close_reason: "duplicate_or_superseded",
+        item_source_revision: sourceRevisionForTest("Provider route fallback"),
+        review_timeline_revision: timelineRevisionForTest(reviewedTimeline),
+        pull_head_sha: "head-sha",
+        work_cluster_refs: JSON.stringify([
+          "Superseded by https://github.com/openclaw/openclaw/pull/400",
+        ]),
+      }).replace(
+        "Closing this PR because the branch is not a useful landing base.",
+        "Closing this PR as superseded by https://github.com/openclaw/openclaw/pull/400.",
+      ),
+      364,
+      "duplicate_or_superseded",
+    );
+    writeFileSync(join(itemsDir, "364.md"), synced.report, "utf8");
+
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 364,
+        title: "Provider route fallback",
+        comment: synced.comment,
+        timeline: reviewedTimeline,
+        itemUpdatedAtAfterLabelSync: "2026-05-01T00:00:00Z",
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Provider cleanup",
+            html_url: "https://github.com/openclaw/openclaw/pull/400",
+            state: "closed",
+            merged_at: "2026-05-02T00:00:00Z",
+            body: "Includes the fallback route behavior from PR 364.",
+            comments: [],
+            labels: [],
+          },
+        },
+      }),
+      () => {
+        withMockCodexProof(
+          root,
+          {
+            type: "decision",
+            decision: "covered",
+            reason: "PR B carries forward PR A's fallback route behavior.",
+            invocationLogPath: proofLogPath,
+          },
+          () => {
+            runApplyDecisionsForTest({
+              itemsDir,
+              closedDir,
+              plansDir,
+              reportPath,
+              extraArgs: [
+                "--target-repo",
+                "openclaw/openclaw",
+                "--apply-kind",
+                "all",
+                "--processed-limit",
+                "3",
+              ],
+            });
+          },
+        );
+      },
+    );
+
+    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+      action: string;
+      reason: string;
+    }>;
+    assert.equal(
+      report.some((entry) => entry.action === "closed"),
+      true,
+      JSON.stringify(report, null, 2),
+    );
+    assert.equal(existsSync(join(closedDir, "364.md")), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

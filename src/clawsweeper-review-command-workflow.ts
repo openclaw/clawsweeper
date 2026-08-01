@@ -1053,6 +1053,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           );
           carried = replaceFrontMatterValue(
             carried,
+            "review_timeline_revision",
+            context.timelineRevision ?? "unknown",
+          );
+          carried = replaceFrontMatterValue(
+            carried,
             "pull_head_sha",
             pullHeadShaFromContext(context) ?? "unknown",
           );

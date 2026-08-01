@@ -294,6 +294,7 @@ export interface ExistingReview {
   markdown: string;
   reviewedAt: string | undefined;
   itemUpdatedAt: string | undefined;
+  automationItemUpdatedAt?: string | undefined;
   reviewCommentSyncedAt: string | undefined;
   labelsSyncedAt: string | undefined;
   decision: string | undefined;
@@ -1217,6 +1218,7 @@ export interface PrCloseCoverageProofGateBlock {
 export interface PrCloseCoverageProofCoveringWitness {
   number: number;
   provedAtMs: number;
+  snapshotSha256: string;
   updatedAt: string | null;
   url: string;
   proof: PrCloseCoverageProofModelResult;

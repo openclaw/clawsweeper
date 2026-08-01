@@ -332,6 +332,7 @@ test("apply-decisions permits a trusted deferred close-proof command status thro
         title: "Provider route fallback",
         action_taken: "retry_pr_close_coverage_proof",
         item_source_revision: sourceRevisionForTest("Provider route fallback"),
+        pull_head_sha: "head-sha",
         close_reason: "duplicate_or_superseded",
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
@@ -358,7 +359,7 @@ test("apply-decisions permits a trusted deferred close-proof command status thro
             html_url: "https://github.com/openclaw/openclaw/pull/363#issuecomment-9363",
             created_at: "2026-05-01T01:00:00Z",
             updated_at: "2026-05-01T01:00:00Z",
-            user: { login: "clawsweeper" },
+            user: { login: "clawsweeper[bot]" },
             body: synced.comment,
           },
           {
@@ -366,7 +367,7 @@ test("apply-decisions permits a trusted deferred close-proof command status thro
             html_url: "https://github.com/openclaw/openclaw/pull/363#issuecomment-9364",
             created_at: "2026-05-01T01:30:00Z",
             updated_at: "2026-05-01T02:00:00Z",
-            user: { login: "clawsweeper" },
+            user: { login: "clawsweeper[bot]" },
             body: "<!-- clawsweeper-command-status: close-coverage-proof-pending -->",
           },
         ],
@@ -374,7 +375,7 @@ test("apply-decisions permits a trusted deferred close-proof command status thro
           {
             event: "commented",
             created_at: "2026-05-01T01:30:00Z",
-            actor: { login: "clawsweeper" },
+            actor: { login: "clawsweeper[bot]" },
           },
         ],
         linkedPulls: {
@@ -426,6 +427,7 @@ test("apply-decisions permits a trusted deferred close-proof command status thro
     assert.equal(
       report.some((entry) => entry.action === "closed"),
       true,
+      JSON.stringify(report, null, 2),
     );
     assert.match(
       report.find((entry) => entry.action === "closed")?.reason ?? "",
@@ -1192,7 +1194,7 @@ test("apply-decisions rechecks duplicate PR freshness after coverage proof passe
   }
 });
 
-test("apply-decisions rechecks covering PR freshness after coverage proof passes", () => {
+test("apply-decisions rejects a same-timestamp covering PR snapshot change after proof", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -1206,6 +1208,8 @@ test("apply-decisions rechecks covering PR freshness after coverage proof passes
       lowSignalCloseReport({
         number: 360,
         title: "Provider route fallback",
+        item_source_revision: sourceRevisionForTest("Provider route fallback"),
+        pull_head_sha: "head-sha",
         close_reason: "duplicate_or_superseded",
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
@@ -1246,7 +1250,7 @@ test("apply-decisions rechecks covering PR freshness after coverage proof passes
             html_url: "https://github.com/openclaw/openclaw/pull/400",
             state: "closed",
             merged_at: "2026-05-02T00:00:00Z",
-            updated_at: "2026-05-01T00:05:00Z",
+            updated_at: "2026-05-01T00:00:00Z",
             body: "Changed after proof ran.",
             comments: [],
             labels: [],
@@ -1293,6 +1297,7 @@ test("apply-decisions rechecks covering PR freshness after coverage proof passes
     assert.match(
       report.find((entry) => entry.action === "retry_pr_close_coverage_proof")?.reason ?? "",
       /linked canonical PR #400 changed after coverage proof/,
+      JSON.stringify(report, null, 2),
     );
     assert.equal(existsSync(join(closedDir, "360.md")), false);
   } finally {

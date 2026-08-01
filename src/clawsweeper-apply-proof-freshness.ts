@@ -1,22 +1,37 @@
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
+import { completeActivityContextSymbol } from "./clawsweeper-types.js";
 import type {
   Item,
   ItemContext,
+  ItemKind,
   PrCloseCoverageProofGateBlock,
   PrCloseCoverageProofGateResult,
 } from "./clawsweeper-types.js";
+import { isReviewedPrActivityCursor } from "./review-activity-cursor.js";
+import { stableJson } from "./stable-json.js";
+
+export interface ApplySelfMutationItemReceipt {
+  updatedAt: string;
+  sourceRevision: string;
+  activityReceipt: string;
+  prHeadMatches: boolean;
+  reviewActivityCursor: string | null;
+}
 
 type ApplyProofFreshnessDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
   | "collectItemContext"
   | "contextHasNonAutomationActivityAfter"
-  | "coveringPrCloseCoveragePullRequestUpdatedAt"
+  | "coveringPrCloseCoveragePullRequestSnapshotSha256"
   | "fetchItem"
+  | "fetchReviewedPrActivityCursor"
+  | "freshPullRequestReviewHead"
   | "GitHubRuntimeBudgetError"
   | "itemSnapshotHash"
 > & {
   action: string | undefined;
-  allowedSelfMutationUpdatedAts: ReadonlySet<string>;
+  automationItemUpdatedAt: string | undefined;
+  completeReviewActivityReceiptMatches: (context: ItemContext) => boolean;
   currentProofState: () => {
     cachedPrCloseCoverageProofGateResult: PrCloseCoverageProofGateResult | undefined;
     prCloseCoverageProofGateChecked: boolean;
@@ -24,22 +39,35 @@ type ApplyProofFreshnessDependencies = Pick<
     storedHash: string | undefined;
     storedUpdatedAt: string | undefined;
   };
+  expectedReviewActivityCursor: string | undefined;
+  itemKind: ItemKind;
   number: number;
+  reviewMarkdown: string;
+  reviewHasCompleteActivityIdentity: boolean;
   retryCloseCoverageCommandStatusOnlyUpdate: (item: Item, context: ItemContext) => boolean;
+  selfMutationItemReceipts: readonly ApplySelfMutationItemReceipt[];
 };
 
 export function createApplyProofFreshnessGuards({
   action,
-  allowedSelfMutationUpdatedAts,
+  automationItemUpdatedAt,
   collectItemContext,
+  completeReviewActivityReceiptMatches,
   contextHasNonAutomationActivityAfter,
-  coveringPrCloseCoveragePullRequestUpdatedAt,
+  coveringPrCloseCoveragePullRequestSnapshotSha256,
   currentProofState,
+  expectedReviewActivityCursor,
   fetchItem,
+  fetchReviewedPrActivityCursor,
+  freshPullRequestReviewHead,
   GitHubRuntimeBudgetError,
+  itemKind,
   itemSnapshotHash,
   number,
+  reviewMarkdown,
+  reviewHasCompleteActivityIdentity,
   retryCloseCoverageCommandStatusOnlyUpdate,
+  selfMutationItemReceipts,
 }: ApplyProofFreshnessDependencies) {
   const postProofFreshnessBlock = (): {
     reason: string;
@@ -73,21 +101,72 @@ export function createApplyProofFreshnessGuards({
         refreshed.item,
         (refreshedContext ??= collectItemContext(refreshed.item, {
           fullTimelineForRelations: true,
+          reviewCacheDigest: true,
         })),
       );
+    const candidateItemReceipts = selfMutationItemReceipts.filter(
+      (receipt) => receipt.updatedAt === refreshed.item.updatedAt,
+    );
+    const mayMatchPersistedAutomationReceipt =
+      Boolean(automationItemUpdatedAt) && refreshed.item.updatedAt === automationItemUpdatedAt;
+    if (candidateItemReceipts.length > 0 || mayMatchPersistedAutomationReceipt) {
+      refreshedContext ??= collectItemContext(refreshed.item, {
+        fullTimelineForRelations: true,
+        reviewCacheDigest: true,
+      });
+    }
+    const refreshedCompleteActivityContext = refreshedContext?.[completeActivityContextSymbol];
+    const refreshedActivityReceipt = refreshedCompleteActivityContext
+      ? stableJson(refreshedCompleteActivityContext)
+      : null;
+    const refreshedReviewActivityCursor =
+      itemKind === "pull_request" &&
+      (candidateItemReceipts.length > 0 ||
+        mayMatchPersistedAutomationReceipt ||
+        refreshed.item.updatedAt === storedUpdatedAt)
+        ? fetchReviewedPrActivityCursor(number)
+        : null;
+    const refreshedItemReceiptMatches = candidateItemReceipts.some(
+      (receipt) =>
+        refreshedContext?.sourceRevision === receipt.sourceRevision &&
+        refreshedActivityReceipt === receipt.activityReceipt &&
+        receipt.prHeadMatches &&
+        refreshedContext !== null &&
+        (itemKind !== "pull_request" ||
+          (freshPullRequestReviewHead(reviewMarkdown, refreshedContext) &&
+            isReviewedPrActivityCursor(expectedReviewActivityCursor) &&
+            receipt.reviewActivityCursor === expectedReviewActivityCursor &&
+            refreshedReviewActivityCursor === expectedReviewActivityCursor)),
+    );
+    const refreshedCompleteReceiptMatchesReview = (): boolean => {
+      refreshedContext ??= collectItemContext(refreshed.item, {
+        fullTimelineForRelations: true,
+        reviewCacheDigest: true,
+      });
+      if (!completeReviewActivityReceiptMatches(refreshedContext)) return false;
+      return (
+        itemKind !== "pull_request" ||
+        refreshedReviewActivityCursor === expectedReviewActivityCursor
+      );
+    };
+    const persistedAutomationReceiptMatches =
+      mayMatchPersistedAutomationReceipt &&
+      reviewHasCompleteActivityIdentity &&
+      refreshedCompleteReceiptMatchesReview();
     const refreshedSelfMutationOnlyUpdate =
-      allowedSelfMutationUpdatedAts.has(refreshed.item.updatedAt) ||
+      refreshedItemReceiptMatches ||
+      persistedAutomationReceiptMatches ||
       refreshedCommandStatusOnlyUpdate;
     const selfMutationMaskedNonAutomationActivity = (): boolean => {
       if (prCloseCoverageProofStartedAtMs === null) return true;
       refreshedContext ??= collectItemContext(refreshed.item, {
         fullTimelineForRelations: true,
+        reviewCacheDigest: true,
       });
-      return contextHasNonAutomationActivityAfter(
-        refreshedContext,
-        prCloseCoverageProofStartedAtMs,
-        { truncationCountsAsActivity: false },
-      );
+      const proofSecondStartMs = Math.floor(prCloseCoverageProofStartedAtMs / 1000) * 1000;
+      return contextHasNonAutomationActivityAfter(refreshedContext, proofSecondStartMs - 1, {
+        truncationCountsAsActivity: false,
+      });
     };
     if (storedUpdatedAt && refreshed.item.updatedAt !== storedUpdatedAt) {
       if (refreshedSelfMutationOnlyUpdate) {
@@ -102,11 +181,23 @@ export function createApplyProofFreshnessGuards({
         currentUpdatedAt: refreshed.item.updatedAt,
       };
     }
+    if (
+      storedUpdatedAt &&
+      refreshed.item.updatedAt === storedUpdatedAt &&
+      reviewHasCompleteActivityIdentity &&
+      !refreshedCompleteReceiptMatchesReview()
+    ) {
+      return {
+        reason: "same-second activity requires a fresh review",
+        currentUpdatedAt: refreshed.item.updatedAt,
+      };
+    }
     if (!storedUpdatedAt && storedHash) {
       const refreshedHash = itemSnapshotHash(
         refreshed.item,
         (refreshedContext ??= collectItemContext(refreshed.item, {
           fullTimelineForRelations: true,
+          reviewCacheDigest: true,
         })),
       );
       if (refreshedHash !== storedHash) {
@@ -134,10 +225,11 @@ export function createApplyProofFreshnessGuards({
       return null;
     }
     const { covering } = cachedPrCloseCoverageProofGateResult;
-    if (!covering.updatedAt) return null;
     try {
-      const currentUpdatedAt = coveringPrCloseCoveragePullRequestUpdatedAt(covering.number);
-      if (currentUpdatedAt === covering.updatedAt) return null;
+      const currentSnapshotSha256 = coveringPrCloseCoveragePullRequestSnapshotSha256(
+        covering.number,
+      );
+      if (currentSnapshotSha256 === covering.snapshotSha256) return null;
       return {
         actionTaken: "retry_pr_close_coverage_proof",
         reason: `linked canonical PR #${covering.number} changed after coverage proof`,

@@ -227,6 +227,18 @@ function stringifyPrCloseCoverageProofPromptJson(value: unknown, space?: number)
   return (serialized ?? "null").replace(/`/g, "\\u0060");
 }
 
+function prCloseCoverageProofReportMarkdown(markdown: string): string {
+  const match = markdown.match(/^(---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$))/);
+  if (!match) return markdown.trim();
+  const frontMatter = (match[2] ?? "")
+    .split(/\r?\n/)
+    .filter((line) => !/^automation_item_updated_at\s*:/.test(line))
+    .join("\n");
+  return `${match[1] ?? "---\n"}${frontMatter}${match[3] ?? "\n---\n"}${markdown.slice(
+    match[0].length,
+  )}`.trim();
+}
+
 export function buildPrCloseCoverageProofPrompt(options: {
   source: PrCloseCoverageProofPullRequestView;
   covering: PrCloseCoverageProofPullRequestView;
@@ -244,7 +256,9 @@ export function buildPrCloseCoverageProofPrompt(options: {
     "",
     "PR A source report JSON string:",
     "```json",
-    stringifyPrCloseCoverageProofPromptJson(options.reportMarkdown.trim()),
+    stringifyPrCloseCoverageProofPromptJson(
+      prCloseCoverageProofReportMarkdown(options.reportMarkdown),
+    ),
     "```",
     "",
     "Current PR title, body, and comments:",
