@@ -109,6 +109,10 @@ test("formatter-hint filtering does not hide shell injection or write flags", ()
     "pnpm format src/index.ts\r\ntouch escaped",
     "pnpm format src/index.ts\r touch escaped",
     "pnpm format src/index.ts\t touch escaped",
+    "pnpm format ../outside.ts",
+    "pnpm format /absolute.ts",
+    "pnpm format src/../outside.ts",
+    "pnpm format ./src/index.ts",
   ]) {
     assert.throws(
       () =>
