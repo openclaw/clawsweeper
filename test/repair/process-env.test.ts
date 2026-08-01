@@ -32,6 +32,7 @@ test("codexSubprocessEnv forces ClawSweeper git identity and strips tokens", () 
       CLAWSWEEPER_CRABFLEET_RUNNER_PTY_URL: "wss://example.invalid/secret",
       CLAWSWEEPER_CRABFLEET_WORK_STATE_URL: "https://example.invalid/secret",
       PNPM_CONFIG_IGNORE_SCRIPTS: "false",
+      PNPM_CONFIG_IGNORE_PNPMFILE: "false",
       npm_config_ignore_scripts: "false",
     },
     () => {
@@ -52,6 +53,7 @@ test("codexSubprocessEnv forces ClawSweeper git identity and strips tokens", () 
       assert.equal(env.CLAWSWEEPER_CRABFLEET_RUNNER_PTY_URL, undefined);
       assert.equal(env.CLAWSWEEPER_CRABFLEET_WORK_STATE_URL, undefined);
       assert.equal(env.PNPM_CONFIG_IGNORE_SCRIPTS, "true");
+      assert.equal(env.PNPM_CONFIG_IGNORE_PNPMFILE, "true");
       assert.equal(env.npm_config_ignore_scripts, "true");
       assert.equal(internalCodexModel("internal"), "secret-model");
       assert.deepEqual(codexModelArgs("internal"), []);
@@ -146,7 +148,174 @@ test("Codex subprocess prevents pnpm deploy from installing target Git hooks", (
       encoding: "utf8",
     });
     assert.equal(hooks.status, 1);
+
+    fs.writeFileSync(
+      path.join(root, ".pnpmfile.cjs"),
+      'require("node:child_process").execFileSync("git", ["config", "core.hooksPath", "git-hooks"], { cwd: process.cwd() }); module.exports = { hooks: {} };\n',
+    );
+    const unsafePnpmfile = deploy("unsafe-pnpmfile", {
+      ...codexSubprocessEnv(),
+      PNPM_CONFIG_IGNORE_PNPMFILE: "false",
+    });
+    assert.equal(unsafePnpmfile.status, 0, unsafePnpmfile.stderr || unsafePnpmfile.stdout);
+    assert.equal(git("config", "--local", "--get", "core.hooksPath"), "git-hooks");
+    git("config", "--local", "--unset-all", "core.hooksPath");
+
+    const safePnpmfile = deploy("safe-pnpmfile", codexSubprocessEnv());
+    assert.equal(safePnpmfile.status, 0, safePnpmfile.stderr || safePnpmfile.stdout);
+    const pnpmfileHooks = spawnSync("git", ["config", "--local", "--get", "core.hooksPath"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(pnpmfileHooks.status, 1);
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Codex subprocess forces Bun installs to ignore lifecycle scripts", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-bun-hooks-"));
+  const bin = path.join(root, "bin");
+  const argsPath = path.join(root, "bun-args.json");
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+
+  try {
+    fs.mkdirSync(bin);
+    fs.mkdirSync(path.join(root, "git-hooks"));
+    fs.writeFileSync(
+      path.join(bin, "bun"),
+      `#!/usr/bin/env node
+const { execFileSync } = require("node:child_process");
+const { writeFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args));
+if (args.includes("--version")) { console.log("fake-bun"); process.exit(0); }
+if (!args.includes("--ignore-scripts")) {
+  execFileSync("git", ["config", "core.hooksPath", "git-hooks"], { cwd: process.cwd() });
+}
+`,
+      { mode: 0o755 },
+    );
+    git("init", "-q");
+    const originalPath = `${bin}${path.delimiter}${process.env.PATH ?? ""}`;
+
+    const unsafe = spawnSync("bun", ["install"], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, PATH: originalPath },
+    });
+    assert.equal(unsafe.status, 0, unsafe.stderr);
+    assert.equal(git("config", "--local", "--get", "core.hooksPath"), "git-hooks");
+    git("config", "--local", "--unset-all", "core.hooksPath");
+
+    withEnv({ PATH: originalPath }, () => {
+      const env = codexSubprocessEnv();
+      const safe = spawnSync("bun", ["--cwd", root, "install"], {
+        cwd: root,
+        encoding: "utf8",
+        env,
+      });
+      assert.equal(safe.status, 0, safe.stderr);
+      assert.deepEqual(JSON.parse(fs.readFileSync(argsPath, "utf8")), [
+        "--cwd",
+        root,
+        "install",
+        "--ignore-scripts",
+      ]);
+      const shortCwd = spawnSync("bun", ["-C", root, "install"], {
+        cwd: root,
+        encoding: "utf8",
+        env,
+      });
+      assert.equal(shortCwd.status, 0, shortCwd.stderr);
+      assert.deepEqual(JSON.parse(fs.readFileSync(argsPath, "utf8")), [
+        "-C",
+        root,
+        "install",
+        "--ignore-scripts",
+      ]);
+      const hooks = spawnSync("git", ["config", "--local", "--get", "core.hooksPath"], {
+        cwd: root,
+        encoding: "utf8",
+      });
+      assert.equal(hooks.status, 1);
+
+      const passthrough = spawnSync("bun", ["--version"], { cwd: root, encoding: "utf8", env });
+      assert.equal(passthrough.status, 0, passthrough.stderr);
+      assert.equal(passthrough.stdout.trim(), "fake-bun");
+
+      const override = spawnSync("bun", ["install", "--no-ignore-scripts"], {
+        cwd: root,
+        encoding: "utf8",
+        env,
+      });
+      assert.equal(override.status, 2);
+      assert.match(override.stderr, /blocked a Bun lifecycle-script override/);
+
+      const installTrusted = spawnSync("bun", ["add", "--trust", "fixture"], {
+        cwd: root,
+        encoding: "utf8",
+        env,
+      });
+      assert.equal(installTrusted.status, 2);
+      assert.match(installTrusted.stderr, /blocked a Bun lifecycle-script override/);
+
+      for (const preloadArgs of [
+        ["--preload", "./hook.ts", "install"],
+        ["--preload=./hook.ts", "install"],
+        ["-r./hook.ts", "install"],
+        ["--require", "./hook.ts", "install"],
+        ["--import=./hook.ts", "install"],
+        ["--eval", "callback()", "install"],
+        ["--eval=callback()", "install"],
+        ["-e", "callback()", "install"],
+        ["-ecallback()", "install"],
+        ["--print", "callback()", "install"],
+        ["--print=callback()", "install"],
+        ["-p", "callback()", "install"],
+        ["-be", "callback()", "install"],
+        ["-bp", "callback()", "install"],
+        ["-br", "./hook.ts", "install"],
+      ]) {
+        const preload = spawnSync("bun", preloadArgs, { cwd: root, encoding: "utf8", env });
+        assert.equal(preload.status, 2, preloadArgs.join(" "));
+        assert.match(preload.stderr, /blocked a Bun preload or evaluation callback/);
+      }
+
+      const productionInstall = spawnSync("bun", ["install", "-p"], {
+        cwd: root,
+        encoding: "utf8",
+        env,
+      });
+      assert.equal(productionInstall.status, 0, productionInstall.stderr);
+      assert.deepEqual(JSON.parse(fs.readFileSync(argsPath, "utf8")), [
+        "install",
+        "--ignore-scripts",
+        "-p",
+      ]);
+
+      const trusted = spawnSync("bun", ["pm", "trust"], { cwd: root, encoding: "utf8", env });
+      assert.equal(trusted.status, 2);
+      assert.match(trusted.stderr, /blocked Bun trusted lifecycle execution/);
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Codex subprocess fails closed when Bun repair would run on Windows", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-windows-bun-"));
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+
+  try {
+    fs.writeFileSync(path.join(root, "bun.exe"), "fixture");
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    withEnv({ PATH: root, PATHEXT: ".EXE;.CMD" }, () => {
+      assert.throws(codexSubprocessEnv, /Bun repair execution requires a Linux runner/);
+    });
+  } finally {
+    if (platform) Object.defineProperty(process, "platform", platform);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

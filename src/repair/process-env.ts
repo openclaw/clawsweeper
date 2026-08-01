@@ -1,6 +1,11 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { codexLoginConfig, codexModelArgs, internalCodexModel } from "../codex-env.js";
 
 export { codexLoginConfig, codexModelArgs, internalCodexModel };
+
+const guardedBunDirectories = new Map<string, string>();
 
 export function ghCliEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return withoutColor({ ...process.env, ...overrides });
@@ -15,8 +20,18 @@ export function codexSubprocessEnv(): NodeJS.ProcessEnv {
     ...process.env,
     ...clawsweeperGitIdentityEnv(),
     PNPM_CONFIG_IGNORE_SCRIPTS: "true",
+    PNPM_CONFIG_IGNORE_PNPMFILE: "true",
     npm_config_ignore_scripts: "true",
   };
+  const bunExecutable = findExecutable("bun", env.PATH);
+  if (bunExecutable) {
+    if (process.platform === "win32") {
+      throw new Error(
+        "Bun repair execution requires a Linux runner; refusing unsafe lifecycle scripts",
+      );
+    }
+    env.PATH = `${guardedBunDirectory(bunExecutable)}${path.delimiter}${env.PATH ?? ""}`;
+  }
   delete env.GH_TOKEN;
   delete env.GITHUB_TOKEN;
   delete env.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN;
@@ -77,4 +92,71 @@ function withoutColor(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   env.CLICOLOR = "0";
   delete env.FORCE_COLOR;
   return env;
+}
+
+function findExecutable(name: string, searchPath: string | undefined): string | null {
+  if (!searchPath) return null;
+  const extensions =
+    process.platform === "win32"
+      ? ["", ...(process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").toLowerCase().split(";")]
+      : [""];
+  for (const directory of searchPath.split(path.delimiter)) {
+    if (!directory) continue;
+    for (const extension of extensions) {
+      const candidate = path.join(directory, `${name}${extension}`);
+      try {
+        fs.accessSync(
+          candidate,
+          process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK,
+        );
+        if (fs.statSync(candidate).isFile()) return fs.realpathSync(candidate);
+      } catch {
+        continue;
+      }
+    }
+  }
+  return null;
+}
+
+function guardedBunDirectory(executable: string): string {
+  const cached = guardedBunDirectories.get(executable);
+  if (cached) return cached;
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-safe-bun-"));
+  fs.chmodSync(directory, 0o700);
+  const shim = `#!/usr/bin/env node
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+const optionsWithValues = new Set(["-C", "-c", "--cwd", "--config", "--filter", "-F"]);
+let commandIndex = -1;
+for (let index = 0; index < args.length; index += 1) {
+  const argument = args[index];
+  if (argument === "--") break;
+  if (/^(?:-[^-]*[rep].*|--(?:preload|require|import|loader|experimental-loader|eval|print)(?:=.*)?)$/.test(argument)) {
+    console.error("ClawSweeper blocked a Bun preload or evaluation callback.");
+    process.exit(2);
+  }
+  if (optionsWithValues.has(argument)) { index += 1; continue; }
+  if (argument.startsWith("-")) continue;
+  commandIndex = index;
+  break;
+}
+const command = commandIndex < 0 ? "" : args[commandIndex];
+if (["install", "i", "add", "a", "update", "upgrade", "remove", "rm", "link", "unlink"].includes(command)) {
+  if (args.some((argument) => /^--(?:no-ignore-scripts|ignore-scripts=(?:false|0)|trust)$/.test(argument))) {
+    console.error("ClawSweeper blocked a Bun lifecycle-script override.");
+    process.exit(2);
+  }
+  args.splice(commandIndex + 1, 0, "--ignore-scripts");
+} else if (command === "pm" && args[commandIndex + 1] === "trust") {
+  console.error("ClawSweeper blocked Bun trusted lifecycle execution.");
+  process.exit(2);
+}
+const result = spawnSync(${JSON.stringify(executable)}, args, { stdio: "inherit", env: process.env });
+if (result.error) { console.error(result.error.message); process.exit(1); }
+process.exit(result.status ?? 1);
+`;
+  fs.writeFileSync(path.join(directory, "bun"), shim, { mode: 0o700 });
+  guardedBunDirectories.set(executable, directory);
+  return directory;
 }
