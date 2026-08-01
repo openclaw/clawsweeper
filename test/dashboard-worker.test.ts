@@ -38,6 +38,7 @@ import {
   ExactReviewLifecycleProjectionStore,
   lifecycleState,
 } from "../dashboard/exact-review-lifecycle.ts";
+import { ExactReviewLifecycleTelemetryStore } from "../dashboard/exact-review-lifecycle-telemetry.ts";
 import { captureCanonicalRecordBaseline } from "../dist/repair/canonical-record-baseline.js";
 import { publishMainWithStateAppend } from "../dist/repair/publish-main.js";
 
@@ -555,6 +556,186 @@ test("exact-review lifecycle projection keeps immutable per-revision facts and t
     });
     assert.equal(lifecycleState(projection), state);
   }
+});
+
+test("lifecycle telemetry counts durable terminal coverage without treating acknowledgement pending as completed", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  lifecycle.ensureSchemaSync();
+  telemetry.ensureSchemaSync();
+  const admittedAt = 1_700_000_000_000;
+  const add = ({
+    number,
+    revision = 1,
+    fenceKey = `openclaw/openclaw#${number}@exact:${revision}`,
+    commandOriginated = false,
+    terminal,
+    receipt,
+  }: {
+    number: number;
+    revision?: number;
+    fenceKey?: string;
+    commandOriginated?: boolean;
+    terminal?: Parameters<
+      ExactReviewLifecycleProjectionStore["recordTerminalDisposition"]
+    >[0]["kind"];
+    receipt?: "accepted" | "deduped" | "superseded";
+  }) => {
+    const identity = {
+      canonicalTargetKey: `openclaw/openclaw#${number}`,
+      fenceKey,
+      revision,
+    };
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: `telemetry:${number}:${revision}`,
+      sourceAction: "re_review",
+      commandOriginated,
+      statusMarker: commandOriginated
+        ? `<!-- clawsweeper-command-status:${number}:token -->`
+        : null,
+      statusCommentId: commandOriginated ? number : null,
+      observedAt: admittedAt + number,
+    });
+    lifecycle.recordClaim({
+      ...identity,
+      claimGeneration: 1,
+      runId: String(number),
+      runAttempt: 1,
+      observedAt: admittedAt + number + 1,
+    });
+    if (receipt) {
+      lifecycle.recordCanonicalReceipt({
+        ...identity,
+        outcome: receipt,
+        receiptId: `telemetry:${number}:${receipt}`,
+        observedAt: admittedAt + number + 2,
+      });
+    }
+    if (terminal) {
+      lifecycle.recordTerminalDisposition({
+        ...identity,
+        kind: terminal,
+        observedAt: admittedAt + number + 3,
+      });
+    }
+    return identity;
+  };
+
+  const acknowledgementPending = add({
+    number: 810,
+    commandOriginated: true,
+    receipt: "accepted",
+    terminal: "review_completed_routed",
+  });
+  lifecycle.recordRouterReceipt({
+    ...acknowledgementPending,
+    outcome: "durable",
+    receiptId: "telemetry:810:router",
+    observedAt: admittedAt + 815,
+  });
+  lifecycle.recordClaim({
+    ...acknowledgementPending,
+    claimGeneration: 2,
+    runId: "810",
+    runAttempt: 2,
+    observedAt: admittedAt + 816,
+  });
+  telemetry.recordDirectOutcome({
+    ...acknowledgementPending,
+    claimGeneration: 1,
+    outcome: "accepted",
+    observedAt: admittedAt + 817,
+  });
+
+  add({ number: 811 }); // Unresolved durable lifecycle fact, not a workflow-success proxy.
+  const supersededDirect = add({ number: 812, revision: 1, terminal: "superseded" });
+  add({ number: 812, revision: 2 });
+  telemetry.recordDirectOutcome({
+    ...supersededDirect,
+    claimGeneration: 1,
+    outcome: "superseded",
+    observedAt: admittedAt + 818,
+  });
+  telemetry.recordDirectOutcome({
+    ...acknowledgementPending,
+    claimGeneration: 1,
+    outcome: "fallback",
+    observedAt: admittedAt - 7 * 24 * 60 * 60 * 1_000 - 1,
+  });
+  add({
+    number: 813,
+    fenceKey: "openclaw/openclaw#813@publish:1",
+    receipt: "accepted",
+    terminal: "review_completed_routed",
+  });
+  add({
+    number: 814,
+    fenceKey: "openclaw/openclaw#814@publish:1",
+    receipt: "deduped",
+    terminal: "review_completed_routed",
+  });
+  add({
+    number: 815,
+    fenceKey: "openclaw/openclaw#815@publish:1",
+    receipt: "superseded",
+    terminal: "superseded",
+  });
+  const retryable = add({ number: 816, fenceKey: "openclaw/openclaw#816@publish:1" });
+  const permanent = add({ number: 817, fenceKey: "openclaw/openclaw#817@publish:1" });
+  telemetry.recordBatchOutcome({
+    batchId: "batch-816",
+    ...retryable,
+    claimGeneration: 1,
+    outcome: "retryable",
+    observedAt: admittedAt + 900,
+  });
+  telemetry.recordBatchOutcome({
+    batchId: "batch-817",
+    ...permanent,
+    claimGeneration: 1,
+    outcome: "permanent",
+    observedAt: admittedAt + 901,
+  });
+  telemetry.recordBatchOutcome({
+    batchId: "expired-batch-816",
+    ...retryable,
+    claimGeneration: 1,
+    outcome: "retryable",
+    observedAt: admittedAt - 7 * 24 * 60 * 60 * 1_000 - 1,
+  });
+  const expiredBatchReceipt = add({
+    number: 818,
+    fenceKey: "openclaw/openclaw#818@publish:1",
+  });
+  lifecycle.recordCanonicalReceipt({
+    ...expiredBatchReceipt,
+    outcome: "accepted",
+    receiptId: "expired-batch-receipt-818",
+    observedAt: admittedAt - 7 * 24 * 60 * 60 * 1_000 - 1,
+  });
+
+  const summary = telemetry.summary(admittedAt + 10_000);
+  assert.equal(summary.terminalCoverage.acknowledgementPendingRecords, 1);
+  assert.equal(summary.terminalCoverage.unknownTerminalRecords, 5);
+  assert.equal(summary.terminalCoverage.nonCurrentRecords, 2);
+  assert.equal(summary.terminalCoverage.terminalClasses.review_completed_routed, 3);
+  assert.equal(summary.terminalCoverage.terminalClasses.superseded, 2);
+  assert.equal(summary.publication.direct.accepted, 1);
+  assert.equal(summary.publication.direct.superseded, 1);
+  assert.equal(summary.publication.direct.fallback, 0);
+  assert.equal(summary.publication.direct.unknown, 2);
+  assert.deepEqual(summary.publication.batch, {
+    accepted: 1,
+    deduped: 1,
+    superseded: 1,
+    retryable: 1,
+    permanent: 1,
+  });
+  assert.equal(summary.publication.lifecycleRetries, 1);
+  assert.equal(summary.publication.lastSuccessfulCanonicalAcceptanceAt, admittedAt + 816);
+  assert.equal(JSON.stringify(summary).includes("openclaw/openclaw"), false);
 });
 
 test("full exact-review admission preserves production verdict publication capacity", () => {
@@ -3148,6 +3329,14 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
       ?.admission.deliveryId,
     "direct-publication-delivery:701",
   );
+  const directTelemetry = new ExactReviewLifecycleTelemetryStore(storage).summary(Date.now());
+  assert.deepEqual(directTelemetry.publication.direct, {
+    accepted: 1,
+    deduped: 1,
+    superseded: 0,
+    fallback: 1,
+    unknown: 0,
+  });
   const directState = (await storage.get("exact-review-queue")) as {
     items: Record<
       string,
@@ -3366,8 +3555,35 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
     fence_key: batchLeased.key,
     state_commit_sha: null,
   });
+  assert.deepEqual(
+    new ExactReviewLifecycleTelemetryStore(storage).summary(Date.now()).publication.batch,
+    { accepted: 1, deduped: 1, superseded: 0, retryable: 0, permanent: 0 },
+  );
   const afterBatch = (await storage.get("exact-review-queue")) as typeof queueState;
   assert.equal(afterBatch.items[batchLeased.key]?.state, "pending");
+  const staleBatchCompletion = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/publication-batches/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        batch_id: "worker-publication-proof",
+        lease_owner: "proof-worker",
+        items: [
+          {
+            item_key: batchLeased.key,
+            revision: 4,
+            claim_generation: batchMember.claimGeneration,
+            terminal_outcome: "superseded",
+          },
+        ],
+      }),
+    }),
+  );
+  assert.equal(staleBatchCompletion.status, 200);
+  assert.equal((await staleBatchCompletion.json()).accepted, 1);
+  assert.deepEqual(
+    new ExactReviewLifecycleTelemetryStore(storage).summary(Date.now()).publication.batch,
+    { accepted: 1, deduped: 1, superseded: 1, retryable: 0, permanent: 0 },
+  );
 
   const recordUrl =
     "https://clawsweeper.openclaw.ai/internal/state/records/openclaw-openclaw/items/701";
@@ -3439,6 +3655,106 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
     max_bytes: 4 * 1024 * 1024,
     fallback_required: true,
   });
+});
+
+test("fetching a stale publication batch records a durable superseded telemetry outcome", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(719, "7190");
+  item.revision = 4;
+  item.leaseRevision = 4;
+  item.claimGeneration = 2;
+  item.state = "pending";
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue(
+    { storage },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1", EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "1" },
+  );
+  const claim = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/publication-batches/claim", {
+        method: "POST",
+        body: JSON.stringify({
+          claim_id: "fetch-stale-telemetry-batch",
+          lease_owner: "fetch-stale-telemetry-owner",
+          max_items: 1,
+        }),
+      }),
+    )
+  ).json();
+  assert.equal(claim.claimed, true);
+  storage.sql.exec(
+    `INSERT INTO exact_review_publication_heads (target_key, source_revision, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(target_key) DO UPDATE SET source_revision = excluded.source_revision`,
+    "openclaw/openclaw#719",
+    2,
+    Date.now(),
+  );
+  const fetched = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/publication-batches/fetch", {
+      method: "POST",
+      body: JSON.stringify({
+        batch_id: "fetch-stale-telemetry-batch",
+        lease_owner: "fetch-stale-telemetry-owner",
+      }),
+    }),
+  );
+  assert.equal(fetched.status, 200);
+  const fetchedBody = (await fetched.json()) as { items: unknown[]; superseded: number };
+  assert.equal(fetchedBody.superseded, 1);
+  assert.deepEqual(fetchedBody.items, []);
+  assert.deepEqual(
+    new ExactReviewLifecycleTelemetryStore(storage).summary(Date.now()).publication.batch,
+    { accepted: 0, deduped: 0, superseded: 1, retryable: 0, permanent: 0 },
+  );
+});
+
+test("non-batch publication completions record durable terminal outcomes without inferring acceptance", async () => {
+  const storage = new MemoryDurableStorage();
+  const retryable = leasedExactReviewPublicationItem(720, "7200");
+  const permanent = leasedExactReviewPublicationItem(721, "7210");
+  const superseded = leasedExactReviewPublicationItem(722, "7220");
+  const published = leasedExactReviewPublicationItem(723, "7230");
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: Object.fromEntries(
+      [retryable, permanent, superseded, published].map((item) => [item.key, item]),
+    ),
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const complete = async (
+    item: ExactReviewQueueItem,
+    outcome: "success" | "failure",
+    completionKind: string,
+    reasonCode: string,
+  ) => {
+    const response = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: item.leaseId,
+          item_key: item.key,
+          lease_revision: item.leaseRevision,
+          claim_generation: item.claimGeneration,
+          run_id: item.claimedRunId,
+          run_attempt: item.claimedRunAttempt,
+          outcome,
+          completion_kind: completionKind,
+          reason_code: reasonCode,
+        }),
+      }),
+    );
+    assert.equal(response.status, 200);
+  };
+  await complete(retryable, "failure", "retryable_failure", "github_transient");
+  await complete(permanent, "failure", "permanent_failure", "invalid_artifact");
+  await complete(superseded, "success", "superseded", "remote_newer_tuple");
+  await complete(published, "success", "published", "publication_applied");
+
+  assert.deepEqual(
+    new ExactReviewLifecycleTelemetryStore(storage).summary(Date.now()).publication.batch,
+    { accepted: 0, deduped: 0, superseded: 1, retryable: 1, permanent: 1 },
+  );
 });
 
 test("direct lifecycle requeue becomes a fresh fenced source-drift revision", async () => {
