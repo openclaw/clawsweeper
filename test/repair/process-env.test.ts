@@ -183,6 +183,7 @@ test("Codex subprocess forces Bun installs to ignore lifecycle scripts", () => {
   try {
     fs.mkdirSync(bin);
     fs.mkdirSync(path.join(root, "git-hooks"));
+    fs.writeFileSync(path.join(root, ".env"), "");
     fs.writeFileSync(
       path.join(bin, "bun"),
       `#!/usr/bin/env node
@@ -232,6 +233,18 @@ if (!args.includes("--ignore-scripts")) {
       assert.deepEqual(JSON.parse(fs.readFileSync(argsPath, "utf8")), [
         "-C",
         root,
+        "install",
+        "--ignore-scripts",
+      ]);
+      const envFile = spawnSync("bun", ["--env-file", ".env", "install"], {
+        cwd: root,
+        encoding: "utf8",
+        env,
+      });
+      assert.equal(envFile.status, 0, envFile.stderr);
+      assert.deepEqual(JSON.parse(fs.readFileSync(argsPath, "utf8")), [
+        "--env-file",
+        ".env",
         "install",
         "--ignore-scripts",
       ]);
@@ -312,6 +325,9 @@ test("Codex subprocess fails closed when Bun repair would run on Windows", () =>
     fs.writeFileSync(path.join(root, "bun.exe"), "fixture");
     Object.defineProperty(process, "platform", { ...platform, value: "win32" });
     withEnv({ PATH: root, PATHEXT: ".EXE;.CMD" }, () => {
+      assert.throws(codexSubprocessEnv, /Bun repair execution requires a Linux runner/);
+    });
+    withEnv({ PATH: "", Path: root, PATHEXT: ".EXE;.CMD" }, () => {
       assert.throws(codexSubprocessEnv, /Bun repair execution requires a Linux runner/);
     });
   } finally {

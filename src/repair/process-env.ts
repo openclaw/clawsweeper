@@ -23,14 +23,16 @@ export function codexSubprocessEnv(): NodeJS.ProcessEnv {
     PNPM_CONFIG_IGNORE_PNPMFILE: "true",
     npm_config_ignore_scripts: "true",
   };
-  const bunExecutable = findExecutable("bun", env.PATH);
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+  const searchPath = env[pathKey];
+  const bunExecutable = findExecutable("bun", searchPath);
   if (bunExecutable) {
     if (process.platform === "win32") {
       throw new Error(
         "Bun repair execution requires a Linux runner; refusing unsafe lifecycle scripts",
       );
     }
-    env.PATH = `${guardedBunDirectory(bunExecutable)}${path.delimiter}${env.PATH ?? ""}`;
+    env[pathKey] = `${guardedBunDirectory(bunExecutable)}${path.delimiter}${searchPath ?? ""}`;
   }
   delete env.GH_TOKEN;
   delete env.GITHUB_TOKEN;
@@ -128,6 +130,7 @@ function guardedBunDirectory(executable: string): string {
 const { spawnSync } = require("node:child_process");
 const args = process.argv.slice(2);
 const optionsWithValues = new Set(["-C", "-c", "--cwd", "--config", "--filter", "-F"]);
+const bunCommands = new Set(["run", "test", "x", "repl", "exec", "install", "i", "add", "a", "remove", "rm", "update", "audit", "outdated", "link", "unlink", "publish", "patch", "pm", "info", "why", "build", "init", "create", "c", "upgrade", "feedback"]);
 let commandIndex = -1;
 for (let index = 0; index < args.length; index += 1) {
   const argument = args[index];
@@ -138,6 +141,7 @@ for (let index = 0; index < args.length; index += 1) {
   }
   if (optionsWithValues.has(argument)) { index += 1; continue; }
   if (argument.startsWith("-")) continue;
+  if (!bunCommands.has(argument)) continue;
   commandIndex = index;
   break;
 }
