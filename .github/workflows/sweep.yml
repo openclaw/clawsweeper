@@ -758,6 +758,22 @@ jobs:
               echo "::notice::Completing $TARGET_REPO#$ITEM_NUMBER because the repository is accessible but the item is missing."
               exit 0
             fi
+            if grep -Eqi 'rate limit exceeded|secondary rate limit|HTTP 429' "$live_item_error"; then
+              cat "$live_item_error" >&2
+              rm -f "$live_item_error"
+              retry_at="$(node -e 'process.stdout.write(new Date(Date.now() + 20 * 60_000).toISOString())')"
+              echo "::notice::GitHub throttled the live-item check for $TARGET_REPO#$ITEM_NUMBER; releasing the claim for retry at $retry_at without spending failure budget."
+              {
+                echo "admission_retry=true"
+                echo "retry_at=$retry_at"
+                echo "proceed=false"
+                echo "terminal_noop=false"
+                echo "terminal_missing=false"
+                echo "guarded_open=false"
+                echo "guarded_open_action="
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             cat "$live_item_error" >&2
             rm -f "$live_item_error"
             exit 1

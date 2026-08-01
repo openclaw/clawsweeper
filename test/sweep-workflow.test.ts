@@ -649,6 +649,12 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.match(liveItem.run ?? "", /Resolved invalid queued target branch/);
   assert.match(liveItem.run ?? "", /admission_retry=true/);
+  assert.match(
+    liveItem.run ?? "",
+    /rate limit exceeded\|secondary rate limit\|HTTP 429/,
+    "a throttled live-item check must release the claim for retry instead of failing",
+  );
+  assert.match(liveItem.run ?? "", /throttled the live-item check/);
   assert.match(liveItem.run ?? "", /decision\.targetBranch = process\.env\.TARGET_BRANCH/);
   assert.match(
     step(reviewer, "Review exact event item").if ?? "",
