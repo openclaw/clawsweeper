@@ -1,0 +1,1171 @@
+{
+  "proof": "OpenClaw Bay deterministic Playwright browser proof",
+  "source_sha": "5ce5e29622a28a68e019fce25d2ee03c5396e527",
+  "route": "/bay-demo",
+  "data_classification": "fully synthetic and redacted; no live/private dashboard payloads",
+  "fixture_sha256": "B0180F79C465964AD39E6E45F730211294742E1206EA4CE1A4C39DEB61AFCB71",
+  "fixture_snapshots": [
+    {
+      "file": "fixtures/01-initial.json",
+      "sha256": "9D6CA7EDD926508DBB3DB7ED3B8328405F8404E16AEE303AE9057CA6B3BA0397"
+    },
+    {
+      "file": "fixtures/02-forward.json",
+      "sha256": "A94441D54E4CBBAE21C788C65FF60B0DCDA166459CBDA77C0A70F827076E9126"
+    },
+    {
+      "file": "fixtures/03-retrigger.json",
+      "sha256": "9BAF0B764E413369EC8D9554D731A4E6B008B2DCB266B5D2837E94E820CEEBFE"
+    }
+  ],
+  "derived_real_tide_snapshot_sha256": "18FAF63BD6529D1F4EB03BF880343E20244413F82FE62029F055AABC13F44DA9",
+  "generated_at": "2026-08-01T07:36:21.493Z",
+  "assertions": [
+    {
+      "name": "real Bay route loaded",
+      "status": "PASS",
+      "route": "/bay-demo"
+    },
+    {
+      "name": "manual poll hook captured",
+      "status": "PASS"
+    },
+    {
+      "name": "visible redacted diagnostics",
+      "status": "PASS",
+      "text": "Live status is partial; some optional GitHub telemetry is unavailable.",
+      "title": "Synthetic proof fixture: optional telemetry unavailable [REDACTED]"
+    },
+    {
+      "name": "Bay mirrors cached aggregate events, admission, publication, state-writer, and handoff telemetry",
+      "status": "PASS",
+      "cards": 5,
+      "review": "RECENT DURABLE EVENTS\n\nUnknown · aggregate unavailable.\n\nREVIEW ADMISSION\n29 waiting\n4 ready · 25 backoff · 2 dispatching · 19 leased\nWAITING · 6 HOURS\n50\n25\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −2 in 1h · Catching up · +12 / hour\nRESULT PUBLICATION\n2 waiting\n2 backoff · 1 dispatching · 14 leased\nWAITING · 6 HOURS\n10\n5\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −1 in 1h · Catching up · +12 / hour\nQUEUE HANDOFF\nPENDING\n29\nDISPATCHING\n3\nLEASED\n33\nHEALTHY\nSTATE WRITER\n8 waiting\n1 active · 1 writer max\nWAITING · 6 HOURS\n10\n5\n0\nLAST 60M\n17 items\n9 state commits\nBatch writer · terminal telemetry fresh",
+      "waiting_hover_label": "12:02 PM · 38 waiting",
+      "rate_hover_label": "12:07 PM · +12 / hour · provisional window",
+      "queue_items": 1,
+      "arriving_queue_samples": 6,
+      "publishing_queue_samples": 6,
+      "applying_queue_samples": 0,
+      "queue_header": "ARRIVING 9i",
+      "publishing_header": "PUBLISHING 9i",
+      "queue_omission": 1,
+      "queue_omission_label": "+3 queued IDs not shown",
+      "queue_omission_role": null,
+      "labelled_axes": 15,
+      "range_controls": 3,
+      "lane_help": 1
+    },
+    {
+      "name": "Bay does not present stale State writer terminal totals as current",
+      "status": "PASS",
+      "state_writer": "RECENT DURABLE EVENTS\n\nUnknown · aggregate unavailable.\n\nREVIEW ADMISSION\n29 waiting\n4 ready · 25 backoff · 2 dispatching · 19 leased\nWAITING · 6 HOURS\n50\n25\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −2 in 1h · Catching up · +12 / hour\nRESULT PUBLICATION\n2 waiting\n2 backoff · 1 dispatching · 14 leased\nWAITING · 6 HOURS\n10\n5\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −1 in 1h · Catching up · +12 / hour\nQUEUE HANDOFF\nPENDING\n29\nDISPATCHING\n3\nLEASED\n33\nHEALTHY\nSTATE WRITER\n8 waiting\n1 active · 1 writer max\nWAITING · 6 HOURS\n10\n5\n0\nLAST 60M\nunknown items\nterminal metrics unavailable\nBatch writer · coordinator live · terminal metrics unavailable"
+    },
+    {
+      "name": "completed and attention pools keep terminal outcomes distinct",
+      "status": "PASS",
+      "completed": 1,
+      "attention": 2,
+      "failed": 1,
+      "cancelled": 1
+    },
+    {
+      "name": "journey timing names the trigger-to-final-review duration",
+      "status": "PASS",
+      "text": "LAST HOUR\nAVG TRIGGER → FINAL REVIEW 12M\n4 JOURNEYS"
+    },
+    {
+      "name": "overflow button explains the bounded public queue sample without inventing hidden IDs",
+      "status": "PASS",
+      "text": "×\nArriving queue sample\n\nKnown references from the bounded public queue projection.\n\n3 queued IDs are counted in this lane, but their individual references are intentionally outside OpenClaw Bay's 24-reference public sample. This panel does not fetch or invent that missing list.\n\nOC #108001\nWaiting for review admission\nOC #108005\nWaiting for review admission\nOC #108009\nWaiting for review admission\nOC #108013\nWaiting for review admission\nOC #108017\nWaiting for review admission\nOC #108021\nWaiting for review admission"
+    },
+    {
+      "name": "Bay switches cached telemetry ranges with matching labels and axes",
+      "status": "PASS",
+      "ranges": [
+        "24h",
+        "7d"
+      ],
+      "text": "RECENT DURABLE EVENTS\n\nUnknown · aggregate unavailable.\n\nREVIEW ADMISSION\n29 waiting\n4 ready · 25 backoff · 2 dispatching · 19 leased\nWAITING · 7 DAYS\n50\n25\n0\nNET RATE · 7 DAYS\n+20\n0\n−20\nDraining · −2 in 1h · Catching up · +12 / hour\nRESULT PUBLICATION\n2 waiting\n2 backoff · 1 dispatching · 14 leased\nWAITING · 7 DAYS\n10\n5\n0\nNET RATE · 7 DAYS\n+20\n0\n−20\nDraining · −1 in 1h · Catching up · +12 / hour\nQUEUE HANDOFF\nPENDING\n29\nDISPATCHING\n3\nLEASED\n33\nHEALTHY\nSTATE WRITER\n8 waiting\n1 active · 1 writer max\nWAITING · 7 DAYS\n10\n5\n0\nLAST 60M\n17 items\n9 state commits\nBatch writer · terminal telemetry fresh"
+    },
+    {
+      "name": "Bay does not reuse a stale rate after a history counter reset",
+      "status": "PASS",
+      "reset_at": "2026-07-11T18:17:00.000Z"
+    },
+    {
+      "name": "Bay marks a stalled cached history rate as stale",
+      "status": "PASS",
+      "last_history_at": "2026-07-11T18:02:00.000Z",
+      "observed_at": "2026-07-11T18:30:01.000Z"
+    },
+    {
+      "name": "mini control board throttles failed history fetches before retrying",
+      "status": "PASS",
+      "before_failure": 5,
+      "during_failure": 6,
+      "after_recovery": 7
+    },
+    {
+      "name": "Bay renders failed history collections as a gap instead of a zero backlog",
+      "status": "PASS",
+      "review_pending_path": "M27.0 18.2 M207.0 19.0"
+    },
+    {
+      "name": "Bay renders failed State writer history collections as a gap",
+      "status": "PASS",
+      "state_writer_pending_path": "M27.0 7.0 M207.0 15.0"
+    },
+    {
+      "name": "Bay labels a current failed State writer collection as a history gap",
+      "status": "PASS",
+      "state_writer": "STATE WRITER\n8 waiting\n1 active · 1 writer max\nWAITING · 6 HOURS\n10\n5\n0\nLAST 60M\n17 items\n9 state commits\nBatch writer · history gap · awaiting current sample"
+    },
+    {
+      "name": "Bay retains legacy pending-only history samples",
+      "status": "PASS",
+      "review_pending_path": "M27.0 18.2 L117.0 18.2 L207.0 19.0"
+    },
+    {
+      "name": "intermediate landscape stacks six Bay lanes before they reach terminal pools",
+      "status": "PASS",
+      "scroll_width": 900,
+      "viewport_width": 900,
+      "stages": [
+        {
+          "left": 13,
+          "top": 945,
+          "bottom": 1221
+        },
+        {
+          "left": 13,
+          "top": 1221,
+          "bottom": 1553
+        },
+        {
+          "left": 13,
+          "top": 1553,
+          "bottom": 1773
+        },
+        {
+          "left": 13,
+          "top": 1773,
+          "bottom": 2049
+        },
+        {
+          "left": 13,
+          "top": 2049,
+          "bottom": 2269
+        },
+        {
+          "left": 13,
+          "top": 2269,
+          "bottom": 2601
+        }
+      ],
+      "terminal_top": 2629
+    },
+    {
+      "name": "portrait layout stacks the workflow from sand to waterline without horizontal overflow",
+      "status": "PASS",
+      "scroll_width": 390,
+      "viewport_width": 390,
+      "grid_columns": "364px",
+      "control_columns": "366px",
+      "stages": [
+        {
+          "left": 13,
+          "top": 1171,
+          "bottom": 1447
+        },
+        {
+          "left": 13,
+          "top": 1447,
+          "bottom": 1779
+        },
+        {
+          "left": 13,
+          "top": 1779,
+          "bottom": 1999
+        },
+        {
+          "left": 13,
+          "top": 1999,
+          "bottom": 2275
+        },
+        {
+          "left": 13,
+          "top": 2275,
+          "bottom": 2495
+        },
+        {
+          "left": 13,
+          "top": 2495,
+          "bottom": 2827
+        }
+      ],
+      "terminal_top": 2855
+    },
+    {
+      "name": "crustacean claw animation advances",
+      "status": "PASS",
+      "elapsed_animation_ms": 300
+    },
+    {
+      "name": "forward transition raises READY flag",
+      "status": "PASS"
+    },
+    {
+      "name": "master sweeper animation advances",
+      "status": "PASS",
+      "phase": "sweeping",
+      "elapsed_animation_ms": 317
+    },
+    {
+      "name": "forward transition lands in applying",
+      "status": "PASS",
+      "destination": "applying"
+    },
+    {
+      "name": "retrigger uses tunnel journey",
+      "status": "PASS",
+      "source_hole": 1,
+      "target_hole": 1,
+      "target_hole_opacity": 0.541869,
+      "label": "openclaw/openclaw#97722 burrowing"
+    },
+    {
+      "name": "retrigger resurfaces in reported lane",
+      "status": "PASS",
+      "destination": "setting-up",
+      "run_id": 1002
+    },
+    {
+      "name": "search locates GitHub reference",
+      "status": "PASS",
+      "focused_number": "97722"
+    },
+    {
+      "name": "repository filter isolates selected repo",
+      "status": "PASS",
+      "visible_keys": [
+        "openclaw/clawhub#3058",
+        "openclaw/clawhub#97002"
+      ]
+    },
+    {
+      "name": "drawer exposes safe GitHub links",
+      "status": "PASS",
+      "links": [
+        {
+          "label": "Open GitHub item",
+          "href": "https://github.com/openclaw/clawhub/issues/3058",
+          "target": "_blank",
+          "rel": "noopener"
+        },
+        {
+          "label": "Open job",
+          "href": "https://github.com/openclaw/clawhub/actions/runs/2001/job/3001",
+          "target": "_blank",
+          "rel": "noopener"
+        },
+        {
+          "label": "Open workflow run",
+          "href": "https://github.com/openclaw/clawhub/actions/runs/2001",
+          "target": "_blank",
+          "rel": "noopener"
+        }
+      ]
+    },
+    {
+      "name": "layered preview tide visibly animates",
+      "status": "PASS",
+      "elapsed_animation_ms": 67,
+      "tide_layers": 3
+    },
+    {
+      "name": "preview tide follows explicit visual phases",
+      "status": "PASS",
+      "phases": [
+        "incoming",
+        "crest",
+        "receding",
+        "idle"
+      ]
+    },
+    {
+      "name": "reduced-motion tide is brief and non-spatial",
+      "status": "PASS",
+      "duration": "520ms",
+      "animation_name": "none",
+      "elapsed_ms": 624
+    },
+    {
+      "name": "tide previews do not poll status",
+      "status": "PASS",
+      "before_status_gets": 13,
+      "after_status_gets": 13
+    },
+    {
+      "name": "dense completed pool renders every buffered outcome",
+      "status": "PASS",
+      "completed": 20,
+      "overflow_notes": 0
+    },
+    {
+      "name": "completed pool keeps visible references readable at constrained width",
+      "status": "PASS",
+      "references": 12,
+      "overlaps": false,
+      "columns": "2",
+      "overflow": "+8 more live items not shown"
+    },
+    {
+      "name": "terminal overflow detail lists every known hidden outcome",
+      "status": "PASS",
+      "known_terminal_outcomes": 20
+    },
+    {
+      "name": "real tide washes terminal outcomes before clearing",
+      "status": "PASS",
+      "washed_terminal_count": 20,
+      "preview_class_used": false,
+      "terminal_after": 0,
+      "countdown": "0 / 20",
+      "active_keys_unchanged": true
+    },
+    {
+      "name": "live workers take precedence over their durable queue stage",
+      "status": "PASS",
+      "in_setting_up": 0,
+      "in_reviewing": 1,
+      "setting_up_header": "SETTING UP 9i"
+    },
+    {
+      "name": "filtered lanes label omitted queue rows as queued",
+      "status": "PASS",
+      "overflow": "+7 queued IDs not shown"
+    },
+    {
+      "name": "incident-shaped terminal failure is visible before the replacement queue row arrives",
+      "status": "PASS",
+      "item_key": "openclaw/openclaw#110158",
+      "terminal_run_id": 29616475298
+    },
+    {
+      "name": "terminal failure tunnels to its matching bounded live retry",
+      "status": "PASS",
+      "item_key": "openclaw/openclaw#110158",
+      "terminal_run_id": 29616475298,
+      "tunnel_label": "openclaw/openclaw#110158 burrowing"
+    },
+    {
+      "name": "replacement retry resurfaces in Arriving and suppresses the stale terminal card",
+      "status": "PASS",
+      "item_key": "openclaw/openclaw#110158",
+      "destination": "arriving",
+      "queue_state": "pending"
+    },
+    {
+      "name": "durable batch ownership places known publication items in Applying & writing",
+      "status": "PASS",
+      "item_key": "openclaw/openclaw#108003",
+      "stage": "applying",
+      "batch_id": "exact-review-batch:9001"
+    },
+    {
+      "name": "legacy Applying queue records are normalized into Publishing without duplicate Applying cards",
+      "status": "PASS",
+      "item_key": "openclaw/openclaw#108003",
+      "legacy_stage": "applying",
+      "rendered_stage": "publishing"
+    },
+    {
+      "name": "preview tide preserves live outcome data",
+      "status": "PASS",
+      "before_keys": [
+        "openclaw/clawhub#97002",
+        "openclaw/clawsweeper#97003",
+        "openclaw/openclaw#97001"
+      ],
+      "after_keys": [
+        "openclaw/clawhub#97002",
+        "openclaw/clawsweeper#97003",
+        "openclaw/openclaw#97001"
+      ],
+      "reduced_motion_after_keys": [
+        "openclaw/clawhub#97002",
+        "openclaw/clawsweeper#97003",
+        "openclaw/openclaw#97001"
+      ],
+      "countdown": "3 / 20"
+    },
+    {
+      "name": "preview tide sends no mutation",
+      "status": "PASS",
+      "mutating_requests": []
+    },
+    {
+      "name": "browser sends no GitHub API request",
+      "status": "PASS",
+      "direct_github_requests": 0
+    },
+    {
+      "name": "mini control board caches each selected dashboard history range",
+      "status": "PASS",
+      "health_history_gets": 11,
+      "ranges": [
+        "6h",
+        "24h",
+        "7d",
+        "6h",
+        "6h",
+        "6h",
+        "6h",
+        "6h",
+        "6h",
+        "6h",
+        "6h"
+      ]
+    },
+    {
+      "name": "no unexpected browser console errors",
+      "status": "PASS",
+      "errors": []
+    },
+    {
+      "name": "no uncaught page errors",
+      "status": "PASS",
+      "errors": []
+    }
+  ],
+  "evidence": [
+    {
+      "id": "01-initial-diagnostics",
+      "title": "Synthetic, redacted status fixture",
+      "detail": "Real Bay route and assets; visible partial-telemetry diagnostic; three explicit terminal outcomes.",
+      "storyboard_panel": 1
+    },
+    {
+      "id": "01a-mini-control-board",
+      "title": "Mini queue control board",
+      "detail": "Bay reuses the dashboard’s cached six-hour review-admission, publication, state-writer, and handoff telemetry; each sparkline point has an exact hover label.",
+      "storyboard_panel": 2
+    },
+    {
+      "id": "01aa-queue-sample",
+      "title": "Readable queue sample detail",
+      "detail": "The readable overflow button opens the known queue sample and explains why aggregate-only IDs are not individually exposed.",
+      "storyboard_panel": 3
+    },
+    {
+      "id": "01ab-range-selector",
+      "title": "Telemetry range selector",
+      "detail": "The compact 6-hour, 24-hour, and 7-day controls use the existing cached health-history endpoint and retain visible y-axis values.",
+      "storyboard_panel": 4
+    },
+    {
+      "id": "01b-portrait-workflow",
+      "title": "Portrait workflow: top to bottom",
+      "detail": "Phone portrait mode stacks Arriving through Publishing and Applying vertically, then places the terminal pools at the waterline without horizontal scrolling.",
+      "storyboard_panel": 5
+    },
+    {
+      "id": "02-ready-for-sweep",
+      "title": "Forward transition: READY",
+      "detail": "The item remains in Reviewing and raises its flag before any lane movement.",
+      "storyboard_panel": 6
+    },
+    {
+      "id": "03-physical-forward-sweep",
+      "title": "Forward transition: physical sweep",
+      "detail": "The master and item are animated together; neither disappears between lanes.",
+      "storyboard_panel": 7
+    },
+    {
+      "id": "04-forward-landed",
+      "title": "Forward transition complete",
+      "detail": "The same GitHub reference is now visibly placed in Applying, the final publication step before its terminal outcome.",
+      "storyboard_panel": 8
+    },
+    {
+      "id": "05-retrigger-tunnel",
+      "title": "New run detected: retrigger tunnel",
+      "detail": "A changed run ID digs from Applying back toward Setting up with both tunnel openings visible.",
+      "storyboard_panel": 9
+    },
+    {
+      "id": "06-retrigger-resurfaced",
+      "title": "Retrigger resurfaced",
+      "detail": "The same GitHub reference reappears in Setting up for its new run.",
+      "storyboard_panel": 10
+    },
+    {
+      "id": "07-search-highlight",
+      "title": "Where's my crustacean?",
+      "detail": "Search focuses and highlights GitHub reference #97722 without another network request.",
+      "storyboard_panel": 11
+    },
+    {
+      "id": "08-repository-filter",
+      "title": "Repository waters filter",
+      "detail": "Only openclaw/clawhub active and terminal items remain visible.",
+      "storyboard_panel": 12
+    },
+    {
+      "id": "09-detail-drawer-links",
+      "title": "Read-only detail drawer",
+      "detail": "The selected item exposes only safe GitHub item, job, and workflow-run links.",
+      "storyboard_panel": 13
+    },
+    {
+      "id": "10-preview-tide-incoming",
+      "title": "Tide incoming along the shoreline",
+      "detail": "Layered translucent water, painted texture, foam, ripples, and bubbles approach the terminal pools.",
+      "storyboard_panel": 14
+    },
+    {
+      "id": "11-preview-tide-crest",
+      "title": "Foam crest washes the terminal pools",
+      "detail": "Terminal crustaceans drift seaward only inside the temporary local preview; live outcomes remain unchanged.",
+      "storyboard_panel": 15
+    },
+    {
+      "id": "12-preview-tide-backwash",
+      "title": "Backwash leaves a wet-sand sheen",
+      "detail": "The water and foam recede toward the illustrated sea while the preview crustaceans return.",
+      "storyboard_panel": 16
+    },
+    {
+      "id": "13-preview-tide-restored",
+      "title": "Preview returns to live state",
+      "detail": "The shoreline is restored and every terminal crustacean returns after the non-mutating preview.",
+      "storyboard_panel": 17
+    },
+    {
+      "id": "14-preview-tide-reduced-motion",
+      "title": "Reduced-motion tide cue",
+      "detail": "Motion-sensitive users receive a brief static shoreline wash with the same non-mutating semantics.",
+      "storyboard_panel": 18
+    },
+    {
+      "id": "15-dense-terminal-pool",
+      "title": "Dense completed pool uses the available shoreline",
+      "detail": "Twenty completed outcomes stay individually visible, with a larger four-column pool and no hidden overflow.",
+      "storyboard_panel": 19
+    },
+    {
+      "id": "16-real-tide-cleared",
+      "title": "Real tide clears only after the wash",
+      "detail": "A generated tide first moves the proved terminal crustaceans seaward, then commits the empty shared buffer.",
+      "storyboard_panel": 20
+    },
+    {
+      "id": "18-terminal-failure-to-live-retry-tunnel",
+      "title": "Held terminal failure tunnels to its pending retry",
+      "detail": "The incident-shaped terminal card for openclaw/openclaw#110158 is replaced by its bounded live queue row rather than remaining in the failed pool.",
+      "storyboard_panel": 21
+    },
+    {
+      "id": "19-live-retry-resurfaced",
+      "title": "Pending retry resurfaces in Arriving",
+      "detail": "The stale failed card is absent and the same GitHub reference is visible as queued exact-review work in the earlier lane.",
+      "storyboard_panel": 22
+    },
+    {
+      "id": "17-visible-proof-diagnostics",
+      "title": "Network and state boundary",
+      "detail": "Visible diagnostics confirm no GitHub API or mutation request, unchanged preview data, and a proved real clear.",
+      "storyboard_panel": 23
+    }
+  ],
+  "tide_isolation": {
+    "phases": [
+      "incoming",
+      "crest",
+      "receding",
+      "idle"
+    ],
+    "before_keys": [
+      "openclaw/clawhub#97002",
+      "openclaw/clawsweeper#97003",
+      "openclaw/openclaw#97001"
+    ],
+    "after_keys": [
+      "openclaw/clawhub#97002",
+      "openclaw/clawsweeper#97003",
+      "openclaw/openclaw#97001"
+    ],
+    "reduced_motion_after_keys": [
+      "openclaw/clawhub#97002",
+      "openclaw/clawsweeper#97003",
+      "openclaw/openclaw#97001"
+    ],
+    "real_tide_terminal_after": 0
+  },
+  "drawer_links": [
+    {
+      "label": "Open GitHub item",
+      "href": "https://github.com/openclaw/clawhub/issues/3058",
+      "target": "_blank",
+      "rel": "noopener"
+    },
+    {
+      "label": "Open job",
+      "href": "https://github.com/openclaw/clawhub/actions/runs/2001/job/3001",
+      "target": "_blank",
+      "rel": "noopener"
+    },
+    {
+      "label": "Open workflow run",
+      "href": "https://github.com/openclaw/clawhub/actions/runs/2001",
+      "target": "_blank",
+      "rel": "noopener"
+    }
+  ],
+  "network": {
+    "requests": [
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/bay-demo",
+        "search": "",
+        "resource_type": "document"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/bay-background.webp",
+        "search": "",
+        "resource_type": "image"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/master-sweeper.webp",
+        "search": "",
+        "resource_type": "image"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/crustaceans-atlas.webp",
+        "search": "",
+        "resource_type": "image"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=24h",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=7d",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/bay-background-portrait.webp",
+        "search": "",
+        "resource_type": "image"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/bay-demo",
+        "search": "",
+        "resource_type": "document"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/bay-background.webp",
+        "search": "",
+        "resource_type": "image"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/master-sweeper.webp",
+        "search": "",
+        "resource_type": "image"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/crustaceans-atlas.webp",
+        "search": "",
+        "resource_type": "image"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      }
+    ],
+    "responses": [
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/bay-demo",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/bay-background.webp",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/master-sweeper.webp",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/crustaceans-atlas.webp",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=24h"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=7d"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 503,
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/bay-background-portrait.webp",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/bay-demo",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/bay-background.webp",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/master-sweeper.webp",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/crustaceans-atlas.webp",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      }
+    ],
+    "direct_github_api_requests": 0,
+    "mutating_requests": 0
+  },
+  "console_errors": [
+    "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+  ],
+  "page_errors": []
+}
