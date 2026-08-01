@@ -710,7 +710,7 @@ def reap_exited_children(primary_pid, background_pids):
             background_pids.add(pid)
 
 
-def reap_adopted_children(primary_pid, background_pids):
+def reap_adopted_children(primary_pid, background_pids, primary_process=None):
     for pid, parent_pid in process_rows():
         if parent_pid != os.getpid() or pid == primary_pid:
             continue
@@ -720,6 +720,10 @@ def reap_adopted_children(primary_pid, background_pids):
             background_pids.discard(pid)
             continue
         if reaped_pid == 0:
+            background_pids.add(pid)
+        elif primary_process is not None and primary_process.poll() is not None:
+            # The helper survived the primary command even if both exited
+            # between supervisor polls; preserve that fail-closed evidence.
             background_pids.add(pid)
         else:
             # Short-lived detached package-manager helpers are already gone while
@@ -794,7 +798,7 @@ def main():
     child = subprocess.Popen(command, close_fds=True)
     background_pids = set()
     while True:
-        reap_adopted_children(child.pid, background_pids)
+        reap_adopted_children(child.pid, background_pids, child)
         return_code = child.poll()
         if return_code is not None:
             break

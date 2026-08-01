@@ -102,7 +102,14 @@ test("formatter-hint filtering does not hide shell injection or write flags", ()
   const cwd = packageFixture({ "check:changed": "node check.js", format: "node format.js" });
   const options = validationOptions("openclaw/openclaw");
 
-  for (const command of ["pnpm format --write", "pnpm format src/index.ts; touch escaped"]) {
+  for (const command of [
+    "pnpm format --write",
+    "pnpm format src/index.ts; touch escaped",
+    "pnpm format src/index.ts\ntouch escaped",
+    "pnpm format src/index.ts\r\ntouch escaped",
+    "pnpm format src/index.ts\r touch escaped",
+    "pnpm format src/index.ts\t touch escaped",
+  ]) {
     assert.throws(
       () =>
         preflightTargetValidationPlan(

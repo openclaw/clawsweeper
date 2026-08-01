@@ -1689,8 +1689,8 @@ export function requiredValidationCommands(
 
 function isMutatingFormatterValidationHint(command: LooseRecord): boolean {
   if (typeof command !== "string") return false;
-  return /^(?:pnpm(?:\s+run)?|npm\s+run|bun\s+run)\s+format(?:\s+(?!-)[A-Za-z0-9@_./-]+)+$/.test(
-    command.trim(),
+  return /^(?:pnpm(?: +run)?|npm +run|bun +run) +format(?: +(?!-)[A-Za-z0-9@_./-]+)+$/.test(
+    command.replace(/^ +| +$/g, ""),
   );
 }
 

@@ -19,7 +19,7 @@ test("Linux validation containment uses an externally owned PID namespace and su
   assert.match(containment, /if pid != primary_pid:\s+background_pids\.add\(pid\)/);
   assert.match(containment, /if pid != os\.getpid\(\)/);
   assert.match(containment, /background_pids\.update\(pid for pid in remaining_pids/);
-  assert.match(containment, /reap_adopted_children\(child\.pid, background_pids\)/);
+  assert.match(containment, /reap_adopted_children\(child\.pid, background_pids, child\)/);
   assert.match(containment, /return_code = child\.poll\(\)/);
   assert.match(containment, /except ChildProcessError/);
   assert.match(containment, /struct\.pack\("=Qi", allowed_access, path_fd\)/);
@@ -121,6 +121,10 @@ test("containment does not classify reaped transient helpers as surviving backgr
   });
   assert.deepEqual(runLandlockScenario("adopted_child_already_reaped"), {
     tracked: [],
+    status: "ok",
+  });
+  assert.deepEqual(runLandlockScenario("adopted_child_primary_exited"), {
+    tracked: [25],
     status: "ok",
   });
 });
@@ -301,7 +305,10 @@ if scenario.startswith("adopted_child_"):
         return (0, 0) if scenario == "adopted_child_alive" else (25, 0)
     module.os.waitpid = fake_waitpid
     tracked = {25}
-    module.reap_adopted_children(20, tracked)
+    class PrimaryProcess:
+        def poll(self):
+            return 0 if scenario == "adopted_child_primary_exited" else None
+    module.reap_adopted_children(20, tracked, PrimaryProcess())
     print(json.dumps({"tracked": sorted(tracked), "status": "ok"}, separators=(",", ":")))
     raise SystemExit(0)
 
