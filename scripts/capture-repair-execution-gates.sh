@@ -21,6 +21,7 @@ normalize_yaml_scalar() {
 if [[ -f "$job_path" && "$job_name" == automerge-*.md && "$requested_merge" == 1 ]]; then
   allow_merge=1
   repair_mode="$(awk '
+    { sub(/\r$/, "") }
     /^---$/ { boundary += 1; if (boundary == 2) exit; next }
     boundary == 1 && $1 == "repair_mode:" {
       if (++count > 1) {
@@ -38,6 +39,7 @@ if [[ -f "$job_path" && "$job_name" == automerge-*.md && "$requested_merge" == 1
     echo "::notice title=Repair-only merge gate::Merge disabled for ${repair_mode:-unclassified} PR repair."
   else
     repository="$(awk '
+      { sub(/\r$/, "") }
       /^---$/ { boundary += 1; if (boundary == 2) exit; next }
       boundary == 1 && $1 == "repo:" { print $2; exit }
     ' "$job_path")"
