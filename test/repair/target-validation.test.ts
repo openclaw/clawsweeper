@@ -4220,6 +4220,203 @@ test("changed-gate fallback preserves and protects pending fresh runtime output"
   }
 });
 
+test("OpenClaw changed-gate rebuilds are disposable and restore existing runtime outputs", () => {
+  for (const existingOutputs of [false, true]) {
+    const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), "dist/\npackages/*/dist/\n");
+    const packageDir = path.join(cwd, "packages", "plugin-sdk");
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.writeFileSync(path.join(packageDir, "package.json"), '{"name":"plugin-sdk"}\n');
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    for (const output of ["dist", "packages/plugin-sdk/dist"]) {
+      if (!existingOutputs) continue;
+      const directory = path.join(cwd, output);
+      fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(path.join(directory, "runtime.js"), `${output}: trusted original\n`);
+    }
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-gate-build-output-"));
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      [
+        'const fs = require("node:fs");',
+        'for (const root of ["dist", "packages/plugin-sdk/dist"]) {',
+        "  fs.mkdirSync(root, { recursive: true });",
+        "  fs.writeFileSync(`${root}/runtime.js`, `${root}: regenerated\\n`);",
+        "}",
+      ].join("\n"),
+    );
+
+    assert.deepEqual(
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          ["pnpm check:changed"],
+          cwd,
+          validationOptions("openclaw/openclaw", {
+            pinnedBaseRef: "origin/main",
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+            },
+          }),
+        ),
+      ),
+      ["pnpm check:changed"],
+    );
+    for (const output of ["dist", "packages/plugin-sdk/dist"]) {
+      const generated = path.join(cwd, output, "runtime.js");
+      if (existingOutputs) {
+        assert.equal(fs.readFileSync(generated, "utf8"), `${output}: trusted original\n`);
+      } else {
+        assert.equal(fs.existsSync(generated), false);
+      }
+    }
+  }
+});
+
+test("changed-gate output restoration still rejects unrelated ignored-input poisoning", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+  fs.appendFileSync(path.join(cwd, ".gitignore"), "dist/\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const dist = path.join(cwd, "dist");
+  fs.mkdirSync(dist, { recursive: true });
+  fs.writeFileSync(path.join(dist, "runtime.js"), "trusted original\n");
+  const dependency = path.join(cwd, "node_modules", "dependency", "runtime.js");
+  fs.mkdirSync(path.dirname(dependency), { recursive: true });
+  fs.writeFileSync(dependency, "safe\n");
+
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-gate-build-poison-"));
+  writeNodeCommandShim(
+    binDir,
+    "pnpm",
+    [
+      'const fs = require("node:fs");',
+      'fs.writeFileSync("dist/runtime.js", "regenerated\\n");',
+      'fs.writeFileSync("node_modules/dependency/runtime.js", "poisoned\\n");',
+    ].join("\n"),
+  );
+
+  assert.throws(
+    () =>
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          ["pnpm check:changed"],
+          cwd,
+          validationOptions("openclaw/openclaw", {
+            pinnedBaseRef: "origin/main",
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+            },
+          }),
+        ),
+      ),
+    /runtimeInputsSha256; changed runtime roots: node_modules$/,
+  );
+  assert.equal(fs.readFileSync(path.join(dist, "runtime.js"), "utf8"), "trusted original\n");
+});
+
+test("changed-gate output preparation failures preserve the existing compiler cache", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+  fs.appendFileSync(path.join(cwd, ".gitignore"), "dist\n.artifacts/\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  fs.writeFileSync(path.join(cwd, "dist"), "unsafe regular-file output\n");
+  const cache = path.join(cwd, ".artifacts", "tsgo-cache", "state.json");
+  fs.mkdirSync(path.dirname(cache), { recursive: true });
+  fs.writeFileSync(cache, "trusted compiler state\n");
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-gate-output-cache-"));
+  writeNodeCommandShim(binDir, "pnpm", "");
+
+  assert.throws(
+    () =>
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          ["pnpm check:changed"],
+          cwd,
+          validationOptions("openclaw/openclaw", {
+            pinnedBaseRef: "origin/main",
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+            },
+          }),
+        ),
+      ),
+    /changed-gate validation has an unsafe existing output: dist/,
+  );
+  assert.equal(fs.readFileSync(cache, "utf8"), "trusted compiler state\n");
+});
+
+test(
+  "changed-gate output restoration rejects replaced output roots before following symlinks",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), "dist/\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const dist = path.join(cwd, "dist");
+    fs.mkdirSync(dist, { recursive: true });
+    fs.writeFileSync(path.join(dist, "runtime.js"), "trusted original\n");
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-protected-output-"));
+    fs.writeFileSync(path.join(outside, "runtime.js"), "outside must survive\n");
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-gate-build-symlink-"));
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      [
+        'const fs = require("node:fs");',
+        'fs.rmSync("dist", { recursive: true, force: true });',
+        `fs.symlinkSync(${JSON.stringify(outside)}, "dist");`,
+      ].join("\n"),
+    );
+
+    assert.throws(
+      () =>
+        withPathOnlyPrefix(binDir, () =>
+          runAllowedValidationCommands(
+            ["pnpm check:changed"],
+            cwd,
+            validationOptions("openclaw/openclaw", {
+              pinnedBaseRef: "origin/main",
+              toolchain: {
+                packageManager: "pnpm",
+                baseValidationCommands: [],
+                changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+              },
+            }),
+          ),
+        ),
+      (error: Error) =>
+        /validation command failed \(pnpm check:changed\)/.test(error.message) &&
+        /changed-gate validation produced an unsafe output: dist/.test(
+          String((error as Error & { cause?: unknown }).cause),
+        ),
+    );
+    assert.equal(
+      fs.readFileSync(path.join(outside, "runtime.js"), "utf8"),
+      "outside must survive\n",
+    );
+    assert.equal(fs.readFileSync(path.join(dist, "runtime.js"), "utf8"), "trusted original\n");
+  },
+);
+
 test("OpenClaw changed-gate compiler cache is disposable and preserves existing state", () => {
   for (const existingCompilerCache of [false, true]) {
     const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });

@@ -1339,20 +1339,40 @@ export function runAllowedValidationCommandsWithBinding(
               validationIdentityProofDeadlineAt(deadlineAt),
             );
           }
-          const restoreValidationCache = runtimeBuild
-            ? prepareDisposableRuntimeBuildCache(cwd, validationEnv, ignoredValidationInputs)
-            : options.targetRepo === "openclaw/openclaw" && isChangedGateCommand(parts, options)
-              ? prepareDisposableRuntimeBuildCache(
+          const restoreChangedGateOutputs =
+            options.targetRepo === "openclaw/openclaw" &&
+            isChangedGateCommand(parts, options) &&
+            !pendingRuntimeBuild
+              ? prepareDisposableChangedGateBuildOutputs(
                   cwd,
                   validationEnv,
                   ignoredValidationInputs,
-                  "tsgo-cache",
-                  "changed-gate validation",
                 )
               : null;
+          let restoreValidationCache: (() => void) | null;
+          try {
+            restoreValidationCache = runtimeBuild
+              ? prepareDisposableRuntimeBuildCache(cwd, validationEnv, ignoredValidationInputs)
+              : options.targetRepo === "openclaw/openclaw" && isChangedGateCommand(parts, options)
+                ? prepareDisposableRuntimeBuildCache(
+                    cwd,
+                    validationEnv,
+                    ignoredValidationInputs,
+                    "tsgo-cache",
+                    "changed-gate validation",
+                  )
+                : null;
+          } catch (error) {
+            restoreChangedGateOutputs?.();
+            throw error;
+          }
           const executionBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
           if (executionBudgetMs < MIN_VALIDATION_COMMAND_BUDGET_MS) {
-            restoreValidationCache?.();
+            try {
+              restoreChangedGateOutputs?.();
+            } finally {
+              restoreValidationCache?.();
+            }
             throw validationCommandBudgetError(rendered);
           }
           try {
@@ -1363,7 +1383,11 @@ export function runAllowedValidationCommandsWithBinding(
               writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
             });
           } finally {
-            restoreValidationCache?.();
+            try {
+              restoreChangedGateOutputs?.();
+            } finally {
+              restoreValidationCache?.();
+            }
           }
           if (runtimeBuild) {
             assertGeneratedRuntimeBuildOutput(cwd);
@@ -1435,17 +1459,33 @@ export function runAllowedValidationCommandsWithBinding(
             let fallbackError: Error | null = null;
             try {
               resetValidationEnvironment(deadlineAt - identityReserveMs);
-              const restoreFallbackValidationCache =
+              const restoreFallbackChangedGateOutputs =
                 options.targetRepo === "openclaw/openclaw" &&
-                isChangedGateCommand(fallbackParts, options)
-                  ? prepareDisposableRuntimeBuildCache(
+                isChangedGateCommand(fallbackParts, options) &&
+                !pendingRuntimeBuild
+                  ? prepareDisposableChangedGateBuildOutputs(
                       cwd,
                       validationEnv,
                       ignoredValidationInputs,
-                      "tsgo-cache",
-                      "changed-gate validation",
                     )
                   : null;
+              let restoreFallbackValidationCache: (() => void) | null;
+              try {
+                restoreFallbackValidationCache =
+                  options.targetRepo === "openclaw/openclaw" &&
+                  isChangedGateCommand(fallbackParts, options)
+                    ? prepareDisposableRuntimeBuildCache(
+                        cwd,
+                        validationEnv,
+                        ignoredValidationInputs,
+                        "tsgo-cache",
+                        "changed-gate validation",
+                      )
+                    : null;
+              } catch (error) {
+                restoreFallbackChangedGateOutputs?.();
+                throw error;
+              }
               try {
                 const fallbackBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
                 if (fallbackBudgetMs < MIN_VALIDATION_COMMAND_BUDGET_MS) {
@@ -1462,7 +1502,11 @@ export function runAllowedValidationCommandsWithBinding(
                   writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
                 });
               } finally {
-                restoreFallbackValidationCache?.();
+                try {
+                  restoreFallbackChangedGateOutputs?.();
+                } finally {
+                  restoreFallbackValidationCache?.();
+                }
               }
             } catch (error) {
               fallbackError = error as Error;
@@ -2796,6 +2840,113 @@ function runtimeArtifactBuildOutputRoots(cwd: string): string[] {
     }
   }
   return roots;
+}
+
+function prepareDisposableChangedGateBuildOutputs(
+  cwd: string,
+  validationEnv: NodeJS.ProcessEnv,
+  ignoredValidationInputs: readonly string[],
+) {
+  const checkout = fs.realpathSync(cwd);
+  const backupRoot = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-changed-gate-output-")),
+  );
+  const validationHomeRoot = fs.realpathSync(path.dirname(String(validationEnv.HOME)));
+  if (
+    backupRoot === checkout ||
+    backupRoot.startsWith(`${checkout}${path.sep}`) ||
+    backupRoot === validationHomeRoot ||
+    backupRoot.startsWith(`${validationHomeRoot}${path.sep}`)
+  ) {
+    fs.rmSync(backupRoot, { recursive: true, force: true });
+    throw new Error("changed-gate validation backup must be outside writable sandbox roots");
+  }
+  const snapshots: Array<{
+    relativePath: string;
+    existed: boolean;
+    parentRealPath: string;
+    parentDevice: number;
+    parentInode: number;
+  }> = [];
+  try {
+    for (const relativePath of runtimeArtifactBuildOutputRoots(cwd)) {
+      const output = path.join(checkout, relativePath);
+      const parent = path.dirname(output);
+      const parentStat = fs.lstatSync(parent, { throwIfNoEntry: false });
+      if (!parentStat) continue;
+      if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) {
+        throw new Error(`changed-gate validation has an unsafe output parent: ${relativePath}`);
+      }
+      const parentRealPath = fs.realpathSync(parent);
+      assertPathWithin(checkout, parentRealPath, relativePath);
+      const outputStat = fs.lstatSync(output, { throwIfNoEntry: false });
+      if (
+        outputStat &&
+        (!ignoredValidationInputs.includes(relativePath) ||
+          !outputStat.isDirectory() ||
+          outputStat.isSymbolicLink())
+      ) {
+        throw new Error(`changed-gate validation has an unsafe existing output: ${relativePath}`);
+      }
+      if (outputStat) {
+        const backup = path.join(backupRoot, relativePath);
+        fs.mkdirSync(path.dirname(backup), { recursive: true });
+        fs.cpSync(output, backup, { recursive: true, verbatimSymlinks: true });
+      }
+      snapshots.push({
+        relativePath,
+        existed: Boolean(outputStat),
+        parentRealPath,
+        parentDevice: parentStat.dev,
+        parentInode: parentStat.ino,
+      });
+    }
+  } catch (error) {
+    fs.rmSync(backupRoot, { recursive: true, force: true });
+    throw error;
+  }
+  return () => {
+    let restorationFailure: unknown = null;
+    let preserveBackup = false;
+    for (const snapshot of snapshots) {
+      try {
+        const output = path.join(checkout, snapshot.relativePath);
+        const parent = path.dirname(output);
+        const parentStat = fs.lstatSync(parent, { throwIfNoEntry: false });
+        if (
+          !parentStat?.isDirectory() ||
+          parentStat.isSymbolicLink() ||
+          parentStat.dev !== snapshot.parentDevice ||
+          parentStat.ino !== snapshot.parentInode ||
+          fs.realpathSync(parent) !== snapshot.parentRealPath
+        ) {
+          throw new Error(
+            `changed-gate validation changed its protected output parent: ${snapshot.relativePath}`,
+          );
+        }
+        const outputStat = fs.lstatSync(output, { throwIfNoEntry: false });
+        if (outputStat && (!outputStat.isDirectory() || outputStat.isSymbolicLink())) {
+          restorationFailure ??= new Error(
+            `changed-gate validation produced an unsafe output: ${snapshot.relativePath}`,
+          );
+        }
+        fs.rmSync(output, { recursive: true, force: true });
+        if (snapshot.existed) {
+          fs.cpSync(path.join(backupRoot, snapshot.relativePath), output, {
+            recursive: true,
+            verbatimSymlinks: true,
+          });
+        }
+      } catch (error) {
+        restorationFailure ??= error;
+        preserveBackup = true;
+      }
+    }
+    if (!preserveBackup) {
+      fs.rmSync(backupRoot, { recursive: true, force: true });
+    }
+    if (restorationFailure) throw restorationFailure;
+  };
 }
 
 function prepareDisposableRuntimeBuildCache(
