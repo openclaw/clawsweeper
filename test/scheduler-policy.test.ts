@@ -8,6 +8,7 @@ import {
   selectDueCandidates,
   shouldReviewItem,
 } from "../dist/scheduler-policy.js";
+import { shouldSkipScheduledHotIntakeExactReviewForTest } from "../dist/clawsweeper.js";
 import { item } from "./helpers.ts";
 
 function schedulerCandidate(candidate) {
@@ -714,5 +715,80 @@ test("hot intake recency prefers newly updated or created issues", () => {
       }),
     ),
     Date.parse("2026-04-29T22:30:00Z"),
+  );
+});
+
+test("CSW-088 suppresses only the immediate same-head and same-body hot-intake review", () => {
+  const reviewedAt = "2026-07-31T02:25:10.000Z";
+  const now = Date.parse("2026-07-31T02:30:00.000Z");
+  const head = "0a3959fe0123456789abcdef0123456789abcdef";
+  const sourceRevision = "4055368d78b5997d42460145ba92e74397576bb4b0aaf91bb063725f2f1cb63d";
+  const pullStateDigest = "b".repeat(64);
+  const reviewActivityCursor = `v1:0:${"c".repeat(64)}`;
+  const sameSnapshot = {
+    reviewStatus: "complete",
+    reviewedAt,
+    reviewHeadSha: head,
+    reviewSourceRevision: sourceRevision,
+    reviewPullStateDigest: pullStateDigest,
+    reviewActivityCursor,
+    currentHeadSha: head.toUpperCase(),
+    currentSourceRevision: sourceRevision,
+    currentPullStateDigest: pullStateDigest,
+    currentReviewActivityCursor: reviewActivityCursor,
+    itemUpdatedAt: reviewedAt,
+    now,
+  };
+
+  assert.equal(shouldSkipScheduledHotIntakeExactReviewForTest(sameSnapshot), true);
+  assert.equal(
+    shouldSkipScheduledHotIntakeExactReviewForTest({
+      ...sameSnapshot,
+      currentHeadSha: "f".repeat(40),
+    }),
+    false,
+  );
+  assert.equal(
+    shouldSkipScheduledHotIntakeExactReviewForTest({
+      ...sameSnapshot,
+      currentSourceRevision: "a".repeat(64),
+    }),
+    false,
+  );
+  assert.equal(
+    shouldSkipScheduledHotIntakeExactReviewForTest({
+      ...sameSnapshot,
+      currentPullStateDigest: "c".repeat(64),
+    }),
+    false,
+  );
+  assert.equal(
+    shouldSkipScheduledHotIntakeExactReviewForTest({
+      ...sameSnapshot,
+      currentReviewActivityCursor: `v1:1:${"d".repeat(64)}`,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldSkipScheduledHotIntakeExactReviewForTest({
+      ...sameSnapshot,
+      itemUpdatedAt: new Date(Date.parse(reviewedAt) + 1).toISOString(),
+    }),
+    false,
+  );
+  assert.equal(
+    shouldSkipScheduledHotIntakeExactReviewForTest({
+      ...sameSnapshot,
+      now: Date.parse(reviewedAt) + 60 * 60 * 1000,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldSkipScheduledHotIntakeExactReviewForTest({
+      ...sameSnapshot,
+      reviewPolicy: "previous-policy",
+      currentReviewPolicy: "current-policy",
+    }),
+    false,
   );
 });
