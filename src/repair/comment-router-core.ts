@@ -322,14 +322,12 @@ export function renderAutomergeJob({
     commentUrl ? `Request comment: ${commentUrl}` : null,
   ].filter(Boolean);
   const extraInstructions = String(automergeInstructions ?? "").trim();
-  const finalMergeLine =
-    repairMode === "autofix"
-      ? "Final merge is disabled for autofix. Keep the PR open after a passing ClawSweeper verdict unless a maintainer explicitly changes mode."
-      : "Do not merge, close, or bypass review gates from the worker. The comment router owns final merge only after a passing ClawSweeper verdict for the exact current head.";
+  const finalMergeLine = automergeJobFinalMergeLine(repairMode);
   return `---
 repo: ${repo}
 cluster_id: ${clusterId}
 mode: autonomous
+repair_mode: ${repairMode}
 ${renderJobIntentFrontmatter("automerge_pr")}
 allowed_actions:
   - comment
@@ -378,6 +376,102 @@ ClawSweeper should use this job only for the bounded ClawSweeper review/fix loop
 - Keep repair scope limited to actionable ClawSweeper findings, failing relevant checks, and required review feedback on this PR.
 ${extraInstructions ? `\nMaintainer special instructions:\n\n${extraInstructions}\n` : ""}
 `;
+}
+
+function automergeJobFinalMergeLine(repairMode: "autofix" | "automerge"): string {
+  return repairMode === "autofix"
+    ? "Final merge is disabled for autofix. Keep the PR open after a passing ClawSweeper verdict unless a maintainer explicitly changes mode."
+    : "Do not merge, close, or bypass review gates from the worker. The comment router owns final merge only after a passing ClawSweeper verdict for the exact current head.";
+}
+
+export function syncAutomergeJobRepairMode(
+  markdown: string,
+  repairMode: string,
+  authorization?: {
+    author?: string | null;
+    authorId?: string | number | null;
+    commentUrl?: string | null;
+    automergeInstructions?: string | null;
+  },
+): string {
+  if (repairMode !== "autofix" && repairMode !== "automerge") {
+    throw new Error(`Invalid repair mode: ${repairMode}`);
+  }
+  const frontmatterMatch = markdown.match(/^(---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$))/);
+  if (!frontmatterMatch) throw new Error("Automerge job must contain YAML frontmatter.");
+
+  const lineEnding = frontmatterMatch[1]!.endsWith("\r\n") ? "\r\n" : "\n";
+  const frontmatter = frontmatterMatch[2]!;
+  if ((frontmatter.match(/^repair_mode:[^\r\n]*$/gm) ?? []).length > 1) {
+    throw new Error("Automerge job contains duplicate repair_mode fields.");
+  }
+  const nextModeLine = `repair_mode: ${repairMode}`;
+  let nextFrontmatter = /^repair_mode:[^\r\n]*$/m.test(frontmatter)
+    ? frontmatter.replace(/^repair_mode:[^\r\n]*$/m, nextModeLine)
+    : /^mode:[^\r\n]*$/m.test(frontmatter)
+      ? frontmatter.replace(/^mode:[^\r\n]*$/m, (line) => `${line}${lineEnding}${nextModeLine}`)
+      : `${nextModeLine}${lineEnding}${frontmatter}`;
+  if (authorization) {
+    const values = {
+      requested_by: authorization.author,
+      requested_by_id: authorization.authorId,
+      request_comment_url: authorization.commentUrl,
+    };
+    for (const [key, rawValue] of Object.entries(values)) {
+      const value = String(rawValue ?? "").trim();
+      const pattern = new RegExp(`^${key}:[^\\r\\n]*(\\r?\\n|$)`, "m");
+      const line = value ? `${key}: ${yamlScalar(value)}` : "";
+      if (pattern.test(nextFrontmatter)) {
+        nextFrontmatter = nextFrontmatter.replace(pattern, (_match, ending: string) =>
+          line ? `${line}${ending}` : "",
+        );
+      } else if (line) {
+        nextFrontmatter = `${nextFrontmatter}${lineEnding}${line}`;
+      }
+    }
+  }
+
+  let nextMarkdown = `${frontmatterMatch[1]}${nextFrontmatter}${frontmatterMatch[3]}${markdown.slice(frontmatterMatch[0].length)}`;
+  nextMarkdown = nextMarkdown
+    .replace(
+      /(Maintainer opted #\d+ into ClawSweeper )(?:autofix|automerge)(\.)/,
+      `$1${repairMode}$2`,
+    )
+    .replace(
+      /^- (?:Final merge is disabled for autofix\.[^\r\n]*|Do not merge, close, or bypass review gates from the worker\.[^\r\n]*)$/m,
+      `- ${automergeJobFinalMergeLine(repairMode)}`,
+    );
+  if (!authorization) return nextMarkdown;
+
+  const author = String(authorization.author ?? "").trim();
+  const commentUrl = String(authorization.commentUrl ?? "").trim();
+  nextMarkdown = nextMarkdown
+    .replace(/^Requested by:[^\r\n]*(?:\r?\n)?/m, "")
+    .replace(/^Request comment:[^\r\n]*(?:\r?\n)?/m, "");
+  const maintainerContext = [
+    author ? `Requested by: ${author}` : null,
+    commentUrl ? `Request comment: ${commentUrl}` : null,
+  ]
+    .filter(Boolean)
+    .join(lineEnding);
+  nextMarkdown = nextMarkdown.replace(
+    /^(Maintainer opted #\d+ into ClawSweeper (?:autofix|automerge)\.)(?:\r?\n)*(?=Source PR:)/m,
+    (_match, heading: string) =>
+      `${heading}${maintainerContext ? `${lineEnding}${lineEnding}${maintainerContext}` : ""}${lineEnding}${lineEnding}${lineEnding}`,
+  );
+  const instructions = String(authorization.automergeInstructions ?? "")
+    .trim()
+    .replace(/\r?\n/g, lineEnding);
+  const instructionSection = /\r?\nMaintainer special instructions:\r?\n\r?\n[\s\S]*$/;
+  if (instructions) {
+    const replacement = `${lineEnding}Maintainer special instructions:${lineEnding}${lineEnding}${instructions}${lineEnding}${lineEnding}`;
+    nextMarkdown = instructionSection.test(nextMarkdown)
+      ? nextMarkdown.replace(instructionSection, () => replacement)
+      : `${nextMarkdown.trimEnd()}${lineEnding}${replacement}`;
+  } else {
+    nextMarkdown = nextMarkdown.replace(instructionSection, "");
+  }
+  return nextMarkdown;
 }
 
 export function renderIssueImplementationJob({

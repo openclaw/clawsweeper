@@ -54,6 +54,32 @@ candidates:
   assert.deepEqual(validateJob({ frontmatter }), ["unsupported job_intent: surprise"]);
 });
 
+test("validateJob accepts only explicit autofix or automerge repair modes", () => {
+  const base = `repo: openclaw/openclaw
+cluster_id: smoke
+mode: autonomous
+allowed_actions:
+  - comment
+candidates:
+  - "#1"
+`;
+
+  for (const mode of ["autofix", "automerge"]) {
+    const frontmatter = parseSimpleYaml(`${base}repair_mode: ${mode}\n`);
+    assert.deepEqual(validateJob({ frontmatter }), []);
+  }
+
+  const invalid = parseSimpleYaml(`${base}repair_mode: merge-everything\n`);
+  assert.deepEqual(validateJob({ frontmatter: invalid }), [
+    "unsupported repair_mode: merge-everything",
+  ]);
+
+  assert.throws(
+    () => parseSimpleYaml(`${base}repair_mode: automerge\nrepair_mode: autofix\n`),
+    /duplicate repair_mode/,
+  );
+});
+
 test("security signal detection ignores non-security advisory wording", () => {
   assert.equal(
     hasSecuritySignalText(

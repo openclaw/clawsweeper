@@ -125,7 +125,7 @@ test("issue PR execution is pinned to sol xhigh without changing planning", () =
   );
 });
 
-test("issue implementation workers hydrate only their canonical issue in both jobs", () => {
+test("issue and pull-request workers hydrate only their canonical item in both jobs", () => {
   const focusedHydration = workflow.match(
     /records-item-number: \$\{\{ steps\.target\.outputs\.records_item_number \|\| '' \}\}/g,
   );
@@ -135,12 +135,13 @@ test("issue implementation workers hydrate only their canonical issue in both jo
 
   assert.equal(focusedHydration?.length, 2);
   assert.equal(targetSlugs?.length, 2);
-  assert.equal((workflow.match(/echo "records_item_number=\$item_number"/g) || []).length, 2);
-  assert.equal(
-    (workflow.match(/echo "target_slug=\$\{owner_slug\}-\$\{repository\}"/g) || []).length,
-    2,
-  );
-  assert.equal((workflow.match(/owner_slug="\$\(printf/g) || []).length, 2);
+  assert.equal((workflow.match(/bash scripts\/resolve-repair-job-target\.sh/g) || []).length, 2);
+
+  const resolver = fs.readFileSync("scripts/resolve-repair-job-target.sh", "utf8");
+  assert.match(resolver, /"issue-\$\{owner_slug\}-"\*\.md/);
+  assert.match(resolver, /"automerge-\$\{owner_slug\}-"\*\.md/);
+  assert.match(resolver, /echo "records_item_number=\$item_number"/);
+  assert.match(resolver, /echo "target_slug=\$\{owner_slug\}-\$\{repository\}"/);
 });
 
 test("execution-gate downgrades complete the planning session without starting execution", () => {

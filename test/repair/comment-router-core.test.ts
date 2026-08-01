@@ -71,6 +71,7 @@ import {
   sharedAutomergeStatusMarkerPrefix,
   staleAutomergeActivationReason,
   staleClosedItemCommandReason,
+  syncAutomergeJobRepairMode,
   shouldClearMaintainerCommandReaction,
   supersededReviewStartStatusLeases,
   trustedAutomationPredatesReviewStartLease,
@@ -1181,9 +1182,159 @@ test("renderAutomergeJob documents autofix as repair-only", () => {
     repairMode: "autofix",
   });
 
+  assert.match(raw, /^repair_mode: autofix$/m);
   assert.match(raw, /Maintainer opted #74610 into ClawSweeper autofix/);
   assert.match(raw, /Final merge is disabled for autofix/);
   assert.doesNotMatch(raw, /opted #74610 into ClawSweeper automerge/);
+});
+
+test("renderAutomergeJob records explicit merge-authorized repair mode", () => {
+  const raw = renderAutomergeJob({
+    repo: "openclaw/clawsweeper",
+    issueNumber: 979,
+    repairMode: "automerge",
+  });
+
+  assert.match(raw, /^repair_mode: automerge$/m);
+  assert.match(raw, /Maintainer opted #979 into ClawSweeper automerge/);
+});
+
+test("existing repair jobs migrate and follow explicit maintainer mode changes", () => {
+  const existing = renderAutomergeJob({
+    repo: "openclaw/clawsweeper",
+    issueNumber: 979,
+    repairMode: "autofix",
+    author: "original-maintainer",
+    authorId: "101",
+    commentUrl: "https://github.com/openclaw/clawsweeper/pull/979#issuecomment-101",
+    automergeInstructions: "Keep this custom instruction.",
+  });
+  const legacy = existing.replace(/^repair_mode: autofix\n/m, "");
+
+  assert.equal(
+    syncAutomergeJobRepairMode(existing, "autofix", {
+      author: "original-maintainer",
+      authorId: "101",
+      commentUrl: "https://github.com/openclaw/clawsweeper/pull/979#issuecomment-101",
+      automergeInstructions: "Keep this custom instruction.",
+    }),
+    existing,
+  );
+  const windows = existing.replaceAll("\n", "\r\n");
+  assert.equal(
+    syncAutomergeJobRepairMode(windows, "autofix", {
+      author: "original-maintainer",
+      authorId: "101",
+      commentUrl: "https://github.com/openclaw/clawsweeper/pull/979#issuecomment-101",
+      automergeInstructions: "Keep this custom instruction.",
+    }),
+    windows,
+  );
+  const updatedWindows = syncAutomergeJobRepairMode(windows, "automerge", {
+    author: "windows-maintainer",
+    automergeInstructions: "Windows-safe $& instruction.\nSecond literal $` instruction.",
+  });
+  assert.ok(updatedWindows.includes("Windows-safe $& instruction."));
+  assert.ok(updatedWindows.includes("Second literal $` instruction."));
+  assert.equal((updatedWindows.match(/Maintainer special instructions:/g) ?? []).length, 1);
+  assert.doesNotMatch(updatedWindows, /(?<!\r)\n|Keep this custom instruction/);
+  assert.equal(
+    syncAutomergeJobRepairMode(updatedWindows, "automerge", {
+      author: "windows-maintainer",
+      automergeInstructions: "Windows-safe $& instruction.\nSecond literal $` instruction.",
+    }),
+    updatedWindows,
+  );
+
+  const migrated = syncAutomergeJobRepairMode(legacy, "autofix");
+  assert.match(migrated, /^repair_mode: autofix$/m);
+  assert.match(migrated, /Keep this custom instruction\./);
+
+  const authorized = syncAutomergeJobRepairMode(migrated, "automerge", {
+    author: "approving-maintainer",
+    authorId: "202",
+    commentUrl: "https://github.com/openclaw/clawsweeper/pull/979#issuecomment-202",
+    automergeInstructions: "Use the actual approving maintainer's instructions.",
+  });
+  assert.match(authorized, /^repair_mode: automerge$/m);
+  assert.match(authorized, /^requested_by: "approving-maintainer"$/m);
+  assert.match(authorized, /^requested_by_id: "202"$/m);
+  assert.match(
+    authorized,
+    /^request_comment_url: "https:\/\/github\.com\/openclaw\/clawsweeper\/pull\/979#issuecomment-202"$/m,
+  );
+  assert.match(authorized, /^Requested by: approving-maintainer$/m);
+  assert.match(authorized, /^Request comment: .*issuecomment-202$/m);
+  assert.match(authorized, /actual approving maintainer's instructions/);
+  assert.doesNotMatch(
+    authorized,
+    /original-maintainer|issuecomment-101|Keep this custom instruction/,
+  );
+  assert.match(authorized, /Maintainer opted #979 into ClawSweeper automerge\./);
+  assert.match(authorized, /comment router owns final merge/);
+  assert.doesNotMatch(authorized, /Final merge is disabled for autofix/);
+  assert.equal(syncAutomergeJobRepairMode(authorized, "automerge"), authorized);
+
+  const renewed = syncAutomergeJobRepairMode(authorized, "automerge", {
+    author: "renewing-maintainer",
+    authorId: "303",
+    commentUrl: "https://github.com/openclaw/clawsweeper/pull/979#issuecomment-303",
+  });
+  assert.match(renewed, /^requested_by: "renewing-maintainer"$/m);
+  assert.match(renewed, /^requested_by_id: "303"$/m);
+  assert.match(renewed, /^Requested by: renewing-maintainer$/m);
+  assert.doesNotMatch(
+    renewed,
+    /approving-maintainer|issuecomment-202|Maintainer special instructions/,
+  );
+
+  for (const instructions of ["Use regexp $& literally.", "Preserve $` and $$ literally."]) {
+    const literal = syncAutomergeJobRepairMode(authorized, "automerge", {
+      author: "renewing-maintainer",
+      automergeInstructions: instructions,
+    });
+    assert.ok(literal.includes(instructions));
+    assert.equal((literal.match(/Maintainer special instructions:/g) ?? []).length, 1);
+    assert.doesNotMatch(literal, /actual approving maintainer's instructions/);
+  }
+
+  const source = readFileSync("src/repair/comment-router.ts", "utf8");
+  const ensure = source.slice(
+    source.indexOf("function ensureAutomergeJob"),
+    source.indexOf("function ensureIssueImplementationJob"),
+  );
+  assert.match(ensure, /syncAutomergeJobRepairMode\(current, repairMode, authorization\)/);
+  assert.match(ensure, /command\.trusted_bot !== true/);
+  assert.match(ensure, /command\.trusted_bot === true/);
+  assert.match(ensure, /repairMode = String\(currentJob\.frontmatter\.repair_mode\)/);
+  assert.match(ensure, /\["autofix", "automerge", "maintainer_approve_automerge"\]/);
+  const routed = source.slice(
+    source.indexOf("function routedCommandForComment"),
+    source.indexOf("function", source.indexOf("function routedCommandForComment") + 1),
+  );
+  assert.match(routed, /automerge_instructions: parsed\.automerge_instructions \?\? null/);
+  assert.doesNotMatch(ensure, /if \(command\.target\?\.has_automerge_job[\s\S]*?return \{/);
+  const modeSelection = source.slice(
+    source.indexOf("function repairJobModeForCommand"),
+    source.indexOf("type ReviewLeaseGuardBlock"),
+  );
+  assert.ok(
+    modeSelection.indexOf('command.intent === "automerge"') < modeSelection.indexOf("hasLabel"),
+  );
+
+  assert.throws(() => syncAutomergeJobRepairMode(existing, "unknown"), /Invalid repair mode/);
+  assert.throws(
+    () =>
+      syncAutomergeJobRepairMode(
+        existing.replace(/^repair_mode: autofix$/m, "repair_mode: automerge\nrepair_mode: autofix"),
+        "autofix",
+      ),
+    /duplicate repair_mode/,
+  );
+  assert.throws(
+    () => syncAutomergeJobRepairMode("no frontmatter", "autofix"),
+    /must contain YAML frontmatter/,
+  );
 });
 
 test("parseCommand recognizes ClawSweeper bot mentions", () => {

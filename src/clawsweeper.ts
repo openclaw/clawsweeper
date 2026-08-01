@@ -69,7 +69,6 @@ import {
 import {
   REVIEW_STRUCTURAL_CACHE_VERSION,
   reviewStructuralRecordAtLeastAsFresh,
-  reviewStructuralItemStateDigest,
   reviewStructuralRecordMatchesHydratedItem,
   reviewStructuralRecordMatchesHydratedPull,
   reviewStructuralRecordMatchesObservedUpdate,
@@ -122,30 +121,19 @@ import {
   UserFacingCommandError,
 } from "./command.js";
 import {
-  commitMetadata,
-  dirtyWorktree,
   isolateGitHubConfigDir,
   localReviewAdditionalPrompt,
   scrubGitHubCredentialEnv,
   LOCAL_REVIEW_WEB_SEARCH_CONFIG,
 } from "./commit-sweeper.js";
 import { AUTOMATION_LIMITS } from "./limits.js";
-import {
-  IDEA_ARCHIVE_LABEL,
-  ideaRevivalReactionThreshold,
-  positiveReactionCount,
-} from "./idea-archive-revival.js";
+import { IDEA_ARCHIVE_LABEL, ideaRevivalReactionThreshold } from "./idea-archive-revival.js";
 import {
   expiredReviewStartStatusLeases,
   freshExactHeadReviewStartLease,
   supersededReviewStartStatusLeases,
 } from "./repair/comment-router-core.js";
-import {
-  AUTOMERGE_LABEL,
-  AUTOFIX_LABEL,
-  HUMAN_REVIEW_LABEL,
-  MANUAL_ONLY_LABEL,
-} from "./repair/exact-review-guard-labels.js";
+import { AUTOMERGE_LABEL, AUTOFIX_LABEL } from "./repair/exact-review-guard-labels.js";
 import { captureCanonicalRecordBaseline } from "./repair/canonical-record-baseline.js";
 import {
   buildOpenClawPrSurfaceStats,
@@ -229,22 +217,32 @@ import { dispatchCommand, type CommandHandler } from "./clawsweeper-command-disp
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import { createPullRequestReferenceParser } from "./clawsweeper-pr-references.js";
 import {
-  derivedPrRating,
   hasShinyProof,
   nextPrRatingLabels,
-  normalizePrRating,
-  normalizeRealBehaviorProof,
   ratingLabelForTier,
   themedRatingName,
 } from "./clawsweeper-rating.js";
 
+import { createApplyGuards, STALLED_UNPROVEN_PROOF_STATUSES } from "./clawsweeper-apply-guards.js";
+import { createAuditEngine } from "./clawsweeper-audit.js";
+import {
+  configSurfaceChangeFromContext,
+  dataModelChangeFromContext,
+  hasDataModelUpgradeProof,
+  isDocsPath,
+} from "./clawsweeper-change-detection.js";
+import { createDashboardPresentation } from "./clawsweeper-dashboard.js";
+import { createLabelPolicy } from "./clawsweeper-label-policy.js";
+import { createLocalRangeReviewer } from "./clawsweeper-local-review.js";
+import { createReportParser } from "./clawsweeper-report-parser.js";
+import { createReviewPresentation } from "./clawsweeper-review-presentation.js";
+import { createSourceRevisionTools } from "./clawsweeper-source-revision.js";
 import { completeActivityContextSymbol } from "./clawsweeper-types.js";
 import type {
   AcquiredReviewStartLease,
   Action,
   ActionTaken,
   AgentsPolicyStatus,
-  AgentsPolicyStatusKind,
   ApplyActionLedger,
   ApplyItemBusinessIdempotencyIdentity,
   ApplyKind,
@@ -254,13 +252,11 @@ import type {
   ApplyPhaseCursor,
   ApplyResult,
   AssistSourceCommentSnapshot,
-  AuditFinding,
   AuditRecord,
   AuditRecordLocation,
   AuditResult,
   AuthorPrBudgetApplyGate,
   AuthorPrBudgetApplyState,
-  AutoImplementationCandidate,
   BulkFilerCountCache,
   BulkFilerDetectionOptions,
   BulkFilerDetectionResult,
@@ -270,7 +266,6 @@ import type {
   ClosingPullRequestReference,
   CompleteActivityContext,
   Confidence,
-  ConfigSurfaceChange,
   ContextHydration,
   DashboardActivityBucket,
   DashboardActivityStats,
@@ -279,7 +274,6 @@ import type {
   DashboardItem,
   DashboardKindStats,
   DashboardStats,
-  DataModelChange,
   Decision,
   DecisionNormalizationItem,
   DueCandidate,
@@ -296,7 +290,6 @@ import type {
   FailedReviewRetryState,
   FailedReviewRetryStatus,
   FeatureShowcase,
-  FeatureShowcaseStatus,
   FileModeSnapshot,
   FixedPullRequest,
   GitcrawlClusterSource,
@@ -311,7 +304,6 @@ import type {
   GitTreeEntry,
   GoodFirstIssueHumanLabelState,
   ImpactLabelName,
-  ImplementationComplexity,
   IssueAdvisoryLabelState,
   Item,
   ItemCategory,
@@ -328,14 +320,10 @@ import type {
   LocalRelatedTitleEntry,
   ManagedLocalReviewCheckoutOptions,
   MantisRecommendation,
-  MantisRecommendationScenario,
-  MantisRecommendationStatus,
   MaturityLabelName,
   MediaProofCommandRunner,
   MergeRiskLabelName,
   MergeRiskOption,
-  MergeRiskOptionCategory,
-  MissingOpenReason,
   MutationRunner,
   OpenItemCounts,
   OverallCorrectness,
@@ -355,7 +343,6 @@ import type {
   PublicBeforeMergeItem,
   PublicPriority,
   PullRequestClosePromotion,
-  PullRequestLiveActivity,
   PullRequestRef,
   RealBehaviorProof,
   RealBehaviorProofEvidenceKind,
@@ -386,25 +373,18 @@ import type {
   SecurityConcern,
   SecurityConcernSeverity,
   SecurityReview,
-  SecurityReviewStatus,
   StalePullRequestReviewHead,
   TelegramVisibleProof,
   TelegramVisibleProofStatus,
   TriagePriority,
-  VisionFitStatus,
   WorkCandidateKind,
   WorkflowStatusSummary,
 } from "./clawsweeper-types.js";
 import {
-  ABANDONED_PR_MIN_AGE_DAYS,
-  ABANDONED_PR_MIN_INACTIVE_DAYS,
-  AGENTS_POLICY_STATUSES,
-  ALL_REASONS,
   ALLOWED_REASONS,
   APPLY_PROTECTED_LABELS,
   AUTHOR_PR_BUDGET_MIN_AGE_DAYS,
   AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS,
-  AUTO_IMPLEMENTATION_CANDIDATES,
   BULK_FILED_LABEL,
   BULK_FILED_LABEL_DEFINITION,
   BULK_FILER_SEARCH_TIMEOUT_MS,
@@ -426,7 +406,6 @@ import {
   FEATURE_SHOWCASE_LABEL,
   FEATURE_SHOWCASE_LABEL_COLOR,
   FEATURE_SHOWCASE_LABEL_DESCRIPTION,
-  FEATURE_SHOWCASE_STATUSES,
   FRESH_DAYS,
   GOOD_FIRST_ISSUE_LABEL,
   GOOD_FIRST_ISSUE_LABEL_DEFINITION,
@@ -435,23 +414,15 @@ import {
   IDEA_ARCHIVE_LABEL_DESCRIPTION,
   IMPACT_LABEL_NAMES,
   IMPACT_LABELS,
-  IMPLEMENTATION_COMPLEXITIES,
   ISSUE_ADVISORY_LABEL_NAMES,
   ISSUE_ADVISORY_LABELS,
   ISSUE_STALE_PROTECTION_LABEL,
-  LOW_SIGNAL_UNMERGEABLE_PR_MIN_INACTIVE_DAYS,
-  MANTIS_RECOMMENDATION_SCENARIOS,
-  MANTIS_RECOMMENDATION_STATUSES,
   MATURITY_LABEL_NAMES,
   MATURITY_LABELS,
-  MERGE_READY_LABEL,
   MERGE_RISK_LABEL_NAMES,
   MERGE_RISK_LABELS,
   NO_STALE_LABEL,
-  OBSOLETE_FIX_PR_MAX_CHANGED_FILES,
   OBSOLETE_FIX_PR_MIN_AGE_DAYS,
-  OBSOLETE_FIX_PR_MIN_INACTIVE_DAYS,
-  OVERALL_CORRECTNESS_VALUES,
   PAIR_BLOCKED_CLOSE_ACTIONS,
   PR_AUTO_CLOSE_EXEMPT_LABELS,
   PR_CLOSE_COVERAGE_PROOF_SECTION,
@@ -459,12 +430,10 @@ import {
   PR_RATING_LABELS,
   PR_RATING_TIERS,
   PR_STATUS_LABEL_NAMES,
-  PR_STATUS_LABELS,
   PRIORITY_LABEL_NAMES,
   PRIORITY_LABELS,
   PROOF_MEDIA_LABEL_NAMES,
   PROOF_MEDIA_LABELS,
-  PROOF_NUDGE_MARKER_PREFIX,
   PROOF_OVERRIDE_LABEL,
   PROOF_SUFFICIENT_LABEL,
   PROOF_SUFFICIENT_LABEL_COLOR,
@@ -474,20 +443,15 @@ import {
   REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS,
   REAL_BEHAVIOR_PROOF_STATUSES,
   RECENT_ISSUE_DAYS,
-  RECENT_MISSING_OPEN_MS,
   REVIEW_COMMENT_MARKER_PREFIX,
   REVIEW_POLICY_VERSION,
   REVIEW_SECTIONS,
   REVIEW_START_STATUS_MARKER_PREFIX,
   SECURITY_CONCERN_SEVERITIES,
-  SECURITY_REVIEW_STATUSES,
   STALE_INSUFFICIENT_INFO_MIN_AGE_DAYS,
   STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS,
   STALE_LABEL,
   STALE_VERSION_BUG_MIN_AGE_DAYS,
-  STALE_VERSION_BUG_MIN_INACTIVE_DAYS,
-  STALLED_UNPROVEN_PR_MIN_AGE_DAYS,
-  STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS,
   TELEGRAM_VISIBLE_PROOF_LABEL,
   TELEGRAM_VISIBLE_PROOF_LABEL_COLOR,
   TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION,
@@ -496,9 +460,6 @@ import {
   UNCONFIRMED_PRODUCT_DIRECTION_MIN_AGE_DAYS,
   UNCONFIRMED_PRODUCT_DIRECTION_MIN_INACTIVE_DAYS,
   UNSPONSORED_FEATURE_MIN_AGE_DAYS,
-  UNSPONSORED_FEATURE_MIN_INACTIVE_DAYS,
-  VISION_FIT_STATUSES,
-  WAITING_ON_AUTHOR_LABEL,
 } from "./clawsweeper-policy.js";
 import {
   filterReviewComments,
@@ -531,6 +492,10 @@ export {
   parseGhJsonWithRetryAsync,
 } from "./github-json.js";
 export { itemNumbersArg } from "./clawsweeper-args.js";
+export {
+  configSurfaceChangeFromPullFilesForTest,
+  dataModelChangeFromPullFilesForTest,
+} from "./clawsweeper-change-detection.js";
 export {
   buildDecisionPacketFromReport,
   renderDecisionPacketPublicBlock,
@@ -1425,270 +1390,50 @@ function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-function reviewCommentBodyDigest(body: string): string {
-  return sha256(body.trim());
-}
+const CLAWSWEEPER_BOT_AUTHORS = new Set(
+  [
+    "clawsweeper",
+    "clawsweeper[bot]",
+    "openclaw-clawsweeper[bot]",
+    process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN,
+  ]
+    .filter((login): login is string => typeof login === "string" && login.length > 0)
+    .map((login) => login.toLowerCase()),
+);
+
+const sourceRevisionTools = createSourceRevisionTools({
+  asRecord,
+  clawsweeperBotAuthors: CLAWSWEEPER_BOT_AUTHORS,
+  githubCount,
+  isClawSweeperComment,
+  login,
+  normalizeAuthorAssociation,
+  normalizeLabelName,
+  pullHeadShaFromContext,
+  sha256,
+  stringOrUndefined,
+});
+export const {
+  isExactEventSourceRevisionChange,
+  itemContentDigestForTest,
+  itemSourceRevisionSha256ForTest,
+  reviewCommentContentRevisionForTest,
+} = sourceRevisionTools;
+const {
+  hydratedReviewStructuralItemStateDigest,
+  isIgnorableSourceRevisionLabel,
+  itemContentDigest,
+  itemSnapshotHash,
+  itemSourceRevisionSha256,
+  pullCommitContentRevision,
+  reviewCommentBodyDigest,
+  reviewCommentContentRevision,
+  reviewTimelineDigestParts,
+} = sourceRevisionTools;
 
 let reviewPromptTemplateCache: string | undefined;
 let reviewDecisionSchemaCache: string | undefined;
 let prCloseCoverageProofPromptTemplateCache: string | undefined;
-
-function itemSnapshotHash(item: Item, context: ItemContext): string {
-  const snapshotItem = {
-    repo: item.repo,
-    number: item.number,
-    kind: item.kind,
-    title: item.title,
-    url: item.url,
-    createdAt: item.createdAt,
-    updatedAt: item.updatedAt,
-    author: item.author,
-    labels: item.labels,
-  };
-  return sha256(stableJson({ item: snapshotItem, context }));
-}
-
-function itemSourceRevisionSha256(issue: unknown, comments: unknown[] = []): string {
-  const source = asRecord(issue);
-  const snapshot = {
-    title: sourceRevisionScalar(source.title),
-    body: sourceRevisionScalar(source.body),
-    labels: revisionLabels(source.labels),
-    comments: comments
-      .map(asRecord)
-      .filter((comment) => !isClawSweeperComment(comment))
-      .map((comment) => ({
-        id: sourceRevisionScalar(comment.id),
-        author: sourceRevisionScalar(login(comment.user) ?? comment.author),
-        body: sourceRevisionScalar(comment.body),
-        updated_at: sourceRevisionScalar(
-          comment.updated_at ?? comment.updatedAt ?? comment.created_at,
-        ),
-      }))
-      .sort((left, right) =>
-        `${left.id}:${left.updated_at}`.localeCompare(`${right.id}:${right.updated_at}`),
-      ),
-  };
-  return sha256(JSON.stringify(snapshot));
-}
-
-function hydratedReviewStructuralItemStateDigest(
-  issue: unknown,
-  comments: readonly unknown[],
-): string | undefined {
-  const source = asRecord(issue);
-  const title = sourceRevisionScalar(source.title);
-  const body = sourceRevisionScalar(source.body);
-  const author = login(source.user);
-  const authorAssociation = normalizeAuthorAssociation(
-    stringOrUndefined(source.author_association),
-  );
-  const state = stringOrUndefined(source.state);
-  if (!author || !authorAssociation || !state || typeof source.locked !== "boolean") {
-    return undefined;
-  }
-  return (
-    reviewStructuralItemStateDigest({
-      titleDigest: sha256(title),
-      bodyDigest: sha256(body),
-      state,
-      locked: source.locked,
-      author,
-      authorAssociation,
-      labels: revisionLabels(source.labels),
-      comments: comments
-        .map(asRecord)
-        .filter((comment) => !isClawSweeperComment(comment))
-        .map((comment) => ({
-          updatedAt: sourceRevisionScalar(
-            comment.updated_at ?? comment.updatedAt ?? comment.created_at,
-          ),
-          author: login(comment.user) ?? stringOrUndefined(comment.author) ?? null,
-          authorAssociation:
-            normalizeAuthorAssociation(
-              stringOrUndefined(comment.author_association ?? comment.authorAssociation),
-            ) ?? null,
-          bodyDigest: sha256(sourceRevisionScalar(comment.body)),
-        })),
-    }) ?? undefined
-  );
-}
-
-function sourceRevisionScalar(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return JSON.stringify(value);
-}
-
-function revisionLabels(labels: unknown): string[] {
-  return (Array.isArray(labels) ? labels : [])
-    .map((label) => normalizeLabelName(String(asRecord(label).name ?? label)))
-    .filter(Boolean)
-    .filter((label) => !isIgnorableSourceRevisionLabel(label))
-    .sort();
-}
-
-function isIgnorableSourceRevisionLabel(label: string) {
-  if (label === normalizeLabelName(PROOF_OVERRIDE_LABEL)) return false;
-  return (
-    isClawSweeperAdvisorySourceRevisionLabel(label) ||
-    (label.startsWith("clawsweeper:") &&
-      !["clawsweeper:human-review", "clawsweeper:manual-only", "clawsweeper:bulk-filed"].includes(
-        label,
-      )) ||
-    label === "no-stale" ||
-    label === "stale"
-  );
-}
-
-function isClawSweeperAdvisorySourceRevisionLabel(label: string): boolean {
-  return (
-    /^(?:status|rating|proof|merge-risk|impact|issue-rating):/.test(label) ||
-    /^p[0-3]$/.test(label) ||
-    MATURITY_LABEL_NAMES.has(label) ||
-    label === "feature: ✨ showcase" ||
-    label === GOOD_FIRST_ISSUE_LABEL ||
-    label === "mantis: telegram-visible-proof" ||
-    label === "triage: needs-real-behavior-proof"
-  );
-}
-
-export function itemSourceRevisionSha256ForTest(issue: unknown, comments: unknown[] = []): string {
-  return itemSourceRevisionSha256(issue, comments);
-}
-
-export function isExactEventSourceRevisionChange(itemKind: Item["kind"], reason: string): boolean {
-  if (itemKind === "pull_request") {
-    return (
-      reason.startsWith("PR head changed since context capture") ||
-      reason === "PR head changed while holding the apply mutation lease"
-    );
-  }
-  return (
-    reason.startsWith("issue source revision changed since context capture") ||
-    reason.startsWith("live issue source revision ") ||
-    reason === "issue source revision changed while holding the apply mutation lease"
-  );
-}
-
-function reviewCommentDigestParts(entries: unknown): unknown {
-  if (!Array.isArray(entries)) return null;
-  return entries
-    .map(asRecord)
-    .filter(
-      (entry) =>
-        typeof entry.author !== "string" ||
-        !CLAWSWEEPER_BOT_AUTHORS.has(entry.author.toLowerCase()),
-    )
-    .map((entry) => {
-      const omitted = githubCount(entry.omitted);
-      if (omitted !== null) return { omitted };
-      return {
-        id: entry.id ?? null,
-        author: entry.author ?? null,
-        authorAssociation: entry.authorAssociation ?? null,
-        body: entry.body ?? null,
-      };
-    });
-}
-
-function reviewCommentContentRevision(entries: readonly unknown[]): string {
-  return sha256(stableJson(reviewCommentDigestParts(entries)));
-}
-
-export function reviewCommentContentRevisionForTest(entries: readonly unknown[]): string {
-  return reviewCommentContentRevision(entries);
-}
-
-function pullCommitContentRevision(entries: readonly unknown[]): string | null {
-  const identities = [];
-  for (const value of entries) {
-    const commit = asRecord(value);
-    const commitInfo = asRecord(commit.commit);
-    const message =
-      typeof commitInfo.message === "string"
-        ? commitInfo.message
-        : typeof commit.message === "string"
-          ? commit.message
-          : null;
-    if (message === null) return null;
-    const author =
-      typeof commit.author === "string"
-        ? commit.author
-        : login(commit.author) || stringOrUndefined(asRecord(commitInfo.author).name) || null;
-    identities.push({ author, message });
-  }
-  return sha256(stableJson(identities));
-}
-
-function reviewTimelineDigestParts(entries: unknown): unknown {
-  if (!Array.isArray(entries)) return null;
-  return entries
-    .map(asRecord)
-    .filter((entry) => {
-      const actor = typeof entry.actor === "string" ? entry.actor.toLowerCase() : "";
-      if (actor && CLAWSWEEPER_BOT_AUTHORS.has(actor)) return false;
-      const label = typeof entry.label === "string" ? normalizeLabelName(entry.label) : "";
-      return !label || !isIgnorableSourceRevisionLabel(label);
-    })
-    .map((entry) => ({
-      id: entry.id ?? null,
-      event: entry.event ?? null,
-      actor: entry.actor ?? null,
-      commitId: entry.commitId ?? null,
-      label: entry.label ?? null,
-      rename: entry.rename ?? null,
-      sourceIssue: entry.sourceIssue ?? null,
-    }));
-}
-
-function itemContentDigest(item: Item, context: ItemContext, git?: GitInfo): string {
-  const isPull = item.kind === "pull_request";
-  const pull = asRecord(context.pullRequest);
-  const base = asRecord(pull.base);
-  const baseSha = typeof base.sha === "string" ? base.sha : null;
-  return sha256(
-    stableJson({
-      kind: item.kind,
-      source: context.sourceRevision ?? null,
-      timeline: context.timelineRevision ?? reviewTimelineDigestParts(context.timeline),
-      relations: {
-        closingPullRequests: context.closingPullRequests ?? null,
-        referencingMergedPullRequests: context.referencingMergedPullRequests ?? null,
-        relatedItems: context.relatedItems ?? null,
-      },
-      latestRelease: git?.latestRelease
-        ? { tagName: git.latestRelease.tagName ?? null, sha: git.latestRelease.sha ?? null }
-        : null,
-      releaseStateComplete: git?.releaseStateComplete ?? false,
-      targetMainSha: isPull ? null : (git?.mainSha ?? null),
-      headSha: isPull ? pullHeadShaFromContext(context) : null,
-      baseSha: isPull ? baseSha : null,
-      pullState: isPull
-        ? {
-            draft: pull.draft ?? null,
-            mergeable: pull.mergeable ?? null,
-            mergeableState: pull.mergeableState ?? null,
-            additions: pull.additions ?? null,
-            deletions: pull.deletions ?? null,
-            changedFiles: pull.changedFiles ?? null,
-          }
-        : null,
-      diff: isPull ? (context.pullFiles ?? null) : null,
-      commits: isPull ? (context.pullCommitsRevision ?? context.pullCommits ?? null) : null,
-      reviewComments: isPull
-        ? (context.pullReviewCommentsRevision ??
-          reviewCommentDigestParts(context.pullReviewComments))
-        : null,
-      checks: isPull ? reviewPullChecksDigestParts(context.pullChecks ?? null) : null,
-    }),
-  );
-}
-
-export function itemContentDigestForTest(item: Item, context: ItemContext, git?: GitInfo): string {
-  return itemContentDigest(item, context, git);
-}
 
 function reviewPolicyHash(options: {
   model?: string;
@@ -1952,1065 +1697,129 @@ export function obsoleteFixPrAgeSkipReason(
   return null;
 }
 
-function maintainerAssociatedEntries(entries: readonly unknown[]): unknown[] {
-  return entries.filter((entry) =>
-    isMaintainerAuthorAssociation(asRecord(entry).author_association),
-  );
-}
-
-function lowSignalUnmergeablePrConflictBlockReason(pullValue: unknown): string | null {
-  const pull = asRecord(pullValue);
-  const mergeableState = (
-    stringOrUndefined(pull.mergeableState) ??
-    stringOrUndefined(pull.mergeable_state) ??
-    "unknown"
-  ).toLowerCase();
-  if (pull.mergeable === false && mergeableState === "dirty") return null;
-  const mergeable = typeof pull.mergeable === "boolean" ? String(pull.mergeable) : "unknown";
-  return `low_signal_unmergeable_pr requires a live merge conflict; GitHub reports mergeable=${mergeable}, mergeable_state=${mergeableState}`;
-}
-
-function githubActivityTimestampMs(value: unknown): number | null {
-  const record = asRecord(value);
-  for (const candidate of [
-    record.updatedAt,
-    record.updated_at,
-    record.submitted_at,
-    record.createdAt,
-    record.created_at,
-  ]) {
-    const timestamp = Date.parse(typeof candidate === "string" ? candidate : "");
-    if (Number.isFinite(timestamp)) return timestamp;
-  }
-  return null;
-}
-
-function githubActivityLogin(value: unknown): string {
-  const record = asRecord(value);
-  return (
-    stringOrUndefined(record.author) ??
-    login(record.user) ??
-    stringOrUndefined(record.actor) ??
-    login(record.actor) ??
-    ""
-  )
-    .trim()
-    .toLowerCase();
-}
-
-function latestPullRequestAuthorActivityAtMs(options: {
-  author: string;
-  createdAt: string;
-  comments?: readonly unknown[];
-  reviews?: readonly unknown[];
-  inlineComments?: readonly unknown[];
-  timeline?: readonly unknown[];
-  headActivityAtMs?: number | null;
-}): number | null {
-  const author = options.author.trim().toLowerCase();
-  if (!author) return null;
-  let latest = Date.parse(options.createdAt);
-  if (!Number.isFinite(latest)) latest = Number.NEGATIVE_INFINITY;
-  const observe = (value: unknown): void => {
-    if (githubActivityLogin(value) !== author) return;
-    const timestamp = githubActivityTimestampMs(value);
-    if (timestamp !== null && timestamp > latest) latest = timestamp;
-  };
-  options.comments?.forEach(observe);
-  options.reviews?.forEach(observe);
-  options.inlineComments?.forEach(observe);
-  for (const event of options.timeline ?? []) {
-    const record = asRecord(event);
-    const eventName = stringOrUndefined(record.event) ?? "";
-    const commitId = stringOrUndefined(record.commitId) ?? stringOrUndefined(record.commit_id);
-    if (
-      eventName === "commented" ||
-      eventName === "committed" ||
-      eventName === "head_ref_force_pushed" ||
-      eventName === "head_ref_restored" ||
-      Boolean(commitId)
-    ) {
-      observe(event);
-    }
-  }
-  if (options.headActivityAtMs !== null && options.headActivityAtMs !== undefined) {
-    latest = Math.max(latest, options.headActivityAtMs);
-  }
-  return Number.isFinite(latest) ? latest : null;
-}
-
-function lowSignalUnmergeablePrAuthorActivityBlockReason(options: {
-  author: string;
-  createdAt: string;
-  comments?: readonly unknown[];
-  reviews?: readonly unknown[];
-  inlineComments?: readonly unknown[];
-  timeline?: readonly unknown[];
-  headActivityAtMs?: number | null;
-  staleMinAgeDays: number;
-  requireHeadActivityEvidence?: boolean;
-  now?: number;
-}): string | null {
-  if (
-    options.requireHeadActivityEvidence &&
-    (options.headActivityAtMs === null || options.headActivityAtMs === undefined)
-  ) {
-    return "low_signal_unmergeable_pr requires dated activity evidence for the current head";
-  }
-  const latestActivityAtMs = latestPullRequestAuthorActivityAtMs(options);
-  if (latestActivityAtMs === null) {
-    return "low_signal_unmergeable_pr requires dated author and current-head activity evidence";
-  }
-  const now = options.now ?? Date.now();
-  const configuredInactiveDays = Number.isFinite(options.staleMinAgeDays)
-    ? Math.max(0, options.staleMinAgeDays)
-    : LOW_SIGNAL_UNMERGEABLE_PR_MIN_INACTIVE_DAYS;
-  const minimumInactiveDays = Math.max(
-    LOW_SIGNAL_UNMERGEABLE_PR_MIN_INACTIVE_DAYS,
-    configuredInactiveDays,
-  );
-  if (now - latestActivityAtMs <= minimumInactiveDays * DAY_MS) {
-    return `low_signal_unmergeable_pr requires ${minimumInactiveDays} days without author comments or head activity`;
-  }
-  return null;
-}
-
-function lowSignalUnmergeablePrApplyBlockReason(
-  number: number,
-  staleMinAgeDays: number,
-): string | null {
-  const issue = ghJson<{ assignees?: unknown[] }>([
-    "api",
-    `repos/${targetRepo()}/issues/${number}`,
-    "--jq",
-    "{assignees:[.assignees[]? | {login:.login}]}",
-  ]);
-  if ((issue.assignees ?? []).length > 0) return "assigned PR has maintainer/human signal";
-
-  const pull = ghJson<{
-    created_at?: string;
-    mergeable?: boolean | null;
-    mergeable_state?: string | null;
-    requested_reviewers?: unknown[];
-    requested_teams?: unknown[];
-    user?: GitHubUser;
-    head?: { ref?: string; repo?: { full_name?: string; id?: unknown }; sha?: string };
-  }>(["api", `repos/${targetRepo()}/pulls/${number}`]);
-  if ((pull.requested_reviewers ?? []).length > 0 || (pull.requested_teams ?? []).length > 0) {
-    return "requested reviewers or teams indicate active review signal";
-  }
-
-  const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`);
-  const maintainerComments = maintainerAssociatedEntries(comments);
-  if (maintainerComments.length > 0) return "maintainer issue comment blocks low-signal auto-close";
-
-  const reviews = ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/reviews`);
-  const maintainerReviews = maintainerAssociatedEntries(reviews);
-  if (maintainerReviews.length > 0) return "maintainer PR review blocks low-signal auto-close";
-
-  const inlineComments = ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/comments`);
-  const maintainerInlineComments = maintainerAssociatedEntries(inlineComments);
-  if (maintainerInlineComments.length > 0) {
-    return "maintainer inline review comment blocks low-signal auto-close";
-  }
-
-  const conflictBlock = lowSignalUnmergeablePrConflictBlockReason(pull);
-  if (conflictBlock) return conflictBlock;
-
-  const timeline = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/timeline`);
-  const headActivity = pullRequestHeadActivity(number, pull, timeline);
-  return lowSignalUnmergeablePrAuthorActivityBlockReason({
-    author: pull.user?.login ?? "",
-    createdAt: pull.created_at ?? "",
-    comments,
-    reviews,
-    inlineComments,
-    timeline,
-    headActivityAtMs: headActivity.headActivityAtMs,
-    staleMinAgeDays,
-    requireHeadActivityEvidence: true,
-  });
-}
-
-function lowSignalUnmergeablePrApplyBlockReasonSafe(
-  number: number,
-  staleMinAgeDays: number,
-): string | null {
-  try {
-    return lowSignalUnmergeablePrApplyBlockReason(number, staleMinAgeDays);
-  } catch (error) {
-    return `low-signal conflict/activity check failed: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
-  }
-}
-
-function unconfirmedProductDirectionApplyBlockReason(
-  number: number,
-  item: Pick<Item, "createdAt" | "labels">,
-  reviewedUpdatedAt: string | undefined,
-  reviewedAt: string | undefined,
-): string | null {
-  if (!unconfirmedProductDirectionCloseEnabled()) {
-    return "unconfirmed product-direction apply policy is disabled";
-  }
-  const ageBlock = unconfirmedProductDirectionAgeSkipReason(item, reviewedUpdatedAt, reviewedAt);
-  if (ageBlock) return ageBlock;
-  const exemptLabel = item.labels
-    .map(normalizeLabelName)
-    .find((label) => PR_AUTO_CLOSE_EXEMPT_LABELS.has(label));
-  if (exemptLabel) return `${exemptLabel} exempts this PR from product-direction auto-close`;
-
-  const issue = ghJson<{ assignees?: unknown[] }>([
-    "api",
-    `repos/${targetRepo()}/issues/${number}`,
-    "--jq",
-    "{assignees:[.assignees[]? | {login:.login}]}",
-  ]);
-  if ((issue.assignees ?? []).length > 0) return "assigned PR has active human signal";
-
-  const pull = ghJson<{ requested_reviewers?: unknown[]; requested_teams?: unknown[] }>([
-    "api",
-    `repos/${targetRepo()}/pulls/${number}`,
-    "--jq",
-    "{requested_reviewers:[.requested_reviewers[]? | {login:.login}],requested_teams:[.requested_teams[]? | {slug:.slug}]}",
-  ]);
-  if ((pull.requested_reviewers ?? []).length > 0 || (pull.requested_teams ?? []).length > 0) {
-    return "requested reviewers or teams indicate active review signal";
-  }
-
-  const maintainerComments = maintainerAssociatedEntries(
-    ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`),
-  );
-  if (maintainerComments.length > 0) return "maintainer issue comment calibrates product direction";
-
-  const maintainerReviews = maintainerAssociatedEntries(
-    ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/reviews`),
-  );
-  if (maintainerReviews.length > 0) return "maintainer PR review calibrates product direction";
-
-  const maintainerInlineComments = maintainerAssociatedEntries(
-    ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/comments`),
-  );
-  if (maintainerInlineComments.length > 0) {
-    return "maintainer inline review comment calibrates product direction";
-  }
-  return null;
-}
-
-function unconfirmedProductDirectionApplyBlockReasonSafe(
-  number: number,
-  item: Pick<Item, "createdAt" | "labels">,
-  reviewedUpdatedAt: string | undefined,
-  reviewedAt: string | undefined,
-): string | null {
-  try {
-    return unconfirmedProductDirectionApplyBlockReason(number, item, reviewedUpdatedAt, reviewedAt);
-  } catch (error) {
-    return `product-direction calibration check failed: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
-  }
-}
-
-export function issueRecentHumanCommentBlockReasonFromComments(
-  comments: readonly unknown[],
-  days: number,
-  now = Date.now(),
-): string | null {
-  for (const comment of comments) {
-    const record = asRecord(comment);
-    if (asRecord(record.user).type === "Bot") continue;
-    const createdAt = typeof record.created_at === "string" ? record.created_at : "";
-    if (!isOlderThanDays(createdAt, days, now)) {
-      return `issue has a non-bot comment within the last ${days} days`;
-    }
-  }
-  return null;
-}
-
-function issueRecentHumanCommentBlockReason(number: number, days: number): string | null {
-  return issueRecentHumanCommentBlockReasonFromComments(
-    ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`),
-    days,
-  );
-}
-
-function issueRecentHumanCommentBlockReasonSafe(number: number, days: number): string | null {
-  try {
-    return issueRecentHumanCommentBlockReason(number, days);
-  } catch (error) {
-    return `issue comment activity check failed: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
-  }
-}
-
-function unsponsoredFeatureApplyBlockReason(
-  number: number,
-  item: Pick<Item, "createdAt">,
-): string | null {
-  if (!unsponsoredFeatureCloseEnabled()) {
-    return "unsponsored feature-request apply policy is disabled";
-  }
-  const ageBlock = unsponsoredFeatureAgeSkipReason(item);
-  if (ageBlock) return ageBlock;
-
-  const issue = ghJson<{
-    assignees?: unknown[];
-    labels?: unknown[];
-    milestone?: unknown;
-    reactions?: unknown;
-    state?: string;
-  }>(["api", `repos/${targetRepo()}/issues/${number}`]);
-  if (issue.state !== "open") return "live issue is not open";
-  if (
-    labelNames(issue.labels)
-      .map(normalizeLabelName)
-      .some((label) => label.includes("security"))
-  ) {
-    return "security-labeled issue requires human triage";
-  }
-  if ((issue.assignees ?? []).length > 0) return "assigned issue has maintainer engagement";
-  if (issue.milestone) return "milestoned issue has maintainer engagement";
-  if (positiveReactionCount(issue.reactions) >= ideaRevivalReactionThreshold()) {
-    return "issue already meets the idea-revival reaction threshold";
-  }
-  const totalReactions = asRecord(issue.reactions).total_count;
-  if (typeof totalReactions === "number" && totalReactions >= 20) {
-    return "issue has strong community traction (20 or more reactions)";
-  }
-  if (labelNames(issue.labels).map(normalizeLabelName).includes("clawsweeper:linked-pr-open")) {
-    return "clawsweeper:linked-pr-open blocks unsponsored feature auto-close";
-  }
-
-  const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`);
-  if (maintainerAssociatedEntries(comments).length > 0) {
-    return "maintainer issue comment confirms engagement";
-  }
-  return issueRecentHumanCommentBlockReasonFromComments(
-    comments,
-    UNSPONSORED_FEATURE_MIN_INACTIVE_DAYS,
-  );
-}
-
-function unsponsoredFeatureApplyBlockReasonSafe(
-  number: number,
-  item: Pick<Item, "createdAt">,
-): string | null {
-  try {
-    return unsponsoredFeatureApplyBlockReason(number, item);
-  } catch (error) {
-    return `unsponsored feature-request liveness check failed: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
-  }
-}
-
-function staleVersionBugApplyBlockReason(
-  number: number,
-  item: Pick<Item, "createdAt">,
-): string | null {
-  if (!staleVersionBugCloseEnabled()) return "stale-version bug apply policy is disabled";
-  const ageBlock = staleVersionBugAgeSkipReason(item);
-  if (ageBlock) return ageBlock;
-
-  const issue = ghJson<{
-    assignees?: unknown[];
-    created_at?: string;
-    labels?: unknown[];
-    milestone?: unknown;
-    reactions?: unknown;
-    state?: string;
-  }>(["api", `repos/${targetRepo()}/issues/${number}`]);
-  if (issue.state !== "open") return "live issue is not open";
-  // Stored records can carry stale timestamps; the age floor must hold live.
-  if (!Number.isFinite(Date.parse(issue.created_at ?? ""))) {
-    return "live issue creation date is unavailable";
-  }
-  const liveAgeBlock = staleVersionBugAgeSkipReason({ createdAt: issue.created_at ?? "" });
-  if (liveAgeBlock) return liveAgeBlock;
-  const labels = labelNames(issue.labels).map(normalizeLabelName);
-  const protectedLabel =
-    protectedLabels(labelNames(issue.labels))[0] ??
-    prAutoCloseExemptLabel(labelNames(issue.labels));
-  if (protectedLabel) return `protected label: ${protectedLabel}`;
-  if (labels.some((label) => label.includes("security"))) {
-    return "security-labeled issue requires human triage";
-  }
-  if ((issue.assignees ?? []).length > 0) return "assigned issue has maintainer engagement";
-  if (issue.milestone) return "milestoned issue has maintainer engagement";
-  const totalReactions = asRecord(issue.reactions).total_count;
-  if (!Number.isInteger(totalReactions) || Number(totalReactions) < 0) {
-    return "live issue reaction count is unavailable";
-  }
-  if (Number(totalReactions) >= 20)
-    return "issue has strong community traction (20 or more reactions)";
-  if (labels.includes("clawsweeper:linked-pr-open")) {
-    return "clawsweeper:linked-pr-open blocks stale-version bug auto-close";
-  }
-
-  const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`);
-  if (maintainerAssociatedEntries(comments).length > 0) {
-    return "maintainer issue comment confirms engagement";
-  }
-  return issueRecentHumanCommentBlockReasonFromComments(
-    comments,
-    STALE_VERSION_BUG_MIN_INACTIVE_DAYS,
-  );
-}
-
-function staleVersionBugApplyBlockReasonSafe(
-  number: number,
-  item: Pick<Item, "createdAt">,
-): string | null {
-  try {
-    return staleVersionBugApplyBlockReason(number, item);
-  } catch (error) {
-    return `stale-version bug liveness check failed: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
-  }
-}
-
-function pullRequestHumanEngagementBlockReason(
-  number: number,
-  known?: {
-    assignees?: unknown[];
-    requestedReviewers?: unknown[];
-    requestedTeams?: unknown[];
-  },
-): string | null {
-  const issue = known
-    ? { assignees: known.assignees }
-    : ghJson<{ assignees?: unknown[] }>([
-        "api",
-        `repos/${targetRepo()}/issues/${number}`,
-        "--jq",
-        "{assignees:[.assignees[]? | {login:.login}]}",
-      ]);
-  if ((issue.assignees ?? []).length > 0) return "assigned PR has active human signal";
-
-  const pull = known
-    ? {
-        requested_reviewers: known.requestedReviewers,
-        requested_teams: known.requestedTeams,
-      }
-    : ghJson<{ requested_reviewers?: unknown[]; requested_teams?: unknown[] }>([
-        "api",
-        `repos/${targetRepo()}/pulls/${number}`,
-        "--jq",
-        "{requested_reviewers:[.requested_reviewers[]? | {login:.login}],requested_teams:[.requested_teams[]? | {slug:.slug}]}",
-      ]);
-  if ((pull.requested_reviewers ?? []).length > 0 || (pull.requested_teams ?? []).length > 0) {
-    return "requested reviewers or teams indicate active review signal";
-  }
-
-  const maintainerComments = maintainerAssociatedEntries(
-    ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`),
-  );
-  if (maintainerComments.length > 0) return "maintainer issue comment blocks inactivity auto-close";
-
-  const maintainerReviews = maintainerAssociatedEntries(
-    ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/reviews`),
-  );
-  if (maintainerReviews.length > 0) return "maintainer PR review blocks inactivity auto-close";
-
-  const maintainerInlineComments = maintainerAssociatedEntries(
-    ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/comments`),
-  );
-  if (maintainerInlineComments.length > 0) {
-    return "maintainer inline review comment blocks inactivity auto-close";
-  }
-  return null;
-}
-
-const FAILING_CHECK_RUN_CONCLUSIONS = new Set(["failure", "timed_out"]);
-
-// Commit dates are author-controlled and a force-push can reuse an old SHA.
-// A pull_request workflow run associated with this PR is tied to source
-// activity, while rerunning its checks leaves created_at unchanged. Missing
-// source-run data keeps the PR open.
-function pullRequestHeadActivity(
-  number: number,
-  pull: {
-    created_at?: string;
-    head?: { ref?: string; repo?: { full_name?: string; id?: unknown }; sha?: string };
-  },
-  timeline = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/timeline`),
-): Pick<PullRequestLiveActivity, "headSha" | "headActivityAtMs"> {
-  const headSha = typeof pull.head?.sha === "string" ? pull.head.sha : "";
-  let headActivityAtMs: number | null = null;
-  const observe = (value: unknown): void => {
-    const ms = Date.parse(typeof value === "string" ? value : "");
-    if (Number.isFinite(ms) && (headActivityAtMs === null || ms > headActivityAtMs)) {
-      headActivityAtMs = ms;
-    }
-  };
-  if (headSha) {
-    const sourceRuns = ghJson<{ workflow_runs?: unknown[] }>([
-      "api",
-      `repos/${targetRepo()}/actions/runs?head_sha=${encodeURIComponent(headSha)}&event=pull_request&per_page=100`,
-    ]);
-    for (const run of sourceRuns.workflow_runs ?? []) {
-      const record = asRecord(run);
-      const directlyAssociated = Array.isArray(record.pull_requests)
-        ? record.pull_requests.some((pull) => Number(asRecord(pull).number) === number)
-        : false;
-      const runRepo = asRecord(record.head_repository);
-      const pullCreatedAtMs = Date.parse(pull.created_at ?? "");
-      const runCreatedAtMs = Date.parse(
-        typeof record.created_at === "string" ? record.created_at : "",
-      );
-      const sameSourceBranch =
-        typeof pull.head?.ref === "string" &&
-        record.head_branch === pull.head.ref &&
-        ((Number.isFinite(Number(pull.head.repo?.id)) &&
-          Number(pull.head.repo?.id) === Number(runRepo.id)) ||
-          (typeof pull.head.repo?.full_name === "string" &&
-            runRepo.full_name === pull.head.repo.full_name)) &&
-        Number.isFinite(pullCreatedAtMs) &&
-        Number.isFinite(runCreatedAtMs) &&
-        runCreatedAtMs >= pullCreatedAtMs;
-      if (record.event === "pull_request" && (directlyAssociated || sameSourceBranch)) {
-        observe(record.created_at);
-      }
-    }
-    for (const event of timeline) {
-      const record = asRecord(event);
-      const commitId = stringOrUndefined(record.commitId) ?? stringOrUndefined(record.commit_id);
-      if (record.event === "head_ref_force_pushed" && commitId === headSha) {
-        observe(stringOrUndefined(record.createdAt) ?? record.created_at);
-      }
-    }
-  }
-  return { headSha, headActivityAtMs };
-}
-
-function pullRequestLiveActivity(number: number): PullRequestLiveActivity {
-  const pull = ghJson<{
-    created_at?: string;
-    draft?: boolean;
-    state?: string;
-    changed_files?: number;
-    mergeable?: boolean | null;
-    mergeable_state?: string | null;
-    requested_reviewers?: unknown[];
-    requested_teams?: unknown[];
-    head?: { ref?: string; repo?: { full_name?: string; id?: unknown }; sha?: string };
-  }>(["api", `repos/${targetRepo()}/pulls/${number}`]);
-  const { headSha, headActivityAtMs } = pullRequestHeadActivity(number, pull);
-  let headChecksFailing = false;
-  let headStatusActivityAtMs: number | null = null;
-  const observeStatusActivity = (value: unknown): void => {
-    const record = asRecord(value);
-    for (const candidate of [
-      record.completed_at,
-      record.started_at,
-      record.updated_at,
-      record.created_at,
-    ]) {
-      const timestamp = Date.parse(typeof candidate === "string" ? candidate : "");
-      if (
-        Number.isFinite(timestamp) &&
-        (headStatusActivityAtMs === null || timestamp > headStatusActivityAtMs)
-      ) {
-        headStatusActivityAtMs = timestamp;
-      }
-    }
-  };
-  if (headSha) {
-    const combined = ghJson<{ state?: string; statuses?: unknown[] }>([
-      "api",
-      `repos/${targetRepo()}/commits/${headSha}/status`,
-    ]);
-    if (combined.state === "failure" || combined.state === "error") headChecksFailing = true;
-    for (const status of combined.statuses ?? []) observeStatusActivity(status);
-    const checks = ghJson<{ check_runs?: unknown[] }>([
-      "api",
-      `repos/${targetRepo()}/commits/${headSha}/check-runs?per_page=100`,
-    ]);
-    for (const run of checks.check_runs ?? []) {
-      const record = asRecord(run);
-      observeStatusActivity(record);
-      if (
-        typeof record.conclusion === "string" &&
-        FAILING_CHECK_RUN_CONCLUSIONS.has(record.conclusion)
-      ) {
-        headChecksFailing = true;
-      }
-    }
-  }
-  const headConflicted = pull.mergeable === false || pull.mergeable_state === "dirty";
-  return {
-    state: pull.state ?? "",
-    createdAt: pull.created_at ?? "",
-    draft: pull.draft === true,
-    headSha,
-    changedFiles: Number.isInteger(pull.changed_files) ? Number(pull.changed_files) : null,
-    requestedReviewers: pull.requested_reviewers ?? [],
-    requestedTeams: pull.requested_teams ?? [],
-    headActivityAtMs,
-    headStatusActivityAtMs,
-    headChecksFailing,
-    headConflicted,
-  };
-}
-
-function prAutoCloseExemptLabel(labels: readonly string[]): string | undefined {
-  return labels.map(normalizeLabelName).find((label) => PR_AUTO_CLOSE_EXEMPT_LABELS.has(label));
-}
-
-function prAutoCloseExemptDecisionReason(
-  item: Pick<Item, "kind" | "labels">,
-  closeReason: CloseReason | undefined,
-): string | null {
-  if (item.kind !== "pull_request") return null;
-  const exemptLabel = prAutoCloseExemptLabel(item.labels);
-  if (!exemptLabel) return null;
-  if (closeReason === "unconfirmed_product_direction") {
-    return `${exemptLabel} exempts this PR from product-direction auto-close`;
-  }
-  if (closeReason === "stalled_unproven_pr") {
-    return `${exemptLabel} exempts this PR from stalled-unproven auto-close`;
-  }
-  if (closeReason === "abandoned_pr") {
-    return `${exemptLabel} exempts this PR from abandoned-PR auto-close`;
-  }
-  if (closeReason === "author_pr_budget_exceeded") {
-    return `${exemptLabel} exempts this PR from author-budget auto-close`;
-  }
-  if (closeReason === "obsolete_fix_pr") {
-    return `${exemptLabel} exempts this PR from obsolete-fix auto-close`;
-  }
-  return null;
-}
-
-export function stalledUnprovenPrAgeSkipReason(
-  item: Pick<Item, "createdAt">,
-  now = Date.now(),
-): string | null {
-  if (!isOlderThanDays(item.createdAt, STALLED_UNPROVEN_PR_MIN_AGE_DAYS, now)) {
-    return `stalled_unproven_pr requires PR older than ${STALLED_UNPROVEN_PR_MIN_AGE_DAYS} days`;
-  }
-  return null;
-}
-
-const STALLED_PROOF_REQUEST_LABELS = new Set([
-  "triage: needs-real-behavior-proof",
-  "status: 📣 needs proof",
-]);
-
-// The durable review comment is edited in place, so its created_at cannot
-// date the proof ask. Only immutable signals count: needs-proof label
-// timeline events and proof-nudge comment creation times.
-export function stalledUnprovenProofRequestBlockReason(
-  number: number,
-  now = Date.now(),
-): string | null {
-  let earliestRequestAtMs: number | null = null;
-  const observe = (value: unknown): void => {
-    const ms = Date.parse(typeof value === "string" ? value : "");
-    if (Number.isFinite(ms) && (earliestRequestAtMs === null || ms < earliestRequestAtMs)) {
-      earliestRequestAtMs = ms;
-    }
-  };
-  for (const event of ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/timeline`)) {
-    const record = asRecord(event);
-    if (record.event !== "labeled") continue;
-    const labelName = asRecord(record.label).name;
-    if (typeof labelName !== "string") continue;
-    if (!STALLED_PROOF_REQUEST_LABELS.has(normalizeLabelName(labelName))) continue;
-    observe(record.created_at);
-  }
-  for (const comment of ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`)) {
-    const record = asRecord(comment);
-    const body = typeof record.body === "string" ? record.body : "";
-    if (!body.includes(PROOF_NUDGE_MARKER_PREFIX)) continue;
-    observe(record.created_at);
-  }
-  if (earliestRequestAtMs === null) {
-    return "no visible dated proof request (needs-proof label event or proof nudge) on the live PR";
-  }
-  if (now - earliestRequestAtMs <= STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS * DAY_MS) {
-    return `stalled_unproven_pr requires the proof request to be visible for ${STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS} days`;
-  }
-  return null;
-}
-
-export function abandonedPrAgeSkipReason(
-  item: Pick<Item, "createdAt">,
-  now = Date.now(),
-): string | null {
-  if (!isOlderThanDays(item.createdAt, ABANDONED_PR_MIN_AGE_DAYS, now)) {
-    return `abandoned_pr requires PR older than ${ABANDONED_PR_MIN_AGE_DAYS} days`;
-  }
-  return null;
-}
-
-function stalledUnprovenPrApplyBlockReason(
-  number: number,
-  item: Pick<Item, "createdAt" | "labels">,
-): string | null {
-  const ageBlock = stalledUnprovenPrAgeSkipReason(item);
-  if (ageBlock) return ageBlock;
-  const exemptLabel = prAutoCloseExemptLabel(item.labels);
-  if (exemptLabel) return `${exemptLabel} exempts this PR from stalled-unproven auto-close`;
-  const proofLabel = item.labels
-    .map(normalizeLabelName)
-    .find(
-      (label) =>
-        label === normalizeLabelName(PROOF_SUFFICIENT_LABEL) ||
-        label === normalizeLabelName(PROOF_OVERRIDE_LABEL),
-    );
-  if (proofLabel) return `${proofLabel} marks the requested proof as resolved`;
-  const proofRequestBlock = stalledUnprovenProofRequestBlockReason(number);
-  if (proofRequestBlock) return proofRequestBlock;
-  const activity = pullRequestLiveActivity(number);
-  if (activity.draft) return "draft PR is handled by the abandoned-PR policy, not stalled-unproven";
-  if (
-    activity.headActivityAtMs === null ||
-    Date.now() - activity.headActivityAtMs <= STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS * DAY_MS
-  ) {
-    return `stalled_unproven_pr requires ${STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS} days without source activity on the current head`;
-  }
-  return pullRequestHumanEngagementBlockReason(number);
-}
-
-function stalledUnprovenPrApplyBlockReasonSafe(
-  number: number,
-  item: Pick<Item, "createdAt" | "labels">,
-): string | null {
-  try {
-    return stalledUnprovenPrApplyBlockReason(number, item);
-  } catch (error) {
-    return `stalled-unproven liveness check failed: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
-  }
-}
-
-function abandonedPrApplyBlockReason(
-  number: number,
-  item: Pick<Item, "createdAt" | "labels">,
-): string | null {
-  const ageBlock = abandonedPrAgeSkipReason(item);
-  if (ageBlock) return ageBlock;
-  const exemptLabel = prAutoCloseExemptLabel(item.labels);
-  if (exemptLabel) return `${exemptLabel} exempts this PR from abandoned-PR auto-close`;
-  const activity = pullRequestLiveActivity(number);
-  if (
-    activity.headActivityAtMs === null ||
-    Date.now() - activity.headActivityAtMs <= ABANDONED_PR_MIN_INACTIVE_DAYS * DAY_MS
-  ) {
-    return `abandoned_pr requires ${ABANDONED_PR_MIN_INACTIVE_DAYS} days without source activity on the current head`;
-  }
-  const waitingOnAuthor = item.labels
-    .map(normalizeLabelName)
-    .includes(normalizeLabelName(WAITING_ON_AUTHOR_LABEL));
-  const stalledState =
-    activity.draft || waitingOnAuthor || activity.headChecksFailing || activity.headConflicted;
-  if (!stalledState) {
-    return "live PR is not draft, waiting-on-author, failing checks, or merge-conflicted; abandonment is not confirmed";
-  }
-  return pullRequestHumanEngagementBlockReason(number);
-}
-
-function abandonedPrApplyBlockReasonSafe(
-  number: number,
-  item: Pick<Item, "createdAt" | "labels">,
-): string | null {
-  try {
-    return abandonedPrApplyBlockReason(number, item);
-  } catch (error) {
-    return `abandoned-PR liveness check failed: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
-  }
-}
-
-function isWorkflowOrCiPath(path: string): boolean {
-  const normalized = path.toLowerCase();
-  return (
-    normalized.startsWith(".github/workflows/") ||
-    normalized.startsWith(".github/actions/") ||
-    normalized.startsWith(".circleci/") ||
-    normalized.startsWith(".buildkite/") ||
-    normalized.startsWith("ci/") ||
-    normalized === ".gitlab-ci.yml" ||
-    normalized === "azure-pipelines.yml" ||
-    normalized === "jenkinsfile"
-  );
-}
-
-function githubContentsPath(path: string): string {
-  return path
-    .split("/")
-    .map((part) => encodeURIComponent(part))
-    .join("/");
-}
-
-function defaultBranchPathMissing(path: string, defaultBranch: string): boolean {
-  try {
-    ghJson<unknown>([
-      "api",
-      `repos/${targetRepo()}/contents/${githubContentsPath(path)}?ref=${encodeURIComponent(defaultBranch)}`,
-    ]);
-    return false;
-  } catch (error) {
-    if (isGitHubNotFoundError(error)) return true;
-    throw error;
-  }
-}
-
-function obsoleteFixPrApplyBlockReason(
-  number: number,
-  item: Pick<Item, "createdAt">,
-): string | null {
-  if (!obsoleteFixPrCloseEnabled()) return "obsolete-fix PR apply policy is disabled";
-  const storedAgeBlock = obsoleteFixPrAgeSkipReason(item);
-  if (storedAgeBlock) return storedAgeBlock;
-
-  const activity = pullRequestLiveActivity(number);
-  if (activity.state !== "open") return "live PR is not open";
-  const liveAgeBlock = obsoleteFixPrAgeSkipReason({ createdAt: activity.createdAt });
-  if (liveAgeBlock) return liveAgeBlock;
-  if (!activity.headSha) return "obsolete_fix_pr requires a live PR head SHA";
-  if (
-    activity.changedFiles === null ||
-    activity.changedFiles < 1 ||
-    activity.changedFiles > OBSOLETE_FIX_PR_MAX_CHANGED_FILES
-  ) {
-    return `obsolete_fix_pr requires between 1 and ${OBSOLETE_FIX_PR_MAX_CHANGED_FILES} live changed files`;
-  }
-
-  const commit = ghJson<{ commit?: { committer?: { date?: string } } }>([
-    "api",
-    `repos/${targetRepo()}/commits/${activity.headSha}`,
-  ]);
-  const committedAt = commit.commit?.committer?.date ?? "";
-  const committedAtMs = Date.parse(committedAt);
-  if (!Number.isFinite(committedAtMs)) {
-    return "obsolete_fix_pr requires a dated current-head committer timestamp";
-  }
-  const latestActivityAtMs = Math.max(
-    committedAtMs,
-    activity.headActivityAtMs ?? Number.NEGATIVE_INFINITY,
-    activity.headStatusActivityAtMs ?? Number.NEGATIVE_INFINITY,
-  );
-  if (Date.now() - latestActivityAtMs <= OBSOLETE_FIX_PR_MIN_INACTIVE_DAYS * DAY_MS) {
-    return `obsolete_fix_pr requires ${OBSOLETE_FIX_PR_MIN_INACTIVE_DAYS} days without current-head commit, status, or check-run activity`;
-  }
-
-  const issue = ghJson<{ assignees?: unknown[]; labels?: unknown[] }>([
-    "api",
-    `repos/${targetRepo()}/issues/${number}`,
-  ]);
-  const protectedLabel = protectedLabels(labelNames(issue.labels))[0];
-  if (protectedLabel) return `protected label: ${protectedLabel}`;
-  const engagementBlock = pullRequestHumanEngagementBlockReason(number, {
-    assignees: issue.assignees ?? [],
-    requestedReviewers: activity.requestedReviewers,
-    requestedTeams: activity.requestedTeams,
-  });
-  if (engagementBlock) return engagementBlock;
-
-  const repository = ghJson<{ default_branch?: string }>(["api", `repos/${targetRepo()}`]);
-  const defaultBranch = repository.default_branch?.trim() ?? "";
-  if (!defaultBranch) return "obsolete_fix_pr requires the repository default branch";
-  const files = ghJson<unknown[]>([
-    "api",
-    `repos/${targetRepo()}/pulls/${number}/files?per_page=${OBSOLETE_FIX_PR_MAX_CHANGED_FILES}`,
-  ]);
-  if (files.length !== activity.changedFiles) {
-    return "obsolete_fix_pr live changed-file list is incomplete";
-  }
-  const changedEntries = files.map((file) => ({
-    path: stringOrUndefined(asRecord(file).filename)?.trim() ?? "",
-    status: stringOrUndefined(asRecord(file).status)?.trim() ?? "",
-  }));
-  const paths = changedEntries.map((entry) => entry.path);
-  if (paths.some((path) => !path) || new Set(paths).size !== paths.length) {
-    return "obsolete_fix_pr live changed-file paths are incomplete";
-  }
-
-  const since = new Date(committedAtMs + 1).toISOString();
-  for (const { path, status } of changedEntries) {
-    const commits = ghJson<unknown[]>([
-      "api",
-      `repos/${targetRepo()}/commits?sha=${encodeURIComponent(defaultBranch)}&path=${encodeURIComponent(path)}&since=${encodeURIComponent(since)}&per_page=1`,
-    ]);
-    if (commits.length === 0) {
-      // A missing path only signals deletion when `filename` names a path that
-      // pre-existed on main. Added files never lived there, and renamed/copied
-      // entries carry the NEW path in `filename`, so absence proves nothing.
-      if (
-        (status === "modified" || status === "removed" || status === "changed") &&
-        isWorkflowOrCiPath(path) &&
-        defaultBranchPathMissing(path, defaultBranch)
-      ) {
-        continue;
-      }
-      return `touched path unchanged on main; fix may still be relevant: ${path}`;
-    }
-    const changedAt = asRecord(asRecord(commits[0]).commit).committer;
-    const changedDate = stringOrUndefined(asRecord(changedAt).date) ?? "";
-    if (!Number.isFinite(Date.parse(changedDate)) || Date.parse(changedDate) <= committedAtMs) {
-      return `post-PR main-side change date is unavailable for touched path: ${path}`;
-    }
-  }
-  return null;
-}
-
-function obsoleteFixPrApplyBlockReasonSafe(
-  number: number,
-  item: Pick<Item, "createdAt">,
-): string | null {
-  try {
-    return obsoleteFixPrApplyBlockReason(number, item);
-  } catch (error) {
-    return `obsolete-fix PR live check failed: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
-  }
-}
-
-function authorPrBudgetSignalBlockReason(markdown: string): string | null {
-  const proof = reportRealBehaviorProof(markdown);
-  const rating = reportPrRating(markdown);
-  if (
-    ["S", "A", "B"].includes(rating.overallTier) &&
-    ["sufficient", "override"].includes(proof.status)
-  ) {
-    return "author_pr_budget_exceeded cannot close a high-quality proven pull request";
-  }
-  if (
-    !["D", "F"].includes(rating.overallTier) &&
-    !STALLED_UNPROVEN_PROOF_STATUSES.has(proof.status)
-  ) {
-    return "author_pr_budget_exceeded requires a D/F rating or missing, mock-only, or insufficient real behavior proof";
-  }
-  return null;
-}
-
-function authorOpenPullRequestCount(author: string): number {
-  const query = [
-    `repo:${targetRepo()}`,
-    "is:pr",
-    "is:open",
-    `author:${quoteGitHubSearchTerm(author)}`,
-  ].join(" ");
-  const result = ghJson<{ total_count?: number; incomplete_results?: boolean }>([
-    "api",
-    "search/issues",
-    "--method",
-    "GET",
-    "-f",
-    `q=${query}`,
-    "-f",
-    "per_page=1",
-  ]);
-  if (result.incomplete_results === true) {
-    throw new Error("GitHub author open-PR search returned incomplete results");
-  }
-  if (!Number.isInteger(result.total_count) || Number(result.total_count) < 0) {
-    throw new Error("GitHub author open-PR search omitted a valid total_count");
-  }
-  return Number(result.total_count);
-}
-
-function authorPrBudgetApplyGate(
-  number: number,
-  item: Pick<Item, "author" | "authorAssociation" | "createdAt" | "kind" | "labels">,
-  markdown: string,
-): AuthorPrBudgetApplyGate {
-  if (!authorPrBudgetCloseEnabled()) {
-    return { allowed: false, reason: "author PR-budget apply policy is disabled" };
-  }
-  if (item.kind !== "pull_request") {
-    return {
-      allowed: false,
-      reason: "author_pr_budget_exceeded is allowed only for pull requests",
-    };
-  }
-  if (isMaintainerAuthored(item)) {
-    return {
-      allowed: false,
-      reason: "author_pr_budget_exceeded cannot close maintainer-authored pull requests",
-    };
-  }
-  const exemptLabel = prAutoCloseExemptLabel(item.labels);
-  if (exemptLabel) {
-    return {
-      allowed: false,
-      reason: `${exemptLabel} exempts this PR from author-budget auto-close`,
-    };
-  }
-  const ageBlock = authorPrBudgetAgeSkipReason(item);
-  if (ageBlock) return { allowed: false, reason: ageBlock };
-  const signalBlock = authorPrBudgetSignalBlockReason(markdown);
-  if (signalBlock) return { allowed: false, reason: signalBlock };
-  if (!item.author.trim()) {
-    return { allowed: false, reason: "author_pr_budget_exceeded requires a known PR author" };
-  }
-
-  const activity = pullRequestLiveActivity(number);
-  if (!activity.headSha) {
-    return { allowed: false, reason: "author_pr_budget_exceeded requires a live PR head SHA" };
-  }
-  const commit = ghJson<{ commit?: { committer?: { date?: string } } }>([
-    "api",
-    `repos/${targetRepo()}/commits/${activity.headSha}`,
-  ]);
-  const committedAtMs = Date.parse(commit.commit?.committer?.date ?? "");
-  if (!Number.isFinite(committedAtMs)) {
-    return {
-      allowed: false,
-      reason: "author_pr_budget_exceeded requires a dated current-head committer timestamp",
-    };
-  }
-  const latestActivityAtMs = Math.max(
-    committedAtMs,
-    activity.headActivityAtMs ?? Number.NEGATIVE_INFINITY,
-    activity.headStatusActivityAtMs ?? Number.NEGATIVE_INFINITY,
-  );
-  if (Date.now() - latestActivityAtMs <= AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS * DAY_MS) {
-    return {
-      allowed: false,
-      reason: `author_pr_budget_exceeded requires ${AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS} days without current-head commit, status, or check-run activity`,
-    };
-  }
-
-  const engagementBlock = pullRequestHumanEngagementBlockReason(number);
-  if (engagementBlock) return { allowed: false, reason: engagementBlock };
-
-  const budget = authorPrBudget();
-  const openPrCount = authorOpenPullRequestCount(item.author);
-  if (openPrCount <= budget) {
-    return {
-      allowed: false,
-      reason: `author has ${openPrCount} open PRs; author PR budget is ${budget}`,
-    };
-  }
-  return { allowed: true, state: { author: item.author, openPrCount, budget } };
-}
-
-function authorPrBudgetApplyGateSafe(
-  number: number,
-  item: Pick<Item, "author" | "authorAssociation" | "createdAt" | "kind" | "labels">,
-  markdown: string,
-): AuthorPrBudgetApplyGate {
-  try {
-    return authorPrBudgetApplyGate(number, item, markdown);
-  } catch (error) {
-    return {
-      allowed: false,
-      reason: `author PR-budget live check failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    };
-  }
-}
+const reportParser = createReportParser({
+  agentsPolicyStatusLine,
+  defaultRootCauseCluster,
+  evidenceEntry,
+  frontMatterJsonArray,
+  frontMatterStringArray,
+  frontMatterValue,
+  isDocsOnlyPullRequestReport,
+  isExternalPullRequestReport,
+  markdownRepository,
+  parseBoldListHeading,
+  parseLabelJustification,
+  parseMergeRiskOption,
+  parseReviewFindingHeading,
+  parseRootCauseCluster,
+  parseSecurityConcernHeading,
+  reviewSectionValue,
+  sectionLineValue,
+  sectionList,
+  selectedReviewLabels,
+  splitFileAndLine,
+});
+export const { rootCauseClusterFromReportForTest } = reportParser;
+const {
+  reportEvidence,
+  reportLikelyOwners,
+  reportOverallCorrectness,
+  reportOverallConfidenceScore,
+  triagePriorityFromReport,
+  impactLabelsFromReport,
+  mergeRiskLabelsFromReport,
+  maturityLabelsFromReport,
+  mergeRiskOptionsFromReport,
+  labelJustificationsFromReport,
+  reportReviewFindings,
+  reportSecurityReview,
+  reportRealBehaviorProof,
+  reportTelegramVisibleProof,
+  reportPrRating,
+  reportMantisRecommendation,
+  reportFeatureShowcase,
+  reportRootCauseCluster,
+  reportAgentsPolicyStatus,
+  defaultAgentsPolicyStatus,
+  reportVisionFit,
+} = reportParser;
+
+const labelPolicy = createLabelPolicy({
+  asRecord,
+  frontMatterValue,
+  isAutomationReportAuthor,
+  mergeRiskOptionsFromReport,
+  reportOverallCorrectness,
+  reportRealBehaviorProof,
+  reportReviewFindings,
+  reportSecurityReview,
+  stringOrUndefined,
+  timestampMs,
+});
+export const { featureShowcaseLabelsForTest, prStatusLabelsForTest, prStatusLabelSchemeForTest } =
+  labelPolicy;
+const {
+  eventTimestampMs,
+  hasRepairLoopPauseLabel,
+  isAfterReview,
+  nextFeatureShowcaseLabels,
+  nextPrStatusLabels,
+  prStatusLabelForKind,
+  prStatusLabelKindFromReport,
+  shouldApplyFeatureShowcaseLabel,
+} = labelPolicy;
+
+const applyGuards = createApplyGuards({
+  asRecord,
+  authorPrBudget,
+  authorPrBudgetAgeSkipReason,
+  authorPrBudgetCloseEnabled,
+  ghJson,
+  ghPaged,
+  isMaintainerAuthorAssociation,
+  isMaintainerAuthored,
+  isOlderThanDays,
+  labelNames,
+  login,
+  normalizeLabelName,
+  obsoleteFixPrAgeSkipReason,
+  obsoleteFixPrCloseEnabled,
+  protectedLabels,
+  quoteGitHubSearchTerm,
+  reportPrRating,
+  reportRealBehaviorProof,
+  staleVersionBugAgeSkipReason,
+  staleVersionBugCloseEnabled,
+  stringOrUndefined,
+  targetRepo,
+  unconfirmedProductDirectionAgeSkipReason,
+  unconfirmedProductDirectionCloseEnabled,
+  unsponsoredFeatureAgeSkipReason,
+  unsponsoredFeatureCloseEnabled,
+});
+export const {
+  abandonedPrAgeSkipReason,
+  issueRecentHumanCommentBlockReasonFromComments,
+  stalledUnprovenPrAgeSkipReason,
+  stalledUnprovenProofRequestBlockReason,
+} = applyGuards;
+const {
+  abandonedPrApplyBlockReasonSafe,
+  authorPrBudgetApplyGateSafe,
+  authorPrBudgetSignalBlockReason,
+  issueRecentHumanCommentBlockReasonSafe,
+  lowSignalUnmergeablePrApplyBlockReasonSafe,
+  lowSignalUnmergeablePrAuthorActivityBlockReason,
+  lowSignalUnmergeablePrConflictBlockReason,
+  obsoleteFixPrApplyBlockReasonSafe,
+  prAutoCloseExemptDecisionReason,
+  prAutoCloseExemptLabel,
+  pullRequestHeadActivity,
+  staleVersionBugApplyBlockReasonSafe,
+  stalledUnprovenPrApplyBlockReasonSafe,
+  unconfirmedProductDirectionApplyBlockReasonSafe,
+  unsponsoredFeatureApplyBlockReasonSafe,
+} = applyGuards;
 
 export function compactMappedSlice<T>(
   items: readonly T[],
@@ -3082,16 +1891,6 @@ function compactComment(value: unknown): unknown {
   };
 }
 
-const CLAWSWEEPER_BOT_AUTHORS = new Set(
-  [
-    "clawsweeper",
-    "clawsweeper[bot]",
-    "openclaw-clawsweeper[bot]",
-    process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN,
-  ]
-    .filter((login): login is string => typeof login === "string" && login.length > 0)
-    .map((login) => login.toLowerCase()),
-);
 function isClawSweeperComment(value: unknown): boolean {
   return CLAWSWEEPER_BOT_AUTHORS.has((login(asRecord(value).user) ?? "").toLowerCase());
 }
@@ -9008,723 +7807,59 @@ function nonUnknownFrontMatter(markdown: string, key: string): string | null {
   return value && value !== "unknown" ? value : null;
 }
 
-function sentence(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  return /[.!?)]$/.test(trimmed) ? trimmed : `${trimmed}.`;
-}
-
-function normalizePublicReviewText(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/https?:\/\/\S+/g, "")
-    .replace(/[`*_~#[\]()>.,:;!?'"-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function publicReviewTextDiffers(left: string, right: string): boolean {
-  const normalizedLeft = normalizePublicReviewText(left);
-  const normalizedRight = normalizePublicReviewText(right);
-  if (!normalizedLeft || !normalizedRight) return normalizedLeft !== normalizedRight;
-  return (
-    normalizedLeft !== normalizedRight &&
-    !normalizedLeft.includes(normalizedRight) &&
-    !normalizedRight.includes(normalizedLeft)
-  );
-}
-
-function publicReviewTextIsSame(left: string, right: string): boolean {
-  const normalizedLeft = normalizePublicReviewText(left);
-  const normalizedRight = normalizePublicReviewText(right);
-  return Boolean(normalizedLeft) && normalizedLeft === normalizedRight;
-}
-
-function isReportNoneList(value: string): boolean {
-  return !value.trim() || value.trim() === "- none";
-}
-
-function isLinkableSourceRef(file: string): boolean {
-  if (file.includes("/")) return true;
-  return ["AGENTS.md", "CHANGELOG.md", "README.md", "VISION.md"].includes(file);
-}
-
-function linkInlineSourceRefs(value: string, sha?: string | null): string {
-  if (!sha) return value;
-  return value.replace(
-    /`([^`]+\.(?:css|js|json|jsx|md|mdx|mjs|sh|ts|tsx|yaml|yml)(?::\d+)?)`/g,
-    (match, ref: string) => {
-      const { file, line } = splitFileAndLine(ref);
-      if (!isLinkableSourceRef(file)) return match;
-      const docsUrl = docsPageUrl(file);
-      const url =
-        docsUrl ?? (file === "VISION.md" && !line ? latestFileUrl(file) : fileUrl(file, sha, line));
-      return markdownLink(`\`${ref}\``, url);
-    },
-  );
-}
-
-function linkPrimaryEvidenceFile(value: string, evidence: Evidence): string {
-  if (!evidence.file || !evidence.sha) return value;
-  const docsUrl = docsPageUrl(evidence.file);
-  if (docsUrl && !value.includes(docsUrl)) {
-    return `${value} Public docs: ${markdownLink(`\`${evidence.file}\``, docsUrl)}.`;
-  }
-  if (evidence.file !== "VISION.md" || value.includes("VISION.md")) return value;
-  const link = markdownLink("`VISION.md`", latestFileUrl(evidence.file));
-  const linked = value
-    .replace(/\b(?:the project vision|project vision|the vision|VISION)\b/i, link)
-    .replace(/^Current main says\b/, `${link} says`)
-    .replace(/^The roadmap guardrails explicitly list\b/, `${link} guardrails explicitly list`);
-  return linked === value ? `${link}: ${value}` : linked;
-}
-
-function evidenceLocation(evidence: Evidence): string {
-  const parts: string[] = [];
-  if (evidence.file) {
-    const location = evidence.line ? `${evidence.file}:${evidence.line}` : evidence.file;
-    const docsUrl = docsPageUrl(evidence.file);
-    const sourceUrl = evidence.sha
-      ? fileUrl(evidence.file, evidence.sha, evidence.line ?? undefined)
-      : null;
-    const url = docsUrl ?? sourceUrl;
-    parts.push(url ? markdownLink(`\`${location}\``, url) : `\`${location}\``);
-  }
-  if (evidence.sha) parts.push(linkedSha(evidence.sha));
-  return parts.length ? ` (${parts.join(", ")})` : "";
-}
-
-function closeEvidenceLine(evidence: Evidence): string {
-  const label = evidence.label.trim();
-  const detail = linkPrimaryEvidenceFile(
-    linkInlineSourceRefs(sentence(evidence.detail), evidence.sha),
-    evidence,
-  );
-  const prefix = label ? `**${label}:** ` : "";
-  return `- ${prefix}${detail}${evidenceLocation(evidence)}`;
-}
-
-function publicLikelyOwnerRole(role: string): string {
-  return role
-    .trim()
-    .replace(/\brecent workflow maintainers\b/gi, "recent workflow contributors")
-    .replace(/\brecent workflow maintainer\b/gi, "recent workflow contributor")
-    .replace(/\brecent adjacent maintainers\b/gi, "recent adjacent contributors")
-    .replace(/\brecent adjacent maintainer\b/gi, "recent adjacent contributor")
-    .replace(/\brecent maintainers\b/gi, "recent area contributors")
-    .replace(/\brecent maintainer\b/gi, "recent area contributor");
-}
-
-function likelyOwnerLine(owner: LikelyOwner): string {
-  const person = owner.person.trim() || "unknown";
-  const role = publicLikelyOwnerRole(owner.role);
-  const reason = sentence(owner.reason.trim() || "Related by repository history.");
-  const commits = owner.commits
-    .map((commit) => commit.trim())
-    .filter(isCommitSha)
-    .slice(0, 3)
-    .map((commit) => linkedSha(commit))
-    .join(", ");
-  const files = owner.files
-    .filter(Boolean)
-    .slice(0, 3)
-    .map((file) => `\`${file}\``)
-    .join(", ");
-  const suffix = [
-    role ? `role: ${role}` : "",
-    `confidence: ${owner.confidence}`,
-    commits ? `commits: ${commits}` : "",
-    files ? `files: ${files}` : "",
-  ].filter(Boolean);
-  return `- **${person}:** ${reason}${suffix.length ? ` (${suffix.join("; ")})` : ""}`;
-}
-
-function priorityLabel(priority: ReviewFinding["priority"]): string {
-  return `P${priority}`;
-}
-
-function publicPriorityFromText(text: string, fallback: PublicPriority): PublicPriority {
-  if (/\b(?:outage|data loss|security exposure|release blocker|widespread)\b/i.test(text)) {
-    return "P0";
-  }
-  if (
-    /\b(?:major regression|blocked workflow|compatibility(?:\s+|-)?break|fail(?:\s+|-)?closed|lifecycle break)\b/i.test(
-      text,
-    )
-  ) {
-    return "P1";
-  }
-  if (/\b(?:localized|non-blocking|nonblocking|recoverable|fallback|timeout)\b/i.test(text)) {
-    return "P2";
-  }
-  return fallback;
-}
-
-function stripPriorityPrefix(text: string): string {
-  return text
-    .trim()
-    .replace(/^[-*]\s+/, "")
-    .replace(/^(?:\*\*)?\[P[0-2]\](?:\*\*)?\s*/i, "")
-    .trim();
-}
-
-function publicPriorityBullet(priority: PublicPriority, text: string): string {
-  return `- [${priority}] ${stripPriorityPrefix(sentence(text))}`;
-}
-
-function publicPriorityBulletFromText(text: string, fallback: PublicPriority): string {
-  return publicPriorityBullet(publicPriorityFromText(text, fallback), text);
-}
-
-function publicPlainBullet(text: string): string {
-  return `- ${stripPriorityPrefix(sentence(text))}`;
-}
-
-function isActionablePriorityText(text: string): boolean {
-  const body = stripPriorityPrefix(text);
-  if (!body || isReportNoneList(body)) return false;
-  if (isRoutineCiOrReviewText(body)) {
-    return false;
-  }
-  return /\b(?:add|block|blocked|break|fail(?:\s+|-)?closed|fix|implement|missing|must|need(?:s|ed)?|prove|reject|repair|required|validate|before merge)\b/i.test(
-    body,
-  );
-}
-
-function isRoutineCiOrReviewText(text: string): boolean {
-  const body = stripPriorityPrefix(text);
-  const mentionsCheckState =
-    /\b(?:ci|status|required(?: status)?)(?:\/status)? checks?(?:(?:\s+(?:are|were|is|was|remain|remains))?\s+(?:green|passing|pass(?:es|ed|ing)?)|\s+(?:have|has)\s+passed|\s+to\s+pass)\b/i.test(
-      body,
-    );
-  const hasCheckStateContrast = /\b(?:although|but|despite|even though|even when|while)\b/i.test(
-    body,
-  );
-  const checkContrastRemainder = body
-    .replace(
-      /\b(?:ci|status|required(?: status)?)(?:\/status)? checks?(?:(?:\s+(?:are|were|is|was|remain|remains))?\s+(?:green|passing|pass(?:es|ed|ing)?)|\s+(?:have|has)\s+passed|\s+to\s+pass)?\b/gi,
-      "",
-    )
-    .replace(/\b(?:no|without) (?:any )?(?:test )?failures?\b/gi, "")
-    .replace(
-      /\b(?:maintainer review is still required|required approvals? (?:are )?complete)\b/gi,
-      "",
-    );
-  const hasSeparateContrastBlocker =
-    /\b(?:add|before merge|block(?:s|ed|ing)?|blocker|break(?:s|ing)?|broken|cover(?:s|ed|ing)?|coverage|crash(?:es|ed|ing)?|data loss|exposure|fail(?:s|ed|ing)?|fix|gap|implement|low|missing|must|need(?:s|ed)?|quality|required|risk|security|test-gap|unsafe|untested|validate|vulnerab(?:le|ility))\b/i.test(
-      checkContrastRemainder,
-    );
-  const isRoutineReviewOrApprovalGate =
-    !hasSeparateContrastBlocker &&
-    /\b(?:maintainer review is still required|required approvals? (?:are )?complete)\b/i.test(body);
-  if (
-    mentionsCheckState &&
-    (/\b(?:break(?:s|ing)?|broken|bypass(?:es|ed|ing)?|incorrect(?:ly)?|unsafe)\b/i.test(body) ||
-      /\b(?:disabled|did not run|do not run|not run(?:ning)?|skipp(?:ed|ing))\b/i.test(body) ||
-      /\bno\b.*\b(?:test(?:s|ing)?|validat(?:e|ed|es|ing|ion))\b.*\bruns?\b/i.test(body) ||
-      /\bwithout\b(?!\s+(?:any\s+)?(?:test\s+)?failures?\b)/i.test(body) ||
-      /\bwith (?:only )?(?:insufficient|limited|mock(?:ed)?|stub(?:bed)?|weak)\b.*\b(?:coverage|test(?:s|ing)?|validat(?:e|ed|es|ing|ion))\b/i.test(
-        body,
-      ) ||
-      /\bwith no\b.*\b(?:coverage|test(?:s|ing)?|validat(?:e|ed|es|ing|ion))\b/i.test(body) ||
-      /\bbecause\b.*\b(?:mock(?:ed|-only)?|stub(?:bed)?|test(?:s|ing)?|validat(?:e|ed|es|ing|ion))\b/i.test(
-        body,
-      ) ||
-      hasSeparateContrastBlocker ||
-      (hasCheckStateContrast &&
-        !isRoutineReviewOrApprovalGate &&
-        (!/\b(?:no|without) (?:any )?(?:test )?failures?\b/i.test(body) ||
-          hasSeparateContrastBlocker)))
-  ) {
-    return false;
-  }
-  if (mentionsCheckState && isRoutineReviewOrApprovalGate) {
-    return true;
-  }
-  return /\b(?:no automated repair|no clawsweeper repair|normal maintainer review|maintainer review and ci|ready for maintainer review|flaky ci|red ci|unrelated (?:ci|status checks?)|(?:ci|status|required(?: status)?)(?:\/status)? checks?(?:(?=\s*(?:and (?:maintainer review|required approvals?)|[.!?;,)]|$))| (?:(?:are|were|is|was|remain|remains) (?:green|passing|pass|red|failing|pending|missing|flaky|unrelated)|pass(?:es|ed)?|(?:have|has) passed|to pass)))\b/i.test(
-    body,
-  );
-}
-
-function publicPriorityBulletIfActionable(text: string, fallback: PublicPriority): string {
-  return isActionablePriorityText(text)
-    ? publicPriorityBulletFromText(text, fallback)
-    : publicPlainBullet(text);
-}
-
-function publicRiskBulletsFromText(text: string, fallback: PublicPriority): string {
-  const lines = text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const bulletLines = lines.filter((line) => /^[-*]\s+/.test(line));
-  if (!bulletLines.length) {
-    return isRoutineCiOrReviewText(text)
-      ? publicPlainBullet(text)
-      : publicPriorityBulletFromText(text, fallback);
-  }
-  return bulletLines
-    .map((line) =>
-      isRoutineCiOrReviewText(line)
-        ? publicPlainBullet(line)
-        : publicPriorityBulletFromText(line, fallback),
-    )
-    .join("\n");
-}
-
-function confidenceText(score: number): string {
-  return score.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
-}
-
-function reviewFindingLocation(
-  finding: Pick<ReviewFinding, "file" | "lineStart" | "lineEnd">,
-): string {
-  const line =
-    finding.lineStart === finding.lineEnd
-      ? `${finding.lineStart}`
-      : `${finding.lineStart}-${finding.lineEnd}`;
-  return `${finding.file}:${line}`;
-}
-
-function reviewFindingSummaryLine(finding: ReviewFinding): string {
-  return `- [${priorityLabel(finding.priority)}] ${finding.title.trim()} — \`${reviewFindingLocation(
-    finding,
-  )}\``;
-}
-
-function reviewFindingDetailedLine(finding: ReviewFinding): string {
-  return [
-    reviewFindingSummaryLine(finding),
-    `  ${sentence(finding.body)}`,
-    `  Confidence: ${confidenceText(finding.confidenceScore)}`,
-    ...(finding.lateFinding
-      ? ["  Late finding: first raised on code an earlier review cycle already covered."]
-      : []),
-  ].join("\n");
-}
-
-function securityConcernSummaryLine(concern: SecurityConcern): string {
-  const location = securityConcernLocation(concern);
-  const suffix = location === "not tied to a single file" ? "" : ` — \`${location}\``;
-  return `- [${concern.severity}] ${concern.title.trim()}${suffix}`;
-}
-
-function securityConcernDetailedLine(concern: SecurityConcern): string {
-  return [
-    securityConcernSummaryLine(concern),
-    `  ${sentence(concern.body)}`,
-    `  Confidence: ${confidenceText(concern.confidenceScore)}`,
-  ].join("\n");
-}
-
-function securityReviewLine(review: SecurityReview): string {
-  const prefix =
-    review.status === "needs_attention"
-      ? "Security review needs attention"
-      : review.status === "cleared"
-        ? "Security review cleared"
-        : "Security review";
-  return `${prefix}: ${sentence(review.summary)}`;
-}
-
-function publicSecurityReviewLine(review: SecurityReview): string {
-  if (review.status !== "needs_attention" && review.concerns.length === 0) return "None.";
-  const prefix =
-    review.status === "needs_attention"
-      ? "Needs attention"
-      : review.status === "cleared"
-        ? "Cleared"
-        : "Not applicable";
-  return `${prefix}: ${sentence(review.summary)}`;
-}
-
-function realBehaviorProofReReviewGuidance(): string {
-  return "After adding proof, update the PR body; ClawSweeper should re-review automatically. If it does not, the PR author or someone with repository write access can comment `@clawsweeper re-review`.";
-}
-
-function realBehaviorProofBlockerSummary(summary: string, fallback: string): string {
-  const body = sentence(summary) || fallback;
-  if (/\b(?:@clawsweeper re-review|re-review automatically|update the PR body)\b/i.test(body)) {
-    return body;
-  }
-  return `${body} ${realBehaviorProofReReviewGuidance()}`;
-}
-
-function publicRealBehaviorProofLine(proof: RealBehaviorProof): string {
-  const summary = sentence(proof.summary);
-  switch (proof.status) {
-    case "sufficient":
-      return `Sufficient (${proof.evidenceKind}): ${summary}`;
-    case "override":
-      return `Override: ${summary || "A maintainer applied proof: override."}`;
-    case "missing":
-      return `Needs real behavior proof before merge: ${realBehaviorProofBlockerSummary(
-        summary,
-        "The PR must include after-fix evidence from a real setup. Screenshots or videos are preferred when they can show the behavior; terminal screenshots, console output, copied live output, linked artifacts, and redacted logs count. Redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence.",
-      )}`;
-    case "mock_only":
-      return `Needs real behavior proof before merge: ${realBehaviorProofBlockerSummary(
-        summary,
-        "Tests, mocks, snapshots, lint, typechecks, and CI are supplemental only. Screenshots or videos are preferred when they can show the behavior; terminal screenshots, console output, copied live output, linked artifacts, and redacted logs count. Redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence.",
-      )}`;
-    case "insufficient":
-      return `Needs stronger real behavior proof before merge: ${realBehaviorProofBlockerSummary(
-        summary,
-        "Include after-fix evidence from a real setup. Screenshots or videos are preferred when they can show the behavior; terminal screenshots, console output, copied live output, linked artifacts, and redacted logs count. Redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence.",
-      )}`;
-    case "not_applicable":
-      return summary ? `Not applicable: ${summary}` : "";
-  }
-}
-
-function publicRankDetailsBlock(): string {
-  return [
-    "| Score | Internal tier | Crab rank | Meaning |",
-    "|---:|:---:|---|---|",
-    "| **6/6** | S | 🦀 challenger crab | Exceptional readiness |",
-    "| **5/6** | A | 🦞 diamond lobster | Very strong readiness |",
-    "| **4/6** | B | 🐚 platinum hermit | Good normal PR; ordinary maintainer review |",
-    "| **3/6** | C | 🦐 gold shrimp | Useful, but confidence is limited |",
-    "| **2/6** | D | 🦪 silver shellfish | Proof or implementation needs work |",
-    "| **1/6** | F | 🧂 unranked krab | Not merge-ready |",
-    "| N/A | NA | 🌊 off-meta tidepool | Rating does not apply |",
-    "",
-    "Overall follows the weaker of proof and patch quality.",
-    "Shiny media proof means a screenshot, video, or linked artifact directly shows the changed behavior. Runtime, network, CSP, and security claims still need visible diagnostics.",
-  ].join("\n");
-}
-
-function publicMergeReadinessResult(rating: PrRating, proof: RealBehaviorProof): string {
-  if (rating.overallTier === "NA") return "needs maintainer review before merge.";
-  switch (proof.status) {
-    case "missing":
-      return "blocked until real behavior proof is added.";
-    case "mock_only":
-      return "blocked until real behavior proof from a real setup is added.";
-    case "insufficient":
-      return "blocked until stronger real behavior proof is added.";
-    case "sufficient":
-    case "override":
-      if (rating.patchTier === "F" || rating.patchTier === "D") {
-        return "blocked by patch quality or review findings.";
-      }
-      if (rating.overallTier === "S" || rating.overallTier === "A" || rating.overallTier === "B") {
-        return "ready for maintainer review.";
-      }
-      return "needs maintainer review before merge.";
-    case "not_applicable":
-      return rating.patchTier === "F" || rating.patchTier === "D"
-        ? "blocked by patch quality or review findings."
-        : "ready for maintainer review.";
-  }
-}
-
-function publicRatingScore(tier: PrRatingTier): number | null {
-  switch (tier) {
-    case "S":
-      return 6;
-    case "A":
-      return 5;
-    case "B":
-      return 4;
-    case "C":
-      return 3;
-    case "D":
-      return 2;
-    case "F":
-      return 1;
-    case "NA":
-      return null;
-  }
-}
-
-function publicRatedName(tier: PrRatingTier): string {
-  const score = publicRatingScore(tier);
-  return `${themedRatingName(tier)}${score === null ? "" : ` **(${score}/6)**`}`;
-}
-
-function publicStatusText(value: string): string {
-  const text = sentence(value);
-  return text ? `${text[0]?.toUpperCase()}${text.slice(1)}` : "";
-}
-
-function publicReviewScoresBlock(
-  rating: PrRating,
-  proof: RealBehaviorProof,
-  findings: readonly ReviewFinding[],
-  securityReview: SecurityReview,
-): string {
-  const shiny = hasShinyProof(proof) ? " ✨ media proof bonus" : "";
-  const overallMeaning =
-    sentence(rating.summary) || "Overall readiness follows the weaker of proof and patch quality.";
-  const proofMeaning =
-    publicRealBehaviorProofLine(proof) || "Real behavior proof does not apply to this change.";
-  const patchMeaning =
-    securityReview.status === "needs_attention" || securityReview.concerns.length > 0
-      ? "Security review found an item that needs attention."
-      : findings.length > 0
-        ? `${findings.length} actionable review ${findings.length === 1 ? "finding" : "findings"} remain.`
-        : rating.patchTier === "F" || rating.patchTier === "D"
-          ? sentence(rating.summary) ||
-            "Patch quality blocks readiness; see the Before merge checklist."
-          : "No actionable review findings were identified.";
-  return [
-    "| Measure | Result | What it means |",
-    "|---|---|---|",
-    `| **Overall readiness** | ${publicRatedName(rating.overallTier)} | ${publicTableCell(overallMeaning)} |`,
-    `| **Proof confidence** | ${publicRatedName(rating.proofTier)}${shiny} | ${publicTableCell(proofMeaning)} |`,
-    `| **Patch quality** | ${publicRatedName(rating.patchTier)} | ${publicTableCell(patchMeaning)} |`,
-  ].join("\n");
-}
-
-function publicVerificationBlock(
-  proof: RealBehaviorProof,
-  evidence: readonly Evidence[],
-  findings: readonly ReviewFinding[],
-  securityReview: SecurityReview,
-): string {
-  const proofResult =
-    proof.status === "sufficient"
-      ? "Verified"
-      : proof.status === "override"
-        ? "Overridden"
-        : proof.status === "not_applicable"
-          ? "Not applicable"
-          : "Needs proof";
-  const proofEvidence =
-    publicRealBehaviorProofLine(proof) || "Real behavior proof does not apply to this change.";
-  const evidenceResult =
-    evidence.length === 0
-      ? "None listed"
-      : `${evidence.length} ${evidence.length === 1 ? "item" : "items"}`;
-  const evidenceSummary =
-    evidence.length === 0
-      ? "None."
-      : evidence
-          .slice(0, 3)
-          .map((entry) =>
-            publicTableCell(
-              `${entry.label.trim() ? `${entry.label.trim()}: ` : ""}${sentence(entry.detail)}`,
-            ),
-          )
-          .join("<br>");
-  const findingResult =
-    findings.length === 0
-      ? "None"
-      : `${findings.length} actionable ${findings.length === 1 ? "finding" : "findings"}`;
-  const findingEvidence =
-    findings.length === 0
-      ? "None."
-      : findings
-          .slice(0, 3)
-          .map((finding) =>
-            publicTableCell(`[${priorityLabel(finding.priority)}] ${finding.title.trim()}`),
-          )
-          .join("<br>");
-  const securityNeedsAttention =
-    securityReview.status === "needs_attention" || securityReview.concerns.length > 0;
-  // Each report-provided entry is sanitized individually; the <br> separators are
-  // renderer-owned and must stay unescaped.
-  const securityEvidence = securityNeedsAttention
-    ? securityReview.concerns.length > 0
-      ? securityReview.concerns
-          .slice(0, 3)
-          .map((concern) => publicTableCell(`${concern.title.trim()}: ${sentence(concern.body)}`))
-          .join("<br>")
-      : publicTableCell(sentence(securityReview.summary))
-    : "None.";
-  return [
-    "| Check | Result | Evidence |",
-    "|---|---|---|",
-    `| **Real behavior** | ${proofResult} | ${publicTableCell(proofEvidence)} |`,
-    `| **Evidence reviewed** | ${evidenceResult} | ${evidenceSummary} |`,
-    `| **Findings** | ${findingResult} | ${findingEvidence} |`,
-    `| **Security** | ${securityNeedsAttention ? "Needs attention" : "None"} | ${securityEvidence} |`,
-  ].join("\n");
-}
-
-function publicMergeReadinessBlock(
-  rating: PrRating,
-  proof: RealBehaviorProof,
-  priority: TriagePriority,
-  bottomLine: string,
-  remainingItemCount: number,
-  decisionNeeded: boolean,
-  reviewedHeadSha: string,
-): string {
-  const result = publicStatusText(publicMergeReadinessResult(rating, proof)).replace(/\.$/, "");
-  const icon = /^blocked\b/i.test(result)
-    ? "⛔"
-    : /^ready\b/i.test(result) && remainingItemCount === 0 && !decisionNeeded
-      ? "✅"
-      : "⚠️";
-  const remaining =
-    remainingItemCount > 0
-      ? ` - ${remainingItemCount} ${remainingItemCount === 1 ? "item remains" : "items remain"}`
-      : "";
-  const lines = [
-    `${icon} **${result}${remaining}**`,
-    "",
-    sentence(bottomLine),
-    "",
-    `**Priority:** ${priority === "none" ? "None" : priority}`,
-  ];
-  if (reviewedHeadSha) lines.push(`**Reviewed head:** \`${reviewedHeadSha}\``);
-  if (decisionNeeded) {
-    lines.push("**Owner decision:** Required. See [Decision needed](#decision-needed).");
-  }
-  return lines.join("\n");
-}
-
-function publicFailedReviewReadinessBlock(markdown: string): string {
-  const reason =
-    reportEvidence(markdown)
-      .find((entry) => entry.label === "failure reason")
-      ?.detail.trim() || "Codex review failed before completion.";
-  return [
-    "Not assessed.",
-    `Failure reason: ${sentence(reason)}`,
-    "",
-    "This is a ClawSweeper/Codex infrastructure failure, not a PR readiness or patch-quality verdict.",
-    "Keep any merge decision on the normal maintainer review path until ClawSweeper can complete a fresh review.",
-  ].join("\n");
-}
-
-function prStatusLabelKindFromLabels(labels: readonly string[]): PrStatusLabelKind | null {
-  for (const label of PR_STATUS_LABELS) {
-    if (labels.includes(label.name)) return label.kind;
-  }
-  return null;
-}
-
-function prStatusLabelKindFromReportLabels(markdown: string): PrStatusLabelKind | null {
-  const parsedLabels = frontMatterStringArray(markdown, "labels");
-  if (hasRepairLoopPauseLabel(parsedLabels)) return null;
-  const fromParsedLabels = prStatusLabelKindFromLabels(parsedLabels);
-  if (fromParsedLabels) return fromParsedLabels;
-  if (parsedLabels.includes(AUTOMERGE_LABEL)) return "automerge_armed";
-  const rawLabels = frontMatterValue(markdown, "labels") ?? "";
-  if (
-    rawLabels.includes(HUMAN_REVIEW_LABEL) ||
-    rawLabels.includes(MANUAL_ONLY_LABEL) ||
-    rawLabels.includes(MERGE_READY_LABEL)
-  )
-    return null;
-  if (rawLabels.includes(AUTOMERGE_LABEL)) return "automerge_armed";
-  return PR_STATUS_LABELS.find((label) => rawLabels.includes(label.name))?.kind ?? null;
-}
-
-function mantisMaintainerCommentRequestsMutation(comment: string): boolean {
-  const commandBody = comment.replace(/^@openclaw-mantis\s+/i, "").trim();
-  const mutationVerb = String.raw`(?:add|apply|approve|assign|cancel|change|close|comment|commit|create|delete|disable|edit|enable|file|fix|implement|label|land|lock|make|mark|merge|modify|open|post|publish|push|rebase|remove|reopen|repair|request|resolve|restart|resume|re-?run|retry|re-?trigger|review|rewrite|run|set|submit|triage|trigger|unlock|update|write)`;
-  const mutationObject = String.raw`(?:automerge|branch(?:es)?|change(?:s)?|check(?:s)?|CI|code(?!\s+(?:block|snippet|sample|example)\b)|commit(?:s)?|GitHub(?:\s+state)?|issue(?:s)?|item(?:s)?|label(?:s)?|comment(?:s)?|patch(?:es)?|pull\s+request(?:s)?|PRs?|ready\s+for\s+review|repositor(?:y|ies)|repo(?:s)?|review(?:s|\s+request(?:s)?)?|workflow(?:s)?)`;
-  const scopedMutation = new RegExp(
-    `\\b${mutationVerb}\\b(?:\\s+\\S+){0,12}\\s+\\b${mutationObject}\\b`,
-    "i",
-  );
-  const explicitToolMutation = new RegExp(
-    `\\b(?:gh|git|GitHub)\\b(?:\\s+\\S+){0,12}\\s+\\b${mutationVerb}\\b`,
-    "i",
-  );
-  const maintenanceVerb = String.raw`(?:apply|approve|assign|close|comment|commit|create|file|fix|implement|label|land|lock|make|merge|modify|publish|push|rebase|reopen|repair|resolve|review|rewrite|submit|triage|unlock)`;
-  const bareMutationImperative = new RegExp(
-    `(?:^|[,.!?:;]\\s*|\\b(?:and|then|also)\\s+)(?:(?:please|kindly)\\s+|(?:can|could|would|will)\\s+you\\s+)*${maintenanceVerb}\\b`,
-    "i",
-  );
-  return (
-    scopedMutation.test(commandBody) ||
-    explicitToolMutation.test(commandBody) ||
-    bareMutationImperative.test(commandBody) ||
-    new RegExp(`\\b${mutationVerb}\\b\\s+(?:it|this|that|them|these|those)\\b`, "i").test(
-      commandBody,
-    ) ||
-    /\b(?:gh\s+workflow|workflow_dispatch|dispatch|trigger\s+the\s+workflow)\b/i.test(commandBody)
-  );
-}
-
-function mantisMaintainerCommentHasProofIntent(comment: string): boolean {
-  const commandBody = comment.replace(/^@openclaw-mantis\s+/i, "").trim();
-  return /\b(?:proof|verify|reproduce|capture|inspect|record|test|check|confirm|compare|exercise|demonstrate|show)\b/i.test(
-    commandBody,
-  );
-}
-
-function validMantisMaintainerComment(recommendation: MantisRecommendation): string {
-  if (recommendation.status !== "recommended" || recommendation.scenario === "none") return "";
-  const comment = recommendation.maintainerComment.trim();
-  const accountMention = "@openclaw-mantis";
-  const ambiguousMantisMention = new RegExp(`@${"mantis"}\\b`, "i");
-  if (
-    !comment.startsWith(`${accountMention} `) ||
-    ambiguousMantisMention.test(comment) ||
-    !mantisMaintainerCommentHasProofIntent(comment) ||
-    mantisMaintainerCommentRequestsMutation(comment) ||
-    comment.length > 500 ||
-    comment.includes("\n")
-  ) {
-    return "";
-  }
-  const commandBody = comment.slice(accountMention.length).trim();
-  if (!commandBody) return "";
-  return `${accountMention} ${commandBody}`;
-}
-
-function isSupportedMantisScenario(scenario: MantisRecommendationScenario): boolean {
-  return (
-    scenario === "telegram_live" ||
-    scenario === "telegram_desktop_proof" ||
-    scenario === "discord_status_reactions" ||
-    scenario === "discord_thread_attachment" ||
-    scenario === "web_ui_chat_proof"
-  );
-}
-
-function publicMantisRecommendationBlock(recommendation: MantisRecommendation): string {
-  if (!hasDispatchableMantisScenario(recommendation)) return "";
-  const comment = validMantisMaintainerComment(recommendation);
-  if (!comment) return "";
-  const reason = sentence(recommendation.reason);
-  const intro = reason
-    ? `${reason} A maintainer can ask Mantis to capture proof by posting this exact PR comment:`
-    : "A maintainer can ask Mantis to capture proof by posting this exact PR comment:";
-  return [intro, "", "```text", comment, "```"].join("\n");
-}
-
-function publicNonDispatchableMantisRecommendationBlock(
-  recommendation: MantisRecommendation,
-): string {
-  if (recommendation.status !== "recommended" || recommendation.scenario === "none") return "";
-  const mutationRequest = mantisMaintainerCommentRequestsMutation(
-    recommendation.maintainerComment.trim(),
-  );
-  const missingProofIntent = !mantisMaintainerCommentHasProofIntent(
-    recommendation.maintainerComment.trim(),
-  );
-  if (
-    isSupportedMantisScenario(recommendation.scenario) &&
-    !mutationRequest &&
-    !missingProofIntent
-  ) {
-    return "";
-  }
-  const reason = sentence(recommendation.reason);
-  if (mutationRequest || missingProofIntent) {
-    const intro = reason
-      ? `${reason} Mantis is proof-only, so it must not be asked to change code or mutate GitHub state.`
-      : "Mantis is proof-only, so it must not be asked to change code or mutate GitHub state.";
-    return [
-      intro,
-      "Use ClawSweeper's repair, apply, or automerge lanes for code changes, branch updates, labels, comments, PR repair, closes, or merges.",
-    ].join("\n");
-  }
-  const intro = reason
-    ? `${reason} Mantis is currently scoped to Telegram, Discord, and web UI chat proof, so it is not the right proof path for this surface.`
-    : "Mantis is currently scoped to Telegram, Discord, and web UI chat proof, so it is not the right proof path for this surface.";
-  return [
-    intro,
-    "Use maintainer screenshot/manual proof, browser or Playwright proof, Crabbox where appropriate, or normal local artifact proof instead.",
-  ].join("\n");
-}
+const reviewPresentation = createReviewPresentation({
+  docsPageUrl,
+  fileUrl,
+  frontMatterStringArray,
+  frontMatterValue,
+  hasDispatchableMantisScenario,
+  hasRepairLoopPauseLabel,
+  isCommitSha,
+  latestFileUrl,
+  linkedSha,
+  markdownLink,
+  publicTableCell,
+  reportEvidence,
+  securityConcernLocation,
+  splitFileAndLine,
+});
+const {
+  closeEvidenceLine,
+  confidenceText,
+  isActionablePriorityText,
+  isReportNoneList,
+  isRoutineCiOrReviewText,
+  isSupportedMantisScenario,
+  likelyOwnerLine,
+  normalizePublicReviewText,
+  prStatusLabelKindFromReportLabels,
+  priorityLabel,
+  publicFailedReviewReadinessBlock,
+  publicLikelyOwnerRole,
+  publicMantisRecommendationBlock,
+  publicMergeReadinessBlock,
+  publicNonDispatchableMantisRecommendationBlock,
+  publicPriorityBulletFromText,
+  publicPriorityBulletIfActionable,
+  publicPriorityFromText,
+  publicRankDetailsBlock,
+  publicRealBehaviorProofLine,
+  publicReviewScoresBlock,
+  publicReviewTextDiffers,
+  publicReviewTextIsSame,
+  publicRiskBulletsFromText,
+  publicSecurityReviewLine,
+  publicVerificationBlock,
+  reviewFindingDetailedLine,
+  reviewFindingLocation,
+  reviewFindingSummaryLine,
+  securityConcernDetailedLine,
+  securityConcernSummaryLine,
+  securityReviewLine,
+  sentence,
+  stripPriorityPrefix,
+  validMantisMaintainerComment,
+} = reviewPresentation;
 
 function closeIntro(reason: CloseReason): string {
   switch (reason) {
@@ -9911,1052 +8046,8 @@ function formatCanonicalLinks(links: string[]): string {
   return `${links.slice(0, -1).join(", ")}, and ${links[links.length - 1]}`;
 }
 
-function reportEvidence(markdown: string): Evidence[] {
-  const evidence = reviewSectionValue(markdown, "evidence");
-  const entries: Evidence[] = [];
-  let current: Evidence | null = null;
-  for (const line of evidence.split("\n")) {
-    const heading = parseBoldListHeading(line);
-    if (heading) {
-      if (current) entries.push(current);
-      current = evidenceEntry({
-        label: heading.label,
-        detail: heading.detail,
-      });
-      continue;
-    }
-    if (!current) continue;
-    const file = line.match(/^\s+- file: \[([^\]]+)\]/);
-    if (file?.[1]) {
-      const location = splitFileAndLine(file[1]);
-      current.file = location.file;
-      current.line = location.line ?? null;
-      continue;
-    }
-    const sha = line.match(/^\s+- sha: \[([^\]]+)\]/);
-    if (sha?.[1]) current.sha = sha[1];
-    const command = line.match(/^\s+- command: `([\s\S]+)`$/);
-    if (command?.[1]) current.command = command[1];
-  }
-  if (current) entries.push(current);
-  return entries;
-}
-
-function reportLikelyOwners(markdown: string): LikelyOwner[] {
-  const section = reviewSectionValue(markdown, "likelyOwners");
-  const owners: LikelyOwner[] = [];
-  let current: LikelyOwner | null = null;
-  for (const line of section.split("\n")) {
-    const heading = parseBoldListHeading(line);
-    if (heading) {
-      if (current) owners.push(current);
-      current = {
-        person: heading.label,
-        role: heading.detail,
-        reason: "",
-        commits: [],
-        files: [],
-        confidence: "low",
-      };
-      continue;
-    }
-    if (!current) continue;
-    const reason = line.match(/^\s+- reason: (.*)$/);
-    if (reason?.[1]) {
-      current.reason = reason[1];
-      continue;
-    }
-    const commits = line.match(/^\s+- commits: (.*)$/);
-    if (commits?.[1]) {
-      current.commits = commits[1]
-        .split(",")
-        .map((commit) => commit.trim())
-        .filter(Boolean);
-      continue;
-    }
-    const files = line.match(/^\s+- files: (.*)$/);
-    if (files?.[1]) {
-      current.files = files[1]
-        .split(",")
-        .map((file) => file.trim())
-        .filter(Boolean);
-      continue;
-    }
-    const confidence = line.match(/^\s+- confidence: (high|medium|low)$/);
-    if (confidence?.[1]) current.confidence = confidence[1] as Confidence;
-  }
-  if (current) owners.push(current);
-  return owners;
-}
-
-function reportOverallCorrectness(markdown: string): OverallCorrectness {
-  const section = reviewSectionValue(markdown, "reviewFindings");
-  const value = sectionLineValue(section, "Overall correctness");
-  return value && OVERALL_CORRECTNESS_VALUES.has(value as OverallCorrectness)
-    ? (value as OverallCorrectness)
-    : "not a patch";
-}
-
-function reportOverallConfidenceScore(markdown: string): number {
-  const section = reviewSectionValue(markdown, "reviewFindings");
-  const raw = sectionLineValue(section, "Overall confidence");
-  const score = raw ? Number(raw) : 0;
-  return Number.isFinite(score) && score >= 0 && score <= 1 ? score : 0;
-}
-
-function triagePriorityFromReport(markdown: string): TriagePriority {
-  const value = frontMatterValue(markdown, "triage_priority");
-  return TRIAGE_PRIORITIES.has(value as TriagePriority) ? (value as TriagePriority) : "none";
-}
-
-function impactLabelsFromReport(markdown: string): ImpactLabelName[] {
-  return frontMatterStringArray(markdown, "impact_labels").filter(
-    (label): label is ImpactLabelName => IMPACT_LABEL_NAMES.has(label),
-  );
-}
-
-function mergeRiskLabelsFromReport(markdown: string): MergeRiskLabelName[] {
-  return frontMatterStringArray(markdown, "merge_risk_labels").filter(
-    (label): label is MergeRiskLabelName => MERGE_RISK_LABEL_NAMES.has(label),
-  );
-}
-
-function maturityLabelsFromReport(markdown: string): MaturityLabelName[] {
-  return frontMatterStringArray(markdown, "maturity_labels").filter(
-    (label): label is MaturityLabelName => MATURITY_LABEL_NAMES.has(label),
-  );
-}
-
-function mergeRiskOptionsFromReport(markdown: string): MergeRiskOption[] {
-  return frontMatterJsonArray(markdown, "merge_risk_options")
-    .map((entry, index) => {
-      try {
-        return parseMergeRiskOption(entry, `merge_risk_options[${index}]`);
-      } catch {
-        return null;
-      }
-    })
-    .filter((entry): entry is MergeRiskOption => Boolean(entry));
-}
-
-function labelJustificationsFromReport(
-  markdown: string,
-  labels: Pick<Decision, "triagePriority" | "impactLabels" | "mergeRiskLabels" | "maturityLabels">,
-): LabelJustification[] {
-  const selected = new Set<string>(selectedReviewLabels(labels));
-  const fromFrontMatter = frontMatterJsonArray(markdown, "label_justifications")
-    .map((entry, index) => {
-      try {
-        return parseLabelJustification(entry, `label_justifications[${index}]`);
-      } catch {
-        return null;
-      }
-    })
-    .filter((entry): entry is LabelJustification => Boolean(entry))
-    .filter((entry) => selected.has(entry.label));
-  const byLabel = new Map(fromFrontMatter.map((entry) => [entry.label, entry]));
-  return selectedReviewLabels(labels).map((label) => ({
-    label,
-    reason:
-      byLabel.get(label)?.reason ??
-      "Older review report did not store a label-specific justification.",
-  }));
-}
-
-function reportReviewFindings(markdown: string): ReviewFinding[] {
-  const section = reviewSectionValue(markdown, "reviewFindings");
-  const findings: ReviewFinding[] = [];
-  let current: ReviewFinding | null = null;
-  for (const line of section.split("\n")) {
-    const heading = parseReviewFindingHeading(line);
-    if (heading) {
-      if (current) findings.push(current);
-      current = {
-        title: heading.title,
-        body: "",
-        priority: heading.priority,
-        confidenceScore: 0,
-        file: heading.file,
-        lineStart: heading.lineStart,
-        lineEnd: heading.lineEnd,
-      };
-      continue;
-    }
-    if (!current) continue;
-    const body = line.match(/^\s+- body: (.*)$/);
-    if (body?.[1]) {
-      current.body = body[1];
-      continue;
-    }
-    const late = line.match(/^\s+- late: (true|false)$/);
-    if (late?.[1]) {
-      current.lateFinding = late[1] === "true";
-      continue;
-    }
-    const confidence = line.match(/^\s+- confidence: ([0-9.]+)$/);
-    if (confidence?.[1]) {
-      const score = Number(confidence[1]);
-      current.confidenceScore = Number.isFinite(score) ? Math.min(1, Math.max(0, score)) : 0;
-    }
-  }
-  if (current) findings.push(current);
-  return findings;
-}
-
-function defaultSecurityReview(markdown: string): SecurityReview {
-  const type = frontMatterValue(markdown, "type");
-  return {
-    status: type === "pull_request" ? "not_applicable" : "not_applicable",
-    summary:
-      type === "pull_request"
-        ? "No dedicated security review was recorded in this older report."
-        : "No patch security review is needed for this non-PR item.",
-    concerns: [],
-  };
-}
-
-function reportSecurityReview(markdown: string): SecurityReview {
-  const section = reviewSectionValue(markdown, "securityReview");
-  if (!section.trim()) return defaultSecurityReview(markdown);
-  const statusValue = sectionLineValue(section, "Status");
-  const status = SECURITY_REVIEW_STATUSES.has(statusValue as SecurityReviewStatus)
-    ? (statusValue as SecurityReviewStatus)
-    : undefined;
-  const summary = sectionLineValue(section, "Summary");
-  if (!status || !summary) return defaultSecurityReview(markdown);
-  const concerns: SecurityConcern[] = [];
-  let current: SecurityConcern | null = null;
-  for (const line of section.split("\n")) {
-    const heading = parseSecurityConcernHeading(line);
-    if (heading) {
-      if (current) concerns.push(current);
-      current = {
-        title: heading.title,
-        body: "",
-        severity: heading.severity,
-        confidenceScore: 0,
-        file: heading.file,
-        line: heading.line,
-      };
-      continue;
-    }
-    if (!current) continue;
-    const body = line.match(/^\s+- body: (.*)$/);
-    if (body?.[1]) {
-      current.body = body[1];
-      continue;
-    }
-    const confidence = line.match(/^\s+- confidence: ([0-9.]+)$/);
-    if (confidence?.[1]) {
-      const score = Number(confidence[1]);
-      current.confidenceScore = Number.isFinite(score) ? Math.min(1, Math.max(0, score)) : 0;
-    }
-  }
-  if (current) concerns.push(current);
-  return { status, summary, concerns };
-}
-
-function defaultRealBehaviorProof(markdown: string): RealBehaviorProof {
-  const type = frontMatterValue(markdown, "type");
-  if (frontMatterStringArray(markdown, "labels").includes(PROOF_OVERRIDE_LABEL)) {
-    return {
-      status: "override",
-      summary: "A maintainer applied proof: override for this PR.",
-      evidenceKind: "not_applicable",
-      needsContributorAction: false,
-    };
-  }
-  if (isDocsOnlyPullRequestReport(markdown)) {
-    return {
-      status: "not_applicable",
-      summary:
-        "Real behavior proof is not required because this PR only changes files under docs/.",
-      evidenceKind: "not_applicable",
-      needsContributorAction: false,
-    };
-  }
-  return {
-    status: "not_applicable",
-    summary:
-      type === "pull_request"
-        ? "No real behavior proof assessment was recorded in this older report."
-        : "Real behavior proof is not required for non-PR issue triage.",
-    evidenceKind: "not_applicable",
-    needsContributorAction: false,
-  };
-}
-
-function reportRealBehaviorProof(markdown: string): RealBehaviorProof {
-  const defaultProof = defaultRealBehaviorProof(markdown);
-  if (defaultProof.status === "override" || isDocsOnlyPullRequestReport(markdown)) {
-    return defaultProof;
-  }
-  const section = reviewSectionValue(markdown, "realBehaviorProof");
-  if (!section.trim()) {
-    if (isExternalPullRequestReport(markdown)) {
-      return {
-        status: "missing",
-        summary:
-          "No after-fix real behavior proof was recorded for this external PR; screenshots or videos are preferred when they can show the behavior, and terminal screenshots, console output, copied live output, linked artifacts, recordings, and redacted logs count. Redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence.",
-        evidenceKind: "none",
-        needsContributorAction: true,
-      };
-    }
-    return defaultProof;
-  }
-  const statusValue = sectionLineValue(section, "Status");
-  const evidenceKindValue = sectionLineValue(section, "Evidence kind");
-  const summary = sectionLineValue(section, "Summary");
-  const needsContributorActionValue = sectionLineValue(section, "Needs contributor action");
-  const status = REAL_BEHAVIOR_PROOF_STATUSES.has(statusValue as RealBehaviorProofStatus)
-    ? (statusValue as RealBehaviorProofStatus)
-    : undefined;
-  const evidenceKind = REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS.has(
-    evidenceKindValue as RealBehaviorProofEvidenceKind,
-  )
-    ? (evidenceKindValue as RealBehaviorProofEvidenceKind)
-    : undefined;
-  if (!status || !evidenceKind || !summary) return defaultRealBehaviorProof(markdown);
-  return normalizeRealBehaviorProof({
-    status,
-    summary,
-    evidenceKind,
-    needsContributorAction: /^true$/i.test(needsContributorActionValue ?? ""),
-  });
-}
-
-function reportTelegramVisibleProof(markdown: string): TelegramVisibleProof {
-  const section = reviewSectionValue(markdown, "telegramVisibleProof");
-  const statusValue = sectionLineValue(section, "Status");
-  const status = TELEGRAM_VISIBLE_PROOF_STATUSES.has(statusValue as TelegramVisibleProofStatus)
-    ? (statusValue as TelegramVisibleProofStatus)
-    : "not_needed";
-  return {
-    status,
-    summary:
-      sectionLineValue(section, "Summary") ??
-      "No Telegram visible-proof assessment was recorded in this report.",
-  };
-}
-
-function reportPrRating(markdown: string): PrRating {
-  const section = reviewSectionValue(markdown, "prRating");
-  const proofTierValue =
-    sectionLineValue(section, "Proof tier") ?? frontMatterValue(markdown, "pr_rating_proof");
-  const patchTierValue =
-    sectionLineValue(section, "Patch tier") ?? frontMatterValue(markdown, "pr_rating_patch");
-  const overallTierValue =
-    sectionLineValue(section, "Overall tier") ?? frontMatterValue(markdown, "pr_rating_overall");
-  const summary = sectionLineValue(section, "Summary");
-  const nextSteps = sectionList(section, "Next rank-up steps").slice(0, 3);
-  if (
-    PR_RATING_TIERS.has(proofTierValue as PrRatingTier) &&
-    PR_RATING_TIERS.has(patchTierValue as PrRatingTier) &&
-    PR_RATING_TIERS.has(overallTierValue as PrRatingTier) &&
-    summary
-  ) {
-    return normalizePrRating({
-      proofTier: proofTierValue as PrRatingTier,
-      patchTier: patchTierValue as PrRatingTier,
-      overallTier: overallTierValue as PrRatingTier,
-      summary,
-      nextSteps,
-    });
-  }
-  const proof = reportRealBehaviorProof(markdown);
-  return derivedPrRating({
-    isPullRequest: frontMatterValue(markdown, "type") === "pull_request",
-    proof,
-    findings: reportReviewFindings(markdown),
-    securityReview: reportSecurityReview(markdown),
-    overallCorrectness: reportOverallCorrectness(markdown),
-    overallConfidenceScore: reportOverallConfidenceScore(markdown),
-  });
-}
-
-function reportMantisRecommendation(markdown: string): MantisRecommendation {
-  const section = reviewSectionValue(markdown, "mantisRecommendation");
-  const statusValue = sectionLineValue(section, "Status");
-  const scenarioValue = sectionLineValue(section, "Scenario");
-  const status = MANTIS_RECOMMENDATION_STATUSES.has(statusValue as MantisRecommendationStatus)
-    ? (statusValue as MantisRecommendationStatus)
-    : "not_recommended";
-  const scenario = MANTIS_RECOMMENDATION_SCENARIOS.has(
-    scenarioValue as MantisRecommendationScenario,
-  )
-    ? (scenarioValue as MantisRecommendationScenario)
-    : "none";
-  return {
-    status,
-    scenario,
-    reason:
-      sectionLineValue(section, "Reason") ??
-      "No Mantis recommendation was recorded in this report.",
-    maintainerComment: sectionLineValue(section, "Maintainer comment") ?? "",
-  };
-}
-
-function reportFeatureShowcase(markdown: string): FeatureShowcase {
-  const section = reviewSectionValue(markdown, "featureShowcase");
-  const statusValue =
-    sectionLineValue(section, "Status") ?? frontMatterValue(markdown, "feature_showcase_status");
-  const status = FEATURE_SHOWCASE_STATUSES.has(statusValue as FeatureShowcaseStatus)
-    ? (statusValue as FeatureShowcaseStatus)
-    : "none";
-  return {
-    status,
-    reason:
-      sectionLineValue(section, "Reason") ??
-      (status === "showcase"
-        ? "This report predates the structured feature showcase reason."
-        : "No feature showcase assessment was recorded in this report."),
-  };
-}
-
-function reportRootCauseCluster(markdown: string): RootCauseClusterAssessment {
-  const raw = frontMatterValue(markdown, "root_cause_cluster");
-  if (!raw) return defaultRootCauseCluster();
-  try {
-    return parseRootCauseCluster(JSON.parse(raw), "root_cause_cluster", {
-      repo: markdownRepository(markdown),
-      number: Number(frontMatterValue(markdown, "number")),
-      kind: (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
-    });
-  } catch {
-    return defaultRootCauseCluster();
-  }
-}
-
-export function rootCauseClusterFromReportForTest(markdown: string): RootCauseClusterAssessment {
-  return reportRootCauseCluster(markdown);
-}
-
-function reportAgentsPolicyStatus(markdown: string): AgentsPolicyStatus | undefined {
-  const section = reviewSectionValue(markdown, "agentsPolicyStatus");
-  const statusValue =
-    sectionLineValue(section, "Status") ?? frontMatterValue(markdown, "agents_policy_status");
-  if (!AGENTS_POLICY_STATUSES.has(statusValue as AgentsPolicyStatusKind)) return undefined;
-  const status = statusValue as AgentsPolicyStatusKind;
-  return {
-    found: /^true$/i.test(sectionLineValue(section, "Found") ?? ""),
-    readFully: /^true$/i.test(sectionLineValue(section, "Read fully") ?? ""),
-    applied: /^true$/i.test(sectionLineValue(section, "Applied") ?? ""),
-    status,
-    summary:
-      sectionLineValue(section, "Summary") ??
-      agentsPolicyStatusLine({
-        found: false,
-        readFully: false,
-        applied: false,
-        status,
-        summary: "",
-      }),
-  };
-}
-
-function defaultAgentsPolicyStatus(): AgentsPolicyStatus {
-  return {
-    found: false,
-    readFully: false,
-    applied: false,
-    status: "unreadable_or_unclear",
-    summary: "AGENTS.md policy status was not recorded in this report.",
-  };
-}
-
-function reportVisionFit(markdown: string): {
-  visionFit: VisionFitStatus;
-  visionFitReason: string;
-  visionFitEvidence: string[];
-  implementationComplexity: ImplementationComplexity;
-  autoImplementationCandidate: AutoImplementationCandidate;
-} {
-  const section = reviewSectionValue(markdown, "visionFit");
-  const visionValue =
-    sectionLineValue(section, "Status") ?? frontMatterValue(markdown, "vision_fit");
-  const complexityValue =
-    sectionLineValue(section, "Implementation complexity") ??
-    frontMatterValue(markdown, "implementation_complexity");
-  const candidateValue =
-    sectionLineValue(section, "Auto implementation candidate") ??
-    frontMatterValue(markdown, "auto_implementation_candidate");
-  const visionFit = VISION_FIT_STATUSES.has(visionValue as VisionFitStatus)
-    ? (visionValue as VisionFitStatus)
-    : "not_applicable";
-  const implementationComplexity = IMPLEMENTATION_COMPLEXITIES.has(
-    complexityValue as ImplementationComplexity,
-  )
-    ? (complexityValue as ImplementationComplexity)
-    : "not_applicable";
-  const autoImplementationCandidate = AUTO_IMPLEMENTATION_CANDIDATES.has(
-    candidateValue as AutoImplementationCandidate,
-  )
-    ? (candidateValue as AutoImplementationCandidate)
-    : "none";
-  return {
-    visionFit,
-    visionFitReason:
-      sectionLineValue(section, "Reason") ??
-      (visionFit === "not_applicable"
-        ? "Vision-fit assessment is not applicable to this older report."
-        : "No vision-fit reason was recorded in this report."),
-    visionFitEvidence:
-      sectionList(section, "Vision evidence").length > 0
-        ? sectionList(section, "Vision evidence")
-        : frontMatterStringArray(markdown, "vision_fit_evidence"),
-    implementationComplexity,
-    autoImplementationCandidate,
-  };
-}
-
-function shouldApplyFeatureShowcaseLabel(options: {
-  isPullRequest: boolean;
-  itemCategory: string | undefined;
-  requiresNewFeature: boolean;
-  showcase: FeatureShowcase;
-  securityReview: Pick<SecurityReview, "status">;
-  overallCorrectness: OverallCorrectness;
-}): boolean {
-  return (
-    options.isPullRequest &&
-    options.showcase.status === "showcase" &&
-    (options.itemCategory === "feature" || options.requiresNewFeature) &&
-    options.securityReview.status !== "needs_attention" &&
-    options.overallCorrectness !== "patch is incorrect"
-  );
-}
-
-function nextFeatureShowcaseLabels(
-  labels: readonly string[],
-  options: {
-    isPullRequest: boolean;
-    itemCategory: string | undefined;
-    requiresNewFeature: boolean;
-    showcase: FeatureShowcase;
-    securityReview: Pick<SecurityReview, "status">;
-    overallCorrectness: OverallCorrectness;
-  },
-): string[] {
-  if (labels.includes(FEATURE_SHOWCASE_LABEL)) return [...labels];
-  return shouldApplyFeatureShowcaseLabel(options)
-    ? [...labels, FEATURE_SHOWCASE_LABEL]
-    : [...labels];
-}
-
-export function featureShowcaseLabelsForTest(
-  labels: readonly string[],
-  options: {
-    isPullRequest?: boolean;
-    itemCategory?: string;
-    requiresNewFeature?: boolean;
-    status?: string;
-    securityReviewStatus?: string;
-    overallCorrectness?: string;
-  },
-): string[] {
-  const status = FEATURE_SHOWCASE_STATUSES.has(options.status as FeatureShowcaseStatus)
-    ? (options.status as FeatureShowcaseStatus)
-    : "none";
-  const securityReviewStatus = SECURITY_REVIEW_STATUSES.has(
-    options.securityReviewStatus as SecurityReviewStatus,
-  )
-    ? (options.securityReviewStatus as SecurityReviewStatus)
-    : "not_applicable";
-  const overallCorrectness = OVERALL_CORRECTNESS_VALUES.has(
-    options.overallCorrectness as OverallCorrectness,
-  )
-    ? (options.overallCorrectness as OverallCorrectness)
-    : "not a patch";
-  return nextFeatureShowcaseLabels(labels, {
-    isPullRequest: options.isPullRequest ?? true,
-    itemCategory: options.itemCategory,
-    requiresNewFeature: options.requiresNewFeature ?? false,
-    showcase: {
-      status,
-      reason: status === "showcase" ? "This is a high-signal feature idea." : "",
-    },
-    securityReview: { status: securityReviewStatus },
-    overallCorrectness,
-  });
-}
-
-function proofNeedsContributorAction(proof: Pick<RealBehaviorProof, "status">): boolean {
-  return (
-    proof.status === "missing" || proof.status === "mock_only" || proof.status === "insufficient"
-  );
-}
-
-function hasBlockingReviewFindings(findings: readonly Pick<ReviewFinding, "priority">[]): boolean {
-  return findings.some((finding) => finding.priority <= 2);
-}
-
-function recommendedMergeRiskOptionCategory(
-  options: readonly Pick<MergeRiskOption, "category" | "recommended">[],
-): MergeRiskOptionCategory | null {
-  return options.find((option) => option.recommended)?.category ?? null;
-}
-
-function securityReviewNeedsContributorWork(options: {
-  securityReview: Pick<SecurityReview, "status">;
-  mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
-}): boolean {
-  if (options.securityReview.status !== "needs_attention") return false;
-  return recommendedMergeRiskOptionCategory(options.mergeRiskOptions) !== "accept_risk";
-}
-
-function hasUnresolvedContributorWork(options: {
-  realBehaviorProof: Pick<RealBehaviorProof, "status">;
-  reviewFindings: readonly Pick<ReviewFinding, "priority">[];
-  securityReview: Pick<SecurityReview, "status">;
-  mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
-  overallCorrectness: OverallCorrectness;
-}): boolean {
-  return (
-    proofNeedsContributorAction(options.realBehaviorProof) ||
-    hasBlockingReviewFindings(options.reviewFindings) ||
-    securityReviewNeedsContributorWork(options) ||
-    options.overallCorrectness === "patch is incorrect"
-  );
-}
-
-function isReadyForMaintainerLook(options: {
-  realBehaviorProof: Pick<RealBehaviorProof, "status">;
-  reviewFindings: readonly Pick<ReviewFinding, "priority">[];
-  securityReview: Pick<SecurityReview, "status">;
-  mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
-  overallCorrectness: OverallCorrectness;
-}): boolean {
-  return (
-    !hasBlockingReviewFindings(options.reviewFindings) &&
-    !securityReviewNeedsContributorWork(options) &&
-    (options.realBehaviorProof.status === "sufficient" ||
-      options.realBehaviorProof.status === "override" ||
-      options.realBehaviorProof.status === "not_applicable") &&
-    options.overallCorrectness === "patch is correct"
-  );
-}
-
-function prStatusLabelKind(options: {
-  realBehaviorProof: Pick<RealBehaviorProof, "status">;
-  reviewFindings: readonly Pick<ReviewFinding, "priority">[];
-  securityReview: Pick<SecurityReview, "status">;
-  mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
-  overallCorrectness: OverallCorrectness;
-  hasAutomergeLabel: boolean;
-  hasRepairLoopPauseLabel: boolean;
-  hasRecentReReviewRequest: boolean;
-  hasRecentAuthorActivity: boolean;
-}): PrStatusLabelKind | null {
-  const unresolvedWork = hasUnresolvedContributorWork(options);
-  if (options.hasRepairLoopPauseLabel) return null;
-  if (options.hasAutomergeLabel) return "automerge_armed";
-  if (options.hasRecentReReviewRequest) return "re_review_loop";
-  if (options.hasRecentAuthorActivity && unresolvedWork) return "actively_grinding";
-  if (proofNeedsContributorAction(options.realBehaviorProof)) return "needs_proof";
-  if (unresolvedWork) return "waiting_on_author";
-  if (isReadyForMaintainerLook(options)) return "ready_for_maintainer_look";
-  return null;
-}
-
-function prStatusLabelForKind(kind: PrStatusLabelKind): (typeof PR_STATUS_LABELS)[number] {
-  const label = PR_STATUS_LABELS.find((candidate) => candidate.kind === kind);
-  if (!label) throw new Error(`unknown PR status label kind: ${kind}`);
-  return label;
-}
-
-function nextPrStatusLabels(
-  labels: readonly string[],
-  statusKind: PrStatusLabelKind | null,
-): string[] {
-  const nextLabels = labels.filter((label) => !PR_STATUS_LABEL_NAMES.has(label));
-  if (statusKind) nextLabels.push(prStatusLabelForKind(statusKind).name);
-  return nextLabels;
-}
-
-function hasRepairLoopPauseLabel(labels: readonly string[]): boolean {
-  const normalized = new Set(labels.map((label) => label.toLowerCase()));
-  return (
-    normalized.has(HUMAN_REVIEW_LABEL) ||
-    normalized.has(MANUAL_ONLY_LABEL) ||
-    normalized.has(MERGE_READY_LABEL)
-  );
-}
-
-function eventTimestampMs(value: unknown): number | null {
-  const record = asRecord(value);
-  return timestampMs(stringOrUndefined(record.updatedAt) ?? stringOrUndefined(record.createdAt));
-}
-
-function isAfterReview(value: unknown, reviewedAtMs: number | null): boolean {
-  if (reviewedAtMs === null) return false;
-  const eventMs = eventTimestampMs(value);
-  return eventMs !== null && eventMs > reviewedAtMs;
-}
-
-function isReReviewRequestText(text: unknown): boolean {
-  const body = stringOrUndefined(text)?.trim() ?? "";
-  if (!body) return false;
-  return (
-    /^\s*\/review(?:\s|$)/im.test(body) ||
-    /^\s*\/clawsweeper\s+(?:re-?review|rerun|re-run|run\s+review|review)(?:\s|$)/im.test(body) ||
-    /(?:^|\s)@clawsweeper(?:\[bot\])?\s+(?:re-?review|rerun|re-run|run\s+review|review)(?:\s|$)/im.test(
-      body,
-    )
-  );
-}
-
-function hasRecentReReviewRequest(
-  context: Pick<ItemContext, "comments">,
-  reviewedAt: string | undefined,
-): boolean {
-  const reviewedAtMs = timestampMs(reviewedAt);
-  return context.comments.some((comment) => {
-    const record = asRecord(comment);
-    if (isAutomationReportAuthor(stringOrUndefined(record.author))) return false;
-    return isAfterReview(comment, reviewedAtMs) && isReReviewRequestText(record.body);
-  });
-}
-
-function hasRecentAuthorActivity(
-  context: Pick<ItemContext, "comments" | "timeline">,
-  options: { reviewedAt: string | undefined; author: string | undefined },
-): boolean {
-  const author = String(options.author ?? "")
-    .trim()
-    .toLowerCase();
-  if (!author) return false;
-  const reviewedAtMs = timestampMs(options.reviewedAt);
-  return (
-    context.comments.some((comment) => {
-      const record = asRecord(comment);
-      return (
-        isAfterReview(comment, reviewedAtMs) &&
-        stringOrUndefined(record.author)?.toLowerCase() === author
-      );
-    }) ||
-    context.timeline.some((event) => {
-      const record = asRecord(event);
-      return (
-        isAfterReview(event, reviewedAtMs) &&
-        stringOrUndefined(record.actor)?.toLowerCase() === author &&
-        typeof record.commitId === "string" &&
-        record.commitId.length > 0
-      );
-    })
-  );
-}
-
-function prStatusLabelKindFromReport(
-  markdown: string,
-  context: ItemContext,
-  currentLabels: readonly string[],
-): PrStatusLabelKind | null {
-  if (frontMatterValue(markdown, "type") !== "pull_request") return null;
-  return prStatusLabelKind({
-    realBehaviorProof: reportRealBehaviorProof(markdown),
-    reviewFindings: reportReviewFindings(markdown),
-    securityReview: reportSecurityReview(markdown),
-    mergeRiskOptions: mergeRiskOptionsFromReport(markdown),
-    overallCorrectness: reportOverallCorrectness(markdown),
-    hasAutomergeLabel: currentLabels.includes(AUTOMERGE_LABEL),
-    hasRepairLoopPauseLabel: hasRepairLoopPauseLabel(currentLabels),
-    hasRecentReReviewRequest: hasRecentReReviewRequest(
-      context,
-      frontMatterValue(markdown, "reviewed_at"),
-    ),
-    hasRecentAuthorActivity: hasRecentAuthorActivity(context, {
-      reviewedAt: frontMatterValue(markdown, "reviewed_at"),
-      author: frontMatterValue(markdown, "author"),
-    }),
-  });
-}
-
-export function prStatusLabelsForTest(
-  labels: readonly string[],
-  options: {
-    isPullRequest?: boolean;
-    nextSteps?: readonly string[];
-    proofStatus?: string;
-    findingPriorities?: readonly number[];
-    securityStatus?: string;
-    mergeRiskOptions?: readonly Pick<MergeRiskOption, "category" | "recommended">[];
-    overallCorrectness?: string;
-    hasAutomergeLabel?: boolean;
-    hasRecentReReviewRequest?: boolean;
-    hasRecentAuthorActivity?: boolean;
-    reviewedAt?: string;
-    comments?: readonly {
-      author?: string;
-      body?: string;
-      createdAt?: string;
-      updatedAt?: string;
-    }[];
-  },
-): string[] {
-  if (options.isPullRequest === false) return nextPrStatusLabels(labels, null);
-  const hasRecentReReviewRequestValue =
-    options.hasRecentReReviewRequest ??
-    hasRecentReReviewRequest(
-      { comments: [...(options.comments ?? [])] },
-      options.reviewedAt ?? "2026-01-01T00:00:00Z",
-    );
-  const statusKind = prStatusLabelKind({
-    realBehaviorProof: {
-      status: REAL_BEHAVIOR_PROOF_STATUSES.has(options.proofStatus as RealBehaviorProofStatus)
-        ? (options.proofStatus as RealBehaviorProofStatus)
-        : "not_applicable",
-    },
-    reviewFindings: (options.findingPriorities ?? [])
-      .filter((priority): priority is 0 | 1 | 2 | 3 => [0, 1, 2, 3].includes(priority))
-      .map((priority) => ({ priority })),
-    securityReview: {
-      status: SECURITY_REVIEW_STATUSES.has(options.securityStatus as SecurityReviewStatus)
-        ? (options.securityStatus as SecurityReviewStatus)
-        : "cleared",
-    },
-    mergeRiskOptions: options.mergeRiskOptions ?? [],
-    overallCorrectness: OVERALL_CORRECTNESS_VALUES.has(
-      options.overallCorrectness as OverallCorrectness,
-    )
-      ? (options.overallCorrectness as OverallCorrectness)
-      : "patch is correct",
-    hasAutomergeLabel: options.hasAutomergeLabel ?? labels.includes(AUTOMERGE_LABEL),
-    hasRepairLoopPauseLabel: hasRepairLoopPauseLabel(labels),
-    hasRecentReReviewRequest: hasRecentReReviewRequestValue,
-    hasRecentAuthorActivity: options.hasRecentAuthorActivity === true,
-  });
-  return nextPrStatusLabels(labels, statusKind);
-}
-
-export function prStatusLabelSchemeForTest(): {
-  kind: PrStatusLabelKind;
-  name: string;
-  color: string;
-  description: string;
-}[] {
-  return PR_STATUS_LABELS.map(({ kind, name, color, description }) => ({
-    kind,
-    name,
-    color,
-    description,
-  }));
-}
-
 function pullRequestFilePathsFromReport(markdown: string): string[] {
   return frontMatterStringArray(markdown, "pull_files");
-}
-
-function configSurfaceChangeFromContext(repo: string, context: ItemContext): ConfigSurfaceChange {
-  if (repo !== "openclaw/openclaw") {
-    return { change: false, keys: [] };
-  }
-
-  const keys = new Set<string>();
-  for (const entry of context.pullFiles ?? []) {
-    const file = asRecord(entry);
-    const path = typeof file.filename === "string" ? file.filename.trim() : "";
-    const previousPath =
-      typeof file.previous_filename === "string" ? file.previous_filename.trim() : "";
-    const configSurfacePath = [path, previousPath].find(isOpenClawConfigSurfacePath);
-    if (!configSurfacePath) continue;
-    const patch = typeof file.patch === "string" ? file.patch : null;
-    if (patch !== null && configSurfacePatchIsTruncated(patch)) {
-      keys.add("unknown-config-surface-change");
-    }
-    const lines = patch === null ? [] : changedPatchLines(patch);
-    if (patch === null || lines.length === 0) {
-      keys.add("unknown-config-surface-change");
-    }
-    for (const line of lines) {
-      const lineKeys = configSurfaceKeysFromPatchLine(configSurfacePath, line);
-      if (
-        lineKeys.length === 0 &&
-        !isMarkdownConfigSurfacePath(configSurfacePath) &&
-        configSurfaceLineNeedsUnknownMarker(line)
-      ) {
-        keys.add("unknown-config-surface-change");
-      }
-      for (const key of lineKeys) {
-        keys.add(key);
-      }
-    }
-  }
-
-  if (context.counts?.pullFilesTruncated) {
-    keys.add("unknown-truncated-pull-files");
-  }
-
-  return { change: keys.size > 0, keys: [...keys].sort() };
-}
-
-export function configSurfaceChangeFromPullFilesForTest(options: {
-  repo?: string;
-  pullFiles?: unknown[];
-  pullFilesTruncated?: boolean;
-}): ConfigSurfaceChange {
-  const counts: ItemContext["counts"] = { comments: 0, timeline: 0 };
-  if (options.pullFilesTruncated !== undefined)
-    counts.pullFilesTruncated = options.pullFilesTruncated;
-  const context: ItemContext = {
-    issue: {},
-    comments: [],
-    timeline: [],
-    counts,
-  };
-  if (options.pullFiles !== undefined) context.pullFiles = options.pullFiles;
-  return configSurfaceChangeFromContext(options.repo ?? "openclaw/openclaw", context);
-}
-
-function dataModelChangeFromContext(repo: string, context: ItemContext): DataModelChange {
-  if (repo !== "openclaw/openclaw") {
-    return { change: false, surfaces: [] };
-  }
-
-  const surfaces = new Set<string>();
-  for (const entry of context.pullFiles ?? []) {
-    const file = asRecord(entry);
-    const path = typeof file.filename === "string" ? file.filename.trim() : "";
-    const previousPath =
-      typeof file.previous_filename === "string" ? file.previous_filename.trim() : "";
-    const candidates = [path, previousPath].filter(Boolean);
-    const likelyPath = candidates.find(isLikelyOpenClawDataModelPath) ?? "";
-    const patch = typeof file.patch === "string" ? file.patch : null;
-    const lines = patch === null ? [] : changedPatchLines(patch);
-
-    if (
-      likelyPath &&
-      (patch === null || lines.length === 0 || configSurfacePatchIsTruncated(patch))
-    ) {
-      surfaces.add(dataModelSurfaceLabel(likelyPath, "unknown-data-model-change"));
-    }
-
-    for (const candidate of candidates) {
-      if (isDocsPath(candidate)) {
-        if (patch !== null && !configSurfacePatchIsTruncated(patch)) {
-          dataModelSurfacesFromPatch(candidate, lines, { docsOnly: true }).forEach((surface) =>
-            surfaces.add(surface),
-          );
-        }
-        continue;
-      }
-      dataModelSurfacesFromPatch(candidate, lines, { docsOnly: false }).forEach((surface) =>
-        surfaces.add(surface),
-      );
-    }
-  }
-
-  if (context.counts?.pullFilesTruncated) {
-    surfaces.add("unknown-truncated-pull-files");
-  }
-
-  return { change: surfaces.size > 0, surfaces: [...surfaces].sort() };
-}
-
-export function dataModelChangeFromPullFilesForTest(options: {
-  repo?: string;
-  pullFiles?: unknown[];
-  pullFilesTruncated?: boolean;
-}): DataModelChange {
-  const counts: ItemContext["counts"] = { comments: 0, timeline: 0 };
-  if (options.pullFilesTruncated !== undefined)
-    counts.pullFilesTruncated = options.pullFilesTruncated;
-  const context: ItemContext = {
-    issue: {},
-    comments: [],
-    timeline: [],
-    counts,
-  };
-  if (options.pullFiles !== undefined) context.pullFiles = options.pullFiles;
-  return dataModelChangeFromContext(options.repo ?? "openclaw/openclaw", context);
-}
-
-function isOpenClawConfigSurfacePath(path: string): boolean {
-  return (
-    /^src\/config\/(?:zod-schema[^/]*|types[^/]*|schema(?:[-.][^/]*)?)\.ts$/.test(path) ||
-    /^src\/plugins\/manifest(?:-registry)?\.ts$/.test(path) ||
-    /^docs\/gateway\/configuration[^/]*\.md$/.test(path) ||
-    path === "docs/plugins/manifest.md"
-  );
-}
-
-function changedPatchLines(patch: string): string[] {
-  return patch
-    .split("\n")
-    .filter(
-      (line) =>
-        (line.startsWith("+") && !line.startsWith("+++")) ||
-        (line.startsWith("-") && !line.startsWith("---")),
-    )
-    .map((line) => line.slice(1).trim());
-}
-
-function configSurfaceLineNeedsUnknownMarker(line: string): boolean {
-  const trimmed = line.trim();
-  return Boolean(trimmed) && !/^\/\/|^\/\*|^\*/.test(trimmed);
-}
-
-function configSurfacePatchIsTruncated(patch: string): boolean {
-  return /\n\n\[truncated \d+ chars\]$/.test(patch);
-}
-
-function configSurfaceKeysFromPatchLine(path: string, line: string): string[] {
-  const trimmed = line.trim();
-  if (!trimmed || /^\/\/|^\/\*|^\*|^<!--/.test(trimmed)) return [];
-
-  const keys = new Set<string>();
-  for (const match of trimmed.matchAll(/`([^`]+)`/g)) {
-    const token = match[1]?.trim();
-    if (token && markdownConfigSurfaceTokenLooksSemantic(path, trimmed, token)) keys.add(token);
-  }
-
-  if (!isMarkdownConfigSurfacePath(path)) {
-    const property = trimmed.match(
-      /^(?:readonly\s+)?(?:"([^"]+)"|'([^']+)'|([A-Za-z_$][\w$.-]*))\??\s*:/,
-    );
-    const key = property?.[1] ?? property?.[2] ?? property?.[3];
-    if (key && isConfigSurfaceToken(key)) {
-      keys.add(pluginManifestConfigSurfaceKey(path, key));
-    }
-
-    if (/\b(?:z\.enum|Type\.Literal|enum)\b/.test(trimmed)) {
-      for (const match of trimmed.matchAll(/["']([A-Za-z0-9_.-]+)["']/g)) {
-        const token = match[1]?.trim();
-        if (token && isConfigSurfaceToken(token)) keys.add(token);
-      }
-    }
-  }
-
-  return [...keys];
-}
-
-function isMarkdownConfigSurfacePath(path: string): boolean {
-  return path.endsWith(".md") || path.endsWith(".mdx");
-}
-
-function markdownConfigSurfaceTokenLooksSemantic(
-  path: string,
-  line: string,
-  token: string,
-): boolean {
-  if (!isConfigSurfaceToken(token)) return false;
-  if (!isMarkdownConfigSurfacePath(path)) return true;
-  return /[.[\]]/.test(token) || /^[A-Z0-9_]{3,}$/.test(token) || /^\s*(?:\||[-*]\s+`)/.test(line);
-}
-
-function isConfigSurfaceToken(token: string): boolean {
-  return (
-    token.length >= 2 &&
-    token.length <= 120 &&
-    /^[A-Za-z0-9_.[\]-]+$/.test(token) &&
-    /[A-Za-z]/.test(token)
-  );
-}
-
-function pluginManifestConfigSurfaceKey(path: string, key: string): string {
-  if (!path.startsWith("src/plugins/manifest") || key.includes(".") || key === "contracts") {
-    return key;
-  }
-  return `contracts.${key}`;
 }
 
 function configSurfaceReviewRequired(markdown: string): boolean {
@@ -10979,239 +8070,13 @@ function dataModelSurfaceChangeFromReport(markdown: string): boolean {
 
 function dataModelUpgradeProofFromReport(markdown: string): boolean {
   if (!dataModelSurfaceChangeFromReport(markdown)) return false;
-  const text = [
-    reviewSectionValue(markdown, "realBehaviorProof"),
-    reviewSectionValue(markdown, "solutionAssessment"),
-    reviewSectionValue(markdown, "evidence"),
-  ].join("\n");
-  const noMigrationRequiredPattern =
-    /\bno\s+(?:data\s+)?migrations?\s+(?:(?:is|are)\s+)?(?:required|needed|necessary)\b/i;
-  const negativeProofText = text.replace(
-    new RegExp(noMigrationRequiredPattern.source, "gi"),
-    "migration unnecessary",
+  return hasDataModelUpgradeProof(
+    [
+      reviewSectionValue(markdown, "realBehaviorProof"),
+      reviewSectionValue(markdown, "solutionAssessment"),
+      reviewSectionValue(markdown, "evidence"),
+    ].join("\n"),
   );
-  if (
-    /\b(?:missing|lacks?|without|no)\b[^.]{0,120}\b(?:migration|upgrade|backfill|compatibility)\b/i.test(
-      negativeProofText,
-    )
-  ) {
-    return false;
-  }
-  if (
-    /\b(?:migration|upgrade|backfill|compatibility)\b[^.]{0,160}\b(?:proof|test(?:ed|s|ing)?|cover(?:ed|age)?|verif(?:y|ied|ication)|compatib(?:le|ility))\b[^.]{0,120}\b(?:required|needed|missing|todo|before merge)\b/i.test(
-      negativeProofText,
-    ) ||
-    /\b(?:must|should|needs?|requires?|required|needed|todo)\b[^.]{0,120}\b(?:migration|upgrade|backfill|compatibility)\b[^.]{0,160}\b(?:proof|test(?:ed|s|ing)?|cover(?:ed|age)?|verif(?:y|ied|ication)|compatib(?:le|ility))\b/i.test(
-      negativeProofText,
-    )
-  ) {
-    return false;
-  }
-  if (
-    /\b(?:migration|upgrade|backfill|schema version|existing data|existing database|existing cache|existing state)\b[^.]{0,180}\b(?:not|never)\b[^.]{0,80}\b(?:test(?:ed|s)?|cover(?:ed|age)?|prov(?:e|ed|en)|verif(?:y|ied)|compatib(?:le|ility)|preserv(?:e|ed|es)|migrat(?:e|ed|es)|backfill(?:ed|s)?)\b/i.test(
-      negativeProofText,
-    ) ||
-    /\b(?:not|never)\b[^.]{0,80}\b(?:test(?:ed|s)?|cover(?:ed|age)?|prov(?:e|ed|en)|verif(?:y|ied)|compatib(?:le|ility)|preserv(?:e|ed|es))\b[^.]{0,180}\b(?:migration|upgrade|backfill|schema version|existing data|existing database|existing cache|existing state)\b/i.test(
-      negativeProofText,
-    )
-  ) {
-    return false;
-  }
-  if (
-    /\b(?:should|would|will|expected|intend(?:ed)?|designed|aims?|plans?|promises?)\b[^.]{0,120}\b(?:preserv(?:e|ed|es)|remain(?:s)? compatible|compatib(?:le|ility)|migration|upgrade|backfill)\b/i.test(
-      negativeProofText,
-    ) ||
-    /\b(?:migration|upgrade|backfill|existing data|existing database|existing cache|existing state)\b[^.]{0,120}\b(?:should|would|will|expected|intend(?:ed)?|designed|aims?|plans?|promises?|planned|pending|unimplemented)\b/i.test(
-      negativeProofText,
-    )
-  ) {
-    return false;
-  }
-  if (
-    /\b(?:migration|upgrade|backfill|compatibility)\b[^.]{0,160}\b(?:proof|test(?:ed|s|ing)?|cover(?:ed|age)?|verif(?:y|ied|ication)|compatib(?:le|ility))\b[^.]{0,120}\b(?:is|are|remains?)?\s*(?:planned|pending|future|unimplemented|incomplete|todo|not yet|to be (?:added|done|implemented|verified|tested))\b/i.test(
-      negativeProofText,
-    ) ||
-    /\b(?:planned|pending|future|unimplemented|incomplete|todo|not yet|to be (?:added|done|implemented|verified|tested))\b[^.]{0,120}\b(?:migration|upgrade|backfill|compatibility)\b[^.]{0,160}\b(?:proof|test(?:ed|s|ing)?|cover(?:ed|age)?|verif(?:y|ied|ication)|compatib(?:le|ility))\b/i.test(
-      negativeProofText,
-    )
-  ) {
-    return false;
-  }
-  if (
-    noMigrationRequiredPattern.test(text) &&
-    /\b(?:existing data|existing database|existing cache|existing state|upgrade compatibility|compatibility)\b[^.]{0,160}\b(?:test(?:ed|s)?|cover(?:ed|age)?|prov(?:e|ed|en)|verif(?:y|ied)|compatib(?:le|ility)|preserv(?:e|ed|es))\b/i.test(
-      text,
-    )
-  ) {
-    return true;
-  }
-  return (
-    /\b(?:migration|upgrade|backfill|schema version|existing data|existing database|existing cache|existing state)\b[^.]{0,180}\b(?:test(?:ed|s)?|cover(?:ed|age)?|prov(?:e|ed|en)|verif(?:y|ied)|compatib(?:le|ility)|preserv(?:e|ed|es)|migrat(?:e|ed|es)|backfill(?:ed|s)?)\b/i.test(
-      text,
-    ) ||
-    /\b(?:test(?:ed|s)?|cover(?:ed|age)?|prov(?:e|ed|en)|verif(?:y|ied)|preserv(?:e|ed|es))\b[^.]{0,180}\b(?:migration|upgrade|backfill|schema version|existing data|existing database|existing cache|existing state)\b/i.test(
-      text,
-    )
-  );
-}
-
-function dataModelSurfacesFromPatch(
-  path: string,
-  lines: readonly string[],
-  options: { docsOnly: boolean },
-): string[] {
-  const text = lines.filter((line) => dataModelLineLooksSemantic(line, options)).join("\n");
-  if (!text) return [];
-
-  const surfaces = new Set<string>();
-  const add = (surface: string) => surfaces.add(dataModelSurfaceLabel(path, surface));
-  const pathHint = dataModelPathHint(path);
-  if (pathHint && dataModelTextMatchesPathHint(text, pathHint)) add(pathHint);
-  if (pathHint && dataModelTextLooksLikePersistedShapeField(text, pathHint)) add(pathHint);
-  if (
-    /\b(?:CREATE|ALTER|DROP)\s+(?:TABLE|INDEX|VIEW|COLUMN)\b|\bADD\s+COLUMN\b|\bPRAGMA\s+user_version\b|\bschema[_-]?version\b/i.test(
-      text,
-    )
-  ) {
-    add("database schema");
-  }
-  if (/\b(?:migration|migrate|upgrade|backfill|doctor|repair|reindex|rehydrat\w*)\b/i.test(text)) {
-    add("migration/backfill/repair");
-  }
-  if (
-    /\b(?:DurableObject|state\.storage|storage\.(?:get|put|delete|list)|blockConcurrencyWhile)\b/i.test(
-      text,
-    )
-  ) {
-    add("durable storage schema");
-  }
-  if (
-    /\b(?:JSON\.(?:parse|stringify)|readFile|writeFile|localStorage|sessionStorage|workspaceState|globalState|serialized|persisted?|statePath)\b/i.test(
-      text,
-    )
-  ) {
-    add("serialized state");
-  }
-  if (
-    /\b(?:cache(?:Key|Version|Schema|Namespace)?|cache[_-]?(?:key|version|schema|namespace)|ttl)\b/i.test(
-      text,
-    )
-  ) {
-    add("persistent cache schema");
-  }
-  if (
-    /\b(?:embedding|vector|collection|dimension|metadata|row[_-]?id|document[_-]?id|chunk[_-]?id|similarity[_-]?index)\b/i.test(
-      text,
-    )
-  ) {
-    add("vector/embedding metadata");
-  }
-  return [...surfaces];
-}
-
-function dataModelLineLooksSemantic(line: string, options: { docsOnly: boolean }): boolean {
-  const trimmed = line.trim();
-  if (!trimmed || /^\/\/|^\/\*|^\*|^<!--/.test(trimmed)) return false;
-  if (!options.docsOnly) return true;
-  return /\b(?:schema|migration|migrate|upgrade|backfill|database|sqlite|postgres|durable object|storage|cache|serialized|json state|embedding|vector|metadata|doctor|repair)\b/i.test(
-    trimmed,
-  );
-}
-
-function isLikelyOpenClawDataModelPath(path: string): boolean {
-  if (!path || isDocsPath(path)) return false;
-  return Boolean(dataModelPathHint(path)) || /\.(?:sql|sqlite|db|prisma)$/.test(path);
-}
-
-function dataModelPathHint(path: string): string {
-  if (
-    /(^|\/)(?:durable-?objects?|workers?|storage)(?:\/|[-_.])|durable-?object|state-storage/i.test(
-      path,
-    )
-  ) {
-    return "durable storage schema";
-  }
-  if (/(^|\/)(?:cache|caches)(?:\/|[-_.])|cache[-_.]schema/i.test(path)) {
-    return "persistent cache schema";
-  }
-  if (
-    /(^|\/)(?:state|sessions?|history|persistence)(?:\/|[-_.])|(?:serialized|persisted?)[-_.]?(?:state|json)/i.test(
-      path,
-    )
-  ) {
-    return "serialized state";
-  }
-  if (
-    /(^|\/)(?:vector|embedding|embeddings|memory)(?:\/|[-_.])|(?:vector|embedding|metadata|row-id|document-id|chunk-id)/i.test(
-      path,
-    )
-  ) {
-    return "vector/embedding metadata";
-  }
-  if (
-    /(^|\/)(?:migrations?|backfill|doctor|repair|upgrade)(?:\/|[-_.])|(?:migration|backfill|doctor|repair|upgrade)\.(?:ts|js)$/i.test(
-      path,
-    )
-  ) {
-    return "migration/backfill/repair";
-  }
-  if (
-    /\.sql$|(^|\/)(?:migrations?|schema|database|db|sql)(?:\/|[-_.])|(?:schema|migration|ddl|prisma)\.(?:ts|js|sql|prisma)$/i.test(
-      path,
-    )
-  ) {
-    return "database schema";
-  }
-  return "";
-}
-
-function dataModelTextMatchesPathHint(text: string, pathHint: string): boolean {
-  switch (pathHint) {
-    case "database schema":
-      return (
-        /\b(?:migration|migrate|schema[_-]?version|user_version|CREATE|ALTER|DROP)\b/i.test(text) ||
-        /\b(?:sqliteTable|pgTable|mysqlTable|defineTable|createTable|createIndex|table|column|index|primaryKey|foreignKey|uniqueIndex)\b/i.test(
-          text,
-        )
-      );
-    case "durable storage schema":
-      return /\b(?:DurableObject|storage|schema|migration|state)\b/i.test(text);
-    case "persistent cache schema":
-      return /\b(?:cache|schema|key|version|namespace|ttl)\b/i.test(text);
-    case "serialized state":
-      return /\b(?:JSON|serialized|persisted?|state|session|history|schema|version)\b/i.test(text);
-    case "vector/embedding metadata":
-      return /\b(?:embedding|vector|collection|dimension|metadata|row[_-]?id|document[_-]?id|chunk[_-]?id|schema|version)\b/i.test(
-        text,
-      );
-    case "migration/backfill/repair":
-      return /\b(?:migration|migrate|upgrade|backfill\w*|doctor|repair|schema|version|existing data|INSERT|UPDATE|DELETE)\b/i.test(
-        text,
-      );
-    default:
-      return false;
-  }
-}
-
-function dataModelTextLooksLikePersistedShapeField(text: string, pathHint: string): boolean {
-  if (pathHint === "database schema") {
-    return (
-      /\b[$A-Z_a-z][$\w]*\??\s*:\s*(?:bigint|blob|boolean|bool|datetime|integer|int|jsonb?|numeric|real|serial|sqliteTable|text|timestamp|uuid|varchar)\s*\(/i.test(
-        text,
-      ) ||
-      /\b(?:bigint|blob|boolean|bool|datetime|integer|int|jsonb?|numeric|real|serial|text|timestamp|uuid|varchar)\s*\(\s*["'`][^"'`]+["'`]/i.test(
-        text,
-      )
-    );
-  }
-
-  return /\b[$A-Z_a-z][$\w]*\??\s*:\s*(?:Array|Map|ReadonlyArray|Record|Set|boolean|number|string|unknown|[$A-Z_a-z][$\w]*)(?:\b|[<[\]])/i.test(
-    text,
-  );
-}
-
-function dataModelSurfaceLabel(path: string, surface: string): string {
-  return `${surface}: ${path}`;
 }
 
 function prSurfaceFilesFromContext(context: ItemContext): PrSurfaceFile[] {
@@ -11328,10 +8193,6 @@ function renderReviewMetricsDigest(metrics: readonly ReviewMetric[]): string {
         `| **${publicTableCell(metric.label)}** | ${publicTableCell(metric.value)} | ${publicTableCell(sentence(metric.reason))} |`,
     ),
   ].join("\n");
-}
-
-function isDocsPath(file: string): boolean {
-  return file.startsWith("docs/");
 }
 
 function isDocsOnlyPullRequestReport(markdown: string): boolean {
@@ -15970,7 +12831,6 @@ export function unsponsoredFeatureDecisionBlockReason(
   return null;
 }
 
-const STALLED_UNPROVEN_PROOF_STATUSES = new Set(["missing", "mock_only", "insufficient"]);
 const STALLED_UNPROVEN_RATING_TIERS = new Set(["D", "F"]);
 
 function externalPrCloseDecisionBlockReason(
@@ -18800,164 +15660,12 @@ function planCommand(args: Args): void {
 // before submission" #357 describes but gates behind an already-open PR. No
 // GitHub fetch: the diff comes from `git diff`, the body from the commit message
 // (or --body-file), so it works offline on a fork checkout.
-function buildLocalRangeReview(
-  targetDir: string,
-  repo: string,
-  baseRef: string,
-): { item: Item; context: ItemContext; baseSha: string; headSha: string } {
-  const base = baseRef || "origin/main";
-  const headSha = run("git", ["rev-parse", "HEAD"], { cwd: targetDir }).trim();
-  const baseSha = run("git", ["merge-base", base, "HEAD"], { cwd: targetDir }).trim();
-  if (!baseSha || baseSha === headSha) {
-    throw new UserFacingCommandError(
-      `No local-range review: HEAD has no commits beyond ${base} in ${targetDir}.`,
-    );
-  }
-  // Reuse #298's committed-range contract: this offline review covers COMMITTED work,
-  // so a dirty tree (staged/untracked changes the review can't see) is rejected.
-  const dirtyTree = dirtyWorktree(targetDir);
-  if (dirtyTree) {
-    throw new UserFacingCommandError(
-      `No local-range review: working tree not clean — commit or stash first:\n${dirtyTree}`,
-    );
-  }
-  // Reuse #298's offline commit metadata (offline=true skips all gh-api hydration).
-  const meta = commitMetadata(targetDir, repo, headSha, true);
-  const bodyText = run("git", ["log", "-1", "--format=%b", headSha], { cwd: targetDir }).trim();
-  const title = meta.subject || `local range ${baseSha.slice(0, 8)}..${headSha.slice(0, 8)}`;
-  const author = meta.authorName || "local";
-  const committedAt = meta.committedAt || "1970-01-01T00:00:00Z";
-  const localCommitShas = run("git", ["rev-list", "--reverse", `${baseSha}..${headSha}`], {
-    cwd: targetDir,
-  })
-    .split("\n")
-    .filter(Boolean);
-  const localCommitIdentities = localCommitShas.map((sha) => {
-    const result = spawnSync("git", ["cat-file", "commit", sha], {
-      cwd: targetDir,
-      encoding: "utf8",
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    if (result.error || result.status !== 0) {
-      throw new UserFacingCommandError(`Could not read local commit ${sha} for range review.`);
-    }
-    const separator = result.stdout.indexOf("\n\n");
-    if (separator < 0) {
-      throw new UserFacingCommandError(`Local commit ${sha} has malformed commit data.`);
-    }
-    const headers = result.stdout.slice(0, separator);
-    const message = result.stdout.slice(separator + 2);
-    const authorHeader = headers.split("\n").find((line) => line.startsWith("author "));
-    const commitAuthor =
-      authorHeader?.slice("author ".length).replace(/\s+<[^>]*>\s+\d+\s+[+-]\d{4}$/, "") ?? "local";
-    return { sha, author: commitAuthor, message };
-  });
-  const localCommitRevision = pullCommitContentRevision(localCommitIdentities);
-  if (!localCommitRevision) {
-    throw new UserFacingCommandError("Could not fingerprint local range commit messages.");
-  }
-  const nameStatus = run("git", ["diff", "--name-status", `${baseSha}..${headSha}`], {
-    cwd: targetDir,
-  }).trim();
-  const semanticPullFiles: unknown[] = [];
-  const pullFiles = nameStatus
-    ? nameStatus.split("\n").map((line) => {
-        // name-status rows are tab-separated: "A\tfile", "M\tfile", or for rename/copy
-        // "R100\told\tnew". The reviewable path is always the LAST field (the new path);
-        // the status is the first. Splitting on the first tab only would feed the literal
-        // "old\tnew" to `git diff -- <path>` and yield an empty patch for renames/copies.
-        const parts = line.split("\t");
-        const status = parts[0] ?? line;
-        const filename = parts[parts.length - 1] ?? line;
-        const previousFilename = parts.length > 2 ? parts[parts.length - 2] : undefined;
-        const patch = run("git", ["diff", `${baseSha}..${headSha}`, "--", filename], {
-          cwd: targetDir,
-        });
-        const file = {
-          filename,
-          ...(previousFilename ? { previous_filename: previousFilename } : {}),
-          status,
-          patch: truncateText(patch, 512 * 1024),
-        };
-        semanticPullFiles.push({
-          ...file,
-          ...pullFileTreeIdentity({ file, targetDir, baseSha, headSha }),
-        });
-        return {
-          filename,
-          ...(previousFilename ? { previous_filename: previousFilename } : {}),
-          status,
-          patch: truncateText(patch, 8000),
-        };
-      })
-    : [];
-  const item: Item = {
-    repo,
-    number: 0,
-    kind: "pull_request",
-    title,
-    url: `local:${headSha}`,
-    createdAt: committedAt,
-    updatedAt: committedAt,
-    author,
-    // A pre-submission self-review is the CONTRIBUTOR case — the proof gate treats OWNER
-    // (maintainer) PRs more leniently, which would undercut exercising the real proof path.
-    authorAssociation: "CONTRIBUTOR",
-    labels: [],
-  };
-  const context: ItemContext = {
-    issue: {
-      number: 0,
-      title,
-      body: bodyText,
-      state: "open",
-      user: { login: author },
-      html_url: item.url,
-    },
-    comments: [],
-    timeline: [],
-    pullRequest: {
-      number: 0,
-      state: "open",
-      draft: false,
-      merged: false,
-      head: { ref: "HEAD", sha: headSha },
-      base: { ref: base, sha: baseSha },
-    },
-    pullFiles,
-    semanticPullFiles,
-    pullCommits: localCommitIdentities.map((commit) => ({
-      sha: commit.sha,
-      author: commit.author,
-      message: truncateText(commit.message, 1000),
-    })),
-    pullCommitsRevision: localCommitRevision,
-    pullReviewComments: [],
-    pullReviewCommentsRevision: reviewCommentContentRevision([]),
-    pullChecks: {
-      complete: true,
-      checkRuns: [],
-      checkRunsTruncated: false,
-      statuses: [],
-      statusesTruncated: false,
-    },
-    counts: {
-      comments: 0,
-      timeline: 0,
-      pullFiles: pullFiles.length,
-      pullFilesHydrated: pullFiles.length,
-      pullFilesTruncated: false,
-      pullCommits: localCommitIdentities.length,
-      pullCommitsHydrated: localCommitIdentities.length,
-      pullCommitsTruncated: false,
-      pullReviewComments: 0,
-      pullReviewCommentsHydrated: 0,
-      pullReviewCommentsTruncated: false,
-    },
-  };
-  return { item, context, baseSha, headSha };
-}
+const buildLocalRangeReview = createLocalRangeReviewer({
+  run,
+  pullCommitContentRevision,
+  pullFileTreeIdentity,
+  reviewCommentContentRevision,
+});
 
 export function buildLocalRangeReviewForTest(
   targetDir: string,
@@ -26971,328 +23679,23 @@ function auditRecords(location: AuditRecordLocation, dir: string): AuditRecord[]
     .filter((record) => record.repo === targetRepo());
 }
 
-function openItemFinding(item: Item, extra: Partial<AuditFinding> = {}): AuditFinding {
-  return {
-    number: item.number,
-    kind: item.kind,
-    title: item.title,
-    labels: item.labels,
-    authorAssociation: item.authorAssociation,
-    createdAt: item.createdAt,
-    updatedAt: item.updatedAt,
-    ...extra,
-  };
-}
-
-function isRecentlyCreatedMissingOpen(item: Item, generatedAtMs: number): boolean {
-  const createdAt = Date.parse(item.createdAt);
-  return Number.isFinite(createdAt) && generatedAtMs - createdAt < RECENT_MISSING_OPEN_MS;
-}
-
-function missingOpenReason(item: Item, generatedAtMs: number): MissingOpenReason {
-  if (!shouldPlanItem(item)) {
-    if (isProtectedItem(item)) return "protected_label";
-    if (isMaintainerAuthored(item)) return "maintainer_authored";
-  }
-  if (isRecentlyCreatedMissingOpen(item, generatedAtMs)) return "recently_created";
-  return "eligible";
-}
-
-function recordFinding(record: AuditRecord, extra: Partial<AuditFinding> = {}): AuditFinding {
-  return {
-    number: record.number,
-    ...(record.kind ? { kind: record.kind } : {}),
-    title: displayTitle(record.title),
-    labels: record.labels,
-    ...(record.action ? { action: record.action } : {}),
-    ...(record.decision ? { decision: record.decision } : {}),
-    ...(record.closeReason ? { closeReason: record.closeReason } : {}),
-    ...(record.confidence ? { confidence: record.confidence } : {}),
-    ...(record.reviewedAt ? { reviewedAt: record.reviewedAt } : {}),
-    reviewStatus: record.reviewStatus,
-    ...(record.currentState ? { currentState: record.currentState } : {}),
-    ...(record.location === "items" ? { itemPath: record.path } : { closedPath: record.path }),
-    ...extra,
-  };
-}
-
-function firstByNumber<T extends { number: number }>(records: T[]): Map<number, T> {
-  const map = new Map<number, T>();
-  for (const record of records) {
-    if (!map.has(record.number)) map.set(record.number, record);
-  }
-  return map;
-}
-
-export function auditFromSnapshot(options: {
-  openItems: Item[];
-  itemRecords: AuditRecord[];
-  closedRecords: AuditRecord[];
-  scanComplete: boolean;
-  pagesScanned: number;
-  generatedAt?: string;
-}): AuditResult {
-  const generatedAt = options.generatedAt ?? new Date().toISOString();
-  const generatedAtMs = Date.parse(generatedAt);
-  const openByNumber = firstByNumber(options.openItems);
-  const itemByNumber = firstByNumber(options.itemRecords);
-  const closedByNumber = firstByNumber(options.closedRecords);
-  const missingOpen: AuditFinding[] = [];
-  const missingEligibleOpen: AuditFinding[] = [];
-  const missingMaintainerOpen: AuditFinding[] = [];
-  const missingProtectedOpen: AuditFinding[] = [];
-  const missingRecentOpen: AuditFinding[] = [];
-  const openArchived: AuditFinding[] = [];
-
-  for (const item of options.openItems) {
-    if (itemByNumber.has(item.number)) continue;
-    const closedRecord = closedByNumber.get(item.number);
-    if (closedRecord) {
-      openArchived.push(openItemFinding(item, { closedPath: closedRecord.path }));
-    } else {
-      const missingReason = missingOpenReason(item, generatedAtMs);
-      const finding = openItemFinding(item, { missingReason });
-      missingOpen.push(finding);
-      if (missingReason === "maintainer_authored") missingMaintainerOpen.push(finding);
-      else if (missingReason === "protected_label") missingProtectedOpen.push(finding);
-      else if (missingReason === "recently_created") missingRecentOpen.push(finding);
-      else missingEligibleOpen.push(finding);
-    }
-  }
-
-  const staleItemRecords = options.scanComplete
-    ? options.itemRecords
-        .filter((record) => !openByNumber.has(record.number))
-        .map((record) => recordFinding(record))
-    : [];
-  const duplicateRecords = options.itemRecords
-    .filter((record) => closedByNumber.has(record.number))
-    .map((record) => {
-      const closedRecord = closedByNumber.get(record.number);
-      return recordFinding(record, closedRecord ? { closedPath: closedRecord.path } : {});
-    });
-  const protectedProposed = options.itemRecords
-    .filter(
-      (record) =>
-        record.action === "proposed_close" &&
-        applyBlockingProtectedLabels(record.labels, record.closeReason).length > 0,
-    )
-    .map((record) => recordFinding(record));
-  const autoCloseOpen = options.itemRecords
-    .filter((record) => {
-      if (
-        record.decision !== "close" ||
-        record.confidence !== "high" ||
-        !record.kind ||
-        !record.closeReason ||
-        !openByNumber.has(record.number)
-      ) {
-        return false;
-      }
-      return isAutoCloseAllowed(
-        repositoryProfileFor(record.repo),
-        record.kind,
-        record.closeReason as CloseReason,
-      );
-    })
-    .map((record) =>
-      recordFinding(record, {
-        currentState: "open",
-        ...(openByNumber.get(record.number)?.updatedAt
-          ? { updatedAt: openByNumber.get(record.number)!.updatedAt }
-          : {}),
-      }),
-    );
-  const staleReviews = options.itemRecords
-    .filter((record) => record.reviewStatus.startsWith("stale_"))
-    .map((record) => recordFinding(record));
-
-  return {
-    generatedAt,
-    targetRepo: targetRepo(),
-    scan: {
-      complete: options.scanComplete,
-      pagesScanned: options.pagesScanned,
-      openItemsSeen: options.openItems.length,
-    },
-    counts: {
-      itemRecords: options.itemRecords.length,
-      closedRecords: options.closedRecords.length,
-      missingOpen: missingOpen.length,
-      missingEligibleOpen: missingEligibleOpen.length,
-      missingMaintainerOpen: missingMaintainerOpen.length,
-      missingProtectedOpen: missingProtectedOpen.length,
-      missingRecentOpen: missingRecentOpen.length,
-      openArchived: openArchived.length,
-      staleItemRecords: staleItemRecords.length,
-      duplicateRecords: duplicateRecords.length,
-      protectedProposed: protectedProposed.length,
-      autoCloseOpen: autoCloseOpen.length,
-      staleReviews: staleReviews.length,
-    },
-    findings: {
-      missingOpen,
-      missingEligibleOpen,
-      missingMaintainerOpen,
-      missingProtectedOpen,
-      missingRecentOpen,
-      openArchived,
-      staleItemRecords,
-      duplicateRecords,
-      protectedProposed,
-      autoCloseOpen,
-      staleReviews,
-    },
-  };
-}
-
-function limitAuditFindings(result: AuditResult, limit: number): AuditResult {
-  const boundedLimit = Math.max(0, limit);
-  return {
-    ...result,
-    findings: Object.fromEntries(
-      Object.entries(result.findings).map(([key, findings]) => [
-        key,
-        findings.slice(0, boundedLimit),
-      ]),
-    ) as AuditResult["findings"],
-  };
-}
-
-export function auditHasStrictFailures(result: AuditResult): boolean {
-  return (
-    !result.scan.complete ||
-    result.counts.missingEligibleOpen > 0 ||
-    result.counts.openArchived > 0 ||
-    result.counts.staleItemRecords > 0 ||
-    result.counts.duplicateRecords > 0 ||
-    result.counts.protectedProposed > 0
-  );
-}
-
-function auditHealthStatus(result: AuditResult): string {
-  return auditHasStrictFailures(result) ? "Action needed" : "Passing";
-}
-
-function auditFindingCategory(category: keyof AuditResult["findings"]): string {
-  switch (category) {
-    case "missingEligibleOpen":
-      return "Missing eligible open";
-    case "openArchived":
-      return "Open archived";
-    case "staleItemRecords":
-      return "Stale item record";
-    case "duplicateRecords":
-      return "Duplicate record";
-    case "protectedProposed":
-      return "Protected proposed close";
-    case "autoCloseOpen":
-      return "Auto-close verdict still open";
-    case "staleReviews":
-      return "Stale review";
-    case "missingOpen":
-      return "Missing open";
-    case "missingMaintainerOpen":
-      return "Missing maintainer open";
-    case "missingProtectedOpen":
-      return "Missing protected open";
-    case "missingRecentOpen":
-      return "Missing recent open";
-  }
-}
-
-function auditFindingDetail(finding: AuditFinding): string {
-  if (finding.closedPath) return finding.closedPath;
-  if (finding.itemPath) return finding.itemPath;
-  if (finding.missingReason) return finding.missingReason;
-  if (finding.action) return finding.action;
-  return "-";
-}
-
-function auditReviewTargetNumbers(result: AuditResult, limit = 10): number[] {
-  const categories: (keyof AuditResult["findings"])[] = [
-    "missingEligibleOpen",
-    "openArchived",
-    "staleReviews",
-  ];
-  const numbers = new Set<number>();
-  for (const category of categories) {
-    for (const finding of result.findings[category]) {
-      if (category === "staleReviews" && finding.currentState === "closed") continue;
-      numbers.add(finding.number);
-      if (numbers.size >= limit) return [...numbers];
-    }
-  }
-  return [...numbers];
-}
-
-function auditReviewTargets(result: AuditResult): string {
-  const numbers = auditReviewTargetNumbers(result);
-  if (numbers.length === 0) return "Targeted review input: _none_";
-  return `Targeted review input: \`${numbers.join(",")}\``;
-}
-
-function actionableAuditFindings(result: AuditResult, limit = 3): string {
-  const categories: (keyof AuditResult["findings"])[] = [
-    "missingEligibleOpen",
-    "protectedProposed",
-    "openArchived",
-    "duplicateRecords",
-    "staleReviews",
-    "staleItemRecords",
-  ];
-  const rows: string[] = [];
-  for (const category of categories) {
-    for (const finding of result.findings[category]) {
-      rows.push(
-        `| ${markdownLink(`#${finding.number}`, itemUrlFor(result.targetRepo, finding.number, finding.kind ?? "issue"))} | ${auditFindingCategory(category)} | ${displayTitle(finding.title ?? "").replaceAll("|", "\\|")} | ${auditFindingDetail(finding).replaceAll("|", "\\|")} |`,
-      );
-      if (rows.length >= limit) return rows.join("\n");
-    }
-  }
-  return "| _None_ |  |  |  |";
-}
-
-export function auditHealthSection(result: AuditResult | null): string {
-  const profile = result ? repositoryProfileFor(result.targetRepo) : targetProfile();
-  if (!result) {
-    return `### Audit Health
-
-${profileAuditStart(profile)}
-No audit has been published yet. Run \`npm run audit -- --update-dashboard\` to refresh audit state.
-${profileAuditEnd(profile)}`;
-  }
-  return `### Audit Health
-
-${profileAuditStart(profile)}
-Repository: ${markdownLink(result.targetRepo, repoUrlFor(result.targetRepo))}
-
-Last audit: ${formatTimestamp(result.generatedAt)}
-
-Status: **${auditHealthStatus(result)}**
-
-${auditReviewTargets(result)}
-
-| Metric | Count |
-| --- | ---: |
-| Scan complete | ${result.scan.complete ? "yes" : "no"} |
-| Open items seen | ${result.scan.openItemsSeen} |
-| Missing eligible open records | ${result.counts.missingEligibleOpen} |
-| Missing maintainer-authored open records | ${result.counts.missingMaintainerOpen} |
-| Missing protected open records | ${result.counts.missingProtectedOpen} |
-| Missing recently-created open records | ${result.counts.missingRecentOpen} |
-| Archived records that are open again | ${result.counts.openArchived} |
-| Stale item records | ${result.counts.staleItemRecords} |
-| Duplicate records | ${result.counts.duplicateRecords} |
-| Protected proposed closes | ${result.counts.protectedProposed} |
-| Auto-close verdicts still open | ${result.counts.autoCloseOpen} |
-| Stale reviews | ${result.counts.staleReviews} |
-
-| Item | Category | Title | Detail |
-| --- | --- | --- | --- |
-${actionableAuditFindings(result)}
-${profileAuditEnd(profile)}`;
-}
+const auditEngine = createAuditEngine({
+  applyBlockingProtectedLabels,
+  displayTitle,
+  formatTimestamp,
+  isMaintainerAuthored,
+  isProtectedItem,
+  itemUrlFor,
+  markdownLink,
+  profileAuditEnd,
+  profileAuditStart,
+  repoUrlFor,
+  shouldPlanItem,
+  targetProfile,
+  targetRepo,
+});
+export const { auditFromSnapshot, auditHasStrictFailures, auditHealthSection } = auditEngine;
+const { limitAuditFindings } = auditEngine;
 
 function currentAuditHealthSection(readme: string, profile = targetProfile()): string {
   const profileMatch = readme.match(
@@ -27828,57 +24231,33 @@ function dashboardStats(
   };
 }
 
-function workPriorityScore(priority: string): number {
-  if (priority === "high") return 3;
-  if (priority === "medium") return 2;
-  if (priority === "low") return 1;
-  return 0;
-}
-
-function markdownTableCell(value: string): string {
-  return value.replaceAll("|", "\\|");
-}
-
-function jsonFrontMatterValue(value: readonly unknown[]): string {
-  return JSON.stringify(value);
-}
-
-function workStatusForDecision(decision: Decision): string {
-  if (decision.workCandidate === "queue_fix_pr") return "candidate";
-  if (decision.workCandidate === "manual_review") return "manual_review";
-  return "none";
-}
-
-function displayCloseReason(reason: string | undefined): string {
-  if (reason && ALL_REASONS.has(reason as CloseReason))
-    return closeReasonText(reason as CloseReason);
-  return reason || "unknown";
-}
-
-export function dashboardClosedAt(markdown: string): string | undefined {
-  const appliedAt = frontMatterValue(markdown, "applied_at");
-  if (appliedAt) return appliedAt;
-  const currentItemClosedAt = frontMatterValue(markdown, "current_item_closed_at");
-  if (currentItemClosedAt) return currentItemClosedAt;
-  const currentState = frontMatterValue(markdown, "current_state");
-  const action = frontMatterValue(markdown, "action_taken");
-  if (currentState === "closed") return frontMatterValue(markdown, "reconciled_at");
-  if (action === "skipped_already_closed") return frontMatterValue(markdown, "apply_checked_at");
-  return undefined;
-}
-
-function dashboardCloseReason(markdown: string): string | undefined {
-  const closeReason = frontMatterValue(markdown, "close_reason");
-  const action = frontMatterValue(markdown, "action_taken");
-  if (action === "closed") return closeReason;
-  if (action === "skipped_already_closed") return "already closed before apply";
-  if (frontMatterValue(markdown, "current_state") === "closed") {
-    if (action === "kept_open") return "closed externally after review";
-    if (action === "skipped_changed_since_review") return "closed externally after item changed";
-    return action ? `closed externally after ${action}` : "closed externally";
-  }
-  return closeReason;
-}
+const dashboardPresentation = createDashboardPresentation({
+  closeReasonText,
+  displayTitle,
+  emptyDashboardActivityStats,
+  formatActivityRow,
+  formatCadenceBucket,
+  formatOperationActivityRow,
+  formatPercent,
+  formatStatusNumber,
+  formatTimestamp,
+  frontMatterValue,
+  itemUrlFor,
+  latestTimestamp,
+  markdownLink,
+  repoUrlFor,
+  reportFileUrl,
+  targetRepo,
+  timestampMs,
+});
+export const { dashboardClosedAt, formatRecentClosedRows } = dashboardPresentation;
+const {
+  dashboardCloseReason,
+  jsonFrontMatterValue,
+  renderDashboard,
+  workPriorityScore,
+  workStatusForDecision,
+} = dashboardPresentation;
 
 function fetchDashboardOpenItemCounts(
   profile: RepositoryProfile,
@@ -27892,140 +24271,6 @@ function fetchDashboardOpenItemCounts(
     );
     return fallback;
   }
-}
-
-export function formatRecentClosedRows(items: readonly DashboardClosedItem[], limit = 10): string {
-  return (
-    items
-      .slice(0, limit)
-      .map((item) => {
-        const repo = item.repo ?? targetRepo();
-        const title = markdownTableCell(displayTitle(item.title));
-        const reason = markdownTableCell(displayCloseReason(item.closeReason));
-        return `| ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${reason} | ${formatTimestamp(item.closedAt ?? item.appliedAt)} | ${markdownLink(item.reportPath, reportFileUrl(item.number, item.reportPath))} |`;
-      })
-      .join("\n") || "| _None_ |  |  |  |  |"
-  );
-}
-
-function formatRecentReviewedRows(items: readonly DashboardItem[], limit = 10): string {
-  return (
-    items
-      .slice(0, limit)
-      .map((item) => {
-        const repo = item.repo ?? targetRepo();
-        const title = markdownTableCell(displayTitle(item.title));
-        const outcome = markdownLink(
-          `${item.decision} / ${item.action}`,
-          reportFileUrl(item.number, item.reportPath),
-        );
-        return `| ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${outcome} | ${item.reviewStatus} | ${formatTimestamp(item.reviewedAt)} |`;
-      })
-      .join("\n") || "| _None_ |  |  |  |  |"
-  );
-}
-
-function formatWorkQueueRows(items: readonly DashboardItem[], limit = 10): string {
-  return (
-    items
-      .slice(0, limit)
-      .map((item) => {
-        const repo = item.repo ?? targetRepo();
-        const title = markdownTableCell(displayTitle(item.title));
-        const report = markdownLink(item.reportPath, reportFileUrl(item.number, item.reportPath));
-        const plan = item.planPath
-          ? markdownLink(item.planPath, reportFileUrl(item.number, item.planPath))
-          : "_pending_";
-        return `| ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${item.workPriority} | ${item.workStatus} | ${formatTimestamp(item.reviewedAt)} | ${plan} | ${report} |`;
-      })
-      .join("\n") || "| _None_ |  |  |  |  |  |  |"
-  );
-}
-
-function formatFleetRecentClosedRows(items: readonly DashboardClosedItem[], limit = 10): string {
-  return (
-    items
-      .slice(0, limit)
-      .map((item) => {
-        const repo = item.repo ?? targetRepo();
-        const title = markdownTableCell(displayTitle(item.title));
-        const reason = markdownTableCell(displayCloseReason(item.closeReason));
-        return `| ${markdownLink(repo, repoUrlFor(repo))} | ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${reason} | ${formatTimestamp(item.closedAt ?? item.appliedAt)} | ${markdownLink(item.reportPath, reportFileUrl(item.number, item.reportPath))} |`;
-      })
-      .join("\n") || "| _None_ |  |  |  |  |  |"
-  );
-}
-
-function formatFleetRecentReviewedRows(items: readonly DashboardItem[], limit = 10): string {
-  return (
-    items
-      .slice(0, limit)
-      .map((item) => {
-        const repo = item.repo ?? targetRepo();
-        const title = markdownTableCell(displayTitle(item.title));
-        const outcome = markdownLink(
-          `${item.decision} / ${item.action}`,
-          reportFileUrl(item.number, item.reportPath),
-        );
-        return `| ${markdownLink(repo, repoUrlFor(repo))} | ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${outcome} | ${item.reviewStatus} | ${formatTimestamp(item.reviewedAt)} |`;
-      })
-      .join("\n") || "| _None_ |  |  |  |  |  |"
-  );
-}
-
-function formatFleetWorkQueueRows(items: readonly DashboardItem[], limit = 15): string {
-  return (
-    items
-      .slice(0, limit)
-      .map((item) => {
-        const repo = item.repo ?? targetRepo();
-        const title = markdownTableCell(displayTitle(item.title));
-        const report = markdownLink(item.reportPath, reportFileUrl(item.number, item.reportPath));
-        const plan = item.planPath
-          ? markdownLink(item.planPath, reportFileUrl(item.number, item.planPath))
-          : "_pending_";
-        return `| ${markdownLink(repo, repoUrlFor(repo))} | ${markdownLink(`#${item.number}`, itemUrlFor(repo, item.number, item.kind))} | ${title} | ${item.workPriority} | ${item.workStatus} | ${formatTimestamp(item.reviewedAt)} | ${plan} | ${report} |`;
-      })
-      .join("\n") || "| _None_ |  |  |  |  |  |  |  |"
-  );
-}
-
-function addActivityBucket(target: DashboardActivityBucket, source: DashboardActivityBucket): void {
-  target.reviews += source.reviews;
-  target.closeDecisions += source.closeDecisions;
-  target.keepOpenDecisions += source.keepOpenDecisions;
-  target.failedOrStaleReviews += source.failedOrStaleReviews;
-  target.closes += source.closes;
-  target.commentSyncs += source.commentSyncs;
-  target.applySkips += source.applySkips;
-  target.inheritedLabelCleanups += source.inheritedLabelCleanups;
-  target.selfHealConflictRepairs += source.selfHealConflictRepairs;
-  target.failedReviewRetries += source.failedReviewRetries;
-  target.failedReviewRetryExhaustions += source.failedReviewRetryExhaustions;
-  target.botOwnedProofDecisionsRequested += source.botOwnedProofDecisionsRequested;
-  target.botOwnedProofDispatches += source.botOwnedProofDispatches;
-}
-
-function aggregateActivity(snapshots: readonly RepoDashboardSnapshot[]): DashboardActivityStats {
-  const activity = emptyDashboardActivityStats();
-  for (const snapshot of snapshots) {
-    addActivityBucket(activity.last15Minutes, snapshot.stats.activity.last15Minutes);
-    addActivityBucket(activity.lastHour, snapshot.stats.activity.lastHour);
-    addActivityBucket(activity.last24Hours, snapshot.stats.activity.last24Hours);
-    activity.latestReviewAt = latestTimestamp(
-      activity.latestReviewAt,
-      snapshot.stats.activity.latestReviewAt,
-    );
-    activity.latestCloseAt = latestTimestamp(
-      activity.latestCloseAt,
-      snapshot.stats.activity.latestCloseAt,
-    );
-    activity.latestCommentSyncAt = latestTimestamp(
-      activity.latestCommentSyncAt,
-      snapshot.stats.activity.latestCommentSyncAt,
-    );
-  }
-  return activity;
 }
 
 function buildRepoDashboardSnapshot(
@@ -28062,262 +24307,10 @@ function dashboardSnapshots(
   return REPOSITORY_PROFILES.map((profile) => buildRepoDashboardSnapshot(profile, readme));
 }
 
-function formatRepositoryOverviewRow(snapshot: RepoDashboardSnapshot): string {
-  const stats = snapshot.stats;
-  return `| ${markdownLink(snapshot.profile.displayName, repoUrlFor(snapshot.profile.targetRepo))} | ${stats.open.total} | ${stats.files} | ${stats.cadence.unreviewedOpen} | ${stats.cadence.due} | ${stats.proposedClose} | ${stats.workCandidates} | ${stats.closed} | ${formatTimestamp(stats.activity.latestReviewAt)} | ${formatTimestamp(stats.activity.latestCloseAt)} | ${stats.activity.lastHour.commentSyncs} |`;
-}
-
-function formatWorkflowStatusRow(snapshot: RepoDashboardSnapshot): string {
-  const run = snapshot.statusSummary.runUrl
-    ? markdownLink("run", snapshot.statusSummary.runUrl)
-    : "_none_";
-  const plan =
-    snapshot.statusSummary.plannedCount === undefined &&
-    snapshot.statusSummary.plannedCapacity === undefined &&
-    snapshot.statusSummary.plannedShards === undefined
-      ? "unknown"
-      : `${formatStatusNumber(snapshot.statusSummary.plannedCount)}/${formatStatusNumber(
-          snapshot.statusSummary.plannedCapacity,
-        )} items, ${formatStatusNumber(snapshot.statusSummary.plannedShards)} shards`;
-  return `| ${markdownLink(snapshot.profile.displayName, repoUrlFor(snapshot.profile.targetRepo))} | ${markdownTableCell(snapshot.statusSummary.state)} | ${formatStatusNumber(snapshot.statusSummary.activeCodex)} | ${plan} | ${formatStatusNumber(snapshot.statusSummary.dueBacklog)} | ${formatTimestamp(snapshot.statusSummary.oldestUnreviewedAt)} | ${markdownTableCell(snapshot.statusSummary.capacityReason ?? "unknown")} | ${formatTimestamp(snapshot.statusSummary.updatedAt)} | ${run} |`;
-}
-
-function renderRepoDashboardDetails(snapshot: RepoDashboardSnapshot): string {
-  const stats = snapshot.stats;
-  return `<details>
-<summary>${snapshot.profile.displayName} (${snapshot.profile.targetRepo})</summary>
-
-<br>
-
-#### Current Run
-
-${snapshot.status}
-
-#### Queue
-
-| Metric | Count |
-| --- | ---: |
-| Target repository | ${markdownLink(snapshot.profile.targetRepo, repoUrlFor(snapshot.profile.targetRepo))} |
-| Open issues | ${stats.open.issues} |
-| Open PRs | ${stats.open.pullRequests} |
-| Open items total | ${stats.open.total} |
-| Reviewed files | ${stats.files} |
-| Unreviewed open items | ${stats.cadence.unreviewedOpen} |
-| Active Codex target | ${formatStatusNumber(snapshot.statusSummary.activeCodex)} |
-| Planned review items | ${formatStatusNumber(snapshot.statusSummary.plannedCount)} |
-| Planned review shards | ${formatStatusNumber(snapshot.statusSummary.plannedShards)} |
-| Planned review capacity | ${formatStatusNumber(snapshot.statusSummary.plannedCapacity)} |
-| Due backlog scanned | ${formatStatusNumber(snapshot.statusSummary.dueBacklog)} |
-| Oldest unreviewed scanned | ${formatTimestamp(snapshot.statusSummary.oldestUnreviewedAt)} |
-| Capacity reason | ${markdownTableCell(snapshot.statusSummary.capacityReason ?? "unknown")} |
-| Archived closed files | ${stats.archivedFiles} |
-
-#### Review Outcomes
-
-| Metric | Count |
-| --- | ---: |
-| Fresh reviewed issues in the last ${FRESH_DAYS} days | ${stats.byKind.issue.fresh} |
-| Proposed issue closes | ${stats.byKind.issue.proposedClose} (${formatPercent(stats.byKind.issue.proposedClose, stats.byKind.issue.fresh)} of reviewed issues) |
-| Fresh reviewed PRs in the last ${FRESH_DAYS} days | ${stats.byKind.pull_request.fresh} |
-| Proposed PR closes | ${stats.byKind.pull_request.proposedClose} (${formatPercent(stats.byKind.pull_request.proposedClose, stats.byKind.pull_request.fresh)} of reviewed PRs) |
-| Fresh verified reviews in the last ${FRESH_DAYS} days | ${stats.fresh} |
-| Proposed closes awaiting apply | ${stats.proposedClose} (${formatPercent(stats.proposedClose, stats.fresh)} of fresh reviews) |
-| Work candidates awaiting promotion | ${stats.workCandidates} |
-| Closed by Codex apply | ${stats.closed} |
-| Failed or stale reviews | ${stats.failed + stats.stale} |
-
-#### Cadence
-
-| Metric | Coverage |
-| --- | ---: |
-| First-week item cadence (<${HOT_REVIEW_DAYS}d) | ${formatCadenceBucket(stats.cadence.hourlyHotItems)} |
-| Daily cadence coverage | ${formatCadenceBucket(stats.cadence.daily)} |
-| Daily PR cadence | ${formatCadenceBucket(stats.cadence.dailyPullRequests)} |
-| Daily new issue cadence (<${RECENT_ISSUE_DAYS}d) | ${formatCadenceBucket(stats.cadence.dailyNewIssues)} |
-| Weekly older issue cadence | ${formatCadenceBucket(stats.cadence.weekly)} |
-| Due now by cadence | ${stats.cadence.due} |
-
-${snapshot.auditHealth}
-
-#### Latest Run Activity
-
-Latest review: ${formatTimestamp(stats.activity.latestReviewAt)}. Latest close: ${formatTimestamp(stats.activity.latestCloseAt)}. Latest comment sync: ${formatTimestamp(stats.activity.latestCommentSyncAt)}.
-
-| Window | Reviews | Close decisions | Keep-open decisions | Failed/stale reviews | Closed | Comments synced | Apply skips |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-${formatActivityRow("Last 15 minutes", stats.activity.last15Minutes)}
-${formatActivityRow("Last hour", stats.activity.lastHour)}
-${formatActivityRow("Last 24 hours", stats.activity.last24Hours)}
-
-#### Operation Counters
-
-| Window | Inherited-label cleanups | Self-heal conflict repairs | Failed-review retries | Exhausted review retries | Bot proof decisions | Bot proof dispatches |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-${formatOperationActivityRow("Last 15 minutes", stats.activity.last15Minutes)}
-${formatOperationActivityRow("Last hour", stats.activity.lastHour)}
-${formatOperationActivityRow("Last 24 hours", stats.activity.last24Hours)}
-
-#### Recently Closed
-
-| Item | Title | Reason | Closed | Report |
-| --- | --- | --- | --- | --- |
-${formatRecentClosedRows(stats.recentClosed)}
-
-#### Work Candidates
-
-| Item | Title | Priority | Status | Reviewed | Plan | Report |
-| --- | --- | --- | --- | --- | --- | --- |
-${formatWorkQueueRows(stats.workQueue)}
-
-#### Recently Reviewed
-
-| Item | Title | Outcome | Status | Reviewed |
-| --- | --- | --- | --- | --- |
-${formatRecentReviewedRows(stats.recent)}
-
-</details>`;
-}
-
 function updateDashboard(itemsDir = defaultItemsDir(), closedDir = defaultClosedDir()): void {
   const readmePath = join(ROOT, "README.md");
   const readme = readFileSync(readmePath, "utf8");
-  const snapshots = dashboardSnapshots(readme, itemsDir, closedDir);
-  const activity = aggregateActivity(snapshots);
-  const recent = snapshots
-    .flatMap((snapshot) => snapshot.stats.recent)
-    .sort((a, b) => Date.parse(b.reviewedAt ?? "") - Date.parse(a.reviewedAt ?? ""));
-  const workQueue = snapshots
-    .flatMap((snapshot) => snapshot.stats.workQueue)
-    .sort(
-      (a, b) =>
-        workPriorityScore(b.workPriority) - workPriorityScore(a.workPriority) ||
-        Date.parse(b.reviewedAt ?? "") - Date.parse(a.reviewedAt ?? ""),
-    );
-  const recentClosed = snapshots
-    .flatMap((snapshot) => snapshot.stats.recentClosed)
-    .sort(
-      (a, b) =>
-        (timestampMs(b.closedAt ?? b.appliedAt) ?? Number.NEGATIVE_INFINITY) -
-          (timestampMs(a.closedAt ?? a.appliedAt) ?? Number.NEGATIVE_INFINITY) ||
-        b.number - a.number,
-    );
-  const totals = snapshots.reduce(
-    (accumulator, snapshot) => {
-      const stats = snapshot.stats;
-      accumulator.openIssues += stats.open.issues;
-      accumulator.openPullRequests += stats.open.pullRequests;
-      accumulator.reviewedFiles += stats.files;
-      accumulator.unreviewedOpen += stats.cadence.unreviewedOpen;
-      accumulator.due += stats.cadence.due;
-      accumulator.activeCodex += snapshot.statusSummary.activeCodex ?? 0;
-      accumulator.plannedShards += snapshot.statusSummary.plannedShards ?? 0;
-      accumulator.plannedCapacity += snapshot.statusSummary.plannedCapacity ?? 0;
-      accumulator.dueBacklog += snapshot.statusSummary.dueBacklog ?? 0;
-      accumulator.proposedClose += stats.proposedClose;
-      accumulator.workCandidates += stats.workCandidates;
-      accumulator.closed += stats.closed;
-      accumulator.failedOrStale += stats.failed + stats.stale;
-      accumulator.archivedFiles += stats.archivedFiles;
-      return accumulator;
-    },
-    {
-      openIssues: 0,
-      openPullRequests: 0,
-      reviewedFiles: 0,
-      unreviewedOpen: 0,
-      due: 0,
-      activeCodex: 0,
-      plannedShards: 0,
-      plannedCapacity: 0,
-      dueBacklog: 0,
-      proposedClose: 0,
-      workCandidates: 0,
-      closed: 0,
-      failedOrStale: 0,
-      archivedFiles: 0,
-    },
-  );
-  const dashboard = `## Dashboard
-
-Last dashboard update: ${formatTimestamp(new Date().toISOString())}
-
-### Fleet
-
-| Metric | Count |
-| --- | ---: |
-| Covered repositories | ${snapshots.length} |
-| Open issues | ${totals.openIssues} |
-| Open PRs | ${totals.openPullRequests} |
-| Open items total | ${totals.openIssues + totals.openPullRequests} |
-| Reviewed files | ${totals.reviewedFiles} |
-| Unreviewed open items | ${totals.unreviewedOpen} |
-| Due now by cadence | ${totals.due} |
-| Active Codex target | ${totals.activeCodex} |
-| Planned review shards | ${totals.plannedShards} |
-| Planned review capacity | ${totals.plannedCapacity} |
-| Due backlog scanned | ${totals.dueBacklog} |
-| Proposed closes awaiting apply | ${totals.proposedClose} |
-| Work candidates awaiting promotion | ${totals.workCandidates} |
-| Closed by Codex apply | ${totals.closed} |
-| Failed or stale reviews | ${totals.failedOrStale} |
-| Archived closed files | ${totals.archivedFiles} |
-
-### Repositories
-
-| Repository | Open | Reviewed | Unreviewed | Due | Proposed closes | Work candidates | Closed | Latest review | Latest close | Comments synced, 1h |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: |
-${snapshots.map(formatRepositoryOverviewRow).join("\n")}
-
-### Current Runs
-
-| Repository | State | Active Codex | Plan | Due backlog | Oldest unreviewed | Capacity reason | Updated | Run |
-| --- | --- | ---: | --- | ---: | --- | --- | --- | --- |
-${snapshots.map(formatWorkflowStatusRow).join("\n")}
-
-### Fleet Activity
-
-Latest review: ${formatTimestamp(activity.latestReviewAt)}. Latest close: ${formatTimestamp(activity.latestCloseAt)}. Latest comment sync: ${formatTimestamp(activity.latestCommentSyncAt)}.
-
-| Window | Reviews | Close decisions | Keep-open decisions | Failed/stale reviews | Closed | Comments synced | Apply skips |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-${formatActivityRow("Last 15 minutes", activity.last15Minutes)}
-${formatActivityRow("Last hour", activity.lastHour)}
-${formatActivityRow("Last 24 hours", activity.last24Hours)}
-
-### Fleet Operation Counters
-
-| Window | Inherited-label cleanups | Self-heal conflict repairs | Failed-review retries | Exhausted review retries | Bot proof decisions | Bot proof dispatches |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-${formatOperationActivityRow("Last 15 minutes", activity.last15Minutes)}
-${formatOperationActivityRow("Last hour", activity.lastHour)}
-${formatOperationActivityRow("Last 24 hours", activity.last24Hours)}
-
-### Recently Closed Across Repos
-
-| Repository | Item | Title | Reason | Closed | Report |
-| --- | --- | --- | --- | --- | --- |
-${formatFleetRecentClosedRows(recentClosed)}
-
-### Work Candidates Across Repos
-
-| Repository | Item | Title | Priority | Status | Reviewed | Plan | Report |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-${formatFleetWorkQueueRows(workQueue)}
-
-<details>
-<summary>Recently Reviewed Across Repos</summary>
-
-<br>
-
-| Repository | Item | Title | Outcome | Status | Reviewed |
-| --- | --- | --- | --- | --- | --- |
-${formatFleetRecentReviewedRows(recent)}
-
-</details>
-
-### Repository Details
-
-${snapshots.map(renderRepoDashboardDetails).join("\n\n")}`;
+  const dashboard = renderDashboard(dashboardSnapshots(readme, itemsDir, closedDir));
   const updated = readme.replace(
     /## Dashboard[\s\S]*?## How It Works/,
     `${dashboard}\n\n## How It Works`,

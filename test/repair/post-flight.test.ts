@@ -266,7 +266,7 @@ test("merge post-flight waits when only ignored checks exist", () => {
       "  const merged = fs.existsSync(process.env.FAKE_GH_MERGED_FILE);",
       "  process.stdout.write(JSON.stringify({",
       "    number: 123, state: merged ? 'closed' : 'open', title: 'fix(ui): preserve source config',",
-      "    draft: false, labels: [], base: { ref: 'main' },",
+      "    draft: false, labels: [{ name: 'clawsweeper:automerge' }], base: { ref: 'main' },",
       "    merged_at: merged ? '2026-05-24T00:42:00Z' : null,",
       "    merge_commit_sha: merged ? 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' : null,",
       "    head: { sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },",
@@ -343,6 +343,232 @@ test("merge post-flight waits when only ignored checks exist", () => {
     assert.equal(fs.readFileSync(viewCountPath, "utf8"), "2");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("post-flight rechecks repair mode and live authorization immediately before merge", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-post-flight-gates-"));
+  const fakeBin = path.join(temporary, "bin");
+  const jobPath = path.join(temporary, "automerge-openclaw-openclaw-123.md");
+  const runDir = path.join(temporary, "run");
+  const resultPath = path.join(runDir, "result.json");
+  const reportPath = path.join(runDir, "post-flight-report.json");
+  const pullCountPath = path.join(temporary, "pull-count");
+  const sourceCountPath = path.join(temporary, "source-pull-count");
+  const mergedPath = path.join(temporary, "merged");
+  fs.mkdirSync(fakeBin, { recursive: true });
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(fakeBin, "gh"),
+    [
+      "#!/usr/bin/env node",
+      "const fs = require('node:fs');",
+      "const args = process.argv.slice(2);",
+      "if (args[0] === 'api' && /^repos\\/openclaw\\/openclaw\\/pulls\\/(123|456)$/.test(args[1])) {",
+      "  const number = Number(args[1].split('/').at(-1));",
+      "  const source = process.env.FAKE_GH_REPLACEMENT === '1' && number === 123;",
+      "  const countPath = source ? process.env.FAKE_GH_SOURCE_COUNT : process.env.FAKE_GH_PULL_COUNT;",
+      "  const count = fs.existsSync(countPath) ? Number(fs.readFileSync(countPath, 'utf8')) : 0;",
+      "  fs.writeFileSync(countPath, String(count + 1));",
+      "  const sequences = JSON.parse(source ? process.env.FAKE_GH_SOURCE_LABEL_SEQUENCES : process.env.FAKE_GH_LABEL_SEQUENCES);",
+      "  const labels = sequences[Math.min(count, sequences.length - 1)].map(name => ({name}));",
+      "  const merged = !source && fs.existsSync(process.env.FAKE_GH_MERGED_FILE);",
+      "  process.stdout.write(JSON.stringify({number,state:merged?'closed':'open',title:'fix: safe merge',draft:false,labels,base:{ref:'main'},merged_at:merged?'2026-07-31T00:00:00Z':null,merge_commit_sha:merged?'b'.repeat(40):null,head:{sha:'a'.repeat(40)}}));",
+      "  process.exit(0);",
+      "}",
+      "if (args[0] === 'api' && args[1].includes('/comments?')) process.exit(0);",
+      "if (args[0] === 'api' && args[1] === 'graphql') {",
+      "  process.stdout.write(JSON.stringify({data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false},nodes:[]}}}}}));",
+      "  process.exit(0);",
+      "}",
+      "if (args[0] === 'pr' && args[1] === 'view') {",
+      "  process.stdout.write(JSON.stringify({baseRefName:'main',isDraft:false,mergeable:'MERGEABLE',mergeStateStatus:'CLEAN',reviewDecision:null,state:'OPEN',statusCheckRollup:[{name:'CI',workflowName:'CI',startedAt:'2026-07-31T00:00:00Z',completedAt:'2026-07-31T00:01:00Z',status:'COMPLETED',conclusion:'SUCCESS'}],title:'fix: safe merge',url:`https://github.com/openclaw/openclaw/pull/${process.env.FAKE_GH_TARGET_NUMBER}`}));",
+      "  process.exit(0);",
+      "}",
+      "if (args[0] === 'pr' && args[1] === 'merge') {fs.writeFileSync(process.env.FAKE_GH_MERGED_FILE,'1');process.exit(0)}",
+      "process.stderr.write(`unexpected gh args: ${args.join(' ')}\\n`);process.exit(2);",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+
+  const execute = ({
+    mode,
+    sequences,
+    sourceSequences,
+    sourceUrls,
+    plannedStrategy = "replace_uneditable_branch",
+    executedFallback = false,
+    canonicalNumber = 123,
+  }: {
+    mode: "autofix" | "automerge";
+    sequences: string[][];
+    sourceSequences?: string[][];
+    sourceUrls?: string[];
+    plannedStrategy?: "replace_uneditable_branch" | "repair_contributor_branch";
+    executedFallback?: boolean;
+    canonicalNumber?: number;
+  }) => {
+    fs.rmSync(mergedPath, { force: true });
+    fs.rmSync(pullCountPath, { force: true });
+    fs.rmSync(sourceCountPath, { force: true });
+    writeMergeJob(jobPath);
+    if (canonicalNumber !== 123) {
+      fs.writeFileSync(
+        jobPath,
+        fs
+          .readFileSync(jobPath, "utf8")
+          .replace("canonical:\n  - '#123'", `canonical:\n  - '#${canonicalNumber}'`),
+      );
+    }
+    if (mode === "autofix") {
+      fs.writeFileSync(
+        jobPath,
+        fs.readFileSync(jobPath, "utf8").replace("repair_mode: automerge", "repair_mode: autofix"),
+      );
+    }
+    writeMergeReports(runDir, resultPath);
+    if (sourceSequences) {
+      const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
+      result.fix_artifact = {
+        repair_strategy: plannedStrategy,
+        source_prs: sourceUrls ?? ["https://github.com/openclaw/openclaw/pull/123"],
+      };
+      fs.writeFileSync(resultPath, JSON.stringify(result));
+      const fixReportPath = path.join(runDir, "fix-execution-report.json");
+      const fixReport = JSON.parse(fs.readFileSync(fixReportPath, "utf8"));
+      fixReport.actions[0].pr_url = "https://github.com/openclaw/openclaw/pull/456";
+      if (executedFallback) {
+        fixReport.actions[0].repair_strategy = "replace_uneditable_branch";
+        fixReport.actions[0].fallback_source_pr = "https://github.com/openclaw/openclaw/pull/123";
+      }
+      fs.writeFileSync(fixReportPath, JSON.stringify(fixReport));
+    }
+    execFileSync(process.execPath, ["dist/repair/post-flight.js", jobPath, resultPath], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_ALLOW_EXECUTE: "1",
+        CLAWSWEEPER_ALLOW_MERGE: "1",
+        CLAWSWEEPER_ALLOWED_OWNER: "openclaw",
+        FAKE_GH_PULL_COUNT: pullCountPath,
+        FAKE_GH_SOURCE_COUNT: sourceCountPath,
+        FAKE_GH_MERGED_FILE: mergedPath,
+        FAKE_GH_LABEL_SEQUENCES: JSON.stringify(sequences),
+        FAKE_GH_SOURCE_LABEL_SEQUENCES: JSON.stringify(sourceSequences ?? []),
+        FAKE_GH_REPLACEMENT: sourceSequences ? "1" : "0",
+        FAKE_GH_TARGET_NUMBER: sourceSequences ? "456" : "123",
+        ...mockGhBinEnv(path.join(fakeBin, "gh"), fakeBin),
+      },
+      stdio: "pipe",
+    });
+    return JSON.parse(fs.readFileSync(reportPath, "utf8"));
+  };
+
+  try {
+    const autofix = execute({ mode: "autofix", sequences: [["clawsweeper:automerge"]] });
+    assert.equal(autofix.actions[0]?.status, "blocked");
+    assert.match(autofix.actions[0]?.reason, /autofix-only/);
+    assert.equal(fs.existsSync(mergedPath), false);
+
+    for (const label of [
+      "ClawSweeper:Human-Review",
+      "clawsweeper:autofix",
+      "clawsweeper:autogenerated",
+      "Security",
+      "clawsweeper:needs-maintainer-review",
+      "clawsweeper:needs-product-decision",
+    ]) {
+      const paused = execute({
+        mode: "automerge",
+        sequences: [["clawsweeper:automerge"], ["clawsweeper:automerge", label]],
+      });
+      assert.equal(paused.actions[0]?.status, "blocked", label);
+      assert.match(paused.actions[0]?.reason, /protected or paused repair label/, label);
+      assert.equal(fs.existsSync(mergedPath), false, label);
+      assert.equal(fs.readFileSync(pullCountPath, "utf8"), "2", label);
+    }
+
+    const revoked = execute({ mode: "automerge", sequences: [["clawsweeper:automerge"], []] });
+    assert.equal(revoked.actions[0]?.status, "blocked");
+    assert.match(revoked.actions[0]?.reason, /explicit clawsweeper:automerge label/);
+    assert.equal(fs.existsSync(mergedPath), false);
+
+    for (const sourceLabels of [
+      [],
+      ["clawsweeper:automerge", "ClawSweeper:Human-Review"],
+      ["clawsweeper:automerge", "clawsweeper:needs-security-review"],
+    ]) {
+      const revokedSource = execute({
+        mode: "automerge",
+        sequences: [["clawsweeper:automerge"]],
+        sourceSequences: [["clawsweeper:automerge"], sourceLabels],
+      });
+      assert.equal(revokedSource.actions[0]?.status, "blocked", sourceLabels.join(","));
+      assert.match(revokedSource.actions[0]?.reason, /fresh current-head ClawSweeper review/);
+      assert.equal(fs.existsSync(mergedPath), false);
+      assert.equal(fs.existsSync(sourceCountPath), false);
+    }
+
+    const unrelatedSource = execute({
+      mode: "automerge",
+      sequences: [["clawsweeper:automerge"]],
+      sourceSequences: [["clawsweeper:automerge"]],
+      sourceUrls: ["https://github.com/openclaw/openclaw/pull/789"],
+    });
+    assert.equal(unrelatedSource.actions[0]?.status, "blocked");
+    assert.match(unrelatedSource.actions[0]?.reason, /fresh current-head ClawSweeper review/);
+    assert.equal(fs.existsSync(mergedPath), false);
+
+    const substitutedCanonical = execute({
+      mode: "automerge",
+      sequences: [["clawsweeper:automerge"]],
+      sourceSequences: [["clawsweeper:automerge"]],
+      sourceUrls: ["https://github.com/openclaw/openclaw/pull/789"],
+      canonicalNumber: 789,
+    });
+    assert.equal(substitutedCanonical.actions[0]?.status, "blocked");
+    assert.match(
+      substitutedCanonical.actions[0]?.reason,
+      /does not match its adopted pull request/,
+    );
+    assert.equal(fs.existsSync(mergedPath), false);
+
+    const fallbackRevoked = execute({
+      mode: "automerge",
+      sequences: [["clawsweeper:automerge"]],
+      sourceSequences: [["clawsweeper:automerge"], []],
+      plannedStrategy: "repair_contributor_branch",
+      executedFallback: true,
+    });
+    assert.equal(fallbackRevoked.actions[0]?.status, "blocked");
+    assert.match(fallbackRevoked.actions[0]?.reason, /fresh current-head ClawSweeper review/);
+    assert.equal(fs.existsSync(mergedPath), false);
+
+    const authorizedReplacement = execute({
+      mode: "automerge",
+      sequences: [["clawsweeper:automerge"]],
+      sourceSequences: [["clawsweeper:automerge"]],
+    });
+    assert.equal(authorizedReplacement.actions[0]?.status, "blocked");
+    assert.match(authorizedReplacement.actions[0]?.reason, /fresh current-head ClawSweeper review/);
+    assert.equal(fs.existsSync(mergedPath), false);
+
+    const authorizedFallback = execute({
+      mode: "automerge",
+      sequences: [["clawsweeper:automerge"]],
+      sourceSequences: [["clawsweeper:automerge"]],
+      plannedStrategy: "repair_contributor_branch",
+      executedFallback: true,
+    });
+    assert.equal(authorizedFallback.actions[0]?.status, "blocked");
+    assert.match(authorizedFallback.actions[0]?.reason, /fresh current-head ClawSweeper review/);
+    assert.equal(fs.existsSync(mergedPath), false);
+
+    const authorized = execute({ mode: "automerge", sequences: [["clawsweeper:automerge"]] });
+    assert.equal(authorized.actions[0]?.status, "executed");
+    assert.equal(fs.existsSync(mergedPath), true);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
   }
 });
 
@@ -472,6 +698,7 @@ function writeMergeJob(jobPath: string) {
       "repo: openclaw/openclaw",
       "cluster_id: automerge-openclaw-openclaw-123",
       "mode: autonomous",
+      "repair_mode: automerge",
       "allowed_actions:",
       "  - comment",
       "  - label",

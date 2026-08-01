@@ -186,7 +186,8 @@ jobs:
       CLAWSWEEPER_ALLOWED_OWNER: ${{ vars.CLAWSWEEPER_ALLOWED_OWNER || 'openclaw' }}
       CLAWSWEEPER_ALLOW_EXECUTE: ${{ (inputs.mode == 'execute' || inputs.mode == 'autonomous') && vars.CLAWSWEEPER_ALLOW_EXECUTE == '1' && '1' || '0' }}
       CLAWSWEEPER_ALLOW_FIX_PR: ${{ (inputs.mode == 'execute' || inputs.mode == 'autonomous') && vars.CLAWSWEEPER_ALLOW_FIX_PR == '1' && '1' || '0' }}
-      CLAWSWEEPER_ALLOW_MERGE: ${{ !contains(inputs.job, '/inbox/issue-') && (inputs.mode == 'execute' || inputs.mode == 'autonomous') && (vars.CLAWSWEEPER_ALLOW_MERGE || '0') || '0' }}
+      CLAWSWEEPER_ALLOW_MERGE: "0"
+      CLAWSWEEPER_REQUESTED_ALLOW_MERGE: ${{ !contains(inputs.job, '/inbox/issue-') && (inputs.mode == 'execute' || inputs.mode == 'autonomous') && (vars.CLAWSWEEPER_ALLOW_MERGE || '0') || '0' }}
       CLAWSWEEPER_HYDRATE_CLUSTER_REFS: ${{ vars.CLAWSWEEPER_HYDRATE_CLUSTER_REFS || '1' }}
       CLAWSWEEPER_HYDRATE_COMMENTS: ${{ vars.CLAWSWEEPER_HYDRATE_COMMENTS || '1' }}
       CLAWSWEEPER_MAX_COMMENTS_PER_ITEM: ${{ vars.CLAWSWEEPER_MAX_COMMENTS_PER_ITEM || '30' }}
@@ -207,39 +208,7 @@ jobs:
         id: target
         env:
           JOB_PATH: ${{ inputs.job }}
-        run: |
-          set -euo pipefail
-          case "$JOB_PATH" in
-            jobs/*/*) ;;
-            *)
-              echo "Invalid job path: $JOB_PATH" >&2
-              exit 1
-              ;;
-          esac
-          owner="${JOB_PATH#jobs/}"
-          owner="${owner%%/*}"
-          if ! printf '%s' "$owner" | grep -Eq '^[A-Za-z0-9_.-]+$'; then
-            echo "Invalid target owner: $owner" >&2
-            exit 1
-          fi
-          echo "target_owner=$owner" >> "$GITHUB_OUTPUT"
-          job_file="${JOB_PATH##*/}"
-          owner_slug="$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]')"
-          if [[ "$job_file" == "issue-${owner_slug}-"*.md ]]; then
-            issue_target="${job_file#issue-${owner_slug}-}"
-            issue_target="${issue_target%.md}"
-            item_number="${issue_target##*-}"
-            repository="${issue_target%-${item_number}}"
-            if ! [[ "$item_number" =~ ^[1-9][0-9]*$ ]] ||
-              ! [[ "$repository" =~ ^[A-Za-z0-9_.-]+$ ]]; then
-              echo "Invalid issue implementation target: $job_file" >&2
-              exit 1
-            fi
-            {
-              echo "target_slug=${owner_slug}-${repository}"
-              echo "records_item_number=$item_number"
-            } >> "$GITHUB_OUTPUT"
-          fi
+        run: bash scripts/resolve-repair-job-target.sh
 
       - name: Create GitHub App token
         id: app_token
@@ -295,16 +264,14 @@ jobs:
         id: check_job
         env:
           JOB_PATH: ${{ inputs.job }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: scripts/restore-repair-job.sh "$JOB_PATH" "this worker"
 
       - name: Capture execution gates
         id: capture_gates
-        run: |
-          {
-            echo "allow_execute=${CLAWSWEEPER_ALLOW_EXECUTE}"
-            echo "allow_fix_pr=${CLAWSWEEPER_ALLOW_FIX_PR}"
-            echo "allow_merge=${CLAWSWEEPER_ALLOW_MERGE}"
-          } >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: bash scripts/capture-repair-execution-gates.sh
 
       - name: Resolve Codex session cache
         id: codex_session
@@ -525,39 +492,7 @@ jobs:
         id: target
         env:
           JOB_PATH: ${{ inputs.job }}
-        run: |
-          set -euo pipefail
-          case "$JOB_PATH" in
-            jobs/*/*) ;;
-            *)
-              echo "Invalid job path: $JOB_PATH" >&2
-              exit 1
-              ;;
-          esac
-          owner="${JOB_PATH#jobs/}"
-          owner="${owner%%/*}"
-          if ! printf '%s' "$owner" | grep -Eq '^[A-Za-z0-9_.-]+$'; then
-            echo "Invalid target owner: $owner" >&2
-            exit 1
-          fi
-          echo "target_owner=$owner" >> "$GITHUB_OUTPUT"
-          job_file="${JOB_PATH##*/}"
-          owner_slug="$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]')"
-          if [[ "$job_file" == "issue-${owner_slug}-"*.md ]]; then
-            issue_target="${job_file#issue-${owner_slug}-}"
-            issue_target="${issue_target%.md}"
-            item_number="${issue_target##*-}"
-            repository="${issue_target%-${item_number}}"
-            if ! [[ "$item_number" =~ ^[1-9][0-9]*$ ]] ||
-              ! [[ "$repository" =~ ^[A-Za-z0-9_.-]+$ ]]; then
-              echo "Invalid issue implementation target: $job_file" >&2
-              exit 1
-            fi
-            {
-              echo "target_slug=${owner_slug}-${repository}"
-              echo "records_item_number=$item_number"
-            } >> "$GITHUB_OUTPUT"
-          fi
+        run: bash scripts/resolve-repair-job-target.sh
 
       - name: Create GitHub App token
         id: target_write_token
@@ -623,7 +558,15 @@ jobs:
         id: check_job
         env:
           JOB_PATH: ${{ inputs.job }}
+          GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
         run: scripts/restore-repair-job.sh "$JOB_PATH" "execute"
+
+      - name: Recheck execution merge authorization
+        id: execution_gates
+        if: ${{ steps.check_job.outputs.job_exists == '1' }}
+        env:
+          GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
+        run: bash scripts/capture-repair-execution-gates.sh
 
       - name: Resolve Codex session cache
         id: codex_session

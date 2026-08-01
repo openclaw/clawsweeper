@@ -88,6 +88,9 @@ export function parseSimpleYaml(text: string): LooseRecord {
     }
 
     currentKey = kv[1] ?? "";
+    if (currentKey === "repair_mode" && Object.hasOwn(out, currentKey)) {
+      throw new Error("duplicate repair_mode in repair job frontmatter");
+    }
     const value = kv[2] ?? "";
     out[currentKey] = value === "" ? [] : parseScalar(value);
   }
@@ -188,6 +191,7 @@ export function validateJob(job: ParsedJob | LooseRecord) {
     "target_checkout",
     "triage_policy",
     "security_policy",
+    "repair_mode",
     "source",
     "trigger_source",
     "commit_sha",
@@ -207,6 +211,9 @@ export function validateJob(job: ParsedJob | LooseRecord) {
   }
   if (fm.job_intent !== undefined && !isRepairJobIntent(fm.job_intent)) {
     errors.push(`unsupported job_intent: ${fm.job_intent}`);
+  }
+  if (fm.repair_mode !== undefined && !["autofix", "automerge"].includes(fm.repair_mode)) {
+    errors.push(`unsupported repair_mode: ${fm.repair_mode}`);
   }
   if (fm.security_sensitive === true) {
     errors.push(

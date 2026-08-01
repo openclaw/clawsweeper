@@ -118,6 +118,7 @@ jobs:
         id: target
         env:
           TARGET_REPO: ${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
+          ITEM_NUMBERS: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event_name == 'workflow_dispatch' && inputs.item_numbers || '' }}
         run: |
           set -euo pipefail
           target_repo="${TARGET_REPO:-openclaw/openclaw}"
@@ -130,6 +131,12 @@ jobs:
             echo "target_repo_owner=${target_repo%%/*}"
             echo "target_repo_name=${target_repo#*/}"
             echo "target_slug=$(printf '%s' "$target_repo" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
+            item_number="${ITEM_NUMBERS:-}"
+            if [[ "$item_number" =~ ^[1-9][0-9]*$ ]] &&
+              [[ ${#item_number} -lt 16 ||
+              ( ${#item_number} -eq 16 && "$item_number" < "9007199254740992" ) ]]; then
+              echo "records_item_number=$item_number"
+            fi
           } >> "$GITHUB_OUTPUT"
 
       - name: Create target GitHub App token
@@ -169,6 +176,7 @@ jobs:
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           records-repo-slugs: ${{ steps.target.outputs.target_slug }}
+          records-item-number: ${{ steps.target.outputs.records_item_number || '' }}
           hydrate-state-blobs: "false"
           token: ${{ steps.state-token.outputs.token }}
           fetch-depth: 1

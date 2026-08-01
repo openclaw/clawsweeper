@@ -24,7 +24,7 @@ import {
   CLAWSWEEPER_LABEL_COLOR,
   CLAWSWEEPER_LABEL_DESCRIPTION,
 } from "./constants.js";
-import { AUTOMERGE_LABEL } from "./comment-router-core.js";
+import { AUTOMERGE_LABEL, AUTOMERGE_BLOCKING_LABEL_NAMES } from "./exact-review-guard-labels.js";
 import { numberEnv } from "./env-utils.js";
 import {
   buildRepairSquashMergeMessage,
@@ -233,6 +233,21 @@ function finalizeFixPr(action: LooseRecord) {
     };
   }
 
+  const currentPull = fetchPullRequest(result.repo, parsed.number);
+  const currentPolicyBlock = validateMergePolicy(action, currentPull);
+  if (currentPolicyBlock) {
+    return { ...prBase, status: "blocked", reason: currentPolicyBlock, waited_ms: waitedMs };
+  }
+  if (currentPull.head?.sha !== pull.head?.sha) {
+    return {
+      ...prBase,
+      status: "blocked",
+      reason: "pull request head changed during merge authorization",
+      waited_ms: waitedMs,
+    };
+  }
+  pull = currentPull;
+
   const mergeMessage = buildRepairSquashMergeMessage({
     target: parsed.number,
     title: view.title ?? pull.title,
@@ -342,7 +357,17 @@ function finalizeIssueImplementationPr({ base, parsed }: LooseRecord) {
 }
 
 function validateMergePolicy(action: LooseRecord, pull: LooseRecord) {
-  if (isAutomergeReplacementMerge(action, pull)) return "";
+  if (job.frontmatter.source === "pr_automerge") {
+    if (job.frontmatter.repair_mode !== "automerge") {
+      return "autofix-only job cannot merge";
+    }
+    const pullAuthorization = validateAutomergePullAuthorization(pull);
+    if (pullAuthorization) return pullAuthorization;
+    const replacementBlock = replacementPullRequestMergeBlock(action, pull);
+    if (replacementBlock) return replacementBlock;
+  }
+  const blockedLabel = AUTOMERGE_BLOCKING_LABEL_NAMES.find((label) => hasLabel(pull.labels, label));
+  if (blockedLabel) return `protected or paused repair label: ${blockedLabel}`;
   if (!job.frontmatter.allowed_actions.includes("merge")) return "job does not allow merge";
   if ((job.frontmatter.blocked_actions ?? []).includes("merge"))
     return "merge is blocked by job frontmatter";
@@ -350,13 +375,39 @@ function validateMergePolicy(action: LooseRecord, pull: LooseRecord) {
   return "";
 }
 
-function isAutomergeReplacementMerge(action: LooseRecord, pull: LooseRecord) {
-  return (
-    job.frontmatter.source === "pr_automerge" &&
-    action.action === "open_fix_pr" &&
-    result.fix_artifact?.repair_strategy === "replace_uneditable_branch" &&
-    hasLabel(pull.labels, AUTOMERGE_LABEL)
-  );
+function validateAutomergePullAuthorization(pull: LooseRecord): string {
+  if (!hasLabel(pull.labels, AUTOMERGE_LABEL)) {
+    return "merge requires an explicit clawsweeper:automerge label";
+  }
+  const blockedLabel = AUTOMERGE_BLOCKING_LABEL_NAMES.find((label) => hasLabel(pull.labels, label));
+  return blockedLabel ? `protected or paused repair label: ${blockedLabel}` : "";
+}
+
+function replacementPullRequestMergeBlock(action: LooseRecord, pull: LooseRecord): string {
+  if (action.action !== "open_fix_pr") {
+    return "";
+  }
+
+  const canonical = job.frontmatter.canonical ?? [];
+  if (canonical.length !== 1 || !/^#?[1-9]\d*$/.test(String(canonical[0] ?? ""))) {
+    return "automerge job must identify one canonical source pull request";
+  }
+  const canonicalNumber = Number(String(canonical[0]).replace(/^#/, ""));
+  if (!Number.isSafeInteger(canonicalNumber)) {
+    return "automerge job canonical source pull request is invalid";
+  }
+  const adoptedNumber = Number(String(job.frontmatter.cluster_id).match(/-(\d+)$/)?.[1] ?? 0);
+  if (adoptedNumber !== canonicalNumber) {
+    return "automerge job canonical source does not match its adopted pull request";
+  }
+  const replacement =
+    Number(pull.number) !== canonicalNumber ||
+    action.repair_strategy === "replace_uneditable_branch" ||
+    Boolean(action.fallback_source_pr) ||
+    result.fix_artifact?.repair_strategy === "replace_uneditable_branch";
+  if (!replacement) return "";
+
+  return "replacement pull request requires a fresh current-head ClawSweeper review; automatic merge disabled";
 }
 
 function isIssueImplementationJob() {

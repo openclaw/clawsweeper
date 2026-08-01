@@ -85,6 +85,7 @@ import {
   sharedAutomergeStatusMarkerPrefix,
   staleClosedItemCommandReason,
   shouldClearMaintainerCommandReaction,
+  syncAutomergeJobRepairMode,
   trustedAutomationPredatesReviewStartLease,
   trustedExactHeadReviewCompletionSince,
   trustedCloseBlockReason,
@@ -503,6 +504,7 @@ function routedCommandForComment(comment: JsonValue): LooseRecord | null {
     intent: parsed.intent,
     autoclose_message: parsed.autoclose_message ?? null,
     implementation_prompt: parsed.implementation_prompt ?? null,
+    automerge_instructions: parsed.automerge_instructions ?? null,
     operator_override: parsed.operator_override ?? null,
     trusted_bot: Boolean(parsed.trusted_bot),
     trusted_bot_author: parsed.trusted_bot_author ?? null,
@@ -2796,20 +2798,16 @@ function acknowledgeTerminalNoopMaintainerCommand(command: LooseRecord) {
 }
 
 function ensureAutomergeJob(command: LooseRecord) {
-  if (command.target?.has_automerge_job && command.target?.job_path) {
-    return {
-      job_path: command.target.job_path,
-      mode: command.target.mode ?? dispatchMode(command.target.job_path),
-      status_detail: "existing",
-    };
-  }
   if (command.target?.kind !== "pull_request" || !command.issue_number) {
     throw new Error("automerge repair job requires a pull request target");
   }
 
   const relative =
-    command.target.automerge_job_path ?? automergeJobPath(command.repo, command.issue_number);
+    command.target.has_automerge_job && command.target.job_path
+      ? command.target.job_path
+      : (command.target.automerge_job_path ?? automergeJobPath(command.repo, command.issue_number));
   const absolute = path.join(repoRoot(), relative);
+  let repairMode = repairJobModeForCommand(command);
   let statusDetail = "existing";
   if (!fs.existsSync(absolute)) {
     fs.mkdirSync(path.dirname(absolute), { recursive: true });
@@ -2819,7 +2817,7 @@ function ensureAutomergeJob(command: LooseRecord) {
         repo: command.repo,
         issueNumber: command.issue_number,
         title: command.target.title,
-        repairMode: repairJobModeForCommand(command),
+        repairMode,
         author: command.author,
         authorId: command.author_id,
         commentUrl: command.comment_url,
@@ -2827,6 +2825,31 @@ function ensureAutomergeJob(command: LooseRecord) {
       }),
     );
     statusDetail = "written";
+  } else {
+    const current = fs.readFileSync(absolute, "utf8");
+    const currentJob = parseJob(relative);
+    const explicitMaintainerApproval =
+      command.trusted_bot !== true &&
+      ["autofix", "automerge", "maintainer_approve_automerge"].includes(String(command.intent));
+    if (
+      command.trusted_bot === true &&
+      ["autofix", "automerge"].includes(String(currentJob.frontmatter.repair_mode))
+    ) {
+      repairMode = String(currentJob.frontmatter.repair_mode);
+    }
+    const authorization = explicitMaintainerApproval
+      ? {
+          author: command.author,
+          authorId: command.author_id,
+          commentUrl: command.comment_url,
+          automergeInstructions: command.automerge_instructions,
+        }
+      : undefined;
+    const updated = syncAutomergeJobRepairMode(current, repairMode, authorization);
+    if (updated !== current) {
+      fs.writeFileSync(absolute, updated);
+      statusDetail = "written";
+    }
   }
 
   const job = parseJob(relative);
@@ -2973,7 +2996,9 @@ function issueImplementationSecuritySignal(text: string) {
 }
 
 function repairJobModeForCommand(command: LooseRecord) {
-  if (command.intent === "autofix" || hasLabel(command.target, AUTOFIX_LABEL)) return "autofix";
+  if (command.intent === "autofix") return "autofix";
+  if (command.intent === "automerge") return "automerge";
+  if (hasLabel(command.target, AUTOFIX_LABEL)) return "autofix";
   return "automerge";
 }
 

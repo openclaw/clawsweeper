@@ -69,6 +69,11 @@ if (errors.length > 0) {
 
 assertAllowedOwner(job.frontmatter.repo, process.env.CLAWSWEEPER_ALLOWED_OWNER);
 
+if (job.frontmatter.repair_mode === "autofix" && process.env.CLAWSWEEPER_ALLOW_MERGE === "1") {
+  console.error("[repair] autofix-only job cannot inherit merge permission; merge disabled");
+  process.env.CLAWSWEEPER_ALLOW_MERGE = "0";
+}
+
 if ((mode === "execute" || mode === "autonomous") && !dryRun) {
   if (job.frontmatter.mode !== mode) {
     throw new Error(`refusing ${mode}: job frontmatter mode is not ${mode}`);
