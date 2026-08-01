@@ -1220,6 +1220,11 @@ export function runAllowedValidationCommandsWithBinding(
   const needsRustToolchain = targetValidationNeedsRustToolchain(cwd, requiredCommands);
   const preparedPnpmRuntime = preparedPnpmRuntimeForValidation(cwd, options);
   return withTargetValidationEnvironment((validationEnv, resetValidationEnvironment) => {
+    if (options.targetRepo === "openclaw/openclaw") {
+      // Vitest's scheduling telemetry rewrites an existing ignored artifact, which
+      // violates checkout identity despite having no bearing on validation proof.
+      validationEnv.OPENCLAW_TEST_PROJECTS_TIMINGS = "0";
+    }
     const validationTimeoutMs = targetValidationTimeoutMs(
       "CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS",
       options.validationTimeoutMs ?? DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,

@@ -28,6 +28,23 @@ const REPAIR_RUNTIME_PATHS = [
 const MAIN_BUNDLE = "dist/clawsweeper.js";
 const RUNTIME_DIST_ARTIFACT = "clawsweeper-runtime-dist";
 
+test("repair planning and execution use a Node runtime accepted by current OpenClaw", () => {
+  const workflow = parse(
+    fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8"),
+  ) as {
+    jobs?: Record<
+      string,
+      { steps?: { id?: unknown; uses?: unknown; with?: Record<string, unknown> }[] }
+    >;
+  };
+  for (const jobName of ["cluster", "execute"]) {
+    const setup = workflow.jobs?.[jobName]?.steps?.find(
+      (step) => step.uses === "./.github/actions/setup-pnpm",
+    );
+    assert.equal(setup?.with?.["node-version"], "24.18.1", `${jobName} runtime`);
+  }
+});
+
 test("sparse repair build workflows include runtime dependencies", () => {
   for (const workflowPath of SPARSE_REPAIR_BUILD_WORKFLOWS) {
     const buildScripts = workflowBuildScripts(workflowPath);

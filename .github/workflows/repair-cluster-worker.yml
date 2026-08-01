@@ -282,6 +282,7 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         with:
+          node-version: "24.18.1"
           build-script: build:repair
 
       - name: Restore durable intake job
@@ -605,6 +606,8 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
         id: execute-setup-pnpm
         with:
+          # OpenClaw's runtime contract rejects the stale Node 24.13 runner cache.
+          node-version: "24.18.1"
           # This job publishes the action ledger with dist/clawsweeper.js, which
           # only the main build emits, so build both Node bundles and skip the
           # dashboard leg the job never runs.

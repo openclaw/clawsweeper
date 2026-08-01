@@ -4282,6 +4282,62 @@ test("OpenClaw changed-gate compiler cache is disposable and preserves existing 
   }
 });
 
+test("OpenClaw validation disables shard timing writes without weakening ignored-input protection", () => {
+  for (const existingTimingArtifact of [false, true]) {
+    const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), ".artifacts/\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const artifacts = path.join(cwd, ".artifacts");
+    fs.mkdirSync(artifacts, { recursive: true });
+    fs.writeFileSync(path.join(artifacts, "stable.txt"), "existing artifact\n");
+    const timings = path.join(artifacts, "vitest-shard-timings.json");
+    if (existingTimingArtifact) fs.writeFileSync(timings, "trusted previous timings\n");
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-vitest-timings-"));
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      [
+        'const fs = require("node:fs");',
+        'if (process.env.OPENCLAW_TEST_PROJECTS_TIMINGS !== "0") {',
+        '  fs.mkdirSync(".artifacts", { recursive: true });',
+        '  fs.writeFileSync(".artifacts/vitest-shard-timings.json", "generated timings\\n");',
+        "}",
+      ].join("\n"),
+    );
+
+    assert.deepEqual(
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          ["pnpm check:changed"],
+          cwd,
+          validationOptions("openclaw/openclaw", {
+            pinnedBaseRef: "origin/main",
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+            },
+          }),
+        ),
+      ),
+      ["pnpm check:changed"],
+    );
+    assert.equal(
+      fs.readFileSync(path.join(artifacts, "stable.txt"), "utf8"),
+      "existing artifact\n",
+    );
+    if (existingTimingArtifact) {
+      assert.equal(fs.readFileSync(timings, "utf8"), "trusted previous timings\n");
+    } else {
+      assert.equal(fs.existsSync(timings), false);
+    }
+  }
+});
+
 test("changed-gate compiler cache isolation still rejects unrelated ignored-input poisoning", () => {
   const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
   fs.appendFileSync(path.join(cwd, ".gitignore"), ".artifacts/\n");
