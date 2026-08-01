@@ -168,6 +168,20 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   );
 });
 
+test("batch publisher gives canonical supersession precedence over artifact terminal plans", () => {
+  const healthyMembers = workflow.jobs.publish!.steps.find(
+    (step) => step.name === "Finalize healthy members under a fenced heartbeat",
+  );
+  assert.ok(healthyMembers, "missing healthy member finalizer");
+  const run = healthyMembers.run ?? "";
+  const supersededReceipt = run.indexOf('if [ "$receipt_outcome" = "superseded" ]; then');
+  const staleArtifactPlan = run.indexOf("elif jq -e '.disposition.requeueLatestExpected == true'");
+  const supersededTerminal = run.indexOf('lifecycle_terminal="superseded"', supersededReceipt);
+  assert.ok(supersededReceipt >= 0);
+  assert.ok(staleArtifactPlan > supersededReceipt);
+  assert.ok(supersededTerminal > supersededReceipt && supersededTerminal < staleArtifactPlan);
+});
+
 test("exact-review producer uses direct publication with bounded legacy fallback", () => {
   assert.match(sweepSource, /name: Deliver GitHub effects and prepare direct state mutation/);
   assert.match(

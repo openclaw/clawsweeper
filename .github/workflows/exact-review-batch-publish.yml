@@ -202,7 +202,9 @@ jobs:
             lifecycle_terminal=""
             lifecycle_router_outcome=""
             lifecycle_deferred_coverage="false"
-            if jq -e '.disposition.requeueLatestExpected == true' "$outcome_path" >/dev/null; then
+            if [ "$receipt_outcome" = "superseded" ]; then
+              lifecycle_terminal="superseded"
+            elif jq -e '.disposition.requeueLatestExpected == true' "$outcome_path" >/dev/null; then
               delivery_id="publisher-source-drift:$(jq -r '.itemKey' <<<"$item"):$(jq -r '.revision' <<<"$item")"
               producer_decision="$(jq -c '.decision.publication.producerDecision' <<<"$item")"
               payload="$(jq -cn \
@@ -236,7 +238,7 @@ jobs:
               # queue decides whether it requeues or reaches dead-letter. The
               # later guarded acknowledgement reads that terminal projection.
               continue
-            elif [ "$outcome_kind" = "superseded" ] || [ "$receipt_outcome" = "superseded" ]; then
+            elif [ "$outcome_kind" = "superseded" ]; then
               lifecycle_terminal="superseded"
             elif [ "$source_action" = "failed_review_shard_recovery" ]; then
               lifecycle_router_outcome="not_required"
