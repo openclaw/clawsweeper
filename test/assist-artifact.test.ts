@@ -226,7 +226,7 @@ test("assist artifact schema is strict and versioned", () => {
 
 test("assist workflow isolates Codex generation from the fresh write-token publisher", () => {
   const workflow = readFileSync(".github/workflows/assist.yml", "utf8");
-  const source = readFileSync("src/clawsweeper.ts", "utf8");
+  const source = readFileSync("src/clawsweeper-assist.ts", "utf8");
   const assistStart = workflow.indexOf("\n  assist:");
   const publishStart = workflow.indexOf("\n  publish:", assistStart);
   assert.ok(assistStart > 0 && publishStart > assistStart);

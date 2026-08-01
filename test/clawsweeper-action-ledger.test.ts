@@ -390,7 +390,12 @@ test("apply and retry business idempotency ignore batch order but bind source re
 });
 
 test("lane instrumentation uses stable slots with explicit parent and phase ordering", () => {
-  const source = readText("src/clawsweeper.ts");
+  const source = [
+    readText("src/clawsweeper.ts"),
+    readText("src/clawsweeper-failed-review-retry.ts"),
+    readText("src/clawsweeper-review-ledger.ts"),
+    readText("src/clawsweeper-apply-ledger.ts"),
+  ].join("\n");
 
   for (const phase of [
     "reviewBatch",
@@ -447,9 +452,10 @@ test("lane instrumentation uses stable slots with explicit parent and phase orde
 
 test("review candidates start lazily and deferred items cannot remain active", () => {
   const source = readText("src/clawsweeper.ts");
-  const ledgerStart = source.slice(
-    source.indexOf("function startReviewActionLedger(options:"),
-    source.indexOf("function startReviewActionLedgerItem("),
+  const ledgerSource = readText("src/clawsweeper-review-ledger.ts");
+  const ledgerStart = ledgerSource.slice(
+    ledgerSource.indexOf("function startReviewActionLedger(options:"),
+    ledgerSource.indexOf("function startReviewActionLedgerItem("),
   );
   const reviewLoop = source.slice(
     source.indexOf("for (const item of candidates) {"),
@@ -470,23 +476,22 @@ test("review candidates start lazily and deferred items cannot remain active", (
     reviewLoop,
     /finally \{[\s\S]*!reviewItemFailed[\s\S]*finishReviewActionLedgerItem\(\{[\s\S]*completionReason: "coordination_deferred"[\s\S]*activeReviewItem = null;/,
   );
-  const reviewMutationAttempt = source.slice(
-    source.indexOf("function startReviewMutationAttempt("),
-    source.indexOf("function recordReviewLogPublication("),
+  const reviewMutationAttempt = ledgerSource.slice(
+    ledgerSource.indexOf("function startReviewMutationAttempt("),
+    ledgerSource.indexOf("function recordReviewLogPublication("),
   );
   assert.match(reviewMutationAttempt, /completion_reason: "mutation_attempted"/);
   assert.match(reviewMutationAttempt, /"mutation_accepted"/);
   assert.match(reviewMutationAttempt, /"mutation_rejected"/);
   assert.match(reviewMutationAttempt, /"mutation_outcome_unknown"/);
   assert.match(reviewMutationAttempt, /mutationIdentitySha256: sha256\(idempotencyIdentity\)/);
-  const reviewItemTerminal = source.slice(
-    source.indexOf("function finishReviewActionLedgerItem("),
-    source.indexOf("export function actionLedgerFailureDisposition("),
+  const reviewItemTerminal = ledgerSource.slice(
+    ledgerSource.indexOf("function finishReviewActionLedgerItem("),
+    ledgerSource.indexOf("function actionLedgerFailureDisposition("),
   );
   assert.match(reviewItemTerminal, /mutation: state\.mutationObserved/);
-  const reviewBatchTerminal = source.slice(
-    source.indexOf("function finishReviewActionLedger(options:"),
-    source.indexOf("function reviewCommand(args:"),
+  const reviewBatchTerminal = ledgerSource.slice(
+    ledgerSource.indexOf("function finishReviewActionLedger(options:"),
   );
   assert.match(reviewBatchTerminal, /mutation: options\.ledger\.mutationObserved/);
 
@@ -512,7 +517,9 @@ test("review candidates start lazily and deferred items cannot remain active", (
 });
 
 test("apply receipts start per item and persist mutation observation before finalization", () => {
-  const source = readText("src/clawsweeper.ts");
+  const source = [readText("src/clawsweeper.ts"), readText("src/clawsweeper-apply-ledger.ts")].join(
+    "\n",
+  );
   const applyLoop = source.slice(
     source.indexOf("for (const entry of fileEntries) {"),
     source.indexOf("if (runtimeBudget.yieldReason) {"),
@@ -611,9 +618,10 @@ test("apply mutation receipts bind every GitHub request attempt and preserve no-
   });
 
   const source = readText("src/clawsweeper.ts");
-  const labelCreates = source.match(/identity: `label_create:/g) ?? [];
+  const labelSource = readText("src/clawsweeper-label-sync.ts");
+  const labelCreates = labelSource.match(/identity: `label_create:/g) ?? [];
   const labelNoMutationClassifiers =
-    source.match(/knownNoMutation: labelAlreadyExistsError/g) ?? [];
+    labelSource.match(/knownNoMutation: labelAlreadyExistsError/g) ?? [];
   assert.ok(labelCreates.length > 0);
   assert.ok(labelNoMutationClassifiers.length >= labelCreates.length);
   assert.match(source, /identity: `review_lease_post:/);
@@ -704,7 +712,7 @@ test("apply failure finalization survives report publication errors", () => {
 });
 
 test("apply report publication uses digest evidence without a durable record path", () => {
-  const source = readText("src/clawsweeper.ts");
+  const source = readText("src/clawsweeper-apply-ledger.ts");
   const evidenceStart = source.indexOf(
     'const reportEvidence = actionLedgerFileDigestEvidence("apply_report", options.reportPath)',
   );
@@ -724,14 +732,15 @@ test("apply report publication uses digest evidence without a durable record pat
 
 test("retry and review publication lanes finalize unexpected failures", () => {
   const source = readText("src/clawsweeper.ts");
-  const retryStart = source.indexOf("const retryLedger = startFailedReviewRetryLedger({");
-  const retryRecord = source.indexOf("recordFailedReviewRetryEvents({", retryStart);
-  const retryThrow = source.indexOf("if (commandError) throw commandError;", retryRecord);
+  const retrySource = readText("src/clawsweeper-failed-review-retry.ts");
+  const retryStart = retrySource.indexOf("const retryLedger = startFailedReviewRetryLedger({");
+  const retryRecord = retrySource.indexOf("recordFailedReviewRetryEvents({", retryStart);
+  const retryThrow = retrySource.indexOf("if (commandError) throw commandError;", retryRecord);
   assert.ok(retryStart >= 0);
   assert.ok(retryRecord > retryStart);
   assert.ok(retryThrow > retryRecord);
   assert.match(
-    source.slice(retryRecord, retryThrow),
+    retrySource.slice(retryRecord, retryThrow),
     /ledger: retryLedger[\s\S]*failure: commandError/,
   );
 
@@ -754,7 +763,10 @@ test("retry and review publication lanes finalize unexpected failures", () => {
     /syncStalePullRequestReviewLabels\(\{[\s\S]{0,240}onMutation: recordMutation/,
   );
   assert.match(source, /syncPriorityLabel\(\{[\s\S]{0,240}onMutation: recordMutation/);
-  assert.match(source, /tryAddOptionalLabel\(\{[\s\S]{0,220}onMutation: options\.onMutation/);
+  assert.match(
+    readText("src/clawsweeper-label-sync.ts"),
+    /tryAddOptionalLabel\(\{[\s\S]{0,220}onMutation: options\.onMutation/,
+  );
 });
 
 test("sweep publishes complete immutable shards for every review and apply producer", () => {
