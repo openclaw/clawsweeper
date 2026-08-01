@@ -2969,6 +2969,11 @@ function validationRuntimeInputsSha256(
   );
   updateIdentityHash(hash, "runtime-input-paths", runtimePaths.join("\0"));
   const coveredEntries = new Map<string, CoveredRuntimeEntry>();
+  const pendingRoots: Array<{
+    relativePath: string;
+    hash: ReturnType<typeof createHash>;
+    entries: Set<string>;
+  }> = [];
   for (const relativePath of runtimePaths) {
     assertValidationIdentityDeadline(deadlineAt, relativePath);
     const entryPath = path.join(root, relativePath);
@@ -2979,11 +2984,10 @@ function validationRuntimeInputsSha256(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       updateIdentityHash(rootHash, "runtime-state", "absent");
-      const rootDigest = rootHash.digest("hex");
-      updateIdentityHash(hash, "runtime-input-root", rootDigest);
-      runtimeRootDigests?.set(relativePath, rootDigest);
+      pendingRoots.push({ relativePath, hash: rootHash, entries: new Set() });
       continue;
     }
+    const rootEntries = new Set<string>();
     updateRuntimeInputDigest(
       rootHash,
       root,
@@ -2992,10 +2996,44 @@ function validationRuntimeInputsSha256(
       deadlineAt,
       coveredEntries,
       trackedPaths,
+      rootEntries,
     );
-    const rootDigest = rootHash.digest("hex");
+    pendingRoots.push({ relativePath, hash: rootHash, entries: rootEntries });
+  }
+  for (const pendingRoot of pendingRoots) {
+    const reachableEntries = new Set(pendingRoot.entries);
+    for (const realPath of reachableEntries) {
+      assertValidationIdentityDeadline(deadlineAt, pendingRoot.relativePath);
+      const coveredEntry = coveredEntries.get(realPath);
+      if (!coveredEntry?.contentSha256) {
+        throw new Error(`incomplete validation runtime input: ${pendingRoot.relativePath}`);
+      }
+      for (const dependency of coveredEntry.dependencies) {
+        assertValidationIdentityDeadline(deadlineAt, pendingRoot.relativePath);
+        reachableEntries.add(dependency);
+      }
+    }
+    const orderedEntries: string[] = [];
+    for (const realPath of reachableEntries) {
+      assertValidationIdentityDeadline(deadlineAt, pendingRoot.relativePath);
+      orderedEntries.push(realPath);
+    }
+    orderedEntries.sort((left, right) => {
+      assertValidationIdentityDeadline(deadlineAt, pendingRoot.relativePath);
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+    for (const realPath of orderedEntries) {
+      assertValidationIdentityDeadline(deadlineAt, pendingRoot.relativePath);
+      const coveredEntry = coveredEntries.get(realPath)!;
+      updateIdentityHash(
+        pendingRoot.hash,
+        "runtime-reachable-entry",
+        `${path.relative(root, realPath)}\0${coveredEntry.contentSha256}`,
+      );
+    }
+    const rootDigest = pendingRoot.hash.digest("hex");
     updateIdentityHash(hash, "runtime-input-root", rootDigest);
-    runtimeRootDigests?.set(relativePath, rootDigest);
+    runtimeRootDigests?.set(pendingRoot.relativePath, rootDigest);
   }
   assertValidationIdentityDeadline(deadlineAt, "runtime input digest");
   return hash.digest("hex");
@@ -3069,6 +3107,7 @@ function minimalValidationRuntimeRoots(paths: Iterable<string>) {
 type CoveredRuntimeEntry = {
   logicalPath: string;
   contentSha256: string;
+  dependencies: Set<string>;
 };
 
 function updateRuntimeInputDigest(
@@ -3079,6 +3118,8 @@ function updateRuntimeInputDigest(
   deadlineAt: number,
   coveredEntries: Map<string, CoveredRuntimeEntry>,
   trackedPaths: ReadonlySet<string>,
+  rootEntries: Set<string>,
+  parentEntry?: CoveredRuntimeEntry,
 ) {
   assertValidationIdentityDeadline(deadlineAt, logicalPath);
   const stat = fs.lstatSync(entryPath);
@@ -3114,11 +3155,15 @@ function updateRuntimeInputDigest(
       deadlineAt,
       coveredEntries,
       trackedPaths,
+      rootEntries,
+      parentEntry,
     );
     appendEntry();
     return;
   }
   const realPath = fs.realpathSync(entryPath);
+  if (parentEntry) parentEntry.dependencies.add(realPath);
+  else rootEntries.add(realPath);
   const coveredBy = coveredEntries.get(realPath);
   if (coveredBy !== undefined) {
     updateIdentityHash(
@@ -3130,7 +3175,7 @@ function updateRuntimeInputDigest(
     appendEntry();
     return;
   }
-  const coveredEntry = { logicalPath, contentSha256: "" };
+  const coveredEntry = { logicalPath, contentSha256: "", dependencies: new Set<string>() };
   coveredEntries.set(realPath, coveredEntry);
   if (stat.isFile()) {
     updateFileDigest(entryHash, entryPath, logicalPath, deadlineAt);
@@ -3152,6 +3197,8 @@ function updateRuntimeInputDigest(
       deadlineAt,
       coveredEntries,
       trackedPaths,
+      rootEntries,
+      coveredEntry,
     );
   }
   coveredEntry.contentSha256 = entryHash.digest("hex");

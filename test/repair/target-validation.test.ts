@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -4505,6 +4506,131 @@ test(
     );
   },
 );
+
+test(
+  "runtime root diagnostics attribute cyclic symlink targets to every affected ignored root",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ verify: "node scripts/verify.mjs" });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), "alpha/\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    for (const runtimeRoot of ["alpha", "node_modules"]) {
+      const directory = path.join(cwd, runtimeRoot);
+      fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(path.join(directory, "state.js"), `${runtimeRoot}: safe\n`);
+      const otherRoot = runtimeRoot === "alpha" ? "node_modules" : "alpha";
+      fs.symlinkSync(
+        path.relative(directory, path.join(cwd, otherRoot)),
+        path.join(directory, "peer"),
+      );
+    }
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-cyclic-root-poison-"));
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      'require("node:fs").writeFileSync("alpha/state.js", "alpha: evil\\n");',
+    );
+
+    assert.throws(
+      () =>
+        withPathOnlyPrefix(binDir, () =>
+          runAllowedValidationCommands(
+            ["pnpm verify"],
+            cwd,
+            validationOptions("steipete/example", {
+              toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
+            }),
+          ),
+        ),
+      /runtimeInputsSha256; changed runtime roots: alpha, node_modules$/,
+    );
+  },
+);
+
+test("runtime identity enforces its deadline throughout reachable-root finalization", () => {
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  const runtimeRoot = path.join(cwd, "node_modules", "dependency");
+  fs.mkdirSync(runtimeRoot, { recursive: true });
+  fs.writeFileSync(path.join(runtimeRoot, "first.js"), "first\n");
+  fs.writeFileSync(path.join(runtimeRoot, "second.js"), "second\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+
+  const resolvedRoot = fs.realpathSync(path.join(cwd, "node_modules"));
+  const originalNow = Date.now;
+  const originalSort = Array.prototype.sort;
+  const originalPush = Array.prototype.push;
+  const originalAdd = Set.prototype.add;
+  const hashPrototype = Object.getPrototypeOf(createHash("sha256")) as {
+    update: (data: string | Uint8Array) => unknown;
+  };
+  const originalUpdate = hashPrototype.update;
+  for (const phase of ["dependency expansion", "array materialization", "sorting"] as const) {
+    const seenDependencies = new Set<string>();
+    let expired = false;
+    let targetedPhase = false;
+    let updatesAfterExpiration = 0;
+    Date.now = () => (expired ? originalNow() + 60_000 : originalNow());
+    Set.prototype.add = function <T>(value: T): Set<T> {
+      if (
+        phase === "dependency expansion" &&
+        typeof value === "string" &&
+        value.startsWith(`${resolvedRoot}/`)
+      ) {
+        if (seenDependencies.has(value)) {
+          targetedPhase = true;
+          expired = true;
+        } else {
+          originalAdd.call(seenDependencies, value);
+        }
+      }
+      return originalAdd.call(this, value) as Set<T>;
+    };
+    Array.prototype.push = function <T>(...values: T[]): number {
+      const result = originalPush.apply(this, values);
+      if (phase === "array materialization" && values.includes(resolvedRoot as T)) {
+        targetedPhase = true;
+        expired = true;
+      }
+      return result;
+    };
+    Array.prototype.sort = function <T>(compare?: (left: T, right: T) => number): T[] {
+      if (
+        phase === "sorting" &&
+        this.length > 1 &&
+        this.includes(resolvedRoot) &&
+        this.every((value) => typeof value === "string" && value.startsWith(resolvedRoot))
+      ) {
+        targetedPhase = true;
+        expired = true;
+      }
+      return originalSort.call(this, compare) as T[];
+    };
+    hashPrototype.update = function (data: string | Uint8Array) {
+      if (expired) updatesAfterExpiration += 1;
+      return originalUpdate.call(this, data);
+    };
+    try {
+      assert.throws(
+        () => captureTargetCheckoutBinding(cwd, 30_000),
+        /validation identity deadline exhausted during node_modules/,
+        phase,
+      );
+    } finally {
+      Date.now = originalNow;
+      Set.prototype.add = originalAdd;
+      Array.prototype.push = originalPush;
+      Array.prototype.sort = originalSort;
+      hashPrototype.update = originalUpdate;
+    }
+    assert.equal(targetedPhase, true, phase);
+    assert.equal(updatesAfterExpiration, 0, phase);
+  }
+});
 
 test("runtime root diagnostics ignore safe cache-directory timestamp changes", () => {
   const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
