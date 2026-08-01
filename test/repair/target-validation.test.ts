@@ -4551,6 +4551,98 @@ test(
   },
 );
 
+test(
+  "runtime root diagnostics do not blame unchanged shared-target roots after alias removal",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ verify: "node scripts/verify.mjs" });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), "alpha/\nruntime-input/\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const input = path.join(cwd, "runtime-input", "state.js");
+    fs.mkdirSync(path.dirname(input), { recursive: true });
+    fs.writeFileSync(input, "shared state\n");
+    for (const runtimeRoot of ["alpha", "node_modules"]) {
+      const directory = path.join(cwd, runtimeRoot);
+      fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(path.join(directory, "anchor.js"), `${runtimeRoot}\n`);
+      fs.symlinkSync(path.relative(directory, input), path.join(directory, "shared.js"));
+    }
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-shared-alias-removal-"));
+    writeNodeCommandShim(binDir, "pnpm", 'require("node:fs").unlinkSync("alpha/shared.js");');
+
+    assert.throws(
+      () =>
+        withPathOnlyPrefix(binDir, () =>
+          runAllowedValidationCommands(
+            ["pnpm verify"],
+            cwd,
+            validationOptions("steipete/example", {
+              toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
+            }),
+          ),
+        ),
+      /runtimeInputsSha256; changed runtime roots: alpha$/,
+    );
+  },
+);
+
+test(
+  "runtime root diagnostics do not blame unchanged cyclic-target roots after alias removal",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ verify: "node scripts/verify.mjs" });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), "alpha/\nruntime-input/\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const sharedRoot = path.join(cwd, "runtime-input");
+    for (const name of ["first", "second"]) {
+      const directory = path.join(sharedRoot, name);
+      fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(path.join(directory, "state.js"), `${name}: safe\n`);
+      const peer = name === "first" ? "second" : "first";
+      fs.symlinkSync(
+        path.relative(directory, path.join(sharedRoot, peer)),
+        path.join(directory, "peer"),
+      );
+    }
+    for (const [runtimeRoot, target] of [
+      ["alpha", "first"],
+      ["node_modules", "second"],
+    ]) {
+      const directory = path.join(cwd, runtimeRoot);
+      fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(path.join(directory, "anchor.js"), `${runtimeRoot}\n`);
+      fs.symlinkSync(
+        path.relative(directory, path.join(sharedRoot, target)),
+        path.join(directory, "shared"),
+      );
+    }
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-cyclic-alias-removal-"));
+    writeNodeCommandShim(binDir, "pnpm", 'require("node:fs").unlinkSync("alpha/shared");');
+
+    assert.throws(
+      () =>
+        withPathOnlyPrefix(binDir, () =>
+          runAllowedValidationCommands(
+            ["pnpm verify"],
+            cwd,
+            validationOptions("steipete/example", {
+              toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
+            }),
+          ),
+        ),
+      /runtimeInputsSha256; changed runtime roots: alpha$/,
+    );
+  },
+);
+
 test("runtime identity enforces its deadline throughout reachable-root finalization", () => {
   const cwd = gitPackageFixture({ check: 'node -e ""' });
   const runtimeRoot = path.join(cwd, "node_modules", "dependency");
@@ -4630,6 +4722,130 @@ test("runtime identity enforces its deadline throughout reachable-root finalizat
     assert.equal(targetedPhase, true, phase);
     assert.equal(updatesAfterExpiration, 0, phase);
   }
+});
+
+test(
+  "runtime identity enforces its deadline when a workspace-reference root has no reachable entries",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    const packagePath = path.join(cwd, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    packageJson.name = "openclaw";
+    fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    const linkRoot = "packages/consumer/node_modules/openclaw";
+    fs.writeFileSync(path.join(cwd, ".gitignore"), `${linkRoot}\n`);
+    const trackedParent = path.join(cwd, "packages", "consumer", "node_modules");
+    fs.mkdirSync(trackedParent, { recursive: true });
+    fs.writeFileSync(path.join(trackedParent, ".keep"), "tracked parent\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    const linkPath = path.join(cwd, linkRoot);
+    fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+    fs.symlinkSync(path.relative(path.dirname(linkPath), cwd), linkPath);
+
+    const originalNow = Date.now;
+    const originalPush = Array.prototype.push;
+    const hashPrototype = Object.getPrototypeOf(createHash("sha256")) as {
+      update: (data: string | Uint8Array) => unknown;
+    };
+    const originalUpdate = hashPrototype.update;
+    let expired = false;
+    let targetFinalizationReached = false;
+    let updatesAfterExpiration = 0;
+    Date.now = () => (expired ? originalNow() + 60_000 : originalNow());
+    Array.prototype.push = function <T>(...values: T[]): number {
+      const result = originalPush.apply(this, values);
+      if (
+        values.some(
+          (value) =>
+            typeof value === "object" &&
+            value !== null &&
+            "relativePath" in value &&
+            value.relativePath === linkRoot,
+        )
+      ) {
+        targetFinalizationReached = true;
+        expired = true;
+      }
+      return result;
+    };
+    hashPrototype.update = function (data: string | Uint8Array) {
+      if (expired) updatesAfterExpiration += 1;
+      return originalUpdate.call(this, data);
+    };
+    try {
+      assert.throws(
+        () => captureTargetCheckoutBinding(cwd, 30_000),
+        /validation identity deadline exhausted during packages\/consumer\/node_modules\/openclaw/,
+      );
+    } finally {
+      Date.now = originalNow;
+      Array.prototype.push = originalPush;
+      hashPrototype.update = originalUpdate;
+    }
+    assert.equal(targetFinalizationReached, true);
+    assert.equal(updatesAfterExpiration, 0);
+  },
+);
+
+test("runtime root mutation diagnostics enforce their comparison deadline", () => {
+  const cwd = gitPackageFixture({ verify: "node scripts/verify.mjs" });
+  fs.appendFileSync(path.join(cwd, ".gitignore"), "alpha/\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  for (const runtimeRoot of ["alpha", "node_modules"]) {
+    const directory = path.join(cwd, runtimeRoot);
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, "state.js"), "safe\n");
+  }
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-root-comparison-deadline-"));
+  writeNodeCommandShim(
+    binDir,
+    "pnpm",
+    'require("node:fs").writeFileSync("alpha/state.js", "evil\\n");',
+  );
+
+  const originalNow = Date.now;
+  const originalKeys = Map.prototype.keys;
+  let expired = false;
+  let comparisonReached = false;
+  Date.now = () => (expired ? originalNow() + 24 * 60 * 60 * 1000 : originalNow());
+  Map.prototype.keys = function <K>(): MapIterator<K> {
+    if (
+      this.has("alpha") &&
+      this.has("node_modules") &&
+      /^[a-f0-9]{64}$/.test(String(this.get("alpha")))
+    ) {
+      comparisonReached = true;
+      expired = true;
+    }
+    return originalKeys.call(this) as MapIterator<K>;
+  };
+  try {
+    assert.throws(
+      () =>
+        withPathOnlyPrefix(binDir, () =>
+          runAllowedValidationCommands(
+            ["pnpm verify"],
+            cwd,
+            validationOptions("steipete/example", {
+              toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
+            }),
+          ),
+        ),
+      (error: Error & { cause?: Error }) =>
+        /unsafe validation command checkout identity could not be verified/.test(error.message) &&
+        /validation identity deadline exhausted during runtime root comparison/.test(
+          error.cause?.message ?? "",
+        ),
+    );
+  } finally {
+    Date.now = originalNow;
+    Map.prototype.keys = originalKeys;
+  }
+  assert.equal(comparisonReached, true);
 });
 
 test("runtime root diagnostics ignore safe cache-directory timestamp changes", () => {

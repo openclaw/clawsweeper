@@ -2628,7 +2628,7 @@ function assertValidationCheckoutIdentity(
     const fields: string[] = validationSourceIdentityMismatchFields(actual, expected);
     if (actual.baseSha !== expected.baseSha) fields.push("baseSha");
     const changedRuntimeRoots = fields.includes("runtimeInputsSha256")
-      ? changedValidationRuntimeRoots(actual, expected)
+      ? changedValidationRuntimeRoots(actual, expected, deadlineAt)
       : [];
     const runtimeRootDetail =
       changedRuntimeRoots.length > 0
@@ -2645,13 +2645,29 @@ function assertValidationCheckoutIdentity(
 function changedValidationRuntimeRoots(
   actual: ValidationCheckoutIdentity,
   expected: ValidationCheckoutIdentity,
+  deadlineAt: number,
 ) {
   const actualRoots = validationCheckoutRuntimeRootDigests.get(actual);
   const expectedRoots = validationCheckoutRuntimeRootDigests.get(expected);
   if (!actualRoots || !expectedRoots) return [];
-  return [...new Set([...actualRoots.keys(), ...expectedRoots.keys()])]
-    .filter((root) => actualRoots.get(root) !== expectedRoots.get(root))
-    .sort();
+  const roots = new Set<string>();
+  for (const root of actualRoots.keys()) {
+    assertValidationIdentityDeadline(deadlineAt, "runtime root comparison");
+    roots.add(root);
+  }
+  for (const root of expectedRoots.keys()) {
+    assertValidationIdentityDeadline(deadlineAt, "runtime root comparison");
+    roots.add(root);
+  }
+  const changedRoots: string[] = [];
+  for (const root of roots) {
+    assertValidationIdentityDeadline(deadlineAt, "runtime root comparison");
+    if (actualRoots.get(root) !== expectedRoots.get(root)) changedRoots.push(root);
+  }
+  return changedRoots.sort((left, right) => {
+    assertValidationIdentityDeadline(deadlineAt, "runtime root comparison");
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
 }
 
 function sameValidationSourceIdentity(
@@ -3001,6 +3017,7 @@ function validationRuntimeInputsSha256(
     pendingRoots.push({ relativePath, hash: rootHash, entries: rootEntries });
   }
   for (const pendingRoot of pendingRoots) {
+    assertValidationIdentityDeadline(deadlineAt, pendingRoot.relativePath);
     const reachableEntries = new Set(pendingRoot.entries);
     for (const realPath of reachableEntries) {
       assertValidationIdentityDeadline(deadlineAt, pendingRoot.relativePath);
@@ -3031,6 +3048,7 @@ function validationRuntimeInputsSha256(
         `${path.relative(root, realPath)}\0${coveredEntry.contentSha256}`,
       );
     }
+    assertValidationIdentityDeadline(deadlineAt, pendingRoot.relativePath);
     const rootDigest = pendingRoot.hash.digest("hex");
     updateIdentityHash(hash, "runtime-input-root", rootDigest);
     runtimeRootDigests?.set(pendingRoot.relativePath, rootDigest);
@@ -3105,7 +3123,6 @@ function minimalValidationRuntimeRoots(paths: Iterable<string>) {
 }
 
 type CoveredRuntimeEntry = {
-  logicalPath: string;
   contentSha256: string;
   dependencies: Set<string>;
 };
@@ -3124,7 +3141,7 @@ function updateRuntimeInputDigest(
   assertValidationIdentityDeadline(deadlineAt, logicalPath);
   const stat = fs.lstatSync(entryPath);
   const entryHash = createHash("sha256");
-  updateIdentityHash(entryHash, "runtime-path", logicalPath);
+  updateIdentityHash(entryHash, "runtime-path", path.relative(root, path.resolve(entryPath)));
   updateIdentityHash(entryHash, "runtime-mode", String(stat.mode));
   const appendEntry = () => updateIdentityHash(hash, "runtime-entry", entryHash.digest("hex"));
   if (stat.isSymbolicLink()) {
@@ -3147,8 +3164,11 @@ function updateRuntimeInputDigest(
       appendEntry();
       return;
     }
+    // Target contents are bound independently through the root's reachable
+    // physical-entry graph. Keep this symlink's own digest structural so a
+    // cyclic graph has the same identity regardless of which root visits first.
     updateRuntimeInputDigest(
-      entryHash,
+      createHash("sha256"),
       root,
       targetPath,
       `${logicalPath}\0target`,
@@ -3167,15 +3187,13 @@ function updateRuntimeInputDigest(
   const coveredBy = coveredEntries.get(realPath);
   if (coveredBy !== undefined) {
     updateIdentityHash(
-      entryHash,
-      "runtime-reference",
-      `${path.relative(root, realPath)}\0${coveredBy.logicalPath}`,
+      hash,
+      "runtime-entry",
+      coveredBy.contentSha256 || `cycle:${path.relative(root, realPath)}`,
     );
-    updateIdentityHash(entryHash, "runtime-reference-content", coveredBy.contentSha256);
-    appendEntry();
     return;
   }
-  const coveredEntry = { logicalPath, contentSha256: "", dependencies: new Set<string>() };
+  const coveredEntry = { contentSha256: "", dependencies: new Set<string>() };
   coveredEntries.set(realPath, coveredEntry);
   if (stat.isFile()) {
     updateFileDigest(entryHash, entryPath, logicalPath, deadlineAt);
