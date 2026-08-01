@@ -2968,7 +2968,7 @@ function validationRuntimeInputsSha256(
       ),
   );
   updateIdentityHash(hash, "runtime-input-paths", runtimePaths.join("\0"));
-  const coveredEntries = new Map<string, string>();
+  const coveredEntries = new Map<string, CoveredRuntimeEntry>();
   for (const relativePath of runtimePaths) {
     assertValidationIdentityDeadline(deadlineAt, relativePath);
     const entryPath = path.join(root, relativePath);
@@ -3066,24 +3066,31 @@ function minimalValidationRuntimeRoots(paths: Iterable<string>) {
   return roots.sort();
 }
 
+type CoveredRuntimeEntry = {
+  logicalPath: string;
+  contentSha256: string;
+};
+
 function updateRuntimeInputDigest(
   hash: ReturnType<typeof createHash>,
   root: string,
   entryPath: string,
   logicalPath: string,
   deadlineAt: number,
-  coveredEntries: Map<string, string>,
+  coveredEntries: Map<string, CoveredRuntimeEntry>,
   trackedPaths: ReadonlySet<string>,
 ) {
   assertValidationIdentityDeadline(deadlineAt, logicalPath);
   const stat = fs.lstatSync(entryPath);
-  updateIdentityHash(hash, "runtime-path", logicalPath);
-  updateIdentityHash(hash, "runtime-mode", String(stat.mode));
+  const entryHash = createHash("sha256");
+  updateIdentityHash(entryHash, "runtime-path", logicalPath);
+  updateIdentityHash(entryHash, "runtime-mode", String(stat.mode));
+  const appendEntry = () => updateIdentityHash(hash, "runtime-entry", entryHash.digest("hex"));
   if (stat.isSymbolicLink()) {
-    updateIdentityHash(hash, "runtime-symlink", fs.readlinkSync(entryPath));
+    updateIdentityHash(entryHash, "runtime-symlink", fs.readlinkSync(entryPath));
     const targetPath = fs.realpathSync(entryPath);
     assertPathWithin(root, targetPath, logicalPath);
-    updateIdentityHash(hash, "runtime-symlink-target", path.relative(root, targetPath));
+    updateIdentityHash(entryHash, "runtime-symlink-target", path.relative(root, targetPath));
     const workspaceReference = trackedSymlinkTargetReference(
       root,
       entryPath,
@@ -3095,11 +3102,12 @@ function updateRuntimeInputDigest(
       // pnpm creates ignored node_modules links back to tracked workspaces. The
       // checkout identity already binds their source, while traversing them here
       // would also absorb mutable .git state and make a read-only fetch stale the runtime.
-      updateIdentityHash(hash, "runtime-workspace-reference", workspaceReference);
+      updateIdentityHash(entryHash, "runtime-workspace-reference", workspaceReference);
+      appendEntry();
       return;
     }
     updateRuntimeInputDigest(
-      hash,
+      entryHash,
       root,
       targetPath,
       `${logicalPath}\0target`,
@@ -3107,27 +3115,37 @@ function updateRuntimeInputDigest(
       coveredEntries,
       trackedPaths,
     );
+    appendEntry();
     return;
   }
   const realPath = fs.realpathSync(entryPath);
   const coveredBy = coveredEntries.get(realPath);
   if (coveredBy !== undefined) {
-    updateIdentityHash(hash, "runtime-reference", `${path.relative(root, realPath)}\0${coveredBy}`);
+    updateIdentityHash(
+      entryHash,
+      "runtime-reference",
+      `${path.relative(root, realPath)}\0${coveredBy.logicalPath}`,
+    );
+    updateIdentityHash(entryHash, "runtime-reference-content", coveredBy.contentSha256);
+    appendEntry();
     return;
   }
-  coveredEntries.set(realPath, logicalPath);
+  const coveredEntry = { logicalPath, contentSha256: "" };
+  coveredEntries.set(realPath, coveredEntry);
   if (stat.isFile()) {
-    updateFileDigest(hash, entryPath, logicalPath, deadlineAt);
+    updateFileDigest(entryHash, entryPath, logicalPath, deadlineAt);
+    coveredEntry.contentSha256 = entryHash.digest("hex");
+    updateIdentityHash(hash, "runtime-entry", coveredEntry.contentSha256);
     return;
   }
   if (!stat.isDirectory()) {
     throw new Error(`unsupported validation runtime input: ${logicalPath}`);
   }
   const children = fs.readdirSync(entryPath).sort();
-  updateIdentityHash(hash, "runtime-children", children.join("\0"));
+  updateIdentityHash(entryHash, "runtime-children", children.join("\0"));
   for (const child of children) {
     updateRuntimeInputDigest(
-      hash,
+      entryHash,
       root,
       path.join(entryPath, child),
       `${logicalPath}/${child}`,
@@ -3136,6 +3154,8 @@ function updateRuntimeInputDigest(
       trackedPaths,
     );
   }
+  coveredEntry.contentSha256 = entryHash.digest("hex");
+  updateIdentityHash(hash, "runtime-entry", coveredEntry.contentSha256);
 }
 
 type TargetTreeEntry = {

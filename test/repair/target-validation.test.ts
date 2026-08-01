@@ -4461,6 +4461,51 @@ test("runtime root diagnostics identify every independently mutated ignored root
   );
 });
 
+test(
+  "runtime root diagnostics attribute shared symlink targets to every affected ignored root",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ verify: "node scripts/verify.mjs" });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), "runtime-input/\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const runtimeInput = path.join(cwd, "runtime-input", "state.js");
+    fs.mkdirSync(path.dirname(runtimeInput), { recursive: true });
+    fs.writeFileSync(runtimeInput, "safe\n");
+    for (const dependency of ["first", "second"]) {
+      const dependencyDir = path.join(cwd, "node_modules", dependency);
+      fs.mkdirSync(dependencyDir, { recursive: true });
+      fs.symlinkSync(
+        path.relative(dependencyDir, runtimeInput),
+        path.join(dependencyDir, "state.js"),
+      );
+    }
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-shared-root-poison-"));
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      'require("node:fs").writeFileSync("runtime-input/state.js", "evil\\n");',
+    );
+
+    assert.throws(
+      () =>
+        withPathOnlyPrefix(binDir, () =>
+          runAllowedValidationCommands(
+            ["pnpm verify"],
+            cwd,
+            validationOptions("steipete/example", {
+              toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
+            }),
+          ),
+        ),
+      /runtimeInputsSha256; changed runtime roots: node_modules, runtime-input$/,
+    );
+  },
+);
+
 test("runtime root diagnostics ignore safe cache-directory timestamp changes", () => {
   const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
   fs.appendFileSync(path.join(cwd, ".gitignore"), ".artifacts/\n");
