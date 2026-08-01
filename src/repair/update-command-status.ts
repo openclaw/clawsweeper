@@ -39,7 +39,12 @@ type Options = {
   verifyTerminalStatusReceipt: boolean;
 };
 
-type CommandStatusUpdateOutcome = "completed" | "unchanged" | "skipped" | "locked_conversation";
+type CommandStatusUpdateOutcome =
+  | "completed"
+  | "unchanged"
+  | "skipped"
+  | "locked_conversation"
+  | "missing_status_comment";
 
 type TerminalStatusReceipt = {
   commandCommentId: number;
@@ -79,6 +84,19 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
   }
   if (!comment?.id || typeof comment.body !== "string") {
     console.warn(`No command status comment found for ${options.repo}#${options.itemNumber}.`);
+    if (options.requireMutation && options.verifyTerminalStatusReceipt) {
+      // Terminal-acknowledgement finalization: the status comment was deleted
+      // (or never existed), so there is nothing left to acknowledge. Surface a
+      // dedicated outcome so the workflow can complete a durable skip instead
+      // of requeueing the driver forever.
+      console.warn("Command status update skipped because the command status comment is missing.");
+      recordCommandProgress(lifecycle, {
+        state: "missing_status_comment",
+        status: "skipped",
+        mutation: false,
+      });
+      return { outcome: "missing_status_comment" };
+    }
     recordCommandProgress(lifecycle, {
       state: options.state,
       status: "skipped",
@@ -168,6 +186,9 @@ async function runCommandStatusUpdate(options: Options) {
   }
   if (!commandError && outcome === "locked_conversation" && process.env.GITHUB_OUTPUT) {
     appendFileSync(process.env.GITHUB_OUTPUT, "locked_conversation=true\n");
+  }
+  if (!commandError && outcome === "missing_status_comment" && process.env.GITHUB_OUTPUT) {
+    appendFileSync(process.env.GITHUB_OUTPUT, "missing_status_comment=true\n");
   }
   if (!commandError && terminalStatusReceipt && process.env.GITHUB_OUTPUT) {
     appendFileSync(

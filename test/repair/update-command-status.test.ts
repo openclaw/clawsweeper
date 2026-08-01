@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -283,6 +287,94 @@ test("terminal locked-conversation skip covers status selection and duplicate cl
   assert.ok(selection >= 0);
   assert.ok(caught > selection);
   assert.match(source.slice(selection, caught), /catch \(error\)/);
+});
+
+function runUpdateCommandStatus(tmp: string, args: string[]) {
+  const ghPath = path.join(tmp, "gh.js");
+  fs.writeFileSync(
+    ghPath,
+    [
+      "const args = process.argv.slice(2).join(' ');",
+      "if (!args.includes('/comments')) process.exit(1);",
+      "process.stdout.write(JSON.stringify([[]]));",
+    ].join("\n"),
+  );
+  const outputPath = path.join(tmp, "github-output");
+  fs.writeFileSync(outputPath, "");
+  const script = path.join(process.cwd(), "dist/repair/update-command-status.js");
+  let status = 0;
+  let stderr = "";
+  try {
+    execFileSync(process.execPath, [script, ...args], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GH_BIN: process.execPath,
+        GH_BIN_ARGS: JSON.stringify([ghPath]),
+        GITHUB_OUTPUT: outputPath,
+        CLAWSWEEPER_ACTION_LEDGER_DISABLED: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    const failure = error as { status?: number; stderr?: string };
+    status = failure.status ?? 1;
+    stderr = String(failure.stderr ?? "");
+  }
+  return { status, stderr, output: fs.readFileSync(outputPath, "utf8") };
+}
+
+test("missing status comment completes the terminal acknowledgement as a skip", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-update-command-status-"));
+  try {
+    const result = runUpdateCommandStatus(tmp, [
+      "--repo",
+      "openclaw/openclaw",
+      "--item-number",
+      "113663",
+      "--marker",
+      "<!-- clawsweeper-command-status:113663:automerge:320c867f -->",
+      "--state",
+      "Complete",
+      "--detail",
+      "Durable review routing completed.",
+      "--require-mutation",
+      "--locked-conversation-terminal-skip",
+      "--verify-terminal-status-receipt",
+    ]);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.output, /^missing_status_comment=true$/m);
+    assert.doesNotMatch(result.output, /terminal_status_verified/);
+    assert.doesNotMatch(result.output, /locked_conversation/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("missing status comment still fails non-terminal required mutations", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-update-command-status-"));
+  try {
+    const result = runUpdateCommandStatus(tmp, [
+      "--repo",
+      "openclaw/openclaw",
+      "--item-number",
+      "113663",
+      "--marker",
+      "<!-- clawsweeper-command-status:113663:automerge:320c867f -->",
+      "--state",
+      "Complete",
+      "--detail",
+      "Durable review routing completed.",
+      "--require-mutation",
+    ]);
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /command status mutation required but no comment was found/);
+    assert.doesNotMatch(result.output, /missing_status_comment/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("parseOptions reads STATUS_COMMENT_ID env fallback", () => {

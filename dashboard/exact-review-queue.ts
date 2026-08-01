@@ -6471,7 +6471,8 @@ export class ExactReviewQueue {
       (Boolean(terminalDisposition) &&
         projection.admission.commandOriginated &&
         !projection.acknowledgement.observed &&
-        commandAcknowledgementState(projection) !== "skipped_locked");
+        commandAcknowledgementState(projection) !== "skipped_locked" &&
+        commandAcknowledgementState(projection) !== "skipped_missing_comment");
     if (
       !disposition ||
       disposition === "requeue" ||
@@ -6758,10 +6759,11 @@ export class ExactReviewQueue {
       body.status_comment_id === undefined || body.status_comment_id === null
         ? null
         : Number(body.status_comment_id);
+    const reason = body.reason;
     if (
       !tuple ||
       !/^ack:[1-9]\d*$/.test(attemptId) ||
-      body.reason !== "locked_conversation" ||
+      (reason !== "locked_conversation" && reason !== "missing_status_comment") ||
       (statusMarker !== null && !statusMarker) ||
       (statusCommentId !== null && (!Number.isSafeInteger(statusCommentId) || statusCommentId < 1))
     ) {
@@ -6780,7 +6782,7 @@ export class ExactReviewQueue {
         attemptId,
         statusMarker,
         statusCommentId,
-        reason: "locked_conversation",
+        reason,
         observedAt: now,
       });
       if (!result.skipped) {

@@ -1939,9 +1939,14 @@ function validDurableLifecycleBayCard(value) {
       ["accepted", "deduped", "superseded"].includes(entry),
     ) &&
     [null, "durable", "not_required"].includes(facts.router_receipt) &&
-    ["not_required", "pending", "observed", "skipped_locked", "unavailable"].includes(
-      facts.acknowledgement,
-    ) &&
+    [
+      "not_required",
+      "pending",
+      "observed",
+      "skipped_locked",
+      "skipped_missing_comment",
+      "unavailable",
+    ].includes(facts.acknowledgement) &&
     Number.isFinite(Date.parse(String(card.updated_at || ""))) &&
     Number.isSafeInteger(card.age_ms) &&
     Number(card.age_ms) >= 0 &&

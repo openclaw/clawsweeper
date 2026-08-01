@@ -1193,10 +1193,22 @@ test("exact event publication derives lifecycle receipt and final command acknow
   assert.match(observedReceipt.run ?? "", /completion_comment_id: completionCommentId/);
   assert.match(observedReceipt.run ?? "", /acknowledgement_state == "observed"/);
   assert.match(lockedSkip.if ?? "", /locked_conversation == 'true'/);
+  assert.match(lockedSkip.if ?? "", /missing_status_comment == 'true'/);
   assert.match(lockedSkip.run ?? "", /terminal-finalization\/skip/);
   assert.match(lockedSkip.run ?? "", /locked_conversation/);
+  assert.match(lockedSkip.run ?? "", /skip_reason="missing_status_comment"/);
+  assert.match(lockedSkip.run ?? "", /expected_state="skipped_missing_comment"/);
+  assert.match(lockedSkip.run ?? "", /acknowledgement_state == \$state/);
+  assert.equal(
+    lockedSkip.env?.MISSING_STATUS_COMMENT,
+    "${{ steps.update-final-command-status.outputs.missing_status_comment }}",
+  );
   assert.match(retry.run ?? "", /terminal-finalization\/retry/);
   assert.match(retry.if ?? "", /observe-verified-terminal-acknowledgement\.outcome != 'success'/);
+  assert.match(
+    retry.if ?? "",
+    /!\(\(steps\.update-final-command-status\.outputs\.locked_conversation == 'true' \|\| steps\.update-final-command-status\.outputs\.missing_status_comment == 'true'\) && steps\.complete-locked-terminal-acknowledgement\.outcome == 'success'\)/,
+  );
   assert.match(retry.run ?? "", /response_status/);
   assert.match(retry.run ?? "", /lease_not_active/);
   const workflowSource = readText(".github/workflows/sweep.yml");

@@ -42,7 +42,17 @@ export type CommandAcknowledgementState =
   | "pending"
   | "observed"
   | "skipped_locked"
+  | "skipped_missing_comment"
   | "unavailable";
+
+export type CommandAcknowledgementTerminalSkipReason =
+  | "locked_conversation"
+  | "missing_status_comment";
+
+export const COMMAND_ACKNOWLEDGEMENT_TERMINAL_SKIP_REASONS: readonly [
+  CommandAcknowledgementTerminalSkipReason,
+  ...CommandAcknowledgementTerminalSkipReason[],
+] = ["locked_conversation", "missing_status_comment"];
 
 export type DurableLifecycleBayLane =
   | "pending"
@@ -123,7 +133,7 @@ type LifecycleAcknowledgementAttempt = {
   attemptedAt: number;
   failedAt?: number;
   expiredAt?: number;
-  terminalSkip?: { reason: "locked_conversation"; observedAt: number };
+  terminalSkip?: { reason: CommandAcknowledgementTerminalSkipReason; observedAt: number };
 };
 
 export type ExactReviewLifecycleProjection = {
@@ -564,13 +574,15 @@ export class ExactReviewLifecycleProjectionStore {
       attemptId: string;
       statusMarker: string | null;
       statusCommentId: number | null;
-      reason: "locked_conversation";
+      reason: CommandAcknowledgementTerminalSkipReason;
       observedAt: number;
     },
   ) {
     this.validateIdentity(input);
     if (!/^ack:[1-9]\d*$/.test(input.attemptId))
       throw new Error("invalid lifecycle acknowledgement attempt");
+    if (!COMMAND_ACKNOWLEDGEMENT_TERMINAL_SKIP_REASONS.includes(input.reason))
+      throw new Error("invalid lifecycle acknowledgement terminal skip reason");
     validateAcknowledgementAddress(input.statusMarker, input.statusCommentId);
     return this.mutate(
       input,
@@ -912,7 +924,12 @@ export function commandAcknowledgementState(
 ): CommandAcknowledgementState {
   if (!projection.acknowledgement.required) return "not_required";
   if (projection.acknowledgement.observed) return "observed";
-  if (commandAcknowledgementTerminalSkip(projection)) return "skipped_locked";
+  const terminalSkip = commandAcknowledgementTerminalSkip(projection);
+  if (terminalSkip) {
+    return terminalSkip.reason === "missing_status_comment"
+      ? "skipped_missing_comment"
+      : "skipped_locked";
+  }
   if (projection.terminalDisposition?.kind === "review_completed_routed") {
     return lifecycleState(projection) === "acknowledgement_pending" ? "pending" : "unavailable";
   }
@@ -1093,7 +1110,7 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
         (attempt.failedAt === undefined || finiteTimestamp(attempt.failedAt)) &&
         (attempt.expiredAt === undefined || finiteTimestamp(attempt.expiredAt)) &&
         (attempt.terminalSkip === undefined ||
-          (attempt.terminalSkip.reason === "locked_conversation" &&
+          (COMMAND_ACKNOWLEDGEMENT_TERMINAL_SKIP_REASONS.includes(attempt.terminalSkip.reason) &&
             finiteTimestamp(attempt.terminalSkip.observedAt))),
     )
   ) {
@@ -1157,8 +1174,9 @@ function finiteTimestamp(value: unknown) {
 }
 
 function commandAcknowledgementTerminalSkip(projection: ExactReviewLifecycleProjection) {
-  return projection.acknowledgement.attempts.some(
-    (attempt) => attempt.terminalSkip?.reason === "locked_conversation",
+  return (
+    [...projection.acknowledgement.attempts].reverse().find((attempt) => attempt.terminalSkip)
+      ?.terminalSkip ?? null
   );
 }
 

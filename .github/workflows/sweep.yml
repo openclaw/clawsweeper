@@ -3270,7 +3270,7 @@ jobs:
 
       - name: Complete locked terminal acknowledgement skip
         id: complete-locked-terminal-acknowledgement
-        if: ${{ always() && steps.finalization-context.outputs.claimed == 'true' && steps.update-final-command-status.outputs.locked_conversation == 'true' }}
+        if: ${{ always() && steps.finalization-context.outputs.claimed == 'true' && (steps.update-final-command-status.outputs.locked_conversation == 'true' || steps.update-final-command-status.outputs.missing_status_comment == 'true') }}
         env:
           ITEM_KEY: ${{ steps.finalization-context.outputs.item_key }}
           QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
@@ -3279,24 +3279,32 @@ jobs:
           STATUS_MARKER: ${{ steps.finalization-context.outputs.status_marker }}
           STATUS_COMMENT_ID: ${{ steps.finalization-context.outputs.status_comment_id }}
           ATTEMPT_ID: ${{ steps.terminal-acknowledgement.outputs.attempt_id }}
+          MISSING_STATUS_COMMENT: ${{ steps.update-final-command-status.outputs.missing_status_comment }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          payload="$(node -e '
+          skip_reason="locked_conversation"
+          expected_state="skipped_locked"
+          if [ "$MISSING_STATUS_COMMENT" = "true" ]; then
+            skip_reason="missing_status_comment"
+            expected_state="skipped_missing_comment"
+          fi
+          payload="$(SKIP_REASON="$skip_reason" node -e '
             const leaseRevision = Number(process.env.LEASE_REVISION);
             const claimGeneration = Number(process.env.CLAIM_GENERATION);
             const runAttempt = Number(process.env.RUN_ATTEMPT);
             const statusMarker = process.env.STATUS_MARKER || null;
             const statusCommentId = process.env.STATUS_COMMENT_ID === "" ? null : Number(process.env.STATUS_COMMENT_ID);
             if (!process.env.QUEUE_LEASE_ID || !process.env.ITEM_KEY || !process.env.ATTEMPT_ID) process.exit(1);
+            if (!["locked_conversation", "missing_status_comment"].includes(process.env.SKIP_REASON)) process.exit(1);
             if (!Number.isInteger(leaseRevision) || leaseRevision < 1 || !Number.isInteger(claimGeneration) || claimGeneration < 1 || !Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
             if (!statusMarker && statusCommentId === null) process.exit(1);
             process.stdout.write(JSON.stringify({
               lease_id: process.env.QUEUE_LEASE_ID, item_key: process.env.ITEM_KEY,
               lease_revision: leaseRevision, claim_generation: claimGeneration,
               run_id: process.env.GITHUB_RUN_ID, run_attempt: runAttempt,
-              attempt_id: process.env.ATTEMPT_ID, reason: "locked_conversation",
+              attempt_id: process.env.ATTEMPT_ID, reason: process.env.SKIP_REASON,
               ...(statusMarker ? { status_marker: statusMarker } : {}),
               ...(statusCommentId === null ? {} : { status_comment_id: statusCommentId }),
             }));
@@ -3304,10 +3312,11 @@ jobs:
           response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
             --request POST --header "content-type: application/json" --data "$payload" \
             "${QUEUE_URL%/}/internal/exact-review/terminal-finalization/skip")"
-          jq -e '.ok == true and .completed == true and .acknowledgement_state == "skipped_locked"' <<< "$response" >/dev/null
+          jq -e --arg state "$expected_state" \
+            '.ok == true and .completed == true and .acknowledgement_state == $state' <<< "$response" >/dev/null
 
       - name: Requeue unobserved terminal acknowledgement
-        if: ${{ always() && steps.finalization-context.outputs.claimed == 'true' && steps.observe-verified-terminal-acknowledgement.outcome != 'success' && !(steps.update-final-command-status.outputs.locked_conversation == 'true' && steps.complete-locked-terminal-acknowledgement.outcome == 'success') }}
+        if: ${{ always() && steps.finalization-context.outputs.claimed == 'true' && steps.observe-verified-terminal-acknowledgement.outcome != 'success' && !((steps.update-final-command-status.outputs.locked_conversation == 'true' || steps.update-final-command-status.outputs.missing_status_comment == 'true') && steps.complete-locked-terminal-acknowledgement.outcome == 'success') }}
         env:
           ITEM_KEY: ${{ steps.finalization-context.outputs.item_key }}
           QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}

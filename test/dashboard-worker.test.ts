@@ -6302,6 +6302,128 @@ test("Worker completes a locked terminal acknowledgement as a projection-backed 
   );
 });
 
+test("Worker completes a missing status comment terminal acknowledgement as a durable skip", async () => {
+  const storage = new MemoryDurableStorage();
+  const leased = leasedExactReviewPublicationItem(787, "7870");
+  const marker = "<!-- clawsweeper-command-status:787:automerge:missing -->";
+  Object.assign(leased.decision.publication!.producerDecision, {
+    sourceAction: "automerge",
+    commandStatusMarker: marker,
+    statusCommentId: 7871,
+  });
+  Object.assign(leased.decision, { commandStatusMarker: marker, statusCommentId: 7871 });
+  Object.assign(leased, {
+    terminalFinalization: {
+      disposition: "review_completed_routed",
+      statusState: "Complete",
+      statusDetail: "The durable review result and its route handoff completed.",
+    },
+  });
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [leased.key]: leased } });
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  lifecycle.ensureSchemaSync();
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#787",
+    fenceKey: leased.key,
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "terminal-missing:787",
+    sourceAction: "automerge",
+    commandOriginated: true,
+    statusMarker: marker,
+    statusCommentId: 7871,
+    observedAt: Date.now(),
+  });
+  lifecycle.recordCanonicalReceipt({
+    ...identity,
+    outcome: "accepted",
+    receiptId: "terminal-missing:787:canonical",
+    observedAt: Date.now(),
+  });
+  lifecycle.recordRouterReceipt({
+    ...identity,
+    outcome: "durable",
+    receiptId: "terminal-missing:787:router",
+    observedAt: Date.now(),
+  });
+  lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: Date.now(),
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const env = { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) };
+  const tuple = {
+    lease_id: leased.leaseId,
+    item_key: leased.key,
+    lease_revision: 1,
+    claim_generation: 1,
+    run_id: "7870",
+    run_attempt: 1,
+    status_marker: marker,
+    status_comment_id: 7871,
+  };
+  const attempted = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/terminal-finalization/attempt",
+      {
+        method: "POST",
+        body: JSON.stringify(tuple),
+      },
+    ),
+    env,
+  );
+  assert.equal((await attempted.json()).attempt_id, "ack:1");
+  const rejected = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/terminal-finalization/skip",
+      {
+        method: "POST",
+        body: JSON.stringify({ ...tuple, attempt_id: "ack:1", reason: "operator_override" }),
+      },
+    ),
+    env,
+  );
+  assert.equal(rejected.status, 400);
+  assert.deepEqual(await rejected.json(), { error: "invalid_terminal_finalization_skip" });
+  const skipped = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/terminal-finalization/skip",
+      {
+        method: "POST",
+        body: JSON.stringify({ ...tuple, attempt_id: "ack:1", reason: "missing_status_comment" }),
+      },
+    ),
+    env,
+  );
+  assert.deepEqual(await skipped.json(), {
+    ok: true,
+    completed: true,
+    lifecycle_state: "acknowledgement_skipped",
+    acknowledgement_state: "skipped_missing_comment",
+    version: 1,
+  });
+  assert.equal(storage.sql.readNormalizedQueue().items[leased.key], undefined);
+  const projection = lifecycle.read(
+    identity.canonicalTargetKey,
+    identity.fenceKey,
+    identity.revision,
+  )!;
+  assert.equal(lifecycleState(projection), "acknowledgement_skipped");
+  assert.equal(commandAcknowledgementState(projection), "skipped_missing_comment");
+  assert.equal(
+    lifecycle.authorizeCommandAcknowledgement({
+      ...identity,
+      statusMarker: marker,
+      statusCommentId: 7871,
+      observedAt: Date.now(),
+    }).allowed,
+    false,
+  );
+});
+
 test("Worker observes the generic durable terminal failure acknowledgement", async () => {
   const storage = new MemoryDurableStorage();
   const leased = leasedExactReviewPublicationItem(784, "7840");
