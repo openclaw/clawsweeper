@@ -1215,6 +1215,20 @@ test("exact event publication derives lifecycle receipt and final command acknow
   );
   assert.match(retry.run ?? "", /response_status/);
   assert.match(retry.run ?? "", /lease_not_active/);
+  assert.match(
+    statusEdit?.run ?? "",
+    /rate limit exceeded\|secondary rate limit\|HTTP 429/,
+    "throttled terminal status updates must be marked for the failure sentinel",
+  );
+  assert.match(statusEdit?.run ?? "", /throttled=true/);
+  const failSentinel = finalizer.steps.find(
+    (candidate) => candidate.name === "Fail failed terminal acknowledgement",
+  );
+  assert.match(
+    failSentinel?.if ?? "",
+    /update-final-command-status\.outcome == 'failure' && steps\.update-final-command-status\.outputs\.throttled != 'true'/,
+    "a throttled update must not red the run — the requeue step already re-arms the driver",
+  );
   const workflowSource = readText(".github/workflows/sweep.yml");
   assert.ok(
     workflowSource.indexOf("Complete durable exact review publication") <

@@ -18,6 +18,9 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- GitHub-throttled terminal status updates no longer fail the finalization run; the requeue step already re-arms the acknowledgement for after the rate window.
+
+
 - GitHub-throttled live-item checks now release the review claim for a delayed retry instead of failing the run and spending failure budget.
 - Event-review artifact publication completes as a superseded no-op when the reviewed branch vanished upstream (force-push or deletion) instead of failing the run.
 - Worker record requests now retry transient blank/invalid 2xx bodies from the edge within the bounded budget instead of failing hydration on the first occurrence.

@@ -3202,12 +3202,21 @@ jobs:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
           set -euo pipefail
+          update_log="$(mktemp)"
+          trap 'rm -f "$update_log"' EXIT
           pnpm run repair:update-command-status -- \
             --repo "$TARGET_REPO" --item-number "$ITEM_NUMBER" \
             --marker "$COMMAND_STATUS_MARKER" --status-comment-id "$STATUS_COMMENT_ID" \
             --state "$STATUS_STATE" --detail "$STATUS_DETAIL" --run-url "$RUN_URL" \
-            --require-mutation --locked-conversation-terminal-skip --verify-terminal-status-receipt || {
+            --require-mutation --locked-conversation-terminal-skip --verify-terminal-status-receipt 2>&1 | tee "$update_log" || {
               update_status="$?"
+              # End-of-window installation throttling is self-healing: the
+              # requeue step re-arms the driver for after the rate window, so
+              # the failure sentinel must not turn this run red.
+              if grep -Eqi 'rate limit exceeded|secondary rate limit|HTTP 429' "$update_log"; then
+                echo "throttled=true" >> "$GITHUB_OUTPUT"
+                echo "::notice::GitHub throttled the terminal status update; the requeue step retries after the rate window."
+              fi
               failure_payload="$(node -e '
                 const revision = Number(process.env.REVISION);
                 if (!process.env.FENCE_KEY || !process.env.ATTEMPT_ID || !Number.isInteger(revision) || revision < 1) process.exit(1);
@@ -3354,7 +3363,7 @@ jobs:
           jq -e '.ok == true and (.requeued == true or .completed == true)' "$response_file" >/dev/null
 
       - name: Fail failed terminal acknowledgement
-        if: ${{ steps.update-final-command-status.outcome == 'failure' || steps.complete-locked-terminal-acknowledgement.outcome == 'failure' || steps.terminal-acknowledgement.outcome == 'failure' || steps.target-write-token.outcome == 'failure' }}
+        if: ${{ (steps.update-final-command-status.outcome == 'failure' && steps.update-final-command-status.outputs.throttled != 'true') || steps.complete-locked-terminal-acknowledgement.outcome == 'failure' || steps.terminal-acknowledgement.outcome == 'failure' || steps.target-write-token.outcome == 'failure' }}
         run: exit 1
 
   target-fanout:
