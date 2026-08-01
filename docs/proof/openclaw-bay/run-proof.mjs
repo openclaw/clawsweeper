@@ -751,8 +751,9 @@ try {
     lane_help: await page.locator('[data-stage="arriving"] .lane-help summary').count(),
   };
   assertProof(
-    "Bay mirrors cached exact-review admission, publication, state-writer, and handoff telemetry",
-    bayControl.cards === 4 &&
+    "Bay mirrors cached aggregate events, admission, publication, state-writer, and handoff telemetry",
+    bayControl.cards === 5 &&
+      /Recent durable events/i.test(bayControl.review) &&
       /Review admission/i.test(bayControl.review) &&
       /Result publication/i.test(bayControl.review) &&
       /State writer/i.test(bayControl.review) &&
