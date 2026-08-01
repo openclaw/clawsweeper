@@ -3666,6 +3666,9 @@ if (args[0] === "install") {
     const bin = path.join(process.cwd(), "node_modules", ".bin", "knip");
     fs.mkdirSync(path.dirname(bin), { recursive: true });
     fs.writeFileSync(bin, "#!/bin/sh\\nexit 0\\n", { mode: 0o755 });
+    const manifest = path.join(process.cwd(), "node_modules", "knip", "package.json");
+    fs.mkdirSync(path.dirname(manifest), { recursive: true });
+    fs.writeFileSync(manifest, JSON.stringify({ name: "knip", version: "6.8.0" }));
     if (fs.existsSync(${JSON.stringify(path.join(hostBin, "tamper-lock"))})) {
       const lock = path.join(process.cwd(), "pnpm-lock.yaml");
       fs.writeFileSync(lock, fs.readFileSync(lock, "utf8").replace("specifier: 6.8.0", "specifier: 6.8.1"));
@@ -3679,13 +3682,23 @@ if (args[0] === "install") {
 }
 if (args.at(-1) === "first" || args.at(-1) === "second") {
   const registry = process.env.PNPM_CONFIG_REGISTRY;
-  const cacheKey = require("node:crypto")
+  const fullCacheKey = require("node:crypto")
     .createHash("sha256")
     .update(JSON.stringify([["knip@6.8.0"], [["@jsr", "https://npm.jsr.io/"], ["default", registry]]]))
-    .digest("hex")
-    .slice(0, 32);
+    .digest("hex");
+  const cacheKey = fullCacheKey.slice(0, 32);
   const marker = path.join(process.env.XDG_CACHE_HOME, "pnpm", "dlx", cacheKey, "marker");
   if (fs.readFileSync(marker, "utf8") !== "frozen helper") process.exit(42);
+  if (fs.readFileSync(path.join(process.env.XDG_CACHE_HOME, "pnpm", "dlx", fullCacheKey, "marker"), "utf8") !== "frozen helper") process.exit(44);
+  const host = new URL(registry).host.replace(":", "+");
+  for (const metadataPath of [
+    path.join(process.env.XDG_CACHE_HOME, "pnpm", "v11", "metadata-full-filtered", host, "knip.jsonl"),
+    path.join(process.env.XDG_CACHE_HOME, "pnpm", "metadata-ff-v1.3", host, "knip.json"),
+  ]) {
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8").trim().split("\\n").at(-1));
+    if (Object.keys(metadata.versions).join(",") !== "6.8.0") process.exit(45);
+    if (!metadata.versions["6.8.0"].dist.integrity.startsWith("sha512-")) process.exit(46);
+  }
   const knip = path.join(path.dirname(marker), "pinned", "node_modules", ".bin", "knip");
   if (!fs.readFileSync(knip, "utf8").includes("JITI_FS_CACHE=0")) process.exit(43);
   if (args.at(-1) === "first") fs.writeFileSync(marker, "validation mutated its own cache");

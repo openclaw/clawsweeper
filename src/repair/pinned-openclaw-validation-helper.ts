@@ -8,6 +8,7 @@ import { parse as parseYaml } from "yaml";
 import { runContainedCommand } from "./command-runner.js";
 
 const PINNED_OPENCLAW_KNIP_VERSION = "6.8.0";
+const PINNED_OPENCLAW_KNIP_PUBLISHED_AT = "2026-04-29T06:27:29.928Z";
 const PREPARED_PNPM_HELPER_CACHE = ".__clawsweeper_pnpm_helper_cache__";
 const MINIMUM_OPENCLAW_RELEASE_AGE_MINUTES = 48 * 60;
 const PINNED_OPENCLAW_KNIP_LOCK = fileURLToPath(
@@ -40,12 +41,9 @@ export function preparePinnedOpenClawValidationHelper({
   const profileRoot = path.dirname(String(validationEnv.HOME));
   const helperCache = path.join(String(validationEnv.COREPACK_HOME), PREPARED_PNPM_HELPER_CACHE);
   const minimumReleaseAge = openClawMinimumReleaseAge(cwd);
-  const cacheRoot = path.join(
-    helperCache,
-    "pnpm",
-    "dlx",
-    pinnedOpenClawDlxCacheKey(installRegistry),
-  );
+  const dlxRoot = path.join(helperCache, "pnpm", "dlx");
+  const fullCacheKey = pinnedOpenClawDlxCacheKey(installRegistry);
+  const cacheRoot = path.join(dlxRoot, fullCacheKey);
   const helperProject = path.join(cacheRoot, "pinned");
   fs.mkdirSync(helperProject, { recursive: true, mode: 0o700 });
   fs.copyFileSync(PINNED_OPENCLAW_KNIP_LOCK, path.join(helperProject, "pnpm-lock.yaml"));
@@ -83,8 +81,9 @@ export function preparePinnedOpenClawValidationHelper({
   );
   scopePinnedOpenClawJitiCache(helperProject);
   fs.symlinkSync("pinned", path.join(cacheRoot, "pkg"));
-  seedOfflinePinnedOpenClawMetadata(helperCache, installRegistry);
+  fs.symlinkSync(fullCacheKey, path.join(dlxRoot, fullCacheKey.slice(0, 32)));
   assertPinnedOpenClawValidationHelperLock(helperCache);
+  seedOfflinePinnedOpenClawMetadata(helperCache, helperProject, installRegistry);
 }
 
 function scopePinnedOpenClawJitiCache(helperProject: string): void {
@@ -107,32 +106,60 @@ function pinnedOpenClawDlxCacheKey(installRegistry: string): string {
   ];
   return createHash("sha256")
     .update(JSON.stringify([resolvedPackages, registries]))
-    .digest("hex")
-    .slice(0, 32);
+    .digest("hex");
 }
 
-function seedOfflinePinnedOpenClawMetadata(helperCache: string, installRegistry: string): void {
+function seedOfflinePinnedOpenClawMetadata(
+  helperCache: string,
+  helperProject: string,
+  installRegistry: string,
+): void {
   const cacheRoot = path.join(helperCache, "pnpm");
   const versions = fs.readdirSync(cacheRoot).filter((entry) => /^v\d+$/.test(entry));
   // pnpm's encode-registry package replaces the host/port separator with `+`.
   const registryHost = new URL(installRegistry).host.replace(":", "+");
-  let seeded = false;
-  for (const version of versions) {
-    const metadata = path.join(cacheRoot, version, "metadata-full", registryHost, "knip.jsonl");
-    if (!fs.existsSync(metadata)) continue;
-    const filtered = path.join(
-      cacheRoot,
-      version,
-      "metadata-full-filtered",
-      registryHost,
-      "knip.jsonl",
-    );
-    fs.mkdirSync(path.dirname(filtered), { recursive: true });
-    fs.copyFileSync(metadata, filtered);
-    seeded = true;
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(helperProject, "node_modules", "knip", "package.json"), "utf8"),
+  ) as Record<string, unknown>;
+  if (manifest.name !== "knip" || manifest.version !== PINNED_OPENCLAW_KNIP_VERSION) {
+    throw new Error("pinned OpenClaw Knip package does not match the trusted dependency graph");
   }
-  if (!seeded) {
-    throw new Error("pinned OpenClaw Knip registry metadata was not created by frozen install");
+  const lock = parseYaml(fs.readFileSync(PINNED_OPENCLAW_KNIP_LOCK, "utf8")) as {
+    packages?: Record<string, { resolution?: { integrity?: string } }>;
+  };
+  const integrity = lock.packages?.[`knip@${PINNED_OPENCLAW_KNIP_VERSION}`]?.resolution?.integrity;
+  if (typeof integrity !== "string" || !integrity.startsWith("sha512-")) {
+    throw new Error("pinned OpenClaw Knip integrity is missing from the trusted dependency graph");
+  }
+  const version = {
+    ...manifest,
+    dist: {
+      integrity,
+      tarball: new URL(`knip/-/knip-${PINNED_OPENCLAW_KNIP_VERSION}.tgz`, installRegistry).href,
+    },
+  };
+  const metadata = {
+    name: "knip",
+    "dist-tags": { latest: PINNED_OPENCLAW_KNIP_VERSION },
+    versions: { [PINNED_OPENCLAW_KNIP_VERSION]: version },
+    time: { [PINNED_OPENCLAW_KNIP_VERSION]: PINNED_OPENCLAW_KNIP_PUBLISHED_AT },
+    modified: PINNED_OPENCLAW_KNIP_PUBLISHED_AT,
+    cachedAt: Date.now(),
+  };
+  for (const version of versions) {
+    for (const layout of ["metadata", "metadata-full", "metadata-full-filtered"]) {
+      const destination = path.join(cacheRoot, version, layout, registryHost, "knip.jsonl");
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.writeFileSync(
+        destination,
+        `${JSON.stringify({ modified: PINNED_OPENCLAW_KNIP_PUBLISHED_AT })}\n${JSON.stringify(metadata)}\n`,
+      );
+    }
+  }
+  for (const layout of ["metadata-v1.3", "metadata-full-v1.3", "metadata-ff-v1.3"]) {
+    const destination = path.join(cacheRoot, layout, registryHost, "knip.json");
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.writeFileSync(destination, JSON.stringify(metadata));
   }
 }
 
