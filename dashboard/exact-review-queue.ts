@@ -69,6 +69,7 @@ import {
   type LifecycleTerminalDisposition,
 } from "./exact-review-lifecycle.ts";
 import { ExactReviewLifecycleTelemetryStore } from "./exact-review-lifecycle-telemetry.ts";
+import { recentDurablePublicationEvents } from "./recent-durable-publication-events.ts";
 import { sanitizedServerError } from "./error-safety.ts";
 
 type GithubAppJsonOptions = { method?: string; body?: BodyInit; errorLabel?: string };
@@ -611,6 +612,15 @@ export class ExactReviewQueue {
     }
     if (targetFanoutMode && request.method === "PUT") {
       return this.writeTargetFanoutCursor(targetFanoutMode, await request.json().catch(() => null));
+    }
+    if (request.method === "GET" && url.pathname === "/recent-durable-publication-events") {
+      const events = recentDurablePublicationEvents({
+        storage: this.storage,
+        window: String(url.searchParams.get("window") || "24h"),
+      });
+      return events
+        ? json({ recent_durable_publication_events: events })
+        : json({ error: "invalid_window" }, 400);
     }
     if (request.method === "POST" && url.pathname === "/source-authority") {
       const body = objectValue(await request.json().catch(() => null));

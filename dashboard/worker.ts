@@ -720,6 +720,11 @@ export default {
       return authenticatedExactReviewReconcile(request, env);
     if (url.pathname === "/api/exact-review-queue" && request.method === "GET")
       return exactReviewQueueRequest(env, "/stats");
+    if (url.pathname === "/api/recent-durable-publication-events" && request.method === "GET")
+      return exactReviewQueueRequest(
+        env,
+        `/recent-durable-publication-events?${url.searchParams.toString()}`,
+      );
     if (url.pathname === "/api/exact-review-queue/item" && request.method === "GET")
       return exactReviewQueueRequest(env, `/item-status?${url.searchParams.toString()}`);
     if (url.pathname === "/api/exact-review-queue/reviews" && request.method === "GET")
@@ -1775,6 +1780,17 @@ async function exactReviewQueueRequest(env, path, request?: Request) {
   );
 }
 
+async function recentDurablePublicationEventsSnapshot(env, window = "24h") {
+  const response = await exactReviewQueueRequest(
+    env,
+    `/recent-durable-publication-events?window=${encodeURIComponent(window)}`,
+  );
+  const body = objectValue(await response.json().catch(() => null));
+  if (!response.ok)
+    throw new Error(String(body.error || "recent durable publication events unavailable"));
+  return body.recent_durable_publication_events ?? null;
+}
+
 export async function exactReviewQueueStatusSnapshot(
   env,
   options: { bayPriorityKeys?: string[] } = {},
@@ -2634,21 +2650,40 @@ async function attachExactReviewQueueStatus(snapshot, env) {
     .filter(Boolean);
   let exactReviewQueue = null;
   let exactReviewQueueError = null;
-  try {
-    exactReviewQueue = await withTimeout(
-      exactReviewQueueStatusSnapshot(env, { bayPriorityKeys }),
-      OPTIONAL_SECTION_TIMEOUT_MS,
-      "exact-review queue",
-    );
-  } catch (error) {
-    exactReviewQueueError = error instanceof Error ? error.message : String(error);
-  }
+  let recentDurablePublicationEvents = null;
+  let recentDurablePublicationEventsError = null;
+  const exactReviewQueueRequest = withTimeout(
+    exactReviewQueueStatusSnapshot(env, { bayPriorityKeys }),
+    OPTIONAL_SECTION_TIMEOUT_MS,
+    "exact-review queue",
+  );
+  const recentDurablePublicationEventsRequest = withTimeout(
+    recentDurablePublicationEventsSnapshot(env),
+    OPTIONAL_SECTION_TIMEOUT_MS,
+    "recent durable publication events",
+  );
+  const [queueResult, eventsResult] = await Promise.allSettled([
+    exactReviewQueueRequest,
+    recentDurablePublicationEventsRequest,
+  ]);
+  if (queueResult.status === "fulfilled") exactReviewQueue = queueResult.value;
+  else
+    exactReviewQueueError =
+      queueResult.reason instanceof Error ? queueResult.reason.message : String(queueResult.reason);
+  if (eventsResult.status === "fulfilled") recentDurablePublicationEvents = eventsResult.value;
+  else
+    recentDurablePublicationEventsError =
+      eventsResult.reason instanceof Error
+        ? eventsResult.reason.message
+        : String(eventsResult.reason);
   const attached = {
     ...snapshot,
     exact_review_queue: exactReviewQueue,
+    recent_durable_publication_events: recentDurablePublicationEvents,
     diagnostics: {
       ...diagnostics,
       exact_review_queue_error: exactReviewQueueError,
+      recent_durable_publication_events_error: recentDurablePublicationEventsError,
     },
   };
   return { ...attached, dashboard_health: summarizeDashboardHealth(attached) };
@@ -8882,6 +8917,7 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
     </section>
     <h3 class="overview-section-title">Handoff Health</h3>
     <div id="exact-review-handoff" aria-live="polite"></div>
+    <div id="recent-durable-publication-events" aria-live="polite"></div>
     <div id="apply-health"></div>
     <div class="automatic-head">
       <h2>Automatic Builds</h2>
@@ -9920,6 +9956,15 @@ function renderExactReviewHandoff(queue) {
   const threshold = "stalled after " + elapsed((health.stalled_after_seconds || 0) * 1000);
   target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Queue handoff health</strong><span>' + esc(health.message || "Queue phase telemetry") + '</span></div><div class="exact-handoff-badges"><span class="health-badge ' + esc(status) + '">' + esc(status) + '</span><span class="health-badge ' + esc(pressureStatus) + '">' + esc(pressureLabel) + '</span></div></div><div class="handoff-phases">' + phases + '</div><div class="handoff-foot"><span>' + esc(slots) + '</span><span>' + esc(backlog) + '</span><span>' + esc(threshold) + '</span></div></div>';
 }
+function renderRecentDurablePublicationEvents(events) {
+  const target = document.getElementById("recent-durable-publication-events");
+  if (!target) return;
+  const direct = events?.direct?.counts || {};
+  const batch = events?.batch?.counts || {};
+  const value = item => item == null ? "unknown" : fmt.format(item);
+  const state = events?.collection?.state || "unknown";
+  target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Recent durable publication events</strong><span>Trailing ' + esc(events?.window?.id || "unknown") + ' window; publication attempts only.</span></div><span class="health-badge ' + esc(state) + '">' + esc(state) + '</span></div><div class="handoff-phases"><div class="handoff-phase"><span>Direct accepted</span><strong>' + esc(value(direct.accepted)) + '</strong><small>durable event</small></div><div class="handoff-phase"><span>Batch retryable</span><strong>' + esc(value(batch.retryable)) + '</strong><small>durable event</small></div></div><div class="handoff-foot"><span>No events observed is idle, not failure.</span><span>Workflow activity is not lifecycle completion.</span></div></div>';
+}
 function renderWorkers(rows) {
   workerIndex = new Map(rows.map(worker => [String(worker.id), worker]));
   const groups = ["issue-to-pr", "pr-repair", "review", "repair", "commit", "assist", "other"];
@@ -10152,6 +10197,7 @@ function renderDashboard(data, note) {
   renderExactReviewLanes(data.exact_review_queue);
   renderStateWriter(data.exact_review_queue);
   renderExactReviewHandoff(data.exact_review_queue);
+  renderRecentDurablePublicationEvents(data.recent_durable_publication_events);
   renderApplyHealth(data);
   renderAutomaticWork(data.automatic_work || []);
   renderWorkers(data.workers || []);

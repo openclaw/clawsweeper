@@ -7489,6 +7489,9 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   assert.match(body, /Result publication/);
   assert.match(body, /State writer/);
   assert.match(body, /Queue handoff/);
+  assert.match(body, /Recent durable events/);
+  assert.match(body, /function bayRecentPublicationEvents/);
+  assert.match(body, /workflow activity is not lifecycle completion/);
   assert.match(body, /function loadBayHistory/);
   assert.match(body, /function bayRateSparkline/);
   assert.match(body, /function bayStateWriterCard/);
@@ -8762,6 +8765,36 @@ class MemoryDurableNamespace {
   }
 }
 
+test("public durable publication event endpoint returns bounded aggregate-only window data", async () => {
+  const storage = new MemoryDurableStorage();
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  telemetry.ensureSchemaSync();
+  telemetry.recordDirectOutcome({
+    canonicalTargetKey: "openclaw/openclaw#898",
+    fenceKey: "openclaw/openclaw#898@exact:1",
+    revision: 1,
+    claimGeneration: 1,
+    outcome: "accepted",
+    observedAt: Date.now() - 60_000,
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const response = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/recent-durable-publication-events?window=6h"),
+    { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) },
+  );
+  const body = (await response.json()) as {
+    recent_durable_publication_events: Record<string, unknown>;
+  };
+  assert.equal(response.status, 200);
+  assert.equal((body.recent_durable_publication_events.window as { id: string }).id, "6h");
+  assert.equal(
+    (body.recent_durable_publication_events.collection as { complete: boolean }).complete,
+    true,
+  );
+  assert.equal(JSON.stringify(body).includes("openclaw/openclaw#898"), false);
+  assert.equal(JSON.stringify(body).includes("workflow"), false);
+});
+
 class MemoryR2Bucket {
   private objects = new Map<string, Uint8Array>();
 
@@ -9504,8 +9537,10 @@ test("optional exact-review telemetry failures do not freeze an idle status snap
     );
     const status = await response.json();
     assert.equal(status.exact_review_queue, null);
+    assert.equal(status.recent_durable_publication_events, null);
     assert.deepEqual(status.diagnostics.errors, []);
     assert.equal(status.diagnostics.exact_review_queue_error, "queue_read_failed");
+    assert.equal(status.diagnostics.recent_durable_publication_events_error, "queue_read_failed");
 
     const cached = await worker.fetch(
       new Request("https://clawsweeper.openclaw.ai/api/status"),
@@ -9514,7 +9549,7 @@ test("optional exact-review telemetry failures do not freeze an idle status snap
     );
     assert.equal(cached.headers.get("x-clawsweeper-cache"), "fresh");
     assert.equal((await cached.json()).diagnostics.exact_review_queue_error, "queue_read_failed");
-    assert.equal(queueReads, 1);
+    assert.equal(queueReads, 2);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -17749,6 +17784,9 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /System Overview/);
   assert.match(html, /id="exact-review-handoff"/);
   assert.match(html, /function renderExactReviewHandoff/);
+  assert.match(html, /id="recent-durable-publication-events"/);
+  assert.match(html, /function renderRecentDurablePublicationEvents/);
+  assert.match(html, /Workflow activity is not lifecycle completion/);
   assert.match(html, /waiting for run claim/);
   assert.match(html, /id="apply-health"/);
   assert.match(html, /function renderApplyHealth/);
@@ -19978,7 +20016,7 @@ test("dashboard serves stale status while coalescing one background refresh", as
     releaseFetch();
     await Promise.all(waitUntilPromises);
     assert.equal(unfilteredRunRequests, 1);
-    assert.equal(queueReads, 1);
+    assert.equal(queueReads, 2);
 
     const refreshed = await worker.fetch(request, env);
     assert.equal(refreshed.headers.get("x-clawsweeper-cache"), "fresh");
@@ -19986,7 +20024,7 @@ test("dashboard serves stale status while coalescing one background refresh", as
     assert.deepEqual(refreshedStatus.pipeline, []);
     assert.equal(refreshedStatus.exact_review_queue.pending, 7);
     assert.equal(refreshedStatus.exact_review_queue.handoff_health.status, "healthy");
-    assert.equal(queueReads, 1);
+    assert.equal(queueReads, 2);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
