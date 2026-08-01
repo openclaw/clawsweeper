@@ -1959,7 +1959,7 @@ test("coverage proof timeout cannot exceed the remaining apply runtime", () => {
 });
 
 test("coverage proof refreshes its timeout after linked PR hydration", () => {
-  const source = readText("src/clawsweeper.ts");
+  const source = readText("src/clawsweeper-report-orchestration.ts");
   const gateStart = source.indexOf("function prCloseCoverageProofGateResult");
   const gateEnd = source.indexOf("function renderPrCloseCoverageProofReportSection", gateStart);
   const gate = source.slice(gateStart, gateEnd);
@@ -2016,7 +2016,7 @@ test("recorded label sync covers only matching automation-owned updates", () => 
     false,
   );
   assert.match(
-    readText("src/clawsweeper.ts"),
+    readText("src/clawsweeper-apply-decision-workflow.ts"),
     /recordedLabelSyncMatches[\s\S]*truncationCountsAsActivity: true/,
   );
 });

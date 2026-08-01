@@ -1033,7 +1033,11 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(publisherSource, /\}\) && !deferredCloseCoverage/);
   assert.match(publisherSource, /writePublicationCompletionOutputs\(\s*"superseded"/);
   assert.match(publisherSource, /completionKind: completionSupersededReason/);
-  const reviewSource = readText("src/clawsweeper.ts");
+  const reviewSource = [
+    readText("src/clawsweeper.ts"),
+    readText("src/clawsweeper-command-operations.ts"),
+    readText("src/clawsweeper-apply-decision-workflow.ts"),
+  ].join("\n");
   assert.match(reviewSource, /reserveReviewLeaseCommand/);
   assert.match(reviewSource, /suppliedReviewStartLeaseFromArgs/);
   assert.match(reviewSource, /exactEventReviewLeaseDisposition/);

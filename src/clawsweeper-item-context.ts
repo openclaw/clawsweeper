@@ -1,0 +1,424 @@
+import type {
+  ContextHydration,
+  GithubPageWithHeaders,
+  GoodFirstIssueHumanLabelState,
+  Item,
+  ItemContext,
+  PreviousClawSweeperReview,
+} from "./clawsweeper-types.js";
+import { completeActivityContextSymbol } from "./clawsweeper-types.js";
+import { stableJson } from "./stable-json.js";
+
+interface CreateItemContextDependencies {
+  asRecord: (value: unknown) => Record<string, unknown>;
+  closingPullRequestsForIssue: (number: number) => unknown[];
+  compactComment: (value: unknown) => unknown;
+  compactIssue: (value: unknown) => unknown;
+  compactMappedSlice: <T>(
+    items: readonly T[],
+    limit: number,
+    mapper: (item: T) => unknown,
+  ) => unknown[];
+  compactMappedWindow: <T>(
+    items: readonly T[],
+    total: number,
+    limit: number,
+    mapper: (item: T) => unknown,
+  ) => unknown[];
+  compactPullCommit: (value: unknown) => unknown;
+  compactPullFile: (value: unknown) => unknown;
+  compactPullRequest: (value: unknown) => unknown;
+  compactSemanticPullFile: (value: unknown) => unknown;
+  compactTimelineEvent: (value: unknown) => unknown;
+  extractLatestClawSweeperReviewFromHydration: (
+    commentsWindow: ContextHydration<unknown>,
+    completeComments: readonly unknown[],
+    number: number,
+  ) => PreviousClawSweeperReview | null;
+  fetchReviewedPrActivityCursor: (
+    number: number,
+    prefetchedInlineComments?: unknown[],
+  ) => string | null;
+  filterReviewContextComments: (
+    comments: readonly unknown[],
+    number: number,
+  ) => { included: unknown[]; filtered: number };
+  ghJson: <T>(args: string[]) => T;
+  ghPaged: <T>(path: string) => T[];
+  ghPagedContextWindow: <T>(
+    path: string,
+    totalCount: unknown,
+    promptLimit: number,
+    fetchers?: { page?: (path: string, page: number) => T[]; paged?: (path: string) => T[] },
+  ) => ContextHydration<T>;
+  ghPagedLinkHeaderContextWindow: <T>(
+    path: string,
+    promptLimit: number,
+    fetchers?: {
+      pageWithHeaders?: (path: string, page: number, perPage: number) => GithubPageWithHeaders<T>;
+      paged?: (path: string) => T[];
+    },
+  ) => ContextHydration<T>;
+  goodFirstIssueHumanLabelState: (timeline: readonly unknown[]) => GoodFirstIssueHumanLabelState;
+  hydratedReviewStructuralItemStateDigest: (
+    issue: unknown,
+    comments: readonly unknown[],
+  ) => string | undefined;
+  itemSourceRevisionSha256: (issue: unknown, comments?: unknown[]) => string;
+  pullChecksContext: (number: number, headSha: string) => unknown;
+  pullCommitContentRevision: (entries: readonly unknown[]) => string | null;
+  referencingMergedPullRequestsForIssue: (number: number) => unknown[];
+  relatedItemsContext: (options: {
+    item: Item;
+    issue: unknown;
+    comments: unknown[];
+    timeline: unknown[];
+    pullRequest?: unknown;
+    pullReviewComments?: unknown[];
+  }) => unknown[];
+  reviewCommentContentRevision: (entries: readonly unknown[]) => string;
+  reviewTimelineDigestParts: (entries: unknown) => unknown;
+  semanticPullFilesWithTreeIdentity: (options: {
+    files: readonly unknown[];
+    itemNumber: number;
+    pullRequest: unknown;
+    targetDir: string;
+  }) => unknown[];
+  sha256: (text: string) => string;
+  stringOrUndefined: (value: unknown) => string | undefined;
+  targetRepo: () => string;
+}
+
+export function createItemContext(dependencies: CreateItemContextDependencies) {
+  const {
+    asRecord,
+    closingPullRequestsForIssue,
+    compactComment,
+    compactIssue,
+    compactMappedSlice,
+    compactMappedWindow,
+    compactPullCommit,
+    compactPullFile,
+    compactPullRequest,
+    compactSemanticPullFile,
+    compactTimelineEvent,
+    extractLatestClawSweeperReviewFromHydration,
+    fetchReviewedPrActivityCursor,
+    filterReviewContextComments,
+    ghJson,
+    ghPaged,
+    ghPagedContextWindow,
+    ghPagedLinkHeaderContextWindow,
+    goodFirstIssueHumanLabelState,
+    hydratedReviewStructuralItemStateDigest,
+    itemSourceRevisionSha256,
+    pullChecksContext,
+    pullCommitContentRevision,
+    referencingMergedPullRequestsForIssue,
+    relatedItemsContext,
+    reviewCommentContentRevision,
+    reviewTimelineDigestParts,
+    semanticPullFilesWithTreeIdentity,
+    sha256,
+    stringOrUndefined,
+    targetRepo,
+  } = dependencies;
+
+  function collectItemContext(
+    item: Item,
+    options: {
+      fullTimelineForRelations?: boolean;
+      reviewCacheDigest?: boolean;
+      reviewCacheGitDir?: string;
+    } = {},
+  ): ItemContext {
+    const issue = ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${item.number}`]);
+    const issueRecord = asRecord(issue);
+    const commentsWindow = ghPagedContextWindow<unknown>(
+      `repos/${targetRepo()}/issues/${item.number}/comments`,
+      issueRecord.comments,
+      24,
+    );
+    const comments = commentsWindow.items;
+    const sourceRevisionComments = commentsWindow.truncated
+      ? ghPaged<unknown>(`repos/${targetRepo()}/issues/${item.number}/comments`)
+      : comments;
+    const filteredComments = filterReviewContextComments(comments, item.number);
+    const previousClawSweeperReview = extractLatestClawSweeperReviewFromHydration(
+      commentsWindow,
+      sourceRevisionComments,
+      item.number,
+    );
+    const timelineWindow = ghPagedLinkHeaderContextWindow<unknown>(
+      `repos/${targetRepo()}/issues/${item.number}/timeline`,
+      80,
+    );
+    const timeline = timelineWindow.items;
+    const fullTimeline =
+      timelineWindow.truncated && (options.fullTimelineForRelations || options.reviewCacheDigest)
+        ? ghPaged<unknown>(`repos/${targetRepo()}/issues/${item.number}/timeline`)
+        : null;
+    const context: ItemContext = {
+      issue: compactIssue(issue),
+      sourceRevision: itemSourceRevisionSha256(issue, sourceRevisionComments),
+      comments: compactMappedWindow(
+        filteredComments.included,
+        filteredComments.included.length,
+        24,
+        compactComment,
+      ),
+      timeline: compactMappedWindow(timeline, timelineWindow.total, 80, compactTimelineEvent),
+      goodFirstIssueHumanLabelState: goodFirstIssueHumanLabelState(fullTimeline ?? timeline),
+      counts: {
+        comments: commentsWindow.total,
+        commentsHydrated: commentsWindow.hydrated,
+        commentsTruncated: commentsWindow.truncated,
+        commentsIncluded: filteredComments.included.length,
+        commentsFiltered: filteredComments.filtered,
+        timeline: timelineWindow.total,
+        timelineHydrated: timelineWindow.hydrated,
+        timelineTruncated: timelineWindow.truncated,
+      },
+    };
+    const structuralItemStateDigest = hydratedReviewStructuralItemStateDigest(
+      issue,
+      sourceRevisionComments,
+    );
+    if (structuralItemStateDigest) {
+      context.structuralItemStateDigest = structuralItemStateDigest;
+    }
+    if (options.reviewCacheDigest) {
+      context.timelineRevision = sha256(
+        stableJson(reviewTimelineDigestParts((fullTimeline ?? timeline).map(compactTimelineEvent))),
+      );
+    }
+    if (previousClawSweeperReview) context.previousClawSweeperReview = previousClawSweeperReview;
+    let pullRequest: unknown = null;
+    let pullReviewComments: unknown[] | null = null;
+    let filteredPullReviewComments: { included: unknown[]; filtered: number } | null = null;
+    let digestPullReviewComments: { included: unknown[]; filtered: number } | null = null;
+    let completePullReviewComments: { included: unknown[]; filtered: number } | null = null;
+    let completePullReviewCommentsHydrated = item.kind !== "pull_request";
+    if (item.kind === "issue") {
+      const closingPullRequests = closingPullRequestsForIssue(item.number);
+      if (closingPullRequests.length > 0) {
+        context.closingPullRequests = compactMappedSlice(
+          closingPullRequests,
+          12,
+          compactPullRequest,
+        );
+        context.counts = {
+          ...context.counts,
+          comments: commentsWindow.total,
+          commentsHydrated: commentsWindow.hydrated,
+          commentsTruncated: commentsWindow.truncated,
+          commentsIncluded: filteredComments.included.length,
+          commentsFiltered: filteredComments.filtered,
+          timeline: timelineWindow.total,
+          timelineHydrated: timelineWindow.hydrated,
+          timelineTruncated: timelineWindow.truncated,
+          closingPullRequests: closingPullRequests.length,
+        };
+      } else {
+        const referencingPRs = referencingMergedPullRequestsForIssue(item.number);
+        if (referencingPRs.length > 0) {
+          context.referencingMergedPullRequests = referencingPRs.slice(0, 10);
+          context.counts = {
+            ...context.counts!,
+            referencingMergedPullRequests: referencingPRs.length,
+          };
+        }
+      }
+    }
+    if (item.kind === "pull_request") {
+      pullRequest = ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${item.number}`]);
+      const pullRecord = asRecord(pullRequest);
+      const pullFilesWindow = ghPagedContextWindow<unknown>(
+        `repos/${targetRepo()}/pulls/${item.number}/files`,
+        pullRecord.changed_files,
+        80,
+      );
+      const pullFiles = pullFilesWindow.items;
+      const pullCommitsWindow = ghPagedContextWindow<unknown>(
+        `repos/${targetRepo()}/pulls/${item.number}/commits`,
+        pullRecord.commits,
+        80,
+      );
+      const pullCommits = pullCommitsWindow.items;
+      const pullReviewCommentsWindow = ghPagedContextWindow<unknown>(
+        `repos/${targetRepo()}/pulls/${item.number}/comments`,
+        pullRecord.review_comments,
+        40,
+      );
+      pullReviewComments = pullReviewCommentsWindow.items;
+      filteredPullReviewComments = filterReviewContextComments(pullReviewComments, item.number);
+      const fullPullReviewComments =
+        (options.reviewCacheDigest || options.fullTimelineForRelations) &&
+        pullReviewCommentsWindow.truncated
+          ? ghPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/comments`)
+          : pullReviewComments;
+      digestPullReviewComments =
+        !options.reviewCacheDigest || fullPullReviewComments === pullReviewComments
+          ? filteredPullReviewComments
+          : filterReviewContextComments(fullPullReviewComments, item.number);
+      completePullReviewComments =
+        fullPullReviewComments === pullReviewComments
+          ? filteredPullReviewComments
+          : filterReviewContextComments(fullPullReviewComments, item.number);
+      completePullReviewCommentsHydrated =
+        fullPullReviewComments.length >= pullReviewCommentsWindow.total;
+      context.pullRequest = compactPullRequest(pullRequest);
+      context.pullFiles = compactMappedWindow(
+        pullFiles,
+        pullFilesWindow.total,
+        80,
+        compactPullFile,
+      );
+      context.semanticPullFiles =
+        options.reviewCacheDigest &&
+        options.reviewCacheGitDir &&
+        !pullFilesWindow.truncated &&
+        pullFilesWindow.total === pullFiles.length
+          ? semanticPullFilesWithTreeIdentity({
+              files: pullFiles,
+              itemNumber: item.number,
+              pullRequest,
+              targetDir: options.reviewCacheGitDir,
+            })
+          : compactMappedWindow(pullFiles, pullFilesWindow.total, 80, (file) => ({
+              ...asRecord(compactSemanticPullFile(file)),
+              treeModesComplete: false,
+            }));
+      context.pullCommits = compactMappedWindow(
+        pullCommits,
+        pullCommitsWindow.total,
+        80,
+        compactPullCommit,
+      );
+      if (
+        options.reviewCacheDigest &&
+        !pullCommitsWindow.truncated &&
+        pullCommitsWindow.total === pullCommits.length
+      ) {
+        const pullCommitsRevision = pullCommitContentRevision(pullCommits);
+        if (pullCommitsRevision) context.pullCommitsRevision = pullCommitsRevision;
+      }
+      context.pullReviewComments = compactMappedWindow(
+        filteredPullReviewComments.included,
+        filteredPullReviewComments.included.length,
+        40,
+        compactComment,
+      );
+      if (options.reviewCacheDigest) {
+        context.pullReviewCommentsRevision = reviewCommentContentRevision(
+          digestPullReviewComments.included.map(compactComment),
+        );
+        const pullReviewActivityCursor = fetchReviewedPrActivityCursor(
+          item.number,
+          fullPullReviewComments,
+        );
+        if (pullReviewActivityCursor) context.pullReviewActivityCursor = pullReviewActivityCursor;
+        const headSha = stringOrUndefined(asRecord(pullRecord.head).sha);
+        context.pullChecks = headSha
+          ? pullChecksContext(item.number, headSha)
+          : {
+              complete: false,
+              checkRuns: [],
+              checkRunsTruncated: true,
+              statuses: [],
+              statusesTruncated: true,
+            };
+      }
+      context.counts = {
+        ...context.counts,
+        comments: commentsWindow.total,
+        commentsHydrated: commentsWindow.hydrated,
+        commentsTruncated: commentsWindow.truncated,
+        commentsIncluded: filteredComments.included.length,
+        commentsFiltered: filteredComments.filtered,
+        timeline: timelineWindow.total,
+        timelineHydrated: timelineWindow.hydrated,
+        timelineTruncated: timelineWindow.truncated,
+        pullFiles: pullFilesWindow.total,
+        pullFilesHydrated: pullFilesWindow.hydrated,
+        pullFilesTruncated: pullFilesWindow.truncated,
+        pullCommits: pullCommitsWindow.total,
+        pullCommitsHydrated: pullCommitsWindow.hydrated,
+        pullCommitsTruncated: pullCommitsWindow.truncated,
+        pullReviewComments: pullReviewCommentsWindow.total,
+        pullReviewCommentsHydrated: pullReviewCommentsWindow.hydrated,
+        pullReviewCommentsTruncated: pullReviewCommentsWindow.truncated,
+        pullReviewCommentsIncluded: filteredPullReviewComments.included.length,
+        pullReviewCommentsFiltered: filteredPullReviewComments.filtered,
+      };
+    }
+    const relationTimeline = fullTimeline ?? timeline;
+    const relatedOptions: Parameters<typeof relatedItemsContext>[0] = {
+      item,
+      issue,
+      comments: filteredComments.included,
+      timeline: relationTimeline,
+    };
+    if (pullRequest) relatedOptions.pullRequest = pullRequest;
+    const relatedPullReviewComments = digestPullReviewComments ?? filteredPullReviewComments;
+    if (relatedPullReviewComments)
+      relatedOptions.pullReviewComments = relatedPullReviewComments.included;
+    const relatedItems = relatedItemsContext(relatedOptions);
+    if (relatedItems.length) {
+      context.relatedItems = relatedItems;
+      const counts: NonNullable<ItemContext["counts"]> = {
+        comments: context.counts?.comments ?? commentsWindow.total,
+        commentsHydrated: context.counts?.commentsHydrated ?? commentsWindow.hydrated,
+        commentsTruncated: context.counts?.commentsTruncated ?? commentsWindow.truncated,
+        commentsIncluded: filteredComments.included.length,
+        commentsFiltered: filteredComments.filtered,
+        timeline: context.counts?.timeline ?? timeline.length,
+        relatedItems: relatedItems.length,
+      };
+      if (context.counts?.timelineHydrated !== undefined)
+        counts.timelineHydrated = context.counts.timelineHydrated;
+      if (context.counts?.timelineTruncated !== undefined)
+        counts.timelineTruncated = context.counts.timelineTruncated;
+      if (context.counts?.pullFiles !== undefined) counts.pullFiles = context.counts.pullFiles;
+      if (context.counts?.pullFilesHydrated !== undefined)
+        counts.pullFilesHydrated = context.counts.pullFilesHydrated;
+      if (context.counts?.pullFilesTruncated !== undefined)
+        counts.pullFilesTruncated = context.counts.pullFilesTruncated;
+      if (context.counts?.pullCommits !== undefined)
+        counts.pullCommits = context.counts.pullCommits;
+      if (context.counts?.pullCommitsHydrated !== undefined)
+        counts.pullCommitsHydrated = context.counts.pullCommitsHydrated;
+      if (context.counts?.pullCommitsTruncated !== undefined)
+        counts.pullCommitsTruncated = context.counts.pullCommitsTruncated;
+      if (context.counts?.pullReviewComments !== undefined)
+        counts.pullReviewComments = context.counts.pullReviewComments;
+      if (context.counts?.pullReviewCommentsHydrated !== undefined)
+        counts.pullReviewCommentsHydrated = context.counts.pullReviewCommentsHydrated;
+      if (context.counts?.pullReviewCommentsTruncated !== undefined)
+        counts.pullReviewCommentsTruncated = context.counts.pullReviewCommentsTruncated;
+      if (context.counts?.pullReviewCommentsIncluded !== undefined)
+        counts.pullReviewCommentsIncluded = context.counts.pullReviewCommentsIncluded;
+      if (context.counts?.pullReviewCommentsFiltered !== undefined)
+        counts.pullReviewCommentsFiltered = context.counts.pullReviewCommentsFiltered;
+      if (context.counts?.closingPullRequests !== undefined)
+        counts.closingPullRequests = context.counts.closingPullRequests;
+      context.counts = counts;
+    }
+    const completeActivityHydrated =
+      sourceRevisionComments.length >= commentsWindow.total &&
+      (fullTimeline ?? timeline).length >= timelineWindow.total &&
+      completePullReviewCommentsHydrated;
+    if (options.fullTimelineForRelations && completeActivityHydrated) {
+      context[completeActivityContextSymbol] = {
+        comments: filterReviewContextComments(sourceRevisionComments, item.number).included.map(
+          compactComment,
+        ),
+        timeline: (fullTimeline ?? timeline).map(compactTimelineEvent),
+        pullReviewComments: (completePullReviewComments?.included ?? []).map(compactComment),
+      };
+    }
+    return context;
+  }
+
+  return { collectItemContext };
+}

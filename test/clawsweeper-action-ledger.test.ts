@@ -451,7 +451,7 @@ test("lane instrumentation uses stable slots with explicit parent and phase orde
 });
 
 test("review candidates start lazily and deferred items cannot remain active", () => {
-  const source = readText("src/clawsweeper.ts");
+  const source = readText("src/clawsweeper-review-command-workflow.ts");
   const ledgerSource = readText("src/clawsweeper-review-ledger.ts");
   const ledgerStart = ledgerSource.slice(
     ledgerSource.indexOf("function startReviewActionLedger(options:"),
@@ -497,7 +497,7 @@ test("review candidates start lazily and deferred items cannot remain active", (
 
   const reviewCommandStart = source.indexOf("function reviewCommand(args:");
   const reviewCatchStart = source.indexOf(
-    "  } catch (error) {\n    if (reviewLedger) {",
+    "} catch (error) {\n      if (reviewLedger) {",
     reviewCommandStart,
   );
   const reviewCatch = source.slice(
@@ -512,14 +512,16 @@ test("review candidates start lazily and deferred items cannot remain active", (
   assert.ok(finalization > cleanup);
   assert.match(
     source,
-    /const releaseOwnedReviewLease = \(itemNumber: number, lease: AcquiredReviewStartLease\): boolean =>[\s\S]*isSuppliedReviewStartLease\(suppliedReviewLease, lease\)[\s\S]*deleteOwnedDedicatedReviewStartLease\(itemNumber, lease\)/,
+    /const releaseOwnedReviewLease = \(\s*itemNumber: number,\s*lease: AcquiredReviewStartLease,?\s*\): boolean =>[\s\S]*isSuppliedReviewStartLease\(suppliedReviewLease, lease\)[\s\S]*deleteOwnedDedicatedReviewStartLease\(itemNumber, lease\)/,
   );
 });
 
 test("apply receipts start per item and persist mutation observation before finalization", () => {
-  const source = [readText("src/clawsweeper.ts"), readText("src/clawsweeper-apply-ledger.ts")].join(
-    "\n",
-  );
+  const source = [
+    readText("src/clawsweeper-apply-decision-workflow.ts"),
+    readText("src/clawsweeper.ts"),
+    readText("src/clawsweeper-apply-ledger.ts"),
+  ].join("\n");
   const applyLoop = source.slice(
     source.indexOf("for (const entry of fileEntries) {"),
     source.indexOf("if (runtimeBudget.yieldReason) {"),
@@ -691,7 +693,7 @@ test("untrusted Codex processes cannot inherit action-ledger producer authority"
 });
 
 test("apply failure finalization survives report publication errors", () => {
-  const source = readText("src/clawsweeper.ts");
+  const source = readText("src/clawsweeper-apply-decision-workflow.ts");
   const finishApplyStart = source.indexOf(
     "const finishApply = (failed = false, failure?: unknown): void => {",
   );
@@ -734,7 +736,11 @@ test("apply report publication uses digest evidence without a durable record pat
 });
 
 test("retry and review publication lanes finalize unexpected failures", () => {
-  const source = readText("src/clawsweeper.ts");
+  const source = [
+    readText("src/clawsweeper-command-operations.ts"),
+    readText("src/clawsweeper-review-command-workflow.ts"),
+    readText("src/clawsweeper-apply-decision-workflow.ts"),
+  ].join("\n");
   const retrySource = readText("src/clawsweeper-failed-review-retry.ts");
   const retryStart = retrySource.indexOf("const retryLedger = startFailedReviewRetryLedger({");
   const retryRecord = retrySource.indexOf("recordFailedReviewRetryEvents({", retryStart);

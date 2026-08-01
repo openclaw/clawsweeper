@@ -107,7 +107,11 @@ test("comment matcher recognizes old and new Codex review comments", () => {
 });
 
 test("structural cache probes before hydration but acquires a lease before carrying a hit", () => {
-  const source = readFileSync("src/clawsweeper.ts", "utf8");
+  const source = [
+    readFileSync("src/clawsweeper-review-command-workflow.ts", "utf8"),
+    readFileSync("src/clawsweeper.ts", "utf8"),
+    readFileSync("src/clawsweeper-item-context.ts", "utf8"),
+  ].join("\n");
   const reviewLoop = source.slice(
     source.indexOf("for (const item of candidates)"),
     source.indexOf("let decision: Decision", source.indexOf("for (const item of candidates)")),
@@ -194,7 +198,11 @@ test("structural cache probes before hydration but acquires a lease before carry
 });
 
 test("semantic cache runs after hydration and revalidates under the acquired lease", () => {
-  const source = readFileSync("src/clawsweeper.ts", "utf8");
+  const source = [
+    readFileSync("src/clawsweeper-review-command-workflow.ts", "utf8"),
+    readFileSync("src/clawsweeper-report-rendering.ts", "utf8"),
+    readFileSync("src/clawsweeper-context-hydration.ts", "utf8"),
+  ].join("\n");
   const reviewLoop = source.slice(
     source.indexOf("for (const item of candidates)"),
     source.indexOf("let decision: Decision", source.indexOf("for (const item of candidates)")),
@@ -467,7 +475,7 @@ test("concurrent review lease election uses server comment order, not client tim
 });
 
 test("apply retains its mutation lease until the item action is complete", () => {
-  const source = readFileSync("src/clawsweeper.ts", "utf8");
+  const source = readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8");
   const acquire = source.indexOf("const mutationLeaseBlockReason = acquireApplyMutationLease");
   const commentSync = source.indexOf("syncedComment = upsertReviewComment(", acquire);
   const close = source.indexOf("closeItem({ number, kind: item.kind", commentSync);
@@ -1342,7 +1350,7 @@ test("superseded review placeholder sweep never selects the durable review comme
 test("publishing the durable review comment sweeps superseded placeholders", () => {
   const source = [
     readFileSync("src/clawsweeper-review-comments-workflow.ts", "utf8"),
-    readFileSync("src/clawsweeper.ts", "utf8"),
+    readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8"),
   ].join("\n");
   const functionStart = source.indexOf("function postReviewStartStatusComment");
   const postStart = source.slice(
@@ -1361,7 +1369,7 @@ test("publishing the durable review comment sweeps superseded placeholders", () 
 });
 
 test("placeholder sweep retries on every apply pass independent of comment body sync", () => {
-  const source = readFileSync("src/clawsweeper.ts", "utf8");
+  const source = readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8");
   const earlyLeaseStart = source.indexOf("const earlyLeaseState = refreshReviewStartLeaseState();");
   assert.ok(earlyLeaseStart >= 0);
   const needsReviewCommentSyncStart = source.indexOf(

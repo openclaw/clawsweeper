@@ -108,7 +108,11 @@ test("review thread pages parse fail-closed", () => {
 });
 
 test("review and apply paths persist and revalidate the cursor", () => {
-  const source = fs.readFileSync("src/clawsweeper.ts", "utf8");
+  const source = [
+    fs.readFileSync("src/clawsweeper-report-orchestration.ts", "utf8"),
+    fs.readFileSync("src/clawsweeper-report-rendering.ts", "utf8"),
+    fs.readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8"),
+  ].join("\n");
 
   assert.match(source, /review_activity_cursor: \$\{options\.context\.pullReviewActivityCursor/);
   assert.match(source, /pull request review activity changed since review/);

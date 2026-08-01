@@ -527,6 +527,8 @@ test("runCodex keeps high reasoning for the final transport retry", () => {
     codexPath,
     `#!/usr/bin/env node
 const fs = require("node:fs");
+// Consume the prompt like the real Codex CLI so early exits cannot race its stdin writer.
+fs.readFileSync(0, "utf8");
 const cfg = process.argv.find((a) => a.startsWith("model_reasoning_effort="));
 const effort = cfg ? cfg.split("=")[1].replace(/"/g, "") : "";
 const attemptsPath = process.env.CODEX_ATTEMPTS_PATH;
