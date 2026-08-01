@@ -4376,8 +4376,139 @@ test("changed-gate compiler cache isolation still rejects unrelated ignored-inpu
           }),
         ),
       ),
-    /unsafe validation command mutated checkout identity \(pnpm check:changed\): runtimeInputsSha256/,
+    /unsafe validation command mutated checkout identity \(pnpm check:changed\): runtimeInputsSha256; changed runtime roots: \.artifacts/,
   );
+  assert.equal(fs.existsSync(path.join(artifacts, "tsgo-cache")), false);
+});
+
+test("runtime root diagnostics identify same-size poisoning even when its timestamp is restored", () => {
+  const cwd = gitPackageFixture({ verify: "node scripts/verify.mjs" });
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const runtime = path.join(cwd, "node_modules", "dependency", "state.js");
+  fs.mkdirSync(path.dirname(runtime), { recursive: true });
+  fs.writeFileSync(runtime, "safe\n");
+  const timestamp = new Date("2024-01-01T00:00:00.000Z");
+  fs.utimesSync(runtime, timestamp, timestamp);
+
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-same-size-poison-"));
+  writeNodeCommandShim(
+    binDir,
+    "pnpm",
+    [
+      'const fs = require("node:fs");',
+      'const input = "node_modules/dependency/state.js";',
+      "const previous = fs.statSync(input);",
+      'fs.writeFileSync(input, "evil\\n");',
+      "fs.utimesSync(input, previous.atime, previous.mtime);",
+    ].join("\n"),
+  );
+
+  assert.throws(
+    () =>
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          ["pnpm verify"],
+          cwd,
+          validationOptions("steipete/example", {
+            toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
+          }),
+        ),
+      ),
+    /runtimeInputsSha256; changed runtime roots: node_modules/,
+  );
+});
+
+test("runtime root diagnostics identify every independently mutated ignored root", () => {
+  const cwd = gitPackageFixture({ verify: "node scripts/verify.mjs" });
+  fs.appendFileSync(path.join(cwd, ".gitignore"), "alpha/\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  for (const root of ["alpha", "node_modules"]) {
+    const input = path.join(cwd, root, "state.js");
+    fs.mkdirSync(path.dirname(input), { recursive: true });
+    fs.writeFileSync(input, "safe\n");
+  }
+
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-multiple-root-poison-"));
+  writeNodeCommandShim(
+    binDir,
+    "pnpm",
+    [
+      'const fs = require("node:fs");',
+      'for (const root of ["alpha", "node_modules"]) {',
+      '  fs.writeFileSync(`${root}/state.js`, "evil\\n");',
+      "}",
+    ].join("\n"),
+  );
+
+  assert.throws(
+    () =>
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          ["pnpm verify"],
+          cwd,
+          validationOptions("steipete/example", {
+            toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
+          }),
+        ),
+      ),
+    /runtimeInputsSha256; changed runtime roots: alpha, node_modules$/,
+  );
+});
+
+test("runtime root diagnostics ignore safe cache-directory timestamp changes", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+  fs.appendFileSync(path.join(cwd, ".gitignore"), ".artifacts/\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const artifacts = path.join(cwd, ".artifacts");
+  fs.mkdirSync(artifacts);
+  fs.writeFileSync(path.join(artifacts, "stable.txt"), "trusted artifact\n");
+  const timestamp = new Date("2024-01-01T00:00:00.000Z");
+  fs.utimesSync(artifacts, timestamp, timestamp);
+
+  const runtime = path.join(cwd, "node_modules", "dependency", "state.js");
+  fs.mkdirSync(path.dirname(runtime), { recursive: true });
+  fs.writeFileSync(runtime, "safe\n");
+
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-cache-mtime-poison-"));
+  writeNodeCommandShim(
+    binDir,
+    "pnpm",
+    [
+      'const fs = require("node:fs");',
+      'fs.mkdirSync(".artifacts/tsgo-cache", { recursive: true });',
+      'fs.writeFileSync(".artifacts/tsgo-cache/state.tsbuildinfo", "generated cache\\n");',
+      'fs.writeFileSync("node_modules/dependency/state.js", "evil\\n");',
+    ].join("\n"),
+  );
+
+  assert.throws(
+    () =>
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          ["pnpm check:changed"],
+          cwd,
+          validationOptions("openclaw/openclaw", {
+            pinnedBaseRef: "origin/main",
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+            },
+          }),
+        ),
+      ),
+    /runtimeInputsSha256; changed runtime roots: node_modules$/,
+  );
+  assert.equal(fs.readFileSync(path.join(artifacts, "stable.txt"), "utf8"), "trusted artifact\n");
   assert.equal(fs.existsSync(path.join(artifacts, "tsgo-cache")), false);
 });
 

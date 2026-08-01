@@ -133,6 +133,10 @@ test("automerge fix prompt makes Codex own PR repair, rebase, and CI discovery",
   assert.match(prompt, /read-only `gh` commands are allowed/);
   assert.match(prompt, /if no successful deterministic pre-edit rebase was supplied/);
   assert.match(prompt, /fetch origin\/main and rebase this branch once/);
+  assert.match(prompt, /rebasing can temporarily stale the prepared dependencies/);
+  assert.match(prompt, /never install or refresh them yourself/);
+  assert.match(prompt, /ClawSweeper refreshes them through its trusted isolated installer/);
+  assert.match(prompt, /treat earlier dependency-resolution failures as provisional/);
   assert.match(prompt, /fix failing CI\/checks for this PR/);
   assert.match(prompt, /failed exact-head checks are repair scope for automerge/);
   assert.match(prompt, /outside likely_files/);
