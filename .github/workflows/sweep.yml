@@ -1351,33 +1351,14 @@ jobs:
           lifecycle_terminal=""
           lifecycle_router_outcome=""
           lifecycle_deferred_coverage="false"
-          echo "requeue_latest=false" >> "$GITHUB_OUTPUT"
+          direct_lifecycle_requeue=false
           queue_url="${QUEUE_URL%/}"
           if [ "${DIRECT_PUBLICATION_SUPERSEDED:-false}" != "true" ]; then
             if jq -e '.disposition.requeueLatestExpected == true' "$DIRECT_OUTCOME" >/dev/null; then
-              requeue_payload="$(node -e '
-                const revision = Number(process.env.REVISION);
-                const decision = JSON.parse(process.env.CLAIM_DECISION || "{}");
-                if (!Number.isInteger(revision) || revision < 1 || !process.env.FENCE_KEY || !decision || typeof decision !== "object" || Array.isArray(decision)) process.exit(1);
-                decision.sourceAction = decision.sourceAction === "failed_review_shard_recovery"
-                  ? decision.sourceAction
-                  : "source_drift_requeue";
-                decision.supersedesInProgress = true;
-                process.stdout.write(JSON.stringify({
-                  delivery_id: `publisher-source-drift:${process.env.FENCE_KEY}:${revision}`,
-                  decision,
-                }));
-              ')"
-              requeue_signature="$(PAYLOAD="$requeue_payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
-              requeue_response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-                --request POST \
-                --header "content-type: application/json" \
-                --header "x-clawsweeper-exact-review-signature: $requeue_signature" \
-                --data "$requeue_payload" \
-                "$queue_url/internal/exact-review/enqueue")"
-              jq -e '.ok == true and (.queued == true or .deduped == true or .shed == true)' <<<"$requeue_response" >/dev/null
               lifecycle_terminal="requeue"
-              echo "requeue_latest=true" >> "$GITHUB_OUTPUT"
+              # The completion owns this direct receipt. Let its fenced queue
+              # transition create the fresh source-drift revision atomically.
+              direct_lifecycle_requeue=true
             elif jq -e '.disposition.terminalMissingExpected == true' "$DIRECT_OUTCOME" >/dev/null; then
               lifecycle_terminal="target_missing"
             elif jq -e '.disposition.terminalClosedExpected == true' "$DIRECT_OUTCOME" >/dev/null; then
@@ -1454,6 +1435,7 @@ jobs:
               "$queue_url/internal/exact-review/lifecycle/terminal-disposition")"
             jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
           fi
+          echo "direct_lifecycle_requeue=$direct_lifecycle_requeue" >> "$GITHUB_OUTPUT"
 
       # This is deliberately after the durable lifecycle handoff. Command
       # acknowledgement is performed later by the dedicated finalizer and is
@@ -1646,6 +1628,7 @@ jobs:
           DIRECT_PUBLICATION_ACCEPTED: ${{ steps.direct-exact-review-publication.outputs.accepted }}
           DIRECT_PUBLICATION_SUPERSEDED: ${{ steps.direct-exact-review-publication.outputs.superseded }}
           DIRECT_LIFECYCLE_OUTCOME: ${{ steps.finalize-direct-exact-review-lifecycle.outcome }}
+          DIRECT_LIFECYCLE_REQUEUE: ${{ steps.finalize-direct-exact-review-lifecycle.outputs.direct_lifecycle_requeue || 'false' }}
         run: |
           outcome=failure
           requeue_latest=false
@@ -1666,6 +1649,7 @@ jobs:
           fi
           echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
           echo "requeue_latest=$requeue_latest" >> "$GITHUB_OUTPUT"
+          echo "direct_lifecycle_requeue=$DIRECT_LIFECYCLE_REQUEUE" >> "$GITHUB_OUTPUT"
 
       - name: Complete exact-review queue lease
         id: complete-exact-review-queue
@@ -1684,6 +1668,7 @@ jobs:
           DIRECT_PUBLICATION_ACCEPTED: ${{ steps.direct-exact-review-publication.outputs.accepted }}
           DIRECT_PUBLICATION_SUPERSEDED: ${{ steps.direct-exact-review-publication.outputs.superseded }}
           DIRECT_LIFECYCLE_OUTCOME: ${{ steps.finalize-direct-exact-review-lifecycle.outcome }}
+          DIRECT_LIFECYCLE_REQUEUE: ${{ steps.exact-review-generation-result.outputs.direct_lifecycle_requeue }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
@@ -1715,6 +1700,9 @@ jobs:
               process.env.DIRECT_LIFECYCLE_OUTCOME === "success";
             const directPublicationSuperseded =
               directPublicationCompleted && process.env.DIRECT_PUBLICATION_SUPERSEDED === "true";
+            const directLifecycleRequeue =
+              directPublicationCompleted && process.env.DIRECT_LIFECYCLE_REQUEUE === "true";
+            if (requeueLatest && directLifecycleRequeue) process.exit(1);
             process.stdout.write(JSON.stringify({
               lease_id: process.env.QUEUE_LEASE_ID,
               ...(protocolVersion === 2
@@ -1733,6 +1721,7 @@ jobs:
                   ? { completion_kind: "superseded", reason_code: "remote_newer_tuple" }
                   : { completion_kind: "published", reason_code: "publication_applied" }
                 : {}),
+              ...(directLifecycleRequeue ? { direct_lifecycle_requeue: true } : {}),
               ...(retryAt ? { retry_at: retryAt } : {}),
             }));
           ')"
@@ -3199,7 +3188,7 @@ jobs:
             --repo "$TARGET_REPO" --item-number "$ITEM_NUMBER" \
             --marker "$COMMAND_STATUS_MARKER" --status-comment-id "$STATUS_COMMENT_ID" \
             --state "$STATUS_STATE" --detail "$STATUS_DETAIL" --run-url "$RUN_URL" \
-            --require-mutation --locked-conversation-terminal-skip || {
+            --require-mutation --locked-conversation-terminal-skip --verify-terminal-status-receipt || {
               update_status="$?"
               failure_payload="$(node -e '
                 const revision = Number(process.env.REVISION);
@@ -3219,6 +3208,39 @@ jobs:
                 "${QUEUE_URL%/}/internal/exact-review/lifecycle/command-ack/failed" >/dev/null
               exit "$update_status"
             }
+
+      - name: Record verified terminal acknowledgement receipt
+        id: observe-verified-terminal-acknowledgement
+        if: ${{ always() && steps.finalization-context.outputs.claimed == 'true' && steps.terminal-acknowledgement.outputs.allowed == 'true' && steps.update-final-command-status.outcome == 'success' && steps.update-final-command-status.outputs.terminal_status_verified == 'true' }}
+        env:
+          TARGET_REPO: ${{ steps.finalization-context.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.finalization-context.outputs.item_number }}
+          STATUS_MARKER: ${{ steps.finalization-context.outputs.status_marker }}
+          COMMAND_COMMENT_ID: ${{ steps.update-final-command-status.outputs.command_comment_id }}
+          COMPLETION_COMMENT_ID: ${{ steps.update-final-command-status.outputs.completion_comment_id }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          payload="$(node -e '
+            const commandCommentId = Number(process.env.COMMAND_COMMENT_ID);
+            const completionCommentId = Number(process.env.COMPLETION_COMMENT_ID);
+            if (!process.env.STATUS_MARKER || !Number.isInteger(commandCommentId) || commandCommentId < 1 || !Number.isInteger(completionCommentId) || completionCommentId < 1) process.exit(1);
+            process.stdout.write(JSON.stringify({
+              canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
+              status_marker: process.env.STATUS_MARKER,
+              command_comment_id: commandCommentId,
+              completion_comment_id: completionCommentId,
+              observed_at: Date.now(),
+            }));
+          ')"
+          signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
+          response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+            --request POST --header "content-type: application/json" \
+            --header "x-clawsweeper-exact-review-signature: $signature" \
+            --data "$payload" \
+            "${QUEUE_URL%/}/internal/exact-review/lifecycle/command-ack/observed")"
+          jq -e '.ok == true and .accepted == true and .acknowledgement_state == "observed"' <<< "$response" >/dev/null
 
       - name: Complete locked terminal acknowledgement skip
         id: complete-locked-terminal-acknowledgement
@@ -3259,7 +3281,7 @@ jobs:
           jq -e '.ok == true and .completed == true and .acknowledgement_state == "skipped_locked"' <<< "$response" >/dev/null
 
       - name: Requeue unobserved terminal acknowledgement
-        if: ${{ always() && steps.finalization-context.outputs.claimed == 'true' && !(steps.update-final-command-status.outputs.locked_conversation == 'true' && steps.complete-locked-terminal-acknowledgement.outcome == 'success') }}
+        if: ${{ always() && steps.finalization-context.outputs.claimed == 'true' && steps.observe-verified-terminal-acknowledgement.outcome != 'success' && !(steps.update-final-command-status.outputs.locked_conversation == 'true' && steps.complete-locked-terminal-acknowledgement.outcome == 'success') }}
         env:
           ITEM_KEY: ${{ steps.finalization-context.outputs.item_key }}
           QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}

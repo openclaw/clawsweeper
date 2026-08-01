@@ -36,16 +36,27 @@ type Options = {
   waitMs: number;
   requireMutation: boolean;
   lockedConversationTerminalSkip: boolean;
+  verifyTerminalStatusReceipt: boolean;
 };
 
 type CommandStatusUpdateOutcome = "completed" | "unchanged" | "skipped" | "locked_conversation";
+
+type TerminalStatusReceipt = {
+  commandCommentId: number;
+  completionCommentId: number;
+};
+
+type CommandStatusUpdateResult = {
+  outcome: CommandStatusUpdateOutcome;
+  terminalStatusReceipt?: TerminalStatusReceipt;
+};
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const options = parseOptions(process.argv.slice(2));
   await runCommandStatusUpdate(options);
 }
 
-async function updateCommandStatus(options: Options): Promise<CommandStatusUpdateOutcome> {
+async function updateCommandStatus(options: Options): Promise<CommandStatusUpdateResult> {
   const lifecycle = commandStatusLifecycle(options);
   if (!options.marker && !options.statusCommentId) {
     recordCommandProgress(lifecycle, {
@@ -55,7 +66,7 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
     });
     if (options.requireMutation)
       throw new Error("command status mutation required but no address was provided");
-    return "skipped";
+    return { outcome: "skipped" };
   }
   validateRepo(options.repo);
   validateItemNumber(options.itemNumber);
@@ -64,7 +75,7 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
     comment = await findCommandStatusComment(options, lifecycle);
   } catch (error) {
     if (!recordTerminalLockedConversationSkip(options, lifecycle, error)) throw error;
-    return "locked_conversation";
+    return { outcome: "locked_conversation" };
   }
   if (!comment?.id || typeof comment.body !== "string") {
     console.warn(`No command status comment found for ${options.repo}#${options.itemNumber}.`);
@@ -75,7 +86,16 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
     });
     if (options.requireMutation)
       throw new Error("command status mutation required but no comment was found");
-    return "skipped";
+    return { outcome: "skipped" };
+  }
+  const terminalStatusReceipt = verifiedTerminalStatusReceipt(comment, options);
+  if (terminalStatusReceipt) {
+    recordCommandProgress(lifecycle, {
+      state: options.state,
+      status: "unchanged",
+      mutation: false,
+    });
+    return { outcome: "unchanged", terminalStatusReceipt };
   }
   const body = mergeCommandProgressSection(comment.body, options);
   if (body === comment.body) {
@@ -84,7 +104,7 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
       status: "unchanged",
       mutation: false,
     });
-    return "unchanged";
+    return { outcome: "unchanged" };
   }
   const payload = writePayload(repoRoot(), `command-status-progress-${comment.id}`, { body });
   try {
@@ -108,21 +128,24 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
     });
   } catch (error) {
     if (!recordTerminalLockedConversationSkip(options, lifecycle, error)) throw error;
-    return "locked_conversation";
+    return { outcome: "locked_conversation" };
   }
   recordCommandProgress(lifecycle, {
     state: options.state,
     status: "completed",
     mutation: true,
   });
-  return "completed";
+  return { outcome: "completed" };
 }
 
 async function runCommandStatusUpdate(options: Options) {
   let commandError: unknown = null;
   let outcome: CommandStatusUpdateOutcome | null = null;
+  let terminalStatusReceipt: TerminalStatusReceipt | undefined;
   try {
-    outcome = await updateCommandStatus(options);
+    const result = await updateCommandStatus(options);
+    outcome = result.outcome;
+    terminalStatusReceipt = result.terminalStatusReceipt;
   } catch (error) {
     commandError = error;
     recordCommandLifecycleFailure(commandStatusLifecycle(options), {
@@ -145,6 +168,17 @@ async function runCommandStatusUpdate(options: Options) {
   }
   if (!commandError && outcome === "locked_conversation" && process.env.GITHUB_OUTPUT) {
     appendFileSync(process.env.GITHUB_OUTPUT, "locked_conversation=true\n");
+  }
+  if (!commandError && terminalStatusReceipt && process.env.GITHUB_OUTPUT) {
+    appendFileSync(
+      process.env.GITHUB_OUTPUT,
+      [
+        "terminal_status_verified=true",
+        `command_comment_id=${terminalStatusReceipt.commandCommentId}`,
+        `completion_comment_id=${terminalStatusReceipt.completionCommentId}`,
+        "",
+      ].join("\n"),
+    );
   }
   if (commandError) throw commandError;
 }
@@ -390,6 +424,58 @@ export function mergeCommandProgressSection(
   return `${body.trimEnd()}\n\n${section}`;
 }
 
+export function verifiedTerminalStatusReceipt(
+  comment: Pick<LooseRecord, "id" | "body">,
+  options: Pick<Options, "verifyTerminalStatusReceipt" | "marker" | "state" | "detail">,
+): TerminalStatusReceipt | null {
+  if (!options.verifyTerminalStatusReceipt || !options.marker) return null;
+  const completionCommentId = Number(comment.id);
+  const commandCommentIds = commandAckCommentIdsFromBody(comment.body);
+  const statusMarkers = commandStatusMarkersFromBody(comment.body);
+  if (
+    !Number.isSafeInteger(completionCommentId) ||
+    commandCommentIds.length !== 1 ||
+    statusMarkers.length !== 1 ||
+    statusMarkers[0] !== options.marker ||
+    !terminalProgressMatches(comment.body, options)
+  ) {
+    return null;
+  }
+  return { commandCommentId: commandCommentIds[0]!, completionCommentId };
+}
+
+function terminalProgressMatches(body: JsonValue, options: Pick<Options, "state" | "detail">) {
+  const progressBlocks = Array.from(
+    String(body ?? "").matchAll(
+      /<!--\s*clawsweeper-command-progress:start\s*-->([\s\S]*?)<!--\s*clawsweeper-command-progress:end\s*-->/gi,
+    ),
+  );
+  if (progressBlocks.length !== 1) return false;
+  const lines = progressBlocks[0]![1]!.split(/\r?\n/).map((line) => line.trimEnd());
+  const stateLines = lines.filter((line) => line.startsWith("- State: "));
+  const detailLines = lines.filter((line) => line.startsWith("- Detail: "));
+  return (
+    stateLines.length === 1 &&
+    detailLines.length === 1 &&
+    stateLines[0] === `- State: ${options.state}` &&
+    detailLines[0] === `- Detail: ${options.detail}`
+  );
+}
+
+function commandAckCommentIdsFromBody(body: JsonValue) {
+  return Array.from(
+    String(body ?? "").matchAll(/<!--\s*clawsweeper-command-ack:(\d+)\s*-->/g),
+    (match) => Number(match[1]),
+  ).filter((id) => Number.isSafeInteger(id) && id > 0);
+}
+
+function commandStatusMarkersFromBody(body: JsonValue) {
+  return Array.from(
+    String(body ?? "").matchAll(/<!--\s*clawsweeper-command-status:[^>]+-->/g),
+    (match) => match[0],
+  );
+}
+
 function renderCommandProgressSection(options: Pick<Options, "state" | "detail" | "runUrl">) {
   const lines = [
     PROGRESS_START,
@@ -435,6 +521,10 @@ export function parseOptions(argv: string[]): Options {
     lockedConversationTerminalSkip:
       (args["locked-conversation-terminal-skip"] ??
         process.env.COMMAND_STATUS_LOCKED_CONVERSATION_TERMINAL_SKIP ??
+        "") === "true",
+    verifyTerminalStatusReceipt:
+      (args["verify-terminal-status-receipt"] ??
+        process.env.COMMAND_STATUS_VERIFY_TERMINAL_RECEIPT ??
         "") === "true",
   };
 }

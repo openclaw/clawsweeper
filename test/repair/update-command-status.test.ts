@@ -6,6 +6,7 @@ import {
   parseOptions,
   selectCommandStatusComment,
   terminalLockedConversationSkip,
+  verifiedTerminalStatusReceipt,
 } from "../../dist/repair/update-command-status.js";
 import { readText } from "../helpers.ts";
 
@@ -59,6 +60,124 @@ test("parseOptions requires a status mutation only when explicitly requested", (
   ]);
 
   assert.equal(options.requireMutation, true);
+});
+
+test("terminal receipt verification is opt-in", () => {
+  const options = parseOptions([
+    "--repo",
+    "openclaw/openclaw",
+    "--item-number",
+    "81564",
+    "--verify-terminal-status-receipt",
+  ]);
+
+  assert.equal(options.verifyTerminalStatusReceipt, true);
+});
+
+test("terminal receipt verification accepts only the selected trusted final status", () => {
+  const marker = "<!-- clawsweeper-command-status:81564:re_review:320c867f -->";
+  const options = parseOptions([
+    "--repo",
+    "openclaw/openclaw",
+    "--item-number",
+    "81564",
+    "--marker",
+    marker,
+    "--status-comment-id",
+    "4466202000",
+    "--state",
+    "Complete",
+    "--detail",
+    "Durable review routing completed.",
+    "--verify-terminal-status-receipt",
+  ]);
+  const comment = {
+    id: 4466201000,
+    body: [
+      "<!-- clawsweeper-command-ack:4466201487 -->",
+      marker,
+      "ClawSweeper re-review requested.",
+      "<!-- clawsweeper-command-progress:start -->",
+      "Re-review progress:",
+      "- State: Complete",
+      "- Detail: Durable review routing completed.",
+      "- Run: https://github.com/openclaw/clawsweeper/actions/runs/older-run",
+      "- Updated: 2026-08-01T00:00:00.000Z",
+      "<!-- clawsweeper-command-progress:end -->",
+    ].join("\n"),
+  };
+
+  assert.deepEqual(verifiedTerminalStatusReceipt(comment, options), {
+    commandCommentId: 4466201487,
+    completionCommentId: 4466201000,
+  });
+  assert.equal(
+    verifiedTerminalStatusReceipt(
+      {
+        ...comment,
+        body: comment.body.replace("Durable review routing completed.", "Still pending."),
+      },
+      options,
+    ),
+    null,
+  );
+  assert.equal(
+    verifiedTerminalStatusReceipt(
+      { ...comment, body: comment.body.replace(marker, "<!-- stale -->") },
+      options,
+    ),
+    null,
+  );
+  assert.equal(
+    verifiedTerminalStatusReceipt(
+      {
+        ...comment,
+        body: comment.body.replace("<!-- clawsweeper-command-ack:4466201487 -->\n", ""),
+      },
+      options,
+    ),
+    null,
+  );
+  assert.equal(
+    verifiedTerminalStatusReceipt(
+      {
+        ...comment,
+        body: comment.body.replace("- State: Complete", "- State: Complete\n- State: Failed"),
+      },
+      options,
+    ),
+    null,
+  );
+  assert.equal(
+    verifiedTerminalStatusReceipt(
+      {
+        ...comment,
+        body: comment.body.replace(
+          "- Detail: Durable review routing completed.",
+          "- Detail: Durable review routing completed.\n- Detail: Still pending.",
+        ),
+      },
+      options,
+    ),
+    null,
+  );
+  assert.equal(
+    verifiedTerminalStatusReceipt({ ...comment, body: `${marker}\n${comment.body}` }, options),
+    null,
+  );
+  assert.equal(
+    verifiedTerminalStatusReceipt(
+      {
+        ...comment,
+        body: comment.body.replace(
+          "<!-- clawsweeper-command-ack:4466201487 -->",
+          "<!-- clawsweeper-command-ack:4466201487 -->\n<!-- clawsweeper-command-ack:4466201488 -->",
+        ),
+      },
+      options,
+    ),
+    null,
+  );
 });
 
 test("parseOptions enables the terminal locked-conversation skip only when requested", () => {

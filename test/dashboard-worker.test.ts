@@ -4289,19 +4289,35 @@ test("durable direct command acknowledgement survives successor lease expiry", a
     env,
   );
   assert.equal((await retriedAttempt.json()).attempt_id, "ack:2");
-  const observed = await queue.fetch(
-    new Request("https://clawsweeper-exact-review-queue/lifecycle/command-ack/observed", {
-      method: "POST",
-      body: JSON.stringify({
-        canonical_target_key: "openclaw/openclaw#706",
-        status_marker: priorMarker,
-        command_comment_id: 7060,
-        completion_comment_id: 7060,
-        observed_at: Date.now(),
-      }),
-    }),
+  const observedPayload = {
+    canonical_target_key: "openclaw/openclaw#706",
+    status_marker: priorMarker,
+    command_comment_id: 7060,
+    completion_comment_id: 7060,
+    observed_at: Date.now(),
+  };
+  const observedBody = JSON.stringify(observedPayload);
+  const observedSignature = `sha256=${createHmac("sha256", secret)
+    .update(observedBody)
+    .digest("hex")}`;
+  const observed = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/lifecycle/command-ack/observed",
+      {
+        method: "POST",
+        headers: { "x-clawsweeper-exact-review-signature": observedSignature },
+        body: observedBody,
+      },
+    ),
+    env,
   );
-  assert.equal((await observed.json()).accepted, true);
+  assert.deepEqual(await observed.json(), {
+    ok: true,
+    accepted: true,
+    lifecycle_state: "completed",
+    acknowledgement_state: "observed",
+    version: 1,
+  });
   const observedState = storage.sql.readNormalizedQueue() as {
     items: Record<string, ExactReviewQueueItem>;
   };
