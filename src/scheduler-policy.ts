@@ -46,6 +46,10 @@ export interface SchedulerDueCandidate<
 const HOT_REVIEW_DAYS = 7;
 const RECENT_ISSUE_DAYS = 30;
 const HOURLY_REVIEW_MS = 60 * 60 * 1000;
+// Hot-intake activity is eligible again after this existing hourly cadence. Keep
+// exact-review suppression inside the same window so it only coalesces the
+// immediate scheduled follow-up, rather than changing normal review cadence.
+export const HOT_INTAKE_FRESHNESS_MS = HOURLY_REVIEW_MS;
 const DAILY_REVIEW_DAYS = 1;
 const WEEKLY_REVIEW_DAYS = 7;
 export const WEEKLY_COVERAGE_REVIEW_DAYS = 6;

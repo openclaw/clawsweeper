@@ -73,6 +73,7 @@ import {
   reviewStructuralRecordMatchesHydratedPull,
   reviewStructuralRecordMatchesObservedUpdate,
   reviewStructuralRecordsDescribeSameVerdictInput,
+  reviewStructuralPullStateDigest,
   reviewStructuralQuery,
   reviewStructuralRecordFromGraphql,
   reviewStructuralCacheDecision,
@@ -112,6 +113,7 @@ import {
   schedulerBucket,
   selectDueCandidates,
   shouldReviewItem,
+  HOT_INTAKE_FRESHNESS_MS,
   WEEKLY_COVERAGE_REVIEW_DAYS,
 } from "./scheduler-policy.js";
 import {
@@ -1465,6 +1467,17 @@ function reviewPolicyHash(options: {
       schema: reviewDecisionSchemaText(),
     }),
   ).slice(0, 16);
+}
+
+export function reviewPolicyHashForTest(
+  options: {
+    model?: string;
+    reasoningEffort?: string;
+    sandboxMode?: string;
+    serviceTier?: string;
+  } = {},
+): string {
+  return reviewPolicyHash(options);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -4445,6 +4458,192 @@ function dueCandidate(
   };
 }
 
+type HotIntakeExactReviewSnapshot = {
+  headSha: string;
+  sourceRevision: string;
+  pullStateDigest: string;
+  reviewActivityCursor: string;
+};
+
+function hotIntakeExactReviewSnapshotFromReport(
+  review: ExistingReview | null,
+  now: number,
+): HotIntakeExactReviewSnapshot | null {
+  if (review?.reviewStatus !== "complete" || !review.reviewedAt) return null;
+  const reviewedAt = Date.parse(review.reviewedAt);
+  if (
+    !Number.isFinite(reviewedAt) ||
+    now < reviewedAt ||
+    now - reviewedAt >= HOT_INTAKE_FRESHNESS_MS
+  ) {
+    return null;
+  }
+  const headSha = pullHeadShaFromReport(review.markdown)?.toLowerCase();
+  const sourceRevision = review.itemSourceRevision?.trim();
+  const pullStateDigest = frontMatterValue(review.markdown, "reviewed_pull_state_digest");
+  const reviewActivityCursor = frontMatterValue(review.markdown, "review_activity_cursor");
+  if (
+    !headSha ||
+    !sourceRevision ||
+    sourceRevision === "unknown" ||
+    !pullStateDigest ||
+    pullStateDigest === "unknown" ||
+    pullStateDigest === "none" ||
+    !isReviewedPrActivityCursor(reviewActivityCursor)
+  ) {
+    return null;
+  }
+  return { headSha, sourceRevision, pullStateDigest, reviewActivityCursor };
+}
+
+function currentHotIntakePullReviewSnapshot(item: Item): HotIntakeExactReviewSnapshot | null {
+  try {
+    const pull = ghJson<unknown>(["api", `repos/${item.repo}/pulls/${item.number}`]);
+    const source = asRecord(pull);
+    const headSha = stringOrUndefined(asRecord(source.head).sha)?.trim().toLowerCase();
+    if (!headSha) return null;
+    const baseSha = stringOrUndefined(asRecord(source.base).sha)?.trim().toLowerCase();
+    const draft = source.draft;
+    const mergeable = source.mergeable;
+    const mergeStateStatus = stringOrUndefined(source.mergeable_state);
+    const additions = githubCount(source.additions);
+    const deletions = githubCount(source.deletions);
+    const changedFiles = githubCount(source.changed_files);
+    const commitCount = githubCount(source.commits);
+    if (
+      !baseSha ||
+      typeof draft !== "boolean" ||
+      (mergeable !== null && typeof mergeable !== "boolean" && typeof mergeable !== "string") ||
+      !mergeStateStatus ||
+      additions === null ||
+      deletions === null ||
+      changedFiles === null ||
+      commitCount === null
+    ) {
+      return null;
+    }
+    const pullStateDigest = reviewStructuralPullStateDigest({
+      headSha,
+      baseSha,
+      draft,
+      mergeable,
+      mergeStateStatus,
+      additions,
+      deletions,
+      changedFiles,
+      commitCount,
+    });
+    if (!pullStateDigest) return null;
+    const reviewActivityCursor = readStableReviewedPrActivityCursor(() =>
+      fetchReviewedPrActivityCursor(item.number),
+    );
+    if (!reviewActivityCursor) return null;
+    const comments = ghPaged<unknown>(`repos/${item.repo}/issues/${item.number}/comments`);
+    return {
+      headSha,
+      sourceRevision: itemSourceRevisionSha256(pull, comments),
+      pullStateDigest,
+      reviewActivityCursor,
+    };
+  } catch (error) {
+    console.error(
+      `[plan] unable to verify fresh exact-review snapshot for ${item.repo}#${item.number}; leaving it eligible: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
+  }
+}
+
+function hasUncapturedActivitySinceExactReview(item: Item, review: ExistingReview): boolean {
+  const updatedAt = Date.parse(item.updatedAt);
+  const reviewedAt = review.reviewedAt ? Date.parse(review.reviewedAt) : Number.NaN;
+  if (!Number.isFinite(updatedAt) || !Number.isFinite(reviewedAt)) return true;
+  if (review.itemUpdatedAt && item.updatedAt === review.itemUpdatedAt) return false;
+  if (updatedAt <= reviewedAt) return false;
+  const reviewCommentSyncedAt = review.reviewCommentSyncedAt
+    ? Date.parse(review.reviewCommentSyncedAt)
+    : Number.NaN;
+  const labelsSyncedAt = review.labelsSyncedAt ? Date.parse(review.labelsSyncedAt) : Number.NaN;
+  const botOwnedSyncedAt = Math.max(
+    Number.isFinite(reviewCommentSyncedAt) ? reviewCommentSyncedAt : -Infinity,
+    Number.isFinite(labelsSyncedAt) ? labelsSyncedAt : -Infinity,
+  );
+  return !Number.isFinite(botOwnedSyncedAt) || updatedAt > botOwnedSyncedAt;
+}
+
+function shouldSkipScheduledHotIntakeExactReview(
+  item: Item,
+  review: ExistingReview | null,
+  now: number,
+  reviewPolicy: string,
+): boolean {
+  if (item.kind !== "pull_request") return false;
+  if (hasReviewPolicyMismatch(review, reviewPolicy)) return false;
+  if (!review || hasUncapturedActivitySinceExactReview(item, review)) return false;
+  const reviewed = hotIntakeExactReviewSnapshotFromReport(review, now);
+  if (!reviewed) return false;
+  const current = currentHotIntakePullReviewSnapshot(item);
+  return (
+    current !== null &&
+    current.headSha === reviewed.headSha &&
+    current.sourceRevision === reviewed.sourceRevision &&
+    current.pullStateDigest === reviewed.pullStateDigest &&
+    current.reviewActivityCursor === reviewed.reviewActivityCursor
+  );
+}
+
+export function shouldSkipScheduledHotIntakeExactReviewForTest(options: {
+  reviewStatus?: string;
+  reviewedAt?: string;
+  reviewHeadSha?: string;
+  reviewSourceRevision?: string;
+  reviewPullStateDigest?: string;
+  reviewActivityCursor?: string;
+  currentHeadSha?: string;
+  currentSourceRevision?: string;
+  currentPullStateDigest?: string;
+  currentReviewActivityCursor?: string;
+  itemUpdatedAt?: string;
+  reviewItemUpdatedAt?: string;
+  reviewCommentSyncedAt?: string;
+  labelsSyncedAt?: string;
+  reviewPolicy?: string;
+  currentReviewPolicy?: string;
+  now: number;
+}): boolean {
+  const review = {
+    reviewStatus: options.reviewStatus,
+    reviewedAt: options.reviewedAt,
+    markdown: `---\npull_head_sha: ${options.reviewHeadSha ?? "unknown"}\nreviewed_pull_state_digest: ${options.reviewPullStateDigest ?? "unknown"}\nreview_activity_cursor: ${options.reviewActivityCursor ?? "unknown"}\n---\n`,
+    itemSourceRevision: options.reviewSourceRevision,
+    reviewPolicy: options.reviewPolicy,
+    itemUpdatedAt: options.reviewItemUpdatedAt,
+    reviewCommentSyncedAt: options.reviewCommentSyncedAt,
+    labelsSyncedAt: options.labelsSyncedAt,
+  } as ExistingReview;
+  if (hasReviewPolicyMismatch(review, options.currentReviewPolicy)) return false;
+  const item = {
+    kind: "pull_request",
+    updatedAt: options.itemUpdatedAt ?? options.reviewedAt ?? "",
+  } as Item;
+  if (hasUncapturedActivitySinceExactReview(item, review)) return false;
+  const reviewed = hotIntakeExactReviewSnapshotFromReport(review, options.now);
+  if (
+    !reviewed ||
+    !options.currentHeadSha ||
+    !options.currentSourceRevision ||
+    !options.currentPullStateDigest ||
+    !options.currentReviewActivityCursor
+  ) {
+    return false;
+  }
+  return (
+    reviewed.headSha === options.currentHeadSha.trim().toLowerCase() &&
+    reviewed.sourceRevision === options.currentSourceRevision.trim() &&
+    reviewed.pullStateDigest === options.currentPullStateDigest.trim() &&
+    reviewed.reviewActivityCursor === options.currentReviewActivityCursor.trim()
+  );
+}
+
 function reviewBackfillCandidate(
   item: Item,
   itemsDir: string,
@@ -5133,7 +5332,12 @@ function planCandidates(options: {
         reviewIndex,
         options.coverageTrackedItemIds,
       );
-      if (candidate) due.push(candidate);
+      if (
+        candidate &&
+        !shouldSkipScheduledHotIntakeExactReview(item, candidate.review, now, options.reviewPolicy)
+      ) {
+        due.push(candidate);
+      }
     }
     const selected = selectDueCandidates(due, capacity, compareHotIntakeDueCandidates, now);
     const candidates = selected.map(({ item }) => item);
@@ -15284,6 +15488,7 @@ function markdownFor(options: {
   const configSurfaceChange = configSurfaceChangeFromContext(options.item.repo, options.context);
   const dataModelChange = dataModelChangeFromContext(options.item.repo, options.context);
   const prSurfaceFiles = prSurfaceFilesFromContext(options.context);
+  const reviewedPullStateDigest = reviewStructuralPullStateFromContext(options.context);
   return `---
 number: ${options.item.number}
 repository: ${options.item.repo}
@@ -15302,6 +15507,11 @@ review_lease_owner: ${options.reviewLeaseOwner ?? "unknown"}
 review_lease_comment_id: ${options.reviewLeaseCommentId ?? "unknown"}
 main_sha: ${options.git.mainSha}
 pull_head_sha: ${pullHeadShaFromContext(options.context) ?? "unknown"}
+reviewed_pull_state_digest: ${
+    reviewedPullStateDigest
+      ? (reviewStructuralPullStateDigest(reviewedPullStateDigest) ?? "unknown")
+      : "unknown"
+  }
 latest_release: ${options.git.latestRelease?.tagName ?? "unknown"}
 latest_release_sha: ${options.git.latestRelease?.sha ?? "unknown"}
 fixed_release: ${options.decision.fixedRelease ?? "unknown"}
