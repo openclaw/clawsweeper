@@ -14,6 +14,10 @@ import {
 import { parsePullRequestUrl } from "./github-ref.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import {
+  preparePinnedOpenClawValidationHelper,
+  restorePinnedOpenClawValidationHelperCache,
+} from "./pinned-openclaw-validation-helper.js";
+import {
   resolveTargetRepoToolchain,
   type TargetChangedGate,
   type TargetRepoToolchain,
@@ -318,7 +322,7 @@ export function reproduceValidationFailureAtPinnedBase({
       return null;
     }
     try {
-      prepareTargetToolchain(checkout, options);
+      prepareTargetToolchain(checkout, options, commands);
     } catch {
       return null;
     }
@@ -347,7 +351,11 @@ function isDependencyOrToolchainInputPath(filePath: string) {
   );
 }
 
-export function prepareTargetToolchain(cwd: string, options: TargetValidationOptions) {
+export function prepareTargetToolchain(
+  cwd: string,
+  options: TargetValidationOptions,
+  validationCommands?: LooseRecord[],
+) {
   clearPreparedTargetPnpmRuntime(cwd);
   if (!options.installTargetDeps) return;
   const packagePath = path.join(cwd, "package.json");
@@ -410,6 +418,12 @@ export function prepareTargetToolchain(cwd: string, options: TargetValidationOpt
       } else {
         preparedPnpmPackageManager = preparePnpmToolchain({
           cwd,
+          targetRepo: options.targetRepo,
+          preparePinnedOpenClawHelper: openClawValidationNeedsPinnedHelper(
+            cwd,
+            options,
+            validationCommands,
+          ),
           packageJson,
           validationEnv,
           setupTimeoutMs,
@@ -442,6 +456,8 @@ export function prepareTargetToolchain(cwd: string, options: TargetValidationOpt
 
 function preparePnpmToolchain({
   cwd,
+  targetRepo,
+  preparePinnedOpenClawHelper,
   packageJson,
   validationEnv,
   setupTimeoutMs,
@@ -450,6 +466,8 @@ function preparePnpmToolchain({
   installRegistry,
 }: {
   cwd: string;
+  targetRepo: string;
+  preparePinnedOpenClawHelper: boolean;
   packageJson: LooseRecord;
   validationEnv: NodeJS.ProcessEnv;
   setupTimeoutMs: number;
@@ -502,7 +520,50 @@ function preparePnpmToolchain({
     restoreTargetFile(cwd, lockfileSnapshot);
     runPnpmInstall(installArgs, "pnpm frozen reinstall");
   }
+  if (preparePinnedOpenClawHelper) {
+    preparePinnedOpenClawValidationHelper({
+      cwd,
+      targetRepo,
+      validationEnv,
+      installRegistry,
+      remainingTimeoutMs: () =>
+        targetToolchainCommandTimeout(
+          deadlineAt,
+          installTimeoutMs,
+          "pinned OpenClaw deadcode helper setup",
+        ),
+    });
+  }
   return packageManager;
+}
+
+function openClawValidationNeedsPinnedHelper(
+  cwd: string,
+  options: TargetValidationOptions,
+  validationCommands: LooseRecord[] | undefined,
+): boolean {
+  if (
+    options.targetRepo !== "openclaw/openclaw" ||
+    options.skipOpenClawChangedGate ||
+    validationCommands === undefined
+  ) {
+    return false;
+  }
+  const commands = requiredValidationCommands(validationCommands, cwd, options);
+  if (!commands.some((command) => isOpenClawChangedGateValidationCommand(command))) return false;
+  const changedPaths = options.pinnedBaseRef
+    ? gitChangedFilesFromRef(cwd, options.pinnedBaseRef)
+    : gitChangedFiles(cwd, DEFAULT_BASE_BRANCH);
+  return changedPaths.some((file) =>
+    /^(?:src|extensions|ui|packages)\/.+\.[cm]?[jt]sx?$/.test(file),
+  );
+}
+
+function isOpenClawChangedGateValidationCommand(command: LooseRecord): boolean {
+  if (typeof command !== "string") return false;
+  return /^(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)?pnpm\s+(?:-s\s+|--silent\s+)?(?:run\s+)?check:changed$/.test(
+    command.trim(),
+  );
 }
 
 function prepareBunToolchain({
@@ -1228,6 +1289,9 @@ export function runAllowedValidationCommandsWithBinding(
       // Vitest's scheduling telemetry rewrites an existing ignored artifact, which
       // violates checkout identity despite having no bearing on validation proof.
       validationEnv.OPENCLAW_TEST_PROJECTS_TIMINGS = "0";
+      // The changed gate invokes `pnpm dlx`; require its resolver to use the
+      // frozen helper metadata instead of attempting a network-only refresh.
+      validationEnv.npm_config_offline = "true";
     }
     const validationTimeoutMs = targetValidationTimeoutMs(
       "CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS",
@@ -4460,6 +4524,7 @@ function withTargetValidationEnvironment<T>(
         throw new Error("prepared target pnpm toolchain copy changed before validation");
       }
       assertPreparedTargetPnpmRuntime(preparedPnpmRuntime, deadlineAt);
+      restorePinnedOpenClawValidationHelperCache(corepackHome, cache);
     }
     fs.mkdirSync(corepackBin, { recursive: true, mode: 0o700 });
     fs.writeFileSync(globalConfig, "", { mode: 0o600 });

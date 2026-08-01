@@ -1488,7 +1488,6 @@ function tryAutomergeFastRebaseRepair({
     return { status: "fallback", reason: "deterministic rebase left working tree changes" };
   }
 
-  prepareTargetToolchain(targetDir, currentTargetValidationOptions());
   const targetBaseSha = pinRepairBase(() =>
     run("git", ["rev-parse", `origin/${baseBranch}`], { cwd: targetDir }),
   ).sha;
@@ -1500,6 +1499,7 @@ function tryAutomergeFastRebaseRepair({
     { fixArtifact, targetDir, sourceHead },
     validationOptions,
   );
+  prepareTargetToolchain(targetDir, validationPlan.options, validationPlan.commands);
   const validationExecution = runAllowedValidationCommandsWithBinding(
     validationPlan.commands,
     targetDir,
@@ -2873,7 +2873,6 @@ function validateAndReviewLoop({
   let validationCommands: LooseRecord[] = [];
   let checkoutBinding = null;
   for (let attempt = 1; attempt <= maxReviewAttempts; attempt += 1) {
-    prepareTargetToolchain(targetDir, currentTargetValidationOptions());
     const validationOptions = {
       ...currentTargetValidationOptions(),
       pinnedBaseRef: targetBaseSha,
@@ -2882,6 +2881,7 @@ function validateAndReviewLoop({
       { fixArtifact, targetDir, sourceHead },
       validationOptions,
     );
+    prepareTargetToolchain(targetDir, validationPlan.options, validationPlan.commands);
     try {
       const validationExecution = runAllowedValidationCommandsWithBinding(
         validationPlan.commands,
@@ -2993,11 +2993,11 @@ function validateAndReviewLoop({
         targetBaseSha,
       });
       onReviewFix?.(`${attempt}-final`);
-      prepareTargetToolchain(targetDir, currentTargetValidationOptions());
       const finalValidationPlan = repairDeltaValidationPlan(
         { fixArtifact, targetDir, sourceHead },
         validationOptions,
       );
+      prepareTargetToolchain(targetDir, finalValidationPlan.options, finalValidationPlan.commands);
       const validationExecution = runAllowedValidationCommandsWithBinding(
         finalValidationPlan.commands,
         targetDir,
@@ -3049,7 +3049,6 @@ function validateAndReviewSynchronizedTree({
   sourceHead,
   repairDeltaPaths,
 }: LooseRecord) {
-  prepareTargetToolchain(targetDir, currentTargetValidationOptions());
   const validationOptions = {
     ...currentTargetValidationOptions(),
     pinnedBaseRef: targetBaseSha,
@@ -3058,6 +3057,7 @@ function validateAndReviewSynchronizedTree({
     { fixArtifact, targetDir, sourceHead },
     validationOptions,
   );
+  prepareTargetToolchain(targetDir, validationPlan.options, validationPlan.commands);
   let validationCommands;
   let checkoutBinding;
   try {

@@ -3627,6 +3627,182 @@ if (args[0] === "enable") {
 });
 
 test(
+  "OpenClaw stages pinned Knip without package execution and restores its offline cache per command",
+  { skip: process.platform === "win32" },
+  () => {
+    const cwd = gitPackageFixture({ first: 'node -e ""', second: 'node -e ""' });
+    const runnerPath = path.join(cwd, "scripts", "deadcode-knip-runner.mjs");
+    fs.mkdirSync(path.dirname(runnerPath), { recursive: true });
+    fs.writeFileSync(runnerPath, 'const KNIP_VERSION = "6.8.0";\n');
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+    const changedSource = path.join(cwd, "src", "index.ts");
+    fs.mkdirSync(path.dirname(changedSource), { recursive: true });
+    fs.writeFileSync(changedSource, "export const changed = true;\n");
+    git(cwd, "add", "src/index.ts");
+
+    const hostBin = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-knip-prefetch-"));
+    const targetBin = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-knip-pnpm-"));
+    const logPath = path.join(hostBin, "invocations.jsonl");
+    writeNodeCommandShim(
+      targetBin,
+      "pnpm",
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ args, cwd: process.cwd(), cache: process.env.XDG_CACHE_HOME, jitiFsCache: process.env.JITI_FS_CACHE, offline: process.env.npm_config_offline }) + "\\n");
+if (args[0] === "install") {
+  fs.mkdirSync("node_modules", { recursive: true });
+  if (process.cwd().includes(".__clawsweeper_pnpm_helper_cache__")) {
+    const helper = path.dirname(process.cwd());
+    fs.writeFileSync(path.join(helper, "marker"), "frozen helper");
+    fs.symlinkSync("marker", path.join(helper, "marker-link"));
+    const bin = path.join(process.cwd(), "node_modules", ".bin", "knip");
+    fs.mkdirSync(path.dirname(bin), { recursive: true });
+    fs.writeFileSync(bin, "#!/bin/sh\\nexit 0\\n", { mode: 0o755 });
+    if (fs.existsSync(${JSON.stringify(path.join(hostBin, "tamper-lock"))})) {
+      const lock = path.join(process.cwd(), "pnpm-lock.yaml");
+      fs.writeFileSync(lock, fs.readFileSync(lock, "utf8").replace("specifier: 6.8.0", "specifier: 6.8.1"));
+    }
+    const configuredRegistry = args.find((arg) => arg.startsWith("--config.registry="))?.slice("--config.registry=".length);
+    const registryHost = new URL(configuredRegistry).host.replace(":", "+");
+    const metadata = path.join(process.env.XDG_CACHE_HOME, "pnpm", "v11", "metadata-full", registryHost, "knip.jsonl");
+    fs.mkdirSync(path.dirname(metadata), { recursive: true });
+    fs.writeFileSync(metadata, "{}\\n");
+  }
+}
+if (args.at(-1) === "first" || args.at(-1) === "second") {
+  const marker = path.join(process.env.XDG_CACHE_HOME, "pnpm", "dlx", "a6769c4cf56f1a323ac28af3b6359f2b", "marker");
+  if (fs.readFileSync(marker, "utf8") !== "frozen helper") process.exit(42);
+  const knip = path.join(path.dirname(marker), "pinned", "node_modules", ".bin", "knip");
+  if (!fs.readFileSync(knip, "utf8").includes("JITI_FS_CACHE=0")) process.exit(43);
+  if (args.at(-1) === "first") fs.writeFileSync(marker, "validation mutated its own cache");
+}
+`,
+    );
+    writeNodeCommandShim(
+      hostBin,
+      "corepack",
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args[0] === "enable") {
+  const destination = args[args.indexOf("--install-directory") + 1];
+  fs.mkdirSync(destination, { recursive: true });
+  const source = path.join(${JSON.stringify(targetBin)}, "pnpm");
+  const target = path.join(destination, "pnpm");
+  fs.copyFileSync(source, target);
+  fs.chmodSync(target, fs.statSync(source).mode);
+}
+`,
+    );
+    const options = {
+      ...validationOptions("openclaw/openclaw", {
+        toolchain: {
+          packageManager: "pnpm",
+          baseValidationCommands: [],
+          changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+        },
+      }),
+      installTargetDeps: true,
+      installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+    };
+
+    withCommandOverridesUnset(["corepack", "pnpm"], () =>
+      withPathOnlyPrefix(hostBin, () => {
+        prepareTargetToolchain(cwd, options, ["pnpm check:changed"]);
+        assert.deepEqual(
+          runAllowedValidationCommands(["pnpm first", "pnpm second"], cwd, options),
+          ["pnpm first", "pnpm second"],
+        );
+      }),
+    );
+
+    const invocations = fs
+      .readFileSync(logPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line));
+    const prefetch = invocations.find(
+      ({ args, cwd: invocationCwd }) =>
+        args[0] === "install" && invocationCwd.includes(".__clawsweeper_pnpm_helper_cache__"),
+    );
+    assert.ok(prefetch);
+    assert.notEqual(prefetch.cwd, cwd);
+    assert.match(prefetch.cache, /[/\\]corepack[/\\]\.__clawsweeper_pnpm_helper_cache__$/);
+    assert.equal(prefetch.args[0], "install");
+    assert.ok(prefetch.args.includes("--frozen-lockfile"));
+    assert.ok(prefetch.args.includes("--ignore-scripts"));
+    assert.ok(prefetch.args.includes("--config.minimum-release-age=2880"));
+    assert.ok(prefetch.args.includes("--ignore-pnpmfile"));
+    assert.ok(prefetch.args.includes("--config.enable-pre-post-scripts=false"));
+    assert.ok(prefetch.args.includes("--config.enable-global-virtual-store=false"));
+    const validations = invocations.filter(({ args }) => ["first", "second"].includes(args.at(-1)));
+    assert.equal(validations.length, 2);
+    assert.notEqual(validations[0].cache, prefetch.cache);
+    assert.equal(validations[0].cache, validations[1].cache);
+    assert.ok(validations.every(({ jitiFsCache }) => jitiFsCache === undefined));
+    assert.ok(validations.every(({ offline }) => offline === "true"));
+
+    withCommandOverridesUnset(["corepack", "pnpm"], () =>
+      withPathOnlyPrefix(hostBin, () => {
+        fs.writeFileSync(path.join(hostBin, "tamper-lock"), "1");
+        assert.throws(
+          () => prepareTargetToolchain(cwd, options, ["pnpm check:changed"]),
+          /dependency lockfile does not match the trusted graph/,
+        );
+        fs.rmSync(path.join(hostBin, "tamper-lock"));
+
+        const previousRegistry = process.env.npm_config_registry;
+        process.env.npm_config_registry = "https://registry.example.invalid:8443/";
+        try {
+          prepareTargetToolchain(cwd, options, ["pnpm check:changed"]);
+        } finally {
+          restoreEnv("npm_config_registry", previousRegistry);
+        }
+
+        const previousPrefetches = fs
+          .readFileSync(logPath, "utf8")
+          .split(/\r?\n/)
+          .filter((line) => {
+            if (!line) return false;
+            const invocation = JSON.parse(line);
+            return (
+              invocation.args[0] === "install" &&
+              invocation.cwd.includes(".__clawsweeper_pnpm_helper_cache__")
+            );
+          }).length;
+        prepareTargetToolchain(cwd, options);
+        prepareTargetToolchain(cwd, { ...options, skipOpenClawChangedGate: true }, [
+          "git diff --check",
+        ]);
+        git(cwd, "reset", "--", "src/index.ts");
+        fs.rmSync(changedSource);
+        fs.writeFileSync(path.join(cwd, "README.md"), "# Docs-only repair\n");
+        git(cwd, "add", "README.md");
+        prepareTargetToolchain(cwd, options, ["pnpm check:changed"]);
+        const subsequentPrefetches = fs
+          .readFileSync(logPath, "utf8")
+          .split(/\r?\n/)
+          .filter((line) => {
+            if (!line) return false;
+            const invocation = JSON.parse(line);
+            return (
+              invocation.args[0] === "install" &&
+              invocation.cwd.includes(".__clawsweeper_pnpm_helper_cache__")
+            );
+          }).length;
+        assert.equal(subsequentPrefetches, previousPrefetches);
+      }),
+    );
+  },
+);
+
+test(
   "pnpm validation refreshes the prepared executable before every command",
   { skip: process.platform === "win32" },
   () => {
