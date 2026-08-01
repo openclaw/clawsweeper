@@ -334,6 +334,7 @@ jobs:
               [ "$remaining_implementations" -gt 0 ] &&
               [ "$target_repo" = "openclaw/openclaw" ] &&
               [ "$(jq -r '.decision.itemKind' <<<"$item")" = "issue" ] &&
+              { [ "$receipt_outcome" = "accepted" ] || [ "$receipt_outcome" = "deduped" ]; } &&
               jq -e '.kind == "eligible"' "$outcome_path" >/dev/null; then
               report_path="${outcome_path%.json}.report.md"
               if [ -f "$report_path" ]; then

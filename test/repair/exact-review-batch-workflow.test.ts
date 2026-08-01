@@ -151,6 +151,15 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
     /permanent publisher result remains retryable until the durable/,
   );
   assert.match(healthyMembers.run ?? "", /\[ "\$outcome_kind" = "permanent_failure" \].*continue/s);
+  const implementationBlock = (healthyMembers.run ?? "").slice(
+    (healthyMembers.run ?? "").indexOf("# The optional implementation lane"),
+    (healthyMembers.run ?? "").indexOf('report_path="${outcome_path%.json}.report.md"'),
+  );
+  assert.match(
+    implementationBlock,
+    /\{ \[ "\$receipt_outcome" = "accepted" \] \|\| \[ "\$receipt_outcome" = "deduped" \]; \} &&/,
+  );
+  assert.doesNotMatch(implementationBlock, /superseded|permanent/);
   assert.equal(
     workflow.jobs.publish!.steps.some(
       (step) => step.name === "Acknowledge terminal batch command lifecycle status",

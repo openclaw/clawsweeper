@@ -1154,7 +1154,23 @@ test("exact event publication derives lifecycle receipt and final command acknow
     "${{ steps.finalization-context.outputs.lifecycle_revision }}",
   );
   assert.match(observedReceipt.if ?? "", /terminal_status_verified == 'true'/);
+  assert.equal(
+    observedReceipt.env?.STATUS_COMMENT_ID,
+    "${{ steps.finalization-context.outputs.status_comment_id }}",
+  );
   assert.match(observedReceipt.run ?? "", /lifecycle\/command-ack\/observed/);
+  assert.match(
+    observedReceipt.run ?? "",
+    /const statusMarker = process\.env\.STATUS_MARKER \|\| null/,
+  );
+  assert.match(
+    observedReceipt.run ?? "",
+    /const statusCommentId = process\.env\.STATUS_COMMENT_ID/,
+  );
+  assert.match(
+    observedReceipt.run ?? "",
+    /\.\.\.\(statusMarker \? \{ status_marker: statusMarker \} : \{\}\)/,
+  );
   assert.match(observedReceipt.run ?? "", /command_comment_id: commandCommentId/);
   assert.match(observedReceipt.run ?? "", /completion_comment_id: completionCommentId/);
   assert.match(observedReceipt.run ?? "", /acknowledgement_state == "observed"/);

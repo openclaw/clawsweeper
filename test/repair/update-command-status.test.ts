@@ -180,6 +180,74 @@ test("terminal receipt verification accepts only the selected trusted final stat
   );
 });
 
+test("terminal receipt verification accepts a status-ID-only final status", () => {
+  const options = parseOptions([
+    "--repo",
+    "openclaw/openclaw",
+    "--item-number",
+    "81565",
+    "--status-comment-id",
+    "4466202001",
+    "--state",
+    "Complete",
+    "--detail",
+    "Durable review routing completed.",
+    "--verify-terminal-status-receipt",
+  ]);
+  const comment = {
+    id: 4466202001,
+    body: [
+      "<!-- clawsweeper-command-ack:4466201488 -->",
+      "ClawSweeper re-review requested.",
+      "<!-- clawsweeper-command-progress:start -->",
+      "Re-review progress:",
+      "- State: Complete",
+      "- Detail: Durable review routing completed.",
+      "- Updated: 2026-08-01T00:00:00.000Z",
+      "<!-- clawsweeper-command-progress:end -->",
+    ].join("\n"),
+  };
+
+  assert.deepEqual(verifiedTerminalStatusReceipt(comment, options), {
+    commandCommentId: 4466201488,
+    completionCommentId: 4466202001,
+  });
+  assert.equal(verifiedTerminalStatusReceipt({ ...comment, id: 4466202002 }, options), null);
+  assert.equal(
+    verifiedTerminalStatusReceipt(
+      {
+        ...comment,
+        body: comment.body.replace("<!-- clawsweeper-command-ack:4466201488 -->\n", ""),
+      },
+      options,
+    ),
+    null,
+  );
+  assert.equal(
+    verifiedTerminalStatusReceipt(
+      {
+        ...comment,
+        body: comment.body.replace(
+          "<!-- clawsweeper-command-ack:4466201488 -->",
+          "<!-- clawsweeper-command-ack:4466201488 -->\n<!-- clawsweeper-command-ack:4466201489 -->",
+        ),
+      },
+      options,
+    ),
+    null,
+  );
+  assert.equal(
+    verifiedTerminalStatusReceipt(
+      {
+        ...comment,
+        body: `<!-- clawsweeper-command-status:81565:re_review:unexpected -->\n${comment.body}`,
+      },
+      options,
+    ),
+    null,
+  );
+});
+
 test("parseOptions enables the terminal locked-conversation skip only when requested", () => {
   const options = parseOptions([
     "--repo",

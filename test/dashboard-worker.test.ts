@@ -5202,6 +5202,98 @@ test("Worker lifecycle projection permits one command acknowledgement after dura
   assert.equal(lifecycle?.acknowledgement.attempts.length, 2);
 });
 
+test("signed Worker records a status-ID-only terminal acknowledgement", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#779",
+    fenceKey: "openclaw/openclaw#779@exact:status-id-only",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "status-id-only-delivery:779",
+    sourceAction: "re_review",
+    commandOriginated: true,
+    statusMarker: null,
+    statusCommentId: 9011,
+    observedAt: 1_700_000_000_000,
+  });
+  lifecycle.recordCanonicalReceipt({
+    ...identity,
+    outcome: "accepted",
+    receiptId: "status-id-only-canonical:779",
+    observedAt: 1_700_000_000_001,
+  });
+  lifecycle.recordRouterReceipt({
+    ...identity,
+    outcome: "durable",
+    receiptId: "status-id-only-router:779",
+    observedAt: 1_700_000_000_002,
+  });
+  lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: 1_700_000_000_003,
+  });
+  assert.equal(
+    lifecycle.authorizeCommandAcknowledgement({
+      ...identity,
+      statusMarker: null,
+      statusCommentId: 9011,
+      observedAt: 1_700_000_000_004,
+    }).allowed,
+    true,
+  );
+
+  const secret = "status-id-only-lifecycle-secret";
+  const payload = {
+    canonical_target_key: "openclaw/openclaw#779",
+    command_comment_id: 9010,
+    completion_comment_id: 9011,
+    observed_at: 1_700_000_000_005,
+  };
+  const body = JSON.stringify(payload);
+  const response = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/lifecycle/command-ack/observed",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret)
+            .update(body)
+            .digest("hex")}`,
+        },
+        body,
+      },
+    ),
+    {
+      CLAWSWEEPER_WEBHOOK_SECRET: secret,
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    },
+  );
+
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    accepted: true,
+    lifecycle_state: "completed",
+    acknowledgement_state: "observed",
+    version: 1,
+  });
+  assert.deepEqual(
+    lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)
+      ?.acknowledgement.observed,
+    {
+      statusMarker: null,
+      commandCommentId: 9010,
+      completionCommentId: 9011,
+      observedAt: 1_700_000_000_005,
+    },
+  );
+});
+
 test("Worker lifecycle acknowledgement preserves canonical GitHub repository casing", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});

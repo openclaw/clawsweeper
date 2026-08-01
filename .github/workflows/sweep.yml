@@ -3216,6 +3216,7 @@ jobs:
           TARGET_REPO: ${{ steps.finalization-context.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.finalization-context.outputs.item_number }}
           STATUS_MARKER: ${{ steps.finalization-context.outputs.status_marker }}
+          STATUS_COMMENT_ID: ${{ steps.finalization-context.outputs.status_comment_id }}
           COMMAND_COMMENT_ID: ${{ steps.update-final-command-status.outputs.command_comment_id }}
           COMPLETION_COMMENT_ID: ${{ steps.update-final-command-status.outputs.completion_comment_id }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -3223,12 +3224,19 @@ jobs:
         run: |
           set -euo pipefail
           payload="$(node -e '
+            const statusMarker = process.env.STATUS_MARKER || null;
+            const statusCommentId = process.env.STATUS_COMMENT_ID === "" ? null : Number(process.env.STATUS_COMMENT_ID);
             const commandCommentId = Number(process.env.COMMAND_COMMENT_ID);
             const completionCommentId = Number(process.env.COMPLETION_COMMENT_ID);
-            if (!process.env.STATUS_MARKER || !Number.isInteger(commandCommentId) || commandCommentId < 1 || !Number.isInteger(completionCommentId) || completionCommentId < 1) process.exit(1);
+            if (
+              (!statusMarker && statusCommentId === null) ||
+              (statusCommentId !== null && (!Number.isInteger(statusCommentId) || statusCommentId < 1)) ||
+              !Number.isInteger(commandCommentId) || commandCommentId < 1 ||
+              !Number.isInteger(completionCommentId) || completionCommentId < 1
+            ) process.exit(1);
             process.stdout.write(JSON.stringify({
               canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
-              status_marker: process.env.STATUS_MARKER,
+              ...(statusMarker ? { status_marker: statusMarker } : {}),
               command_comment_id: commandCommentId,
               completion_comment_id: completionCommentId,
               observed_at: Date.now(),

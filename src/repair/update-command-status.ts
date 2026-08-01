@@ -426,18 +426,40 @@ export function mergeCommandProgressSection(
 
 export function verifiedTerminalStatusReceipt(
   comment: Pick<LooseRecord, "id" | "body">,
-  options: Pick<Options, "verifyTerminalStatusReceipt" | "marker" | "state" | "detail">,
+  options: Pick<
+    Options,
+    "verifyTerminalStatusReceipt" | "marker" | "statusCommentId" | "state" | "detail"
+  >,
 ): TerminalStatusReceipt | null {
-  if (!options.verifyTerminalStatusReceipt || !options.marker) return null;
+  if (!options.verifyTerminalStatusReceipt || (!options.marker && !options.statusCommentId))
+    return null;
   const completionCommentId = Number(comment.id);
   const commandCommentIds = commandAckCommentIdsFromBody(comment.body);
   const statusMarkers = commandStatusMarkersFromBody(comment.body);
   if (
     !Number.isSafeInteger(completionCommentId) ||
-    commandCommentIds.length !== 1 ||
-    statusMarkers.length !== 1 ||
-    statusMarkers[0] !== options.marker ||
     !terminalProgressMatches(comment.body, options)
+  ) {
+    return null;
+  }
+  if (options.marker) {
+    if (
+      commandCommentIds.length !== 1 ||
+      statusMarkers.length !== 1 ||
+      statusMarkers[0] !== options.marker
+    ) {
+      return null;
+    }
+    return { commandCommentId: commandCommentIds[0]!, completionCommentId };
+  }
+  const statusCommentId = options.statusCommentId;
+  if (
+    statusCommentId === null ||
+    !Number.isSafeInteger(statusCommentId) ||
+    statusCommentId < 1 ||
+    completionCommentId !== statusCommentId ||
+    commandCommentIds.length !== 1 ||
+    statusMarkers.length !== 0
   ) {
     return null;
   }
